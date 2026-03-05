@@ -22,7 +22,7 @@ Thank you for your interest in contributing to Zeroshot! This guide covers every
 - **Node.js 18+** (check: `node --version`)
 - **npm** (bundled with Node)
 - **Docker** (optional, for isolation mode tests)
-- **Claude Code CLI** - `npm i -g @anthropic-ai/claude-code && claude auth login`
+- **AI Provider CLI** - At least one: Claude Code (`npm i -g @anthropic-ai/claude-code`), Codex, Gemini CLI, or OpenCode
 - **GitHub CLI** - Required for PR creation features ([install guide](https://cli.github.com/))
 
 ### Installation
