@@ -148,6 +148,78 @@ test('gateway invoke completes deterministic edit task', async () => {
   }
 });
 
+test('gateway sends Anthropic-compatible requests through the configured base URL', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-gateway-anthropic-'));
+  fs.writeFileSync(path.join(tempDir, 'note.txt'), 'gateway note\n', 'utf8');
+
+  try {
+    const requests = [];
+    const response = await withGatewayServer((req, res, json) => {
+      requests.push({ url: req.url, headers: req.headers, body: json });
+      if (requests.length === 1) {
+        jsonResponse(res, 200, {
+          content: [
+            { type: 'text', text: 'Reading the target file.' },
+            {
+              type: 'tool_use',
+              id: 'tool-read',
+              name: 'read_file',
+              input: { path: 'note.txt' },
+            },
+          ],
+        });
+        return;
+      }
+      jsonResponse(res, 200, {
+        content: [{ type: 'text', text: 'Task complete.' }],
+      });
+    }, (baseUrl) =>
+      runProviderExecutable(
+        JSON.stringify({
+          schemaVersion: 1,
+          command: 'invoke',
+          provider: 'gateway',
+          context: 'Read note.txt.',
+          options: {
+            cwd: tempDir,
+            gateway: {
+              protocol: 'anthropic',
+              baseUrl: `${baseUrl}/anthropic`,
+              apiKey: 'gateway-test-key',
+              model: 'MiniMax-M3',
+              maxTokens: 4096,
+              toolPolicy: {
+                roots: ['.'],
+                commands: [],
+              },
+            },
+          },
+          timeoutMs: 2_000,
+        })
+      )
+    );
+
+    assert.equal(response.exitCode, 0);
+    assert.equal(response.envelope.ok, true);
+    assert.deepEqual(requests.map((request) => request.url), [
+      '/anthropic/v1/messages',
+      '/anthropic/v1/messages',
+    ]);
+    assert.equal(requests[0].headers['x-api-key'], 'gateway-test-key');
+    assert.equal(requests[0].headers['anthropic-version'], '2023-06-01');
+    assert.equal(requests[0].body.model, 'MiniMax-M3');
+    assert.equal(requests[0].body.max_tokens, 4096);
+    assert.equal(requests[0].body.messages[0].role, 'user');
+    assert.equal(requests[0].body.tools[0].input_schema.type, 'object');
+    assert.equal(requests[1].body.messages[1].role, 'assistant');
+    assert.equal(requests[1].body.messages[1].content[1].type, 'tool_use');
+    assert.equal(requests[1].body.messages[2].content[0].type, 'tool_result');
+    assert.equal(response.envelope.result.events.at(-1).success, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('gateway rejects invalid config as permanent failures', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-gateway-invalid-'));
 

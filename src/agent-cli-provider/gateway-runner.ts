@@ -164,10 +164,12 @@ async function runGatewayLoop(
 
   for (let turn = 0; turn < MAX_GATEWAY_TURNS; turn += 1) {
     const response = await createGatewayChatCompletion({
+      protocol: gateway.protocol,
       baseUrl: gateway.baseUrl,
       apiKey: gateway.apiKey,
       headers: gateway.headers,
       model: gateway.model,
+      ...(gateway.maxTokens === undefined ? {} : { maxTokens: gateway.maxTokens }),
       messages,
       tools: TOOL_DEFINITIONS,
     });
