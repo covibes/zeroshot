@@ -737,7 +737,7 @@ function defineLifecycleStartTests() {
       assert.strictEqual(options.containerHome, '/tmp/home');
     });
 
-    it('should base PR worktrees on the local PR base branch', async function () {
+    it('should base PR worktrees on the remote PR base branch', async function () {
       const config = createSimpleConfig();
       const originalCreateWorktreeIsolation = IsolationManager.prototype.createWorktreeIsolation;
       const calls = [];
@@ -767,7 +767,10 @@ function defineLifecycleStartTests() {
 
       assert.strictEqual(calls.length, 1);
       assert.strictEqual(calls[0].workDir, '/tmp/repo');
-      assert.deepStrictEqual(calls[0].options, { baseRef: 'predev' });
+      assert.deepStrictEqual(calls[0].options, {
+        baseRef: 'origin/predev',
+        requireFreshBase: true,
+      });
     });
 
     it('should handle missing input (requires issue, file, or text)', async function () {

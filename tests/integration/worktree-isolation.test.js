@@ -18,6 +18,8 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 
 const IsolationManager = require('../../src/isolation-manager');
+const Orchestrator = require('../../src/orchestrator');
+const { buildStartOptions } = require('../../lib/start-cluster');
 
 let manager;
 let testRepoDir;
@@ -54,6 +56,120 @@ function createTempGitRepo(prefix) {
   return repoDir;
 }
 
+function createStaleRemoteBaseFixture(prefix) {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const remoteDir = path.join(fixtureRoot, 'origin.git');
+  const sourceDir = path.join(fixtureRoot, 'source');
+  const publisherDir = path.join(fixtureRoot, 'publisher');
+
+  fs.mkdirSync(remoteDir);
+  runGit(['init', '--bare'], { cwd: remoteDir });
+
+  fs.mkdirSync(sourceDir);
+  runGit(['init'], { cwd: sourceDir });
+  runGit(['config', 'user.email', 'test@test.com'], { cwd: sourceDir });
+  runGit(['config', 'user.name', 'Test User'], { cwd: sourceDir });
+  fs.writeFileSync(path.join(sourceDir, 'test.txt'), 'initial content');
+  runGit(['add', 'test.txt'], { cwd: sourceDir });
+  runGit(['commit', '-m', 'Initial commit'], { cwd: sourceDir });
+  runGit(['branch', '-M', 'dev'], { cwd: sourceDir });
+  runGit(['remote', 'add', 'origin', remoteDir], { cwd: sourceDir });
+  runGit(['push', '-u', 'origin', 'dev'], { cwd: sourceDir });
+
+  runGit(['clone', '--branch', 'dev', remoteDir, publisherDir], { cwd: fixtureRoot });
+  runGit(['config', 'user.email', 'test@test.com'], { cwd: publisherDir });
+  runGit(['config', 'user.name', 'Test User'], { cwd: publisherDir });
+  fs.writeFileSync(path.join(publisherDir, 'test.txt'), 'remote content');
+  runGit(['add', 'test.txt'], { cwd: publisherDir });
+  runGit(['commit', '-m', 'Advance remote'], { cwd: publisherDir });
+  runGit(['push', 'origin', 'dev'], { cwd: publisherDir });
+
+  return {
+    fixtureRoot,
+    sourceDir,
+    localSha: runGit(['rev-parse', 'dev'], { cwd: sourceDir }).trim(),
+    remoteSha: runGit(['rev-parse', 'refs/heads/dev'], { cwd: remoteDir }).trim(),
+  };
+}
+
+function findGitBinary() {
+  for (const directory of (process.env.PATH || '').split(path.delimiter)) {
+    const candidate = path.join(directory, process.platform === 'win32' ? 'git.exe' : 'git');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // Keep looking.
+    }
+  }
+  throw new Error('Unable to locate the git executable');
+}
+
+function listTemporaryBaseRefs(repoDir) {
+  return runGit(['for-each-ref', '--format=%(refname)', 'refs/zeroshot/base-fetch/'], {
+    cwd: repoDir,
+  })
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+}
+
+function createGitInterventionShim(
+  fixtureRoot,
+  { repoDir, sharedRefSha = null, failWorktreeAdd = false }
+) {
+  const shimDir = path.join(fixtureRoot, 'git-shim');
+  const shimPath = path.join(shimDir, 'git');
+  const realGit = findGitBinary();
+  fs.mkdirSync(shimDir);
+
+  const script = [
+    '#!/usr/bin/env node',
+    "const { spawnSync } = require('child_process');",
+    `const realGit = ${JSON.stringify(realGit)};`,
+    `const repoDir = ${JSON.stringify(repoDir)};`,
+    `const sharedRefSha = ${JSON.stringify(sharedRefSha)};`,
+    `const failWorktreeAdd = ${JSON.stringify(failWorktreeAdd)};`,
+    'const args = process.argv.slice(2);',
+    "if (args[0] === 'worktree' && args[1] === 'add') {",
+    '  const refs = spawnSync(',
+    '    realGit,',
+    "    ['for-each-ref', '--format=%(refname)', 'refs/zeroshot/base-fetch/'],",
+    "    { cwd: repoDir, encoding: 'utf8', stdio: 'pipe' }",
+    '  );',
+    '  if (refs.status !== 0 || refs.error || !refs.stdout.trim()) {',
+    "    process.stderr.write('temporary base ref missing before worktree add\\n');",
+    '    process.exit(97);',
+    '  }',
+    '  if (failWorktreeAdd) {',
+    "    process.stderr.write('injected worktree add failure\\n');",
+    '    process.exit(98);',
+    '  }',
+    '  if (sharedRefSha) {',
+    '    const update = spawnSync(',
+    '      realGit,',
+    "      ['update-ref', 'refs/remotes/origin/dev', sharedRefSha],",
+    "      { cwd: repoDir, encoding: 'utf8', stdio: 'pipe' }",
+    '    );',
+    '    if (update.status !== 0 || update.error) {',
+    "      process.stderr.write(update.error?.message || update.stderr || 'ref update failed');",
+    '      process.exit(96);',
+    '    }',
+    '  }',
+    '}',
+    "const child = spawnSync(realGit, args, { stdio: 'inherit' });",
+    'if (child.error) {',
+    '  process.stderr.write(child.error.message);',
+    '  process.exit(1);',
+    '}',
+    'process.exit(child.status === null ? 1 : child.status);',
+    '',
+  ].join('\n');
+
+  fs.writeFileSync(shimPath, script, { mode: 0o755 });
+  return shimDir;
+}
+
 function registerRepositoryHooks() {
   before(function () {
     testRepoDir = createTempGitRepo('zs-worktree-test-repo-');
@@ -88,6 +204,7 @@ function registerCreateWorktreeIsolationTests() {
     registerWorktreeNonGitTest();
     registerWorktreeCleanupBeforeCreateTest();
     registerWorktreeSetupCommandTest();
+    registerRemotePrBaseTests();
   });
 }
 
@@ -283,6 +400,247 @@ function registerWorktreeSetupCommandTest() {
         // Ignore cleanup errors.
       }
       fs.rmSync(timeoutRepoDir, { recursive: true, force: true });
+    }
+  });
+}
+
+function registerRemotePrBaseTests() {
+  it('fetches the remote commit for direct and detached-derived PR options', async function () {
+    const orchestrator = new Orchestrator({ quiet: true, skipLoad: true });
+    const originalRunOptions = process.env.ZEROSHOT_RUN_OPTIONS;
+    const originalCwd = process.env.ZEROSHOT_CWD;
+
+    try {
+      const modes = [
+        {
+          name: 'direct',
+          buildOptions: (fixture) => ({
+            cwd: fixture.sourceDir,
+            worktree: true,
+            prBase: 'dev',
+          }),
+        },
+        {
+          name: 'detached-derived',
+          buildOptions: (fixture) => {
+            process.env.ZEROSHOT_CWD = fixture.sourceDir;
+            process.env.ZEROSHOT_RUN_OPTIONS = JSON.stringify({
+              ship: true,
+              prBase: 'dev',
+            });
+            return buildStartOptions({
+              clusterId: 'detached-remote-pr-base',
+              options: {},
+              settings: {},
+            });
+          },
+        },
+      ];
+
+      for (const mode of modes) {
+        const fixture = createStaleRemoteBaseFixture(`zs-${mode.name}-remote-pr-base-`);
+        const clusterId = `test-${mode.name}-remote-pr-base-${Date.now()}`;
+
+        assert.notStrictEqual(fixture.localSha, fixture.remoteSha, 'local dev must be stale');
+
+        let result;
+        try {
+          result = await orchestrator._initializeIsolation(
+            mode.buildOptions(fixture),
+            {},
+            clusterId
+          );
+          const worktreeSha = runGit(['rev-parse', 'HEAD'], {
+            cwd: result.worktreeInfo.path,
+          }).trim();
+          assert.strictEqual(
+            worktreeSha,
+            fixture.remoteSha,
+            `${mode.name} worktree must start at the fetched origin/dev commit`
+          );
+          assert.strictEqual(result.worktreeInfo.baseRef, 'origin/dev');
+          assert.strictEqual(result.worktreeInfo.baseSha, fixture.remoteSha);
+          assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+        } finally {
+          if (result) {
+            result.isolationManager.cleanupWorktreeIsolation(clusterId);
+          }
+          fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      orchestrator.close();
+      if (originalRunOptions === undefined) delete process.env.ZEROSHOT_RUN_OPTIONS;
+      else process.env.ZEROSHOT_RUN_OPTIONS = originalRunOptions;
+      if (originalCwd === undefined) delete process.env.ZEROSHOT_CWD;
+      else process.env.ZEROSHOT_CWD = originalCwd;
+    }
+  });
+
+  it('resolves a remote base through its full ref when a local branch shadows it', function () {
+    const fixture = createStaleRemoteBaseFixture('zs-shadowed-pr-base-');
+    const clusterId = `test-shadowed-remote-pr-base-${Date.now()}`;
+    const remoteManager = new IsolationManager();
+
+    try {
+      runGit(['branch', 'origin/dev', fixture.localSha], { cwd: fixture.sourceDir });
+
+      const info = remoteManager.createWorktreeIsolation(clusterId, fixture.sourceDir, {
+        baseRef: 'origin/dev',
+        requireFreshBase: true,
+      });
+      const worktreeSha = runGit(['rev-parse', 'HEAD'], { cwd: info.path }).trim();
+      const localShadowSha = runGit(['rev-parse', 'refs/heads/origin/dev^{commit}'], {
+        cwd: fixture.sourceDir,
+      }).trim();
+      const remoteTrackingSha = runGit(['rev-parse', 'refs/remotes/origin/dev^{commit}'], {
+        cwd: fixture.sourceDir,
+      }).trim();
+
+      assert.strictEqual(localShadowSha, fixture.localSha);
+      assert.strictEqual(remoteTrackingSha, fixture.remoteSha);
+      assert.strictEqual(info.baseSha, fixture.remoteSha);
+      assert.strictEqual(worktreeSha, fixture.remoteSha);
+      assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+    } finally {
+      remoteManager.cleanupWorktreeIsolation(clusterId);
+      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the requested remote base cannot be refreshed', function () {
+    const fixture = createStaleRemoteBaseFixture('zs-unavailable-pr-base-');
+    const clusterId = `test-unavailable-remote-pr-base-${Date.now()}`;
+    const unavailableRemote = path.join(fixture.fixtureRoot, 'missing-origin.git');
+    const remoteManager = new IsolationManager();
+
+    try {
+      runGit(['remote', 'set-url', 'origin', unavailableRemote], { cwd: fixture.sourceDir });
+      assert.throws(
+        () =>
+          remoteManager.createWorktreeIsolation(clusterId, fixture.sourceDir, {
+            baseRef: 'origin/dev',
+            requireFreshBase: true,
+          }),
+        /Command git failed/,
+        'an unavailable remote must not fall back to a stale origin/dev ref'
+      );
+      assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+    } finally {
+      remoteManager.cleanupWorktreeIsolation(clusterId);
+      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a cached remote-tracking ref for offline repository worktree settings', function () {
+    const fixture = createStaleRemoteBaseFixture('zs-offline-repo-base-');
+    const clusterId = `test-offline-repo-base-${Date.now()}`;
+    const unavailableRemote = path.join(fixture.fixtureRoot, 'missing-origin.git');
+    const remoteManager = new IsolationManager();
+    const settingsDir = path.join(fixture.sourceDir, '.zeroshot');
+
+    try {
+      fs.mkdirSync(settingsDir);
+      fs.writeFileSync(
+        path.join(settingsDir, 'settings.json'),
+        JSON.stringify({ worktree: { baseRef: 'origin/dev' } })
+      );
+      runGit(['add', '.zeroshot/settings.json'], { cwd: fixture.sourceDir });
+      runGit(['commit', '-m', 'Add worktree base setting'], { cwd: fixture.sourceDir });
+      runGit(['remote', 'set-url', 'origin', unavailableRemote], { cwd: fixture.sourceDir });
+
+      const info = remoteManager.createWorktreeIsolation(clusterId, fixture.sourceDir);
+      const worktreeSha = runGit(['rev-parse', 'HEAD'], { cwd: info.path }).trim();
+
+      assert.strictEqual(info.baseRef, 'origin/dev');
+      assert.strictEqual(info.baseSha, fixture.localSha);
+      assert.strictEqual(worktreeSha, fixture.localSha);
+      assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+    } finally {
+      remoteManager.cleanupWorktreeIsolation(clusterId);
+      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the captured PR base when the shared remote-tracking ref changes', function () {
+    if (process.platform === 'win32') {
+      this.skip();
+    }
+
+    const fixture = createStaleRemoteBaseFixture('zs-concurrent-pr-base-');
+    const clusterId = `test-concurrent-remote-pr-base-${Date.now()}`;
+    const remoteManager = new IsolationManager();
+    const originalPath = process.env.PATH;
+    const treeSha = runGit(['rev-parse', `${fixture.localSha}^{tree}`], {
+      cwd: fixture.sourceDir,
+    }).trim();
+    const interferenceSha = runGit(
+      ['commit-tree', treeSha, '-p', fixture.localSha, '-m', 'Interference commit'],
+      { cwd: fixture.sourceDir }
+    ).trim();
+    const shimDir = createGitInterventionShim(fixture.fixtureRoot, {
+      repoDir: fixture.sourceDir,
+      sharedRefSha: interferenceSha,
+    });
+
+    try {
+      process.env.PATH = `${shimDir}${path.delimiter}${originalPath || ''}`;
+      const info = remoteManager.createWorktreeIsolation(clusterId, fixture.sourceDir, {
+        baseRef: 'origin/dev',
+        requireFreshBase: true,
+      });
+      process.env.PATH = originalPath;
+
+      const worktreeSha = runGit(['rev-parse', 'HEAD'], { cwd: info.path }).trim();
+      const remoteTrackingSha = runGit(['rev-parse', 'refs/remotes/origin/dev^{commit}'], {
+        cwd: fixture.sourceDir,
+      }).trim();
+
+      assert.strictEqual(remoteTrackingSha, interferenceSha);
+      assert.strictEqual(info.baseSha, fixture.remoteSha);
+      assert.strictEqual(worktreeSha, fixture.remoteSha);
+      assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+    } finally {
+      process.env.PATH = originalPath;
+      remoteManager.cleanupWorktreeIsolation(clusterId);
+      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('removes the temporary PR base ref when worktree creation fails', function () {
+    if (process.platform === 'win32') {
+      this.skip();
+    }
+
+    const fixture = createStaleRemoteBaseFixture('zs-failed-pr-base-');
+    const clusterId = `test-failed-remote-pr-base-${Date.now()}`;
+    const remoteManager = new IsolationManager();
+    const originalPath = process.env.PATH;
+    const shimDir = createGitInterventionShim(fixture.fixtureRoot, {
+      repoDir: fixture.sourceDir,
+      failWorktreeAdd: true,
+    });
+    const worktreePath = path.join(os.homedir(), '.zeroshot', 'worktrees', clusterId);
+
+    try {
+      process.env.PATH = `${shimDir}${path.delimiter}${originalPath || ''}`;
+      assert.throws(
+        () =>
+          remoteManager.createWorktreeIsolation(clusterId, fixture.sourceDir, {
+            baseRef: 'origin/dev',
+            requireFreshBase: true,
+          }),
+        /injected worktree add failure/,
+        'worktree creation should surface the original failure'
+      );
+      process.env.PATH = originalPath;
+
+      assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+      assert.strictEqual(fs.existsSync(worktreePath), false);
+    } finally {
+      process.env.PATH = originalPath;
+      remoteManager.cleanupWorktreeIsolation(clusterId);
+      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
     }
   });
 }
