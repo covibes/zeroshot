@@ -67,12 +67,31 @@ consumes the intent, and every turn identity remains single-use across failures 
 Retry is a same-run intent record only; it does not itself establish a new dispatch lease or invoke
 a worker, and no automatic or background code path in this protocol ever calls it.
 
+## Resubmit
+
+`resubmit({ifGeneration, ifRunId, idempotencyKey, replacementInput?})` mints a new run from a
+terminal retained run at the same graph generation. Unlike `update`, `stop`, and `retry`, resubmit
+carries a run CAS (`ifRunId`) in addition to the generation CAS, and an optional `replacementInput`.
+A closed request rejects `mode`, `turnId`, `provider`, `config`, `source`, and any other unknown or
+execution-selector field.
+
+Only a terminal run (`phase: finished`) admits resubmit; every other phase fails closed with
+`INVALID_PHASE`. A stale `ifGeneration` returns `GENERATION_CONFLICT`; a stale `ifRunId` (the
+cluster has since moved to a different run) returns `RUN_CONFLICT`. A `replacementInput` that fails
+the graph's closed `initialInput` payload-type validation returns `SCHEMA_VIOLATION`.
+
+Resubmit always allocates a new run ID and cursor; it never changes generation or the admitted
+graph or compiled IR. With no `replacementInput`, it reuses the prior run's exact recorded verified
+seed input. With a `replacementInput`, that value is verified against the graph's `initialInput`
+schema and becomes the new run's verified seed. The prior run and its watch history remain readable
+and terminally immutable; resubmit appends no records to it.
+
 ## CAS, idempotency, and acknowledgements
 
-All three mutation methods require an exact generation CAS. Fingerprints bind the method and
-canonical validated parameters except `idempotencyKey`. Same-key replay returns the original
-receipt with `deduped:true`; changed parameters or cross-method key reuse returns
-`IDEMPOTENCY_REUSE`.
+All four mutation methods require an exact generation CAS; resubmit additionally requires an exact
+run CAS. Fingerprints bind the method and canonical validated parameters except `idempotencyKey`.
+Same-key replay returns the original receipt with `deduped:true`; changed parameters or
+cross-method key reuse returns `IDEMPOTENCY_REUSE`.
 
 Stop receipts acknowledge the accepted mode, effective monotonic mode, and durable lifecycle
 state. They do not claim that external side effects were rolled back, that cancellation made an

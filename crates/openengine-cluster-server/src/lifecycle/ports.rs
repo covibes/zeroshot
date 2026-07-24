@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ApplyResult, Cursor, DispatchState, Generation, IdempotencyKey, Labels, LogLevel,
-    OperationalStatus, RequestFingerprint, RetryParams, RetryResult, RunId, StopMode, StopParams,
-    StopResult, TurnFailureKind, UpdateParams, UpdateResult,
+    OperationalStatus, RequestFingerprint, ResubmitResult, RetryParams, RetryResult, RunId,
+    StopMode, StopParams, StopResult, TurnFailureKind, UpdateParams, UpdateResult,
 };
 use serde_json::Value;
 
@@ -16,6 +16,7 @@ pub enum MutationReceipt {
     Update(UpdateResult),
     Stop(StopResult),
     Retry(RetryResult),
+    Resubmit(ResubmitResult),
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

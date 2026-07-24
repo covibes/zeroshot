@@ -17,8 +17,9 @@ use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, DomainErrorData, GetParams, GetResult, InitializeParams,
     InitializeResult, PlanParams, PlanResult, RequestId, APPLICATION_ERROR, INTERNAL_ERROR_CODE,
     INVALID_PARAMS, INVALID_PHASE, INVALID_REQUEST, JSON_RPC_VERSION, METHOD_NOT_FOUND,
-    PARSE_ERROR, PROTOCOL_VERSION, SCHEMA_VIOLATION, RetryParams, RetryResult, StopParams,
-    StopResult, UNSUPPORTED_PROTOCOL_VERSION, UpdateParams, UpdateResult, WatchParams, WatchResult,
+    PARSE_ERROR, PROTOCOL_VERSION, SCHEMA_VIOLATION, ResubmitParams, ResubmitResult, RetryParams,
+    RetryResult, StopParams, StopResult, UNSUPPORTED_PROTOCOL_VERSION, UpdateParams, UpdateResult,
+    WatchParams, WatchResult,
 };
 use serde_json::{json, Map, Value};
 use thiserror::Error;
@@ -161,6 +162,18 @@ pub trait ClusterBackend: Send + Sync + 'static {
         ))
     }
 
+    async fn resubmit(
+        &self,
+        _context: &ConnectionContext,
+        _params: ResubmitParams,
+    ) -> Result<ResubmitResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support lifecycle resubmit",
+            None,
+        ))
+    }
+
     async fn watch(
         &self,
         _context: &ConnectionContext,
@@ -254,6 +267,7 @@ where
             "update" => ImplementedMethod::Update,
             "stop" => ImplementedMethod::Stop,
             "retry" => ImplementedMethod::Retry,
+            "resubmit" => ImplementedMethod::Resubmit,
             _ => {
                 return serialize_error(Some(id), METHOD_NOT_FOUND, "Method not found", None);
             }
@@ -275,6 +289,7 @@ where
             ImplementedMethod::Update => self.dispatch_update(id, params).await,
             ImplementedMethod::Stop => self.dispatch_stop(id, params).await,
             ImplementedMethod::Retry => self.dispatch_retry(id, params).await,
+            ImplementedMethod::Resubmit => self.dispatch_resubmit(id, params).await,
         }
     }
 
@@ -424,6 +439,27 @@ where
             Err(error) => serialize_backend_error(id, error),
         }
     }
+
+    async fn dispatch_resubmit(&self, id: RequestId, params: Value) -> String {
+        let params = match serde_json::from_value::<ResubmitParams>(params) {
+            Ok(params) => params,
+            Err(error) => {
+                return serialize_error(
+                    Some(id),
+                    INVALID_PARAMS,
+                    "Invalid params",
+                    Some(DomainErrorData {
+                        code: SCHEMA_VIOLATION.to_owned(),
+                        details: Some(json!({ "reason": error.to_string() })),
+                    }),
+                );
+            }
+        };
+        match self.backend.resubmit(&self.context, params).await {
+            Ok(result) => serialize_success(id, result),
+            Err(error) => serialize_backend_error(id, error),
+        }
+    }
 }
 
 enum ImplementedMethod {
@@ -434,4 +470,5 @@ enum ImplementedMethod {
     Update,
     Stop,
     Retry,
+    Resubmit,
 }

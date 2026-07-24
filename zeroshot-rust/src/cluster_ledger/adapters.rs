@@ -5,13 +5,13 @@ mod state;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    canonical_value_bytes, ApplyResult, Generation, Phase, RetryResult, RunId, StopResult,
-    UpdateResult,
+    canonical_value_bytes, ApplyResult, Generation, Phase, ResubmitResult, RetryResult, RunId,
+    StopResult, UpdateResult,
 };
 use openengine_cluster_server::admission::{
     AdmissionSnapshot, AdmissionStore, CancellationSignal, CommitProposal, ControlJournal,
-    ControlSnapshot, IdempotencyRecord, StoreError as ProtocolStoreError, VerifiedIoLedger,
-    VerifiedSeed,
+    ControlSnapshot, IdempotencyRecord, ResubmitProposal, StoreError as ProtocolStoreError,
+    VerifiedIoLedger, VerifiedSeed,
 };
 use openengine_cluster_server::lifecycle::{
     CompletionResult, DispatchPermit, FailedCompletion, LifecycleSnapshot, LifecycleStore,
@@ -417,6 +417,16 @@ impl AdmissionStore for ClusterLedgerAdapters {
             },
         )
         .await
+    }
+
+    async fn resubmit(
+        &self,
+        _proposal: ResubmitProposal,
+        _cancellation: &CancellationSignal,
+    ) -> Result<ResubmitResult, ProtocolStoreError> {
+        Err(ProtocolStoreError::InvalidPhase {
+            current: self.folded().await?.admission.control.phase,
+        })
     }
 }
 

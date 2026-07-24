@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ApplyResult, ClusterStatus, CompiledGraphIr, Cursor, DispatchState, Generation,
     GraphDiagnostic, GraphSpec, IdempotencyKey, NoRetryableFrontierReason, Phase,
-    RequestFingerprint, RunId,
+    RequestFingerprint, ResubmitParams, ResubmitResult, RunId,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -177,6 +177,12 @@ pub struct CommitProposal {
     pub fingerprint: RequestFingerprint,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResubmitProposal {
+    pub params: ResubmitParams,
+    pub fingerprint: RequestFingerprint,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum StoreError {
     #[error("admission store failed: {0}")]
@@ -185,6 +191,8 @@ pub enum StoreError {
     IdempotencyReuse,
     #[error("generation precondition failed")]
     GenerationConflict { current: Option<Generation> },
+    #[error("run precondition failed")]
+    RunConflict { current: Option<RunId> },
     #[error("cluster phase does not admit apply: {current:?}")]
     InvalidPhase { current: Phase },
     #[error("admission parameters violate the run-input contract: {0}")]
@@ -234,4 +242,9 @@ pub trait AdmissionStore:
         proposal: CommitProposal,
         cancellation: &CancellationSignal,
     ) -> Result<ApplyResult, StoreError>;
+    async fn resubmit(
+        &self,
+        proposal: ResubmitProposal,
+        cancellation: &CancellationSignal,
+    ) -> Result<ResubmitResult, StoreError>;
 }

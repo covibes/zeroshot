@@ -239,6 +239,13 @@ pub enum Phase {
     Finished,
 }
 
+impl Phase {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Finished)
+    }
+}
+
 #[derive(
     Clone, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
 )]
