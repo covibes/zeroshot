@@ -5,6 +5,7 @@ fn capabilities_of(profiles: Vec<GraphProfile>) -> ServerCapabilities {
     ServerCapabilities {
         graph_profiles: GraphProfileSet::new(profiles).unwrap(),
         logs: false,
+        agent_attach: false,
     }
 }
 

@@ -1,0 +1,28 @@
+[
+  {
+    "event": {
+      "type": "working"
+    },
+    "subscriptionId": "sub-1"
+  },
+  {
+    "event": {
+      "text": "agent dispatch started",
+      "type": "output"
+    },
+    "subscriptionId": "sub-1"
+  },
+  {
+    "event": {
+      "text": "<redacted: output exceeded bounds>",
+      "type": "output"
+    },
+    "subscriptionId": "sub-1"
+  },
+  {
+    "event": {
+      "type": "settled"
+    },
+    "subscriptionId": "sub-1"
+  }
+]

@@ -1,8 +1,10 @@
 //! NDJSON stdio transport: multiplexes unary JSON-RPC request/response traffic and generic
-//! `watch`/`logs` subscription notifications over one bounded-frame connection.
+//! `watch`/`logs`/`agent/attach` subscription notifications over one bounded-frame connection.
 
 mod admission;
+mod agent_attach;
 mod logs;
+mod subscription;
 
 use admission::{acquire_task_slot, reject_duplicate, run_writer, InFlightIds, MAX_CONNECTION_TASKS};
 
@@ -55,6 +57,23 @@ struct ConnectionState {
     outbound_tx: mpsc::Sender<String>,
     subscriptions: SubscriptionMap,
     in_flight_ids: InFlightIds,
+}
+
+/// Races `next` against `cancel`, `biased` toward the cancellation so a `subscription/cancel` that
+/// arrives while parked awaiting the next live event wakes the loop immediately instead of only
+/// being observed the next time the stream is polled -- which never happens again on an idle run.
+/// `biased` also ensures a pending cancellation is never starved by an unbounded run of
+/// already-buffered stream items. Shared by `run_watch_subscription` and
+/// `subscription::run_bounded_event_subscription`.
+pub(super) async fn race_cancel_or_next<T>(
+    cancel: &Notify,
+    next: impl std::future::Future<Output = Option<T>>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = cancel.notified() => None,
+        item = next => item,
+    }
 }
 
 pub async fn serve_ndjson<B, R, W, E>(
@@ -162,6 +181,29 @@ where
                     logs::run_logs_subscription(task_dispatcher, id, params, task_state).await;
                 });
             }
+            NdjsonLineKind::AgentAttach { id, params } => {
+                if reject_duplicate(&in_flight_ids, &outbound_tx, id.clone()).await {
+                    continue;
+                }
+                let Some(permit) =
+                    acquire_task_slot(&task_slots, &outbound_tx, Some(id.clone())).await
+                else {
+                    in_flight_ids.lock().remove(&id);
+                    continue;
+                };
+                let task_dispatcher = dispatcher.clone();
+                let task_state = state.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    agent_attach::run_agent_attach_subscription(
+                        task_dispatcher,
+                        id,
+                        params,
+                        task_state,
+                    )
+                    .await;
+                });
+            }
             NdjsonLineKind::Passthrough { id } => {
                 if let Some(id) = id.clone() {
                     if reject_duplicate(&in_flight_ids, &outbound_tx, id).await {
@@ -221,14 +263,11 @@ async fn run_passthrough_request<B>(
 }
 
 /// Establishes a `watch` subscription and, on success, streams its `event`/`subscription/closed`
-/// notifications until the stream ends (overflow, backend close, or cancellation). Registers a
-/// per-subscription cancellation [`Notify`] in `subscriptions` for the duration so a concurrent
-/// `subscription/cancel` wakes the streaming loop immediately -- even while parked awaiting the
-/// next live event -- instead of only being observed the next time `WatchEventStream::next()` is
-/// polled, which never happens again on an idle run. The established [`WatchHandle`] is kept alive
-/// for the same duration purely to hold its backing flag false: dropping it early would trip
-/// `WatchEventStream`'s own cancellation check before anything ever streams. Deregisters once the
-/// stream stops.
+/// notifications until the stream ends (overflow, backend close, or cancellation), via
+/// `subscription::run_established_subscription` -- the same shared establish/loop/cleanup
+/// `subscription::run_bounded_event_subscription` uses. The established [`WatchHandle`] is kept
+/// alive for the duration purely to hold its backing flag false: dropping it early would trip
+/// `WatchEventStream`'s own cancellation check before anything ever streams.
 async fn run_watch_subscription<B>(
     dispatcher: Dispatcher<B>,
     id: RequestId,
@@ -244,46 +283,24 @@ async fn run_watch_subscription<B>(
     } = state;
     let (response, established) = dispatcher.dispatch_watch(id.clone(), params).await;
     in_flight_ids.lock().remove(&id);
-    let Some((subscription_id, mut stream, _handle)) = established else {
-        let _ = outbound_tx.send(response).await;
+    let channels = subscription::SubscriptionChannels {
+        outbound_tx,
+        subscriptions,
+    };
+    let Some((established, _handle)) =
+        subscription::establish_subscription(&channels, response, established).await
+    else {
         return;
     };
-    let cancel = Arc::new(Notify::new());
-    // Register before sending the response: `mpsc::Sender::send` can yield under backpressure
-    // or Tokio's cooperative-scheduling budget, and a `subscription/cancel` racing in during that
-    // yield must always find the subscription already cancellable (mirrors the client's
-    // register-before-resolve ordering in `NdjsonTransport::run_pump`).
-    subscriptions
-        .lock()
-        .insert(subscription_id.clone(), Arc::clone(&cancel));
-    if outbound_tx.send(response).await.is_err() {
-        subscriptions.lock().remove(&subscription_id);
-        return;
-    }
 
-    loop {
-        // Race the stream against `cancel` so a `subscription/cancel` that arrives while this task
-        // is parked inside `next_live`'s `receiver.recv().await` (the steady state for an idle
-        // subscription) wakes it right away instead of leaking the task and its channel for the
-        // rest of the connection's lifetime. `biased` checks `cancel` first: without it, once a
-        // cancellation is pending, `select!`'s default random tie-break could still occasionally
-        // favor draining more already-buffered stream items over observing the cancellation,
-        // letting an unbounded number of already-buffered events leak instead of at most the one
-        // that may already be in flight.
-        let item = tokio::select! {
-            biased;
-            () = cancel.notified() => None,
-            item = stream.next() => item,
-        };
-        let Some(item) = item else {
-            break;
-        };
-        let notification = match item {
+    let encode_subscription_id = established.subscription_id.clone();
+    subscription::run_established_subscription(established, channels, move |item| {
+        Some(match item {
             WatchStreamItem::Record(record) => serde_json::to_string(&JsonRpcNotification {
                 jsonrpc: JSON_RPC_VERSION.to_owned(),
                 method: "event".to_owned(),
                 params: EventNotification {
-                    subscription_id: subscription_id.clone(),
+                    subscription_id: encode_subscription_id.clone(),
                     run_id: record.run_id,
                     cursor: record.cursor,
                     event: record.event,
@@ -297,18 +314,15 @@ async fn run_watch_subscription<B>(
                 jsonrpc: JSON_RPC_VERSION.to_owned(),
                 method: "subscription/closed".to_owned(),
                 params: SubscriptionClosedNotification {
-                    subscription_id: subscription_id.clone(),
+                    subscription_id: encode_subscription_id.clone(),
                     reason,
                     last_delivered_cursor,
                 },
             })
             .expect("subscription closed notification serialization must succeed"),
-        };
-        if outbound_tx.send(notification).await.is_err() {
-            break;
-        }
-    }
-    subscriptions.lock().remove(&subscription_id);
+        })
+    })
+    .await;
 }
 
 pub async fn serve_stdio<B>(dispatcher: Dispatcher<B>) -> io::Result<()>
@@ -374,14 +388,15 @@ where
 pub(crate) enum NdjsonLineKind {
     Watch { id: RequestId, params: Value },
     Logs { id: RequestId, params: Value },
+    AgentAttach { id: RequestId, params: Value },
     Cancel(SubscriptionId),
     Passthrough { id: Option<RequestId> },
 }
 
-/// Classifies a decoded NDJSON line without fully deserializing its params: a `watch`/`logs`
-/// request is pulled out for subscription handling, a `subscription/cancel` notification is pulled
-/// out for inline cancellation, and everything else (including malformed JSON) passes through to
-/// [`Dispatcher::dispatch`] unchanged.
+/// Classifies a decoded NDJSON line without fully deserializing its params: a `watch`/`logs`/
+/// `agent/attach` request is pulled out for subscription handling, a `subscription/cancel`
+/// notification is pulled out for inline cancellation, and everything else (including malformed
+/// JSON) passes through to [`Dispatcher::dispatch`] unchanged.
 pub(crate) fn classify_ndjson_line(line: &str) -> NdjsonLineKind {
     if let Ok(request) = serde_json::from_str::<JsonRpcRequest<Value>>(line) {
         if request.method == "watch" {
@@ -392,6 +407,12 @@ pub(crate) fn classify_ndjson_line(line: &str) -> NdjsonLineKind {
         }
         if request.method == "logs" {
             return NdjsonLineKind::Logs {
+                id: request.id,
+                params: request.params,
+            };
+        }
+        if request.method == "agent/attach" {
+            return NdjsonLineKind::AgentAttach {
                 id: request.id,
                 params: request.params,
             };
@@ -411,60 +432,4 @@ pub(crate) fn classify_ndjson_line(line: &str) -> NdjsonLineKind {
 }
 
 #[cfg(test)]
-mod tests {
-    use openengine_cluster_protocol::RunId;
-
-    use super::*;
-    use crate::watch::fixtures::{FixtureBackend, FixtureStore};
-    use crate::ConnectionContext;
-
-    /// Regression test for a race where `run_watch_subscription` sent the `watch` response before
-    /// registering the subscription's `WatchHandle` in `subscriptions`: a `subscription/cancel`
-    /// processed by the read loop in that window found nothing to remove and the subscription was
-    /// never cancellable again. Forces the response send to block (a pre-filled, capacity-1
-    /// outbound queue that nothing drains) so the task is parked exactly at that send call, then
-    /// asserts registration has already happened — true only when the insert precedes the send.
-    #[tokio::test]
-    async fn subscription_is_registered_before_its_response_send_can_complete() {
-        let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
-        let dispatcher = Dispatcher::new(FixtureBackend::new(store), ConnectionContext::default());
-
-        let (outbound_tx, mut outbound_rx) = mpsc::channel::<String>(1);
-        outbound_tx.send("occupied".to_owned()).await.unwrap();
-
-        let subscriptions: SubscriptionMap = Arc::new(Mutex::new(HashMap::new()));
-        let state = ConnectionState {
-            outbound_tx,
-            subscriptions: Arc::clone(&subscriptions),
-            in_flight_ids: Arc::new(Mutex::new(HashSet::new())),
-        };
-
-        tokio::spawn(run_watch_subscription(
-            dispatcher,
-            RequestId::Integer(1),
-            Value::Object(serde_json::Map::new()),
-            state,
-        ));
-
-        // Let the spawned task run dispatch_watch to completion; it then blocks indefinitely on
-        // the full outbound queue, since nothing here drains it yet. Poll via bounded cooperative
-        // yields rather than a fixed sleep: a real-time sleep is a race against however long the
-        // spawned task actually takes to be scheduled, which flakes under the CPU contention of a
-        // full `cargo test --workspace` run; yielding is deterministic regardless of load and the
-        // attempt cap still fails the test if registration never happens.
-        let mut attempts = 0;
-        while subscriptions.lock().len() != 1 {
-            attempts += 1;
-            assert!(
-                attempts < 100_000,
-                "subscription was never registered before its response send could complete, \
-                 so a cancel racing the response would be lost"
-            );
-            tokio::task::yield_now().await;
-        }
-
-        // Drain the queue so the parked task can finish instead of leaking past the test.
-        let _ = outbound_rx.recv().await;
-        let _ = outbound_rx.recv().await;
-    }
-}
+mod tests;

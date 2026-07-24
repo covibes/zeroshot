@@ -1,5 +1,6 @@
 use openengine_cluster_protocol::{
-    ApplyParams, DeleteParams, ResubmitParams, RetryParams, StopParams, UpdateParams,
+    AgentAttachParams, ApplyParams, DeleteParams, ResubmitParams, RetryParams, StopParams,
+    UpdateParams,
 };
 use schemars::schema_for;
 use serde_json::{json, Value};
@@ -23,6 +24,7 @@ pub(super) fn document() -> Value {
             get_method(),
             watch_method(),
             logs_method(),
+            agent_attach_method(),
         ],
         "components": {
             "schemas": {
@@ -34,10 +36,12 @@ pub(super) fn document() -> Value {
             }
         },
         "x-generic-subscription-framing": {
-            "description": "watch and logs each establish a subscription via one normal JSON-RPC \
-                result; subsequent delivery uses the generic notification methods below, shared by \
-                every subscription-based method. There is no watch/event, watch/cancel, \
-                watch/closed, logs/event, logs/cancel, or logs/closed method on the wire.",
+            "description": "watch, logs, and agent/attach each establish a subscription via one \
+                normal JSON-RPC result; subsequent delivery uses the generic notification methods \
+                below, shared by every subscription-based method. There is no watch/event, \
+                watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, \
+                agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the \
+                wire.",
             "notifications": {
                 "event": { "$ref": "schema.json#/$defs/EventNotification" },
                 "subscription/cancel": { "$ref": "schema.json#/$defs/SubscriptionCancelParams" },
@@ -266,6 +270,27 @@ fn logs_method() -> Value {
         "result": {
             "name": "logsResult",
             "schema": { "$ref": "schema.json#/$defs/LogsResult" }
+        }
+    })
+}
+
+fn agent_attach_method() -> Value {
+    // `ExecutionRef` is inline-schema (like `logs`'s `BoundedLogTarget`/`BoundedLogMessage`), so it
+    // has no standalone `$defs` entry to `$ref` -- extract its actual inline schema from a
+    // generated `AgentAttachParams` schema instead of hand-authoring a `$ref` that would dangle.
+    let schema = serde_json::to_value(schema_for!(AgentAttachParams))
+        .expect("agent_attach parameter JSON Schema serialization must succeed");
+    json!({
+        "name": "agent/attach",
+        "paramStructure": "by-name",
+        "params": [{
+            "name": "execution",
+            "required": true,
+            "schema": property_schema(&schema, "execution")
+        }],
+        "result": {
+            "name": "agentAttachResult",
+            "schema": { "$ref": "schema.json#/$defs/AgentAttachResult" }
         }
     })
 }

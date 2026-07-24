@@ -2,13 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use openengine_cluster_protocol::{
-    ApplyParams, ApplyResult, ArtifactRef, CompiledGraphIr, DeleteParams, DeleteResult,
-    EventNotification, GetParams, GetResult, GraphDiagnostic, GraphSpec, InitializeParams,
-    InitializeResult, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LogEventNotification,
-    LogsClosedNotification, LogsParams, LogsResult, PlanParams, PlanResult, ResubmitParams,
-    ResubmitResult, RetryParams, RetryResult, StopParams, StopResult, StructuralBounds,
-    SubscriptionCancelParams, SubscriptionClosedNotification, UpdateParams, UpdateResult,
-    WatchParams, WatchResult,
+    AgentAttachClosedNotification, AgentAttachEventNotification, AgentAttachParams,
+    AgentAttachResult, ApplyParams, ApplyResult, ArtifactRef, CompiledGraphIr, DeleteParams,
+    DeleteResult, EventNotification, GetParams, GetResult, GraphDiagnostic, GraphSpec,
+    InitializeParams, InitializeResult, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    LogEventNotification, LogsClosedNotification, LogsParams, LogsResult, PlanParams, PlanResult,
+    ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams, StopResult,
+    StructuralBounds, SubscriptionCancelParams, SubscriptionClosedNotification, UpdateParams,
+    UpdateResult, WatchParams, WatchResult,
 };
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 use schemars::{schema_for, JsonSchema};
@@ -72,6 +73,10 @@ pub struct ImplementedProtocolSchema {
     pub logs_response: JsonRpcResponse<LogsResult>,
     pub log_event_notification: JsonRpcNotification<LogEventNotification>,
     pub logs_closed_notification: JsonRpcNotification<LogsClosedNotification>,
+    pub agent_attach_request: JsonRpcRequest<AgentAttachParams>,
+    pub agent_attach_response: JsonRpcResponse<AgentAttachResult>,
+    pub agent_attach_event_notification: JsonRpcNotification<AgentAttachEventNotification>,
+    pub agent_attach_closed_notification: JsonRpcNotification<AgentAttachClosedNotification>,
 }
 
 pub async fn generate_artifacts() -> Vec<Artifact> {
@@ -134,6 +139,7 @@ pub async fn generate_artifacts() -> Vec<Artifact> {
     artifacts.extend(crate::lifecycle_artifacts::generate_delete_goldens().await);
     artifacts.extend(crate::watch_artifacts::generate_watch_goldens().await);
     artifacts.extend(crate::logs_artifacts::generate_logs_goldens().await);
+    artifacts.extend(crate::agent_attach_artifacts::generate_agent_attach_goldens().await);
     for (name, request) in cases {
         let response = dispatcher.dispatch(request).await;
         artifacts.push(Artifact {

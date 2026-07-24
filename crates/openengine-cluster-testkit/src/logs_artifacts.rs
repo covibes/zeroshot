@@ -102,7 +102,7 @@ async fn logs_session() -> Vec<LogEventNotification> {
     let mut notifications = Vec::new();
     while notifications.len() < 3 {
         match stream.next().await {
-            Some(LogStreamItem::Record(record)) => {
+            Some(LogStreamItem::Event(record)) => {
                 notifications.push(LogEventNotification {
                     subscription_id: result.subscription_id.clone(),
                     record,

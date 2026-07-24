@@ -55,13 +55,13 @@ async fn production_dispatcher_returns_canonical_empty_initialize_and_get() {
         initialize["result"],
         json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "graphProfiles": [], "logs": false },
+            "capabilities": { "graphProfiles": [], "logs": false, "agentAttach": false },
             "status": empty_status()
         })
     );
     assert_eq!(
         initialize["result"]["capabilities"],
-        json!({ "graphProfiles": [], "logs": false })
+        json!({ "graphProfiles": [], "logs": false, "agentAttach": false })
     );
 
     let get = dispatch("get", json!({"atCursor": null})).await;

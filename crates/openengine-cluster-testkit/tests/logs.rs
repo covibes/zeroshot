@@ -10,6 +10,10 @@ use openengine_cluster_testkit::admission::{InMemoryAdmissionStore, ScriptedVeri
 use openengine_cluster_testkit::capability_vectors::assert_logs_capability;
 use openengine_cluster_testkit::logs::InMemoryLogStore;
 
+#[path = "schema_support/mod.rs"]
+mod schema_support;
+use schema_support::find_schema;
+
 fn initialize_params() -> InitializeParams {
     InitializeParams {
         protocol_version: PROTOCOL_VERSION.to_owned(),
@@ -47,12 +51,14 @@ fn logs_capability_vector_matches_server_capabilities() {
     let disabled = ServerCapabilities {
         graph_profiles: GraphProfileSet::new(vec![]).unwrap(),
         logs: false,
+        agent_attach: false,
     };
     assert_logs_capability(&disabled, false);
 
     let enabled = ServerCapabilities {
         graph_profiles: GraphProfileSet::new(vec![]).unwrap(),
         logs: true,
+        agent_attach: false,
     };
     assert_logs_capability(&enabled, true);
 }
@@ -60,11 +66,7 @@ fn logs_capability_vector_matches_server_capabilities() {
 #[tokio::test]
 async fn generated_logs_goldens_validate_against_the_published_schema() {
     let artifacts = openengine_cluster_testkit::artifacts::generate_artifacts().await;
-    let schema = artifacts
-        .iter()
-        .find(|artifact| artifact.relative_path.ends_with("/schema.json"))
-        .unwrap();
-    let schema: serde_json::Value = serde_json::from_slice(&schema.bytes).unwrap();
+    let schema = find_schema(&artifacts);
     let mut event_schema = schema["$defs"]["LogEventNotification"].clone();
     event_schema["$defs"] = schema["$defs"].clone();
     let event_validator = jsonschema::validator_for(&event_schema).unwrap();

@@ -18,6 +18,121 @@
       ],
       "type": "object"
     },
+    "AgentAttachClosedNotification": {
+      "additionalProperties": false,
+      "description": "Wire body of the terminal `subscription/closed` server notification for an `agent/attach`\nsubscription. Deliberately carries no cursor field -- `agent/attach` gives a type-level\n\"cursorless\" guarantee, unlike [`crate::SubscriptionClosedNotification`].",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/SubscriptionCloseReason"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "AgentAttachEvent": {
+      "description": "The closed public agent-attach progress algebra. This is the only representable shape:\nreasoning, tools, provider frames, usage, and session identifiers have no variant. `Working`\nand `Settled` are empty struct variants rather than bare units: serde's internally tagged enum\ndeserialization silently ignores unknown fields on a unit variant regardless of\n`deny_unknown_fields`, which would otherwise let an unrepresentable field ride along\nundetected on either of these two variants.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "working",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "maxLength": 16384,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+              "type": "string"
+            },
+            "type": {
+              "const": "output",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "settled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AgentAttachEventNotification": {
+      "$ref": "#/$defs/AgentAttachEventNotificationWire"
+    },
+    "AgentAttachEventNotificationWire": {
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/AgentAttachEvent"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "event"
+      ],
+      "type": "object"
+    },
+    "AgentAttachParams": {
+      "additionalProperties": false,
+      "description": "`agent/attach` establishment parameters: the named `{execution}` request. Deliberately closed,\nrejecting any unknown field.",
+      "properties": {
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution"
+      ],
+      "type": "object"
+    },
+    "AgentAttachResult": {
+      "additionalProperties": false,
+      "description": "The `agent/attach` establishment result: only a `subscriptionId`. Deliberately carries no\n`runId` or `atCursor` -- `agent/attach` is not run-scoped and has no cursor.",
+      "properties": {
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId"
+      ],
+      "type": "object"
+    },
     "ApplyParams": {
       "additionalProperties": false,
       "properties": {
@@ -1690,6 +1805,44 @@
       ],
       "type": "object"
     },
+    "JsonRpcNotification6": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AgentAttachEventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification7": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AgentAttachClosedNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
     "JsonRpcRequest": {
       "properties": {
         "id": {
@@ -1749,6 +1902,29 @@
         },
         "params": {
           "$ref": "#/$defs/LogsParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest12": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AgentAttachParams"
         }
       },
       "required": [
@@ -1973,6 +2149,16 @@
         }
       ]
     },
+    "JsonRpcResponse12": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess12"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
     "JsonRpcResponse2": {
       "anyOf": [
         {
@@ -2101,6 +2287,25 @@
         },
         "result": {
           "$ref": "#/$defs/LogsResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess12": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/AgentAttachResult"
         }
       },
       "required": [
@@ -2902,6 +3107,10 @@
     "ServerCapabilities": {
       "additionalProperties": false,
       "properties": {
+        "agentAttach": {
+          "default": false,
+          "type": "boolean"
+        },
         "graphProfiles": {
           "default": [],
           "items": {
@@ -3580,6 +3789,18 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "agent_attach_closed_notification": {
+      "$ref": "#/$defs/JsonRpcNotification7"
+    },
+    "agent_attach_event_notification": {
+      "$ref": "#/$defs/JsonRpcNotification6"
+    },
+    "agent_attach_request": {
+      "$ref": "#/$defs/JsonRpcRequest12"
+    },
+    "agent_attach_response": {
+      "$ref": "#/$defs/JsonRpcResponse12"
+    },
     "apply_request": {
       "$ref": "#/$defs/JsonRpcRequest3"
     },
@@ -3689,7 +3910,11 @@
     "logs_request",
     "logs_response",
     "log_event_notification",
-    "logs_closed_notification"
+    "logs_closed_notification",
+    "agent_attach_request",
+    "agent_attach_response",
+    "agent_attach_event_notification",
+    "agent_attach_closed_notification"
   ],
   "title": "ImplementedProtocolSchema",
   "type": "object"

@@ -1,2 +1,2 @@
 {"jsonrpc":"2.0","id":"init-1","method":"initialize","params":{"protocolVersion":"openengine.cluster/v1"}}
-{"jsonrpc":"2.0","id":"init-1","result":{"protocolVersion":"openengine.cluster/v1","capabilities":{"graphProfiles":[],"logs":false},"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null}}}
+{"jsonrpc":"2.0","id":"init-1","result":{"protocolVersion":"openengine.cluster/v1","capabilities":{"graphProfiles":[],"logs":false,"agentAttach":false},"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null}}}
