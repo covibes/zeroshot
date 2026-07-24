@@ -329,6 +329,73 @@
         }
       ]
     },
+    "DeleteParams": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "ifGeneration": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ifRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ifGeneration",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "DeleteResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deduped": {
+          "type": "boolean"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "deleted",
+        "phase",
+        "deduped"
+      ],
+      "type": "object"
+    },
     "DiagnosticPathSegment": {
       "oneOf": [
         {
@@ -1477,6 +1544,29 @@
       ],
       "type": "object"
     },
+    "JsonRpcRequest10": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/WatchParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
     "JsonRpcRequest2": {
       "properties": {
         "id": {
@@ -1650,7 +1740,7 @@
           "type": "string"
         },
         "params": {
-          "$ref": "#/$defs/WatchParams"
+          "$ref": "#/$defs/DeleteParams"
         }
       },
       "required": [
@@ -1665,6 +1755,16 @@
       "anyOf": [
         {
           "$ref": "#/$defs/JsonRpcSuccess"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse10": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess10"
         },
         {
           "$ref": "#/$defs/JsonRpcErrorResponse"
@@ -1761,6 +1861,25 @@
         },
         "result": {
           "$ref": "#/$defs/InitializeResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess10": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/WatchResult"
         }
       },
       "required": [
@@ -1912,7 +2031,7 @@
           "type": "string"
         },
         "result": {
-          "$ref": "#/$defs/WatchResult"
+          "$ref": "#/$defs/DeleteResult"
         }
       },
       "required": [
@@ -2246,7 +2365,8 @@
         "empty",
         "admitting",
         "running",
-        "finished"
+        "finished",
+        "deleting"
       ],
       "type": "string"
     },
@@ -3144,6 +3264,12 @@
     "apply_response": {
       "$ref": "#/$defs/JsonRpcResponse3"
     },
+    "delete_request": {
+      "$ref": "#/$defs/JsonRpcRequest9"
+    },
+    "delete_response": {
+      "$ref": "#/$defs/JsonRpcResponse9"
+    },
     "event_notification": {
       "$ref": "#/$defs/JsonRpcNotification"
     },
@@ -3196,10 +3322,10 @@
       "$ref": "#/$defs/JsonRpcResponse5"
     },
     "watch_request": {
-      "$ref": "#/$defs/JsonRpcRequest9"
+      "$ref": "#/$defs/JsonRpcRequest10"
     },
     "watch_response": {
-      "$ref": "#/$defs/JsonRpcResponse9"
+      "$ref": "#/$defs/JsonRpcResponse10"
     }
   },
   "required": [
@@ -3219,6 +3345,8 @@
     "retry_response",
     "resubmit_request",
     "resubmit_response",
+    "delete_request",
+    "delete_response",
     "watch_request",
     "watch_response",
     "event_notification",

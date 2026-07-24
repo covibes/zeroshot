@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyResult, ClusterStatus, CompiledGraphIr, Cursor, DispatchState, Generation,
-    GraphDiagnostic, GraphSpec, IdempotencyKey, NoRetryableFrontierReason, Phase,
+    ApplyResult, ClusterStatus, CompiledGraphIr, Cursor, DeleteParams, DeleteResult, DispatchState,
+    Generation, GraphDiagnostic, GraphSpec, IdempotencyKey, NoRetryableFrontierReason, Phase,
     RequestFingerprint, ResubmitParams, ResubmitResult, RunId,
 };
 use serde_json::Value;
@@ -183,6 +183,12 @@ pub struct ResubmitProposal {
     pub fingerprint: RequestFingerprint,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeleteProposal {
+    pub params: DeleteParams,
+    pub fingerprint: RequestFingerprint,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum StoreError {
     #[error("admission store failed: {0}")]
@@ -247,4 +253,9 @@ pub trait AdmissionStore:
         proposal: ResubmitProposal,
         cancellation: &CancellationSignal,
     ) -> Result<ResubmitResult, StoreError>;
+    async fn delete(
+        &self,
+        proposal: DeleteProposal,
+        cancellation: &CancellationSignal,
+    ) -> Result<DeleteResult, StoreError>;
 }

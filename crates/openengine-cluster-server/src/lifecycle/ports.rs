@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyResult, Cursor, DispatchState, Generation, IdempotencyKey, Labels, LogLevel,
+    ApplyResult, Cursor, DeleteResult, DispatchState, Generation, IdempotencyKey, Labels, LogLevel,
     OperationalStatus, RequestFingerprint, ResubmitResult, RetryParams, RetryResult, RunId,
     StopMode, StopParams, StopResult, TurnFailureKind, UpdateParams, UpdateResult,
 };
@@ -17,6 +17,7 @@ pub enum MutationReceipt {
     Stop(StopResult),
     Retry(RetryResult),
     Resubmit(ResubmitResult),
+    Delete(DeleteResult),
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

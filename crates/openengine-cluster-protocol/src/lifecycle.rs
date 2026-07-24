@@ -326,3 +326,26 @@ pub struct ResubmitResult {
     pub at_cursor: Cursor,
     pub deduped: bool,
 }
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteParams {
+    pub if_generation: Generation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_run_id: Option<RunId>,
+    pub idempotency_key: IdempotencyKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteResult {
+    pub deleted: bool,
+    pub phase: Phase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<Generation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_cursor: Option<Cursor>,
+    pub deduped: bool,
+}

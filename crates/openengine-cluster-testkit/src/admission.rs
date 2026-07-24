@@ -5,20 +5,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyResult, CompiledGraphIr, Cursor, DispatchState, Generation, GraphSpec, IdempotencyKey,
-    OperationalStatus, Phase, ResubmitResult, RunId,
+    ApplyResult, CompiledGraphIr, Cursor, DeleteResult, DispatchState, Generation, GraphSpec,
+    IdempotencyKey, OperationalStatus, Phase, ResubmitResult, RunId,
 };
 use openengine_cluster_server::admission::{
     AdmissionSnapshot, AdmissionStore, CancellationSignal, CommitProposal, ControlJournal,
-    ControlSnapshot, IdempotencyRecord, ResubmitProposal, StoreError, VerifiedIoLedger,
-    VerifiedSeed,
+    ControlSnapshot, DeleteProposal, IdempotencyRecord, ResubmitProposal, StoreError,
+    VerifiedIoLedger, VerifiedSeed,
 };
 use openengine_cluster_server::lifecycle::{LeaseId, LifecycleSnapshot, MutationReceipt, TurnId};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+mod delete;
 mod fixtures;
 mod inspection;
+mod resubmit;
 mod scripted_verifier;
 pub use fixtures::*;
 pub use inspection::StoreInspection;
@@ -73,6 +75,9 @@ pub(crate) struct StoreState {
     pub(crate) next_retry_turn: u64,
     pub(crate) retryable_history: RetryableHistory,
     pub(crate) observation: ObservationState,
+    /// Set while a terminal run's `delete` is waiting on the (test-only, simulated) backend
+    /// cleanup executor to confirm every backend-owned resource is authoritatively absent.
+    pub(crate) pending_cleanup: bool,
 }
 
 /// Tracks the disposition of the most recent dispatch/lease completion, purely to compute a
@@ -260,102 +265,6 @@ impl StoreState {
         cursor
     }
 
-    fn replay_resubmit(
-        &self,
-        proposal: &ResubmitProposal,
-    ) -> Result<Option<ResubmitResult>, StoreError> {
-        let Some(existing) = self
-            .idempotency_records
-            .get(&proposal.params.idempotency_key)
-        else {
-            return Ok(None);
-        };
-        if existing.fingerprint != proposal.fingerprint {
-            return Err(StoreError::IdempotencyReuse);
-        }
-        let MutationReceipt::Resubmit(mut receipt) = existing.receipt.clone() else {
-            return Err(StoreError::IdempotencyReuse);
-        };
-        receipt.deduped = true;
-        Ok(Some(receipt))
-    }
-
-    fn resubmit(
-        &mut self,
-        proposal: ResubmitProposal,
-        cancellation: &CancellationSignal,
-    ) -> Result<ResubmitResult, StoreError> {
-        if let Some(receipt) = self.replay_resubmit(&proposal)? {
-            return Ok(receipt);
-        }
-        enforce_generation(Some(proposal.params.if_generation), self.control.generation)?;
-        let current_run_id = self.control.run_id.clone();
-        if current_run_id.as_ref() != Some(&proposal.params.if_run_id) {
-            return Err(StoreError::RunConflict {
-                current: current_run_id,
-            });
-        }
-        if !self.control.phase.is_terminal() {
-            return Err(StoreError::InvalidPhase {
-                current: self.control.phase,
-            });
-        }
-        let prior_run_id = current_run_id.expect("terminal phase implies an admitted run");
-        let input = match &proposal.params.replacement_input {
-            Some(replacement) => {
-                let spec = self
-                    .control
-                    .spec
-                    .as_ref()
-                    .expect("terminal phase implies an admitted graph");
-                spec.initial_input
-                    .validate_value(replacement)
-                    .map_err(|error| StoreError::SchemaViolation(error.to_string()))?;
-                replacement.clone()
-            }
-            None => self
-                .seed_ledger
-                .iter()
-                .rev()
-                .find(|seed| seed.run_id == prior_run_id)
-                .map(|seed| seed.input.clone())
-                .ok_or_else(|| StoreError::Internal("terminal run has no verified seed".into()))?,
-        };
-        if cancellation.is_cancelled() {
-            return Err(StoreError::Cancelled);
-        }
-        let generation = self
-            .control
-            .generation
-            .expect("terminal phase implies a generation");
-        self.next_run += 1;
-        let run_id = RunId::new(format!("run-{}", self.next_run));
-        let at_cursor = self.install_run(run_id.clone(), generation, input);
-        let operational = self
-            .lifecycle
-            .operational
-            .clone()
-            .expect("install_run sets lifecycle operational");
-        let result = ResubmitResult {
-            generation,
-            prior_run_id,
-            run_id,
-            phase: Phase::Running,
-            operational,
-            at_cursor,
-            deduped: false,
-        };
-        self.idempotency_records.insert(
-            proposal.params.idempotency_key,
-            IdempotencyRecord {
-                fingerprint: proposal.fingerprint,
-                receipt: MutationReceipt::Resubmit(result.clone()),
-            },
-        );
-        append(self, self.control.cursor.clone(), AppendKind::Idempotency);
-        Ok(result)
-    }
-
     fn record_idempotency(&mut self, proposal: CommitProposal, result: &ApplyResult) {
         self.idempotency_records.insert(
             proposal.idempotency_key,
@@ -449,6 +358,14 @@ impl AdmissionStore for InMemoryAdmissionStore {
         cancellation: &CancellationSignal,
     ) -> Result<ResubmitResult, StoreError> {
         self.state.lock().await.resubmit(proposal, cancellation)
+    }
+
+    async fn delete(
+        &self,
+        proposal: DeleteProposal,
+        cancellation: &CancellationSignal,
+    ) -> Result<DeleteResult, StoreError> {
+        self.state.lock().await.delete(proposal, cancellation)
     }
 }
 

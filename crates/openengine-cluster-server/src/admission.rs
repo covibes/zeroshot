@@ -15,18 +15,18 @@ use snapshot::validate_snapshot;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    diff_compiled_graphs, ApplyParams, ApplyResult, GetParams, GetResult, GraphSpec,
-    IdempotencyKey, InitializeParams, InitializeResult, PlanParams, PlanResult, RequestFingerprint,
-    ResubmitParams, ResubmitResult, RetryParams, RetryResult, ServerCapabilities, StopParams,
-    StopResult, SubscriptionId, UpdateParams, UpdateResult, WatchParams, WatchResult,
-    GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, INVALID_PHASE,
+    diff_compiled_graphs, ApplyParams, ApplyResult, DeleteParams, DeleteResult, GetParams,
+    GetResult, GraphSpec, IdempotencyKey, InitializeParams, InitializeResult, PlanParams,
+    PlanResult, RequestFingerprint, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
+    ServerCapabilities, StopParams, StopResult, SubscriptionId, UpdateParams, UpdateResult,
+    WatchParams, WatchResult, GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, INVALID_PHASE,
 };
 use serde_json::json;
 
 use crate::lifecycle::{
-    method_fingerprint, resubmit_fingerprint, retry_fingerprint, stop_fingerprint,
-    update_fingerprint, LifecycleSnapshot, MutationReceipt, RetryProposal, StopProposal,
-    UpdateProposal,
+    delete_fingerprint, method_fingerprint, resubmit_fingerprint, retry_fingerprint,
+    stop_fingerprint, update_fingerprint, LifecycleSnapshot, MutationReceipt, RetryProposal,
+    StopProposal, UpdateProposal,
 };
 use crate::watch::{ObservationStore, WatchEventStream, WatchHandle};
 use crate::{BackendError, ClusterBackend, ConnectionContext};
@@ -385,6 +385,27 @@ where
         self.store
             .resubmit(
                 ResubmitProposal {
+                    params,
+                    fingerprint,
+                },
+                &context.cancellation,
+            )
+            .await
+            .map_err(store_error_to_backend)
+    }
+
+    async fn delete(
+        &self,
+        context: &ConnectionContext,
+        params: DeleteParams,
+    ) -> Result<DeleteResult, BackendError> {
+        let fingerprint = delete_fingerprint(&params)?;
+        if context.cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        self.store
+            .delete(
+                DeleteProposal {
                     params,
                     fingerprint,
                 },

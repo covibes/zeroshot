@@ -68,6 +68,7 @@ async fn generated_artifacts_are_complete_and_committed_without_drift() {
         "protocol/openengine-cluster/v1/goldens/admission-lifecycle.ndjson",
         "protocol/openengine-cluster/v1/goldens/admission-errors.ndjson",
         "protocol/openengine-cluster/v1/goldens/lifecycle-controls.ndjson",
+        "protocol/openengine-cluster/v1/goldens/lifecycle-delete.ndjson",
     ] {
         assert!(paths.contains(&required), "missing {required}");
     }
@@ -124,6 +125,7 @@ async fn openrpc_exposes_only_the_implemented_protocol_methods() {
             "stop",
             "retry",
             "resubmit",
+            "delete",
             "get",
             "watch"
         ]

@@ -86,12 +86,37 @@ seed input. With a `replacementInput`, that value is verified against the graph'
 schema and becomes the new run's verified seed. The prior run and its watch history remain readable
 and terminally immutable; resubmit appends no records to it.
 
+## Delete
+
+`delete({ifGeneration, ifRunId?, idempotencyKey})` is the authoritative terminal-cluster deletion
+with an exclusive cleanup fence. A closed request rejects `mode`, `turnId`, `provider`, `config`,
+`source`, `replacementInput`, and any other unknown or execution-selector field.
+
+Only an empty cluster (`phase: empty`) or a terminal run (`phase: finished`) admits delete; every
+other phase — including a delete already held pending cleanup — fails closed with `INVALID_PHASE`.
+This single rule covers both non-terminal rejection and competing-delete-during-cleanup rejection,
+since the held cleanup fence's phase is never `empty` or `finished`. `ifRunId` is optional: omit it
+(or pass no run) to match an empty cluster's absent current run, exactly as a stale `ifGeneration`
+returns `GENERATION_CONFLICT` and a stale `ifRunId` returns `RUN_CONFLICT`.
+
+On an empty cluster, delete is a history-free no-op: it returns `deleted:false`, `phase:empty`, and
+mutates nothing. On a terminal run, delete commits exclusive ownership before any external cleanup:
+it either finalizes immediately (`deleted:true`, `phase:empty`) or, if cleanup is not yet
+authoritatively confirmed, holds the resource in the `deleting` phase (`deleted:false`,
+`phase:deleting`) with its generation, run ID, and cursor observable but otherwise unchanged. The
+`deleting` phase fences `apply`, `resubmit`, `dispatch`, and any competing `delete` until every
+backend-owned resource is confirmed absent — delete never claims to have rolled back those external
+effects itself. While cleanup is indeterminate, no history is erased and the resource never reports
+empty. Only once cleanup is authoritatively confirmed does delete remove the deleted run's durable
+lineage: `get` becomes empty, the deleted run's watch history reports `GONE`, and the next `apply`'s
+generation resets to `1`. A repeated delete after removal is again a history-free no-op.
+
 ## CAS, idempotency, and acknowledgements
 
-All four mutation methods require an exact generation CAS; resubmit additionally requires an exact
-run CAS. Fingerprints bind the method and canonical validated parameters except `idempotencyKey`.
-Same-key replay returns the original receipt with `deduped:true`; changed parameters or
-cross-method key reuse returns `IDEMPOTENCY_REUSE`.
+All five mutation methods require an exact generation CAS; resubmit and delete additionally require
+an exact (for delete, optional) run CAS. Fingerprints bind the method and canonical validated
+parameters except `idempotencyKey`. Same-key replay returns the original receipt with
+`deduped:true`; changed parameters or cross-method key reuse returns `IDEMPOTENCY_REUSE`.
 
 Stop receipts acknowledge the accepted mode, effective monotonic mode, and durable lifecycle
 state. They do not claim that external side effects were rolled back, that cancellation made an
@@ -101,7 +126,10 @@ late output from becoming verified protocol output; it cannot undo effects outsi
 ## Status and fixture boundary
 
 Admitted status includes labels, log level, dispatch state, optional stop mode, and in-flight count.
-The resource phase remains `running` during active, suspended, and draining operation and becomes
-`finished` exactly once. `InMemoryAdmissionStore` serializes admission and lifecycle mutations under
-one mutex solely for deterministic conformance tests. Scripted `running` and `finished` states do
-not imply native node execution or production cancellation.
+The resource phase remains `running` during active, suspended, and draining operation, becomes
+`finished` exactly once, and — only while a terminal run's delete cleanup is indeterminate — holds
+`deleting` before returning to `empty`. `InMemoryAdmissionStore` serializes admission and lifecycle
+mutations under one mutex solely for deterministic conformance tests, and its pending-cleanup fence
+is resolved by a test-only hook standing in for a future backend cleanup executor. Scripted
+`running`, `finished`, and `deleting` states do not imply native node execution, production
+cancellation, or a real cleanup executor.

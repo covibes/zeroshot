@@ -16,11 +16,11 @@ use std::sync::Arc;
 use parking_lot::Mutex as ParkingMutex;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyParams, ApplyResult, GetParams, GetResult, InitializeParams, InitializeResult,
-    JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcSuccess,
-    PlanParams, PlanResult, RequestId, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
-    StopParams, StopResult, SubscriptionCancelParams, SubscriptionId, UpdateParams, UpdateResult,
-    JSON_RPC_VERSION, PROTOCOL_VERSION,
+    ApplyParams, ApplyResult, DeleteParams, DeleteResult, GetParams, GetResult, InitializeParams,
+    InitializeResult, JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcSuccess, PlanParams, PlanResult, RequestId, ResubmitParams, ResubmitResult, RetryParams,
+    RetryResult, StopParams, StopResult, SubscriptionCancelParams, SubscriptionId, UpdateParams,
+    UpdateResult, JSON_RPC_VERSION, PROTOCOL_VERSION,
 };
 use openengine_cluster_server::{ClusterBackend, Dispatcher};
 use serde::de::DeserializeOwned;
@@ -413,6 +413,10 @@ where
 
     pub async fn resubmit(&self, params: ResubmitParams) -> Result<ResubmitResult, ClientError> {
         self.call("resubmit", params).await
+    }
+
+    pub async fn delete(&self, params: DeleteParams) -> Result<DeleteResult, ClientError> {
+        self.call("delete", params).await
     }
 
     async fn call<P, R>(&self, method: &str, params: P) -> Result<R, ClientError>

@@ -367,6 +367,47 @@
       }
     },
     {
+      "name": "delete",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "ifGeneration",
+          "required": true,
+          "schema": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "ifRunId",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "idempotencyKey",
+          "required": true,
+          "schema": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "deleteResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/DeleteResult"
+        }
+      }
+    },
+    {
       "name": "get",
       "paramStructure": "by-name",
       "params": [

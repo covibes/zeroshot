@@ -237,6 +237,7 @@ pub enum Phase {
     Admitting,
     Running,
     Finished,
+    Deleting,
 }
 
 impl Phase {

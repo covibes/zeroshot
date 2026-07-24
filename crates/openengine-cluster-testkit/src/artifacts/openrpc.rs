@@ -1,4 +1,6 @@
-use openengine_cluster_protocol::{ApplyParams, ResubmitParams, RetryParams, StopParams, UpdateParams};
+use openengine_cluster_protocol::{
+    ApplyParams, DeleteParams, ResubmitParams, RetryParams, StopParams, UpdateParams,
+};
 use schemars::schema_for;
 use serde_json::{json, Value};
 
@@ -17,6 +19,7 @@ pub(super) fn document() -> Value {
             stop_method(),
             retry_method(),
             resubmit_method(),
+            delete_method(),
             get_method(),
             watch_method(),
         ],
@@ -188,6 +191,24 @@ fn resubmit_method() -> Value {
         "result": {
             "name": "resubmitResult",
             "schema": { "$ref": "schema.json#/$defs/ResubmitResult" }
+        }
+    })
+}
+
+fn delete_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(DeleteParams))
+        .expect("delete parameter JSON Schema serialization must succeed");
+    json!({
+        "name": "delete",
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
+            { "name": "ifRunId", "required": false, "schema": property_schema(&schema, "ifRunId") },
+            { "name": "idempotencyKey", "required": true, "schema": property_schema(&schema, "idempotencyKey") }
+        ],
+        "result": {
+            "name": "deleteResult",
+            "schema": { "$ref": "schema.json#/$defs/DeleteResult" }
         }
     })
 }
