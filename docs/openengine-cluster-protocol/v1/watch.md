@@ -37,6 +37,15 @@ the wire. `WatchEvent` is a closed, tagged (`type`) enum:
   yet.
 - `bookmark` — advances the cursor with no public fold change (internal dispatch/lease turn
   bookkeeping).
+- `fault{fault}` — a durable, closed, bounded, backend-neutral `BackendFault` projection (bounded
+  code, consequence, retry disposition, action, severity, engine-owned summary, safe source
+  frames, and opaque event identity). It correlates to the enclosing `EventNotification.runId`
+  plus its own optional opaque `executionRef`; retry disposition and action are descriptive only
+  and never authorize a retry, and emission never itself changes terminal semantics -- it folds to
+  no public status change, exactly like `bookmark`. Raw messages, paths, URLs, headers, commands,
+  provider codes, credentials, session IDs, and arbitrary maps are unrepresentable. Native
+  `EngineFault` mapping is out of scope here and tracked by a later issue, the same way
+  `node_begin`/`node_end`'s synthetic hook is.
 - `finished{finalStatus, stopMode?}` — always the last event for a run.
 
 A continuous watch from a run's first cursor through its `finished` event, after `(runId, cursor)`
@@ -87,6 +96,6 @@ exists only as that future contract's boundary prerequisite.
 `InMemoryAdmissionStore` in the testkit is a deterministic, in-process fixture: retained history
 and live subscriber fan-out live entirely in process memory behind one store mutex, purely for
 conformance testing. It is not a production ledger, does not persist across process restarts, and
-its `node_begin`/`node_end` golden vectors are a synthetic hook decoupled from real graph execution.
-A native ledger's `ObservationStore` projection (consuming these wire types unchanged) is owned by a
-later issue.
+its `node_begin`/`node_end` and `emit_fault_event` golden-vector hooks are synthetic, decoupled from
+real graph execution and real backend fault reporting respectively. A native ledger's
+`ObservationStore` projection (consuming these wire types unchanged) is owned by a later issue.

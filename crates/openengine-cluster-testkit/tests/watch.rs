@@ -17,14 +17,9 @@ use serde_json::{json, Value};
 mod committed_support;
 use committed_support::committed;
 
-fn expect_record(
-    item: Option<WatchStreamItem>,
-) -> openengine_cluster_server::watch::PublicEventRecord {
-    match item {
-        Some(WatchStreamItem::Record(record)) => record,
-        other => panic!("expected a record, got {other:?}"),
-    }
-}
+#[path = "admission_support/expect_record.rs"]
+mod expect_record_support;
+use expect_record_support::expect_record;
 
 #[tokio::test]
 async fn watch_parks_while_empty_and_attaches_on_the_next_committed_run() {

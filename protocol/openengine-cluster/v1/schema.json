@@ -182,6 +182,69 @@
       ],
       "type": "object"
     },
+    "BackendFault": {
+      "$ref": "#/$defs/BackendFaultWire"
+    },
+    "BackendFaultWire": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/FaultAction"
+        },
+        "code": {
+          "$ref": "#/$defs/FaultCode"
+        },
+        "consequence": {
+          "$ref": "#/$defs/FaultConsequence"
+        },
+        "eventId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "executionRef": {
+          "default": null,
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry": {
+          "$ref": "#/$defs/FaultRetryDisposition"
+        },
+        "severity": {
+          "$ref": "#/$defs/FaultSeverity"
+        },
+        "source": {
+          "items": {
+            "$ref": "#/$defs/FaultSourceFrame"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
+        "summary": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventId",
+        "code",
+        "consequence",
+        "retry",
+        "action",
+        "severity",
+        "summary",
+        "source"
+      ],
+      "type": "object"
+    },
     "ChoiceBranch": {
       "additionalProperties": false,
       "properties": {
@@ -512,6 +575,74 @@
         "runId",
         "cursor",
         "event"
+      ],
+      "type": "object"
+    },
+    "FaultAction": {
+      "description": "Descriptive only, like [`FaultRetryDisposition`]: naming `Retry` never itself retries or\nauthorizes a retry.",
+      "enum": [
+        "none",
+        "retry",
+        "wait",
+        "escalate",
+        "abort"
+      ],
+      "type": "string"
+    },
+    "FaultCode": {
+      "enum": [
+        "unavailable",
+        "resource_exhausted",
+        "deadline_exceeded",
+        "permission_denied",
+        "failed_precondition",
+        "not_found",
+        "aborted",
+        "internal",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "FaultConsequence": {
+      "enum": [
+        "turn_failed",
+        "run_failed",
+        "run_degraded",
+        "no_observable_effect"
+      ],
+      "type": "string"
+    },
+    "FaultRetryDisposition": {
+      "description": "Descriptive only: no `BackendFault` and no `fault` event ever performs or authorizes a retry.\nEvent ordering and emission never themselves change terminal semantics.",
+      "enum": [
+        "retryable",
+        "retryable_after_backoff",
+        "not_retryable",
+        "indeterminate"
+      ],
+      "type": "string"
+    },
+    "FaultSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "type": "string"
+    },
+    "FaultSourceFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "component"
       ],
       "type": "object"
     },
@@ -2906,7 +3037,7 @@
       "type": "object"
     },
     "WatchEvent": {
-      "description": "The closed public event algebra. `Phase` folds the observable cluster status (admission\ncommit, update, suspend/resume, stop-request); `NodeBegin`/`NodeEnd` are a testkit-only\nsynthetic hook decoupled from the real dispatch/lease turn mechanism, since no native graph\nexecutor exists yet; `Bookmark` advances the cursor without changing folded public state;\n`Finished` is always the last event for a run.",
+      "description": "The closed public event algebra. `Phase` folds the observable cluster status (admission\ncommit, update, suspend/resume, stop-request); `NodeBegin`/`NodeEnd` are a testkit-only\nsynthetic hook decoupled from the real dispatch/lease turn mechanism, since no native graph\nexecutor exists yet; `Bookmark` advances the cursor without changing folded public state;\n`Fault` carries a durable, backend-neutral projected `BackendFault`: it correlates to the\nenclosing `EventNotification.run_id` plus its own optional opaque `executionRef`, and its\nordering/emission never itself authorizes a retry or changes terminal semantics -- it folds to\nno public status change, exactly like `Bookmark`; `Finished` is always the last event for a\nrun.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -2985,6 +3116,23 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fault": {
+              "$ref": "#/$defs/BackendFault"
+            },
+            "type": {
+              "const": "fault",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "fault"
           ],
           "type": "object"
         },

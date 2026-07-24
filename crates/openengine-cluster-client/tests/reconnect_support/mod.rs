@@ -1,7 +1,8 @@
 //! Shared slow-consumer-overflow / gap-free-reconnect-replay / dedup-and-`Finished` scenario
-//! driven identically by `tests/reconnect.rs` (in-process `WatchClient`) and
-//! `tests/subscription_ndjson.rs` (`NdjsonWatchClient` over the wire), proving both transports
-//! produce byte-equivalent event/cursor sequences.
+//! driven identically by `tests/reconnect.rs` (in-process `WatchClient`) and, via
+//! `ndjson_scenario`, `tests/subscription_ndjson.rs` / `tests/backend_faults.rs`
+//! (`NdjsonWatchClient` over the wire), proving both transports produce byte-equivalent
+//! event/cursor sequences and that the `fault` `WatchEvent` variant needs no special-casing.
 
 use openengine_cluster_client::{EventOrClosed, NdjsonReconnectingEventStream, ReconnectingEventStream};
 use openengine_cluster_protocol::{
@@ -36,17 +37,21 @@ where
     }
 }
 
-/// Publishes 3 events into the (2-capacity) `store`, drains `stream` until it closes, and asserts
-/// the close is `SLOW_CONSUMER` with `cursor-2` as the last delivered cursor after exactly
-/// `[cursor-1, cursor-2]` were observed. Returns the observed cursors.
-pub async fn overflow_and_close(
+/// Publishes 3 copies of `event()` into the (2-capacity) `store`, drains `stream` until it
+/// closes, and asserts the close is `SLOW_CONSUMER` with `cursor-2` as the last delivered cursor
+/// after exactly `[cursor-1, cursor-2]` were observed. Returns the observed cursors. Generic over
+/// the published `WatchEvent` so a caller can prove some variant other than `Bookmark` (e.g. a
+/// `fault` event) overflows and replays through the exact same cursor mechanics, with no
+/// special-casing.
+pub async fn overflow_and_close_with(
     store: &FixtureStore,
     stream: &mut impl EventStream,
+    mut event: impl FnMut() -> WatchEvent,
 ) -> Vec<Cursor> {
     // The fixture's queue holds two entries; the third overflows it.
-    store.publish(WatchEvent::Bookmark).await;
-    store.publish(WatchEvent::Bookmark).await;
-    store.publish(WatchEvent::Bookmark).await;
+    store.publish(event()).await;
+    store.publish(event()).await;
+    store.publish(event()).await;
 
     let mut received = Vec::new();
     loop {
