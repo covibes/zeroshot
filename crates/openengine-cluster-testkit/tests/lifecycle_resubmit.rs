@@ -5,7 +5,9 @@ use openengine_cluster_protocol::{
     INVALID_PHASE, RUN_CONFLICT, SCHEMA_VIOLATION,
 };
 use openengine_cluster_server::watch::{ObservationStore, SubscribeRequest};
-use openengine_cluster_testkit::admission::InMemoryAdmissionStore;
+use openengine_cluster_testkit::admission::{
+    compiled_from_graph_fixture, graph_fixture, InMemoryAdmissionStore, ScriptedOutcome,
+};
 use openengine_cluster_testkit::lifecycle::{resubmit, stop};
 use serde_json::json;
 
@@ -13,7 +15,7 @@ use serde_json::json;
 mod admission_support;
 #[path = "lifecycle_support/mod.rs"]
 mod lifecycle_support;
-use admission_support::{rpc_code, FixtureClient};
+use admission_support::{client, committed, rpc_code, FixtureClient};
 use lifecycle_support::running;
 
 /// A terminal run: `running()` immediately force-stopped, reaching `Phase::Finished` at
@@ -148,6 +150,39 @@ async fn resubmit_idempotent_replay_returns_original_receipt_no_second_run() {
         after.control_journal.len(),
         before.control_journal.len() + 1
     );
+}
+
+#[tokio::test]
+async fn resubmit_replay_precedes_current_graph_schema_validation() {
+    let first_graph = graph_fixture("worker", json!({"kind":"null"}));
+    let second_graph = graph_fixture("worker", json!({"kind":"integer"}));
+    let outcomes = vec![
+        ScriptedOutcome::approve(compiled_from_graph_fixture(&first_graph), vec![]),
+        ScriptedOutcome::approve(compiled_from_graph_fixture(&second_graph), vec![]),
+    ];
+    let (client, _, store) = client(outcomes);
+    client
+        .apply(committed(first_graph, json!(null), 0, "create-first"))
+        .await
+        .unwrap();
+    client
+        .stop(stop(StopMode::Force, 1, "finish-first"))
+        .await
+        .unwrap();
+
+    let params = resubmit(1, "run-1", "replay-across-generation", Some(json!(null)));
+    let first = client.resubmit(params.clone()).await.unwrap();
+    client
+        .apply(committed(second_graph, json!(1), 1, "create-second"))
+        .await
+        .unwrap();
+    let before_replay = store.inspect().await;
+
+    let replay = client.resubmit(params).await.unwrap();
+    assert!(replay.deduped);
+    assert_eq!(replay.run_id, first.run_id);
+    assert_eq!(replay.at_cursor, first.at_cursor);
+    assert_eq!(store.inspect().await, before_replay);
 }
 
 #[tokio::test]
