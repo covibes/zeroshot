@@ -1,0 +1,16 @@
+[
+  {
+    "type": "working"
+  },
+  {
+    "text": "agent dispatch started",
+    "type": "output"
+  },
+  {
+    "text": "<redacted: output exceeded bounds>",
+    "type": "output"
+  },
+  {
+    "type": "settled"
+  }
+]

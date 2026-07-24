@@ -56,7 +56,7 @@ where
         let PumpedSubscription {
             receiver,
             overflowed,
-        } = subscription;
+        } = subscription.expect("a successful watch response must carry a subscriptionId");
         let stream = NdjsonReconnectingEventStream {
             transport: self.transport,
             receiver,

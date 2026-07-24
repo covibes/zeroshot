@@ -7,6 +7,10 @@ use openengine_cluster_testkit::artifacts::{
     ArtifactError, check_artifacts, generate_artifacts, write_artifacts,
 };
 
+#[path = "schema_support/mod.rs"]
+mod schema_support;
+use schema_support::find_schema;
+
 #[tokio::test]
 async fn generated_artifacts_are_complete_and_committed_without_drift() {
     let artifacts = generate_artifacts().await;
@@ -132,7 +136,8 @@ async fn openrpc_exposes_only_the_implemented_protocol_methods() {
             "delete",
             "get",
             "watch",
-            "logs"
+            "logs",
+            "agent/attach"
         ]
     );
     for component in [
@@ -261,11 +266,7 @@ async fn openrpc_exposes_closed_lifecycle_controls() {
 #[tokio::test]
 async fn schema_is_derived_from_canonical_envelopes_with_required_success_ids() {
     let artifacts = generate_artifacts().await;
-    let schema = artifacts
-        .iter()
-        .find(|artifact| artifact.relative_path.ends_with("/schema.json"))
-        .unwrap();
-    let schema: serde_json::Value = serde_json::from_slice(&schema.bytes).unwrap();
+    let schema = find_schema(&artifacts);
     let definitions = schema["$defs"].as_object().unwrap();
 
     assert!(

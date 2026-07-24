@@ -43,6 +43,7 @@ impl ClusterBackend for SingleWorkerCapabilitiesBackend {
             ServerCapabilities {
                 graph_profiles: GraphProfileSet::new(vec![GraphProfile::SingleWorker]).unwrap(),
                 logs: false,
+                agent_attach: false,
             },
             ClusterStatus::empty(),
         ))

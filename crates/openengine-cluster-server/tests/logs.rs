@@ -4,26 +4,30 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    BoundedLogTarget, BoundedLogMessage, GetParams, GetResult, InitializeParams, InitializeResult,
-    LogLevel, LogRecord, LogsParams, LogsResult, SubscriptionCloseReason, SubscriptionId,
-    INVALID_PHASE, MAX_LOG_EVENT_ENCODED_BYTES,
+    BoundedLogTarget, BoundedLogMessage, LogLevel, LogRecord, LogsParams, SubscriptionCloseReason,
+    SubscriptionId, INVALID_PHASE, MAX_LOG_EVENT_ENCODED_BYTES,
 };
 use openengine_cluster_server::logs::fixtures::{LogsFixtureBackend, LogsFixtureStore};
-use openengine_cluster_server::logs::{
-    subscribe_and_stream_logs, LogEventStream, LogStore, LogStreamItem, LogsHandle,
-};
-use openengine_cluster_server::watch::fixtures::FixtureBackend as WatchFixtureBackend;
-use openengine_cluster_server::watch::fixtures::FixtureStore as WatchFixtureStore;
+use openengine_cluster_server::logs::{subscribe_and_stream_logs, LogStore, LogStreamItem};
 use openengine_cluster_server::watch::fixtures::{await_ndjson_shutdown, spawn_ndjson};
-use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
+use openengine_cluster_server::{ClusterBackend, ConnectionContext, Dispatcher};
 use serde_json::json;
 use tokio::io::BufReader;
 
+#[path = "capability_default_support/mod.rs"]
+mod capability_default_support;
 #[path = "ndjson_test_support/mod.rs"]
 mod ndjson_test_support;
-use ndjson_test_support::{read_value, request_line, write_line};
+#[path = "oversized_event_wire_support/mod.rs"]
+mod oversized_event_wire_support;
+#[path = "oversized_id_backend_support/mod.rs"]
+mod oversized_id_backend_support;
+use capability_default_support::bare_watch_dispatcher;
+use oversized_event_wire_support::{
+    assert_oversized_event_does_not_block_unary_responses, OversizedEventWire,
+};
+use oversized_id_backend_support::oversized_id_backend;
 
 /// Every test below either doesn't care about the exact overflow point or drives it through this
 /// fixed capacity directly against the backend; only
@@ -41,15 +45,7 @@ fn sample_log_record(message: &str) -> LogRecord {
 
 #[tokio::test]
 async fn default_logs_is_unsupported_unless_the_backend_overrides_it() {
-    let store = Arc::new(WatchFixtureStore::new(
-        openengine_cluster_protocol::RunId::new("run-1"),
-        Vec::new(),
-        AMPLE_CAPACITY,
-    ));
-    let dispatcher = Dispatcher::new(
-        WatchFixtureBackend::new(store),
-        ConnectionContext::default(),
-    );
+    let dispatcher = bare_watch_dispatcher(AMPLE_CAPACITY);
     let Err(error) = dispatcher.logs(LogsParams::default()).await else {
         panic!("expected the default logs implementation to be unsupported");
     };
@@ -72,7 +68,7 @@ async fn logs_streams_only_future_records_no_replay() {
 
     store.publish(sample_log_record("after subscribing")).await;
     let item = stream.next().await.unwrap();
-    let LogStreamItem::Record(record) = item else {
+    let LogStreamItem::Event(record) = item else {
         panic!("expected a live log record");
     };
     assert_eq!(record.message.as_str(), "after subscribing");
@@ -128,7 +124,7 @@ async fn queue_overflow_closes_with_slow_consumer_and_carries_no_cursor() {
     store.publish(sample_log_record("second")).await;
 
     let first = stream.next().await.unwrap();
-    let LogStreamItem::Record(record) = first else {
+    let LogStreamItem::Event(record) = first else {
         panic!("expected the first buffered record");
     };
     assert_eq!(record.message.as_str(), "first");
@@ -142,43 +138,24 @@ async fn queue_overflow_closes_with_slow_consumer_and_carries_no_cursor() {
     );
 }
 
-/// A `logs`-only backend whose subscription id is deliberately pathologically large -- large
-/// enough on its own to push `LogEventNotification`'s encoded size over
-/// `MAX_LOG_EVENT_ENCODED_BYTES`, even though every `LogRecord` field is already bounded well
-/// under that ceiling. Delegates `initialize`/`get` to a wrapped [`LogsFixtureBackend`] and
-/// overrides only `logs`.
-struct OversizedIdLogsBackend {
+// A `logs`-only backend whose subscription id is deliberately pathologically large -- large
+// enough on its own to push `LogEventNotification`'s encoded size over
+// `MAX_LOG_EVENT_ENCODED_BYTES`, even though every `LogRecord` field is already bounded well
+// under that ceiling. Delegates `initialize`/`get` to a wrapped `LogsFixtureBackend` and
+// overrides only `logs`.
+oversized_id_backend! {
+    name: OversizedIdLogsBackend,
     inner: LogsFixtureBackend,
-}
-
-#[async_trait]
-impl ClusterBackend for OversizedIdLogsBackend {
-    async fn initialize(
-        &self,
-        context: &ConnectionContext,
-        params: InitializeParams,
-    ) -> Result<InitializeResult, BackendError> {
-        self.inner.initialize(context, params).await
-    }
-
-    async fn get(
-        &self,
-        context: &ConnectionContext,
-        params: GetParams,
-    ) -> Result<GetResult, BackendError> {
-        self.inner.get(context, params).await
-    }
-
-    async fn logs(
-        &self,
-        _context: &ConnectionContext,
-        _params: LogsParams,
-        queue_capacity: usize,
-    ) -> Result<(LogsResult, LogEventStream, LogsHandle), BackendError> {
+    method: logs,
+    params: LogsParams,
+    result: openengine_cluster_protocol::LogsResult,
+    stream: openengine_cluster_server::logs::LogEventStream,
+    handle: openengine_cluster_server::logs::LogsHandle,
+    body: |self, _params, queue_capacity| {
         let store: Arc<dyn LogStore> = Arc::clone(&self.inner.store) as Arc<dyn LogStore>;
         let subscription_id = SubscriptionId::new("s".repeat(MAX_LOG_EVENT_ENCODED_BYTES));
         Ok(subscribe_and_stream_logs(&store, subscription_id, queue_capacity).await)
-    }
+    },
 }
 
 #[tokio::test]
@@ -189,22 +166,19 @@ async fn oversized_event_encoding_ends_only_that_subscription_without_panicking(
     });
     let mut read = BufReader::new(read);
 
-    write_line(&mut write, &request_line(1, "logs", json!({}))).await;
-    let established = read_value(&mut read).await;
-    assert!(established.get("result").is_some(), "{established}");
-
     // Encodes to well over `MAX_LOG_EVENT_ENCODED_BYTES` purely because of the backend's
     // pathologically large subscription id; the notification loop must drop it silently instead
     // of panicking the server task.
-    store.publish(sample_log_record("won't fit")).await;
-
-    write_line(&mut write, &request_line(2, "get", json!({}))).await;
-    let get_response = read_value(&mut read).await;
-    assert_eq!(get_response["id"], 2);
-    assert!(
-        get_response.get("result").is_some(),
-        "connection must keep serving unary requests after an unencodable event: {get_response}"
-    );
+    assert_oversized_event_does_not_block_unary_responses(
+        OversizedEventWire {
+            write: &mut write,
+            read: &mut read,
+        },
+        "logs",
+        json!({}),
+        || store.publish(sample_log_record("won't fit")),
+    )
+    .await;
 
     drop(write);
     await_ndjson_shutdown(server).await;

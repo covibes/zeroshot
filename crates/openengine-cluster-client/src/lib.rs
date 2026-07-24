@@ -1,14 +1,19 @@
 //! Typed transport-neutral Cluster Protocol client.
 
 mod ndjson_pump;
+mod ndjson_subscription;
 
 use ndjson_pump::forward_notification;
 
+pub mod agent_attach;
 pub mod logs;
+pub mod ndjson_agent_attach;
 pub mod ndjson_logs;
 pub mod ndjson_watch;
 pub mod watch;
+pub use agent_attach::*;
 pub use logs::*;
+pub use ndjson_agent_attach::*;
 pub use ndjson_logs::*;
 pub use ndjson_watch::*;
 pub use watch::*;
@@ -187,19 +192,20 @@ where
         })
     }
 
-    /// Sends a `watch` request and returns its response line plus the receiver registered for its
-    /// subscription's notifications. Errors if the response carried no `subscriptionId` (either a
-    /// backend error, or a malformed/unexpected response).
+    /// Sends a subscription-establishing request and returns its response line plus, only on
+    /// success, the receiver registered for its subscription's notifications. Establishment can
+    /// legitimately fail with a JSON-RPC error (for example `agent/attach` rejecting an unknown or
+    /// inactive `ExecutionRef`) -- that case carries no `subscriptionId` but is not a transport
+    /// fault, so it is left for the caller's response parser to surface as a typed
+    /// [`crate::ClientError::Rpc`] rather than being collapsed into a generic [`TransportError`]
+    /// here.
     pub(crate) async fn open_subscription(
         &self,
         request: String,
         id: RequestId,
-    ) -> Result<(String, PumpedSubscription), TransportError> {
+    ) -> Result<(String, Option<PumpedSubscription>), TransportError> {
         let response = self.send_request(request, id).await?;
-        let subscription = response.subscription.ok_or_else(|| {
-            TransportError::Protocol("watch response carried no subscriptionId".to_owned())
-        })?;
-        Ok((response.line, subscription))
+        Ok((response.line, response.subscription))
     }
 
     pub(crate) fn next_watch_request_id(&self) -> RequestId {

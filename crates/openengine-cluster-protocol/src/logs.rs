@@ -4,12 +4,13 @@
 
 use std::borrow::Cow;
 
-use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
-use serde::de;
-use serde::{Deserialize, Deserializer, Serialize};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::wire::impl_validate_gated_wire;
+use crate::wire::{
+    impl_bounded_nonempty_string, impl_bounded_redactable_string, impl_validate_gated_wire,
+};
 use crate::{LogLevel, SubscriptionCloseReason, SubscriptionId};
 
 pub const MAX_LOG_TARGET_BYTES: usize = 128;
@@ -23,51 +24,12 @@ pub const REDACTED_LOG_MESSAGE: &str = "<redacted: message exceeded bounds>";
 #[serde(transparent)]
 pub struct BoundedLogTarget(String);
 
-impl BoundedLogTarget {
-    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
-        let value = value.into();
-        if value.is_empty() {
-            Err("value must not be empty")
-        } else if value.len() > MAX_LOG_TARGET_BYTES || value.chars().any(char::is_control) {
-            Err("value must be at most 128 non-control UTF-8 bytes")
-        } else {
-            Ok(Self(value))
-        }
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for BoundedLogTarget {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Self::new(String::deserialize(deserializer)?).map_err(de::Error::custom)
-    }
-}
-
-impl JsonSchema for BoundedLogTarget {
-    fn inline_schema() -> bool {
-        true
-    }
-
-    fn schema_name() -> Cow<'static, str> {
-        "BoundedLogTarget".into()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "minLength": 1,
-            "maxLength": MAX_LOG_TARGET_BYTES,
-            "pattern": r"^[^\u0000-\u001f\u007f-\u009f]+$"
-        })
-    }
-}
+impl_bounded_nonempty_string!(
+    BoundedLogTarget,
+    MAX_LOG_TARGET_BYTES,
+    "128",
+    "BoundedLogTarget"
+);
 
 /// A possibly-empty, bounded, redacted-on-overflow log message. Bounded by UTF-8 byte length, not
 /// character count. This is the only bounded fallback text available for an oversized message --
@@ -76,54 +38,13 @@ impl JsonSchema for BoundedLogTarget {
 #[serde(transparent)]
 pub struct BoundedLogMessage(String);
 
-impl BoundedLogMessage {
-    pub fn new(value: impl Into<String>) -> Result<Self, &'static str> {
-        let value = value.into();
-        if value.len() > MAX_LOG_MESSAGE_BYTES || value.chars().any(char::is_control) {
-            Err("value must be at most 16384 non-control UTF-8 bytes")
-        } else {
-            Ok(Self(value))
-        }
-    }
-
-    /// The fixed bounded redaction marker used when a raw message could not be safely projected.
-    #[must_use]
-    pub fn redacted() -> Self {
-        Self(REDACTED_LOG_MESSAGE.to_owned())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for BoundedLogMessage {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Self::new(String::deserialize(deserializer)?).map_err(de::Error::custom)
-    }
-}
-
-impl JsonSchema for BoundedLogMessage {
-    fn inline_schema() -> bool {
-        true
-    }
-
-    fn schema_name() -> Cow<'static, str> {
-        "BoundedLogMessage".into()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "maxLength": MAX_LOG_MESSAGE_BYTES,
-            "pattern": r"^[^\u0000-\u001f\u007f-\u009f]*$"
-        })
-    }
-}
+impl_bounded_redactable_string!(
+    BoundedLogMessage,
+    MAX_LOG_MESSAGE_BYTES,
+    "16384",
+    "BoundedLogMessage",
+    REDACTED_LOG_MESSAGE
+);
 
 /// The closed public log record shape: a level, a bounded target, and a bounded (possibly
 /// redacted) message. No raw bytes, reasoning, tools, credentials, env, or provider/session IDs

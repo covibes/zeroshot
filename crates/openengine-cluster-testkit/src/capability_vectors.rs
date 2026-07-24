@@ -21,3 +21,13 @@ pub fn assert_logs_capability(capabilities: &ServerCapabilities, expected: bool)
         "advertised logs capability did not match expected value"
     );
 }
+
+/// Asserts the advertised `agentAttach` capability flag matches `expected`. No backend-to-capability
+/// registry lives here: callers supply the expectation, so a scripted vector here makes no claim
+/// about any production backend.
+pub fn assert_agent_attach_capability(capabilities: &ServerCapabilities, expected: bool) {
+    assert_eq!(
+        capabilities.agent_attach, expected,
+        "advertised agent_attach capability did not match expected value"
+    );
+}

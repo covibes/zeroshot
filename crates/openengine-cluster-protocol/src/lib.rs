@@ -1,6 +1,7 @@
 //! Canonical Open Engine Cluster Protocol wire and domain types.
 
 pub mod admission;
+pub mod agent_attach;
 pub mod artifact;
 pub mod canonical;
 pub mod diagnostic;
@@ -17,6 +18,7 @@ mod wire;
 pub mod worker;
 
 pub use worker::*;
+pub use agent_attach::*;
 pub use artifact::*;
 pub use admission::*;
 pub use canonical::*;
@@ -203,6 +205,19 @@ pub struct GetResult {
     pub at_cursor: Option<Cursor>,
 }
 
+impl GetResult {
+    /// A `get` result carrying no spec, no cursor, and an empty cluster status. Used by fixture
+    /// backends that exist only to exercise one specific capability.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            spec: None,
+            status: ClusterStatus::empty(),
+            at_cursor: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ServerCapabilities {
@@ -211,6 +226,8 @@ pub struct ServerCapabilities {
     pub graph_profiles: GraphProfileSet,
     #[serde(default)]
     pub logs: bool,
+    #[serde(default)]
+    pub agent_attach: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

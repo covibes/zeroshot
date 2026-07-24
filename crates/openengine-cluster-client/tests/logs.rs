@@ -7,16 +7,18 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use openengine_cluster_client::{
-    ClusterClient, JsonRpcTransport, LogEventOrClosed, NdjsonLogsClient, NdjsonTransport,
-};
+use openengine_cluster_client::{JsonRpcTransport, LogEventOrClosed, NdjsonLogsClient, NdjsonTransport};
 use openengine_cluster_protocol::{
-    BoundedLogTarget, BoundedLogMessage, GetParams, LogLevel, LogRecord, LogsParams,
+    BoundedLogTarget, BoundedLogMessage, LogLevel, LogRecord, LogsParams,
 };
 use openengine_cluster_server::logs::fixtures::{LogsFixtureBackend, LogsFixtureStore};
 use openengine_cluster_server::watch::fixtures::{await_ndjson_shutdown, spawn_ndjson};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+
+#[path = "cancel_leak_support/mod.rs"]
+mod cancel_leak_support;
+use cancel_leak_support::assert_cancel_stops_further_delivery;
 
 fn sample_log_record(message: &str) -> LogRecord {
     LogRecord {
@@ -42,44 +44,16 @@ async fn cancel_stops_further_delivery() {
         other => panic!("expected an event, got {other:?}"),
     }
 
-    stream.cancel().await.unwrap();
-
-    // `cancel()` only writes a fire-and-forget notification line -- it does not wait for the
-    // server to have applied it. Force a synchronous round trip on the same connection so the
-    // subsequent publishes are guaranteed to happen only after the server's read loop has already
-    // processed (and synchronously applied) the preceding cancel line.
-    ClusterClient::new(&transport)
-        .get(GetParams::default())
-        .await
-        .unwrap();
-
-    // The server-side subscription task may already be parked awaiting the next live event at the
-    // moment cancellation is processed, so at most one further event may still be delivered before
-    // it observes cancellation and stops for good.
-    store.publish(sample_log_record("maybe-leaked")).await;
-    store.publish(sample_log_record("must-never-arrive")).await;
-
-    let mut leaked = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(300), stream.next()).await {
-            Ok(Some(Ok(LogEventOrClosed::Event(record)))) => {
-                leaked.push(record.message.as_str().to_owned())
-            }
-            Ok(Some(Ok(other))) => panic!("unexpected notification after cancel: {other:?}"),
-            Ok(Some(Err(e))) => panic!("unexpected error: {e}"),
-            Ok(None) | Err(_) => break,
-        }
-    }
-    assert!(
-        leaked.len() <= 1,
-        "cancelled subscription received more than one post-cancel event: {leaked:?}"
-    );
-    if let Some(message) = leaked.first() {
-        assert_eq!(
-            message, "maybe-leaked",
-            "cancellation failed to stop delivery before the next published event"
-        );
-    }
+    assert_cancel_stops_further_delivery(
+        &mut stream,
+        &transport,
+        |text| store.publish(sample_log_record(text)),
+        |item| match item {
+            LogEventOrClosed::Event(record) => Some(record.message.as_str().to_owned()),
+            LogEventOrClosed::Closed { .. } => None,
+        },
+    )
+    .await;
 
     drop(stream);
     drop(transport);

@@ -1,6 +1,6 @@
 //! Shared raw NDJSON line I/O primitives for driving `serve_ndjson` directly over
-//! `tokio::io::duplex` pipes without a typed protocol client. Used by `tests/subscription_ndjson.rs`
-//! and `tests/logs.rs`.
+//! `tokio::io::duplex` pipes without a typed protocol client. Used by `tests/subscription_ndjson.rs`,
+//! `tests/logs.rs`, and `tests/agent_attach.rs`.
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};

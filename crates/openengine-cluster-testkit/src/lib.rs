@@ -2,6 +2,8 @@
 
 pub mod admission;
 mod admission_artifacts;
+pub mod agent_attach;
+mod agent_attach_artifacts;
 pub mod artifacts;
 pub mod capability_vectors;
 pub mod fixture;

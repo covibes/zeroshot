@@ -1,6 +1,7 @@
 //! Backend-neutral Cluster Protocol dispatcher.
 
 pub mod admission;
+pub mod agent_attach;
 pub mod graph_verifier;
 pub mod lifecycle;
 pub mod logs;
@@ -9,6 +10,7 @@ pub mod watch;
 pub mod worker_registry;
 
 mod dispatch;
+mod subscription_stream;
 mod wire;
 pub(crate) use wire::{serialize_backend_error, serialize_error, serialize_success};
 
@@ -16,14 +18,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyParams, ApplyResult, DeleteParams, DeleteResult, GetParams, GetResult, InitializeParams,
-    InitializeResult, LogsParams, LogsResult, PlanParams, PlanResult, INVALID_PHASE,
-    ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams, StopResult, UpdateParams,
-    UpdateResult, WatchParams, WatchResult,
+    AgentAttachParams, AgentAttachResult, ApplyParams, ApplyResult, DeleteParams, DeleteResult,
+    GetParams, GetResult, InitializeParams, InitializeResult, LogsParams, LogsResult, PlanParams,
+    PlanResult, INVALID_PHASE, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
+    StopParams, StopResult, UpdateParams, UpdateResult, WatchParams, WatchResult,
 };
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::agent_attach::{AgentAttachEventStream, AgentAttachHandle};
 use crate::logs::{LogEventStream, LogsHandle};
 use crate::watch::{WatchEventStream, WatchHandle};
 
@@ -209,6 +212,19 @@ pub trait ClusterBackend: Send + Sync + 'static {
         Err(BackendError::application(
             INVALID_PHASE,
             "Backend does not support logs",
+            None,
+        ))
+    }
+
+    async fn agent_attach(
+        &self,
+        _context: &ConnectionContext,
+        _params: AgentAttachParams,
+        _queue_capacity: usize,
+    ) -> Result<(AgentAttachResult, AgentAttachEventStream, AgentAttachHandle), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support agent attach",
             None,
         ))
     }
