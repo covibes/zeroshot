@@ -3,6 +3,7 @@
 pub mod admission;
 pub mod graph_verifier;
 pub mod lifecycle;
+pub mod logs;
 pub mod stdio;
 pub mod watch;
 pub mod worker_registry;
@@ -16,13 +17,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, DeleteParams, DeleteResult, GetParams, GetResult, InitializeParams,
-    InitializeResult, PlanParams, PlanResult, INVALID_PHASE, ResubmitParams, ResubmitResult,
-    RetryParams, RetryResult, StopParams, StopResult, UpdateParams, UpdateResult, WatchParams,
-    WatchResult,
+    InitializeResult, LogsParams, LogsResult, PlanParams, PlanResult, INVALID_PHASE,
+    ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams, StopResult, UpdateParams,
+    UpdateResult, WatchParams, WatchResult,
 };
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::logs::{LogEventStream, LogsHandle};
 use crate::watch::{WatchEventStream, WatchHandle};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -194,6 +196,19 @@ pub trait ClusterBackend: Send + Sync + 'static {
         Err(BackendError::application(
             INVALID_PHASE,
             "Backend does not support watch",
+            None,
+        ))
+    }
+
+    async fn logs(
+        &self,
+        _context: &ConnectionContext,
+        _params: LogsParams,
+        _queue_capacity: usize,
+    ) -> Result<(LogsResult, LogEventStream, LogsHandle), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support logs",
             None,
         ))
     }

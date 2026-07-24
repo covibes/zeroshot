@@ -1,0 +1,26 @@
+[
+  {
+    "record": {
+      "level": "info",
+      "message": "worker dispatch started",
+      "target": "worker-dispatch"
+    },
+    "subscriptionId": "sub-1"
+  },
+  {
+    "record": {
+      "level": "warn",
+      "message": "retrying after backoff",
+      "target": "worker-dispatch"
+    },
+    "subscriptionId": "sub-1"
+  },
+  {
+    "record": {
+      "level": "error",
+      "message": "<redacted: message exceeded bounds>",
+      "target": "worker-dispatch"
+    },
+    "subscriptionId": "sub-1"
+  }
+]

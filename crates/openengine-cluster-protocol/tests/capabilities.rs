@@ -4,6 +4,7 @@ use serde_json::json;
 fn capabilities_of(profiles: Vec<GraphProfile>) -> ServerCapabilities {
     ServerCapabilities {
         graph_profiles: openengine_cluster_protocol::GraphProfileSet::new(profiles).unwrap(),
+        logs: false,
     }
 }
 
@@ -11,7 +12,7 @@ fn capabilities_of(profiles: Vec<GraphProfile>) -> ServerCapabilities {
 fn empty_capabilities_round_trip() {
     let value = capabilities_of(vec![]);
     let json = serde_json::to_value(&value).unwrap();
-    assert_eq!(json, json!({ "graphProfiles": [] }));
+    assert_eq!(json, json!({ "graphProfiles": [], "logs": false }));
     let parsed: ServerCapabilities = serde_json::from_value(json).unwrap();
     assert_eq!(parsed, value);
 }
@@ -22,7 +23,7 @@ fn single_worker_capabilities_round_trip() {
     let json = serde_json::to_value(&value).unwrap();
     assert_eq!(
         json,
-        json!({ "graphProfiles": ["openengine.graph.single-worker/v1"] })
+        json!({ "graphProfiles": ["openengine.graph.single-worker/v1"], "logs": false })
     );
     let parsed: ServerCapabilities = serde_json::from_value(json).unwrap();
     assert_eq!(parsed, value);
@@ -38,7 +39,8 @@ fn full_v1_capabilities_round_trip() {
             "graphProfiles": [
                 "openengine.graph.full/v1",
                 "openengine.graph.single-worker/v1"
-            ]
+            ],
+            "logs": false
         })
     );
     let parsed: ServerCapabilities = serde_json::from_value(json).unwrap();

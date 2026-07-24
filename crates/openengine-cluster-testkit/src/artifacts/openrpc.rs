@@ -22,6 +22,7 @@ pub(super) fn document() -> Value {
             delete_method(),
             get_method(),
             watch_method(),
+            logs_method(),
         ],
         "components": {
             "schemas": {
@@ -33,10 +34,10 @@ pub(super) fn document() -> Value {
             }
         },
         "x-generic-subscription-framing": {
-            "description": "watch establishes a subscription via one normal JSON-RPC result; \
-                subsequent delivery uses the generic notification methods below, shared by any \
-                future subscription-based method (e.g. logs/attach). There is no watch/event, \
-                watch/cancel, or watch/closed method on the wire.",
+            "description": "watch and logs each establish a subscription via one normal JSON-RPC \
+                result; subsequent delivery uses the generic notification methods below, shared by \
+                every subscription-based method. There is no watch/event, watch/cancel, \
+                watch/closed, logs/event, logs/cancel, or logs/closed method on the wire.",
             "notifications": {
                 "event": { "$ref": "schema.json#/$defs/EventNotification" },
                 "subscription/cancel": { "$ref": "schema.json#/$defs/SubscriptionCancelParams" },
@@ -253,6 +254,18 @@ fn watch_method() -> Value {
         "result": {
             "name": "watchResult",
             "schema": { "$ref": "schema.json#/$defs/WatchResult" }
+        }
+    })
+}
+
+fn logs_method() -> Value {
+    json!({
+        "name": "logs",
+        "paramStructure": "by-name",
+        "params": [],
+        "result": {
+            "name": "logsResult",
+            "schema": { "$ref": "schema.json#/$defs/LogsResult" }
         }
     })
 }

@@ -1,7 +1,8 @@
 //! NDJSON stdio transport: multiplexes unary JSON-RPC request/response traffic and generic
-//! `watch` subscription notifications over one bounded-frame connection.
+//! `watch`/`logs` subscription notifications over one bounded-frame connection.
 
 mod admission;
+mod logs;
 
 use admission::{acquire_task_slot, reject_duplicate, run_writer, InFlightIds, MAX_CONNECTION_TASKS};
 
@@ -142,6 +143,23 @@ where
                 tasks.spawn(async move {
                     let _permit = permit;
                     run_watch_subscription(task_dispatcher, id, params, task_state).await;
+                });
+            }
+            NdjsonLineKind::Logs { id, params } => {
+                if reject_duplicate(&in_flight_ids, &outbound_tx, id.clone()).await {
+                    continue;
+                }
+                let Some(permit) =
+                    acquire_task_slot(&task_slots, &outbound_tx, Some(id.clone())).await
+                else {
+                    in_flight_ids.lock().remove(&id);
+                    continue;
+                };
+                let task_dispatcher = dispatcher.clone();
+                let task_state = state.clone();
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    logs::run_logs_subscription(task_dispatcher, id, params, task_state).await;
                 });
             }
             NdjsonLineKind::Passthrough { id } => {
@@ -355,18 +373,25 @@ where
 /// `None` for malformed lines or notifications, which [`Dispatcher::dispatch`] handles on its own.
 pub(crate) enum NdjsonLineKind {
     Watch { id: RequestId, params: Value },
+    Logs { id: RequestId, params: Value },
     Cancel(SubscriptionId),
     Passthrough { id: Option<RequestId> },
 }
 
-/// Classifies a decoded NDJSON line without fully deserializing its params: a `watch` request is
-/// pulled out for subscription handling, a `subscription/cancel` notification is pulled out for
-/// inline cancellation, and everything else (including malformed JSON) passes through to
+/// Classifies a decoded NDJSON line without fully deserializing its params: a `watch`/`logs`
+/// request is pulled out for subscription handling, a `subscription/cancel` notification is pulled
+/// out for inline cancellation, and everything else (including malformed JSON) passes through to
 /// [`Dispatcher::dispatch`] unchanged.
 pub(crate) fn classify_ndjson_line(line: &str) -> NdjsonLineKind {
     if let Ok(request) = serde_json::from_str::<JsonRpcRequest<Value>>(line) {
         if request.method == "watch" {
             return NdjsonLineKind::Watch {
+                id: request.id,
+                params: request.params,
+            };
+        }
+        if request.method == "logs" {
+            return NdjsonLineKind::Logs {
                 id: request.id,
                 params: request.params,
             };

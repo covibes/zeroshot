@@ -69,6 +69,10 @@ async fn generated_artifacts_are_complete_and_committed_without_drift() {
         "protocol/openengine-cluster/v1/goldens/admission-errors.ndjson",
         "protocol/openengine-cluster/v1/goldens/lifecycle-controls.ndjson",
         "protocol/openengine-cluster/v1/goldens/lifecycle-delete.ndjson",
+        "protocol/openengine-cluster/v1/goldens/logs-session.json",
+        "protocol/openengine-cluster/v1/fixtures/logs/logs-params.json",
+        "protocol/openengine-cluster/v1/fixtures/logs/logs-closed.json",
+        "protocol/openengine-cluster/v1/fixtures/logs/log-record.json",
     ] {
         assert!(paths.contains(&required), "missing {required}");
     }
@@ -127,7 +131,8 @@ async fn openrpc_exposes_only_the_implemented_protocol_methods() {
             "resubmit",
             "delete",
             "get",
-            "watch"
+            "watch",
+            "logs"
         ]
     );
     for component in [
