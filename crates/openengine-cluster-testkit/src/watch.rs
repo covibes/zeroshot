@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ClusterStatus, Cursor, DeleteResult, NodeAddress, Phase, RunId, WatchEvent, WorkerOutcome,
+    BackendFault, ClusterStatus, Cursor, DeleteResult, NodeAddress, Phase, RunId, WatchEvent,
+    WorkerOutcome,
 };
 use openengine_cluster_server::admission::{ControlSnapshot, StoreError};
 use openengine_cluster_server::lifecycle::{LifecycleEvent, LifecycleSnapshot};
@@ -347,6 +348,16 @@ impl InMemoryAdmissionStore {
             NodeEventBody::End { outcome } => WatchEvent::NodeEnd { node, outcome },
         };
         state.record_public_event(run_id, cursor.clone(), event);
+        cursor
+    }
+
+    /// Emits a synthetic `Fault` golden-vector event for `run_id`, allocating one new public
+    /// cursor. Test-only: no production backend reports a real `BackendFault` through this hook
+    /// yet; native mapping is out of scope for this slice.
+    pub async fn emit_fault_event(&self, run_id: &RunId, fault: BackendFault) -> Cursor {
+        let mut state = self.state.lock().await;
+        let cursor = state.allocate_cursor();
+        state.record_public_event(run_id, cursor.clone(), WatchEvent::Fault { fault });
         cursor
     }
 }

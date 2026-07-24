@@ -6,6 +6,10 @@
 use std::sync::Arc;
 
 use openengine_cluster_client::{ClusterClient, InProcessTransport};
+use openengine_cluster_protocol::{
+    BackendFault, BoundedString256, FaultAction, FaultCode, FaultConsequence,
+    FaultRetryDisposition, FaultSeverity, FaultSourceFrame,
+};
 use openengine_cluster_server::admission::AdmissionCoordinator;
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 
@@ -35,4 +39,26 @@ pub fn dispatcher_fixture(
     let dispatcher = Dispatcher::new(backend.clone(), ConnectionContext::default());
     let client = ClusterClient::new(InProcessTransport::new(dispatcher.clone()));
     (client, dispatcher, backend, verifier, store)
+}
+
+/// A valid, deterministic `BackendFault` for reuse by goldens and the testkit `backend_faults`
+/// conformance test. `event_id` is the sole varying input so callers can produce distinct fault
+/// events.
+#[must_use]
+pub fn sample_backend_fault(event_id: &str) -> BackendFault {
+    BackendFault {
+        event_id: BoundedString256::new(event_id).expect("fixture event id must be valid"),
+        execution_ref: None,
+        code: FaultCode::Unavailable,
+        consequence: FaultConsequence::TurnFailed,
+        retry: FaultRetryDisposition::RetryableAfterBackoff,
+        action: FaultAction::Retry,
+        severity: FaultSeverity::Error,
+        summary: BoundedString256::new("upstream worker unavailable")
+            .expect("fixture summary must be valid"),
+        source: vec![FaultSourceFrame {
+            component: BoundedString256::new("worker-dispatch")
+                .expect("fixture component must be valid"),
+        }],
+    }
 }

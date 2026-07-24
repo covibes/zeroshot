@@ -21,34 +21,18 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
 #[path = "reconnect_support/mod.rs"]
 mod reconnect_support;
-use reconnect_support::{
-    assert_reconnect_replays_and_dedups, overflow_and_close, FIXTURE_QUEUE_CAPACITY,
-};
+use reconnect_support::FIXTURE_QUEUE_CAPACITY;
+
+#[path = "reconnect_support/ndjson_scenario.rs"]
+mod ndjson_scenario;
+use ndjson_scenario::ndjson_overflow_and_reconnect_scenario;
 
 #[tokio::test]
 async fn reconnect_after_slow_consumer_recovers_with_no_gap_and_dedups_duplicates_over_ndjson() {
-    let run_id = RunId::new("run-1");
-    let store = Arc::new(FixtureStore::new(
-        run_id.clone(),
-        Vec::new(),
-        FIXTURE_QUEUE_CAPACITY,
-    ));
-    let (client_write, client_read, server) = spawn_ndjson(FixtureBackend::new(Arc::clone(&store)));
-
-    let transport = NdjsonTransport::new(client_read, client_write);
-    let watch_client = NdjsonWatchClient::new(&transport);
-
-    let (result, mut stream) = watch_client.watch(WatchParams::default()).await.unwrap();
-    assert_eq!(result.run_id, Some(run_id));
-
-    let received = overflow_and_close(&store, &mut stream).await;
-
-    let (_result, mut stream) = stream.reconnect().await.unwrap();
-    assert_reconnect_replays_and_dedups(&store, &mut stream, received).await;
-
-    drop(stream);
-    drop(transport);
-    await_ndjson_shutdown(server).await;
+    ndjson_overflow_and_reconnect_scenario(RunId::new("run-1"), FIXTURE_QUEUE_CAPACITY, || {
+        WatchEvent::Bookmark
+    })
+    .await;
 }
 
 #[tokio::test]

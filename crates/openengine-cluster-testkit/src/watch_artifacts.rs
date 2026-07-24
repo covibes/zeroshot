@@ -4,15 +4,17 @@
 //! standalone wire shapes for request/close framing that no single session exercises.
 
 use openengine_cluster_protocol::{
-    Cursor, EventNotification, NodeAddress, NodeName, PositiveInteger, RunId,
+    BackendFault, Cursor, EventNotification, FaultAction, FaultCode, FaultConsequence,
+    FaultRetryDisposition, FaultSeverity, NodeAddress, NodeName, PositiveInteger, RunId,
     SubscriptionCancelParams, SubscriptionCloseReason, SubscriptionClosedNotification,
-    SubscriptionId, WatchParams, WorkerOutcome,
+    SubscriptionId, WatchEvent, WatchParams, WorkerOutcome,
 };
 use openengine_cluster_server::watch::WatchStreamItem;
 use serde_json::{json, Value};
 
 use crate::admission_artifacts::scripted_dispatcher;
 use crate::artifacts::{json_artifact, Artifact};
+use crate::fixture::sample_backend_fault;
 use crate::watch::NodeEventBody;
 
 const ROOT: &str = "protocol/openengine-cluster/v1";
@@ -54,7 +56,30 @@ pub(crate) async fn generate_watch_goldens() -> Vec<Artifact> {
                 },
             ]),
         ),
+        json_artifact(
+            format!("{ROOT}/fixtures/watch/backend-fault.json"),
+            json!([sample_backend_fault("evt-1"), non_retryable_backend_fault()]),
+        ),
+        json_artifact(
+            format!("{ROOT}/fixtures/watch/fault-event.json"),
+            json!(WatchEvent::Fault {
+                fault: sample_backend_fault("evt-1"),
+            }),
+        ),
     ]
+}
+
+/// A second deterministic `BackendFault` covering a distinct code/severity/action-retry-consistent
+/// combination from [`sample_backend_fault`], for golden-vector coverage.
+fn non_retryable_backend_fault() -> BackendFault {
+    BackendFault {
+        code: FaultCode::PermissionDenied,
+        consequence: FaultConsequence::RunFailed,
+        retry: FaultRetryDisposition::NotRetryable,
+        action: FaultAction::Abort,
+        severity: FaultSeverity::Critical,
+        ..sample_backend_fault("evt-2")
+    }
 }
 
 /// Commits one run through a real `AdmissionCoordinator`, attaches a watch subscription, then

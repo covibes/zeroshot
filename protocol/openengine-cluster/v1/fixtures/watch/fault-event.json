@@ -1,0 +1,17 @@
+{
+  "fault": {
+    "action": "retry",
+    "code": "unavailable",
+    "consequence": "turn_failed",
+    "eventId": "evt-1",
+    "retry": "retryable_after_backoff",
+    "severity": "error",
+    "source": [
+      {
+        "component": "worker-dispatch"
+      }
+    ],
+    "summary": "upstream worker unavailable"
+  },
+  "type": "fault"
+}

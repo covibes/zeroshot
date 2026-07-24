@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    ClusterStatus, Cursor, GraphSpec, NodeName, PositiveInteger, RunId, StopMode, WorkerOutcome,
+    BackendFault, ClusterStatus, Cursor, GraphSpec, NodeName, PositiveInteger, RunId, StopMode,
+    WorkerOutcome,
 };
 
 pub const NOT_FOUND: &str = "NOT_FOUND";
@@ -67,7 +68,11 @@ pub struct AdmissionTransition {
 /// commit, update, suspend/resume, stop-request); `NodeBegin`/`NodeEnd` are a testkit-only
 /// synthetic hook decoupled from the real dispatch/lease turn mechanism, since no native graph
 /// executor exists yet; `Bookmark` advances the cursor without changing folded public state;
-/// `Finished` is always the last event for a run.
+/// `Fault` carries a durable, backend-neutral projected `BackendFault`: it correlates to the
+/// enclosing `EventNotification.run_id` plus its own optional opaque `executionRef`, and its
+/// ordering/emission never itself authorizes a retry or changes terminal semantics -- it folds to
+/// no public status change, exactly like `Bookmark`; `Finished` is always the last event for a
+/// run.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, tag = "type", rename_all = "snake_case")]
 pub enum WatchEvent {
@@ -85,6 +90,9 @@ pub enum WatchEvent {
         outcome: WorkerOutcome,
     },
     Bookmark,
+    Fault {
+        fault: BackendFault,
+    },
     Finished {
         final_status: ClusterStatus,
         #[serde(default, skip_serializing_if = "Option::is_none")]
