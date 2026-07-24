@@ -1796,18 +1796,20 @@ class Orchestrator {
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});
-      // `prBase` is the PR target branch. Use that same local ref as the
-      // worktree base so repo-local integration commits are not skipped.
+      // `prBase` is the PR target branch. Base isolated work on its refreshed
+      // remote-tracking ref so a stale local branch cannot change the plan.
       const worktreeOptions = {};
       if (options.prBase) {
-        worktreeOptions.baseRef = options.prBase;
-        this._log(`[Orchestrator] Using worktree base ref: ${options.prBase}`);
+        worktreeOptions.baseRef = `origin/${options.prBase}`;
+        worktreeOptions.requireFreshBase = true;
+        this._log(`[Orchestrator] Using worktree base ref: ${worktreeOptions.baseRef}`);
       }
       worktreeInfo = isolationManager.createWorktreeIsolation(clusterId, workDir, worktreeOptions);
 
       this._log(`[Orchestrator] Starting cluster in worktree isolation mode`);
       this._log(`[Orchestrator] Worktree: ${worktreeInfo.path}`);
       this._log(`[Orchestrator] Branch: ${worktreeInfo.branch}`);
+      this._log(`[Orchestrator] Worktree base commit: ${worktreeInfo.baseSha}`);
     }
 
     return { isolationManager, containerId, worktreeInfo, image: isolationImage };
