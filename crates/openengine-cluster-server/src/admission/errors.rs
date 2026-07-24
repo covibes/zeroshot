@@ -3,7 +3,7 @@
 use openengine_cluster_protocol::{
     ApplyParams, CompiledGraphIr, Generation, GraphSpec, CANCELLED, GENERATION_CONFLICT, GONE,
     IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, INVALID_PHASE, NOT_FOUND, NO_RETRYABLE_FRONTIER,
-    SCHEMA_VIOLATION,
+    RUN_CONFLICT, SCHEMA_VIOLATION,
 };
 use serde_json::{json, Value};
 
@@ -60,7 +60,7 @@ pub(super) fn precheck_input(
     if unchanged {
         if input.is_some() {
             return Err(schema_error(
-                "unchanged apply must omit input; use future resubmit semantics to supply a new root input",
+                "unchanged apply must omit input; use resubmit to supply a new root input",
             ));
         }
         return Ok(());
@@ -96,6 +96,11 @@ pub(super) fn store_error_to_backend(error: StoreError) -> BackendError {
             GENERATION_CONFLICT,
             "Generation precondition failed",
             Some(json!({ "currentGeneration": current })),
+        ),
+        StoreError::RunConflict { current } => BackendError::application(
+            RUN_CONFLICT,
+            "Run precondition failed",
+            Some(json!({ "currentRunId": current })),
         ),
         StoreError::InvalidPhase { current } => BackendError::application(
             INVALID_PHASE,

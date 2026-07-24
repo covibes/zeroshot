@@ -6,13 +6,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ApplyResult, CompiledGraphIr, Cursor, DispatchState, Generation, GraphSpec, IdempotencyKey,
-    OperationalStatus, Phase, RunId,
+    OperationalStatus, Phase, ResubmitResult, RunId,
 };
 use openengine_cluster_server::admission::{
     AdmissionSnapshot, AdmissionStore, CancellationSignal, CommitProposal, ControlJournal,
-    ControlSnapshot, IdempotencyRecord, StoreError, VerifiedIoLedger, VerifiedSeed,
+    ControlSnapshot, IdempotencyRecord, ResubmitProposal, StoreError, VerifiedIoLedger,
+    VerifiedSeed,
 };
 use openengine_cluster_server::lifecycle::{LeaseId, LifecycleSnapshot, MutationReceipt, TurnId};
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 mod fixtures;
@@ -174,7 +176,6 @@ impl StoreState {
 
     fn changed_receipt(&mut self, proposal: &CommitProposal) -> Result<ApplyResult, StoreError> {
         self.next_run += 1;
-        self.next_cursor += 1;
         let generation_value = self
             .control
             .generation
@@ -182,19 +183,39 @@ impl StoreState {
         let generation = Generation::new(generation_value)
             .map_err(|error| StoreError::Internal(error.to_string()))?;
         let run_id = RunId::new(format!("run-{}", self.next_run));
-        let cursor = Cursor::new(format!("cursor-{}", self.next_cursor));
         let input = proposal
             .input
             .clone()
             .expect("changed admission validated required input");
-        self.control = ControlSnapshot {
-            spec: Some(proposal.graph.clone()),
-            compiled_ir: Some(proposal.compiled_ir.clone()),
+        self.control.spec = Some(proposal.graph.clone());
+        self.control.compiled_ir = Some(proposal.compiled_ir.clone());
+        self.install_run(run_id.clone(), generation, input);
+        Ok(ApplyResult {
             generation: Some(generation),
-            run_id: Some(run_id.clone()),
+            run_id: Some(run_id),
             phase: Phase::Running,
-            cursor: Some(cursor.clone()),
-        };
+            deduped: false,
+            diff: None,
+        })
+    }
+
+    /// Mints a fresh run at `cursor`, resetting lease/lifecycle state and appending the control
+    /// receipt, verified seed, and public admission-transition event. Assumes `self.control.spec`
+    /// (and `compiled_ir`, where relevant) already holds the graph this run admits — callers that
+    /// change the graph (`changed_receipt`) must set it before calling this; callers that reuse the
+    /// admitted graph (`resubmit`) leave it untouched. Every freshly admitted run starts `Running`.
+    fn install_run(&mut self, run_id: RunId, generation: Generation, input: Value) -> Cursor {
+        self.next_cursor += 1;
+        let cursor = Cursor::new(format!("cursor-{}", self.next_cursor));
+        let spec = self
+            .control
+            .spec
+            .clone()
+            .expect("install_run requires an admitted graph spec");
+        self.control.generation = Some(generation);
+        self.control.run_id = Some(run_id.clone());
+        self.control.phase = Phase::Running;
+        self.control.cursor = Some(cursor.clone());
         for lease in self.leases.values() {
             lease.cancellation.cancel();
         }
@@ -214,7 +235,7 @@ impl StoreState {
             generation,
             run_id: run_id.clone(),
             cursor: cursor.clone(),
-            spec: proposal.graph.clone(),
+            spec: spec.clone(),
         });
         append(self, Some(cursor.clone()), AppendKind::Control);
         self.seed_ledger.push(VerifiedSeed {
@@ -225,24 +246,114 @@ impl StoreState {
         append(self, Some(cursor.clone()), AppendKind::VerifiedSeed);
         let status = self.control.status_with_lifecycle(&self.lifecycle);
         self.record_public_event(
-            &run_id,
-            cursor,
+            &run_id.clone(),
+            cursor.clone(),
             openengine_cluster_protocol::WatchEvent::Phase {
                 status,
                 admission: Some(Box::new(openengine_cluster_protocol::AdmissionTransition {
-                    run_id: run_id.clone(),
-                    spec: proposal.graph.clone(),
+                    run_id,
+                    spec,
                     seed_input: input,
                 })),
             },
         );
-        Ok(ApplyResult {
-            generation: Some(generation),
-            run_id: Some(run_id),
+        cursor
+    }
+
+    fn replay_resubmit(
+        &self,
+        proposal: &ResubmitProposal,
+    ) -> Result<Option<ResubmitResult>, StoreError> {
+        let Some(existing) = self
+            .idempotency_records
+            .get(&proposal.params.idempotency_key)
+        else {
+            return Ok(None);
+        };
+        if existing.fingerprint != proposal.fingerprint {
+            return Err(StoreError::IdempotencyReuse);
+        }
+        let MutationReceipt::Resubmit(mut receipt) = existing.receipt.clone() else {
+            return Err(StoreError::IdempotencyReuse);
+        };
+        receipt.deduped = true;
+        Ok(Some(receipt))
+    }
+
+    fn resubmit(
+        &mut self,
+        proposal: ResubmitProposal,
+        cancellation: &CancellationSignal,
+    ) -> Result<ResubmitResult, StoreError> {
+        if let Some(receipt) = self.replay_resubmit(&proposal)? {
+            return Ok(receipt);
+        }
+        enforce_generation(Some(proposal.params.if_generation), self.control.generation)?;
+        let current_run_id = self.control.run_id.clone();
+        if current_run_id.as_ref() != Some(&proposal.params.if_run_id) {
+            return Err(StoreError::RunConflict {
+                current: current_run_id,
+            });
+        }
+        if !self.control.phase.is_terminal() {
+            return Err(StoreError::InvalidPhase {
+                current: self.control.phase,
+            });
+        }
+        let prior_run_id = current_run_id.expect("terminal phase implies an admitted run");
+        let input = match &proposal.params.replacement_input {
+            Some(replacement) => {
+                let spec = self
+                    .control
+                    .spec
+                    .as_ref()
+                    .expect("terminal phase implies an admitted graph");
+                spec.initial_input
+                    .validate_value(replacement)
+                    .map_err(|error| StoreError::SchemaViolation(error.to_string()))?;
+                replacement.clone()
+            }
+            None => self
+                .seed_ledger
+                .iter()
+                .rev()
+                .find(|seed| seed.run_id == prior_run_id)
+                .map(|seed| seed.input.clone())
+                .ok_or_else(|| StoreError::Internal("terminal run has no verified seed".into()))?,
+        };
+        if cancellation.is_cancelled() {
+            return Err(StoreError::Cancelled);
+        }
+        let generation = self
+            .control
+            .generation
+            .expect("terminal phase implies a generation");
+        self.next_run += 1;
+        let run_id = RunId::new(format!("run-{}", self.next_run));
+        let at_cursor = self.install_run(run_id.clone(), generation, input);
+        let operational = self
+            .lifecycle
+            .operational
+            .clone()
+            .expect("install_run sets lifecycle operational");
+        let result = ResubmitResult {
+            generation,
+            prior_run_id,
+            run_id,
             phase: Phase::Running,
+            operational,
+            at_cursor,
             deduped: false,
-            diff: None,
-        })
+        };
+        self.idempotency_records.insert(
+            proposal.params.idempotency_key,
+            IdempotencyRecord {
+                fingerprint: proposal.fingerprint,
+                receipt: MutationReceipt::Resubmit(result.clone()),
+            },
+        );
+        append(self, self.control.cursor.clone(), AppendKind::Idempotency);
+        Ok(result)
     }
 
     fn record_idempotency(&mut self, proposal: CommitProposal, result: &ApplyResult) {
@@ -263,7 +374,7 @@ fn validate_commit_input(proposal: &CommitProposal, unchanged: bool) -> Result<(
             Ok(())
         } else {
             Err(StoreError::SchemaViolation(
-                "unchanged apply must omit input; use future resubmit semantics".into(),
+                "unchanged apply must omit input; use resubmit".into(),
             ))
         };
     }
@@ -330,6 +441,14 @@ impl AdmissionStore for InMemoryAdmissionStore {
         cancellation: &CancellationSignal,
     ) -> Result<ApplyResult, StoreError> {
         self.state.lock().await.commit(proposal, cancellation)
+    }
+
+    async fn resubmit(
+        &self,
+        proposal: ResubmitProposal,
+        cancellation: &CancellationSignal,
+    ) -> Result<ResubmitResult, StoreError> {
+        self.state.lock().await.resubmit(proposal, cancellation)
     }
 }
 

@@ -1627,6 +1627,29 @@
           "type": "string"
         },
         "params": {
+          "$ref": "#/$defs/ResubmitParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest9": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
           "$ref": "#/$defs/WatchParams"
         }
       },
@@ -1712,6 +1735,16 @@
       "anyOf": [
         {
           "$ref": "#/$defs/JsonRpcSuccess8"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse9": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess9"
         },
         {
           "$ref": "#/$defs/JsonRpcErrorResponse"
@@ -1852,6 +1885,25 @@
       "type": "object"
     },
     "JsonRpcSuccess8": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/ResubmitResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess9": {
       "properties": {
         "id": {
           "$ref": "#/$defs/RequestId"
@@ -2298,6 +2350,70 @@
           "type": "integer"
         }
       ]
+    },
+    "ResubmitParams": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "ifGeneration": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ifRunId": {
+          "type": "string"
+        },
+        "replacementInput": true
+      },
+      "required": [
+        "ifGeneration",
+        "ifRunId",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "ResubmitResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": "string"
+        },
+        "deduped": {
+          "type": "boolean"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operational": {
+          "$ref": "#/$defs/OperationalStatus"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "priorRunId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "priorRunId",
+        "runId",
+        "phase",
+        "operational",
+        "atCursor",
+        "deduped"
+      ],
+      "type": "object"
     },
     "RetryParams": {
       "additionalProperties": false,
@@ -3049,6 +3165,12 @@
     "plan_response": {
       "$ref": "#/$defs/JsonRpcResponse2"
     },
+    "resubmit_request": {
+      "$ref": "#/$defs/JsonRpcRequest8"
+    },
+    "resubmit_response": {
+      "$ref": "#/$defs/JsonRpcResponse8"
+    },
     "retry_request": {
       "$ref": "#/$defs/JsonRpcRequest7"
     },
@@ -3074,10 +3196,10 @@
       "$ref": "#/$defs/JsonRpcResponse5"
     },
     "watch_request": {
-      "$ref": "#/$defs/JsonRpcRequest8"
+      "$ref": "#/$defs/JsonRpcRequest9"
     },
     "watch_response": {
-      "$ref": "#/$defs/JsonRpcResponse8"
+      "$ref": "#/$defs/JsonRpcResponse9"
     }
   },
   "required": [
@@ -3095,6 +3217,8 @@
     "stop_response",
     "retry_request",
     "retry_response",
+    "resubmit_request",
+    "resubmit_response",
     "watch_request",
     "watch_response",
     "event_notification",

@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
+use crate::admission::deserialize_present_value;
 use crate::value::{identifier_keyed_map_schema, BoundedString256};
 use crate::{Cursor, Generation, IdempotencyKey, Phase, RunId};
 
@@ -294,6 +296,32 @@ pub struct RetryResult {
     pub phase: Phase,
     pub retried_turn_id: String,
     pub retry_turn_id: String,
+    pub operational: OperationalStatus,
+    pub at_cursor: Cursor,
+    pub deduped: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResubmitParams {
+    pub if_generation: Generation,
+    pub if_run_id: RunId,
+    pub idempotency_key: IdempotencyKey,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replacement_input: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResubmitResult {
+    pub generation: Generation,
+    pub prior_run_id: RunId,
+    pub run_id: RunId,
+    pub phase: Phase,
     pub operational: OperationalStatus,
     pub at_cursor: Cursor,
     pub deduped: bool,

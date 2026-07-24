@@ -123,6 +123,7 @@ async fn openrpc_exposes_only_the_implemented_protocol_methods() {
             "update",
             "stop",
             "retry",
+            "resubmit",
             "get",
             "watch"
         ]

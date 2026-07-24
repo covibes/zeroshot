@@ -1,4 +1,4 @@
-use openengine_cluster_protocol::{ApplyParams, RetryParams, StopParams, UpdateParams};
+use openengine_cluster_protocol::{ApplyParams, ResubmitParams, RetryParams, StopParams, UpdateParams};
 use schemars::schema_for;
 use serde_json::{json, Value};
 
@@ -16,6 +16,7 @@ pub(super) fn document() -> Value {
             update_method(),
             stop_method(),
             retry_method(),
+            resubmit_method(),
             get_method(),
             watch_method(),
         ],
@@ -168,6 +169,25 @@ fn retry_method() -> Value {
         "result": {
             "name": "retryResult",
             "schema": { "$ref": "schema.json#/$defs/RetryResult" }
+        }
+    })
+}
+
+fn resubmit_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(ResubmitParams))
+        .expect("resubmit parameter JSON Schema serialization must succeed");
+    json!({
+        "name": "resubmit",
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
+            { "name": "ifRunId", "required": true, "schema": property_schema(&schema, "ifRunId") },
+            { "name": "idempotencyKey", "required": true, "schema": property_schema(&schema, "idempotencyKey") },
+            { "name": "replacementInput", "required": false, "schema": true }
+        ],
+        "result": {
+            "name": "resubmitResult",
+            "schema": { "$ref": "schema.json#/$defs/ResubmitResult" }
         }
     })
 }
