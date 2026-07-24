@@ -58,3 +58,30 @@ pub(crate) async fn generate_lifecycle_goldens() -> Vec<Artifact> {
     artifact.bytes.extend_from_slice(&remainder.bytes);
     vec![artifact]
 }
+
+pub(crate) async fn generate_resubmit_goldens() -> Vec<Artifact> {
+    let (graph, dispatcher, _store) = scripted_dispatcher(1);
+    let artifact = transcript(
+        "lifecycle-resubmit.ndjson",
+        &dispatcher,
+        vec![
+            json!({
+                "jsonrpc":"2.0","id":"resubmit-apply","method":"apply",
+                "params":{"graph":graph,"input":null,"ifGeneration":0,"idempotencyKey":"resubmit-create"}
+            }),
+            json!({
+                "jsonrpc":"2.0","id":"resubmit-stop","method":"stop",
+                "params":{"mode":"force","ifGeneration":1,"idempotencyKey":"resubmit-stop"}
+            }),
+            json!({
+                "jsonrpc":"2.0","id":"resubmit-resubmit","method":"resubmit",
+                "params":{"ifGeneration":1,"ifRunId":"run-1","idempotencyKey":"resubmit-resubmit"}
+            }),
+            json!({
+                "jsonrpc":"2.0","id":"resubmit-get","method":"get","params":{}
+            }),
+        ],
+    )
+    .await;
+    vec![artifact]
+}

@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, GetParams, GetResult, InitializeParams, InitializeResult,
     JsonRpcError, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcSuccess,
-    PlanParams, PlanResult, RequestId, RetryParams, RetryResult, StopParams, StopResult,
-    SubscriptionCancelParams, SubscriptionId, UpdateParams, UpdateResult, JSON_RPC_VERSION,
-    PROTOCOL_VERSION,
+    PlanParams, PlanResult, RequestId, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
+    StopParams, StopResult, SubscriptionCancelParams, SubscriptionId, UpdateParams, UpdateResult,
+    JSON_RPC_VERSION, PROTOCOL_VERSION,
 };
 use openengine_cluster_server::{ClusterBackend, Dispatcher};
 use serde::de::DeserializeOwned;
@@ -409,6 +409,10 @@ where
 
     pub async fn retry(&self, params: RetryParams) -> Result<RetryResult, ClientError> {
         self.call("retry", params).await
+    }
+
+    pub async fn resubmit(&self, params: ResubmitParams) -> Result<ResubmitResult, ClientError> {
+        self.call("resubmit", params).await
     }
 
     async fn call<P, R>(&self, method: &str, params: P) -> Result<R, ClientError>

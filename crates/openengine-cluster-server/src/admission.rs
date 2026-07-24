@@ -17,15 +17,16 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     diff_compiled_graphs, ApplyParams, ApplyResult, GetParams, GetResult, GraphSpec,
     IdempotencyKey, InitializeParams, InitializeResult, PlanParams, PlanResult, RequestFingerprint,
-    RetryParams, RetryResult, ServerCapabilities, StopParams, StopResult, SubscriptionId,
-    UpdateParams, UpdateResult, WatchParams, WatchResult, GRAPH_INVALID, IDEMPOTENCY_REUSE,
-    INTERNAL_ERROR_CODE, INVALID_PHASE,
+    ResubmitParams, ResubmitResult, RetryParams, RetryResult, ServerCapabilities, StopParams,
+    StopResult, SubscriptionId, UpdateParams, UpdateResult, WatchParams, WatchResult,
+    GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, INVALID_PHASE,
 };
 use serde_json::json;
 
 use crate::lifecycle::{
-    method_fingerprint, retry_fingerprint, stop_fingerprint, update_fingerprint, LifecycleSnapshot,
-    MutationReceipt, RetryProposal, StopProposal, UpdateProposal,
+    method_fingerprint, resubmit_fingerprint, retry_fingerprint, stop_fingerprint,
+    update_fingerprint, LifecycleSnapshot, MutationReceipt, RetryProposal, StopProposal,
+    UpdateProposal,
 };
 use crate::watch::{ObservationStore, WatchEventStream, WatchHandle};
 use crate::{BackendError, ClusterBackend, ConnectionContext};
@@ -368,6 +369,47 @@ where
                 params,
                 fingerprint,
             })
+            .await
+            .map_err(store_error_to_backend)
+    }
+
+    async fn resubmit(
+        &self,
+        context: &ConnectionContext,
+        params: ResubmitParams,
+    ) -> Result<ResubmitResult, BackendError> {
+        let fingerprint = resubmit_fingerprint(&params)?;
+        // Replacement-input schema validation is safe to fail fast on: unlike generation/run CAS,
+        // the admitted graph never changes as a side effect of resubmit, so this check's outcome
+        // cannot differ between a first call and its idempotent replay. Generation/run/phase/
+        // idempotency-replay checks are NOT duplicated here; they run once, atomically, inside
+        // `store.resubmit` (mirroring `retry`/`update`/`stop`) so a replay is judged against the
+        // request that was actually recorded rather than the coordinator's own pre-mutation read.
+        if let Some(replacement_input) = params.replacement_input.as_ref() {
+            let (snapshot, _) = self.read_valid_snapshot().await?;
+            let graph = snapshot.control.spec.as_ref().ok_or_else(|| {
+                BackendError::application(
+                    INVALID_PHASE,
+                    "Cluster has no admitted graph to validate replacement input against",
+                    None,
+                )
+            })?;
+            graph
+                .initial_input
+                .validate_value(replacement_input)
+                .map_err(|error| schema_error(&error.to_string()))?;
+        }
+        if context.cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        self.store
+            .resubmit(
+                ResubmitProposal {
+                    params,
+                    fingerprint,
+                },
+                &context.cancellation,
+            )
             .await
             .map_err(store_error_to_backend)
     }

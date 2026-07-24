@@ -1,9 +1,11 @@
 //! Typed lifecycle parameter constructors for deterministic fixtures.
 
 use openengine_cluster_protocol::{
-    Generation, IdempotencyKey, RetryParams, StopMode, StopParams, TurnFailureKind, UpdateParams,
+    Generation, IdempotencyKey, ResubmitParams, RetryParams, RunId, StopMode, StopParams,
+    TurnFailureKind, UpdateParams,
 };
 use openengine_cluster_server::lifecycle::{FailedCompletion, FailureRetryability, LeaseId};
+use serde_json::Value;
 
 #[must_use]
 pub fn suspend(generation: u64, key: &str) -> UpdateParams {
@@ -39,6 +41,21 @@ pub fn retry(generation: u64, key: &str) -> RetryParams {
     RetryParams {
         if_generation: fixture_generation(generation),
         idempotency_key: fixture_key(key),
+    }
+}
+
+#[must_use]
+pub fn resubmit(
+    generation: u64,
+    run_id: &str,
+    key: &str,
+    replacement: Option<Value>,
+) -> ResubmitParams {
+    ResubmitParams {
+        if_generation: fixture_generation(generation),
+        if_run_id: RunId::new(run_id),
+        idempotency_key: fixture_key(key),
+        replacement_input: replacement,
     }
 }
 

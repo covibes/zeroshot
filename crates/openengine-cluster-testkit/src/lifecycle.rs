@@ -15,7 +15,7 @@ use crate::admission::{append, enforce_generation, AppendKind, InMemoryAdmission
 
 mod dispatch;
 mod params;
-pub use params::{fail, fail_exhausted, resume, retry, stop, suspend};
+pub use params::{fail, fail_exhausted, resubmit, resume, retry, stop, suspend};
 
 fn dispatch_state_for_suspension(suspended: bool) -> DispatchState {
     if suspended {

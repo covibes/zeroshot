@@ -324,6 +324,49 @@
       }
     },
     {
+      "name": "resubmit",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "ifGeneration",
+          "required": true,
+          "schema": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "ifRunId",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "idempotencyKey",
+          "required": true,
+          "schema": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        },
+        {
+          "name": "replacementInput",
+          "required": false,
+          "schema": true
+        }
+      ],
+      "result": {
+        "name": "resubmitResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/ResubmitResult"
+        }
+      }
+    },
+    {
       "name": "get",
       "paramStructure": "by-name",
       "params": [

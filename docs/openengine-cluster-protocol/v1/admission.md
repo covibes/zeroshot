@@ -19,7 +19,8 @@ idempotency record and never writes the control journal or verified-I/O ledger.
   `initialInput` payload type, assigns a new run ID, and commits generation 1 or the next
   JavaScript-safe generation.
 - An unchanged compiled identity omits `input`, preserves generation and run ID, and records only
-  the idempotency receipt. A new root input belongs to future `resubmit` semantics.
+  the idempotency receipt. Supplying a new root input for an unchanged graph is `resubmit`'s job,
+  not `apply`'s; see [`lifecycle.md`](./lifecycle.md#resubmit).
 
 `get({atCursor?})` returns the committed `GraphSpec`, status, and cursor from one atomic aggregate
 snapshot. The logical control journal and verified-I/O seed ledger must identify the same current
