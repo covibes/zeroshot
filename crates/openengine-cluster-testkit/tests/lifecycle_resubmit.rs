@@ -1,12 +1,10 @@
-use std::sync::Arc;
-
 use openengine_cluster_protocol::{
     ResubmitParams, ResubmitResult, StopMode, GENERATION_CONFLICT, IDEMPOTENCY_REUSE,
     INVALID_PHASE, RUN_CONFLICT, SCHEMA_VIOLATION,
 };
 use openengine_cluster_server::watch::{ObservationStore, SubscribeRequest};
 use openengine_cluster_testkit::admission::{
-    compiled_from_graph_fixture, graph_fixture, InMemoryAdmissionStore, ScriptedOutcome,
+    compiled_from_graph_fixture, graph_fixture, ScriptedOutcome,
 };
 use openengine_cluster_testkit::lifecycle::{resubmit, stop};
 use serde_json::json;
@@ -15,19 +13,11 @@ use serde_json::json;
 mod admission_support;
 #[path = "lifecycle_support/mod.rs"]
 mod lifecycle_support;
-use admission_support::{client, committed, rpc_code, FixtureClient};
+#[path = "mutation_fixture/mod.rs"]
+mod mutation_fixture;
+use admission_support::{client, committed, rpc_code};
 use lifecycle_support::running;
-
-/// A terminal run: `running()` immediately force-stopped, reaching `Phase::Finished` at
-/// generation 1. `resubmit` requires a terminal retained run to mutate from.
-async fn terminal_run() -> (FixtureClient, Arc<InMemoryAdmissionStore>) {
-    let (client, store) = running().await;
-    client
-        .stop(stop(StopMode::Force, 1, "terminal-run-fixture"))
-        .await
-        .expect("fixture force-stop reaches a terminal run");
-    (client, store)
-}
+use mutation_fixture::terminal_run;
 
 #[test]
 fn resubmit_wire_types_expose_no_provider_or_config_field_names() {

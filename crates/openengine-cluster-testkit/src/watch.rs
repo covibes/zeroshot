@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ClusterStatus, Cursor, NodeAddress, RunId, WatchEvent, WorkerOutcome,
+    ClusterStatus, Cursor, DeleteResult, NodeAddress, Phase, RunId, WatchEvent, WorkerOutcome,
 };
-use openengine_cluster_server::admission::StoreError;
-use openengine_cluster_server::lifecycle::LifecycleEvent;
+use openengine_cluster_server::admission::{ControlSnapshot, StoreError};
+use openengine_cluster_server::lifecycle::{LifecycleEvent, LifecycleSnapshot};
 use openengine_cluster_server::watch::{
     ObservationStore, PublicEventRecord, ReplayPageRequest, ResolvedSubscription, SubscribeRequest,
 };
@@ -133,6 +133,27 @@ impl StoreState {
         event: WatchEvent,
     ) {
         self.observation.record(run_id, cursor, event);
+    }
+
+    /// Finalizes a terminal run's deletion: tombstones its watch history (the same
+    /// `ObservationState.tombstoned`/`StoreError::RunGone` plumbing `tombstone_run` uses) and
+    /// resets control and lifecycle to their empty defaults, so the next apply starts at
+    /// generation 1.
+    pub(crate) fn finalize_delete(&mut self) -> DeleteResult {
+        let tombstoned_at = self.lifecycle.latest_cursor.clone();
+        if let Some(run_id) = self.control.run_id.clone() {
+            self.observation.tombstoned.insert(run_id, tombstoned_at);
+        }
+        self.control = ControlSnapshot::default();
+        self.lifecycle = LifecycleSnapshot::default();
+        DeleteResult {
+            deleted: true,
+            phase: Phase::Empty,
+            generation: None,
+            run_id: None,
+            at_cursor: None,
+            deduped: false,
+        }
     }
 }
 
@@ -281,6 +302,27 @@ impl InMemoryAdmissionStore {
             .and_then(|records| records.last())
             .map(|record| record.cursor.clone());
         state.observation.tombstoned.insert(run_id, tombstoned_at);
+    }
+
+    /// Test-only: simulates the backend cleanup executor arming the pending-cleanup fence so the
+    /// next `delete` of a terminal run holds `Deleting` instead of finalizing immediately. No
+    /// production cleanup executor calls this yet.
+    pub async fn arm_pending_cleanup(&self) {
+        self.state.lock().await.pending_cleanup = true;
+    }
+
+    /// Test-only: simulates the backend cleanup executor confirming every backend-owned resource
+    /// is authoritatively absent, resolving a held `Deleting` fence. No production cleanup
+    /// executor calls this yet.
+    pub async fn resolve_pending_deletion(&self) -> DeleteResult {
+        let mut state = self.state.lock().await;
+        assert_eq!(
+            state.control.phase,
+            Phase::Deleting,
+            "resolve_pending_deletion requires a held deleting fence"
+        );
+        state.pending_cleanup = false;
+        state.finalize_delete()
     }
 
     /// Redelivers the last recorded public event for `run_id` to every live subscriber without

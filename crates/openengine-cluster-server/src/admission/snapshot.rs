@@ -19,7 +19,7 @@ pub(super) fn validate_snapshot(
     let valid = match snapshot.control.phase {
         Phase::Empty => is_empty && lifecycle_empty,
         Phase::Admitting => (is_empty && lifecycle_empty) || (is_committed && lifecycle_committed),
-        Phase::Running | Phase::Finished => is_committed && lifecycle_committed,
+        Phase::Running | Phase::Finished | Phase::Deleting => is_committed && lifecycle_committed,
     };
     if valid {
         Ok(())
@@ -66,7 +66,9 @@ fn phase_matches(
         .filter(|record| matches!(record.event, LifecycleEvent::Finished { .. }))
         .count();
     match phase {
-        Phase::Finished => finished_phase_matches(lifecycle, operational, finished_count),
+        Phase::Finished | Phase::Deleting => {
+            finished_phase_matches(lifecycle, operational, finished_count)
+        }
         Phase::Empty => false,
         Phase::Admitting | Phase::Running => {
             running_phase_matches(operational.dispatch_state, finished_count)

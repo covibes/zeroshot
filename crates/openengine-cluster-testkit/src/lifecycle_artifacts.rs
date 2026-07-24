@@ -85,3 +85,30 @@ pub(crate) async fn generate_resubmit_goldens() -> Vec<Artifact> {
     .await;
     vec![artifact]
 }
+
+pub(crate) async fn generate_delete_goldens() -> Vec<Artifact> {
+    let (graph, dispatcher, _store) = scripted_dispatcher(1);
+    let artifact = transcript(
+        "lifecycle-delete.ndjson",
+        &dispatcher,
+        vec![
+            json!({
+                "jsonrpc":"2.0","id":"delete-apply","method":"apply",
+                "params":{"graph":graph,"input":null,"ifGeneration":0,"idempotencyKey":"delete-create"}
+            }),
+            json!({
+                "jsonrpc":"2.0","id":"delete-stop","method":"stop",
+                "params":{"mode":"force","ifGeneration":1,"idempotencyKey":"delete-stop"}
+            }),
+            json!({
+                "jsonrpc":"2.0","id":"delete-delete","method":"delete",
+                "params":{"ifGeneration":1,"ifRunId":"run-1","idempotencyKey":"delete-delete"}
+            }),
+            json!({
+                "jsonrpc":"2.0","id":"delete-get","method":"get","params":{}
+            }),
+        ],
+    )
+    .await;
+    vec![artifact]
+}
