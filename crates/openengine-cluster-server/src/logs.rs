@@ -10,7 +10,7 @@ use openengine_cluster_protocol::{
     LogRecord, LogsParams, LogsResult, SubscriptionCloseReason, SubscriptionId,
     DEFAULT_SUBSCRIPTION_QUEUE_CAPACITY,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 pub use ports::{LogStore, LogSubscription};
 
@@ -31,6 +31,7 @@ pub struct LogEventStream {
     receiver: Option<mpsc::Receiver<LogRecord>>,
     overflowed: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
     closed: bool,
 }
 
@@ -38,13 +39,15 @@ impl LogEventStream {
     #[must_use]
     pub fn new(subscription: LogSubscription) -> (Self, LogsHandle) {
         let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_notify = Arc::new(Notify::new());
         let stream = Self {
             receiver: Some(subscription.receiver),
             overflowed: subscription.overflowed,
             cancelled: Arc::clone(&cancelled),
+            cancel_notify: Arc::clone(&cancel_notify),
             closed: false,
         };
-        (stream, LogsHandle::new(cancelled))
+        (stream, LogsHandle::new(cancelled, cancel_notify))
     }
 
     /// Returns the next live log record, or a terminal slow-consumer close. Returns `None` once
@@ -70,21 +73,30 @@ impl LogEventStream {
     /// Awaits the next live-delivered record, or a terminal slow-consumer close once the live
     /// channel closes with the overflow flag set.
     async fn next_live(&mut self) -> Option<LogStreamItem> {
+        let cancel_notify = Arc::clone(&self.cancel_notify);
         let Some(receiver) = self.receiver.as_mut() else {
             self.closed = true;
             return None;
         };
-        match receiver.recv().await {
-            Some(record) => Some(LogStreamItem::Record(record)),
-            None => {
+        tokio::select! {
+            biased;
+            () = cancel_notify.notified() => {
                 self.receiver = None;
                 self.closed = true;
-                self.overflowed
-                    .load(Ordering::Acquire)
-                    .then_some(LogStreamItem::Closed {
-                        reason: SubscriptionCloseReason::SlowConsumer,
-                    })
+                None
             }
+            item = receiver.recv() => match item {
+                Some(record) => Some(LogStreamItem::Record(record)),
+                None => {
+                    self.receiver = None;
+                    self.closed = true;
+                    self.overflowed
+                        .load(Ordering::Acquire)
+                        .then_some(LogStreamItem::Closed {
+                            reason: SubscriptionCloseReason::SlowConsumer,
+                        })
+                }
+            },
         }
     }
 }
@@ -93,15 +105,20 @@ impl LogEventStream {
 /// never mutates admission or lifecycle cluster state.
 pub struct LogsHandle {
     cancelled: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
 }
 
 impl LogsHandle {
-    fn new(cancelled: Arc<AtomicBool>) -> Self {
-        Self { cancelled }
+    fn new(cancelled: Arc<AtomicBool>, cancel_notify: Arc<Notify>) -> Self {
+        Self {
+            cancelled,
+            cancel_notify,
+        }
     }
 
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        self.cancel_notify.notify_one();
     }
 
     #[must_use]

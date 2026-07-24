@@ -103,35 +103,20 @@ where
 {
     /// Returns the next live log record, or a terminal close. Returns `None` once the
     /// subscription's channel ends (cancelled locally, or the transport's connection ended).
-    pub async fn next(&mut self) -> Option<LogEventOrClosed> {
+    /// Returns `Some(Err(_))` if a schema-malformed or unexpected-method notification is
+    /// forwarded for this subscription -- the wire pump routes by subscription id only, so
+    /// peer-controlled payload shape must never panic here.
+    pub async fn next(&mut self) -> Option<Result<LogEventOrClosed, ClientError>> {
         let line = match self.receiver.recv().await {
             Some(line) => line,
             None if self.overflowed.swap(false, Ordering::AcqRel) => {
-                return Some(LogEventOrClosed::Closed {
+                return Some(Ok(LogEventOrClosed::Closed {
                     reason: SubscriptionCloseReason::SlowConsumer,
-                });
+                }));
             }
             None => return None,
         };
-        let value: Value =
-            serde_json::from_str(&line).expect("subscription notification must be valid JSON");
-        match value.get("method").and_then(Value::as_str) {
-            Some("event") => {
-                let notification: JsonRpcNotification<LogEventNotification> =
-                    serde_json::from_value(value)
-                        .expect("event notification must match the wire schema");
-                Some(LogEventOrClosed::Event(notification.params.record))
-            }
-            Some("subscription/closed") => {
-                let notification: JsonRpcNotification<LogsClosedNotification> =
-                    serde_json::from_value(value)
-                        .expect("subscription closed notification must match the wire schema");
-                Some(LogEventOrClosed::Closed {
-                    reason: notification.params.reason,
-                })
-            }
-            other => panic!("unexpected subscription notification method {other:?}"),
-        }
+        Some(parse_log_notification(&line))
     }
 
     /// Sends `subscription/cancel` for this subscription. Idempotent from the caller's
@@ -141,5 +126,29 @@ where
             .cancel_subscription(self.subscription_id.clone())
             .await?;
         Ok(())
+    }
+}
+
+fn parse_log_notification(line: &str) -> Result<LogEventOrClosed, ClientError> {
+    let value: Value = serde_json::from_str(line)
+        .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
+    match value.get("method").and_then(Value::as_str) {
+        Some("event") => {
+            let notification: JsonRpcNotification<LogEventNotification> =
+                serde_json::from_value(value)
+                    .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
+            Ok(LogEventOrClosed::Event(notification.params.record))
+        }
+        Some("subscription/closed") => {
+            let notification: JsonRpcNotification<LogsClosedNotification> =
+                serde_json::from_value(value)
+                    .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
+            Ok(LogEventOrClosed::Closed {
+                reason: notification.params.reason,
+            })
+        }
+        other => Err(ClientError::InvalidResponse(format!(
+            "unexpected subscription notification method {other:?}"
+        ))),
     }
 }
