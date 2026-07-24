@@ -19,9 +19,13 @@ use openengine_cluster_server::watch::fixtures::{
 use openengine_cluster_server::watch::{WatchEventStream, WatchHandle};
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+use tokio::io::{AsyncWriteExt, BufReader, DuplexStream};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+
+#[path = "ndjson_test_support/mod.rs"]
+mod ndjson_test_support;
+use ndjson_test_support::{read_line, read_value, request_line, write_line};
 
 /// Matches the issue's documented "> 1 MiB" oversized-frame threshold; the exact bound is an
 /// internal `serve_ndjson` implementation detail, not part of the public contract.
@@ -43,33 +47,6 @@ where
         read: BufReader::new(read),
         server,
     }
-}
-
-async fn write_line(writer: &mut DuplexStream, line: &str) {
-    writer.write_all(line.as_bytes()).await.unwrap();
-    writer.write_all(b"\n").await.unwrap();
-    writer.flush().await.unwrap();
-}
-
-async fn read_line(reader: &mut BufReader<DuplexStream>) -> String {
-    let mut line = String::new();
-    let read = reader.read_line(&mut line).await.unwrap();
-    assert!(
-        read > 0,
-        "connection closed unexpectedly while awaiting a line"
-    );
-    while line.ends_with(['\n', '\r']) {
-        line.pop();
-    }
-    line
-}
-
-async fn read_value(reader: &mut BufReader<DuplexStream>) -> Value {
-    serde_json::from_str(&read_line(reader).await).unwrap()
-}
-
-fn request_line(id: i64, method: &str, params: Value) -> String {
-    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
 }
 
 fn cancel_line(subscription_id: &str) -> String {

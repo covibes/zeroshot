@@ -37,7 +37,7 @@ async fn cancel_stops_further_delivery() {
     let (_result, mut stream) = logs_client.logs(LogsParams::default()).await.unwrap();
 
     store.publish(sample_log_record("first")).await;
-    match stream.next().await.unwrap() {
+    match stream.next().await.unwrap().unwrap() {
         LogEventOrClosed::Event(record) => assert_eq!(record.message.as_str(), "first"),
         other => panic!("expected an event, got {other:?}"),
     }
@@ -62,10 +62,11 @@ async fn cancel_stops_further_delivery() {
     let mut leaked = Vec::new();
     loop {
         match tokio::time::timeout(Duration::from_millis(300), stream.next()).await {
-            Ok(Some(LogEventOrClosed::Event(record))) => {
+            Ok(Some(Ok(LogEventOrClosed::Event(record)))) => {
                 leaked.push(record.message.as_str().to_owned())
             }
-            Ok(Some(other)) => panic!("unexpected notification after cancel: {other:?}"),
+            Ok(Some(Ok(other))) => panic!("unexpected notification after cancel: {other:?}"),
+            Ok(Some(Err(e))) => panic!("unexpected error: {e}"),
             Ok(None) | Err(_) => break,
         }
     }
@@ -143,6 +144,84 @@ async fn independent_request_id_source() {
         first_result.unwrap().0.subscription_id,
         second_result.unwrap().0.subscription_id
     );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn next_returns_an_error_instead_of_panicking_on_a_malformed_event_notification() {
+    let (client_write, server_read) = tokio::io::duplex(1 << 16);
+    let (mut server_write, client_read) = tokio::io::duplex(1 << 16);
+    let server = tokio::spawn(async move {
+        let mut server_read = BufReader::new(server_read);
+        let logs = read_json_line(&mut server_read).await;
+        write_json_line(
+            &mut server_write,
+            json!({
+                "jsonrpc": "2.0",
+                "id": logs["id"],
+                "result": {"subscriptionId": "sub-1"}
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut server_write,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {"subscriptionId": "sub-1"}
+            }),
+        )
+        .await;
+    });
+
+    let transport = NdjsonTransport::new(client_read, client_write);
+    let logs_client = NdjsonLogsClient::new(&transport);
+    let (_result, mut stream) = logs_client.logs(LogsParams::default()).await.unwrap();
+
+    match stream.next().await {
+        Some(Err(_)) => {}
+        other => panic!("expected an error for a malformed event notification, got {other:?}"),
+    }
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn next_returns_an_error_instead_of_panicking_on_an_unexpected_notification_method() {
+    let (client_write, server_read) = tokio::io::duplex(1 << 16);
+    let (mut server_write, client_read) = tokio::io::duplex(1 << 16);
+    let server = tokio::spawn(async move {
+        let mut server_read = BufReader::new(server_read);
+        let logs = read_json_line(&mut server_read).await;
+        write_json_line(
+            &mut server_write,
+            json!({
+                "jsonrpc": "2.0",
+                "id": logs["id"],
+                "result": {"subscriptionId": "sub-1"}
+            }),
+        )
+        .await;
+        write_json_line(
+            &mut server_write,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "unexpected/method",
+                "params": {"subscriptionId": "sub-1"}
+            }),
+        )
+        .await;
+    });
+
+    let transport = NdjsonTransport::new(client_read, client_write);
+    let logs_client = NdjsonLogsClient::new(&transport);
+    let (_result, mut stream) = logs_client.logs(LogsParams::default()).await.unwrap();
+
+    match stream.next().await {
+        Some(Err(_)) => {}
+        other => panic!("expected an error for an unexpected notification method, got {other:?}"),
+    }
+
     server.await.unwrap();
 }
 
@@ -236,14 +315,15 @@ async fn unread_subscription_overflow_does_not_block_unary_responses() {
         let mut events = 0;
         loop {
             match stream.next().await {
-                Some(LogEventOrClosed::Event(_)) => events += 1,
-                Some(LogEventOrClosed::Closed { reason }) => {
+                Some(Ok(LogEventOrClosed::Event(_))) => events += 1,
+                Some(Ok(LogEventOrClosed::Closed { reason })) => {
                     assert_eq!(
                         reason,
                         openengine_cluster_protocol::SubscriptionCloseReason::SlowConsumer
                     );
                     break events;
                 }
+                Some(Err(e)) => panic!("unexpected error: {e}"),
                 None => panic!("local overflow ended without a SLOW_CONSUMER close"),
             }
         }

@@ -61,7 +61,7 @@ pub(super) async fn run_logs_subscription<B>(
         let Some(item) = item else {
             break;
         };
-        let notification = match item {
+        let encoded = match item {
             LogStreamItem::Record(record) => serde_json::to_string(&JsonRpcNotification {
                 jsonrpc: JSON_RPC_VERSION.to_owned(),
                 method: "event".to_owned(),
@@ -69,8 +69,7 @@ pub(super) async fn run_logs_subscription<B>(
                     subscription_id: subscription_id.clone(),
                     record,
                 },
-            })
-            .expect("log event notification serialization must succeed"),
+            }),
             LogStreamItem::Closed { reason } => serde_json::to_string(&JsonRpcNotification {
                 jsonrpc: JSON_RPC_VERSION.to_owned(),
                 method: "subscription/closed".to_owned(),
@@ -78,8 +77,15 @@ pub(super) async fn run_logs_subscription<B>(
                     subscription_id: subscription_id.clone(),
                     reason,
                 },
-            })
-            .expect("logs subscription closed notification serialization must succeed"),
+            }),
+        };
+        // A bounded oversized/unserializable event (e.g. driven by a pathologically large
+        // backend-supplied subscription id) must never panic the server task -- drop it and end
+        // only this subscription through the existing cleanup below, never falling back to an
+        // unbounded or raw wire representation.
+        let notification = match encoded {
+            Ok(line) => line,
+            Err(_) => break,
         };
         if outbound_tx.send(notification).await.is_err() {
             break;
