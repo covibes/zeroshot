@@ -4,6 +4,7 @@ use openengine_cluster_testkit::capability_vectors::assert_advertised_profiles;
 fn capabilities_of(profiles: Vec<GraphProfile>) -> ServerCapabilities {
     ServerCapabilities {
         graph_profiles: GraphProfileSet::new(profiles).unwrap(),
+        logs: false,
     }
 }
 

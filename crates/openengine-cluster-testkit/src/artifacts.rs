@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, ArtifactRef, CompiledGraphIr, DeleteParams, DeleteResult,
     EventNotification, GetParams, GetResult, GraphDiagnostic, GraphSpec, InitializeParams,
-    InitializeResult, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, PlanParams, PlanResult,
-    ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams, StopResult,
-    StructuralBounds, SubscriptionCancelParams, SubscriptionClosedNotification, UpdateParams,
-    UpdateResult, WatchParams, WatchResult,
+    InitializeResult, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LogEventNotification,
+    LogsClosedNotification, LogsParams, LogsResult, PlanParams, PlanResult, ResubmitParams,
+    ResubmitResult, RetryParams, RetryResult, StopParams, StopResult, StructuralBounds,
+    SubscriptionCancelParams, SubscriptionClosedNotification, UpdateParams, UpdateResult,
+    WatchParams, WatchResult,
 };
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 use schemars::{schema_for, JsonSchema};
@@ -67,6 +68,10 @@ pub struct ImplementedProtocolSchema {
     pub event_notification: JsonRpcNotification<EventNotification>,
     pub subscription_cancel_notification: JsonRpcNotification<SubscriptionCancelParams>,
     pub subscription_closed_notification: JsonRpcNotification<SubscriptionClosedNotification>,
+    pub logs_request: JsonRpcRequest<LogsParams>,
+    pub logs_response: JsonRpcResponse<LogsResult>,
+    pub log_event_notification: JsonRpcNotification<LogEventNotification>,
+    pub logs_closed_notification: JsonRpcNotification<LogsClosedNotification>,
 }
 
 pub async fn generate_artifacts() -> Vec<Artifact> {
@@ -128,6 +133,7 @@ pub async fn generate_artifacts() -> Vec<Artifact> {
     artifacts.extend(crate::lifecycle_artifacts::generate_resubmit_goldens().await);
     artifacts.extend(crate::lifecycle_artifacts::generate_delete_goldens().await);
     artifacts.extend(crate::watch_artifacts::generate_watch_goldens().await);
+    artifacts.extend(crate::logs_artifacts::generate_logs_goldens().await);
     for (name, request) in cases {
         let response = dispatcher.dispatch(request).await;
         artifacts.push(Artifact {

@@ -4,8 +4,12 @@ mod ndjson_pump;
 
 use ndjson_pump::forward_notification;
 
+pub mod logs;
+pub mod ndjson_logs;
 pub mod ndjson_watch;
 pub mod watch;
+pub use logs::*;
+pub use ndjson_logs::*;
 pub use ndjson_watch::*;
 pub use watch::*;
 

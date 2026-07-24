@@ -11,3 +11,13 @@ pub fn assert_advertised_profiles(capabilities: &ServerCapabilities, expected: &
         "advertised graph profiles did not match expected vector"
     );
 }
+
+/// Asserts the advertised `logs` capability flag matches `expected`. No backend-to-capability
+/// registry lives here: callers supply the expectation, so a scripted vector here makes no claim
+/// about any production backend.
+pub fn assert_logs_capability(capabilities: &ServerCapabilities, expected: bool) {
+    assert_eq!(
+        capabilities.logs, expected,
+        "advertised logs capability did not match expected value"
+    );
+}

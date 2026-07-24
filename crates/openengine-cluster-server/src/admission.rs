@@ -16,10 +16,11 @@ use snapshot::validate_snapshot;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     diff_compiled_graphs, ApplyParams, ApplyResult, DeleteParams, DeleteResult, GetParams,
-    GetResult, GraphSpec, IdempotencyKey, InitializeParams, InitializeResult, PlanParams,
-    PlanResult, RequestFingerprint, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
-    ServerCapabilities, StopParams, StopResult, SubscriptionId, UpdateParams, UpdateResult,
-    WatchParams, WatchResult, GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, INVALID_PHASE,
+    GetResult, GraphSpec, IdempotencyKey, InitializeParams, InitializeResult, LogsParams,
+    LogsResult, PlanParams, PlanResult, RequestFingerprint, ResubmitParams, ResubmitResult,
+    RetryParams, RetryResult, ServerCapabilities, StopParams, StopResult, SubscriptionId,
+    UpdateParams, UpdateResult, WatchParams, WatchResult, GRAPH_INVALID, IDEMPOTENCY_REUSE,
+    INTERNAL_ERROR_CODE, INVALID_PHASE,
 };
 use serde_json::json;
 
@@ -28,6 +29,7 @@ use crate::lifecycle::{
     stop_fingerprint, update_fingerprint, LifecycleSnapshot, MutationReceipt, RetryProposal,
     StopProposal, UpdateProposal,
 };
+use crate::logs::{LogEventStream, LogStore, LogsHandle};
 use crate::watch::{ObservationStore, WatchEventStream, WatchHandle};
 use crate::{BackendError, ClusterBackend, ConnectionContext};
 
@@ -35,6 +37,7 @@ pub struct AdmissionCoordinator<V, S> {
     verifier: Arc<V>,
     store: Arc<S>,
     next_subscription: Arc<AtomicU64>,
+    log_store: Option<Arc<dyn LogStore>>,
 }
 
 struct PreparedCommit {
@@ -50,6 +53,7 @@ impl<V, S> Clone for AdmissionCoordinator<V, S> {
             verifier: Arc::clone(&self.verifier),
             store: Arc::clone(&self.store),
             next_subscription: Arc::clone(&self.next_subscription),
+            log_store: self.log_store.clone(),
         }
     }
 }
@@ -61,6 +65,7 @@ impl<V, S> AdmissionCoordinator<V, S> {
             verifier: Arc::new(verifier),
             store: Arc::new(store),
             next_subscription: Arc::new(AtomicU64::new(1)),
+            log_store: None,
         }
     }
 
@@ -70,7 +75,17 @@ impl<V, S> AdmissionCoordinator<V, S> {
             verifier,
             store,
             next_subscription: Arc::new(AtomicU64::new(1)),
+            log_store: None,
         }
+    }
+
+    /// Injects an optional backend `logs` port. `ServerCapabilities.logs` is `true` if and only if
+    /// this has been called: enabling/disabling this capability is a construction-time choice that
+    /// changes no durable admission/lifecycle state.
+    #[must_use]
+    pub fn with_log_store(mut self, log_store: Arc<dyn LogStore>) -> Self {
+        self.log_store = Some(log_store);
+        self
     }
 
     #[must_use]
@@ -216,7 +231,10 @@ where
     ) -> Result<InitializeResult, BackendError> {
         let (snapshot, lifecycle) = self.read_valid_snapshot().await?;
         Ok(InitializeResult::new(
-            ServerCapabilities::default(),
+            ServerCapabilities {
+                logs: self.log_store.is_some(),
+                ..ServerCapabilities::default()
+            },
             snapshot.control.status_with_lifecycle(&lifecycle),
         ))
     }
@@ -436,5 +454,29 @@ where
             store_error_to_backend,
         )
         .await
+    }
+
+    async fn logs(
+        &self,
+        _context: &ConnectionContext,
+        params: LogsParams,
+        queue_capacity: usize,
+    ) -> Result<(LogsResult, LogEventStream, LogsHandle), BackendError> {
+        let Some(log_store) = self.log_store.clone() else {
+            return Err(BackendError::application(
+                INVALID_PHASE,
+                "Backend does not support logs",
+                None,
+            ));
+        };
+        let _ = params;
+        let subscription_id = SubscriptionId::new(format!(
+            "sub-{}",
+            self.next_subscription.fetch_add(1, Ordering::Relaxed)
+        ));
+        Ok(
+            crate::logs::subscribe_and_stream_logs(&log_store, subscription_id, queue_capacity)
+                .await,
+        )
     }
 }

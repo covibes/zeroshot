@@ -8,6 +8,7 @@ pub mod fault;
 pub mod graph;
 mod graph_profile;
 pub mod lifecycle;
+pub mod logs;
 pub mod payload;
 mod payload_value;
 mod value;
@@ -23,6 +24,7 @@ pub use diagnostic::*;
 pub use fault::*;
 pub use graph::*;
 pub use lifecycle::*;
+pub use logs::*;
 pub use payload::*;
 pub use payload_value::*;
 pub use watch::*;
@@ -207,6 +209,8 @@ pub struct ServerCapabilities {
     #[serde(default)]
     #[schemars(schema_with = "graph_profile::graph_profile_set_schema")]
     pub graph_profiles: GraphProfileSet,
+    #[serde(default)]
+    pub logs: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
