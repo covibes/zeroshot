@@ -379,26 +379,6 @@ where
         params: ResubmitParams,
     ) -> Result<ResubmitResult, BackendError> {
         let fingerprint = resubmit_fingerprint(&params)?;
-        // Replacement-input schema validation is safe to fail fast on: unlike generation/run CAS,
-        // the admitted graph never changes as a side effect of resubmit, so this check's outcome
-        // cannot differ between a first call and its idempotent replay. Generation/run/phase/
-        // idempotency-replay checks are NOT duplicated here; they run once, atomically, inside
-        // `store.resubmit` (mirroring `retry`/`update`/`stop`) so a replay is judged against the
-        // request that was actually recorded rather than the coordinator's own pre-mutation read.
-        if let Some(replacement_input) = params.replacement_input.as_ref() {
-            let (snapshot, _) = self.read_valid_snapshot().await?;
-            let graph = snapshot.control.spec.as_ref().ok_or_else(|| {
-                BackendError::application(
-                    INVALID_PHASE,
-                    "Cluster has no admitted graph to validate replacement input against",
-                    None,
-                )
-            })?;
-            graph
-                .initial_input
-                .validate_value(replacement_input)
-                .map_err(|error| schema_error(&error.to_string()))?;
-        }
         if context.cancellation.is_cancelled() {
             return Err(cancelled_error());
         }
