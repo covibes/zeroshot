@@ -3462,7 +3462,7 @@ Continue from where you left off. Review your previous output to understand what
 
     // Phase 2: Build mock cluster config with proposed agents
     // Collect all agents that would exist after operations complete
-    const existingAgentConfigs = cluster.config.agents || [];
+    const existingAgentConfigs = this._prepareExistingAgentConfigsForValidation(cluster);
     const proposedAgentConfigs = this._buildProposedAgentConfigs(existingAgentConfigs, operations);
 
     // Phase 3: Validate proposed cluster config
@@ -3532,16 +3532,22 @@ Continue from where you left off. Review your previous output to understand what
       if (op.action === 'add_agents' && op.agents) {
         for (const agentConfig of op.agents) {
           const existingIdx = proposedAgentConfigs.findIndex((a) => a.id === agentConfig.id);
+          const proposedAgentConfig = JSON.parse(JSON.stringify(agentConfig));
           if (existingIdx === -1) {
-            proposedAgentConfigs.push(agentConfig);
+            proposedAgentConfigs.push(proposedAgentConfig);
+          } else {
+            proposedAgentConfigs[existingIdx] = proposedAgentConfig;
           }
         }
       } else if (op.action === 'load_config' && op.config) {
         const loadedAgentConfigs = this._resolveLoadConfigAgents(op.config);
         for (const agentConfig of loadedAgentConfigs) {
           const existingIdx = proposedAgentConfigs.findIndex((a) => a.id === agentConfig.id);
+          const proposedAgentConfig = JSON.parse(JSON.stringify(agentConfig));
           if (existingIdx === -1) {
-            proposedAgentConfigs.push(agentConfig);
+            proposedAgentConfigs.push(proposedAgentConfig);
+          } else {
+            proposedAgentConfigs[existingIdx] = proposedAgentConfig;
           }
         }
       } else if (op.action === 'remove_agents' && op.agentIds) {
@@ -3560,6 +3566,24 @@ Continue from where you left off. Review your previous output to understand what
     }
 
     return proposedAgentConfigs;
+  }
+
+  _prepareExistingAgentConfigsForValidation(cluster) {
+    const existingAgentConfigs = JSON.parse(JSON.stringify(cluster?.config?.agents || []));
+
+    // The CLI validates --model before startup, then materializes it into every
+    // initial agent config and persists the override separately on the cluster.
+    // Only those already-accepted configs have that provenance. Strip their
+    // runtime model projection before validating a later operation chain; new
+    // add/load/update payloads stay untouched and must satisfy the authored
+    // modelLevel-only policy even when their value equals the active override.
+    if (cluster?.modelOverride) {
+      for (const agentConfig of existingAgentConfigs) {
+        delete agentConfig.model;
+      }
+    }
+
+    return existingAgentConfigs;
   }
 
   _resolveLoadConfigAgents(config) {
