@@ -477,7 +477,7 @@ function registerRemotePrBaseTests() {
     }
   });
 
-  it('resolves a remote base through its full ref when a local branch shadows it', function () {
+  it('resolves a remote base through its full ref without updating the shared tracking ref', function () {
     const fixture = createStaleRemoteBaseFixture('zs-shadowed-pr-base-');
     const clusterId = `test-shadowed-remote-pr-base-${Date.now()}`;
     const remoteManager = new IsolationManager();
@@ -498,7 +498,7 @@ function registerRemotePrBaseTests() {
       }).trim();
 
       assert.strictEqual(localShadowSha, fixture.localSha);
-      assert.strictEqual(remoteTrackingSha, fixture.remoteSha);
+      assert.strictEqual(remoteTrackingSha, fixture.localSha);
       assert.strictEqual(info.baseSha, fixture.remoteSha);
       assert.strictEqual(worktreeSha, fixture.remoteSha);
       assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
@@ -602,6 +602,49 @@ function registerRemotePrBaseTests() {
       assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
     } finally {
       process.env.PATH = originalPath;
+      remoteManager.cleanupWorktreeIsolation(clusterId);
+      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not contend on the shared remote-tracking ref when refreshing a PR base', function () {
+    if (process.platform === 'win32') {
+      this.skip();
+    }
+
+    const fixture = createStaleRemoteBaseFixture('zs-locked-remote-pr-base-');
+    const clusterId = `test-locked-remote-pr-base-${Date.now()}`;
+    const remoteManager = new IsolationManager();
+    const gitDirValue = runGit(['rev-parse', '--git-dir'], { cwd: fixture.sourceDir }).trim();
+    const gitDir = path.resolve(fixture.sourceDir, gitDirValue);
+    const sharedRefLock = path.join(gitDir, 'refs', 'remotes', 'origin', 'dev.lock');
+    const fetchHeadPath = path.join(gitDir, 'FETCH_HEAD');
+    const fetchHeadBefore = fs.existsSync(fetchHeadPath)
+      ? fs.readFileSync(fetchHeadPath, 'utf8')
+      : null;
+
+    try {
+      fs.writeFileSync(sharedRefLock, 'held by concurrent fetch\n');
+
+      const info = remoteManager.createWorktreeIsolation(clusterId, fixture.sourceDir, {
+        baseRef: 'origin/dev',
+        requireFreshBase: true,
+      });
+      const worktreeSha = runGit(['rev-parse', 'HEAD'], { cwd: info.path }).trim();
+      const remoteTrackingSha = runGit(['rev-parse', 'refs/remotes/origin/dev^{commit}'], {
+        cwd: fixture.sourceDir,
+      }).trim();
+      const fetchHeadAfter = fs.existsSync(fetchHeadPath)
+        ? fs.readFileSync(fetchHeadPath, 'utf8')
+        : null;
+
+      assert.strictEqual(remoteTrackingSha, fixture.localSha);
+      assert.strictEqual(info.baseSha, fixture.remoteSha);
+      assert.strictEqual(worktreeSha, fixture.remoteSha);
+      assert.strictEqual(fetchHeadAfter, fetchHeadBefore);
+      assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+    } finally {
+      fs.rmSync(sharedRefLock, { force: true });
       remoteManager.cleanupWorktreeIsolation(clusterId);
       fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
     }

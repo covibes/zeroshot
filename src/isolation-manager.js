@@ -72,7 +72,6 @@ function deleteTemporaryBaseRef(repoRoot, temporaryRef) {
 }
 
 function fetchFreshRemoteBase(repoRoot, branch) {
-  const remoteTrackingRef = `refs/remotes/origin/${branch}`;
   const temporaryRef = `${FRESH_BASE_REF_PREFIX}/${crypto.randomBytes(16).toString('hex')}`;
 
   try {
@@ -82,8 +81,9 @@ function fetchFreshRemoteBase(repoRoot, branch) {
         'fetch',
         '--atomic',
         '--no-tags',
+        '--no-write-fetch-head',
+        '--refmap=',
         'origin',
-        `+refs/heads/${branch}:${remoteTrackingRef}`,
         `+refs/heads/${branch}:${temporaryRef}`,
       ],
       {
