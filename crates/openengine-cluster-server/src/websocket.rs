@@ -4,7 +4,7 @@
 //! ([`crate::stdio::ConnectionState`], `classify_ndjson_line`, `dispatch_classified_line`) so
 //! results, events, and errors stay byte-equivalent between the stdio and WebSocket bindings.
 //! Framing rules unique to WebSocket -- binary rejection, the 1,048,576 UTF-8 byte bound, and
-//! best-effort `$/cancelRequest` -- live only here; `stdio::serve_ndjson` itself is untouched.
+//! race-free `$/cancelRequest` -- live only here; `stdio::serve_ndjson` itself is untouched.
 
 use std::collections::HashMap;
 use std::io;
@@ -36,9 +36,12 @@ pub const MAX_FRAME_BYTES: usize = 1_048_576;
 /// Bounded per-connection outbound queue, matching `stdio::serve_ndjson`'s bound.
 const OUTBOUND_QUEUE_CAPACITY: usize = 256;
 
-/// Per-connection registry of best-effort abort handles for in-flight passthrough (unary) request
-/// tasks, keyed by their [`RequestId`]. `$/cancelRequest` looks an id up here and aborts it; an
-/// absent id (unknown, or already completed and self-removed) is silently a no-op. Establishing
+/// Per-connection registry of abort handles for in-flight passthrough (unary) request tasks, keyed
+/// by their [`RequestId`]. Registration happens-before the spawned task can perform any work --
+/// including completing -- via `spawn_passthrough`'s readiness gate, and release is unconditional
+/// on every exit path (normal completion, cancellation, or panic) via [`PassthroughGuard`]'s
+/// `Drop` impl, so no stale or leaked entry is possible. `$/cancelRequest` looks an id up here and
+/// aborts it; an absent id (unknown, or already completed) is silently a no-op. Establishing
 /// requests (`watch`/`logs`/`agent/attach`) are not registered here -- their in-flight lifetime is
 /// already covered by `subscription/cancel` once established, and is intentionally short.
 type CancelRegistry = Arc<Mutex<HashMap<RequestId, AbortHandle>>>;
@@ -53,7 +56,7 @@ pub fn websocket_config() -> WebSocketConfig {
 
 /// Serves one already-handshaken WebSocket connection: demultiplexes unary requests and `watch`/
 /// `logs`/`agent/attach` subscriptions sharing this connection exactly like `stdio::serve_ndjson`,
-/// plus per-connection best-effort `$/cancelRequest`. Binary frames close with code 1003;
+/// plus per-connection race-free `$/cancelRequest`. Binary frames close with code 1003;
 /// oversized or capacity-rejected text frames close with code 1009. Never returns an `Err`:
 /// transport failures close the connection and this simply returns once torn down.
 pub async fn serve_websocket<B, S>(
@@ -144,7 +147,7 @@ enum FrameOutcome {
 }
 
 /// Per-frame handling context: the shared [`DispatchCtx`] plus the two handles unique to this
-/// WebSocket binding (the best-effort `$/cancelRequest` registry and the deterministic-close
+/// WebSocket binding (the race-free `$/cancelRequest` registry and the deterministic-close
 /// signal), bundled so [`handle_message`] and its helpers take one argument instead of an
 /// ever-growing list.
 struct WsCtx<'a, B> {
@@ -202,8 +205,22 @@ where
     FrameOutcome::Continue
 }
 
-/// Spawns the passthrough (non-subscription) request task for an admission-approved line, best-
-/// effort registering its abort handle under `id` in `cancel_registry` for `$/cancelRequest`.
+/// Spawns the passthrough (non-subscription) request task for an admission-approved line,
+/// registering its abort handle under `id` in `cancel_registry` for `$/cancelRequest`. The spawned
+/// task cannot perform any work -- including completing -- until the caller has finished inserting
+/// that handle: a request that carries an `id` gates its own start on a one-shot readiness signal
+/// the caller only fires after the insert, making registration happen-before any task work
+/// deterministically regardless of which worker thread the scheduler picks it up on. A bare
+/// notification (`id.is_none()`) has nothing to register and keeps starting immediately.
+///
+/// [`PassthroughGuard`] is constructed here -- synchronously, on the connection task -- and moved
+/// into the spawned future's captured environment rather than built inside the task's own body.
+/// This matters because a task can be aborted before the runtime ever polls it even once (e.g. a
+/// `$/cancelRequest` that lands while still parked behind the readiness gate above): such a task
+/// never executes a single statement of its own body, so a guard created *inside* that body would
+/// never come into existence and cleanup would silently never run. A value captured by an `async
+/// move` block, by contrast, is part of the future's state from the moment the block is
+/// constructed, so Rust drops it normally when the never-polled future itself is dropped.
 fn spawn_passthrough<B>(
     ctx: &mut WsCtx<'_, B>,
     id: Option<RequestId>,
@@ -215,23 +232,43 @@ fn spawn_passthrough<B>(
     let task_dispatcher = ctx.dispatch.dispatcher.clone();
     let task_state = ctx.dispatch.state.clone();
     let task_cancel_registry = Arc::clone(ctx.cancel_registry);
-    let spawn_id = id.clone();
+    let guard = id.clone().map(|id| PassthroughGuard {
+        id,
+        state: task_state.clone(),
+        cancel_registry: Arc::clone(&task_cancel_registry),
+    });
+    let (ready_tx, ready_rx) = if id.is_some() {
+        let (tx, rx) = oneshot::channel::<()>();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let abort_handle = ctx.dispatch.tasks.spawn(async move {
+        if let Some(ready_rx) = ready_rx {
+            let _ = ready_rx.await;
+        }
         let _permit = permit;
         run_passthrough_request(PassthroughRequest {
             dispatcher: task_dispatcher,
-            id,
             line,
             state: task_state,
-            cancel_registry: task_cancel_registry,
+            guard,
         })
         .await;
     });
-    // Best-effort: a pathologically fast dispatch can self-remove (see `run_passthrough_request`)
-    // before this insert runs, leaving a harmless stale entry -- `$/cancelRequest` never claims a
-    // rollback guarantee, and the entry is bounded by this connection's lifetime and task-slot cap.
-    if let Some(spawn_id) = spawn_id {
-        ctx.cancel_registry.lock().insert(spawn_id, abort_handle);
+    // Test-only: widens the window between the spawned task being handed to the scheduler and
+    // this registration completing, so `tests::fast_completion_race_cannot_leave_stale_registry_entry`
+    // can deterministically manufacture -- rather than hope to get lucky on -- the exact adverse
+    // interleaving the readiness gate above exists to close. `cfg(test)` only activates while
+    // compiling this crate's own lib unit tests, so this never runs in a real binary or in
+    // `tests/websocket.rs`'s integration coverage (a separate crate that links this one normally).
+    #[cfg(test)]
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    if let Some(id) = id {
+        ctx.cancel_registry.lock().insert(id, abort_handle);
+    }
+    if let Some(ready_tx) = ready_tx {
+        let _ = ready_tx.send(());
     }
 }
 
@@ -239,32 +276,46 @@ fn spawn_passthrough<B>(
 /// reasonable.
 struct PassthroughRequest<B> {
     dispatcher: Dispatcher<B>,
-    id: Option<RequestId>,
     line: String,
+    state: ConnectionState,
+    guard: Option<PassthroughGuard>,
+}
+
+/// Releases a passthrough request's `in_flight_ids` and `cancel_registry` entries exactly once, on
+/// every exit path -- including `$/cancelRequest`'s task abortion, which drops this future in
+/// place (whether at its current await point, or -- if aborted before ever being polled -- as part
+/// of dropping the future's captured-but-never-executed initial state) instead of resuming past
+/// it, so cleanup cannot depend on falling off the end of `run_passthrough_request`.
+struct PassthroughGuard {
+    id: RequestId,
     state: ConnectionState,
     cancel_registry: CancelRegistry,
 }
 
+impl Drop for PassthroughGuard {
+    fn drop(&mut self) {
+        self.state.in_flight_ids.lock().remove(&self.id);
+        self.cancel_registry.lock().remove(&self.id);
+    }
+}
+
 /// Dispatches a non-subscription request or notification frame, releasing its in-flight id and
-/// best-effort cancel registration (if any) once the backend call returns and before the response
-/// is enqueued. Mirrors `stdio::run_passthrough_request`, plus the `cancel_registry` cleanup that
-/// binding has no notion of.
+/// cancel registration (if any, via the already-constructed [`PassthroughGuard`]) once the backend
+/// call returns and before the response is enqueued -- unconditionally, even if the task is
+/// aborted mid-flight. Mirrors `stdio::run_passthrough_request`, plus the `cancel_registry` cleanup
+/// that binding has no notion of.
 async fn run_passthrough_request<B>(request: PassthroughRequest<B>)
 where
     B: ClusterBackend,
 {
     let PassthroughRequest {
         dispatcher,
-        id,
         line,
         state,
-        cancel_registry,
+        guard,
     } = request;
     let response = dispatcher.dispatch(&line).await;
-    if let Some(id) = &id {
-        state.in_flight_ids.lock().remove(id);
-        cancel_registry.lock().remove(id);
-    }
+    drop(guard);
     let _ = state.outbound_tx.send(response).await;
 }
 
@@ -331,3 +382,6 @@ async fn run_writer<Si>(
     }
     let _ = sink.close().await;
 }
+
+#[cfg(test)]
+mod tests;

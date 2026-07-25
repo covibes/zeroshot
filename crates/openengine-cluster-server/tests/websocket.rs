@@ -217,6 +217,107 @@ impl GatedHarnessSpawn for Harness {
 }
 
 #[tokio::test]
+async fn cancel_request_releases_in_flight_id_and_permits_id_reuse() {
+    let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
+
+    // Blocks on the gate: this request never completes, so its `in_flight_ids`/`cancel_registry`
+    // entries can only be released via the cancellation path, never via normal fall-through.
+    harness.send_get(1).await;
+
+    let cancel = json!({
+        "jsonrpc": "2.0",
+        "method": "$/cancelRequest",
+        "params": {"id": 1},
+    })
+    .to_string();
+    send_text(&mut harness.client, cancel).await;
+
+    // `AbortHandle::abort()` only schedules the target task's cancellation; the guard that
+    // releases `in_flight_ids` runs whenever the runtime actually gets around to polling (and
+    // dropping) that task, not synchronously when `abort()` returns. Poll for the id becoming
+    // reusable via bounded cooperative retries rather than a fixed sleep: a duplicate rejection is
+    // a harmless, synchronous no-op (it never touches `in_flight_ids`, so resending is safe), and
+    // it always arrives promptly since it never waits on the still-closed gate -- whereas an
+    // *accepted* retry's task immediately blocks on that same still-closed gate exactly like the
+    // original did, so it produces no prompt response at all. That absence, not its content,
+    // is what distinguishes "admitted" from "still rejected" here, deterministically regardless
+    // of scheduler load. The attempt cap still fails the test if the id is never released -- the
+    // exact pre-fix bug (a cancelled request permanently reserving its id).
+    let mut accepted = false;
+    for attempt in 0..100_000 {
+        harness.send_get(1).await;
+        match tokio::time::timeout(Duration::from_millis(50), harness.recv_value()).await {
+            Ok(response) => {
+                assert_eq!(response["id"], 1);
+                assert_eq!(
+                    response["error"]["data"]["code"], "DUPLICATE_REQUEST_ID",
+                    "a prompt response before the gate is released can only be a duplicate \
+                     rejection (a real result would block on the still-closed gate); got \
+                     {response}"
+                );
+                assert!(
+                    attempt < 99_999,
+                    "id 1 was never released after cancellation settled -- it is still \
+                     permanently reserved in in_flight_ids"
+                );
+                tokio::task::yield_now().await;
+            }
+            Err(_) => {
+                // No prompt response: this retry was admitted and its task is now parked on the
+                // gate, exactly like the original was before cancellation.
+                accepted = true;
+                break;
+            }
+        }
+    }
+    assert!(accepted, "id 1 was never accepted for reuse");
+
+    // Releasing the gate now only unblocks the accepted retry's still-pending backend call; no
+    // response frame was ever emitted for the original cancelled request, so this is the only
+    // frame left to receive.
+    gate.notify_one();
+    let second = tokio::time::timeout(Duration::from_secs(1), harness.recv_value())
+        .await
+        .expect("the accepted retry must complete once the gate is released");
+    assert_eq!(second["id"], 1);
+    assert!(second.get("result").is_some(), "{second}");
+
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn fast_completions_do_not_leak_or_corrupt_cancel_registry() {
+    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
+    let mut harness = spawn_server(FixtureBackend::new(store)).await;
+
+    // Ungated backend: each `get` resolves as fast as the runtime allows. Repeatedly reusing the
+    // same id and firing a `$/cancelRequest` immediately after each completion -- when the id is
+    // already fully released and the notification can only ever hit an unknown-or-completed id --
+    // is a high-volume regression/sanity net for that exact "silent no-op" contract and for the
+    // general fast-completion-plus-cancellation interaction: every iteration must still receive
+    // its own correct, uncorrupted response and the connection must never misbehave (unexpected
+    // close, mismatched response, panic, deadlock) across 200 rapid cycles.
+    for _ in 0..200 {
+        send_text(&mut harness.client, request_text(1, "get", json!({}))).await;
+        let response = tokio::time::timeout(Duration::from_secs(1), recv_json(&mut harness.client))
+            .await
+            .expect("each fast completion must receive its own uncorrupted response");
+        assert_eq!(response["id"], 1);
+        assert!(response.get("result").is_some(), "{response}");
+
+        let cancel = json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": {"id": 1},
+        })
+        .to_string();
+        send_text(&mut harness.client, cancel).await;
+    }
+
+    shut_down(harness).await;
+}
+
+#[tokio::test]
 async fn duplicate_in_flight_request_ids_are_rejected() {
     let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
 
