@@ -233,3 +233,88 @@ async fn excess_requests_are_rejected_with_server_busy() {
 
     shut_down(harness).await;
 }
+
+/// Sends `get(id)` while `gate` blocks it, confirms admission via a duplicate-id rejection (which
+/// can only exist once the first request's admission -- and, by construction, its cancel-registry
+/// registration -- has already run), sends `$/cancelRequest(id)`, then proves the connection's
+/// single reader loop has already processed that cancellation by round-tripping an unrelated,
+/// ungated `initialize` request: message N+1 cannot have been read before message N finished
+/// handling. Finally asserts no response for `id` ever arrives within a bounded window.
+async fn cancel_pending_get_and_confirm_no_response(harness: &mut Harness, id: i64, sync_id: i64) {
+    harness.send_get(id).await;
+    harness.send_get(id).await;
+    let duplicate = harness.recv_value().await;
+    assert_eq!(duplicate["id"], id);
+    assert_eq!(duplicate["error"]["code"], -32600);
+    assert_eq!(duplicate["error"]["data"]["code"], "DUPLICATE_REQUEST_ID");
+
+    let cancel = json!({
+        "jsonrpc": "2.0",
+        "method": "$/cancelRequest",
+        "params": {"id": id},
+    })
+    .to_string();
+    send_text(&mut harness.client, cancel).await;
+
+    send_text(
+        &mut harness.client,
+        request_text(
+            sync_id,
+            "initialize",
+            json!({"protocolVersion": "openengine.cluster/v1"}),
+        ),
+    )
+    .await;
+    let sync_response = recv_json(&mut harness.client).await;
+    assert_eq!(sync_response["id"], sync_id);
+    assert!(sync_response.get("result").is_some(), "{sync_response}");
+
+    let no_response = tokio::time::timeout(Duration::from_millis(500), harness.client.next()).await;
+    assert!(
+        no_response.is_err(),
+        "cancelled request {id} must never emit a response, got {no_response:?}"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_pending_request_releases_its_id_and_never_emits_a_response() {
+    let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
+
+    cancel_pending_get_and_confirm_no_response(&mut harness, 1, 99).await;
+
+    // AC1: id 1 must be free for reuse once its cancelled predecessor has cleaned up, rather than
+    // being rejected forever as a duplicate.
+    harness.send_get(1).await;
+    gate.notify_one();
+    let reused = tokio::time::timeout(Duration::from_secs(1), harness.recv_value())
+        .await
+        .expect("id 1 must be reusable once its cancelled predecessor has cleaned up");
+    assert_eq!(reused["id"], 1);
+    assert!(reused.get("result").is_some(), "{reused}");
+
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn cancelled_request_id_remains_independently_cancellable_after_reuse() {
+    let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
+
+    // A: cancel request id 1.
+    cancel_pending_get_and_confirm_no_response(&mut harness, 1, 100).await;
+
+    // B: reuse id 1 -- AC1 (admitted, not DUPLICATE_REQUEST_ID) plus AC4: an old request's cleanup
+    // must never disturb a newer same-id request's own cancel-registry registration, so B must
+    // remain independently cancellable on its own merits.
+    cancel_pending_get_and_confirm_no_response(&mut harness, 1, 101).await;
+
+    // C: reuse id 1 once more, this time letting it complete normally end to end.
+    harness.send_get(1).await;
+    gate.notify_one();
+    let completed = tokio::time::timeout(Duration::from_secs(1), harness.recv_value())
+        .await
+        .expect("id 1 must remain reusable and completable after two cancellations");
+    assert_eq!(completed["id"], 1);
+    assert!(completed.get("result").is_some(), "{completed}");
+
+    shut_down(harness).await;
+}
