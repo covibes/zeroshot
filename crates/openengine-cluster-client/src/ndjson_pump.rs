@@ -1,12 +1,65 @@
-//! Non-blocking notification routing for the shared NDJSON response pump.
+//! Non-blocking pumped-message routing shared by every transport's response pump
+//! ([`NdjsonTransport`](crate::NdjsonTransport)'s NDJSON-line pump and
+//! [`WebSocketTransport`](crate::websocket::WebSocketTransport)'s `Message::Text`-frame pump):
+//! resolving a unary response's pending oneshot (registering a freshly minted subscription's
+//! channel first, so no `event` racing the response can be missed), or forwarding a `watch`/
+//! `logs`/`agent_attach` notification to its already-registered subscription channel.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use openengine_cluster_protocol::SubscriptionId;
+use openengine_cluster_protocol::{RequestId, SubscriptionId};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use super::SubscriptionMap;
+use super::{
+    PendingMap, PumpedResponse, PumpedSubscription, SubscriptionMap, SubscriptionRegistration,
+    SUBSCRIPTION_QUEUE_CAPACITY,
+};
+
+/// Decodes and routes one pumped line: a notification is forwarded live (see
+/// [`forward_notification`]); a unary response resolves its pending oneshot, registering a
+/// freshly minted subscription's channel first when the response is a successful `watch`-shaped
+/// result carrying `result.subscriptionId`. Malformed JSON, a notification/response with no
+/// resolvable identity, or an unknown/already-resolved request id are silently dropped -- the
+/// same permissive handling `run_pump` always applied inline before this was extracted. Returns
+/// the subscription id the caller must write a `subscription/cancel` for, exactly like
+/// [`forward_notification`], when a live notification could not be delivered.
+pub(super) fn route_pumped_message(
+    line: String,
+    pending: &PendingMap,
+    subscriptions: &SubscriptionMap,
+) -> Option<SubscriptionId> {
+    let Ok(value) = serde_json::from_str::<Value>(&line) else {
+        return None;
+    };
+    if value.get("method").is_some() {
+        return forward_notification(&value, line, subscriptions);
+    }
+    let id = value.get("id").and_then(RequestId::from_json_value)?;
+    let sender = pending.lock().remove(&id)?;
+    let subscription = value
+        .get("result")
+        .and_then(|result| result.get("subscriptionId"))
+        .and_then(Value::as_str)
+        .map(|subscription_id| {
+            let (sender, receiver) = mpsc::channel(SUBSCRIPTION_QUEUE_CAPACITY);
+            let overflowed = Arc::new(AtomicBool::new(false));
+            subscriptions.lock().insert(
+                SubscriptionId::new(subscription_id),
+                SubscriptionRegistration {
+                    sender,
+                    overflowed: Arc::clone(&overflowed),
+                },
+            );
+            PumpedSubscription {
+                receiver,
+                overflowed,
+            }
+        });
+    let _ = sender.send(PumpedResponse { line, subscription });
+    None
+}
 
 /// Forwards one `event`/`subscription/closed` notification without waiting on a consumer.
 /// Returns the subscription id when the local receiver is full or gone and the server must be

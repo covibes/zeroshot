@@ -3,13 +3,13 @@ use std::path::{Path, PathBuf};
 
 use openengine_cluster_protocol::{
     AgentAttachClosedNotification, AgentAttachEventNotification, AgentAttachParams,
-    AgentAttachResult, ApplyParams, ApplyResult, ArtifactRef, CompiledGraphIr, DeleteParams,
-    DeleteResult, EventNotification, GetParams, GetResult, GraphDiagnostic, GraphSpec,
-    InitializeParams, InitializeResult, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    LogEventNotification, LogsClosedNotification, LogsParams, LogsResult, PlanParams, PlanResult,
-    ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams, StopResult,
-    StructuralBounds, SubscriptionCancelParams, SubscriptionClosedNotification, UpdateParams,
-    UpdateResult, WatchParams, WatchResult,
+    AgentAttachResult, ApplyParams, ApplyResult, ArtifactRef, CancelRequestParams, CompiledGraphIr,
+    DeleteParams, DeleteResult, EventNotification, GetParams, GetResult, GraphDiagnostic,
+    GraphSpec, InitializeParams, InitializeResult, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcResponse, LogEventNotification, LogsClosedNotification, LogsParams, LogsResult,
+    PlanParams, PlanResult, ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams,
+    StopResult, StructuralBounds, SubscriptionCancelParams, SubscriptionClosedNotification,
+    UpdateParams, UpdateResult, WatchParams, WatchResult,
 };
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 use schemars::{schema_for, JsonSchema};
@@ -69,6 +69,7 @@ pub struct ImplementedProtocolSchema {
     pub event_notification: JsonRpcNotification<EventNotification>,
     pub subscription_cancel_notification: JsonRpcNotification<SubscriptionCancelParams>,
     pub subscription_closed_notification: JsonRpcNotification<SubscriptionClosedNotification>,
+    pub cancel_request_notification: JsonRpcNotification<CancelRequestParams>,
     pub logs_request: JsonRpcRequest<LogsParams>,
     pub logs_response: JsonRpcResponse<LogsResult>,
     pub log_event_notification: JsonRpcNotification<LogEventNotification>,

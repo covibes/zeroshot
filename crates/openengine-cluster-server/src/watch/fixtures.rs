@@ -2,7 +2,9 @@
 //! contract independent of `openengine-cluster-testkit`'s production-shaped
 //! `InMemoryAdmissionStore`. Shared by this crate's own integration tests and by
 //! `openengine-cluster-client`'s reconnect tests so both exercise identical
-//! subscribe/replay/overflow semantics against one implementation.
+//! subscribe/replay/overflow semantics against one implementation. Also bundles [`spawn_ndjson`]/
+//! [`spawn_websocket`] connection harnesses reused across this crate, the client crate, and the
+//! testkit crate's own wire-transport tests.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -16,6 +18,7 @@ use openengine_cluster_protocol::{
 use tokio::io::DuplexStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
+use tokio_tungstenite::WebSocketStream;
 
 use super::{
     subscribe_and_stream, ObservationStore, PublicEventRecord, ReplayPageRequest,
@@ -23,6 +26,7 @@ use super::{
 };
 use crate::admission::StoreError;
 use crate::stdio::serve_ndjson;
+use crate::websocket::{serve_websocket, websocket_config};
 use crate::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
 
 /// Wires `backend` to a fresh [`serve_ndjson`] task over an in-memory duplex pipe pair, returning
@@ -54,6 +58,45 @@ pub async fn await_ndjson_shutdown(server: JoinHandle<io::Result<()>>) {
         .expect("serve_ndjson task did not terminate within the timeout")
         .expect("serve_ndjson task panicked")
         .expect("serve_ndjson task returned an error");
+}
+
+/// Wires `backend` to a fresh [`serve_websocket`] task over an in-memory duplex pipe pair,
+/// returning the pipe's already-handshaken client-facing [`WebSocketStream`] and the server task's
+/// join handle. Shared by this crate's own WebSocket framing tests and by
+/// `openengine-cluster-client`'s and `openengine-cluster-testkit`'s WebSocket transport tests so
+/// all three drive the exact same wiring, mirroring [`spawn_ndjson`]'s role for the NDJSON
+/// binding.
+pub async fn spawn_websocket<B>(
+    backend: B,
+) -> (WebSocketStream<DuplexStream>, JoinHandle<io::Result<()>>)
+where
+    B: ClusterBackend,
+{
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let dispatcher = Dispatcher::new(backend, ConnectionContext::default());
+    let server = tokio::spawn(async move {
+        let ws = tokio_tungstenite::accept_async_with_config(server_io, Some(websocket_config()))
+            .await
+            .expect("server handshake must succeed");
+        serve_websocket(dispatcher, ws).await
+    });
+    let (client, _response) =
+        tokio_tungstenite::client_async("ws://localhost/websocket", client_io)
+            .await
+            .expect("client handshake must succeed");
+    (client, server)
+}
+
+/// Awaits a [`spawn_websocket`] server task's join handle within a short bound, panicking with a
+/// descriptive message if it hangs, panicked, or returned an error. Shared by this crate's own and
+/// `openengine-cluster-client`'s/`openengine-cluster-testkit`'s WebSocket tests for asserting
+/// deterministic shutdown, mirroring [`await_ndjson_shutdown`].
+pub async fn await_websocket_shutdown(server: JoinHandle<io::Result<()>>) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("serve_websocket task did not terminate within the timeout")
+        .expect("serve_websocket task panicked")
+        .expect("serve_websocket task returned an error");
 }
 
 #[derive(Default)]

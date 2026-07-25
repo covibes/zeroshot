@@ -10,15 +10,16 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use super::serialize_error;
 
-/// Maximum concurrent backend dispatch/subscription tasks per connection.
-pub(super) const MAX_CONNECTION_TASKS: usize = 256;
+/// Maximum concurrent backend dispatch/subscription tasks per connection. Shared verbatim with
+/// the sibling `websocket` transport module.
+pub(crate) const MAX_CONNECTION_TASKS: usize = 256;
 const DUPLICATE_REQUEST_ID: &str = "DUPLICATE_REQUEST_ID";
 const SERVER_BUSY: &str = "SERVER_BUSY";
 
-pub(super) type InFlightIds = Arc<Mutex<HashSet<RequestId>>>;
+pub(crate) type InFlightIds = Arc<Mutex<HashSet<RequestId>>>;
 
 /// Registers `id` as in flight, or reports that it was already in flight.
-pub(super) async fn reject_duplicate(
+pub(crate) async fn reject_duplicate(
     in_flight_ids: &InFlightIds,
     outbound_tx: &mpsc::Sender<String>,
     id: RequestId,
@@ -40,7 +41,7 @@ pub(super) async fn reject_duplicate(
 
 /// Acquires one task slot. Excess requests receive a deterministic application error;
 /// notifications have no JSON-RPC response and are dropped.
-pub(super) async fn acquire_task_slot(
+pub(crate) async fn acquire_task_slot(
     task_slots: &Arc<Semaphore>,
     outbound_tx: &mpsc::Sender<String>,
     id: Option<RequestId>,

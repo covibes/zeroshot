@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    BackendFault, ClusterStatus, Cursor, GraphSpec, NodeName, PositiveInteger, RunId, StopMode,
-    WorkerOutcome,
+    BackendFault, ClusterStatus, Cursor, GraphSpec, NodeName, PositiveInteger, RequestId, RunId,
+    StopMode, WorkerOutcome,
 };
 
 pub const NOT_FOUND: &str = "NOT_FOUND";
@@ -115,6 +115,16 @@ pub struct EventNotification {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SubscriptionCancelParams {
     pub subscription_id: SubscriptionId,
+}
+
+/// Wire body of the `$/cancelRequest` client notification: best-effort cancellation of an
+/// in-flight unary request by its `RequestId`. Unknown or already-completed ids are a silent
+/// no-op; cancelling after the backend has committed leaves that committed state unchanged and
+/// emits no response or compensation.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CancelRequestParams {
+    pub id: RequestId,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

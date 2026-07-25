@@ -8,24 +8,30 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use openengine_cluster_protocol::{
-    GetParams, GetResult, InitializeParams, InitializeResult, RunId, WatchEvent, WatchParams,
-    WatchResult,
-};
+use openengine_cluster_protocol::{RunId, WatchEvent};
 use openengine_cluster_server::watch::fixtures::{
     await_ndjson_shutdown, spawn_ndjson, FixtureBackend, FixtureStore,
 };
-use openengine_cluster_server::watch::{WatchEventStream, WatchHandle};
-use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext};
+use openengine_cluster_server::ClusterBackend;
 use serde_json::{json, Value};
 use tokio::io::{AsyncWriteExt, BufReader, DuplexStream};
-use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 #[path = "ndjson_test_support/mod.rs"]
 mod ndjson_test_support;
 use ndjson_test_support::{read_line, read_value, request_line, write_line};
+
+#[path = "gated_backend_support/mod.rs"]
+mod gated_backend_support;
+use gated_backend_support::GatedBackend;
+
+#[path = "admission_bound_support/mod.rs"]
+mod admission_bound_support;
+use admission_bound_support::{
+    assert_duplicate_in_flight_ids_are_rejected,
+    assert_excess_requests_are_rejected_with_server_busy, spawn_gated_harness, GatedHarnessSpawn,
+    RequestChannel,
+};
 
 /// Matches the issue's documented "> 1 MiB" oversized-frame threshold; the exact bound is an
 /// internal `serve_ndjson` implementation detail, not part of the public contract.
@@ -46,6 +52,22 @@ where
         write,
         read: BufReader::new(read),
         server,
+    }
+}
+
+impl RequestChannel for Harness {
+    async fn send_get(&mut self, id: i64) {
+        write_line(&mut self.write, &request_line(id, "get", json!({}))).await;
+    }
+
+    async fn recv_value(&mut self) -> Value {
+        read_value(&mut self.read).await
+    }
+}
+
+impl GatedHarnessSpawn for Harness {
+    async fn spawn_gated(backend: GatedBackend) -> Self {
+        spawn_server(backend)
     }
 }
 
@@ -130,65 +152,11 @@ async fn oversized_and_malformed_frames_are_deterministic() {
     shut_down(harness).await;
 }
 
-/// Wraps [`FixtureBackend`] so a test can hold `get` in flight until it explicitly releases it,
-/// making duplicate-in-flight-id detection deterministic instead of racing the backend call.
-struct GatedBackend {
-    inner: FixtureBackend,
-    gate: Arc<Notify>,
-}
-
-#[async_trait]
-impl ClusterBackend for GatedBackend {
-    async fn initialize(
-        &self,
-        context: &ConnectionContext,
-        params: InitializeParams,
-    ) -> Result<InitializeResult, BackendError> {
-        self.inner.initialize(context, params).await
-    }
-
-    async fn get(
-        &self,
-        context: &ConnectionContext,
-        params: GetParams,
-    ) -> Result<GetResult, BackendError> {
-        self.gate.notified().await;
-        self.inner.get(context, params).await
-    }
-
-    async fn watch(
-        &self,
-        context: &ConnectionContext,
-        params: WatchParams,
-        queue_capacity: usize,
-    ) -> Result<(WatchResult, WatchEventStream, WatchHandle), BackendError> {
-        self.inner.watch(context, params, queue_capacity).await
-    }
-}
-
 #[tokio::test]
 async fn duplicate_request_ids_are_rejected() {
-    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
-    let gate = Arc::new(Notify::new());
-    let mut harness = spawn_server(GatedBackend {
-        inner: FixtureBackend::new(store),
-        gate: Arc::clone(&gate),
-    });
+    let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
 
-    write_line(&mut harness.write, &request_line(1, "get", json!({}))).await;
-    write_line(&mut harness.write, &request_line(1, "get", json!({}))).await;
-
-    // The first request is still blocked on the gate, so the only frame that can possibly exist
-    // yet is the duplicate rejection for the second.
-    let duplicate = read_value(&mut harness.read).await;
-    assert_eq!(duplicate["id"], 1);
-    assert_eq!(duplicate["error"]["code"], -32600);
-    assert_eq!(duplicate["error"]["data"]["code"], "DUPLICATE_REQUEST_ID");
-
-    gate.notify_one();
-    let first = read_value(&mut harness.read).await;
-    assert_eq!(first["id"], 1);
-    assert!(first.get("result").is_some(), "{first}");
+    assert_duplicate_in_flight_ids_are_rejected(&mut harness, &gate).await;
 
     shut_down(harness).await;
 }
@@ -197,23 +165,9 @@ async fn duplicate_request_ids_are_rejected() {
 async fn excess_requests_are_rejected_without_unbounded_task_admission() {
     const MAX_CONNECTION_TASKS: i64 = 256;
 
-    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
-    let gate = Arc::new(Notify::new());
-    let mut harness = spawn_server(GatedBackend {
-        inner: FixtureBackend::new(store),
-        gate,
-    });
+    let (mut harness, _gate) = spawn_gated_harness::<Harness>().await;
 
-    for id in 1..=MAX_CONNECTION_TASKS + 1 {
-        write_line(&mut harness.write, &request_line(id, "get", json!({}))).await;
-    }
-
-    let rejected = tokio::time::timeout(Duration::from_secs(1), read_value(&mut harness.read))
-        .await
-        .expect("the bounded admission rejection must not wait for blocked backend calls");
-    assert_eq!(rejected["id"], MAX_CONNECTION_TASKS + 1);
-    assert_eq!(rejected["error"]["code"], -32000);
-    assert_eq!(rejected["error"]["data"]["code"], "SERVER_BUSY");
+    assert_excess_requests_are_rejected_with_server_busy(&mut harness, MAX_CONNECTION_TASKS).await;
 
     shut_down(harness).await;
 }

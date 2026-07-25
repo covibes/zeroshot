@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+futures-util.workspace = true
 openengine-cluster-protocol.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
@@ -15,4 +16,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+tokio-tungstenite.workspace = true
 tokio-util.workspace = true

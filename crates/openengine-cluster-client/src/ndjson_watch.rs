@@ -1,7 +1,10 @@
-//! NDJSON-bound watch subscription client. Mirrors [`crate::watch::ReconnectingEventStream`]'s
-//! `(runId, cursor)` dedup and reconnect-from-last-delivered-cursor semantics, but drives them
-//! over [`crate::NdjsonTransport`]'s wire-framed `watch`/`event`/`subscription/cancel`/
+//! [`SubscriptionTransport`]-generic watch subscription client. Mirrors
+//! [`crate::watch::ReconnectingEventStream`]'s `(runId, cursor)` dedup and
+//! reconnect-from-last-delivered-cursor semantics, but drives them over any
+//! [`SubscriptionTransport`]'s wire-framed `watch`/`event`/`subscription/cancel`/
 //! `subscription/closed` notifications instead of the in-process [`Dispatcher`] passthrough.
+//! [`NdjsonWatchClient`]/[`NdjsonReconnectingEventStream`] alias this machinery to
+//! [`crate::NdjsonTransport`]; [`crate::websocket::WebSocketTransport`] reuses it unchanged.
 
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -13,34 +16,37 @@ use openengine_cluster_protocol::{
 };
 use openengine_cluster_server::watch::PublicEventRecord;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use crate::watch::admit_event;
 use crate::PumpedSubscription;
-use crate::{validate_response_identity, ClientError, EventOrClosed, NdjsonTransport};
+use crate::{
+    validate_response_identity, ClientError, EventOrClosed, NdjsonTransport, SubscriptionTransport,
+};
 
-/// Typed NDJSON watch client. Request ids come from the shared [`NdjsonTransport`] rather than a
-/// client-local counter, so independently constructed watch clients on one connection cannot
-/// replace each other's pending response waiters.
-pub struct NdjsonWatchClient<'a, R, W> {
-    transport: &'a NdjsonTransport<R, W>,
+/// Typed watch client generic over any [`SubscriptionTransport`]. Request ids come from the
+/// shared transport rather than a client-local counter, so independently constructed watch
+/// clients on one connection cannot replace each other's pending response waiters.
+pub struct WatchSubscriptionClient<'a, T> {
+    transport: &'a T,
 }
 
-impl<'a, R, W> NdjsonWatchClient<'a, R, W>
+/// [`WatchSubscriptionClient`] bound to [`NdjsonTransport`].
+pub type NdjsonWatchClient<'a, R, W> = WatchSubscriptionClient<'a, NdjsonTransport<R, W>>;
+
+impl<'a, T> WatchSubscriptionClient<'a, T>
 where
-    R: AsyncRead + Send + Unpin + 'static,
-    W: AsyncWrite + Send + Unpin + 'static,
+    T: SubscriptionTransport,
 {
     #[must_use]
-    pub const fn new(transport: &'a NdjsonTransport<R, W>) -> Self {
+    pub const fn new(transport: &'a T) -> Self {
         Self { transport }
     }
 
     pub async fn watch(
         &self,
         params: WatchParams,
-    ) -> Result<(WatchResult, NdjsonReconnectingEventStream<'a, R, W>), ClientError> {
+    ) -> Result<(WatchResult, WatchSubscriptionEventStream<'a, T>), ClientError> {
         let id = self.next_request_id();
         let request = serde_json::to_string(&JsonRpcRequest {
             jsonrpc: JSON_RPC_VERSION.to_owned(),
@@ -57,7 +63,7 @@ where
             receiver,
             overflowed,
         } = subscription.expect("a successful watch response must carry a subscriptionId");
-        let stream = NdjsonReconnectingEventStream {
+        let stream = WatchSubscriptionEventStream {
             transport: self.transport,
             receiver,
             overflowed,
@@ -91,9 +97,9 @@ fn parse_watch_response(line: &str, expected_id: &RequestId) -> Result<WatchResu
 
 /// Deduplicates durable events by `(runId, cursor)` across legal at-least-once physical
 /// redelivery and across reconnect, exactly like [`crate::watch::ReconnectingEventStream`] but
-/// sourced from wire notifications forwarded by [`NdjsonTransport`]'s pump.
-pub struct NdjsonReconnectingEventStream<'a, R, W> {
-    transport: &'a NdjsonTransport<R, W>,
+/// sourced from wire notifications forwarded by a [`SubscriptionTransport`]'s pump.
+pub struct WatchSubscriptionEventStream<'a, T> {
+    transport: &'a T,
     receiver: mpsc::Receiver<String>,
     overflowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     subscription_id: SubscriptionId,
@@ -102,10 +108,13 @@ pub struct NdjsonReconnectingEventStream<'a, R, W> {
     run_id: Option<RunId>,
 }
 
-impl<'a, R, W> NdjsonReconnectingEventStream<'a, R, W>
+/// [`WatchSubscriptionEventStream`] bound to [`NdjsonTransport`].
+pub type NdjsonReconnectingEventStream<'a, R, W> =
+    WatchSubscriptionEventStream<'a, NdjsonTransport<R, W>>;
+
+impl<'a, T> WatchSubscriptionEventStream<'a, T>
 where
-    R: AsyncRead + Send + Unpin + 'static,
-    W: AsyncWrite + Send + Unpin + 'static,
+    T: SubscriptionTransport,
 {
     /// Returns the next logically new event, transparently dropping legal duplicate physical
     /// deliveries, or a terminal close. Returns `None` once the subscription's channel ends
@@ -176,8 +185,8 @@ where
     /// reconnect so a duplicate delivered before and after reconnect is still suppressed once.
     pub async fn reconnect(
         self,
-    ) -> Result<(WatchResult, NdjsonReconnectingEventStream<'a, R, W>), ClientError> {
-        let watch_client = NdjsonWatchClient::new(self.transport);
+    ) -> Result<(WatchResult, WatchSubscriptionEventStream<'a, T>), ClientError> {
+        let watch_client = WatchSubscriptionClient::new(self.transport);
         let params = WatchParams {
             run_id: self.run_id,
             from_cursor: self.last_delivered,

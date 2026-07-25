@@ -1,12 +1,16 @@
-//! Shared NDJSON "one unary response, then live `event`/`subscription/closed` notifications with
-//! no dedup or reconnect" client machinery for future-only subscription capabilities (`logs`,
-//! `agent_attach`). Generated once per capability via [`impl_ndjson_event_subscription`] rather
-//! than hand-copied, so the request/parse/`next`/`cancel` logic exists exactly once. `watch` has
-//! different (dedup + reconnect) semantics and is not implemented via this macro.
+//! Shared [`crate::SubscriptionTransport`]-generic "one unary response, then live `event`/
+//! `subscription/closed` notifications with no dedup or reconnect" client machinery for
+//! future-only subscription capabilities (`logs`, `agent_attach`). Generated once per capability
+//! via [`impl_ndjson_event_subscription`] rather than hand-copied, so the request/parse/`next`/
+//! `cancel` logic exists exactly once and is driven identically by [`crate::NdjsonTransport`] and
+//! [`crate::websocket::WebSocketTransport`] alike. `watch` has different (dedup + reconnect)
+//! semantics and is not implemented via this macro.
 macro_rules! impl_ndjson_event_subscription {
     (
-        client: $client:ident,
-        stream: $stream:ident,
+        generic_client: $client:ident,
+        generic_stream: $stream:ident,
+        ndjson_client: $ndjson_client:ident,
+        ndjson_stream: $ndjson_stream:ident,
         event_or_closed: $event_or_closed:ident,
         method_fn: $method_fn:ident,
         method_name: $method_name:literal,
@@ -27,24 +31,26 @@ macro_rules! impl_ndjson_event_subscription {
             },
         }
 
-        pub struct $client<'a, R, W> {
-            transport: &'a crate::NdjsonTransport<R, W>,
+        pub struct $client<'a, T> {
+            transport: &'a T,
         }
 
-        impl<'a, R, W> $client<'a, R, W>
+        #[doc = concat!("[`", stringify!($client), "`] bound to [`crate::NdjsonTransport`].")]
+        pub type $ndjson_client<'a, R, W> = $client<'a, crate::NdjsonTransport<R, W>>;
+
+        impl<'a, T> $client<'a, T>
         where
-            R: tokio::io::AsyncRead + Send + Unpin + 'static,
-            W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+            T: crate::SubscriptionTransport,
         {
             #[must_use]
-            pub const fn new(transport: &'a crate::NdjsonTransport<R, W>) -> Self {
+            pub const fn new(transport: &'a T) -> Self {
                 Self { transport }
             }
 
             pub async fn $method_fn(
                 &self,
                 params: $params_ty,
-            ) -> Result<($result_ty, $stream<'a, R, W>), crate::ClientError> {
+            ) -> Result<($result_ty, $stream<'a, T>), crate::ClientError> {
                 let id = self.transport.next_watch_request_id();
                 let request =
                     serde_json::to_string(&openengine_cluster_protocol::JsonRpcRequest {
@@ -100,17 +106,19 @@ macro_rules! impl_ndjson_event_subscription {
             Ok(response.result)
         }
 
-        pub struct $stream<'a, R, W> {
-            transport: &'a crate::NdjsonTransport<R, W>,
+        pub struct $stream<'a, T> {
+            transport: &'a T,
             receiver: tokio::sync::mpsc::Receiver<String>,
             overflowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
             subscription_id: openengine_cluster_protocol::SubscriptionId,
         }
 
-        impl<'a, R, W> $stream<'a, R, W>
+        #[doc = concat!("[`", stringify!($stream), "`] bound to [`crate::NdjsonTransport`].")]
+        pub type $ndjson_stream<'a, R, W> = $stream<'a, crate::NdjsonTransport<R, W>>;
+
+        impl<'a, T> $stream<'a, T>
         where
-            R: tokio::io::AsyncRead + Send + Unpin + 'static,
-            W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+            T: crate::SubscriptionTransport,
         {
             /// Returns the next live event, or a terminal close. Returns `None` once the
             /// subscription's channel ends (cancelled locally, or the transport's connection

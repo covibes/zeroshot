@@ -22,6 +22,9 @@ use tokio::task::JoinHandle;
 mod reconnect_support;
 use reconnect_support::FIXTURE_QUEUE_CAPACITY;
 
+#[path = "reconnect_support/scenario_harness.rs"]
+mod scenario_harness;
+
 #[path = "reconnect_support/ndjson_scenario.rs"]
 mod ndjson_scenario;
 use ndjson_scenario::ndjson_overflow_and_reconnect_scenario;
