@@ -4,7 +4,8 @@
 //! ([`crate::stdio::ConnectionState`], `classify_ndjson_line`, `dispatch_classified_line`) so
 //! results, events, and errors stay byte-equivalent between the stdio and WebSocket bindings.
 //! Framing rules unique to WebSocket -- binary rejection, the 1,048,576 UTF-8 byte bound, and
-//! best-effort `$/cancelRequest` -- live only here; `stdio::serve_ndjson` itself is untouched.
+//! cooperative, ownership-safe `$/cancelRequest` -- live only here; `stdio::serve_ndjson` itself
+//! is untouched.
 
 use std::collections::HashMap;
 use std::io;
@@ -15,16 +16,16 @@ use futures_util::{Sink, SinkExt, StreamExt};
 use openengine_cluster_protocol::{CancelRequestParams, JsonRpcNotification, RequestId};
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit};
-use tokio::task::{AbortHandle, JoinSet};
+use tokio::sync::{mpsc, oneshot, Notify, OwnedSemaphorePermit};
+use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message, Utf8Bytes};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::stdio::{
-    classify_ndjson_line, dispatch_classified_line, new_connection_setup, shutdown_connection,
-    ConnectionSetup, ConnectionState, DispatchCtx, LineDispatch, ShutdownArgs,
+    classify_ndjson_line, dispatch_classified_line, new_connection_setup, race_cancel_or_next,
+    shutdown_connection, ConnectionSetup, ConnectionState, DispatchCtx, LineDispatch, ShutdownArgs,
 };
 use crate::{ClusterBackend, Dispatcher};
 
@@ -36,12 +37,17 @@ pub const MAX_FRAME_BYTES: usize = 1_048_576;
 /// Bounded per-connection outbound queue, matching `stdio::serve_ndjson`'s bound.
 const OUTBOUND_QUEUE_CAPACITY: usize = 256;
 
-/// Per-connection registry of best-effort abort handles for in-flight passthrough (unary) request
-/// tasks, keyed by their [`RequestId`]. `$/cancelRequest` looks an id up here and aborts it; an
-/// absent id (unknown, or already completed and self-removed) is silently a no-op. Establishing
-/// requests (`watch`/`logs`/`agent/attach`) are not registered here -- their in-flight lifetime is
-/// already covered by `subscription/cancel` once established, and is intentionally short.
-type CancelRegistry = Arc<Mutex<HashMap<RequestId, AbortHandle>>>;
+/// Per-connection registry of cooperative cancellation signals for in-flight passthrough (unary)
+/// request tasks, keyed by their [`RequestId`]. [`spawn_passthrough`] registers a task's entry
+/// synchronously *before* spawning it, so the entry always exists before the task can possibly run
+/// or complete -- no scheduling race. `$/cancelRequest` looks an id up here and notifies it; an
+/// absent id (unknown, or already completed and cleaned up) is silently a no-op. A task's own
+/// cleanup (`run_passthrough_request`) removes only its own registration, verified via
+/// `Arc::ptr_eq` against the entry currently stored under its id, so an old request's cleanup can
+/// never delete a newer same-id request's fresh registration. Establishing requests (`watch`/
+/// `logs`/`agent/attach`) are not registered here -- their in-flight lifetime is already covered by
+/// `subscription/cancel` once established, and is intentionally short.
+type CancelRegistry = Arc<Mutex<HashMap<RequestId, Arc<Notify>>>>;
 
 /// WebSocket configuration enforcing [`MAX_FRAME_BYTES`] as the incoming message size bound, so
 /// tungstenite itself rejects an oversized message during frame reassembly rather than buffering
@@ -53,7 +59,7 @@ pub fn websocket_config() -> WebSocketConfig {
 
 /// Serves one already-handshaken WebSocket connection: demultiplexes unary requests and `watch`/
 /// `logs`/`agent/attach` subscriptions sharing this connection exactly like `stdio::serve_ndjson`,
-/// plus per-connection best-effort `$/cancelRequest`. Binary frames close with code 1003;
+/// plus per-connection cooperative `$/cancelRequest`. Binary frames close with code 1003;
 /// oversized or capacity-rejected text frames close with code 1009. Never returns an `Err`:
 /// transport failures close the connection and this simply returns once torn down.
 pub async fn serve_websocket<B, S>(
@@ -144,7 +150,7 @@ enum FrameOutcome {
 }
 
 /// Per-frame handling context: the shared [`DispatchCtx`] plus the two handles unique to this
-/// WebSocket binding (the best-effort `$/cancelRequest` registry and the deterministic-close
+/// WebSocket binding (the cooperative `$/cancelRequest` registry and the deterministic-close
 /// signal), bundled so [`handle_message`] and its helpers take one argument instead of an
 /// ever-growing list.
 struct WsCtx<'a, B> {
@@ -188,8 +194,16 @@ where
         return FrameOutcome::Break;
     }
     if let Some(cancel_id) = parse_cancel_request(&text) {
-        if let Some(handle) = ctx.cancel_registry.lock().remove(&cancel_id) {
-            handle.abort();
+        // Notify only -- never remove here. Removal happens exactly once, in the owning task's
+        // own ownership-checked cleanup (`run_passthrough_request`), so the map always has a
+        // single source of truth for "who owns this entry". This intentionally diverges from
+        // `dispatch_classified_line`'s `subscription/cancel` handling (which does remove-then-
+        // notify): subscription ids are minted once and never reused, so eager removal is safe
+        // there, whereas JSON-RPC `RequestId`s are explicitly retryable/reusable by clients, which
+        // is exactly what makes eager removal here unsafe (a same-id retry could register between
+        // an eager remove and the owning task's own cleanup).
+        if let Some(notify) = ctx.cancel_registry.lock().get(&cancel_id) {
+            notify.notify_one();
         }
         return FrameOutcome::Continue;
     }
@@ -202,8 +216,12 @@ where
     FrameOutcome::Continue
 }
 
-/// Spawns the passthrough (non-subscription) request task for an admission-approved line, best-
-/// effort registering its abort handle under `id` in `cancel_registry` for `$/cancelRequest`.
+/// Spawns the passthrough (non-subscription) request task for an admission-approved line,
+/// registering its cooperative cancellation signal under `id` in `cancel_registry` *synchronously,
+/// before* spawning the task -- registration happens-before the task can possibly run or complete
+/// (ordinary sequential program order on the calling task, not a scheduling race), so
+/// `$/cancelRequest` can never observe a not-yet-registered id for a request that has already been
+/// admitted.
 fn spawn_passthrough<B>(
     ctx: &mut WsCtx<'_, B>,
     id: Option<RequestId>,
@@ -215,8 +233,13 @@ fn spawn_passthrough<B>(
     let task_dispatcher = ctx.dispatch.dispatcher.clone();
     let task_state = ctx.dispatch.state.clone();
     let task_cancel_registry = Arc::clone(ctx.cancel_registry);
-    let spawn_id = id.clone();
-    let abort_handle = ctx.dispatch.tasks.spawn(async move {
+    let cancel_notify = Arc::new(Notify::new());
+    if let Some(id) = &id {
+        ctx.cancel_registry
+            .lock()
+            .insert(id.clone(), Arc::clone(&cancel_notify));
+    }
+    ctx.dispatch.tasks.spawn(async move {
         let _permit = permit;
         run_passthrough_request(PassthroughRequest {
             dispatcher: task_dispatcher,
@@ -224,15 +247,10 @@ fn spawn_passthrough<B>(
             line,
             state: task_state,
             cancel_registry: task_cancel_registry,
+            cancel_notify,
         })
         .await;
     });
-    // Best-effort: a pathologically fast dispatch can self-remove (see `run_passthrough_request`)
-    // before this insert runs, leaving a harmless stale entry -- `$/cancelRequest` never claims a
-    // rollback guarantee, and the entry is bounded by this connection's lifetime and task-slot cap.
-    if let Some(spawn_id) = spawn_id {
-        ctx.cancel_registry.lock().insert(spawn_id, abort_handle);
-    }
 }
 
 /// Grouped arguments for [`run_passthrough_request`], keeping that function's argument count
@@ -243,12 +261,21 @@ struct PassthroughRequest<B> {
     line: String,
     state: ConnectionState,
     cancel_registry: CancelRegistry,
+    cancel_notify: Arc<Notify>,
 }
 
-/// Dispatches a non-subscription request or notification frame, releasing its in-flight id and
-/// best-effort cancel registration (if any) once the backend call returns and before the response
-/// is enqueued. Mirrors `stdio::run_passthrough_request`, plus the `cancel_registry` cleanup that
-/// binding has no notion of.
+/// Dispatches a non-subscription request or notification frame, racing its completion against a
+/// cooperative `$/cancelRequest` signal via [`race_cancel_or_next`] -- the same idiom
+/// `stdio::race_cancel_or_next` already uses for subscription cancellation -- so cancellation and
+/// normal completion resume into the exact same cleanup code below regardless of which side wins;
+/// no exit path can skip it, unlike external task abortion. Once the race settles, unconditionally
+/// releases the request's in-flight id and -- only if this task's own cancellation entry is still
+/// the one registered under `id`, checked via `Arc::ptr_eq` -- its cancel-registry entry, so a
+/// same-id retry's fresh registration (inserted by its own [`spawn_passthrough`] call) is never
+/// disturbed by this task's cleanup. A response is enqueued only when the race resolved to
+/// completion; a cancelled request produces no response, preserving the no-rollback/at-most-one-
+/// terminal-response contract. Mirrors `stdio::run_passthrough_request`, plus the `cancel_registry`
+/// cleanup that binding has no notion of.
 async fn run_passthrough_request<B>(request: PassthroughRequest<B>)
 where
     B: ClusterBackend,
@@ -259,13 +286,39 @@ where
         line,
         state,
         cancel_registry,
+        cancel_notify,
     } = request;
-    let response = dispatcher.dispatch(&line).await;
+    let outcome = race_cancel_or_next(&cancel_notify, async {
+        Some(dispatcher.dispatch(&line).await)
+    })
+    .await;
     if let Some(id) = &id {
         state.in_flight_ids.lock().remove(id);
-        cancel_registry.lock().remove(id);
+        release_owned_cancel_entry(&cancel_registry, id, &cancel_notify);
     }
-    let _ = state.outbound_tx.send(response).await;
+    if let Some(response) = outcome {
+        let _ = state.outbound_tx.send(response).await;
+    }
+}
+
+/// Removes `cancel_registry`'s entry for `id` only if it is still `notify` itself (via
+/// `Arc::ptr_eq`), so a task can only ever remove its own registration. If a same-id retry has
+/// already overwritten the entry with its own fresh [`Notify`] by the time this runs, the pointer
+/// comparison fails and the newer registration is left untouched -- correct under every possible
+/// interleaving of an old request's cleanup and a new same-id request's registration, not just the
+/// common ordering.
+fn release_owned_cancel_entry(
+    cancel_registry: &CancelRegistry,
+    id: &RequestId,
+    notify: &Arc<Notify>,
+) {
+    let mut registry = cancel_registry.lock();
+    if registry
+        .get(id)
+        .is_some_and(|existing| Arc::ptr_eq(existing, notify))
+    {
+        registry.remove(id);
+    }
 }
 
 /// Parses `text` as a `$/cancelRequest` notification, returning the target `RequestId` only when
@@ -331,3 +384,6 @@ async fn run_writer<Si>(
     }
     let _ = sink.close().await;
 }
+
+#[cfg(test)]
+mod tests;
