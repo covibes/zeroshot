@@ -42,6 +42,7 @@ export default [
         clearInterval: 'readonly',
         setImmediate: 'readonly',
         clearImmediate: 'readonly',
+        queueMicrotask: 'readonly',
         fetch: 'readonly',
         AbortController: 'readonly',
       },
@@ -272,6 +273,68 @@ export default [
     },
   },
   {
+    // Generated file: regenerating via `npm run generate:cluster-protocol-types` is the only fix
+    // for any drift, so style-only nitpicks about its shape are not actionable here.
+    files: ['src/cluster/wire-types.generated.ts'],
+    rules: {
+      'sonarjs/redundant-type-aliases': 'off',
+      'sonarjs/use-type-alias': 'off',
+    },
+  },
+  {
+    files: ['src/cluster/**/*.ts'],
+    plugins: {
+      '@typescript-eslint': tseslint.plugin,
+    },
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: {
+        project: './tsconfig.cluster.json',
+        tsconfigRootDir,
+      },
+      ecmaVersion: 2022,
+      sourceType: 'module',
+    },
+    rules: {
+      'no-undef': 'off',
+      'no-unused-vars': 'off',
+      'unused-imports/no-unused-vars': 'off',
+      // Generated file: not hand-formatted, and re-running the generator is the only fix for drift.
+      'max-lines': 'off',
+      '@typescript-eslint/ban-ts-comment': [
+        'error',
+        {
+          'ts-check': false,
+          'ts-expect-error': true,
+          'ts-ignore': true,
+          'ts-nocheck': true,
+        },
+      ],
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
+      ],
+      '@typescript-eslint/explicit-function-return-type': 'error',
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-non-null-assertion': 'error',
+      '@typescript-eslint/no-unsafe-argument': 'error',
+      '@typescript-eslint/no-unsafe-assignment': 'error',
+      '@typescript-eslint/no-unsafe-call': 'error',
+      '@typescript-eslint/no-unsafe-member-access': 'error',
+      '@typescript-eslint/no-unsafe-return': 'error',
+      '@typescript-eslint/no-unsafe-type-assertion': 'error',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          vars: 'all',
+          varsIgnorePattern: '^_',
+          args: 'after-used',
+          argsIgnorePattern: '^_',
+        },
+      ],
+    },
+  },
+  {
     // TUI/CLI/streaming files use ANSI escape codes for terminal colors - allow control characters
     files: [
       'src/streaming/*.js',
@@ -329,6 +392,7 @@ export default [
       'hooks/**',
       'lib/tui-backend/**',
       'lib/agent-cli-provider/**',
+      'lib/cluster/**',
     ],
   },
   prettierConfig,

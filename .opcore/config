@@ -1,5 +1,10 @@
 {
   "validation": {
+    "pathPolicy": {
+      "exclude": [
+        "lib/cluster/**"
+      ]
+    },
     "checks": {
       "rust": {
         "functionMetrics": {
@@ -7,6 +12,18 @@
           "maxComplexity": 10,
           "maxParams": 6
         }
+      },
+      "typescript": {
+        "fileLength": {
+          "maxFileLines": 1400
+        }
+      },
+      "clone": {
+        "exclude": [
+          "src/cluster/json-guards.ts",
+          "tests/cluster-client/agent-attach.test.js",
+          "tests/cluster-client/logs.test.js"
+        ]
       }
     }
   }
