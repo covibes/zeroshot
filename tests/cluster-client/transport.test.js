@@ -3,7 +3,11 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
-const { requestIdKey } = require('../../lib/cluster/cjs/index.js');
+const {
+  requestIdKey,
+  BoundedSubscriptionQueue,
+  ClusterTransportError,
+} = require('../../lib/cluster/cjs/index.js');
 const { createHarness, parseFrame, successReplyFor } = require('./_fixtures.js');
 
 // AC2: two callers sharing one MultiplexedTransport must never allocate colliding request ids,
@@ -108,6 +112,23 @@ test('nextWatchRequestId mints distinct watch-<n> ids shared across callers', ()
     ids.add(id);
   }
   assert.equal(ids.size, 10);
+});
+
+// AC5: BoundedSubscriptionQueue.recv() must never silently drop a concurrent waiter — Rust's
+// mpsc::Receiver is not Clone, so a second concurrent recv() fails fast rather than overwriting
+// the first caller's pending resolver.
+test('a second concurrent recv() throws synchronously and does not lose the first waiter', async () => {
+  const queue = new BoundedSubscriptionQueue();
+
+  const first = queue.recv();
+  assert.throws(
+    () => queue.recv(),
+    ClusterTransportError,
+    'concurrent recv() calls on the same subscription queue are not supported'
+  );
+
+  assert.equal(queue.tryPush('x'), 'ok');
+  assert.equal(await first, 'x', 'the first waiter must still resolve once a line is pushed');
 });
 
 test('finish() rejects every pending call and ends every open subscription queue', async () => {

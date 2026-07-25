@@ -27,6 +27,7 @@ export class DurableWatchClient {
   private transport: WebSocketTransport;
   private stream: WatchSubscriptionEventStream;
   private closing = false;
+  private reconnecting: Promise<void> | null = null;
 
   private constructor(
     url: string,
@@ -60,25 +61,59 @@ export class DurableWatchClient {
       const outcome = await this.stream.next();
       if (outcome !== null) return outcome;
       if (this.closing) return null;
-      await this.reconnectFullSocket();
+      await this.sharedReconnect();
+      if (this.closing) return null;
     }
   }
 
+  /**
+   * Ensures concurrent `next()` callers observing a disconnected stream share exactly one in-flight
+   * reconnect attempt rather than each dialing their own fresh socket.
+   */
+  private sharedReconnect(): Promise<void> {
+    if (!this.reconnecting) {
+      this.reconnecting = this.reconnectFullSocket().finally(() => {
+        this.reconnecting = null;
+      });
+    }
+    return this.reconnecting;
+  }
+
+  /**
+   * Dials a fresh socket, fetches a coherent snapshot, and re-establishes the watch — entirely on
+   * the fresh transport. `close()` racing any phase of this (post-connect, post-get,
+   * post-watch-establish) wins: the fresh transport (and any subscription already established on it)
+   * is closed/cancelled and never installed as the live transport/stream.
+   */
   private async reconnectFullSocket(): Promise<void> {
     const runId = this.stream.currentRunId();
     const fromCursor = this.stream.lastDeliveredCursor();
     const dedup = this.stream.dedupSet();
 
-    const freshTransport = await WebSocketTransport.connect(this.url, this.options);
-    await new ClusterClient(freshTransport).get({});
-    const { stream } = await new WatchSubscriptionClient(freshTransport).watchWithDedup(
-      { runId, fromCursor },
-      dedup
-    );
+    let freshTransport: WebSocketTransport | null = null;
+    try {
+      freshTransport = await WebSocketTransport.connect(this.url, this.options);
+      if (this.closing) return;
 
-    this.transport.close();
-    this.transport = freshTransport;
-    this.stream = stream;
+      await new ClusterClient(freshTransport).get({});
+      if (this.closing) return;
+
+      const { stream } = await new WatchSubscriptionClient(freshTransport).watchWithDedup(
+        { runId, fromCursor },
+        dedup
+      );
+      if (this.closing) {
+        await stream.cancel();
+        return;
+      }
+
+      this.transport.close();
+      this.transport = freshTransport;
+      this.stream = stream;
+      freshTransport = null;
+    } finally {
+      freshTransport?.close();
+    }
   }
 
   /** Cancels the live subscription and closes the connection. Idempotent. */

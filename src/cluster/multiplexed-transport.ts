@@ -48,8 +48,16 @@ export class BoundedSubscriptionQueue {
     this.end();
   }
 
-  /** Mirrors `mpsc::Receiver::recv() -> Option<String>`: resolves `null` once the channel ends. */
+  /**
+   * Mirrors `mpsc::Receiver::recv() -> Option<String>`: resolves `null` once the channel ends.
+   * Rust's `Receiver` is not `Clone`, so only one consumer can ever await it; TypeScript has no move
+   * semantics to enforce that structurally, so a second concurrent call fails fast instead of
+   * silently overwriting (and losing) the first waiter.
+   */
   recv(): Promise<string | null> {
+    if (this.resolveWaiting) {
+      throw new ClusterTransportError('concurrent recv() calls on the same subscription queue are not supported');
+    }
     if (this.buffer.length > 0) return Promise.resolve(this.buffer.shift() ?? null);
     if (this.closed) return Promise.resolve(null);
     return new Promise((resolve) => {
