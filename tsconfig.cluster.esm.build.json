@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.cluster.json",
+  "compilerOptions": {
+    "rootDir": "src/cluster",
+    "outDir": "lib/cluster/esm",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["src/cluster/**/*.ts"],
+  "exclude": ["node_modules", "dist", "coverage", "lib", "tui-rs/target"]
+}

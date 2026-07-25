@@ -64,20 +64,21 @@ IS THIS HOW A SENIOR STAFF ARCHITECT WOULD DO IT? ACT LIKE ONE.
 
 ## Where to Look
 
-| Concept                  | File                                |
-| ------------------------ | ----------------------------------- |
-| Conductor classification | `src/conductor-bootstrap.js`        |
-| Base templates           | `cluster-templates/base-templates/` |
-| Message bus              | `src/message-bus.js`                |
-| Ledger (SQLite)          | `src/ledger.js`                     |
-| Trigger evaluation       | `src/logic-engine.js`               |
-| Agent wrapper            | `src/agent-wrapper.js`              |
-| Docker mounts/env        | `lib/docker-config.js`              |
-| Container lifecycle      | `src/isolation-manager.js`          |
-| Issue providers          | `src/issue-providers/`              |
-| Git remote detection     | `lib/git-remote-utils.js`           |
-| Input helpers            | `src/input-helpers.js`              |
-| Settings                 | `lib/settings.js`                   |
+| Concept                   | File                                |
+| ------------------------- | ----------------------------------- |
+| Conductor classification  | `src/conductor-bootstrap.js`        |
+| Base templates            | `cluster-templates/base-templates/` |
+| Message bus               | `src/message-bus.js`                |
+| Ledger (SQLite)           | `src/ledger.js`                     |
+| Trigger evaluation        | `src/logic-engine.js`               |
+| Agent wrapper             | `src/agent-wrapper.js`              |
+| Docker mounts/env         | `lib/docker-config.js`              |
+| Container lifecycle       | `src/isolation-manager.js`          |
+| Issue providers           | `src/issue-providers/`              |
+| Git remote detection      | `lib/git-remote-utils.js`           |
+| Input helpers             | `src/input-helpers.js`              |
+| Settings                  | `lib/settings.js`                   |
+| TypeScript cluster client | `src/cluster/`                      |
 
 ## CLI Quick Reference
 

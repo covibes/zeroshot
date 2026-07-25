@@ -3,6 +3,16 @@
   "version": "6.4.0",
   "description": "Multi-agent orchestration engine for Claude, Codex, and Gemini",
   "main": "src/orchestrator.js",
+  "exports": {
+    ".": "./src/orchestrator.js",
+    "./cluster": {
+      "types": "./lib/cluster/cjs/index.d.ts",
+      "import": "./lib/cluster/esm/index.js",
+      "require": "./lib/cluster/cjs/index.js"
+    },
+    "./package.json": "./package.json",
+    "./*": "./*"
+  },
   "bin": {
     "zeroshot": "./cli/index.js",
     "zeroshot-agent-provider": "./lib/agent-cli-provider/executable.js",
@@ -58,6 +68,14 @@
     "test:providers:live": "npm run build:agent-cli-provider && node scripts/live-provider-smoke.js",
     "check:agent-cli-provider": "npm run check:agent-cli-provider:ci",
     "check:agent-cli-provider:ci": "npm run typecheck:agent-cli-provider && npm run lint:agent-cli-provider && npm run build:agent-cli-provider && npm run test:agent-cli-provider",
+    "generate:cluster-types": "node scripts/generate-cluster-wire-types.js",
+    "cluster-types:check": "node scripts/generate-cluster-wire-types.js --check",
+    "typecheck:cluster": "tsc --project tsconfig.cluster.json",
+    "lint:cluster": "eslint \"src/cluster/**/*.ts\"",
+    "build:cluster": "npm run cluster-types:check && tsc --project tsconfig.cluster.cjs.build.json && tsc --project tsconfig.cluster.esm.build.json && node scripts/write-cluster-package-markers.js",
+    "test:cluster-client": "npm run build:cluster && node --test tests/cluster-client/*.test.js",
+    "test:cluster-package": "npm run build:cluster && node --test tests/cluster-package/*.test.js",
+    "check:cluster:ci": "npm run typecheck:cluster && npm run lint:cluster && npm run build:cluster && npm run test:cluster-client && npm run test:cluster-package",
     "dev:link": "npm link",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -76,7 +94,7 @@
     "release": "semantic-release",
     "release:preflight": "node scripts/release-preflight.js",
     "release:assert-published": "node scripts/assert-release-published.js",
-    "prepublishOnly": "npm run lint && npm run typecheck && npm run check:agent-cli-provider:ci",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm run check:agent-cli-provider:ci && npm run check:cluster:ci",
     "prepare": "npm run build:agent-cli-provider && husky"
   },
   "c8": {
@@ -148,7 +166,8 @@
     "node-pty": "^1.1.0",
     "omelette": "^0.4.17",
     "pidusage": "^4.0.1",
-    "proper-lockfile": "^4.1.2"
+    "proper-lockfile": "^4.1.2",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@semantic-release/changelog": "^6.0.3",
@@ -156,6 +175,7 @@
     "@semantic-release/github": "^11.0.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.0.3",
+    "@types/ws": "^8.18.1",
     "c8": "^10.1.3",
     "chai": "^6.2.1",
     "depcheck": "^1.4.7",
@@ -166,6 +186,7 @@
     "eslint-plugin-unused-imports": "^4.3.0",
     "husky": "^9.1.7",
     "jscpd": "^3.5.10",
+    "json-schema-to-typescript": "^15.0.4",
     "lint-staged": "^16.2.7",
     "mocha": "^11.7.5",
     "prettier": "^3.7.4",
