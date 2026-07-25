@@ -71,6 +71,9 @@ jobs:
       - name: Check generated Cluster Protocol artifacts
         run: npm run protocol:check
 
+      - name: Check generated Cluster Protocol TypeScript artifacts
+        run: npm run generate:cluster-protocol-ts -- --check
+
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
@@ -79,6 +82,12 @@ jobs:
 
       - name: Test Rust workspace
         run: cargo test --workspace
+
+      - name: Cluster TypeScript client tests
+        run: npm run test:cluster-client
+
+      - name: Cluster TypeScript package tests
+        run: npm run test:cluster-package
 
       - name: Security audit
         run: npm audit --audit-level=moderate --omit=dev
@@ -92,6 +101,9 @@ jobs:
 
       - name: Type check
         run: npm run typecheck
+
+      - name: Type check cluster
+        run: npm run typecheck:cluster
 
       - name: Check provider CLI helper
         run: npm run check:agent-cli-provider:ci

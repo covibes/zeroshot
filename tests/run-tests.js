@@ -31,6 +31,7 @@ const args = process.argv.slice(2).flatMap((arg) => {
 const defaultTestFiles = [
   'tests/unit/**/*.test.js',
   'tests/cluster-worker/**/*.test.js',
+  'tests/cluster/**/*.test.js',
   'tests/*.test.js',
 ];
 const hasExplicitTestFile = args.some((arg) => !arg.startsWith('-'));
