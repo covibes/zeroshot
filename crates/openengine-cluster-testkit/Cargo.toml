@@ -18,6 +18,8 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+futures-util.workspace = true
 jsonschema.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true

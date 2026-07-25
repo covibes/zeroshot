@@ -497,8 +497,11 @@
   ],
   "openrpc": "1.3.2",
   "x-generic-subscription-framing": {
-    "description": "watch, logs, and agent/attach each establish a subscription via one normal JSON-RPC result; subsequent delivery uses the generic notification methods below, shared by every subscription-based method. There is no watch/event, watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the wire.",
+    "description": "watch, logs, and agent/attach each establish a subscription via one normal JSON-RPC result; subsequent delivery uses the generic notification methods below, shared by every subscription-based method. There is no watch/event, watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the wire. `$/cancelRequest` is a transport-level best-effort cancellation of any in-flight unary request by its RequestId; it is silently a no-op for an unknown or already-completed id and carries no rollback claim after backend commit.",
     "notifications": {
+      "$/cancelRequest": {
+        "$ref": "schema.json#/$defs/CancelRequestParams"
+      },
       "event": {
         "$ref": "schema.json#/$defs/EventNotification"
       },

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use openengine_cluster_protocol::RunId;
 
 use super::*;

@@ -1,15 +1,17 @@
 //! Shared slow-consumer-overflow / gap-free-reconnect-replay / dedup-and-`Finished` scenario
 //! driven identically by `tests/reconnect.rs` (in-process `WatchClient`) and, via
-//! `ndjson_scenario`, `tests/subscription_ndjson.rs` / `tests/backend_faults.rs`
-//! (`NdjsonWatchClient` over the wire), proving both transports produce byte-equivalent
-//! event/cursor sequences and that the `fault` `WatchEvent` variant needs no special-casing.
+//! `ndjson_scenario`/`websocket_scenario` on top of `scenario_harness`, `tests/subscription_ndjson.rs`
+//! / `tests/websocket.rs` / `tests/backend_faults.rs` (`NdjsonWatchClient`/`WebSocketTransport` over
+//! the wire), proving all transports produce byte-equivalent event/cursor sequences and that the
+//! `fault` `WatchEvent` variant needs no special-casing.
 
-use openengine_cluster_client::{EventOrClosed, NdjsonReconnectingEventStream, ReconnectingEventStream};
+use openengine_cluster_client::{
+    EventOrClosed, ReconnectingEventStream, SubscriptionTransport, WatchSubscriptionEventStream,
+};
 use openengine_cluster_protocol::{
     ClusterStatus, Cursor, StopMode, SubscriptionCloseReason, WatchEvent,
 };
 use openengine_cluster_server::watch::fixtures::FixtureStore;
-use tokio::io::{AsyncRead, AsyncWrite};
 
 /// The fixture's queue is bounded to 2 entries; the third publish overflows it, forcing a
 /// deterministic `SLOW_CONSUMER` close for these tests to reconnect from.
@@ -27,10 +29,14 @@ impl EventStream for ReconnectingEventStream {
     }
 }
 
-impl<'a, R, W> EventStream for NdjsonReconnectingEventStream<'a, R, W>
+/// Covers every [`SubscriptionTransport`]-generic wire binding at once (NDJSON's
+/// `NdjsonReconnectingEventStream` alias and `WebSocketTransport`'s
+/// `WatchSubscriptionEventStream<'a, WebSocketTransport<S>>`), since both are the same generic
+/// type parameterized by transport -- proving the two wire bindings share this exact scenario
+/// logic rather than each needing their own impl.
+impl<'a, T> EventStream for WatchSubscriptionEventStream<'a, T>
 where
-    R: AsyncRead + Send + Unpin + 'static,
-    W: AsyncWrite + Send + Unpin + 'static,
+    T: SubscriptionTransport,
 {
     async fn next_event(&mut self) -> Option<EventOrClosed> {
         self.next().await

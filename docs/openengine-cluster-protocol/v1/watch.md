@@ -2,8 +2,10 @@
 
 This document defines the durable observation contract: retained per-run events, opaque cursors,
 generic subscription framing, and snapshot-tail reconnect. The Rust wire types are authoritative.
-NDJSON/WebSocket line framing for this subscription surface is bound by a later issue; this slice
-defines the wire types and an in-process Rust client/server behavior only.
+This document defines the wire types and in-process Rust client/server behavior; the NDJSON stdio
+binding lives in `openengine-cluster-server`'s `stdio` module, and the production WebSocket
+binding -- framing, close codes, `$/cancelRequest`, and the hosted data-plane boundary -- is
+defined in [`data-plane.md`](./data-plane.md).
 
 ## Method and framing
 

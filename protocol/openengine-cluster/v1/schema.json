@@ -360,6 +360,19 @@
       ],
       "type": "object"
     },
+    "CancelRequestParams": {
+      "additionalProperties": false,
+      "description": "Wire body of the `$/cancelRequest` client notification: best-effort cancellation of an\nin-flight unary request by its `RequestId`. Unknown or already-completed ids are a silent\nno-op; cancelling after the backend has committed leaves that committed state unchanged and\nemits no response or compensation.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
     "ChoiceBranch": {
       "additionalProperties": false,
       "properties": {
@@ -1776,7 +1789,7 @@
           "type": "string"
         },
         "params": {
-          "$ref": "#/$defs/LogEventNotification"
+          "$ref": "#/$defs/CancelRequestParams"
         }
       },
       "required": [
@@ -1795,7 +1808,7 @@
           "type": "string"
         },
         "params": {
-          "$ref": "#/$defs/LogsClosedNotification"
+          "$ref": "#/$defs/LogEventNotification"
         }
       },
       "required": [
@@ -1814,7 +1827,7 @@
           "type": "string"
         },
         "params": {
-          "$ref": "#/$defs/AgentAttachEventNotification"
+          "$ref": "#/$defs/LogsClosedNotification"
         }
       },
       "required": [
@@ -1825,6 +1838,25 @@
       "type": "object"
     },
     "JsonRpcNotification7": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AgentAttachEventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification8": {
       "properties": {
         "jsonrpc": {
           "type": "string"
@@ -3790,10 +3822,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "agent_attach_closed_notification": {
-      "$ref": "#/$defs/JsonRpcNotification7"
+      "$ref": "#/$defs/JsonRpcNotification8"
     },
     "agent_attach_event_notification": {
-      "$ref": "#/$defs/JsonRpcNotification6"
+      "$ref": "#/$defs/JsonRpcNotification7"
     },
     "agent_attach_request": {
       "$ref": "#/$defs/JsonRpcRequest12"
@@ -3806,6 +3838,9 @@
     },
     "apply_response": {
       "$ref": "#/$defs/JsonRpcResponse3"
+    },
+    "cancel_request_notification": {
+      "$ref": "#/$defs/JsonRpcNotification4"
     },
     "delete_request": {
       "$ref": "#/$defs/JsonRpcRequest9"
@@ -3829,10 +3864,10 @@
       "$ref": "#/$defs/JsonRpcResponse"
     },
     "log_event_notification": {
-      "$ref": "#/$defs/JsonRpcNotification4"
+      "$ref": "#/$defs/JsonRpcNotification5"
     },
     "logs_closed_notification": {
-      "$ref": "#/$defs/JsonRpcNotification5"
+      "$ref": "#/$defs/JsonRpcNotification6"
     },
     "logs_request": {
       "$ref": "#/$defs/JsonRpcRequest11"
@@ -3907,6 +3942,7 @@
     "event_notification",
     "subscription_cancel_notification",
     "subscription_closed_notification",
+    "cancel_request_notification",
     "logs_request",
     "logs_response",
     "log_event_notification",

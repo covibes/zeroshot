@@ -1,17 +1,22 @@
 //! NDJSON stdio transport: multiplexes unary JSON-RPC request/response traffic and generic
 //! `watch`/`logs`/`agent/attach` subscription notifications over one bounded-frame connection.
 
-mod admission;
-mod agent_attach;
-mod logs;
-mod subscription;
+pub(crate) mod admission;
+pub(crate) mod agent_attach;
+pub(crate) mod dispatch;
+pub(crate) mod logs;
+pub(crate) mod subscription;
 
-use admission::{acquire_task_slot, reject_duplicate, run_writer, InFlightIds, MAX_CONNECTION_TASKS};
+pub(crate) use dispatch::{
+    dispatch_classified_line, new_connection_setup, shutdown_connection, ConnectionSetup,
+    DispatchCtx, LineDispatch, ShutdownArgs,
+};
 
-use std::collections::{HashMap, HashSet};
+use admission::{run_writer, InFlightIds};
+
+use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
 
 use parking_lot::Mutex;
 use openengine_cluster_protocol::{
@@ -21,8 +26,7 @@ use openengine_cluster_protocol::{
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Notify, Semaphore};
-use tokio::task::JoinSet;
+use tokio::sync::{mpsc, Notify};
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
@@ -38,25 +42,22 @@ const MAX_FRAME_BYTES: usize = 1_048_576;
 /// than growing memory without bound.
 const OUTBOUND_QUEUE_CAPACITY: usize = 256;
 
-/// Grace period given to already-spawned bounded backend dispatches to finish once the connection
-/// closes. Subscription tasks are notified through their cancellation handles before shutdown;
-/// any backend operation that does not finish inside this bound is force-aborted.
-const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(200);
-
 /// Per-subscription cancellation signal: notifying it wakes `run_watch_subscription`'s streaming
 /// loop immediately, even while parked awaiting the next live event, instead of relying solely on
 /// `WatchEventStream`'s own cancelled flag, which is only re-checked at the top of `next()` and so
 /// never observed on an idle run once the task is parked inside `next_live`'s
 /// `receiver.recv().await`.
-type SubscriptionMap = Arc<Mutex<HashMap<SubscriptionId, Arc<Notify>>>>;
+pub(crate) type SubscriptionMap = Arc<Mutex<HashMap<SubscriptionId, Arc<Notify>>>>;
 
 /// Per-connection state shared by every spawned request/subscription task: the outbound write
-/// queue and the tracking maps used for cancellation and duplicate-id rejection.
+/// queue and the tracking maps used for cancellation and duplicate-id rejection. Shared verbatim
+/// with the sibling `websocket` transport module so both bindings drive the exact same
+/// subscription-establishment and cancellation machinery.
 #[derive(Clone)]
-struct ConnectionState {
-    outbound_tx: mpsc::Sender<String>,
-    subscriptions: SubscriptionMap,
-    in_flight_ids: InFlightIds,
+pub(crate) struct ConnectionState {
+    pub(crate) outbound_tx: mpsc::Sender<String>,
+    pub(crate) subscriptions: SubscriptionMap,
+    pub(crate) in_flight_ids: InFlightIds,
 }
 
 /// Races `next` against `cancel`, `biased` toward the cancellation so a `subscription/cancel` that
@@ -64,8 +65,9 @@ struct ConnectionState {
 /// being observed the next time the stream is polled -- which never happens again on an idle run.
 /// `biased` also ensures a pending cancellation is never starved by an unbounded run of
 /// already-buffered stream items. Shared by `run_watch_subscription` and
-/// `subscription::run_bounded_event_subscription`.
-pub(super) async fn race_cancel_or_next<T>(
+/// `subscription::run_bounded_event_subscription`, and by the sibling `websocket` transport
+/// module's identical subscription runner reuse.
+pub(crate) async fn race_cancel_or_next<T>(
     cancel: &Notify,
     next: impl std::future::Future<Output = Option<T>>,
 ) -> Option<T> {
@@ -91,15 +93,12 @@ where
     let (outbound_tx, outbound_rx) = mpsc::channel::<String>(OUTBOUND_QUEUE_CAPACITY);
     let writer_task = tokio::spawn(run_writer(writer, outbound_rx));
 
-    let subscriptions: SubscriptionMap = Arc::new(Mutex::new(HashMap::new()));
-    let in_flight_ids: InFlightIds = Arc::new(Mutex::new(HashSet::new()));
-    let task_slots = Arc::new(Semaphore::new(MAX_CONNECTION_TASKS));
-    let mut tasks: JoinSet<()> = JoinSet::new();
-    let state = ConnectionState {
-        outbound_tx: outbound_tx.clone(),
-        subscriptions: Arc::clone(&subscriptions),
-        in_flight_ids: Arc::clone(&in_flight_ids),
-    };
+    let ConnectionSetup {
+        subscriptions,
+        task_slots,
+        mut tasks,
+        state,
+    } = new_connection_setup(&outbound_tx);
 
     let mut lines = Framed::new(reader, LinesCodec::new_with_max_length(MAX_FRAME_BYTES));
     loop {
@@ -141,107 +140,33 @@ where
             None => break,
         };
 
-        match classify_ndjson_line(&line) {
-            NdjsonLineKind::Cancel(subscription_id) => {
-                if let Some(cancel) = subscriptions.lock().remove(&subscription_id) {
-                    cancel.notify_one();
-                }
-            }
-            NdjsonLineKind::Watch { id, params } => {
-                if reject_duplicate(&in_flight_ids, &outbound_tx, id.clone()).await {
-                    continue;
-                }
-                let Some(permit) =
-                    acquire_task_slot(&task_slots, &outbound_tx, Some(id.clone())).await
-                else {
-                    in_flight_ids.lock().remove(&id);
-                    continue;
-                };
-                let task_dispatcher = dispatcher.clone();
-                let task_state = state.clone();
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    run_watch_subscription(task_dispatcher, id, params, task_state).await;
-                });
-            }
-            NdjsonLineKind::Logs { id, params } => {
-                if reject_duplicate(&in_flight_ids, &outbound_tx, id.clone()).await {
-                    continue;
-                }
-                let Some(permit) =
-                    acquire_task_slot(&task_slots, &outbound_tx, Some(id.clone())).await
-                else {
-                    in_flight_ids.lock().remove(&id);
-                    continue;
-                };
-                let task_dispatcher = dispatcher.clone();
-                let task_state = state.clone();
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    logs::run_logs_subscription(task_dispatcher, id, params, task_state).await;
-                });
-            }
-            NdjsonLineKind::AgentAttach { id, params } => {
-                if reject_duplicate(&in_flight_ids, &outbound_tx, id.clone()).await {
-                    continue;
-                }
-                let Some(permit) =
-                    acquire_task_slot(&task_slots, &outbound_tx, Some(id.clone())).await
-                else {
-                    in_flight_ids.lock().remove(&id);
-                    continue;
-                };
-                let task_dispatcher = dispatcher.clone();
-                let task_state = state.clone();
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    agent_attach::run_agent_attach_subscription(
-                        task_dispatcher,
-                        id,
-                        params,
-                        task_state,
-                    )
-                    .await;
-                });
-            }
-            NdjsonLineKind::Passthrough { id } => {
-                if let Some(id) = id.clone() {
-                    if reject_duplicate(&in_flight_ids, &outbound_tx, id).await {
-                        continue;
-                    }
-                }
-                let Some(permit) = acquire_task_slot(&task_slots, &outbound_tx, id.clone()).await
-                else {
-                    if let Some(id) = id {
-                        in_flight_ids.lock().remove(&id);
-                    }
-                    continue;
-                };
-                let task_dispatcher = dispatcher.clone();
-                let task_state = state.clone();
-                tasks.spawn(async move {
-                    let _permit = permit;
-                    run_passthrough_request(task_dispatcher, id, line, task_state).await;
-                });
-            }
+        let kind = classify_ndjson_line(&line);
+        let mut ctx = DispatchCtx {
+            dispatcher: &dispatcher,
+            state: &state,
+            task_slots: &task_slots,
+            tasks: &mut tasks,
+        };
+        if let LineDispatch::Passthrough { id, permit } =
+            dispatch_classified_line(kind, &mut ctx).await
+        {
+            let task_dispatcher = dispatcher.clone();
+            let task_state = state.clone();
+            tasks.spawn(async move {
+                let _permit = permit;
+                run_passthrough_request(task_dispatcher, id, line, task_state).await;
+            });
         }
     }
 
-    for cancel in subscriptions.lock().drain().map(|(_, cancel)| cancel) {
-        cancel.notify_one();
-    }
-
-    let drain_naturally = async { while tasks.join_next().await.is_some() {} };
-    if tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, drain_naturally)
-        .await
-        .is_err()
-    {
-        tasks.shutdown().await;
-    }
-    drop(subscriptions);
-    drop(outbound_tx);
-    drop(state);
-    let _ = writer_task.await;
+    shutdown_connection(ShutdownArgs {
+        subscriptions,
+        tasks,
+        outbound_tx,
+        state,
+        writer_task,
+    })
+    .await;
     Ok(())
 }
 
@@ -267,8 +192,9 @@ async fn run_passthrough_request<B>(
 /// `subscription::run_established_subscription` -- the same shared establish/loop/cleanup
 /// `subscription::run_bounded_event_subscription` uses. The established [`WatchHandle`] is kept
 /// alive for the duration purely to hold its backing flag false: dropping it early would trip
-/// `WatchEventStream`'s own cancellation check before anything ever streams.
-async fn run_watch_subscription<B>(
+/// `WatchEventStream`'s own cancellation check before anything ever streams. Reused verbatim by
+/// the sibling `websocket` transport module.
+pub(crate) async fn run_watch_subscription<B>(
     dispatcher: Dispatcher<B>,
     id: RequestId,
     params: Value,

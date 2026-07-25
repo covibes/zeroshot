@@ -17,8 +17,9 @@ use crate::{serialize_backend_error, serialize_error, serialize_success, Cluster
 /// Establishes a `logs` subscription and, on success, streams its `event`/`subscription/closed`
 /// notifications until the stream ends (overflow, backend close, or cancellation). See
 /// `run_watch_subscription` for the identical registration-ordering and cancellation-race notes
-/// [`run_bounded_event_subscription`] mirrors.
-pub(super) async fn run_logs_subscription<B>(
+/// [`run_bounded_event_subscription`] mirrors. Reused verbatim by the sibling `websocket`
+/// transport module.
+pub(crate) async fn run_logs_subscription<B>(
     dispatcher: Dispatcher<B>,
     id: RequestId,
     params: Value,

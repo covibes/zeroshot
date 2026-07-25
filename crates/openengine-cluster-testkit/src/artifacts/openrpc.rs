@@ -41,11 +41,14 @@ pub(super) fn document() -> Value {
                 below, shared by every subscription-based method. There is no watch/event, \
                 watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, \
                 agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the \
-                wire.",
+                wire. `$/cancelRequest` is a transport-level best-effort cancellation of any \
+                in-flight unary request by its RequestId; it is silently a no-op for an unknown \
+                or already-completed id and carries no rollback claim after backend commit.",
             "notifications": {
                 "event": { "$ref": "schema.json#/$defs/EventNotification" },
                 "subscription/cancel": { "$ref": "schema.json#/$defs/SubscriptionCancelParams" },
-                "subscription/closed": { "$ref": "schema.json#/$defs/SubscriptionClosedNotification" }
+                "subscription/closed": { "$ref": "schema.json#/$defs/SubscriptionClosedNotification" },
+                "$/cancelRequest": { "$ref": "schema.json#/$defs/CancelRequestParams" }
             }
         }
     })

@@ -7,6 +7,7 @@ pub mod lifecycle;
 pub mod logs;
 pub mod stdio;
 pub mod watch;
+pub mod websocket;
 pub mod worker_registry;
 
 mod dispatch;
