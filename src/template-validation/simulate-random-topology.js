@@ -1,6 +1,3 @@
-const fs = require('node:fs');
-const path = require('node:path');
-
 const Ledger = require('../ledger');
 const MessageBus = require('../message-bus');
 const LogicEngine = require('../logic-engine');
@@ -227,16 +224,8 @@ function parseOperations(raw) {
 }
 
 function resolveConfigOperation({ configOp, templatesDir }) {
-  if (typeof configOp === 'object' && configOp?.base) {
-    const resolver = new TemplateResolver(templatesDir);
-    return resolver.resolve(configOp.base, configOp.params || {});
-  }
-  if (typeof configOp === 'string') {
-    const configPath = path.join(templatesDir, `${configOp}.json`);
-    const configContent = fs.readFileSync(configPath, 'utf8');
-    return JSON.parse(configContent);
-  }
-  throw new Error(`Unsupported load_config payload: ${JSON.stringify(configOp)}`);
+  const resolver = new TemplateResolver(templatesDir);
+  return resolver.resolveConfigReference(configOp).loadedConfig;
 }
 
 function applyClusterOperation({ state, messageBus, operation, sourceMessage, templatesDir }) {

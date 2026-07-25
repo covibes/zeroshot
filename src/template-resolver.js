@@ -16,6 +16,32 @@ const fs = require('fs');
 const path = require('path');
 
 const COMPARISON_OPERATORS = ['==', '!=', '<=', '>=', '<', '>'];
+const TEMPLATE_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+function invalidTemplateNameError(label, name) {
+  return new Error(
+    `Invalid ${label} name ${JSON.stringify(name)}: use only letters, numbers, hyphens, and underscores`
+  );
+}
+
+function resolveNamedTemplatePath(directory, name, label) {
+  if (typeof name !== 'string' || !TEMPLATE_NAME_PATTERN.test(name)) {
+    throw invalidTemplateNameError(label, name);
+  }
+
+  const templateRoot = path.resolve(directory);
+  const templatePath = path.resolve(templateRoot, `${name}.json`);
+  const relativePath = path.relative(templateRoot, templatePath);
+  if (
+    relativePath === '..' ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw invalidTemplateNameError(label, name);
+  }
+
+  return templatePath;
+}
 
 function isIdentifierChar(char) {
   if (!char) return false;
@@ -98,6 +124,49 @@ class TemplateResolver {
   }
 
   /**
+   * Load a static or parameterized cluster config from a safe named reference.
+   * Names are identifiers, never filesystem paths.
+   *
+   * @param {string | {base: string, params?: Object}} config
+   * @returns {{kind: 'static' | 'parameterized', name: string, params: Object | null, loadedConfig: Object}}
+   */
+  resolveConfigReference(config) {
+    if (typeof config === 'string') {
+      const configPath = resolveNamedTemplatePath(this.templatesDir, config, 'config');
+      if (!fs.existsSync(configPath)) {
+        throw new Error(`Config not found: ${config} (looked in ${configPath})`);
+      }
+
+      return {
+        kind: 'static',
+        name: config,
+        params: null,
+        loadedConfig: JSON.parse(fs.readFileSync(configPath, 'utf8')),
+      };
+    }
+
+    if (
+      config &&
+      typeof config === 'object' &&
+      !Array.isArray(config) &&
+      Object.prototype.hasOwnProperty.call(config, 'base')
+    ) {
+      const { base, params } = config;
+      const resolvedParams = params || {};
+      return {
+        kind: 'parameterized',
+        name: base,
+        params: resolvedParams,
+        loadedConfig: this.resolve(base, resolvedParams),
+      };
+    }
+
+    throw new Error(
+      `Invalid config format: expected string or {base, params}, got ${typeof config}`
+    );
+  }
+
+  /**
    * Resolve a template with parameters
    * @param {string} baseName - Name of base template (without .json)
    * @param {Object} params - Parameter values to substitute
@@ -105,7 +174,7 @@ class TemplateResolver {
    */
   resolve(baseName, params) {
     // Load base template
-    const templatePath = path.join(this.baseTemplatesDir, `${baseName}.json`);
+    const templatePath = resolveNamedTemplatePath(this.baseTemplatesDir, baseName, 'base template');
     if (!fs.existsSync(templatePath)) {
       throw new Error(`Base template not found: ${baseName} (looked in ${templatePath})`);
     }
@@ -409,7 +478,7 @@ class TemplateResolver {
    * @returns {any}
    */
   getTemplateInfo(baseName) {
-    const templatePath = path.join(this.baseTemplatesDir, `${baseName}.json`);
+    const templatePath = resolveNamedTemplatePath(this.baseTemplatesDir, baseName, 'base template');
     if (!fs.existsSync(templatePath)) {
       return null;
     }

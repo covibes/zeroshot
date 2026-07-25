@@ -3,6 +3,8 @@
  */
 
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const TemplateResolver = require('../src/template-resolver');
 const { DEFAULT_MAX_ITERATIONS } = require('../src/agent/agent-config');
@@ -158,6 +160,138 @@ describe('TemplateResolver', function () {
     it('should fail on non-existent template', function () {
       assert.throws(() => resolver.resolve('does-not-exist', {}), /Base template not found/);
     });
+  });
+});
+
+describe('TemplateResolver config references', function () {
+  let tempDir;
+  let templatesDir;
+  let resolver;
+
+  beforeEach(function () {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-template-reference-'));
+    templatesDir = path.join(tempDir, 'cluster-templates');
+    fs.mkdirSync(path.join(templatesDir, 'base-templates'), { recursive: true });
+
+    fs.writeFileSync(
+      path.join(templatesDir, 'safe-config_1.json'),
+      JSON.stringify({ agents: [{ id: 'static-agent' }] })
+    );
+    fs.writeFileSync(
+      path.join(templatesDir, 'no-agents.json'),
+      JSON.stringify({ name: 'no agents' })
+    );
+    fs.writeFileSync(
+      path.join(templatesDir, 'base-templates', 'safe-base_template.json'),
+      JSON.stringify({ agents: [{ id: 'parameterized-agent' }] })
+    );
+
+    // These files prove traversal would reach valid JSON rather than merely
+    // failing because the escaped target happens not to exist.
+    fs.writeFileSync(
+      path.join(tempDir, 'outside-static.json'),
+      JSON.stringify({ agents: [{ id: 'outside-static' }] })
+    );
+    fs.writeFileSync(
+      path.join(templatesDir, 'outside-base.json'),
+      JSON.stringify({ agents: [{ id: 'outside-base' }] })
+    );
+
+    resolver = new TemplateResolver(templatesDir);
+  });
+
+  afterEach(function () {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('should load static and parameterized names containing hyphens and underscores', function () {
+    const staticReference = resolver.resolveConfigReference('safe-config_1');
+    assert.strictEqual(staticReference.kind, 'static');
+    assert.strictEqual(staticReference.loadedConfig.agents[0].id, 'static-agent');
+
+    const parameterizedReference = resolver.resolveConfigReference({
+      base: 'safe-base_template',
+      params: {},
+    });
+    assert.strictEqual(parameterizedReference.kind, 'parameterized');
+    assert.strictEqual(parameterizedReference.loadedConfig.agents[0].id, 'parameterized-agent');
+  });
+
+  it('should preserve not-found and config-shape behavior for safe names', function () {
+    assert.throws(
+      () => resolver.resolveConfigReference('does-not-exist'),
+      /Config not found: does-not-exist/
+    );
+    assert.throws(
+      () => resolver.resolveConfigReference({ base: 'does-not-exist', params: {} }),
+      /Base template not found: does-not-exist/
+    );
+
+    const noAgentsReference = resolver.resolveConfigReference('no-agents');
+    assert.deepStrictEqual(noAgentsReference.loadedConfig, { name: 'no agents' });
+  });
+
+  for (const invalidConfig of [null, {}, { params: {} }, [], 42]) {
+    it(`should preserve invalid config format for ${JSON.stringify(invalidConfig)}`, function () {
+      assert.throws(
+        () => resolver.resolveConfigReference(invalidConfig),
+        /Invalid config format: expected string or \{base, params\}/
+      );
+    });
+  }
+
+  for (const unsafeName of [
+    '../outside-static',
+    String.raw`..\outside-static`,
+    path.resolve('/tmp', 'outside-static'),
+    'nested/config',
+    String.raw`nested\config`,
+    String.raw`C:\outside-static`,
+    String.raw`\\server\share`,
+    '',
+    '.',
+    '..',
+    'name.json',
+    'name:config',
+    'name config',
+  ]) {
+    it(`should reject unsafe static config name ${JSON.stringify(unsafeName)}`, function () {
+      assert.throws(
+        () => resolver.resolveConfigReference(unsafeName),
+        /Invalid config name.*letters, numbers, hyphens, and underscores/
+      );
+    });
+  }
+
+  for (const unsafeName of [
+    '../outside-base',
+    String.raw`..\outside-base`,
+    path.resolve('/tmp', 'outside-base'),
+    'nested/template',
+    String.raw`nested\template`,
+    String.raw`C:\outside-base`,
+    String.raw`\\server\share`,
+    '',
+    '.',
+    '..',
+    'name.json',
+    'name:template',
+    'name template',
+  ]) {
+    it(`should reject unsafe parameterized base name ${JSON.stringify(unsafeName)}`, function () {
+      assert.throws(
+        () => resolver.resolveConfigReference({ base: unsafeName, params: {} }),
+        /Invalid base template name.*letters, numbers, hyphens, and underscores/
+      );
+    });
+  }
+
+  it('should reject unsafe names through direct base-template APIs', function () {
+    assert.throws(() => resolver.resolve('../outside-base', {}), /Invalid base template name/);
+    assert.throws(
+      () => resolver.getTemplateInfo(String.raw`..\outside-base`),
+      /Invalid base template name/
+    );
   });
 });
 
