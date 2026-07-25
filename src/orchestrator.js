@@ -3597,37 +3597,23 @@ Continue from where you left off. Review your previous output to understand what
   }
 
   _resolveLoadConfigAgents(config) {
+    return this._resolveLoadConfig(config).loadedConfig.agents;
+  }
+
+  _resolveLoadConfig(config) {
     if (!config) {
       throw new Error('load_config operation missing config');
     }
 
     const templatesDir = path.join(__dirname, '..', 'cluster-templates');
-    let loadedConfig;
+    const resolver = new TemplateResolver(templatesDir);
+    const resolvedConfig = resolver.resolveConfigReference(config);
 
-    // Parameterized template - resolve with TemplateResolver
-    if (typeof config === 'object' && config.base) {
-      const { base, params } = config;
-      const resolver = new TemplateResolver(templatesDir);
-      loadedConfig = resolver.resolve(base, params || {});
-    } else if (typeof config === 'string') {
-      // Static config - load directly from file
-      const configPath = path.join(templatesDir, `${config}.json`);
-      if (!fs.existsSync(configPath)) {
-        throw new Error(`Config not found: ${config} (looked in ${configPath})`);
-      }
-      const configContent = fs.readFileSync(configPath, 'utf8');
-      loadedConfig = JSON.parse(configContent);
-    } else {
-      throw new Error(
-        `Invalid config format: expected string or {base, params}, got ${typeof config}`
-      );
-    }
-
-    if (!loadedConfig.agents || !Array.isArray(loadedConfig.agents)) {
+    if (!resolvedConfig.loadedConfig.agents || !Array.isArray(resolvedConfig.loadedConfig.agents)) {
       throw new Error(`Config has no agents array`);
     }
 
-    return loadedConfig.agents;
+    return resolvedConfig;
   }
 
   _hasCompletionHandler(agentConfigs) {
@@ -3988,44 +3974,17 @@ Continue from where you left off. Review your previous output to understand what
    */
   async _opLoadConfig(cluster, op, context) {
     const { config } = op;
-    if (!config) {
-      throw new Error('load_config operation missing config');
-    }
+    const resolvedConfig = this._resolveLoadConfig(config);
+    const loadedConfig = resolvedConfig.loadedConfig;
 
-    const templatesDir = path.join(__dirname, '..', 'cluster-templates');
-    let loadedConfig;
-
-    // Check if config is parameterized ({ base, params }) or static (string)
-    if (typeof config === 'object' && config.base) {
-      // Parameterized template - resolve with TemplateResolver
-      const { base, params } = config;
-      this._log(`    Loading parameterized template: ${base}`);
-      this._log(`    Params: ${JSON.stringify(params)}`);
-
-      const resolver = new TemplateResolver(templatesDir);
-      loadedConfig = resolver.resolve(base, params);
-
-      this._log(`    ✓ Resolved template: ${base} → ${loadedConfig.agents?.length || 0} agent(s)`);
-    } else if (typeof config === 'string') {
-      // Static config - load directly from file
-      const configPath = path.join(templatesDir, `${config}.json`);
-
-      if (!fs.existsSync(configPath)) {
-        throw new Error(`Config not found: ${config} (looked in ${configPath})`);
-      }
-
-      this._log(`    Loading static config: ${config}`);
-
-      const configContent = fs.readFileSync(configPath, 'utf8');
-      loadedConfig = JSON.parse(configContent);
-    } else {
-      throw new Error(
-        `Invalid config format: expected string or {base, params}, got ${typeof config}`
+    if (resolvedConfig.kind === 'parameterized') {
+      this._log(`    Loading parameterized template: ${resolvedConfig.name}`);
+      this._log(`    Params: ${JSON.stringify(resolvedConfig.params)}`);
+      this._log(
+        `    ✓ Resolved template: ${resolvedConfig.name} → ${loadedConfig.agents.length} agent(s)`
       );
-    }
-
-    if (!loadedConfig.agents || !Array.isArray(loadedConfig.agents)) {
-      throw new Error(`Config has no agents array`);
+    } else {
+      this._log(`    Loading static config: ${resolvedConfig.name}`);
     }
 
     this._log(`    Found ${loadedConfig.agents.length} agent(s)`);
