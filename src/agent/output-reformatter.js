@@ -14,6 +14,50 @@
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 
+const { execFile, spawn } = require('child_process');
+
+// Provider used to reformat non-JSON agent output into the target schema.
+// opencode is used as the reformatting backend because it reliably emits clean
+// JSON via `--format json`. This makes the reformat fallback work for agents
+// whose own output isn't directly parseable (e.g. an opencode planner that
+// spends its turn on tool-calls instead of emitting the final JSON block).
+const REFORMAT_PROVIDER_BIN = 'opencode';
+const REFORMAT_TIMEOUT_MS = 180000;
+
+/**
+ * Call the reformat model (opencode CLI) with a prompt; resolve raw output or null.
+ * Uses spawn with stdin ignored — opencode hangs if stdin is left as an open pipe.
+ */
+function callReformatModel(prompt) {
+  return new Promise((resolve) => {
+    const child = spawn(REFORMAT_PROVIDER_BIN, ['run', '--format', 'json', prompt], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(null);
+    }, REFORMAT_TIMEOUT_MS);
+    child.stdout.on('data', (d) => {
+      stdout += d.toString();
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      finish(stdout || null);
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      finish(null);
+    });
+  });
+}
+
 /**
  * Build the reformatting prompt
  *
@@ -27,7 +71,9 @@ function buildReformatPrompt(rawOutput, schema, previousError = null) {
   // Truncate long outputs to avoid context limits
   const truncatedOutput = rawOutput.length > 4000 ? rawOutput.slice(-4000) : rawOutput;
 
-  let prompt = `Convert this text into a JSON object matching the schema.
+  let prompt = `CRITICAL: Do NOT use any tools. Do NOT read, write, or edit any files. Do NOT explore the codebase. This is a pure text-to-JSON transformation — respond with JSON only.
+
+Convert this text into a JSON object matching the schema.
 
 ## SCHEMA
 \`\`\`json
@@ -72,27 +118,14 @@ Fix this issue in your response.`;
  * @returns {Promise<Object>} The reformatted JSON object
  * @throws {Error} Always throws - SDK not implemented
  */
-function reformatOutput({
+async function reformatOutput({
   rawOutput,
-  schema: _schema,
+  schema,
   providerName,
-  maxAttempts: _maxAttempts = DEFAULT_MAX_ATTEMPTS,
-  onAttempt: _onAttempt,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  onAttempt,
 }) {
-  // SDK not implemented - reformatting not available
-  // When SDK support is added, uncomment the implementation below
-  return Promise.reject(
-    new Error(
-      `Output reformatting not available: SDK not implemented for provider "${providerName}". ` +
-        `Agent output must be valid JSON. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
-    )
-  );
-
-  // FUTURE: When SDK support is added to providers, uncomment this:
-  /*
-  const { getProvider } = require('../providers');
-  const provider = getProvider(providerName);
-
+  const { extractJsonFromOutput } = require('./output-extraction');
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -103,23 +136,13 @@ function reformatOutput({
     const prompt = buildReformatPrompt(rawOutput, schema, lastError);
 
     try {
-      const result = await provider.callSimple(prompt, {
-        level: 'level1',
-        maxTokens: 2000,
-      });
-
-      if (!result?.success) {
-        lastError = result?.error || 'API call failed';
+      const output = await callReformatModel(prompt);
+      if (!output) {
+        lastError = 'reformat model returned no output';
         continue;
       }
 
-      if (!result?.text) {
-        lastError = 'Empty response from reformatting model';
-        continue;
-      }
-
-      const parsed = extractJsonFromOutput(result.text, providerName);
-
+      const parsed = extractJsonFromOutput(output, 'opencode');
       if (!parsed) {
         lastError = 'Could not extract JSON from reformatted output';
         continue;
@@ -138,9 +161,9 @@ function reformatOutput({
   }
 
   throw new Error(
-    `Failed to reformat output after ${maxAttempts} attempts. Last error: ${lastError}`
+    `Failed to reformat output after ${maxAttempts} attempts (provider "${providerName}"). ` +
+      `Last error: ${lastError}. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
   );
-  */
 }
 
 /**
