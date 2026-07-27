@@ -260,6 +260,7 @@ export interface BuildProviderCommandOptions {
   readonly autoApprove?: boolean;
   readonly resumeSessionId?: string;
   readonly continueSession?: boolean;
+  readonly claudeSettingsFile?: string;
   readonly cliFeatures?: CliFeatureOverrides;
   readonly authEnv?: Readonly<Record<string, string>>;
   readonly strictSchema?: boolean;
