@@ -108,6 +108,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Link CLI
+        run: npm link
+
       - name: Docker isolation e2e
         run: npm run test:e2e:docker
         timeout-minutes: 15
