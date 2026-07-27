@@ -102,6 +102,18 @@ test('runtime Claude command facade delegates to helper', () => {
   });
 });
 
+test('Claude command loads the per-run settings overlay without replacing user config', () => {
+  const command = assertRuntimeCommandParity('claude', 'test context', {
+    outputFormat: 'json',
+    modelSpec: { level: 'level2', model: 'sonnet' },
+    claudeSettingsFile: '/tmp/zeroshot-run-settings.json',
+  });
+  const settingsIndex = command.args.indexOf('--settings');
+  assert.notEqual(settingsIndex, -1);
+  assert.equal(command.args[settingsIndex + 1], '/tmp/zeroshot-run-settings.json');
+  assert.equal(command.env.CLAUDE_CONFIG_DIR, undefined);
+});
+
 test('runtime Codex command facade delegates to helper', () => {
   assertRuntimeCommandParity('codex', 'test context', {
     outputFormat: 'json',

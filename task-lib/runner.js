@@ -116,9 +116,15 @@ function buildProviderOptions(options, runtime, modelSelection) {
     autoApprove: true,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...mcpConfigOption(options),
+    ...claudeSettingsFileOption(),
     ...(options.resume ? { resumeSessionId: options.resume } : {}),
     ...(options.continue ? { continueSession: true } : {}),
   };
+}
+
+function claudeSettingsFileOption() {
+  const settingsPath = process.env.ZEROSHOT_CLAUDE_SETTINGS_FILE?.trim();
+  return settingsPath ? { claudeSettingsFile: settingsPath } : {};
 }
 
 function mcpConfigOption(options) {

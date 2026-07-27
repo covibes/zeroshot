@@ -208,6 +208,11 @@ function normalizeBuildOptions(value: Record<string, unknown>): BuildProviderCom
     'continueSession',
     optionalBooleanValue(value.continueSession, 'options.continueSession')
   );
+  addDefined(
+    result,
+    'claudeSettingsFile',
+    optionalStringValue(value.claudeSettingsFile, 'options.claudeSettingsFile')
+  );
   addDefined(result, 'cliFeatures', optionalCliFeatures(value.cliFeatures));
   addDefined(result, 'mcpConfig', optionalMcpConfig(value.mcpConfig));
   addDefined(

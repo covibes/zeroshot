@@ -123,6 +123,13 @@ function addSessionArgs(args: string[], options: BuildProviderCommandOptions): v
   }
 }
 
+function addSettingsArgs(args: string[], options: BuildProviderCommandOptions): void {
+  const settingsPath = options.claudeSettingsFile?.trim();
+  if (settingsPath) {
+    args.push('--settings', settingsPath);
+  }
+}
+
 function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[] {
   const features = optionFeatures(options);
   const warnings: WarningMetadata[] = [];
@@ -179,6 +186,7 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   addModelArgs(args, options);
   addAutoApproveArgs(args, options);
   addSessionArgs(args, options);
+  addSettingsArgs(args, options);
 
   args.push(context);
 

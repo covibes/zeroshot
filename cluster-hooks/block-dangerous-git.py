@@ -2,9 +2,8 @@
 """
 PreToolUse hook to block dangerous git commands in zeroshot worktree mode.
 
-This hook is installed globally but ONLY activates when the environment
-variable ZEROSHOT_WORKTREE=1 is set. This keeps the blocking specific to
-worktree-isolated zeroshot invocations.
+This hook is loaded from a per-run Zeroshot settings overlay and only activates
+when the environment variable ZEROSHOT_WORKTREE=1 is set.
 
 Blocks:
 - git stash (all forms) - hides work from other agents

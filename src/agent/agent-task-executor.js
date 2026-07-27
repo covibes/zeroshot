@@ -20,7 +20,11 @@ const { loadSettings } = require('../../lib/settings.js');
 const { resolveClaudeAuth } = require('../../lib/settings/claude-auth.js');
 const { prependWorktreeToolBinToEnv } = require('../worktree-tooling-env.js');
 const {
-  prepareClaudeConfigDir,
+  CLAUDE_SETTINGS_ENV,
+  cleanupClaudeSettingsOverlay,
+  ensureAskUserQuestionHook,
+  ensureDangerousGitHook,
+  prepareClaudeSettingsOverlay,
   resolveRepoMcpConfigPath,
 } = require('../worktree-claude-config.js');
 const {
@@ -372,10 +376,6 @@ function extractErrorContext({ output, statusOutput, taskId, isNotFound = false,
   return sanitizeErrorMessage(`Task failed. Output: ${trimmedOutput}`);
 }
 
-// Track which config dirs already have zeroshot-installed hooks.
-const askUserQuestionHookInstalledDirs = new Set();
-const dangerousGitHookInstalledDirs = new Set();
-
 /**
  * Extract token usage from NDJSON output.
  * Looks for the 'result' event line which contains usage data.
@@ -427,162 +427,6 @@ function extractTokenUsage(output, providerName = 'claude') {
     durationMs: resultEvent.duration || null,
     modelUsage: resultEvent.modelUsage || null,
   };
-}
-
-/**
- * Ensure the AskUserQuestion blocking hook is installed in user's Claude config.
- * This adds defense-in-depth by blocking the tool at the Claude CLI level.
- * Modifies ~/.claude/settings.json and copies hook script to ~/.claude/hooks/
- *
- * Safe to call multiple times - only modifies config once per process.
- */
-function ensureAskUserQuestionHook(targetClaudeDir = null) {
-  const userClaudeDir =
-    targetClaudeDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  if (askUserQuestionHookInstalledDirs.has(userClaudeDir)) {
-    return;
-  }
-  const hooksDir = path.join(userClaudeDir, 'hooks');
-  const settingsPath = path.join(userClaudeDir, 'settings.json');
-  const hookScriptName = 'block-ask-user-question.py';
-  const hookScriptDst = path.join(hooksDir, hookScriptName);
-
-  // Ensure hooks directory exists
-  if (!fs.existsSync(hooksDir)) {
-    fs.mkdirSync(hooksDir, { recursive: true });
-  }
-
-  // Copy hook script if not present or outdated
-  const hookScriptSrc = path.join(__dirname, '..', '..', 'cluster-hooks', hookScriptName);
-  if (fs.existsSync(hookScriptSrc)) {
-    // Always copy to ensure latest version
-    fs.copyFileSync(hookScriptSrc, hookScriptDst);
-    fs.chmodSync(hookScriptDst, 0o755);
-  }
-
-  // Read existing settings or create new
-  let settings = {};
-  if (fs.existsSync(settingsPath)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    } catch (e) {
-      console.warn(`[AgentTaskExecutor] Could not parse settings.json, creating new: ${e.message}`);
-      settings = {};
-    }
-  }
-
-  // Ensure hooks structure exists
-  if (!settings.hooks) {
-    settings.hooks = {};
-  }
-  if (!settings.hooks.PreToolUse) {
-    settings.hooks.PreToolUse = [];
-  }
-
-  // Check if AskUserQuestion hook already exists
-  const hasHook = settings.hooks.PreToolUse.some(
-    (entry) =>
-      entry.matcher === 'AskUserQuestion' ||
-      (entry.hooks && entry.hooks.some((h) => h.command && h.command.includes(hookScriptName)))
-  );
-
-  if (!hasHook) {
-    // Add the hook
-    settings.hooks.PreToolUse.push({
-      matcher: 'AskUserQuestion',
-      hooks: [
-        {
-          type: 'command',
-          command: hookScriptDst,
-        },
-      ],
-    });
-
-    // Write updated settings
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    console.log(`[AgentTaskExecutor] Installed AskUserQuestion blocking hook in ${settingsPath}`);
-  }
-
-  askUserQuestionHookInstalledDirs.add(userClaudeDir);
-}
-
-/**
- * Ensure the dangerous git blocking hook is installed in user's Claude config.
- * This blocks dangerous git commands like stash, checkout --, reset --hard, etc.
- * Modifies ~/.claude/settings.json and copies hook script to ~/.claude/hooks/
- *
- * Only used in worktree mode - Docker isolation mode has its own git-safe.sh wrapper.
- * Safe to call multiple times - only modifies config once per process.
- */
-function ensureDangerousGitHook(targetClaudeDir = null) {
-  const userClaudeDir =
-    targetClaudeDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  if (dangerousGitHookInstalledDirs.has(userClaudeDir)) {
-    return;
-  }
-  const hooksDir = path.join(userClaudeDir, 'hooks');
-  const settingsPath = path.join(userClaudeDir, 'settings.json');
-  const hookScriptName = 'block-dangerous-git.py';
-  const hookScriptDst = path.join(hooksDir, hookScriptName);
-
-  // Ensure hooks directory exists
-  if (!fs.existsSync(hooksDir)) {
-    fs.mkdirSync(hooksDir, { recursive: true });
-  }
-
-  // Copy hook script if not present or outdated
-  const hookScriptSrc = path.join(__dirname, '..', '..', 'cluster-hooks', hookScriptName);
-  if (fs.existsSync(hookScriptSrc)) {
-    // Always copy to ensure latest version
-    fs.copyFileSync(hookScriptSrc, hookScriptDst);
-    fs.chmodSync(hookScriptDst, 0o755);
-  }
-
-  // Read existing settings or create new
-  let settings = {};
-  if (fs.existsSync(settingsPath)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    } catch (e) {
-      console.warn(`[AgentTaskExecutor] Could not parse settings.json, creating new: ${e.message}`);
-      settings = {};
-    }
-  }
-
-  // Ensure hooks structure exists
-  if (!settings.hooks) {
-    settings.hooks = {};
-  }
-  if (!settings.hooks.PreToolUse) {
-    settings.hooks.PreToolUse = [];
-  }
-
-  // Check if dangerous git hook already exists
-  const hasHook = settings.hooks.PreToolUse.some(
-    (entry) =>
-      entry.matcher === 'Bash' &&
-      entry.hooks &&
-      entry.hooks.some((h) => h.command && h.command.includes(hookScriptName))
-  );
-
-  if (!hasHook) {
-    // Add the hook - matches Bash tool to check for dangerous git commands
-    settings.hooks.PreToolUse.push({
-      matcher: 'Bash',
-      hooks: [
-        {
-          type: 'command',
-          command: hookScriptDst,
-        },
-      ],
-    });
-
-    // Write updated settings
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    console.log(`[AgentTaskExecutor] Installed dangerous git blocking hook in ${settingsPath}`);
-  }
-
-  dangerousGitHookInstalledDirs.add(userClaudeDir);
 }
 
 /**
@@ -644,66 +488,69 @@ async function spawnClaudeTask(agent, context) {
     return spawnClaudeTaskIsolated(agent, context);
   }
 
-  // NON-ISOLATION MODE: For Claude, use user's existing Claude config
+  // NON-ISOLATION MODE: Load safety hooks through an additional per-run settings file. Claude
+  // still reads the user's normal config and the repository's project/local config.
   // AskUserQuestion blocking handled via:
   // 1. Prompt injection (see agent-context-builder)
   // 2. PreToolUse hook (defense-in-depth) - activated by ZEROSHOT_BLOCK_ASK_USER env var
-  const claudeConfigDir =
+  const claudeSettingsPath =
     providerName === 'claude'
-      ? prepareClaudeConfigDir({
-          cwd,
-          worktreePath: agent.worktree?.path || null,
+      ? prepareClaudeSettingsOverlay({
+          includeDangerousGit: Boolean(agent.worktree?.enabled),
         })
       : null;
 
-  ensureProviderHooks(agent, providerName, claudeConfigDir);
-  const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeConfigDir });
-  const taskId = await spawnTaskProcess({
-    agent,
-    ctPath,
-    args,
-    cwd,
-    spawnEnv,
-  });
+  try {
+    const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
+    const taskId = await spawnTaskProcess({
+      agent,
+      ctPath,
+      args,
+      cwd,
+      spawnEnv,
+    });
 
-  agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
+    agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
 
-  // Wait for task to be registered in zeroshot storage (race condition fix)
-  await waitForTaskReady(agent, taskId);
+    // Wait for task to be registered in zeroshot storage (race condition fix)
+    await waitForTaskReady(agent, taskId);
 
-  // CRITICAL: Poll for REAL process PID from task store
-  // The watcher spawns the actual CLI and writes PID to SQLite asynchronously.
-  // We must poll because the watcher runs in a forked process.
-  const MAX_PID_POLLS = 30; // 3 seconds max
-  const PID_POLL_DELAY = 100;
-  let realPid = null;
-  let terminalBeforePidObservation = false;
+    // CRITICAL: Poll for REAL process PID from task store
+    // The watcher spawns the actual CLI and writes PID to SQLite asynchronously.
+    // We must poll because the watcher runs in a forked process.
+    const MAX_PID_POLLS = 30; // 3 seconds max
+    const PID_POLL_DELAY = 100;
+    let realPid = null;
+    let terminalBeforePidObservation = false;
 
-  for (let i = 0; i < MAX_PID_POLLS; i++) {
-    const taskInfo = getTask(taskId);
-    if (taskInfo?.pid) {
-      realPid = taskInfo.pid;
-      break;
+    for (let i = 0; i < MAX_PID_POLLS; i++) {
+      const taskInfo = getTask(taskId);
+      if (taskInfo?.pid) {
+        realPid = taskInfo.pid;
+        break;
+      }
+      if (taskInfo && ['completed', 'failed', 'killed', 'stale'].includes(taskInfo.status)) {
+        terminalBeforePidObservation = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, PID_POLL_DELAY));
     }
-    if (taskInfo && ['completed', 'failed', 'killed', 'stale'].includes(taskInfo.status)) {
-      terminalBeforePidObservation = true;
-      break;
+
+    if (realPid) {
+      agent.processPid = realPid;
+      agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
+      agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
+    } else if (terminalBeforePidObservation) {
+      agent._log(`📋 Agent ${agent.id}: Task finished before PID observation`);
+    } else {
+      agent._log(`⚠️ Agent ${agent.id}: PID not available (task may use non-standard watcher)`);
     }
-    await new Promise((r) => setTimeout(r, PID_POLL_DELAY));
-  }
 
-  if (realPid) {
-    agent.processPid = realPid;
-    agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
-    agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
-  } else if (terminalBeforePidObservation) {
-    agent._log(`📋 Agent ${agent.id}: Task finished before PID observation`);
-  } else {
-    agent._log(`⚠️ Agent ${agent.id}: PID not available (task may use non-standard watcher)`);
+    // Keep the overlay alive until the provider exits, then remove it.
+    return await followClaudeTaskLogs(agent, taskId);
+  } finally {
+    cleanupClaudeSettingsOverlay(claudeSettingsPath);
   }
-
-  // Now follow the logs and stream output
-  return followClaudeTaskLogs(agent, taskId);
 }
 
 function resolveAgentModelSpec(agent) {
@@ -744,8 +591,8 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
   }
 
   // MCP servers: providers whose CLI accepts an MCP config flag (e.g. Copilot's
-  // --additional-mcp-config) cannot use the Claude config-dir overlay, so forward the repo's
-  // `.mcp.json` (the same MCP source Claude consumes) inline via `--mcp-config`.
+  // --additional-mcp-config) cannot discover Claude's project config, so forward the repo's
+  // `.mcp.json` inline via `--mcp-config`.
   for (const mcpArg of resolveMcpConfigArgs(agent, providerName)) {
     args.push(mcpArg);
   }
@@ -756,10 +603,10 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
 /**
  * Build the `--mcp-config` args for a task-run invocation, or [] when they don't apply.
  *
- * Only providers whose adapter models an MCP config CLI flag receive it — Claude consumes MCP via
- * the config-dir `.mcp.json` overlay (see prepareClaudeConfigDir) and needs no flag. The repo
- * `.mcp.json` content is inlined (not passed as an @<path> reference) so the identical value works
- * under local, worktree, and Docker isolation without host/container path translation.
+ * Only providers whose adapter models an MCP config CLI flag receive it — Claude discovers its
+ * project MCP config directly and needs no flag. The repo `.mcp.json` content is inlined (not
+ * passed as an @<path> reference) so the identical value works under local, worktree, and Docker
+ * isolation without host/container path translation.
  */
 function resolveMcpConfigArgs(agent, providerName) {
   if (!providerModelsMcpConfigFlag(providerName)) return [];
@@ -809,21 +656,8 @@ function buildFinalContext({ agent, context, desiredOutputFormat, runOutputForma
   return context;
 }
 
-function ensureProviderHooks(agent, providerName, claudeConfigDir = null) {
-  if (providerName !== 'claude') {
-    return;
-  }
-
-  ensureAskUserQuestionHook(claudeConfigDir);
-
-  // WORKTREE MODE: Install git safety hook (blocks dangerous git commands)
-  if (agent.worktree?.enabled) {
-    ensureDangerousGitHook(claudeConfigDir);
-  }
-}
-
 function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
-  const { claudeConfigDir = null } = options;
+  const { claudeSettingsPath = null } = options;
   const spawnEnv = { ...process.env };
   const agentCwd = agent.config?.cwd || agent.worktree?.path || process.cwd();
   const clusterId = agent.cluster?.id || agent.cluster_id || process.env.ZEROSHOT_CLUSTER_ID;
@@ -848,8 +682,8 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
 
   if (providerName === 'claude') {
     Object.assign(spawnEnv, buildClaudeEnv(modelSpec));
-    if (claudeConfigDir) {
-      spawnEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+    if (claudeSettingsPath) {
+      spawnEnv[CLAUDE_SETTINGS_ENV] = claudeSettingsPath;
     }
 
     // WORKTREE MODE: Activate git safety hook via environment variable
@@ -2365,6 +2199,7 @@ async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
 
 module.exports = {
   ensureAskUserQuestionHook,
+  ensureDangerousGitHook,
   spawnClaudeTask,
   followClaudeTaskLogs,
   followClaudeTaskLogsIsolated,

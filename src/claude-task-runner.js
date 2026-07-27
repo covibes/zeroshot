@@ -12,7 +12,11 @@ const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
-const { prepareClaudeConfigDir } = require('./worktree-claude-config');
+const {
+  CLAUDE_SETTINGS_ENV,
+  cleanupClaudeSettingsOverlay,
+  prepareClaudeSettingsOverlay,
+} = require('./worktree-claude-config');
 const {
   appendTaskRunModelArgs,
   wrapTaskRunWithIsolatedSettings,
@@ -191,15 +195,22 @@ class ClaudeTaskRunner extends TaskRunner {
       worktreePath,
     });
 
-    const taskId = await this._spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, agentId);
+    const claudeSettingsPath =
+      providerName === 'claude' ? spawnEnv[CLAUDE_SETTINGS_ENV] || null : null;
 
-    this._log(`📋 [${agentId}]: Following zeroshot logs for ${taskId}`);
+    try {
+      const taskId = await this._spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, agentId);
 
-    // Wait for task registration
-    await this._waitForTaskReady(ctPath, taskId);
+      this._log(`📋 [${agentId}]: Following zeroshot logs for ${taskId}`);
 
-    // Follow logs until completion
-    return this._followLogs(ctPath, taskId, agentId);
+      // Wait for task registration
+      await this._waitForTaskReady(ctPath, taskId);
+
+      // Follow logs until completion
+      return await this._followLogs(ctPath, taskId, agentId);
+    } finally {
+      cleanupClaudeSettingsOverlay(claudeSettingsPath);
+    }
   }
 
   _getProviderContext(providerName, settings) {
@@ -325,10 +336,9 @@ class ClaudeTaskRunner extends TaskRunner {
       spawnEnv.ANTHROPIC_MODEL = resolvedModelSpec.model;
     }
     if (providerName === 'claude') {
-      const claudeConfigDir = prepareClaudeConfigDir({ cwd, worktreePath });
-      if (claudeConfigDir) {
-        spawnEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
-      }
+      spawnEnv[CLAUDE_SETTINGS_ENV] = prepareClaudeSettingsOverlay({
+        includeDangerousGit: Boolean(worktreePath),
+      });
     }
 
     prependWorktreeToolBinToEnv(spawnEnv, { cwd, worktreePath });
