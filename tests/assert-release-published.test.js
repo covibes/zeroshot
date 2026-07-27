@@ -5,6 +5,7 @@ const {
   provenanceStatement,
   verifyInstalledCli,
   verifyProvenance,
+  waitForPublishedArtifact,
 } = require('../scripts/assert-release-published');
 const { releaseTypeForMessages } = require('../scripts/release-preflight');
 
@@ -131,5 +132,51 @@ describe('release publication assertion', () => {
       /expected 6.7.2/
     );
     assert.strictEqual(removed, '/tmp/zeroshot-release-proof-failure');
+  });
+
+  it('retries eventually consistent publication artifacts', async () => {
+    let checks = 0;
+    const delays = [];
+
+    const result = await waitForPublishedArtifact(
+      'npm provenance',
+      async () => {
+        checks += 1;
+        if (checks < 3) throw new Error('HTTP 404: Not found');
+        return 'ready';
+      },
+      {
+        attempts: 3,
+        delayMs: 25,
+        sleep: async (delay) => {
+          delays.push(delay);
+        },
+      }
+    );
+
+    assert.strictEqual(result, 'ready');
+    assert.strictEqual(checks, 3);
+    assert.deepStrictEqual(delays, [25, 25]);
+  });
+
+  it('reports the last publication propagation failure after exhausting retries', async () => {
+    let checks = 0;
+
+    await assert.rejects(
+      waitForPublishedArtifact(
+        'npm provenance',
+        async () => {
+          checks += 1;
+          throw new Error(`not ready ${checks}`);
+        },
+        {
+          attempts: 2,
+          delayMs: 0,
+          sleep: async () => {},
+        }
+      ),
+      /npm provenance did not become ready after 2 attempts: not ready 2/
+    );
+    assert.strictEqual(checks, 2);
   });
 });

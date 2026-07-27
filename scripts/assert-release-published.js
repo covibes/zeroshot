@@ -201,6 +201,33 @@ async function waitForNpmLatest(name, expectedVersion, options = {}) {
   throw new Error(`expected npm latest for ${name} to be ${expectedVersion}, got ${latest}`);
 }
 
+async function waitForPublishedArtifact(label, check, options = {}) {
+  const attempts =
+    options.attempts || Number(process.env.RELEASE_ASSERT_ATTEMPTS || DEFAULT_ATTEMPTS);
+  const delayMs =
+    options.delayMs || Number(process.env.RELEASE_ASSERT_DELAY_MS || DEFAULT_DELAY_MS);
+  const wait = options.sleep || sleep;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await check();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        console.log(
+          `${label} is not ready: ${error.message}; retrying (${attempt}/${attempts})`
+        );
+        await wait(delayMs);
+      }
+    }
+  }
+
+  throw new Error(
+    `${label} did not become ready after ${attempts} attempts: ${lastError?.message || 'unknown error'}`
+  );
+}
+
 async function main() {
   const name = packageName();
   const headTags = tagsPointingAtHead();
@@ -223,25 +250,36 @@ async function main() {
   console.log(`npm latest for ${name}: ${latest}`);
 
   const expectedCommit = run('git', ['rev-parse', 'HEAD']);
-  const metadata = npmReleaseMetadata(name, expectedVersion);
-  if (metadata.version !== expectedVersion) {
-    throw new Error(`npm metadata returned ${metadata.version}; expected ${expectedVersion}`);
-  }
-  if (metadata.gitHead !== expectedCommit) {
-    throw new Error(`npm gitHead ${metadata.gitHead || '(missing)'} does not match HEAD`);
-  }
+  const metadata = await waitForPublishedArtifact('npm release metadata', () => {
+    const result = npmReleaseMetadata(name, expectedVersion);
+    if (result.version !== expectedVersion) {
+      throw new Error(`npm metadata returned ${result.version}; expected ${expectedVersion}`);
+    }
+    if (result.gitHead !== expectedCommit) {
+      throw new Error(`npm gitHead ${result.gitHead || '(missing)'} does not match HEAD`);
+    }
+    if (!result['dist.attestations']?.url) {
+      throw new Error('npm attestation URL is missing');
+    }
+    return result;
+  });
 
-  const attestationUrl = metadata['dist.attestations']?.url;
-  if (!attestationUrl) throw new Error('npm attestation URL is missing');
-  const attestations = await httpsJson(attestationUrl);
-  verifyProvenance(provenanceStatement(attestations), expectedCommit);
+  await waitForPublishedArtifact('npm provenance', async () => {
+    const attestations = await httpsJson(metadata['dist.attestations'].url);
+    verifyProvenance(provenanceStatement(attestations), expectedCommit);
+  });
 
-  const release = githubRelease(expectedTag);
-  if (release.tagName !== expectedTag) {
-    throw new Error(`GitHub Release tag ${release.tagName} does not match ${expectedTag}`);
-  }
-  verifyCuratedNotes(expectedTag, release);
-  verifyInstalledCli(name, expectedVersion);
+  await waitForPublishedArtifact('GitHub Release', () => {
+    const release = githubRelease(expectedTag);
+    if (release.tagName !== expectedTag) {
+      throw new Error(`GitHub Release tag ${release.tagName} does not match ${expectedTag}`);
+    }
+    verifyCuratedNotes(expectedTag, release);
+  });
+
+  await waitForPublishedArtifact('installed CLI', () =>
+    verifyInstalledCli(name, expectedVersion)
+  );
 
   console.log(`Release publication verified: ${name}@${latest}`);
 }
@@ -263,4 +301,5 @@ module.exports = {
   verifyInstalledCli,
   verifyProvenance,
   waitForNpmLatest,
+  waitForPublishedArtifact,
 };
