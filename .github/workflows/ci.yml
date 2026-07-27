@@ -16,6 +16,12 @@ on:
   merge_group:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      include_docker_e2e:
+        description: Run the non-hermetic live-provider Docker E2E job
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   # Fast quality gates - must pass before anything else
@@ -94,7 +100,7 @@ jobs:
   # "Integration tests (slow)" step self-skip under CI (this is what that
   # step's Docker coverage was previously silently missing).
   e2e-docker:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.include_docker_e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -124,6 +130,7 @@ jobs:
       needs.check.result == 'success' &&
       (
         github.ref == 'refs/heads/main' ||
+        github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'pull_request' && github.base_ref == 'main') ||
         (github.event_name == 'merge_group' && (
           github.event.merge_group.base_ref == 'main' ||
