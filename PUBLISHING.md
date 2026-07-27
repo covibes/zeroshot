@@ -75,7 +75,6 @@ The package.json is already configured correctly:
 ```json
 {
   "name": "@the-open-engine/zeroshot",
-  "version": "5.4.0",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -88,6 +87,10 @@ The package.json is already configured correctly:
 - **`"access": "public"`** - Required for scoped packages to be public
 - **`"registry"`** - Explicit npm registry URL
 - **`"name"`** - Scoped package name with @the-open-engine org
+
+The checked-in version is not release authority. semantic-release derives the next version from
+Git tags and rewrites the manifest in its isolated publication workspace before `npm publish`.
+Git tags, npm metadata, and GitHub Releases are the durable version authorities.
 
 ## Step 5: Test Publishing Locally (Optional)
 
@@ -126,19 +129,21 @@ Once trusted publishing is configured, publishing happens automatically from `ma
    git commit -m "feat!: breaking change"     # Major version bump (0.1.0 → 1.0.0)
    ```
 
-3. **Merge through the protected flow**:
+3. **Merge through the protected trunk flow**:
 
    ```bash
-   # PR into dev, then release PR from dev to main
-   gh pr create --base dev
-   gh pr create --base main --head dev --title "Release"
+   gh pr create --base main
+   gh pr merge --auto --squash
    ```
 
-4. **GitHub Actions runs** the release workflow:
+   The squash commit uses the PR title, so keep the PR title conventional (`fix:`, `feat:`, or a
+   breaking form). There is no separate release-promotion PR.
+
+4. **GitHub Actions runs** the release workflow after the exact merged `main` commit passes CI:
    - Analyzes commit messages
    - Determines version bump
-   - Updates CHANGELOG.md
-   - Creates a GitHub release
+   - Uses `docs/releases/vX.Y.Z.md` when curated notes exist, otherwise generates conventional notes
+   - Creates the immutable tag and GitHub Release
    - Publishes to npm
 
 ### Check the release:
@@ -222,27 +227,27 @@ npm deprecate '@covibes/zeroshot@<=5.4.0' \
 
 ### No release created
 
-**Cause:** Commits don't follow conventional commit format.
+**Cause:** No commit since the latest tag has a release-worthy conventional type.
 
-**Fix:** Use `feat:`, `fix:`, or other conventional commit types.
+**Fix:** Use `feat:`, `fix:`, or another release-worthy conventional type when publication is
+intended. `docs:` and `chore:` commits intentionally produce no release and are treated as a
+successful no-op.
 
-## Manual Publishing (Emergency)
+## Recovery
 
-If GitHub Actions fails and you need to publish manually:
+Do not publish a normal release from a developer checkout. The `Release` workflow provides three
+manual actions:
 
-```bash
-# Login to npm
-npm login
+- `dry-run` validates the current protected `main` without publishing.
+- `recover-npm` republishes only when the requested immutable tag has no npm version.
+- `recover-github-release` recreates only a missing GitHub Release.
 
-# Update version (semantic-release normally does this)
-npm version patch   # or 'minor' or 'major'
+Both recovery actions require a `vX.Y.Z` tag and its full commit SHA. The workflow verifies that the
+tag, checkout, supplied SHA, and `main` ancestry agree. An existing artifact is verified and treated
+as a no-op; an inconsistent artifact fails closed.
 
-# Publish
-npm publish --access public --otp <your-2fa-code>
-
-# Open PRs through the protected dev -> main flow,
-# then let the release workflow own normal publication again.
-```
+Interactive 2FA publishing is reserved for creating a package before trusted publishing can be
+configured. It is not a release recovery path.
 
 ## Security Best Practices
 
@@ -258,7 +263,7 @@ npm publish --access public --otp <your-2fa-code>
 2. ✅ Create the initial `@the-open-engine/zeroshot` package with interactive 2FA if needed
 3. ✅ Configure trusted publishing for `the-open-engine/zeroshot` + `release.yml`
 4. ✅ Make a commit with `feat:` or `fix:`
-5. ✅ Merge dev to main through the protected PR flow
+5. ✅ Merge the feature PR to main through the protected merge queue
 6. ✅ Watch GitHub Actions run the release
 7. ✅ Verify package published to npm
 

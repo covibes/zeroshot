@@ -126,7 +126,7 @@ describe('release hygiene', function () {
     const workflowText = [
       readText('.github/workflows/ci.yml'),
       readText('.github/workflows/release.yml'),
-      readText('.releaserc.json'),
+      JSON.stringify(require('../../package.json').release),
     ].join(' ');
 
     assertNoMatch('release workflows', workflowText, [

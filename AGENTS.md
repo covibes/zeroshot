@@ -12,6 +12,16 @@ Operational rules and references for automated agents working on this repo. Inst
 - Never ask questions. Agents run non-interactively; make autonomous decisions.
 - Never edit `CLAUDE.md` unless explicitly asked to update docs.
 - Detached (`-d`) runs must forward all `zeroshot run` options via `ZEROSHOT_RUN_OPTIONS` (see `buildDaemonEnv` + `buildStartOptions`) so PR/worktree config cannot be dropped.
+- `main` is the single development and release trunk. Target normal PRs at `main`; never recreate a
+  long-lived `dev -> main` release-promotion flow.
+- Pull request titles are Conventional Commit headers because squash merge makes the title the
+  released commit. `fix:`/`perf:` publish patches, `feat:` publishes minors, breaking syntax
+  publishes majors, and `docs:`/`chore:` intentionally publish nothing.
+- The checked-in package version is always `0.0.0-development`. Release tags, npm metadata, and
+  GitHub Releases are authoritative; release automation must never commit versions back to `main`.
+- Curated notes live at `docs/releases/vX.Y.Z.md`. Recovery may operate only from an immutable
+  `vX.Y.Z` tag whose exact commit is an ancestor of `main`, and it must never overwrite an existing
+  npm version or GitHub Release.
 
 Worker git operations are allowed only with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). They are forbidden without isolation.
 
@@ -265,7 +275,7 @@ reach the cleanup-failure reporter (default: process warning); never detach them
 zeroshot run 123                  # Local, no isolation
 zeroshot run 123 --worktree       # Git worktree isolation
 zeroshot run 123 --pr             # Worktree + create PR
-zeroshot run 123 --pr --pr-base dev # PR base: dev, worktree base: origin/dev (incl. -d)
+zeroshot run 123 --pr --pr-base main # PR base: main, worktree base: origin/main (incl. -d)
 zeroshot run 123 --ship           # Worktree + PR + auto-merge
 zeroshot run 123 --docker         # Docker container isolation
 zeroshot run 123 -d               # Background (daemon) mode
@@ -661,9 +671,15 @@ Multiple CI jobs fail → Diagnose each independently.
 
 ## Release Pipeline Convention
 
-- Dev required checks: `check` only (merge queue).
-- Main required checks: `check` + `install-matrix` (merge queue).
-- Cross-platform `install-matrix` runs in CI for main only.
+- `main` is the only development and release branch.
+- Feature branches merge directly to `main` through its merge queue.
+- Main requires `check` + `install-matrix`; semantic-release runs only after the exact merged
+  `main` commit passes CI.
+- Conventional squash-commit titles select patch/minor/major. Documentation and chore commits may
+  intentionally produce no release.
+- The checked-in `0.0.0-development` manifest version is deliberately non-authoritative;
+  semantic-release derives and writes the published version from Git tags in its release workspace.
+- There is no release-promotion PR and no `dev -> main` synchronization step.
 
 Do NOT assume single root cause.
 
