@@ -32,6 +32,10 @@ describe('release topology', function () {
       'release jobs must bind to the exact CI-tested main commit'
     );
     assert(
+      /workflow_run\.head_sha \|\| github\.sha/.test(releaseWorkflow),
+      'manual dry runs must bind to the exact dispatched commit'
+    );
+    assert(
       /Recheck main immediately before publication/.test(releaseWorkflow),
       'release must fail closed if main moves after validation'
     );

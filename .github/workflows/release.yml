@@ -56,7 +56,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node.js ${{ matrix.node }}
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -116,7 +116,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Verify this is the CI-tested main commit
         id: candidate
@@ -176,7 +176,7 @@ jobs:
           "$prefix_dir/bin/zeroshot" list
 
       - name: Recheck main immediately before publication
-        if: steps.candidate.outputs.current == 'true'
+        if: steps.candidate.outputs.current == 'true' && github.event_name == 'workflow_run'
         shell: bash
         run: |
           set -euo pipefail
