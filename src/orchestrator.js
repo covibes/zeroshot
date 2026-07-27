@@ -52,7 +52,10 @@ const { isProcessRunning } = require('../lib/process-liveness');
 const { getProvider } = require('./providers');
 const StateSnapshotter = require('./state-snapshotter');
 const { resolveClusterRequiredQualityGates } = require('./quality-gates');
-const { normalizeProviderSession } = require('./agent/provider-session');
+const {
+  normalizeProviderSession,
+  restoreAgentProviderSession,
+} = require('./agent/provider-session');
 const {
   commandProofsToQualityGates,
   mergeCommandProofs,
@@ -229,6 +232,19 @@ function buildPrOptions(options, requiredQualityGates) {
     autoMerge,
     ...(requiredQualityGates.length > 0 ? { requiredQualityGates } : {}),
     cwd: options.cwd || process.cwd(),
+  };
+}
+
+function serializeWorktree(worktree) {
+  if (!worktree) {
+    return null;
+  }
+  return {
+    enabled: true,
+    path: worktree.path,
+    branch: worktree.branch,
+    repoRoot: worktree.repoRoot,
+    workDir: worktree.workDir,
   };
 }
 
@@ -646,6 +662,15 @@ class Orchestrator {
       };
     }
 
+    if (clusterData.worktree?.enabled) {
+      agentOptions.worktree = {
+        enabled: true,
+        path: clusterData.worktree.path,
+        branch: clusterData.worktree.branch,
+        repoRoot: clusterData.worktree.repoRoot,
+      };
+    }
+
     return agentOptions;
   }
 
@@ -657,7 +682,7 @@ class Orchestrator {
     return new AgentWrapper(agentConfig, messageBus, clusterContext, agentOptions);
   }
 
-  _restoreAgentState(agent, agentConfig, clusterData) {
+  _restoreAgentState(agent, agentConfig, clusterData, messageBus) {
     if (!clusterData.agentStates) return;
 
     const savedState = clusterData.agentStates.find((state) => state.id === agentConfig.id);
@@ -671,7 +696,12 @@ class Orchestrator {
     agent.currentTask = null;
     agent.currentTaskId = savedState.currentTaskId || null;
     agent.processPid = savedState.processPid || null;
-    agent.providerSession = normalizeProviderSession(savedState.providerSession);
+    agent.providerSession = restoreAgentProviderSession({
+      agent,
+      savedState,
+      messageBus,
+      clusterId: clusterData.id,
+    });
   }
 
   _rebuildClusterAgents(clusterContext, messageBus, isolation, isolationManager) {
@@ -701,7 +731,7 @@ class Orchestrator {
         isolationManager
       );
       const agent = this._instantiateAgent(agentConfig, messageBus, clusterContext, agentOptions);
-      this._restoreAgentState(agent, agentConfig, clusterData);
+      this._restoreAgentState(agent, agentConfig, clusterData, messageBus);
       agents.push(agent);
     }
 
@@ -881,6 +911,7 @@ class Orchestrator {
                 workDir: cluster.isolation.workDir, // Required for resume
               }
             : null,
+          worktree: serializeWorktree(cluster.worktree),
           // Persist agent runtime states for accurate status display from other processes
           agentStates: cluster.agents
             ? cluster.agents.map((a) => ({
@@ -1588,6 +1619,8 @@ class Orchestrator {
         [
           'TASK_STARTED',
           'TASK_COMPLETED',
+          'TASK_FAILED',
+          'RETRY_SCHEDULED',
           'PROCESS_SPAWNED',
           'TASK_ID_ASSIGNED',
           'STARTED',

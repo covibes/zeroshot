@@ -155,7 +155,7 @@ function providerLevelSelection(options) {
   return { modelSpec };
 }
 
-function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec }) {
+export function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec }) {
   return {
     id,
     prompt: prompt.slice(0, 200) + (prompt.length > 200 ? '...' : ''),
@@ -163,7 +163,11 @@ function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, mode
     cwd,
     status: 'running',
     pid: null,
-    sessionId: options.resume || options.sessionId || null,
+    // Only watcher-observed provider output may populate sessionId. A requested
+    // resume ID is diagnostic input, not proof the resumed provider emitted or
+    // accepted that session identity.
+    sessionId: null,
+    requestedResumeSessionId: options.resume || null,
     logFile,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

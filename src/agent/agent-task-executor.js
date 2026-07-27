@@ -1217,7 +1217,15 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
   });
 }
 
-async function buildCompletionResult({ agent, taskId, providerName, state, stdout, success }) {
+async function buildCompletionResult({
+  agent,
+  taskId,
+  providerName,
+  state,
+  stdout,
+  success,
+  taskInfo = getTask(taskId),
+}) {
   const classified = await evaluateStructuredSuccess({ agent, taskId, state, success });
   let errorContext = classified.error;
   if (!errorContext && !classified.success) {
@@ -1232,7 +1240,8 @@ async function buildCompletionResult({ agent, taskId, providerName, state, stdou
     providerSession: providerSessionFromCompletedTask({
       agent,
       providerName,
-      taskInfo: getTask(taskId),
+      taskInfo,
+      logicalSuccess: classified.success,
     }),
   };
 }

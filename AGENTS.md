@@ -333,11 +333,15 @@ Provider task ownership: task watchers persist an owned termination boundary wit
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work.
 
-Provider session reuse is explicit-ID and agent-owned. Watchers may capture provider session IDs,
-but only the same logical `AgentWrapper` may resume them. Persist this state in that agent's
-`agentStates` entry, never select a cwd-wide "latest" session, never share across agents, and start
-fresh when provider capability, identity, task completion, or durable isolation semantics do not
-prove reuse is safe.
+Provider session reuse is explicit-ID and agent-owned. Watcher-observed IDs are distinct from
+requested resume IDs. Commit continuation only after logical/structured success and bind it to the
+completed task, agent, generation, provider, cwd, and worktree. A resumed turn sends only new
+trigger/guidance context; it never replays static prompts or ISSUE_OPENED/PLAN_READY packs already in
+the provider session. Persist continuation in that agent's `agentStates` entry, never in native
+`ClusterLedger`, never select a cwd-wide "latest" session, and never share across agents. Durable
+restore fails closed unless the last lifecycle boundary is the exact matching `TASK_COMPLETED`;
+live, failed, retry/backoff, provider-switch, unsupported, Docker, and workspace-drift states start
+fresh.
 
 ### Guidance Messaging
 

@@ -442,6 +442,7 @@ function publishTaskCompleted(agent, result) {
     iteration: agent.iteration,
     success: true,
     taskId: agent.currentTaskId,
+    provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
     tokenUsage: result.tokenUsage || null,
   });
 }
@@ -574,11 +575,11 @@ async function runTaskAttempt(agent, triggeringMessage) {
     updateAgentProviderSession(agent, null);
     throw error;
   }
-  updateAgentProviderSession(agent, result.providerSession);
   attachResultMetadata(agent, result);
 
   // Check if task execution failed
   if (!result.success) {
+    updateAgentProviderSession(agent, null);
     const error = new Error(result.error || 'Task execution failed');
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
@@ -592,6 +593,10 @@ async function runTaskAttempt(agent, triggeringMessage) {
       `Validator platform mismatch detected (${fallbackReason}). Retrying in Docker isolation.`
     );
   }
+
+  // Commit continuation state only after provider completion, structured-output
+  // classification, and platform fallback checks all agree this logical turn succeeded.
+  updateAgentProviderSession(agent, result.providerSession);
 
   // Set state to idle BEFORE publishing lifecycle event
   // (so lifecycle message includes correct state)
@@ -981,6 +986,9 @@ async function executeTask(agent, triggeringMessage) {
       await runTaskAttempt(agent, triggeringMessage);
       return;
     } catch (error) {
+      // Any failed logical attempt invalidates continuation before TASK_FAILED is
+      // published and persisted. Retries must reconstruct a fresh full context.
+      updateAgentProviderSession(agent, null);
       if (!agent.running || agent.state === 'stopped') {
         agent._log(`[${agent.id}] Task interrupted during shutdown; skipping retry`);
         return;

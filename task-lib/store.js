@@ -41,6 +41,7 @@ function getDb() {
       status TEXT NOT NULL DEFAULT 'pending',
       pid INTEGER,
       session_id TEXT,
+      requested_resume_session_id TEXT,
       log_file TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -79,6 +80,7 @@ function getDb() {
 
   ensureTaskColumn(db, 'process_group_id', 'INTEGER');
   ensureTaskColumn(db, 'termination_strategy', 'TEXT');
+  ensureTaskColumn(db, 'requested_resume_session_id', 'TEXT');
 
   return db;
 }
@@ -88,6 +90,10 @@ function ensureTaskColumn(database, name, definition) {
   if (!columns.some((column) => column.name === name)) {
     database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
   }
+}
+
+function nullable(value) {
+  return value || null;
 }
 
 export function ensureDirs() {
@@ -112,6 +118,7 @@ function rowToTask(row) {
     status: row.status,
     pid: row.pid,
     sessionId: row.session_id,
+    requestedResumeSessionId: row.requested_resume_session_id,
     logFile: row.log_file,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -149,11 +156,11 @@ export function saveTasks(tasks) {
   const database = getDb();
   const insert = database.prepare(`
     INSERT OR REPLACE INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
+      id, prompt, full_prompt, cwd, status, pid, session_id, requested_resume_session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy
     ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
+      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @requestedResumeSessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
     )
@@ -172,6 +179,7 @@ export function saveTasks(tasks) {
         status: task.status || 'pending',
         pid: task.pid || null,
         sessionId: task.sessionId || null,
+        requestedResumeSessionId: nullable(task.requestedResumeSessionId),
         logFile: task.logFile || null,
         createdAt: task.createdAt || new Date().toISOString(),
         updatedAt: task.updatedAt || new Date().toISOString(),
@@ -240,6 +248,7 @@ export function updateTask(id, updates) {
       status = @status,
       pid = @pid,
       session_id = @sessionId,
+      requested_resume_session_id = @requestedResumeSessionId,
       log_file = @logFile,
       updated_at = @updatedAt,
       exit_code = @exitCode,
@@ -262,6 +271,7 @@ export function updateTask(id, updates) {
       status: updated.status || 'pending',
       pid: updated.pid || null,
       sessionId: updated.sessionId || null,
+      requestedResumeSessionId: nullable(updated.requestedResumeSessionId),
       logFile: updated.logFile || null,
       updatedAt: updated.updatedAt,
       exitCode: updated.exitCode ?? null,
@@ -295,11 +305,11 @@ export function addTask(task) {
     .prepare(
       `
     INSERT INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
+      id, prompt, full_prompt, cwd, status, pid, session_id, requested_resume_session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy
     ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
+      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @requestedResumeSessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
     )
@@ -313,6 +323,7 @@ export function addTask(task) {
       status: fullTask.status || 'pending',
       pid: fullTask.pid || null,
       sessionId: fullTask.sessionId || null,
+      requestedResumeSessionId: nullable(fullTask.requestedResumeSessionId),
       logFile: fullTask.logFile || null,
       createdAt: fullTask.createdAt,
       updatedAt: fullTask.updatedAt,

@@ -1,6 +1,22 @@
 const assert = require('assert');
 
 describe('single-task session resume', function () {
+  it('keeps a requested resume ID separate from watcher-captured identity', async function () {
+    const { buildTaskRecord } = await import('../../task-lib/runner.js');
+    const task = buildTaskRecord({
+      id: 'task-resumed',
+      prompt: 'continue',
+      cwd: '/tmp/project',
+      options: { resume: 'requested-thread' },
+      logFile: '/tmp/task-resumed.log',
+      providerName: 'codex',
+      modelSpec: {},
+    });
+
+    assert.strictEqual(task.requestedResumeSessionId, 'requested-thread');
+    assert.strictEqual(task.sessionId, null);
+  });
+
   it('uses the captured explicit provider session ID', async function () {
     const { buildResumeTaskOptions } = await import('../../task-lib/commands/resume.js');
     assert.deepStrictEqual(

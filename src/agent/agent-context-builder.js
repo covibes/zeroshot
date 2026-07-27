@@ -138,6 +138,74 @@ function buildPacks(params) {
   return packs;
 }
 
+function buildContinuationPacks(params) {
+  const {
+    id,
+    iteration,
+    config,
+    selectedPrompt,
+    queuedGuidance,
+    triggeringMessage,
+    strategy,
+    messageBus,
+    cluster,
+    lastTaskEndTime,
+    lastAgentStartTime,
+  } = params;
+  const packs = [];
+  let order = 0;
+
+  order = pushStaticPack({
+    packs,
+    packId: 'continuationHeader',
+    section: 'continuationHeader',
+    text: `## Continuation Turn\n\nAgent: ${id}\nIteration: ${iteration}\n\nApply only the new material below while retaining the existing session instructions.\n\n`,
+    order,
+  });
+
+  // Iteration-rule prompts may intentionally change between turns. Static prompts,
+  // repository tooling, ISSUE_OPENED/PLAN_READY sources, and output contracts are
+  // already present in the provider session and must not be replayed.
+  if (config.promptConfig?.type === 'rules') {
+    order = pushStaticPack({
+      packs,
+      packId: 'iterationInstructions',
+      section: 'iterationInstructions',
+      text: buildInstructionsSection({ config, selectedPrompt, id }),
+      order,
+    });
+  }
+
+  order = pushStaticPack({
+    packs,
+    packId: 'queuedGuidance',
+    section: 'queuedGuidance',
+    text: queuedGuidance || '',
+    order,
+  });
+  order = appendSourcePacks(
+    packs,
+    {
+      sources: (strategy.sources || []).map((source) => ({
+        ...source,
+        since: 'last_agent_start',
+      })),
+    },
+    { messageBus, cluster, lastTaskEndTime, lastAgentStartTime },
+    order
+  );
+  pushStaticPack({
+    packs,
+    packId: 'triggeringMessage',
+    section: 'triggeringMessage',
+    text: buildTriggeringMessageSection(triggeringMessage),
+    order,
+    options: { preserve: true },
+  });
+
+  return packs;
+}
+
 /**
  * Build execution context for an agent
  * @param {object} params - Context building parameters
@@ -157,7 +225,10 @@ function buildPacks(params) {
  */
 function buildContext(params) {
   const strategy = params.config.contextStrategy || { sources: [] };
-  const packs = buildPacks({ ...params, strategy });
+  const continuation = params.mode === 'continuation';
+  const packs = continuation
+    ? buildContinuationPacks({ ...params, strategy })
+    : buildPacks({ ...params, strategy });
   const maxTokens = resolveLegacyMaxTokens(strategy);
   const packResult = buildContextPacks({
     packs,
@@ -171,7 +242,7 @@ function buildContext(params) {
     role: params.role,
     iteration: params.iteration,
     triggeringMessage: params.triggeringMessage,
-    strategy,
+    strategy: { ...strategy, contextMode: continuation ? 'continuation' : 'full' },
     packs: packResult.packDecisions,
     budget: packResult.budget,
     truncation: packResult.truncation,
