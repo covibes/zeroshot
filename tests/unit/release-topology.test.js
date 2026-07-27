@@ -74,6 +74,10 @@ describe('release topology', function () {
     assert(/required_review_thread_resolution/.test(setup), 'main must resolve review threads');
     assert(/"context": "required"/.test(setup), 'main must require aggregate CI');
     assert(/"context": "semantic"/.test(setup), 'main must require semantic policy');
+    assert(
+      !/prevent_self_review/.test(setup),
+      'release environment setup must not send reviewer-only fields without reviewers'
+    );
 
     assert(/branches:\s*\[main\]/.test(prPolicy), 'PR policy must target main');
     assert(/merge_group:/.test(prPolicy), 'semantic policy must run in the merge queue');
