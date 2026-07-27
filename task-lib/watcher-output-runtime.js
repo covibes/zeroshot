@@ -1,0 +1,181 @@
+import {
+  detectProviderFatalError,
+  detectProviderStreamingModeError,
+  recoverProviderStructuredOutput,
+  supportsProviderStructuredOutputRecovery,
+} from './provider-helper-runtime.js';
+
+function splitBufferLines(buffer, chunk) {
+  const nextBuffer = buffer + chunk;
+  const lines = nextBuffer.split('\n');
+  return { lines: lines.slice(0, -1), remaining: lines.at(-1) || '' };
+}
+
+export function resolveWatcherCommand(config, commandSpec, fallbackArgs, normalizeProviderName) {
+  return {
+    providerName: normalizeProviderName(config.provider || 'claude'),
+    env: { ...process.env, ...(commandSpec.env || {}) },
+    command: commandSpec.binary,
+    finalArgs: [...(commandSpec.args || fallbackArgs)],
+  };
+}
+
+export async function completeWatcherTask({
+  taskId,
+  completion,
+  commandCleanup,
+  terminateProvider,
+  updateTask,
+  emergencyLog,
+  terminalUpdates = {},
+}) {
+  const providerTerminal = await terminateProvider();
+  const cleanupSucceeded = providerTerminal ? await commandCleanup.run() : false;
+  if (!providerTerminal) {
+    emergencyLog(
+      `[${Date.now()}][CLEANUP] Provider termination boundary is still live; preserving command cleanup paths.\n`
+    );
+  }
+  try {
+    await updateTask(taskId, {
+      status: completion.status,
+      pid: null,
+      processGroupId: null,
+      exitCode: completion.resolvedCode,
+      error: completion.error,
+      ...terminalUpdates,
+      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
+    });
+  } catch (error) {
+    emergencyLog(`[${Date.now()}][ERROR] Failed to update task status: ${error.message}\n`);
+  }
+}
+
+export function createWatcherOutputRuntime({ config, providerName, log, stopProvider }) {
+  const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
+  const silentJsonMode =
+    config.outputFormat === 'json' &&
+    config.jsonSchema &&
+    config.silentJsonOutput &&
+    enableRecovery;
+  let finalResultJson = null;
+  let streamingModeError = null;
+  let fatalError = null;
+
+  function maybeHandleFatalError(line, timestamp) {
+    if (fatalError) return false;
+    const detected = detectProviderFatalError(providerName, line);
+    if (!detected) return false;
+    fatalError = detected;
+    if (silentJsonMode) log(`[${timestamp}]${line}\n`);
+    log(`[${timestamp}][FATAL] ${detected}\n`);
+    stopProvider(timestamp);
+    return true;
+  }
+
+  function captureStreamingError(line, timestamp) {
+    const detectedError = detectProviderStreamingModeError(providerName, line);
+    if (!detectedError) return false;
+    streamingModeError = { ...detectedError, timestamp };
+    return true;
+  }
+
+  function maybeCaptureStructuredOutput(line) {
+    try {
+      const json = JSON.parse(line);
+      if (json.structured_output) finalResultJson = line;
+    } catch {
+      // Not JSON, skip.
+    }
+  }
+
+  function handleOutputLine(line, timestamp) {
+    if (silentJsonMode && !line.trim()) return;
+    maybeHandleFatalError(line, timestamp);
+    if (captureStreamingError(line, timestamp)) return;
+    if (silentJsonMode) {
+      maybeCaptureStructuredOutput(line);
+    } else {
+      log(`[${timestamp}]${line}\n`);
+    }
+  }
+
+  function consumeOutput(buffer, chunk) {
+    const timestamp = Date.now();
+    const { lines, remaining } = splitBufferLines(buffer, chunk.toString());
+    for (const line of lines) handleOutputLine(line, timestamp);
+    return remaining;
+  }
+
+  function consumeStderr(buffer, chunk) {
+    const timestamp = Date.now();
+    const { lines, remaining } = splitBufferLines(buffer, chunk.toString());
+    for (const line of lines) log(`[${timestamp}]${line}\n`);
+    return remaining;
+  }
+
+  function flushOutput(buffer, timestamp) {
+    if (!buffer.trim()) return;
+    if (!enableRecovery) {
+      if (!silentJsonMode) log(`[${timestamp}]${buffer}\n`);
+      return;
+    }
+    maybeHandleFatalError(buffer, timestamp);
+    if (captureStreamingError(buffer, timestamp)) return;
+    if (silentJsonMode) {
+      maybeCaptureStructuredOutput(buffer);
+    } else {
+      log(`[${timestamp}]${buffer}\n`);
+    }
+  }
+
+  function flushStderr(buffer, timestamp) {
+    if (!buffer.trim()) return;
+    maybeHandleFatalError(buffer, timestamp);
+    log(`[${timestamp}]${buffer}\n`);
+  }
+
+  function attemptRecovery(code, timestamp) {
+    if (!(code !== 0 && streamingModeError?.sessionId)) return null;
+    const recovered = recoverProviderStructuredOutput(providerName, streamingModeError.sessionId);
+    if (recovered?.payload) {
+      const recoveredLine = JSON.stringify(recovered.payload);
+      if (silentJsonMode) {
+        finalResultJson = recoveredLine;
+      } else {
+        log(`[${timestamp}]${recoveredLine}\n`);
+      }
+    } else if (streamingModeError.line) {
+      const prefix = silentJsonMode ? '' : `[${streamingModeError.timestamp}]`;
+      log(`${prefix}${streamingModeError.line}\n`);
+    }
+    return recovered;
+  }
+
+  function complete({ code, signal, outputBuffer, stderrBuffer = null }) {
+    const timestamp = Date.now();
+    flushOutput(outputBuffer, timestamp);
+    if (stderrBuffer !== null) flushStderr(stderrBuffer, timestamp);
+    const recovered = attemptRecovery(code, timestamp);
+    if (silentJsonMode && finalResultJson) log(`${finalResultJson}\n`);
+    if (config.outputFormat !== 'json') {
+      log(`\n${'='.repeat(50)}\n`);
+      log(`Finished: ${new Date().toISOString()}\n`);
+      log(`Exit code: ${code}, Signal: ${signal}\n`);
+    }
+    let resolvedCode = code;
+    if (recovered?.payload) {
+      resolvedCode = 0;
+    }
+    if (fatalError) {
+      resolvedCode = 1;
+    }
+    return {
+      resolvedCode,
+      status: resolvedCode === 0 ? 'completed' : 'failed',
+      error: fatalError || (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
+    };
+  }
+
+  return { complete, consumeOutput, consumeStderr };
+}

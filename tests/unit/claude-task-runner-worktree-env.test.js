@@ -5,6 +5,7 @@ const path = require('path');
 
 const ClaudeTaskRunner = require('../../src/claude-task-runner');
 const {
+  CLAUDE_MCP_CONFIG_ENV,
   CLAUDE_SETTINGS_ENV,
   cleanupClaudeSettingsOverlay,
 } = require('../../src/worktree-claude-config');
@@ -62,6 +63,8 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
       'gitdir: nested-submodule\n',
       'utf8'
     );
+    const mcpPath = path.join(worktreeRoot, '.mcp.json');
+    fs.writeFileSync(mcpPath, '{"mcpServers":{"repo":{}}}\n', 'utf8');
 
     const runner = new ClaudeTaskRunner({ quiet: true });
     const originalPathEntries = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
@@ -79,6 +82,11 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
       'the user config source must remain active'
     );
     assert.ok(spawnEnv[CLAUDE_SETTINGS_ENV], 'Claude runs should receive a settings overlay');
+    assert.strictEqual(
+      spawnEnv[CLAUDE_MCP_CONFIG_ENV],
+      mcpPath,
+      'Claude runs should explicitly receive the repository MCP config'
+    );
     assert.strictEqual(fs.readFileSync(userSettingsPath, 'utf8'), userSettings);
     const overlaySettings = JSON.parse(fs.readFileSync(spawnEnv[CLAUDE_SETTINGS_ENV], 'utf8'));
     assert.deepStrictEqual(
@@ -112,5 +120,40 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
       args.slice(args.indexOf('--reasoning-effort'), args.indexOf('--reasoning-effort') + 2),
       ['--reasoning-effort', 'max']
     );
+  });
+
+  it('keeps the overlay after task creation transfers ownership to the watcher', async function () {
+    const runner = new ClaudeTaskRunner({ quiet: true });
+    let settingsPath;
+    runner._spawnAndGetTaskId = (_command, _args, _cwd, spawnEnv) => {
+      settingsPath = spawnEnv[CLAUDE_SETTINGS_ENV];
+      return 'task-owned-overlay';
+    };
+    runner._waitForTaskReady = () => {};
+    runner._followLogs = () => {
+      throw new Error('log follower timed out');
+    };
+
+    await assert.rejects(
+      runner.run('context', { provider: 'claude', cwd: process.cwd() }),
+      /log follower timed out/
+    );
+    settingsOverlays.push(settingsPath);
+    assert.ok(fs.existsSync(settingsPath), 'the detached task must retain its live settings file');
+  });
+
+  it('cleans the overlay when task creation fails before ownership transfer', async function () {
+    const runner = new ClaudeTaskRunner({ quiet: true });
+    let settingsPath;
+    runner._spawnAndGetTaskId = (_command, _args, _cwd, spawnEnv) => {
+      settingsPath = spawnEnv[CLAUDE_SETTINGS_ENV];
+      throw new Error('task creation failed');
+    };
+
+    await assert.rejects(
+      runner.run('context', { provider: 'claude', cwd: process.cwd() }),
+      /task creation failed/
+    );
+    assert.ok(!fs.existsSync(path.dirname(settingsPath)));
   });
 });
