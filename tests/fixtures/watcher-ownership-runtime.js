@@ -2,6 +2,13 @@ const { spawn } = require('child_process');
 const { existsSync, mkdirSync, readFileSync } = require('fs');
 const { dirname, resolve } = require('path');
 const { pathToFileURL } = require('url');
+const {
+  forceKill,
+  forceKillOwnedGroup,
+  isRunning,
+  spawnCapturedWatcher,
+  waitFor: waitForRuntime,
+} = require('./watcher-runtime-helpers');
 
 const watcherName = process.argv[2];
 const repoRoot = resolve(__dirname, '../..');
@@ -10,35 +17,8 @@ const providerPath = resolve(__dirname, 'sigterm-root-with-child.js');
 const logFile = resolve(process.env.HOME, '.zeroshot', `${watcherName}.log`);
 const taskId = watcherName === 'attachable-watcher.js' ? 'runtime-a' : 'runtime-w';
 
-const sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
-
-async function waitFor(predicate, timeoutMs = 20000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = predicate();
-    if (result) return result;
-    await sleep(20);
-  }
-  throw new Error(`Timed out waiting for ${watcherName} runtime state`);
-}
-
-function isRunning(pid) {
-  if (!pid) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function forceKill(pid) {
-  if (!pid) return;
-  try {
-    process.kill(pid, 'SIGKILL');
-  } catch {
-    // Already stopped.
-  }
+function waitFor(predicate) {
+  return waitForRuntime(predicate, `Timed out waiting for ${watcherName} runtime state`);
 }
 
 async function main() {
@@ -46,6 +26,20 @@ async function main() {
   const killUrl = pathToFileURL(resolve(repoRoot, 'task-lib/commands/kill.js')).href;
   const { addTask, getTask } = await import(storeUrl);
   const { killTaskCommand } = await import(killUrl);
+  const {
+    cleanupClaudeSettingsOverlay,
+    prepareClaudeSettingsOverlay,
+  } = require('../../src/worktree-claude-config');
+  const settingsPath = prepareClaudeSettingsOverlay();
+  const cleanupDir = dirname(settingsPath);
+  const cleanupMetadata = [
+    {
+      kind: 'temp-directory',
+      provider: 'claude',
+      path: cleanupDir,
+      reason: 'settings-overlay',
+    },
+  ];
 
   mkdirSync(dirname(logFile), { recursive: true });
   addTask({
@@ -58,8 +52,9 @@ async function main() {
     logFile,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    provider: 'codex',
+    provider: 'claude',
     attachable: watcherName === 'attachable-watcher.js',
+    commandCleanup: { cleanup: [cleanupDir], cleanupMetadata },
   });
 
   const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
@@ -67,30 +62,22 @@ async function main() {
     stdio: 'ignore',
   });
   const config = {
-    provider: 'codex',
+    provider: 'claude',
     outputFormat: 'stream-json',
     commandSpec: {
       binary: process.execPath,
       args: [providerPath],
       env: {},
-      cleanup: [],
+      cleanup: [cleanupDir],
+      cleanupMetadata,
     },
   };
-  const watcher = spawn(
-    process.execPath,
-    [watcherPath, taskId, repoRoot, logFile, '[]', JSON.stringify(config)],
-    {
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }
+  const captured = spawnCapturedWatcher(
+    watcherPath,
+    [taskId, repoRoot, logFile, '[]', JSON.stringify(config)],
+    { env: process.env }
   );
-  let watcherOutput = '';
-  watcher.stdout.on('data', (chunk) => {
-    watcherOutput += chunk;
-  });
-  watcher.stderr.on('data', (chunk) => {
-    watcherOutput += chunk;
-  });
+  const watcher = captured.child;
 
   let providerPid;
   let descendantPid;
@@ -100,7 +87,7 @@ async function main() {
       if (watcher.exitCode !== null && !task?.pid) {
         const logOutput = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
         throw new Error(
-          `${watcherName} exited ${watcher.exitCode} before persisting ownership: ${watcherOutput}${logOutput}`
+          `${watcherName} exited ${watcher.exitCode} before persisting ownership: ${captured.output()}${logOutput}`
         );
       }
       return task?.pid && task.processGroupId && task.terminationStrategy ? task : null;
@@ -127,13 +114,15 @@ async function main() {
       persistedStrategy: persisted.terminationStrategy,
       persistedGroupId: persisted.processGroupId,
       terminalGroupId: terminal.processGroupId,
+      cleanupRemoved: !existsSync(cleanupDir),
     };
     process.stdout.write(`RESULT:${JSON.stringify(result)}\n`);
   } finally {
     forceKill(watcher.pid);
-    forceKill(providerPid);
+    forceKillOwnedGroup(providerPid);
     forceKill(descendantPid);
     forceKill(unrelated.pid);
+    cleanupClaudeSettingsOverlay(settingsPath);
   }
 }
 

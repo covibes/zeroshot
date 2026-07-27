@@ -5,6 +5,8 @@ const path = require('path');
 
 const {
   cleanupClaudeSettingsOverlay,
+  isClaudeSettingsOverlayDirectory,
+  isClaudeSettingsOverlayPath,
   prepareClaudeSettingsOverlay,
   resolveRepoMcpConfigPath,
 } = require('../../src/worktree-claude-config');
@@ -37,6 +39,19 @@ describe('worktree-claude-config', function () {
     );
   });
 
+  it('gives retry and restart runs independently owned overlays', function () {
+    const first = prepareClaudeSettingsOverlay();
+    const retry = prepareClaudeSettingsOverlay();
+    settingsOverlays.push(first, retry);
+
+    assert.notStrictEqual(first, retry);
+    assert.ok(fs.existsSync(first));
+    assert.ok(fs.existsSync(retry));
+    assert.strictEqual(cleanupClaudeSettingsOverlay(first), true);
+    assert.ok(!fs.existsSync(path.dirname(first)));
+    assert.ok(fs.existsSync(retry), 'cleaning one run must not affect the next run');
+  });
+
   it('adds the dangerous-git hook only for worktree runs', function () {
     const settingsPath = prepareClaudeSettingsOverlay({ includeDangerousGit: true });
     settingsOverlays.push(settingsPath);
@@ -61,19 +76,26 @@ describe('worktree-claude-config', function () {
     assert.ok(fs.existsSync(settingsPath));
 
     assert.strictEqual(cleanupClaudeSettingsOverlay(unrelatedSettingsPath), false);
+    assert.strictEqual(isClaudeSettingsOverlayPath(unrelatedSettingsPath), false);
+    assert.strictEqual(isClaudeSettingsOverlayDirectory(unrelatedDir), false);
     assert.ok(fs.existsSync(unrelatedSettingsPath));
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath), true);
+    assert.strictEqual(isClaudeSettingsOverlayDirectory(path.dirname(settingsPath)), true);
     assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
     assert.ok(!fs.existsSync(path.dirname(settingsPath)));
   });
 
-  it('resolves repository MCP config independently of the Claude settings overlay', function () {
+  it('prefers root MCP config and supports the legacy Claude-directory fallback', function () {
     const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-worktree-'));
     tempDirs.push(worktreeRoot);
     fs.writeFileSync(path.join(worktreeRoot, '.git'), 'gitdir: test\n', 'utf8');
     fs.mkdirSync(path.join(worktreeRoot, '.claude'), { recursive: true });
-    const mcpPath = path.join(worktreeRoot, '.claude', '.mcp.json');
-    fs.writeFileSync(mcpPath, '{"mcpServers":{}}\n', 'utf8');
+    const legacyMcpPath = path.join(worktreeRoot, '.claude', '.mcp.json');
+    const rootMcpPath = path.join(worktreeRoot, '.mcp.json');
+    fs.writeFileSync(legacyMcpPath, '{"mcpServers":{"legacy":{}}}\n', 'utf8');
 
-    assert.strictEqual(resolveRepoMcpConfigPath({ worktreePath: worktreeRoot }), mcpPath);
+    assert.strictEqual(resolveRepoMcpConfigPath({ worktreePath: worktreeRoot }), legacyMcpPath);
+    fs.writeFileSync(rootMcpPath, '{"mcpServers":{"root":{}}}\n', 'utf8');
+    assert.strictEqual(resolveRepoMcpConfigPath({ worktreePath: worktreeRoot }), rootMcpPath);
   });
 });

@@ -50,6 +50,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Provider detection           | `lib/provider-detection.js`                                             |
 | Provider capabilities        | `src/providers/capabilities.js`                                         |
 | Claude settings overlay      | `src/worktree-claude-config.js`                                         |
+| Detached task cleanup owner  | `task-lib/command-spec-cleanup.js`                                      |
+| Shared watcher output path   | `task-lib/watcher-output-runtime.js`                                    |
 | Start-cluster helper         | `lib/start-cluster.js`                                                  |
 | Legacy worker facade         | `lib/cluster-worker/`                                                   |
 | Legacy worker executable     | `bin/zeroshot-cluster-worker.js`                                        |
@@ -331,7 +333,10 @@ Restart persistence: orchestrator publishes `AGENT_RESTART_ATTEMPT` to the ledge
 
 Provider task ownership: task watchers persist an owned termination boundary with each active task.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
-`taskkill /T`. Recovery must terminate that recorded boundary before retrying work.
+`taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
+ownership is persisted with the task and may run only after that boundary is confirmed terminal.
+Killed/stale recovery consumes the persisted cleanup, and recursive cleanup is restricted to
+Zeroshot-owned provider overlays.
 
 ### Guidance Messaging
 
