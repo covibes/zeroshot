@@ -12,6 +12,7 @@ const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
+const { applyDarwinKeychainBoundaryToEnv } = require('./darwin-keychain-boundary');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../task-lib/store.js');
 const {
   TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
@@ -388,6 +389,10 @@ class ClaudeTaskRunner extends TaskRunner {
         spawnEnv[CLAUDE_MCP_CONFIG_ENV] = mcpConfigPath;
       }
     }
+
+    // KEYCHAIN BOUNDARY (darwin only): keep non-interactive worker descendants
+    // away from the user's GUI Keychain session (issue #704).
+    applyDarwinKeychainBoundaryToEnv(spawnEnv);
 
     prependWorktreeToolBinToEnv(spawnEnv, { cwd, worktreePath });
 

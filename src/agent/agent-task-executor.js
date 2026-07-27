@@ -19,6 +19,7 @@ const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.
 const { loadSettings } = require('../../lib/settings.js');
 const { resolveClaudeAuth } = require('../../lib/settings/claude-auth.js');
 const { prependWorktreeToolBinToEnv } = require('../worktree-tooling-env.js');
+const { applyDarwinKeychainBoundaryToEnv } = require('../darwin-keychain-boundary.js');
 const {
   CLAUDE_SETTINGS_ENV,
   cleanupClaudeSettingsOverlay,
@@ -723,6 +724,13 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
       spawnEnv.ZEROSHOT_WORKTREE = '1';
     }
   }
+
+  // KEYCHAIN BOUNDARY (darwin only): non-interactive local/worktree worker
+  // descendants must not reach the user's GUI Keychain session (issue #704).
+  // Docker isolation never reaches buildSpawnEnv (see spawnClaudeTaskIsolated).
+  // Applied before the worktree tool bins so repo-managed tool substitutes
+  // stay first on PATH.
+  applyDarwinKeychainBoundaryToEnv(spawnEnv);
 
   prependWorktreeToolBinToEnv(spawnEnv, {
     cwd: agentCwd,
@@ -2628,6 +2636,7 @@ module.exports = {
   ensureAskUserQuestionHook,
   ensureDangerousGitHook,
   resolveMcpConfigArgs,
+  buildSpawnEnv,
   spawnClaudeTask,
   spawnTaskProcess,
   followClaudeTaskLogs,
