@@ -86,7 +86,6 @@ function detectCliFeatures(helpText?: string | null): OpencodeCliFeatures {
     supportsVariant: unknown ? true : /--variant\b/.test(help),
     supportsDir: unknown ? false : /--dir\b/.test(help),
     supportsCwd: unknown ? false : /--cwd\b/.test(help),
-    supportsDir: unknown ? false : /--dir\b/.test(help),
     supportsAutoApprove: false,
     unknown,
   };
@@ -113,8 +112,6 @@ function addOpencodeOptionalArgs(args: string[], options: BuildProviderCommandOp
     args.push('--dir', options.cwd);
   } else if (options.cwd && features.supportsCwd) {
     args.push('--cwd', options.cwd);
-  } else if (options.cwd && features.supportsDir) {
-    args.push('--dir', options.cwd);
   }
 }
 
