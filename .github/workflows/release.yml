@@ -139,9 +139,7 @@ jobs:
           "$prefix_dir/bin/zeroshot" list
 
       - name: Run semantic-release dry run
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: npx semantic-release --dry-run --branches "$GITHUB_REF_NAME"
+        run: node scripts/release-dry-run.js
 
   release:
     needs: [install-matrix]

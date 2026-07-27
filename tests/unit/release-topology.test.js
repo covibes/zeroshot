@@ -44,7 +44,7 @@ describe('release topology', function () {
       'manual dry runs must bind to the exact dispatched commit'
     );
     assert(
-      /semantic-release --dry-run --branches "\$GITHUB_REF_NAME"/.test(releaseWorkflow),
+      /node scripts\/release-dry-run\.js/.test(releaseWorkflow),
       'manual dry runs must analyze the dispatched candidate as a release branch'
     );
     assert(/contents:\s*read/.test(dryRunJob), 'dry runs must remain read-only');
