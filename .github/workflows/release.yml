@@ -56,7 +56,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node.js ${{ matrix.node }}
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -90,20 +90,66 @@ jobs:
           });
           NODE
 
+  dry-run:
+    needs: [install-matrix]
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      inputs.action == 'dry-run' &&
+      needs.install-matrix.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact dispatched candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install pinned dependencies
+        run: npm ci
+
+      - name: Fetch immutable release history
+        run: git fetch --tags --force
+
+      - name: Release preflight
+        run: npm run release:preflight
+
+      - name: Verify package tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_dir="$(mktemp -d)"
+          prefix_dir="$(mktemp -d)"
+          trap 'rm -rf "$pack_dir" "$prefix_dir"' EXIT
+
+          npm pack --pack-destination "$pack_dir"
+          tarball="$(find "$pack_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          npm install --global --prefix "$prefix_dir" "$tarball"
+          "$prefix_dir/bin/zeroshot" --version
+          "$prefix_dir/bin/zeroshot" --help
+          "$prefix_dir/bin/zeroshot" list
+
+      - name: Run semantic-release dry run
+        run: node scripts/release-dry-run.js
+
   release:
     needs: [install-matrix]
     if: |
       always() &&
       needs.install-matrix.result == 'success' &&
-      (
-        (github.event_name == 'workflow_dispatch' && inputs.action == 'dry-run') ||
-        (
-          github.event_name == 'workflow_run' &&
-          github.event.workflow_run.event == 'push' &&
-          github.event.workflow_run.conclusion == 'success' &&
-          vars.RELEASE_AUTOMATION_ENABLED == 'true'
-        )
-      )
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.RELEASE_AUTOMATION_ENABLED == 'true'
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -116,7 +162,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Verify this is the CI-tested main commit
         id: candidate
@@ -125,11 +172,6 @@ jobs:
           TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            echo "current=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           current_sha="$(git rev-parse HEAD)"
           remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
           if [[ "$current_sha" != "$TESTED_SHA" || "$remote_sha" != "$TESTED_SHA" ]]; then
@@ -191,15 +233,10 @@ jobs:
         if: steps.candidate.outputs.current == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            npx semantic-release --dry-run
-          else
-            npx semantic-release
-          fi
+        run: npx semantic-release
 
       - name: Assert release state
-        if: steps.candidate.outputs.current == 'true' && github.event_name == 'workflow_run'
+        if: steps.candidate.outputs.current == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run release:assert-published

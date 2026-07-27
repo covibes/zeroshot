@@ -127,7 +127,6 @@ JSON
 
 gh api --method PUT "repos/$REPO/environments/release" --input - <<'JSON' >/dev/null
 {
-  "prevent_self_review": false,
   "deployment_branch_policy": {
     "protected_branches": false,
     "custom_branch_policies": true
