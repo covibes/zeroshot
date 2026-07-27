@@ -71,9 +71,9 @@ class AgentWrapper {
     this.currentTask = null;
     /** @type {string | null} */
     this.currentTaskId = null; // Track spawned task ID for resume capability
-    /** @type {{provider: string, sessionId: string, agentId: string, taskId: string, generation: number, cwd: string, worktreePath: string|null, contextSequence: number, guidanceSequence: number|null, promptIdentity: string|null} | null} */
+    /** @type {{provider: string, sessionId: string, agentId: string, taskId: string, generation: number, cwd: string, worktreePath: string|null, contextSequence: string, guidanceSequence: string|null, promptIdentity: string|null} | null} */
     this.providerSession = null; // Provider continuation state, owned by this logical agent only
-    this.currentContextSequence = 0;
+    this.currentContextSequence = '0';
     this.currentGuidanceSequence = null;
     this.currentPromptIdentity = null;
     /** @type {number | null} */
@@ -458,7 +458,7 @@ class AgentWrapper {
       cluster_id: this.cluster.id,
       orderBySequence: true,
     });
-    this.currentContextSequence = latestMessage?.sequence || 0;
+    this.currentContextSequence = latestMessage?.sequence || '0';
     const queuedGuidance = collectQueuedGuidance({
       messageBus: this.messageBus,
       clusterId: this.cluster.id,

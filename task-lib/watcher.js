@@ -8,7 +8,7 @@
 import { spawn } from 'child_process';
 import { appendFileSync, unlinkSync } from 'fs';
 import { unlink } from 'fs/promises';
-import { updateTask } from './store.js';
+import { getTask, updateTask } from './store.js';
 import {
   detectProviderFatalError,
   detectProviderStreamingModeError,
@@ -37,11 +37,14 @@ function log(msg) {
 
 const providerName = normalizeProviderName(config.provider || 'claude');
 const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
+const storedTask = getTask(taskId);
 const maybeCaptureProviderSession = createProviderSessionCapture({
   providerName,
   taskId,
   updateTask,
   log,
+  initialSessionId: storedTask?.sessionId || null,
+  initialSessionIdConflict: storedTask?.sessionIdConflict === true,
 });
 
 const env = { ...process.env, ...(commandSpec.env || {}) };

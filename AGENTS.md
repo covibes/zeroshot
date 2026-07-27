@@ -335,9 +335,12 @@ POSIX providers run in a dedicated process group; Windows providers use the exac
 Provider continuation is agent- and generation-owned and becomes durable only after logical output
 validation and the `onComplete` hook succeed. A requested resume is successful only when the
 watcher captures that exact same nonempty provider session ID; absent or forked identity fails the
-attempt before hooks and forces the retry to rebuild full context. Persist the exact SQLite rowid
-high-water sequence, applied guidance sequence, and bounded SHA-256 selected-prompt identity with
-the observed provider session; never persist the selected prompt text. Restored
+attempt before hooks and forces the retry to rebuild full context. Watchers track every unique
+session ID observed in a task; once two IDs differ, the persisted capture is permanently ambiguous
+even if a later event repeats the requested ID. Persist SQLite rowid high-water and applied-guidance
+cursors as canonical decimal strings, bind them to SQLite as `BigInt`, and never coerce them through
+JavaScript `Number`. Persist those cursors and a bounded SHA-256 selected-prompt identity with the
+observed provider session; never persist the selected prompt text. Restored
 continuations fail closed unless the final durable `TASK_COMPLETED` boundary and all provenance
 match. Full and continuation source/guidance reads are bounded through the captured high-water;
 continuations query strictly after their prior sequence and de-duplicate the exact triggering

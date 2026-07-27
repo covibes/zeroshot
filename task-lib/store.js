@@ -12,7 +12,7 @@ import { TASKS_DIR, LOGS_DIR } from './config.js';
 import { generateName } from './name-generator.js';
 
 const DB_FILE = join(TASKS_DIR, 'store.db');
-export const TASK_STORE_SCHEMA_VERSION = 2;
+export const TASK_STORE_SCHEMA_VERSION = 3;
 
 /** @type {Database.Database | null} */
 let db = null;
@@ -42,6 +42,7 @@ function getDb() {
       status TEXT NOT NULL DEFAULT 'pending',
       pid INTEGER,
       session_id TEXT,
+      session_id_conflict INTEGER NOT NULL DEFAULT 0,
       requested_resume_session_id TEXT,
       log_file TEXT,
       created_at TEXT NOT NULL,
@@ -95,6 +96,7 @@ export function migrateTaskStore(database) {
   ensureTaskColumn(database, 'process_group_id', 'INTEGER');
   ensureTaskColumn(database, 'termination_strategy', 'TEXT');
   ensureTaskColumn(database, 'requested_resume_session_id', 'TEXT');
+  ensureTaskColumn(database, 'session_id_conflict', 'INTEGER NOT NULL DEFAULT 0');
 
   const version = database.pragma('user_version', { simple: true });
   if (version >= TASK_STORE_SCHEMA_VERSION) return;
@@ -108,6 +110,9 @@ export function migrateTaskStore(database) {
                session_id = NULL`
         )
         .run();
+    }
+    if (version < 3) {
+      database.prepare('UPDATE tasks SET session_id_conflict = 0').run();
     }
     database.pragma(`user_version = ${TASK_STORE_SCHEMA_VERSION}`);
   })();
@@ -139,6 +144,7 @@ function rowToTask(row) {
     status: row.status,
     pid: row.pid,
     sessionId: row.session_id,
+    sessionIdConflict: Boolean(row.session_id_conflict),
     requestedResumeSessionId: row.requested_resume_session_id,
     logFile: row.log_file,
     createdAt: row.created_at,
@@ -177,11 +183,11 @@ export function saveTasks(tasks) {
   const database = getDb();
   const insert = database.prepare(`
     INSERT OR REPLACE INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, requested_resume_session_id, log_file,
+      id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy
     ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @requestedResumeSessionId, @logFile,
+      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
     )
@@ -200,6 +206,7 @@ export function saveTasks(tasks) {
         status: task.status || 'pending',
         pid: task.pid || null,
         sessionId: task.sessionId || null,
+        sessionIdConflict: task.sessionIdConflict ? 1 : 0,
         requestedResumeSessionId: nullable(task.requestedResumeSessionId),
         logFile: task.logFile || null,
         createdAt: task.createdAt || new Date().toISOString(),
@@ -269,6 +276,7 @@ export function updateTask(id, updates) {
       status = @status,
       pid = @pid,
       session_id = @sessionId,
+      session_id_conflict = @sessionIdConflict,
       requested_resume_session_id = @requestedResumeSessionId,
       log_file = @logFile,
       updated_at = @updatedAt,
@@ -292,6 +300,7 @@ export function updateTask(id, updates) {
       status: updated.status || 'pending',
       pid: updated.pid || null,
       sessionId: updated.sessionId || null,
+      sessionIdConflict: updated.sessionIdConflict ? 1 : 0,
       requestedResumeSessionId: nullable(updated.requestedResumeSessionId),
       logFile: updated.logFile || null,
       updatedAt: updated.updatedAt,
@@ -326,11 +335,11 @@ export function addTask(task) {
     .prepare(
       `
     INSERT INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, requested_resume_session_id, log_file,
+      id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy
     ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @requestedResumeSessionId, @logFile,
+      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
     )
@@ -344,6 +353,7 @@ export function addTask(task) {
       status: fullTask.status || 'pending',
       pid: fullTask.pid || null,
       sessionId: fullTask.sessionId || null,
+      sessionIdConflict: fullTask.sessionIdConflict ? 1 : 0,
       requestedResumeSessionId: nullable(fullTask.requestedResumeSessionId),
       logFile: fullTask.logFile || null,
       createdAt: fullTask.createdAt,

@@ -16,6 +16,9 @@ const {
   USER_GUIDANCE_AGENT,
   USER_GUIDANCE_CLUSTER,
 } = require('./guidance-topics');
+const { messageSequenceFromSql, messageSequenceToSql } = require('./ledger-sequence');
+
+const MESSAGE_SEQUENCE_SELECT = 'CAST(rowid AS TEXT) AS sequence';
 
 class Ledger extends EventEmitter {
   constructor(dbPath = ':memory:', options = {}) {
@@ -91,18 +94,21 @@ class Ledger extends EventEmitter {
   }
 
   _prepareStatements() {
-    this.stmts = {
-      insert: this.db.prepare(`
+    const insert = this.db.prepare(`
         INSERT INTO messages (id, timestamp, topic, sender, receiver, content_text, content_data, metadata, cluster_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `),
+      `);
+    insert.safeIntegers(true);
 
-      queryBase: `SELECT rowid AS sequence, * FROM messages WHERE cluster_id = ?`,
+    this.stmts = {
+      insert,
+
+      queryBase: `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages WHERE cluster_id = ?`,
 
       count: this.db.prepare(`SELECT COUNT(*) as count FROM messages WHERE cluster_id = ?`),
 
       getAll: this.db.prepare(
-        `SELECT rowid AS sequence, * FROM messages WHERE cluster_id = ?` +
+        `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages WHERE cluster_id = ?` +
           ` ORDER BY timestamp ASC, rowid ASC`
       ),
     };
@@ -159,7 +165,7 @@ class Ledger extends EventEmitter {
         record.metadata,
         record.cluster_id
       );
-      record.sequence = Number(insertResult.lastInsertRowid);
+      record.sequence = messageSequenceFromSql(insertResult.lastInsertRowid);
 
       // Invalidate cache
       this.cache.clear();
@@ -234,7 +240,7 @@ class Ledger extends EventEmitter {
           record.metadata,
           record.cluster_id
         );
-        record.sequence = Number(insertResult.lastInsertRowid);
+        record.sequence = messageSequenceFromSql(insertResult.lastInsertRowid);
 
         results.push(this._deserializeMessage(record));
       }
@@ -326,19 +332,13 @@ class Ledger extends EventEmitter {
     }
 
     if (afterId !== undefined && afterId !== null) {
-      if (!Number.isInteger(afterId) || afterId < 0) {
-        throw new Error('afterId must be a non-negative durable message sequence');
-      }
       conditions.push('rowid > ?');
-      params.push(afterId);
+      params.push(messageSequenceToSql(afterId, 'afterId'));
     }
 
     if (throughId !== undefined && throughId !== null) {
-      if (!Number.isInteger(throughId) || throughId < 0) {
-        throw new Error('throughId must be a non-negative durable message sequence');
-      }
       conditions.push('rowid <= ?');
-      params.push(throughId);
+      params.push(messageSequenceToSql(throughId, 'throughId'));
     }
 
     // Defend against prototype pollution affecting default query ordering.
@@ -347,12 +347,14 @@ class Ledger extends EventEmitter {
       ? criteria.order
       : undefined;
     const direction = String(orderValue ?? 'asc').toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-    const sequenceBounded = afterId !== undefined || throughId !== undefined;
+    const sequenceBounded =
+      (afterId !== undefined && afterId !== null) ||
+      (throughId !== undefined && throughId !== null);
     const orderClause = sequenceBounded
       ? `rowid ${direction}`
       : `timestamp ${direction}, rowid ${direction}`;
     let sql =
-      `SELECT rowid AS sequence, * FROM messages WHERE ${conditions.join(' AND ')}` +
+      `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages WHERE ${conditions.join(' AND ')}` +
       ` ORDER BY ${orderClause}`;
 
     if (limit) {
@@ -399,7 +401,8 @@ class Ledger extends EventEmitter {
     }
 
     const params = [cluster_id, USER_GUIDANCE_CLUSTER];
-    let sql = 'SELECT rowid AS sequence, * FROM messages WHERE cluster_id = ? AND (topic = ?';
+    let sql =
+      `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages ` + 'WHERE cluster_id = ? AND (topic = ?';
 
     if (target_agent_id) {
       params.push(USER_GUIDANCE_AGENT, target_agent_id);
@@ -414,23 +417,17 @@ class Ledger extends EventEmitter {
     }
 
     if (afterId !== undefined && afterId !== null) {
-      if (!Number.isInteger(afterId) || afterId < 0) {
-        throw new Error('afterId must be a non-negative durable message sequence');
-      }
-      params.push(afterId);
+      params.push(messageSequenceToSql(afterId, 'afterId'));
       sql += ' AND rowid > ?';
     }
 
     if (throughId !== undefined && throughId !== null) {
-      if (!Number.isInteger(throughId) || throughId < 0) {
-        throw new Error('throughId must be a non-negative durable message sequence');
-      }
-      params.push(throughId);
+      params.push(messageSequenceToSql(throughId, 'throughId'));
       sql += ' AND rowid <= ?';
     }
 
     sql +=
-      afterId !== undefined || throughId !== undefined
+      (afterId !== undefined && afterId !== null) || (throughId !== undefined && throughId !== null)
         ? ' ORDER BY rowid ASC'
         : ' ORDER BY timestamp ASC, rowid ASC';
 
@@ -487,17 +484,14 @@ class Ledger extends EventEmitter {
     }
 
     if (throughId !== undefined && throughId !== null) {
-      if (!Number.isInteger(throughId) || throughId < 0) {
-        throw new Error('throughId must be a non-negative durable message sequence');
-      }
       conditions.push('rowid <= ?');
-      params.push(throughId);
+      params.push(messageSequenceToSql(throughId, 'throughId'));
     }
 
     const orderClause =
       orderBySequence || throughId !== undefined ? 'rowid DESC' : 'timestamp DESC, rowid DESC';
     const sql =
-      `SELECT rowid AS sequence, * FROM messages WHERE ${conditions.join(' AND ')}` +
+      `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages WHERE ${conditions.join(' AND ')}` +
       ` ORDER BY ${orderClause} LIMIT 1`;
 
     const stmt = this.db.prepare(sql);
@@ -576,7 +570,7 @@ class Ledger extends EventEmitter {
   _computeTokensByRole(cluster_id) {
     // Query all TOKEN_USAGE messages for this cluster
     const sql =
-      `SELECT rowid AS sequence, * FROM messages WHERE cluster_id = ?` +
+      `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages WHERE cluster_id = ?` +
       ` AND topic = 'TOKEN_USAGE' ORDER BY timestamp ASC, rowid ASC`;
     const stmt = this.db.prepare(sql);
     const rows = stmt.all(cluster_id);
@@ -671,7 +665,7 @@ class Ledger extends EventEmitter {
    * @returns {Function} Stop polling function
    */
   pollForMessages(clusterId, callback, intervalMs = 500, initialCount = 300) {
-    let lastSequence = 0;
+    let lastSequence = '0';
     let lastMessageIds = new Set();
     let isFirstPoll = true;
 
@@ -683,11 +677,14 @@ class Ledger extends EventEmitter {
           // First poll: get last N messages by count
           if (clusterId) {
             sql =
-              'SELECT * FROM (SELECT rowid AS sequence, * FROM messages WHERE cluster_id = ? ORDER BY rowid DESC LIMIT ?) ORDER BY sequence ASC';
+              `SELECT * FROM (SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages ` +
+              'WHERE cluster_id = ? ORDER BY rowid DESC LIMIT ?) ' +
+              'ORDER BY CAST(sequence AS INTEGER) ASC';
             params = [clusterId, initialCount];
           } else {
             sql =
-              'SELECT * FROM (SELECT rowid AS sequence, * FROM messages ORDER BY rowid DESC LIMIT ?) ORDER BY sequence ASC';
+              `SELECT * FROM (SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages ` +
+              'ORDER BY rowid DESC LIMIT ?) ORDER BY CAST(sequence AS INTEGER) ASC';
             params = [initialCount];
           }
           isFirstPoll = false;
@@ -695,11 +692,14 @@ class Ledger extends EventEmitter {
           // Subsequent polls: get messages after the exact durable sequence.
           if (clusterId) {
             sql =
-              'SELECT rowid AS sequence, * FROM messages WHERE cluster_id = ? AND rowid > ? ORDER BY rowid ASC';
-            params = [clusterId, lastSequence];
+              `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages ` +
+              'WHERE cluster_id = ? AND rowid > ? ORDER BY rowid ASC';
+            params = [clusterId, messageSequenceToSql(lastSequence)];
           } else {
-            sql = 'SELECT rowid AS sequence, * FROM messages WHERE rowid > ? ORDER BY rowid ASC';
-            params = [lastSequence];
+            sql =
+              `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages ` +
+              'WHERE rowid > ? ORDER BY rowid ASC';
+            params = [messageSequenceToSql(lastSequence)];
           }
         }
 
@@ -714,10 +714,9 @@ class Ledger extends EventEmitter {
           const message = this._deserializeMessage(row);
           callback(message);
 
-          // Update the database-serialized high-water mark.
-          if (row.sequence > lastSequence) {
-            lastSequence = row.sequence;
-          }
+          // Rows are delivered in SQLite rowid order, so the final row is the
+          // exact database-serialized high-water mark.
+          lastSequence = messageSequenceFromSql(row.sequence);
         }
 
         // Prune old message IDs to prevent memory leak
@@ -761,7 +760,10 @@ class Ledger extends EventEmitter {
   _deserializeMessage(row) {
     const message = {
       id: row.id,
-      sequence: Number.isInteger(row.sequence) ? row.sequence : undefined,
+      sequence:
+        row.sequence === undefined
+          ? undefined
+          : messageSequenceFromSql(row.sequence, 'stored message sequence'),
       timestamp: row.timestamp,
       topic: row.topic,
       sender: row.sender,

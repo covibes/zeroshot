@@ -16,6 +16,7 @@ describe('single-task session resume', function () {
 
     assert.strictEqual(task.requestedResumeSessionId, 'requested-thread');
     assert.strictEqual(task.sessionId, null);
+    assert.strictEqual(task.sessionIdConflict, false);
   });
 
   it('uses the captured explicit provider session ID', async function () {
@@ -75,9 +76,12 @@ describe('single-task session resume', function () {
       migrateTaskStore(database);
 
       const row = database
-        .prepare('SELECT session_id, requested_resume_session_id FROM tasks WHERE id = ?')
+        .prepare(
+          'SELECT session_id, session_id_conflict, requested_resume_session_id FROM tasks WHERE id = ?'
+        )
         .get('legacy-task');
       assert.strictEqual(row.session_id, null);
+      assert.strictEqual(row.session_id_conflict, 0);
       assert.strictEqual(row.requested_resume_session_id, 'historically-requested-id');
       assert.strictEqual(
         database.pragma('user_version', { simple: true }),
@@ -93,9 +97,15 @@ describe('single-task session resume', function () {
       migrateTaskStore(database);
       assert.deepStrictEqual(
         database
-          .prepare('SELECT session_id, requested_resume_session_id FROM tasks WHERE id = ?')
+          .prepare(
+            'SELECT session_id, session_id_conflict, requested_resume_session_id FROM tasks WHERE id = ?'
+          )
           .get('captured-task'),
-        { session_id: 'observed-id', requested_resume_session_id: 'requested-id' }
+        {
+          session_id: 'observed-id',
+          session_id_conflict: 0,
+          requested_resume_session_id: 'requested-id',
+        }
       );
     } finally {
       database.close();

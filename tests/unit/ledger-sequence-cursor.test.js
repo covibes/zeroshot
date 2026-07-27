@@ -5,6 +5,8 @@ const os = require('os');
 const path = require('path');
 
 const Ledger = require('../../src/ledger');
+const { compareMessageSequences, MAX_SQLITE_ROWID } = require('../../src/ledger-sequence');
+const { normalizeProviderSession } = require('../../src/agent/provider-session');
 
 const WRITER_FIXTURE = path.resolve(__dirname, '../fixtures/ledger-sequence-writer.js');
 
@@ -58,11 +60,11 @@ describe('durable ledger sequence cursors', function () {
       });
       const writes = (await Promise.all(results))
         .map(({ message }) => message)
-        .sort((left, right) => left.sequence - right.sequence);
+        .sort((left, right) => compareMessageSequences(left.sequence, right.sequence));
 
       assert.strictEqual(writes[0].timestamp, timestamp);
       assert.strictEqual(writes[1].timestamp, timestamp);
-      assert.ok(writes[0].sequence < writes[1].sequence);
+      assert.strictEqual(compareMessageSequences(writes[0].sequence, writes[1].sequence), -1);
 
       const guidanceLedgers = [new Ledger(dbPath), new Ledger(dbPath)];
       const guidanceTimestamp = timestamp + 1;
@@ -77,7 +79,7 @@ describe('durable ledger sequence cursors', function () {
             content: { text: `guidance-${index}` },
           })
         )
-        .sort((left, right) => left.sequence - right.sequence);
+        .sort((left, right) => compareMessageSequences(left.sequence, right.sequence));
       guidanceLedgers.forEach((ledger) => ledger.close());
       assert.strictEqual(guidanceWrites[0].timestamp, guidanceTimestamp);
       assert.strictEqual(guidanceWrites[1].timestamp, guidanceTimestamp);
@@ -115,6 +117,131 @@ describe('durable ledger sequence cursors', function () {
         }
       }
       fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves adjacent rowids above Number.MAX_SAFE_INTEGER through queries and JSON state', function () {
+    const ledger = new Ledger(':memory:');
+    const clusterId = 'high-rowid-cluster';
+    const first = 9007199254740992n;
+    const rows = [
+      [first, 'source-a', 'VALIDATION_RESULT', 'validator', 'broadcast'],
+      [first + 1n, 'source-b', 'VALIDATION_RESULT', 'validator', 'broadcast'],
+      [first + 2n, 'guidance-a', 'USER_GUIDANCE_AGENT', 'operator', 'worker'],
+      [first + 3n, 'guidance-b', 'USER_GUIDANCE_AGENT', 'operator', 'worker'],
+    ];
+    const insert = ledger.db.prepare(`
+      INSERT INTO messages (
+        rowid, id, timestamp, topic, sender, receiver, content_text, content_data, metadata, cluster_id
+      ) VALUES (
+        @rowid, @id, @timestamp, @topic, @sender, @receiver, @text, NULL, NULL, @clusterId
+      )
+    `);
+
+    try {
+      for (const [rowid, id, topic, sender, receiver] of rows) {
+        insert.run({
+          rowid,
+          id,
+          timestamp: 1000,
+          topic,
+          sender,
+          receiver,
+          text: id,
+          clusterId,
+        });
+      }
+
+      const all = ledger.query({
+        cluster_id: clusterId,
+        afterId: (first - 1n).toString(),
+        throughId: (first + 3n).toString(),
+      });
+      assert.deepStrictEqual(
+        all.map(({ id, sequence }) => [id, sequence]),
+        rows.map(([rowid, id]) => [id, rowid.toString()])
+      );
+      assert.strictEqual(new Set(all.map((message) => message.id)).size, rows.length);
+
+      const sourceDelta = ledger.query({
+        cluster_id: clusterId,
+        topic: 'VALIDATION_RESULT',
+        afterId: first.toString(),
+        throughId: (first + 1n).toString(),
+      });
+      assert.deepStrictEqual(
+        sourceDelta.map((message) => message.id),
+        ['source-b']
+      );
+
+      const guidanceDelta = ledger.queryGuidanceMailbox({
+        cluster_id: clusterId,
+        target_agent_id: 'worker',
+        afterId: (first + 2n).toString(),
+        throughId: (first + 3n).toString(),
+      });
+      assert.deepStrictEqual(
+        guidanceDelta.map((message) => message.id),
+        ['guidance-b']
+      );
+      assert.strictEqual(
+        ledger.findLast({ cluster_id: clusterId, orderBySequence: true }).sequence,
+        (first + 3n).toString()
+      );
+
+      const persisted = JSON.parse(
+        JSON.stringify(
+          normalizeProviderSession({
+            provider: 'claude',
+            sessionId: 'high-rowid-session',
+            agentId: 'worker',
+            taskId: 'task-high-rowid',
+            generation: 1,
+            cwd: '/tmp/high-rowid',
+            worktreePath: null,
+            contextSequence: sourceDelta[0].sequence,
+            guidanceSequence: guidanceDelta[0].sequence,
+            promptIdentity: null,
+          })
+        )
+      );
+      assert.strictEqual(persisted.contextSequence, (first + 1n).toString());
+      assert.strictEqual(persisted.guidanceSequence, (first + 3n).toString());
+
+      const appended = ledger.append({
+        cluster_id: clusterId,
+        topic: 'VALIDATION_RESULT',
+        sender: 'validator',
+        content: { text: 'source-c' },
+      });
+      assert.strictEqual(appended.sequence, (first + 4n).toString());
+
+      for (const invalid of [
+        '',
+        '01',
+        '-1',
+        (MAX_SQLITE_ROWID + 1n).toString(),
+        Number.MAX_SAFE_INTEGER + 1,
+        first,
+      ]) {
+        assert.throws(
+          () => ledger.query({ cluster_id: clusterId, afterId: invalid }),
+          /canonical non-negative decimal string|SQLite rowid range/
+        );
+      }
+      assert.throws(
+        () => ledger.query({ cluster_id: clusterId, throughId: '01' }),
+        /canonical non-negative decimal string/
+      );
+      assert.strictEqual(
+        normalizeProviderSession({
+          ...persisted,
+          contextSequence: (MAX_SQLITE_ROWID + 1n).toString(),
+        }),
+        null
+      );
+    } finally {
+      ledger.close();
     }
   });
 });

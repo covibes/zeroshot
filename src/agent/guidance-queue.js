@@ -1,5 +1,6 @@
 const GUIDANCE_BLOCK_START = '<<GUIDANCE_QUEUE_START>>';
 const GUIDANCE_BLOCK_END = '<<GUIDANCE_QUEUE_END>>';
+const { compareMessageSequences } = require('../ledger-sequence');
 
 function formatGuidanceMessage(message) {
   const timestamp = Number.isFinite(message.timestamp)
@@ -24,7 +25,7 @@ function formatGuidanceMessage(message) {
 function orderGuidanceMessages(messages, orderBySequence) {
   return messages.slice().sort((a, b) => {
     if (orderBySequence) {
-      return (a.sequence || 0) - (b.sequence || 0);
+      return compareMessageSequences(a.sequence || '0', b.sequence || '0');
     }
     return (a.timestamp || 0) - (b.timestamp || 0);
   });

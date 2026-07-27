@@ -96,8 +96,8 @@ describe('agent-owned provider session reuse', function () {
       generation: 1,
       cwd: TEST_CWD,
       worktreePath: null,
-      contextSequence: 41,
-      guidanceSequence: 17,
+      contextSequence: '41',
+      guidanceSequence: '17',
       promptIdentity: FOLLOW_UP_PROMPT_IDENTITY,
     });
 
@@ -196,6 +196,23 @@ describe('agent-owned provider session reuse', function () {
       assert.strictEqual(result.providerSession, null);
       assert.match(result.error, expectedError);
     }
+
+    const ambiguous = await buildCompletionResult({
+      agent,
+      taskId: baseTaskInfo.id,
+      providerName: 'claude',
+      state: { output: 'provider emitted forked then requested IDs', logFilePath: null },
+      stdout: 'Status: completed',
+      success: true,
+      taskInfo: {
+        ...baseTaskInfo,
+        sessionId: 'claude-session-1',
+        sessionIdConflict: true,
+      },
+    });
+    assert.strictEqual(ambiguous.success, false);
+    assert.strictEqual(ambiguous.providerSession, null);
+    assert.match(ambiguous.error, /conflicting session identities/);
   });
 
   it('never leaks one agent session into another agent', function () {

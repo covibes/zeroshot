@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const path = require('path');
 
 const { normalizeProviderName, providerSupportsCapability } = require('../../lib/provider-names');
+const { tryCanonicalMessageSequence } = require('../ledger-sequence');
 
 const DURABLE_SESSION_BOUNDARY_EVENTS = new Set([
   'TASK_STARTED',
@@ -22,7 +23,7 @@ function normalizeAbsolutePath(value) {
 }
 
 function normalizeCursor(value) {
-  return Number.isInteger(value) && value >= 0 ? value : null;
+  return tryCanonicalMessageSequence(value);
 }
 
 function normalizeNullableCursor(value) {
@@ -148,6 +149,9 @@ function validateCompletedResumeIdentity(taskInfo) {
   if (!requestedSessionId) {
     return null;
   }
+  if (taskInfo?.sessionIdConflict === true) {
+    return 'Provider continuation emitted conflicting session identities';
+  }
 
   const capturedSessionId = normalizeNonEmptyString(taskInfo?.sessionId);
   if (capturedSessionId === requestedSessionId) {
@@ -173,6 +177,9 @@ function providerSessionFromCompletedTask({
     return null;
   }
   if (normalizeProviderName(taskInfo.provider) !== provider) {
+    return null;
+  }
+  if (taskInfo.sessionIdConflict === true) {
     return null;
   }
   if (validateCompletedResumeIdentity(taskInfo)) {
@@ -208,7 +215,7 @@ function readLastDurableSessionBoundary(messageBus, clusterId, agentId) {
     cluster_id: clusterId,
     topic: 'AGENT_LIFECYCLE',
     sender: agentId,
-    afterId: 0,
+    afterId: '0',
   });
   return lifecycle
     .filter((message) => DURABLE_SESSION_BOUNDARY_EVENTS.has(message.content?.data?.event))
@@ -222,7 +229,7 @@ function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId 
   }
   if (
     !Object.hasOwn(savedState, 'lastGuidanceAppliedId') ||
-    savedState.lastGuidanceAppliedId !== session.guidanceSequence
+    normalizeNullableCursor(savedState.lastGuidanceAppliedId) !== session.guidanceSequence
   ) {
     return null;
   }
@@ -237,8 +244,8 @@ function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId 
     data.taskId !== session.taskId ||
     data.iteration !== session.generation ||
     normalizeProviderName(data.provider) !== session.provider ||
-    data.contextSequence !== session.contextSequence ||
-    data.guidanceSequence !== session.guidanceSequence ||
+    normalizeCursor(data.contextSequence) !== session.contextSequence ||
+    normalizeNullableCursor(data.guidanceSequence) !== session.guidanceSequence ||
     data.promptIdentity !== session.promptIdentity
   ) {
     return null;

@@ -1942,11 +1942,11 @@ function defineLifecycleResumeTests() {
         generation: agent.iteration,
         cwd: path.resolve(agent.config.cwd || process.cwd()),
         worktreePath: null,
-        contextSequence: 41,
-        guidanceSequence: 17,
+        contextSequence: '41',
+        guidanceSequence: '17',
         promptIdentity: privatePromptIdentity,
       };
-      agent.lastGuidanceAppliedId = 17;
+      agent.lastGuidanceAppliedId = '17';
       cluster.messageBus.publish({
         cluster_id: result.id,
         topic: 'AGENT_LIFECYCLE',
@@ -1958,8 +1958,8 @@ function defineLifecycleResumeTests() {
             provider: 'claude',
             taskId: 'task-complete',
             iteration: agent.iteration,
-            contextSequence: 41,
-            guidanceSequence: 17,
+            contextSequence: '41',
+            guidanceSequence: '17',
             promptIdentity: privatePromptIdentity,
           },
         },
@@ -1998,11 +1998,11 @@ function defineLifecycleResumeTests() {
           generation: agent.iteration,
           cwd: path.resolve(agent.config.cwd || process.cwd()),
           worktreePath: null,
-          contextSequence: 41,
-          guidanceSequence: 17,
+          contextSequence: '41',
+          guidanceSequence: '17',
           promptIdentity: privatePromptIdentity,
         });
-        assert.strictEqual(restoredAgent.lastGuidanceAppliedId, 17);
+        assert.strictEqual(restoredAgent.lastGuidanceAppliedId, '17');
         assert.strictEqual(restoredState.currentTask, false);
       } finally {
         reloaded.close();

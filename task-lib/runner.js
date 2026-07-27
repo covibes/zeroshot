@@ -167,6 +167,7 @@ export function buildTaskRecord({ id, prompt, cwd, options, logFile, providerNam
     // resume ID is diagnostic input, not proof the resumed provider emitted or
     // accepted that session identity.
     sessionId: null,
+    sessionIdConflict: false,
     requestedResumeSessionId: options.resume || null,
     logFile,
     createdAt: new Date().toISOString(),

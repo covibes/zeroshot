@@ -19,8 +19,8 @@ function buildProviderSession(overrides = {}) {
     generation: 1,
     cwd: PROVIDER_SESSION_TEST_CWD,
     worktreePath: null,
-    contextSequence: 41,
-    guidanceSequence: 17,
+    contextSequence: '41',
+    guidanceSequence: '17',
     promptIdentity: FOLLOW_UP_PROMPT_IDENTITY,
     ...overrides,
   };

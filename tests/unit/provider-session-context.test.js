@@ -1,6 +1,7 @@
 const assert = require('assert');
 const path = require('path');
 const { promptIdentity } = require('../../src/agent/provider-session');
+const { compareMessageSequences } = require('../../src/ledger-sequence');
 
 const {
   createProviderSessionAgent,
@@ -127,7 +128,13 @@ describe('provider-session continuation context', function () {
     restoredAgent.lastGuidanceAppliedId = agent.providerSession.guidanceSequence;
     restoredAgent.iteration = 2;
 
-    assert.ok(firstPostTurn.sequence > restoredAgent.providerSession.contextSequence);
+    assert.strictEqual(
+      compareMessageSequences(
+        firstPostTurn.sequence,
+        restoredAgent.providerSession.contextSequence
+      ),
+      1
+    );
     agent.iteration = 2;
     const secondContext = restoredAgent._buildContext(trigger);
 
@@ -170,7 +177,7 @@ describe('provider-session continuation context', function () {
       generation: 1,
       cwd: path.resolve(agent.config.cwd || process.cwd()),
       worktreePath: null,
-      contextSequence: 1,
+      contextSequence: '1',
       guidanceSequence: null,
       promptIdentity: promptIdentity('STATIC-OLD-CLI-INSTRUCTIONS'),
     };

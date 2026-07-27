@@ -1,8 +1,10 @@
 const assert = require('assert');
 const path = require('path');
 const sinon = require('sinon');
+const { buildCompletionResult } = require('../../src/agent/agent-task-executor');
 
 const {
+  buildProviderSession,
   createProviderSessionAgent,
   createProviderSessionHarness,
 } = require('../helpers/provider-session-harness');
@@ -79,6 +81,88 @@ describe('provider-session lifecycle boundaries', function () {
       })
       .find((message) => message.content?.data?.event === 'TASK_FAILED');
     assert.ok(failed, 'failed attempt must be durable before retry');
+  });
+
+  it('fails a requested A resume captured as B then A before hooks and retries fresh', async function () {
+    const cluster = { id: 'ambiguous-resume-cluster', createdAt: Date.now(), agents: [] };
+    let attempts = 0;
+    let agent;
+    agent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: {
+        prompt: 'FULL-FRESH-RETRY-INSTRUCTIONS',
+        outputFormat: 'text',
+        maxRetries: 2,
+        hooks: {
+          onComplete: {
+            action: 'publish_message',
+            config: { topic: 'IMPLEMENTATION_READY' },
+          },
+        },
+      },
+      runtime: {
+        quiet: true,
+        providerCliFeatures: { claude: { supportsResume: true } },
+        mockSpawnFn: (args, { context }) => {
+          attempts += 1;
+          if (attempts === 1) {
+            const resumeIndex = args.indexOf('--resume');
+            assert.ok(resumeIndex >= 0);
+            assert.strictEqual(args[resumeIndex + 1], 'claude-session-1');
+            return buildCompletionResult({
+              agent,
+              taskId: 'ambiguous-resume-task',
+              providerName: 'claude',
+              state: { output: 'done', logFilePath: null },
+              stdout: 'Status: completed',
+              success: true,
+              taskInfo: {
+                id: 'ambiguous-resume-task',
+                provider: 'claude',
+                status: 'completed',
+                requestedResumeSessionId: 'claude-session-1',
+                sessionId: 'claude-session-1',
+                sessionIdConflict: true,
+              },
+            });
+          }
+
+          assert.strictEqual(agent.providerSession, null);
+          assert.ok(!args.includes('--resume'));
+          assert.match(context, /FULL-FRESH-RETRY-INSTRUCTIONS/);
+          return { success: true, output: 'fresh retry done', providerSession: null };
+        },
+      },
+    });
+    agent.iteration = 1;
+    agent.providerSession = buildProviderSession({
+      cwd: path.resolve(agent.config.cwd || process.cwd()),
+    });
+    agent.lastGuidanceAppliedId = agent.providerSession.guidanceSequence;
+    agent.running = true;
+
+    await agent._executeTask({
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'retry the continuation' },
+    });
+
+    assert.strictEqual(attempts, 2);
+    assert.strictEqual(
+      messageBus.count({ cluster_id: cluster.id, topic: 'IMPLEMENTATION_READY' }),
+      1,
+      'the ambiguous resumed output must fail before its completion hook'
+    );
+    const lifecycleEvents = messageBus
+      .query({
+        cluster_id: cluster.id,
+        topic: 'AGENT_LIFECYCLE',
+        sender: 'worker',
+      })
+      .map((message) => message.content?.data?.event);
+    assert.strictEqual(lifecycleEvents.filter((event) => event === 'TASK_COMPLETED').length, 1);
+    assert.ok(lifecycleEvents.includes('TASK_FAILED'));
   });
 
   it('does not recognize a completed turn or session when the onComplete hook crashes', async function () {
