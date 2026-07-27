@@ -1,0 +1,131 @@
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+
+const mode = process.argv[2];
+const repoRoot = path.resolve(__dirname, '../..');
+
+function moduleUrl(relativePath) {
+  return pathToFileURL(path.join(repoRoot, relativePath)).href;
+}
+
+function taskRecord(id, status, commandCleanup, ownership = {}) {
+  return {
+    id,
+    prompt: mode,
+    fullPrompt: mode,
+    cwd: repoRoot,
+    status,
+    pid: ownership.pid ?? null,
+    processGroupId: ownership.processGroupId ?? null,
+    terminationStrategy: ownership.terminationStrategy ?? null,
+    commandCleanup,
+  };
+}
+
+function cleanupReceipt(cleanupPath) {
+  return {
+    cleanup: [cleanupPath],
+    cleanupMetadata: [
+      {
+        kind: 'temp-directory',
+        provider: 'claude',
+        path: cleanupPath,
+        reason: 'settings-overlay',
+      },
+    ],
+  };
+}
+
+async function runRetryScenario(store, killTaskCommand, completeWatcherTask) {
+  const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
+  fs.mkdirSync(overlayRoot, { recursive: true });
+  const cleanupPath = fs.mkdtempSync(path.join(overlayRoot, 'run-terminal-retry-'));
+  const taskId = 'terminal-cleanup-retry';
+  store.addTask(taskRecord(taskId, 'running', cleanupReceipt(cleanupPath), { pid: 424242 }));
+  let cleanupRuns = 0;
+
+  await completeWatcherTask({
+    taskId,
+    completion: { status: 'completed', resolvedCode: 0, error: null },
+    commandCleanup: {
+      run() {
+        cleanupRuns += 1;
+        return Promise.resolve(false);
+      },
+    },
+    terminateProvider: () => Promise.resolve(true),
+    updateTask: store.updateTask,
+    emergencyLog() {},
+  });
+
+  const terminal = store.getTask(taskId);
+  const cleanupExistsBeforeRetry = fs.existsSync(cleanupPath);
+  await killTaskCommand(taskId, { graceMs: 40, pollMs: 5 });
+  return {
+    terminal,
+    recovered: store.getTask(taskId),
+    cleanupRuns,
+    cleanupExistsBeforeRetry,
+    cleanupExistsAfterRetry: fs.existsSync(cleanupPath),
+  };
+}
+
+async function runUnsafeScenario(store, killTaskCommand) {
+  const userDirectory = path.join(process.env.ZEROSHOT_HOME, 'user-owned');
+  fs.mkdirSync(userDirectory);
+  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+  });
+  const taskId = 'terminal-cleanup-unsafe';
+  store.addTask(
+    taskRecord(taskId, 'completed', cleanupReceipt(userDirectory), {
+      pid: unrelated.pid,
+      processGroupId: unrelated.pid,
+      terminationStrategy: 'process',
+    })
+  );
+
+  try {
+    await killTaskCommand(taskId, { graceMs: 40, pollMs: 5 });
+    let unrelatedAlive = true;
+    try {
+      process.kill(unrelated.pid, 0);
+    } catch {
+      unrelatedAlive = false;
+    }
+    return {
+      terminal: store.getTask(taskId),
+      unrelatedAlive,
+      userDirectoryExists: fs.existsSync(userDirectory),
+    };
+  } finally {
+    try {
+      process.kill(unrelated.pid, 'SIGKILL');
+    } catch {
+      // The regression expects this process to remain alive until fixture teardown.
+    }
+  }
+}
+
+async function main() {
+  const store = await import(moduleUrl('task-lib/store.js'));
+  const { killTaskCommand } = await import(moduleUrl('task-lib/commands/kill.js'));
+  const { completeWatcherTask } = await import(moduleUrl('task-lib/watcher-output-runtime.js'));
+  let result;
+  if (mode === 'retry') {
+    result = await runRetryScenario(store, killTaskCommand, completeWatcherTask);
+  } else if (mode === 'unsafe') {
+    result = await runUnsafeScenario(store, killTaskCommand);
+  } else {
+    throw new Error(`Unknown terminal cleanup fixture mode: ${mode}`);
+  }
+  process.stdout.write(`RESULT:${JSON.stringify(result)}\n`);
+}
+
+main().catch((error) => {
+  process.stderr.write(`${error.stack || error.message}\n`);
+  process.exitCode = 1;
+});

@@ -5,10 +5,28 @@ import { terminateProcess } from '../process-termination.js';
 
 async function cleanupTerminatedTask(task) {
   if (!task.commandCleanup) return {};
-  const cleanup = createCommandSpecCleanup(task.commandCleanup, (cleanupPath, error) => {
-    console.log(chalk.yellow(`Warning: failed to clean up ${cleanupPath}: ${error.message}`));
-  });
-  return (await cleanup.run()) ? { commandCleanup: null } : {};
+  try {
+    const cleanup = createCommandSpecCleanup(task.commandCleanup, (cleanupPath, error) => {
+      console.log(chalk.yellow(`Warning: failed to clean up ${cleanupPath}: ${error.message}`));
+    });
+    return (await cleanup.run()) ? { commandCleanup: null } : {};
+  } catch (error) {
+    console.log(
+      chalk.yellow(`Warning: failed to validate persisted command cleanup: ${error.message}`)
+    );
+    return {};
+  }
+}
+
+async function retryTerminalTaskCleanup(taskId, task) {
+  if (!task.commandCleanup) return;
+  const cleanupUpdate = await cleanupTerminatedTask(task);
+  if (cleanupUpdate.commandCleanup === null) {
+    updateTask(taskId, cleanupUpdate);
+    console.log(chalk.green(`✓ Recovered pending command cleanup for task ${taskId}`));
+    return;
+  }
+  console.log(chalk.yellow(`Warning: command cleanup remains pending for task ${taskId}`));
 }
 
 export async function killTaskCommand(taskId, options = {}) {
@@ -20,6 +38,7 @@ export async function killTaskCommand(taskId, options = {}) {
   }
 
   if (task.status !== 'running') {
+    await retryTerminalTaskCleanup(taskId, task);
     console.log(chalk.yellow(`Task is not running (status: ${task.status})`));
     return;
   }
