@@ -875,9 +875,7 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
 
-  // argv strings are null-terminated at the OS level, so a null byte anywhere
-  // in agent-generated content (e.g. the task prompt) crashes spawn() with
-  // ERR_INVALID_ARG_VALUE. Strip it rather than letting it reach spawn().
+  // spawn() throws on null bytes in argv; strip them before they get there.
   const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
 
   return new Promise((resolve, reject) => {
