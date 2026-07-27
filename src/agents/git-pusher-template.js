@@ -275,6 +275,7 @@ const hasSufficientEvidence = latestValidatorMessages.every((r) => {
 return hasSufficientEvidence;`;
 
 const { readRepoSettings } = require('../../lib/repo-settings');
+const { normalizeGitRemoteName, quoteShellArgument } = require('../../lib/git-remote-utils');
 const { resolveRequiredQualityGates } = require('../quality-gates');
 
 function getSafeBranchName(value) {
@@ -292,25 +293,6 @@ function getSafeBranchName(value) {
     return null;
   }
 
-  return trimmed;
-}
-
-function getSafeGitRemote(value) {
-  if (value === undefined || value === null) {
-    return 'origin';
-  }
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (
-    trimmed.length === 0 ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(trimmed) ||
-    trimmed.includes('..')
-  ) {
-    return null;
-  }
   return trimmed;
 }
 
@@ -347,7 +329,7 @@ function resolveGitHubConfig(options = {}) {
   const repoSettingsResult = readRepoSettings(options.cwd || process.cwd());
   const repoSettings = repoSettingsResult.settings || {};
   const repoGithub = repoSettings.github || {};
-  const gitRemote = getSafeGitRemote(options.gitRemote);
+  const gitRemote = normalizeGitRemoteName(options.gitRemote ?? 'origin');
   if (!gitRemote) {
     throw new Error(`Invalid git remote name '${options.gitRemote}'`);
   }
@@ -466,6 +448,7 @@ function generateReviewModePrompt(config) {
     requiresPrIdExtraction,
     gitRemote,
   } = config;
+  const gitRemoteArgument = quoteShellArgument(gitRemote);
 
   return `CRITICAL: ALL VALIDATORS APPROVED. YOU ARE A TRANSPORT-ONLY GIT PUSHER.
 
@@ -507,7 +490,7 @@ Run this command. Do not skip it.
 
 ### STEP 4: Push to ${gitRemote} (MANDATORY)
 \`\`\`bash
-git push -u ${gitRemote} HEAD
+git push -u -- ${gitRemoteArgument} HEAD
 \`\`\`
 Run this. If it fails, do not edit files, rebase, or resolve conflicts. Output blocked JSON with the failure summary.
 
@@ -579,6 +562,7 @@ function generatePrompt(config) {
     autoMerge,
     gitRemote,
   } = config;
+  const gitRemoteArgument = quoteShellArgument(gitRemote);
 
   if (!autoMerge) {
     return generateReviewModePrompt(config);
@@ -668,7 +652,7 @@ Run this command. Do not skip it.
 
 ### STEP 4: Push to ${gitRemote} (MANDATORY)
 \`\`\`bash
-git push -u ${gitRemote} HEAD
+git push -u -- ${gitRemoteArgument} HEAD
 \`\`\`
 Run this. If it fails, do not edit files, rebase, or resolve conflicts. Output blocked JSON with the failure summary.
 

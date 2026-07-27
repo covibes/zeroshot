@@ -83,6 +83,7 @@ function fetchFreshRemoteBase(repoRoot, remoteName, branch) {
         '--no-tags',
         '--no-write-fetch-head',
         '--refmap=',
+        '--',
         remoteName,
         `+refs/heads/${branch}:${temporaryRef}`,
       ],
@@ -1634,7 +1635,7 @@ class IsolationManager {
         try {
           runSync(
             'git',
-            ['fetch', '--no-tags', remoteName, `+refs/heads/${branch}:${remoteTrackingRef}`],
+            ['fetch', '--no-tags', '--', remoteName, `+refs/heads/${branch}:${remoteTrackingRef}`],
             {
               cwd: repoRoot,
               encoding: 'utf8',

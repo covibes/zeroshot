@@ -13,9 +13,27 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { parseGitRemoteUrl, detectGitContext } = require('../../lib/git-remote-utils');
+const {
+  normalizeGitRemoteName,
+  quoteShellArgument,
+  parseGitRemoteUrl,
+  detectGitContext,
+} = require('../../lib/git-remote-utils');
 
 describe('Git Remote Utils', function () {
+  describe('remote names', function () {
+    it('accepts Git-valid punctuation and quotes it for shell prompts', function () {
+      assert.strictEqual(normalizeGitRemoteName("my@remote's"), "my@remote's");
+      assert.strictEqual(quoteShellArgument("my@remote's"), `'my@remote'"'"'s'`);
+    });
+
+    it('rejects names Git cannot map into remote-tracking refs', function () {
+      for (const name of ['', 'has space', 'two..dots', '.hidden', 'name.lock', 'bad?name']) {
+        assert.strictEqual(normalizeGitRemoteName(name), null, name);
+      }
+    });
+  });
+
   registerParseGitRemoteUrlTests();
   registerDetectGitContextTests();
 });
