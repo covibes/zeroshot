@@ -332,6 +332,13 @@ Restart persistence: orchestrator publishes `AGENT_RESTART_ATTEMPT` to the ledge
 Provider task ownership: task watchers persist an owned termination boundary with each active task.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work.
+Provider continuation is agent- and generation-owned and becomes durable only after logical output
+validation and the `onComplete` hook succeed. Persist the exact ledger high-water cursor, applied
+guidance cursor, and selected prompt identity with the observed provider session; restored
+continuations fail closed unless the final durable `TASK_COMPLETED` boundary and all provenance
+match. Continuation sources query strictly after that cursor and de-duplicate the exact triggering
+message by ledger ID. If the installed CLI cannot resume, rebuild full context or fail before
+launch—never send a continuation delta to a fresh provider session.
 
 Provider session reuse is explicit-ID and agent-owned. Watcher-observed IDs are distinct from
 requested resume IDs. Commit continuation only after logical/structured success and bind it to the

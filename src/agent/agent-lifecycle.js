@@ -438,12 +438,16 @@ function attachResultMetadata(agent, result) {
 }
 
 function publishTaskCompleted(agent, result) {
+  const session = result.providerSession;
   agent._publishLifecycle('TASK_COMPLETED', {
     iteration: agent.iteration,
     success: true,
     taskId: agent.currentTaskId,
     provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
     tokenUsage: result.tokenUsage || null,
+    contextCursor: session?.contextCursor ?? agent.currentContextCursor,
+    guidanceCursor: session?.guidanceCursor ?? agent.currentGuidanceCursor ?? null,
+    promptText: session?.promptText ?? agent.currentPromptText ?? null,
   });
 }
 
@@ -594,9 +598,17 @@ async function runTaskAttempt(agent, triggeringMessage) {
     );
   }
 
-  // Commit continuation state only after provider completion, structured-output
-  // classification, and platform fallback checks all agree this logical turn succeeded.
+  // The hook publishes the logical output of the turn. Until it succeeds, neither
+  // TASK_COMPLETED nor its provider continuation boundary is durable.
+  try {
+    await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
+  } catch (error) {
+    updateAgentProviderSession(agent, null);
+    throw error;
+  }
+
   updateAgentProviderSession(agent, result.providerSession);
+  agent.lastGuidanceAppliedAt = agent.currentGuidanceCursor;
 
   // Set state to idle BEFORE publishing lifecycle event
   // (so lifecycle message includes correct state)
@@ -608,7 +620,6 @@ async function runTaskAttempt(agent, triggeringMessage) {
   publishTaskCompleted(agent, result);
   publishTokenUsage(agent, result);
   clearTransientTaskState(agent);
-  await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
 }
 
 function logTaskAttemptFailure(agent, attempt, maxRetries, error) {

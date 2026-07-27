@@ -66,17 +66,24 @@ function resolveSourceMessages({
   cluster,
   lastTaskEndTime,
   lastAgentStartTime,
+  afterCursor,
+  triggeringMessageId,
   compact = false,
 }) {
-  const sinceTimestamp = resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime);
+  const sinceTimestamp =
+    afterCursor === undefined
+      ? resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime)
+      : undefined;
   const { amount, strategy } = resolveSourceSelection(source, { compact });
   const messages = messageBus.query({
     cluster_id: cluster.id,
     topic: source.topic,
     sender: source.sender,
-    since: sinceTimestamp,
+    ...(afterCursor === undefined ? { since: sinceTimestamp } : { after: afterCursor }),
   });
-  const replayableMessages = messages.filter(isReplayableMessage);
+  const replayableMessages = messages.filter(
+    (message) => isReplayableMessage(message) && message.id !== triggeringMessageId
+  );
 
   if (amount === undefined) {
     return replayableMessages;
@@ -115,6 +122,8 @@ function buildSourcePack({
   cluster,
   lastTaskEndTime,
   lastAgentStartTime,
+  afterCursor,
+  triggeringMessageId,
 }) {
   const render = (compact) => {
     const messages = resolveSourceMessages({
@@ -123,6 +132,8 @@ function buildSourcePack({
       cluster,
       lastTaskEndTime,
       lastAgentStartTime,
+      afterCursor,
+      triggeringMessageId,
       compact,
     });
 

@@ -12,6 +12,7 @@ import { TASKS_DIR, LOGS_DIR } from './config.js';
 import { generateName } from './name-generator.js';
 
 const DB_FILE = join(TASKS_DIR, 'store.db');
+export const TASK_STORE_SCHEMA_VERSION = 2;
 
 /** @type {Database.Database | null} */
 let db = null;
@@ -78,9 +79,7 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
   `);
 
-  ensureTaskColumn(db, 'process_group_id', 'INTEGER');
-  ensureTaskColumn(db, 'termination_strategy', 'TEXT');
-  ensureTaskColumn(db, 'requested_resume_session_id', 'TEXT');
+  migrateTaskStore(db);
 
   return db;
 }
@@ -90,6 +89,28 @@ function ensureTaskColumn(database, name, definition) {
   if (!columns.some((column) => column.name === name)) {
     database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
   }
+}
+
+export function migrateTaskStore(database) {
+  ensureTaskColumn(database, 'process_group_id', 'INTEGER');
+  ensureTaskColumn(database, 'termination_strategy', 'TEXT');
+  ensureTaskColumn(database, 'requested_resume_session_id', 'TEXT');
+
+  const version = database.pragma('user_version', { simple: true });
+  if (version >= TASK_STORE_SCHEMA_VERSION) return;
+
+  database.transaction(() => {
+    if (version < 2) {
+      database
+        .prepare(
+          `UPDATE tasks
+           SET requested_resume_session_id = COALESCE(requested_resume_session_id, session_id),
+               session_id = NULL`
+        )
+        .run();
+    }
+    database.pragma(`user_version = ${TASK_STORE_SCHEMA_VERSION}`);
+  })();
 }
 
 function nullable(value) {

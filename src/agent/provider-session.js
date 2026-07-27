@@ -20,6 +20,18 @@ function normalizeAbsolutePath(value) {
   return normalized ? path.resolve(normalized) : null;
 }
 
+function normalizeCursor(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function normalizeNullableCursor(value) {
+  return value === null ? null : normalizeCursor(value);
+}
+
+function normalizePromptText(value) {
+  return value === null || typeof value === 'string' ? value : undefined;
+}
+
 function supportsSessionResume(providerName) {
   try {
     return providerSupportsCapability(providerName, 'sessionResume');
@@ -41,6 +53,9 @@ function normalizeProviderSession(value) {
   const cwd = normalizeAbsolutePath(value.cwd);
   const worktreePath =
     value.worktreePath === null ? null : normalizeAbsolutePath(value.worktreePath);
+  const contextCursor = normalizeCursor(value.contextCursor);
+  const guidanceCursor = normalizeNullableCursor(value.guidanceCursor);
+  const promptText = normalizePromptText(value.promptText);
 
   if (
     !provider ||
@@ -52,6 +67,11 @@ function normalizeProviderSession(value) {
     !cwd ||
     !Object.hasOwn(value, 'worktreePath') ||
     (value.worktreePath !== null && !worktreePath) ||
+    contextCursor === null ||
+    !Object.hasOwn(value, 'guidanceCursor') ||
+    (value.guidanceCursor !== null && guidanceCursor === null) ||
+    !Object.hasOwn(value, 'promptText') ||
+    promptText === undefined ||
     !supportsSessionResume(provider)
   ) {
     return null;
@@ -65,6 +85,9 @@ function normalizeProviderSession(value) {
     generation,
     cwd,
     worktreePath,
+    contextCursor,
+    guidanceCursor,
+    promptText,
   };
 }
 
@@ -91,7 +114,7 @@ function sessionMatchesAgent(session, agent, providerName, expectedGeneration) {
   );
 }
 
-function resolveAgentResumeSessionId(agent, providerName) {
+function resolveAgentProviderSession(agent, providerName) {
   const stored = normalizeProviderSession(agent?.providerSession);
   const expectedGeneration = Number.isInteger(agent?.iteration) ? agent.iteration - 1 : -1;
 
@@ -102,7 +125,11 @@ function resolveAgentResumeSessionId(agent, providerName) {
     return null;
   }
 
-  return stored.sessionId;
+  return stored;
+}
+
+function resolveAgentResumeSessionId(agent, providerName) {
+  return resolveAgentProviderSession(agent, providerName)?.sessionId || null;
 }
 
 function providerSessionFromCompletedTask({
@@ -134,6 +161,9 @@ function providerSessionFromCompletedTask({
     taskId,
     generation,
     ...workspace,
+    contextCursor: agent?.currentContextCursor,
+    guidanceCursor: agent?.currentGuidanceCursor ?? null,
+    promptText: agent?.currentPromptText ?? null,
   });
 }
 
@@ -156,7 +186,13 @@ function readLastDurableSessionBoundary(messageBus, clusterId, agentId) {
 
 function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId }) {
   const session = normalizeProviderSession(savedState?.providerSession);
-  if (!session || !RESTORABLE_AGENT_STATES.has(savedState?.state || 'idle')) {
+  if (!session || !RESTORABLE_AGENT_STATES.has(savedState?.state)) {
+    return null;
+  }
+  if (
+    !Object.hasOwn(savedState, 'lastGuidanceAppliedAt') ||
+    savedState.lastGuidanceAppliedAt !== session.guidanceCursor
+  ) {
     return null;
   }
   if (!sessionMatchesAgent(session, agent, session.provider, savedState.iteration)) {
@@ -169,7 +205,10 @@ function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId 
     data?.event !== 'TASK_COMPLETED' ||
     data.taskId !== session.taskId ||
     data.iteration !== session.generation ||
-    normalizeProviderName(data.provider) !== session.provider
+    normalizeProviderName(data.provider) !== session.provider ||
+    data.contextCursor !== session.contextCursor ||
+    data.guidanceCursor !== session.guidanceCursor ||
+    data.promptText !== session.promptText
   ) {
     return null;
   }
@@ -181,6 +220,7 @@ module.exports = {
   agentWorkspaceProvenance,
   normalizeProviderSession,
   providerSessionFromCompletedTask,
+  resolveAgentProviderSession,
   resolveAgentResumeSessionId,
   restoreAgentProviderSession,
   supportsSessionResume,

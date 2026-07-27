@@ -268,6 +268,25 @@ async function waitForAgentCalls(runner, expectedCalls, timeoutMs = 3000) {
   );
 }
 
+async function waitForLifecycleEvent({ messageBus, clusterId, agentId, event, timeoutMs = 3000 }) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const observed = messageBus
+      .query({
+        cluster_id: clusterId,
+        topic: 'AGENT_LIFECYCLE',
+        sender: agentId,
+      })
+      .some((message) => message.content?.data?.event === event);
+    if (observed) {
+      return;
+    }
+    await sleep(20);
+  }
+
+  throw new Error(`Agent ${agentId} did not publish lifecycle event ${event}`);
+}
+
 function publishInterruptedTaskHistory(
   cluster,
   clusterId,
@@ -1713,15 +1732,27 @@ function defineLifecycleResumeTests() {
       lifecycleMockRunner.when('worker').returns({ done: true });
 
       const result = await lifecycleOrchestrator.start(config, { text: 'Task' });
+      const runningCluster = lifecycleOrchestrator.getCluster(result.id);
+      await waitForLifecycleEvent({
+        messageBus: runningCluster.messageBus,
+        clusterId: result.id,
+        agentId: 'worker',
+        event: 'TASK_COMPLETED',
+      });
       await lifecycleOrchestrator.stop(result.id);
 
       const cluster = lifecycleOrchestrator.getCluster(result.id);
+      const durableHighWater = cluster.messageBus.query({
+        cluster_id: result.id,
+        order: 'desc',
+        limit: 1,
+      })[0].timestamp;
       cluster.failureInfo = {
         agentId: 'worker',
         taskId: 'persisted-worker-failure',
         iteration: 1,
         error: 'boom',
-        timestamp: Date.now(),
+        timestamp: durableHighWater + 1,
       };
 
       const resumedRunner = new MockTaskRunner();
@@ -1908,7 +1939,11 @@ function defineLifecycleResumeTests() {
         generation: agent.iteration,
         cwd: path.resolve(agent.config.cwd || process.cwd()),
         worktreePath: null,
+        contextCursor: 41,
+        guidanceCursor: 17,
+        promptText: agent._selectPrompt(),
       };
+      agent.lastGuidanceAppliedAt = 17;
       cluster.messageBus.publish({
         cluster_id: result.id,
         topic: 'AGENT_LIFECYCLE',
@@ -1920,6 +1955,9 @@ function defineLifecycleResumeTests() {
             provider: 'claude',
             taskId: 'task-complete',
             iteration: agent.iteration,
+            contextCursor: 41,
+            guidanceCursor: 17,
+            promptText: agent._selectPrompt(),
           },
         },
       });
@@ -1947,7 +1985,11 @@ function defineLifecycleResumeTests() {
           generation: agent.iteration,
           cwd: path.resolve(agent.config.cwd || process.cwd()),
           worktreePath: null,
+          contextCursor: 41,
+          guidanceCursor: 17,
+          promptText: agent._selectPrompt(),
         });
+        assert.strictEqual(restoredAgent.lastGuidanceAppliedAt, 17);
         assert.strictEqual(restoredState.currentTask, false);
       } finally {
         reloaded.close();
@@ -1976,13 +2018,20 @@ function defineLifecycleResumeTests() {
         generation: 1,
         cwd,
         worktreePath: null,
+        contextCursor: 41,
+        guidanceCursor: 17,
+        promptText: agent._selectPrompt(),
       };
+      agent.lastGuidanceAppliedAt = 17;
       for (const data of [
         {
           event: 'TASK_COMPLETED',
           provider: 'claude',
           taskId: 'task-complete-generation-1',
           iteration: 1,
+          contextCursor: 41,
+          guidanceCursor: 17,
+          promptText: agent._selectPrompt(),
         },
         {
           event: 'TASK_STARTED',

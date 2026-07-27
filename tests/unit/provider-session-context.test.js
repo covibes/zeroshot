@@ -1,53 +1,35 @@
 const assert = require('assert');
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
-const AgentWrapper = require('../../src/agent-wrapper');
-const Ledger = require('../../src/ledger');
-const MessageBus = require('../../src/message-bus');
+const {
+  createProviderSessionAgent,
+  createProviderSessionHarness,
+} = require('../helpers/provider-session-harness');
 
 describe('provider-session continuation context', function () {
-  let tempDir;
-  let ledger;
+  let harness;
   let messageBus;
-  let priorSettingsFile;
 
   beforeEach(function () {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-session-context-'));
-    priorSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
-    process.env.ZEROSHOT_SETTINGS_FILE = path.join(tempDir, 'settings.json');
-    fs.writeFileSync(
-      process.env.ZEROSHOT_SETTINGS_FILE,
-      JSON.stringify({ backoffBaseMs: 0, backoffMaxMs: 0, jitterFactor: 0 })
-    );
-    ledger = new Ledger(path.join(tempDir, 'ledger.db'));
-    messageBus = new MessageBus(ledger);
+    harness = createProviderSessionHarness('zeroshot-session-context-');
+    messageBus = harness.messageBus;
   });
 
   afterEach(function () {
-    ledger.close();
-    if (priorSettingsFile === undefined) {
-      delete process.env.ZEROSHOT_SETTINGS_FILE;
-    } else {
-      process.env.ZEROSHOT_SETTINGS_FILE = priorSettingsFile;
-    }
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    harness.cleanup();
   });
 
-  it('sends static context once and only the new turn delta after resume', function () {
+  it('uses the exact durable cursor after restart and de-duplicates the triggering message', function () {
     const cluster = {
       id: 'session-context-cluster',
       createdAt: Date.now(),
       agents: [],
     };
-    const agent = new AgentWrapper(
-      {
-        id: 'worker',
-        role: 'implementation',
-        provider: 'claude',
+    const agent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: {
         prompt: 'STATIC-WORKER-INSTRUCTIONS',
-        timeout: 0,
         contextStrategy: {
           sources: [
             { topic: 'ISSUE_OPENED', limit: 1 },
@@ -56,13 +38,7 @@ describe('provider-session continuation context', function () {
           ],
         },
       },
-      messageBus,
-      cluster,
-      {
-        testMode: true,
-        mockSpawnFn: () => ({ success: true, output: '{}' }),
-      }
-    );
+    });
     const cwd = path.resolve(agent.config.cwd || process.cwd());
 
     messageBus.publish({
@@ -83,6 +59,13 @@ describe('provider-session continuation context', function () {
       sender: 'validator-old',
       content: { text: 'OLD-VALIDATION-RESULT' },
     });
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'USER_GUIDANCE_AGENT',
+      sender: 'operator',
+      receiver: 'worker',
+      content: { text: 'FIRST-TURN-GUIDANCE' },
+    });
 
     agent.iteration = 1;
     const firstContext = agent._buildContext({
@@ -93,6 +76,7 @@ describe('provider-session continuation context', function () {
     assert.match(firstContext, /STATIC-WORKER-INSTRUCTIONS/);
     assert.match(firstContext, /STATIC-ISSUE-OPENED/);
     assert.match(firstContext, /STATIC-PLAN-READY/);
+    assert.match(firstContext, /FIRST-TURN-GUIDANCE/);
 
     agent.providerSession = {
       provider: 'claude',
@@ -102,29 +86,49 @@ describe('provider-session continuation context', function () {
       generation: 1,
       cwd,
       worktreePath: null,
+      contextCursor: agent.currentContextCursor,
+      guidanceCursor: agent.currentGuidanceCursor,
+      promptText: agent.currentPromptText,
     };
-    const deltaTimestamp = agent.lastAgentStartTime + 10;
-    messageBus.publish({
+    const firstPostTurn = messageBus.publish({
       cluster_id: cluster.id,
       topic: 'VALIDATION_RESULT',
       sender: 'validator-a',
-      timestamp: deltaTimestamp,
       content: { text: 'NEW-VALIDATION-A' },
     });
     messageBus.publish({
       cluster_id: cluster.id,
       topic: 'VALIDATION_RESULT',
       sender: 'validator-b',
-      timestamp: deltaTimestamp + 1,
       content: { text: 'NEW-VALIDATION-B' },
     });
-    agent.iteration = 2;
-    const secondContext = agent._buildContext({
+    const trigger = messageBus.publish({
+      cluster_id: cluster.id,
       topic: 'VALIDATION_RESULT',
       sender: 'validator',
-      timestamp: deltaTimestamp + 2,
       content: { text: 'NEW-REJECTION-DELTA' },
     });
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'USER_GUIDANCE_AGENT',
+      sender: 'operator',
+      receiver: 'worker',
+      content: { text: 'SECOND-TURN-GUIDANCE' },
+    });
+
+    const restoredAgent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: agent.config,
+      runtime: { providerCliFeatures: { claude: { supportsResume: true } } },
+    });
+    restoredAgent.providerSession = agent.providerSession;
+    restoredAgent.lastGuidanceAppliedAt = agent.providerSession.guidanceCursor;
+    restoredAgent.iteration = 2;
+
+    assert.ok(firstPostTurn.timestamp > restoredAgent.providerSession.contextCursor);
+    agent.iteration = 2;
+    const secondContext = restoredAgent._buildContext(trigger);
 
     assert.match(secondContext, /Continuation Turn/);
     assert.match(secondContext, /NEW-REJECTION-DELTA/);
@@ -135,71 +139,49 @@ describe('provider-session continuation context', function () {
     assert.doesNotMatch(secondContext, /STATIC-PLAN-READY/);
     assert.doesNotMatch(secondContext, /FIRST-TURN-TRIGGER/);
     assert.doesNotMatch(secondContext, /OLD-VALIDATION-RESULT/);
+    assert.doesNotMatch(secondContext, /FIRST-TURN-GUIDANCE/);
+    assert.match(secondContext, /SECOND-TURN-GUIDANCE/);
+    assert.strictEqual(
+      secondContext.match(/NEW-REJECTION-DELTA/g)?.length,
+      1,
+      'the trigger must not be duplicated as a source message'
+    );
   });
 
-  it('clears a failed logical result before the retry is constructed', async function () {
-    const cluster = { id: 'retry-cluster', createdAt: Date.now(), agents: [] };
-    let attempts = 0;
-    let agent;
-
-    agent = new AgentWrapper(
-      {
-        id: 'worker',
-        role: 'implementation',
-        provider: 'claude',
-        prompt: 'STATIC-RETRY-INSTRUCTIONS',
-        outputFormat: 'text',
-        maxRetries: 2,
-        timeout: 0,
-        contextStrategy: { sources: [] },
-      },
-      messageBus,
+  it('reconstructs full static context when the installed CLI cannot resume', function () {
+    const cluster = { id: 'old-cli-cluster', createdAt: Date.now(), agents: [] };
+    const agent = createProviderSessionAgent({
       cluster,
-      {
-        testMode: true,
-        quiet: true,
-        mockSpawnFn: (args, { context }) => {
-          attempts += 1;
-          if (attempts === 1) {
-            return {
-              success: false,
-              error: 'logical schema failure',
-              providerSession: {
-                provider: 'claude',
-                sessionId: 'must-not-resume',
-                agentId: 'worker',
-                taskId: 'failed-task',
-                generation: 1,
-                cwd: path.resolve(agent.config.cwd || process.cwd()),
-                worktreePath: null,
-              },
-            };
-          }
+      messageBus,
+      config: {
+        prompt: 'STATIC-OLD-CLI-INSTRUCTIONS',
+      },
+      runtime: {
+        providerCliFeatures: { claude: { supportsResume: false } },
+      },
+    });
+    agent.iteration = 2;
+    agent.providerSession = {
+      provider: 'claude',
+      sessionId: 'unsupported-resume-session',
+      agentId: 'worker',
+      taskId: 'task-generation-1',
+      generation: 1,
+      cwd: path.resolve(agent.config.cwd || process.cwd()),
+      worktreePath: null,
+      contextCursor: 1,
+      guidanceCursor: null,
+      promptText: 'STATIC-OLD-CLI-INSTRUCTIONS',
+    };
 
-          assert.strictEqual(agent.providerSession, null);
-          assert.ok(!args.includes('--resume'));
-          assert.match(context, /STATIC-RETRY-INSTRUCTIONS/);
-          return { success: true, output: 'done', providerSession: null };
-        },
-      }
-    );
-    agent.running = true;
-
-    await agent._executeTask({
-      topic: 'ISSUE_OPENED',
-      sender: 'system',
-      content: { text: 'retry me' },
+    const context = agent._buildContext({
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'retry with full context' },
     });
 
-    assert.strictEqual(attempts, 2);
+    assert.match(context, /STATIC-OLD-CLI-INSTRUCTIONS/);
+    assert.doesNotMatch(context, /Continuation Turn/);
     assert.strictEqual(agent.providerSession, null);
-    const failed = messageBus
-      .query({
-        cluster_id: cluster.id,
-        topic: 'AGENT_LIFECYCLE',
-        sender: 'worker',
-      })
-      .find((message) => message.content?.data?.event === 'TASK_FAILED');
-    assert.ok(failed, 'failed attempt must be durable before retry');
   });
 });

@@ -94,7 +94,8 @@ function buildStaticSections(params) {
 }
 
 function buildPacks(params) {
-  const { strategy, messageBus, cluster, lastTaskEndTime, lastAgentStartTime } = params;
+  const { strategy, messageBus, cluster, lastTaskEndTime, lastAgentStartTime, triggeringMessage } =
+    params;
   const sections = buildStaticSections(params);
   const packs = [];
   let order = 0;
@@ -116,7 +117,13 @@ function buildPacks(params) {
   order = appendSourcePacks(
     packs,
     strategy,
-    { messageBus, cluster, lastTaskEndTime, lastAgentStartTime },
+    {
+      messageBus,
+      cluster,
+      lastTaskEndTime,
+      lastAgentStartTime,
+      triggeringMessageId: triggeringMessage?.id,
+    },
     order
   );
   order = pushStaticPack({
@@ -151,6 +158,8 @@ function buildContinuationPacks(params) {
     cluster,
     lastTaskEndTime,
     lastAgentStartTime,
+    continuationCursor,
+    previousPromptText,
   } = params;
   const packs = [];
   let order = 0;
@@ -166,7 +175,7 @@ function buildContinuationPacks(params) {
   // Iteration-rule prompts may intentionally change between turns. Static prompts,
   // repository tooling, ISSUE_OPENED/PLAN_READY sources, and output contracts are
   // already present in the provider session and must not be replayed.
-  if (config.promptConfig?.type === 'rules') {
+  if (config.promptConfig?.type === 'rules' && selectedPrompt !== previousPromptText) {
     order = pushStaticPack({
       packs,
       packId: 'iterationInstructions',
@@ -185,13 +194,15 @@ function buildContinuationPacks(params) {
   });
   order = appendSourcePacks(
     packs,
+    strategy,
     {
-      sources: (strategy.sources || []).map((source) => ({
-        ...source,
-        since: 'last_agent_start',
-      })),
+      messageBus,
+      cluster,
+      lastTaskEndTime,
+      lastAgentStartTime,
+      afterCursor: continuationCursor,
+      triggeringMessageId: triggeringMessage?.id,
     },
-    { messageBus, cluster, lastTaskEndTime, lastAgentStartTime },
     order
   );
   pushStaticPack({

@@ -702,6 +702,7 @@ class Orchestrator {
       messageBus,
       clusterId: clusterData.id,
     });
+    agent.lastGuidanceAppliedAt = agent.providerSession?.guidanceCursor ?? null;
   }
 
   _rebuildClusterAgents(clusterContext, messageBus, isolation, isolationManager) {
@@ -922,6 +923,7 @@ class Orchestrator {
                 currentTaskId: a.currentTaskId,
                 processPid: a.processPid,
                 providerSession: normalizeProviderSession(a.providerSession),
+                lastGuidanceAppliedAt: a.lastGuidanceAppliedAt ?? null,
               }))
             : null,
           setupLogPath: cluster.setupLogPath || null,

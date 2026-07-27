@@ -116,6 +116,11 @@ function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions
 
 function addSessionArgs(args: string[], options: BuildProviderCommandOptions): void {
   const features = optionFeatures(options);
+  if ((options.resumeSessionId || options.continueSession) && features.supportsResume === false) {
+    throw new Error(
+      'Claude CLI cannot safely run continuation context because this installation lacks --resume.'
+    );
+  }
   if (options.resumeSessionId && features.supportsResume !== false) {
     args.push('--resume', options.resumeSessionId);
     return;
@@ -172,18 +177,6 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
         'claude',
         'claude-reasoning',
         'Claude CLI does not support --effort; skipping reasoningEffort.'
-      )
-    );
-  }
-  if (
-    (options.resumeSessionId || options.continueSession) &&
-    features.supportsResume === false
-  ) {
-    warnings.push(
-      warning(
-        'claude',
-        'claude-session-resume-unsupported',
-        'Claude CLI does not support session resume; starting a fresh session.'
       )
     );
   }

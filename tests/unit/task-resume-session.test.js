@@ -1,4 +1,5 @@
 const assert = require('assert');
+const Database = require('better-sqlite3');
 
 describe('single-task session resume', function () {
   it('keeps a requested resume ID separate from watcher-captured identity', async function () {
@@ -57,5 +58,47 @@ describe('single-task session resume', function () {
         }),
       /does not support safe session resume/
     );
+  });
+
+  it('migrates legacy requested IDs out of the observed session column with version proof', async function () {
+    const { migrateTaskStore, TASK_STORE_SCHEMA_VERSION } = await import('../../task-lib/store.js');
+    const database = new Database(':memory:');
+    try {
+      database.exec(`
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          session_id TEXT
+        );
+        INSERT INTO tasks (id, session_id) VALUES ('legacy-task', 'historically-requested-id');
+      `);
+
+      migrateTaskStore(database);
+
+      const row = database
+        .prepare('SELECT session_id, requested_resume_session_id FROM tasks WHERE id = ?')
+        .get('legacy-task');
+      assert.strictEqual(row.session_id, null);
+      assert.strictEqual(row.requested_resume_session_id, 'historically-requested-id');
+      assert.strictEqual(
+        database.pragma('user_version', { simple: true }),
+        TASK_STORE_SCHEMA_VERSION
+      );
+
+      database
+        .prepare(
+          `INSERT INTO tasks (id, session_id, requested_resume_session_id)
+           VALUES ('captured-task', 'observed-id', 'requested-id')`
+        )
+        .run();
+      migrateTaskStore(database);
+      assert.deepStrictEqual(
+        database
+          .prepare('SELECT session_id, requested_resume_session_id FROM tasks WHERE id = ?')
+          .get('captured-task'),
+        { session_id: 'observed-id', requested_resume_session_id: 'requested-id' }
+      );
+    } finally {
+      database.close();
+    }
   });
 });

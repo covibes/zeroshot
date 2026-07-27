@@ -265,7 +265,7 @@ class Ledger extends EventEmitter {
    * @returns {Array} Matching messages
    */
   query(criteria) {
-    const { cluster_id, topic, sender, receiver, since, until, limit, offset } = criteria;
+    const { cluster_id, topic, sender, receiver, since, after, until, limit, offset } = criteria;
 
     if (!cluster_id) {
       throw new Error('cluster_id is required for queries');
@@ -293,6 +293,14 @@ class Ledger extends EventEmitter {
     if (since) {
       conditions.push('timestamp >= ?');
       params.push(typeof since === 'number' ? since : new Date(since).getTime());
+    }
+
+    if (after !== undefined && after !== null) {
+      if (!Number.isInteger(after) || after < 0) {
+        throw new Error('after must be a non-negative durable ledger cursor');
+      }
+      conditions.push('timestamp > ?');
+      params.push(after);
     }
 
     if (until) {

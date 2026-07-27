@@ -4,8 +4,6 @@ const path = require('path');
 const {
   providerSessionFromCompletedTask,
   resolveAgentResumeSessionId,
-  restoreAgentProviderSession,
-  updateAgentProviderSession,
 } = require('../../src/agent/provider-session');
 const { buildCompletionResult, buildTaskRunArgs } = require('../../src/agent/agent-task-executor');
 
@@ -20,6 +18,9 @@ function buildSession(overrides = {}) {
     generation: 1,
     cwd: TEST_CWD,
     worktreePath: null,
+    contextCursor: 41,
+    guidanceCursor: 17,
+    promptText: 'FOLLOW-UP-INSTRUCTIONS',
     ...overrides,
   };
 }
@@ -31,6 +32,10 @@ function buildAgent(overrides = {}) {
     config: { cwd: TEST_CWD, ...overrides.config },
     cluster: { id: 'cluster-1' },
     providerSession: overrides.providerSession ?? null,
+    currentContextCursor: overrides.currentContextCursor ?? 41,
+    currentGuidanceCursor: overrides.currentGuidanceCursor ?? 17,
+    lastGuidanceAppliedAt: overrides.lastGuidanceAppliedAt ?? 17,
+    currentPromptText: overrides.currentPromptText ?? 'FOLLOW-UP-INSTRUCTIONS',
     isolation: overrides.isolation || null,
     worktree: overrides.worktree || null,
   };
@@ -43,16 +48,6 @@ function taskArgs(agent, providerName) {
     modelSpec: {},
     runOutputFormat: 'stream-json',
   });
-}
-
-function lifecycleBus(messages) {
-  return {
-    query: () =>
-      messages.map((data, index) => ({
-        timestamp: index + 1,
-        content: { data },
-      })),
-  };
 }
 
 describe('agent-owned provider session reuse', function () {
@@ -116,6 +111,9 @@ describe('agent-owned provider session reuse', function () {
       generation: 1,
       cwd: TEST_CWD,
       worktreePath: null,
+      contextCursor: 41,
+      guidanceCursor: 17,
+      promptText: 'FOLLOW-UP-INSTRUCTIONS',
     });
 
     assert.strictEqual(
@@ -180,53 +178,5 @@ describe('agent-owned provider session reuse', function () {
     assert.strictEqual(resolveAgentResumeSessionId(worker, 'claude'), 'claude-session-1');
     assert.strictEqual(resolveAgentResumeSessionId(validator, 'claude'), null);
     assert.strictEqual(validator.providerSession, null);
-  });
-
-  it('restores only the exact last completed task boundary', function () {
-    const agent = buildAgent({ iteration: 1 });
-    const savedState = {
-      state: 'idle',
-      iteration: 1,
-      providerSession: buildSession(),
-    };
-    const completed = {
-      event: 'TASK_COMPLETED',
-      provider: 'claude',
-      taskId: 'task-generation-1',
-      iteration: 1,
-    };
-
-    const restored = restoreAgentProviderSession({
-      agent,
-      savedState,
-      messageBus: lifecycleBus([completed]),
-      clusterId: 'cluster-1',
-    });
-    assert.deepStrictEqual(restored, buildSession());
-
-    for (const boundary of [
-      { event: 'TASK_STARTED', provider: 'claude', taskId: 'task-generation-2', iteration: 2 },
-      { event: 'TASK_FAILED', provider: 'claude', taskId: 'task-generation-2', iteration: 2 },
-      { event: 'RETRY_SCHEDULED', provider: 'claude', taskId: 'task-generation-2', iteration: 2 },
-    ]) {
-      assert.strictEqual(
-        restoreAgentProviderSession({
-          agent,
-          savedState,
-          messageBus: lifecycleBus([completed, boundary]),
-          clusterId: 'cluster-1',
-        }),
-        null
-      );
-    }
-  });
-
-  it('drops legacy session-only state because its task provenance is ambiguous', function () {
-    const agent = buildAgent({ iteration: 1 });
-    updateAgentProviderSession(agent, {
-      provider: 'claude',
-      sessionId: 'legacy-session',
-    });
-    assert.strictEqual(agent.providerSession, null);
   });
 });

@@ -42,16 +42,14 @@ describe('Codex provider helper builder', function () {
     assert.ok(continued.warnings.some((warning) => warning.code === 'unsupported-session-control'));
   });
 
-  it('starts fresh with a warning when the installed Codex CLI cannot resume', function () {
-    const resumed = buildCommand('codex', 'test context', {
-      resumeSessionId: 'session-123',
-      cliFeatures: { supportsResume: false },
-    });
-
-    assert.deepStrictEqual(resumed.args.slice(0, 1), ['exec']);
-    assert.ok(!resumed.args.includes('resume'));
-    assert.ok(
-      resumed.warnings.some((warning) => warning.code === 'codex-session-resume-unsupported')
+  it('fails closed when the installed Codex CLI cannot resume', function () {
+    assert.throws(
+      () =>
+        buildCommand('codex', 'delta-only context', {
+          resumeSessionId: 'session-123',
+          cliFeatures: { supportsResume: false },
+        }),
+      /cannot safely run continuation context/
     );
   });
 
@@ -374,15 +372,14 @@ describe('Claude provider helper builder', function () {
     assert.deepStrictEqual(continued.args.slice(-2), ['--continue', 'test context']);
   });
 
-  it('starts fresh with a warning when the installed Claude CLI cannot resume', function () {
-    const resumed = buildCommand('claude', 'test context', {
-      resumeSessionId: 'session-123',
-      cliFeatures: { supportsResume: false },
-    });
-
-    assert.ok(!resumed.args.includes('--resume'));
-    assert.ok(
-      resumed.warnings.some((warning) => warning.code === 'claude-session-resume-unsupported')
+  it('fails closed when the installed Claude CLI cannot resume', function () {
+    assert.throws(
+      () =>
+        buildCommand('claude', 'delta-only context', {
+          resumeSessionId: 'session-123',
+          cliFeatures: { supportsResume: false },
+        }),
+      /cannot safely run continuation context/
     );
   });
 

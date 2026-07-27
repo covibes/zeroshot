@@ -176,6 +176,11 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
 }
 
 function buildCommand(context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
+  if (options.resumeSessionId && optionFeatures(options).supportsResume === false) {
+    throw new Error(
+      'Codex CLI cannot safely run continuation context because this installation lacks exec resume.'
+    );
+  }
   const args: string[] = ['exec'];
   const cleanup: string[] = [];
   const resumeSessionId =
