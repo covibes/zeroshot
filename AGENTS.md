@@ -364,6 +364,9 @@ POSIX providers run in a dedicated process group; Windows providers use the exac
 - Provider names use CLI identifiers: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot` (legacy `anthropic`/`openai`/`google` map to these).
 - `model` remains a provider-specific escape hatch.
 - Claude/Codex/Opencode only: `reasoningEffort` (`low|medium|high|xhigh|max`).
+- Configure non-catalog Opencode model IDs only through
+  `providerSettings.opencode.levelOverrides.<level>.model`; direct agent model IDs remain
+  catalog-validated.
 
 ### Logic Script API
 

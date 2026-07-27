@@ -204,15 +204,25 @@ class ClaudeTaskRunner extends TaskRunner {
     providerSettings,
     levelOverrides,
   }) {
+    const validateModelId = (modelId) => {
+      const isConfigured = Object.values(levelOverrides).some(
+        (override) => override?.model === modelId
+      );
+      if (isConfigured) {
+        return providerModule.validateConfiguredModelId(modelId);
+      }
+      return providerModule.validateModelId(modelId);
+    };
+
     if (explicitModelSpec) {
-      if (explicitModelSpec.model) {
-        providerModule.validateModelId(explicitModelSpec.model);
+      if (explicitModelSpec.model !== undefined) {
+        validateModelId(explicitModelSpec.model);
       }
       return explicitModelSpec;
     }
 
     if (model) {
-      providerModule.validateModelId(model);
+      validateModelId(model);
       return { model, reasoningEffort };
     }
 
