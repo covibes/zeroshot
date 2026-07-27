@@ -268,10 +268,9 @@ export interface BuildProviderCommandOptions {
   readonly authEnv?: Readonly<Record<string, string>>;
   readonly strictSchema?: boolean;
   readonly gateway?: GatewayBuildOptions;
-  // MCP server configs forwarded to providers that accept an MCP config CLI flag (currently
-  // Copilot's `--additional-mcp-config`). Each entry is an inline JSON string (the standard
-  // `{"mcpServers": {...}}` envelope) or an `@<path>` file reference; adapters emit one flag per
-  // entry. Providers whose adapter models no MCP flag ignore this field.
+  // MCP server configs forwarded to providers that accept an MCP config CLI flag. Claude accepts
+  // one variadic `--mcp-config` followed by file paths; adapters such as Copilot accept repeated
+  // flags with inline JSON so configs survive container path translation.
   readonly mcpConfig?: readonly string[];
 }
 

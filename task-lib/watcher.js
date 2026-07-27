@@ -11,11 +11,10 @@ import { updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
 import { terminateProcess } from './process-termination.js';
 import {
-  detectProviderFatalError,
-  detectProviderStreamingModeError,
-  recoverProviderStructuredOutput,
-  supportsProviderStructuredOutputRecovery,
-} from './provider-helper-runtime.js';
+  completeWatcherTask,
+  createWatcherOutputRuntime,
+  resolveWatcherCommand,
+} from './watcher-output-runtime.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -47,12 +46,12 @@ const commandCleanup = createCommandSpecCleanup(commandSpec, (cleanupPath, error
   emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${cleanupPath}: ${error.message}\n`);
 });
 
-const providerName = normalizeProviderName(config.provider || 'claude');
-const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
-
-const env = { ...process.env, ...(commandSpec.env || {}) };
-const command = commandSpec.binary;
-const finalArgs = [...(commandSpec.args || args)];
+const { providerName, env, command, finalArgs } = resolveWatcherCommand(
+  config,
+  commandSpec,
+  args,
+  normalizeProviderName
+);
 
 let child = spawn(command, finalArgs, {
   cwd: commandSpec.cwd || cwd,
@@ -68,44 +67,11 @@ updateTask(taskId, {
   terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
 });
 
-const silentJsonMode =
-  config.outputFormat === 'json' &&
-  config.jsonSchema &&
-  config.silentJsonOutput &&
-  supportsProviderStructuredOutputRecovery(providerName);
-
-let finalResultJson = null;
-let streamingModeError = null;
-let fatalError = null;
 let crashStarted = false;
-
 let stdoutBuffer = '';
 let stderrBuffer = '';
 
-function splitBufferLines(buffer, chunk) {
-  const nextBuffer = buffer + chunk;
-  const lines = nextBuffer.split('\n');
-  const remaining = lines.pop() || '';
-  return { lines, remaining };
-}
-
-function maybeHandleFatalError(line, timestamp) {
-  if (fatalError) {
-    return false;
-  }
-
-  const detected = detectProviderFatalError(providerName, line);
-  if (!detected) {
-    return false;
-  }
-
-  fatalError = detected;
-
-  if (silentJsonMode) {
-    log(`[${timestamp}]${line}\n`);
-  }
-  log(`[${timestamp}][FATAL] ${detected}\n`);
-
+function stopProviderAfterFatalOutput() {
   try {
     child.kill('SIGTERM');
   } catch {
@@ -121,180 +87,47 @@ function maybeHandleFatalError(line, timestamp) {
       }
     }
   }, 5000);
-
-  return true;
 }
 
-function captureStreamingError(line, timestamp) {
-  const detectedError = detectProviderStreamingModeError(providerName, line);
-  if (!detectedError) {
-    return false;
-  }
-
-  streamingModeError = { ...detectedError, timestamp };
-  return true;
-}
-
-function maybeCaptureStructuredOutput(line) {
-  try {
-    const json = JSON.parse(line);
-    if (json.structured_output) {
-      finalResultJson = line;
-    }
-  } catch {
-    // Not JSON, skip
-  }
-}
-
-function handleSilentJsonLines(lines, timestamp) {
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    maybeHandleFatalError(line, timestamp);
-    if (captureStreamingError(line, timestamp)) {
-      continue;
-    }
-    maybeCaptureStructuredOutput(line);
-  }
-}
-
-function handleStreamingLines(lines, timestamp) {
-  for (const line of lines) {
-    maybeHandleFatalError(line, timestamp);
-    if (captureStreamingError(line, timestamp)) {
-      continue;
-    }
-    log(`[${timestamp}]${line}\n`);
-  }
-}
-
-function flushStdoutBuffer(timestamp) {
-  if (!stdoutBuffer.trim()) {
-    return;
-  }
-
-  if (!enableRecovery) {
-    if (!silentJsonMode) {
-      log(`[${timestamp}]${stdoutBuffer}\n`);
-    }
-    return;
-  }
-
-  maybeHandleFatalError(stdoutBuffer, timestamp);
-  if (captureStreamingError(stdoutBuffer, timestamp)) {
-    return;
-  }
-
-  if (silentJsonMode) {
-    maybeCaptureStructuredOutput(stdoutBuffer);
-    return;
-  }
-
-  log(`[${timestamp}]${stdoutBuffer}\n`);
-}
-
-function flushStderrBuffer(timestamp) {
-  if (stderrBuffer.trim()) {
-    maybeHandleFatalError(stderrBuffer, timestamp);
-    log(`[${timestamp}]${stderrBuffer}\n`);
-  }
-}
-
-function attemptRecovery(code, timestamp) {
-  if (!(code !== 0 && streamingModeError?.sessionId)) {
-    return null;
-  }
-
-  const recovered = recoverProviderStructuredOutput(providerName, streamingModeError.sessionId);
-  if (recovered?.payload) {
-    const recoveredLine = JSON.stringify(recovered.payload);
-    if (silentJsonMode) {
-      finalResultJson = recoveredLine;
-    } else {
-      log(`[${timestamp}]${recoveredLine}\n`);
-    }
-  } else if (streamingModeError.line) {
-    if (silentJsonMode) {
-      log(streamingModeError.line + '\n');
-    } else {
-      log(`[${streamingModeError.timestamp}]${streamingModeError.line}\n`);
-    }
-  }
-
-  return recovered;
-}
-
-function writeCompletionFooter(code, signal) {
-  if (config.outputFormat === 'json') {
-    return;
-  }
-
-  log(`\n${'='.repeat(50)}\n`);
-  log(`Finished: ${new Date().toISOString()}\n`);
-  log(`Exit code: ${code}, Signal: ${signal}\n`);
-}
+const outputRuntime = createWatcherOutputRuntime({
+  config,
+  providerName,
+  log,
+  stopProvider: stopProviderAfterFatalOutput,
+});
 
 child.stdout.on('data', (data) => {
-  const chunk = data.toString();
-  const timestamp = Date.now();
-
-  const { lines, remaining } = splitBufferLines(stdoutBuffer, chunk);
-  stdoutBuffer = remaining;
-
-  if (silentJsonMode) {
-    handleSilentJsonLines(lines, timestamp);
-  } else {
-    handleStreamingLines(lines, timestamp);
-  }
+  stdoutBuffer = outputRuntime.consumeOutput(stdoutBuffer, data);
 });
 
 child.stderr.on('data', (data) => {
-  const chunk = data.toString();
-  const timestamp = Date.now();
-
-  const { lines, remaining } = splitBufferLines(stderrBuffer, chunk);
-  stderrBuffer = remaining;
-
-  for (const line of lines) {
-    log(`[${timestamp}]${line}\n`);
-  }
+  stderrBuffer = outputRuntime.consumeStderr(stderrBuffer, data);
 });
 
 child.on('close', async (code, signal) => {
   if (crashStarted) return;
-  const timestamp = Date.now();
-
-  flushStdoutBuffer(timestamp);
-  flushStderrBuffer(timestamp);
-
-  const recovered = attemptRecovery(code, timestamp);
-
-  if (silentJsonMode && finalResultJson) {
-    log(finalResultJson + '\n');
-  }
-
-  writeCompletionFooter(code, signal);
-  const cleanupSucceeded = await commandCleanup.run();
-
-  const resolvedCode = fatalError ? 1 : recovered?.payload ? 0 : code;
-  const status = resolvedCode === 0 ? 'completed' : 'failed';
-  try {
-    await updateTask(taskId, {
-      status,
-      pid: null,
-      processGroupId: null,
-      exitCode: resolvedCode,
-      error: fatalError || (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
-      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
-    });
-  } catch (updateError) {
-    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
-  }
+  const completion = outputRuntime.complete({
+    code,
+    signal,
+    outputBuffer: stdoutBuffer,
+    stderrBuffer,
+  });
+  await completeWatcherTask({
+    taskId,
+    completion,
+    commandCleanup,
+    terminateProvider: terminateOwnedProviderBoundary,
+    updateTask,
+    emergencyLog,
+  });
   process.exit(0);
 });
 
 child.on('error', async (err) => {
+  crashStarted = true;
   log(`\nError: ${err.message}\n`);
-  const cleanupSucceeded = commandCleanup.runSync();
+  const providerTerminal = await terminateOwnedProviderBoundary();
+  const cleanupSucceeded = providerTerminal ? await commandCleanup.run() : false;
   try {
     await updateTask(taskId, {
       status: 'failed',
@@ -309,8 +142,8 @@ child.on('error', async (err) => {
   process.exit(1);
 });
 
-async function terminateProviderAfterWatcherCrash() {
-  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return true;
+async function terminateOwnedProviderBoundary() {
+  if (!child?.pid) return true;
   const result = await terminateProcess(child.pid, {
     processGroupId: process.platform === 'win32' ? null : child.pid,
     terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
@@ -323,7 +156,7 @@ async function crashWithError(error, source) {
   crashStarted = true;
   const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
   emergencyLog(`\n[${Date.now()}][CRASH] ${source}: ${errorMessage}\n`);
-  const providerTerminal = await terminateProviderAfterWatcherCrash();
+  const providerTerminal = await terminateOwnedProviderBoundary();
   let cleanupSucceeded = false;
   if (providerTerminal) {
     cleanupSucceeded = await commandCleanup.run();

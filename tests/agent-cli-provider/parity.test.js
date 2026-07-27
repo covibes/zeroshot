@@ -107,11 +107,48 @@ test('Claude command loads the per-run settings overlay without replacing user c
     outputFormat: 'json',
     modelSpec: { level: 'level2', model: 'sonnet' },
     claudeSettingsFile: '/tmp/zeroshot-run-settings.json',
+    cliFeatures: { supportsSettings: true },
   });
   const settingsIndex = command.args.indexOf('--settings');
   assert.notEqual(settingsIndex, -1);
   assert.equal(command.args[settingsIndex + 1], '/tmp/zeroshot-run-settings.json');
   assert.equal(command.env.CLAUDE_CONFIG_DIR, undefined);
+});
+
+test('Claude MCP configs remain variadic without consuming the positional prompt', () => {
+  const command = assertRuntimeCommandParity('claude', 'literal task prompt', {
+    mcpConfig: ['/repo/.mcp.json', '/repo/extra.mcp.json'],
+    modelSpec: { model: 'sonnet' },
+    cliFeatures: { supportsMcpConfig: true },
+  });
+  const mcpIndex = command.args.indexOf('--mcp-config');
+  const inputIndex = command.args.indexOf('--input-format');
+  assert.deepEqual(command.args.slice(mcpIndex, inputIndex), [
+    '--mcp-config',
+    '/repo/.mcp.json',
+    '/repo/extra.mcp.json',
+  ]);
+  assert.equal(command.args[inputIndex + 1], 'text');
+  assert.equal(command.args.at(-1), 'literal task prompt');
+});
+
+test('Claude fails closed before spawn when required settings or MCP flags are unavailable', () => {
+  assert.throws(
+    () =>
+      helper.buildProviderCommand('claude', 'context', {
+        claudeSettingsFile: '/tmp/settings.json',
+        cliFeatures: { supportsSettings: false },
+      }),
+    /Upgrade Claude Code/
+  );
+  assert.throws(
+    () =>
+      helper.buildProviderCommand('claude', 'context', {
+        mcpConfig: ['/repo/.mcp.json'],
+        cliFeatures: { supportsMcpConfig: false },
+      }),
+    /Upgrade Claude Code/
+  );
 });
 
 test('runtime Codex command facade delegates to helper', () => {
@@ -659,8 +696,16 @@ test('feature probing is deterministic from injected help text', () => {
     supportsVerbose: true,
     supportsModel: true,
     supportsEffort: true,
+    supportsSettings: false,
+    supportsMcpConfig: false,
     unknown: true,
   });
+  const claudeFeatures = helper
+    .getProviderAdapter('claude')
+    .detectCliFeatures('claude --settings --mcp-config --model');
+  assert.equal(claudeFeatures.supportsSettings, true);
+  assert.equal(claudeFeatures.supportsMcpConfig, true);
+  assert.equal(claudeFeatures.unknown, false);
 
   assert.equal(
     helper
