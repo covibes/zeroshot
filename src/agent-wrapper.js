@@ -107,6 +107,7 @@ class AgentWrapper {
           agentId: this.id,
           model: this._selectModel(),
           modelSpec: spec,
+          modelSpecSource: this._resolveModelSpecSource(),
           provider: this._resolveProvider(),
           cwd: this.config.cwd || process.cwd(),
           worktreePath: this.worktree?.path || null,
@@ -220,6 +221,17 @@ class AgentWrapper {
     const level = provider.validateLevel(defaultLevel, minLevel, maxLevel);
     const spec = provider.resolveModelSpec(level, levelOverrides);
     return applyReasoningOverride({ ...spec, level }, this.config.reasoningEffort);
+  }
+
+  _resolveModelSpecSource() {
+    if (this.modelConfig.type === 'rules') {
+      for (const rule of this.modelConfig.rules) {
+        if (this._matchesIterationRange(rule.iterations)) {
+          return rule.model ? 'direct' : 'provider-level';
+        }
+      }
+    }
+    return this.modelConfig.model ? 'direct' : 'provider-level';
   }
 
   /**

@@ -112,7 +112,7 @@ class ClaudeTaskRunner extends TaskRunner {
    * Execute a task via zeroshot CLI
    *
    * @param {string} context - Full prompt/context
-   * @param {{agentId?: string, model?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, cwd?: string, worktreePath?: string|null, isolation?: any}} options - Execution options
+   * @param {{agentId?: string, model?: string, modelLevel?: string, modelSpec?: Object|null, modelSpecSource?: 'direct'|'provider-level', reasoningEffort?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, cwd?: string, worktreePath?: string|null, isolation?: any}} options - Execution options
    * @returns {Promise<{success: boolean, output: string, error: string|null, taskId?: string}>}
    */
   async run(context, options = {}) {
@@ -122,6 +122,7 @@ class ClaudeTaskRunner extends TaskRunner {
       model = null,
       modelLevel = null,
       modelSpec: explicitModelSpec = null,
+      modelSpecSource = 'direct',
       reasoningEffort = null,
       outputFormat = 'stream-json',
       jsonSchema = null,
@@ -139,6 +140,7 @@ class ClaudeTaskRunner extends TaskRunner {
     );
     const resolvedModelSpec = this._resolveModelSpec({
       explicitModelSpec,
+      modelSpecSource,
       model,
       reasoningEffort,
       modelLevel,
@@ -197,6 +199,7 @@ class ClaudeTaskRunner extends TaskRunner {
 
   _resolveModelSpec({
     explicitModelSpec,
+    modelSpecSource,
     model,
     reasoningEffort,
     modelLevel,
@@ -204,25 +207,26 @@ class ClaudeTaskRunner extends TaskRunner {
     providerSettings,
     levelOverrides,
   }) {
-    const validateModelId = (modelId) => {
-      const isConfigured = Object.values(levelOverrides).some(
-        (override) => override?.model === modelId
-      );
-      if (isConfigured) {
-        return providerModule.validateConfiguredModelId(modelId);
-      }
-      return providerModule.validateModelId(modelId);
-    };
+    if (modelSpecSource === 'provider-level') {
+      return this._resolveProviderLevelModelSpec({
+        explicitModelSpec,
+        modelLevel,
+        reasoningEffort,
+        providerModule,
+        providerSettings,
+        levelOverrides,
+      });
+    }
 
     if (explicitModelSpec) {
       if (explicitModelSpec.model !== undefined) {
-        validateModelId(explicitModelSpec.model);
+        providerModule.validateModelId(explicitModelSpec.model);
       }
       return explicitModelSpec;
     }
 
     if (model) {
-      validateModelId(model);
+      providerModule.validateModelId(model);
       return { model, reasoningEffort };
     }
 
@@ -233,6 +237,27 @@ class ClaudeTaskRunner extends TaskRunner {
     }
 
     return resolvedModelSpec;
+  }
+
+  _resolveProviderLevelModelSpec({
+    explicitModelSpec,
+    modelLevel,
+    reasoningEffort,
+    providerModule,
+    providerSettings,
+    levelOverrides,
+  }) {
+    const level =
+      explicitModelSpec?.level ||
+      modelLevel ||
+      providerSettings.defaultLevel ||
+      providerModule.getDefaultLevel();
+    const resolvedModelSpec = providerModule.resolveModelSpec(level, levelOverrides);
+    const resolvedReasoningEffort = explicitModelSpec?.reasoningEffort || reasoningEffort;
+
+    return resolvedReasoningEffort
+      ? { ...resolvedModelSpec, reasoningEffort: resolvedReasoningEffort }
+      : resolvedModelSpec;
   }
 
   _resolveOutputFormat({ outputFormat, jsonSchema, strictSchema }) {

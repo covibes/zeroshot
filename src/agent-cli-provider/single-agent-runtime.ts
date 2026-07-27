@@ -250,7 +250,7 @@ function resolveRuntimeModelSpec(
   providerSettings: RuntimeProviderSettings
 ): ModelSpec {
   if (explicit?.model !== undefined) {
-    validateRuntimeModelId(adapter, explicit.model, providerSettings.levelOverrides);
+    adapter.validateModelId(explicit.model);
     return explicit;
   }
 
@@ -259,21 +259,6 @@ function resolveRuntimeModelSpec(
   const modelSpec = modelSpecFromResolved(resolved);
   if (explicit?.reasoningEffort === undefined) return modelSpec;
   return { ...modelSpec, reasoningEffort: explicit.reasoningEffort };
-}
-
-function validateRuntimeModelId(
-  adapter: ProviderAdapter,
-  modelId: string | null,
-  levelOverrides: LevelOverrides
-): void {
-  const isConfigured = Object.values(levelOverrides).some(
-    (override) => override?.model === modelId
-  );
-  if (isConfigured && adapter.validateConfiguredModelId) {
-    adapter.validateConfiguredModelId(modelId);
-    return;
-  }
-  adapter.validateModelId(modelId);
 }
 
 function modelSpecFromResolved(resolved: {

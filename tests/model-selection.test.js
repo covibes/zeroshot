@@ -64,6 +64,55 @@ function registerStaticModelTests() {
   });
 }
 
+function registerModelSpecSourceTests() {
+  describe('Task runner model provenance', () => {
+    function captureTaskRunnerOptions(agentConfig, iteration = 0) {
+      let capturedOptions;
+      const agent = new AgentWrapper(agentConfig, mockMessageBus, mockCluster, {
+        testMode: true,
+        taskRunner: {
+          run(_context, options) {
+            capturedOptions = options;
+            return { success: true };
+          },
+        },
+      });
+
+      agent.iteration = iteration;
+      agent.mockSpawnFn([], { context: 'test context' });
+      return capturedOptions;
+    }
+
+    it('marks static direct models separately from provider-level selections', () => {
+      assert.strictEqual(
+        captureTaskRunnerOptions({ id: 'direct', model: 'opus', timeout: 0 }).modelSpecSource,
+        'direct'
+      );
+      assert.strictEqual(
+        captureTaskRunnerOptions({ id: 'level', modelLevel: 'level2', timeout: 0 }).modelSpecSource,
+        'provider-level'
+      );
+    });
+
+    it('tracks the matching rule source for each iteration', () => {
+      const agentConfig = {
+        id: 'rules',
+        timeout: 0,
+        modelRules: [
+          { iterations: '1', model: 'haiku' },
+          { iterations: '2+', modelLevel: 'level2' },
+        ],
+      };
+
+      assert.strictEqual(captureTaskRunnerOptions(agentConfig, 1).modelSpecSource, 'direct');
+      assert.strictEqual(
+        captureTaskRunnerOptions(agentConfig, 2).modelSpecSource,
+        'provider-level'
+      );
+    });
+  });
+}
+
 function registerDynamicModelRulesTests() {
   describe('Dynamic model rules', () => {
     it('should match exact iteration', () => {
@@ -210,6 +259,7 @@ function registerRealWorldUseCaseTests() {
 describe('Model Selection', () => {
   registerModelSelectionHooks();
   registerStaticModelTests();
+  registerModelSpecSourceTests();
   registerDynamicModelRulesTests();
   registerErrorHandlingTests();
   registerRealWorldUseCaseTests();

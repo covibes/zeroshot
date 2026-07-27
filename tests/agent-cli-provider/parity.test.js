@@ -243,6 +243,33 @@ test('runtime Opencode rejects an unconfigured external model before command con
   );
 });
 
+test('runtime Opencode rejects a direct external model even when a configured override matches', () => {
+  withTempSettings(
+    {
+      providerSettings: {
+        opencode: {
+          defaultLevel: 'level2',
+          levelOverrides: {
+            level2: { model: 'kimi/kimi-k2-5', reasoningEffort: 'high' },
+          },
+        },
+      },
+    },
+    () => {
+      assert.throws(
+        () =>
+          runtimeProviders.getProvider('opencode').buildCommand('opencode direct context', {
+            modelSpec: { level: 'level2', model: 'kimi/kimi-k2-5' },
+            cliFeatures: { supportsJson: true, supportsModel: true },
+          }),
+        (error) =>
+          error.permanent === true &&
+          /Invalid model "kimi\/kimi-k2-5" for provider "opencode"/.test(error.message)
+      );
+    }
+  );
+});
+
 test('runtime Opencode rejects a malformed configured model before command construction', () => {
   withTempSettings(
     {
