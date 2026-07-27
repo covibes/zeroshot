@@ -103,10 +103,11 @@ class AgentWrapper {
       const taskRunner = options.taskRunner;
       this.mockSpawnFn = (args, { context }) => {
         const spec = this._resolveModelSpec();
+        const source = this._resolveModelSpecSource();
         return taskRunner.run(context, {
           agentId: this.id,
-          model: this._selectModel(),
-          modelSpec: spec,
+          ...(source === 'direct' ? { model: spec.model } : { modelLevel: spec.level }),
+          ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
           provider: this._resolveProvider(),
           cwd: this.config.cwd || process.cwd(),
           worktreePath: this.worktree?.path || null,
@@ -220,6 +221,17 @@ class AgentWrapper {
     const level = provider.validateLevel(defaultLevel, minLevel, maxLevel);
     const spec = provider.resolveModelSpec(level, levelOverrides);
     return applyReasoningOverride({ ...spec, level }, this.config.reasoningEffort);
+  }
+
+  _resolveModelSpecSource() {
+    if (this.modelConfig.type === 'rules') {
+      for (const rule of this.modelConfig.rules) {
+        if (this._matchesIterationRange(rule.iterations)) {
+          return rule.model ? 'direct' : 'provider-level';
+        }
+      }
+    }
+    return this.modelConfig.model ? 'direct' : 'provider-level';
   }
 
   /**
