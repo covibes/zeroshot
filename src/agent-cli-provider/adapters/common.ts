@@ -99,7 +99,7 @@ export function validateModelIdFromCatalog(
   modelId: string | null | undefined
 ): string | null | undefined {
   if (!modelId) return modelId;
-  if (catalog[modelId] !== undefined) return modelId;
+  if (Object.prototype.hasOwnProperty.call(catalog, modelId)) return modelId;
   const validModels = Object.keys(catalog).join(', ');
   throw new InvalidProviderModelError(
     `Invalid model "${modelId}" for provider "${provider}". Valid models: ${validModels}.`

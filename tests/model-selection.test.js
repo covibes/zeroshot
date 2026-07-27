@@ -83,14 +83,18 @@ function registerModelSpecSourceTests() {
       return capturedOptions;
     }
 
-    it('marks static direct models separately from provider-level selections', () => {
+    it('passes direct models and provider levels through separate structural fields', () => {
       assert.strictEqual(
-        captureTaskRunnerOptions({ id: 'direct', model: 'opus', timeout: 0 }).modelSpecSource,
-        'direct'
+        captureTaskRunnerOptions({ id: 'direct', model: 'opus', timeout: 0 }).model,
+        'opus'
+      );
+      assert.strictEqual(
+        captureTaskRunnerOptions({ id: 'level', modelLevel: 'level2', timeout: 0 }).modelLevel,
+        'level2'
       );
       assert.strictEqual(
         captureTaskRunnerOptions({ id: 'level', modelLevel: 'level2', timeout: 0 }).modelSpecSource,
-        'provider-level'
+        undefined
       );
     });
 
@@ -104,11 +108,8 @@ function registerModelSpecSourceTests() {
         ],
       };
 
-      assert.strictEqual(captureTaskRunnerOptions(agentConfig, 1).modelSpecSource, 'direct');
-      assert.strictEqual(
-        captureTaskRunnerOptions(agentConfig, 2).modelSpecSource,
-        'provider-level'
-      );
+      assert.strictEqual(captureTaskRunnerOptions(agentConfig, 1).model, 'haiku');
+      assert.strictEqual(captureTaskRunnerOptions(agentConfig, 2).modelLevel, 'level2');
     });
   });
 }

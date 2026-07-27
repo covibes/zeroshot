@@ -15,8 +15,16 @@ const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const { prepareClaudeConfigDir } = require('./worktree-claude-config');
 const {
   appendTaskRunModelArgs,
-  buildIsolatedProviderSettingsEnv,
+  wrapTaskRunWithIsolatedSettings,
 } = require('./task-run-model-args');
+
+function rejectCallerSuppliedModelProvenance(options) {
+  if (Object.prototype.hasOwnProperty.call(options, 'modelSpecSource')) {
+    throw new Error(
+      'modelSpecSource is derived from model versus modelLevel/default and cannot be supplied.'
+    );
+  }
+}
 
 function runCommand(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -116,17 +124,17 @@ class ClaudeTaskRunner extends TaskRunner {
    * Execute a task via zeroshot CLI
    *
    * @param {string} context - Full prompt/context
-   * @param {{agentId?: string, model?: string, modelLevel?: string, modelSpec?: Object|null, modelSpecSource?: 'direct'|'provider-level', reasoningEffort?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, cwd?: string, worktreePath?: string|null, isolation?: any}} options - Execution options
+   * @param {{agentId?: string, model?: string, modelLevel?: string, modelSpec?: Object|null, reasoningEffort?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, cwd?: string, worktreePath?: string|null, isolation?: any}} options - Execution options
    * @returns {Promise<{success: boolean, output: string, error: string|null, taskId?: string}>}
    */
   async run(context, options = {}) {
+    rejectCallerSuppliedModelProvenance(options);
     const {
       agentId = 'unknown',
       provider,
       model = null,
       modelLevel = null,
       modelSpec: explicitModelSpec = null,
-      modelSpecSource = 'direct',
       reasoningEffort = null,
       outputFormat = 'stream-json',
       jsonSchema = null,
@@ -142,9 +150,8 @@ class ClaudeTaskRunner extends TaskRunner {
       providerName,
       settings
     );
-    const resolvedModelSpec = this._resolveModelSpec({
+    const modelSelection = this._resolveModelSelection({
       explicitModelSpec,
-      modelSpecSource,
       model,
       reasoningEffort,
       modelLevel,
@@ -152,13 +159,13 @@ class ClaudeTaskRunner extends TaskRunner {
       providerSettings,
       levelOverrides,
     });
+    const resolvedModelSpec = modelSelection.modelSpec;
 
     // Isolation mode delegates to separate method
     if (isolation?.enabled) {
       return this._runIsolated(context, {
         ...options,
         provider: providerName,
-        modelSpec: resolvedModelSpec,
       });
     }
 
@@ -174,7 +181,7 @@ class ClaudeTaskRunner extends TaskRunner {
       providerName,
       runOutputFormat,
       resolvedModelSpec,
-      modelSpecSource,
+      modelSpecSource: modelSelection.source,
       jsonSchema,
     });
 
@@ -204,7 +211,6 @@ class ClaudeTaskRunner extends TaskRunner {
 
   _resolveModelSpec({
     explicitModelSpec,
-    modelSpecSource,
     model,
     reasoningEffort,
     modelLevel,
@@ -212,36 +218,53 @@ class ClaudeTaskRunner extends TaskRunner {
     providerSettings,
     levelOverrides,
   }) {
-    if (modelSpecSource === 'provider-level') {
-      return this._resolveProviderLevelModelSpec({
+    return this._resolveModelSelection({
+      explicitModelSpec,
+      model,
+      reasoningEffort,
+      modelLevel,
+      providerModule,
+      providerSettings,
+      levelOverrides,
+    }).modelSpec;
+  }
+
+  _resolveModelSelection({
+    explicitModelSpec,
+    model,
+    reasoningEffort,
+    modelLevel,
+    providerModule,
+    providerSettings,
+    levelOverrides,
+  }) {
+    if (model) {
+      providerModule.validateModelId(model);
+      return {
+        source: 'direct',
+        modelSpec: { model, reasoningEffort },
+      };
+    }
+
+    if (explicitModelSpec?.model !== undefined) {
+      providerModule.validateModelId(explicitModelSpec.model);
+      return {
+        source: 'direct',
+        modelSpec: explicitModelSpec,
+      };
+    }
+
+    return {
+      source: 'provider-level',
+      modelSpec: this._resolveProviderLevelModelSpec({
         explicitModelSpec,
         modelLevel,
         reasoningEffort,
         providerModule,
         providerSettings,
         levelOverrides,
-      });
-    }
-
-    if (explicitModelSpec) {
-      if (explicitModelSpec.model !== undefined) {
-        providerModule.validateModelId(explicitModelSpec.model);
-      }
-      return explicitModelSpec;
-    }
-
-    if (model) {
-      providerModule.validateModelId(model);
-      return { model, reasoningEffort };
-    }
-
-    const level = modelLevel || providerSettings.defaultLevel || providerModule.getDefaultLevel();
-    let resolvedModelSpec = providerModule.resolveModelSpec(level, levelOverrides);
-    if (reasoningEffort) {
-      resolvedModelSpec = { ...resolvedModelSpec, reasoningEffort };
-    }
-
-    return resolvedModelSpec;
+      }),
+    };
   }
 
   _resolveProviderLevelModelSpec({
@@ -258,16 +281,6 @@ class ClaudeTaskRunner extends TaskRunner {
       providerSettings.defaultLevel ||
       providerModule.getDefaultLevel();
     const resolvedModelSpec = providerModule.resolveModelSpec(level, levelOverrides);
-    if (
-      explicitModelSpec?.model !== undefined &&
-      explicitModelSpec.model !== resolvedModelSpec.model
-    ) {
-      const error = new Error(
-        `Provider-level model "${explicitModelSpec.model}" does not match the configured ${level} model "${resolvedModelSpec.model}".`
-      );
-      error.permanent = true;
-      throw error;
-    }
     const resolvedReasoningEffort = explicitModelSpec?.reasoningEffort || reasoningEffort;
 
     return resolvedReasoningEffort
@@ -592,21 +605,40 @@ class ClaudeTaskRunner extends TaskRunner {
   /**
    * Run task in isolated Docker container
    * @param {string} context
-   * @param {{agentId?: string, model?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, isolation?: any}} options
+   * @param {{agentId?: string, provider?: string, model?: string, modelLevel?: string, modelSpec?: Object|null, reasoningEffort?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, isolation?: any}} options
    * @returns {Promise<{success: boolean, output: string, error: string|null}>}
    */
   _runIsolated(context, options) {
+    rejectCallerSuppliedModelProvenance(options);
     const {
       agentId = 'unknown',
       provider = 'claude',
-      modelSpec = null,
-      modelSpecSource = 'direct',
+      model = null,
+      modelLevel = null,
+      modelSpec: explicitModelSpec = null,
+      reasoningEffort = null,
       outputFormat = 'stream-json',
       jsonSchema = null,
       strictSchema = false,
       isolation,
     } = options;
     const { manager, clusterId } = isolation;
+    const settings = loadSettings();
+    const { providerModule, providerSettings, levelOverrides } = this._getProviderContext(
+      provider,
+      settings
+    );
+    const modelSelection = this._resolveModelSelection({
+      explicitModelSpec,
+      model,
+      reasoningEffort,
+      modelLevel,
+      providerModule,
+      providerSettings,
+      levelOverrides,
+    });
+    const modelSpec = modelSelection.modelSpec;
+    const modelSpecSource = modelSelection.source;
 
     this._log(`📦 [${agentId}]: Running task in isolated container...`);
 
@@ -616,7 +648,7 @@ class ClaudeTaskRunner extends TaskRunner {
         ? 'stream-json'
         : desiredOutputFormat;
 
-    const command = [
+    let command = [
       'zeroshot',
       'task',
       'run',
@@ -642,6 +674,12 @@ class ClaudeTaskRunner extends TaskRunner {
     }
 
     command.push(finalContext);
+    command = wrapTaskRunWithIsolatedSettings(command, {
+      providerName: provider,
+      settings,
+      modelSpecSource,
+      modelSpec,
+    });
 
     return new Promise((resolve, reject) => {
       let output = '';
@@ -649,7 +687,6 @@ class ClaudeTaskRunner extends TaskRunner {
 
       const proc = manager.spawnInContainer(clusterId, command, {
         env: {
-          ...buildIsolatedProviderSettingsEnv(provider, loadSettings(), modelSpecSource, modelSpec),
           ...(provider === 'claude' && modelSpec?.model
             ? { ANTHROPIC_MODEL: modelSpec.model, ZEROSHOT_BLOCK_ASK_USER: '1' }
             : {}),

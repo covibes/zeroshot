@@ -7,6 +7,11 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { prepareSingleAgentProviderCommand } = require('./provider-helper-runtime.js');
+const {
+  ISOLATED_SETTINGS_FILE_ENV,
+  ISOLATED_SETTINGS_FILE_MARKER,
+  LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV,
+} = require('../src/task-run-model-args.js');
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -212,6 +217,7 @@ function resolveWatcherScript(options, providerName) {
 }
 
 function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfig }) {
+  const watcherEnv = buildWatcherEnv();
   const watcher = fork(
     watcherScript,
     [id, cwd, logFile, JSON.stringify(finalArgs), JSON.stringify(watcherConfig)],
@@ -219,9 +225,20 @@ function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfi
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
+      env: watcherEnv,
     }
   );
 
   watcher.unref();
   watcher.disconnect(); // Close IPC channel so parent can exit
+}
+
+export function buildWatcherEnv(sourceEnv = process.env) {
+  const watcherEnv = { ...sourceEnv };
+  delete watcherEnv[LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV];
+  if (watcherEnv[ISOLATED_SETTINGS_FILE_MARKER] === '1') {
+    delete watcherEnv[ISOLATED_SETTINGS_FILE_ENV];
+    delete watcherEnv[ISOLATED_SETTINGS_FILE_MARKER];
+  }
+  return watcherEnv;
 }

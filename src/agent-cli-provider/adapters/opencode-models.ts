@@ -53,10 +53,7 @@ export const LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
   level3: { rank: 3, model: null, reasoningEffort: 'high' },
 };
 
-export function resolveModelSpec(
-  level: ModelLevel,
-  overrides?: LevelOverrides
-): ResolvedModelSpec {
+export function resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec {
   const base = LEVEL_MAPPING[level] ?? LEVEL_MAPPING.level2;
   const override = overrides?.[level];
   const selectedModel = override?.model ?? base.model;
@@ -73,7 +70,7 @@ export function resolveModelSpec(
 export function validateConfiguredModelId(
   modelId: string | null | undefined
 ): string | null | undefined {
-  if (modelId && MODEL_CATALOG[modelId] !== undefined) return modelId;
+  if (modelId && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, modelId)) return modelId;
   if (typeof modelId !== 'string') return validateModelId(modelId);
   const segments = modelId.split('/');
   if (segments.length >= 2 && segments.every(Boolean) && !/\s/u.test(modelId)) return modelId;
@@ -84,8 +81,6 @@ export function validateConfiguredModelId(
   );
 }
 
-export function validateModelId(
-  modelId: string | null | undefined
-): string | null | undefined {
+export function validateModelId(modelId: string | null | undefined): string | null | undefined {
   return validateModelIdFromCatalog('opencode', MODEL_CATALOG, modelId);
 }

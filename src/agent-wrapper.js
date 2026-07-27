@@ -103,11 +103,11 @@ class AgentWrapper {
       const taskRunner = options.taskRunner;
       this.mockSpawnFn = (args, { context }) => {
         const spec = this._resolveModelSpec();
+        const source = this._resolveModelSpecSource();
         return taskRunner.run(context, {
           agentId: this.id,
-          model: this._selectModel(),
-          modelSpec: spec,
-          modelSpecSource: this._resolveModelSpecSource(),
+          ...(source === 'direct' ? { model: spec.model } : { modelLevel: spec.level }),
+          ...(spec.reasoningEffort ? { reasoningEffort: spec.reasoningEffort } : {}),
           provider: this._resolveProvider(),
           cwd: this.config.cwd || process.cwd(),
           worktreePath: this.worktree?.path || null,

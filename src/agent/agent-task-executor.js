@@ -25,7 +25,7 @@ const {
 } = require('../worktree-claude-config.js');
 const {
   appendTaskRunModelArgs,
-  buildIsolatedProviderSettingsEnv,
+  wrapTaskRunWithIsolatedSettings,
 } = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
 
@@ -1516,7 +1516,7 @@ async function spawnClaudeTaskIsolated(agent, context) {
   agent._log(`📦 Agent ${agent.id}: Running task in isolated container using zeroshot task run...`);
 
   const { desiredOutputFormat, runOutputFormat } = resolveOutputFormatConfig(agent);
-  const command = [
+  let command = [
     'zeroshot',
     ...buildTaskRunArgs({
       agent,
@@ -1534,15 +1534,19 @@ async function spawnClaudeTaskIsolated(agent, context) {
   });
 
   command.push(finalContext);
+  command = wrapTaskRunWithIsolatedSettings(command, {
+    providerName,
+    settings: loadSettings(),
+    modelSpecSource,
+    modelSpec,
+  });
 
   // STEP 1: Spawn task and extract task ID (same as non-isolated mode)
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
   // Note: Auth env vars are injected by IsolationManager, we only need model mapping here
-  const isolatedEnv = {
-    ...buildIsolatedProviderSettingsEnv(providerName, loadSettings(), modelSpecSource, modelSpec),
-    ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
-  };
+  const isolatedEnv =
+    providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {};
 
   const taskId = await new Promise((resolve, reject) => {
     const proc = manager.spawnInContainer(clusterId, command, {

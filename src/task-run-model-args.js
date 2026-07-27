@@ -27,39 +27,129 @@ function appendTaskRunModelArgs(args, modelSpec, modelSpecSource = 'direct') {
   return args;
 }
 
-const ISOLATED_PROVIDER_SETTINGS_ENV = 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON';
+const ISOLATED_SETTINGS_FILE_ENV = 'ZEROSHOT_SETTINGS_FILE';
+const ISOLATED_SETTINGS_FILE_MARKER = 'ZEROSHOT_DOCKER_SETTINGS_FILE';
+const LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV = 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON';
+const SETTINGS_BOOTSTRAP_SCRIPT = String.raw`
+const childProcess = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const snapshot = process.argv[1];
+const command = process.argv[2];
+const args = process.argv.slice(3);
+const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-isolated-settings-'));
+const settingsFile = path.join(directory, 'settings.json');
+
+try {
+  fs.writeFileSync(settingsFile, snapshot, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+  const result = childProcess.spawnSync(command, args, {
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      ${ISOLATED_SETTINGS_FILE_ENV}: settingsFile,
+      ${ISOLATED_SETTINGS_FILE_MARKER}: '1',
+    },
+  });
+  if (result.error) throw result.error;
+  process.exitCode = result.status === null ? 1 : result.status;
+} finally {
+  fs.rmSync(directory, { recursive: true, force: true });
+}
+`.trim();
 
 /**
- * Serialize the effective configured-model settings needed by an isolated
- * child. Only providers that support settings-owned external model IDs need a
- * snapshot; direct models continue through the strict public channel.
+ * Wrap an isolated task command with a Docker-only, temporary settings-file
+ * bootstrap. The snapshot is a closed projection containing only the selected
+ * OpenCode level and its model. It never contains arbitrary provider settings,
+ * credentials, or caller-owned keys.
  *
- * @param {string} providerName
- * @param {Object} settings
- * @param {'direct'|'provider-level'} modelSpecSource
- * @param {Object|null|undefined} modelSpec
- * @returns {Record<string, string>}
+ * @param {string[]} command
+ * @param {{providerName: string, settings: Object, modelSpecSource: 'direct'|'provider-level', modelSpec: Object|null|undefined}} context
+ * @returns {string[]}
  */
-function buildIsolatedProviderSettingsEnv(providerName, settings, modelSpecSource, modelSpec) {
-  if (providerName !== 'opencode' || modelSpecSource !== 'provider-level') return {};
-  const providerSettings = settings.providerSettings?.[providerName] || {};
-  const configuredModel = providerSettings.levelOverrides?.[modelSpec?.level]?.model ?? null;
+function wrapTaskRunWithIsolatedSettings(command, context) {
+  const { providerName, settings, modelSpecSource, modelSpec } = context;
+  if (providerName !== 'opencode' || modelSpecSource !== 'provider-level') return command;
+  const snapshot = buildIsolatedSettingsSnapshot(settings, modelSpec);
+  if (snapshot === null) return command;
+  return ['node', '-e', SETTINGS_BOOTSTRAP_SCRIPT, snapshot, ...command];
+}
+
+function buildIsolatedSettingsSnapshot(settings, modelSpec) {
+  const level = modelSpec?.level;
+  if (!['level1', 'level2', 'level3'].includes(level)) {
+    throw permanentError(
+      'Provider-level isolated OpenCode selections require a valid model level.'
+    );
+  }
+
+  const providerSettings = ownRecordValue(settings, 'providerSettings', 'settings') ?? {};
+  const opencodeSettings = ownRecordValue(
+    providerSettings,
+    'opencode',
+    'settings.providerSettings'
+  );
+  const levelOverrides = ownRecordValue(
+    opencodeSettings,
+    'levelOverrides',
+    'settings.providerSettings.opencode'
+  );
+  const levelOverride = ownRecordValue(
+    levelOverrides,
+    level,
+    'settings.providerSettings.opencode.levelOverrides'
+  );
+  const configuredModel =
+    levelOverride && Object.prototype.hasOwnProperty.call(levelOverride, 'model')
+      ? levelOverride.model
+      : null;
+  if (configuredModel !== null && typeof configuredModel !== 'string') {
+    throw permanentError(`Configured isolated OpenCode ${level} model must be a string or null.`);
+  }
   if (modelSpec?.model !== configuredModel) {
-    const error = new Error(
+    throw permanentError(
       `Provider-level model "${modelSpec?.model}" does not match the effective isolated ${modelSpec?.level} model "${configuredModel}".`
     );
-    error.permanent = true;
-    throw error;
   }
-  return {
-    [ISOLATED_PROVIDER_SETTINGS_ENV]: JSON.stringify({
-      [providerName]: providerSettings,
-    }),
-  };
+  if (configuredModel === null) return null;
+
+  return JSON.stringify({
+    providerSettings: {
+      opencode: {
+        levelOverrides: {
+          [level]: { model: configuredModel },
+        },
+      },
+    },
+  });
+}
+
+function ownRecordValue(record, key, field) {
+  if (record === null || record === undefined) return undefined;
+  if (typeof record !== 'object' || Array.isArray(record)) {
+    throw permanentError(`${field} must be an object.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(record, key)) return undefined;
+  const value = record[key];
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw permanentError(`${field}.${key} must be an object.`);
+  }
+  return value;
+}
+
+function permanentError(message) {
+  const error = new Error(message);
+  error.permanent = true;
+  return error;
 }
 
 module.exports = {
-  ISOLATED_PROVIDER_SETTINGS_ENV,
+  ISOLATED_SETTINGS_FILE_ENV,
+  ISOLATED_SETTINGS_FILE_MARKER,
+  LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV,
   appendTaskRunModelArgs,
-  buildIsolatedProviderSettingsEnv,
+  wrapTaskRunWithIsolatedSettings,
 };

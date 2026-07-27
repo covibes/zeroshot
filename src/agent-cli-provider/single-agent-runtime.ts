@@ -67,6 +67,7 @@ type MutableModelSpec = {
 
 const MODEL_LEVELS: readonly ModelLevel[] = ['level1', 'level2', 'level3'];
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV = 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON';
 const settingsModule: unknown = require('../../lib/settings');
 const providerDetectionModule: unknown = require('../../lib/provider-detection');
 const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
@@ -359,29 +360,12 @@ function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
 }
 
 function loadRuntimeSettings(): Record<string, unknown> {
-  const settings = requiredRecord(loadSettingsFn(), 'loadSettings');
-  const snapshotJson = process.env.ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON;
-  if (snapshotJson === undefined) return settings;
-
-  const snapshot = isolatedProviderSettingsFromJson(snapshotJson);
-  const configured = optionalRecord(settings.providerSettings, 'settings.providerSettings') ?? {};
-  return {
-    ...settings,
-    providerSettings: {
-      ...configured,
-      ...snapshot,
-    },
-  };
-}
-
-function isolatedProviderSettingsFromJson(value: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    throw new Error('ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON must be valid JSON.');
+  if (Object.prototype.hasOwnProperty.call(process.env, LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV)) {
+    throw new Error(
+      `${LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV} is not a trusted settings channel; use the settings file.`
+    );
   }
-  return requiredRecord(parsed, 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON');
+  return requiredRecord(loadSettingsFn(), 'loadSettings');
 }
 
 function rejectCallerSuppliedModelProvenance(input: SingleAgentProviderCommandInput): void {
