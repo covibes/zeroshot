@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+const fs = require('fs');
+const https = require('https');
+const path = require('path');
 const { execFileSync } = require('child_process');
 const { releaseTypeForMessages } = require('./release-preflight');
 
@@ -16,6 +19,87 @@ function packageName() {
 
 function npmLatest(name) {
   return JSON.parse(run('npm', ['view', name, 'dist-tags.latest', '--json']));
+}
+
+function npmReleaseMetadata(name, version) {
+  return JSON.parse(
+    run('npm', ['view', `${name}@${version}`, 'version', 'gitHead', 'dist.attestations', '--json'])
+  );
+}
+
+function httpsJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, { headers: { Accept: 'application/json' } }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      response.on('end', () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode} from ${url}: ${body}`));
+          return;
+        }
+        resolve(JSON.parse(body));
+      });
+    });
+    request.on('error', reject);
+  });
+}
+
+function provenanceStatement(attestations) {
+  const provenance = attestations.attestations?.find(
+    (attestation) => attestation.predicateType === 'https://slsa.dev/provenance/v1'
+  );
+  const payload = provenance?.bundle?.dsseEnvelope?.payload;
+  if (!payload) throw new Error('npm provenance statement is missing');
+  return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+}
+
+function verifyProvenance(statement, expectedCommit) {
+  const workflow = statement.predicate?.buildDefinition?.externalParameters?.workflow;
+  if (workflow?.repository !== 'https://github.com/the-open-engine/zeroshot') {
+    throw new Error(`unexpected provenance repository: ${workflow?.repository || '(missing)'}`);
+  }
+  if (workflow?.path !== '.github/workflows/release.yml') {
+    throw new Error(`unexpected provenance workflow: ${workflow?.path || '(missing)'}`);
+  }
+
+  const resolved = statement.predicate?.buildDefinition?.resolvedDependencies || [];
+  if (!resolved.some((dependency) => dependency.digest?.gitCommit === expectedCommit)) {
+    throw new Error(`provenance does not resolve to release commit ${expectedCommit}`);
+  }
+}
+
+function githubRelease(tag) {
+  return JSON.parse(run('gh', ['release', 'view', tag, '--json', 'tagName,body,url,publishedAt']));
+}
+
+function verifyCuratedNotes(tag, release) {
+  const notesPath = path.join(process.cwd(), 'docs', 'releases', `${tag}.md`);
+  if (!fs.existsSync(notesPath)) return;
+  const expected = fs.readFileSync(notesPath, 'utf8').trim();
+  const actual = String(release.body || '').trim();
+  if (actual !== expected) {
+    throw new Error(`GitHub Release ${tag} does not match ${notesPath}`);
+  }
+}
+
+function verifyInstalledCli(name, version) {
+  const packageSpec = `${name}@${version}`;
+  const reported = run('npm', [
+    'exec',
+    '--yes',
+    `--package=${packageSpec}`,
+    '--',
+    'zeroshot',
+    '--version',
+  ]);
+  if (!reported.split(/\s+/).includes(version)) {
+    throw new Error(`installed CLI reported ${reported}; expected ${version}`);
+  }
+  run('npm', ['exec', '--yes', `--package=${packageSpec}`, '--', 'zeroshot', '--help']);
+  run('npm', ['exec', '--yes', `--package=${packageSpec}`, '--', 'zeroshot', 'list']);
 }
 
 function tagsPointingAtHead() {
@@ -108,6 +192,27 @@ async function main() {
 
   console.log(`npm latest for ${name}: ${latest}`);
 
+  const expectedCommit = run('git', ['rev-parse', 'HEAD']);
+  const metadata = npmReleaseMetadata(name, expectedVersion);
+  if (metadata.version !== expectedVersion) {
+    throw new Error(`npm metadata returned ${metadata.version}; expected ${expectedVersion}`);
+  }
+  if (metadata.gitHead !== expectedCommit) {
+    throw new Error(`npm gitHead ${metadata.gitHead || '(missing)'} does not match HEAD`);
+  }
+
+  const attestationUrl = metadata['dist.attestations']?.url;
+  if (!attestationUrl) throw new Error('npm attestation URL is missing');
+  const attestations = await httpsJson(attestationUrl);
+  verifyProvenance(provenanceStatement(attestations), expectedCommit);
+
+  const release = githubRelease(expectedTag);
+  if (release.tagName !== expectedTag) {
+    throw new Error(`GitHub Release tag ${release.tagName} does not match ${expectedTag}`);
+  }
+  verifyCuratedNotes(expectedTag, release);
+  verifyInstalledCli(name, expectedVersion);
+
   console.log(`Release publication verified: ${name}@${latest}`);
 }
 
@@ -121,7 +226,10 @@ if (require.main === module) {
 module.exports = {
   latestReleaseTag,
   latestReachableReleaseTag,
+  npmReleaseMetadata,
   npmLatest,
+  provenanceStatement,
   tagsPointingAtHead,
+  verifyProvenance,
   waitForNpmLatest,
 };

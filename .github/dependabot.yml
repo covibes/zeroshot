@@ -3,7 +3,7 @@ updates:
   # Enable version updates for npm
   - package-ecosystem: 'npm'
     directory: '/'
-    target-branch: 'dev'
+    target-branch: 'main'
     schedule:
       interval: 'weekly'
       day: 'monday'

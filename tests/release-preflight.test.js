@@ -46,7 +46,7 @@ describe('release preflight', () => {
             branches: ['main'],
             plugins: [
               '@semantic-release/commit-analyzer',
-              '@semantic-release/release-notes-generator',
+              './scripts/semantic-release-notes.js',
               ['@semantic-release/npm', { npmPublish: true }],
               '@semantic-release/git',
               '@semantic-release/github',
@@ -57,16 +57,34 @@ describe('release preflight', () => {
     );
   });
 
+  it('rejects custom analyzer rules that would distort semantic versioning', () => {
+    assert.throws(
+      () =>
+        validateReleaseConfig({
+          release: {
+            branches: ['main'],
+            plugins: [
+              [
+                '@semantic-release/commit-analyzer',
+                { releaseRules: [{ type: 'release', release: 'minor' }] },
+              ],
+              './scripts/semantic-release-notes.js',
+              ['@semantic-release/npm', { npmPublish: true }],
+              '@semantic-release/github',
+            ],
+          },
+        }),
+      /standard conventional release rules/
+    );
+  });
+
   it('accepts the protected-main release config', () => {
     const plugins = validateReleaseConfig({
       release: {
         branches: ['main'],
         plugins: [
-          [
-            '@semantic-release/commit-analyzer',
-            { releaseRules: [{ type: 'release', release: 'minor' }] },
-          ],
-          '@semantic-release/release-notes-generator',
+          '@semantic-release/commit-analyzer',
+          './scripts/semantic-release-notes.js',
           ['@semantic-release/npm', { npmPublish: true }],
           '@semantic-release/github',
         ],
@@ -75,7 +93,7 @@ describe('release preflight', () => {
 
     assert.deepStrictEqual(plugins, [
       '@semantic-release/commit-analyzer',
-      '@semantic-release/release-notes-generator',
+      './scripts/semantic-release-notes.js',
       '@semantic-release/npm',
       '@semantic-release/github',
     ]);

@@ -90,6 +90,7 @@ The package.json is already configured correctly:
 
 The checked-in version is not release authority. semantic-release derives the next version from
 Git tags and rewrites the manifest in its isolated publication workspace before `npm publish`.
+Git tags, npm metadata, and GitHub Releases are the durable version authorities.
 
 ## Step 5: Test Publishing Locally (Optional)
 
@@ -141,7 +142,8 @@ Once trusted publishing is configured, publishing happens automatically from `ma
 4. **GitHub Actions runs** the release workflow after the exact merged `main` commit passes CI:
    - Analyzes commit messages
    - Determines version bump
-   - Generates release notes and creates a GitHub release
+   - Uses `docs/releases/vX.Y.Z.md` when curated notes exist, otherwise generates conventional notes
+   - Creates the immutable tag and GitHub Release
    - Publishes to npm
 
 ### Check the release:
@@ -231,23 +233,21 @@ npm deprecate '@covibes/zeroshot@<=5.4.0' \
 intended. `docs:` and `chore:` commits intentionally produce no release and are treated as a
 successful no-op.
 
-## Manual Publishing (Emergency)
+## Recovery
 
-If GitHub Actions fails and you need to publish manually:
+Do not publish a normal release from a developer checkout. The `Release` workflow provides three
+manual actions:
 
-```bash
-# Login to npm
-npm login
+- `dry-run` validates the current protected `main` without publishing.
+- `recover-npm` republishes only when the requested immutable tag has no npm version.
+- `recover-github-release` recreates only a missing GitHub Release.
 
-# Update version (semantic-release normally does this)
-npm version patch   # or 'minor' or 'major'
+Both recovery actions require a `vX.Y.Z` tag and its full commit SHA. The workflow verifies that the
+tag, checkout, supplied SHA, and `main` ancestry agree. An existing artifact is verified and treated
+as a no-op; an inconsistent artifact fails closed.
 
-# Publish
-npm publish --access public --otp <your-2fa-code>
-
-# Put any recovery change through a protected PR to main,
-# then let the release workflow own normal publication again.
-```
+Interactive 2FA publishing is reserved for creating a package before trusted publishing can be
+configured. It is not a release recovery path.
 
 ## Security Best Practices
 

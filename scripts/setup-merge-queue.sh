@@ -1,80 +1,40 @@
 #!/bin/bash
-# Setup GitHub merge queue and branch protection for zeroshot
-# Run once after creating the repo or to update settings
 
-set -e
+set -euo pipefail
 
 REPO="the-open-engine/zeroshot"
+MAIN_RULESET_NAME="Protect main trunk"
+TAG_RULESET_NAME="Make release tags immutable"
 
-echo "╔═══════════════════════════════════════════════════════════════════╗"
-echo "║  Setting up merge queue for $REPO                         ║"
-echo "╚═══════════════════════════════════════════════════════════════════╝"
-echo ""
-
-# Check gh is authenticated
 if ! gh auth status &>/dev/null; then
-  echo "❌ ERROR: Not authenticated with GitHub CLI"
-  echo "   Run: gh auth login"
+  echo "ERROR: Authenticate GitHub CLI with: gh auth login"
   exit 1
 fi
 
-# Check we have admin access
-if ! gh api "repos/$REPO" --jq '.permissions.admin' | grep -q true; then
-  echo "❌ ERROR: You need admin access to $REPO"
+if [[ "$(gh api "repos/$REPO" --jq '.permissions.admin')" != "true" ]]; then
+  echo "ERROR: Repository admin access is required"
   exit 1
 fi
 
-echo "✓ Authenticated with admin access"
-echo ""
-
-# ============================================================================
-# Configure 'main' branch protection (single trunk)
-# ============================================================================
-
-echo "→ Configuring 'main' branch protection..."
-
-gh api --method PUT "repos/$REPO/branches/main/protection" \
-  --input - <<EOF
-{
-  "required_status_checks": {
-    "strict": true,
-    "contexts": ["check", "install-matrix (ubuntu-latest, 20)", "install-matrix (macos-latest, 20)"]
-  },
-  "enforce_admins": true,
-  "required_pull_request_reviews": {
-    "required_approving_review_count": 0,
-    "dismiss_stale_reviews": true,
-    "require_code_owner_reviews": false
-  },
-  "restrictions": null,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "required_linear_history": true,
-  "required_conversation_resolution": false
+upsert_ruleset() {
+  local name="$1"
+  local payload="$2"
+  local id
+  id="$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$name\") | .id" | head -1)"
+  if [[ -n "$id" ]]; then
+    gh api --method PUT "repos/$REPO/rulesets/$id" --input "$payload" >/dev/null
+  else
+    gh api --method POST "repos/$REPO/rulesets" --input "$payload" >/dev/null
+  fi
 }
-EOF
 
-echo "✓ 'main' branch protection configured"
+main_payload="$(mktemp)"
+tag_payload="$(mktemp)"
+trap 'rm -f "$main_payload" "$tag_payload"' EXIT
 
-# Enable merge queue for main branch
-echo "→ Enabling merge queue for 'main' branch..."
-
-# Note: Merge queue requires GitHub Enterprise or public repos with Actions
-# Using the ruleset API which supports merge queue
-RULESET_NAME="main-merge-queue"
-RULESET_ID="$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$RULESET_NAME\") | .id" | head -1)"
-if [[ -n "$RULESET_ID" ]]; then
-  RULESET_METHOD="PUT"
-  RULESET_ENDPOINT="repos/$REPO/rulesets/$RULESET_ID"
-else
-  RULESET_METHOD="POST"
-  RULESET_ENDPOINT="repos/$REPO/rulesets"
-fi
-
-gh api --method "$RULESET_METHOD" "$RULESET_ENDPOINT" \
-  --input - <<EOF
+cat > "$main_payload" <<'JSON'
 {
-  "name": "$RULESET_NAME",
+  "name": "Protect main trunk",
   "target": "branch",
   "enforcement": "active",
   "conditions": {
@@ -84,6 +44,36 @@ gh api --method "$RULESET_METHOD" "$RULESET_ENDPOINT" \
     }
   },
   "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {"type": "required_linear_history"},
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "dismissal_restriction": {
+          "enabled": false,
+          "allowed_actors": []
+        },
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {"context": "required", "integration_id": 15368},
+          {"context": "semantic", "integration_id": 15368}
+        ]
+      }
+    },
     {
       "type": "merge_queue",
       "parameters": {
@@ -96,20 +86,34 @@ gh api --method "$RULESET_METHOD" "$RULESET_ENDPOINT" \
         "min_entries_to_merge_wait_minutes": 1
       }
     }
-  ]
+  ],
+  "bypass_actors": []
 }
-EOF
+JSON
 
-echo "✓ Merge queue enabled for 'main'"
+cat > "$tag_payload" <<'JSON'
+{
+  "name": "Make release tags immutable",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/tags/v*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"}
+  ],
+  "bypass_actors": []
+}
+JSON
 
-# ============================================================================
-# Configure repository settings
-# ============================================================================
+upsert_ruleset "$MAIN_RULESET_NAME" "$main_payload"
+upsert_ruleset "$TAG_RULESET_NAME" "$tag_payload"
 
-echo "→ Configuring repository settings..."
-
-gh api --method PATCH "repos/$REPO" \
-  --input - <<EOF
+gh api --method PATCH "repos/$REPO" --input - <<'JSON' >/dev/null
 {
   "allow_squash_merge": true,
   "allow_merge_commit": false,
@@ -119,37 +123,35 @@ gh api --method PATCH "repos/$REPO" \
   "delete_branch_on_merge": true,
   "allow_auto_merge": true
 }
-EOF
+JSON
 
-echo "✓ Repository settings configured"
+gh api --method PUT "repos/$REPO/environments/release" --input - <<'JSON' >/dev/null
+{
+  "prevent_self_review": false,
+  "deployment_branch_policy": {
+    "protected_branches": false,
+    "custom_branch_policies": true
+  }
+}
+JSON
 
-# ============================================================================
-# Summary
-# ============================================================================
+if ! gh api "repos/$REPO/environments/release/deployment-branch-policies" \
+  --jq '.branch_policies[] | select(.name == "main") | .id' | grep -q .; then
+  gh api --method POST "repos/$REPO/environments/release/deployment-branch-policies" \
+    -f name=main -f type=branch >/dev/null
+fi
 
-echo ""
-echo "╔═══════════════════════════════════════════════════════════════════╗"
-echo "║  ✓ Merge queue setup complete!                                    ║"
-echo "╚═══════════════════════════════════════════════════════════════════╝"
-echo ""
-echo "Workflow:"
-echo "  feature-branch (local)"
-echo "  ↓"
-echo "  pre-push hook → lint + typecheck (~5s)"
-echo "  ↓"
-echo "  push to origin/feature-branch"
-echo "  ↓"
-echo "  gh pr create --base main"
-echo "  ↓"
-echo "  CI runs tests on PR branch"
-echo "  ↓"
-echo "  gh pr merge --auto --squash → enters merge queue"
-echo "  ↓"
-echo "  Queue rebases PR on latest main + runs CI again"
-echo "  ↓"
-echo "  Merge to main (only if CI passes on rebased code)"
-echo ""
-echo "Release workflow:"
-echo "  Conventional PR title selects patch/minor/major"
-echo "  → merge to main → CI passes → semantic-release publishes"
-echo ""
+gh variable set RELEASE_AUTOMATION_ENABLED --repo "$REPO" --body false
+
+if gh api "repos/$REPO/branches/main/protection" >/dev/null 2>&1; then
+  gh api --method DELETE "repos/$REPO/branches/main/protection"
+fi
+
+while IFS= read -r ruleset_id; do
+  [[ -n "$ruleset_id" ]] && gh api --method DELETE "repos/$REPO/rulesets/$ruleset_id"
+done < <(
+  gh api "repos/$REPO/rulesets" \
+    --jq '.[] | select(.name == "dev-merge-queue" or .name == "main-merge-queue") | .id'
+)
+
+echo "Configured protected main trunk, merge queue, immutable release tags, and disabled release automation."

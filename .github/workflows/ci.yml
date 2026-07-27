@@ -22,10 +22,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 20
           cache: 'npm'
@@ -97,10 +97,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 20
           cache: 'npm'
@@ -140,10 +140,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: 'npm'
@@ -217,12 +217,12 @@ jobs:
       ))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 20
           cache: 'npm'
@@ -234,3 +234,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:preflight
+
+  required:
+    name: required
+    if: ${{ always() }}
+    needs:
+      - check
+      - install-matrix
+      - release-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every applicable CI gate
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+          INSTALL_MATRIX_RESULT: ${{ needs.install-matrix.result }}
+          RELEASE_PREFLIGHT_RESULT: ${{ needs.release-preflight.result }}
+        run: |
+          if [[ "$CHECK_RESULT" != "success" ]]; then
+            echo "::error::check concluded with $CHECK_RESULT"
+            exit 1
+          fi
+          if [[ "$INSTALL_MATRIX_RESULT" != "success" ]]; then
+            echo "::error::install-matrix concluded with $INSTALL_MATRIX_RESULT"
+            exit 1
+          fi
+          if [[ "$RELEASE_PREFLIGHT_RESULT" != "success" && "$RELEASE_PREFLIGHT_RESULT" != "skipped" ]]; then
+            echo "::error::release-preflight concluded with $RELEASE_PREFLIGHT_RESULT"
+            exit 1
+          fi

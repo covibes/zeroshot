@@ -14,6 +14,14 @@ Operational rules and references for automated agents working on this repo. Inst
 - Detached (`-d`) runs must forward all `zeroshot run` options via `ZEROSHOT_RUN_OPTIONS` (see `buildDaemonEnv` + `buildStartOptions`) so PR/worktree config cannot be dropped.
 - `main` is the single development and release trunk. Target normal PRs at `main`; never recreate a
   long-lived `dev -> main` release-promotion flow.
+- Pull request titles are Conventional Commit headers because squash merge makes the title the
+  released commit. `fix:`/`perf:` publish patches, `feat:` publishes minors, breaking syntax
+  publishes majors, and `docs:`/`chore:` intentionally publish nothing.
+- The checked-in package version is always `0.0.0-development`. Release tags, npm metadata, and
+  GitHub Releases are authoritative; release automation must never commit versions back to `main`.
+- Curated notes live at `docs/releases/vX.Y.Z.md`. Recovery may operate only from an immutable
+  `vX.Y.Z` tag whose exact commit is an ancestor of `main`, and it must never overwrite an existing
+  npm version or GitHub Release.
 
 Worker git operations are allowed only with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). They are forbidden without isolation.
 
