@@ -224,6 +224,7 @@ function buildPrOptions(options, requiredQualityGates) {
     prBase: options.prBase || null,
     mergeQueue: options.mergeQueue || false,
     closeIssue: options.closeIssue || null,
+    gitRemote: options.gitRemote || null,
     autoMerge,
     ...(requiredQualityGates.length > 0 ? { requiredQualityGates } : {}),
     cwd: options.cwd || process.cwd(),
@@ -1266,6 +1267,8 @@ class Orchestrator {
         const { detectGitContext } = require('../lib/git-remote-utils');
         const gitContext = detectGitContext(options.cwd);
         cluster.gitPlatform = gitContext?.provider || null;
+        options.gitRemote = gitContext?.remote || options.gitRemote || null;
+        cluster.prOptions = buildPrOptions(options, requiredQualityGates);
 
         if (cluster.gitPlatform) {
           this._log(`[Orchestrator] Git platform detected: ${cluster.gitPlatform.toUpperCase()}`);
@@ -1796,11 +1799,21 @@ class Orchestrator {
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});
+      const { detectGitContext } = require('../lib/git-remote-utils');
+      const gitContext = detectGitContext(workDir);
+      if (gitContext?.remote) {
+        options.gitRemote = gitContext.remote;
+      }
+
       // `prBase` is the PR target branch. Base isolated work on its refreshed
       // remote-tracking ref so a stale local branch cannot change the plan.
       const worktreeOptions = {};
       if (options.prBase) {
-        worktreeOptions.baseRef = `origin/${options.prBase}`;
+        const remoteName = options.gitRemote || 'origin';
+        worktreeOptions.baseRef = `${remoteName}/${options.prBase}`;
+        if (remoteName !== 'origin') {
+          worktreeOptions.remoteName = remoteName;
+        }
         worktreeOptions.requireFreshBase = true;
         this._log(`[Orchestrator] Using worktree base ref: ${worktreeOptions.baseRef}`);
       }
@@ -1872,15 +1885,12 @@ class Orchestrator {
       closeIssue: options.closeIssue,
       requiredQualityGates: options.requiredQualityGates,
       autoMerge: resolveRunPlan(options).autoMerge,
+      gitRemote: gitContext?.remote || options.gitRemote,
+      issueNumber: inputData.number,
+      issueTitle: inputData.title,
+      includeIssueReference: !skipCloseIssue,
       cwd: options.cwd,
     });
-
-    // Template replacement for issue context
-    const issueRef = skipCloseIssue ? '' : `Closes #${inputData.number || 'unknown'}`;
-    gitPusherConfig.prompt = gitPusherConfig.prompt
-      .replace(/\{\{issue_number\}\}/g, inputData.number || 'unknown')
-      .replace(/\{\{issue_title\}\}/g, inputData.title || 'Implementation')
-      .replace(/Closes #\{\{issue_number\}\}/g, issueRef);
 
     config.agents.push(gitPusherConfig);
     this._log(
@@ -4035,7 +4045,6 @@ Continue from where you left off. Review your previous output to understand what
         }
       }
 
-      // Generate platform-specific git-pusher agent from template
       const {
         generateGitPusherAgent,
         isPlatformSupported,
@@ -4047,18 +4056,19 @@ Continue from where you left off. Review your previous output to understand what
         );
       }
 
-      // Use persisted PR options from cluster state (or empty for repo settings fallback)
-      const gitPusherConfig = generateGitPusherAgent(platform, cluster.prOptions || {});
-
       // Get issue context from ledger
       const issueMsg = cluster.messageBus.ledger.findLast({ topic: 'ISSUE_OPENED' });
       const issueNumber = issueMsg?.content?.data?.number || 'unknown';
       const issueTitle = issueMsg?.content?.data?.title || 'Implementation';
 
-      // Inject issue context into prompt
-      gitPusherConfig.prompt = gitPusherConfig.prompt
-        .replace(/\{\{issue_number\}\}/g, issueNumber)
-        .replace(/\{\{issue_title\}\}/g, issueTitle);
+      // Generate the final prompt in one typed assembly pass. Issue values are
+      // resolved before the shell-quoted remote is inserted, so placeholder-like
+      // remote names cannot be rewritten by issue context.
+      const gitPusherConfig = generateGitPusherAgent(platform, {
+        ...(cluster.prOptions || {}),
+        issueNumber,
+        issueTitle,
+      });
 
       await this._opAddAgents(cluster, { agents: [gitPusherConfig] }, context);
       this._log(`    [--pr mode] Injected ${platform}-git-pusher agent`);

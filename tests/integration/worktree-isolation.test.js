@@ -508,6 +508,31 @@ function registerRemotePrBaseTests() {
     }
   });
 
+  it('refreshes a PR base from a selected non-origin remote', function () {
+    const fixture = createStaleRemoteBaseFixture('zs-upstream-pr-base-');
+    const clusterId = `test-upstream-remote-pr-base-${Date.now()}`;
+    const remoteManager = new IsolationManager();
+
+    try {
+      runGit(['remote', 'rename', 'origin', 'upstream'], { cwd: fixture.sourceDir });
+
+      const info = remoteManager.createWorktreeIsolation(clusterId, fixture.sourceDir, {
+        baseRef: 'upstream/dev',
+        remoteName: 'upstream',
+        requireFreshBase: true,
+      });
+      const worktreeSha = runGit(['rev-parse', 'HEAD'], { cwd: info.path }).trim();
+
+      assert.strictEqual(info.baseRef, 'upstream/dev');
+      assert.strictEqual(info.baseSha, fixture.remoteSha);
+      assert.strictEqual(worktreeSha, fixture.remoteSha);
+      assert.deepStrictEqual(listTemporaryBaseRefs(fixture.sourceDir), []);
+    } finally {
+      remoteManager.cleanupWorktreeIsolation(clusterId);
+      fs.rmSync(fixture.fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when the requested remote base cannot be refreshed', function () {
     const fixture = createStaleRemoteBaseFixture('zs-unavailable-pr-base-');
     const clusterId = `test-unavailable-remote-pr-base-${Date.now()}`;

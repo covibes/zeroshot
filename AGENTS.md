@@ -619,6 +619,10 @@ git switch <branch>                            # Instead of git checkout
 git restore <file>                             # Instead of git checkout --
 ```
 
+Bind issue context before inserting shell-quoted Git configuration into prompt commands. Never run
+global placeholder replacement over a completed command prompt: Git-valid names can contain
+placeholder-like text.
+
 ### Test-First Workflow
 
 Write tests BEFORE or WITH code:
