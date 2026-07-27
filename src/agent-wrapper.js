@@ -17,6 +17,7 @@ const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { buildContext } = require('./agent/agent-context-builder');
 const { collectQueuedGuidance } = require('./agent/guidance-queue');
+const { resolveAgentResumeSessionId } = require('./agent/provider-session');
 const { findMatchingTrigger, evaluateTrigger } = require('./agent/agent-trigger-evaluator');
 const { executeHook } = require('./agent/agent-hook-executor');
 const { injectInput: injectAgentInput } = require('./agent/agent-input-injector');
@@ -66,7 +67,7 @@ class AgentWrapper {
     this.currentTask = null;
     /** @type {string | null} */
     this.currentTaskId = null; // Track spawned task ID for resume capability
-    /** @type {{provider: string, sessionId: string} | null} */
+    /** @type {{provider: string, sessionId: string, agentId: string, taskId: string, generation: number, cwd: string, worktreePath: string|null} | null} */
     this.providerSession = null; // Provider continuation state, owned by this logical agent only
     /** @type {number | null} */
     this.processPid = null; // Track process PID for resource monitoring
@@ -425,6 +426,8 @@ class AgentWrapper {
    */
   _buildContext(triggeringMessage) {
     const previousAgentStart = this.lastAgentStartTime;
+    const providerName = this._resolveProvider();
+    const contextMode = resolveAgentResumeSessionId(this, providerName) ? 'continuation' : 'full';
     const queuedGuidance = collectQueuedGuidance({
       messageBus: this.messageBus,
       clusterId: this.cluster.id,
@@ -443,6 +446,7 @@ class AgentWrapper {
       triggeringMessage,
       selectedPrompt: this._selectPrompt(),
       queuedGuidance: queuedGuidance.guidanceBlock,
+      mode: contextMode,
       // Pass isolation state for conditional git restriction
       worktree: this.worktree,
       isolation: this.isolation,

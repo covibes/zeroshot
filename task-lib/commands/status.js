@@ -41,6 +41,9 @@ export function showStatus(taskId) {
   console.log(`${chalk.dim('PID:')}        ${task.pid || 'N/A'}`);
   console.log(`${chalk.dim('Exit Code:')}  ${task.exitCode ?? 'N/A'}`);
   console.log(`${chalk.dim('Session:')}    ${task.sessionId || 'N/A'}`);
+  if (task.requestedResumeSessionId) {
+    console.log(`${chalk.dim('Requested:')}  ${task.requestedResumeSessionId}`);
+  }
   console.log(`${chalk.dim('Log File:')}   ${task.logFile}`);
 
   console.log(`\n${chalk.dim('Prompt:')}`);

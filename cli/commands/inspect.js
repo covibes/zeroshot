@@ -140,6 +140,7 @@ function buildTaskSummary(task, details) {
     error: task.error || null,
     cwd: task.cwd || null,
     sessionId: task.sessionId || null,
+    requestedResumeSessionId: task.requestedResumeSessionId || null,
     attachable: Boolean(task.attachable),
     socketPath: details.socketPath.path,
     socketPathExists: details.socketPath.exists,
