@@ -36,6 +36,10 @@ describe('release topology', function () {
       'manual dry runs must bind to the exact dispatched commit'
     );
     assert(
+      /semantic-release --dry-run --branches "\$GITHUB_REF_NAME"/.test(releaseWorkflow),
+      'manual dry runs must analyze the dispatched candidate as a release branch'
+    );
+    assert(
       /Recheck main immediately before publication/.test(releaseWorkflow),
       'release must fail closed if main moves after validation'
     );

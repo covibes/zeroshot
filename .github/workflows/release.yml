@@ -193,7 +193,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            npx semantic-release --dry-run
+            npx semantic-release --dry-run --branches "$GITHUB_REF_NAME"
           else
             npx semantic-release
           fi
