@@ -1900,6 +1900,10 @@ function defineLifecycleResumeTests() {
       agent.currentTask = { kill() {} };
       agent.currentTaskId = 'task-live';
       agent.processPid = 4242;
+      agent.providerSession = {
+        provider: 'claude',
+        sessionId: 'agent-owned-session',
+      };
 
       await lifecycleOrchestrator._saveClusters();
 
@@ -1916,6 +1920,10 @@ function defineLifecycleResumeTests() {
 
         assert.strictEqual(restoredAgent.currentTask, null);
         assert.strictEqual(restoredAgent.currentTaskId, 'task-live');
+        assert.deepStrictEqual(restoredAgent.providerSession, {
+          provider: 'claude',
+          sessionId: 'agent-owned-session',
+        });
         assert.strictEqual(restoredState.currentTask, false);
       } finally {
         reloaded.close();

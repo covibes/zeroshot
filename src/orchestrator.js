@@ -52,6 +52,7 @@ const { isProcessRunning } = require('../lib/process-liveness');
 const { getProvider } = require('./providers');
 const StateSnapshotter = require('./state-snapshotter');
 const { resolveClusterRequiredQualityGates } = require('./quality-gates');
+const { normalizeProviderSession } = require('./agent/provider-session');
 const {
   commandProofsToQualityGates,
   mergeCommandProofs,
@@ -670,6 +671,7 @@ class Orchestrator {
     agent.currentTask = null;
     agent.currentTaskId = savedState.currentTaskId || null;
     agent.processPid = savedState.processPid || null;
+    agent.providerSession = normalizeProviderSession(savedState.providerSession);
   }
 
   _rebuildClusterAgents(clusterContext, messageBus, isolation, isolationManager) {
@@ -888,6 +890,7 @@ class Orchestrator {
                 currentTask: a.currentTask ? true : false,
                 currentTaskId: a.currentTaskId,
                 processPid: a.processPid,
+                providerSession: normalizeProviderSession(a.providerSession),
               }))
             : null,
           setupLogPath: cluster.setupLogPath || null,

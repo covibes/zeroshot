@@ -1,3 +1,4 @@
+import { getString, isRecord, tryParseJson } from '../json';
 import { appendJsonSchemaPrompt, writeStrictOutputSchemaFile } from '../schema';
 import {
   type BuildProviderCommandOptions,
@@ -18,7 +19,6 @@ import {
   createParserState,
   optionFeatures,
   resolveModelSpecWithConfig,
-  unsupportedSessionControlWarnings,
   validateModelIdFromCatalog,
   warning,
 } from './common';
@@ -55,8 +55,16 @@ function detectCliFeatures(helpText?: string | null): CodexCliFeatures {
     supportsConfigOverride: supports(help, /--config\b/),
     supportsModel: supports(help, /\s-m\b/) || supports(help, /--model\b/),
     supportsSkipGitRepoCheck: supports(help, /--skip-git-repo-check\b/),
+    supportsResume: supports(help, /\bresume\b/),
     unknown,
   };
+}
+
+function extractSessionId(line: string): string | null {
+  const event = tryParseJson(line.trim());
+  if (!isRecord(event) || getString(event, 'type') !== 'thread.started') return null;
+  const sessionId = getString(event, 'thread_id');
+  return sessionId?.trim() || null;
 }
 
 function addOutputArgs(args: string[], options: BuildProviderCommandOptions): void {
@@ -118,7 +126,25 @@ function applySchemaArgs(
 
 function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[] {
   const features = optionFeatures(options);
-  const warnings: WarningMetadata[] = unsupportedSessionControlWarnings('codex', options);
+  const warnings: WarningMetadata[] = [];
+  if (options.continueSession) {
+    warnings.push(
+      warning(
+        'codex',
+        'unsupported-session-control',
+        'Codex requires an explicit session ID; ignoring continueSession.'
+      )
+    );
+  }
+  if (options.resumeSessionId && features.supportsResume === false) {
+    warnings.push(
+      warning(
+        'codex',
+        'codex-session-resume-unsupported',
+        'Codex CLI does not support exec resume; starting a fresh session.'
+      )
+    );
+  }
   if (options.autoApprove && features.supportsAutoApprove === false) {
     warnings.push(
       warning(
@@ -152,14 +178,26 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
 function buildCommand(context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
   const args: string[] = ['exec'];
   const cleanup: string[] = [];
+  const resumeSessionId =
+    options.resumeSessionId && optionFeatures(options).supportsResume !== false
+      ? options.resumeSessionId
+      : null;
+  if (resumeSessionId) {
+    args.push('resume');
+  }
 
   addOutputArgs(args, options);
   addModelArgs(args, options);
-  addCwdArgs(args, options);
+  if (!resumeSessionId) {
+    addCwdArgs(args, options);
+  }
   addAutoApproveArgs(args, options);
   addSkipGitArgs(args, options);
   const finalContext = applySchemaArgs(args, cleanup, context, options);
 
+  if (resumeSessionId) {
+    args.push(resumeSessionId);
+  }
   args.push(finalContext);
 
   return commandSpec({
@@ -213,6 +251,7 @@ export const codexAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  extractSessionId,
   parseEvent: parseCodexEvent,
   createParserState: () => createParserState('codex'),
   resolveModelSpec,

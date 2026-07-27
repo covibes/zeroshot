@@ -49,6 +49,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Gateway tools/policy         | `src/agent-cli-provider/gateway-tools.ts`                               |
 | Provider detection           | `lib/provider-detection.js`                                             |
 | Provider capabilities        | `src/providers/capabilities.js`                                         |
+| Provider session reuse       | `src/agent/provider-session.js`                                         |
 | Start-cluster helper         | `lib/start-cluster.js`                                                  |
 | Legacy worker facade         | `lib/cluster-worker/`                                                   |
 | Legacy worker executable     | `bin/zeroshot-cluster-worker.js`                                        |
@@ -331,6 +332,12 @@ Restart persistence: orchestrator publishes `AGENT_RESTART_ATTEMPT` to the ledge
 Provider task ownership: task watchers persist an owned termination boundary with each active task.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work.
+
+Provider session reuse is explicit-ID and agent-owned. Watchers may capture provider session IDs,
+but only the same logical `AgentWrapper` may resume them. Persist this state in that agent's
+`agentStates` entry, never select a cwd-wide "latest" session, never share across agents, and start
+fresh when provider capability, identity, task completion, or durable isolation semantics do not
+prove reuse is safe.
 
 ### Guidance Messaging
 
