@@ -224,6 +224,7 @@ function buildPrOptions(options, requiredQualityGates) {
     prBase: options.prBase || null,
     mergeQueue: options.mergeQueue || false,
     closeIssue: options.closeIssue || null,
+    gitRemote: options.gitRemote || null,
     autoMerge,
     ...(requiredQualityGates.length > 0 ? { requiredQualityGates } : {}),
     cwd: options.cwd || process.cwd(),
@@ -1266,6 +1267,8 @@ class Orchestrator {
         const { detectGitContext } = require('../lib/git-remote-utils');
         const gitContext = detectGitContext(options.cwd);
         cluster.gitPlatform = gitContext?.provider || null;
+        options.gitRemote = gitContext?.remote || options.gitRemote || null;
+        cluster.prOptions = buildPrOptions(options, requiredQualityGates);
 
         if (cluster.gitPlatform) {
           this._log(`[Orchestrator] Git platform detected: ${cluster.gitPlatform.toUpperCase()}`);
@@ -1796,11 +1799,21 @@ class Orchestrator {
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});
+      const { detectGitContext } = require('../lib/git-remote-utils');
+      const gitContext = detectGitContext(workDir);
+      if (gitContext?.remote) {
+        options.gitRemote = gitContext.remote;
+      }
+
       // `prBase` is the PR target branch. Base isolated work on its refreshed
       // remote-tracking ref so a stale local branch cannot change the plan.
       const worktreeOptions = {};
       if (options.prBase) {
-        worktreeOptions.baseRef = `origin/${options.prBase}`;
+        const remoteName = options.gitRemote || 'origin';
+        worktreeOptions.baseRef = `${remoteName}/${options.prBase}`;
+        if (remoteName !== 'origin') {
+          worktreeOptions.remoteName = remoteName;
+        }
         worktreeOptions.requireFreshBase = true;
         this._log(`[Orchestrator] Using worktree base ref: ${worktreeOptions.baseRef}`);
       }
@@ -1872,6 +1885,7 @@ class Orchestrator {
       closeIssue: options.closeIssue,
       requiredQualityGates: options.requiredQualityGates,
       autoMerge: resolveRunPlan(options).autoMerge,
+      gitRemote: gitContext?.remote || options.gitRemote,
       cwd: options.cwd,
     });
 

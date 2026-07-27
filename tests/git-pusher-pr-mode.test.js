@@ -33,6 +33,14 @@ function writeRepoSettings(cwd, settings) {
   fs.writeFileSync(path.join(settingsDir, 'settings.json'), JSON.stringify(settings, null, 2));
 }
 
+function addUpstreamRemote(cwd) {
+  execSync('git init', { cwd, stdio: 'ignore' });
+  execSync('git remote add upstream https://github.com/acme/widgets.git', {
+    cwd,
+    stdio: 'ignore',
+  });
+}
+
 describe('git-pusher --pr vs --ship (autoMerge)', function () {
   it('review mode (autoMerge=false): prompt has no merge step, output template is merged:false', function () {
     withTmpCwd((cwd) => {
@@ -84,6 +92,51 @@ describe('git-pusher --pr vs --ship (autoMerge)', function () {
     });
   });
 
+  it('pushes to the selected non-origin remote', function () {
+    withTmpCwd((cwd) => {
+      const agentConfig = generateGitPusherAgent('github', {
+        autoMerge: false,
+        gitRemote: 'upstream',
+        cwd,
+      });
+
+      assert.match(agentConfig.prompt, /git push -u upstream HEAD/);
+      assert.doesNotMatch(agentConfig.prompt, /git push -u origin HEAD/);
+    });
+  });
+
+  it('threads an auto-detected non-origin remote into the PR agent', function () {
+    withTmpCwd((cwd) => {
+      addUpstreamRemote(cwd);
+      const orchestrator = new Orchestrator({
+        storageDir: path.join(cwd, 'storage'),
+      });
+      const config = { agents: [{ id: 'completion-detector' }] };
+
+      try {
+        orchestrator._applyAutoPrConfig(
+          config,
+          {
+            number: 448,
+            title: 'Support non-origin remotes',
+            url: 'https://github.com/acme/widgets/issues/448',
+          },
+          {
+            autoPr: true,
+            cwd,
+            requiredQualityGates: [],
+          }
+        );
+
+        const gitPusher = config.agents.find((agent) => agent.id === 'git-pusher');
+        assert.ok(gitPusher);
+        assert.match(gitPusher.prompt, /git push -u upstream HEAD/);
+      } finally {
+        orchestrator.close();
+      }
+    });
+  });
+
   it('--pr review mode overrides repo github.autoMerge=true', function () {
     withTmpCwd((cwd) => {
       writeRepoSettings(cwd, { github: { autoMerge: true } });
@@ -120,6 +173,12 @@ describe('git-pusher --pr vs --ship (autoMerge)', function () {
     // Persisted even when no other PR fields were passed (--pr with all defaults),
     // otherwise the distinction is lost on `zeroshot resume`.
     assert.notStrictEqual(prOptionsForPr, null);
+  });
+
+  it('buildPrOptions persists the selected remote for resume', function () {
+    const prOptions = Orchestrator.buildPrOptions({ pr: true, gitRemote: 'upstream' }, []);
+
+    assert.strictEqual(prOptions.gitRemote, 'upstream');
   });
 
   it('resolveRunPlan is the single source for the autoMerge decision', function () {

@@ -295,6 +295,25 @@ function getSafeBranchName(value) {
   return trimmed;
 }
 
+function getSafeGitRemote(value) {
+  if (value === undefined || value === null) {
+    return 'origin';
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (
+    trimmed.length === 0 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(trimmed) ||
+    trimmed.includes('..')
+  ) {
+    return null;
+  }
+  return trimmed;
+}
+
 function parseBool(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value !== 'string') return null;
@@ -321,12 +340,17 @@ function normalizeCloseIssueMode(value) {
  * @param {string} [options.prBase] - Target branch for PRs
  * @param {boolean} [options.mergeQueue] - Use GitHub merge queue
  * @param {string} [options.closeIssue] - When to close issue: auto|always|never
+ * @param {string} [options.gitRemote=origin] - Remote to push the implementation branch to
  * @returns {Object} Resolved configuration
  */
 function resolveGitHubConfig(options = {}) {
   const repoSettingsResult = readRepoSettings(options.cwd || process.cwd());
   const repoSettings = repoSettingsResult.settings || {};
   const repoGithub = repoSettings.github || {};
+  const gitRemote = getSafeGitRemote(options.gitRemote);
+  if (!gitRemote) {
+    throw new Error(`Invalid git remote name '${options.gitRemote}'`);
+  }
 
   // CLI options override repo settings
   const prBase = getSafeBranchName(options.prBase) || getSafeBranchName(repoGithub.prBase);
@@ -347,7 +371,7 @@ function resolveGitHubConfig(options = {}) {
     options.autoMerge === true ||
     (options.autoMerge !== false && parseBool(repoGithub.autoMerge) === true);
 
-  return { prBase, useMergeQueue, closeIssueMode, autoMerge };
+  return { prBase, useMergeQueue, closeIssueMode, autoMerge, gitRemote };
 }
 
 /**
@@ -358,7 +382,7 @@ function resolveGitHubConfig(options = {}) {
  * @returns {Object|null} Platform configuration or null if unsupported
  */
 function getPlatformConfig(platform, config = {}) {
-  const { prBase, useMergeQueue, closeIssueMode, autoMerge } = config;
+  const { prBase, useMergeQueue, closeIssueMode, autoMerge, gitRemote } = config;
 
   const PLATFORM_CONFIGS = {
     github: {
@@ -380,6 +404,7 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
       usesMergeQueue: useMergeQueue,
       closeIssueMode: closeIssueMode || 'never',
       autoMerge: Boolean(autoMerge),
+      gitRemote,
     },
     gitlab: {
       prName: 'MR',
@@ -392,6 +417,7 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
       outputFields: { urlField: 'mr_url', numberField: 'mr_number', mergedField: 'merged' },
       closeIssueMode: closeIssueMode || 'never',
       autoMerge: Boolean(autoMerge),
+      gitRemote,
     },
     'azure-devops': {
       prName: 'PR',
@@ -411,6 +437,7 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
       requiresPrIdExtraction: true,
       closeIssueMode: closeIssueMode || 'never',
       autoMerge: Boolean(autoMerge),
+      gitRemote,
     },
   };
 
@@ -430,8 +457,15 @@ const SUPPORTED_PLATFORMS = ['github', 'gitlab', 'azure-devops'];
  * @returns {string} The complete review-mode prompt
  */
 function generateReviewModePrompt(config) {
-  const { prName, prNameLower, createCmd, prUrlExample, outputFields, requiresPrIdExtraction } =
-    config;
+  const {
+    prName,
+    prNameLower,
+    createCmd,
+    prUrlExample,
+    outputFields,
+    requiresPrIdExtraction,
+    gitRemote,
+  } = config;
 
   return `CRITICAL: ALL VALIDATORS APPROVED. YOU ARE A TRANSPORT-ONLY GIT PUSHER.
 
@@ -471,9 +505,9 @@ git commit -m "feat: implement #{{issue_number}} - {{issue_title}}"
 \`\`\`
 Run this command. Do not skip it.
 
-### STEP 4: Push to origin (MANDATORY)
+### STEP 4: Push to ${gitRemote} (MANDATORY)
 \`\`\`bash
-git push -u origin HEAD
+git push -u ${gitRemote} HEAD
 \`\`\`
 Run this. If it fails, do not edit files, rebase, or resolve conflicts. Output blocked JSON with the failure summary.
 
@@ -543,6 +577,7 @@ function generatePrompt(config) {
     usesMergeQueue,
     closeIssueMode,
     autoMerge,
+    gitRemote,
   } = config;
 
   if (!autoMerge) {
@@ -631,9 +666,9 @@ git commit -m "feat: implement #{{issue_number}} - {{issue_title}}"
 \`\`\`
 Run this command. Do not skip it.
 
-### STEP 4: Push to origin (MANDATORY)
+### STEP 4: Push to ${gitRemote} (MANDATORY)
 \`\`\`bash
-git push -u origin HEAD
+git push -u ${gitRemote} HEAD
 \`\`\`
 Run this. If it fails, do not edit files, rebase, or resolve conflicts. Output blocked JSON with the failure summary.
 
@@ -728,6 +763,7 @@ If blocked before creating a ${prName}, output:
  * @param {string} [options.prBase] - Target branch for PRs
  * @param {boolean} [options.mergeQueue] - Use GitHub merge queue
  * @param {string} [options.closeIssue] - When to close issue: auto|always|never
+ * @param {string} [options.gitRemote=origin] - Remote to push the implementation branch to
  * @param {Array} [options.requiredQualityGates] - Required handoff quality gates
  * @param {boolean} [options.autoMerge] - Merge the PR (--ship). False stops after PR creation (--pr).
  * @returns {Object} Agent configuration object
