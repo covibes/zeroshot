@@ -180,4 +180,46 @@ describe('release publication assertion', () => {
     );
     assert.strictEqual(checks, 2);
   });
+
+  it('shares one deadline across sequential publication checks', async () => {
+    let now = 0;
+    let checks = 0;
+    const retryOptions = {
+      attempts: 24,
+      delayMs: 5,
+      deadline: 10,
+      now: () => now,
+      sleep: (delay) => {
+        now += delay;
+        return Promise.resolve();
+      },
+    };
+
+    await assert.rejects(
+      waitForPublishedArtifact(
+        'npm provenance',
+        () => {
+          checks += 1;
+          throw new Error('not ready');
+        },
+        retryOptions
+      ),
+      /after 3 attempts/
+    );
+    assert.strictEqual(now, 10);
+
+    await assert.rejects(
+      waitForPublishedArtifact(
+        'GitHub Release',
+        () => {
+          checks += 1;
+          throw new Error('not ready');
+        },
+        retryOptions
+      ),
+      /after 1 attempts/
+    );
+    assert.strictEqual(checks, 4);
+    assert.strictEqual(now, 10);
+  });
 });
