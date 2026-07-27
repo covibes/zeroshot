@@ -3,6 +3,13 @@ const ClaudeTaskRunner = require('../src/claude-task-runner');
 const { validateProviderSettings } = require('../src/config-validator');
 const { getProvider } = require('../src/providers');
 
+const CONTROL_MODEL_IDS = [
+  'kimi/model\0suffix',
+  'kimi/model\u0001suffix',
+  'kimi/model\u001fsuffix',
+  'kimi/model\u007fsuffix',
+];
+
 describe('Opencode external model configuration', function () {
   it('accepts well-formed external models only through level overrides', function () {
     const opencode = getProvider('opencode');
@@ -142,6 +149,28 @@ describe('Opencode malformed external model validation', function () {
         permanent: true,
       });
       assert.throws(() => codex.resolveModelSpec('level2', { level2: { model } }), {
+        permanent: true,
+      });
+    }
+  });
+
+  it('rejects C0 and DEL bytes through configured settings as permanent model errors', function () {
+    const opencode = getProvider('opencode');
+
+    for (const model of CONTROL_MODEL_IDS) {
+      assert.throws(
+        () =>
+          validateProviderSettings('opencode', {
+            defaultLevel: 'level2',
+            levelOverrides: { level2: { model } },
+          }),
+        (error) =>
+          error.name === 'InvalidProviderModelError' &&
+          error.permanent === true &&
+          error.message.includes('Invalid configured model')
+      );
+      assert.throws(() => opencode.validateModelId(model), {
+        name: 'InvalidProviderModelError',
         permanent: true,
       });
     }

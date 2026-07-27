@@ -16,6 +16,12 @@ const {
 const runtimeProviders = require('../../src/providers');
 
 const createdTempFiles = new Set();
+const CONTROL_MODEL_IDS = [
+  'kimi/model\0suffix',
+  'kimi/model\u0001suffix',
+  'kimi/model\u001fsuffix',
+  'kimi/model\u007fsuffix',
+];
 
 afterEach(() => {
   for (const file of createdTempFiles) {
@@ -294,6 +300,41 @@ test('runtime Opencode rejects a malformed configured model before command const
       );
     }
   );
+});
+
+test('runtime Opencode rejects control bytes in configured and direct models before command construction', () => {
+  const opencode = runtimeProviders.getProvider('opencode');
+
+  for (const model of CONTROL_MODEL_IDS) {
+    withTempSettings(
+      {
+        providerSettings: {
+          opencode: {
+            defaultLevel: 'level2',
+            levelOverrides: { level2: { model } },
+          },
+        },
+      },
+      () => {
+        assert.throws(
+          () =>
+            opencode.buildCommand('configured control byte', {
+              cliFeatures: { supportsJson: true, supportsModel: true },
+            }),
+          { name: 'InvalidProviderModelError', permanent: true }
+        );
+      }
+    );
+
+    assert.throws(
+      () =>
+        opencode.buildCommand('direct control byte', {
+          modelSpec: { level: 'level2', model },
+          cliFeatures: { supportsJson: true, supportsModel: true },
+        }),
+      { name: 'InvalidProviderModelError', permanent: true }
+    );
+  }
 });
 
 test('runtime Pi command facade delegates to helper', () => {

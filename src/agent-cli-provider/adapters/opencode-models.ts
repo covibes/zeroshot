@@ -53,6 +53,13 @@ export const LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
   level3: { rank: 3, model: null, reasoningEffort: 'high' },
 };
 
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
+}
+
 export function resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec {
   const base = LEVEL_MAPPING[level] ?? LEVEL_MAPPING.level2;
   const override = overrides?.[level];
@@ -73,11 +80,18 @@ export function validateConfiguredModelId(
   if (modelId && Object.prototype.hasOwnProperty.call(MODEL_CATALOG, modelId)) return modelId;
   if (typeof modelId !== 'string') return validateModelId(modelId);
   const segments = modelId.split('/');
-  if (segments.length >= 2 && segments.every(Boolean) && !/\s/u.test(modelId)) return modelId;
+  if (
+    segments.length >= 2 &&
+    segments.every(Boolean) &&
+    !/\s/u.test(modelId) &&
+    !containsControlCharacter(modelId)
+  ) {
+    return modelId;
+  }
   throw new InvalidProviderModelError(
     `Invalid configured model "${unknownToMessage(
       modelId
-    )}" for provider "opencode". Expected "provider/model" with no whitespace or empty path segments.`
+    )}" for provider "opencode". Expected "provider/model" with no whitespace, control characters, or empty path segments.`
   );
 }
 
