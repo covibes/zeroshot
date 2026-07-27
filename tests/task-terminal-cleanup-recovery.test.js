@@ -57,4 +57,14 @@ describe('Terminal task cleanup recovery', function () {
     assert.match(stdout, /cleanup remains pending/i);
     assert.match(stdout, /Refusing unowned temporary directory cleanup/);
   });
+
+  it('retains an unsafe output-schema file receipt without touching the terminal task pid', function () {
+    const { result, stdout } = runFixture('unsafe-file');
+    assert.strictEqual(result.terminal.status, 'completed');
+    assert.notStrictEqual(result.terminal.commandCleanup, null);
+    assert.strictEqual(result.unrelatedAlive, true);
+    assert.strictEqual(result.userFileExists, true);
+    assert.match(stdout, /cleanup remains pending/i);
+    assert.match(stdout, /Refusing (?:unowned|non-canonical) output-schema cleanup/);
+  });
 });

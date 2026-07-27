@@ -64,4 +64,22 @@ describe('watcher command cleanup ownership', function () {
     assert.strictEqual(result.ownedOverlayExists, true);
     assert.notStrictEqual(result.commandCleanup, null);
   });
+
+  it('attachable-watcher loads and runs persisted cleanup after an early args failure', async function () {
+    const result = await runFixture('attachable-watcher.js', 'invalid-args');
+    assert.strictEqual(result.watcherExit.code, 1, result.watcherOutput);
+    assert.strictEqual(result.cleanupExists, false);
+    assert.strictEqual(result.status, 'failed');
+    assert.strictEqual(result.commandCleanup, null);
+    assert.match(result.logOutput, /\[CRASH\]/);
+  });
+
+  it('attachable-watcher retains an unsafe persisted receipt after an early args failure', async function () {
+    const result = await runFixture('attachable-watcher.js', 'invalid-args-unowned');
+    assert.strictEqual(result.watcherExit.code, 1, result.watcherOutput);
+    assert.strictEqual(result.cleanupExists, true);
+    assert.strictEqual(result.status, 'failed');
+    assert.notStrictEqual(result.commandCleanup, null);
+    assert.match(result.logOutput, /Refusing unowned temporary directory cleanup/);
+  });
 });

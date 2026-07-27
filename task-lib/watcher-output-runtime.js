@@ -7,6 +7,8 @@ import {
 } from './provider-helper-runtime.js';
 import { terminateProcess } from './process-termination.js';
 
+export const COMMAND_CLEANUP_UNINITIALIZED = Symbol('command-cleanup-uninitialized');
+
 export function spawnWatcherProvider(command, finalArgs, options) {
   return spawn(command, finalArgs, {
     ...options,
@@ -71,7 +73,18 @@ export async function completeWatcherTask({
     return false;
   }
 
-  const cleanupSucceeded = commandCleanup ? await commandCleanup.run() : true;
+  let cleanupSucceeded = false;
+  if (commandCleanup === COMMAND_CLEANUP_UNINITIALIZED) {
+    emergencyLog(
+      `[${Date.now()}][CLEANUP] Command cleanup ownership was not initialized; preserving the persisted receipt.\n`
+    );
+  } else if (commandCleanup?.run) {
+    try {
+      cleanupSucceeded = await commandCleanup.run();
+    } catch (error) {
+      emergencyLog(`[${Date.now()}][CLEANUP] Command cleanup failed: ${error.message}\n`);
+    }
+  }
   try {
     await updateTask(taskId, {
       status: completion.status,

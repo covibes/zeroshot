@@ -33,6 +33,11 @@ const {
   wrapTaskRunWithIsolatedSettings,
 } = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
+const {
+  cleanupCallerOwnedCommand,
+  requireTaskIdFromWrapperResult,
+  trackTaskWrapperCleanupOwnership,
+} = require('../task-spawn-cleanup-ownership');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -512,7 +517,7 @@ async function spawnClaudeTask(agent, context) {
       spawnEnv,
     });
   } catch (error) {
-    cleanupClaudeSettingsOverlay(claudeSettingsPath);
+    cleanupCallerOwnedCommand(error, () => cleanupClaudeSettingsOverlay(claudeSettingsPath));
     throw error;
   }
 
@@ -732,13 +737,15 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
     let stdout = '';
     let stderr = '';
     let resolved = false;
+    const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(proc);
+    const rejectWithOwnership = (error) => reject(classifyCleanupOwnership(error));
 
     // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs
     const spawnTimeout = setTimeout(() => {
       if (resolved) return;
       resolved = true;
       proc.kill('SIGKILL');
-      reject(
+      rejectWithOwnership(
         new Error(
           `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
             `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
@@ -760,42 +767,46 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
       resolved = true;
       // Handle process killed by signal (e.g., SIGTERM, SIGKILL, SIGSTOP)
       if (signal) {
-        reject(new Error(`Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`));
+        rejectWithOwnership(
+          new Error(`Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`)
+        );
         return;
       }
 
-      if (code === 0) {
-        // Parse task ID from output: "✓ Task spawned: xxx-yyy-nn"
-        // Format: <adjective>-<noun>-<digits> (may or may not have task- prefix)
-        const spawnedTaskId = parseTaskIdFromOutput(stdout);
-        if (spawnedTaskId) {
-          agent.currentTaskId = spawnedTaskId; // Track for resume capability
-          agent._publishLifecycle('TASK_ID_ASSIGNED', {
-            pid: agent.processPid,
-            taskId: spawnedTaskId,
-          });
-
-          // Start liveness monitoring
-          if (agent.enableLivenessCheck) {
-            agent.taskStartedAt = Date.now();
-            agent.lastOutputTime = agent.taskStartedAt;
-            agent._startLivenessCheck();
-          }
-
-          resolve(spawnedTaskId);
-        } else {
-          reject(new Error(`Could not parse task ID from output: ${stdout}`));
-        }
-      } else {
-        reject(new Error(`zeroshot task run failed with code ${code}: ${stderr}`));
+      let spawnedTaskId;
+      try {
+        spawnedTaskId = requireTaskIdFromWrapperResult({
+          code,
+          stdout,
+          stderr,
+          parseTaskId: parseTaskIdFromOutput,
+        });
+      } catch (error) {
+        rejectWithOwnership(error);
+        return;
       }
+
+      agent.currentTaskId = spawnedTaskId; // Track for resume capability
+      agent._publishLifecycle('TASK_ID_ASSIGNED', {
+        pid: agent.processPid,
+        taskId: spawnedTaskId,
+      });
+
+      // Start liveness monitoring
+      if (agent.enableLivenessCheck) {
+        agent.taskStartedAt = Date.now();
+        agent.lastOutputTime = agent.taskStartedAt;
+        agent._startLivenessCheck();
+      }
+
+      resolve(spawnedTaskId);
     });
 
     proc.on('error', (error) => {
       clearTimeout(spawnTimeout);
       if (resolved) return;
       resolved = true;
-      reject(error);
+      rejectWithOwnership(error);
     });
   });
 }

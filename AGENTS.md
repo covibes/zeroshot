@@ -335,6 +335,13 @@ Provider task ownership: task watchers persist an owned termination boundary wit
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
 ownership is persisted with the task and may run only after that boundary is confirmed terminal.
+Once the outer task wrapper process starts, ambiguous rejection, timeout, nonzero exit, or task-ID
+parse failure transfers cleanup ownership to the task lifecycle; only a proven pre-spawn failure may
+eager-clean caller-owned resources. Watcher completion clears a cleanup receipt only after an
+initialized cleanup owner actually succeeds. Cleanup metadata is a closed one-to-one receipt:
+Claude settings overlays must be owned temporary directories, and Codex output-schema files must be
+exact regular, non-symlink UUID JSON files directly inside canonical `zeroshot-schema-*` temp
+directories. Unsafe or uninitialized cleanup remains persisted and warning-visible.
 Killed/stale recovery consumes the persisted cleanup, and recursive cleanup is restricted to
 Zeroshot-owned provider overlays. A terminal task that retains cleanup ownership after a failed
 watcher cleanup retries that persisted cleanup through `kill` without signaling the already-terminal

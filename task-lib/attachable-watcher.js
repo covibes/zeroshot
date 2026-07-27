@@ -6,7 +6,7 @@
  */
 
 import { appendFileSync } from 'fs';
-import { updateTask } from './store.js';
+import { getTask, updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
 import * as watcherOutputRuntime from './watcher-output-runtime.js';
 import { createRequire } from 'module';
@@ -17,7 +17,7 @@ import { createRequire } from 'module';
 // ═══════════════════════════════════════════════════════════════════════════
 
 const [, , taskIdArg, cwdArg, logFileArg, argsJsonArg, configJsonArg] = process.argv;
-let commandCleanup = null;
+let commandCleanup = watcherOutputRuntime.COMMAND_CLEANUP_UNINITIALIZED;
 let crashStarted = false;
 let server = null;
 
@@ -64,6 +64,16 @@ process.on('unhandledRejection', (reason) => {
   void failWatcher(reason, 'unhandledRejection');
 });
 
+const persistedTask = taskIdArg ? getTask(taskIdArg) : null;
+if (persistedTask) {
+  commandCleanup = createCommandSpecCleanup(
+    persistedTask.commandCleanup || { cleanup: [], cleanupMetadata: [] },
+    (cleanupPath, error) => {
+      emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${cleanupPath}: ${error.message}\n`);
+    }
+  );
+}
+
 const require = createRequire(import.meta.url);
 const { AttachServer } = require('../src/attach');
 const { getTaskSocketPath } = require('../src/attach/socket-paths');
@@ -80,10 +90,6 @@ const commandSpec = config.commandSpec || {
   env: config.env || {},
   cleanup: [],
 };
-commandCleanup = createCommandSpecCleanup(commandSpec, (cleanupPath, error) => {
-  emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${cleanupPath}: ${error.message}\n`);
-});
-
 const socketPath = getTaskSocketPath(taskId);
 
 function log(msg) {

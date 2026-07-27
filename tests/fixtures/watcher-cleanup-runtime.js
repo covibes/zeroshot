@@ -39,7 +39,7 @@ async function main() {
     },
   ];
 
-  if (mode === 'unowned') {
+  if (mode === 'unowned' || mode === 'invalid-args-unowned') {
     cleanupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-unowned-cleanup-'));
     cleanupMetadata = [
       {
@@ -87,11 +87,12 @@ async function main() {
     outputFormat: 'stream-json',
     commandSpec,
   };
+  const argsJson = mode.startsWith('invalid-args') ? '{invalid-json' : '[]';
   const captured = spawnCapturedWatcher(watcherPath, [
     taskId,
     repoRoot,
     logFile,
-    '[]',
+    argsJson,
     JSON.stringify(config),
   ]);
   const watcher = captured.child;

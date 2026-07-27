@@ -39,6 +39,20 @@ function cleanupReceipt(cleanupPath) {
   };
 }
 
+function fileCleanupReceipt(cleanupPath) {
+  return {
+    cleanup: [cleanupPath],
+    cleanupMetadata: [
+      {
+        kind: 'temp-file',
+        provider: 'codex',
+        path: cleanupPath,
+        reason: 'output-schema',
+      },
+    ],
+  };
+}
+
 async function runRetryScenario(store, killTaskCommand, completeWatcherTask) {
   const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
   fs.mkdirSync(overlayRoot, { recursive: true });
@@ -110,6 +124,43 @@ async function runUnsafeScenario(store, killTaskCommand) {
   }
 }
 
+async function runUnsafeFileScenario(store, killTaskCommand) {
+  const userFile = path.join(process.env.ZEROSHOT_HOME, 'user-schema.json');
+  fs.writeFileSync(userFile, '{}\n');
+  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+  });
+  const taskId = 'terminal-cleanup-unsafe-file';
+  store.addTask(
+    taskRecord(taskId, 'completed', fileCleanupReceipt(userFile), {
+      pid: unrelated.pid,
+      processGroupId: unrelated.pid,
+      terminationStrategy: 'process',
+    })
+  );
+
+  try {
+    await killTaskCommand(taskId, { graceMs: 40, pollMs: 5 });
+    let unrelatedAlive = true;
+    try {
+      process.kill(unrelated.pid, 0);
+    } catch {
+      unrelatedAlive = false;
+    }
+    return {
+      terminal: store.getTask(taskId),
+      unrelatedAlive,
+      userFileExists: fs.existsSync(userFile),
+    };
+  } finally {
+    try {
+      process.kill(unrelated.pid, 'SIGKILL');
+    } catch {
+      // The regression expects this process to remain alive until fixture teardown.
+    }
+  }
+}
+
 async function main() {
   const store = await import(moduleUrl('task-lib/store.js'));
   const { killTaskCommand } = await import(moduleUrl('task-lib/commands/kill.js'));
@@ -119,6 +170,8 @@ async function main() {
     result = await runRetryScenario(store, killTaskCommand, completeWatcherTask);
   } else if (mode === 'unsafe') {
     result = await runUnsafeScenario(store, killTaskCommand);
+  } else if (mode === 'unsafe-file') {
+    result = await runUnsafeFileScenario(store, killTaskCommand);
   } else {
     throw new Error(`Unknown terminal cleanup fixture mode: ${mode}`);
   }

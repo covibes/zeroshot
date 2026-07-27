@@ -13,6 +13,11 @@ const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const {
+  cleanupCallerOwnedCommand,
+  requireTaskIdFromWrapperResult,
+  trackTaskWrapperCleanupOwnership,
+} = require('./task-spawn-cleanup-ownership');
+const {
   CLAUDE_MCP_CONFIG_ENV,
   CLAUDE_SETTINGS_ENV,
   cleanupClaudeSettingsOverlay,
@@ -213,7 +218,9 @@ class ClaudeTaskRunner extends TaskRunner {
     try {
       taskId = await this._spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, agentId);
     } catch (error) {
-      cleanupClaudeSettingsOverlay(spawnEnv[CLAUDE_SETTINGS_ENV]);
+      cleanupCallerOwnedCommand(error, () =>
+        cleanupClaudeSettingsOverlay(spawnEnv[CLAUDE_SETTINGS_ENV])
+      );
       throw error;
     }
 
@@ -380,6 +387,8 @@ class ClaudeTaskRunner extends TaskRunner {
 
       let stdout = '';
       let stderr = '';
+      const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(proc);
+      const rejectWithOwnership = (error) => reject(classifyCleanupOwnership(error));
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -390,20 +399,23 @@ class ClaudeTaskRunner extends TaskRunner {
       });
 
       proc.on('close', (code) => {
-        if (code === 0) {
-          const match = stdout.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/);
-          if (match) {
-            resolve(match[1]);
-          } else {
-            reject(new Error(`Could not parse task ID from output: ${stdout}`));
-          }
-        } else {
-          reject(new Error(`zeroshot task run failed with code ${code}: ${stderr}`));
+        try {
+          resolve(
+            requireTaskIdFromWrapperResult({
+              code,
+              stdout,
+              stderr,
+              parseTaskId: (output) =>
+                output.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/)?.[1],
+            })
+          );
+        } catch (error) {
+          rejectWithOwnership(error);
         }
       });
 
       proc.on('error', (error) => {
-        reject(error);
+        rejectWithOwnership(error);
       });
     });
   }

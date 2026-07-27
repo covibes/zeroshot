@@ -20,6 +20,7 @@
 const { describe, it, beforeEach, afterEach } = require('mocha');
 const { expect } = require('chai');
 const { spawn } = require('child_process');
+const { randomUUID } = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -30,9 +31,11 @@ describe('Watcher Crash Handling', function () {
   let tempDir;
   let logFile;
   let taskId;
+  let schemaRoots;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'watcher-test-'));
+    schemaRoots = [];
     taskId = `test-crash-${Date.now()}`;
     logFile = path.join(tempDir, `${taskId}.log`);
   });
@@ -41,6 +44,9 @@ describe('Watcher Crash Handling', function () {
     // Cleanup temp files
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
+      for (const schemaRoot of schemaRoots) {
+        fs.rmSync(schemaRoot, { recursive: true, force: true });
+      }
     } catch {
       // Ignore cleanup errors
     }
@@ -223,9 +229,16 @@ if (crashType === 'sync-throw') {
     child.on('exit', (code) => done(null, { code }));
   }
 
-  it('removes helper cleanup files after watcher close', (done) => {
-    const cleanupFile = path.join(tempDir, 'schema.json');
+  function createSchemaCleanupFile() {
+    const schemaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-schema-'));
+    schemaRoots.push(schemaRoot);
+    const cleanupFile = path.join(schemaRoot, `${randomUUID()}.json`);
     fs.writeFileSync(cleanupFile, '{}');
+    return cleanupFile;
+  }
+
+  it('removes helper cleanup files after watcher close', (done) => {
+    const cleanupFile = createSchemaCleanupFile();
 
     runWatcher(
       {
@@ -276,8 +289,7 @@ if (crashType === 'sync-throw') {
   });
 
   it('removes helper cleanup files when command spawn fails', (done) => {
-    const cleanupFile = path.join(tempDir, 'schema-error.json');
-    fs.writeFileSync(cleanupFile, '{}');
+    const cleanupFile = createSchemaCleanupFile();
 
     runWatcher(
       {
