@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const https = require('https');
+const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { releaseTypeForMessages } = require('./release-preflight');
@@ -9,8 +10,8 @@ const { releaseTypeForMessages } = require('./release-preflight');
 const DEFAULT_ATTEMPTS = 24;
 const DEFAULT_DELAY_MS = 5000;
 
-function run(command, args) {
-  return execFileSync(command, args, { encoding: 'utf8' }).trim();
+function run(command, args, options = {}) {
+  return execFileSync(command, args, { encoding: 'utf8', ...options }).trim();
 }
 
 function packageName() {
@@ -85,21 +86,50 @@ function verifyCuratedNotes(tag, release) {
   }
 }
 
-function verifyInstalledCli(name, version) {
+function verifyInstalledCli(name, version, options = {}) {
   const packageSpec = `${name}@${version}`;
-  const reported = run('npm', [
-    'exec',
-    '--yes',
-    `--package=${packageSpec}`,
-    '--',
-    'zeroshot',
-    '--version',
-  ]);
-  if (!reported.split(/\s+/).includes(version)) {
-    throw new Error(`installed CLI reported ${reported}; expected ${version}`);
+  const execute = options.execute || run;
+  const makeTempRoot =
+    options.makeTempRoot ||
+    (() => fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-release-cli-')));
+  const removeTempRoot =
+    options.removeTempRoot ||
+    ((root) => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+  const platform = options.platform || process.platform;
+  const prefix = makeTempRoot();
+
+  try {
+    execute('npm', [
+      'install',
+      '--global',
+      '--prefix',
+      prefix,
+      '--no-audit',
+      '--no-fund',
+      packageSpec,
+    ]);
+
+    const executable = path.join(
+      prefix,
+      platform === 'win32' ? 'zeroshot.cmd' : 'bin',
+      ...(platform === 'win32' ? [] : ['zeroshot'])
+    );
+    const isolatedEnv = {
+      ...process.env,
+      HOME: prefix,
+      USERPROFILE: prefix,
+    };
+    const reported = execute(executable, ['--version'], { env: isolatedEnv });
+    if (!reported.split(/\s+/).includes(version)) {
+      throw new Error(`installed CLI reported ${reported}; expected ${version}`);
+    }
+    execute(executable, ['--help'], { env: isolatedEnv });
+    execute(executable, ['list'], { env: isolatedEnv });
+  } finally {
+    removeTempRoot(prefix);
   }
-  run('npm', ['exec', '--yes', `--package=${packageSpec}`, '--', 'zeroshot', '--help']);
-  run('npm', ['exec', '--yes', `--package=${packageSpec}`, '--', 'zeroshot', 'list']);
 }
 
 function tagsPointingAtHead() {
@@ -230,6 +260,7 @@ module.exports = {
   npmLatest,
   provenanceStatement,
   tagsPointingAtHead,
+  verifyInstalledCli,
   verifyProvenance,
   waitForNpmLatest,
 };
