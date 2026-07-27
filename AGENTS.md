@@ -39,6 +39,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Gateway tools/policy         | `src/agent-cli-provider/gateway-tools.ts`                               |
 | Provider detection           | `lib/provider-detection.js`                                             |
 | Provider capabilities        | `src/providers/capabilities.js`                                         |
+| Claude settings overlay      | `src/worktree-claude-config.js`                                         |
 | Start-cluster helper         | `lib/start-cluster.js`                                                  |
 | Legacy worker facade         | `lib/cluster-worker/`                                                   |
 | Legacy worker executable     | `bin/zeroshot-cluster-worker.js`                                        |
