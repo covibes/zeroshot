@@ -5,9 +5,10 @@
  * Runs detached from parent, provides Unix socket for attach clients.
  */
 
-import { appendFileSync, unlinkSync } from 'fs';
-import { unlink } from 'fs/promises';
+import { appendFileSync } from 'fs';
 import { updateTask } from './store.js';
+import { createCommandSpecCleanup } from './command-spec-cleanup.js';
+import { terminateProcess } from './process-termination.js';
 import {
   detectProviderFatalError,
   detectProviderStreamingModeError,
@@ -22,8 +23,9 @@ import { createRequire } from 'module';
 // ═══════════════════════════════════════════════════════════════════════════
 
 const [, , taskIdArg, cwdArg, logFileArg, argsJsonArg, configJsonArg] = process.argv;
-let commandSpecCleanup = [];
-let cleanupStarted = false;
+let commandCleanup = null;
+let crashStarted = false;
+let server = null;
 
 function emergencyLog(msg) {
   if (logFileArg) {
@@ -37,20 +39,42 @@ function emergencyLog(msg) {
   }
 }
 
-function crashWithError(error, source) {
+async function stopAttachableProvider() {
+  const pid = server?.pid;
+  if (!pid || server.state === 'exited') return true;
+  const result = await terminateProcess(pid, {
+    processGroupId: process.platform === 'win32' ? null : pid,
+    terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
+  });
+  return result.terminated;
+}
+
+async function failWatcher(error, source) {
+  if (crashStarted) return;
+  crashStarted = true;
   const timestamp = Date.now();
   const errorMsg = error instanceof Error ? error.stack || error.message : String(error);
 
   emergencyLog(`\n[${timestamp}][CRASH] ${source}: ${errorMsg}\n`);
-  emergencyLog(`[${timestamp}][CRASH] Process terminating due to unhandled error\n`);
-  cleanupCommandSpecSync();
+  const providerTerminal = await stopAttachableProvider();
+  let cleanupSucceeded = false;
+  if (providerTerminal) {
+    cleanupSucceeded = commandCleanup ? await commandCleanup.run() : true;
+  } else {
+    emergencyLog(
+      `[${timestamp}][CRASH] Provider termination could not be confirmed; preserving command cleanup paths.\n`
+    );
+  }
 
   if (taskIdArg) {
     try {
-      updateTask(taskIdArg, {
+      await updateTask(taskIdArg, {
         status: 'failed',
+        pid: null,
+        processGroupId: null,
         error: `${source}: ${errorMsg}`,
         socketPath: null,
+        ...(cleanupSucceeded ? { commandCleanup: null } : {}),
       });
     } catch (updateError) {
       emergencyLog(`[${timestamp}][CRASH] Failed to update task status: ${updateError.message}\n`);
@@ -61,11 +85,11 @@ function crashWithError(error, source) {
 }
 
 process.on('uncaughtException', (error) => {
-  crashWithError(error, 'uncaughtException');
+  void failWatcher(error, 'uncaughtException');
 });
 
 process.on('unhandledRejection', (reason) => {
-  crashWithError(reason, 'unhandledRejection');
+  void failWatcher(reason, 'unhandledRejection');
 });
 
 const require = createRequire(import.meta.url);
@@ -84,8 +108,9 @@ const commandSpec = config.commandSpec || {
   env: config.env || {},
   cleanup: [],
 };
-commandSpecCleanup = commandSpec.cleanup || [];
-let server = null;
+commandCleanup = createCommandSpecCleanup(commandSpec, (cleanupPath, error) => {
+  emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${cleanupPath}: ${error.message}\n`);
+});
 
 const socketPath = getTaskSocketPath(taskId);
 
@@ -234,30 +259,6 @@ function attemptRecovery(code, timestamp) {
   return recovered;
 }
 
-async function cleanupCommandSpec() {
-  if (cleanupStarted) return;
-  cleanupStarted = true;
-  for (const file of commandSpecCleanup) {
-    try {
-      await unlink(file);
-    } catch (error) {
-      log(`[${Date.now()}][CLEANUP] Failed to delete ${file}: ${error.message}\n`);
-    }
-  }
-}
-
-function cleanupCommandSpecSync() {
-  if (cleanupStarted) return;
-  cleanupStarted = true;
-  for (const file of commandSpecCleanup) {
-    try {
-      unlinkSync(file);
-    } catch (error) {
-      emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${file}: ${error.message}\n`);
-    }
-  }
-}
-
 function writeCompletionFooter(code, signal) {
   if (config.outputFormat === 'json') {
     return;
@@ -294,6 +295,7 @@ server.on('output', (data) => {
 });
 
 server.on('exit', async ({ exitCode, signal }) => {
+  if (crashStarted) return;
   const timestamp = Date.now();
   const code = exitCode;
 
@@ -306,7 +308,7 @@ server.on('exit', async ({ exitCode, signal }) => {
   }
 
   writeCompletionFooter(code, signal);
-  await cleanupCommandSpec();
+  const cleanupSucceeded = await commandCleanup.run();
 
   const resolvedCode = fatalError ? 1 : recovered?.payload ? 0 : code;
   const status = resolvedCode === 0 ? 'completed' : 'failed';
@@ -318,6 +320,7 @@ server.on('exit', async ({ exitCode, signal }) => {
       exitCode: resolvedCode,
       error: fatalError || (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
       socketPath: null,
+      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
     });
   } catch (updateError) {
     log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
@@ -329,19 +332,7 @@ server.on('exit', async ({ exitCode, signal }) => {
 });
 
 server.on('error', async (err) => {
-  log(`\nError: ${err.message}\n`);
-  await cleanupCommandSpec();
-  try {
-    await updateTask(taskId, {
-      status: 'failed',
-      pid: null,
-      processGroupId: null,
-      error: err.message,
-    });
-  } catch (updateError) {
-    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
-  }
-  process.exit(1);
+  await failWatcher(err, 'attach server error');
 });
 
 server.on('clientAttach', ({ clientId }) => {
@@ -367,18 +358,15 @@ try {
   log(`[${Date.now()}][SYSTEM] Socket: ${socketPath}\n`);
   log(`[${Date.now()}][SYSTEM] PID: ${server.pid}\n`);
 } catch (err) {
-  log(`\nFailed to start: ${err.message}\n`);
-  await cleanupCommandSpec();
-  updateTask(taskId, { status: 'failed', error: err.message });
-  process.exit(1);
+  await failWatcher(err, 'attach server start');
 }
 
 process.on('SIGTERM', async () => {
   log(`[${Date.now()}][SYSTEM] Received SIGTERM, stopping...\n`);
-  await server.stop('SIGTERM');
+  await stopAttachableProvider();
 });
 
 process.on('SIGINT', async () => {
   log(`[${Date.now()}][SYSTEM] Received SIGINT, stopping...\n`);
-  await server.stop('SIGINT');
+  await stopAttachableProvider();
 });
