@@ -22,6 +22,7 @@ const { normalizeProviderName } = require('../../lib/provider-names');
 const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
+const { updateAgentProviderSession } = require('./provider-session');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
 
@@ -566,7 +567,14 @@ async function runTaskAttempt(agent, triggeringMessage) {
   await applyValidatorJitter(agent);
   publishTaskStarted(agent, triggeringMessage);
 
-  const result = await agent._spawnClaudeTask(context);
+  let result;
+  try {
+    result = await agent._spawnClaudeTask(context);
+  } catch (error) {
+    updateAgentProviderSession(agent, null);
+    throw error;
+  }
+  updateAgentProviderSession(agent, result.providerSession);
   attachResultMetadata(agent, result);
 
   // Check if task execution failed
@@ -579,6 +587,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
 
   const fallbackReason = await maybeRetryValidatorInDocker(agent, result);
   if (fallbackReason) {
+    updateAgentProviderSession(agent, null);
     throw new Error(
       `Validator platform mismatch detected (${fallbackReason}). Retrying in Docker isolation.`
     );

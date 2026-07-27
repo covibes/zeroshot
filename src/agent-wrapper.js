@@ -66,6 +66,8 @@ class AgentWrapper {
     this.currentTask = null;
     /** @type {string | null} */
     this.currentTaskId = null; // Track spawned task ID for resume capability
+    /** @type {{provider: string, sessionId: string} | null} */
+    this.providerSession = null; // Provider continuation state, owned by this logical agent only
     /** @type {number | null} */
     this.processPid = null; // Track process PID for resource monitoring
     this.running = false;

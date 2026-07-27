@@ -24,6 +24,10 @@ const {
   resolveRepoMcpConfigPath,
 } = require('../worktree-claude-config.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
+const {
+  providerSessionFromCompletedTask,
+  resolveAgentResumeSessionId,
+} = require('./provider-session');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -750,6 +754,11 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
     args.push(mcpArg);
   }
 
+  const resumeSessionId = resolveAgentResumeSessionId(agent, providerName);
+  if (resumeSessionId) {
+    args.push('--resume', resumeSessionId);
+  }
+
   return args;
 }
 
@@ -1220,6 +1229,11 @@ async function buildCompletionResult({ agent, taskId, providerName, state, stdou
     output: state.output,
     error: errorContext,
     tokenUsage: extractTokenUsage(state.output, providerName),
+    providerSession: providerSessionFromCompletedTask({
+      agent,
+      providerName,
+      taskInfo: getTask(taskId),
+    }),
   };
 }
 
@@ -2366,5 +2380,6 @@ module.exports = {
   broadcastIsolatedLine,
   parseResultOutput,
   buildCompletionResult,
+  buildTaskRunArgs,
   killTask,
 };

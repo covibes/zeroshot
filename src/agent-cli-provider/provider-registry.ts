@@ -19,6 +19,7 @@ export interface ProviderCapabilities {
   readonly streamJson: ProviderCapabilityState;
   readonly thinkingMode: ProviderCapabilityState;
   readonly reasoningEffort: ProviderCapabilityState;
+  readonly sessionResume: ProviderCapabilityState;
 }
 
 interface FixedProviderCommandSpec {
@@ -93,13 +94,22 @@ export interface ProviderRegistryEntry {
 }
 
 const STANDARD_CAPABILITIES: Readonly<
-  Pick<ProviderCapabilities, 'dockerIsolation' | 'worktreeIsolation' | 'mcpServers' | 'streamJson' | 'thinkingMode'>
+  Pick<
+    ProviderCapabilities,
+    | 'dockerIsolation'
+    | 'worktreeIsolation'
+    | 'mcpServers'
+    | 'streamJson'
+    | 'thinkingMode'
+    | 'sessionResume'
+  >
 > = {
   dockerIsolation: true,
   worktreeIsolation: true,
   mcpServers: true,
   streamJson: true,
   thinkingMode: true,
+  sessionResume: false,
 };
 
 const CLAUDE_DOCKER_ENV_PASSTHROUGH = [
@@ -161,6 +171,7 @@ export const providerRegistry = [
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
       reasoningEffort: true,
+      sessionResume: true,
     },
     docs: {
       label: 'Claude',
@@ -197,6 +208,7 @@ export const providerRegistry = [
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
       reasoningEffort: true,
+      sessionResume: true,
     },
     docs: {
       label: 'Codex',

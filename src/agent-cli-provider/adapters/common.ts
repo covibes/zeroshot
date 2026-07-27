@@ -64,7 +64,7 @@ export function unsupportedSessionControlWarnings(
     warning(
       provider,
       'unsupported-session-control',
-      'resume/continue is only supported for Claude CLI; ignoring.'
+      `Provider ${provider} does not support resume/continue session control; ignoring.`
     ),
   ];
 }

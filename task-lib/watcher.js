@@ -15,6 +15,7 @@ import {
   recoverProviderStructuredOutput,
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
+import { createProviderSessionCapture } from './provider-session-capture.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -36,6 +37,12 @@ function log(msg) {
 
 const providerName = normalizeProviderName(config.provider || 'claude');
 const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
+const maybeCaptureProviderSession = createProviderSessionCapture({
+  providerName,
+  taskId,
+  updateTask,
+  log,
+});
 
 const env = { ...process.env, ...(commandSpec.env || {}) };
 const command = commandSpec.binary;
@@ -136,6 +143,7 @@ function maybeCaptureStructuredOutput(line) {
 function handleSilentJsonLines(lines, timestamp) {
   for (const line of lines) {
     if (!line.trim()) continue;
+    maybeCaptureProviderSession(line);
     maybeHandleFatalError(line, timestamp);
     if (captureStreamingError(line, timestamp)) {
       continue;
@@ -146,6 +154,7 @@ function handleSilentJsonLines(lines, timestamp) {
 
 function handleStreamingLines(lines, timestamp) {
   for (const line of lines) {
+    maybeCaptureProviderSession(line);
     maybeHandleFatalError(line, timestamp);
     if (captureStreamingError(line, timestamp)) {
       continue;
@@ -159,6 +168,7 @@ function flushStdoutBuffer(timestamp) {
     return;
   }
 
+  maybeCaptureProviderSession(stdoutBuffer);
   if (!enableRecovery) {
     if (!silentJsonMode) {
       log(`[${timestamp}]${stdoutBuffer}\n`);

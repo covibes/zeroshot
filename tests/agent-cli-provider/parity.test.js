@@ -430,9 +430,26 @@ test('feature probing is deterministic from injected help text', () => {
     supportsVerbose: true,
     supportsModel: true,
     supportsEffort: true,
+    supportsResume: true,
     unknown: true,
   });
 
+  assert.equal(
+    helper.getProviderAdapter('claude').detectCliFeatures('claude --resume').supportsResume,
+    true
+  );
+  assert.equal(
+    helper.getProviderAdapter('claude').detectCliFeatures('claude --print').supportsResume,
+    false
+  );
+  assert.equal(
+    helper.getProviderAdapter('codex').detectCliFeatures('codex exec resume').supportsResume,
+    true
+  );
+  assert.equal(
+    helper.getProviderAdapter('codex').detectCliFeatures('codex exec --json').supportsResume,
+    false
+  );
   assert.equal(
     helper
       .getProviderAdapter('codex')
