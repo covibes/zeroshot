@@ -336,7 +336,9 @@ POSIX providers run in a dedicated process group; Windows providers use the exac
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
 ownership is persisted with the task and may run only after that boundary is confirmed terminal.
 Killed/stale recovery consumes the persisted cleanup, and recursive cleanup is restricted to
-Zeroshot-owned provider overlays.
+Zeroshot-owned provider overlays. If watcher termination cannot confirm that boundary, the task
+remains nonterminal with its PID, process group, strategy, and cleanup ownership intact; retry and
+cleanup stay blocked until a later kill confirms termination.
 
 ### Guidance Messaging
 

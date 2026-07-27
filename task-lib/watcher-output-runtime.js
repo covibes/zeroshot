@@ -1,9 +1,28 @@
+import { spawn } from 'child_process';
 import {
   detectProviderFatalError,
   detectProviderStreamingModeError,
   recoverProviderStructuredOutput,
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
+import { terminateProcess } from './process-termination.js';
+
+export function spawnWatcherProvider(command, finalArgs, options) {
+  return spawn(command, finalArgs, {
+    ...options,
+    windowsHide: true,
+  });
+}
+
+export async function terminateWatcherProvider(providerProcess) {
+  const pid = providerProcess?.pid;
+  if (!pid) return true;
+  const result = await terminateProcess(pid, {
+    processGroupId: process.platform === 'win32' ? null : pid,
+    terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
+  });
+  return result.terminated;
+}
 
 function splitBufferLines(buffer, chunk) {
   const nextBuffer = buffer + chunk;
@@ -29,13 +48,30 @@ export async function completeWatcherTask({
   emergencyLog,
   terminalUpdates = {},
 }) {
-  const providerTerminal = await terminateProvider();
-  const cleanupSucceeded = providerTerminal ? await commandCleanup.run() : false;
+  let providerTerminal = false;
+  try {
+    providerTerminal = await terminateProvider();
+  } catch (error) {
+    emergencyLog(`[${Date.now()}][CLEANUP] Provider termination check failed: ${error.message}\n`);
+  }
   if (!providerTerminal) {
     emergencyLog(
       `[${Date.now()}][CLEANUP] Provider termination boundary is still live; preserving command cleanup paths.\n`
     );
+    try {
+      await updateTask(taskId, {
+        status: 'running',
+        error: completion.error
+          ? `${completion.error}; provider termination could not be confirmed`
+          : 'Provider termination could not be confirmed; retry and cleanup remain blocked',
+      });
+    } catch (error) {
+      emergencyLog(`[${Date.now()}][ERROR] Failed to preserve task ownership: ${error.message}\n`);
+    }
+    return false;
   }
+
+  const cleanupSucceeded = commandCleanup ? await commandCleanup.run() : true;
   try {
     await updateTask(taskId, {
       status: completion.status,
@@ -49,6 +85,20 @@ export async function completeWatcherTask({
   } catch (error) {
     emergencyLog(`[${Date.now()}][ERROR] Failed to update task status: ${error.message}\n`);
   }
+  return true;
+}
+
+export function completeWatcherFailure({ error, source, ...completionOptions }) {
+  const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
+  completionOptions.emergencyLog(`\n[${Date.now()}][CRASH] ${source}: ${errorMessage}\n`);
+  return completeWatcherTask({
+    ...completionOptions,
+    completion: {
+      status: 'failed',
+      resolvedCode: 1,
+      error: `${source}: ${errorMessage}`,
+    },
+  });
 }
 
 export function createWatcherOutputRuntime({ config, providerName, log, stopProvider }) {

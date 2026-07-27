@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
 
 const ClaudeTaskRunner = require('../../src/claude-task-runner');
 const {
@@ -156,4 +157,58 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
     );
     assert.ok(!fs.existsSync(path.dirname(settingsPath)));
   });
+});
+
+describe('ClaudeTaskRunner isolated MCP forwarding', function () {
+  const tempDirs = [];
+
+  afterEach(function () {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const relativeMcpPath of ['.mcp.json', path.join('.claude', '.mcp.json')]) {
+    it(`uses the container workspace path for ${relativeMcpPath} in isolated runs`, async function () {
+      const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runner-mcp-'));
+      tempDirs.push(worktreeRoot);
+      fs.writeFileSync(path.join(worktreeRoot, '.git'), 'gitdir: isolated-test\n');
+      const mcpPath = path.join(worktreeRoot, relativeMcpPath);
+      fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
+      fs.writeFileSync(mcpPath, '{"mcpServers":{"repo":{}}}\n');
+
+      let spawnedCommand;
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter();
+      proc.stderr = new EventEmitter();
+      proc.kill = () => {};
+      const runner = new ClaudeTaskRunner({ quiet: true, timeout: 20 });
+      const resultPromise = runner._runIsolated('context', {
+        provider: 'claude',
+        cwd: worktreeRoot,
+        worktreePath: worktreeRoot,
+        isolation: {
+          enabled: true,
+          clusterId: 'isolated-mcp',
+          manager: {
+            spawnInContainer(_clusterId, command) {
+              spawnedCommand = command;
+              process.nextTick(() => proc.emit('close', 0));
+              return proc;
+            },
+          },
+        },
+      });
+
+      const result = await resultPromise;
+      const mcpIndex = spawnedCommand.indexOf('--mcp-config');
+      assert.strictEqual(result.success, true);
+      assert.ok(mcpIndex > 0, JSON.stringify(spawnedCommand));
+      assert.strictEqual(
+        spawnedCommand[mcpIndex + 1],
+        path.posix.join('/workspace', relativeMcpPath.split(path.sep).join('/'))
+      );
+      assert.ok(!spawnedCommand.includes(mcpPath));
+    });
+  }
 });

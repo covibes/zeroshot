@@ -21,8 +21,15 @@ describe('Claude repository MCP forwarding', function () {
     return root;
   }
 
-  function claudeArgs(root) {
-    return resolveMcpConfigArgs({ config: { cwd: root }, worktree: { path: root } }, 'claude');
+  function claudeArgs(root, isolated = false) {
+    return resolveMcpConfigArgs(
+      {
+        config: { cwd: root },
+        worktree: { path: root },
+        isolation: { enabled: isolated },
+      },
+      'claude'
+    );
   }
 
   it('forwards the root MCP config path to the detached Claude task command', function () {
@@ -31,6 +38,7 @@ describe('Claude repository MCP forwarding', function () {
     fs.writeFileSync(mcpPath, '{"mcpServers":{"root":{}}}\n');
 
     assert.deepStrictEqual(claudeArgs(root), ['--mcp-config', mcpPath]);
+    assert.deepStrictEqual(claudeArgs(root, true), ['--mcp-config', '/workspace/.mcp.json']);
   });
 
   it('forwards the legacy Claude-directory MCP config when root config is absent', function () {
@@ -41,5 +49,9 @@ describe('Claude repository MCP forwarding', function () {
     fs.writeFileSync(mcpPath, '{"mcpServers":{"legacy":{}}}\n');
 
     assert.deepStrictEqual(claudeArgs(root), ['--mcp-config', mcpPath]);
+    assert.deepStrictEqual(claudeArgs(root, true), [
+      '--mcp-config',
+      '/workspace/.claude/.mcp.json',
+    ]);
   });
 });

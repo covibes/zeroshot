@@ -5,6 +5,8 @@ const path = require('path');
 
 const {
   cleanupClaudeSettingsOverlay,
+  ensureAskUserQuestionHook,
+  ensureDangerousGitHook,
   isClaudeSettingsOverlayDirectory,
   isClaudeSettingsOverlayPath,
   prepareClaudeSettingsOverlay,
@@ -83,6 +85,23 @@ describe('worktree-claude-config', function () {
     assert.strictEqual(isClaudeSettingsOverlayDirectory(path.dirname(settingsPath)), true);
     assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
     assert.ok(!fs.existsSync(path.dirname(settingsPath)));
+  });
+
+  it('refuses to install safety hooks into arbitrary user directories', function () {
+    const askUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-user-ask-'));
+    const dangerousGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-user-git-'));
+    tempDirs.push(askUserDir, dangerousGitDir);
+
+    assert.throws(
+      () => ensureAskUserQuestionHook(askUserDir),
+      /Zeroshot-owned Claude settings overlay/
+    );
+    assert.throws(
+      () => ensureDangerousGitHook(dangerousGitDir),
+      /Zeroshot-owned Claude settings overlay/
+    );
+    assert.deepStrictEqual(fs.readdirSync(askUserDir), []);
+    assert.deepStrictEqual(fs.readdirSync(dangerousGitDir), []);
   });
 
   it('prefers root MCP config and supports the legacy Claude-directory fallback', function () {

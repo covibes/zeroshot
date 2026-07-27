@@ -5,15 +5,16 @@
  * Runs detached from parent, updates task status on completion
  */
 
-import { spawn } from 'child_process';
 import { appendFileSync } from 'fs';
 import { updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
-import { terminateProcess } from './process-termination.js';
 import {
+  completeWatcherFailure,
   completeWatcherTask,
   createWatcherOutputRuntime,
   resolveWatcherCommand,
+  spawnWatcherProvider,
+  terminateWatcherProvider,
 } from './watcher-output-runtime.js';
 import { createRequire } from 'module';
 
@@ -53,12 +54,11 @@ const { providerName, env, command, finalArgs } = resolveWatcherCommand(
   normalizeProviderName
 );
 
-let child = spawn(command, finalArgs, {
+let child = spawnWatcherProvider(command, finalArgs, {
   cwd: commandSpec.cwd || cwd,
   env,
   stdio: ['ignore', 'pipe', 'pipe'],
   detached: process.platform !== 'win32',
-  windowsHide: true,
 });
 
 updateTask(taskId, {
@@ -126,56 +126,33 @@ child.on('close', async (code, signal) => {
 child.on('error', async (err) => {
   crashStarted = true;
   log(`\nError: ${err.message}\n`);
-  const providerTerminal = await terminateOwnedProviderBoundary();
-  const cleanupSucceeded = providerTerminal ? await commandCleanup.run() : false;
-  try {
-    await updateTask(taskId, {
-      status: 'failed',
-      pid: null,
-      processGroupId: null,
-      error: err.message,
-      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
-    });
-  } catch (updateError) {
-    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
-  }
+  await completeWatcherTask({
+    taskId,
+    completion: { status: 'failed', resolvedCode: 1, error: err.message },
+    commandCleanup,
+    terminateProvider: terminateOwnedProviderBoundary,
+    updateTask,
+    emergencyLog,
+  });
   process.exit(1);
 });
 
-async function terminateOwnedProviderBoundary() {
-  if (!child?.pid) return true;
-  const result = await terminateProcess(child.pid, {
-    processGroupId: process.platform === 'win32' ? null : child.pid,
-    terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
-  });
-  return result.terminated;
+function terminateOwnedProviderBoundary() {
+  return terminateWatcherProvider(child);
 }
 
 async function crashWithError(error, source) {
   if (crashStarted) return;
   crashStarted = true;
-  const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
-  emergencyLog(`\n[${Date.now()}][CRASH] ${source}: ${errorMessage}\n`);
-  const providerTerminal = await terminateOwnedProviderBoundary();
-  let cleanupSucceeded = false;
-  if (providerTerminal) {
-    cleanupSucceeded = await commandCleanup.run();
-  } else {
-    emergencyLog(
-      `[${Date.now()}][CRASH] Provider termination could not be confirmed; preserving command cleanup paths.\n`
-    );
-  }
-  try {
-    await updateTask(taskId, {
-      status: 'failed',
-      pid: null,
-      processGroupId: null,
-      error: `${source}: ${errorMessage}`,
-      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
-    });
-  } catch (updateError) {
-    emergencyLog(`[${Date.now()}][CRASH] Failed to update task status: ${updateError.message}\n`);
-  }
+  await completeWatcherFailure({
+    taskId,
+    error,
+    source,
+    commandCleanup,
+    terminateProvider: terminateOwnedProviderBoundary,
+    updateTask,
+    emergencyLog,
+  });
   process.exit(1);
 }
 
