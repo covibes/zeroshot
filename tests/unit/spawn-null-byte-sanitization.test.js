@@ -71,10 +71,16 @@ describe('spawnTaskProcess null byte sanitization', function () {
 
 describe('IsolationManager.spawnInContainer null byte sanitization', function () {
   it('strips null bytes from string args before calling spawn()', function () {
+    // isolation-manager.js's class is prototype-patched by other test files
+    // (e.g. orchestrator.test.js), which relies on require.cache staying stable
+    // for the rest of the mocha worker. Snapshot and restore it instead of just
+    // deleting it, so this test's own reload doesn't leak into other test files.
+    const managerPath = require.resolve('../../src/isolation-manager');
+    const originalCacheEntry = require.cache[managerPath];
+    delete require.cache[managerPath];
+
     const spawnStub = sinon.stub(childProcess, 'spawn').returns(new EventEmitter());
     try {
-      const managerPath = require.resolve('../../src/isolation-manager');
-      delete require.cache[managerPath];
       const IsolationManager = require(managerPath);
       const manager = new IsolationManager();
       manager.containers.set('cluster-1', 'container-abc');
@@ -91,8 +97,11 @@ describe('IsolationManager.spawnInContainer null byte sanitization', function ()
       assert.strictEqual(spawnedArgs.at(-1), 'You are agent "worker".trailing after null byte');
     } finally {
       spawnStub.restore();
-      const managerPath = require.resolve('../../src/isolation-manager');
-      delete require.cache[managerPath];
+      if (originalCacheEntry) {
+        require.cache[managerPath] = originalCacheEntry;
+      } else {
+        delete require.cache[managerPath];
+      }
     }
   });
 });
