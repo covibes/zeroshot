@@ -71,7 +71,7 @@ function deleteTemporaryBaseRef(repoRoot, temporaryRef) {
   }
 }
 
-function fetchFreshRemoteBase(repoRoot, branch) {
+function fetchFreshRemoteBase(repoRoot, remoteName, branch) {
   const temporaryRef = `${FRESH_BASE_REF_PREFIX}/${crypto.randomBytes(16).toString('hex')}`;
 
   try {
@@ -83,7 +83,8 @@ function fetchFreshRemoteBase(repoRoot, branch) {
         '--no-tags',
         '--no-write-fetch-head',
         '--refmap=',
-        'origin',
+        '--',
+        remoteName,
         `+refs/heads/${branch}:${temporaryRef}`,
       ],
       {
@@ -1540,6 +1541,7 @@ class IsolationManager {
    * @param {string} workDir - Original working directory
    * @param {object} [options] - Worktree creation options
    * @param {string} [options.baseRef] - Git ref to base the worktree branch on
+   * @param {string} [options.remoteName=origin] - Remote used by a remote base ref
    * @param {boolean} [options.requireFreshBase=false] - Require a freshly fetched remote base
    * @param {number} [options.worktreeSetupTimeoutMs] - Setup command timeout in milliseconds
    * @returns {{ path: string, branch: string, repoRoot: string, baseRef: string, baseSha: string }}
@@ -1617,22 +1619,23 @@ class IsolationManager {
     const worktreeSetupTimeoutMs = resolveWorktreeSetupTimeoutMs(repoSettings, options);
 
     const baseRef = worktreeBaseRef || 'HEAD';
+    const remoteName = options.remoteName || 'origin';
     let baseSha;
     let temporaryBaseRef = null;
 
-    if (worktreeBaseRef && worktreeBaseRef.startsWith('origin/')) {
-      const branch = worktreeBaseRef.slice('origin/'.length);
-      const remoteTrackingRef = `refs/remotes/origin/${branch}`;
+    if (worktreeBaseRef && worktreeBaseRef.startsWith(`${remoteName}/`)) {
+      const branch = worktreeBaseRef.slice(remoteName.length + 1);
+      const remoteTrackingRef = `refs/remotes/${remoteName}/${branch}`;
 
       if (options.requireFreshBase === true) {
-        const freshBase = fetchFreshRemoteBase(repoRoot, branch);
+        const freshBase = fetchFreshRemoteBase(repoRoot, remoteName, branch);
         baseSha = freshBase.baseSha;
         temporaryBaseRef = freshBase.temporaryRef;
       } else {
         try {
           runSync(
             'git',
-            ['fetch', '--no-tags', 'origin', `+refs/heads/${branch}:${remoteTrackingRef}`],
+            ['fetch', '--no-tags', '--', remoteName, `+refs/heads/${branch}:${remoteTrackingRef}`],
             {
               cwd: repoRoot,
               encoding: 'utf8',

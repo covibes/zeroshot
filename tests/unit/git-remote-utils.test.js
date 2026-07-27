@@ -8,10 +8,32 @@
  * - Graceful error handling
  */
 
-const assert = require('assert');
-const { parseGitRemoteUrl, detectGitContext } = require('../../lib/git-remote-utils');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const {
+  normalizeGitRemoteName,
+  quoteShellArgument,
+  parseGitRemoteUrl,
+  detectGitContext,
+} = require('../../lib/git-remote-utils');
 
 describe('Git Remote Utils', function () {
+  describe('remote names', function () {
+    it('accepts Git-valid punctuation and quotes it for shell prompts', function () {
+      assert.strictEqual(normalizeGitRemoteName("my@remote's"), "my@remote's");
+      assert.strictEqual(quoteShellArgument("my@remote's"), `'my@remote'"'"'s'`);
+    });
+
+    it('rejects names Git cannot map into remote-tracking refs', function () {
+      for (const name of ['', 'has space', 'two..dots', '.hidden', 'name.lock', 'bad?name']) {
+        assert.strictEqual(normalizeGitRemoteName(name), null, name);
+      }
+    });
+  });
+
   registerParseGitRemoteUrlTests();
   registerDetectGitContextTests();
 });
@@ -211,11 +233,60 @@ function registerDetectGitContextTests() {
       assert.strictEqual(result, null);
     });
 
-    // NOTE: Additional integration-style tests for detectGitContext
-    // would require mocking git commands or setting up test fixtures.
-    // These are better suited for integration tests.
-    //
-    // Unit tests above verify the core URL parsing logic in isolation.
-    // Provider integration tests will verify the full workflow.
+    it('should detect the only supported remote when origin is absent', function () {
+      withGitRemotes(
+        {
+          upstream: 'git@github.com:the-open-engine/zeroshot.git',
+        },
+        (cwd) => {
+          const result = detectGitContext(cwd);
+
+          assert.strictEqual(result.provider, 'github');
+          assert.strictEqual(result.fullRepo, 'the-open-engine/zeroshot');
+          assert.strictEqual(result.remote, 'upstream');
+        }
+      );
+    });
+
+    it('should preserve origin as the deterministic preference when it is supported', function () {
+      withGitRemotes(
+        {
+          upstream: 'https://gitlab.com/upstream/project.git',
+          origin: 'https://github.com/fork/project.git',
+        },
+        (cwd) => {
+          const result = detectGitContext(cwd);
+
+          assert.strictEqual(result.provider, 'github');
+          assert.strictEqual(result.fullRepo, 'fork/project');
+          assert.strictEqual(result.remote, 'origin');
+        }
+      );
+    });
+
+    it('should fail closed when multiple supported non-origin remotes are ambiguous', function () {
+      withGitRemotes(
+        {
+          fork: 'https://github.com/fork/project.git',
+          upstream: 'https://github.com/upstream/project.git',
+        },
+        (cwd) => {
+          assert.strictEqual(detectGitContext(cwd), null);
+        }
+      );
+    });
   });
+}
+
+function withGitRemotes(remotes, fn) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-git-remotes-'));
+  try {
+    execFileSync('git', ['init'], { cwd, stdio: 'ignore' });
+    for (const [name, url] of Object.entries(remotes)) {
+      execFileSync('git', ['remote', 'add', name, url], { cwd, stdio: 'ignore' });
+    }
+    return fn(cwd);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 }
