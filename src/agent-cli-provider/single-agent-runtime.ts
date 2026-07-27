@@ -34,9 +34,16 @@ interface RuntimeProviderSettings {
   readonly gateway?: GatewayBuildOptions;
 }
 
+interface RuntimeCommandContext {
+  readonly cliFeatures: CliFeatureOverrides;
+  readonly authEnv: Readonly<Record<string, string>>;
+  readonly modelSpecSource: 'direct' | 'provider-level';
+}
+
 export interface SingleAgentProviderCommandInput {
   readonly provider?: string | null;
   readonly context: string;
+  readonly modelSpecSource?: 'direct' | 'provider-level';
   readonly options?: BuildProviderCommandOptions;
 }
 
@@ -86,7 +93,11 @@ export function prepareSingleAgentProviderCommand(
   );
   const cliFeatures = resolveRuntimeCliFeatures(adapter.id, baseOptions.cliFeatures);
   const authEnv = baseOptions.authEnv ?? resolveRuntimeAuthEnv(adapter.id, settings);
-  const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, cliFeatures, authEnv);
+  const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
+    cliFeatures,
+    authEnv,
+    modelSpecSource: input.modelSpecSource ?? 'direct',
+  });
   return {
     adapter,
     options,
@@ -128,8 +139,7 @@ function mergeAcpFailClosedCliFeatures(
     ...detected,
     ...overrides,
     supportsAcpStdio: detected.supportsAcpStdio && overrides.supportsAcpStdio !== false,
-    supportsPromptImages:
-      detected.supportsPromptImages && overrides.supportsPromptImages !== false,
+    supportsPromptImages: detected.supportsPromptImages && overrides.supportsPromptImages !== false,
     supportsLoadSession: detected.supportsLoadSession && overrides.supportsLoadSession !== false,
     supportsSessionCancel:
       detected.supportsSessionCancel && overrides.supportsSessionCancel !== false,
@@ -162,7 +172,9 @@ export function probeRuntimeProviderCli(provider: string): RuntimeProviderProbe 
   }
 
   const helpText = stringResult(getHelpOutputFn(helpCommand.command, helpCommand.args)).trim();
-  const versionText = stringResult(getVersionOutputFn(helpCommand.command, helpCommand.args)).trim();
+  const versionText = stringResult(
+    getVersionOutputFn(helpCommand.command, helpCommand.args)
+  ).trim();
   const availabilityProbe = getProviderRegistryEntry(adapter.id).availabilityProbe ?? 'command';
 
   return {
@@ -177,10 +189,14 @@ function buildRuntimeOptions(
   baseOptions: BuildProviderCommandOptions,
   adapter: ProviderAdapter,
   providerSettings: RuntimeProviderSettings,
-  cliFeatures: CliFeatureOverrides,
-  authEnv: Readonly<Record<string, string>>
+  runtime: RuntimeCommandContext
 ): BuildProviderCommandOptions {
-  const modelSpec = resolveRuntimeModelSpec(adapter, baseOptions.modelSpec, providerSettings);
+  const modelSpec = resolveRuntimeModelSpec(
+    adapter,
+    baseOptions.modelSpec,
+    providerSettings,
+    runtime.modelSpecSource
+  );
   const gateway = resolveRuntimeGatewayOptions(
     adapter.id,
     baseOptions,
@@ -191,16 +207,16 @@ function buildRuntimeOptions(
     ...baseOptions,
     modelSpec,
     ...(gateway === undefined ? {} : { gateway }),
-    cliFeatures,
+    cliFeatures: runtime.cliFeatures,
   };
   if (baseOptions.jsonSchema && !supportsProviderCapability(adapter.id, 'jsonSchema')) {
-    if (!shouldIncludeAuthEnv(baseOptions, authEnv)) {
+    if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) {
       return { ...resolved, strictSchema: false };
     }
-    return { ...resolved, authEnv, strictSchema: false };
+    return { ...resolved, authEnv: runtime.authEnv, strictSchema: false };
   }
-  if (!shouldIncludeAuthEnv(baseOptions, authEnv)) return resolved;
-  return { ...resolved, authEnv };
+  if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) return resolved;
+  return { ...resolved, authEnv: runtime.authEnv };
 }
 
 function resolveRuntimeGatewayOptions(
@@ -218,23 +234,19 @@ function resolveRuntimeGatewayOptions(
       ? settingsGateway.headers
       : { ...(settingsGateway.headers ?? {}), ...requestGateway.headers };
   const mergedGateway: GatewayBuildOptions = {
-    ...(requestGateway.baseUrl ?? settingsGateway.baseUrl
+    ...((requestGateway.baseUrl ?? settingsGateway.baseUrl)
       ? { baseUrl: requestGateway.baseUrl ?? settingsGateway.baseUrl }
       : {}),
-    ...(requestGateway.apiKey ?? settingsGateway.apiKey
+    ...((requestGateway.apiKey ?? settingsGateway.apiKey)
       ? { apiKey: requestGateway.apiKey ?? settingsGateway.apiKey }
       : {}),
     ...(mergedHeaders === undefined ? {} : { headers: mergedHeaders }),
     model: requestGateway.model ?? modelSpec.model ?? settingsGateway.model ?? null,
-    ...(requestGateway.toolPolicy ?? settingsGateway.toolPolicy
+    ...((requestGateway.toolPolicy ?? settingsGateway.toolPolicy)
       ? { toolPolicy: requestGateway.toolPolicy ?? settingsGateway.toolPolicy }
       : {}),
   };
-  return resolveGatewayConfiguration(
-    mergedGateway,
-    'options.gateway',
-    cwd
-  );
+  return resolveGatewayConfiguration(mergedGateway, 'options.gateway', cwd);
 }
 
 function shouldIncludeAuthEnv(
@@ -247,9 +259,19 @@ function shouldIncludeAuthEnv(
 function resolveRuntimeModelSpec(
   adapter: ProviderAdapter,
   explicit: ModelSpec | undefined,
-  providerSettings: RuntimeProviderSettings
+  providerSettings: RuntimeProviderSettings,
+  modelSpecSource: 'direct' | 'provider-level'
 ): ModelSpec {
   if (explicit?.model !== undefined) {
+    if (modelSpecSource === 'provider-level') {
+      if (explicit.level === undefined) {
+        throw new Error('Provider-level task model selections require a model level.');
+      }
+      const validateConfiguredModelId =
+        adapter.validateConfiguredModelId ?? adapter.validateModelId;
+      validateConfiguredModelId(explicit.model);
+      return explicit;
+    }
     adapter.validateModelId(explicit.model);
     return explicit;
   }
@@ -286,7 +308,8 @@ function adapterForRuntimeInput(
   provider: string | null | undefined,
   settings: Record<string, unknown>
 ): ProviderAdapter {
-  const configured = provider ?? optionalString(settings.defaultProvider, 'settings.defaultProvider');
+  const configured =
+    provider ?? optionalString(settings.defaultProvider, 'settings.defaultProvider');
   return getProviderAdapter(configured ?? 'claude');
 }
 
@@ -309,16 +332,14 @@ function runtimeProviderSettings(
   );
   const gateway =
     provider === 'gateway'
-      ? normalizeGatewayBuildOptions(
-          providerSettings,
-          'settings.providerSettings.gateway',
-          cwd
-        )
+      ? normalizeGatewayBuildOptions(providerSettings, 'settings.providerSettings.gateway', cwd)
       : undefined;
   if (defaultLevel === undefined) {
     return gateway === undefined ? { levelOverrides } : { levelOverrides, gateway };
   }
-  return gateway === undefined ? { defaultLevel, levelOverrides } : { defaultLevel, levelOverrides, gateway };
+  return gateway === undefined
+    ? { defaultLevel, levelOverrides }
+    : { defaultLevel, levelOverrides, gateway };
 }
 
 function runtimeHelpCommand(provider: ProviderId): CommandParts {
@@ -333,7 +354,11 @@ function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
   try {
     const settings = loadRuntimeSettings();
     const providerSettings = runtimeProviderSettings(settings, 'gateway', process.cwd());
-    resolveGatewayConfiguration(providerSettings.gateway, 'settings.providerSettings.gateway', process.cwd());
+    resolveGatewayConfiguration(
+      providerSettings.gateway,
+      'settings.providerSettings.gateway',
+      process.cwd()
+    );
     return {
       available: true,
       helpText: 'Bundled gateway runner',
@@ -456,10 +481,7 @@ function requiredRecord(value: unknown, field: string): Record<string, unknown> 
   throw new Error(`${field} must be an object.`);
 }
 
-function stringRecordFromUnknown(
-  value: unknown,
-  field: string
-): Readonly<Record<string, string>> {
+function stringRecordFromUnknown(value: unknown, field: string): Readonly<Record<string, string>> {
   if (value === undefined || value === null) return {};
   const record = requiredRecord(value, field);
   const result: Record<string, string> = {};

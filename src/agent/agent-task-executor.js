@@ -23,6 +23,7 @@ const {
   prepareClaudeConfigDir,
   resolveRepoMcpConfigPath,
 } = require('../worktree-claude-config.js');
+const { appendTaskRunModelArgs } = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
@@ -722,14 +723,10 @@ function resolveOutputFormatConfig(agent) {
 
 function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
   const args = ['task', 'run', '--output-format', runOutputFormat, '--provider', providerName];
-
-  if (modelSpec?.model) {
-    args.push('--model', modelSpec.model);
-  }
-
-  if (modelSpec?.reasoningEffort) {
-    args.push('--reasoning-effort', modelSpec.reasoningEffort);
-  }
+  const modelSpecSource = agent._resolveModelSpecSource
+    ? agent._resolveModelSpecSource()
+    : 'direct';
+  appendTaskRunModelArgs(args, modelSpec, modelSpecSource);
 
   // Add verification mode flag if configured
   if (agent.config.verificationMode) {

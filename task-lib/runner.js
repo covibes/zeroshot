@@ -25,10 +25,10 @@ export function spawnTask(prompt, options = {}) {
 
   const outputFormat = resolveOutputFormat(options);
   const jsonSchema = resolveJsonSchema(options, outputFormat);
-  const prepared = prepareSingleAgentProviderCommand({
-    provider: options.provider || null,
-    context: prompt,
-    options: buildProviderOptions(options, outputFormat, jsonSchema, cwd),
+  const prepared = prepareTaskProviderCommandFromResolved(prompt, options, {
+    outputFormat,
+    jsonSchema,
+    cwd,
   });
   const providerName = prepared.adapter.id;
   const modelSpec = prepared.options.modelSpec;
@@ -72,6 +72,25 @@ export function spawnTask(prompt, options = {}) {
   return task;
 }
 
+export function prepareTaskProviderCommand(prompt, options = {}) {
+  const outputFormat = resolveOutputFormat(options);
+  return prepareTaskProviderCommandFromResolved(prompt, options, {
+    outputFormat,
+    jsonSchema: resolveJsonSchema(options, outputFormat),
+    cwd: options.cwd || process.cwd(),
+  });
+}
+
+function prepareTaskProviderCommandFromResolved(prompt, options, runtime) {
+  const modelSelection = resolveRequestedModelSelection(options);
+  return prepareSingleAgentProviderCommand({
+    provider: options.provider || null,
+    context: prompt,
+    modelSpecSource: modelSelection?.source,
+    options: buildProviderOptions(options, runtime, modelSelection),
+  });
+}
+
 function resolveOutputFormat(options) {
   return options.outputFormat || 'stream-json';
 }
@@ -85,13 +104,13 @@ function resolveJsonSchema(options, outputFormat) {
   return jsonSchema;
 }
 
-function buildProviderOptions(options, outputFormat, jsonSchema, cwd) {
+function buildProviderOptions(options, runtime, modelSelection) {
   return {
-    outputFormat,
-    jsonSchema,
-    cwd,
+    outputFormat: runtime.outputFormat,
+    jsonSchema: runtime.jsonSchema,
+    cwd: runtime.cwd,
     autoApprove: true,
-    ...modelSpecOption(options),
+    ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...mcpConfigOption(options),
     ...(options.resume ? { resumeSessionId: options.resume } : {}),
     ...(options.continue ? { continueSession: true } : {}),
@@ -104,27 +123,46 @@ function mcpConfigOption(options) {
   return { mcpConfig: entries };
 }
 
-function modelSpecOption(options) {
-  const modelSpec = resolveRequestedModelSpec(options);
-  return modelSpec === undefined ? {} : { modelSpec };
+function resolveRequestedModelSelection(options) {
+  if (options.model && options.configuredModel) {
+    throw new Error('--model and --configured-model cannot be used together');
+  }
+  if (options.configuredModel && !options.modelLevel) {
+    throw new Error('--configured-model requires --model-level');
+  }
+
+  if (options.model) {
+    return directModelSelection(options);
+  }
+
+  if (options.configuredModel) {
+    return configuredModelSelection(options);
+  }
+
+  return providerLevelSelection(options);
 }
 
-function resolveRequestedModelSpec(options) {
-  if (options.model) {
-    return {
-      model: options.model,
-      ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
-    };
-  }
+function directModelSelection(options) {
+  const modelSpec = { model: options.model };
+  if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
+  return { source: 'direct', modelSpec };
+}
 
-  if (options.reasoningEffort) {
-    return {
-      ...(options.modelLevel ? { level: options.modelLevel } : {}),
-      reasoningEffort: options.reasoningEffort,
-    };
-  }
-  if (options.modelLevel) return { level: options.modelLevel };
-  return undefined;
+function configuredModelSelection(options) {
+  const modelSpec = {
+    level: options.modelLevel,
+    model: options.configuredModel,
+  };
+  if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
+  return { source: 'provider-level', modelSpec };
+}
+
+function providerLevelSelection(options) {
+  if (!options.reasoningEffort && !options.modelLevel) return undefined;
+  const modelSpec = {};
+  if (options.modelLevel) modelSpec.level = options.modelLevel;
+  if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
+  return { source: 'provider-level', modelSpec };
 }
 
 function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec }) {

@@ -13,6 +13,7 @@ const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const { prepareClaudeConfigDir } = require('./worktree-claude-config');
+const { appendTaskRunModelArgs } = require('./task-run-model-args');
 
 function runCommand(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -170,6 +171,7 @@ class ClaudeTaskRunner extends TaskRunner {
       providerName,
       runOutputFormat,
       resolvedModelSpec,
+      modelSpecSource,
       jsonSchema,
     });
 
@@ -267,16 +269,16 @@ class ClaudeTaskRunner extends TaskRunner {
     return jsonSchema && outputFormat === 'json' && !strictSchema ? 'stream-json' : outputFormat;
   }
 
-  _buildRunArgs({ context, providerName, runOutputFormat, resolvedModelSpec, jsonSchema }) {
+  _buildRunArgs({
+    context,
+    providerName,
+    runOutputFormat,
+    resolvedModelSpec,
+    modelSpecSource = 'direct',
+    jsonSchema,
+  }) {
     const args = ['task', 'run', '--output-format', runOutputFormat, '--provider', providerName];
-
-    if (resolvedModelSpec?.model) {
-      args.push('--model', resolvedModelSpec.model);
-    }
-
-    if (resolvedModelSpec?.reasoningEffort) {
-      args.push('--reasoning-effort', resolvedModelSpec.reasoningEffort);
-    }
+    appendTaskRunModelArgs(args, resolvedModelSpec, modelSpecSource);
 
     // Pass schema to CLI only when using json output (strictSchema=true or no conflict)
     if (jsonSchema && runOutputFormat === 'json') {
@@ -585,6 +587,7 @@ class ClaudeTaskRunner extends TaskRunner {
       agentId = 'unknown',
       provider = 'claude',
       modelSpec = null,
+      modelSpecSource = 'direct',
       outputFormat = 'stream-json',
       jsonSchema = null,
       strictSchema = false,
@@ -610,13 +613,7 @@ class ClaudeTaskRunner extends TaskRunner {
       provider,
     ];
 
-    if (modelSpec?.model) {
-      command.push('--model', modelSpec.model);
-    }
-
-    if (modelSpec?.reasoningEffort) {
-      command.push('--reasoning-effort', modelSpec.reasoningEffort);
-    }
+    appendTaskRunModelArgs(command, modelSpec, modelSpecSource);
 
     if (jsonSchema && runOutputFormat === 'json') {
       command.push('--json-schema', JSON.stringify(jsonSchema));
