@@ -314,6 +314,35 @@ function normalizeCloseIssueMode(value) {
   return null;
 }
 
+function normalizeIssueNumber(value) {
+  const candidate = typeof value === 'number' ? String(value) : value;
+  if (typeof candidate !== 'string') return 'unknown';
+  const trimmed = candidate.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed) ? trimmed : 'unknown';
+}
+
+function normalizeIssueTitle(value) {
+  if (typeof value !== 'string' || value.trim() === '') return 'Implementation';
+  const normalized = [...value]
+    .map((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint < 0x20 || codePoint === 0x7f ? ' ' : character;
+    })
+    .join('')
+    .trim();
+  return normalized || 'Implementation';
+}
+
+function resolveIssueContext(options) {
+  const issueNumber = normalizeIssueNumber(options.issueNumber);
+  const issueTitle = normalizeIssueTitle(options.issueTitle);
+  const issueReference =
+    options.includeIssueReference === false || issueNumber === 'unknown'
+      ? ''
+      : `Closes #${issueNumber}`;
+  return { issueNumber, issueTitle, issueReference };
+}
+
 /**
  * Resolve GitHub configuration from CLI options and repo settings.
  * Priority: CLI options > repo settings (.zeroshot/settings.json) > defaults
@@ -323,6 +352,9 @@ function normalizeCloseIssueMode(value) {
  * @param {boolean} [options.mergeQueue] - Use GitHub merge queue
  * @param {string} [options.closeIssue] - When to close issue: auto|always|never
  * @param {string} [options.gitRemote=origin] - Remote to push the implementation branch to
+ * @param {string|number} [options.issueNumber] - Typed issue identifier for prompt commands
+ * @param {string} [options.issueTitle] - Typed issue title for prompt commands
+ * @param {boolean} [options.includeIssueReference] - Include the closing reference in PR text
  * @returns {Object} Resolved configuration
  */
 function resolveGitHubConfig(options = {}) {
@@ -353,7 +385,14 @@ function resolveGitHubConfig(options = {}) {
     options.autoMerge === true ||
     (options.autoMerge !== false && parseBool(repoGithub.autoMerge) === true);
 
-  return { prBase, useMergeQueue, closeIssueMode, autoMerge, gitRemote };
+  return {
+    prBase,
+    useMergeQueue,
+    closeIssueMode,
+    autoMerge,
+    gitRemote,
+    issueContext: resolveIssueContext(options),
+  };
 }
 
 /**
@@ -365,12 +404,15 @@ function resolveGitHubConfig(options = {}) {
  */
 function getPlatformConfig(platform, config = {}) {
   const { prBase, useMergeQueue, closeIssueMode, autoMerge, gitRemote } = config;
+  const issueContext = config.issueContext || resolveIssueContext({});
+  const issueTitleArgument = quoteShellArgument(`feat: ${issueContext.issueTitle}`);
+  const issueReferenceArgument = quoteShellArgument(issueContext.issueReference);
 
   const PLATFORM_CONFIGS = {
     github: {
       prName: 'PR',
       prNameLower: 'pull request',
-      createCmd: `gh pr create${prBase ? ` --base ${prBase}` : ''} --title "feat: {{issue_title}}" --body "Closes #{{issue_number}}"`,
+      createCmd: `gh pr create${prBase ? ` --base ${prBase}` : ''} --title ${issueTitleArgument} --body ${issueReferenceArgument}`,
       mergeCmd: useMergeQueue
         ? `PR_ID="$(timeout 30 gh pr view --json id --jq .id)"
 gh api graphql -f query='mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{state}}}' -f id="$PR_ID"
@@ -387,12 +429,12 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
       closeIssueMode: closeIssueMode || 'never',
       autoMerge: Boolean(autoMerge),
       gitRemote,
+      issueContext,
     },
     gitlab: {
       prName: 'MR',
       prNameLower: 'merge request',
-      createCmd:
-        'glab mr create --title "feat: {{issue_title}}" --description "Closes #{{issue_number}}"',
+      createCmd: `glab mr create --title ${issueTitleArgument} --description ${issueReferenceArgument}`,
       mergeCmd: 'glab mr merge --auto-merge',
       mergeFallbackCmd: 'glab mr merge',
       prUrlExample: 'https://gitlab.com/owner/repo/-/merge_requests/123',
@@ -400,12 +442,12 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
       closeIssueMode: closeIssueMode || 'never',
       autoMerge: Boolean(autoMerge),
       gitRemote,
+      issueContext,
     },
     'azure-devops': {
       prName: 'PR',
       prNameLower: 'pull request',
-      createCmd:
-        'az repos pr create --title "feat: {{issue_title}}" --description "Closes #{{issue_number}}"',
+      createCmd: `az repos pr create --title ${issueTitleArgument} --description ${issueReferenceArgument}`,
       mergeCmd: 'az repos pr update --id <PR_ID> --auto-complete true',
       mergeFallbackCmd: 'az repos pr update --id <PR_ID> --status completed',
       prUrlExample: 'https://dev.azure.com/org/project/_git/repo/pullrequest/123',
@@ -420,6 +462,7 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
       closeIssueMode: closeIssueMode || 'never',
       autoMerge: Boolean(autoMerge),
       gitRemote,
+      issueContext,
     },
   };
 
@@ -447,8 +490,12 @@ function generateReviewModePrompt(config) {
     outputFields,
     requiresPrIdExtraction,
     gitRemote,
+    issueContext,
   } = config;
   const gitRemoteArgument = quoteShellArgument(gitRemote);
+  const commitMessageArgument = quoteShellArgument(
+    `feat: implement #${issueContext.issueNumber} - ${issueContext.issueTitle}`
+  );
 
   return `CRITICAL: ALL VALIDATORS APPROVED. YOU ARE A TRANSPORT-ONLY GIT PUSHER.
 
@@ -484,7 +531,7 @@ Run this. If nothing to commit, output JSON with ${outputFields.urlField}: null 
 
 ### STEP 3: Commit the changes (MANDATORY if there are changes)
 \`\`\`bash
-git commit -m "feat: implement #{{issue_number}} - {{issue_title}}"
+git commit -m ${commitMessageArgument}
 \`\`\`
 Run this command. Do not skip it.
 
@@ -561,8 +608,13 @@ function generatePrompt(config) {
     closeIssueMode,
     autoMerge,
     gitRemote,
+    issueContext,
   } = config;
   const gitRemoteArgument = quoteShellArgument(gitRemote);
+  const issueNumberArgument = quoteShellArgument(issueContext.issueNumber);
+  const commitMessageArgument = quoteShellArgument(
+    `feat: implement #${issueContext.issueNumber} - ${issueContext.issueTitle}`
+  );
 
   if (!autoMerge) {
     return generateReviewModePrompt(config);
@@ -646,7 +698,7 @@ Run this. If nothing to commit, output JSON with ${outputFields.urlField}: null 
 
 ### STEP 3: Commit the changes (MANDATORY if there are changes)
 \`\`\`bash
-git commit -m "feat: implement #{{issue_number}} - {{issue_title}}"
+git commit -m ${commitMessageArgument}
 \`\`\`
 Run this command. Do not skip it.
 
@@ -684,8 +736,8 @@ ${
   closeIssueMode !== 'never'
     ? `### STEP 7: Close the issue (MANDATORY)
 \`\`\`bash
-if [ "{{issue_number}}" != "unknown" ]; then
-  ISSUE_STATE="$(gh issue view {{issue_number}} --json state --jq .state 2>/dev/null || true)"
+if [ ${issueNumberArgument} != "unknown" ]; then
+  ISSUE_STATE="$(gh issue view ${issueNumberArgument} --json state --jq .state 2>/dev/null || true)"
   if [ "$ISSUE_STATE" = "OPEN" ]; then
     BASE_BRANCH="${rebaseBranch || 'main'}"
     DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null || true)"
@@ -701,9 +753,9 @@ if [ "{{issue_number}}" != "unknown" ]; then
     if [ "$SHOULD_CLOSE" = "1" ]; then
   PR_URL="$(gh pr view --json url --jq .url 2>/dev/null || true)"
   if [ -n "$PR_URL" ]; then
-    gh issue close {{issue_number}} --comment "Implemented in $PR_URL"
+    gh issue close ${issueNumberArgument} --comment "Implemented in $PR_URL"
   else
-    gh issue close {{issue_number}} --comment "Implemented"
+    gh issue close ${issueNumberArgument} --comment "Implemented"
   fi
     fi
   fi
@@ -748,6 +800,9 @@ If blocked before creating a ${prName}, output:
  * @param {boolean} [options.mergeQueue] - Use GitHub merge queue
  * @param {string} [options.closeIssue] - When to close issue: auto|always|never
  * @param {string} [options.gitRemote=origin] - Remote to push the implementation branch to
+ * @param {string|number} [options.issueNumber] - Typed issue identifier for prompt commands
+ * @param {string} [options.issueTitle] - Typed issue title for prompt commands
+ * @param {boolean} [options.includeIssueReference] - Include the closing reference in PR text
  * @param {Array} [options.requiredQualityGates] - Required handoff quality gates
  * @param {boolean} [options.autoMerge] - Merge the PR (--ship). False stops after PR creation (--pr).
  * @returns {Object} Agent configuration object

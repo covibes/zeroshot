@@ -1886,15 +1886,11 @@ class Orchestrator {
       requiredQualityGates: options.requiredQualityGates,
       autoMerge: resolveRunPlan(options).autoMerge,
       gitRemote: gitContext?.remote || options.gitRemote,
+      issueNumber: inputData.number,
+      issueTitle: inputData.title,
+      includeIssueReference: !skipCloseIssue,
       cwd: options.cwd,
     });
-
-    // Template replacement for issue context
-    const issueRef = skipCloseIssue ? '' : `Closes #${inputData.number || 'unknown'}`;
-    gitPusherConfig.prompt = gitPusherConfig.prompt
-      .replace(/\{\{issue_number\}\}/g, inputData.number || 'unknown')
-      .replace(/\{\{issue_title\}\}/g, inputData.title || 'Implementation')
-      .replace(/Closes #\{\{issue_number\}\}/g, issueRef);
 
     config.agents.push(gitPusherConfig);
     this._log(
@@ -4049,7 +4045,6 @@ Continue from where you left off. Review your previous output to understand what
         }
       }
 
-      // Generate platform-specific git-pusher agent from template
       const {
         generateGitPusherAgent,
         isPlatformSupported,
@@ -4061,18 +4056,19 @@ Continue from where you left off. Review your previous output to understand what
         );
       }
 
-      // Use persisted PR options from cluster state (or empty for repo settings fallback)
-      const gitPusherConfig = generateGitPusherAgent(platform, cluster.prOptions || {});
-
       // Get issue context from ledger
       const issueMsg = cluster.messageBus.ledger.findLast({ topic: 'ISSUE_OPENED' });
       const issueNumber = issueMsg?.content?.data?.number || 'unknown';
       const issueTitle = issueMsg?.content?.data?.title || 'Implementation';
 
-      // Inject issue context into prompt
-      gitPusherConfig.prompt = gitPusherConfig.prompt
-        .replace(/\{\{issue_number\}\}/g, issueNumber)
-        .replace(/\{\{issue_title\}\}/g, issueTitle);
+      // Generate the final prompt in one typed assembly pass. Issue values are
+      // resolved before the shell-quoted remote is inserted, so placeholder-like
+      // remote names cannot be rewritten by issue context.
+      const gitPusherConfig = generateGitPusherAgent(platform, {
+        ...(cluster.prOptions || {}),
+        issueNumber,
+        issueTitle,
+      });
 
       await this._opAddAgents(cluster, { agents: [gitPusherConfig] }, context);
       this._log(`    [--pr mode] Injected ${platform}-git-pusher agent`);
