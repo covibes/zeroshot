@@ -140,7 +140,7 @@ describe('release publication assertion', () => {
 
     const result = await waitForPublishedArtifact(
       'npm provenance',
-      async () => {
+      () => {
         checks += 1;
         if (checks < 3) throw new Error('HTTP 404: Not found');
         return 'ready';
@@ -148,8 +148,9 @@ describe('release publication assertion', () => {
       {
         attempts: 3,
         delayMs: 25,
-        sleep: async (delay) => {
+        sleep: (delay) => {
           delays.push(delay);
+          return Promise.resolve();
         },
       }
     );
@@ -165,14 +166,14 @@ describe('release publication assertion', () => {
     await assert.rejects(
       waitForPublishedArtifact(
         'npm provenance',
-        async () => {
+        () => {
           checks += 1;
           throw new Error(`not ready ${checks}`);
         },
         {
           attempts: 2,
           delayMs: 0,
-          sleep: async () => {},
+          sleep: () => Promise.resolve(),
         }
       ),
       /npm provenance did not become ready after 2 attempts: not ready 2/
