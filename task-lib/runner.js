@@ -86,7 +86,6 @@ function prepareTaskProviderCommandFromResolved(prompt, options, runtime) {
   return prepareSingleAgentProviderCommand({
     provider: options.provider || null,
     context: prompt,
-    modelSpecSource: modelSelection?.source,
     options: buildProviderOptions(options, runtime, modelSelection),
   });
 }
@@ -124,19 +123,14 @@ function mcpConfigOption(options) {
 }
 
 function resolveRequestedModelSelection(options) {
-  if (options.model && options.configuredModel) {
-    throw new Error('--model and --configured-model cannot be used together');
-  }
-  if (options.configuredModel && !options.modelLevel) {
-    throw new Error('--configured-model requires --model-level');
+  if (Object.prototype.hasOwnProperty.call(options, 'configuredModel')) {
+    throw new Error(
+      '--configured-model is not supported; configure providerSettings levelOverrides instead'
+    );
   }
 
   if (options.model) {
     return directModelSelection(options);
-  }
-
-  if (options.configuredModel) {
-    return configuredModelSelection(options);
   }
 
   return providerLevelSelection(options);
@@ -145,16 +139,7 @@ function resolveRequestedModelSelection(options) {
 function directModelSelection(options) {
   const modelSpec = { model: options.model };
   if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
-  return { source: 'direct', modelSpec };
-}
-
-function configuredModelSelection(options) {
-  const modelSpec = {
-    level: options.modelLevel,
-    model: options.configuredModel,
-  };
-  if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
-  return { source: 'provider-level', modelSpec };
+  return { modelSpec };
 }
 
 function providerLevelSelection(options) {
@@ -162,7 +147,7 @@ function providerLevelSelection(options) {
   const modelSpec = {};
   if (options.modelLevel) modelSpec.level = options.modelLevel;
   if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
-  return { source: 'provider-level', modelSpec };
+  return { modelSpec };
 }
 
 function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec }) {

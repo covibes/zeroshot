@@ -32,7 +32,6 @@ export async function runTask(prompt, options = {}) {
     cwd: options.cwd || process.cwd(),
     model: options.model,
     modelLevel: options.modelLevel,
-    configuredModel: options.configuredModel,
     reasoningEffort: options.reasoningEffort,
     provider: options.provider,
     resume: options.resume,

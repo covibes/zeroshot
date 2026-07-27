@@ -13,7 +13,10 @@ const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const { prepareClaudeConfigDir } = require('./worktree-claude-config');
-const { appendTaskRunModelArgs } = require('./task-run-model-args');
+const {
+  appendTaskRunModelArgs,
+  buildIsolatedProviderSettingsEnv,
+} = require('./task-run-model-args');
 
 function runCommand(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -255,6 +258,16 @@ class ClaudeTaskRunner extends TaskRunner {
       providerSettings.defaultLevel ||
       providerModule.getDefaultLevel();
     const resolvedModelSpec = providerModule.resolveModelSpec(level, levelOverrides);
+    if (
+      explicitModelSpec?.model !== undefined &&
+      explicitModelSpec.model !== resolvedModelSpec.model
+    ) {
+      const error = new Error(
+        `Provider-level model "${explicitModelSpec.model}" does not match the configured ${level} model "${resolvedModelSpec.model}".`
+      );
+      error.permanent = true;
+      throw error;
+    }
     const resolvedReasoningEffort = explicitModelSpec?.reasoningEffort || reasoningEffort;
 
     return resolvedReasoningEffort
@@ -635,10 +648,12 @@ class ClaudeTaskRunner extends TaskRunner {
       let resolved = false;
 
       const proc = manager.spawnInContainer(clusterId, command, {
-        env:
-          provider === 'claude' && modelSpec?.model
+        env: {
+          ...buildIsolatedProviderSettingsEnv(provider, loadSettings(), modelSpecSource, modelSpec),
+          ...(provider === 'claude' && modelSpec?.model
             ? { ANTHROPIC_MODEL: modelSpec.model, ZEROSHOT_BLOCK_ASK_USER: '1' }
-            : {},
+            : {}),
+        },
       });
 
       proc.stdout.on('data', (/** @type {Buffer} */ data) => {

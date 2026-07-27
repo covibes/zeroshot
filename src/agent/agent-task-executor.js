@@ -23,7 +23,10 @@ const {
   prepareClaudeConfigDir,
   resolveRepoMcpConfigPath,
 } = require('../worktree-claude-config.js');
-const { appendTaskRunModelArgs } = require('../task-run-model-args.js');
+const {
+  appendTaskRunModelArgs,
+  buildIsolatedProviderSettingsEnv,
+} = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
@@ -1506,6 +1509,9 @@ async function spawnClaudeTaskIsolated(agent, context) {
   const { manager, clusterId } = agent.isolation;
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const modelSpec = resolveAgentModelSpec(agent);
+  const modelSpecSource = agent._resolveModelSpecSource
+    ? agent._resolveModelSpecSource()
+    : 'direct';
 
   agent._log(`📦 Agent ${agent.id}: Running task in isolated container using zeroshot task run...`);
 
@@ -1533,8 +1539,10 @@ async function spawnClaudeTaskIsolated(agent, context) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
   // Note: Auth env vars are injected by IsolationManager, we only need model mapping here
-  const isolatedEnv =
-    providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {};
+  const isolatedEnv = {
+    ...buildIsolatedProviderSettingsEnv(providerName, loadSettings(), modelSpecSource, modelSpec),
+    ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
+  };
 
   const taskId = await new Promise((resolve, reject) => {
     const proc = manager.spawnInContainer(clusterId, command, {

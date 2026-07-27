@@ -82,32 +82,29 @@ describe('Opencode external model task runner boundary', function () {
     );
   });
 
-  it('re-resolves provider-level selections instead of trusting a supplied model value', function () {
+  it('rejects provider-level selections whose supplied model does not match settings', function () {
     const providerModule = getProvider('opencode');
     const levelOverrides = {
       level2: { model: 'kimi/kimi-k2-5', reasoningEffort: 'high' },
     };
     const runner = new ClaudeTaskRunner({ quiet: true });
 
-    assert.deepStrictEqual(
-      runner._resolveModelSpec({
-        explicitModelSpec: {
-          level: 'level2',
-          model: 'untrusted/external-model',
-        },
-        modelSpecSource: 'provider-level',
-        model: null,
-        reasoningEffort: null,
-        modelLevel: null,
-        providerModule,
-        providerSettings: { defaultLevel: 'level2', levelOverrides },
-        levelOverrides,
-      }),
-      {
-        level: 'level2',
-        model: 'kimi/kimi-k2-5',
-        reasoningEffort: 'high',
-      }
+    assert.throws(
+      () =>
+        runner._resolveModelSpec({
+          explicitModelSpec: {
+            level: 'level2',
+            model: 'untrusted/external-model',
+          },
+          modelSpecSource: 'provider-level',
+          model: null,
+          reasoningEffort: null,
+          modelLevel: null,
+          providerModule,
+          providerSettings: { defaultLevel: 'level2', levelOverrides },
+          levelOverrides,
+        }),
+      /does not match the configured level2 model/
     );
   });
 });

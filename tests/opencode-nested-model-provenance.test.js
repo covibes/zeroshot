@@ -7,7 +7,11 @@ const { PassThrough } = require('stream');
 const AgentWrapper = require('../src/agent-wrapper');
 const ClaudeTaskRunner = require('../src/claude-task-runner');
 const { spawnClaudeTaskIsolated } = require('../src/agent/agent-task-executor');
-const { appendTaskRunModelArgs } = require('../src/task-run-model-args');
+const { loadSettings } = require('../lib/settings');
+const {
+  ISOLATED_PROVIDER_SETTINGS_ENV,
+  appendTaskRunModelArgs,
+} = require('../src/task-run-model-args');
 
 const EXTERNAL_MODEL = 'kimi/kimi-k2-5';
 const CATALOG_MODEL = 'openai/gpt-5.2-codex';
@@ -20,10 +24,7 @@ function assertConfiguredModelArgs(args) {
     args.slice(args.indexOf('--model-level'), args.indexOf('--model-level') + 2),
     ['--model-level', 'level2']
   );
-  assert.deepStrictEqual(
-    args.slice(args.indexOf('--configured-model'), args.indexOf('--configured-model') + 2),
-    ['--configured-model', EXTERNAL_MODEL]
-  );
+  assert.strictEqual(args.includes('--configured-model'), false);
   assert.strictEqual(args.includes('--model'), false);
 }
 
@@ -124,6 +125,7 @@ describe('Nested task model argument encoding', function () {
 describe('Nested Docker agent model arguments', function () {
   it('preserves provider-level provenance in the spawned command', async function () {
     let capturedCommand;
+    let capturedOptions;
     const agent = {
       id: 'configured-docker',
       config: { outputFormat: 'json', strictSchema: true },
@@ -131,8 +133,9 @@ describe('Nested Docker agent model arguments', function () {
         enabled: true,
         clusterId: 'test-cluster',
         manager: {
-          spawnInContainer(_clusterId, command) {
+          spawnInContainer(_clusterId, command, options) {
             capturedCommand = command;
+            capturedOptions = options;
             return createClosingProcess();
           },
         },
@@ -154,6 +157,9 @@ describe('Nested Docker agent model arguments', function () {
       /zeroshot task run failed with code 1/
     );
     assertConfiguredModelArgs(capturedCommand);
+    assert.deepStrictEqual(JSON.parse(capturedOptions.env[ISOLATED_PROVIDER_SETTINGS_ENV]), {
+      opencode: loadSettings().providerSettings.opencode,
+    });
   });
 });
 
@@ -176,6 +182,7 @@ describe('Nested ClaudeTaskRunner model arguments', function () {
     assertConfiguredModelArgs(localArgs);
 
     let capturedCommand;
+    let capturedOptions;
     const result = await runner._runIsolated('test context', {
       agentId: 'configured-runner-docker',
       provider: 'opencode',
@@ -185,8 +192,9 @@ describe('Nested ClaudeTaskRunner model arguments', function () {
       isolation: {
         clusterId: 'test-cluster',
         manager: {
-          spawnInContainer(_clusterId, command) {
+          spawnInContainer(_clusterId, command, options) {
             capturedCommand = command;
+            capturedOptions = options;
             return createClosingProcess();
           },
         },
@@ -195,21 +203,19 @@ describe('Nested ClaudeTaskRunner model arguments', function () {
 
     assert.strictEqual(result.success, false);
     assertConfiguredModelArgs(capturedCommand);
+    assert.ok(capturedOptions.env[ISOLATED_PROVIDER_SETTINGS_ENV]);
   });
 });
 
 describe('Nested task-lib model preparation', function () {
-  it('uses passed configured intent without Docker-local settings', async function () {
+  it('derives configured intent from settings and rejects caller-supplied model provenance', async function () {
     const { prepareTaskProviderCommand } = await import('../task-lib/runner.js');
     const dockerSettingsFile = path.join(settingsDir, 'docker-settings.json');
-    fs.writeFileSync(dockerSettingsFile, JSON.stringify({ defaultProvider: 'opencode' }));
-    process.env.ZEROSHOT_SETTINGS_FILE = dockerSettingsFile;
 
     try {
       const prepared = prepareTaskProviderCommand('test context', {
         provider: 'opencode',
         modelLevel: 'level2',
-        configuredModel: EXTERNAL_MODEL,
         reasoningEffort: 'high',
       });
       assert.deepStrictEqual(prepared.options.modelSpec, {
@@ -217,6 +223,24 @@ describe('Nested task-lib model preparation', function () {
         model: EXTERNAL_MODEL,
         reasoningEffort: 'high',
       });
+
+      const snapshot = JSON.stringify({
+        opencode: {
+          defaultLevel: 'level2',
+          levelOverrides: {
+            level2: { model: EXTERNAL_MODEL, reasoningEffort: 'high' },
+          },
+        },
+      });
+      fs.writeFileSync(dockerSettingsFile, JSON.stringify({ defaultProvider: 'opencode' }));
+      process.env.ZEROSHOT_SETTINGS_FILE = dockerSettingsFile;
+      process.env[ISOLATED_PROVIDER_SETTINGS_ENV] = snapshot;
+      const isolatedPrepared = prepareTaskProviderCommand('test context', {
+        provider: 'opencode',
+        modelLevel: 'level2',
+      });
+      assert.strictEqual(isolatedPrepared.options.modelSpec.model, EXTERNAL_MODEL);
+
       assert.throws(
         () =>
           prepareTaskProviderCommand('test context', {
@@ -229,21 +253,13 @@ describe('Nested task-lib model preparation', function () {
         () =>
           prepareTaskProviderCommand('test context', {
             provider: 'opencode',
-            configuredModel: EXTERNAL_MODEL,
-          }),
-        /--configured-model requires --model-level/
-      );
-      assert.throws(
-        () =>
-          prepareTaskProviderCommand('test context', {
-            provider: 'opencode',
-            model: CATALOG_MODEL,
             modelLevel: 'level2',
             configuredModel: EXTERNAL_MODEL,
           }),
-        /--model and --configured-model cannot be used together/
+        /--configured-model is not supported/
       );
     } finally {
+      delete process.env[ISOLATED_PROVIDER_SETTINGS_ENV];
       process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
     }
   });

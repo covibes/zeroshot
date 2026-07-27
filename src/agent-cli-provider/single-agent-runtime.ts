@@ -37,13 +37,11 @@ interface RuntimeProviderSettings {
 interface RuntimeCommandContext {
   readonly cliFeatures: CliFeatureOverrides;
   readonly authEnv: Readonly<Record<string, string>>;
-  readonly modelSpecSource: 'direct' | 'provider-level';
 }
 
 export interface SingleAgentProviderCommandInput {
   readonly provider?: string | null;
   readonly context: string;
-  readonly modelSpecSource?: 'direct' | 'provider-level';
   readonly options?: BuildProviderCommandOptions;
 }
 
@@ -83,6 +81,7 @@ const resolveClaudeAuthFn = moduleFunction(claudeAuthModule, 'resolveClaudeAuth'
 export function prepareSingleAgentProviderCommand(
   input: SingleAgentProviderCommandInput
 ): PreparedSingleAgentProviderCommand {
+  rejectCallerSuppliedModelProvenance(input);
   const baseOptions = input.options ?? {};
   const settings = loadRuntimeSettings();
   const adapter = adapterForRuntimeInput(input.provider, settings);
@@ -96,7 +95,6 @@ export function prepareSingleAgentProviderCommand(
   const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
     cliFeatures,
     authEnv,
-    modelSpecSource: input.modelSpecSource ?? 'direct',
   });
   return {
     adapter,
@@ -191,12 +189,7 @@ function buildRuntimeOptions(
   providerSettings: RuntimeProviderSettings,
   runtime: RuntimeCommandContext
 ): BuildProviderCommandOptions {
-  const modelSpec = resolveRuntimeModelSpec(
-    adapter,
-    baseOptions.modelSpec,
-    providerSettings,
-    runtime.modelSpecSource
-  );
+  const modelSpec = resolveRuntimeModelSpec(adapter, baseOptions.modelSpec, providerSettings);
   const gateway = resolveRuntimeGatewayOptions(
     adapter.id,
     baseOptions,
@@ -259,19 +252,9 @@ function shouldIncludeAuthEnv(
 function resolveRuntimeModelSpec(
   adapter: ProviderAdapter,
   explicit: ModelSpec | undefined,
-  providerSettings: RuntimeProviderSettings,
-  modelSpecSource: 'direct' | 'provider-level'
+  providerSettings: RuntimeProviderSettings
 ): ModelSpec {
   if (explicit?.model !== undefined) {
-    if (modelSpecSource === 'provider-level') {
-      if (explicit.level === undefined) {
-        throw new Error('Provider-level task model selections require a model level.');
-      }
-      const validateConfiguredModelId =
-        adapter.validateConfiguredModelId ?? adapter.validateModelId;
-      validateConfiguredModelId(explicit.model);
-      return explicit;
-    }
     adapter.validateModelId(explicit.model);
     return explicit;
   }
@@ -376,8 +359,37 @@ function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
 }
 
 function loadRuntimeSettings(): Record<string, unknown> {
-  const settings = loadSettingsFn();
-  return requiredRecord(settings, 'loadSettings');
+  const settings = requiredRecord(loadSettingsFn(), 'loadSettings');
+  const snapshotJson = process.env.ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON;
+  if (snapshotJson === undefined) return settings;
+
+  const snapshot = isolatedProviderSettingsFromJson(snapshotJson);
+  const configured = optionalRecord(settings.providerSettings, 'settings.providerSettings') ?? {};
+  return {
+    ...settings,
+    providerSettings: {
+      ...configured,
+      ...snapshot,
+    },
+  };
+}
+
+function isolatedProviderSettingsFromJson(value: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error('ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON must be valid JSON.');
+  }
+  return requiredRecord(parsed, 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON');
+}
+
+function rejectCallerSuppliedModelProvenance(input: SingleAgentProviderCommandInput): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'modelSpecSource')) {
+    throw new Error(
+      'modelSpecSource is not accepted at the child provider boundary; use modelLevel and effective provider settings.'
+    );
+  }
 }
 
 function moduleFunction(moduleValue: unknown, field: string): UnknownFunction {
