@@ -1,0 +1,83 @@
+[
+  {
+    "cursor": "cursor-1",
+    "event": {
+      "admission": {
+        "runId": "run-1",
+        "seedInput": null,
+        "spec": {
+          "initialInput": {
+            "kind": "null"
+          },
+          "policy": {
+            "default": "deny",
+            "policy": "policy.default@1"
+          },
+          "profile": "openengine.graph.single-worker/v1",
+          "root": {
+            "attempts": 1,
+            "input": {
+              "kind": "null"
+            },
+            "inputBindings": [],
+            "kind": "step",
+            "name": "worker",
+            "output": {
+              "kind": "null"
+            },
+            "timeoutMs": 1000,
+            "worker": "legacy.zeroshot.ship@1",
+            "writeBindings": []
+          }
+        }
+      },
+      "status": {
+        "atCursor": "cursor-1",
+        "currentRunId": "run-1",
+        "observedGeneration": 1,
+        "operational": {
+          "dispatchState": "active",
+          "inFlight": 0,
+          "labels": {},
+          "logLevel": "info"
+        },
+        "phase": "running"
+      },
+      "type": "phase"
+    },
+    "runId": "run-1",
+    "subscriptionId": "sub-1"
+  },
+  {
+    "cursor": "cursor-2",
+    "event": {
+      "input": {
+        "kind": "null"
+      },
+      "node": {
+        "attempt": 1,
+        "node": "worker"
+      },
+      "type": "node_begin"
+    },
+    "runId": "run-1",
+    "subscriptionId": "sub-1"
+  },
+  {
+    "cursor": "cursor-3",
+    "event": {
+      "node": {
+        "attempt": 1,
+        "node": "worker"
+      },
+      "outcome": {
+        "artifacts": [],
+        "output": null,
+        "status": "verified"
+      },
+      "type": "node_end"
+    },
+    "runId": "run-1",
+    "subscriptionId": "sub-1"
+  }
+]

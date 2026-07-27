@@ -1,0 +1,30 @@
+[
+  {
+    "action": "retry",
+    "code": "unavailable",
+    "consequence": "turn_failed",
+    "eventId": "evt-1",
+    "retry": "retryable_after_backoff",
+    "severity": "error",
+    "source": [
+      {
+        "component": "worker-dispatch"
+      }
+    ],
+    "summary": "upstream worker unavailable"
+  },
+  {
+    "action": "abort",
+    "code": "permission_denied",
+    "consequence": "run_failed",
+    "eventId": "evt-2",
+    "retry": "not_retryable",
+    "severity": "critical",
+    "source": [
+      {
+        "component": "worker-dispatch"
+      }
+    ],
+    "summary": "upstream worker unavailable"
+  }
+]

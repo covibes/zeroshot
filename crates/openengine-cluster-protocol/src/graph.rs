@@ -15,35 +15,12 @@ use crate::{
     PositiveInteger,
 };
 
-pub const FULL_GRAPH_PROFILE: &str = "openengine.graph.full/v1";
-pub const SINGLE_WORKER_GRAPH_PROFILE: &str = "openengine.graph.single-worker/v1";
+pub use crate::graph_profile::{
+    GraphProfile, GraphProfileSet, GraphProfilesError, FULL_GRAPH_PROFILE, GRAPH_PROFILES,
+    SINGLE_WORKER_GRAPH_PROFILE,
+};
+
 pub const LEGACY_ZEROSHOT_WORKER: &str = "legacy.zeroshot.ship@1";
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub enum GraphProfile {
-    #[serde(rename = "openengine.graph.full/v1")]
-    #[schemars(rename = "openengine.graph.full/v1")]
-    Full,
-    #[serde(rename = "openengine.graph.single-worker/v1")]
-    #[schemars(rename = "openengine.graph.single-worker/v1")]
-    SingleWorker,
-}
-
-impl GraphProfile {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Full => FULL_GRAPH_PROFILE,
-            Self::SingleWorker => SINGLE_WORKER_GRAPH_PROFILE,
-        }
-    }
-}
-
-impl fmt::Display for GraphProfile {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum StableRefError {

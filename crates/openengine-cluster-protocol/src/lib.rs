@@ -1,25 +1,35 @@
 //! Canonical Open Engine Cluster Protocol wire and domain types.
 
 pub mod admission;
+pub mod agent_attach;
 pub mod artifact;
 pub mod canonical;
 pub mod diagnostic;
+pub mod fault;
 pub mod graph;
+mod graph_profile;
 pub mod lifecycle;
+pub mod logs;
 pub mod payload;
 mod payload_value;
 mod value;
+pub mod watch;
+mod wire;
 pub mod worker;
 
 pub use worker::*;
+pub use agent_attach::*;
 pub use artifact::*;
 pub use admission::*;
 pub use canonical::*;
 pub use diagnostic::*;
+pub use fault::*;
 pub use graph::*;
 pub use lifecycle::*;
+pub use logs::*;
 pub use payload::*;
 pub use payload_value::*;
+pub use watch::*;
 
 use std::borrow::Cow;
 
@@ -53,11 +63,33 @@ pub enum RequestId {
     Integer(i64),
 }
 
+impl RequestId {
+    /// Parses a JSON-RPC id from a decoded [`Value`]: a string, or a number representable as an
+    /// `i64`. Shared by the server's request dispatcher and the client's response demultiplexer
+    /// so both apply the exact same id-shape rules.
+    #[must_use]
+    pub fn from_json_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::String(value) => Some(Self::String(value.clone())),
+            Value::Number(value) => value.as_i64().map(Self::Integer),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonRpcRequest<P> {
     pub jsonrpc: String,
     pub id: RequestId,
+    pub method: String,
+    pub params: P,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JsonRpcNotification<P> {
+    pub jsonrpc: String,
     pub method: String,
     pub params: P,
 }
@@ -173,9 +205,30 @@ pub struct GetResult {
     pub at_cursor: Option<Cursor>,
 }
 
+impl GetResult {
+    /// A `get` result carrying no spec, no cursor, and an empty cluster status. Used by fixture
+    /// backends that exist only to exercise one specific capability.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            spec: None,
+            status: ClusterStatus::empty(),
+            at_cursor: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ServerCapabilities {}
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ServerCapabilities {
+    #[serde(default)]
+    #[schemars(schema_with = "graph_profile::graph_profile_set_schema")]
+    pub graph_profiles: GraphProfileSet,
+    #[serde(default)]
+    pub logs: bool,
+    #[serde(default)]
+    pub agent_attach: bool,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,9 +261,19 @@ pub enum Phase {
     Admitting,
     Running,
     Finished,
+    Deleting,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+impl Phase {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Finished)
+    }
+}
+
+#[derive(
+    Clone, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(transparent)]
 pub struct Cursor(String);
 
@@ -226,7 +289,9 @@ impl Cursor {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(
+    Clone, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+)]
 #[serde(transparent)]
 pub struct RunId(String);
 

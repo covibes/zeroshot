@@ -28,6 +28,7 @@ const { readRepoSettings } = require('../lib/repo-settings');
 const { provisionClaudeCredentials } = require('./claude-credentials');
 
 const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
+const FRESH_BASE_REF_PREFIX = 'refs/zeroshot/base-fetch';
 
 function runSync(command, args, options = {}) {
   const timeout = options.timeout ?? 30000;
@@ -46,6 +47,61 @@ function runSync(command, args, options = {}) {
 
 function runShellSync(command, options = {}) {
   return runSync('/bin/bash', ['-lc', command], options);
+}
+
+function resolveCommit(repoRoot, ref) {
+  return runSync('git', ['rev-parse', '--verify', `${ref}^{commit}`], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: 'pipe',
+  }).trim();
+}
+
+function deleteTemporaryBaseRef(repoRoot, temporaryRef) {
+  try {
+    runSync('git', ['update-ref', '-d', temporaryRef], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
+  } catch (err) {
+    console.warn(
+      `[IsolationManager] Warning: failed to remove temporary base ref ${temporaryRef}: ${err.message}`
+    );
+  }
+}
+
+function fetchFreshRemoteBase(repoRoot, remoteName, branch) {
+  const temporaryRef = `${FRESH_BASE_REF_PREFIX}/${crypto.randomBytes(16).toString('hex')}`;
+
+  try {
+    runSync(
+      'git',
+      [
+        'fetch',
+        '--atomic',
+        '--no-tags',
+        '--no-write-fetch-head',
+        '--refmap=',
+        '--',
+        remoteName,
+        `+refs/heads/${branch}:${temporaryRef}`,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }
+    );
+
+    return {
+      baseSha: resolveCommit(repoRoot, temporaryRef),
+      temporaryRef,
+    };
+  } catch (err) {
+    deleteTemporaryBaseRef(repoRoot, temporaryRef);
+    throw err;
+  }
 }
 
 function expandHomePath(value) {
@@ -127,7 +183,7 @@ class IsolationManager {
     this.containers = new Map(); // clusterId -> containerId
     this.isolatedDirs = new Map(); // clusterId -> { path, originalDir }
     this.clusterConfigDirs = new Map(); // clusterId -> configDirPath
-    this.worktrees = new Map(); // clusterId -> { path, branch, repoRoot }
+    this.worktrees = new Map(); // clusterId -> { path, branch, repoRoot, baseRef, baseSha }
     this._exitWatchers = new Map(); // clusterId -> ChildProcess
   }
 
@@ -1443,7 +1499,7 @@ class IsolationManager {
    * Creates a git worktree at ~/.zeroshot/worktrees/{clusterId}
    * @param {string} clusterId - Cluster ID
    * @param {string} workDir - Original working directory (must be a git repo)
-   * @returns {{ path: string, branch: string, repoRoot: string }}
+   * @returns {{ path: string, branch: string, repoRoot: string, baseRef: string, baseSha: string }}
    */
   createWorktreeIsolation(clusterId, workDir, options = {}) {
     if (!this._isGitRepo(workDir)) {
@@ -1485,8 +1541,10 @@ class IsolationManager {
    * @param {string} workDir - Original working directory
    * @param {object} [options] - Worktree creation options
    * @param {string} [options.baseRef] - Git ref to base the worktree branch on
+   * @param {string} [options.remoteName=origin] - Remote used by a remote base ref
+   * @param {boolean} [options.requireFreshBase=false] - Require a freshly fetched remote base
    * @param {number} [options.worktreeSetupTimeoutMs] - Setup command timeout in milliseconds
-   * @returns {{ path: string, branch: string, repoRoot: string }}
+   * @returns {{ path: string, branch: string, repoRoot: string, baseRef: string, baseSha: string }}
    */
   createWorktree(clusterId, workDir, options = {}) {
     const repoRoot = this._getGitRoot(workDir);
@@ -1560,19 +1618,41 @@ class IsolationManager {
     }
     const worktreeSetupTimeoutMs = resolveWorktreeSetupTimeoutMs(repoSettings, options);
 
-    // Best-effort ensure origin/<branch> exists locally if requested.
-    if (worktreeBaseRef && worktreeBaseRef.startsWith('origin/')) {
-      const branch = worktreeBaseRef.slice('origin/'.length);
-      try {
-        runSync('git', ['fetch', 'origin', branch], {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          stdio: 'pipe',
-        });
-      } catch {
-        // ignore
+    const baseRef = worktreeBaseRef || 'HEAD';
+    const remoteName = options.remoteName || 'origin';
+    let baseSha;
+    let temporaryBaseRef = null;
+
+    if (worktreeBaseRef && worktreeBaseRef.startsWith(`${remoteName}/`)) {
+      const branch = worktreeBaseRef.slice(remoteName.length + 1);
+      const remoteTrackingRef = `refs/remotes/${remoteName}/${branch}`;
+
+      if (options.requireFreshBase === true) {
+        const freshBase = fetchFreshRemoteBase(repoRoot, remoteName, branch);
+        baseSha = freshBase.baseSha;
+        temporaryBaseRef = freshBase.temporaryRef;
+      } else {
+        try {
+          runSync(
+            'git',
+            ['fetch', '--no-tags', '--', remoteName, `+refs/heads/${branch}:${remoteTrackingRef}`],
+            {
+              cwd: repoRoot,
+              encoding: 'utf8',
+              stdio: 'pipe',
+            }
+          );
+        } catch {
+          // Repository worktree settings historically allowed an offline cached remote ref.
+        }
+        baseSha = resolveCommit(repoRoot, remoteTrackingRef);
       }
+    } else {
+      baseSha = resolveCommit(repoRoot, baseRef);
     }
+
+    console.log(`[IsolationManager] Worktree base ref: ${baseRef}`);
+    console.log(`[IsolationManager] Worktree base commit: ${baseSha}`);
 
     // Create branch name from cluster ID (e.g., cluster-cosmic-meteor-87 -> zeroshot/cosmic-meteor-87)
     const baseBranchName = `zeroshot/${clusterId.replace(/^cluster-/, '')}`;
@@ -1581,44 +1661,18 @@ class IsolationManager {
     // Worktree path in persistent location (survives reboots)
     const worktreePath = path.join(os.homedir(), '.zeroshot', 'worktrees', clusterId);
 
-    // Ensure parent directory exists
-    const parentDir = path.dirname(worktreePath);
-    if (!fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true });
-    }
-
-    // Best-effort cleanup of stale worktree metadata and directory.
-    // IMPORTANT: If a previous run deleted the directory without deregistering the worktree,
-    // git may keep the branch "checked out" and block deletion/reuse.
     try {
-      runSync('git', ['worktree', 'remove', '--force', worktreePath], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
-    } catch {
-      // ignore
-    }
-    try {
-      runSync('git', ['worktree', 'prune'], { cwd: repoRoot, encoding: 'utf8', stdio: 'pipe' });
-    } catch {
-      // ignore
-    }
-    try {
-      fs.rmSync(worktreePath, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
+      // Ensure parent directory exists
+      const parentDir = path.dirname(worktreePath);
+      if (!fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true });
+      }
 
-    const baseRef = worktreeBaseRef || 'HEAD';
-    console.log(`[IsolationManager] Worktree base ref: ${baseRef}`);
-    console.log(`[IsolationManager] Worktree path: ${worktreePath}`);
-
-    // Create worktree with new branch based on baseRef (retry on branch collision/in-use)
-    for (let attempt = 0; attempt < 10; attempt++) {
-      // Best-effort delete if branch exists and is not in use by another worktree.
+      // Best-effort cleanup of stale worktree metadata and directory.
+      // IMPORTANT: If a previous run deleted the directory without deregistering the worktree,
+      // git may keep the branch "checked out" and block deletion/reuse.
       try {
-        runSync('git', ['branch', '-D', branchName], {
+        runSync('git', ['worktree', 'remove', '--force', worktreePath], {
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: 'pipe',
@@ -1626,38 +1680,72 @@ class IsolationManager {
       } catch {
         // ignore
       }
-
       try {
-        runSync('git', ['worktree', 'add', '-b', branchName, worktreePath, baseRef], {
+        runSync('git', ['worktree', 'prune'], {
           cwd: repoRoot,
           encoding: 'utf8',
           stdio: 'pipe',
         });
-        console.log(`[IsolationManager] Worktree setup phase: created branch ${branchName}`);
-        break;
-      } catch (err) {
-        const stderr = (
-          err && (err.stderr || err.message) ? String(err.stderr || err.message) : ''
-        ).toLowerCase();
-        const isBranchCollision =
-          stderr.includes('already exists') ||
-          stderr.includes('cannot delete branch') ||
-          stderr.includes('checked out');
+      } catch {
+        // ignore
+      }
+      try {
+        fs.rmSync(worktreePath, { recursive: true, force: true });
+      } catch {
+        // ignore
+      }
 
-        if (attempt < 9 && isBranchCollision) {
-          branchName = `${baseBranchName}-${crypto.randomBytes(3).toString('hex')}`;
-          try {
-            runSync('git', ['worktree', 'prune'], {
-              cwd: repoRoot,
-              encoding: 'utf8',
-              stdio: 'pipe',
-            });
-          } catch {
-            // ignore
-          }
-          continue;
+      console.log(`[IsolationManager] Worktree path: ${worktreePath}`);
+
+      // Create worktree with new branch based on baseRef (retry on branch collision/in-use)
+      for (let attempt = 0; attempt < 10; attempt++) {
+        // Best-effort delete if branch exists and is not in use by another worktree.
+        try {
+          runSync('git', ['branch', '-D', branchName], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            stdio: 'pipe',
+          });
+        } catch {
+          // ignore
         }
-        throw err;
+
+        try {
+          runSync('git', ['worktree', 'add', '-b', branchName, worktreePath, baseSha], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            stdio: 'pipe',
+          });
+          console.log(`[IsolationManager] Worktree setup phase: created branch ${branchName}`);
+          break;
+        } catch (err) {
+          const stderr = (
+            err && (err.stderr || err.message) ? String(err.stderr || err.message) : ''
+          ).toLowerCase();
+          const isBranchCollision =
+            stderr.includes('already exists') ||
+            stderr.includes('cannot delete branch') ||
+            stderr.includes('checked out');
+
+          if (attempt < 9 && isBranchCollision) {
+            branchName = `${baseBranchName}-${crypto.randomBytes(3).toString('hex')}`;
+            try {
+              runSync('git', ['worktree', 'prune'], {
+                cwd: repoRoot,
+                encoding: 'utf8',
+                stdio: 'pipe',
+              });
+            } catch {
+              // ignore
+            }
+            continue;
+          }
+          throw err;
+        }
+      }
+    } finally {
+      if (temporaryBaseRef) {
+        deleteTemporaryBaseRef(repoRoot, temporaryBaseRef);
       }
     }
 
@@ -1684,6 +1772,8 @@ class IsolationManager {
       path: worktreePath,
       branch: branchName,
       repoRoot,
+      baseRef,
+      baseSha,
     };
   }
 

@@ -1,34 +1,11 @@
 use async_trait::async_trait;
 use openengine_cluster_client::{ClientError, ClusterClient, JsonRpcTransport, TransportError};
 use openengine_cluster_protocol::{Generation, IdempotencyKey, StopMode, StopParams, UpdateParams};
-use serde_json::{json, Value};
-use std::{collections::VecDeque, sync::Arc};
-use tokio::sync::Mutex;
+use serde_json::json;
 
-#[derive(Clone)]
-struct ScriptedTransport {
-    requests: Arc<Mutex<Vec<Value>>>,
-    results: Arc<Mutex<VecDeque<Value>>>,
-}
-
-impl ScriptedTransport {
-    fn new(results: impl IntoIterator<Item = Value>) -> Self {
-        Self {
-            requests: Arc::new(Mutex::new(Vec::new())),
-            results: Arc::new(Mutex::new(results.into_iter().collect())),
-        }
-    }
-}
-
-#[async_trait]
-impl JsonRpcTransport for ScriptedTransport {
-    async fn request(&self, request: String) -> Result<String, TransportError> {
-        let request: Value = serde_json::from_str(&request).unwrap();
-        self.requests.lock().await.push(request.clone());
-        let result = self.results.lock().await.pop_front().unwrap();
-        Ok(json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string())
-    }
-}
+#[path = "scripted_transport_support/mod.rs"]
+mod scripted_transport_support;
+use scripted_transport_support::ScriptedTransport;
 
 fn generation() -> Generation {
     Generation::new(1).unwrap()

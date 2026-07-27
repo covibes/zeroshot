@@ -1,0 +1,13 @@
+{
+  "validation": {
+    "checks": {
+      "rust": {
+        "functionMetrics": {
+          "maxFunctionLines": 80,
+          "maxComplexity": 10,
+          "maxParams": 6
+        }
+      }
+    }
+  }
+}

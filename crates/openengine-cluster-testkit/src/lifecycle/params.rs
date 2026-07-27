@@ -1,6 +1,11 @@
 //! Typed lifecycle parameter constructors for deterministic fixtures.
 
-use openengine_cluster_protocol::{Generation, IdempotencyKey, StopMode, StopParams, UpdateParams};
+use openengine_cluster_protocol::{
+    DeleteParams, Generation, IdempotencyKey, ResubmitParams, RetryParams, RunId, StopMode,
+    StopParams, TurnFailureKind, UpdateParams,
+};
+use openengine_cluster_server::lifecycle::{FailedCompletion, FailureRetryability, LeaseId};
+use serde_json::Value;
 
 #[must_use]
 pub fn suspend(generation: u64, key: &str) -> UpdateParams {
@@ -28,6 +33,60 @@ pub fn stop(mode: StopMode, generation: u64, key: &str) -> StopParams {
         mode,
         if_generation: fixture_generation(generation),
         idempotency_key: fixture_key(key),
+    }
+}
+
+#[must_use]
+pub fn retry(generation: u64, key: &str) -> RetryParams {
+    RetryParams {
+        if_generation: fixture_generation(generation),
+        idempotency_key: fixture_key(key),
+    }
+}
+
+#[must_use]
+pub fn resubmit(
+    generation: u64,
+    run_id: &str,
+    key: &str,
+    replacement: Option<Value>,
+) -> ResubmitParams {
+    ResubmitParams {
+        if_generation: fixture_generation(generation),
+        if_run_id: RunId::new(run_id),
+        idempotency_key: fixture_key(key),
+        replacement_input: replacement,
+    }
+}
+
+#[must_use]
+pub fn delete(generation: u64, run_id: Option<&str>, key: &str) -> DeleteParams {
+    DeleteParams {
+        if_generation: fixture_generation(generation),
+        if_run_id: run_id.map(RunId::new),
+        idempotency_key: fixture_key(key),
+    }
+}
+
+#[must_use]
+pub fn fail(kind: TurnFailureKind, lease_id: &str) -> FailedCompletion {
+    failed_completion(kind, lease_id, FailureRetryability::Retryable)
+}
+
+#[must_use]
+pub fn fail_exhausted(kind: TurnFailureKind, lease_id: &str) -> FailedCompletion {
+    failed_completion(kind, lease_id, FailureRetryability::AttemptsExhausted)
+}
+
+fn failed_completion(
+    kind: TurnFailureKind,
+    lease_id: &str,
+    retryability: FailureRetryability,
+) -> FailedCompletion {
+    FailedCompletion {
+        lease_id: LeaseId::new(lease_id),
+        kind,
+        retryability,
     }
 }
 

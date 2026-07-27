@@ -12,6 +12,16 @@ Operational rules and references for automated agents working on this repo. Inst
 - Never ask questions. Agents run non-interactively; make autonomous decisions.
 - Never edit `CLAUDE.md` unless explicitly asked to update docs.
 - Detached (`-d`) runs must forward all `zeroshot run` options via `ZEROSHOT_RUN_OPTIONS` (see `buildDaemonEnv` + `buildStartOptions`) so PR/worktree config cannot be dropped.
+- `main` is the single development and release trunk. Target normal PRs at `main`; never recreate a
+  long-lived `dev -> main` release-promotion flow.
+- Pull request titles are Conventional Commit headers because squash merge makes the title the
+  released commit. `fix:`/`perf:` publish patches, `feat:` publishes minors, breaking syntax
+  publishes majors, and `docs:`/`chore:` intentionally publish nothing.
+- The checked-in package version is always `0.0.0-development`. Release tags, npm metadata, and
+  GitHub Releases are authoritative; release automation must never commit versions back to `main`.
+- Curated notes live at `docs/releases/vX.Y.Z.md`. Recovery may operate only from an immutable
+  `vX.Y.Z` tag whose exact commit is an ancestor of `main`, and it must never overwrite an existing
+  npm version or GitHub Release.
 
 Worker git operations are allowed only with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). They are forbidden without isolation.
 
@@ -21,70 +31,93 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 
 ## Where to Look
 
-| Concept                     | File                                                                 |
-| --------------------------- | -------------------------------------------------------------------- |
-| Conductor classification    | `src/conductor-bootstrap.js`                                         |
-| Base templates              | `cluster-templates/base-templates/`                                  |
-| Message bus                 | `src/message-bus.js`                                                 |
-| Ledger (SQLite)             | `src/ledger.js`                                                      |
-| Guidance topics             | `src/guidance-topics.js`                                             |
-| Guidance mailbox helper     | `src/ledger.js`                                                      |
-| Guidance live injection     | `src/orchestrator.js`                                                |
-| Trigger evaluation          | `src/logic-engine.js`                                                |
-| Agent wrapper               | `src/agent-wrapper.js`                                               |
-| Providers registry          | `src/providers/index.js`                                             |
-| Provider implementations    | `src/providers/`                                                     |
-| Provider engine registry    | `src/agent-cli-provider/provider-registry.ts`                        |
-| Gateway runner              | `src/agent-cli-provider/gateway-runner.ts`                           |
-| Gateway tools/policy        | `src/agent-cli-provider/gateway-tools.ts`                            |
-| Provider detection          | `lib/provider-detection.js`                                          |
-| Provider capabilities       | `src/providers/capabilities.js`                                      |
-| Start-cluster helper        | `lib/start-cluster.js`                                               |
-| Legacy worker facade        | `lib/cluster-worker/`                                                |
-| Legacy worker executable    | `bin/zeroshot-cluster-worker.js`                                     |
-| Docker mounts/env           | `lib/docker-config.js`                                               |
-| Container lifecycle         | `src/isolation-manager.js`                                           |
-| Settings                    | `lib/settings.js`                                                    |
-| Cluster wire/domain types   | `crates/openengine-cluster-protocol/`                                |
-| Admission wire semantics    | `crates/openengine-cluster-protocol/src/admission.rs`                |
-| Graph AST/bindings/guards   | `crates/openengine-cluster-protocol/src/graph.rs`                    |
-| Closed payload algebra      | `crates/openengine-cluster-protocol/src/payload.rs`                  |
-| Closed payload validation   | `crates/openengine-cluster-protocol/src/payload_value.rs`            |
-| Compiled IR/identity        | `crates/openengine-cluster-protocol/src/canonical.rs`                |
-| Artifact receipts           | `crates/openengine-cluster-protocol/src/artifact.rs`                 |
-| Graph diagnostics/bounds    | `crates/openengine-cluster-protocol/src/diagnostic.rs`               |
-| Shared wire-value bounds    | `crates/openengine-cluster-protocol/src/value.rs`                    |
-| Cluster dispatch/stdio      | `crates/openengine-cluster-server/`                                  |
-| Graph verifier facade       | `crates/openengine-cluster-server/src/graph_verifier.rs`             |
-| Graph verifier analysis     | `crates/openengine-cluster-server/src/graph_verifier/`               |
-| Native product construction | `zeroshot-rust/`                                                     |
-| Artifact store port/fake    | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`      |
-| Product-local artifact CAS  | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`        |
-| Issue provider contracts    | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`             |
-| Source provider contracts   | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/` |
-| Provider value bounds       | `zeroshot-rust/src/provider_value.rs`, `provider_value/`             |
-| Native safe faults          | `zeroshot-rust/src/fault.rs`                                         |
-| Native fault taxonomy       | `zeroshot-rust/src/fault/taxonomy.rs`                                |
-| Native diagnostic redaction | `zeroshot-rust/src/fault/redaction.rs`                               |
-| Native observability        | `zeroshot-rust/src/observability.rs`                                 |
-| Admission coordinator       | `crates/openengine-cluster-server/src/admission.rs`                  |
-| Admission durable ports     | `crates/openengine-cluster-server/src/admission/ports.rs`            |
-| Admission snapshot folding  | `crates/openengine-cluster-server/src/admission/snapshot.rs`         |
-| Lifecycle state machine     | `crates/openengine-cluster-server/src/lifecycle.rs`                  |
-| Lifecycle durable ports     | `crates/openengine-cluster-server/src/lifecycle/ports.rs`            |
-| Cluster typed transports    | `crates/openengine-cluster-client/`                                  |
-| Cluster fixtures/artifacts  | `crates/openengine-cluster-testkit/`                                 |
-| Scripted admission fixtures | `crates/openengine-cluster-testkit/src/admission.rs`                 |
-| Fixture inspection controls | `crates/openengine-cluster-testkit/src/admission/inspection.rs`      |
-| Scripted lifecycle helpers  | `crates/openengine-cluster-testkit/src/lifecycle.rs`                 |
-| Lifecycle fixture params    | `crates/openengine-cluster-testkit/src/lifecycle/params.rs`          |
-| Admission transcript output | `crates/openengine-cluster-testkit/src/admission_artifacts.rs`       |
-| Negative graph vectors      | `crates/openengine-cluster-testkit/src/negative_graph_fixtures.rs`   |
-| Verifier vectors            | `crates/openengine-cluster-testkit/src/graph_verifier_artifacts.rs`  |
-| Graph contract prose        | `docs/openengine-cluster-protocol/v1/graph-contract.md`              |
-| Admission contract prose    | `docs/openengine-cluster-protocol/v1/admission.md`                   |
-| Lifecycle contract prose    | `docs/openengine-cluster-protocol/v1/lifecycle.md`                   |
-| Generated graph fixtures    | `protocol/openengine-cluster/v1/fixtures/graph/`                     |
+| Concept                      | File                                                                    |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| Conductor classification     | `src/conductor-bootstrap.js`                                            |
+| Base templates               | `cluster-templates/base-templates/`                                     |
+| Message bus                  | `src/message-bus.js`                                                    |
+| Ledger (SQLite)              | `src/ledger.js`                                                         |
+| Guidance topics              | `src/guidance-topics.js`                                                |
+| Guidance mailbox helper      | `src/ledger.js`                                                         |
+| Guidance live injection      | `src/orchestrator.js`                                                   |
+| Trigger evaluation           | `src/logic-engine.js`                                                   |
+| Agent wrapper                | `src/agent-wrapper.js`                                                  |
+| Providers registry           | `src/providers/index.js`                                                |
+| Provider implementations     | `src/providers/`                                                        |
+| Provider engine registry     | `src/agent-cli-provider/provider-registry.ts`                           |
+| Gateway runner               | `src/agent-cli-provider/gateway-runner.ts`                              |
+| Gateway tools/policy         | `src/agent-cli-provider/gateway-tools.ts`                               |
+| Provider detection           | `lib/provider-detection.js`                                             |
+| Provider capabilities        | `src/providers/capabilities.js`                                         |
+| Start-cluster helper         | `lib/start-cluster.js`                                                  |
+| Legacy worker facade         | `lib/cluster-worker/`                                                   |
+| Legacy worker executable     | `bin/zeroshot-cluster-worker.js`                                        |
+| Docker mounts/env            | `lib/docker-config.js`                                                  |
+| Container lifecycle          | `src/isolation-manager.js`                                              |
+| Settings                     | `lib/settings.js`                                                       |
+| Cluster wire/domain types    | `crates/openengine-cluster-protocol/`                                   |
+| Admission wire semantics     | `crates/openengine-cluster-protocol/src/admission.rs`                   |
+| Graph AST/bindings/guards    | `crates/openengine-cluster-protocol/src/graph.rs`                       |
+| Closed payload algebra       | `crates/openengine-cluster-protocol/src/payload.rs`                     |
+| Closed payload validation    | `crates/openengine-cluster-protocol/src/payload_value.rs`               |
+| Compiled IR/identity         | `crates/openengine-cluster-protocol/src/canonical.rs`                   |
+| Artifact receipts            | `crates/openengine-cluster-protocol/src/artifact.rs`                    |
+| Graph diagnostics/bounds     | `crates/openengine-cluster-protocol/src/diagnostic.rs`                  |
+| Shared wire-value bounds     | `crates/openengine-cluster-protocol/src/value.rs`                       |
+| Cluster dispatch/stdio       | `crates/openengine-cluster-server/`                                     |
+| Graph verifier facade        | `crates/openengine-cluster-server/src/graph_verifier.rs`                |
+| Graph verifier analysis      | `crates/openengine-cluster-server/src/graph_verifier/`                  |
+| Native product construction  | `zeroshot-rust/`                                                        |
+| Native cluster ledger        | `zeroshot-rust/src/cluster_ledger.rs`                                   |
+| Ledger store port/fake       | `zeroshot-rust/src/cluster_ledger/store.rs`, `store/fake.rs`            |
+| SQLite ledger store          | `zeroshot-rust/src/cluster_ledger/store/sqlite.rs`, `store/sqlite/`     |
+| SQLite append/query helpers  | `zeroshot-rust/src/cluster_ledger/store/sqlite/{operations,queries}.rs` |
+| Ledger records/replay        | `zeroshot-rust/src/cluster_ledger/record.rs`, `replay.rs`               |
+| Protocol ledger adapters     | `zeroshot-rust/src/cluster_ledger/adapters.rs`                          |
+| Artifact store port/fake     | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`         |
+| Product-local artifact CAS   | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`           |
+| Issue provider contracts     | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                |
+| Source provider contracts    | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`    |
+| Provider value bounds        | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                |
+| Execution runtime seam       | `zeroshot-rust/src/execution.rs`, `execution/types.rs`                  |
+| Local runtime + drivers      | `zeroshot-rust/src/execution/{local,driver}.rs`                         |
+| Local process runner         | `zeroshot-rust/src/execution/process.rs`                                |
+| Fair scheduler               | `zeroshot-rust/src/scheduler.rs`                                        |
+| Native safe faults           | `zeroshot-rust/src/fault.rs`                                            |
+| Native fault taxonomy        | `zeroshot-rust/src/fault/taxonomy.rs`                                   |
+| Native diagnostic redaction  | `zeroshot-rust/src/fault/redaction.rs`                                  |
+| Native observability         | `zeroshot-rust/src/observability.rs`                                    |
+| Admission coordinator        | `crates/openengine-cluster-server/src/admission.rs`                     |
+| Admission durable ports      | `crates/openengine-cluster-server/src/admission/ports.rs`               |
+| Admission snapshot folding   | `crates/openengine-cluster-server/src/admission/snapshot.rs`            |
+| Lifecycle state machine      | `crates/openengine-cluster-server/src/lifecycle.rs`                     |
+| Lifecycle durable ports      | `crates/openengine-cluster-server/src/lifecycle/ports.rs`               |
+| Watch event stream/handle    | `crates/openengine-cluster-server/src/watch.rs`                         |
+| Watch observation port       | `crates/openengine-cluster-server/src/watch/ports.rs`                   |
+| Watch minimal test fixture   | `crates/openengine-cluster-server/src/watch/fixtures.rs`                |
+| Watch wire types/framing     | `crates/openengine-cluster-protocol/src/watch.rs`                       |
+| Client watch/reconnect       | `crates/openengine-cluster-client/src/watch.rs`                         |
+| NDJSON stdio binding         | `crates/openengine-cluster-server/src/stdio.rs`                         |
+| NDJSON watch client          | `crates/openengine-cluster-client/src/ndjson_watch.rs`                  |
+| NDJSON task admission        | `crates/openengine-cluster-server/src/stdio/admission.rs`               |
+| NDJSON response pump         | `crates/openengine-cluster-client/src/ndjson_pump.rs`                   |
+| Cluster typed transports     | `crates/openengine-cluster-client/`                                     |
+| Cluster fixtures/artifacts   | `crates/openengine-cluster-testkit/`                                    |
+| Scripted admission fixtures  | `crates/openengine-cluster-testkit/src/admission.rs`                    |
+| Fixture inspection controls  | `crates/openengine-cluster-testkit/src/admission/inspection.rs`         |
+| Scripted lifecycle helpers   | `crates/openengine-cluster-testkit/src/lifecycle.rs`                    |
+| Lifecycle fixture params     | `crates/openengine-cluster-testkit/src/lifecycle/params.rs`             |
+| In-memory observation store  | `crates/openengine-cluster-testkit/src/watch.rs`                        |
+| Admission transcript output  | `crates/openengine-cluster-testkit/src/admission_artifacts.rs`          |
+| Watch/subscription artifacts | `crates/openengine-cluster-testkit/src/watch_artifacts.rs`              |
+| Negative graph vectors       | `crates/openengine-cluster-testkit/src/negative_graph_fixtures.rs`      |
+| Verifier vectors             | `crates/openengine-cluster-testkit/src/graph_verifier_artifacts.rs`     |
+| Graph contract prose         | `docs/openengine-cluster-protocol/v1/graph-contract.md`                 |
+| Admission contract prose     | `docs/openengine-cluster-protocol/v1/admission.md`                      |
+| Lifecycle contract prose     | `docs/openengine-cluster-protocol/v1/lifecycle.md`                      |
+| Watch contract prose         | `docs/openengine-cluster-protocol/v1/watch.md`                          |
+| Generated graph fixtures     | `protocol/openengine-cluster/v1/fixtures/graph/`                        |
+| Generated watch fixtures     | `protocol/openengine-cluster/v1/fixtures/watch/`                        |
 
 Cluster Protocol Rust types are the source of truth. Files under
 `protocol/openengine-cluster/v1/` are generated projections; update them with
@@ -101,6 +134,13 @@ filesystem store, and must preserve ref-first release plus synchronized blob-the
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
 Keep protocol, transport, daemon, compatibility, adapter, credential resolution, ledger, and
 workspace behavior outside it.
+`ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair
+scheduler are engine-private seams. They own local dispatch placement, fencing, deadlines,
+workspace conflict arbitration, cancellation, and local-process containment only. They do not own
+ledger mutation, durable attempt state, protocol methods, provider catalog/configuration,
+credential resolution, workspace lifecycle, real CLI/ACP/Gateway drivers, built-in registration,
+or `NativeBackend` composition. Runtime command/control values remain serializable, secret-free,
+and input-free after control reconstruction.
 Native engine faults must be constructed only by `FaultFactory` from closed `ModuleEvidence`.
 Decoded faults must match the canonical semantics derived from their required primary source frame.
 Raw diagnostic values are replaced wholesale with typed markers and remain ephemeral; never put
@@ -108,6 +148,24 @@ them in `EngineFault`, observations, protocol responses, persistence, or exports
 injected through `ObservationSink` and uses only the fixed metrics and closed dimensions in
 `observability.rs`; retry disposition is descriptive data, not retry authorization. Do not install
 global telemetry state or caller-defined labels.
+`ClusterLedger` is the only native durable domain authority. Its closed/versioned record algebra,
+identity allocation, replay, lifecycle/CAS/idempotency rules, and safe-fault consequences stay
+above the backend-neutral `LedgerStore` port. Control and verified I/O share one ordered hash
+chain and transaction. Semantic validation and append CAS use the same folded position/hash; never
+reread a newer prefix while committing payloads derived from an older one. Every committed mutation
+ends in a hash-chained `MutationReceipt` record that exactly matches its atomic idempotency
+projection, so missing or forged projection rows fail replay. Matching receipt retries return an
+explicit replay outcome; receipt equality cannot distinguish a new commit from a concurrent
+identical retry. `SqliteLedgerStore` is the sole v1 production store. SQLite creation initializes
+a private same-directory database and atomically publishes the digest-named path, so losing
+creators never remove the winning resource. Projections are
+rebuildable and may not become a second journal. Persist only canonical engine records, verified
+I/O, safe faults, effect intent/reconciliation, and cleanup receipts—never provider sessions,
+reasoning, tools, raw diagnostics, stdout, or stderr.
+Initial resource creation and its owner fence are one store operation. Guarded appends check
+cancellation inside the store transaction immediately before their first write, after idempotent
+receipt lookup. SQLite removal leaves an explicit empty tombstone until file unlink; missing live
+metadata without that tombstone is corruption and must never authorize replacement.
 Graph syntax, payload subtyping, compiled IR, diagnostics, and artifact receipt Rust types remain
 authoritative protocol contracts. `ProductionGraphVerifier` is the one reusable production
 semantic verifier for `openengine.graph.full/v1`; it resolves workers through `WorkerRegistry` and
@@ -149,13 +207,24 @@ predicate is a winner; correlate `raced=satisfied|no_satisfier` with those winne
 The admission coordinator provides stateful plan/apply/get semantics through injected ports.
 Testkit scripted approval and `running` phase mean admitted state, not native verification or a
 production full-graph executor.
+`AdmissionStore` and `ObservationStore` remain separate ports. A watch-capable
+`AdmissionCoordinator` requires both; never satisfy the observation boundary with a runtime
+placeholder that rejects every subscription.
+The NDJSON server caps and continuously reaps per-connection request/subscription tasks;
+`subscription/cancel` bypasses admission. The client response pump must never await a
+per-subscription consumer: local queue overflow closes that stream as `SLOW_CONSUMER` from its
+exact caller-delivered cursor and cancels the server subscription. Watch request IDs are allocated
+by the shared transport, never by individual watch-client facades.
 Authoritative admission snapshots fail closed: `empty` has no durable fields, `running` has the
 complete matching control/seed tuple, and transient `admitting` preserves one of those two shapes.
 Operational suspend is a dispatch gate: existing leases may land verified I/O, but successors wait
-for resume. Drain waits without inventing graph hooks; force cancels and voids leases without
-fabricating output. Each stopped run has one final `finished` event. Stop acknowledgements never
-claim rollback or absence of external side effects. These are deterministic scripted-backend
-semantics, not a native graph scheduler or worker executor.
+for resume. Manual retry admits only a retryable settled frontier after every peer lease settles;
+exhausted authored attempts never create a frontier. An accepted retry intent reserves its next
+single-use turn and rejects a stale error-successor until that reserved turn begins. Drain waits
+without inventing graph hooks and terminalizes after the final verified or failed settlement; force
+cancels and voids leases without fabricating output. Each stopped run has one final `finished`
+event. Stop acknowledgements never claim rollback or absence of external side effects. These are
+deterministic scripted-backend semantics, not a native graph scheduler or worker executor.
 
 The TUI is not included in this release. Use `zeroshot list`, `zeroshot status <id>`,
 and `zeroshot logs <id> -f` or `zeroshot logs <id> -w` for monitoring.
@@ -206,7 +275,7 @@ reach the cleanup-failure reporter (default: process warning); never detach them
 zeroshot run 123                  # Local, no isolation
 zeroshot run 123 --worktree       # Git worktree isolation
 zeroshot run 123 --pr             # Worktree + create PR
-zeroshot run 123 --pr --pr-base dev # PR base: dev, worktree base: origin/dev (incl. -d)
+zeroshot run 123 --pr --pr-base main # PR base: main, worktree base: origin/main (incl. -d)
 zeroshot run 123 --ship           # Worktree + PR + auto-merge
 zeroshot run 123 --docker         # Docker container isolation
 zeroshot run 123 -d               # Background (daemon) mode
@@ -404,6 +473,12 @@ Clusters survive crashes. Resume: `zeroshot resume <id>`.
 Bash subprocess output not streamed: Claude CLI returns `tool_result` after subprocess completes.
 Long scripts show no output until done.
 
+Strict structured-output Codex tasks use the attachable PTY watcher. Claude strict
+structured-output tasks keep the non-PTY watcher because PTY notifications can be
+interpreted as streaming commands; use `zeroshot logs` for those tasks.
+Attach sockets use the shared short runtime namespace from `src/attach/socket-paths.js`;
+never reconstruct their path from `HOME` in a watcher or client.
+
 ### Kubernetes / Network Storage (SQLite Ledger)
 
 Zeroshot’s message ledger is SQLite (`~/.zeroshot/<id>.db`). On Kubernetes, putting this on a
@@ -544,6 +619,10 @@ git switch <branch>                            # Instead of git checkout
 git restore <file>                             # Instead of git checkout --
 ```
 
+Bind issue context before inserting shell-quoted Git configuration into prompt commands. Never run
+global placeholder replacement over a completed command prompt: Git-valid names can contain
+placeholder-like text.
+
 ### Test-First Workflow
 
 Write tests BEFORE or WITH code:
@@ -555,6 +634,12 @@ touch tests/new-feature.test.js  # FIRST
 ```
 
 ### Validation Workflow
+
+Rust APIs are mechanically capped at four parameters by `clippy.toml`. The only
+symbol-level exceptions are frozen pre-6.7.2 public compatibility declarations
+and their exact implementations, each carrying a rationale. Opcore remains at
+six because it has no per-symbol override; new and internal APIs must use request
+structs rather than raising or bypassing the Clippy ceiling.
 
 Run validation for:
 
@@ -586,9 +671,15 @@ Multiple CI jobs fail → Diagnose each independently.
 
 ## Release Pipeline Convention
 
-- Dev required checks: `check` only (merge queue).
-- Main required checks: `check` + `install-matrix` (merge queue).
-- Cross-platform `install-matrix` runs in CI for main only.
+- `main` is the only development and release branch.
+- Feature branches merge directly to `main` through its merge queue.
+- Main requires `check` + `install-matrix`; semantic-release runs only after the exact merged
+  `main` commit passes CI.
+- Conventional squash-commit titles select patch/minor/major. Documentation and chore commits may
+  intentionally produce no release.
+- The checked-in `0.0.0-development` manifest version is deliberately non-authoritative;
+  semantic-release derives and writes the published version from Git tags in its release workspace.
+- There is no release-promotion PR and no `dev -> main` synchronization step.
 
 Do NOT assume single root cause.
 
@@ -619,3 +710,4 @@ Do NOT assume single root cause.
 | Git stash usage            | Pre-commit hook    |
 | lint-staged backup stashes | Pre-commit wrapper |
 | Rust formatting drift      | Pre-commit hook    |
+| Rust APIs over 4 params    | Clippy error       |

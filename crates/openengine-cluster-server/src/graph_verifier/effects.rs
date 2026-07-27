@@ -238,14 +238,14 @@ pub(super) fn merge_alternatives(branches: &[Effects]) -> Effects {
         possible_writes.extend(branch.possible_writes.clone());
         merge_possible_write_types(&mut possible_write_types, &branch.possible_write_types);
         if branch.falls_through {
-            retain_common_effects(
-                &mut definite_nodes,
-                &mut definite_writes,
-                &mut outcome_writes,
-                &mut parallel_definition_effects,
-                &mut conditional_nodes,
-                branch,
-            );
+            CommonEffects {
+                definite_nodes: &mut definite_nodes,
+                definite_writes: &mut definite_writes,
+                outcome_writes: &mut outcome_writes,
+                parallel_definition_effects: &mut parallel_definition_effects,
+                conditional_nodes: &mut conditional_nodes,
+            }
+            .retain(branch);
             unavailable_nodes.extend(branch.unavailable_nodes.clone());
             exit_failed.extend(branch.exit_failed.clone());
         }
@@ -268,31 +268,20 @@ pub(super) fn merge_alternatives(branches: &[Effects]) -> Effects {
     }
 }
 
-pub(super) fn retain_common_effects(
-    definite_nodes: &mut BTreeSet<NodeName>,
-    definite_writes: &mut Writes,
-    outcome_writes: &mut OutcomeWrites,
-    parallel_definition_effects: &mut Vec<ParallelDefinitionEffect>,
-    conditional_nodes: &mut BTreeMap<NodeName, BTreeSet<NodeName>>,
-    branch: &Effects,
-) {
-    definite_nodes.retain(|name| branch.definite_nodes.contains(name));
-    definite_writes.retain(|path, write| {
-        let Some(other) = branch.definite_writes.get(path) else {
-            return false;
-        };
-        let Some(common) = intersect_write_facts(write, other) else {
-            return false;
-        };
-        *write = common;
-        true
-    });
-    outcome_writes.retain(|name, writes| {
-        let Some(other) = branch.outcome_writes.get(name) else {
-            return false;
-        };
-        writes.retain(|path, write| {
-            let Some(other) = other.get(path) else {
+struct CommonEffects<'a> {
+    definite_nodes: &'a mut BTreeSet<NodeName>,
+    definite_writes: &'a mut Writes,
+    outcome_writes: &'a mut OutcomeWrites,
+    parallel_definition_effects: &'a mut Vec<ParallelDefinitionEffect>,
+    conditional_nodes: &'a mut BTreeMap<NodeName, BTreeSet<NodeName>>,
+}
+
+impl CommonEffects<'_> {
+    fn retain(self, branch: &Effects) {
+        self.definite_nodes
+            .retain(|name| branch.definite_nodes.contains(name));
+        self.definite_writes.retain(|path, write| {
+            let Some(other) = branch.definite_writes.get(path) else {
                 return false;
             };
             let Some(common) = intersect_write_facts(write, other) else {
@@ -301,21 +290,36 @@ pub(super) fn retain_common_effects(
             *write = common;
             true
         });
-        !writes.is_empty()
-    });
-    parallel_definition_effects.retain(|effect| {
-        branch
-            .parallel_definition_effects
-            .iter()
-            .any(|other| other == effect)
-    });
-    conditional_nodes.retain(|owner, nodes| {
-        let Some(other) = branch.conditional_nodes.get(owner) else {
-            return false;
-        };
-        nodes.retain(|name| other.contains(name));
-        !nodes.is_empty()
-    });
+        self.outcome_writes.retain(|name, writes| {
+            let Some(other) = branch.outcome_writes.get(name) else {
+                return false;
+            };
+            writes.retain(|path, write| {
+                let Some(other) = other.get(path) else {
+                    return false;
+                };
+                let Some(common) = intersect_write_facts(write, other) else {
+                    return false;
+                };
+                *write = common;
+                true
+            });
+            !writes.is_empty()
+        });
+        self.parallel_definition_effects.retain(|effect| {
+            branch
+                .parallel_definition_effects
+                .iter()
+                .any(|other| other == effect)
+        });
+        self.conditional_nodes.retain(|owner, nodes| {
+            let Some(other) = branch.conditional_nodes.get(owner) else {
+                return false;
+            };
+            nodes.retain(|name| other.contains(name));
+            !nodes.is_empty()
+        });
+    }
 }
 
 pub(super) fn merge_conditional_nodes(

@@ -6,12 +6,12 @@ use tokio::io::AsyncReadExt;
 use zeroshot_engine::artifact_store::local_cas::LocalCasArtifactStore;
 use zeroshot_engine::artifact_store::{ArtifactStore, ArtifactStoreFailureKind, ReleaseResult};
 
+#[path = "support/artifacts.rs"]
+mod artifacts;
 #[path = "local_cas/recovery.rs"]
 mod recovery;
-#[path = "support/mod.rs"]
-mod support;
 
-use support::{byte_stream as stream, test_intent as intent};
+use artifacts::{byte_stream as stream, test_intent as intent};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 

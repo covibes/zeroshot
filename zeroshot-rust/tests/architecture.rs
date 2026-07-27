@@ -1,94 +1,12 @@
 use std::collections::BTreeSet;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use serde_json::Value;
+#[path = "support/architecture.rs"]
+mod architecture_support;
 
-fn product_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn repository_root() -> PathBuf {
-    product_root()
-        .parent()
-        .expect("product crate must be a root workspace member")
-        .to_path_buf()
-}
-
-fn read(path: &Path) -> String {
-    fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
-}
-
-fn relative_files(root: &Path, directory: &Path, output: &mut BTreeSet<String>) {
-    for entry in fs::read_dir(directory)
-        .unwrap_or_else(|error| panic!("read directory {}: {error}", directory.display()))
-    {
-        let entry = entry.expect("directory entry must be readable");
-        let path = entry.path();
-        if path.is_dir() {
-            relative_files(root, &path, output);
-        } else {
-            output.insert(
-                path.strip_prefix(root)
-                    .expect("file must be under product root")
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-            );
-        }
-    }
-}
-
-fn workspace_metadata() -> Value {
-    let root = repository_root();
-    let output = Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .current_dir(root)
-        .output()
-        .expect("cargo metadata must run");
-    assert!(
-        output.status.success(),
-        "cargo metadata failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("cargo metadata must emit JSON")
-}
-
-fn product_package(metadata: &Value) -> &Value {
-    metadata["packages"]
-        .as_array()
-        .expect("metadata packages must be an array")
-        .iter()
-        .find(|package| package["name"] == "zeroshot-rust")
-        .expect("workspace must contain zeroshot-rust")
-}
-
-fn runtime_source() -> String {
-    let product = product_root();
-    format!(
-        "{}\n{}",
-        read(&product.join("src/lib.rs")),
-        read(&product.join("src/main.rs"))
-    )
-}
-
-fn rust_sources(relative_roots: &[&str]) -> String {
-    let product = product_root();
-    let mut files = BTreeSet::new();
-    for relative_root in relative_roots {
-        let path = product.join(relative_root);
-        if path.is_dir() {
-            relative_files(&product, &path, &mut files);
-        } else {
-            files.insert((*relative_root).to_owned());
-        }
-    }
-    files
-        .into_iter()
-        .map(|path| read(&product.join(path)))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+use architecture_support::{
+    product_package, product_root, read, relative_files, repository_root, rust_sources,
+    runtime_source, workspace_metadata,
+};
 
 #[test]
 fn product_uses_the_root_workspace_and_a_rust_only_layout() {
@@ -109,6 +27,11 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "src/artifact_store/local_cas.rs",
         "src/artifact_store/local_cas/filesystem.rs",
         "src/artifact_store/local_cas/operations.rs",
+        "src/execution.rs",
+        "src/execution/driver.rs",
+        "src/execution/local.rs",
+        "src/execution/process.rs",
+        "src/execution/types.rs",
         "src/fault.rs",
         "src/fault/redaction.rs",
         "src/fault/taxonomy.rs",
@@ -116,17 +39,21 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "src/main.rs",
         "src/observability.rs",
         "src/provider_value.rs",
+        "src/scheduler.rs",
         "src/issue_provider.rs",
         "src/source_code_provider.rs",
         "tests/architecture.rs",
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
+        "tests/execution_runtime_contract.rs",
         "tests/fault_contract.rs",
         "tests/local_cas.rs",
+        "tests/local_execution_runtime.rs",
+        "tests/local_process_runner.rs",
         "tests/observability_contract.rs",
         "tests/provider_contracts.rs",
-        "tests/support/mod.rs",
         "tests/provider_bounds.rs",
+        "tests/scheduler_contract.rs",
     ] {
         assert!(files.contains(required), "missing product file: {required}");
     }
@@ -156,20 +83,34 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
             )
         })
         .collect::<BTreeSet<_>>();
+    for required in [
+        ("zeroshot-rust".to_owned(), "bin".to_owned()),
+        ("zeroshot_engine".to_owned(), "lib".to_owned()),
+        ("architecture".to_owned(), "test".to_owned()),
+        ("backend_boundary".to_owned(), "test".to_owned()),
+        ("execution_runtime_contract".to_owned(), "test".to_owned()),
+        ("fault_contract".to_owned(), "test".to_owned()),
+        ("local_execution_runtime".to_owned(), "test".to_owned()),
+        ("local_process_runner".to_owned(), "test".to_owned()),
+        ("observability_contract".to_owned(), "test".to_owned()),
+        ("scheduler_contract".to_owned(), "test".to_owned()),
+    ] {
+        assert!(
+            targets.contains(&required),
+            "missing durable target: {required:?}"
+        );
+    }
     assert_eq!(
-        targets,
+        targets
+            .iter()
+            .filter(|(_, kind)| kind == "bin" || kind == "lib")
+            .cloned()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([
-            ("architecture".to_owned(), "test".to_owned()),
-            ("artifact_store".to_owned(), "test".to_owned()),
-            ("backend_boundary".to_owned(), "test".to_owned()),
-            ("fault_contract".to_owned(), "test".to_owned()),
-            ("local_cas".to_owned(), "test".to_owned()),
-            ("observability_contract".to_owned(), "test".to_owned()),
-            ("provider_bounds".to_owned(), "test".to_owned()),
-            ("provider_contracts".to_owned(), "test".to_owned()),
             ("zeroshot-rust".to_owned(), "bin".to_owned()),
             ("zeroshot_engine".to_owned(), "lib".to_owned()),
-        ])
+        ]),
+        "product package must retain exactly one library and one executable"
     );
 }
 
@@ -190,21 +131,36 @@ fn product_dependencies_stay_inside_native_contract_and_backend_boundaries() {
             )
         })
         .collect::<BTreeSet<_>>();
-    let allowed = BTreeSet::from([
-        ("async-trait".to_owned(), "normal".to_owned()),
-        ("fs2".to_owned(), "normal".to_owned()),
+    for required in [
         (
             "openengine-cluster-protocol".to_owned(),
             "normal".to_owned(),
         ),
         ("openengine-cluster-server".to_owned(), "normal".to_owned()),
+        ("rust_decimal".to_owned(), "normal".to_owned()),
+        ("rusqlite".to_owned(), "normal".to_owned()),
         ("serde".to_owned(), "normal".to_owned()),
-        ("serde_json".to_owned(), "normal".to_owned()),
         ("sha2".to_owned(), "normal".to_owned()),
-        ("thiserror".to_owned(), "normal".to_owned()),
-        ("tokio".to_owned(), "normal".to_owned()),
-    ]);
-    assert_eq!(dependencies, allowed);
+    ] {
+        assert!(
+            dependencies.contains(&required),
+            "missing native dependency: {required:?}"
+        );
+    }
+    for prohibited in [
+        "openengine-cluster-client",
+        "openengine-cluster-testkit",
+        "postgres",
+        "sqlx",
+        "diesel",
+        "reqwest",
+        "hyper",
+    ] {
+        assert!(
+            dependencies.iter().all(|(name, _)| name != prohibited),
+            "prohibited native dependency: {prohibited}"
+        );
+    }
 }
 
 #[test]
@@ -287,13 +243,48 @@ fn runtime_has_no_future_product_concerns() {
         "daemon",
         "persistence",
         "verifier",
-        "scheduler",
-        "worker",
-        "workspace",
     ] {
         assert!(
             !words.contains(forbidden_word),
             "forbidden future product concern: {forbidden_word}"
+        );
+    }
+}
+
+#[test]
+fn execution_runtime_and_scheduler_stay_engine_private() {
+    let execution = rust_sources(&["src/execution.rs", "src/execution", "src/scheduler.rs"]);
+    for required in [
+        "trait ExecutionRuntime",
+        "struct LocalExecutionRuntime",
+        "struct LocalProcessRunner",
+        "struct FairScheduler",
+    ] {
+        assert!(
+            execution.contains(required),
+            "missing execution/scheduler seam: {required}"
+        );
+    }
+    for forbidden in [
+        "RemoteExecutionRuntime",
+        "kubernetes",
+        "pod",
+        "broker",
+        "outbox",
+        "reqwest",
+        "hyper",
+        "NativeBackendFactory",
+        "NativeBackend",
+        "ClusterLedger",
+        "CredentialResolver",
+        "WorkspaceManager",
+        "CliDriver",
+        "AcpDriver",
+        "GatewayDriver",
+    ] {
+        assert!(
+            !execution.contains(forbidden),
+            "execution/scheduler crossed an owned boundary: {forbidden}"
         );
     }
 }

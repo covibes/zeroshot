@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyResult, ClusterStatus, CompiledGraphIr, Cursor, DispatchState, Generation,
-    GraphDiagnostic, GraphSpec, IdempotencyKey, Phase, RequestFingerprint, RunId,
+    ApplyResult, ClusterStatus, CompiledGraphIr, Cursor, DeleteParams, DeleteResult, DispatchState,
+    Generation, GraphDiagnostic, GraphSpec, IdempotencyKey, NoRetryableFrontierReason, Phase,
+    RequestFingerprint, ResubmitParams, ResubmitResult, RunId,
 };
 use serde_json::Value;
 use thiserror::Error;
@@ -176,6 +177,18 @@ pub struct CommitProposal {
     pub fingerprint: RequestFingerprint,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResubmitProposal {
+    pub params: ResubmitParams,
+    pub fingerprint: RequestFingerprint,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeleteProposal {
+    pub params: DeleteParams,
+    pub fingerprint: RequestFingerprint,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum StoreError {
     #[error("admission store failed: {0}")]
@@ -184,6 +197,8 @@ pub enum StoreError {
     IdempotencyReuse,
     #[error("generation precondition failed")]
     GenerationConflict { current: Option<Generation> },
+    #[error("run precondition failed")]
+    RunConflict { current: Option<RunId> },
     #[error("cluster phase does not admit apply: {current:?}")]
     InvalidPhase { current: Phase },
     #[error("admission parameters violate the run-input contract: {0}")]
@@ -196,6 +211,12 @@ pub enum StoreError {
     UnknownLease,
     #[error("dispatch completion was rejected because the lease is cancelled or terminal")]
     CompletionRejected,
+    #[error("run does not exist")]
+    UnknownRun,
+    #[error("run history was deleted")]
+    RunGone { tombstoned_at: Option<Cursor> },
+    #[error("no retryable failed frontier is pending: {reason}")]
+    NoRetryableFrontier { reason: NoRetryableFrontierReason },
 }
 
 /// Logical durable control-journal view.
@@ -227,4 +248,14 @@ pub trait AdmissionStore:
         proposal: CommitProposal,
         cancellation: &CancellationSignal,
     ) -> Result<ApplyResult, StoreError>;
+    async fn resubmit(
+        &self,
+        proposal: ResubmitProposal,
+        cancellation: &CancellationSignal,
+    ) -> Result<ResubmitResult, StoreError>;
+    async fn delete(
+        &self,
+        proposal: DeleteProposal,
+        cancellation: &CancellationSignal,
+    ) -> Result<DeleteResult, StoreError>;
 }

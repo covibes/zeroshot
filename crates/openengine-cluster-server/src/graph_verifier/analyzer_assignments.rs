@@ -60,10 +60,12 @@ impl<'a> Analyzer<'a> {
         let (selectors, map_aggregates, join_correlations) = self.assignment_inputs(guards);
         let Some(dimensions) = build_dimensions(
             &selectors,
-            &self.nodes,
-            &map_aggregates,
-            &self.parallel_join_correlations,
-            &self.map_execution_correlations,
+            DimensionInputs {
+                nodes: &self.nodes,
+                map_aggregates: &map_aggregates,
+                join_correlations: &self.parallel_join_correlations,
+                execution_correlations: &self.map_execution_correlations,
+            },
         ) else {
             self.assignment_ceiling(path);
             return None;

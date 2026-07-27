@@ -1,31 +1,43 @@
 //! Backend-neutral admission orchestration and durable-store ports.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+mod errors;
 mod ports;
 mod snapshot;
+use errors::{
+    cancelled_error, precheck_generation, precheck_input, schema_error, store_error_to_backend,
+    validate_apply_mode,
+};
 pub use ports::*;
 use snapshot::validate_snapshot;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    diff_compiled_graphs, ApplyParams, ApplyResult, CompiledGraphIr, Generation, GetParams,
-    GetResult, GraphSpec, IdempotencyKey, InitializeParams, InitializeResult, PlanParams,
-    PlanResult, RequestFingerprint, ServerCapabilities, StopParams, StopResult, UpdateParams,
-    UpdateResult, CANCELLED, GENERATION_CONFLICT, GRAPH_INVALID, IDEMPOTENCY_REUSE,
-    INTERNAL_ERROR_CODE, INVALID_PHASE, SCHEMA_VIOLATION,
+    diff_compiled_graphs, ApplyParams, ApplyResult, DeleteParams, DeleteResult, GetParams,
+    GetResult, GraphSpec, IdempotencyKey, InitializeParams, InitializeResult, LogsParams,
+    LogsResult, PlanParams, PlanResult, RequestFingerprint, ResubmitParams, ResubmitResult,
+    RetryParams, RetryResult, ServerCapabilities, StopParams, StopResult, SubscriptionId,
+    UpdateParams, UpdateResult, WatchParams, WatchResult, GRAPH_INVALID, IDEMPOTENCY_REUSE,
+    INTERNAL_ERROR_CODE, INVALID_PHASE,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::lifecycle::{
-    method_fingerprint, stop_fingerprint, update_fingerprint, LifecycleSnapshot, MutationReceipt,
+    delete_fingerprint, method_fingerprint, resubmit_fingerprint, retry_fingerprint,
+    stop_fingerprint, update_fingerprint, LifecycleSnapshot, MutationReceipt, RetryProposal,
     StopProposal, UpdateProposal,
 };
+use crate::logs::{LogEventStream, LogStore, LogsHandle};
+use crate::watch::{ObservationStore, WatchEventStream, WatchHandle};
 use crate::{BackendError, ClusterBackend, ConnectionContext};
 
 pub struct AdmissionCoordinator<V, S> {
     verifier: Arc<V>,
     store: Arc<S>,
+    next_subscription: Arc<AtomicU64>,
+    log_store: Option<Arc<dyn LogStore>>,
 }
 
 struct PreparedCommit {
@@ -40,6 +52,8 @@ impl<V, S> Clone for AdmissionCoordinator<V, S> {
         Self {
             verifier: Arc::clone(&self.verifier),
             store: Arc::clone(&self.store),
+            next_subscription: Arc::clone(&self.next_subscription),
+            log_store: self.log_store.clone(),
         }
     }
 }
@@ -50,12 +64,28 @@ impl<V, S> AdmissionCoordinator<V, S> {
         Self {
             verifier: Arc::new(verifier),
             store: Arc::new(store),
+            next_subscription: Arc::new(AtomicU64::new(1)),
+            log_store: None,
         }
     }
 
     #[must_use]
     pub fn from_shared(verifier: Arc<V>, store: Arc<S>) -> Self {
-        Self { verifier, store }
+        Self {
+            verifier,
+            store,
+            next_subscription: Arc::new(AtomicU64::new(1)),
+            log_store: None,
+        }
+    }
+
+    /// Injects an optional backend `logs` port. `ServerCapabilities.logs` is `true` if and only if
+    /// this has been called: enabling/disabling this capability is a construction-time choice that
+    /// changes no durable admission/lifecycle state.
+    #[must_use]
+    pub fn with_log_store(mut self, log_store: Arc<dyn LogStore>) -> Self {
+        self.log_store = Some(log_store);
+        self
     }
 
     #[must_use]
@@ -192,7 +222,7 @@ where
 impl<V, S> ClusterBackend for AdmissionCoordinator<V, S>
 where
     V: GraphVerifier,
-    S: AdmissionStore,
+    S: AdmissionStore + ObservationStore,
 {
     async fn initialize(
         &self,
@@ -201,7 +231,10 @@ where
     ) -> Result<InitializeResult, BackendError> {
         let (snapshot, lifecycle) = self.read_valid_snapshot().await?;
         Ok(InitializeResult::new(
-            ServerCapabilities::default(),
+            ServerCapabilities {
+                logs: self.log_store.is_some(),
+                ..ServerCapabilities::default()
+            },
             snapshot.control.status_with_lifecycle(&lifecycle),
         ))
     }
@@ -342,114 +375,108 @@ where
             .await
             .map_err(store_error_to_backend)
     }
-}
 
-fn validate_apply_mode(params: &ApplyParams) -> Result<(), BackendError> {
-    if params.dry_run {
-        if params.idempotency_key.is_some() {
-            return Err(schema_error("dry-run apply must omit idempotencyKey"));
-        }
-        if params.input.is_some() {
-            return Err(schema_error("dry-run apply must omit input"));
-        }
-    } else if params.idempotency_key.is_none() {
-        return Err(schema_error("committed apply requires idempotencyKey"));
+    async fn retry(
+        &self,
+        _context: &ConnectionContext,
+        params: RetryParams,
+    ) -> Result<RetryResult, BackendError> {
+        let fingerprint = retry_fingerprint(&params)?;
+        self.store
+            .retry_lifecycle(RetryProposal {
+                params,
+                fingerprint,
+            })
+            .await
+            .map_err(store_error_to_backend)
     }
-    Ok(())
-}
 
-fn precheck_generation(
-    expected: Option<Generation>,
-    current: Option<Generation>,
-) -> Result<(), BackendError> {
-    let matches = match expected {
-        None => true,
-        Some(expected) if expected.get() == 0 => current.is_none(),
-        Some(expected) => current == Some(expected),
-    };
-    if matches {
-        Ok(())
-    } else {
-        Err(BackendError::application(
-            GENERATION_CONFLICT,
-            "Generation precondition failed",
-            Some(json!({ "currentGeneration": current })),
-        ))
+    async fn resubmit(
+        &self,
+        context: &ConnectionContext,
+        params: ResubmitParams,
+    ) -> Result<ResubmitResult, BackendError> {
+        let fingerprint = resubmit_fingerprint(&params)?;
+        if context.cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        self.store
+            .resubmit(
+                ResubmitProposal {
+                    params,
+                    fingerprint,
+                },
+                &context.cancellation,
+            )
+            .await
+            .map_err(store_error_to_backend)
     }
-}
 
-fn precheck_input(
-    current: Option<&CompiledGraphIr>,
-    desired: &CompiledGraphIr,
-    graph: &GraphSpec,
-    input: Option<&Value>,
-) -> Result<(), BackendError> {
-    let unchanged = current
-        .map(|current| Ok(current.identity()? == desired.identity()?))
-        .transpose()
-        .map_err(|error: openengine_cluster_protocol::CanonicalError| {
-            BackendError::new(INTERNAL_ERROR_CODE, error.to_string())
-        })?
-        .unwrap_or(false);
-    if unchanged {
-        if input.is_some() {
-            return Err(schema_error(
-                "unchanged apply must omit input; use future resubmit semantics to supply a new root input",
+    async fn delete(
+        &self,
+        context: &ConnectionContext,
+        params: DeleteParams,
+    ) -> Result<DeleteResult, BackendError> {
+        let fingerprint = delete_fingerprint(&params)?;
+        if context.cancellation.is_cancelled() {
+            return Err(cancelled_error());
+        }
+        self.store
+            .delete(
+                DeleteProposal {
+                    params,
+                    fingerprint,
+                },
+                &context.cancellation,
+            )
+            .await
+            .map_err(store_error_to_backend)
+    }
+
+    async fn watch(
+        &self,
+        _context: &ConnectionContext,
+        params: WatchParams,
+        queue_capacity: usize,
+    ) -> Result<(WatchResult, WatchEventStream, WatchHandle), BackendError> {
+        let subscription_id = SubscriptionId::new(format!(
+            "sub-{}",
+            self.next_subscription.fetch_add(1, Ordering::Relaxed)
+        ));
+        let store: Arc<dyn ObservationStore> = Arc::clone(&self.store) as Arc<dyn ObservationStore>;
+        crate::watch::subscribe_and_stream(
+            &store,
+            crate::watch::SubscribeAndStreamRequest {
+                subscription_id,
+                params,
+                queue_capacity,
+            },
+            store_error_to_backend,
+        )
+        .await
+    }
+
+    async fn logs(
+        &self,
+        _context: &ConnectionContext,
+        params: LogsParams,
+        queue_capacity: usize,
+    ) -> Result<(LogsResult, LogEventStream, LogsHandle), BackendError> {
+        let Some(log_store) = self.log_store.clone() else {
+            return Err(BackendError::application(
+                INVALID_PHASE,
+                "Backend does not support logs",
+                None,
             ));
-        }
-        return Ok(());
-    }
-    let input = input.ok_or_else(|| schema_error("apply that starts a run requires input"))?;
-    graph
-        .initial_input
-        .validate_value(input)
-        .map_err(|error| schema_error(&error.to_string()))
-}
-
-fn schema_error(message: &str) -> BackendError {
-    BackendError::invalid_params(
-        SCHEMA_VIOLATION,
-        "Admission parameters violate the schema",
-        Some(json!({ "reason": message })),
-    )
-}
-
-fn cancelled_error() -> BackendError {
-    BackendError::application(CANCELLED, "Admission cancelled before commit", None)
-}
-
-fn store_error_to_backend(error: StoreError) -> BackendError {
-    match error {
-        StoreError::Internal(message) => BackendError::new(INTERNAL_ERROR_CODE, message),
-        StoreError::IdempotencyReuse => BackendError::application(
-            IDEMPOTENCY_REUSE,
-            "Idempotency key was reused with different parameters",
-            None,
-        ),
-        StoreError::GenerationConflict { current } => BackendError::application(
-            GENERATION_CONFLICT,
-            "Generation precondition failed",
-            Some(json!({ "currentGeneration": current })),
-        ),
-        StoreError::InvalidPhase { current } => BackendError::application(
-            INVALID_PHASE,
-            "Cluster phase does not admit apply",
-            Some(json!({ "currentPhase": current })),
-        ),
-        StoreError::SchemaViolation(message) => schema_error(&message),
-        StoreError::Cancelled => cancelled_error(),
-        StoreError::DispatchDenied { current } => BackendError::application(
-            INVALID_PHASE,
-            "Lifecycle state denies successor dispatch",
-            Some(json!({ "dispatchState": current })),
-        ),
-        StoreError::UnknownLease => {
-            BackendError::application(INVALID_PHASE, "Dispatch lease does not exist", None)
-        }
-        StoreError::CompletionRejected => BackendError::application(
-            CANCELLED,
-            "Dispatch completion was rejected after cancellation or terminalization",
-            None,
-        ),
+        };
+        let _ = params;
+        let subscription_id = SubscriptionId::new(format!(
+            "sub-{}",
+            self.next_subscription.fetch_add(1, Ordering::Relaxed)
+        ));
+        Ok(
+            crate::logs::subscribe_and_stream_logs(&log_store, subscription_id, queue_capacity)
+                .await,
+        )
     }
 }

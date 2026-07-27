@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
-use openengine_cluster_client::{ClientError, ClusterClient, InProcessTransport};
-use openengine_cluster_protocol::{ApplyParams, Generation, GraphSpec, IdempotencyKey};
-use openengine_cluster_server::admission::AdmissionCoordinator;
-use openengine_cluster_server::{ConnectionContext, Dispatcher};
+use openengine_cluster_client::ClientError;
 use openengine_cluster_testkit::admission::{InMemoryAdmissionStore, ScriptedOutcome, ScriptedVerifier};
+use openengine_cluster_testkit::fixture::dispatcher_fixture;
+pub use openengine_cluster_testkit::fixture::FixtureClient;
 
-type FixtureBackend = AdmissionCoordinator<ScriptedVerifier, InMemoryAdmissionStore>;
-pub type FixtureClient = ClusterClient<InProcessTransport<FixtureBackend>>;
+mod committed;
+pub use committed::committed;
 
 pub fn client(
     outcomes: Vec<ScriptedOutcome>,
@@ -16,30 +15,8 @@ pub fn client(
     Arc<ScriptedVerifier>,
     Arc<InMemoryAdmissionStore>,
 ) {
-    let verifier = Arc::new(ScriptedVerifier::new(outcomes));
-    let store = Arc::new(InMemoryAdmissionStore::default());
-    let backend = AdmissionCoordinator::from_shared(Arc::clone(&verifier), Arc::clone(&store));
-    let dispatcher = Dispatcher::new(backend, ConnectionContext::default());
-    (
-        ClusterClient::new(InProcessTransport::new(dispatcher)),
-        verifier,
-        store,
-    )
-}
-
-pub fn committed(
-    graph: GraphSpec,
-    input: serde_json::Value,
-    generation: u64,
-    key: &str,
-) -> ApplyParams {
-    ApplyParams {
-        graph,
-        input: Some(input),
-        dry_run: false,
-        if_generation: Some(Generation::new(generation).unwrap()),
-        idempotency_key: Some(IdempotencyKey::new(key).unwrap()),
-    }
+    let (client, _dispatcher, _backend, verifier, store) = dispatcher_fixture(outcomes);
+    (client, verifier, store)
 }
 
 pub fn rpc_code(error: ClientError) -> String {

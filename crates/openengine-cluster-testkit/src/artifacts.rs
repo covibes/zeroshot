@@ -2,9 +2,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use openengine_cluster_protocol::{
-    ApplyParams, ApplyResult, ArtifactRef, CompiledGraphIr, GetParams, GetResult, GraphDiagnostic,
-    GraphSpec, InitializeParams, InitializeResult, JsonRpcRequest, JsonRpcResponse, PlanParams,
-    PlanResult, StopParams, StopResult, StructuralBounds, UpdateParams, UpdateResult,
+    AgentAttachClosedNotification, AgentAttachEventNotification, AgentAttachParams,
+    AgentAttachResult, ApplyParams, ApplyResult, ArtifactRef, CancelRequestParams, CompiledGraphIr,
+    DeleteParams, DeleteResult, EventNotification, GetParams, GetResult, GraphDiagnostic,
+    GraphSpec, InitializeParams, InitializeResult, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcResponse, LogEventNotification, LogsClosedNotification, LogsParams, LogsResult,
+    PlanParams, PlanResult, ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams,
+    StopResult, StructuralBounds, SubscriptionCancelParams, SubscriptionClosedNotification,
+    UpdateParams, UpdateResult, WatchParams, WatchResult,
 };
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 use schemars::{schema_for, JsonSchema};
@@ -53,6 +58,26 @@ pub struct ImplementedProtocolSchema {
     pub update_response: JsonRpcResponse<UpdateResult>,
     pub stop_request: JsonRpcRequest<StopParams>,
     pub stop_response: JsonRpcResponse<StopResult>,
+    pub retry_request: JsonRpcRequest<RetryParams>,
+    pub retry_response: JsonRpcResponse<RetryResult>,
+    pub resubmit_request: JsonRpcRequest<ResubmitParams>,
+    pub resubmit_response: JsonRpcResponse<ResubmitResult>,
+    pub delete_request: JsonRpcRequest<DeleteParams>,
+    pub delete_response: JsonRpcResponse<DeleteResult>,
+    pub watch_request: JsonRpcRequest<WatchParams>,
+    pub watch_response: JsonRpcResponse<WatchResult>,
+    pub event_notification: JsonRpcNotification<EventNotification>,
+    pub subscription_cancel_notification: JsonRpcNotification<SubscriptionCancelParams>,
+    pub subscription_closed_notification: JsonRpcNotification<SubscriptionClosedNotification>,
+    pub cancel_request_notification: JsonRpcNotification<CancelRequestParams>,
+    pub logs_request: JsonRpcRequest<LogsParams>,
+    pub logs_response: JsonRpcResponse<LogsResult>,
+    pub log_event_notification: JsonRpcNotification<LogEventNotification>,
+    pub logs_closed_notification: JsonRpcNotification<LogsClosedNotification>,
+    pub agent_attach_request: JsonRpcRequest<AgentAttachParams>,
+    pub agent_attach_response: JsonRpcResponse<AgentAttachResult>,
+    pub agent_attach_event_notification: JsonRpcNotification<AgentAttachEventNotification>,
+    pub agent_attach_closed_notification: JsonRpcNotification<AgentAttachClosedNotification>,
 }
 
 pub async fn generate_artifacts() -> Vec<Artifact> {
@@ -111,6 +136,11 @@ pub async fn generate_artifacts() -> Vec<Artifact> {
     artifacts.extend(crate::graph_verifier_artifacts::graph_verifier_fixture_artifacts().await);
     artifacts.extend(crate::admission_artifacts::generate_admission_goldens().await);
     artifacts.extend(crate::lifecycle_artifacts::generate_lifecycle_goldens().await);
+    artifacts.extend(crate::lifecycle_artifacts::generate_resubmit_goldens().await);
+    artifacts.extend(crate::lifecycle_artifacts::generate_delete_goldens().await);
+    artifacts.extend(crate::watch_artifacts::generate_watch_goldens().await);
+    artifacts.extend(crate::logs_artifacts::generate_logs_goldens().await);
+    artifacts.extend(crate::agent_attach_artifacts::generate_agent_attach_goldens().await);
     for (name, request) in cases {
         let response = dispatcher.dispatch(request).await;
         artifacts.push(Artifact {
@@ -162,7 +192,7 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn json_artifact(relative_path: String, value: Value) -> Artifact {
+pub(crate) fn json_artifact(relative_path: String, value: Value) -> Artifact {
     let mut bytes = serde_json::to_vec_pretty(&value).expect("artifact serialization must succeed");
     bytes.push(b'\n');
     Artifact {

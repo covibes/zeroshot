@@ -7,8 +7,8 @@ use openengine_cluster_server::admission::{
     AdmissionSnapshot, IdempotencyRecord, StoreError, VerifiedSeed,
 };
 use openengine_cluster_server::lifecycle::{
-    CompletionResult, DispatchPermit, LeaseId, LifecycleSnapshot, LifecycleStore, TurnId,
-    VerifiedCompletion,
+    CompletionResult, DispatchPermit, FailedCompletion, LeaseId, LifecycleSnapshot, LifecycleStore,
+    TurnId, VerifiedCompletion,
 };
 
 use super::{AppendReceipt, ControlReceipt, ControlSnapshot, InMemoryAdmissionStore};
@@ -66,6 +66,13 @@ impl InMemoryAdmissionStore {
         <Self as LifecycleStore>::complete_dispatch(self, completion).await
     }
 
+    pub async fn fail_dispatch(
+        &self,
+        failure: FailedCompletion,
+    ) -> Result<CompletionResult, StoreError> {
+        <Self as LifecycleStore>::fail_dispatch(self, failure).await
+    }
+
     /// Signals a store-owned lease cancellation without settling it.
     /// This exists only to prove rejected completions preserve aggregate invariants.
     pub async fn cancel_dispatch_for_test(&self, lease_id: &LeaseId) -> bool {
@@ -101,6 +108,8 @@ impl InMemoryAdmissionStore {
                 records: Vec::new(),
                 verified_turns: Vec::new(),
                 void_turns: Vec::new(),
+                pending_failed_frontier: None,
+                pending_retry_turn: None,
             }
         };
     }

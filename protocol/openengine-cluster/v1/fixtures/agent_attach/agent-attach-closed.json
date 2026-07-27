@@ -1,0 +1,10 @@
+[
+  {
+    "reason": "done",
+    "subscriptionId": "sub-1"
+  },
+  {
+    "reason": "SLOW_CONSUMER",
+    "subscriptionId": "sub-2"
+  }
+]

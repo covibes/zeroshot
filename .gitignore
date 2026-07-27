@@ -32,7 +32,7 @@ coverage/
 .nyc_output/
 
 # Logs
-logs/
+/logs/
 *.log
 
 # Temporary files

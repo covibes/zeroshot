@@ -1,0 +1,11 @@
+[
+  {
+    "reason": "done",
+    "subscriptionId": "sub-1"
+  },
+  {
+    "lastDeliveredCursor": "cursor-7",
+    "reason": "SLOW_CONSUMER",
+    "subscriptionId": "sub-2"
+  }
+]

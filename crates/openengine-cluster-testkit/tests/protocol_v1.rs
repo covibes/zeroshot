@@ -16,8 +16,10 @@ use openengine_cluster_testkit::admission::{
     ScriptedVerifier,
 };
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
+use tokio::io::AsyncWriteExt;
+
+#[path = "stdio_subprocess_support/mod.rs"]
+mod stdio_subprocess_support;
 
 #[test]
 fn protocol_version_is_exact() {
@@ -38,7 +40,7 @@ fn canonical_empty_results_have_exact_wire_shape() {
         serde_json::to_value(initialize).unwrap(),
         serde_json::json!({
             "protocolVersion": "openengine.cluster/v1",
-            "capabilities": {},
+            "capabilities": { "graphProfiles": [], "logs": false, "agentAttach": false },
             "status": {
                 "phase": "empty",
                 "observedGeneration": null,
@@ -90,20 +92,7 @@ async fn initialize_and_get_match_across_transports() {
     let dispatcher = Dispatcher::new(EmptyBackend, ConnectionContext::default());
     let in_process = ClusterClient::new(InProcessTransport::new(dispatcher));
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_openengine-cluster-stdio"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).await.unwrap();
-        bytes
-    });
+    let (subprocess, stdin, stdout) = stdio_subprocess_support::spawn();
     let stdio = ClusterClient::new(NdjsonTransport::new(stdout, stdin));
 
     let in_process_initialize = in_process.initialize().await.unwrap();
@@ -127,8 +116,7 @@ async fn initialize_and_get_match_across_transports() {
     assert_eq!(stdio_get.at_cursor, None);
 
     drop(stdio);
-    assert!(child.wait().await.unwrap().success());
-    assert_eq!(stderr_task.await.unwrap(), b"");
+    subprocess.join().await;
 }
 
 #[tokio::test]
@@ -146,20 +134,7 @@ async fn admission_transcript_matches_in_process_and_stdio() {
         ConnectionContext::default(),
     )));
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_openengine-cluster-stdio"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).await.unwrap();
-        bytes
-    });
+    let (subprocess, stdin, stdout) = stdio_subprocess_support::spawn();
     let stdio = ClusterClient::new(NdjsonTransport::new(stdout, stdin));
 
     assert_eq!(
@@ -225,8 +200,7 @@ async fn admission_transcript_matches_in_process_and_stdio() {
     );
 
     drop(stdio);
-    assert!(child.wait().await.unwrap().success());
-    assert_eq!(stderr_task.await.unwrap(), b"");
+    subprocess.join().await;
 }
 
 #[tokio::test]
@@ -380,12 +354,7 @@ async fn dispatcher_rejects_a_backend_response_with_the_wrong_protocol_version()
 
 #[tokio::test]
 async fn stdio_emits_protocol_frames_only() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_openengine-cluster-stdio"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = stdio_subprocess_support::spawn_child();
     let mut stdin = child.stdin.take().unwrap();
     stdin
         .write_all(

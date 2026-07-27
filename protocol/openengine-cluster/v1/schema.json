@@ -1,5 +1,138 @@
 {
   "$defs": {
+    "AdmissionTransition": {
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "seedInput": true,
+        "spec": {
+          "$ref": "#/$defs/GraphSpec"
+        }
+      },
+      "required": [
+        "runId",
+        "spec",
+        "seedInput"
+      ],
+      "type": "object"
+    },
+    "AgentAttachClosedNotification": {
+      "additionalProperties": false,
+      "description": "Wire body of the terminal `subscription/closed` server notification for an `agent/attach`\nsubscription. Deliberately carries no cursor field -- `agent/attach` gives a type-level\n\"cursorless\" guarantee, unlike [`crate::SubscriptionClosedNotification`].",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/SubscriptionCloseReason"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "AgentAttachEvent": {
+      "description": "The closed public agent-attach progress algebra. This is the only representable shape:\nreasoning, tools, provider frames, usage, and session identifiers have no variant. `Working`\nand `Settled` are empty struct variants rather than bare units: serde's internally tagged enum\ndeserialization silently ignores unknown fields on a unit variant regardless of\n`deny_unknown_fields`, which would otherwise let an unrepresentable field ride along\nundetected on either of these two variants.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "working",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "maxLength": 16384,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+              "type": "string"
+            },
+            "type": {
+              "const": "output",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "settled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AgentAttachEventNotification": {
+      "$ref": "#/$defs/AgentAttachEventNotificationWire"
+    },
+    "AgentAttachEventNotificationWire": {
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/AgentAttachEvent"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "event"
+      ],
+      "type": "object"
+    },
+    "AgentAttachParams": {
+      "additionalProperties": false,
+      "description": "`agent/attach` establishment parameters: the named `{execution}` request. Deliberately closed,\nrejecting any unknown field.",
+      "properties": {
+        "execution": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution"
+      ],
+      "type": "object"
+    },
+    "AgentAttachResult": {
+      "additionalProperties": false,
+      "description": "The `agent/attach` establishment result: only a `subscriptionId`. Deliberately carries no\n`runId` or `atCursor` -- `agent/attach` is not run-scoped and has no cursor.",
+      "properties": {
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId"
+      ],
+      "type": "object"
+    },
     "ApplyParams": {
       "additionalProperties": false,
       "properties": {
@@ -65,6 +198,178 @@
       "required": [
         "phase",
         "deduped"
+      ],
+      "type": "object"
+    },
+    "ArtifactLineage": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "runId",
+        "attempt"
+      ],
+      "type": "object"
+    },
+    "ArtifactProducer": {
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+          "type": "string"
+        },
+        "worker": {
+          "maxLength": 256,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*@[1-9][0-9]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "worker"
+      ],
+      "type": "object"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "byteLength": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lineage": {
+          "$ref": "#/$defs/ArtifactLineage"
+        },
+        "mediaType": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "producer": {
+          "$ref": "#/$defs/ArtifactProducer"
+        },
+        "redaction": {
+          "$ref": "#/$defs/RedactionClass"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "typeId": {
+          "maxLength": 256,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*@[1-9][0-9]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifactId",
+        "sha256",
+        "byteLength",
+        "mediaType",
+        "typeId",
+        "producer",
+        "lineage",
+        "redaction"
+      ],
+      "type": "object"
+    },
+    "BackendFault": {
+      "$ref": "#/$defs/BackendFaultWire"
+    },
+    "BackendFaultWire": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/FaultAction"
+        },
+        "code": {
+          "$ref": "#/$defs/FaultCode"
+        },
+        "consequence": {
+          "$ref": "#/$defs/FaultConsequence"
+        },
+        "eventId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "executionRef": {
+          "default": null,
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry": {
+          "$ref": "#/$defs/FaultRetryDisposition"
+        },
+        "severity": {
+          "$ref": "#/$defs/FaultSeverity"
+        },
+        "source": {
+          "items": {
+            "$ref": "#/$defs/FaultSourceFrame"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
+        "summary": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventId",
+        "code",
+        "consequence",
+        "retry",
+        "action",
+        "severity",
+        "summary",
+        "source"
+      ],
+      "type": "object"
+    },
+    "CancelRequestParams": {
+      "additionalProperties": false,
+      "description": "Wire body of the `$/cancelRequest` client notification: best-effort cancellation of an\nin-flight unary request by its `RequestId`. Unknown or already-completed ids are a silent\nno-op; cancelling after the backend has committed leaves that committed state unchanged and\nemits no response or compensation.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "id"
       ],
       "type": "object"
     },
@@ -215,6 +520,73 @@
         }
       ]
     },
+    "DeleteParams": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "ifGeneration": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ifRunId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "ifGeneration",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "DeleteResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deduped": {
+          "type": "boolean"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "deleted",
+        "phase",
+        "deduped"
+      ],
+      "type": "object"
+    },
     "DiagnosticPathSegment": {
       "oneOf": [
         {
@@ -306,6 +678,99 @@
       },
       "required": [
         "code"
+      ],
+      "type": "object"
+    },
+    "EventNotification": {
+      "additionalProperties": false,
+      "description": "Wire body of the generic `event` server notification.",
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "event": {
+          "$ref": "#/$defs/WatchEvent"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "runId",
+        "cursor",
+        "event"
+      ],
+      "type": "object"
+    },
+    "FaultAction": {
+      "description": "Descriptive only, like [`FaultRetryDisposition`]: naming `Retry` never itself retries or\nauthorizes a retry.",
+      "enum": [
+        "none",
+        "retry",
+        "wait",
+        "escalate",
+        "abort"
+      ],
+      "type": "string"
+    },
+    "FaultCode": {
+      "enum": [
+        "unavailable",
+        "resource_exhausted",
+        "deadline_exceeded",
+        "permission_denied",
+        "failed_precondition",
+        "not_found",
+        "aborted",
+        "internal",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "FaultConsequence": {
+      "enum": [
+        "turn_failed",
+        "run_failed",
+        "run_degraded",
+        "no_observable_effect"
+      ],
+      "type": "string"
+    },
+    "FaultRetryDisposition": {
+      "description": "Descriptive only: no `BackendFault` and no `fault` event ever performs or authorizes a retry.\nEvent ordering and emission never themselves change terminal semantics.",
+      "enum": [
+        "retryable",
+        "retryable_after_backoff",
+        "not_retryable",
+        "indeterminate"
+      ],
+      "type": "string"
+    },
+    "FaultSeverity": {
+      "enum": [
+        "info",
+        "warning",
+        "error",
+        "critical"
+      ],
+      "type": "string"
+    },
+    "FaultSourceFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "component"
       ],
       "type": "object"
     },
@@ -1258,6 +1723,158 @@
       ],
       "type": "object"
     },
+    "JsonRpcNotification": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/EventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification2": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/SubscriptionCancelParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification3": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/SubscriptionClosedNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification4": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/CancelRequestParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification5": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/LogEventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification6": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/LogsClosedNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification7": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AgentAttachEventNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcNotification8": {
+      "properties": {
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AgentAttachClosedNotification"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
     "JsonRpcRequest": {
       "properties": {
         "id": {
@@ -1271,6 +1888,75 @@
         },
         "params": {
           "$ref": "#/$defs/InitializeParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest10": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/WatchParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest11": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/LogsParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest12": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/AgentAttachParams"
         }
       },
       "required": [
@@ -1396,10 +2082,109 @@
       ],
       "type": "object"
     },
+    "JsonRpcRequest7": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/RetryParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest8": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/ResubmitParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "JsonRpcRequest9": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/$defs/DeleteParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
     "JsonRpcResponse": {
       "anyOf": [
         {
           "$ref": "#/$defs/JsonRpcSuccess"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse10": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess10"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse11": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess11"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse12": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess12"
         },
         {
           "$ref": "#/$defs/JsonRpcErrorResponse"
@@ -1456,6 +2241,36 @@
         }
       ]
     },
+    "JsonRpcResponse7": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess7"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse8": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess8"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
+    "JsonRpcResponse9": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonRpcSuccess9"
+        },
+        {
+          "$ref": "#/$defs/JsonRpcErrorResponse"
+        }
+      ]
+    },
     "JsonRpcSuccess": {
       "properties": {
         "id": {
@@ -1466,6 +2281,63 @@
         },
         "result": {
           "$ref": "#/$defs/InitializeResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess10": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/WatchResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess11": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/LogsResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess12": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/AgentAttachResult"
         }
       },
       "required": [
@@ -1570,6 +2442,63 @@
       ],
       "type": "object"
     },
+    "JsonRpcSuccess7": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/RetryResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess8": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/ResubmitResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "JsonRpcSuccess9": {
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "jsonrpc": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/$defs/DeleteResult"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
     "Labels": {
       "additionalProperties": {
         "maxLength": 256,
@@ -1586,6 +2515,25 @@
       },
       "type": "object"
     },
+    "LogEventNotification": {
+      "$ref": "#/$defs/LogEventNotificationWire"
+    },
+    "LogEventNotificationWire": {
+      "additionalProperties": false,
+      "properties": {
+        "record": {
+          "$ref": "#/$defs/LogRecord"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "record"
+      ],
+      "type": "object"
+    },
     "LogLevel": {
       "enum": [
         "trace",
@@ -1595,6 +2543,88 @@
         "error"
       ],
       "type": "string"
+    },
+    "LogRecord": {
+      "additionalProperties": false,
+      "description": "The closed public log record shape: a level, a bounded target, and a bounded (possibly\nredacted) message. No raw bytes, reasoning, tools, credentials, env, or provider/session IDs\nare representable.",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/LogLevel"
+        },
+        "message": {
+          "maxLength": 16384,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+          "type": "string"
+        },
+        "target": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "target",
+        "message"
+      ],
+      "type": "object"
+    },
+    "LogsClosedNotification": {
+      "additionalProperties": false,
+      "description": "Wire body of the terminal `subscription/closed` server notification for a `logs` subscription.\nDeliberately carries no cursor field -- `logs` gives a type-level \"cursorless\" guarantee, unlike\n[`crate::SubscriptionClosedNotification`].",
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/SubscriptionCloseReason"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "LogsParams": {
+      "additionalProperties": false,
+      "description": "`logs` establishment parameters. v1 has zero caller filters: this is deliberately empty and\nclosed, rejecting any unknown field.",
+      "type": "object"
+    },
+    "LogsResult": {
+      "additionalProperties": false,
+      "description": "The `logs` establishment result: only a `subscriptionId`. Deliberately carries no `runId` or\n`atCursor` -- `logs` is not run-scoped and has no cursor.",
+      "properties": {
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId"
+      ],
+      "type": "object"
+    },
+    "NodeAddress": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "node": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "attempt"
+      ],
+      "type": "object"
     },
     "NodeOutputChannel": {
       "enum": [
@@ -1873,7 +2903,8 @@
         "empty",
         "admitting",
         "running",
-        "finished"
+        "finished",
+        "deleting"
       ],
       "type": "string"
     },
@@ -1958,6 +2989,15 @@
       ],
       "type": "object"
     },
+    "RedactionClass": {
+      "enum": [
+        "public",
+        "internal",
+        "confidential",
+        "restricted"
+      ],
+      "type": "string"
+    },
     "RequestId": {
       "anyOf": [
         {
@@ -1969,8 +3009,165 @@
         }
       ]
     },
+    "ResubmitParams": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "ifGeneration": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ifRunId": {
+          "type": "string"
+        },
+        "replacementInput": true
+      },
+      "required": [
+        "ifGeneration",
+        "ifRunId",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "ResubmitResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": "string"
+        },
+        "deduped": {
+          "type": "boolean"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operational": {
+          "$ref": "#/$defs/OperationalStatus"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "priorRunId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "priorRunId",
+        "runId",
+        "phase",
+        "operational",
+        "atCursor",
+        "deduped"
+      ],
+      "type": "object"
+    },
+    "RetryParams": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotencyKey": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "ifGeneration": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "ifGeneration",
+        "idempotencyKey"
+      ],
+      "type": "object"
+    },
+    "RetryResult": {
+      "additionalProperties": false,
+      "properties": {
+        "atCursor": {
+          "type": "string"
+        },
+        "deduped": {
+          "type": "boolean"
+        },
+        "generation": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operational": {
+          "$ref": "#/$defs/OperationalStatus"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "retriedTurnId": {
+          "type": "string"
+        },
+        "retryTurnId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "runId",
+        "phase",
+        "retriedTurnId",
+        "retryTurnId",
+        "operational",
+        "atCursor",
+        "deduped"
+      ],
+      "type": "object"
+    },
     "ServerCapabilities": {
       "additionalProperties": false,
+      "properties": {
+        "agentAttach": {
+          "default": false,
+          "type": "boolean"
+        },
+        "graphProfiles": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GraphProfile"
+          },
+          "maxItems": 2,
+          "not": {
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "const": "openengine.graph.single-worker/v1"
+              },
+              {
+                "const": "openengine.graph.full/v1"
+              }
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "logs": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "StopMode": {
@@ -2083,6 +3280,49 @@
         "maxNodeExecutions",
         "peakConcurrency",
         "attemptsPerNode"
+      ],
+      "type": "object"
+    },
+    "SubscriptionCancelParams": {
+      "additionalProperties": false,
+      "description": "Wire body of the generic `subscription/cancel` client notification.",
+      "properties": {
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId"
+      ],
+      "type": "object"
+    },
+    "SubscriptionCloseReason": {
+      "enum": [
+        "done",
+        "SLOW_CONSUMER"
+      ],
+      "type": "string"
+    },
+    "SubscriptionClosedNotification": {
+      "additionalProperties": false,
+      "description": "Wire body of the terminal `subscription/closed` server notification.",
+      "properties": {
+        "lastDeliveredCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/SubscriptionCloseReason"
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId",
+        "reason"
       ],
       "type": "object"
     },
@@ -2211,6 +3451,349 @@
       ],
       "type": "object"
     },
+    "WatchEvent": {
+      "description": "The closed public event algebra. `Phase` folds the observable cluster status (admission\ncommit, update, suspend/resume, stop-request); `NodeBegin`/`NodeEnd` are a testkit-only\nsynthetic hook decoupled from the real dispatch/lease turn mechanism, since no native graph\nexecutor exists yet; `Bookmark` advances the cursor without changing folded public state;\n`Fault` carries a durable, backend-neutral projected `BackendFault`: it correlates to the\nenclosing `EventNotification.run_id` plus its own optional opaque `executionRef`, and its\nordering/emission never itself authorizes a retry or changes terminal semantics -- it folds to\nno public status change, exactly like `Bookmark`; `Finished` is always the last event for a\nrun.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "admission": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AdmissionTransition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "$ref": "#/$defs/ClusterStatus"
+            },
+            "type": {
+              "const": "phase",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "input": true,
+            "node": {
+              "$ref": "#/$defs/NodeAddress"
+            },
+            "type": {
+              "const": "node_begin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "node": {
+              "$ref": "#/$defs/NodeAddress"
+            },
+            "outcome": {
+              "$ref": "#/$defs/WorkerOutcome"
+            },
+            "type": {
+              "const": "node_end",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "bookmark",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fault": {
+              "$ref": "#/$defs/BackendFault"
+            },
+            "type": {
+              "const": "fault",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "fault"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "final_status": {
+              "$ref": "#/$defs/ClusterStatus"
+            },
+            "stop_mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StopMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "const": "finished",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "final_status"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WatchParams": {
+      "additionalProperties": false,
+      "properties": {
+        "fromCursor": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "WatchResult": {
+      "properties": {
+        "atCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriptionId"
+      ],
+      "type": "object"
+    },
+    "WorkerErrorCode": {
+      "enum": [
+        "timeout",
+        "crash",
+        "malformed",
+        "refusal"
+      ],
+      "type": "string"
+    },
+    "WorkerFailureReason": {
+      "enum": [
+        "declared_failure",
+        "policy_denied",
+        "interactive_input_required",
+        "authentication_required",
+        "malformed_result"
+      ],
+      "type": "string"
+    },
+    "WorkerOutcome": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/WorkerOutcomeWire"
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "error"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "reason": {
+                    "const": "declared_failure"
+                  }
+                },
+                "required": [
+                  "reason"
+                ]
+              },
+              {
+                "properties": {
+                  "code": {
+                    "const": "refusal"
+                  },
+                  "reason": {
+                    "enum": [
+                      "policy_denied",
+                      "interactive_input_required",
+                      "authentication_required"
+                    ]
+                  }
+                },
+                "required": [
+                  "code",
+                  "reason"
+                ]
+              },
+              {
+                "properties": {
+                  "code": {
+                    "const": "malformed"
+                  },
+                  "reason": {
+                    "const": "malformed_result"
+                  }
+                },
+                "required": [
+                  "code",
+                  "reason"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "WorkerOutcomeWire": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifacts": {
+              "items": {
+                "$ref": "#/$defs/ArtifactRef"
+              },
+              "type": "array"
+            },
+            "output": true,
+            "status": {
+              "const": "verified",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "output",
+            "artifacts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "artifacts": {
+              "items": {
+                "$ref": "#/$defs/ArtifactRef"
+              },
+              "type": "array"
+            },
+            "diagnostic": true,
+            "output": true,
+            "signals": {
+              "additionalProperties": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+                "type": "string"
+              },
+              "propertyNames": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "status": {
+              "const": "verifier",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "output",
+            "signals",
+            "diagnostic",
+            "artifacts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/WorkerErrorCode"
+            },
+            "reason": {
+              "$ref": "#/$defs/WorkerFailureReason"
+            },
+            "status": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "code",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "WriteBinding": {
       "additionalProperties": false,
       "properties": {
@@ -2238,11 +3821,35 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "agent_attach_closed_notification": {
+      "$ref": "#/$defs/JsonRpcNotification8"
+    },
+    "agent_attach_event_notification": {
+      "$ref": "#/$defs/JsonRpcNotification7"
+    },
+    "agent_attach_request": {
+      "$ref": "#/$defs/JsonRpcRequest12"
+    },
+    "agent_attach_response": {
+      "$ref": "#/$defs/JsonRpcResponse12"
+    },
     "apply_request": {
       "$ref": "#/$defs/JsonRpcRequest3"
     },
     "apply_response": {
       "$ref": "#/$defs/JsonRpcResponse3"
+    },
+    "cancel_request_notification": {
+      "$ref": "#/$defs/JsonRpcNotification4"
+    },
+    "delete_request": {
+      "$ref": "#/$defs/JsonRpcRequest9"
+    },
+    "delete_response": {
+      "$ref": "#/$defs/JsonRpcResponse9"
+    },
+    "event_notification": {
+      "$ref": "#/$defs/JsonRpcNotification"
     },
     "get_request": {
       "$ref": "#/$defs/JsonRpcRequest4"
@@ -2256,11 +3863,35 @@
     "initialize_response": {
       "$ref": "#/$defs/JsonRpcResponse"
     },
+    "log_event_notification": {
+      "$ref": "#/$defs/JsonRpcNotification5"
+    },
+    "logs_closed_notification": {
+      "$ref": "#/$defs/JsonRpcNotification6"
+    },
+    "logs_request": {
+      "$ref": "#/$defs/JsonRpcRequest11"
+    },
+    "logs_response": {
+      "$ref": "#/$defs/JsonRpcResponse11"
+    },
     "plan_request": {
       "$ref": "#/$defs/JsonRpcRequest2"
     },
     "plan_response": {
       "$ref": "#/$defs/JsonRpcResponse2"
+    },
+    "resubmit_request": {
+      "$ref": "#/$defs/JsonRpcRequest8"
+    },
+    "resubmit_response": {
+      "$ref": "#/$defs/JsonRpcResponse8"
+    },
+    "retry_request": {
+      "$ref": "#/$defs/JsonRpcRequest7"
+    },
+    "retry_response": {
+      "$ref": "#/$defs/JsonRpcResponse7"
     },
     "stop_request": {
       "$ref": "#/$defs/JsonRpcRequest6"
@@ -2268,11 +3899,23 @@
     "stop_response": {
       "$ref": "#/$defs/JsonRpcResponse6"
     },
+    "subscription_cancel_notification": {
+      "$ref": "#/$defs/JsonRpcNotification2"
+    },
+    "subscription_closed_notification": {
+      "$ref": "#/$defs/JsonRpcNotification3"
+    },
     "update_request": {
       "$ref": "#/$defs/JsonRpcRequest5"
     },
     "update_response": {
       "$ref": "#/$defs/JsonRpcResponse5"
+    },
+    "watch_request": {
+      "$ref": "#/$defs/JsonRpcRequest10"
+    },
+    "watch_response": {
+      "$ref": "#/$defs/JsonRpcResponse10"
     }
   },
   "required": [
@@ -2287,7 +3930,27 @@
     "update_request",
     "update_response",
     "stop_request",
-    "stop_response"
+    "stop_response",
+    "retry_request",
+    "retry_response",
+    "resubmit_request",
+    "resubmit_response",
+    "delete_request",
+    "delete_response",
+    "watch_request",
+    "watch_response",
+    "event_notification",
+    "subscription_cancel_notification",
+    "subscription_closed_notification",
+    "cancel_request_notification",
+    "logs_request",
+    "logs_response",
+    "log_event_notification",
+    "logs_closed_notification",
+    "agent_attach_request",
+    "agent_attach_response",
+    "agent_attach_event_notification",
+    "agent_attach_closed_notification"
   ],
   "title": "ImplementedProtocolSchema",
   "type": "object"

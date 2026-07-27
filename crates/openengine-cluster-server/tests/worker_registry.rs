@@ -144,6 +144,23 @@ async fn diagnostics_are_depth_first_and_cover_each_compatibility_axis() {
 }
 
 #[tokio::test]
+async fn resolves_builtin_worker_via_default_compatibility_rules() {
+    let mut registry = registry();
+    let worker = WorkerRef::new("mock.worker@1").unwrap();
+    let mut value = descriptor("mock.worker@1", false);
+    value["binding"] =
+        serde_json::to_value(openengine_cluster_protocol::WorkerProtocolBinding::builtin_v1())
+            .unwrap();
+    value["credentialRequirements"] = json!([]);
+    registry
+        .0
+        .insert(worker, serde_json::from_value(value).unwrap());
+
+    let graph: GraphSpec = serde_json::from_value(graph()).unwrap();
+    check_graph_workers(&graph, &registry).await.unwrap();
+}
+
+#[tokio::test]
 async fn missing_exact_version_is_a_stable_registry_diagnostic() {
     let mut value = graph();
     value["root"]["children"][0]["worker"] = json!("mock.worker@2");

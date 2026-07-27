@@ -53,7 +53,13 @@ export function spawnTask(prompt, options = {}) {
     providerName,
     commandSpec
   );
-  const watcherScript = resolveWatcherScript(options);
+  const watcherScript = resolveWatcherScript(
+    {
+      attachable: options.attachable,
+      jsonSchema,
+    },
+    providerName
+  );
   spawnWatcher({
     watcherScript,
     id,
@@ -165,8 +171,20 @@ function buildWatcherCommandSpec(commandSpec) {
   return watcherCommandSpec;
 }
 
-function resolveWatcherScript(options) {
-  const useAttachable = options.attachable !== false && !options.jsonSchema;
+export function shouldUseAttachableWatcher(options, providerName) {
+  if (options.attachable === false) {
+    return false;
+  }
+
+  // Claude strict structured output still needs the non-PTY watcher. Claude
+  // can treat PTY notifications as streaming commands and reject the run.
+  // Other providers, including Codex, support their structured-output mode in
+  // the attachable PTY watcher and must not lose the advertised attach socket.
+  return !(providerName === 'claude' && options.jsonSchema);
+}
+
+function resolveWatcherScript(options, providerName) {
+  const useAttachable = shouldUseAttachableWatcher(options, providerName);
   return useAttachable ? join(__dirname, 'attachable-watcher.js') : join(__dirname, 'watcher.js');
 }
 

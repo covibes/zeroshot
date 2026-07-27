@@ -1,24 +1,35 @@
 //! Backend-neutral Cluster Protocol dispatcher.
 
 pub mod admission;
+pub mod agent_attach;
 pub mod graph_verifier;
 pub mod lifecycle;
+pub mod logs;
 pub mod stdio;
+pub mod watch;
+pub mod websocket;
 pub mod worker_registry;
+
+mod dispatch;
+mod subscription_stream;
+mod wire;
+pub(crate) use wire::{serialize_backend_error, serialize_error, serialize_success};
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyParams, ApplyResult, DomainErrorData, GetParams, GetResult, InitializeParams,
-    InitializeResult, JsonRpcError, JsonRpcErrorResponse, JsonRpcSuccess, PlanParams, PlanResult,
-    RequestId, APPLICATION_ERROR, INTERNAL_ERROR, INTERNAL_ERROR_CODE, INVALID_PARAMS,
-    INVALID_PHASE, INVALID_REQUEST, JSON_RPC_VERSION, METHOD_NOT_FOUND, PARSE_ERROR,
-    PROTOCOL_VERSION, SCHEMA_VIOLATION, StopParams, StopResult, UNSUPPORTED_PROTOCOL_VERSION,
-    UpdateParams, UpdateResult,
+    AgentAttachParams, AgentAttachResult, ApplyParams, ApplyResult, DeleteParams, DeleteResult,
+    GetParams, GetResult, InitializeParams, InitializeResult, LogsParams, LogsResult, PlanParams,
+    PlanResult, INVALID_PHASE, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
+    StopParams, StopResult, UpdateParams, UpdateResult, WatchParams, WatchResult,
 };
-use serde_json::{json, Map, Value};
+use serde_json::Value;
 use thiserror::Error;
+
+use crate::agent_attach::{AgentAttachEventStream, AgentAttachHandle};
+use crate::logs::{LogEventStream, LogsHandle};
+use crate::watch::{WatchEventStream, WatchHandle};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ConnectionContext {
@@ -143,6 +154,81 @@ pub trait ClusterBackend: Send + Sync + 'static {
             None,
         ))
     }
+
+    async fn retry(
+        &self,
+        _context: &ConnectionContext,
+        _params: RetryParams,
+    ) -> Result<RetryResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support lifecycle retry",
+            None,
+        ))
+    }
+
+    async fn resubmit(
+        &self,
+        _context: &ConnectionContext,
+        _params: ResubmitParams,
+    ) -> Result<ResubmitResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support lifecycle resubmit",
+            None,
+        ))
+    }
+
+    async fn delete(
+        &self,
+        _context: &ConnectionContext,
+        _params: DeleteParams,
+    ) -> Result<DeleteResult, BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support lifecycle delete",
+            None,
+        ))
+    }
+
+    async fn watch(
+        &self,
+        _context: &ConnectionContext,
+        _params: WatchParams,
+        _queue_capacity: usize,
+    ) -> Result<(WatchResult, WatchEventStream, WatchHandle), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support watch",
+            None,
+        ))
+    }
+
+    async fn logs(
+        &self,
+        _context: &ConnectionContext,
+        _params: LogsParams,
+        _queue_capacity: usize,
+    ) -> Result<(LogsResult, LogEventStream, LogsHandle), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support logs",
+            None,
+        ))
+    }
+
+    async fn agent_attach(
+        &self,
+        _context: &ConnectionContext,
+        _params: AgentAttachParams,
+        _queue_capacity: usize,
+    ) -> Result<(AgentAttachResult, AgentAttachEventStream, AgentAttachHandle), BackendError> {
+        Err(BackendError::application(
+            INVALID_PHASE,
+            "Backend does not support agent attach",
+            None,
+        ))
+    }
 }
 
 pub struct Dispatcher<B> {
@@ -157,294 +243,4 @@ impl<B> Clone for Dispatcher<B> {
             context: self.context.clone(),
         }
     }
-}
-
-impl<B> Dispatcher<B>
-where
-    B: ClusterBackend,
-{
-    #[must_use]
-    pub fn new(backend: B, context: ConnectionContext) -> Self {
-        Self {
-            backend: Arc::new(backend),
-            context,
-        }
-    }
-
-    #[must_use]
-    pub fn from_shared(backend: Arc<B>, context: ConnectionContext) -> Self {
-        Self { backend, context }
-    }
-
-    pub async fn dispatch(&self, input: &str) -> String {
-        let value = match serde_json::from_str::<Value>(input) {
-            Ok(value) => value,
-            Err(_) => return serialize_error(None, PARSE_ERROR, "Parse error", None),
-        };
-
-        let object = match value {
-            Value::Object(object) => object,
-            Value::Array(_) => {
-                return serialize_error(None, INVALID_REQUEST, "Invalid Request", None);
-            }
-            _ => return serialize_error(None, INVALID_REQUEST, "Invalid Request", None),
-        };
-
-        self.dispatch_object(object).await
-    }
-
-    async fn dispatch_object(&self, object: Map<String, Value>) -> String {
-        if object.get("jsonrpc") != Some(&Value::String(JSON_RPC_VERSION.to_owned())) {
-            return serialize_error(None, INVALID_REQUEST, "Invalid Request", None);
-        }
-
-        let Some(Value::String(method)) = object.get("method") else {
-            return serialize_error(None, INVALID_REQUEST, "Invalid Request", None);
-        };
-        let Some(id_value) = object.get("id") else {
-            return serialize_error(None, INVALID_REQUEST, "Invalid Request", None);
-        };
-        let Some(id) = parse_request_id(id_value) else {
-            return serialize_error(None, INVALID_REQUEST, "Invalid Request", None);
-        };
-
-        let method = match method.as_str() {
-            "initialize" => ImplementedMethod::Initialize,
-            "plan" => ImplementedMethod::Plan,
-            "apply" => ImplementedMethod::Apply,
-            "get" => ImplementedMethod::Get,
-            "update" => ImplementedMethod::Update,
-            "stop" => ImplementedMethod::Stop,
-            _ => {
-                return serialize_error(Some(id), METHOD_NOT_FOUND, "Method not found", None);
-            }
-        };
-
-        let params = match object.get("params") {
-            Some(Value::Object(params)) => Value::Object(params.clone()),
-            Some(_) => {
-                return serialize_error(Some(id), INVALID_PARAMS, "Invalid params", None);
-            }
-            None => return serialize_error(Some(id), INVALID_PARAMS, "Invalid params", None),
-        };
-
-        match method {
-            ImplementedMethod::Initialize => self.dispatch_initialize(id, params).await,
-            ImplementedMethod::Plan => self.dispatch_plan(id, params).await,
-            ImplementedMethod::Apply => self.dispatch_apply(id, params).await,
-            ImplementedMethod::Get => self.dispatch_get(id, params).await,
-            ImplementedMethod::Update => self.dispatch_update(id, params).await,
-            ImplementedMethod::Stop => self.dispatch_stop(id, params).await,
-        }
-    }
-
-    async fn dispatch_plan(&self, id: RequestId, params: Value) -> String {
-        let params = match serde_json::from_value::<PlanParams>(params) {
-            Ok(params) => params,
-            Err(_) => {
-                return serialize_error(
-                    Some(id),
-                    INVALID_PARAMS,
-                    "Invalid params",
-                    Some(DomainErrorData::new(SCHEMA_VIOLATION)),
-                );
-            }
-        };
-        match self.backend.plan(&self.context, params).await {
-            Ok(result) => serialize_success(id, result),
-            Err(error) => serialize_backend_error(id, error),
-        }
-    }
-
-    async fn dispatch_apply(&self, id: RequestId, params: Value) -> String {
-        let params = match serde_json::from_value::<ApplyParams>(params) {
-            Ok(params) => params,
-            Err(_) => {
-                return serialize_error(
-                    Some(id),
-                    INVALID_PARAMS,
-                    "Invalid params",
-                    Some(DomainErrorData::new(SCHEMA_VIOLATION)),
-                );
-            }
-        };
-        match self.backend.apply(&self.context, params).await {
-            Ok(result) => serialize_success(id, result),
-            Err(error) => serialize_backend_error(id, error),
-        }
-    }
-
-    async fn dispatch_initialize(&self, id: RequestId, params: Value) -> String {
-        let params = match serde_json::from_value::<InitializeParams>(params) {
-            Ok(params) => params,
-            Err(_) => {
-                return serialize_error(Some(id), INVALID_PARAMS, "Invalid params", None);
-            }
-        };
-        if params.protocol_version != PROTOCOL_VERSION {
-            return serialize_error(
-                Some(id),
-                APPLICATION_ERROR,
-                "Unsupported protocol version",
-                Some(DomainErrorData {
-                    code: UNSUPPORTED_PROTOCOL_VERSION.to_owned(),
-                    details: Some(json!({
-                        "requestedProtocolVersion": params.protocol_version,
-                        "supportedProtocolVersion": PROTOCOL_VERSION,
-                    })),
-                }),
-            );
-        }
-
-        match self.backend.initialize(&self.context, params).await {
-            Ok(result) => match result.validate_protocol_version() {
-                Ok(()) => serialize_success(id, result),
-                Err(error) => serialize_backend_error(
-                    id,
-                    BackendError::new(INTERNAL_ERROR_CODE, error.to_string()),
-                ),
-            },
-            Err(error) => serialize_backend_error(id, error),
-        }
-    }
-
-    async fn dispatch_get(&self, id: RequestId, params: Value) -> String {
-        let params = match serde_json::from_value::<GetParams>(params) {
-            Ok(params) => params,
-            Err(_) => {
-                return serialize_error(Some(id), INVALID_PARAMS, "Invalid params", None);
-            }
-        };
-
-        match self.backend.get(&self.context, params).await {
-            Ok(result) => serialize_success(id, result),
-            Err(error) => serialize_backend_error(id, error),
-        }
-    }
-
-    async fn dispatch_update(&self, id: RequestId, params: Value) -> String {
-        let params = match serde_json::from_value::<UpdateParams>(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return serialize_error(
-                    Some(id),
-                    INVALID_PARAMS,
-                    "Invalid params",
-                    Some(DomainErrorData {
-                        code: SCHEMA_VIOLATION.to_owned(),
-                        details: Some(json!({ "reason": error.to_string() })),
-                    }),
-                );
-            }
-        };
-        match self.backend.update(&self.context, params).await {
-            Ok(result) => serialize_success(id, result),
-            Err(error) => serialize_backend_error(id, error),
-        }
-    }
-
-    async fn dispatch_stop(&self, id: RequestId, params: Value) -> String {
-        let params = match serde_json::from_value::<StopParams>(params) {
-            Ok(params) => params,
-            Err(error) => {
-                return serialize_error(
-                    Some(id),
-                    INVALID_PARAMS,
-                    "Invalid params",
-                    Some(DomainErrorData {
-                        code: SCHEMA_VIOLATION.to_owned(),
-                        details: Some(json!({ "reason": error.to_string() })),
-                    }),
-                );
-            }
-        };
-        match self.backend.stop(&self.context, params).await {
-            Ok(result) => serialize_success(id, result),
-            Err(error) => serialize_backend_error(id, error),
-        }
-    }
-}
-
-enum ImplementedMethod {
-    Initialize,
-    Plan,
-    Apply,
-    Get,
-    Update,
-    Stop,
-}
-
-fn parse_request_id(value: &Value) -> Option<RequestId> {
-    match value {
-        Value::String(value) => Some(RequestId::String(value.clone())),
-        Value::Number(value) => value.as_i64().map(RequestId::Integer),
-        _ => None,
-    }
-}
-
-fn serialize_success<T>(id: RequestId, result: T) -> String
-where
-    T: serde::Serialize,
-{
-    serde_json::to_string(&JsonRpcSuccess {
-        jsonrpc: JSON_RPC_VERSION.to_owned(),
-        id,
-        result,
-    })
-    .expect("protocol response serialization must succeed")
-}
-
-fn serialize_backend_error(id: RequestId, error: BackendError) -> String {
-    let code = if error.code.is_empty() {
-        INTERNAL_ERROR_CODE.to_owned()
-    } else {
-        error.code
-    };
-    match error.kind {
-        BackendErrorKind::Internal => serialize_error(
-            Some(id),
-            INTERNAL_ERROR,
-            "Internal error",
-            Some(DomainErrorData {
-                code,
-                details: None,
-            }),
-        ),
-        BackendErrorKind::InvalidParams => serialize_error(
-            Some(id),
-            INVALID_PARAMS,
-            "Invalid params",
-            Some(DomainErrorData {
-                code,
-                details: error.details,
-            }),
-        ),
-        BackendErrorKind::Application => serialize_error(
-            Some(id),
-            APPLICATION_ERROR,
-            &error.message,
-            Some(DomainErrorData {
-                code,
-                details: error.details,
-            }),
-        ),
-    }
-}
-
-fn serialize_error(
-    id: Option<RequestId>,
-    code: i64,
-    message: &str,
-    data: Option<DomainErrorData>,
-) -> String {
-    serde_json::to_string(&JsonRpcErrorResponse {
-        jsonrpc: JSON_RPC_VERSION.to_owned(),
-        id,
-        error: JsonRpcError {
-            code,
-            message: message.to_owned(),
-            data,
-        },
-    })
-    .expect("protocol error serialization must succeed")
 }

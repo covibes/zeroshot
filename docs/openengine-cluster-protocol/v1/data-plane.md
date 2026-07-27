@@ -1,0 +1,75 @@
+# Cluster Protocol v1 WebSocket data plane
+
+This document defines the production Rust WebSocket binding: the wire framing that carries the
+backend-neutral `Dispatcher` and the generic subscription framing defined in
+[`watch.md`](./watch.md) over one WebSocket connection, plus the boundary between that binding and
+everything that hosts it. It adds no protocol method or event semantics of its own beyond
+`$/cancelRequest`; every method, event, and generic subscription notification is unchanged from the
+in-process and NDJSON stdio bindings.
+
+## Framing
+
+One WebSocket text message carries exactly one JSON-RPC object (request, response, or
+notification) -- there is no line delimiter and no batching. A binary frame is not a supported
+encoding: it closes the connection immediately with code `1003` (unsupported data). A text message
+whose UTF-8 byte length exceeds `1,048,576` after frame reassembly closes the connection with code
+`1009` (message too big), matching the NDJSON stdio binding's line-length bound. A text message that
+fails to parse as JSON-RPC receives a normal `PARSE_ERROR` JSON-RPC error response on the same
+connection; unlike the size and encoding violations above, a parse failure does not close the
+connection. Ping/pong control frames are answered automatically and otherwise ignored.
+
+Subscription delivery reuses the exact same generic `event`/`subscription/cancel`/
+`subscription/closed` notification framing described in `watch.md` -- there are no
+WebSocket-specific subscription notification names, and results/events/errors are byte-equivalent
+between the in-process, NDJSON, and WebSocket bindings for the same request sequence.
+
+## `$/cancelRequest`
+
+`$/cancelRequest{id}` is a client notification, best-effort cancelling an in-flight unary request by
+its `RequestId` on the same connection. It carries no response of its own. An unknown or
+already-completed id is a silent no-op: the connection remains fully usable and no error is
+surfaced. Cancelling a request that has already committed backend state leaves that committed state
+unchanged -- there is no rollback or compensation, only suppression of the (otherwise still
+in-flight) response delivery. `$/cancelRequest` targets unary/passthrough requests only; an
+established `watch`/`logs`/`agent/attach` subscription is cancelled with `subscription/cancel`
+instead, exactly as over NDJSON.
+
+## Connection isolation over a shared backend
+
+One backend instance can be shared by multiple independently authorized WebSocket connections. Each
+connection is constructed with its own injected `ConnectionContext`; the wire protocol carries no
+auth, tenant, or route field, and no protocol parameter is ever interpreted as one -- that
+identity/authorization decision is made once, by whatever hosts this binding, at connection
+acceptance time, not by anything this crate parses from a request. CAS and idempotency guarantees
+are enforced by the shared backend itself, so two connections against one backend cannot double
+commit or observe effects attributable to another connection's context.
+
+## Capsule data-plane placement
+
+This binding is the data-plane surface exposed by one capsule: the runtime process or container
+that accepts WebSocket connections and serves one backend's `Dispatcher` over them. Everything
+upstream of an accepted connection is owned by whatever hosts that capsule, not by this crate:
+
+- provisioning or scheduling the capsule itself;
+- TLS termination (this binding speaks plain WebSocket text frames; TLS, if any, terminates in
+  front of it);
+- resolving tenancy, routing, or authentication/authorization for a connection before it reaches
+  `serve_websocket`;
+- billing and usage metering;
+- workspace or secret storage/services;
+- artifact bytes (this protocol carries status, events, and control -- never artifact payloads);
+- issuing or validating the token/credential that authorized the connection.
+
+A hosting process is expected to accept the raw connection, resolve and inject that connection's
+`ConnectionContext`, and hand the rest to `serve_websocket`; this document defines only what happens
+from that handoff onward.
+
+## Fixture and test boundary
+
+`crates/openengine-cluster-server/tests/websocket.rs` covers this binding's own framing and
+admission behavior directly against raw tungstenite frames.
+`crates/openengine-cluster-client/tests/websocket.rs` covers the typed `WebSocketTransport` client
+against the same binding. `crates/openengine-cluster-testkit/tests/protocol_websocket.rs` proves
+byte-equivalence against the in-process and NDJSON bindings and exercises two independently
+authorized connections sharing one backend. All three drive `serve_websocket` over an in-memory
+duplex pipe; none of them involve real network I/O, TLS, or the hosting concerns listed above.
