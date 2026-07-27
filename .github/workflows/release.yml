@@ -21,6 +21,10 @@ permissions:
   pull-requests: write
   id-token: write
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
   install-matrix:
     # Run only for real release flow or manual dry-run
@@ -42,6 +46,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'main' }}
 
       - name: Setup Node.js ${{ matrix.node }}
         uses: actions/setup-node@v4
@@ -124,25 +130,49 @@ jobs:
           # NOTE: Do NOT set persist-credentials: false here
           # Semantic-release needs git credentials to query remote tags
 
+      - name: Verify this is the CI-tested main commit
+        id: candidate
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tested_sha="${{ github.event.workflow_run.head_sha }}"
+          current_sha="$(git rev-parse HEAD)"
+          if [ "$current_sha" != "$tested_sha" ]; then
+            echo "Skipping obsolete release run: tested $tested_sha, main is $current_sha"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
       - name: Fetch all tags
+        if: steps.candidate.outputs.current == 'true'
         run: |
           git fetch --tags --force
           echo "Available tags:"
           git tag -l | tail -10
 
       - name: Setup Node.js
+        if: steps.candidate.outputs.current == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
+        if: steps.candidate.outputs.current == 'true'
         run: npm ci
 
       - name: Release preflight
+        if: steps.candidate.outputs.current == 'true'
         run: npm run release:preflight
 
       - name: Verify package before release
+        if: steps.candidate.outputs.current == 'true'
         run: |
           # Create tarball (respects 'files' array in package.json)
           # Extract last line only (tarball filename) to avoid capturing prepare script output
@@ -164,7 +194,20 @@ jobs:
 
           echo "✅ Package verification passed"
 
+      - name: Recheck main immediately before publication
+        if: steps.candidate.outputs.current == 'true'
+        shell: bash
+        run: |
+          git fetch origin main
+          current_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git rev-parse origin/main)"
+          if [ "$current_sha" != "$remote_sha" ]; then
+            echo "::error::main moved from $current_sha to $remote_sha after validation"
+            exit 1
+          fi
+
       - name: Release
+        if: steps.candidate.outputs.current == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -181,5 +224,5 @@ jobs:
           fi
 
       - name: Assert release published
-        if: github.event_name == 'workflow_run'
+        if: steps.candidate.outputs.current == 'true' && github.event_name == 'workflow_run'
         run: npm run release:assert-published

@@ -3,13 +3,14 @@ const assert = require('assert');
 const {
   analyzeMessage,
   maxReleaseType,
+  releaseTypeForMessages,
   validateReleaseConfig,
 } = require('../scripts/release-preflight');
 
 describe('release preflight', () => {
-  it('classifies release promotion commits as minor releases', () => {
-    assert.strictEqual(analyzeMessage('release: promote dev to main'), 'minor');
-    assert.strictEqual(analyzeMessage('release(main): promote dev to main'), 'minor');
+  it('does not retain the retired release-promotion commit type', () => {
+    assert.strictEqual(analyzeMessage('release: promote dev to main'), null);
+    assert.strictEqual(analyzeMessage('release(main): promote dev to main'), null);
   });
 
   it('classifies conventional breaking commits as majors', () => {
@@ -24,6 +25,17 @@ describe('release preflight', () => {
     assert.strictEqual(maxReleaseType('patch', 'minor'), 'minor');
     assert.strictEqual(maxReleaseType('minor', 'patch'), 'minor');
     assert.strictEqual(maxReleaseType('minor', 'major'), 'major');
+  });
+
+  it('allows trunk commits that intentionally produce no publication', () => {
+    assert.strictEqual(
+      releaseTypeForMessages(['docs: clarify setup', 'chore: refresh fixtures']),
+      null
+    );
+    assert.strictEqual(
+      releaseTypeForMessages(['docs: clarify setup', 'fix: repair attach']),
+      'patch'
+    );
   });
 
   it('rejects branch-writing plugins in the effective release config', () => {

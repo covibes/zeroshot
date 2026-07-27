@@ -50,7 +50,6 @@ function analyzeMessage(message) {
   if (breaking) return 'major';
 
   switch (type) {
-    case 'release':
     case 'feat':
       return 'minor';
     case 'fix':
@@ -61,6 +60,14 @@ function analyzeMessage(message) {
   }
 }
 
+function releaseTypeForMessages(messages) {
+  let releaseType = null;
+  for (const message of messages) {
+    releaseType = maxReleaseType(releaseType, analyzeMessage(message));
+  }
+  return releaseType;
+}
+
 function getPluginNames(releaseConfig) {
   return (releaseConfig.plugins || []).map(normalizePlugin);
 }
@@ -68,9 +75,7 @@ function getPluginNames(releaseConfig) {
 function validateReleaseConfig(packageJson) {
   const releaseConfig = packageJson.release;
   if (!releaseConfig || typeof releaseConfig !== 'object') {
-    throw new Error(
-      'package.json#release is required so it takes precedence over stale .releaserc files'
-    );
+    throw new Error('package.json#release is required as the single release configuration');
   }
 
   const branches = Array.isArray(releaseConfig.branches)
@@ -186,10 +191,7 @@ async function prTitleFromMergeQueue() {
 async function releaseSignal() {
   const tag = latestReleaseTag();
   const messages = commitMessagesSince(tag);
-  let releaseType = null;
-  for (const message of messages) {
-    releaseType = maxReleaseType(releaseType, analyzeMessage(message));
-  }
+  let releaseType = releaseTypeForMessages(messages);
 
   let title = prTitleFromEvent();
   if (!title) title = await prTitleFromMergeQueue();
@@ -214,9 +216,8 @@ async function main() {
   if (signal.prTitle) console.log(`Release PR title: ${signal.prTitle}`);
 
   if (!signal.releaseType) {
-    throw new Error(
-      'Release promotion would publish nothing; use a release-worthy PR title/commit'
-    );
+    console.log('Release preflight passed: no publication expected');
+    return;
   }
 
   console.log(`Release preflight passed: ${signal.releaseType}`);
@@ -232,5 +233,6 @@ if (require.main === module) {
 module.exports = {
   analyzeMessage,
   maxReleaseType,
+  releaseTypeForMessages,
   validateReleaseConfig,
 };

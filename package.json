@@ -1,6 +1,6 @@
 {
   "name": "@the-open-engine/zeroshot",
-  "version": "6.4.0",
+  "version": "0.0.0-development",
   "description": "Multi-agent orchestration engine for Claude, Codex, and Gemini",
   "main": "src/orchestrator.js",
   "bin": {
@@ -17,17 +17,7 @@
       "main"
     ],
     "plugins": [
-      [
-        "@semantic-release/commit-analyzer",
-        {
-          "releaseRules": [
-            {
-              "type": "release",
-              "release": "minor"
-            }
-          ]
-        }
-      ],
+      "@semantic-release/commit-analyzer",
       "@semantic-release/release-notes-generator",
       [
         "@semantic-release/npm",
@@ -151,8 +141,6 @@
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
-    "@semantic-release/changelog": "^6.0.3",
-    "@semantic-release/git": "^10.0.1",
     "@semantic-release/github": "^11.0.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.0.3",

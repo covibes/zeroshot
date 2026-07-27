@@ -28,20 +28,24 @@ echo "✓ Authenticated with admin access"
 echo ""
 
 # ============================================================================
-# Configure 'dev' branch protection (merge target)
+# Configure 'main' branch protection (single trunk)
 # ============================================================================
 
-echo "→ Configuring 'dev' branch protection..."
+echo "→ Configuring 'main' branch protection..."
 
-gh api --method PUT "repos/$REPO/branches/dev/protection" \
+gh api --method PUT "repos/$REPO/branches/main/protection" \
   --input - <<EOF
 {
   "required_status_checks": {
     "strict": true,
     "contexts": ["check", "install-matrix (ubuntu-latest, 20)", "install-matrix (macos-latest, 20)"]
   },
-  "enforce_admins": false,
-  "required_pull_request_reviews": null,
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 0,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false
+  },
   "restrictions": null,
   "allow_force_pushes": false,
   "allow_deletions": false,
@@ -50,22 +54,32 @@ gh api --method PUT "repos/$REPO/branches/dev/protection" \
 }
 EOF
 
-echo "✓ 'dev' branch protection configured"
+echo "✓ 'main' branch protection configured"
 
-# Enable merge queue for dev branch
-echo "→ Enabling merge queue for 'dev' branch..."
+# Enable merge queue for main branch
+echo "→ Enabling merge queue for 'main' branch..."
 
 # Note: Merge queue requires GitHub Enterprise or public repos with Actions
 # Using the ruleset API which supports merge queue
-gh api --method POST "repos/$REPO/rulesets" \
-  --input - <<EOF 2>/dev/null || echo "   (ruleset may already exist)"
+RULESET_NAME="main-merge-queue"
+RULESET_ID="$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$RULESET_NAME\") | .id" | head -1)"
+if [[ -n "$RULESET_ID" ]]; then
+  RULESET_METHOD="PUT"
+  RULESET_ENDPOINT="repos/$REPO/rulesets/$RULESET_ID"
+else
+  RULESET_METHOD="POST"
+  RULESET_ENDPOINT="repos/$REPO/rulesets"
+fi
+
+gh api --method "$RULESET_METHOD" "$RULESET_ENDPOINT" \
+  --input - <<EOF
 {
-  "name": "dev-merge-queue",
+  "name": "$RULESET_NAME",
   "target": "branch",
   "enforcement": "active",
   "conditions": {
     "ref_name": {
-      "include": ["refs/heads/dev"],
+      "include": ["refs/heads/main"],
       "exclude": []
     }
   },
@@ -86,36 +100,7 @@ gh api --method POST "repos/$REPO/rulesets" \
 }
 EOF
 
-echo "✓ Merge queue enabled for 'dev'"
-
-# ============================================================================
-# Configure 'main' branch protection (release branch)
-# ============================================================================
-
-echo "→ Configuring 'main' branch protection..."
-
-gh api --method PUT "repos/$REPO/branches/main/protection" \
-  --input - <<EOF
-{
-  "required_status_checks": {
-    "strict": true,
-    "contexts": ["check", "install-matrix (ubuntu-latest, 20)", "install-matrix (macos-latest, 20)"]
-  },
-  "enforce_admins": false,
-  "required_pull_request_reviews": {
-    "required_approving_review_count": 1,
-    "dismiss_stale_reviews": true,
-    "require_code_owner_reviews": false
-  },
-  "restrictions": null,
-  "allow_force_pushes": false,
-  "allow_deletions": false,
-  "required_linear_history": true,
-  "required_conversation_resolution": false
-}
-EOF
-
-echo "✓ 'main' branch protection configured"
+echo "✓ Merge queue enabled for 'main'"
 
 # ============================================================================
 # Configure repository settings
@@ -154,17 +139,17 @@ echo "  pre-push hook → lint + typecheck (~5s)"
 echo "  ↓"
 echo "  push to origin/feature-branch"
 echo "  ↓"
-echo "  gh pr create --base dev"
+echo "  gh pr create --base main"
 echo "  ↓"
 echo "  CI runs tests on PR branch"
 echo "  ↓"
 echo "  gh pr merge --auto --squash → enters merge queue"
 echo "  ↓"
-echo "  Queue rebases PR on latest dev + runs CI again"
+echo "  Queue rebases PR on latest main + runs CI again"
 echo "  ↓"
-echo "  Merge to dev (only if CI passes on rebased code)"
+echo "  Merge to main (only if CI passes on rebased code)"
 echo ""
 echo "Release workflow:"
-echo "  gh pr create --base main --head dev --title \"Release\""
-echo "  → CI passes → merge → semantic-release publishes"
+echo "  Conventional PR title selects patch/minor/major"
+echo "  → merge to main → CI passes → semantic-release publishes"
 echo ""

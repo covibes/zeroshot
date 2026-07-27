@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require('child_process');
+const { releaseTypeForMessages } = require('./release-preflight');
 
 const DEFAULT_ATTEMPTS = 24;
 const DEFAULT_DELAY_MS = 5000;
@@ -22,6 +23,18 @@ function tagsPointingAtHead() {
   return run('git', ['tag', '--points-at', 'HEAD', '--list', 'v[0-9]*'])
     .split(/\r?\n/)
     .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function latestReachableReleaseTag() {
+  return run('git', ['describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*']);
+}
+
+function commitMessagesSince(tag) {
+  const output = run('git', ['log', '--format=%B%x1e', `${tag}..HEAD`]);
+  return output
+    .split('\x1e')
+    .map((message) => message.trim())
     .filter(Boolean);
 }
 
@@ -80,6 +93,12 @@ async function main() {
   const expectedTag = latestReleaseTag(headTags);
 
   if (!expectedTag) {
+    const previousTag = latestReachableReleaseTag();
+    const releaseType = releaseTypeForMessages(commitMessagesSince(previousTag));
+    if (!releaseType) {
+      console.log('No release-worthy commits since the latest tag; no publication expected');
+      return;
+    }
     throw new Error('expected a vX.Y.Z release tag to point at HEAD after release');
   }
 
@@ -101,6 +120,7 @@ if (require.main === module) {
 
 module.exports = {
   latestReleaseTag,
+  latestReachableReleaseTag,
   npmLatest,
   tagsPointingAtHead,
   waitForNpmLatest,

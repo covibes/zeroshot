@@ -10,45 +10,16 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   merge_group:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  # ENFORCE: PRs to main must come from dev branch only
-  enforce-main-pr-source:
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check PR source branch
-        run: |
-          if [[ "${{ github.head_ref }}" != "dev" ]]; then
-            echo "::error::PRs to main MUST come from the dev branch."
-            echo ""
-            echo "❌ BLOCKED: PR from '${{ github.head_ref }}' to main"
-            echo ""
-            echo "The dev → main workflow exists so that:"
-            echo "  • All changes are tested on dev first"
-            echo "  • Releases are coherent snapshots of dev"
-            echo "  • main is always a subset of dev (no divergence)"
-            echo ""
-            echo "CORRECT WORKFLOW:"
-            echo "  1. Create PR to dev first: gh pr create --base dev"
-            echo "  2. After merge to dev, create release PR:"
-            echo "     gh pr create --base main --head dev --title 'Release'"
-            echo ""
-            exit 1
-          fi
-          echo "✓ PR from dev to main - allowed"
-
   # Fast quality gates - must pass before anything else
   check:
-    # Wait for branch enforcement on PRs to main
-    needs: [enforce-main-pr-source]
-    if: always() && (needs.enforce-main-pr-source.result == 'success' || needs.enforce-main-pr-source.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -237,18 +208,13 @@ jobs:
 
   release-preflight:
     name: Release preflight
-    needs: [enforce-main-pr-source]
     if: |
-      always() &&
-      (needs.enforce-main-pr-source.result == 'success' || needs.enforce-main-pr-source.result == 'skipped') &&
-      (
-        (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-        (github.event_name == 'merge_group' && (
-          github.event.merge_group.base_ref == 'main' ||
-          github.event.merge_group.base_ref == 'refs/heads/main' ||
-          startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')
-        ))
-      )
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      (github.event_name == 'merge_group' && (
+        github.event.merge_group.base_ref == 'main' ||
+        github.event.merge_group.base_ref == 'refs/heads/main' ||
+        startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')
+      ))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
