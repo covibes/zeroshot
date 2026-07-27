@@ -3,8 +3,28 @@ const os = require('os');
 const path = require('path');
 
 const AgentWrapper = require('../../src/agent-wrapper');
+const { promptIdentity } = require('../../src/agent/provider-session');
 const Ledger = require('../../src/ledger');
 const MessageBus = require('../../src/message-bus');
+
+const PROVIDER_SESSION_TEST_CWD = path.resolve('/tmp/provider-session-project');
+const FOLLOW_UP_PROMPT_IDENTITY = promptIdentity('FOLLOW-UP-INSTRUCTIONS');
+
+function buildProviderSession(overrides = {}) {
+  return {
+    provider: 'claude',
+    sessionId: 'claude-session-1',
+    agentId: 'worker',
+    taskId: 'task-generation-1',
+    generation: 1,
+    cwd: PROVIDER_SESSION_TEST_CWD,
+    worktreePath: null,
+    contextSequence: 41,
+    guidanceSequence: 17,
+    promptIdentity: FOLLOW_UP_PROMPT_IDENTITY,
+    ...overrides,
+  };
+}
 
 function createProviderSessionHarness(prefix) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -55,6 +75,9 @@ function createProviderSessionAgent({ cluster, messageBus, config = {}, runtime 
 }
 
 module.exports = {
+  FOLLOW_UP_PROMPT_IDENTITY,
+  PROVIDER_SESSION_TEST_CWD,
+  buildProviderSession,
   createProviderSessionAgent,
   createProviderSessionHarness,
 };

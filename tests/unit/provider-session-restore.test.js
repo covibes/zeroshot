@@ -1,28 +1,13 @@
 const assert = require('assert');
-const path = require('path');
-
 const {
   restoreAgentProviderSession,
   updateAgentProviderSession,
 } = require('../../src/agent/provider-session');
-
-const TEST_CWD = path.resolve('/tmp/provider-session-project');
-
-function buildSession(overrides = {}) {
-  return {
-    provider: 'claude',
-    sessionId: 'claude-session-1',
-    agentId: 'worker',
-    taskId: 'task-generation-1',
-    generation: 1,
-    cwd: TEST_CWD,
-    worktreePath: null,
-    contextCursor: 41,
-    guidanceCursor: 17,
-    promptText: 'FOLLOW-UP-INSTRUCTIONS',
-    ...overrides,
-  };
-}
+const {
+  FOLLOW_UP_PROMPT_IDENTITY,
+  PROVIDER_SESSION_TEST_CWD: TEST_CWD,
+  buildProviderSession: buildSession,
+} = require('../helpers/provider-session-harness');
 
 function buildAgent() {
   return {
@@ -31,10 +16,10 @@ function buildAgent() {
     config: { cwd: TEST_CWD },
     cluster: { id: 'cluster-1' },
     providerSession: null,
-    currentContextCursor: 41,
-    currentGuidanceCursor: 17,
-    lastGuidanceAppliedAt: 17,
-    currentPromptText: 'FOLLOW-UP-INSTRUCTIONS',
+    currentContextSequence: 41,
+    currentGuidanceSequence: 17,
+    lastGuidanceAppliedId: 17,
+    currentPromptIdentity: FOLLOW_UP_PROMPT_IDENTITY,
     isolation: null,
     worktree: null,
   };
@@ -64,9 +49,9 @@ const completedBoundary = {
   provider: 'claude',
   taskId: 'task-generation-1',
   iteration: 1,
-  contextCursor: 41,
-  guidanceCursor: 17,
-  promptText: 'FOLLOW-UP-INSTRUCTIONS',
+  contextSequence: 41,
+  guidanceSequence: 17,
+  promptIdentity: FOLLOW_UP_PROMPT_IDENTITY,
 };
 
 describe('provider-session restart proof', function () {
@@ -76,7 +61,7 @@ describe('provider-session restart proof', function () {
       state: 'idle',
       iteration: 1,
       providerSession: buildSession(),
-      lastGuidanceAppliedAt: 17,
+      lastGuidanceAppliedId: 17,
     };
 
     assert.deepStrictEqual(restore(agent, savedState, [completedBoundary]), buildSession());
@@ -102,7 +87,7 @@ describe('provider-session restart proof', function () {
   it('drops continuation state without an exact durable context cursor', function () {
     const agent = buildAgent();
     const missingCursor = buildSession();
-    delete missingCursor.contextCursor;
+    delete missingCursor.contextSequence;
 
     updateAgentProviderSession(agent, missingCursor);
     assert.strictEqual(agent.providerSession, null);
@@ -135,7 +120,7 @@ describe('provider-session restart proof', function () {
       {
         iteration: 1,
         providerSession: buildSession(),
-        lastGuidanceAppliedAt: 17,
+        lastGuidanceAppliedId: 17,
       },
       {
         state: 'idle',
@@ -146,7 +131,7 @@ describe('provider-session restart proof', function () {
         state: 'idle',
         iteration: 1,
         providerSession: buildSession(),
-        lastGuidanceAppliedAt: 16,
+        lastGuidanceAppliedId: 16,
       },
     ]) {
       assert.strictEqual(restore(agent, savedState, [completedBoundary]), null);
@@ -162,9 +147,9 @@ describe('provider-session restart proof', function () {
           state: 'idle',
           iteration: 1,
           providerSession: buildSession(),
-          lastGuidanceAppliedAt: 17,
+          lastGuidanceAppliedId: 17,
         },
-        [{ ...completedBoundary, contextCursor: 42 }]
+        [{ ...completedBoundary, contextSequence: 42 }]
       ),
       null
     );

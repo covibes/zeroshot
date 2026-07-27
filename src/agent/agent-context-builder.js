@@ -122,6 +122,7 @@ function buildPacks(params) {
       cluster,
       lastTaskEndTime,
       lastAgentStartTime,
+      throughId: params.contextThroughId,
       triggeringMessageId: triggeringMessage?.id,
     },
     order
@@ -158,8 +159,10 @@ function buildContinuationPacks(params) {
     cluster,
     lastTaskEndTime,
     lastAgentStartTime,
-    continuationCursor,
-    previousPromptText,
+    continuationSequence,
+    contextThroughId,
+    previousPromptIdentity,
+    currentPromptIdentity,
   } = params;
   const packs = [];
   let order = 0;
@@ -175,7 +178,7 @@ function buildContinuationPacks(params) {
   // Iteration-rule prompts may intentionally change between turns. Static prompts,
   // repository tooling, ISSUE_OPENED/PLAN_READY sources, and output contracts are
   // already present in the provider session and must not be replayed.
-  if (config.promptConfig?.type === 'rules' && selectedPrompt !== previousPromptText) {
+  if (config.promptConfig?.type === 'rules' && currentPromptIdentity !== previousPromptIdentity) {
     order = pushStaticPack({
       packs,
       packId: 'iterationInstructions',
@@ -200,7 +203,8 @@ function buildContinuationPacks(params) {
       cluster,
       lastTaskEndTime,
       lastAgentStartTime,
-      afterCursor: continuationCursor,
+      afterId: continuationSequence,
+      throughId: contextThroughId,
       triggeringMessageId: triggeringMessage?.id,
     },
     order

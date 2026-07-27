@@ -31,6 +31,7 @@ const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
 const {
   providerSessionFromCompletedTask,
   resolveAgentResumeSessionId,
+  validateCompletedResumeIdentity,
 } = require('./provider-session');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
@@ -1227,6 +1228,11 @@ async function buildCompletionResult({
   taskInfo = getTask(taskId),
 }) {
   const classified = await evaluateStructuredSuccess({ agent, taskId, state, success });
+  const resumeIdentityError = classified.success ? validateCompletedResumeIdentity(taskInfo) : null;
+  if (resumeIdentityError) {
+    classified.success = false;
+    classified.error = resumeIdentityError;
+  }
   let errorContext = classified.error;
   if (!errorContext && !classified.success) {
     errorContext = buildFailureContext({ agent, taskId, providerName, state, stdout });

@@ -108,9 +108,9 @@ describe('provider-session lifecycle boundaries', function () {
             generation: 1,
             cwd: path.resolve(agent.config.cwd || process.cwd()),
             worktreePath: null,
-            contextCursor: agent.currentContextCursor,
-            guidanceCursor: agent.currentGuidanceCursor,
-            promptText: agent.currentPromptText,
+            contextSequence: agent.currentContextSequence,
+            guidanceSequence: agent.currentGuidanceSequence,
+            promptIdentity: agent.currentPromptIdentity,
           },
         }),
       },
@@ -171,9 +171,9 @@ describe('provider-session lifecycle boundaries', function () {
       generation: 1,
       cwd,
       worktreePath: null,
-      contextCursor: agent.currentContextCursor,
-      guidanceCursor: agent.currentGuidanceCursor,
-      promptText: agent.currentPromptText,
+      contextSequence: agent.currentContextSequence,
+      guidanceSequence: agent.currentGuidanceSequence,
+      promptIdentity: agent.currentPromptIdentity,
     };
     agent.iteration = 2;
     const second = agent._buildContext({
@@ -187,9 +187,9 @@ describe('provider-session lifecycle boundaries', function () {
       sessionId: 'generation-2',
       taskId: 'task-2',
       generation: 2,
-      contextCursor: agent.currentContextCursor,
-      guidanceCursor: agent.currentGuidanceCursor,
-      promptText: agent.currentPromptText,
+      contextSequence: agent.currentContextSequence,
+      guidanceSequence: agent.currentGuidanceSequence,
+      promptIdentity: agent.currentPromptIdentity,
     };
     agent.iteration = 3;
     const third = agent._buildContext({

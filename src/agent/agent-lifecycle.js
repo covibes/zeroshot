@@ -445,9 +445,9 @@ function publishTaskCompleted(agent, result) {
     taskId: agent.currentTaskId,
     provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
     tokenUsage: result.tokenUsage || null,
-    contextCursor: session?.contextCursor ?? agent.currentContextCursor,
-    guidanceCursor: session?.guidanceCursor ?? agent.currentGuidanceCursor ?? null,
-    promptText: session?.promptText ?? agent.currentPromptText ?? null,
+    contextSequence: session?.contextSequence ?? agent.currentContextSequence,
+    guidanceSequence: session?.guidanceSequence ?? agent.currentGuidanceSequence ?? null,
+    promptIdentity: session?.promptIdentity ?? agent.currentPromptIdentity ?? null,
   });
 }
 
@@ -608,7 +608,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
   }
 
   updateAgentProviderSession(agent, result.providerSession);
-  agent.lastGuidanceAppliedAt = agent.currentGuidanceCursor;
+  agent.lastGuidanceAppliedId = agent.currentGuidanceSequence;
 
   // Set state to idle BEFORE publishing lifecycle event
   // (so lifecycle message includes correct state)

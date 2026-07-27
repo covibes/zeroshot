@@ -1,29 +1,14 @@
 const assert = require('assert');
-const path = require('path');
-
 const {
   providerSessionFromCompletedTask,
   resolveAgentResumeSessionId,
 } = require('../../src/agent/provider-session');
 const { buildCompletionResult, buildTaskRunArgs } = require('../../src/agent/agent-task-executor');
-
-const TEST_CWD = path.resolve('/tmp/provider-session-project');
-
-function buildSession(overrides = {}) {
-  return {
-    provider: 'claude',
-    sessionId: 'claude-session-1',
-    agentId: 'worker',
-    taskId: 'task-generation-1',
-    generation: 1,
-    cwd: TEST_CWD,
-    worktreePath: null,
-    contextCursor: 41,
-    guidanceCursor: 17,
-    promptText: 'FOLLOW-UP-INSTRUCTIONS',
-    ...overrides,
-  };
-}
+const {
+  FOLLOW_UP_PROMPT_IDENTITY,
+  PROVIDER_SESSION_TEST_CWD: TEST_CWD,
+  buildProviderSession: buildSession,
+} = require('../helpers/provider-session-harness');
 
 function buildAgent(overrides = {}) {
   return {
@@ -32,10 +17,10 @@ function buildAgent(overrides = {}) {
     config: { cwd: TEST_CWD, ...overrides.config },
     cluster: { id: 'cluster-1' },
     providerSession: overrides.providerSession ?? null,
-    currentContextCursor: overrides.currentContextCursor ?? 41,
-    currentGuidanceCursor: overrides.currentGuidanceCursor ?? 17,
-    lastGuidanceAppliedAt: overrides.lastGuidanceAppliedAt ?? 17,
-    currentPromptText: overrides.currentPromptText ?? 'FOLLOW-UP-INSTRUCTIONS',
+    currentContextSequence: overrides.currentContextSequence ?? 41,
+    currentGuidanceSequence: overrides.currentGuidanceSequence ?? 17,
+    lastGuidanceAppliedId: overrides.lastGuidanceAppliedId ?? 17,
+    currentPromptIdentity: overrides.currentPromptIdentity ?? FOLLOW_UP_PROMPT_IDENTITY,
     isolation: overrides.isolation || null,
     worktree: overrides.worktree || null,
   };
@@ -111,9 +96,9 @@ describe('agent-owned provider session reuse', function () {
       generation: 1,
       cwd: TEST_CWD,
       worktreePath: null,
-      contextCursor: 41,
-      guidanceCursor: 17,
-      promptText: 'FOLLOW-UP-INSTRUCTIONS',
+      contextSequence: 41,
+      guidanceSequence: 17,
+      promptIdentity: FOLLOW_UP_PROMPT_IDENTITY,
     });
 
     assert.strictEqual(
@@ -166,6 +151,51 @@ describe('agent-owned provider session reuse', function () {
     assert.strictEqual(result.success, false);
     assert.strictEqual(result.providerSession, null);
     assert.match(result.error, /schema mismatch/);
+  });
+
+  it('accepts only the exact provider identity requested for a resumed turn', async function () {
+    const agent = buildAgent({
+      iteration: 2,
+      config: { outputFormat: 'text' },
+    });
+    const baseTaskInfo = {
+      id: 'task-generation-2',
+      provider: 'claude',
+      status: 'completed',
+      requestedResumeSessionId: 'claude-session-1',
+    };
+
+    const confirmed = await buildCompletionResult({
+      agent,
+      taskId: baseTaskInfo.id,
+      providerName: 'claude',
+      state: { output: 'done', logFilePath: null },
+      stdout: 'Status: completed',
+      success: true,
+      taskInfo: { ...baseTaskInfo, sessionId: 'claude-session-1' },
+    });
+    assert.strictEqual(confirmed.success, true);
+    assert.strictEqual(confirmed.providerSession.sessionId, 'claude-session-1');
+
+    for (const [name, sessionId, expectedError] of [
+      ['ignored', null, /did not confirm/],
+      ['forked', 'forked-session', /different session identity/],
+      ['absent', undefined, /did not confirm/],
+    ]) {
+      const result = await buildCompletionResult({
+        agent,
+        taskId: baseTaskInfo.id,
+        providerName: 'claude',
+        state: { output: `${name} resume probe`, logFilePath: null },
+        stdout: 'Status: completed',
+        success: true,
+        taskInfo: { ...baseTaskInfo, sessionId },
+      });
+
+      assert.strictEqual(result.success, false, `${name} resume must fail the logical attempt`);
+      assert.strictEqual(result.providerSession, null);
+      assert.match(result.error, expectedError);
+    }
   });
 
   it('never leaks one agent session into another agent', function () {

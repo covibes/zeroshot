@@ -18,6 +18,7 @@ const { getProvider } = require('./providers');
 const { buildContext } = require('./agent/agent-context-builder');
 const { collectQueuedGuidance } = require('./agent/guidance-queue');
 const {
+  promptIdentity,
   resolveAgentProviderSession,
   updateAgentProviderSession,
 } = require('./agent/provider-session');
@@ -70,11 +71,11 @@ class AgentWrapper {
     this.currentTask = null;
     /** @type {string | null} */
     this.currentTaskId = null; // Track spawned task ID for resume capability
-    /** @type {{provider: string, sessionId: string, agentId: string, taskId: string, generation: number, cwd: string, worktreePath: string|null, contextCursor: number, guidanceCursor: number|null, promptText: string|null} | null} */
+    /** @type {{provider: string, sessionId: string, agentId: string, taskId: string, generation: number, cwd: string, worktreePath: string|null, contextSequence: number, guidanceSequence: number|null, promptIdentity: string|null} | null} */
     this.providerSession = null; // Provider continuation state, owned by this logical agent only
-    this.currentContextCursor = 0;
-    this.currentGuidanceCursor = null;
-    this.currentPromptText = null;
+    this.currentContextSequence = 0;
+    this.currentGuidanceSequence = null;
+    this.currentPromptIdentity = null;
     /** @type {number | null} */
     this.processPid = null; // Track process PID for resource monitoring
     this.running = false;
@@ -85,7 +86,7 @@ class AgentWrapper {
     /** @type {number | null} */
     this.lastAgentStartTime = null; // Track when agent last began executing (for context filtering)
     /** @type {number | null} */
-    this.lastGuidanceAppliedAt = null; // Track last queued guidance applied to prompt
+    this.lastGuidanceAppliedId = null; // Track last queued guidance sequence applied to prompt
 
     // LIVENESS DETECTION - Track output freshness to detect stuck agents
     /** @type {number | null} */
@@ -453,17 +454,21 @@ class AgentWrapper {
     }
     const contextMode = providerSession ? 'continuation' : 'full';
     const selectedPrompt = this._selectPrompt();
-    const latestMessage = this.messageBus.findLast({ cluster_id: this.cluster.id });
-    this.currentContextCursor = latestMessage?.timestamp || 0;
+    const latestMessage = this.messageBus.findLast({
+      cluster_id: this.cluster.id,
+      orderBySequence: true,
+    });
+    this.currentContextSequence = latestMessage?.sequence || 0;
     const queuedGuidance = collectQueuedGuidance({
       messageBus: this.messageBus,
       clusterId: this.cluster.id,
       agentId: this.id,
-      lastDeliveredAt: this.lastGuidanceAppliedAt,
+      afterId: this.lastGuidanceAppliedId,
+      throughId: this.currentContextSequence,
     });
-    this.currentGuidanceCursor =
-      queuedGuidance.latestTimestamp ?? this.lastGuidanceAppliedAt ?? null;
-    this.currentPromptText = selectedPrompt ?? null;
+    this.currentGuidanceSequence =
+      queuedGuidance.latestSequence ?? this.lastGuidanceAppliedId ?? null;
+    this.currentPromptIdentity = promptIdentity(selectedPrompt);
     const context = buildContext({
       id: this.id,
       role: this.role,
@@ -477,8 +482,10 @@ class AgentWrapper {
       selectedPrompt,
       queuedGuidance: queuedGuidance.guidanceBlock,
       mode: contextMode,
-      continuationCursor: providerSession?.contextCursor,
-      previousPromptText: providerSession?.promptText,
+      continuationSequence: providerSession?.contextSequence,
+      contextThroughId: this.currentContextSequence,
+      previousPromptIdentity: providerSession?.promptIdentity,
+      currentPromptIdentity: this.currentPromptIdentity,
       // Pass isolation state for conditional git restriction
       worktree: this.worktree,
       isolation: this.isolation,

@@ -1,5 +1,6 @@
 const assert = require('assert');
 const path = require('path');
+const { promptIdentity } = require('../../src/agent/provider-session');
 
 const {
   createProviderSessionAgent,
@@ -86,9 +87,9 @@ describe('provider-session continuation context', function () {
       generation: 1,
       cwd,
       worktreePath: null,
-      contextCursor: agent.currentContextCursor,
-      guidanceCursor: agent.currentGuidanceCursor,
-      promptText: agent.currentPromptText,
+      contextSequence: agent.currentContextSequence,
+      guidanceSequence: agent.currentGuidanceSequence,
+      promptIdentity: agent.currentPromptIdentity,
     };
     const firstPostTurn = messageBus.publish({
       cluster_id: cluster.id,
@@ -123,10 +124,10 @@ describe('provider-session continuation context', function () {
       runtime: { providerCliFeatures: { claude: { supportsResume: true } } },
     });
     restoredAgent.providerSession = agent.providerSession;
-    restoredAgent.lastGuidanceAppliedAt = agent.providerSession.guidanceCursor;
+    restoredAgent.lastGuidanceAppliedId = agent.providerSession.guidanceSequence;
     restoredAgent.iteration = 2;
 
-    assert.ok(firstPostTurn.timestamp > restoredAgent.providerSession.contextCursor);
+    assert.ok(firstPostTurn.sequence > restoredAgent.providerSession.contextSequence);
     agent.iteration = 2;
     const secondContext = restoredAgent._buildContext(trigger);
 
@@ -169,9 +170,9 @@ describe('provider-session continuation context', function () {
       generation: 1,
       cwd: path.resolve(agent.config.cwd || process.cwd()),
       worktreePath: null,
-      contextCursor: 1,
-      guidanceCursor: null,
-      promptText: 'STATIC-OLD-CLI-INSTRUCTIONS',
+      contextSequence: 1,
+      guidanceSequence: null,
+      promptIdentity: promptIdentity('STATIC-OLD-CLI-INSTRUCTIONS'),
     };
 
     const context = agent._buildContext({
@@ -183,5 +184,72 @@ describe('provider-session continuation context', function () {
     assert.match(context, /STATIC-OLD-CLI-INSTRUCTIONS/);
     assert.doesNotMatch(context, /Continuation Turn/);
     assert.strictEqual(agent.providerSession, null);
+  });
+
+  it('freezes lazy source rendering at the captured durable high-water sequence', function () {
+    const cluster = { id: 'bounded-context-cluster', createdAt: Date.now(), agents: [] };
+    const agent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: {
+        prompt: 'BOUNDED-CONTEXT-INSTRUCTIONS',
+        contextStrategy: {
+          sources: [{ topic: 'VALIDATION_RESULT' }],
+        },
+      },
+    });
+
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'BEFORE-SNAPSHOT' },
+    });
+
+    const originalQuery = messageBus.query.bind(messageBus);
+    let injected = false;
+    messageBus.query = (criteria) => {
+      if (!injected && criteria.topic === 'VALIDATION_RESULT') {
+        injected = true;
+        messageBus.publish({
+          cluster_id: cluster.id,
+          topic: 'VALIDATION_RESULT',
+          sender: 'validator',
+          content: { text: 'AFTER-SNAPSHOT' },
+        });
+      }
+      return originalQuery(criteria);
+    };
+
+    agent.iteration = 1;
+    const first = agent._buildContext({
+      topic: 'ISSUE_OPENED',
+      sender: 'system',
+      content: { text: 'start' },
+    });
+    assert.match(first, /BEFORE-SNAPSHOT/);
+    assert.doesNotMatch(first, /AFTER-SNAPSHOT/);
+
+    agent.providerSession = {
+      provider: 'claude',
+      sessionId: 'bounded-session',
+      agentId: 'worker',
+      taskId: 'task-generation-1',
+      generation: 1,
+      cwd: path.resolve(agent.config.cwd || process.cwd()),
+      worktreePath: null,
+      contextSequence: agent.currentContextSequence,
+      guidanceSequence: agent.currentGuidanceSequence,
+      promptIdentity: agent.currentPromptIdentity,
+    };
+    agent.iteration = 2;
+
+    const second = agent._buildContext({
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'next' },
+    });
+    assert.strictEqual(second.match(/AFTER-SNAPSHOT/g)?.length, 1);
+    assert.doesNotMatch(second, /BEFORE-SNAPSHOT/);
   });
 });

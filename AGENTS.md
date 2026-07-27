@@ -333,12 +333,17 @@ Provider task ownership: task watchers persist an owned termination boundary wit
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work.
 Provider continuation is agent- and generation-owned and becomes durable only after logical output
-validation and the `onComplete` hook succeed. Persist the exact ledger high-water cursor, applied
-guidance cursor, and selected prompt identity with the observed provider session; restored
+validation and the `onComplete` hook succeed. A requested resume is successful only when the
+watcher captures that exact same nonempty provider session ID; absent or forked identity fails the
+attempt before hooks and forces the retry to rebuild full context. Persist the exact SQLite rowid
+high-water sequence, applied guidance sequence, and bounded SHA-256 selected-prompt identity with
+the observed provider session; never persist the selected prompt text. Restored
 continuations fail closed unless the final durable `TASK_COMPLETED` boundary and all provenance
-match. Continuation sources query strictly after that cursor and de-duplicate the exact triggering
-message by ledger ID. If the installed CLI cannot resume, rebuild full context or fail before
-launch—never send a continuation delta to a fresh provider session.
+match. Full and continuation source/guidance reads are bounded through the captured high-water;
+continuations query strictly after their prior sequence and de-duplicate the exact triggering
+message by ledger ID. Timestamps are display/filter metadata, not continuation cursors: concurrent
+writers can share one millisecond. If the installed CLI cannot resume, rebuild full context or fail
+before launch—never send a continuation delta to a fresh provider session.
 
 Provider session reuse is explicit-ID and agent-owned. Watcher-observed IDs are distinct from
 requested resume IDs. Commit continuation only after logical/structured success and bind it to the
@@ -355,7 +360,7 @@ fresh.
 - Topics: `USER_GUIDANCE_CLUSTER`, `USER_GUIDANCE_AGENT` (see `src/guidance-topics.js`).
 - Mailbox helper: `ledger.queryGuidanceMailbox()` with `messageBus.queryGuidanceMailbox()` passthrough.
 - Live injection: `Orchestrator.sendGuidanceToAgent()` uses `agent.injectInput()` to attempt PTY stdin; always persists `USER_GUIDANCE_AGENT` with `metadata.delivery` (`status: injected|unsupported`, `method: pty`, `taskId`, `reason`).
-- Safe-point queue fallback: `AgentWrapper._buildContext()` pulls queued guidance via `collectQueuedGuidance()` and injects a delimited block in `agent-context-builder` between Instructions and Output Schema. Cursor: `agent.lastGuidanceAppliedAt`.
+- Safe-point queue fallback: `AgentWrapper._buildContext()` pulls queued guidance via `collectQueuedGuidance()` and injects a delimited block in `agent-context-builder` between Instructions and Output Schema. Durable sequence: `agent.lastGuidanceAppliedId`.
 
 ### Agent Configuration (Minimal)
 

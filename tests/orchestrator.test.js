@@ -17,6 +17,7 @@ const IsolationManager = require('../src/isolation-manager.js');
 const MockTaskRunner = require('./helpers/mock-task-runner.js');
 const LedgerAssertions = require('./helpers/ledger-assertions.js');
 const Ledger = require('../src/ledger.js');
+const { promptIdentity } = require('../src/agent/provider-session.js');
 
 // Isolate tests from user settings (prevents minModel/maxModel conflicts)
 const testSettingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-test-settings-'));
@@ -1919,6 +1920,8 @@ function defineLifecycleResumeTests() {
 
     it('restores a proven completed session without reviving currentTask handles', async function () {
       const config = createSimpleConfig();
+      const privatePrompt = `PRIVATE-CONTINUATION-PROMPT-${'x'.repeat(16_384)}`;
+      const privatePromptIdentity = promptIdentity(privatePrompt);
       lifecycleMockRunner.when('worker').delays(1000, { done: true });
 
       const result = await lifecycleOrchestrator.start(config, { text: 'Task' });
@@ -1939,11 +1942,11 @@ function defineLifecycleResumeTests() {
         generation: agent.iteration,
         cwd: path.resolve(agent.config.cwd || process.cwd()),
         worktreePath: null,
-        contextCursor: 41,
-        guidanceCursor: 17,
-        promptText: agent._selectPrompt(),
+        contextSequence: 41,
+        guidanceSequence: 17,
+        promptIdentity: privatePromptIdentity,
       };
-      agent.lastGuidanceAppliedAt = 17;
+      agent.lastGuidanceAppliedId = 17;
       cluster.messageBus.publish({
         cluster_id: result.id,
         topic: 'AGENT_LIFECYCLE',
@@ -1955,14 +1958,24 @@ function defineLifecycleResumeTests() {
             provider: 'claude',
             taskId: 'task-complete',
             iteration: agent.iteration,
-            contextCursor: 41,
-            guidanceCursor: 17,
-            promptText: agent._selectPrompt(),
+            contextSequence: 41,
+            guidanceSequence: 17,
+            promptIdentity: privatePromptIdentity,
           },
         },
       });
 
       await lifecycleOrchestrator._saveClusters();
+      const persistedRegistry = fs.readFileSync(
+        path.join(lifecycleStorageDir, 'clusters.json'),
+        'utf8'
+      );
+      const exportedLedger = lifecycleOrchestrator.export(result.id, 'json');
+      assert.ok(privatePromptIdentity.length <= 71);
+      assert.ok(!persistedRegistry.includes(privatePrompt));
+      assert.ok(!exportedLedger.includes(privatePrompt));
+      assert.ok(!persistedRegistry.includes('"promptText"'));
+      assert.ok(!exportedLedger.includes('"promptText"'));
 
       const reloaded = await Orchestrator.create({
         taskRunner: new MockTaskRunner(),
@@ -1985,11 +1998,11 @@ function defineLifecycleResumeTests() {
           generation: agent.iteration,
           cwd: path.resolve(agent.config.cwd || process.cwd()),
           worktreePath: null,
-          contextCursor: 41,
-          guidanceCursor: 17,
-          promptText: agent._selectPrompt(),
+          contextSequence: 41,
+          guidanceSequence: 17,
+          promptIdentity: privatePromptIdentity,
         });
-        assert.strictEqual(restoredAgent.lastGuidanceAppliedAt, 17);
+        assert.strictEqual(restoredAgent.lastGuidanceAppliedId, 17);
         assert.strictEqual(restoredState.currentTask, false);
       } finally {
         reloaded.close();
@@ -2018,20 +2031,20 @@ function defineLifecycleResumeTests() {
         generation: 1,
         cwd,
         worktreePath: null,
-        contextCursor: 41,
-        guidanceCursor: 17,
-        promptText: agent._selectPrompt(),
+        contextSequence: 41,
+        guidanceSequence: 17,
+        promptIdentity: promptIdentity(agent._selectPrompt()),
       };
-      agent.lastGuidanceAppliedAt = 17;
+      agent.lastGuidanceAppliedId = 17;
       for (const data of [
         {
           event: 'TASK_COMPLETED',
           provider: 'claude',
           taskId: 'task-complete-generation-1',
           iteration: 1,
-          contextCursor: 41,
-          guidanceCursor: 17,
-          promptText: agent._selectPrompt(),
+          contextSequence: 41,
+          guidanceSequence: 17,
+          promptIdentity: promptIdentity(agent._selectPrompt()),
         },
         {
           event: 'TASK_STARTED',

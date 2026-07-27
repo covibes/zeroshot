@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const path = require('path');
 
 const { normalizeProviderName, providerSupportsCapability } = require('../../lib/provider-names');
@@ -28,8 +29,18 @@ function normalizeNullableCursor(value) {
   return value === null ? null : normalizeCursor(value);
 }
 
-function normalizePromptText(value) {
-  return value === null || typeof value === 'string' ? value : undefined;
+function normalizePromptIdentity(value) {
+  if (value === null) {
+    return null;
+  }
+  return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value) ? value : undefined;
+}
+
+function promptIdentity(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return `sha256:${crypto.createHash('sha256').update(String(value)).digest('hex')}`;
 }
 
 function supportsSessionResume(providerName) {
@@ -53,9 +64,9 @@ function normalizeProviderSession(value) {
   const cwd = normalizeAbsolutePath(value.cwd);
   const worktreePath =
     value.worktreePath === null ? null : normalizeAbsolutePath(value.worktreePath);
-  const contextCursor = normalizeCursor(value.contextCursor);
-  const guidanceCursor = normalizeNullableCursor(value.guidanceCursor);
-  const promptText = normalizePromptText(value.promptText);
+  const contextSequence = normalizeCursor(value.contextSequence);
+  const guidanceSequence = normalizeNullableCursor(value.guidanceSequence);
+  const normalizedPromptIdentity = normalizePromptIdentity(value.promptIdentity);
 
   if (
     !provider ||
@@ -67,11 +78,11 @@ function normalizeProviderSession(value) {
     !cwd ||
     !Object.hasOwn(value, 'worktreePath') ||
     (value.worktreePath !== null && !worktreePath) ||
-    contextCursor === null ||
-    !Object.hasOwn(value, 'guidanceCursor') ||
-    (value.guidanceCursor !== null && guidanceCursor === null) ||
-    !Object.hasOwn(value, 'promptText') ||
-    promptText === undefined ||
+    contextSequence === null ||
+    !Object.hasOwn(value, 'guidanceSequence') ||
+    (value.guidanceSequence !== null && guidanceSequence === null) ||
+    !Object.hasOwn(value, 'promptIdentity') ||
+    normalizedPromptIdentity === undefined ||
     !supportsSessionResume(provider)
   ) {
     return null;
@@ -85,9 +96,9 @@ function normalizeProviderSession(value) {
     generation,
     cwd,
     worktreePath,
-    contextCursor,
-    guidanceCursor,
-    promptText,
+    contextSequence,
+    guidanceSequence,
+    promptIdentity: normalizedPromptIdentity,
   };
 }
 
@@ -132,6 +143,22 @@ function resolveAgentResumeSessionId(agent, providerName) {
   return resolveAgentProviderSession(agent, providerName)?.sessionId || null;
 }
 
+function validateCompletedResumeIdentity(taskInfo) {
+  const requestedSessionId = normalizeNonEmptyString(taskInfo?.requestedResumeSessionId);
+  if (!requestedSessionId) {
+    return null;
+  }
+
+  const capturedSessionId = normalizeNonEmptyString(taskInfo?.sessionId);
+  if (capturedSessionId === requestedSessionId) {
+    return null;
+  }
+
+  return capturedSessionId
+    ? 'Provider continuation returned a different session identity'
+    : 'Provider continuation did not confirm the requested session identity';
+}
+
 function providerSessionFromCompletedTask({
   agent,
   providerName,
@@ -148,6 +175,9 @@ function providerSessionFromCompletedTask({
   if (normalizeProviderName(taskInfo.provider) !== provider) {
     return null;
   }
+  if (validateCompletedResumeIdentity(taskInfo)) {
+    return null;
+  }
 
   const sessionId = normalizeNonEmptyString(taskInfo.sessionId);
   const taskId = normalizeNonEmptyString(taskInfo.id);
@@ -161,9 +191,9 @@ function providerSessionFromCompletedTask({
     taskId,
     generation,
     ...workspace,
-    contextCursor: agent?.currentContextCursor,
-    guidanceCursor: agent?.currentGuidanceCursor ?? null,
-    promptText: agent?.currentPromptText ?? null,
+    contextSequence: agent?.currentContextSequence,
+    guidanceSequence: agent?.currentGuidanceSequence ?? null,
+    promptIdentity: agent?.currentPromptIdentity ?? null,
   });
 }
 
@@ -178,6 +208,7 @@ function readLastDurableSessionBoundary(messageBus, clusterId, agentId) {
     cluster_id: clusterId,
     topic: 'AGENT_LIFECYCLE',
     sender: agentId,
+    afterId: 0,
   });
   return lifecycle
     .filter((message) => DURABLE_SESSION_BOUNDARY_EVENTS.has(message.content?.data?.event))
@@ -190,8 +221,8 @@ function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId 
     return null;
   }
   if (
-    !Object.hasOwn(savedState, 'lastGuidanceAppliedAt') ||
-    savedState.lastGuidanceAppliedAt !== session.guidanceCursor
+    !Object.hasOwn(savedState, 'lastGuidanceAppliedId') ||
+    savedState.lastGuidanceAppliedId !== session.guidanceSequence
   ) {
     return null;
   }
@@ -206,9 +237,9 @@ function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId 
     data.taskId !== session.taskId ||
     data.iteration !== session.generation ||
     normalizeProviderName(data.provider) !== session.provider ||
-    data.contextCursor !== session.contextCursor ||
-    data.guidanceCursor !== session.guidanceCursor ||
-    data.promptText !== session.promptText
+    data.contextSequence !== session.contextSequence ||
+    data.guidanceSequence !== session.guidanceSequence ||
+    data.promptIdentity !== session.promptIdentity
   ) {
     return null;
   }
@@ -219,10 +250,12 @@ function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId 
 module.exports = {
   agentWorkspaceProvenance,
   normalizeProviderSession,
+  promptIdentity,
   providerSessionFromCompletedTask,
   resolveAgentProviderSession,
   resolveAgentResumeSessionId,
   restoreAgentProviderSession,
   supportsSessionResume,
   updateAgentProviderSession,
+  validateCompletedResumeIdentity,
 };
