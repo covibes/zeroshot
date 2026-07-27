@@ -25,6 +25,7 @@ const {
   ensureAskUserQuestionHook,
   ensureDangerousGitHook,
   prepareClaudeSettingsOverlay,
+  resolveContainerMcpConfigPath,
   resolveRepoMcpConfigPath,
 } = require('../worktree-claude-config.js');
 const {
@@ -614,7 +615,13 @@ function resolveMcpConfigArgs(agent, providerName) {
   if (!mcpPath) return [];
 
   if (providerName === 'claude') {
-    return ['--mcp-config', mcpPath];
+    const forwardedPath = agent.isolation?.enabled
+      ? resolveContainerMcpConfigPath({
+          cwd: agent.config?.cwd || process.cwd(),
+          worktreePath: agent.worktree?.path || null,
+        })
+      : mcpPath;
+    return forwardedPath ? ['--mcp-config', forwardedPath] : [];
   }
   if (!providerModelsMcpConfigFlag(providerName)) return [];
 

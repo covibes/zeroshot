@@ -17,6 +17,7 @@ const {
   CLAUDE_SETTINGS_ENV,
   cleanupClaudeSettingsOverlay,
   prepareClaudeSettingsOverlay,
+  resolveContainerMcpConfigPath,
   resolveRepoMcpConfigPath,
 } = require('./worktree-claude-config');
 const {
@@ -99,6 +100,17 @@ function runCommandSync(command, args, options = {}) {
     throw error;
   }
   return result.stdout?.toString() || '';
+}
+
+function appendIsolatedMcpConfigArgs(command, provider, options) {
+  if (provider !== 'claude') return;
+  const mcpConfigPath = resolveContainerMcpConfigPath({
+    cwd: options.cwd || process.cwd(),
+    worktreePath: options.worktreePath || null,
+  });
+  if (mcpConfigPath) {
+    command.push('--mcp-config', mcpConfigPath);
+  }
 }
 
 class ClaudeTaskRunner extends TaskRunner {
@@ -676,6 +688,8 @@ class ClaudeTaskRunner extends TaskRunner {
     if (jsonSchema && runOutputFormat === 'json') {
       command.push('--json-schema', JSON.stringify(jsonSchema));
     }
+
+    appendIsolatedMcpConfigArgs(command, provider, options);
 
     let finalContext = context;
     if (jsonSchema && desiredOutputFormat === 'json' && runOutputFormat === 'stream-json') {

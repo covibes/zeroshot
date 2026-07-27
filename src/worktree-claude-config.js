@@ -37,6 +37,11 @@ function requireTargetClaudeDir(targetClaudeDir) {
   if (typeof targetClaudeDir !== 'string' || !targetClaudeDir) {
     throw new Error('Claude safety hooks require an explicit per-run settings directory.');
   }
+  if (!isClaudeSettingsOverlayDirectory(targetClaudeDir)) {
+    throw new Error(
+      `Claude safety hooks require a Zeroshot-owned Claude settings overlay: ${targetClaudeDir}`
+    );
+  }
   return targetClaudeDir;
 }
 
@@ -187,6 +192,26 @@ function resolveRepoMcpConfigPath(options = {}) {
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
+function resolveContainerMcpConfigPath(options = {}) {
+  const worktreeRoot = resolveWorktreeRoot(options.worktreePath || options.cwd);
+  const hostConfigPath = resolveRepoMcpConfigPath(options);
+  if (!worktreeRoot || !hostConfigPath) {
+    return null;
+  }
+
+  const relativePath = path.relative(worktreeRoot, hostConfigPath);
+  if (
+    !relativePath ||
+    path.isAbsolute(relativePath) ||
+    relativePath === '..' ||
+    relativePath.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error(`Repository MCP config is outside the mounted workspace: ${hostConfigPath}`);
+  }
+
+  return path.posix.join('/workspace', relativePath.split(path.sep).join('/'));
+}
+
 module.exports = {
   CLAUDE_MCP_CONFIG_ENV,
   CLAUDE_SETTINGS_ENV,
@@ -196,5 +221,6 @@ module.exports = {
   isClaudeSettingsOverlayDirectory,
   isClaudeSettingsOverlayPath,
   prepareClaudeSettingsOverlay,
+  resolveContainerMcpConfigPath,
   resolveRepoMcpConfigPath,
 };

@@ -59,14 +59,15 @@ describe('windowsHide spawn options (Windows console window fix)', function () {
     );
   });
 
-  it('adds windowsHide: true to the watcher child spawn (task-lib/watcher.js)', function () {
-    const source = readSource('task-lib/watcher.js');
-    const match = source.match(/const child = spawn\([\s\S]*?\);/);
-    assert(match, 'watcher child spawn() call not found in task-lib/watcher.js');
+  it('adds windowsHide: true at the shared watcher child spawn site', function () {
+    const source = readSource('task-lib/watcher-output-runtime.js');
+    const match = source.match(/function spawnWatcherProvider\([\s\S]*?\n\}/);
+    assert(match, 'spawnWatcherProvider() not found in watcher-output-runtime.js');
+    assert.match(match[0], /spawn\(/);
     assert.match(
       match[0],
       /windowsHide:\s*true/,
-      'watcher.js must pass windowsHide: true to spawn()'
+      'the shared watcher runtime must pass windowsHide: true to spawn()'
     );
   });
 

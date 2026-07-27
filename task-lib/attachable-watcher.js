@@ -8,7 +8,6 @@
 import { appendFileSync } from 'fs';
 import { updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
-import { terminateProcess } from './process-termination.js';
 import * as watcherOutputRuntime from './watcher-output-runtime.js';
 import { createRequire } from 'module';
 
@@ -34,46 +33,24 @@ function emergencyLog(msg) {
   }
 }
 
-async function stopAttachableProvider() {
-  const pid = server?.pid;
-  if (!pid) return true;
-  const result = await terminateProcess(pid, {
-    processGroupId: process.platform === 'win32' ? null : pid,
-    terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
-  });
-  return result.terminated;
+function stopAttachableProvider() {
+  return watcherOutputRuntime.terminateWatcherProvider(server);
 }
 
 async function failWatcher(error, source) {
   if (crashStarted) return;
   crashStarted = true;
-  const timestamp = Date.now();
-  const errorMsg = error instanceof Error ? error.stack || error.message : String(error);
-
-  emergencyLog(`\n[${timestamp}][CRASH] ${source}: ${errorMsg}\n`);
-  const providerTerminal = await stopAttachableProvider();
-  let cleanupSucceeded = false;
-  if (providerTerminal) {
-    cleanupSucceeded = commandCleanup ? await commandCleanup.run() : true;
-  } else {
-    emergencyLog(
-      `[${timestamp}][CRASH] Provider termination could not be confirmed; preserving command cleanup paths.\n`
-    );
-  }
-
   if (taskIdArg) {
-    try {
-      await updateTask(taskIdArg, {
-        status: 'failed',
-        pid: null,
-        processGroupId: null,
-        error: `${source}: ${errorMsg}`,
-        socketPath: null,
-        ...(cleanupSucceeded ? { commandCleanup: null } : {}),
-      });
-    } catch (updateError) {
-      emergencyLog(`[${timestamp}][CRASH] Failed to update task status: ${updateError.message}\n`);
-    }
+    await watcherOutputRuntime.completeWatcherFailure({
+      taskId: taskIdArg,
+      error,
+      source,
+      commandCleanup,
+      terminateProvider: stopAttachableProvider,
+      updateTask,
+      emergencyLog,
+      terminalUpdates: { socketPath: null },
+    });
   }
 
   process.exit(1);
