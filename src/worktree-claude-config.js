@@ -10,6 +10,7 @@ const SETTINGS_BASENAME = 'settings.json';
 const OVERLAY_ROOT_BASENAME = 'zeroshot-claude-settings';
 const OVERLAY_PREFIX = 'run-';
 const CLAUDE_SETTINGS_ENV = 'ZEROSHOT_CLAUDE_SETTINGS_FILE';
+const CLAUDE_MCP_CONFIG_ENV = 'ZEROSHOT_CLAUDE_MCP_CONFIG_FILE';
 const ASK_USER_HOOK = 'block-ask-user-question.py';
 const DANGEROUS_GIT_HOOK = 'block-dangerous-git.py';
 
@@ -134,6 +135,18 @@ function prepareClaudeSettingsOverlay(options = {}) {
 }
 
 function cleanupClaudeSettingsOverlay(settingsPath) {
+  if (!isClaudeSettingsOverlayPath(settingsPath)) {
+    return false;
+  }
+
+  const overlayDir = path.dirname(path.resolve(settingsPath));
+  fs.rmSync(overlayDir, { recursive: true, force: true });
+  installedAskUserHookDirs.delete(overlayDir);
+  installedDangerousGitHookDirs.delete(overlayDir);
+  return true;
+}
+
+function isClaudeSettingsOverlayPath(settingsPath) {
   if (typeof settingsPath !== 'string' || !settingsPath) {
     return false;
   }
@@ -141,24 +154,25 @@ function cleanupClaudeSettingsOverlay(settingsPath) {
   const tempRoot = path.resolve(os.tmpdir(), OVERLAY_ROOT_BASENAME);
   const resolvedSettingsPath = path.resolve(settingsPath);
   const overlayDir = path.dirname(resolvedSettingsPath);
-  if (
-    path.basename(resolvedSettingsPath) !== SETTINGS_BASENAME ||
-    path.dirname(overlayDir) !== tempRoot ||
-    !path.basename(overlayDir).startsWith(OVERLAY_PREFIX)
-  ) {
+  return (
+    path.basename(resolvedSettingsPath) === SETTINGS_BASENAME &&
+    path.dirname(overlayDir) === tempRoot &&
+    path.basename(overlayDir).startsWith(OVERLAY_PREFIX)
+  );
+}
+
+function isClaudeSettingsOverlayDirectory(overlayDir) {
+  if (typeof overlayDir !== 'string' || !overlayDir) {
     return false;
   }
-
-  fs.rmSync(overlayDir, { recursive: true, force: true });
-  installedAskUserHookDirs.delete(overlayDir);
-  installedDangerousGitHookDirs.delete(overlayDir);
-  return true;
+  return isClaudeSettingsOverlayPath(path.join(overlayDir, SETTINGS_BASENAME));
 }
 
 /**
- * Resolve the repo's `.mcp.json` path for a given worktree/cwd, or null if none exists. Reused by
- * providers that consume MCP servers through a CLI flag instead of discovering the project config
- * themselves (for example, Copilot's `--additional-mcp-config`).
+ * Resolve the repo's MCP config for a given worktree/cwd. The project-root
+ * `.mcp.json` is Claude's current convention. `.claude/.mcp.json` remains a
+ * deliberate compatibility fallback for repositories created by Zeroshot's
+ * earlier worktree integration.
  */
 function resolveRepoMcpConfigPath(options = {}) {
   const worktreeRoot = resolveWorktreeRoot(options.worktreePath || options.cwd);
@@ -166,15 +180,21 @@ function resolveRepoMcpConfigPath(options = {}) {
     return null;
   }
 
-  const mcpPath = path.join(worktreeRoot, CLAUDE_DIRNAME, MCP_BASENAME);
-  return fs.existsSync(mcpPath) ? mcpPath : null;
+  const candidates = [
+    path.join(worktreeRoot, MCP_BASENAME),
+    path.join(worktreeRoot, CLAUDE_DIRNAME, MCP_BASENAME),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
 module.exports = {
+  CLAUDE_MCP_CONFIG_ENV,
   CLAUDE_SETTINGS_ENV,
   cleanupClaudeSettingsOverlay,
   ensureAskUserQuestionHook,
   ensureDangerousGitHook,
+  isClaudeSettingsOverlayDirectory,
+  isClaudeSettingsOverlayPath,
   prepareClaudeSettingsOverlay,
   resolveRepoMcpConfigPath,
 };

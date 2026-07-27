@@ -6,9 +6,10 @@
  */
 
 import { spawn } from 'child_process';
-import { appendFileSync, unlinkSync } from 'fs';
-import { unlink } from 'fs/promises';
+import { appendFileSync } from 'fs';
 import { updateTask } from './store.js';
+import { createCommandSpecCleanup } from './command-spec-cleanup.js';
+import { terminateProcess } from './process-termination.js';
 import {
   detectProviderFatalError,
   detectProviderStreamingModeError,
@@ -34,6 +35,18 @@ function log(msg) {
   appendFileSync(logFile, msg);
 }
 
+function emergencyLog(msg) {
+  try {
+    log(msg);
+  } catch {
+    process.stderr.write(msg);
+  }
+}
+
+const commandCleanup = createCommandSpecCleanup(commandSpec, (cleanupPath, error) => {
+  emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${cleanupPath}: ${error.message}\n`);
+});
+
 const providerName = normalizeProviderName(config.provider || 'claude');
 const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
 
@@ -41,7 +54,7 @@ const env = { ...process.env, ...(commandSpec.env || {}) };
 const command = commandSpec.binary;
 const finalArgs = [...(commandSpec.args || args)];
 
-const child = spawn(command, finalArgs, {
+let child = spawn(command, finalArgs, {
   cwd: commandSpec.cwd || cwd,
   env,
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -64,7 +77,7 @@ const silentJsonMode =
 let finalResultJson = null;
 let streamingModeError = null;
 let fatalError = null;
-let cleanupStarted = false;
+let crashStarted = false;
 
 let stdoutBuffer = '';
 let stderrBuffer = '';
@@ -210,30 +223,6 @@ function attemptRecovery(code, timestamp) {
   return recovered;
 }
 
-async function cleanupCommandSpec() {
-  if (cleanupStarted) return;
-  cleanupStarted = true;
-  for (const file of commandSpec.cleanup || []) {
-    try {
-      await unlink(file);
-    } catch (error) {
-      log(`[${Date.now()}][CLEANUP] Failed to delete ${file}: ${error.message}\n`);
-    }
-  }
-}
-
-function cleanupCommandSpecSync() {
-  if (cleanupStarted) return;
-  cleanupStarted = true;
-  for (const file of commandSpec.cleanup || []) {
-    try {
-      unlinkSync(file);
-    } catch (error) {
-      log(`[${Date.now()}][CLEANUP] Failed to delete ${file}: ${error.message}\n`);
-    }
-  }
-}
-
 function writeCompletionFooter(code, signal) {
   if (config.outputFormat === 'json') {
     return;
@@ -271,6 +260,7 @@ child.stderr.on('data', (data) => {
 });
 
 child.on('close', async (code, signal) => {
+  if (crashStarted) return;
   const timestamp = Date.now();
 
   flushStdoutBuffer(timestamp);
@@ -283,7 +273,7 @@ child.on('close', async (code, signal) => {
   }
 
   writeCompletionFooter(code, signal);
-  await cleanupCommandSpec();
+  const cleanupSucceeded = await commandCleanup.run();
 
   const resolvedCode = fatalError ? 1 : recovered?.payload ? 0 : code;
   const status = resolvedCode === 0 ? 'completed' : 'failed';
@@ -294,6 +284,7 @@ child.on('close', async (code, signal) => {
       processGroupId: null,
       exitCode: resolvedCode,
       error: fatalError || (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
+      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
     });
   } catch (updateError) {
     log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
@@ -303,16 +294,62 @@ child.on('close', async (code, signal) => {
 
 child.on('error', async (err) => {
   log(`\nError: ${err.message}\n`);
-  cleanupCommandSpecSync();
+  const cleanupSucceeded = commandCleanup.runSync();
   try {
     await updateTask(taskId, {
       status: 'failed',
       pid: null,
       processGroupId: null,
       error: err.message,
+      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
     });
   } catch (updateError) {
     log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
   }
   process.exit(1);
+});
+
+async function terminateProviderAfterWatcherCrash() {
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return true;
+  const result = await terminateProcess(child.pid, {
+    processGroupId: process.platform === 'win32' ? null : child.pid,
+    terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
+  });
+  return result.terminated;
+}
+
+async function crashWithError(error, source) {
+  if (crashStarted) return;
+  crashStarted = true;
+  const errorMessage = error instanceof Error ? error.stack || error.message : String(error);
+  emergencyLog(`\n[${Date.now()}][CRASH] ${source}: ${errorMessage}\n`);
+  const providerTerminal = await terminateProviderAfterWatcherCrash();
+  let cleanupSucceeded = false;
+  if (providerTerminal) {
+    cleanupSucceeded = await commandCleanup.run();
+  } else {
+    emergencyLog(
+      `[${Date.now()}][CRASH] Provider termination could not be confirmed; preserving command cleanup paths.\n`
+    );
+  }
+  try {
+    await updateTask(taskId, {
+      status: 'failed',
+      pid: null,
+      processGroupId: null,
+      error: `${source}: ${errorMessage}`,
+      ...(cleanupSucceeded ? { commandCleanup: null } : {}),
+    });
+  } catch (updateError) {
+    emergencyLog(`[${Date.now()}][CRASH] Failed to update task status: ${updateError.message}\n`);
+  }
+  process.exit(1);
+}
+
+process.on('uncaughtException', (error) => {
+  void crashWithError(error, 'uncaughtException');
+});
+
+process.on('unhandledRejection', (reason) => {
+  void crashWithError(reason, 'unhandledRejection');
 });

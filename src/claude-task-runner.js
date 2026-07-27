@@ -13,9 +13,11 @@ const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const {
+  CLAUDE_MCP_CONFIG_ENV,
   CLAUDE_SETTINGS_ENV,
   cleanupClaudeSettingsOverlay,
   prepareClaudeSettingsOverlay,
+  resolveRepoMcpConfigPath,
 } = require('./worktree-claude-config');
 
 function runCommand(command, args, options = {}, callback = null) {
@@ -181,22 +183,19 @@ class ClaudeTaskRunner extends TaskRunner {
       worktreePath,
     });
 
-    const claudeSettingsPath =
-      providerName === 'claude' ? spawnEnv[CLAUDE_SETTINGS_ENV] || null : null;
-
+    let taskId;
     try {
-      const taskId = await this._spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, agentId);
-
-      this._log(`📋 [${agentId}]: Following zeroshot logs for ${taskId}`);
-
-      // Wait for task registration
-      await this._waitForTaskReady(ctPath, taskId);
-
-      // Follow logs until completion
-      return await this._followLogs(ctPath, taskId, agentId);
-    } finally {
-      cleanupClaudeSettingsOverlay(claudeSettingsPath);
+      taskId = await this._spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, agentId);
+    } catch (error) {
+      cleanupClaudeSettingsOverlay(spawnEnv[CLAUDE_SETTINGS_ENV]);
+      throw error;
     }
+
+    // Once a task ID is returned, the detached watcher owns provider
+    // termination and command cleanup.
+    this._log(`📋 [${agentId}]: Following zeroshot logs for ${taskId}`);
+    await this._waitForTaskReady(ctPath, taskId);
+    return this._followLogs(ctPath, taskId, agentId);
   }
 
   _getProviderContext(providerName, settings) {
@@ -276,6 +275,10 @@ class ClaudeTaskRunner extends TaskRunner {
       spawnEnv[CLAUDE_SETTINGS_ENV] = prepareClaudeSettingsOverlay({
         includeDangerousGit: Boolean(worktreePath),
       });
+      const mcpConfigPath = resolveRepoMcpConfigPath({ cwd, worktreePath });
+      if (mcpConfigPath) {
+        spawnEnv[CLAUDE_MCP_CONFIG_ENV] = mcpConfigPath;
+      }
     }
 
     prependWorktreeToolBinToEnv(spawnEnv, { cwd, worktreePath });

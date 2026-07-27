@@ -7,6 +7,11 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { prepareSingleAgentProviderCommand } = require('./provider-helper-runtime.js');
+const {
+  CLAUDE_MCP_CONFIG_ENV,
+  CLAUDE_SETTINGS_ENV,
+  isClaudeSettingsOverlayPath,
+} = require('../src/worktree-claude-config');
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -32,7 +37,7 @@ export function spawnTask(prompt, options = {}) {
   });
   const providerName = prepared.adapter.id;
   const modelSpec = prepared.options.modelSpec;
-  const commandSpec = prepared.commandSpec;
+  const commandSpec = attachClaudeOverlayCleanup(prepared.commandSpec, providerName);
 
   const task = buildTaskRecord({
     id,
@@ -42,6 +47,7 @@ export function spawnTask(prompt, options = {}) {
     logFile,
     providerName,
     modelSpec,
+    commandSpec,
   });
 
   addTask(task);
@@ -100,14 +106,39 @@ function buildProviderOptions(options, outputFormat, jsonSchema, cwd) {
 }
 
 function claudeSettingsFileOption() {
-  const settingsPath = process.env.ZEROSHOT_CLAUDE_SETTINGS_FILE?.trim();
+  const settingsPath = process.env[CLAUDE_SETTINGS_ENV]?.trim();
   return settingsPath ? { claudeSettingsFile: settingsPath } : {};
 }
 
 function mcpConfigOption(options) {
-  const entries = options.mcpConfig;
-  if (!Array.isArray(entries) || entries.length === 0) return {};
+  const entries = Array.isArray(options.mcpConfig) ? [...options.mcpConfig] : [];
+  const claudeMcpConfigPath = process.env[CLAUDE_MCP_CONFIG_ENV]?.trim();
+  if (claudeMcpConfigPath && !entries.includes(claudeMcpConfigPath)) {
+    entries.push(claudeMcpConfigPath);
+  }
+  if (entries.length === 0) return {};
   return { mcpConfig: entries };
+}
+
+export function attachClaudeOverlayCleanup(commandSpec, providerName) {
+  if (providerName !== 'claude') return commandSpec;
+  const settingsPath = process.env[CLAUDE_SETTINGS_ENV]?.trim();
+  if (!isClaudeSettingsOverlayPath(settingsPath)) return commandSpec;
+
+  const overlayDir = dirname(settingsPath);
+  return {
+    ...commandSpec,
+    cleanup: [...(commandSpec.cleanup || []), overlayDir],
+    cleanupMetadata: [
+      ...(commandSpec.cleanupMetadata || []),
+      {
+        kind: 'temp-directory',
+        provider: 'claude',
+        path: overlayDir,
+        reason: 'settings-overlay',
+      },
+    ],
+  };
 }
 
 function modelSpecOption(options) {
@@ -133,7 +164,7 @@ function resolveRequestedModelSpec(options) {
   return undefined;
 }
 
-function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec }) {
+function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec, commandSpec }) {
   return {
     id,
     prompt: prompt.slice(0, 200) + (prompt.length > 200 ? '...' : ''),
@@ -156,6 +187,13 @@ function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, mode
     attachable: false,
     processGroupId: null,
     terminationStrategy: null,
+    commandCleanup:
+      commandSpec.cleanup?.length > 0
+        ? {
+            cleanup: commandSpec.cleanup,
+            cleanupMetadata: commandSpec.cleanupMetadata || [],
+          }
+        : null,
   };
 }
 

@@ -1,6 +1,15 @@
 import chalk from 'chalk';
 import { getTask, updateTask } from '../store.js';
-import { terminateProcess } from '../runner.js';
+import { createCommandSpecCleanup } from '../command-spec-cleanup.js';
+import { terminateProcess } from '../process-termination.js';
+
+async function cleanupTerminatedTask(task) {
+  if (!task.commandCleanup) return {};
+  const cleanup = createCommandSpecCleanup(task.commandCleanup, (cleanupPath, error) => {
+    console.log(chalk.yellow(`Warning: failed to clean up ${cleanupPath}: ${error.message}`));
+  });
+  return (await cleanup.run()) ? { commandCleanup: null } : {};
+}
 
 export async function killTaskCommand(taskId, options = {}) {
   const task = getTask(taskId);
@@ -25,16 +34,19 @@ export async function killTaskCommand(taskId, options = {}) {
 
   if (result.terminated && result.alreadyDead) {
     console.log(chalk.yellow('Process already dead, updating status...'));
+    const cleanupUpdate = await cleanupTerminatedTask(task);
     updateTask(taskId, {
       status: 'stale',
       pid: null,
       processGroupId: null,
       error: 'Process died unexpectedly',
+      ...cleanupUpdate,
     });
     return;
   }
 
   if (result.terminated) {
+    const cleanupUpdate = await cleanupTerminatedTask(task);
     const suffix = result.escalated ? ' after SIGKILL escalation' : ' with SIGTERM';
     console.log(chalk.green(`✓ Killed task ${taskId} (PID: ${task.pid})${suffix}`));
     if (result.degraded) {
@@ -46,6 +58,7 @@ export async function killTaskCommand(taskId, options = {}) {
       processGroupId: null,
       exitCode: result.escalated ? 137 : 143,
       error: result.escalated ? 'Killed by user after SIGKILL escalation' : 'Killed by user',
+      ...cleanupUpdate,
     });
   } else {
     console.log(chalk.red(`Failed to kill task ${taskId}`));

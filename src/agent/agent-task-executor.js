@@ -496,57 +496,56 @@ async function spawnClaudeTask(agent, context) {
         })
       : null;
 
+  let taskId;
   try {
     const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
-    const taskId = await spawnTaskProcess({
+    taskId = await spawnTaskProcess({
       agent,
       ctPath,
       args,
       cwd,
       spawnEnv,
     });
-
-    agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
-
-    // Wait for task to be registered in zeroshot storage (race condition fix)
-    await waitForTaskReady(agent, taskId);
-
-    // CRITICAL: Poll for REAL process PID from task store
-    // The watcher spawns the actual CLI and writes PID to SQLite asynchronously.
-    // We must poll because the watcher runs in a forked process.
-    const MAX_PID_POLLS = 30; // 3 seconds max
-    const PID_POLL_DELAY = 100;
-    let realPid = null;
-    let terminalBeforePidObservation = false;
-
-    for (let i = 0; i < MAX_PID_POLLS; i++) {
-      const taskInfo = getTask(taskId);
-      if (taskInfo?.pid) {
-        realPid = taskInfo.pid;
-        break;
-      }
-      if (taskInfo && ['completed', 'failed', 'killed', 'stale'].includes(taskInfo.status)) {
-        terminalBeforePidObservation = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, PID_POLL_DELAY));
-    }
-
-    if (realPid) {
-      agent.processPid = realPid;
-      agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
-      agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
-    } else if (terminalBeforePidObservation) {
-      agent._log(`📋 Agent ${agent.id}: Task finished before PID observation`);
-    } else {
-      agent._log(`⚠️ Agent ${agent.id}: PID not available (task may use non-standard watcher)`);
-    }
-
-    // Keep the overlay alive until the provider exits, then remove it.
-    return await followClaudeTaskLogs(agent, taskId);
-  } finally {
+  } catch (error) {
     cleanupClaudeSettingsOverlay(claudeSettingsPath);
+    throw error;
   }
+
+  // The task ID transfers provider and cleanup ownership to the detached
+  // watcher. From this point, follower/PID observation failures must not remove
+  // files that a live provider still reads.
+  agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
+  await waitForTaskReady(agent, taskId);
+
+  const MAX_PID_POLLS = 30;
+  const PID_POLL_DELAY = 100;
+  let realPid = null;
+  let terminalBeforePidObservation = false;
+
+  for (let i = 0; i < MAX_PID_POLLS; i++) {
+    const taskInfo = getTask(taskId);
+    if (taskInfo?.pid) {
+      realPid = taskInfo.pid;
+      break;
+    }
+    if (taskInfo && ['completed', 'failed', 'killed', 'stale'].includes(taskInfo.status)) {
+      terminalBeforePidObservation = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, PID_POLL_DELAY));
+  }
+
+  if (realPid) {
+    agent.processPid = realPid;
+    agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
+    agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
+  } else if (terminalBeforePidObservation) {
+    agent._log(`📋 Agent ${agent.id}: Task finished before PID observation`);
+  } else {
+    agent._log(`⚠️ Agent ${agent.id}: PID not available (task may use non-standard watcher)`);
+  }
+
+  return followClaudeTaskLogs(agent, taskId);
 }
 
 function resolveAgentModelSpec(agent) {
@@ -590,9 +589,9 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
     args.push('--json-schema', schema);
   }
 
-  // MCP servers: providers whose CLI accepts an MCP config flag (e.g. Copilot's
-  // --additional-mcp-config) cannot discover Claude's project config, so forward the repo's
-  // `.mcp.json` inline via `--mcp-config`.
+  // MCP servers: explicitly forward the repo config through the task CLI.
+  // Claude receives the path; providers such as Copilot receive inlined JSON
+  // so it survives container path translation.
   for (const mcpArg of resolveMcpConfigArgs(agent, providerName)) {
     args.push(mcpArg);
   }
@@ -603,19 +602,21 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
 /**
  * Build the `--mcp-config` args for a task-run invocation, or [] when they don't apply.
  *
- * Only providers whose adapter models an MCP config CLI flag receive it — Claude discovers its
- * project MCP config directly and needs no flag. The repo `.mcp.json` content is inlined (not
- * passed as an @<path> reference) so the identical value works under local, worktree, and Docker
- * isolation without host/container path translation.
+ * Claude receives the config path because its CLI supports `--mcp-config`.
+ * Other providers whose adapter models an MCP config flag receive inlined
+ * content so the identical value works under Docker isolation.
  */
 function resolveMcpConfigArgs(agent, providerName) {
-  if (!providerModelsMcpConfigFlag(providerName)) return [];
-
   const mcpPath = resolveRepoMcpConfigPath({
     cwd: agent.config?.cwd || process.cwd(),
     worktreePath: agent.worktree?.path || null,
   });
   if (!mcpPath) return [];
+
+  if (providerName === 'claude') {
+    return ['--mcp-config', mcpPath];
+  }
+  if (!providerModelsMcpConfigFlag(providerName)) return [];
 
   const content = fs.readFileSync(mcpPath, 'utf8').trim();
   if (content.length === 0) return [];
@@ -2191,6 +2192,7 @@ async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
 module.exports = {
   ensureAskUserQuestionHook,
   ensureDangerousGitHook,
+  resolveMcpConfigArgs,
   spawnClaudeTask,
   followClaudeTaskLogs,
   followClaudeTaskLogsIsolated,
