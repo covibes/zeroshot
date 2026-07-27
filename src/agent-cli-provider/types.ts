@@ -96,6 +96,8 @@ export interface ClaudeCliFeatures extends BaseCliFeatures {
   readonly supportsVerbose: boolean;
   readonly supportsModel: boolean;
   readonly supportsEffort: boolean;
+  readonly supportsSettings: boolean;
+  readonly supportsMcpConfig: boolean;
 }
 
 export interface CodexCliFeatures extends BaseCliFeatures {
@@ -188,6 +190,7 @@ export interface CliFeatureOverrides {
   readonly supportsVerbose?: boolean;
   readonly supportsModel?: boolean;
   readonly supportsEffort?: boolean;
+  readonly supportsSettings?: boolean;
   readonly supportsJson?: boolean;
   readonly supportsOutputSchema?: boolean;
   readonly supportsDir?: boolean;
@@ -223,10 +226,10 @@ export interface CliFeatureOverrides {
 }
 
 export interface CleanupMetadata {
-  readonly kind: 'temp-file';
+  readonly kind: 'temp-file' | 'temp-directory';
   readonly provider: ProviderId;
   readonly path: string;
-  readonly reason: 'output-schema';
+  readonly reason: 'output-schema' | 'settings-overlay';
 }
 
 export interface WarningMetadata {

@@ -52,7 +52,8 @@ function getDb() {
       socket_path TEXT,
       attachable INTEGER DEFAULT 0,
       process_group_id INTEGER,
-      termination_strategy TEXT
+      termination_strategy TEXT,
+      command_cleanup TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -79,6 +80,7 @@ function getDb() {
 
   ensureTaskColumn(db, 'process_group_id', 'INTEGER');
   ensureTaskColumn(db, 'termination_strategy', 'TEXT');
+  ensureTaskColumn(db, 'command_cleanup', 'TEXT');
 
   return db;
 }
@@ -88,6 +90,20 @@ function ensureTaskColumn(database, name, definition) {
   if (!columns.some((column) => column.name === name)) {
     database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
   }
+}
+
+function parseCommandCleanup(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeCommandCleanup(value) {
+  return value ? JSON.stringify(value) : null;
 }
 
 export function ensureDirs() {
@@ -124,6 +140,7 @@ function rowToTask(row) {
     attachable: Boolean(row.attachable),
     processGroupId: row.process_group_id,
     terminationStrategy: row.termination_strategy,
+    commandCleanup: parseCommandCleanup(row.command_cleanup),
   };
 }
 
@@ -151,11 +168,13 @@ export function saveTasks(tasks) {
     INSERT OR REPLACE INTO tasks (
       id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
-      schedule_id, socket_path, attachable, process_group_id, termination_strategy
+      schedule_id, socket_path, attachable, process_group_id, termination_strategy,
+      command_cleanup
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
-      @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
+      @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
+      @commandCleanup
     )
   `);
 
@@ -184,6 +203,7 @@ export function saveTasks(tasks) {
         attachable: task.attachable ? 1 : 0,
         processGroupId: task.processGroupId || null,
         terminationStrategy: task.terminationStrategy || null,
+        commandCleanup: serializeCommandCleanup(task.commandCleanup),
       });
     }
   });
@@ -250,7 +270,8 @@ export function updateTask(id, updates) {
       socket_path = @socketPath,
       attachable = @attachable,
       process_group_id = @processGroupId,
-      termination_strategy = @terminationStrategy
+      termination_strategy = @terminationStrategy,
+      command_cleanup = @commandCleanup
     WHERE id = @id
   `
     )
@@ -273,6 +294,7 @@ export function updateTask(id, updates) {
       attachable: updated.attachable ? 1 : 0,
       processGroupId: updated.processGroupId || null,
       terminationStrategy: updated.terminationStrategy || null,
+      commandCleanup: serializeCommandCleanup(updated.commandCleanup),
     });
 
   return updated;
@@ -297,11 +319,13 @@ export function addTask(task) {
     INSERT INTO tasks (
       id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
-      schedule_id, socket_path, attachable, process_group_id, termination_strategy
+      schedule_id, socket_path, attachable, process_group_id, termination_strategy,
+      command_cleanup
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
-      @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
+      @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
+      @commandCleanup
     )
   `
     )
@@ -325,6 +349,7 @@ export function addTask(task) {
       attachable: fullTask.attachable ? 1 : 0,
       processGroupId: fullTask.processGroupId || null,
       terminationStrategy: fullTask.terminationStrategy || null,
+      commandCleanup: serializeCommandCleanup(fullTask.commandCleanup),
     });
 
   return fullTask;

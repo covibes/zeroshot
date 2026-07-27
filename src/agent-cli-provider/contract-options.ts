@@ -23,6 +23,7 @@ const CLI_FEATURE_FIELDS = [
   'supportsVerbose',
   'supportsModel',
   'supportsEffort',
+  'supportsSettings',
   'supportsJson',
   'supportsOutputSchema',
   'supportsDir',
