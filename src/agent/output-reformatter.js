@@ -4,17 +4,13 @@
  * When an LLM outputs markdown/text instead of JSON despite schema instructions,
  * this module attempts to extract/reformat the content into valid JSON.
  *
- * STATUS: SDK NOT IMPLEMENTED - Reformatting is not available.
- * This module exists for future extension when SDK support is added.
- *
- * To enable reformatting:
- * 1. Implement SDK support in the provider (getSDKEnvVar, callSimple)
- * 2. The reformatOutput() function will then work automatically
+ * Opencode output can be reformatted through its CLI when direct JSON extraction fails.
+ * Other providers remain on their own extraction paths and never depend on the opencode binary.
  */
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 
-const { execFile, spawn } = require('child_process');
+const childProcess = require('child_process');
 
 // Provider used to reformat non-JSON agent output into the target schema.
 // opencode is used as the reformatting backend because it reliably emits clean
@@ -24,36 +20,83 @@ const { execFile, spawn } = require('child_process');
 const REFORMAT_PROVIDER_BIN = 'opencode';
 const REFORMAT_TIMEOUT_MS = 180000;
 
+function createCancellationError() {
+  const error = new Error('Output reformatting cancelled');
+  error.code = 'REFORMAT_CANCELLED';
+  return error;
+}
+
 /**
- * Call the reformat model (opencode CLI) with a prompt; resolve raw output or null.
- * Uses spawn with stdin ignored — opencode hangs if stdin is left as an open pipe.
+ * Call the opencode CLI with a prompt.
+ * Stdin is ignored because opencode otherwise waits for EOF.
+ *
+ * @param {string} prompt
+ * @param {{isCancelled?: () => boolean}} [options]
+ * @returns {Promise<string|null>}
  */
-function callReformatModel(prompt) {
-  return new Promise((resolve) => {
-    const child = spawn(REFORMAT_PROVIDER_BIN, ['run', '--format', 'json', prompt], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+function callReformatModel(prompt, { isCancelled = () => false } = {}) {
+  if (isCancelled()) return Promise.reject(createCancellationError());
+
+  return new Promise((resolve, reject) => {
+    const child = childProcess.spawn(
+      REFORMAT_PROVIDER_BIN,
+      ['run', '--format', 'json', prompt],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
     let stdout = '';
+    let stderr = '';
     let settled = false;
-    const finish = (val) => {
+    let timeoutTimer;
+    let cancellationTimer;
+
+    const finish = (error, value = null) => {
       if (settled) return;
       settled = true;
-      resolve(val);
+      clearTimeout(timeoutTimer);
+      clearInterval(cancellationTimer);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(value);
+      }
     };
-    const timer = setTimeout(() => {
+
+    timeoutTimer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish(null);
+      finish(new Error(`opencode reformat timed out after ${REFORMAT_TIMEOUT_MS}ms`));
     }, REFORMAT_TIMEOUT_MS);
-    child.stdout.on('data', (d) => {
-      stdout += d.toString();
+
+    cancellationTimer = setInterval(() => {
+      if (!isCancelled()) return;
+      child.kill('SIGKILL');
+      finish(createCancellationError());
+    }, 50);
+
+    child.stdout.on('data', (data) => {
+      stdout += data.toString();
     });
-    child.on('close', () => {
-      clearTimeout(timer);
-      finish(stdout || null);
+    child.stderr.on('data', (data) => {
+      stderr += data.toString();
     });
-    child.on('error', () => {
-      clearTimeout(timer);
-      finish(null);
+    child.on('close', (code, signal) => {
+      if (isCancelled()) {
+        finish(createCancellationError());
+      } else if (code !== 0) {
+        const detail = stderr.trim().slice(-500);
+        finish(
+          new Error(
+            `opencode reformat exited with code ${code}${signal ? ` (${signal})` : ''}` +
+              (detail ? `: ${detail}` : '')
+          )
+        );
+      } else {
+        finish(null, stdout || null);
+      }
+    });
+    child.on('error', (error) => {
+      finish(error);
     });
   });
 }
@@ -104,19 +147,18 @@ Fix this issue in your response.`;
 }
 
 /**
- * Attempt to reformat non-JSON output into valid JSON
- *
- * STATUS: SDK NOT IMPLEMENTED - This function always throws.
- * When SDK support is added to providers, this will work automatically.
+ * This fallback is intentionally scoped to opencode agents. It participates in agent
+ * cancellation so retries cannot outlive cluster shutdown.
  *
  * @param {Object} options
  * @param {string} options.rawOutput - The non-JSON output to reformat
  * @param {Object} options.schema - Target JSON schema
- * @param {string} options.providerName - Provider name (claude, codex, gemini, opencode)
+ * @param {string} options.providerName - Active provider name
  * @param {number} [options.maxAttempts=3] - Maximum reformatting attempts
  * @param {Function} [options.onAttempt] - Callback for each attempt (attempt, error)
+ * @param {Function} [options.isCancelled] - Returns true after agent cancellation
  * @returns {Promise<Object>} The reformatted JSON object
- * @throws {Error} Always throws - SDK not implemented
+ * @throws {Error} If the provider is unsupported, cancellation occurs, or attempts fail
  */
 async function reformatOutput({
   rawOutput,
@@ -124,11 +166,20 @@ async function reformatOutput({
   providerName,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   onAttempt,
+  isCancelled = () => false,
 }) {
+  if (providerName !== 'opencode') {
+    throw new Error(
+      `Output reformatting not available for provider "${providerName}". ` +
+        `Agent output must be valid JSON. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
+    );
+  }
+
   const { extractJsonFromOutput } = require('./output-extraction');
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (isCancelled()) throw createCancellationError();
     if (onAttempt) {
       onAttempt(attempt, lastError);
     }
@@ -136,7 +187,7 @@ async function reformatOutput({
     const prompt = buildReformatPrompt(rawOutput, schema, lastError);
 
     try {
-      const output = await callReformatModel(prompt);
+      const output = await callReformatModel(prompt, { isCancelled });
       if (!output) {
         lastError = 'reformat model returned no output';
         continue;
@@ -156,6 +207,7 @@ async function reformatOutput({
 
       return parsed;
     } catch (err) {
+      if (err.code === 'REFORMAT_CANCELLED') throw err;
       lastError = err.message;
     }
   }

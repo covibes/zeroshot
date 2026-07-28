@@ -2202,6 +2202,7 @@ async function parseResultOutput(agent, output) {
         rawOutput: output,
         schema: agent.config.jsonSchema,
         providerName,
+        isCancelled: () => agent.running === false || agent.state === 'stopped',
         onAttempt: (attempt, lastError) => {
           if (lastError) {
             console.warn(`[Agent ${agent.id}] Reformat attempt ${attempt}: ${lastError}`);
