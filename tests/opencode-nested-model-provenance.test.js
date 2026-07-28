@@ -135,7 +135,7 @@ describe('Nested Docker agent model arguments', function () {
             capturedOptions = options;
             return createClosingProcess();
           },
-          async execInContainer() {
+          execInContainer() {
             return { code: 2, stdout: '', stderr: '' };
           },
         },

@@ -35,7 +35,7 @@ function createLaunchHarness({ spawnTimeoutMs = 1000 } = {}) {
       capturedEnv = options.env;
       return proc;
     },
-    async execInContainer(_clusterId, command) {
+    execInContainer(_clusterId, command) {
       commands.push(command);
       if (command[1] === 'get-task-id-by-spawn-token') {
         assert.strictEqual(command[2], capturedEnv[OWNERSHIP_ENV]);
@@ -179,7 +179,7 @@ describe('Isolated terminal cleanup recovery', function () {
     const commands = [];
     let shouldFail = failCleanup;
     const manager = {
-      async execInContainer(_clusterId, command) {
+      execInContainer(_clusterId, command) {
         commands.push(command);
         if (command[1] === 'status') {
           return { code: 0, stdout: 'Status: killed\n', stderr: '' };
