@@ -132,6 +132,9 @@ function resolveAgentProviderSession(agent, providerName) {
 
   if (!stored || !sessionMatchesAgent(stored, agent, providerName, expectedGeneration)) {
     if (agent) {
+      if (agent.providerSession) {
+        agent.lastGuidanceAppliedId = null;
+      }
       agent.providerSession = null;
     }
     return null;
@@ -208,6 +211,9 @@ function providerSessionFromCompletedTask({
 }
 
 function updateAgentProviderSession(agent, value) {
+  if (agent.providerSession && value === null) {
+    agent.lastGuidanceAppliedId = null;
+  }
   const session = normalizeProviderSession(value);
   agent.providerSession = session;
   return session;
