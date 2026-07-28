@@ -110,6 +110,67 @@ describe('Task cleanup recovery', function () {
       fs.rmSync(taskHome, { recursive: true, force: true });
     }
   });
+
+  it('preserves cleanup ownership while a running task has not published its provider PID', async function () {
+    const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-task-starting-store-'));
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    const killUrl = new URL('../task-lib/commands/kill.js', `file://${__filename}`).href;
+    const script = `
+      import fs from 'fs';
+      import os from 'os';
+      import path from 'path';
+      const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
+      fs.mkdirSync(overlayRoot, { recursive: true });
+      const startingCleanup = fs.mkdtempSync(path.join(overlayRoot, 'run-kill-starting-'));
+      const { addTask, getTask } = await import(${JSON.stringify(storeUrl)});
+      const { killTaskCommand } = await import(${JSON.stringify(killUrl)});
+      addTask({
+        id: 'starting-task',
+        status: 'running',
+        pid: null,
+        commandCleanup: {
+          cleanup: [startingCleanup],
+          cleanupMetadata: [{
+            kind: 'temp-directory',
+            provider: 'claude',
+            path: startingCleanup,
+            reason: 'settings-overlay'
+          }]
+        }
+      });
+      await killTaskCommand('starting-task');
+      const task = getTask('starting-task');
+      const cleanupExists = fs.existsSync(startingCleanup);
+      const exitCode = process.exitCode || 0;
+      process.exitCode = 0;
+      fs.rmSync(startingCleanup, { recursive: true, force: true });
+      console.log('RESULT:' + JSON.stringify({ task, cleanupExists, exitCode }));
+    `;
+
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ['--input-type=module', '-e', script],
+        {
+          env: {
+            ...process.env,
+            HOME: taskHome,
+            USERPROFILE: taskHome,
+            ZEROSHOT_HOME: taskHome,
+          },
+        }
+      );
+      const line = stdout.split('\n').find((entry) => entry.startsWith('RESULT:'));
+      const result = JSON.parse(line.slice('RESULT:'.length));
+      assert.strictEqual(result.task.status, 'running');
+      assert.strictEqual(result.task.pid, null);
+      assert.notStrictEqual(result.task.commandCleanup, null);
+      assert.strictEqual(result.cleanupExists, true);
+      assert.strictEqual(result.exitCode, 1);
+    } finally {
+      fs.rmSync(taskHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Task cleanup after deferred termination', function () {

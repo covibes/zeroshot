@@ -43,6 +43,16 @@ export async function killTaskCommand(taskId, options = {}) {
     return;
   }
 
+  if (!Number.isInteger(task.pid) || task.pid <= 0) {
+    console.log(
+      chalk.yellow(
+        `Task ${taskId} has not published a provider PID; preserving its running state and command cleanup ownership`
+      )
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const terminationOptions = {
     ...options,
     processGroupId: task.processGroupId,
