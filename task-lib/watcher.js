@@ -60,7 +60,7 @@ if (
     taskId,
     getTask,
     commandCleanup,
-    terminateProvider: async () => true,
+    terminateProvider: () => true,
     updateTask,
     emergencyLog,
   })
