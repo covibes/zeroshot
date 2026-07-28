@@ -179,26 +179,72 @@ function sleep(ms) {
   });
 }
 
+function nextRetryDelay(attempt, attempts, delayMs, options) {
+  if (attempt >= attempts) return null;
+  if (options.deadline === undefined) return delayMs;
+
+  const now = options.now || Date.now;
+  const remainingMs = options.deadline - now();
+  if (remainingMs <= 0) return null;
+  return Math.min(delayMs, remainingMs);
+}
+
 async function waitForNpmLatest(name, expectedVersion, options = {}) {
   const attempts =
     options.attempts || Number(process.env.RELEASE_ASSERT_ATTEMPTS || DEFAULT_ATTEMPTS);
   const delayMs =
     options.delayMs || Number(process.env.RELEASE_ASSERT_DELAY_MS || DEFAULT_DELAY_MS);
+  const wait = options.sleep || sleep;
 
   let latest = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     latest = npmLatest(name);
     if (latest === expectedVersion) return latest;
 
-    if (attempt < attempts) {
+    const retryDelay = nextRetryDelay(attempt, attempts, delayMs, options);
+    if (retryDelay !== null) {
       console.log(
         `npm latest for ${name} is ${latest}; waiting for ${expectedVersion} (${attempt}/${attempts})`
       );
-      await sleep(delayMs);
+      await wait(retryDelay);
+    } else {
+      break;
     }
   }
 
   throw new Error(`expected npm latest for ${name} to be ${expectedVersion}, got ${latest}`);
+}
+
+async function waitForPublishedArtifact(label, check, options = {}) {
+  const attempts =
+    options.attempts || Number(process.env.RELEASE_ASSERT_ATTEMPTS || DEFAULT_ATTEMPTS);
+  const delayMs =
+    options.delayMs || Number(process.env.RELEASE_ASSERT_DELAY_MS || DEFAULT_DELAY_MS);
+  const wait = options.sleep || sleep;
+  let lastError = null;
+  let attemptsMade = 0;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    attemptsMade = attempt;
+    try {
+      return await check();
+    } catch (error) {
+      lastError = error;
+      const retryDelay = nextRetryDelay(attempt, attempts, delayMs, options);
+      if (retryDelay !== null) {
+        console.log(
+          `${label} is not ready: ${error.message}; retrying (${attempt}/${attempts})`
+        );
+        await wait(retryDelay);
+      } else {
+        break;
+      }
+    }
+  }
+
+  throw new Error(
+    `${label} did not become ready after ${attemptsMade} attempts: ${lastError?.message || 'unknown error'}`
+  );
 }
 
 async function main() {
@@ -218,30 +264,62 @@ async function main() {
 
   console.log(`tags on HEAD: ${headTags.join(', ') || '(none)'}`);
   const expectedVersion = expectedTag.slice(1);
-  const latest = await waitForNpmLatest(name, expectedVersion);
+  const retryAttempts = Number(process.env.RELEASE_ASSERT_ATTEMPTS || DEFAULT_ATTEMPTS);
+  const retryDelayMs = Number(process.env.RELEASE_ASSERT_DELAY_MS || DEFAULT_DELAY_MS);
+  const retryOptions = {
+    attempts: retryAttempts,
+    delayMs: retryDelayMs,
+    deadline: Date.now() + retryAttempts * retryDelayMs,
+  };
+  const latest = await waitForNpmLatest(name, expectedVersion, retryOptions);
 
   console.log(`npm latest for ${name}: ${latest}`);
 
   const expectedCommit = run('git', ['rev-parse', 'HEAD']);
-  const metadata = npmReleaseMetadata(name, expectedVersion);
-  if (metadata.version !== expectedVersion) {
-    throw new Error(`npm metadata returned ${metadata.version}; expected ${expectedVersion}`);
-  }
-  if (metadata.gitHead !== expectedCommit) {
-    throw new Error(`npm gitHead ${metadata.gitHead || '(missing)'} does not match HEAD`);
-  }
+  const metadata = await waitForPublishedArtifact(
+    'npm release metadata',
+    () => {
+      const result = npmReleaseMetadata(name, expectedVersion);
+      if (result.version !== expectedVersion) {
+        throw new Error(`npm metadata returned ${result.version}; expected ${expectedVersion}`);
+      }
+      if (result.gitHead !== expectedCommit) {
+        throw new Error(`npm gitHead ${result.gitHead || '(missing)'} does not match HEAD`);
+      }
+      if (!result['dist.attestations']?.url) {
+        throw new Error('npm attestation URL is missing');
+      }
+      return result;
+    },
+    retryOptions
+  );
 
-  const attestationUrl = metadata['dist.attestations']?.url;
-  if (!attestationUrl) throw new Error('npm attestation URL is missing');
-  const attestations = await httpsJson(attestationUrl);
-  verifyProvenance(provenanceStatement(attestations), expectedCommit);
+  await waitForPublishedArtifact(
+    'npm provenance',
+    async () => {
+      const attestations = await httpsJson(metadata['dist.attestations'].url);
+      verifyProvenance(provenanceStatement(attestations), expectedCommit);
+    },
+    retryOptions
+  );
 
-  const release = githubRelease(expectedTag);
-  if (release.tagName !== expectedTag) {
-    throw new Error(`GitHub Release tag ${release.tagName} does not match ${expectedTag}`);
-  }
-  verifyCuratedNotes(expectedTag, release);
-  verifyInstalledCli(name, expectedVersion);
+  await waitForPublishedArtifact(
+    'GitHub Release',
+    () => {
+      const release = githubRelease(expectedTag);
+      if (release.tagName !== expectedTag) {
+        throw new Error(`GitHub Release tag ${release.tagName} does not match ${expectedTag}`);
+      }
+      verifyCuratedNotes(expectedTag, release);
+    },
+    retryOptions
+  );
+
+  await waitForPublishedArtifact(
+    'installed CLI',
+    () => verifyInstalledCli(name, expectedVersion),
+    retryOptions
+  );
 
   console.log(`Release publication verified: ${name}@${latest}`);
 }
@@ -263,4 +341,5 @@ module.exports = {
   verifyInstalledCli,
   verifyProvenance,
   waitForNpmLatest,
+  waitForPublishedArtifact,
 };
