@@ -186,6 +186,9 @@ async function runGatewayLoop(
     messages.push({
       role: 'assistant',
       content: response.text,
+      ...(response.anthropicContent === undefined
+        ? {}
+        : { anthropicContent: response.anthropicContent }),
       toolCalls: response.toolCalls,
     });
 

@@ -19,6 +19,7 @@ export interface GatewayToolCall {
 export interface GatewayChatMessage {
   readonly role: 'system' | 'user' | 'assistant' | 'tool';
   readonly content: string;
+  readonly anthropicContent?: readonly unknown[];
   readonly toolCalls?: readonly GatewayToolCall[];
   readonly toolCallId?: string;
 }
@@ -26,6 +27,7 @@ export interface GatewayChatMessage {
 export interface GatewayChatResponse {
   readonly text: string;
   readonly toolCalls: readonly GatewayToolCall[];
+  readonly anthropicContent?: readonly unknown[];
 }
 
 class GatewayHttpError extends Error {
@@ -73,6 +75,7 @@ async function createOpenAIChatCompletion(
     },
     body: JSON.stringify({
       model: input.model,
+      ...(input.maxTokens === undefined ? {} : { max_tokens: input.maxTokens }),
       messages: input.messages.map((message) => serializeOpenAIMessage(message)),
       tools: input.tools,
       tool_choice: 'auto',
@@ -140,9 +143,11 @@ async function createAnthropicChatCompletion(
   if (!isRecord(parsed)) {
     throw new Error('Gateway returned a non-JSON response.');
   }
+  const anthropicContent = getArray(parsed, 'content');
   return {
     text: getAnthropicMessageText(parsed),
     toolCalls: getAnthropicToolCalls(parsed),
+    anthropicContent,
   };
 }
 
@@ -199,7 +204,7 @@ function serializeAnthropicMessages(
     if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
       result.push({
         role: 'assistant',
-        content: [
+        content: message.anthropicContent ?? [
           ...(message.content ? [{ type: 'text', text: message.content }] : []),
           ...message.toolCalls.map((toolCall) => ({
             type: 'tool_use',
