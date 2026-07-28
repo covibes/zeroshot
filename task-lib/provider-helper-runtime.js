@@ -19,6 +19,7 @@ export const {
   classifyProviderError,
   detectProviderFatalError,
   detectProviderStreamingModeError,
+  extractProviderSessionId,
   findProviderRegistryEntry,
   getProviderAdapter,
   getProviderRegistryEntry,

@@ -79,6 +79,16 @@ export function parseProviderChunk(
   return events;
 }
 
+export function extractProviderSessionId(
+  providerName: KnownProviderName | string,
+  line: string
+): string | null {
+  const adapter = getProviderAdapter(providerName || 'claude');
+  const content = stripTimestampPrefix(line);
+  if (!content || !adapter.extractSessionId) return null;
+  return adapter.extractSessionId(content);
+}
+
 export function resolveModelSpec(
   providerName: KnownProviderName | string,
   level: ModelLevel,

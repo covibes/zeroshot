@@ -12,6 +12,7 @@ import { TASKS_DIR, LOGS_DIR } from './config.js';
 import { generateName } from './name-generator.js';
 
 const DB_FILE = join(TASKS_DIR, 'store.db');
+export const TASK_STORE_SCHEMA_VERSION = 4;
 
 /** @type {Database.Database | null} */
 let db = null;
@@ -41,6 +42,9 @@ function getDb() {
       status TEXT NOT NULL DEFAULT 'pending',
       pid INTEGER,
       session_id TEXT,
+      session_id_conflict INTEGER NOT NULL DEFAULT 0,
+      requested_resume_session_id TEXT,
+      resume_identity_verified INTEGER NOT NULL DEFAULT 0,
       log_file TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -77,8 +81,7 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
   `);
 
-  ensureTaskColumn(db, 'process_group_id', 'INTEGER');
-  ensureTaskColumn(db, 'termination_strategy', 'TEXT');
+  migrateTaskStore(db);
 
   return db;
 }
@@ -88,6 +91,40 @@ function ensureTaskColumn(database, name, definition) {
   if (!columns.some((column) => column.name === name)) {
     database.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
   }
+}
+
+export function migrateTaskStore(database) {
+  ensureTaskColumn(database, 'process_group_id', 'INTEGER');
+  ensureTaskColumn(database, 'termination_strategy', 'TEXT');
+  ensureTaskColumn(database, 'requested_resume_session_id', 'TEXT');
+  ensureTaskColumn(database, 'session_id_conflict', 'INTEGER NOT NULL DEFAULT 0');
+  ensureTaskColumn(database, 'resume_identity_verified', 'INTEGER NOT NULL DEFAULT 0');
+
+  const version = database.pragma('user_version', { simple: true });
+  if (version >= TASK_STORE_SCHEMA_VERSION) return;
+
+  database.transaction(() => {
+    if (version < 2) {
+      database
+        .prepare(
+          `UPDATE tasks
+           SET requested_resume_session_id = COALESCE(requested_resume_session_id, session_id),
+               session_id = NULL`
+        )
+        .run();
+    }
+    if (version < 3) {
+      database.prepare('UPDATE tasks SET session_id_conflict = 0').run();
+    }
+    if (version < 4) {
+      database.prepare('UPDATE tasks SET resume_identity_verified = 0').run();
+    }
+    database.pragma(`user_version = ${TASK_STORE_SCHEMA_VERSION}`);
+  })();
+}
+
+function nullable(value) {
+  return value || null;
 }
 
 export function ensureDirs() {
@@ -112,6 +149,9 @@ function rowToTask(row) {
     status: row.status,
     pid: row.pid,
     sessionId: row.session_id,
+    sessionIdConflict: Boolean(row.session_id_conflict),
+    requestedResumeSessionId: row.requested_resume_session_id,
+    resumeIdentityVerified: Boolean(row.resume_identity_verified),
     logFile: row.log_file,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -149,11 +189,11 @@ export function saveTasks(tasks) {
   const database = getDb();
   const insert = database.prepare(`
     INSERT OR REPLACE INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
+      id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy
     ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
+      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
     )
@@ -172,6 +212,9 @@ export function saveTasks(tasks) {
         status: task.status || 'pending',
         pid: task.pid || null,
         sessionId: task.sessionId || null,
+        sessionIdConflict: task.sessionIdConflict ? 1 : 0,
+        requestedResumeSessionId: nullable(task.requestedResumeSessionId),
+        resumeIdentityVerified: task.resumeIdentityVerified ? 1 : 0,
         logFile: task.logFile || null,
         createdAt: task.createdAt || new Date().toISOString(),
         updatedAt: task.updatedAt || new Date().toISOString(),
@@ -240,6 +283,9 @@ export function updateTask(id, updates) {
       status = @status,
       pid = @pid,
       session_id = @sessionId,
+      session_id_conflict = @sessionIdConflict,
+      requested_resume_session_id = @requestedResumeSessionId,
+      resume_identity_verified = @resumeIdentityVerified,
       log_file = @logFile,
       updated_at = @updatedAt,
       exit_code = @exitCode,
@@ -262,6 +308,9 @@ export function updateTask(id, updates) {
       status: updated.status || 'pending',
       pid: updated.pid || null,
       sessionId: updated.sessionId || null,
+      sessionIdConflict: updated.sessionIdConflict ? 1 : 0,
+      requestedResumeSessionId: nullable(updated.requestedResumeSessionId),
+      resumeIdentityVerified: updated.resumeIdentityVerified ? 1 : 0,
       logFile: updated.logFile || null,
       updatedAt: updated.updatedAt,
       exitCode: updated.exitCode ?? null,
@@ -295,11 +344,11 @@ export function addTask(task) {
     .prepare(
       `
     INSERT INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
+      id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy
     ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
+      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy
     )
@@ -313,6 +362,9 @@ export function addTask(task) {
       status: fullTask.status || 'pending',
       pid: fullTask.pid || null,
       sessionId: fullTask.sessionId || null,
+      sessionIdConflict: fullTask.sessionIdConflict ? 1 : 0,
+      requestedResumeSessionId: nullable(fullTask.requestedResumeSessionId),
+      resumeIdentityVerified: fullTask.resumeIdentityVerified ? 1 : 0,
       logFile: fullTask.logFile || null,
       createdAt: fullTask.createdAt,
       updatedAt: fullTask.updatedAt,

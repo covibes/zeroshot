@@ -28,6 +28,11 @@ const {
   wrapTaskRunWithIsolatedSettings,
 } = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
+const {
+  providerSessionFromCompletedTask,
+  resolveAgentResumeSessionId,
+  validateCompletedResumeIdentity,
+} = require('./provider-session');
 const { extractClaudeVertexModelError } = require('./output-extraction');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
@@ -751,6 +756,11 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
     args.push(mcpArg);
   }
 
+  const resumeSessionId = resolveAgentResumeSessionId(agent, providerName);
+  if (resumeSessionId) {
+    args.push('--resume', resumeSessionId);
+  }
+
   return args;
 }
 
@@ -1212,8 +1222,21 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
   });
 }
 
-async function buildCompletionResult({ agent, taskId, providerName, state, stdout, success }) {
+async function buildCompletionResult({
+  agent,
+  taskId,
+  providerName,
+  state,
+  stdout,
+  success,
+  taskInfo = getTask(taskId),
+}) {
   const classified = await evaluateStructuredSuccess({ agent, taskId, state, success });
+  const resumeIdentityError = classified.success ? validateCompletedResumeIdentity(taskInfo) : null;
+  if (resumeIdentityError) {
+    classified.success = false;
+    classified.error = resumeIdentityError;
+  }
   const vertexModelError =
     providerName === 'claude'
       ? extractClaudeVertexModelError(state.output, {
@@ -1233,6 +1256,12 @@ async function buildCompletionResult({ agent, taskId, providerName, state, stdou
     output: state.output,
     error: errorContext,
     tokenUsage: extractTokenUsage(state.output, providerName),
+    providerSession: providerSessionFromCompletedTask({
+      agent,
+      providerName,
+      taskInfo,
+      logicalSuccess: classified.success,
+    }),
     vertexModelError,
   };
 }
@@ -2397,5 +2426,6 @@ module.exports = {
   broadcastIsolatedLine,
   parseResultOutput,
   buildCompletionResult,
+  buildTaskRunArgs,
   killTask,
 };

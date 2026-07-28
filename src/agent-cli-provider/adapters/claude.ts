@@ -1,4 +1,4 @@
-import { stringifyJson } from '../json';
+import { getString, isRecord, stringifyJson, tryParseJson } from '../json';
 import {
   type BuildProviderCommandOptions,
   type ClaudeCliFeatures,
@@ -66,6 +66,7 @@ function detectCliFeatures(helpText?: string | null): ClaudeCliFeatures {
     supportsVerbose: unknown ? true : /--verbose/.test(help),
     supportsModel: unknown ? true : /--model/.test(help),
     supportsEffort: unknown ? true : /--effort/.test(help),
+    supportsResume: unknown ? true : /--resume/.test(help),
     unknown,
   };
 }
@@ -115,13 +116,26 @@ function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions
 }
 
 function addSessionArgs(args: string[], options: BuildProviderCommandOptions): void {
-  if (options.resumeSessionId) {
+  const features = optionFeatures(options);
+  if ((options.resumeSessionId || options.continueSession) && features.supportsResume === false) {
+    throw new Error(
+      'Claude CLI cannot safely run continuation context because this installation lacks --resume.'
+    );
+  }
+  if (options.resumeSessionId && features.supportsResume !== false) {
     args.push('--resume', options.resumeSessionId);
     return;
   }
-  if (options.continueSession) {
+  if (options.continueSession && features.supportsResume !== false) {
     args.push('--continue');
   }
+}
+
+function extractSessionId(line: string): string | null {
+  const event = tryParseJson(line.trim());
+  if (!isRecord(event)) return null;
+  const sessionId = getString(event, 'session_id');
+  return sessionId?.trim() || null;
 }
 
 function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[] {
@@ -228,6 +242,7 @@ export const claudeAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  extractSessionId,
   parseEvent: parseClaudeEvent,
   createParserState: () => createParserState('claude'),
   resolveModelSpec,

@@ -8,13 +8,14 @@
 import { spawn } from 'child_process';
 import { appendFileSync, unlinkSync } from 'fs';
 import { unlink } from 'fs/promises';
-import { updateTask } from './store.js';
+import { getTask, updateTask } from './store.js';
 import {
   detectProviderFatalError,
   detectProviderStreamingModeError,
   recoverProviderStructuredOutput,
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
+import { createProviderSessionCapture } from './provider-session-capture.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -36,6 +37,17 @@ function log(msg) {
 
 const providerName = normalizeProviderName(config.provider || 'claude');
 const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
+const storedTask = getTask(taskId);
+const providerSessionCapture = createProviderSessionCapture({
+  providerName,
+  taskId,
+  updateTask,
+  log,
+  requestedSessionId: storedTask?.requestedResumeSessionId || null,
+  initialSessionId: storedTask?.sessionId || null,
+  initialSessionIdConflict: storedTask?.sessionIdConflict === true,
+});
+const maybeCaptureProviderSession = providerSessionCapture.captureLine;
 
 const env = { ...process.env, ...(commandSpec.env || {}) };
 const command = commandSpec.binary;
@@ -136,6 +148,7 @@ function maybeCaptureStructuredOutput(line) {
 function handleSilentJsonLines(lines, timestamp) {
   for (const line of lines) {
     if (!line.trim()) continue;
+    maybeCaptureProviderSession(line);
     maybeHandleFatalError(line, timestamp);
     if (captureStreamingError(line, timestamp)) {
       continue;
@@ -146,6 +159,7 @@ function handleSilentJsonLines(lines, timestamp) {
 
 function handleStreamingLines(lines, timestamp) {
   for (const line of lines) {
+    maybeCaptureProviderSession(line);
     maybeHandleFatalError(line, timestamp);
     if (captureStreamingError(line, timestamp)) {
       continue;
@@ -159,6 +173,7 @@ function flushStdoutBuffer(timestamp) {
     return;
   }
 
+  maybeCaptureProviderSession(stdoutBuffer);
   if (!enableRecovery) {
     if (!silentJsonMode) {
       log(`[${timestamp}]${stdoutBuffer}\n`);
@@ -282,18 +297,25 @@ child.on('close', async (code, signal) => {
     log(finalResultJson + '\n');
   }
 
-  writeCompletionFooter(code, signal);
+  const sessionIdentityError = providerSessionCapture.getCompletionError();
+  const resolvedCode =
+    fatalError || sessionIdentityError ? 1 : recovered?.payload ? 0 : code;
+  const status = resolvedCode === 0 ? 'completed' : 'failed';
+
+  writeCompletionFooter(resolvedCode, signal);
   await cleanupCommandSpec();
 
-  const resolvedCode = fatalError ? 1 : recovered?.payload ? 0 : code;
-  const status = resolvedCode === 0 ? 'completed' : 'failed';
   try {
     await updateTask(taskId, {
       status,
       pid: null,
       processGroupId: null,
       exitCode: resolvedCode,
-      error: fatalError || (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
+      ...providerSessionCapture.getCompletionUpdate(resolvedCode),
+      error:
+        fatalError ||
+        sessionIdentityError ||
+        (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
     });
   } catch (updateError) {
     log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
