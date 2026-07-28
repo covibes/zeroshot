@@ -875,8 +875,11 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
 
+  // spawn() throws on null bytes in argv; strip them before they get there.
+  const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
+
   return new Promise((resolve, reject) => {
-    const proc = spawn(ctPath, args, {
+    const proc = spawn(ctPath, safeArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: spawnEnv,
@@ -2366,6 +2369,7 @@ async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
 module.exports = {
   ensureAskUserQuestionHook,
   spawnClaudeTask,
+  spawnTaskProcess,
   followClaudeTaskLogs,
   followClaudeTaskLogsIsolated,
   waitForTaskReady,
