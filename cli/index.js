@@ -3806,6 +3806,22 @@ program
     }
   });
 
+// Resolve the durable task ownership receipt for an in-flight detached launch.
+program
+  .command('get-task-id-by-spawn-token <token>')
+  .description('Output task ID for an internal spawn ownership token (machine-readable)')
+  .action(async (token) => {
+    try {
+      const { getTaskIdBySpawnToken } = await import(
+        '../task-lib/commands/get-task-id-by-spawn-token.js'
+      );
+      getTaskIdBySpawnToken(token);
+    } catch (error) {
+      console.error('Error resolving task spawn ownership:', error.message);
+      process.exit(1);
+    }
+  });
+
 function failTuiUnavailable() {
   console.error(
     'The TUI is not included in this Zeroshot release. Use `zeroshot logs -f`, `zeroshot logs -w`, or `zeroshot list` instead.'

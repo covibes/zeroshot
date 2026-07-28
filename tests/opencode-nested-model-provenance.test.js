@@ -10,6 +10,7 @@ const { spawnClaudeTaskIsolated } = require('../src/agent/agent-task-executor');
 const { appendTaskRunModelArgs } = require('../src/task-run-model-args');
 
 const EXTERNAL_MODEL = 'kimi/kimi-k2-5';
+const OWNERSHIP_ENV = 'ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN';
 const CATALOG_MODEL = 'openai/gpt-5.2-codex';
 let settingsDir;
 let settingsFile;
@@ -134,6 +135,9 @@ describe('Nested Docker agent model arguments', function () {
             capturedOptions = options;
             return createClosingProcess();
           },
+          async execInContainer() {
+            return { code: 2, stdout: '', stderr: '' };
+          },
         },
       },
       enableLivenessCheck: false,
@@ -162,7 +166,7 @@ describe('Nested Docker agent model arguments', function () {
         },
       },
     });
-    assert.deepStrictEqual(capturedOptions.env, {});
+    assert.strictEqual(typeof capturedOptions.env[OWNERSHIP_ENV], 'string');
   });
 });
 

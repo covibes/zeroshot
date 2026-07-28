@@ -1525,10 +1525,14 @@ async function spawnClaudeTaskIsolated(agent, context) {
 
   // STEP 1: Spawn task and extract task ID (same as non-isolated mode)
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
-  const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
-  // Note: Auth env vars are injected by IsolationManager, we only need model mapping here
-  const isolatedEnv =
-    providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {};
+  const SPAWN_TIMEOUT_MS = agent.spawnTimeoutMs ?? 30000;
+  const ownershipToken = createTaskSpawnOwnershipToken();
+  // Auth env vars are injected by IsolationManager; the launch token is the
+  // only authoritative bridge back to the detached task row in the container.
+  const isolatedEnv = {
+    ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
+    [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
+  };
 
   let isolatedPendingLaunch = null;
   const taskId = await new Promise((resolve, reject) => {
@@ -1539,6 +1543,12 @@ async function spawnClaudeTaskIsolated(agent, context) {
     let isolatedTaskId = null;
     let wrapperClosed = false;
     let resolveWrapperClose;
+    let stdout = '';
+    let stderr = '';
+    let resolved = false;
+    let timeoutError = null;
+    let spawnTimeout = null;
+    let cancellation = null;
     const waitForWrapperClose = new Promise((resolveClose) => {
       resolveWrapperClose = resolveClose;
     });
@@ -1548,6 +1558,28 @@ async function spawnClaudeTaskIsolated(agent, context) {
         resolveWrapperClose();
       }
     };
+    const findPersistedTaskId = async () => {
+      const persistedTaskId = await resolveIsolatedTaskIdBySpawnToken(
+        manager,
+        clusterId,
+        ownershipToken
+      );
+      if (persistedTaskId) {
+        isolatedTaskId = persistedTaskId;
+        assignDurableTaskId(agent, persistedTaskId);
+      }
+      return persistedTaskId;
+    };
+    const rejectLaunch = (error, { retainHandle = false } = {}) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(spawnTimeout);
+      if (!retainHandle && agent.currentTask === isolatedPendingLaunch) {
+        agent.currentTask = null;
+      }
+      reject(error);
+    };
+
     proc.once('close', markWrapperClosed);
     proc.once('error', markWrapperClosed);
     isolatedPendingLaunch = {
@@ -1555,21 +1587,56 @@ async function spawnClaudeTaskIsolated(agent, context) {
       cancelled: false,
       async kill(reason = 'Task killed') {
         isolatedPendingLaunch.cancelled = true;
-        let termination = null;
-        if (isolatedTaskId) {
-          termination = await terminateIsolatedTask(manager, clusterId, isolatedTaskId);
-          if (termination?.forced === false) return termination;
+        if (cancellation) return cancellation;
+        cancellation = (async () => {
+          let termination = null;
+          let commandError = null;
+          try {
+            const persistedTaskId = isolatedTaskId || (await findPersistedTaskId());
+            if (persistedTaskId) {
+              termination = await terminateIsolatedTask(manager, clusterId, persistedTaskId);
+            }
+          } catch (error) {
+            commandError = error;
+          }
+
+          if (!wrapperClosed) {
+            proc.kill('SIGKILL');
+            await waitForWrapperClose;
+          }
+
+          try {
+            const persistedTaskId = isolatedTaskId || (await findPersistedTaskId());
+            if (persistedTaskId && !termination) {
+              termination = await terminateIsolatedTask(manager, clusterId, persistedTaskId);
+              commandError = null;
+            }
+          } catch (error) {
+            commandError ||= error;
+          }
+
+          if (commandError) {
+            return { forced: false, reason: commandError.message };
+          }
+          agent._log?.(`Cancelled pending isolated task launch: ${reason}`);
+          return termination
+            ? { ...termination, forced: true, taskId: isolatedTaskId }
+            : { forced: true, taskId: null };
+        })();
+
+        const termination = await cancellation;
+        if (termination?.forced === false) cancellation = null;
+        if (!resolved) {
+          const error =
+            timeoutError ||
+            new Error(
+              termination?.forced === false
+                ? `Task launch cancellation was not confirmed: ${termination.reason}`
+                : `Task launch cancelled: ${isolatedTaskId || 'before persistence'}`
+            );
+          rejectLaunch(error, { retainHandle: termination?.forced === false });
         }
-        if (!wrapperClosed) {
-          proc.kill('SIGKILL');
-          await waitForWrapperClose;
-        }
-        if (isolatedTaskId && !termination) {
-          termination = await terminateIsolatedTask(manager, clusterId, isolatedTaskId);
-        }
-        if (termination?.forced === false) return termination;
-        agent._log?.(`Cancelled pending isolated task launch: ${reason}`);
-        return termination || { forced: true };
+        return termination;
       },
     };
     agent.currentTask = isolatedPendingLaunch;
@@ -1578,21 +1645,17 @@ async function spawnClaudeTaskIsolated(agent, context) {
     agent.processPid = proc.pid;
     agent._publishLifecycle('PROCESS_SPAWNED', { pid: proc.pid });
 
-    let stdout = '';
-    let stderr = '';
-    let resolved = false;
-
-    // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs
-    const spawnTimeout = setTimeout(() => {
+    // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs. Timeout
+    // uses the same cancellation path so a durable child cannot outlive it.
+    spawnTimeout = setTimeout(() => {
       if (resolved) return;
-      resolved = true;
-      proc.kill('SIGKILL');
-      reject(
-        new Error(
-          `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
-            `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
-        )
+      timeoutError = new Error(
+        `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
+          `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
       );
+      isolatedPendingLaunch.kill(timeoutError.message).catch((error) => {
+        rejectLaunch(error, { retainHandle: true });
+      });
     }, SPAWN_TIMEOUT_MS);
 
     proc.stdout.on('data', (data) => {
@@ -1603,40 +1666,41 @@ async function spawnClaudeTaskIsolated(agent, context) {
       stderr += data.toString();
     });
 
-    proc.on('close', (code, signal) => {
+    proc.on('close', async (code, signal) => {
       clearTimeout(spawnTimeout);
-      if (resolved) return;
-      resolved = true;
-      // Handle process killed by signal
+      if (resolved || isolatedPendingLaunch.cancelled) return;
       if (signal) {
-        reject(new Error(`Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`));
+        await isolatedPendingLaunch.kill(
+          `Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`
+        );
         return;
       }
 
-      if (code === 0) {
-        // Parse task ID from output: "✓ Task spawned: xxx-yyy-nn"
-        const spawnedTaskId = parseTaskIdFromOutput(stdout);
-        if (spawnedTaskId) {
-          isolatedTaskId = spawnedTaskId;
-          assignDurableTaskId(agent, spawnedTaskId);
-
-          resolve(spawnedTaskId);
-        } else {
-          reject(new Error(`Could not parse task ID from output: ${stdout}`));
-        }
-      } else {
-        reject(new Error(`zeroshot task run failed with code ${code}: ${stderr}`));
+      try {
+        const persistedTaskId = await findPersistedTaskId();
+        const spawnedTaskId = requireTaskIdFromWrapperResult({
+          code,
+          stdout,
+          stderr,
+          parseTaskId: parseTaskIdFromOutput,
+          persistedTaskId,
+        });
+        isolatedTaskId = spawnedTaskId;
+        assignDurableTaskId(agent, spawnedTaskId);
+        resolved = true;
+        resolve(spawnedTaskId);
+      } catch (error) {
+        rejectLaunch(error, { retainHandle: Boolean(isolatedTaskId) });
       }
     });
 
-    proc.on('error', (error) => {
-      if (!isolatedTaskId && agent.currentTask === isolatedPendingLaunch) {
-        agent.currentTask = null;
-      }
+    proc.on('error', async (error) => {
       clearTimeout(spawnTimeout);
-      if (resolved) return;
-      resolved = true;
-      reject(error);
+      if (resolved || isolatedPendingLaunch.cancelled) return;
+      const termination = await isolatedPendingLaunch.kill(error.message);
+      if (termination?.forced === false && !resolved) {
+        rejectLaunch(error, { retainHandle: true });
+      }
     });
   });
   if (isolatedPendingLaunch?.cancelled) throw new Error(`Task launch cancelled: ${taskId}`);
@@ -1738,6 +1802,25 @@ function rejectIsolatedFollower({ agent, state, cleanup, reject, error }) {
   reject(error);
 }
 
+async function resolveIsolatedTaskIdBySpawnToken(manager, clusterId, ownershipToken) {
+  const result = await manager.execInContainer(clusterId, [
+    'zeroshot',
+    'get-task-id-by-spawn-token',
+    ownershipToken,
+  ]);
+  if (result.code === 2) return null;
+  if (result.code !== 0) {
+    throw new Error(
+      `Failed to resolve isolated task ownership: ${result.stderr || result.stdout || `exit ${result.code}`}`
+    );
+  }
+  const taskId = result.stdout.trim();
+  if (!taskId) {
+    throw new Error('Isolated task ownership lookup returned an empty task ID');
+  }
+  return taskId;
+}
+
 function parseIsolatedStatus(output) {
   return output.match(/Status:\s+(completed|failed|killed|stale|cancelled)/i)?.[1].toLowerCase();
 }
@@ -1745,22 +1828,26 @@ function parseIsolatedStatus(output) {
 async function terminateIsolatedTask(manager, clusterId, taskId) {
   const before = await manager.execInContainer(clusterId, ['zeroshot', 'status', taskId]);
   const beforeStatus = before.code === 0 ? parseIsolatedStatus(before.stdout) : null;
-  if (beforeStatus) {
-    return { alreadyTerminal: true, forced: false, status: beforeStatus };
-  }
-
   const result = await manager.execInContainer(clusterId, ['zeroshot', 'kill', taskId]);
-  const status = await manager.execInContainer(clusterId, ['zeroshot', 'status', taskId]);
-  const afterStatus = status.code === 0 ? parseIsolatedStatus(status.stdout) : null;
-  if (!afterStatus) {
+  if (result.code !== 0) {
     throw new Error(
       `Failed to terminate isolated task ${taskId}: ${result.stderr || result.stdout || `exit ${result.code}`}`
     );
   }
 
+  const status = await manager.execInContainer(clusterId, ['zeroshot', 'status', taskId]);
+  const afterStatus = status.code === 0 ? parseIsolatedStatus(status.stdout) : null;
+  if (!afterStatus) {
+    throw new Error(
+      `Failed to confirm isolated task ${taskId} after cleanup recovery: ${
+        status.stderr || status.stdout || `exit ${status.code}`
+      }`
+    );
+  }
+
   return {
-    alreadyTerminal: false,
-    forced: afterStatus === 'killed',
+    alreadyTerminal: Boolean(beforeStatus),
+    forced: !beforeStatus && afterStatus === 'killed',
     status: afterStatus,
   };
 }
@@ -2377,24 +2464,28 @@ async function killTask(agent, termination = 'Task killed') {
 
 async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
   let termination;
-  if (currentTask && typeof currentTask.terminate === 'function') {
-    termination = await currentTask.terminate(reason, { code });
-  } else {
-    termination = await terminateIsolatedTask(
-      agent.isolation.manager,
-      agent.isolation.clusterId,
-      taskId
-    );
-    if (currentTask && typeof currentTask.kill === 'function') {
-      currentTask.kill(reason, { code });
+  try {
+    if (currentTask && typeof currentTask.terminate === 'function') {
+      termination = await currentTask.terminate(reason, { code });
+    } else {
+      termination = await terminateIsolatedTask(
+        agent.isolation.manager,
+        agent.isolation.clusterId,
+        taskId
+      );
+      if (currentTask && typeof currentTask.kill === 'function') {
+        currentTask.kill(reason, { code });
+      }
     }
+  } catch (error) {
+    return { forced: false, reason: error.message };
   }
 
-  agent._stopLivenessCheck?.();
-  if (termination?.forced === false) {
+  if (termination?.forced === false && !termination.alreadyTerminal) {
     return termination;
   }
 
+  agent._stopLivenessCheck?.();
   agent.currentTask = null;
   agent.currentTaskId = null;
   agent.processPid = null;

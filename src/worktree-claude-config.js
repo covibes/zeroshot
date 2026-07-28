@@ -14,8 +14,6 @@ const CLAUDE_MCP_CONFIG_ENV = 'ZEROSHOT_CLAUDE_MCP_CONFIG_FILE';
 const ASK_USER_HOOK = 'block-ask-user-question.py';
 const DANGEROUS_GIT_HOOK = 'block-dangerous-git.py';
 
-const installedAskUserHookDirs = new Set();
-const installedDangerousGitHookDirs = new Set();
 
 function readSettings(settingsPath) {
   if (!fs.existsSync(settingsPath)) {
@@ -70,9 +68,6 @@ function ensurePreToolUseHooks(settings) {
 
 function ensureAskUserQuestionHook(targetClaudeDir) {
   const overlayDir = requireTargetClaudeDir(targetClaudeDir);
-  if (installedAskUserHookDirs.has(overlayDir)) {
-    return;
-  }
 
   const hookScriptPath = copyHookScript(overlayDir, ASK_USER_HOOK);
   const settingsPath = path.join(overlayDir, SETTINGS_BASENAME);
@@ -92,14 +87,10 @@ function ensureAskUserQuestionHook(targetClaudeDir) {
     writeSettings(settingsPath, settings);
   }
 
-  installedAskUserHookDirs.add(overlayDir);
 }
 
 function ensureDangerousGitHook(targetClaudeDir) {
   const overlayDir = requireTargetClaudeDir(targetClaudeDir);
-  if (installedDangerousGitHookDirs.has(overlayDir)) {
-    return;
-  }
 
   const hookScriptPath = copyHookScript(overlayDir, DANGEROUS_GIT_HOOK);
   const settingsPath = path.join(overlayDir, SETTINGS_BASENAME);
@@ -119,7 +110,6 @@ function ensureDangerousGitHook(targetClaudeDir) {
     writeSettings(settingsPath, settings);
   }
 
-  installedDangerousGitHookDirs.add(overlayDir);
 }
 
 function prepareClaudeSettingsOverlay(options = {}) {
@@ -146,8 +136,6 @@ function cleanupClaudeSettingsOverlay(settingsPath) {
 
   const overlayDir = path.dirname(path.resolve(settingsPath));
   fs.rmSync(overlayDir, { recursive: true, force: true });
-  installedAskUserHookDirs.delete(overlayDir);
-  installedDangerousGitHookDirs.delete(overlayDir);
   return true;
 }
 

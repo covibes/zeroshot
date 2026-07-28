@@ -54,6 +54,30 @@ describe('worktree-claude-config', function () {
     assert.ok(fs.existsSync(retry), 'cleaning one run must not affect the next run');
   });
 
+  it('rewrites hooks when a cleaned overlay path is reused after many runs', function () {
+    const settingsPaths = Array.from({ length: 40 }, () =>
+      prepareClaudeSettingsOverlay({ includeDangerousGit: true })
+    );
+    const reusedDir = path.dirname(settingsPaths[0]);
+    for (const settingsPath of settingsPaths) {
+      assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
+    }
+
+    fs.mkdirSync(reusedDir, { recursive: true });
+    fs.writeFileSync(path.join(reusedDir, 'settings.json'), '{}\n', { mode: 0o600 });
+    ensureAskUserQuestionHook(reusedDir);
+    ensureDangerousGitHook(reusedDir);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(reusedDir, 'settings.json'), 'utf8'));
+    assert.deepStrictEqual(
+      settings.hooks.PreToolUse.map((entry) => entry.matcher),
+      ['AskUserQuestion', 'Bash']
+    );
+    assert.ok(fs.existsSync(path.join(reusedDir, 'hooks', 'block-ask-user-question.py')));
+    assert.ok(fs.existsSync(path.join(reusedDir, 'hooks', 'block-dangerous-git.py')));
+    tempDirs.push(reusedDir);
+  });
+
   it('adds the dangerous-git hook only for worktree runs', function () {
     const settingsPath = prepareClaudeSettingsOverlay({ includeDangerousGit: true });
     settingsOverlays.push(settingsPath);
