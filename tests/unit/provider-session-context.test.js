@@ -156,6 +156,70 @@ describe('provider-session continuation context', function () {
     );
   });
 
+  it('combines continuation cursors with last-task timestamp boundaries', function () {
+    const cluster = { id: 'bounded-since-cluster', createdAt: Date.now(), agents: [] };
+    const agent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: {
+        prompt: 'BOUNDED-SINCE-INSTRUCTIONS',
+        contextStrategy: {
+          sources: [{ topic: 'VALIDATION_RESULT', since: 'last_task_end' }],
+        },
+      },
+      runtime: { providerCliFeatures: { claude: { supportsResume: true } } },
+    });
+
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'ISSUE_OPENED',
+      sender: 'system',
+      content: { text: 'initial trigger' },
+    });
+    agent.iteration = 1;
+    agent._buildContext({ topic: 'ISSUE_OPENED', content: { text: 'initial trigger' } });
+    agent.providerSession = {
+      provider: 'claude',
+      sessionId: 'bounded-since-session',
+      agentId: 'worker',
+      taskId: 'task-generation-1',
+      generation: 1,
+      cwd: path.resolve(agent.config.cwd || process.cwd()),
+      worktreePath: null,
+      contextSequence: agent.currentContextSequence,
+      guidanceSequence: agent.currentGuidanceSequence,
+      promptIdentity: agent.currentPromptIdentity,
+    };
+
+    const previousTaskMessage = messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'CREATED-DURING-PREVIOUS-TASK' },
+    });
+    agent.lastTaskEndTime = previousTaskMessage.timestamp + 100;
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      timestamp: agent.lastTaskEndTime + 1,
+      content: { text: 'AFTER-LAST-TASK-END' },
+    });
+    const trigger = messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      timestamp: agent.lastTaskEndTime + 2,
+      content: { text: 'CURRENT-TRIGGER' },
+    });
+    agent.iteration = 2;
+    const continuation = agent._buildContext(trigger);
+
+    assert.match(continuation, /AFTER-LAST-TASK-END/);
+    assert.match(continuation, /CURRENT-TRIGGER/);
+    assert.doesNotMatch(continuation, /CREATED-DURING-PREVIOUS-TASK/);
+  });
+
   it('reconstructs full static context when the installed CLI cannot resume', function () {
     const cluster = { id: 'old-cli-cluster', createdAt: Date.now(), agents: [] };
     const agent = createProviderSessionAgent({

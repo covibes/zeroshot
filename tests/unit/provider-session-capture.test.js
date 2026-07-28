@@ -79,8 +79,8 @@ describe('provider session capture', function () {
       initialSessionId: 'forked-b',
     });
 
-    capture(JSON.stringify({ type: 'result', session_id: 'requested-a' }));
-    capture(JSON.stringify({ type: 'result', session_id: 'requested-a' }));
+    capture.captureLine(JSON.stringify({ type: 'result', session_id: 'requested-a' }));
+    capture.captureLine(JSON.stringify({ type: 'result', session_id: 'requested-a' }));
 
     assert.deepStrictEqual(updates, [
       {
@@ -88,6 +88,64 @@ describe('provider session capture', function () {
         update: { sessionId: null, sessionIdConflict: true },
       },
     ]);
+  });
+
+  it('fails closed when SQLite persistence throws after a second identity', async function () {
+    const { createProviderSessionCapture } =
+      await import('../../task-lib/provider-session-capture.js');
+    const logs = [];
+    let writes = 0;
+    const capture = createProviderSessionCapture({
+      providerName: 'claude',
+      taskId: 'sqlite-failure-task',
+      requestedSessionId: 'requested-a',
+      updateTask: () => {
+        writes += 1;
+        if (writes === 2) {
+          const error = new Error('database is locked');
+          error.code = 'SQLITE_BUSY';
+          throw error;
+        }
+      },
+      log: (message) => logs.push(message),
+    });
+
+    capture.captureLine(JSON.stringify({ type: 'system', session_id: 'requested-a' }));
+    capture.captureLine(JSON.stringify({ type: 'result', session_id: 'forked-b' }));
+    capture.captureLine(JSON.stringify({ type: 'result', session_id: 'requested-a' }));
+
+    assert.strictEqual(writes, 2, 'an in-memory conflict must remain sticky after the failed write');
+    assert.match(capture.getCompletionError(), /could not be persisted: database is locked/);
+    assert.ok(logs.some((message) => message.includes('Failed to persist provider session')));
+  });
+
+  it('requires an explicit requested identity to be observed exactly', async function () {
+    const { createProviderSessionCapture } =
+      await import('../../task-lib/provider-session-capture.js');
+    const lineFor = (sessionId) =>
+      JSON.stringify({ type: 'thread.started', thread_id: sessionId });
+
+    for (const [name, observed, expected] of [
+      ['confirmed', ['requested-a'], null],
+      ['ignored', [], /did not confirm/],
+      ['forked', ['forked-b'], /different session identity/],
+      ['ambiguous', ['requested-a', 'forked-b'], /conflicting session identities/],
+    ]) {
+      const capture = createProviderSessionCapture({
+        providerName: 'codex',
+        taskId: `${name}-resume`,
+        requestedSessionId: 'requested-a',
+        updateTask: () => {},
+        log: () => {},
+      });
+      observed.forEach((sessionId) => capture.captureLine(lineFor(sessionId)));
+      const error = capture.getCompletionError();
+      if (expected === null) {
+        assert.strictEqual(error, null);
+      } else {
+        assert.match(error, expected);
+      }
+    }
   });
 
   it('ignores malformed output and providers without safe resume semantics', async function () {

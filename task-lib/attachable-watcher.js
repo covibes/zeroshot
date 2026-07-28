@@ -97,14 +97,16 @@ function log(msg) {
 const providerName = normalizeProviderName(config.provider || 'claude');
 const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
 const storedTask = getTask(taskId);
-const maybeCaptureProviderSession = createProviderSessionCapture({
+const providerSessionCapture = createProviderSessionCapture({
   providerName,
   taskId,
   updateTask,
   log,
+  requestedSessionId: storedTask?.requestedResumeSessionId || null,
   initialSessionId: storedTask?.sessionId || null,
   initialSessionIdConflict: storedTask?.sessionIdConflict === true,
 });
+const maybeCaptureProviderSession = providerSessionCapture.captureLine;
 
 const env = { ...process.env, ...(commandSpec.env || {}) };
 const command = commandSpec.binary;
@@ -318,19 +320,26 @@ server.on('exit', async ({ exitCode, signal }) => {
     log(finalResultJson + '\n');
   }
 
-  writeCompletionFooter(code, signal);
+  const sessionIdentityError = providerSessionCapture.getCompletionError();
+  const resolvedCode =
+    fatalError || sessionIdentityError ? 1 : recovered?.payload ? 0 : code;
+  const status = resolvedCode === 0 ? 'completed' : 'failed';
+
+  writeCompletionFooter(resolvedCode, signal);
   await cleanupCommandSpec();
 
-  const resolvedCode = fatalError ? 1 : recovered?.payload ? 0 : code;
-  const status = resolvedCode === 0 ? 'completed' : 'failed';
   try {
     await updateTask(taskId, {
       status,
       pid: null,
       processGroupId: null,
       exitCode: resolvedCode,
-      error: fatalError || (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
+      error:
+        fatalError ||
+        sessionIdentityError ||
+        (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
       socketPath: null,
+      ...(sessionIdentityError ? { sessionId: null, sessionIdConflict: true } : {}),
     });
   } catch (updateError) {
     log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);

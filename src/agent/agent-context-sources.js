@@ -71,16 +71,19 @@ function resolveSourceMessages({
   triggeringMessageId,
   compact = false,
 }) {
-  const sinceTimestamp =
-    afterId === undefined
-      ? resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime)
-      : undefined;
+  const sinceTimestamp = resolveSourceSince(
+    source,
+    cluster,
+    lastTaskEndTime,
+    lastAgentStartTime
+  );
   const { amount, strategy } = resolveSourceSelection(source, { compact });
   const messages = messageBus.query({
     cluster_id: cluster.id,
     topic: source.topic,
     sender: source.sender,
-    ...(afterId === undefined ? { since: sinceTimestamp } : { afterId }),
+    since: sinceTimestamp,
+    afterId,
     throughId,
   });
   const replayableMessages = messages.filter(
