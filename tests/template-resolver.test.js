@@ -217,6 +217,50 @@ describe('TemplateResolver config references', function () {
     assert.strictEqual(parameterizedReference.loadedConfig.agents[0].id, 'parameterized-agent');
   });
 
+  it('should load symlinks whose canonical targets remain inside each template root', function () {
+    fs.symlinkSync(
+      path.join(templatesDir, 'safe-config_1.json'),
+      path.join(templatesDir, 'static-alias.json')
+    );
+    fs.symlinkSync(
+      path.join(templatesDir, 'base-templates', 'safe-base_template.json'),
+      path.join(templatesDir, 'base-templates', 'base-alias.json')
+    );
+
+    const staticReference = resolver.resolveConfigReference('static-alias');
+    assert.strictEqual(staticReference.loadedConfig.agents[0].id, 'static-agent');
+
+    const parameterizedReference = resolver.resolveConfigReference({
+      base: 'base-alias',
+      params: {},
+    });
+    assert.strictEqual(parameterizedReference.loadedConfig.agents[0].id, 'parameterized-agent');
+  });
+
+  it('should reject safe-named symlinks escaping each template root', function () {
+    fs.symlinkSync(
+      path.join(tempDir, 'outside-static.json'),
+      path.join(templatesDir, 'escaped-static.json')
+    );
+    fs.symlinkSync(
+      path.join(templatesDir, 'outside-base.json'),
+      path.join(templatesDir, 'base-templates', 'escaped-base.json')
+    );
+
+    assert.throws(
+      () => resolver.resolveConfigReference('escaped-static'),
+      /Invalid config name/
+    );
+    assert.throws(
+      () => resolver.resolveConfigReference({ base: 'escaped-base', params: {} }),
+      /Invalid base template name/
+    );
+    assert.throws(
+      () => resolver.getTemplateInfo('escaped-base'),
+      /Invalid base template name/
+    );
+  });
+
   it('should preserve not-found and config-shape behavior for safe names', function () {
     assert.throws(
       () => resolver.resolveConfigReference('does-not-exist'),

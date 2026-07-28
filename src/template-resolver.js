@@ -24,6 +24,15 @@ function invalidTemplateNameError(label, name) {
   );
 }
 
+function isPathContained(root, target) {
+  const relativePath = path.relative(root, target);
+  return (
+    relativePath !== '..' &&
+    !relativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relativePath)
+  );
+}
+
 function resolveNamedTemplatePath(directory, name, label) {
   if (typeof name !== 'string' || !TEMPLATE_NAME_PATTERN.test(name)) {
     throw invalidTemplateNameError(label, name);
@@ -31,16 +40,21 @@ function resolveNamedTemplatePath(directory, name, label) {
 
   const templateRoot = path.resolve(directory);
   const templatePath = path.resolve(templateRoot, `${name}.json`);
-  const relativePath = path.relative(templateRoot, templatePath);
-  if (
-    relativePath === '..' ||
-    relativePath.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relativePath)
-  ) {
+  if (!isPathContained(templateRoot, templatePath)) {
     throw invalidTemplateNameError(label, name);
   }
 
   return templatePath;
+}
+
+function canonicalizeNamedTemplatePath(directory, templatePath, name, label) {
+  const canonicalRoot = fs.realpathSync(directory);
+  const canonicalTemplatePath = fs.realpathSync(templatePath);
+  if (!isPathContained(canonicalRoot, canonicalTemplatePath)) {
+    throw invalidTemplateNameError(label, name);
+  }
+
+  return canonicalTemplatePath;
 }
 
 function isIdentifierChar(char) {
@@ -137,11 +151,17 @@ class TemplateResolver {
         throw new Error(`Config not found: ${config} (looked in ${configPath})`);
       }
 
+      const canonicalConfigPath = canonicalizeNamedTemplatePath(
+        this.templatesDir,
+        configPath,
+        config,
+        'config'
+      );
       return {
         kind: 'static',
         name: config,
         params: null,
-        loadedConfig: JSON.parse(fs.readFileSync(configPath, 'utf8')),
+        loadedConfig: JSON.parse(fs.readFileSync(canonicalConfigPath, 'utf8')),
       };
     }
 
@@ -179,7 +199,13 @@ class TemplateResolver {
       throw new Error(`Base template not found: ${baseName} (looked in ${templatePath})`);
     }
 
-    const templateJson = fs.readFileSync(templatePath, 'utf8');
+    const canonicalTemplatePath = canonicalizeNamedTemplatePath(
+      this.baseTemplatesDir,
+      templatePath,
+      baseName,
+      'base template'
+    );
+    const templateJson = fs.readFileSync(canonicalTemplatePath, 'utf8');
     const template = JSON.parse(templateJson);
 
     return this.resolveTemplate(template, params);
@@ -482,7 +508,13 @@ class TemplateResolver {
     if (!fs.existsSync(templatePath)) {
       return null;
     }
-    const template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+    const canonicalTemplatePath = canonicalizeNamedTemplatePath(
+      this.baseTemplatesDir,
+      templatePath,
+      baseName,
+      'base template'
+    );
+    const template = JSON.parse(fs.readFileSync(canonicalTemplatePath, 'utf8'));
     return {
       name: template.name,
       description: template.description,
