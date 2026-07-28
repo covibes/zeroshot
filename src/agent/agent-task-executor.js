@@ -36,6 +36,7 @@ const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
 const {
   TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
   cleanupCallerOwnedCommand,
+  callerOwnsCommandCleanup,
   createTaskSpawnOwnershipToken,
   requireTaskIdFromWrapperResult,
   trackTaskWrapperCleanupOwnership,
@@ -762,7 +763,7 @@ function createPendingTaskLaunchHandle({
     kill(reason = 'Task killed') {
       handle.cancelled = true;
       if (cancellation) return cancellation;
-      cancellation = (async () => {
+      const cancellationAttempt = (async () => {
         let taskId = findPersistedTaskId();
         let commandError = null;
         let commandAttempted = false;
@@ -804,7 +805,18 @@ function createPendingTaskLaunchHandle({
         agent._log?.(`Cancelled pending task launch${taskId ? ` ${taskId}` : ''}: ${reason}`);
         return { forced: true, taskId: taskId || null };
       })();
-      return cancellation;
+      cancellation = cancellationAttempt;
+      cancellationAttempt.then(
+        (termination) => {
+          if (termination?.forced === false && cancellation === cancellationAttempt) {
+            cancellation = null;
+          }
+        },
+        () => {
+          if (cancellation === cancellationAttempt) cancellation = null;
+        }
+      );
+      return cancellationAttempt;
     },
   };
   return handle;
@@ -864,11 +876,37 @@ function spawnTaskProcess({
     let resolved = false;
     let timeoutError = null;
     const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
-    const rejectWithOwnership = (error) => {
-      if (!findPersistedTaskId() && wrapperClosed && agent.currentTask === pendingLaunch) {
+    const rejectWithOwnership = async (error) => {
+      const classifiedError = classifyCleanupOwnership(error);
+      if (
+        !callerOwnsCommandCleanup(classifiedError) &&
+        agent.currentTask === pendingLaunch
+      ) {
+        let termination;
+        try {
+          termination = await pendingLaunch.kill(classifiedError.message);
+        } catch (cleanupError) {
+          termination = { forced: false, reason: cleanupError.message };
+        }
+        if (termination?.forced === false) {
+          classifiedError.message += ` Task cleanup was not confirmed: ${termination.reason}`;
+          classifiedError.retainTaskHandle = true;
+          classifiedError.permanent = true;
+          classifiedError.restartExhausted = true;
+          classifiedError.terminationExhausted = true;
+          classifiedError.terminationAttempts = 1;
+          classifiedError.taskId = agent.currentTaskId || null;
+        } else if (agent.currentTask === pendingLaunch) {
+          agent.currentTask = null;
+          agent.currentTaskId = null;
+          agent.processPid = null;
+          agent.lastOutputTime = null;
+          agent.taskStartedAt = null;
+        }
+      } else if (wrapperClosed && agent.currentTask === pendingLaunch) {
         agent.currentTask = null;
       }
-      reject(classifyCleanupOwnership(error));
+      reject(classifiedError);
     };
 
     // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs
@@ -889,17 +927,17 @@ function spawnTaskProcess({
       stderr += data.toString();
     });
 
-    proc.on('close', (code, signal) => {
+    proc.on('close', async (code, signal) => {
       clearTimeout(spawnTimeout);
       if (resolved) return;
       resolved = true;
       if (timeoutError) {
-        rejectWithOwnership(timeoutError);
+        await rejectWithOwnership(timeoutError);
         return;
       }
       // Handle process killed by signal (e.g., SIGTERM, SIGKILL, SIGSTOP)
       if (signal) {
-        rejectWithOwnership(
+        await rejectWithOwnership(
           new Error(`Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`)
         );
         return;
@@ -915,7 +953,7 @@ function spawnTaskProcess({
           persistedTaskId: findPersistedTaskId(),
         });
       } catch (error) {
-        rejectWithOwnership(error);
+        await rejectWithOwnership(error);
         return;
       }
 
@@ -1603,10 +1641,18 @@ async function spawnClaudeTaskIsolated(agent, context) {
       if (resolved) return;
       resolved = true;
       clearTimeout(spawnTimeout);
-      if (!retainHandle && agent.currentTask === isolatedPendingLaunch) {
+      const rejection = error instanceof Error ? error : new Error(String(error));
+      if (retainHandle) {
+        rejection.retainTaskHandle = true;
+        rejection.permanent = true;
+        rejection.restartExhausted = true;
+        rejection.terminationExhausted = true;
+        rejection.terminationAttempts = 1;
+        rejection.taskId = isolatedTaskId || agent.currentTaskId || null;
+      } else if (agent.currentTask === isolatedPendingLaunch) {
         agent.currentTask = null;
       }
-      reject(error);
+      reject(rejection);
     };
 
     proc.once('close', markWrapperClosed);
@@ -1719,7 +1765,10 @@ async function spawnClaudeTaskIsolated(agent, context) {
         resolved = true;
         resolve(spawnedTaskId);
       } catch (error) {
-        rejectLaunch(error, { retainHandle: Boolean(isolatedTaskId) });
+        const termination = await isolatedPendingLaunch.kill(error.message);
+        if (!resolved) {
+          rejectLaunch(error, { retainHandle: termination?.forced === false });
+        }
       }
     });
 
@@ -1877,7 +1926,7 @@ async function terminateIsolatedTask(manager, clusterId, taskId) {
   return {
     alreadyTerminal: Boolean(beforeStatus),
     forced: !beforeStatus && afterStatus === 'killed',
-    status: afterStatus,
+    status: beforeStatus || afterStatus,
   };
 }
 

@@ -7,8 +7,7 @@ const { resolveWorktreeRoot } = require('./worktree-tooling-env');
 const CLAUDE_DIRNAME = '.claude';
 const MCP_BASENAME = '.mcp.json';
 const SETTINGS_BASENAME = 'settings.json';
-const OVERLAY_ROOT_BASENAME = 'zeroshot-claude-settings';
-const OVERLAY_PREFIX = 'run-';
+const OVERLAY_PREFIX = 'zeroshot-claude-settings-';
 const CLAUDE_SETTINGS_ENV = 'ZEROSHOT_CLAUDE_SETTINGS_FILE';
 const CLAUDE_MCP_CONFIG_ENV = 'ZEROSHOT_CLAUDE_MCP_CONFIG_FILE';
 const ASK_USER_HOOK = 'block-ask-user-question.py';
@@ -113,10 +112,8 @@ function ensureDangerousGitHook(targetClaudeDir) {
 }
 
 function prepareClaudeSettingsOverlay(options = {}) {
-  const tempRoot = path.join(os.tmpdir(), OVERLAY_ROOT_BASENAME);
-  fs.mkdirSync(tempRoot, { recursive: true });
-
-  const overlayDir = fs.mkdtempSync(path.join(tempRoot, OVERLAY_PREFIX));
+  const overlayDir = fs.mkdtempSync(path.join(os.tmpdir(), OVERLAY_PREFIX));
+  fs.chmodSync(overlayDir, 0o700);
   try {
     ensureAskUserQuestionHook(overlayDir);
     if (options.includeDangerousGit) {
@@ -144,14 +141,24 @@ function isClaudeSettingsOverlayPath(settingsPath) {
     return false;
   }
 
-  const tempRoot = path.resolve(os.tmpdir(), OVERLAY_ROOT_BASENAME);
   const resolvedSettingsPath = path.resolve(settingsPath);
   const overlayDir = path.dirname(resolvedSettingsPath);
-  return (
-    path.basename(resolvedSettingsPath) === SETTINGS_BASENAME &&
-    path.dirname(overlayDir) === tempRoot &&
-    path.basename(overlayDir).startsWith(OVERLAY_PREFIX)
-  );
+  if (
+    path.basename(resolvedSettingsPath) !== SETTINGS_BASENAME ||
+    path.dirname(overlayDir) !== path.resolve(os.tmpdir()) ||
+    !path.basename(overlayDir).startsWith(OVERLAY_PREFIX)
+  ) {
+    return false;
+  }
+
+  try {
+    const stat = fs.lstatSync(overlayDir);
+    const ownedByProcess =
+      typeof process.getuid !== 'function' || stat.uid === process.getuid();
+    return stat.isDirectory() && !stat.isSymbolicLink() && ownedByProcess && (stat.mode & 0o777) === 0o700;
+  } catch {
+    return false;
+  }
 }
 
 function isClaudeSettingsOverlayDirectory(overlayDir) {

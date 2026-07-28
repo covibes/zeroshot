@@ -152,10 +152,7 @@ describe('Nested Docker agent model arguments', function () {
       _publishLifecycle() {},
     };
 
-    await assert.rejects(
-      spawnClaudeTaskIsolated(agent, 'test context'),
-      /zeroshot task run failed with code 1/
-    );
+    await assert.rejects(spawnClaudeTaskIsolated(agent, 'test context'), /Task launch cancelled/);
     assertConfiguredModelArgs(capturedCommand);
     assert.deepStrictEqual(JSON.parse(capturedCommand[3]), {
       providerSettings: {

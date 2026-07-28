@@ -36,6 +36,7 @@ describe('worktree-claude-config', function () {
       ['AskUserQuestion']
     );
     assert.strictEqual(fs.statSync(settingsPath).mode & 0o777, 0o600);
+    assert.strictEqual(fs.statSync(path.dirname(settingsPath)).mode & 0o777, 0o700);
     assert.ok(
       fs.existsSync(path.join(path.dirname(settingsPath), 'hooks', 'block-ask-user-question.py'))
     );
@@ -64,6 +65,7 @@ describe('worktree-claude-config', function () {
     }
 
     fs.mkdirSync(reusedDir, { recursive: true });
+    fs.chmodSync(reusedDir, 0o700);
     fs.writeFileSync(path.join(reusedDir, 'settings.json'), '{}\n', { mode: 0o600 });
     ensureAskUserQuestionHook(reusedDir);
     ensureDangerousGitHook(reusedDir);
@@ -127,6 +129,23 @@ describe('worktree-claude-config', function () {
     assert.deepStrictEqual(fs.readdirSync(askUserDir), []);
     assert.deepStrictEqual(fs.readdirSync(dangerousGitDir), []);
   });
+  it('rejects predictable overlay-shaped directories without private ownership mode', function () {
+    const insecureDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'zeroshot-claude-settings-insecure-')
+    );
+    const insecureSettingsPath = path.join(insecureDir, 'settings.json');
+    tempDirs.push(insecureDir);
+    fs.chmodSync(insecureDir, 0o755);
+
+    assert.strictEqual(isClaudeSettingsOverlayPath(insecureSettingsPath), false);
+    assert.strictEqual(isClaudeSettingsOverlayDirectory(insecureDir), false);
+    assert.throws(
+      () => ensureAskUserQuestionHook(insecureDir),
+      /Zeroshot-owned Claude settings overlay/
+    );
+    assert.deepStrictEqual(fs.readdirSync(insecureDir), []);
+  });
+
 
   it('prefers root MCP config and supports the legacy Claude-directory fallback', function () {
     const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-worktree-'));

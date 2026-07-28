@@ -54,9 +54,9 @@ function fileCleanupReceipt(cleanupPath) {
 }
 
 async function runRetryScenario(store, killTaskCommand, completeWatcherTask) {
-  const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
-  fs.mkdirSync(overlayRoot, { recursive: true });
-  const cleanupPath = fs.mkdtempSync(path.join(overlayRoot, 'run-terminal-retry-'));
+  const cleanupPath = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'zeroshot-claude-settings-run-terminal-retry-')
+  );
   const taskId = 'terminal-cleanup-retry';
   store.addTask(taskRecord(taskId, 'running', cleanupReceipt(cleanupPath), { pid: 424242 }));
   let cleanupRuns = 0;

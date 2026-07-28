@@ -113,7 +113,7 @@ describe('Isolated task lifecycle handles', function () {
     assert.ok(events.some(({ event }) => event === 'AGENT_INACTIVITY_TIMEOUT'));
   });
 
-  it('does not kill or retry a task that completed before recovery reconciliation', async function () {
+  it('preserves completion while terminal cleanup recovery wins reconciliation', async function () {
     const manager = createIsolationManager({ status: 'completed' });
     const { agent } = createIsolatedAgent(manager, {
       lastOutputTime: Date.now() - 100,
@@ -127,7 +127,7 @@ describe('Isolated task lifecycle handles', function () {
     stopLivenessCheck(agent);
 
     assert.strictEqual(result.success, true);
-    assert.strictEqual(manager.killCalls, 0);
+    assert.strictEqual(manager.killCalls, 1);
     assert.strictEqual(agent.currentTask, null);
   });
 

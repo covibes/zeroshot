@@ -23,12 +23,13 @@ function createProcess() {
   return proc;
 }
 
-function createLaunchHarness({ spawnTimeoutMs = 1000 } = {}) {
+function createLaunchHarness({ spawnTimeoutMs = 1000, lookupFailures = 0 } = {}) {
   const proc = createProcess();
   const taskId = 'task-durable-race1';
   const commands = [];
   let rowVisible = false;
   let status = 'running';
+  let remainingLookupFailures = lookupFailures;
   let capturedEnv;
   const manager = {
     spawnInContainer(_clusterId, _command, options) {
@@ -39,6 +40,10 @@ function createLaunchHarness({ spawnTimeoutMs = 1000 } = {}) {
       commands.push(command);
       if (command[1] === 'get-task-id-by-spawn-token') {
         assert.strictEqual(command[2], capturedEnv[OWNERSHIP_ENV]);
+        if (remainingLookupFailures > 0) {
+          remainingLookupFailures -= 1;
+          return { code: 1, stdout: '', stderr: 'lookup unavailable' };
+        }
         return rowVisible
           ? { code: 0, stdout: `${taskId}\n`, stderr: '' }
           : { code: 2, stdout: '', stderr: '' };
@@ -158,6 +163,29 @@ describe('Isolated detached launch ownership', function () {
     const termination = await terminationPromise;
     assert.strictEqual(termination.taskId, harness.taskId);
     await launchRejection;
+    assert.ok(harness.commands.some((command) => command[1] === 'kill'));
+  });
+
+  it('retains ambiguous token ownership until a later lookup can terminate the task', async function () {
+    const harness = createLaunchHarness({ lookupFailures: 2 });
+    const launch = spawnClaudeTaskIsolated(harness.agent, 'test context');
+    await waitFor(() => harness.agent.currentTask?.pendingLaunch);
+    const pendingHandle = harness.agent.currentTask;
+    harness.proc.closed = true;
+    harness.proc.emit('close', 0, null);
+
+    const rejection = await launch.then(
+      () => null,
+      (error) => error
+    );
+    assert.strictEqual(rejection?.retainTaskHandle, true);
+    assert.strictEqual(rejection?.permanent, true);
+    assert.strictEqual(harness.agent.currentTask, pendingHandle);
+
+    harness.setRowVisible();
+    const termination = await killTask(harness.agent, 'retry ambiguous ownership cleanup');
+    assert.strictEqual(termination.taskId, harness.taskId);
+    assert.strictEqual(harness.agent.currentTask, null);
     assert.ok(harness.commands.some((command) => command[1] === 'kill'));
   });
 

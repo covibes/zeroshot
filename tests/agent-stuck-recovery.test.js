@@ -198,13 +198,24 @@ describe('Agent stuck-task recovery', function () {
     const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-launch-windows-'));
     const fakeZeroshot = path.join(fakeBin, 'zeroshot');
     const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    const retryKillMarker = path.join(fakeBin, 'retry-kill-marker');
     fs.writeFileSync(
       fakeZeroshot,
       `#!/usr/bin/env node
       (async () => {
+        const fs = require('node:fs');
         const { addTask, updateTask } = await import(${JSON.stringify(storeUrl)});
         const action = process.argv[2];
         const taskId = process.argv[3];
+        if (
+          action === 'kill' &&
+          taskId === 'launch-retry-task' &&
+          !fs.existsSync(${JSON.stringify(retryKillMarker)})
+        ) {
+          fs.writeFileSync(${JSON.stringify(retryKillMarker)}, 'failed once\\n');
+          process.exitCode = 1;
+          return;
+        }
         if (action === 'kill') {
           updateTask(taskId, {
             status: 'killed',
@@ -280,7 +291,39 @@ describe('Agent stuck-task recovery', function () {
         if (state === 'post-row') await assert.rejects(launch, /killed by signal/i);
       }
 
+      const retryTaskId = 'launch-retry-task';
+      removeTask(retryTaskId);
+      const retryAgent = {
+        currentTask: null,
+        currentTaskId: null,
+        processPid: null,
+        lastOutputTime: null,
+        taskStartedAt: null,
+        _publishLifecycle() {},
+        _stopLivenessCheck() {},
+        _log() {},
+      };
+      const retryLaunch = spawnTaskProcess({
+        agent: retryAgent,
+        ctPath: fakeZeroshot,
+        args: ['post-row', retryTaskId],
+        cwd: process.cwd(),
+        spawnEnv: process.env,
+      });
+      const retryRejection = assert.rejects(retryLaunch, /killed by signal/i);
+      await waitFor(() => getTask(retryTaskId), 10000);
+      const firstRetryTermination = await killTask(retryAgent, 'first cancellation attempt');
+      assert.strictEqual(firstRetryTermination?.forced, false);
+      assert.notStrictEqual(retryAgent.currentTask, null);
+      const secondRetryTermination = await killTask(retryAgent, 'second cancellation attempt');
+      assert.notStrictEqual(secondRetryTermination?.forced, false);
+      assert.strictEqual(retryAgent.currentTask, null);
+      assert.strictEqual(getTask(retryTaskId)?.status, 'killed');
+      await retryRejection;
+      removeTask(retryTaskId);
+
       const timeoutTaskId = 'launch-timeout-task';
+      removeTask(timeoutTaskId);
       const timeoutAgent = {
         currentTask: null,
         currentTaskId: null,
@@ -306,9 +349,9 @@ describe('Agent stuck-task recovery', function () {
       }
       assert.match(timeoutError?.message || '', /Spawn timeout/);
       assert.strictEqual(timeoutError.commandCleanupOwner, 'task-lifecycle');
-      assert.strictEqual(getTask(timeoutTaskId)?.status, 'running');
-      await killTask(timeoutAgent, 'cancel timeout');
       assert.strictEqual(getTask(timeoutTaskId)?.status, 'killed');
+      assert.strictEqual(timeoutAgent.currentTask, null);
+      assert.strictEqual(timeoutAgent.currentTaskId, null);
       removeTask(timeoutTaskId);
     } finally {
       fs.rmSync(fakeBin, { recursive: true, force: true });

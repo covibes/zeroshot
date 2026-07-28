@@ -11,10 +11,12 @@ const commandCleanupFixtureSource = `
   import fs from 'fs';
   import os from 'os';
   import path from 'path';
-  const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
-  fs.mkdirSync(overlayRoot, { recursive: true });
-  const liveCleanup = fs.mkdtempSync(path.join(overlayRoot, 'run-kill-live-'));
-  const deadCleanup = fs.mkdtempSync(path.join(overlayRoot, 'run-kill-dead-'));
+  const liveCleanup = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'zeroshot-claude-settings-run-kill-live-')
+  );
+  const deadCleanup = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'zeroshot-claude-settings-run-kill-dead-')
+  );
   const cleanupMetadata = (cleanupPath) => [{
     kind: 'temp-directory', provider: 'claude',
     path: cleanupPath, reason: 'settings-overlay'
@@ -119,9 +121,9 @@ describe('Task cleanup recovery', function () {
       import fs from 'fs';
       import os from 'os';
       import path from 'path';
-      const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
-      fs.mkdirSync(overlayRoot, { recursive: true });
-      const startingCleanup = fs.mkdtempSync(path.join(overlayRoot, 'run-kill-starting-'));
+      const startingCleanup = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'zeroshot-claude-settings-run-kill-starting-')
+      );
       const { addTask, getTask } = await import(${JSON.stringify(storeUrl)});
       const { killTaskCommand } = await import(${JSON.stringify(killUrl)});
       addTask({
@@ -282,11 +284,12 @@ describe('Task cleanup recovery', function () {
       import fs from 'fs';
       import os from 'os';
       import path from 'path';
-      const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
-      fs.mkdirSync(overlayRoot, { recursive: true });
-      const cleanupPath = path.join(overlayRoot, 'run-transient-cleanup-retry');
+      const cleanupPath = path.join(
+        os.tmpdir(),
+        'zeroshot-claude-settings-run-transient-cleanup-retry'
+      );
       fs.rmSync(cleanupPath, { recursive: true, force: true });
-      fs.mkdirSync(cleanupPath);
+      fs.mkdirSync(cleanupPath, { mode: 0o700 });
       const { addTask, getTask, updateTask } = await import(${JSON.stringify(storeUrl)});
       const { killTaskCommand } = await import(${JSON.stringify(killUrl)});
       addTask({

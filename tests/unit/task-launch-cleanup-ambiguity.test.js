@@ -35,14 +35,14 @@ describe('Ambiguous task-wrapper cleanup ownership', function () {
   this.timeout(40000);
 
   for (const mode of ['runner', 'agent']) {
-    it(`${mode} transfers cleanup only after a durable task receipt`, function () {
+    it(`${mode} recovers cleanup after a durable task receipt`, function () {
       const result = runFixture(mode);
       assert.match(result.rejection.message, /failed with code 1/);
       assert.strictEqual(result.rejection.commandCleanupOwner, 'task-lifecycle');
-      assert.strictEqual(result.pending.status, 'running');
-      assert.notStrictEqual(result.pending.commandCleanup, null);
-      assert.strictEqual(result.overlayExistsAfterReject, true);
-      assert.strictEqual(result.providerAliveAfterReject, true);
+      assert.strictEqual(result.pending.status, 'killed');
+      assert.strictEqual(result.pending.commandCleanup, null);
+      assert.strictEqual(result.overlayExistsAfterReject, false);
+      assert.strictEqual(result.providerAliveAfterReject, false);
       assert.strictEqual(result.terminal.status, 'killed');
       assert.strictEqual(result.terminal.commandCleanup, null);
       assert.strictEqual(result.overlayExistsAfterKill, false);

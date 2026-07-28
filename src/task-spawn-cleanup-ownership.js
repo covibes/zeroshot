@@ -75,6 +75,7 @@ module.exports = {
   COMMAND_CLEANUP_OWNER,
   TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
   cleanupCallerOwnedCommand,
+  callerOwnsCommandCleanup,
   createTaskSpawnOwnershipToken,
   requireTaskIdFromWrapperResult,
   trackTaskWrapperCleanupOwnership,

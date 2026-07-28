@@ -16,6 +16,35 @@ function moduleUrl(relativePath) {
   return pathToFileURL(path.join(repoRoot, relativePath)).href;
 }
 
+function createFakeZeroshot() {
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-ambiguous-bin-'));
+  const fakeZeroshot = path.join(fakeBin, 'zeroshot');
+  const killCommandUrl = moduleUrl('task-lib/commands/kill.js');
+  fs.writeFileSync(
+    fakeZeroshot,
+    `#!/usr/bin/env node
+    (async () => {
+      if (process.argv[2] === 'kill') {
+        const { killTaskCommand } = await import(${JSON.stringify(killCommandUrl)});
+        await killTaskCommand(process.argv[3], {
+          graceMs: 40,
+          hardKillWaitMs: 500,
+          pollMs: 5,
+        });
+        return;
+      }
+      require(${JSON.stringify(__filename)});
+    })().catch((error) => {
+      process.stderr.write(error.stack + '\\n');
+      process.exitCode = 1;
+    });
+    `,
+    { mode: 0o755 }
+  );
+  return { fakeBin, fakeZeroshot };
+}
+
+
 function isRunning(pid) {
   try {
     process.kill(pid, 0);
@@ -105,30 +134,33 @@ async function rejectThroughLauncher() {
   process.env.AMBIGUOUS_TASK_SCENARIO = scenario;
   process.env.AMBIGUOUS_TASK_MODE = mode;
   if (mode === 'runner') {
-    const ClaudeTaskRunner = require('../../src/claude-task-runner');
-    const runner = new ClaudeTaskRunner({ quiet: true });
-    const spawnAndGetTaskId = runner._spawnAndGetTaskId.bind(runner);
-    runner._spawnAndGetTaskId = (_command, _args, cwd, spawnEnv, agentId) =>
-      spawnAndGetTaskId(process.execPath, [__filename], cwd, spawnEnv, agentId);
-    await runner.run('ambiguous wrapper test', {
-      provider: 'claude',
-      cwd: repoRoot,
-    });
-    return;
+    const { fakeBin, fakeZeroshot } = createFakeZeroshot();
+    try {
+      const ClaudeTaskRunner = require('../../src/claude-task-runner');
+      const runner = new ClaudeTaskRunner({ quiet: true });
+      const spawnAndGetTaskId = runner._spawnAndGetTaskId.bind(runner);
+      runner._spawnAndGetTaskId = (_command, _args, cwd, spawnEnv, agentId) =>
+        spawnAndGetTaskId(fakeZeroshot, [], cwd, spawnEnv, agentId);
+      await runner.run('ambiguous wrapper test', {
+        provider: 'claude',
+        cwd: repoRoot,
+      });
+      return;
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
   }
 
   if (mode === 'agent') {
-    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-ambiguous-bin-'));
-    const fakeZeroshot = path.join(fakeBin, 'zeroshot');
-    fs.writeFileSync(
-      fakeZeroshot,
-      `#!/usr/bin/env node\nrequire(${JSON.stringify(__filename)});\n`,
-      { mode: 0o755 }
-    );
-    process.env.PATH = `${fakeBin}${path.delimiter}${process.env.PATH || ''}`;
-    const { spawnClaudeTask } = require('../../src/agent/agent-task-executor');
-    await spawnClaudeTask(createAgent(), 'ambiguous wrapper test');
-    return;
+    const { fakeBin } = createFakeZeroshot();
+    try {
+      process.env.PATH = `${fakeBin}${path.delimiter}${process.env.PATH || ''}`;
+      const { spawnClaudeTask } = require('../../src/agent/agent-task-executor');
+      await spawnClaudeTask(createAgent(), 'ambiguous wrapper test');
+      return;
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
   }
 
   throw new Error(`Unknown ambiguous launcher mode: ${mode}`);

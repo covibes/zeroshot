@@ -12,10 +12,11 @@ const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
-const { getTaskBySpawnOwnershipToken } = require('../task-lib/store.js');
+const { getTask, getTaskBySpawnOwnershipToken } = require('../task-lib/store.js');
 const {
   TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
   cleanupCallerOwnedCommand,
+  callerOwnsCommandCleanup,
   createTaskSpawnOwnershipToken,
   requireTaskIdFromWrapperResult,
   trackTaskWrapperCleanupOwnership,
@@ -93,6 +94,28 @@ function runCommand(command, args, options = {}, callback = null) {
       resolve({ stdout, stderr });
     });
   });
+}
+
+const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale', 'cancelled']);
+
+async function cleanupPersistedTaskAfterLaunchFailure(ctPath, taskId) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let commandError = null;
+    try {
+      await runCommand(ctPath, ['kill', taskId], { timeout: 10000 });
+    } catch (error) {
+      commandError = error;
+    }
+    const task = getTask(taskId);
+    if (!task || (TASK_TERMINAL_STATUSES.has(task.status) && !task.commandCleanup)) {
+      return;
+    }
+    lastError =
+      commandError ||
+      new Error(`Task ${taskId} termination and command cleanup were not confirmed`);
+  }
+  throw lastError || new Error(`Task ${taskId} cleanup failed`);
 }
 
 function runCommandSync(command, args, options = {}) {
@@ -392,8 +415,37 @@ class ClaudeTaskRunner extends TaskRunner {
 
       let stdout = '';
       let stderr = '';
+      let settled = false;
       const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
-      const rejectWithOwnership = (error) => reject(classifyCleanupOwnership(error));
+      const rejectWithOwnership = async (error) => {
+        if (settled) return;
+        settled = true;
+        const classifiedError = classifyCleanupOwnership(error);
+        if (!callerOwnsCommandCleanup(classifiedError)) {
+          classifiedError.spawnOwnershipToken = ownershipToken;
+          let persistedTaskId = null;
+          let lookupError = null;
+          try {
+            persistedTaskId = findPersistedTaskId();
+          } catch (lookupFailure) {
+            lookupError = lookupFailure;
+          }
+          classifiedError.taskId = persistedTaskId;
+          try {
+            if (lookupError) throw lookupError;
+            if (persistedTaskId) {
+              await cleanupPersistedTaskAfterLaunchFailure(ctPath, persistedTaskId);
+            }
+          } catch (cleanupError) {
+            classifiedError.message += ` Task cleanup was not confirmed: ${cleanupError.message}`;
+            classifiedError.permanent = true;
+            classifiedError.restartExhausted = true;
+            classifiedError.terminationExhausted = true;
+            classifiedError.terminationAttempts = persistedTaskId ? 3 : 1;
+          }
+        }
+        reject(classifiedError);
+      };
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -403,25 +455,26 @@ class ClaudeTaskRunner extends TaskRunner {
         stderr += data.toString();
       });
 
-      proc.on('close', (code) => {
+      proc.on('close', async (code) => {
+        if (settled) return;
         try {
-          resolve(
-            requireTaskIdFromWrapperResult({
-              code,
-              stdout,
-              stderr,
-              parseTaskId: (output) =>
-                output.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/)?.[1],
-              persistedTaskId: findPersistedTaskId(),
-            })
-          );
+          const taskId = requireTaskIdFromWrapperResult({
+            code,
+            stdout,
+            stderr,
+            parseTaskId: (output) =>
+              output.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/)?.[1],
+            persistedTaskId: findPersistedTaskId(),
+          });
+          settled = true;
+          resolve(taskId);
         } catch (error) {
-          rejectWithOwnership(error);
+          await rejectWithOwnership(error);
         }
       });
 
-      proc.on('error', (error) => {
-        rejectWithOwnership(error);
+      proc.on('error', async (error) => {
+        await rejectWithOwnership(error);
       });
     });
   }
