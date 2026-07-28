@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 const { URL } = require('node:url');
 
-const { startLivenessCheck, stopLivenessCheck } = require('../src/agent/agent-lifecycle');
+const { startLivenessCheck, stopLivenessCheck, stop } = require('../src/agent/agent-lifecycle');
 const { killTask, spawnTaskProcess } = require('../src/agent/agent-task-executor');
 const Orchestrator = require('../src/orchestrator');
 const MockTaskRunner = require('./helpers/mock-task-runner');
@@ -86,6 +86,36 @@ describe('Agent stuck-task recovery', function () {
         jitterFactor: 0,
       })
     );
+  });
+
+  it('retries shutdown termination while an unconfirmed task handle remains', async function () {
+    let terminationAttempts = 0;
+    const agent = {
+      id: 'shutdown-retry',
+      running: true,
+      state: 'running',
+      currentTask: {},
+      livenessCheckInterval: null,
+      unsubscribe: null,
+      _currentExecution: null,
+      _log() {},
+      _killTask() {
+        terminationAttempts += 1;
+        if (terminationAttempts === 1) {
+          return { forced: false, reason: 'provider still running' };
+        }
+        this.currentTask = null;
+        return { forced: true };
+      },
+    };
+
+    await assert.rejects(stop(agent), /could not confirm termination/);
+    assert.strictEqual(agent.running, false);
+    assert.notStrictEqual(agent.currentTask, null);
+
+    await stop(agent);
+    assert.strictEqual(terminationAttempts, 2);
+    assert.strictEqual(agent.currentTask, null);
   });
 
   afterEach(function () {

@@ -201,7 +201,7 @@ function start(agent) {
 async function stop(agent) {
   stopLivenessCheck(agent);
 
-  if (!agent.running) {
+  if (!agent.running && !agent.currentTask) {
     return;
   }
 
