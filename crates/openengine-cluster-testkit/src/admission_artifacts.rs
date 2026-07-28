@@ -1,5 +1,7 @@
 //! Generated admission transcript fixtures.
 
+use std::sync::Arc;
+
 use openengine_cluster_server::admission::AdmissionCoordinator;
 use openengine_cluster_server::{ClusterBackend, ConnectionContext, Dispatcher};
 use openengine_cluster_protocol::GraphSpec;
@@ -14,7 +16,7 @@ use crate::artifacts::Artifact;
 const ROOT: &str = "protocol/openengine-cluster/v1";
 
 pub(crate) async fn generate_admission_goldens() -> Vec<Artifact> {
-    let (graph, dispatcher) = scripted_dispatcher(2);
+    let (graph, dispatcher, _store) = scripted_dispatcher(2);
     let lifecycle_requests = vec![
         json!({
             "jsonrpc":"2.0","id":"admission-init","method":"initialize",
@@ -56,19 +58,26 @@ pub(crate) async fn generate_admission_goldens() -> Vec<Artifact> {
 pub(crate) type ScriptedDispatcher =
     Dispatcher<AdmissionCoordinator<ScriptedVerifier, InMemoryAdmissionStore>>;
 
-pub(crate) fn scripted_dispatcher(approvals: usize) -> (GraphSpec, ScriptedDispatcher) {
+/// Builds a fresh scripted dispatcher plus the shared store backing it, for golden generators
+/// that need to reach into the store directly (for example the watch generator's synthetic
+/// `emit_node_event` hook) rather than only driving requests through the dispatcher.
+pub(crate) fn scripted_dispatcher(
+    approvals: usize,
+) -> (GraphSpec, ScriptedDispatcher, Arc<InMemoryAdmissionStore>) {
     let graph = graph_fixture("worker", json!({"kind":"null"}));
     let compiled = compiled_from_graph_fixture(&graph);
     let outcomes = (0..approvals)
         .map(|_| ScriptedOutcome::approve(compiled.clone(), vec![]))
         .collect();
-    let backend = AdmissionCoordinator::new(
-        ScriptedVerifier::new(outcomes),
-        InMemoryAdmissionStore::default(),
+    let store = Arc::new(InMemoryAdmissionStore::default());
+    let backend = AdmissionCoordinator::from_shared(
+        Arc::new(ScriptedVerifier::new(outcomes)),
+        Arc::clone(&store),
     );
     (
         graph,
         Dispatcher::new(backend, ConnectionContext::default()),
+        store,
     )
 }
 

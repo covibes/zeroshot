@@ -2,7 +2,7 @@
 
 use openengine_cluster_protocol::{
     legacy_ship_request_payload_type, legacy_ship_result_payload_type, LegacyShipRequest,
-    LegacyShipResult, WorkerDescriptor, WorkerOutcome,
+    LegacyShipResult, WorkerDescriptor, WorkerOutcome, BUILTIN_PROFILE, BUILTIN_VERSION,
 };
 use schemars::schema_for;
 use serde_json::{json, Value};
@@ -72,20 +72,34 @@ pub fn worker_fixture_artifacts() -> Vec<Artifact> {
     legacy["graphProfiles"] = json!(["openengine.graph.single-worker/v1"]);
     legacy["contract"]["input"] = serde_json::to_value(legacy_ship_request_payload_type()).unwrap();
     legacy["contract"]["output"] = serde_json::to_value(legacy_ship_result_payload_type()).unwrap();
+    let mut builtin = descriptor(
+        "mock.builtin@1",
+        "builtin",
+        BUILTIN_VERSION,
+        BUILTIN_PROFILE,
+    );
+    builtin["credentialRequirements"] = json!([]);
 
-    let mut artifacts = positive_worker_artifacts(acp.clone(), a2a, legacy.clone());
-    artifacts.extend(negative_contract_artifacts(&acp, &legacy));
+    let mut artifacts =
+        positive_worker_artifacts(acp.clone(), a2a, legacy.clone(), builtin.clone());
+    artifacts.extend(negative_contract_artifacts(&acp, &legacy, &builtin));
     artifacts.extend(negative_secret_artifacts(&acp));
     artifacts.extend(negative_outcome_artifacts());
     artifacts.extend(compatibility_artifacts(&acp));
     artifacts
 }
 
-fn positive_worker_artifacts(acp: Value, a2a: Value, legacy: Value) -> Vec<Artifact> {
+fn positive_worker_artifacts(
+    acp: Value,
+    a2a: Value,
+    legacy: Value,
+    builtin: Value,
+) -> Vec<Artifact> {
     vec![
         json_artifact("positive/acp-v1.json", acp.clone()),
         json_artifact("positive/a2a-1.0.json", a2a),
         json_artifact("positive/legacy-zeroshot-ship-v1.json", legacy),
+        json_artifact("positive/builtin-v1.json", builtin.clone()),
         json_artifact(
             "positive/policy-refusal.json",
             json!({
@@ -119,7 +133,7 @@ fn positive_worker_artifacts(acp: Value, a2a: Value, legacy: Value) -> Vec<Artif
     ]
 }
 
-fn negative_contract_artifacts(acp: &Value, legacy: &Value) -> Vec<Artifact> {
+fn negative_contract_artifacts(acp: &Value, legacy: &Value, builtin: &Value) -> Vec<Artifact> {
     let mut artifacts = negative_descriptor_artifacts(
         acp,
         vec![
@@ -187,6 +201,29 @@ fn negative_contract_artifacts(acp: &Value, legacy: &Value) -> Vec<Artifact> {
                 "INVALID_LEGACY_BINDING",
                 "/contract/output",
                 json!({ "kind": "string" }),
+            ),
+        ],
+    ));
+    artifacts.extend(negative_descriptor_artifacts(
+        builtin,
+        vec![
+            (
+                "builtin-wrong-version",
+                "UNSUPPORTED_WORKER_BINDING",
+                "/binding/version",
+                json!("2"),
+            ),
+            (
+                "builtin-wrong-profile",
+                "UNSUPPORTED_WORKER_BINDING",
+                "/binding/profile",
+                json!("openengine.worker.builtin/v2"),
+            ),
+            (
+                "builtin-nonempty-credentials",
+                "INVALID_BUILTIN_BINDING",
+                "/credentialRequirements",
+                json!(["credential.test@1"]),
             ),
         ],
     ));

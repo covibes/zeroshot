@@ -1,6 +1,9 @@
 pub mod artifact_store;
+pub mod cluster_ledger;
+pub mod execution;
 pub mod issue_provider;
 mod provider_value;
+pub mod scheduler;
 pub mod source_code_provider;
 
 use async_trait::async_trait;

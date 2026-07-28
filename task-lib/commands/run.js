@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { spawnTask } from '../runner.js';
+import { shouldUseAttachableWatcher, spawnTask } from '../runner.js';
 
 export async function runTask(prompt, options = {}) {
   if (!prompt || prompt.trim().length === 0) {
@@ -46,8 +46,23 @@ export async function runTask(prompt, options = {}) {
   console.log(chalk.dim(`  Log: ${task.logFile}`));
   console.log(chalk.dim(`  CWD: ${task.cwd}`));
 
+  const attachSupported = shouldUseAttachableWatcher(
+    {
+      jsonSchema: outputFormat === 'json' ? jsonSchema : null,
+    },
+    task.provider
+  );
+
   console.log(chalk.dim('\nCommands:'));
-  console.log(chalk.dim(`  zeroshot attach ${task.id}    # Attach to task (Ctrl+B d to detach)`));
+  if (attachSupported) {
+    console.log(chalk.dim(`  zeroshot attach ${task.id}    # Attach to task (Ctrl+B d to detach)`));
+  } else {
+    console.log(
+      chalk.dim(
+        `  Attach unavailable: ${task.provider} strict structured output uses a non-PTY watcher`
+      )
+    );
+  }
   console.log(chalk.dim(`  zeroshot logs ${task.id}      # View output`));
   console.log(chalk.dim(`  zeroshot logs -f ${task.id}   # Follow output`));
   console.log(chalk.dim(`  zeroshot status ${task.id}    # Check status`));

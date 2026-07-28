@@ -1,4 +1,7 @@
-use openengine_cluster_protocol::{ApplyParams, StopParams, UpdateParams};
+use openengine_cluster_protocol::{
+    AgentAttachParams, ApplyParams, DeleteParams, ResubmitParams, RetryParams, StopParams,
+    UpdateParams,
+};
 use schemars::schema_for;
 use serde_json::{json, Value};
 
@@ -15,7 +18,13 @@ pub(super) fn document() -> Value {
             apply_method(),
             update_method(),
             stop_method(),
+            retry_method(),
+            resubmit_method(),
+            delete_method(),
             get_method(),
+            watch_method(),
+            logs_method(),
+            agent_attach_method(),
         ],
         "components": {
             "schemas": {
@@ -24,6 +33,22 @@ pub(super) fn document() -> Value {
                 "GraphDiagnostic": { "$ref": "graph.schema.json#/$defs/GraphDiagnostic" },
                 "StructuralBounds": { "$ref": "graph.schema.json#/$defs/StructuralBounds" },
                 "ArtifactRef": { "$ref": "graph.schema.json#/$defs/ArtifactRef" }
+            }
+        },
+        "x-generic-subscription-framing": {
+            "description": "watch, logs, and agent/attach each establish a subscription via one \
+                normal JSON-RPC result; subsequent delivery uses the generic notification methods \
+                below, shared by every subscription-based method. There is no watch/event, \
+                watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, \
+                agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the \
+                wire. `$/cancelRequest` is a transport-level best-effort cancellation of any \
+                in-flight unary request by its RequestId; it is silently a no-op for an unknown \
+                or already-completed id and carries no rollback claim after backend commit.",
+            "notifications": {
+                "event": { "$ref": "schema.json#/$defs/EventNotification" },
+                "subscription/cancel": { "$ref": "schema.json#/$defs/SubscriptionCancelParams" },
+                "subscription/closed": { "$ref": "schema.json#/$defs/SubscriptionClosedNotification" },
+                "$/cancelRequest": { "$ref": "schema.json#/$defs/CancelRequestParams" }
             }
         }
     })
@@ -142,6 +167,60 @@ fn stop_method() -> Value {
     })
 }
 
+fn retry_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(RetryParams))
+        .expect("retry parameter JSON Schema serialization must succeed");
+    json!({
+        "name": "retry",
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
+            { "name": "idempotencyKey", "required": true, "schema": property_schema(&schema, "idempotencyKey") }
+        ],
+        "result": {
+            "name": "retryResult",
+            "schema": { "$ref": "schema.json#/$defs/RetryResult" }
+        }
+    })
+}
+
+fn resubmit_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(ResubmitParams))
+        .expect("resubmit parameter JSON Schema serialization must succeed");
+    json!({
+        "name": "resubmit",
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
+            { "name": "ifRunId", "required": true, "schema": property_schema(&schema, "ifRunId") },
+            { "name": "idempotencyKey", "required": true, "schema": property_schema(&schema, "idempotencyKey") },
+            { "name": "replacementInput", "required": false, "schema": true }
+        ],
+        "result": {
+            "name": "resubmitResult",
+            "schema": { "$ref": "schema.json#/$defs/ResubmitResult" }
+        }
+    })
+}
+
+fn delete_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(DeleteParams))
+        .expect("delete parameter JSON Schema serialization must succeed");
+    json!({
+        "name": "delete",
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
+            { "name": "ifRunId", "required": false, "schema": property_schema(&schema, "ifRunId") },
+            { "name": "idempotencyKey", "required": true, "schema": property_schema(&schema, "idempotencyKey") }
+        ],
+        "result": {
+            "name": "deleteResult",
+            "schema": { "$ref": "schema.json#/$defs/DeleteResult" }
+        }
+    })
+}
+
 fn property_schema(schema: &Value, property: &str) -> Value {
     schema["properties"]
         .get(property)
@@ -161,6 +240,60 @@ fn get_method() -> Value {
         "result": {
             "name": "getResult",
             "schema": { "$ref": "schema.json#/$defs/GetResult" }
+        }
+    })
+}
+
+fn watch_method() -> Value {
+    json!({
+        "name": "watch",
+        "paramStructure": "by-name",
+        "params": [
+            {
+                "name": "runId", "required": false,
+                "schema": { "type": ["string", "null"] }
+            },
+            {
+                "name": "fromCursor", "required": false,
+                "schema": { "type": ["string", "null"] }
+            }
+        ],
+        "result": {
+            "name": "watchResult",
+            "schema": { "$ref": "schema.json#/$defs/WatchResult" }
+        }
+    })
+}
+
+fn logs_method() -> Value {
+    json!({
+        "name": "logs",
+        "paramStructure": "by-name",
+        "params": [],
+        "result": {
+            "name": "logsResult",
+            "schema": { "$ref": "schema.json#/$defs/LogsResult" }
+        }
+    })
+}
+
+fn agent_attach_method() -> Value {
+    // `ExecutionRef` is inline-schema (like `logs`'s `BoundedLogTarget`/`BoundedLogMessage`), so it
+    // has no standalone `$defs` entry to `$ref` -- extract its actual inline schema from a
+    // generated `AgentAttachParams` schema instead of hand-authoring a `$ref` that would dangle.
+    let schema = serde_json::to_value(schema_for!(AgentAttachParams))
+        .expect("agent_attach parameter JSON Schema serialization must succeed");
+    json!({
+        "name": "agent/attach",
+        "paramStructure": "by-name",
+        "params": [{
+            "name": "execution",
+            "required": true,
+            "schema": property_schema(&schema, "execution")
+        }],
+        "result": {
+            "name": "agentAttachResult",
+            "schema": { "$ref": "schema.json#/$defs/AgentAttachResult" }
         }
     })
 }

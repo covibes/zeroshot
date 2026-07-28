@@ -293,6 +293,121 @@
       }
     },
     {
+      "name": "retry",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "ifGeneration",
+          "required": true,
+          "schema": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "idempotencyKey",
+          "required": true,
+          "schema": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "retryResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RetryResult"
+        }
+      }
+    },
+    {
+      "name": "resubmit",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "ifGeneration",
+          "required": true,
+          "schema": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "ifRunId",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "idempotencyKey",
+          "required": true,
+          "schema": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        },
+        {
+          "name": "replacementInput",
+          "required": false,
+          "schema": true
+        }
+      ],
+      "result": {
+        "name": "resubmitResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/ResubmitResult"
+        }
+      }
+    },
+    {
+      "name": "delete",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "ifGeneration",
+          "required": true,
+          "schema": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        {
+          "name": "ifRunId",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "idempotencyKey",
+          "required": true,
+          "schema": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "deleteResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/DeleteResult"
+        }
+      }
+    },
+    {
       "name": "get",
       "paramStructure": "by-name",
       "params": [
@@ -313,7 +428,89 @@
           "$ref": "schema.json#/$defs/GetResult"
         }
       }
+    },
+    {
+      "name": "watch",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "runId",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "fromCursor",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "watchResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/WatchResult"
+        }
+      }
+    },
+    {
+      "name": "logs",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "logsResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/LogsResult"
+        }
+      }
+    },
+    {
+      "name": "agent/attach",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "execution",
+          "required": true,
+          "schema": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "agentAttachResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/AgentAttachResult"
+        }
+      }
     }
   ],
-  "openrpc": "1.3.2"
+  "openrpc": "1.3.2",
+  "x-generic-subscription-framing": {
+    "description": "watch, logs, and agent/attach each establish a subscription via one normal JSON-RPC result; subsequent delivery uses the generic notification methods below, shared by every subscription-based method. There is no watch/event, watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the wire. `$/cancelRequest` is a transport-level best-effort cancellation of any in-flight unary request by its RequestId; it is silently a no-op for an unknown or already-completed id and carries no rollback claim after backend commit.",
+    "notifications": {
+      "$/cancelRequest": {
+        "$ref": "schema.json#/$defs/CancelRequestParams"
+      },
+      "event": {
+        "$ref": "schema.json#/$defs/EventNotification"
+      },
+      "subscription/cancel": {
+        "$ref": "schema.json#/$defs/SubscriptionCancelParams"
+      },
+      "subscription/closed": {
+        "$ref": "schema.json#/$defs/SubscriptionClosedNotification"
+      }
+    }
+  }
 }

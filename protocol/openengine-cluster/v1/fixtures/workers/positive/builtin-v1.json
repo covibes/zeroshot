@@ -1,0 +1,40 @@
+{
+  "artifactProfile": {
+    "allowedMediaTypes": [
+      "application/json"
+    ],
+    "allowedTypeIds": [
+      "openengine.result@1"
+    ],
+    "minimumRedaction": "internal"
+  },
+  "binding": {
+    "profile": "openengine.worker.builtin/v1",
+    "protocol": "builtin",
+    "version": "1"
+  },
+  "capabilityPolicy": {
+    "autonomy": "strict",
+    "permissionPolicy": "policy.strict@1"
+  },
+  "contract": {
+    "errors": [
+      "timeout",
+      "crash",
+      "malformed",
+      "refusal"
+    ],
+    "input": {
+      "kind": "string"
+    },
+    "output": {
+      "kind": "string"
+    },
+    "verifier": null
+  },
+  "credentialRequirements": [],
+  "graphProfiles": [
+    "openengine.graph.full/v1"
+  ],
+  "worker": "mock.builtin@1"
+}

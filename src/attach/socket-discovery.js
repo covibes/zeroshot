@@ -1,20 +1,18 @@
 /**
  * Socket Discovery - Utilities for socket path management
  *
- * Socket locations:
- * - Tasks: ~/.zeroshot/sockets/task-<id>.sock
- * - Clusters: ~/.zeroshot/sockets/cluster-<id>.sock (cluster-level, future)
- * - Agents: ~/.zeroshot/sockets/cluster-<id>/<agent-id>.sock
+ * Socket locations are allocated by socket-paths.js under a short, per-user
+ * runtime directory so long HOME paths cannot exceed Unix socket limits.
  */
 
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const net = require('net');
 const { readClustersFileSync } = require('../../lib/clusters-registry');
+const socketPaths = require('./socket-paths');
 
-const ZEROSHOT_DIR = path.join(os.homedir(), '.zeroshot');
-const SOCKET_DIR = path.join(ZEROSHOT_DIR, 'sockets');
+const ZEROSHOT_DIR = path.join(socketPaths.resolveHomeDir(), '.zeroshot');
+const SOCKET_DIR = socketPaths.getSocketDir();
 
 /**
  * Check if an ID is a known cluster by looking up clusters.json
@@ -35,9 +33,7 @@ function isKnownCluster(id) {
  * Ensure socket directory exists
  */
 function ensureSocketDir() {
-  if (!fs.existsSync(SOCKET_DIR)) {
-    fs.mkdirSync(SOCKET_DIR, { recursive: true });
-  }
+  socketPaths.ensureSocketDir();
 }
 
 /**
@@ -46,8 +42,7 @@ function ensureSocketDir() {
  * @returns {string} - Socket path
  */
 function getTaskSocketPath(taskId) {
-  ensureSocketDir();
-  return path.join(SOCKET_DIR, `${taskId}.sock`);
+  return socketPaths.getTaskSocketPath(taskId);
 }
 
 /**
@@ -57,11 +52,7 @@ function getTaskSocketPath(taskId) {
  * @returns {string} - Socket path
  */
 function getAgentSocketPath(clusterId, agentId) {
-  const clusterDir = path.join(SOCKET_DIR, clusterId);
-  if (!fs.existsSync(clusterDir)) {
-    fs.mkdirSync(clusterDir, { recursive: true });
-  }
-  return path.join(clusterDir, `${agentId}.sock`);
+  return socketPaths.getAgentSocketPath(clusterId, agentId);
 }
 
 /**
@@ -81,8 +72,7 @@ function getSocketPath(id, agentId = null) {
       return getAgentSocketPath(id, agentId);
     }
     // Cluster-level socket (future use)
-    ensureSocketDir();
-    return path.join(SOCKET_DIR, `${id}.sock`);
+    return socketPaths.getClusterSocketPath(id);
   }
   // Unknown format, treat as task
   return getTaskSocketPath(id);

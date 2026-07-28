@@ -5,10 +5,8 @@
  * Runs detached from parent, provides Unix socket for attach clients.
  */
 
-import { appendFileSync, existsSync, mkdirSync, unlinkSync } from 'fs';
+import { appendFileSync, unlinkSync } from 'fs';
 import { unlink } from 'fs/promises';
-import { join } from 'path';
-import { homedir } from 'os';
 import { updateTask } from './store.js';
 import {
   detectProviderFatalError,
@@ -72,6 +70,7 @@ process.on('unhandledRejection', (reason) => {
 
 const require = createRequire(import.meta.url);
 const { AttachServer } = require('../src/attach');
+const { getTaskSocketPath } = require('../src/attach/socket-paths');
 const { normalizeProviderName } = require('../lib/provider-names');
 
 const taskId = taskIdArg;
@@ -88,12 +87,7 @@ const commandSpec = config.commandSpec || {
 commandSpecCleanup = commandSpec.cleanup || [];
 let server = null;
 
-const SOCKET_DIR = join(homedir(), '.zeroshot', 'sockets');
-const socketPath = join(SOCKET_DIR, `${taskId}.sock`);
-
-if (!existsSync(SOCKET_DIR)) {
-  mkdirSync(SOCKET_DIR, { recursive: true });
-}
+const socketPath = getTaskSocketPath(taskId);
 
 function log(msg) {
   appendFileSync(logFile, msg);

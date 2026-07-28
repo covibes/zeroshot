@@ -1,0 +1,32 @@
+[
+  {
+    "level": "trace",
+    "message": "trace record",
+    "target": "worker-dispatch"
+  },
+  {
+    "level": "debug",
+    "message": "debug record",
+    "target": "worker-dispatch"
+  },
+  {
+    "level": "info",
+    "message": "info record",
+    "target": "worker-dispatch"
+  },
+  {
+    "level": "warn",
+    "message": "warn record",
+    "target": "worker-dispatch"
+  },
+  {
+    "level": "error",
+    "message": "error record",
+    "target": "worker-dispatch"
+  },
+  {
+    "level": "error",
+    "message": "<redacted: message exceeded bounds>",
+    "target": "worker-dispatch"
+  }
+]

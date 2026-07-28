@@ -821,6 +821,26 @@
             "profile"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "profile": {
+              "const": "openengine.worker.builtin/v1"
+            },
+            "protocol": {
+              "const": "builtin"
+            },
+            "version": {
+              "const": "1"
+            }
+          },
+          "required": [
+            "protocol",
+            "version",
+            "profile"
+          ],
+          "type": "object"
         }
       ]
     }
@@ -1165,6 +1185,33 @@
           "required": [
             "worker",
             "binding"
+          ]
+        },
+        {
+          "properties": {
+            "binding": {
+              "properties": {
+                "protocol": {
+                  "const": "builtin"
+                }
+              },
+              "required": [
+                "protocol"
+              ]
+            },
+            "credentialRequirements": {
+              "maxItems": 0
+            },
+            "worker": {
+              "not": {
+                "const": "legacy.zeroshot.ship@1"
+              }
+            }
+          },
+          "required": [
+            "worker",
+            "binding",
+            "credentialRequirements"
           ]
         }
       ]

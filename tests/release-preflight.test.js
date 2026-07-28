@@ -3,13 +3,14 @@ const assert = require('assert');
 const {
   analyzeMessage,
   maxReleaseType,
+  releaseTypeForMessages,
   validateReleaseConfig,
 } = require('../scripts/release-preflight');
 
 describe('release preflight', () => {
-  it('classifies release promotion commits as minor releases', () => {
-    assert.strictEqual(analyzeMessage('release: promote dev to main'), 'minor');
-    assert.strictEqual(analyzeMessage('release(main): promote dev to main'), 'minor');
+  it('does not retain the retired release-promotion commit type', () => {
+    assert.strictEqual(analyzeMessage('release: promote dev to main'), null);
+    assert.strictEqual(analyzeMessage('release(main): promote dev to main'), null);
   });
 
   it('classifies conventional breaking commits as majors', () => {
@@ -26,6 +27,17 @@ describe('release preflight', () => {
     assert.strictEqual(maxReleaseType('minor', 'major'), 'major');
   });
 
+  it('allows trunk commits that intentionally produce no publication', () => {
+    assert.strictEqual(
+      releaseTypeForMessages(['docs: clarify setup', 'chore: refresh fixtures']),
+      null
+    );
+    assert.strictEqual(
+      releaseTypeForMessages(['docs: clarify setup', 'fix: repair attach']),
+      'patch'
+    );
+  });
+
   it('rejects branch-writing plugins in the effective release config', () => {
     assert.throws(
       () =>
@@ -34,7 +46,7 @@ describe('release preflight', () => {
             branches: ['main'],
             plugins: [
               '@semantic-release/commit-analyzer',
-              '@semantic-release/release-notes-generator',
+              './scripts/semantic-release-notes.js',
               ['@semantic-release/npm', { npmPublish: true }],
               '@semantic-release/git',
               '@semantic-release/github',
@@ -45,16 +57,34 @@ describe('release preflight', () => {
     );
   });
 
+  it('rejects custom analyzer rules that would distort semantic versioning', () => {
+    assert.throws(
+      () =>
+        validateReleaseConfig({
+          release: {
+            branches: ['main'],
+            plugins: [
+              [
+                '@semantic-release/commit-analyzer',
+                { releaseRules: [{ type: 'release', release: 'minor' }] },
+              ],
+              './scripts/semantic-release-notes.js',
+              ['@semantic-release/npm', { npmPublish: true }],
+              '@semantic-release/github',
+            ],
+          },
+        }),
+      /standard conventional release rules/
+    );
+  });
+
   it('accepts the protected-main release config', () => {
     const plugins = validateReleaseConfig({
       release: {
         branches: ['main'],
         plugins: [
-          [
-            '@semantic-release/commit-analyzer',
-            { releaseRules: [{ type: 'release', release: 'minor' }] },
-          ],
-          '@semantic-release/release-notes-generator',
+          '@semantic-release/commit-analyzer',
+          './scripts/semantic-release-notes.js',
           ['@semantic-release/npm', { npmPublish: true }],
           '@semantic-release/github',
         ],
@@ -63,7 +93,7 @@ describe('release preflight', () => {
 
     assert.deepStrictEqual(plugins, [
       '@semantic-release/commit-analyzer',
-      '@semantic-release/release-notes-generator',
+      './scripts/semantic-release-notes.js',
       '@semantic-release/npm',
       '@semantic-release/github',
     ]);

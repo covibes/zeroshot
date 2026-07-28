@@ -1,34 +1,47 @@
 name: Release
 
 on:
-  # Auto-release after CI passes on main
   workflow_run:
-    workflows: ['CI']
+    workflows: [CI]
     types: [completed]
     branches: [main]
-  # Manual trigger for DRY-RUN ONLY (testing release process)
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: 'Dry run ONLY (no publish allowed)'
+      action:
+        description: Validate the release or recover one missing artifact from an immutable tag.
         required: true
-        default: true
-        type: boolean
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - recover-npm
+          - recover-github-release
+      release_tag:
+        description: Recovery tag in vX.Y.Z form.
+        required: false
+        type: string
+      release_commit:
+        description: Full immutable commit SHA referenced by release_tag.
+        required: false
+        type: string
 
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
 
 jobs:
   install-matrix:
-    # Run only for real release flow or manual dry-run
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.dry_run == true) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
-    # Cross-platform/version compatibility before release
-    # NOTE: macOS runners cost 10x Linux minutes - minimal matrix
+      (github.event_name == 'workflow_dispatch' && inputs.action == 'dry-run') ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        vars.RELEASE_AUTOMATION_ENABLED == 'true'
+      )
     strategy:
       fail-fast: false
       matrix:
@@ -37,149 +50,257 @@ jobs:
             node: 20
           - os: macos-latest
             node: 20
-
     runs-on: ${{ matrix.os }}
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout tested candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Setup Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: ${{ matrix.node }}
-          cache: 'npm'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Link CLI
-        run: npm link
-
-      - name: CLI smoke test
+      - name: Link and smoke CLI
         run: |
+          npm link
           zeroshot --help
           zeroshot --version
           zeroshot list
 
-      - name: Test process-metrics (platform-specific)
+      - name: Test platform process metrics
         run: |
-          node -e "
+          node - <<'NODE'
+          const { getProcessMetrics, isPlatformSupported } = require('./src/process-metrics');
           (async () => {
-            const { getProcessMetrics, formatMetrics, getStateIcon, isPlatformSupported, getPlatformInfo } = require('./src/process-metrics');
-            const os = require('os');
-
-            console.log('Platform:', os.platform());
-            console.log('Supported:', isPlatformSupported());
-            console.log('Platform info:', JSON.stringify(getPlatformInfo()));
-
-            // Test metrics collection
             const metrics = await getProcessMetrics(process.pid, { samplePeriodMs: 100 });
-            console.log('Metrics:', JSON.stringify(metrics, null, 2));
-
-            // Validate required fields
             if (!metrics.exists) throw new Error('Process should exist');
-            if (typeof metrics.cpuPercent !== 'number') throw new Error('cpuPercent must be number');
-            if (typeof metrics.memoryMB !== 'number') throw new Error('memoryMB must be number');
-            if (!metrics.state) throw new Error('state must be set');
+            if (typeof metrics.cpuPercent !== 'number') throw new Error('cpuPercent must be numeric');
+            if (typeof metrics.memoryMB !== 'number') throw new Error('memoryMB must be numeric');
+            console.log({ platform: process.platform, supported: isPlatformSupported(), metrics });
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
 
-            console.log('Formatted:', formatMetrics(metrics));
-            console.log('State icon:', getStateIcon(metrics.state, metrics.network?.hasActivity));
-
-            console.log('✓ Process metrics test passed on', os.platform());
-          })().catch(e => { console.error(e); process.exit(1); });
-          "
-
-      - name: Test status-footer
-        run: |
-          node -e "
-          const { StatusFooter } = require('./src/status-footer');
-
-          const footer = new StatusFooter({ enabled: false });
-          footer.setCluster('test-cluster');
-          footer.setClusterState('running');
-          footer.updateAgent({ id: 'worker', state: 'executing_task', pid: process.pid, iteration: 1 });
-
-          const statusLine = footer.buildStatusLine(80);
-          if (!statusLine.includes('running')) throw new Error('Status line missing state');
-          if (!statusLine.includes('1/1')) throw new Error('Status line missing agent count');
-
-          footer.stop();
-          console.log('✓ StatusFooter test passed');
-          "
-
-  release:
+  dry-run:
     needs: [install-matrix]
-    # SAFETY: Only run if CI passed OR manual dry-run
-    # Real releases MUST go through CI (workflow_run with success)
-    # Manual trigger MUST be dry-run only (cannot publish untested code)
     if: |
-      (github.event_name == 'workflow_dispatch' && inputs.dry_run == true) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      github.event_name == 'workflow_dispatch' &&
+      inputs.action == 'dry-run' &&
+      needs.install-matrix.result == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout exact dispatched candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-          ref: main
-          # NOTE: Do NOT set persist-credentials: false here
-          # Semantic-release needs git credentials to query remote tags
-
-      - name: Fetch all tags
-        run: |
-          git fetch --tags --force
-          echo "Available tags:"
-          git tag -l | tail -10
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          registry-url: https://registry.npmjs.org
 
-      - name: Install dependencies
+      - name: Install pinned dependencies
         run: npm ci
+
+      - name: Fetch immutable release history
+        run: git fetch --tags --force
 
       - name: Release preflight
         run: npm run release:preflight
 
-      - name: Verify package before release
+      - name: Verify package tarball
+        shell: bash
         run: |
-          # Create tarball (respects 'files' array in package.json)
-          # Extract last line only (tarball filename) to avoid capturing prepare script output
-          TARBALL=$(npm pack | tail -1)
-          echo "Created: $TARBALL"
+          set -euo pipefail
+          pack_dir="$(mktemp -d)"
+          prefix_dir="$(mktemp -d)"
+          trap 'rm -rf "$pack_dir" "$prefix_dir"' EXIT
 
-          # Install from tarball (simulates npm install -g @the-open-engine/zeroshot)
-          npm install -g "./$TARBALL"
+          npm pack --pack-destination "$pack_dir"
+          tarball="$(find "$pack_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          npm install --global --prefix "$prefix_dir" "$tarball"
+          "$prefix_dir/bin/zeroshot" --version
+          "$prefix_dir/bin/zeroshot" --help
+          "$prefix_dir/bin/zeroshot" list
 
-          # Smoke tests - must all pass
-          echo "=== Testing installed package ==="
-          zeroshot --version
-          zeroshot --help
-          zeroshot list
+      - name: Run semantic-release dry run
+        run: node scripts/release-dry-run.js
 
-          # Cleanup
-          npm uninstall -g @the-open-engine/zeroshot
-          rm "$TARBALL"
+  release:
+    needs: [install-matrix]
+    if: |
+      always() &&
+      needs.install-matrix.result == 'success' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.RELEASE_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout exact CI-tested main commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-          echo "✅ Package verification passed"
-
-      - name: Release
+      - name: Verify this is the CI-tested main commit
+        id: candidate
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # SAFETY: Manual triggers MUST be dry-run only
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "⚠️  Manual trigger detected - enforcing dry-run mode"
-            npx semantic-release --dry-run
-          elif [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "ℹ️  Dry-run mode enabled"
-            npx semantic-release --dry-run
-          else
-            echo "🚀 Publishing release (triggered by CI passing)"
-            npx semantic-release
+          set -euo pipefail
+          current_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$current_sha" != "$TESTED_SHA" || "$remote_sha" != "$TESTED_SHA" ]]; then
+            echo "Skipping obsolete release: tested=$TESTED_SHA checkout=$current_sha main=$remote_sha"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "current=true" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        if: steps.candidate.outputs.current == 'true'
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install pinned dependencies
+        if: steps.candidate.outputs.current == 'true'
+        run: npm ci
+
+      - name: Fetch immutable release history
+        if: steps.candidate.outputs.current == 'true'
+        run: git fetch --tags --force
+
+      - name: Release preflight
+        if: steps.candidate.outputs.current == 'true'
+        run: npm run release:preflight
+
+      - name: Verify package tarball
+        if: steps.candidate.outputs.current == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pack_dir="$(mktemp -d)"
+          prefix_dir="$(mktemp -d)"
+          trap 'rm -rf "$pack_dir" "$prefix_dir"' EXIT
+
+          npm pack --pack-destination "$pack_dir"
+          tarball="$(find "$pack_dir" -maxdepth 1 -name '*.tgz' -print -quit)"
+          npm install --global --prefix "$prefix_dir" "$tarball"
+          "$prefix_dir/bin/zeroshot" --version
+          "$prefix_dir/bin/zeroshot" --help
+          "$prefix_dir/bin/zeroshot" list
+
+      - name: Recheck main immediately before publication
+        if: steps.candidate.outputs.current == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$current_sha" != "$remote_sha" ]]; then
+            echo "::error::main moved from $current_sha to $remote_sha after validation"
+            exit 1
           fi
 
-      - name: Assert release published
-        if: github.event_name == 'workflow_run'
+      - name: Run semantic-release
+        if: steps.candidate.outputs.current == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npx semantic-release
+
+      - name: Assert release state
+        if: steps.candidate.outputs.current == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run release:assert-published
+
+  recover:
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.action == 'recover-npm' || inputs.action == 'recover-github-release')
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Validate recovery inputs
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::release_tag must match vX.Y.Z"
+            exit 1
+          }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::release_commit must be a full lowercase SHA"
+            exit 1
+          }
+
+      - name: Checkout immutable release commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.release_commit }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install pinned dependencies
+        run: npm ci
+
+      - name: Fetch protected refs
+        run: |
+          git fetch origin main
+          git fetch origin "refs/tags/${{ inputs.release_tag }}:refs/tags/${{ inputs.release_tag }}"
+
+      - name: Verify recovery package
+        run: |
+          npm run release:preflight
+          npm run lint
+          npm run typecheck
+          npm run check:agent-cli-provider:ci
+          npm pack --dry-run --json
+
+      - name: Recover missing artifact
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RECOVERY_ACTION: ${{ inputs.action }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: npm run release:recover

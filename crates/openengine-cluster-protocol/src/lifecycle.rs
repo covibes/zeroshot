@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
+use crate::admission::deserialize_present_value;
 use crate::value::{identifier_keyed_map_schema, BoundedString256};
 use crate::{Cursor, Generation, IdempotencyKey, Phase, RunId};
 
@@ -88,6 +90,42 @@ pub enum DispatchState {
 pub enum StopMode {
     Drain,
     Force,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnFailureKind {
+    Failed,
+    Refused,
+    Timeout,
+    Crash,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoRetryableFrontierReason {
+    Exhausted,
+    Success,
+    Active,
+    Consumed,
+}
+
+impl NoRetryableFrontierReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exhausted => "exhausted",
+            Self::Success => "success",
+            Self::Active => "active",
+            Self::Consumed => "consumed",
+        }
+    }
+}
+
+impl std::fmt::Display for NoRetryableFrontierReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -240,5 +278,74 @@ pub struct StopResult {
     pub effective_mode: StopMode,
     pub operational: OperationalStatus,
     pub at_cursor: Cursor,
+    pub deduped: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RetryParams {
+    pub if_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RetryResult {
+    pub generation: Generation,
+    pub run_id: RunId,
+    pub phase: Phase,
+    pub retried_turn_id: String,
+    pub retry_turn_id: String,
+    pub operational: OperationalStatus,
+    pub at_cursor: Cursor,
+    pub deduped: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResubmitParams {
+    pub if_generation: Generation,
+    pub if_run_id: RunId,
+    pub idempotency_key: IdempotencyKey,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub replacement_input: Option<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResubmitResult {
+    pub generation: Generation,
+    pub prior_run_id: RunId,
+    pub run_id: RunId,
+    pub phase: Phase,
+    pub operational: OperationalStatus,
+    pub at_cursor: Cursor,
+    pub deduped: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteParams {
+    pub if_generation: Generation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_run_id: Option<RunId>,
+    pub idempotency_key: IdempotencyKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DeleteResult {
+    pub deleted: bool,
+    pub phase: Phase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<Generation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<RunId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at_cursor: Option<Cursor>,
     pub deduped: bool,
 }

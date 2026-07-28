@@ -1,0 +1,102 @@
+//! `agent/attach` subscription NDJSON streaming and dispatch, split out from `stdio.rs` to keep
+//! that file's `watch` counterpart readable -- mirrors `run_logs_subscription`/`dispatch_logs`
+//! exactly, sharing the same generic `subscriptions` cancellation map and outbound queue, since
+//! `agent/attach` reuses the identical wire notification methods and cancellation framing.
+
+use openengine_cluster_protocol::{
+    AgentAttachClosedNotification, AgentAttachEventNotification, AgentAttachParams,
+    DomainErrorData, JsonRpcNotification, RequestId, SubscriptionId, INVALID_PARAMS,
+    JSON_RPC_VERSION, SCHEMA_VIOLATION,
+};
+use serde_json::Value;
+
+use super::subscription::{run_bounded_event_subscription, BoundedEventSubscriptionRequest};
+use super::ConnectionState;
+use crate::agent_attach::{AgentAttachEventStream, AgentAttachHandle};
+use crate::{serialize_backend_error, serialize_error, serialize_success, ClusterBackend, Dispatcher};
+
+/// Establishes an `agent/attach` subscription and, on success, streams its `event`/
+/// `subscription/closed` notifications until the stream ends (overflow, backend close, or
+/// cancellation). See `run_logs_subscription`/`run_watch_subscription` for the identical
+/// registration-ordering and cancellation-race notes [`run_bounded_event_subscription`] mirrors.
+/// Reused verbatim by the sibling `websocket` transport module.
+pub(crate) async fn run_agent_attach_subscription<B>(
+    dispatcher: Dispatcher<B>,
+    id: RequestId,
+    params: Value,
+    state: ConnectionState,
+) where
+    B: ClusterBackend,
+{
+    let (response, established) = dispatcher.dispatch_agent_attach(id.clone(), params).await;
+    run_bounded_event_subscription(
+        BoundedEventSubscriptionRequest {
+            id,
+            response,
+            established,
+            state,
+        },
+        |subscription_id, event| {
+            serde_json::to_string(&JsonRpcNotification {
+                jsonrpc: JSON_RPC_VERSION.to_owned(),
+                method: "event".to_owned(),
+                params: AgentAttachEventNotification {
+                    subscription_id,
+                    event,
+                },
+            })
+        },
+        |subscription_id, reason| {
+            serde_json::to_string(&JsonRpcNotification {
+                jsonrpc: JSON_RPC_VERSION.to_owned(),
+                method: "subscription/closed".to_owned(),
+                params: AgentAttachClosedNotification {
+                    subscription_id,
+                    reason,
+                },
+            })
+        },
+    )
+    .await;
+}
+
+impl<B> Dispatcher<B>
+where
+    B: ClusterBackend,
+{
+    /// NDJSON-only counterpart to [`Dispatcher::dispatch`] for the `agent/attach` method. Mirrors
+    /// [`Dispatcher::dispatch_logs`] exactly; only the Rust param/result types differ.
+    pub(crate) async fn dispatch_agent_attach(
+        &self,
+        id: RequestId,
+        params: Value,
+    ) -> (
+        String,
+        Option<(SubscriptionId, AgentAttachEventStream, AgentAttachHandle)>,
+    ) {
+        let params = match serde_json::from_value::<AgentAttachParams>(params) {
+            Ok(params) => params,
+            Err(_) => {
+                return (
+                    serialize_error(
+                        Some(id),
+                        INVALID_PARAMS,
+                        "Invalid params",
+                        Some(DomainErrorData::new(SCHEMA_VIOLATION)),
+                    ),
+                    None,
+                );
+            }
+        };
+        match self.agent_attach(params).await {
+            Ok((result, stream, handle)) => {
+                let subscription_id = result.subscription_id.clone();
+                (
+                    serialize_success(id, result),
+                    Some((subscription_id, stream, handle)),
+                )
+            }
+            Err(error) => (serialize_backend_error(id, error), None),
+        }
+    }
+}

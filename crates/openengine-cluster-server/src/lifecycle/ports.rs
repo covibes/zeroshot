@@ -2,9 +2,9 @@
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ApplyResult, Cursor, DispatchState, Generation, IdempotencyKey, Labels, LogLevel,
-    OperationalStatus, RequestFingerprint, RunId, StopMode, StopParams, StopResult, UpdateParams,
-    UpdateResult,
+    ApplyResult, Cursor, DeleteResult, DispatchState, Generation, IdempotencyKey, Labels, LogLevel,
+    OperationalStatus, RequestFingerprint, ResubmitResult, RetryParams, RetryResult, RunId,
+    StopMode, StopParams, StopResult, TurnFailureKind, UpdateParams, UpdateResult,
 };
 use serde_json::Value;
 
@@ -15,6 +15,9 @@ pub enum MutationReceipt {
     Apply(ApplyResult),
     Update(UpdateResult),
     Stop(StopResult),
+    Retry(RetryResult),
+    Resubmit(ResubmitResult),
+    Delete(DeleteResult),
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -59,6 +62,19 @@ pub struct DispatchPermit {
 pub struct VerifiedCompletion {
     pub lease_id: LeaseId,
     pub output: Value,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FailureRetryability {
+    Retryable,
+    AttemptsExhausted,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FailedCompletion {
+    pub lease_id: LeaseId,
+    pub kind: TurnFailureKind,
+    pub retryability: FailureRetryability,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,6 +126,15 @@ pub enum LifecycleEvent {
     Finished {
         mode: StopMode,
     },
+    Failed {
+        turn_id: TurnId,
+        kind: TurnFailureKind,
+        retryability: FailureRetryability,
+    },
+    Retried {
+        failed_turn_id: TurnId,
+        retry_turn_id: TurnId,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -119,6 +144,8 @@ pub struct LifecycleSnapshot {
     pub records: Vec<LifecycleRecord>,
     pub verified_turns: Vec<VerifiedTurn>,
     pub void_turns: Vec<VoidTurn>,
+    pub pending_failed_frontier: Option<TurnId>,
+    pub pending_retry_turn: Option<TurnId>,
 }
 
 impl LifecycleSnapshot {
@@ -142,6 +169,12 @@ pub struct StopProposal {
     pub fingerprint: RequestFingerprint,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetryProposal {
+    pub params: RetryParams,
+    pub fingerprint: RequestFingerprint,
+}
+
 #[async_trait]
 pub trait LifecycleStore: Send + Sync {
     async fn read_lifecycle_snapshot(&self) -> Result<LifecycleSnapshot, StoreError>;
@@ -156,6 +189,16 @@ pub trait LifecycleStore: Send + Sync {
         &self,
         completion: VerifiedCompletion,
     ) -> Result<CompletionResult, StoreError>;
+
+    /// Internal primitive that records a dispatched turn's terminal failure and establishes it as
+    /// the pending retryable frontier. Not RPC-exposed; no production graph executor calls this
+    /// yet (see crate docs).
+    async fn fail_dispatch(
+        &self,
+        failure: FailedCompletion,
+    ) -> Result<CompletionResult, StoreError>;
+
+    async fn retry_lifecycle(&self, proposal: RetryProposal) -> Result<RetryResult, StoreError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

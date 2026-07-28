@@ -1,0 +1,10 @@
+[
+  {
+    "fromCursor": null,
+    "runId": null
+  },
+  {
+    "fromCursor": "cursor-1",
+    "runId": "run-1"
+  }
+]

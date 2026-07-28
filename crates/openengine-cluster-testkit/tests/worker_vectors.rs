@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     legacy_ship_request_payload_type, legacy_ship_result_payload_type, ArtifactRef, GraphSpec,
-    WorkerDescriptor, WorkerOutcome, WorkerProtocolBinding, WorkerRef, LEGACY_ZEROSHOT_WORKER,
-    RUNTIME_WORKER_ERRORS,
+    WorkerDescriptor, WorkerOutcome, WorkerProtocolBinding, WorkerRef, BUILTIN_PROFILE,
+    BUILTIN_VERSION, LEGACY_ZEROSHOT_WORKER, RUNTIME_WORKER_ERRORS,
 };
 use openengine_cluster_server::worker_registry::{
     check_graph_workers, WorkerCompatibilityCode, WorkerRegistry, WorkerRegistryError,
@@ -107,6 +107,7 @@ fn positive_vectors_round_trip_through_their_committed_contracts() {
         "/positive/acp-v1.json",
         "/positive/a2a-1.0.json",
         "/positive/legacy-zeroshot-ship-v1.json",
+        "/positive/builtin-v1.json",
     ] {
         let value = fixture_value(suffix);
         let parsed: WorkerDescriptor = serde_json::from_value(value.clone()).unwrap();
@@ -201,6 +202,10 @@ const RUST_REJECTION_MARKERS: &[(&str, &str)] = &[
         "legacy.zeroshot.ship@1 must use its pinned binding",
         "INVALID_LEGACY_BINDING",
     ),
+    (
+        "must not declare credential requirements",
+        "INVALID_BUILTIN_BINDING",
+    ),
     ("unknown field", "FORBIDDEN_FIELD"),
 ];
 
@@ -245,6 +250,7 @@ fn classify_schema_descriptor_rejection(document: &Value) -> Option<&'static str
         classify_artifact_profile_rejection(document),
         classify_credential_rejection(document),
         classify_legacy_rejection(document),
+        classify_builtin_rejection(document),
     ]
     .into_iter()
     .flatten()
@@ -257,6 +263,7 @@ fn classify_binding_rejection(document: &Value) -> Option<&'static str> {
         "acp" => ("1", "openengine.worker.acp/v1"),
         "a2a" => ("1.0", "openengine.worker.a2a/1.0"),
         "legacy_zeroshot" => ("1", "legacy.zeroshot.ship/v1"),
+        "builtin" => (BUILTIN_VERSION, BUILTIN_PROFILE),
         _ => return Some("UNSUPPORTED_WORKER_BINDING"),
     };
     if binding["version"] != expected_binding.0 || binding["profile"] != expected_binding.1 {
@@ -337,6 +344,14 @@ fn classify_legacy_rejection(document: &Value) -> Option<&'static str> {
     None
 }
 
+fn classify_builtin_rejection(document: &Value) -> Option<&'static str> {
+    let is_builtin = document["binding"]["protocol"] == "builtin";
+    let has_credentials = document["credentialRequirements"]
+        .as_array()
+        .is_some_and(|values| !values.is_empty());
+    (is_builtin && has_credentials).then_some("INVALID_BUILTIN_BINDING")
+}
+
 #[test]
 fn descriptor_and_outcome_negative_vectors_have_exact_rejection_codes() {
     let schema = worker_schema();
@@ -391,7 +406,7 @@ fn descriptor_and_outcome_negative_vectors_have_exact_rejection_codes() {
             kind => panic!("unknown worker fixture kind {kind}"),
         }
     }
-    assert_eq!(descriptor_count, 19);
+    assert_eq!(descriptor_count, 22);
     assert_eq!(outcome_count, 3);
 }
 

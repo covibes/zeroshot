@@ -19,11 +19,12 @@ with `malformed_result`. Rust serialization/deserialization and JSON Schema reje
 
 ## Portable bindings
 
-| Protocol        | Version | Profile                     | Scope                           |
-| --------------- | ------- | --------------------------- | ------------------------------- |
-| ACP             | `1`     | `openengine.worker.acp/v1`  | Testkit mock conformance only   |
-| A2A             | `1.0`   | `openengine.worker.a2a/1.0` | Testkit mock conformance only   |
-| Legacy Zeroshot | `1`     | `legacy.zeroshot.ship/v1`   | Reserved future facade contract |
+| Protocol        | Version | Profile                        | Scope                                                                                            |
+| --------------- | ------- | ------------------------------ | ------------------------------------------------------------------------------------------------ |
+| ACP             | `1`     | `openengine.worker.acp/v1`     | Testkit mock conformance only                                                                    |
+| A2A             | `1.0`   | `openengine.worker.a2a/1.0`    | Testkit mock conformance only                                                                    |
+| Legacy Zeroshot | `1`     | `legacy.zeroshot.ship/v1`      | Reserved future facade contract                                                                  |
+| Builtin         | `1`     | `openengine.worker.builtin/v1` | Protocol-owned binding for native in-process built-ins; no product IDs, commands, or credentials |
 
 The ACP and A2A mock normalizers are deterministic fixtures. They add no sockets, subprocesses,
 SDKs, discovery, network transport, callbacks, or production protocol runtime. Permission denial,

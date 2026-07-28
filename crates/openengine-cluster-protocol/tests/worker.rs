@@ -1,7 +1,8 @@
 use openengine_cluster_protocol::{
     legacy_ship_request_payload_type, legacy_ship_result_payload_type, GraphProfile,
     LegacyShipRequest, WorkerDescriptor, WorkerFailureReason, WorkerOutcome, WorkerProtocolBinding,
-    ACP_PROFILE, ACP_VERSION, LEGACY_ZEROSHOT_WORKER, RUNTIME_WORKER_ERRORS,
+    ACP_PROFILE, ACP_VERSION, BUILTIN_PROFILE, BUILTIN_VERSION, LEGACY_ZEROSHOT_WORKER,
+    RUNTIME_WORKER_ERRORS,
 };
 use serde_json::json;
 
@@ -136,6 +137,36 @@ fn descriptor_schema_matches_legacy_cross_field_validation() {
     mismatched_identity["worker"] = json!(LEGACY_ZEROSHOT_WORKER);
     assert!(serde_json::from_value::<WorkerDescriptor>(mismatched_identity.clone()).is_err());
     assert!(!validator.is_valid(&mismatched_identity));
+}
+
+#[test]
+fn builtin_binding_round_trips_and_rejects_invalid_variants() {
+    let mut builtin = descriptor();
+    builtin["worker"] = json!("mock.builtin@1");
+    builtin["binding"] = serde_json::to_value(WorkerProtocolBinding::builtin_v1()).unwrap();
+    builtin["credentialRequirements"] = json!([]);
+
+    assert!(serde_json::from_value::<WorkerDescriptor>(builtin.clone()).is_ok());
+    let schema = serde_json::to_value(schemars::schema_for!(WorkerDescriptor)).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&builtin));
+
+    for (pointer, replacement) in [
+        ("/binding/version", json!("2")),
+        ("/binding/profile", json!("openengine.worker.builtin/v2")),
+        ("/credentialRequirements", json!(["credential.mock@1"])),
+    ] {
+        let mut invalid = builtin.clone();
+        *invalid.pointer_mut(pointer).unwrap() = replacement;
+        assert!(serde_json::from_value::<WorkerDescriptor>(invalid.clone()).is_err());
+        assert!(
+            !validator.is_valid(&invalid),
+            "schema accepted invalid builtin descriptor mutation at {pointer}"
+        );
+    }
+
+    assert_eq!(WorkerProtocolBinding::builtin_v1().version, BUILTIN_VERSION);
+    assert_eq!(WorkerProtocolBinding::builtin_v1().profile, BUILTIN_PROFILE);
 }
 
 #[test]

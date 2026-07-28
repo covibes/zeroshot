@@ -1,0 +1,89 @@
+name: PR Policy
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  merge_group:
+    branches: [main]
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  semantic:
+    name: semantic
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate pull request body and squash commit
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          message_file="$(mktemp)"
+          trap 'rm -f "$message_file"' EXIT
+
+          jq -er '
+            .pull_request as $pull_request
+            | ($pull_request.title // "") as $title
+            | ($pull_request.body // "") as $body
+            | if ($body | test("\\S"))
+              then "\($title)\n\n\($body)"
+              else error("pull request body must not be blank")
+              end
+          ' "$GITHUB_EVENT_PATH" > "$message_file"
+
+          npm exec -- commitlint --edit "$message_file" --verbose
+
+      - name: Validate every candidate commit
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MERGE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+            head_sha="$PR_HEAD_SHA"
+          elif [[ "$EVENT_NAME" == "merge_group" ]]; then
+            base_sha="$MERGE_BASE_SHA"
+            head_sha="$MERGE_HEAD_SHA"
+          else
+            echo "::error::Unsupported event $EVENT_NAME"
+            exit 1
+          fi
+
+          git cat-file -e "${base_sha}^{commit}"
+          git cat-file -e "${head_sha}^{commit}"
+          mapfile -t commits < <(git rev-list --reverse --no-merges "${base_sha}..${head_sha}")
+          if (( ${#commits[@]} == 0 )); then
+            echo "No real, non-merge commits to validate."
+            exit 0
+          fi
+
+          for commit in "${commits[@]}"; do
+            echo "Validating commit ${commit}"
+            git show --no-patch --format=%B "$commit" | npm exec -- commitlint --verbose
+          done

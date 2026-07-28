@@ -10,51 +10,28 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   merge_group:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      include_docker_e2e:
+        description: Run the non-hermetic live-provider Docker E2E job
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  # ENFORCE: PRs to main must come from dev branch only
-  enforce-main-pr-source:
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check PR source branch
-        run: |
-          if [[ "${{ github.head_ref }}" != "dev" ]]; then
-            echo "::error::PRs to main MUST come from the dev branch."
-            echo ""
-            echo "❌ BLOCKED: PR from '${{ github.head_ref }}' to main"
-            echo ""
-            echo "The dev → main workflow exists so that:"
-            echo "  • All changes are tested on dev first"
-            echo "  • Releases are coherent snapshots of dev"
-            echo "  • main is always a subset of dev (no divergence)"
-            echo ""
-            echo "CORRECT WORKFLOW:"
-            echo "  1. Create PR to dev first: gh pr create --base dev"
-            echo "  2. After merge to dev, create release PR:"
-            echo "     gh pr create --base main --head dev --title 'Release'"
-            echo ""
-            exit 1
-          fi
-          echo "✓ PR from dev to main - allowed"
-
   # Fast quality gates - must pass before anything else
   check:
-    # Wait for branch enforcement on PRs to main
-    needs: [enforce-main-pr-source]
-    if: always() && (needs.enforce-main-pr-source.result == 'success' || needs.enforce-main-pr-source.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 20
           cache: 'npm'
@@ -123,19 +100,22 @@ jobs:
   # "Integration tests (slow)" step self-skip under CI (this is what that
   # step's Docker coverage was previously silently missing).
   e2e-docker:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.include_docker_e2e
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 20
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Link CLI
+        run: npm link
 
       - name: Docker isolation e2e
         run: npm run test:e2e:docker
@@ -150,6 +130,7 @@ jobs:
       needs.check.result == 'success' &&
       (
         github.ref == 'refs/heads/main' ||
+        github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'pull_request' && github.base_ref == 'main') ||
         (github.event_name == 'merge_group' && (
           github.event.merge_group.base_ref == 'main' ||
@@ -169,10 +150,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Setup Node.js ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: ${{ matrix.node }}
           cache: 'npm'
@@ -237,26 +218,21 @@ jobs:
 
   release-preflight:
     name: Release preflight
-    needs: [enforce-main-pr-source]
     if: |
-      always() &&
-      (needs.enforce-main-pr-source.result == 'success' || needs.enforce-main-pr-source.result == 'skipped') &&
-      (
-        (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-        (github.event_name == 'merge_group' && (
-          github.event.merge_group.base_ref == 'main' ||
-          github.event.merge_group.base_ref == 'refs/heads/main' ||
-          startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')
-        ))
-      )
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      (github.event_name == 'merge_group' && (
+        github.event.merge_group.base_ref == 'main' ||
+        github.event.merge_group.base_ref == 'refs/heads/main' ||
+        startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')
+      ))
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 20
           cache: 'npm'
@@ -268,3 +244,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run release:preflight
+
+  required:
+    name: required
+    if: ${{ always() }}
+    needs:
+      - check
+      - install-matrix
+      - release-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every applicable CI gate
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+          INSTALL_MATRIX_RESULT: ${{ needs.install-matrix.result }}
+          RELEASE_PREFLIGHT_RESULT: ${{ needs.release-preflight.result }}
+        run: |
+          if [[ "$CHECK_RESULT" != "success" ]]; then
+            echo "::error::check concluded with $CHECK_RESULT"
+            exit 1
+          fi
+          if [[ "$INSTALL_MATRIX_RESULT" != "success" ]]; then
+            echo "::error::install-matrix concluded with $INSTALL_MATRIX_RESULT"
+            exit 1
+          fi
+          if [[ "$RELEASE_PREFLIGHT_RESULT" != "success" && "$RELEASE_PREFLIGHT_RESULT" != "skipped" ]]; then
+            echo "::error::release-preflight concluded with $RELEASE_PREFLIGHT_RESULT"
+            exit 1
+          fi

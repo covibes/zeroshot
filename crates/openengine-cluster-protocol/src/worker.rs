@@ -9,15 +9,16 @@ use std::collections::BTreeMap;
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
-use thiserror::Error;
 
 use crate::{
     FieldName, GraphProfile, MediaType, NonEmptyEnumSet, PayloadType, RedactionClass, TypeId,
     WorkerErrorCode, WorkerRef, LEGACY_ZEROSHOT_WORKER, SINGLE_WORKER_GRAPH_PROFILE,
 };
 
+mod error;
 mod legacy;
 mod outcome;
+pub use error::*;
 pub use legacy::*;
 pub use outcome::*;
 
@@ -27,6 +28,8 @@ pub const A2A_VERSION: &str = "1.0";
 pub const A2A_PROFILE: &str = "openengine.worker.a2a/1.0";
 pub const LEGACY_ZEROSHOT_VERSION: &str = "1";
 pub const LEGACY_ZEROSHOT_PROFILE: &str = "legacy.zeroshot.ship/v1";
+pub const BUILTIN_VERSION: &str = "1";
+pub const BUILTIN_PROFILE: &str = "openengine.worker.builtin/v1";
 pub const RUNTIME_WORKER_ERRORS: [WorkerErrorCode; 4] = [
     WorkerErrorCode::Timeout,
     WorkerErrorCode::Crash,
@@ -40,6 +43,7 @@ pub enum WorkerProtocol {
     Acp,
     A2a,
     LegacyZeroshot,
+    Builtin,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -92,6 +96,11 @@ impl WorkerProtocolBinding {
         .expect("built-in legacy binding is valid")
     }
 
+    pub fn builtin_v1() -> Self {
+        Self::new(WorkerProtocol::Builtin, BUILTIN_VERSION, BUILTIN_PROFILE)
+            .expect("built-in binding is valid")
+    }
+
     pub fn validate(&self) -> Result<(), WorkerContractError> {
         let expected = expected_binding(self.protocol);
         if (self.version.as_str(), self.profile.as_str()) == expected {
@@ -107,6 +116,7 @@ const fn expected_binding(protocol: WorkerProtocol) -> (&'static str, &'static s
         WorkerProtocol::Acp => (ACP_VERSION, ACP_PROFILE),
         WorkerProtocol::A2a => (A2A_VERSION, A2A_PROFILE),
         WorkerProtocol::LegacyZeroshot => (LEGACY_ZEROSHOT_VERSION, LEGACY_ZEROSHOT_PROFILE),
+        WorkerProtocol::Builtin => (BUILTIN_VERSION, BUILTIN_PROFILE),
     }
 }
 
@@ -156,6 +166,16 @@ impl JsonSchema for WorkerProtocolBinding {
                         "protocol": { "const": "legacy_zeroshot" },
                         "version": { "const": LEGACY_ZEROSHOT_VERSION },
                         "profile": { "const": LEGACY_ZEROSHOT_PROFILE }
+                    }
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["protocol", "version", "profile"],
+                    "properties": {
+                        "protocol": { "const": "builtin" },
+                        "version": { "const": BUILTIN_VERSION },
+                        "profile": { "const": BUILTIN_PROFILE }
                     }
                 }
             ]
@@ -261,7 +281,8 @@ impl WorkerDescriptor {
     pub fn validate(&self) -> Result<(), WorkerContractError> {
         self.binding.validate()?;
         self.validate_collections()?;
-        self.validate_legacy_binding()
+        self.validate_legacy_binding()?;
+        self.validate_builtin_binding()
     }
 
     fn validate_collections(&self) -> Result<(), WorkerContractError> {
@@ -293,6 +314,16 @@ impl WorkerDescriptor {
             && self.contract.errors == RUNTIME_WORKER_ERRORS;
         if (protocol_is_legacy && !valid_legacy) || (identity_is_legacy && !protocol_is_legacy) {
             Err(WorkerContractError::InvalidLegacyBinding)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_builtin_binding(&self) -> Result<(), WorkerContractError> {
+        if self.binding.protocol == WorkerProtocol::Builtin
+            && !self.credential_requirements.is_empty()
+        {
+            Err(WorkerContractError::InvalidBuiltinBinding)
         } else {
             Ok(())
         }
@@ -368,6 +399,19 @@ impl JsonSchema for WorkerDescriptor {
                                     }
                                 }
                             }
+                        },
+                        {
+                            "required": ["worker", "binding", "credentialRequirements"],
+                            "properties": {
+                                "worker": { "not": { "const": LEGACY_ZEROSHOT_WORKER } },
+                                "binding": {
+                                    "required": ["protocol"],
+                                    "properties": {
+                                        "protocol": { "const": "builtin" }
+                                    }
+                                },
+                                "credentialRequirements": { "maxItems": 0 }
+                            }
                         }
                     ]
                 }
@@ -434,24 +478,4 @@ fn closed_worker_errors_schema(_generator: &mut SchemaGenerator) -> Schema {
             "enum": ["timeout", "crash", "malformed", "refusal"]
         }
     })
-}
-
-#[derive(Clone, Debug, Error, Eq, PartialEq)]
-pub enum WorkerContractError {
-    #[error("unsupported worker protocol version/profile binding")]
-    UnsupportedProtocolBinding,
-    #[error("invalid opaque registry handle")]
-    InvalidOpaqueHandle,
-    #[error("{0} must not be empty")]
-    Empty(&'static str),
-    #[error("{0} must not contain duplicates")]
-    Duplicate(&'static str),
-    #[error("worker errors must contain timeout, crash, malformed, and refusal")]
-    IncompleteRuntimeErrors,
-    #[error("legacy.zeroshot.ship@1 must use its pinned binding and {SINGLE_WORKER_GRAPH_PROFILE}")]
-    InvalidLegacyBinding,
-    #[error("legacy ship source fields are inconsistent")]
-    InvalidLegacySource,
-    #[error("worker error code and failure reason are inconsistent")]
-    InvalidFailurePair,
 }

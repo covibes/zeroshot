@@ -224,6 +224,7 @@ function buildPrOptions(options, requiredQualityGates) {
     prBase: options.prBase || null,
     mergeQueue: options.mergeQueue || false,
     closeIssue: options.closeIssue || null,
+    gitRemote: options.gitRemote || null,
     autoMerge,
     ...(requiredQualityGates.length > 0 ? { requiredQualityGates } : {}),
     cwd: options.cwd || process.cwd(),
@@ -1266,6 +1267,8 @@ class Orchestrator {
         const { detectGitContext } = require('../lib/git-remote-utils');
         const gitContext = detectGitContext(options.cwd);
         cluster.gitPlatform = gitContext?.provider || null;
+        options.gitRemote = gitContext?.remote || options.gitRemote || null;
+        cluster.prOptions = buildPrOptions(options, requiredQualityGates);
 
         if (cluster.gitPlatform) {
           this._log(`[Orchestrator] Git platform detected: ${cluster.gitPlatform.toUpperCase()}`);
@@ -1796,18 +1799,30 @@ class Orchestrator {
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});
-      // `prBase` is the PR target branch. Use that same local ref as the
-      // worktree base so repo-local integration commits are not skipped.
+      const { detectGitContext } = require('../lib/git-remote-utils');
+      const gitContext = detectGitContext(workDir);
+      if (gitContext?.remote) {
+        options.gitRemote = gitContext.remote;
+      }
+
+      // `prBase` is the PR target branch. Base isolated work on its refreshed
+      // remote-tracking ref so a stale local branch cannot change the plan.
       const worktreeOptions = {};
       if (options.prBase) {
-        worktreeOptions.baseRef = options.prBase;
-        this._log(`[Orchestrator] Using worktree base ref: ${options.prBase}`);
+        const remoteName = options.gitRemote || 'origin';
+        worktreeOptions.baseRef = `${remoteName}/${options.prBase}`;
+        if (remoteName !== 'origin') {
+          worktreeOptions.remoteName = remoteName;
+        }
+        worktreeOptions.requireFreshBase = true;
+        this._log(`[Orchestrator] Using worktree base ref: ${worktreeOptions.baseRef}`);
       }
       worktreeInfo = isolationManager.createWorktreeIsolation(clusterId, workDir, worktreeOptions);
 
       this._log(`[Orchestrator] Starting cluster in worktree isolation mode`);
       this._log(`[Orchestrator] Worktree: ${worktreeInfo.path}`);
       this._log(`[Orchestrator] Branch: ${worktreeInfo.branch}`);
+      this._log(`[Orchestrator] Worktree base commit: ${worktreeInfo.baseSha}`);
     }
 
     return { isolationManager, containerId, worktreeInfo, image: isolationImage };
@@ -1870,15 +1885,12 @@ class Orchestrator {
       closeIssue: options.closeIssue,
       requiredQualityGates: options.requiredQualityGates,
       autoMerge: resolveRunPlan(options).autoMerge,
+      gitRemote: gitContext?.remote || options.gitRemote,
+      issueNumber: inputData.number,
+      issueTitle: inputData.title,
+      includeIssueReference: !skipCloseIssue,
       cwd: options.cwd,
     });
-
-    // Template replacement for issue context
-    const issueRef = skipCloseIssue ? '' : `Closes #${inputData.number || 'unknown'}`;
-    gitPusherConfig.prompt = gitPusherConfig.prompt
-      .replace(/\{\{issue_number\}\}/g, inputData.number || 'unknown')
-      .replace(/\{\{issue_title\}\}/g, inputData.title || 'Implementation')
-      .replace(/Closes #\{\{issue_number\}\}/g, issueRef);
 
     config.agents.push(gitPusherConfig);
     this._log(
@@ -2649,31 +2661,68 @@ class Orchestrator {
   }
 
   _resolveFailureInfo(cluster, clusterId) {
-    if (cluster.failureInfo) {
-      return cluster.failureInfo.agentId ? cluster.failureInfo : null;
+    const persistedFailure = cluster.failureInfo?.agentId ? cluster.failureInfo : null;
+    if (persistedFailure) {
+      if (!this._hasDurableProgressAfterFailure(cluster, clusterId, persistedFailure)) {
+        return persistedFailure;
+      }
+      this._log(
+        `[Orchestrator] Ignoring recovered registry failure from ${persistedFailure.agentId}; durable task progress followed it`
+      );
     }
 
     const errors = cluster.messageBus.query({
       cluster_id: clusterId,
       topic: 'AGENT_ERROR',
-      limit: 10,
       order: 'desc',
     });
 
-    if (errors.length === 0) {
-      return null;
+    for (const error of errors) {
+      const failureInfo = {
+        agentId: error.sender,
+        taskId: error.content?.data?.taskId || null,
+        iteration: error.content?.data?.iteration || 0,
+        error: error.content?.data?.error || error.content?.text,
+        timestamp: error.timestamp,
+      };
+      if (this._hasDurableProgressAfterFailure(cluster, clusterId, failureInfo)) {
+        this._log(
+          `[Orchestrator] Ignoring recovered ledger failure from ${error.sender}; durable task progress followed it`
+        );
+        continue;
+      }
+
+      this._log(`[Orchestrator] Found failure from ledger: ${failureInfo.agentId}`);
+      return failureInfo;
     }
 
-    const firstError = errors[0];
-    const failureInfo = {
-      agentId: firstError.sender,
-      taskId: firstError.content?.data?.taskId || null,
-      iteration: firstError.content?.data?.iteration || 0,
-      error: firstError.content?.data?.error || firstError.content?.text,
-      timestamp: firstError.timestamp,
-    };
-    this._log(`[Orchestrator] Found failure from ledger: ${failureInfo.agentId}`);
-    return failureInfo;
+    return null;
+  }
+
+  _hasDurableProgressAfterFailure(cluster, clusterId, failureInfo) {
+    const failureIteration = failureInfo.iteration;
+    const failureTimestamp = failureInfo.timestamp;
+    return cluster.messageBus
+      .query({
+        cluster_id: clusterId,
+        topic: 'AGENT_LIFECYCLE',
+        sender: failureInfo.agentId,
+        since: failureTimestamp,
+      })
+      .some((message) => {
+        const event = message.content?.data?.event;
+        if (!['TASK_STARTED', 'TASK_COMPLETED'].includes(event)) {
+          return false;
+        }
+
+        const iteration = message.content?.data?.iteration;
+        return (
+          (Number.isFinite(failureTimestamp) && message.timestamp > failureTimestamp) ||
+          (Number.isInteger(failureIteration) &&
+            Number.isInteger(iteration) &&
+            iteration > failureIteration)
+        );
+      });
   }
 
   _requireFailedAgent(clusterId, cluster, failureInfo) {
@@ -3996,7 +4045,6 @@ Continue from where you left off. Review your previous output to understand what
         }
       }
 
-      // Generate platform-specific git-pusher agent from template
       const {
         generateGitPusherAgent,
         isPlatformSupported,
@@ -4008,18 +4056,19 @@ Continue from where you left off. Review your previous output to understand what
         );
       }
 
-      // Use persisted PR options from cluster state (or empty for repo settings fallback)
-      const gitPusherConfig = generateGitPusherAgent(platform, cluster.prOptions || {});
-
       // Get issue context from ledger
       const issueMsg = cluster.messageBus.ledger.findLast({ topic: 'ISSUE_OPENED' });
       const issueNumber = issueMsg?.content?.data?.number || 'unknown';
       const issueTitle = issueMsg?.content?.data?.title || 'Implementation';
 
-      // Inject issue context into prompt
-      gitPusherConfig.prompt = gitPusherConfig.prompt
-        .replace(/\{\{issue_number\}\}/g, issueNumber)
-        .replace(/\{\{issue_title\}\}/g, issueTitle);
+      // Generate the final prompt in one typed assembly pass. Issue values are
+      // resolved before the shell-quoted remote is inserted, so placeholder-like
+      // remote names cannot be rewritten by issue context.
+      const gitPusherConfig = generateGitPusherAgent(platform, {
+        ...(cluster.prOptions || {}),
+        issueNumber,
+        issueTitle,
+      });
 
       await this._opAddAgents(cluster, { agents: [gitPusherConfig] }, context);
       this._log(`    [--pr mode] Injected ${platform}-git-pusher agent`);

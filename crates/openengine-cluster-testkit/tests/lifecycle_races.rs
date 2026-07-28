@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use openengine_cluster_protocol::{DispatchState, StopMode, INVALID_PHASE};
 use openengine_cluster_server::lifecycle::{LifecycleEvent, TurnId};
-use openengine_cluster_testkit::lifecycle::{stop, suspend};
+use openengine_cluster_testkit::lifecycle::{delete, stop, suspend};
 
 #[path = "admission_support/mod.rs"]
 mod admission_support;
@@ -87,4 +87,54 @@ async fn lifecycle_concurrent_first_use_and_drain_force_race_serialize() {
             mode: StopMode::Force
         }
     ));
+}
+
+#[tokio::test]
+async fn delete_concurrent_competing_keys_serialize_exactly_one_winner() {
+    let (client, store) = running().await;
+    client
+        .stop(stop(StopMode::Force, 1, "delete-race-fixture"))
+        .await
+        .expect("fixture force-stop reaches a terminal run");
+    // Arms the cleanup fence so the winning delete holds `Deleting` instead of finalizing
+    // immediately, which is what lets the loser observe a non-terminal phase (INVALID_PHASE)
+    // rather than a reset-generation conflict.
+    store.arm_pending_cleanup().await;
+    let client = Arc::new(client);
+
+    let first = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            client
+                .delete(delete(1, Some("run-1"), "delete-race-a"))
+                .await
+        })
+    };
+    let second = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            client
+                .delete(delete(1, Some("run-1"), "delete-race-b"))
+                .await
+        })
+    };
+    let first = first.await.unwrap();
+    let second = second.await.unwrap();
+
+    let results = [first, second];
+    let winners = results.iter().filter(|result| result.is_ok()).count();
+    assert_eq!(
+        winners, 1,
+        "exactly one competing delete call must win the fence"
+    );
+    for result in results {
+        match result {
+            Ok(result) => {
+                assert!(!result.deleted);
+                assert_eq!(result.phase, openengine_cluster_protocol::Phase::Deleting);
+                assert!(!result.deduped);
+            }
+            Err(error) => assert_eq!(rpc_code(error), INVALID_PHASE),
+        }
+    }
 }

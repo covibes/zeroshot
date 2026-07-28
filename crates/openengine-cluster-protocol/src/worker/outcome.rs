@@ -4,11 +4,11 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use schemars::{json_schema, JsonSchema, Schema, SchemaGenerator};
-use serde::de;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::WorkerContractError;
+use crate::wire::impl_validate_gated_wire;
 use crate::{ArtifactRef, EnumLabel, FieldName, WorkerErrorCode};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -200,26 +200,7 @@ impl<'a> From<&'a WorkerOutcome> for WorkerOutcomeRef<'a> {
     }
 }
 
-impl<'de> Deserialize<'de> for WorkerOutcome {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let outcome = Self::from(WorkerOutcomeWire::deserialize(deserializer)?);
-        outcome.validate().map_err(de::Error::custom)?;
-        Ok(outcome)
-    }
-}
-
-impl Serialize for WorkerOutcome {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.validate().map_err(serde::ser::Error::custom)?;
-        WorkerOutcomeRef::from(self).serialize(serializer)
-    }
-}
+impl_validate_gated_wire!(WorkerOutcome, WorkerOutcomeWire, WorkerOutcomeRef);
 
 impl JsonSchema for WorkerOutcome {
     fn schema_name() -> Cow<'static, str> {

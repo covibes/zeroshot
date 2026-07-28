@@ -1,0 +1,8 @@
+{"id":"delete-apply","jsonrpc":"2.0","method":"apply","params":{"graph":{"initialInput":{"kind":"null"},"policy":{"default":"deny","policy":"policy.default@1"},"profile":"openengine.graph.single-worker/v1","root":{"attempts":1,"input":{"kind":"null"},"inputBindings":[],"kind":"step","name":"worker","output":{"kind":"null"},"timeoutMs":1000,"worker":"legacy.zeroshot.ship@1","writeBindings":[]}},"idempotencyKey":"delete-create","ifGeneration":0,"input":null}}
+{"jsonrpc":"2.0","id":"delete-apply","result":{"generation":1,"runId":"run-1","phase":"running","deduped":false}}
+{"id":"delete-stop","jsonrpc":"2.0","method":"stop","params":{"idempotencyKey":"delete-stop","ifGeneration":1,"mode":"force"}}
+{"jsonrpc":"2.0","id":"delete-stop","result":{"generation":1,"runId":"run-1","phase":"finished","acceptedMode":"force","effectiveMode":"force","operational":{"labels":{},"logLevel":"info","dispatchState":"stopped","stopMode":"force","inFlight":0},"atCursor":"cursor-3","deduped":false}}
+{"id":"delete-delete","jsonrpc":"2.0","method":"delete","params":{"idempotencyKey":"delete-delete","ifGeneration":1,"ifRunId":"run-1"}}
+{"jsonrpc":"2.0","id":"delete-delete","result":{"deleted":true,"phase":"empty","deduped":false}}
+{"id":"delete-get","jsonrpc":"2.0","method":"get","params":{}}
+{"jsonrpc":"2.0","id":"delete-get","result":{"spec":null,"status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null},"atCursor":null}}
