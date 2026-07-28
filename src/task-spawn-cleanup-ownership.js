@@ -40,20 +40,21 @@ function requireTaskIdFromWrapperResult({
   if (code !== 0) {
     throw new Error(`zeroshot task run failed with code ${code}: ${stderr}`);
   }
-  if (persistedTaskId) {
+  if (!persistedTaskId) {
     const printedTaskId = parseTaskId(stdout);
-    if (printedTaskId && printedTaskId !== persistedTaskId) {
-      throw new Error(
-        `Task ownership receipt ${persistedTaskId} did not match wrapper output ${printedTaskId}.`
-      );
-    }
-    return persistedTaskId;
+    throw new Error(
+      `Detached task ownership receipt was not persisted${
+        printedTaskId ? ` for wrapper output ${printedTaskId}` : ''
+      }.`
+    );
   }
-  const taskId = parseTaskId(stdout);
-  if (!taskId) {
-    throw new Error(`Could not parse task ID from output: ${stdout}`);
+  const printedTaskId = parseTaskId(stdout);
+  if (printedTaskId && printedTaskId !== persistedTaskId) {
+    throw new Error(
+      `Task ownership receipt ${persistedTaskId} did not match wrapper output ${printedTaskId}.`
+    );
   }
-  return taskId;
+  return persistedTaskId;
 }
 
 function createTaskSpawnOwnershipToken() {

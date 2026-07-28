@@ -4,7 +4,7 @@ const os = require('os');
 const path = require('path');
 
 const { startLivenessCheck, stopLivenessCheck } = require('../src/agent/agent-lifecycle');
-const { killTask } = require('../src/agent/agent-task-executor');
+const { killTask, spawnTaskProcess } = require('../src/agent/agent-task-executor');
 const Orchestrator = require('../src/orchestrator');
 const MockTaskRunner = require('./helpers/mock-task-runner');
 
@@ -192,6 +192,127 @@ describe('Agent stuck-task recovery', function () {
     }
   });
 
+
+  it('cancels pending launches before persistence, before wrapper close, and before follower install', async function () {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-launch-windows-'));
+    const fakeZeroshot = path.join(fakeBin, 'zeroshot');
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    fs.writeFileSync(
+      fakeZeroshot,
+      `#!/usr/bin/env node
+      (async () => {
+        const { addTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+        const action = process.argv[2];
+        const taskId = process.argv[3];
+        if (action === 'kill') {
+          updateTask(taskId, {
+            status: 'killed',
+            pid: null,
+            processGroupId: null,
+            cancelRequested: false,
+            commandCleanup: null
+          });
+          return;
+        }
+        if (action === 'pre-row') {
+          setInterval(() => {}, 1000);
+          return;
+        }
+        if (action === 'timeout-row') {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        addTask({
+          id: taskId,
+          status: 'running',
+          pid: null,
+          spawnOwnershipToken: process.env.ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN,
+          commandCleanup: null
+        });
+        if (action === 'post-row' || action === 'timeout-row') {
+          setInterval(() => {}, 1000);
+          return;
+        }
+        process.stdout.write('Task spawned: ' + taskId + '\\n');
+      })().catch((error) => {
+        process.stderr.write(error.stack + '\\n');
+        process.exitCode = 1;
+      });
+      `,
+      { mode: 0o755 }
+    );
+    const { getTask, removeTask } = await import(storeUrl);
+
+    try {
+      for (const state of ['pre-row', 'post-row', 'post-id']) {
+        const taskId = `launch-${state.replace('-', '')}-task`;
+        const agent = {
+          currentTask: null,
+          currentTaskId: null,
+          processPid: null,
+          lastOutputTime: null,
+          taskStartedAt: null,
+          _publishLifecycle() {},
+          _stopLivenessCheck() {},
+          _log() {},
+        };
+        const launch = spawnTaskProcess({
+          agent,
+          ctPath: fakeZeroshot,
+          args: [state, taskId],
+          cwd: process.cwd(),
+          spawnEnv: process.env,
+        });
+        await waitFor(() => agent.currentTask?.pendingLaunch);
+        if (state === 'post-row') await waitFor(() => getTask(taskId));
+        if (state === 'post-id') await launch;
+
+        const termination = await killTask(agent, `cancel ${state}`);
+        assert.notStrictEqual(termination?.forced, false, state);
+        assert.strictEqual(agent.currentTask, null, state);
+        assert.strictEqual(agent.currentTaskId, null, state);
+        if (state !== 'pre-row') {
+          assert.strictEqual(getTask(taskId)?.status, 'killed', state);
+          removeTask(taskId);
+        } else {
+          await assert.rejects(launch, /killed by signal/i);
+        }
+        if (state === 'post-row') await assert.rejects(launch, /killed by signal/i);
+      }
+
+      const timeoutTaskId = 'launch-timeout-task';
+      const timeoutAgent = {
+        currentTask: null,
+        currentTaskId: null,
+        processPid: null,
+        lastOutputTime: null,
+        taskStartedAt: null,
+        _publishLifecycle() {},
+        _stopLivenessCheck() {},
+        _log() {},
+      };
+      let timeoutError;
+      try {
+        await spawnTaskProcess({
+          agent: timeoutAgent,
+          ctPath: fakeZeroshot,
+          args: ['timeout-row', timeoutTaskId],
+          cwd: process.cwd(),
+          spawnEnv: process.env,
+          spawnTimeoutMs: 300,
+        });
+      } catch (error) {
+        timeoutError = error;
+      }
+      assert.match(timeoutError?.message || '', /Spawn timeout/);
+      assert.strictEqual(timeoutError.commandCleanupOwner, 'task-lifecycle');
+      assert.strictEqual(getTask(timeoutTaskId)?.status, 'running');
+      await killTask(timeoutAgent, 'cancel timeout');
+      assert.strictEqual(getTask(timeoutTaskId)?.status, 'killed');
+      removeTask(timeoutTaskId);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
   async function runMockRecovery({ failures, maxRestartAttempts, maxTotalRestarts }) {
     fs.writeFileSync(
       process.env.ZEROSHOT_SETTINGS_FILE,

@@ -79,7 +79,7 @@ async function main() {
         ? `require('fs').writeFileSync(${JSON.stringify(providerPidFile)}, String(process.pid));`
         : `process.stdout.write('provider output\\n'); process.exit(${providerExitCode});`;
   const commandSpec = {
-    binary: process.execPath,
+    binary: mode === 'missing-command' ? path.join(stateDir, 'provider-disappeared') : process.execPath,
     args: ['-e', providerSource],
     env: {},
     cleanup: [cleanupDir],

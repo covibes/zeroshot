@@ -20,7 +20,11 @@ function runFixture(mode) {
         },
       }
     );
-    assert.strictEqual(execution.status, 0, execution.stderr || execution.stdout);
+    assert.strictEqual(
+      execution.status,
+      mode === 'retry' ? 0 : 1,
+      execution.stderr || execution.stdout
+    );
     const { stdout } = execution;
     const resultLine = stdout.split('\n').find((entry) => entry.startsWith('RESULT:'));
     assert.ok(resultLine, stdout);

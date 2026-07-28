@@ -54,6 +54,15 @@ describe('watcher command cleanup ownership', function () {
     });
   }
 
+  it('fails durably when the provider executable disappears before spawn', async function () {
+    const result = await runFixture('watcher.js', 'missing-command');
+    assert.strictEqual(result.watcherExit.code, 1, result.watcherOutput);
+    assert.strictEqual(result.status, 'failed');
+    assert.strictEqual(result.commandCleanup, null);
+    assert.strictEqual(result.cleanupExists, false);
+    assert.match(result.logOutput, /ENOENT|no such file/i);
+  });
+
   it('cleans an owned overlay after normal completion', async function () {
     const result = await runFixture('watcher.js', 'exit0');
     assert.strictEqual(result.watcherExit.code, 0);

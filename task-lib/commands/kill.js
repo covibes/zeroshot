@@ -19,14 +19,16 @@ async function cleanupTerminatedTask(task) {
 }
 
 async function retryTerminalTaskCleanup(taskId, task) {
-  if (!task.commandCleanup) return;
+  if (!task.commandCleanup) return true;
   const cleanupUpdate = await cleanupTerminatedTask(task);
   if (cleanupUpdate.commandCleanup === null) {
     updateTask(taskId, cleanupUpdate);
     console.log(chalk.green(`✓ Recovered pending command cleanup for task ${taskId}`));
-    return;
+    return true;
   }
   console.log(chalk.yellow(`Warning: command cleanup remains pending for task ${taskId}`));
+  process.exitCode = 1;
+  return false;
 }
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
@@ -106,6 +108,10 @@ export async function killTaskCommand(taskId, options = {}) {
       cancelRequested: false,
       ...cleanupUpdate,
     });
+    if (getTask(taskId)?.commandCleanup) {
+      console.log(chalk.yellow(`Warning: command cleanup remains pending for task ${taskId}`));
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -125,6 +131,10 @@ export async function killTaskCommand(taskId, options = {}) {
       cancelRequested: false,
       ...cleanupUpdate,
     });
+    if (getTask(taskId)?.commandCleanup) {
+      console.log(chalk.yellow(`Warning: command cleanup remains pending for task ${taskId}`));
+      process.exitCode = 1;
+    }
   } else {
     console.log(chalk.red(`Failed to kill task ${taskId}`));
     updateTask(taskId, {

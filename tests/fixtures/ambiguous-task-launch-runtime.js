@@ -38,6 +38,10 @@ async function runAmbiguousWrapper() {
       cliFeatures: { supportsSettings: false },
     });
   }
+  if (scenario === 'legacy-success-no-token') {
+    process.stdout.write(`Task spawned: ${taskId}\n`);
+    return;
+  }
   const cleanupPath = path.dirname(settingsPath);
   const provider = childProcess.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
     detached: process.platform !== 'win32',

@@ -56,6 +56,14 @@ describe('Ambiguous task-wrapper cleanup ownership', function () {
       assert.strictEqual(result.pending, null);
       assert.strictEqual(result.overlayExistsAfterReject, false);
     });
+
+    it(`${mode} rejects legacy success output without a durable token receipt`, function () {
+      const result = runFixture(mode, 'legacy-success-no-token');
+      assert.match(result.rejection.message, /ownership receipt was not persisted/);
+      assert.strictEqual(result.rejection.commandCleanupOwner, undefined);
+      assert.strictEqual(result.pending, null);
+      assert.strictEqual(result.overlayExistsAfterReject, false);
+    });
   }
 });
 
@@ -71,6 +79,21 @@ describe('Durable task ownership receipt', function () {
         persistedTaskId: 'task-durable-receipt',
       }),
       'task-durable-receipt'
+    );
+  });
+
+  it('rejects wrapper output that disagrees with the durable receipt', function () {
+    const { requireTaskIdFromWrapperResult } = require('../../src/task-spawn-cleanup-ownership');
+    assert.throws(
+      () =>
+        requireTaskIdFromWrapperResult({
+          code: 0,
+          stdout: 'Task spawned: task-wrong-id',
+          stderr: '',
+          parseTaskId: () => 'task-wrong-id',
+          persistedTaskId: 'task-durable-receipt',
+        }),
+      /did not match wrapper output/
     );
   });
 });

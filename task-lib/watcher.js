@@ -55,52 +55,13 @@ const { providerName, env, command, finalArgs } = resolveWatcherCommand(
   normalizeProviderName
 );
 
-if (
-  await completePendingWatcherCancellation({
-    taskId,
-    getTask,
-    commandCleanup,
-    terminateProvider: () => true,
-    updateTask,
-    emergencyLog,
-  })
-) {
-  process.exit(0);
-}
-
 let crashStarted = false;
-let child = spawnWatcherProvider(command, finalArgs, {
-  cwd: commandSpec.cwd || cwd,
-  env,
-  stdio: ['ignore', 'pipe', 'pipe'],
-  detached: process.platform !== 'win32',
-});
-
-updateTask(taskId, {
-  pid: child.pid,
-  processGroupId: process.platform === 'win32' ? null : child.pid,
-  terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
-});
-
-if (
-  await completePendingWatcherCancellation({
-    taskId,
-    getTask,
-    commandCleanup,
-    terminateProvider: terminateOwnedProviderBoundary,
-    updateTask,
-    emergencyLog,
-  })
-) {
-  crashStarted = true;
-  process.exit(0);
-}
-
-
+let child = null;
 let stdoutBuffer = '';
 let stderrBuffer = '';
 
 function stopProviderAfterFatalOutput() {
+  if (!child) return;
   try {
     child.kill('SIGTERM');
   } catch {
@@ -123,6 +84,53 @@ const outputRuntime = createWatcherOutputRuntime({
   providerName,
   log,
   stopProvider: stopProviderAfterFatalOutput,
+});
+
+function terminateOwnedProviderBoundary() {
+  return terminateWatcherProvider(child);
+}
+
+async function crashWithError(error, source) {
+  if (crashStarted) return;
+  crashStarted = true;
+  await completeWatcherFailure({
+    taskId,
+    error,
+    source,
+    commandCleanup,
+    terminateProvider: terminateOwnedProviderBoundary,
+    updateTask,
+    emergencyLog,
+  });
+  process.exit(1);
+}
+
+process.on('uncaughtException', (error) => {
+  void crashWithError(error, 'uncaughtException');
+});
+
+process.on('unhandledRejection', (reason) => {
+  void crashWithError(reason, 'unhandledRejection');
+});
+
+if (
+  await completePendingWatcherCancellation({
+    taskId,
+    getTask,
+    commandCleanup,
+    terminateProvider: () => true,
+    updateTask,
+    emergencyLog,
+  })
+) {
+  process.exit(0);
+}
+
+child = spawnWatcherProvider(command, finalArgs, {
+  cwd: commandSpec.cwd || cwd,
+  env,
+  stdio: ['ignore', 'pipe', 'pipe'],
+  detached: process.platform !== 'win32',
 });
 
 child.stdout.on('data', (data) => {
@@ -153,6 +161,7 @@ child.on('close', async (code, signal) => {
 });
 
 child.on('error', async (err) => {
+  if (crashStarted) return;
   crashStarted = true;
   log(`\nError: ${err.message}\n`);
   await completeWatcherTask({
@@ -166,29 +175,21 @@ child.on('error', async (err) => {
   process.exit(1);
 });
 
-function terminateOwnedProviderBoundary() {
-  return terminateWatcherProvider(child);
-}
+updateTask(taskId, {
+  pid: child.pid,
+  processGroupId: process.platform === 'win32' ? null : child.pid,
+  terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
+});
 
-async function crashWithError(error, source) {
-  if (crashStarted) return;
+if (getTask(taskId)?.cancelRequested) {
   crashStarted = true;
-  await completeWatcherFailure({
+  await completePendingWatcherCancellation({
     taskId,
-    error,
-    source,
+    getTask,
     commandCleanup,
     terminateProvider: terminateOwnedProviderBoundary,
     updateTask,
     emergencyLog,
   });
-  process.exit(1);
+  process.exit(0);
 }
-
-process.on('uncaughtException', (error) => {
-  void crashWithError(error, 'uncaughtException');
-});
-
-process.on('unhandledRejection', (reason) => {
-  void crashWithError(reason, 'unhandledRejection');
-});

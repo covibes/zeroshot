@@ -509,6 +509,7 @@ async function spawnClaudeTask(agent, context) {
       : null;
 
   let taskId;
+  let pendingLaunch;
   try {
     const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
     taskId = await spawnTaskProcess({
@@ -518,6 +519,7 @@ async function spawnClaudeTask(agent, context) {
       cwd,
       spawnEnv,
     });
+    pendingLaunch = agent.currentTask;
   } catch (error) {
     cleanupCallerOwnedCommand(error, () => cleanupClaudeSettingsOverlay(claudeSettingsPath));
     throw error;
@@ -528,6 +530,7 @@ async function spawnClaudeTask(agent, context) {
   // files that a live provider still reads.
   agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
   await waitForTaskReady(agent, taskId);
+  if (pendingLaunch?.cancelled) throw new Error(`Task launch cancelled: ${taskId}`);
 
   const MAX_PID_POLLS = 30;
   const PID_POLL_DELAY = 100;
@@ -546,6 +549,8 @@ async function spawnClaudeTask(agent, context) {
     }
     await new Promise((r) => setTimeout(r, PID_POLL_DELAY));
   }
+
+  if (pendingLaunch?.cancelled) throw new Error(`Task launch cancelled: ${taskId}`);
 
   if (realPid) {
     agent.processPid = realPid;
@@ -720,10 +725,90 @@ function parseTaskIdFromOutput(stdout) {
   return match ? match[1] : null;
 }
 
-function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
-  // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
-  const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
+const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
 
+function assignDurableTaskId(agent, taskId) {
+  if (!taskId || agent.currentTaskId === taskId) return;
+  agent.currentTaskId = taskId;
+  agent._publishLifecycle('TASK_ID_ASSIGNED', {
+    pid: agent.processPid,
+    taskId,
+  });
+}
+
+function createPendingTaskLaunchHandle({
+  agent,
+  proc,
+  ctPath,
+  findPersistedTaskId,
+  waitForWrapperClose,
+  isWrapperClosed,
+}) {
+  let cancellation = null;
+  const handle = {
+    pendingLaunch: true,
+    cancelled: false,
+    kill(reason = 'Task killed') {
+      handle.cancelled = true;
+      if (cancellation) return cancellation;
+      cancellation = (async () => {
+        let taskId = findPersistedTaskId();
+        let commandError = null;
+        let commandAttempted = false;
+        const cancelTask = async (persistedTaskId) => {
+          commandAttempted = true;
+          assignDurableTaskId(agent, persistedTaskId);
+          try {
+            await runCommandWithTimeout(ctPath, ['kill', persistedTaskId], { timeout: 10000 });
+          } catch (error) {
+            commandError = error;
+          }
+        };
+        if (taskId) await cancelTask(taskId);
+
+        if (!isWrapperClosed()) {
+          proc.kill('SIGKILL');
+          await waitForWrapperClose;
+        }
+
+        taskId = taskId || findPersistedTaskId();
+        if (taskId && !commandAttempted) await cancelTask(taskId);
+        if (taskId && commandError === null) {
+          const task = getTask(taskId);
+          if (!task || !TASK_TERMINAL_STATUSES.has(task.status) || task.commandCleanup) {
+            commandError = new Error(
+              `Task ${taskId} termination and command cleanup were not confirmed`
+            );
+          }
+        } else if (taskId) {
+          const task = getTask(taskId);
+          if (task && TASK_TERMINAL_STATUSES.has(task.status) && !task.commandCleanup) {
+            commandError = null;
+          }
+        }
+
+        if (commandError) {
+          return { forced: false, reason: commandError.message };
+        }
+        agent._log?.(`Cancelled pending task launch${taskId ? ` ${taskId}` : ''}: ${reason}`);
+        return { forced: true, taskId: taskId || null };
+      })();
+      return cancellation;
+    },
+  };
+  return handle;
+}
+
+function spawnTaskProcess({
+  agent,
+  ctPath,
+  args,
+  cwd,
+  spawnEnv,
+  spawnTimeoutMs = 30000,
+}) {
+  // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it.
+  const SPAWN_TIMEOUT_MS = spawnTimeoutMs;
   // spawn() throws on null bytes in argv; strip them before they get there.
   const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
   const ownershipToken = createTaskSpawnOwnershipToken();
@@ -737,6 +822,28 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
       windowsHide: true,
     });
 
+    let wrapperClosed = false;
+    let resolveWrapperClose;
+    const waitForWrapperClose = new Promise((resolveClose) => {
+      resolveWrapperClose = resolveClose;
+    });
+    const markWrapperClosed = () => {
+      if (wrapperClosed) return;
+      wrapperClosed = true;
+      resolveWrapperClose();
+    };
+    proc.once('close', markWrapperClosed);
+    proc.once('error', markWrapperClosed);
+    const pendingLaunch = createPendingTaskLaunchHandle({
+      agent,
+      proc,
+      ctPath,
+      findPersistedTaskId,
+      waitForWrapperClose,
+      isWrapperClosed: () => wrapperClosed,
+    });
+    agent.currentTask = pendingLaunch;
+
     // NOTE: Don't emit PROCESS_SPAWNED here - proc.pid is a wrapper that exits immediately.
     // Real PID comes from task store after watcher spawns the actual CLI process.
     // PROCESS_SPAWNED is emitted in spawnClaudeTask after waitForTaskReady + PID polling.
@@ -744,20 +851,23 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
     let stdout = '';
     let stderr = '';
     let resolved = false;
+    let timeoutError = null;
     const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
-    const rejectWithOwnership = (error) => reject(classifyCleanupOwnership(error));
+    const rejectWithOwnership = (error) => {
+      if (!findPersistedTaskId() && wrapperClosed && agent.currentTask === pendingLaunch) {
+        agent.currentTask = null;
+      }
+      reject(classifyCleanupOwnership(error));
+    };
 
     // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs
     const spawnTimeout = setTimeout(() => {
       if (resolved) return;
-      resolved = true;
-      proc.kill('SIGKILL');
-      rejectWithOwnership(
-        new Error(
-          `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
-            `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
-        )
+      timeoutError = new Error(
+        `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
+          `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
       );
+      proc.kill('SIGKILL');
     }, SPAWN_TIMEOUT_MS);
 
     proc.stdout.on('data', (data) => {
@@ -772,6 +882,10 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
       clearTimeout(spawnTimeout);
       if (resolved) return;
       resolved = true;
+      if (timeoutError) {
+        rejectWithOwnership(timeoutError);
+        return;
+      }
       // Handle process killed by signal (e.g., SIGTERM, SIGKILL, SIGSTOP)
       if (signal) {
         rejectWithOwnership(
@@ -794,11 +908,7 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
         return;
       }
 
-      agent.currentTaskId = spawnedTaskId; // Track for resume capability
-      agent._publishLifecycle('TASK_ID_ASSIGNED', {
-        pid: agent.processPid,
-        taskId: spawnedTaskId,
-      });
+      assignDurableTaskId(agent, spawnedTaskId);
 
       // Start liveness monitoring
       if (agent.enableLivenessCheck) {
@@ -1409,10 +1519,48 @@ async function spawnClaudeTaskIsolated(agent, context) {
   const isolatedEnv =
     providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {};
 
+  let isolatedPendingLaunch = null;
   const taskId = await new Promise((resolve, reject) => {
     const proc = manager.spawnInContainer(clusterId, command, {
       env: isolatedEnv,
     });
+
+    let isolatedTaskId = null;
+    let wrapperClosed = false;
+    let resolveWrapperClose;
+    const waitForWrapperClose = new Promise((resolveClose) => {
+      resolveWrapperClose = resolveClose;
+    });
+    const markWrapperClosed = () => {
+      if (wrapperClosed) return;
+      wrapperClosed = true;
+      resolveWrapperClose();
+    };
+    proc.once('close', markWrapperClosed);
+    proc.once('error', markWrapperClosed);
+    isolatedPendingLaunch = {
+      pendingLaunch: true,
+      cancelled: false,
+      async kill(reason = 'Task killed') {
+        isolatedPendingLaunch.cancelled = true;
+        let termination = null;
+        if (isolatedTaskId) {
+          termination = await terminateIsolatedTask(manager, clusterId, isolatedTaskId);
+          if (termination?.forced === false) return termination;
+        }
+        if (!wrapperClosed) {
+          proc.kill('SIGKILL');
+          await waitForWrapperClose;
+        }
+        if (isolatedTaskId && !termination) {
+          termination = await terminateIsolatedTask(manager, clusterId, isolatedTaskId);
+        }
+        if (termination?.forced === false) return termination;
+        agent._log?.(`Cancelled pending isolated task launch: ${reason}`);
+        return termination || { forced: true };
+      },
+    };
+    agent.currentTask = isolatedPendingLaunch;
 
     // Track PID for resource monitoring
     agent.processPid = proc.pid;
@@ -1457,11 +1605,8 @@ async function spawnClaudeTaskIsolated(agent, context) {
         // Parse task ID from output: "✓ Task spawned: xxx-yyy-nn"
         const spawnedTaskId = parseTaskIdFromOutput(stdout);
         if (spawnedTaskId) {
-          agent.currentTaskId = spawnedTaskId; // Track for resume capability
-          agent._publishLifecycle('TASK_ID_ASSIGNED', {
-            pid: agent.processPid,
-            taskId: spawnedTaskId,
-          });
+          isolatedTaskId = spawnedTaskId;
+          assignDurableTaskId(agent, spawnedTaskId);
 
           resolve(spawnedTaskId);
         } else {
@@ -1473,12 +1618,16 @@ async function spawnClaudeTaskIsolated(agent, context) {
     });
 
     proc.on('error', (error) => {
+      if (!isolatedTaskId && agent.currentTask === pendingLaunch) {
+        agent.currentTask = null;
+      }
       clearTimeout(spawnTimeout);
       if (resolved) return;
       resolved = true;
       reject(error);
     });
   });
+  if (isolatedPendingLaunch?.cancelled) throw new Error(`Task launch cancelled: ${taskId}`);
 
   agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId} in container...`);
 
@@ -2164,6 +2313,18 @@ async function killTask(agent, termination = 'Task killed') {
   const currentTask = agent.currentTask;
   const taskId = agent.currentTaskId;
 
+  if (currentTask?.pendingLaunch && typeof currentTask.kill === 'function') {
+    const termination = await currentTask.kill(reason, { code });
+    if (termination?.forced === false) return termination;
+    agent._stopLivenessCheck?.();
+    agent.currentTask = null;
+    agent.currentTaskId = null;
+    agent.processPid = null;
+    agent.lastOutputTime = null;
+    agent.taskStartedAt = null;
+    return termination;
+  }
+
   if (agent.isolation?.enabled && taskId) {
     return killIsolatedTask(agent, currentTask, taskId, reason, code);
   }
@@ -2185,7 +2346,7 @@ async function killTask(agent, termination = 'Task killed') {
   agent._stopLivenessCheck?.();
 
   if (currentTask && typeof currentTask.kill === 'function') {
-    currentTask.kill(reason, { code });
+    await currentTask.kill(reason, { code });
   }
 
   agent.currentTask = null;

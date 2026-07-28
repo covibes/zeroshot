@@ -273,6 +273,87 @@ describe('Task cleanup recovery', function () {
       fs.rmSync(taskHome, { recursive: true, force: true });
     }
   });
+
+  it('returns failure while terminal cleanup remains and succeeds on retry', async function () {
+    const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-task-cleanup-retry-'));
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    const killUrl = new URL('../task-lib/commands/kill.js', `file://${__filename}`).href;
+    const script = `
+      import fs from 'fs';
+      import os from 'os';
+      import path from 'path';
+      const overlayRoot = path.join(os.tmpdir(), 'zeroshot-claude-settings');
+      fs.mkdirSync(overlayRoot, { recursive: true });
+      const cleanupPath = path.join(overlayRoot, 'run-transient-cleanup-retry');
+      fs.rmSync(cleanupPath, { recursive: true, force: true });
+      fs.mkdirSync(cleanupPath);
+      const { addTask, getTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+      const { killTaskCommand } = await import(${JSON.stringify(killUrl)});
+      addTask({
+        id: 'terminal-cleanup-retry',
+        status: 'failed',
+        pid: null,
+        commandCleanup: {
+          cleanup: [cleanupPath],
+          cleanupMetadata: [{
+            kind: 'temp-directory',
+            provider: 'codex',
+            path: cleanupPath,
+            reason: 'settings-overlay'
+          }]
+        }
+      });
+      await killTaskCommand('terminal-cleanup-retry');
+      const first = {
+        exitCode: process.exitCode || 0,
+        receiptPending: Boolean(getTask('terminal-cleanup-retry').commandCleanup)
+      };
+      updateTask('terminal-cleanup-retry', {
+        commandCleanup: {
+          cleanup: [cleanupPath],
+          cleanupMetadata: [{
+            kind: 'temp-directory',
+            provider: 'claude',
+            path: cleanupPath,
+            reason: 'settings-overlay'
+          }]
+        }
+      });
+      process.exitCode = 0;
+      await killTaskCommand('terminal-cleanup-retry');
+      const second = {
+        exitCode: process.exitCode || 0,
+        receiptPending: Boolean(getTask('terminal-cleanup-retry').commandCleanup),
+        cleanupExists: fs.existsSync(cleanupPath)
+      };
+      console.log('RESULT:' + JSON.stringify({ first, second }));
+    `;
+
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ['--input-type=module', '-e', script],
+        {
+          env: {
+            ...process.env,
+            HOME: taskHome,
+            USERPROFILE: taskHome,
+            ZEROSHOT_HOME: taskHome,
+          },
+        }
+      );
+      const line = stdout.split('\n').find((entry) => entry.startsWith('RESULT:'));
+      const result = JSON.parse(line.slice('RESULT:'.length));
+      assert.deepStrictEqual(result.first, { exitCode: 1, receiptPending: true });
+      assert.deepStrictEqual(result.second, {
+        exitCode: 0,
+        receiptPending: false,
+        cleanupExists: false,
+      });
+    } finally {
+      fs.rmSync(taskHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Task cleanup after deferred termination', function () {
