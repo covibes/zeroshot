@@ -40,6 +40,7 @@ const {
   requireTaskIdFromWrapperResult,
   trackTaskWrapperCleanupOwnership,
 } = require('../task-spawn-cleanup-ownership');
+const { extractClaudeVertexModelError } = require('./output-extraction');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -1181,6 +1182,15 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
 
 async function buildCompletionResult({ agent, taskId, providerName, state, stdout, success }) {
   const classified = await evaluateStructuredSuccess({ agent, taskId, state, success });
+  const vertexModelError =
+    providerName === 'claude'
+      ? extractClaudeVertexModelError(state.output, {
+          useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+        })
+      : null;
+  if (vertexModelError) {
+    classified.success = false;
+  }
   let errorContext = classified.error;
   if (!errorContext && !classified.success) {
     errorContext = buildFailureContext({ agent, taskId, providerName, state, stdout });
@@ -1191,6 +1201,7 @@ async function buildCompletionResult({ agent, taskId, providerName, state, stdou
     output: state.output,
     error: errorContext,
     tokenUsage: extractTokenUsage(state.output, providerName),
+    vertexModelError,
   };
 }
 
@@ -1804,7 +1815,13 @@ function settleIsolatedTerminalStatus({
       }
     }
 
-    const success = status === 'completed';
+    const vertexModelError =
+      providerName === 'claude'
+        ? extractClaudeVertexModelError(state.fullOutput, {
+            useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+          })
+        : null;
+    const success = status === 'completed' && !vertexModelError;
     const errorContext = !success
       ? extractErrorContext({
           output: state.fullOutput,
@@ -1823,7 +1840,7 @@ function settleIsolatedTerminalStatus({
           },
         })
       : null;
-    const parsedResult = await agent._parseResultOutput(state.fullOutput);
+    const parsedResult = vertexModelError ? null : await agent._parseResultOutput(state.fullOutput);
 
     settleIsolatedFollower({
       agent,
@@ -1837,6 +1854,7 @@ function settleIsolatedTerminalStatus({
         result: parsedResult,
         error: errorContext,
         tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+        vertexModelError,
       },
     });
   })().catch((error) => {
