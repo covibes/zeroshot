@@ -129,6 +129,11 @@ class RuntimeProvider extends BaseProvider {
     return this._adapter.validateModelId(modelId);
   }
 
+  validateConfiguredModelId(modelId) {
+    const validator = this._adapter.validateConfiguredModelId || this._adapter.validateModelId;
+    return validator(modelId);
+  }
+
   isRetryableError(err) {
     return helper.classifyProviderError(this.name, err).retryable;
   }

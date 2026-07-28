@@ -16,6 +16,12 @@ const {
 const runtimeProviders = require('../../src/providers');
 
 const createdTempFiles = new Set();
+const CONTROL_MODEL_IDS = [
+  'kimi/model\0suffix',
+  'kimi/model\u0001suffix',
+  'kimi/model\u001fsuffix',
+  'kimi/model\u007fsuffix',
+];
 
 afterEach(() => {
   for (const file of createdTempFiles) {
@@ -59,6 +65,25 @@ function assertRuntimeCommandParity(provider, context, options) {
   const direct = helper.buildProviderCommand(provider, context, options);
   assert.deepEqual(normalizeCommand(runtime), normalizeCommand(direct));
   return direct;
+}
+
+function withTempSettings(settings, callback) {
+  const settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-provider-settings-'));
+  const settingsFile = path.join(settingsDir, 'settings.json');
+  const previousSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
+  if (settings !== undefined) fs.writeFileSync(settingsFile, JSON.stringify(settings));
+  process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
+
+  try {
+    return callback();
+  } finally {
+    if (previousSettingsFile === undefined) {
+      delete process.env.ZEROSHOT_SETTINGS_FILE;
+    } else {
+      process.env.ZEROSHOT_SETTINGS_FILE = previousSettingsFile;
+    }
+    fs.rmSync(settingsDir, { recursive: true, force: true });
+  }
 }
 
 test('runtime Claude command facade delegates to helper', () => {
@@ -127,6 +152,189 @@ test('runtime Opencode command facade delegates to helper', () => {
       supportsCwd: true,
     },
   });
+});
+
+test('runtime Opencode command parity preserves the CLI default model', () => {
+  withTempSettings(undefined, () => {
+    const context = 'opencode default context';
+    const runtimeOptions = {
+      outputFormat: 'json',
+      cliFeatures: {
+        supportsJson: true,
+        supportsVariant: true,
+        supportsDir: true,
+        supportsCwd: true,
+      },
+    };
+    const runtime = runtimeProviders.getProvider('opencode').buildCommand(context, runtimeOptions);
+    const direct = helper.buildProviderCommand('opencode', context, {
+      ...runtimeOptions,
+      modelSpec: helper.resolveModelSpec('opencode', 'level2'),
+    });
+
+    assert.deepEqual(normalizeCommand(runtime), normalizeCommand(direct));
+    assert.equal(direct.args.includes('--model'), false);
+  });
+});
+
+test('runtime Opencode command parity accepts an external model configured in Opencode settings', () => {
+  withTempSettings(
+    {
+      providerSettings: {
+        opencode: {
+          defaultLevel: 'level2',
+          levelOverrides: {
+            level2: { model: 'kimi/kimi-k2-5', reasoningEffort: 'high' },
+          },
+        },
+      },
+    },
+    () => {
+      const context = 'opencode external context';
+      const runtimeOptions = {
+        outputFormat: 'json',
+        cliFeatures: {
+          supportsJson: true,
+          supportsVariant: true,
+          supportsDir: true,
+          supportsCwd: true,
+        },
+      };
+      const runtime = runtimeProviders
+        .getProvider('opencode')
+        .buildCommand(context, runtimeOptions);
+      const direct = helper.buildProviderCommand('opencode', context, {
+        ...runtimeOptions,
+        modelSpec: helper.resolveModelSpec('opencode', 'level2', {
+          level2: { model: 'kimi/kimi-k2-5', reasoningEffort: 'high' },
+        }),
+      });
+
+      assert.deepEqual(normalizeCommand(runtime), normalizeCommand(direct));
+      assert.deepEqual(direct.args.slice(0, 7), [
+        'run',
+        '--format',
+        'json',
+        '--model',
+        'kimi/kimi-k2-5',
+        '--variant',
+        'high',
+      ]);
+    }
+  );
+});
+
+test('runtime Opencode rejects an unconfigured external model before command construction', () => {
+  withTempSettings(
+    {
+      providerSettings: {
+        opencode: {
+          defaultLevel: 'level2',
+          levelOverrides: {},
+        },
+      },
+    },
+    () => {
+      assert.throws(
+        () =>
+          runtimeProviders.getProvider('opencode').buildCommand('opencode external context', {
+            modelSpec: { level: 'level2', model: 'kimi/kimi-k2-5' },
+            cliFeatures: { supportsJson: true, supportsModel: true },
+          }),
+        (error) =>
+          error.permanent === true &&
+          /Invalid model "kimi\/kimi-k2-5" for provider "opencode"/.test(error.message)
+      );
+    }
+  );
+});
+
+test('runtime Opencode rejects a direct external model even when a configured override matches', () => {
+  withTempSettings(
+    {
+      providerSettings: {
+        opencode: {
+          defaultLevel: 'level2',
+          levelOverrides: {
+            level2: { model: 'kimi/kimi-k2-5', reasoningEffort: 'high' },
+          },
+        },
+      },
+    },
+    () => {
+      assert.throws(
+        () =>
+          runtimeProviders.getProvider('opencode').buildCommand('opencode direct context', {
+            modelSpec: { level: 'level2', model: 'kimi/kimi-k2-5' },
+            cliFeatures: { supportsJson: true, supportsModel: true },
+          }),
+        (error) =>
+          error.permanent === true &&
+          /Invalid model "kimi\/kimi-k2-5" for provider "opencode"/.test(error.message)
+      );
+    }
+  );
+});
+
+test('runtime Opencode rejects a malformed configured model before command construction', () => {
+  withTempSettings(
+    {
+      providerSettings: {
+        opencode: {
+          defaultLevel: 'level2',
+          levelOverrides: {
+            level2: { model: 'kimi/' },
+          },
+        },
+      },
+    },
+    () => {
+      assert.throws(
+        () =>
+          runtimeProviders.getProvider('opencode').buildCommand('opencode malformed context', {
+            cliFeatures: { supportsJson: true, supportsModel: true },
+          }),
+        (error) =>
+          error.permanent === true &&
+          /Invalid configured model "kimi\/" for provider "opencode"/.test(error.message)
+      );
+    }
+  );
+});
+
+test('runtime Opencode rejects control bytes in configured and direct models before command construction', () => {
+  const opencode = runtimeProviders.getProvider('opencode');
+
+  for (const model of CONTROL_MODEL_IDS) {
+    withTempSettings(
+      {
+        providerSettings: {
+          opencode: {
+            defaultLevel: 'level2',
+            levelOverrides: { level2: { model } },
+          },
+        },
+      },
+      () => {
+        assert.throws(
+          () =>
+            opencode.buildCommand('configured control byte', {
+              cliFeatures: { supportsJson: true, supportsModel: true },
+            }),
+          { name: 'InvalidProviderModelError', permanent: true }
+        );
+      }
+    );
+
+    assert.throws(
+      () =>
+        opencode.buildCommand('direct control byte', {
+          modelSpec: { level: 'level2', model },
+          cliFeatures: { supportsJson: true, supportsModel: true },
+        }),
+      { name: 'InvalidProviderModelError', permanent: true }
+    );
+  }
 });
 
 test('runtime Pi command facade delegates to helper', () => {
@@ -285,10 +493,19 @@ test('model resolution and invalid-model permanence match helper', () => {
       );
     }
 
-    assert.deepEqual(
-      helper.resolveModelSpec(provider, 'level2', { level2: { model: '' } }),
-      current.resolveModelSpec('level2', { level2: { model: '' } })
-    );
+    if (provider === 'opencode') {
+      assert.throws(() => helper.resolveModelSpec(provider, 'level2', { level2: { model: '' } }), {
+        permanent: true,
+      });
+      assert.throws(() => current.resolveModelSpec('level2', { level2: { model: '' } }), {
+        permanent: true,
+      });
+    } else {
+      assert.deepEqual(
+        helper.resolveModelSpec(provider, 'level2', { level2: { model: '' } }),
+        current.resolveModelSpec('level2', { level2: { model: '' } })
+      );
+    }
 
     if (provider === 'pi' || provider === 'copilot' || provider === 'gateway') {
       assert.deepEqual(

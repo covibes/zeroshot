@@ -23,6 +23,10 @@ const {
   prepareClaudeConfigDir,
   resolveRepoMcpConfigPath,
 } = require('../worktree-claude-config.js');
+const {
+  appendTaskRunModelArgs,
+  wrapTaskRunWithIsolatedSettings,
+} = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
@@ -722,14 +726,10 @@ function resolveOutputFormatConfig(agent) {
 
 function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
   const args = ['task', 'run', '--output-format', runOutputFormat, '--provider', providerName];
-
-  if (modelSpec?.model) {
-    args.push('--model', modelSpec.model);
-  }
-
-  if (modelSpec?.reasoningEffort) {
-    args.push('--reasoning-effort', modelSpec.reasoningEffort);
-  }
+  const modelSpecSource = agent._resolveModelSpecSource
+    ? agent._resolveModelSpecSource()
+    : 'direct';
+  appendTaskRunModelArgs(args, modelSpec, modelSpecSource);
 
   // Add verification mode flag if configured
   if (agent.config.verificationMode) {
@@ -875,8 +875,11 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
 
+  // spawn() throws on null bytes in argv; strip them before they get there.
+  const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
+
   return new Promise((resolve, reject) => {
-    const proc = spawn(ctPath, args, {
+    const proc = spawn(ctPath, safeArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: spawnEnv,
@@ -1509,11 +1512,14 @@ async function spawnClaudeTaskIsolated(agent, context) {
   const { manager, clusterId } = agent.isolation;
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const modelSpec = resolveAgentModelSpec(agent);
+  const modelSpecSource = agent._resolveModelSpecSource
+    ? agent._resolveModelSpecSource()
+    : 'direct';
 
   agent._log(`📦 Agent ${agent.id}: Running task in isolated container using zeroshot task run...`);
 
   const { desiredOutputFormat, runOutputFormat } = resolveOutputFormatConfig(agent);
-  const command = [
+  let command = [
     'zeroshot',
     ...buildTaskRunArgs({
       agent,
@@ -1531,6 +1537,12 @@ async function spawnClaudeTaskIsolated(agent, context) {
   });
 
   command.push(finalContext);
+  command = wrapTaskRunWithIsolatedSettings(command, {
+    providerName,
+    settings: loadSettings(),
+    modelSpecSource,
+    modelSpec,
+  });
 
   // STEP 1: Spawn task and extract task ID (same as non-isolated mode)
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
@@ -2357,6 +2369,7 @@ async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
 module.exports = {
   ensureAskUserQuestionHook,
   spawnClaudeTask,
+  spawnTaskProcess,
   followClaudeTaskLogs,
   followClaudeTaskLogsIsolated,
   waitForTaskReady,

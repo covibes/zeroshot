@@ -19,6 +19,14 @@ describe('release topology', function () {
     const agents = readText('AGENTS.md');
     const repoSettings = JSON.parse(readText('.zeroshot/settings.json'));
     const packageJson = JSON.parse(readText('package.json'));
+    const dryRunJob = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('\n  dry-run:'),
+      releaseWorkflow.indexOf('\n  release:')
+    );
+    const publishJob = releaseWorkflow.slice(
+      releaseWorkflow.indexOf('\n  release:'),
+      releaseWorkflow.indexOf('\n  recover:')
+    );
 
     assert(!/\bbranches:\s*\[main,\s*dev\]/.test(ci), 'CI must not target a retired dev branch');
     assert(!/enforce-main-pr-source/.test(ci), 'CI must not require dev-to-main promotions');
@@ -31,6 +39,20 @@ describe('release topology', function () {
       /github\.event\.workflow_run\.head_sha/.test(releaseWorkflow),
       'release jobs must bind to the exact CI-tested main commit'
     );
+    assert(
+      /workflow_run\.head_sha \|\| github\.sha/.test(releaseWorkflow),
+      'manual dry runs must bind to the exact dispatched commit'
+    );
+    assert(
+      /node scripts\/release-dry-run\.js/.test(releaseWorkflow),
+      'manual dry runs must analyze the dispatched candidate as a release branch'
+    );
+    assert(/contents:\s*read/.test(dryRunJob), 'dry runs must remain read-only');
+    assert(!/environment:\s*release/.test(dryRunJob), 'dry runs must not enter release environment');
+    assert(!/id-token:\s*write/.test(dryRunJob), 'dry runs must not receive npm OIDC authority');
+    assert(/environment:\s*release/.test(publishJob), 'publishing must use release environment');
+    assert(/contents:\s*write/.test(publishJob), 'publishing must be allowed to create releases');
+    assert(/id-token:\s*write/.test(publishJob), 'publishing must receive npm OIDC authority');
     assert(
       /Recheck main immediately before publication/.test(releaseWorkflow),
       'release must fail closed if main moves after validation'
@@ -74,6 +96,10 @@ describe('release topology', function () {
     assert(/required_review_thread_resolution/.test(setup), 'main must resolve review threads');
     assert(/"context": "required"/.test(setup), 'main must require aggregate CI');
     assert(/"context": "semantic"/.test(setup), 'main must require semantic policy');
+    assert(
+      !/prevent_self_review/.test(setup),
+      'release environment setup must not send reviewer-only fields without reviewers'
+    );
 
     assert(/branches:\s*\[main\]/.test(prPolicy), 'PR policy must target main');
     assert(/merge_group:/.test(prPolicy), 'semantic policy must run in the merge queue');

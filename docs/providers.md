@@ -91,6 +91,23 @@ Notes:
 - Opencode passes reasoning effort as `--variant`.
 - `model` is still supported as a provider-specific escape hatch.
 
+### External Opencode models
+
+Opencode models outside Zeroshot's built-in catalog must be configured in the
+Opencode provider's level overrides:
+
+```bash
+zeroshot settings set providerSettings.opencode.levelOverrides.level2.model kimi/kimi-k2-5
+```
+
+Configured IDs must use Opencode's `provider/model` shape. Nested model paths
+such as `openrouter/anthropic/claude-sonnet-4` are accepted; whitespace and
+empty path segments are rejected before Opencode is started. Direct agent
+`model` fields remain limited to the built-in catalog. Nested Docker tasks
+receive only a temporary settings-file projection for the requested level and
+model; arbitrary provider settings and environment overlays are not trusted or
+forwarded to the provider process.
+
 ### Current explicit model IDs
 
 Zeroshot keeps provider-agnostic `modelLevel` defaults and also recognizes these

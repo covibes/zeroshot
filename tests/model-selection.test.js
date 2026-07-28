@@ -64,6 +64,56 @@ function registerStaticModelTests() {
   });
 }
 
+function registerModelSpecSourceTests() {
+  describe('Task runner model provenance', () => {
+    function captureTaskRunnerOptions(agentConfig, iteration = 0) {
+      let capturedOptions;
+      const agent = new AgentWrapper(agentConfig, mockMessageBus, mockCluster, {
+        testMode: true,
+        taskRunner: {
+          run(_context, options) {
+            capturedOptions = options;
+            return { success: true };
+          },
+        },
+      });
+
+      agent.iteration = iteration;
+      agent.mockSpawnFn([], { context: 'test context' });
+      return capturedOptions;
+    }
+
+    it('passes direct models and provider levels through separate structural fields', () => {
+      assert.strictEqual(
+        captureTaskRunnerOptions({ id: 'direct', model: 'opus', timeout: 0 }).model,
+        'opus'
+      );
+      assert.strictEqual(
+        captureTaskRunnerOptions({ id: 'level', modelLevel: 'level2', timeout: 0 }).modelLevel,
+        'level2'
+      );
+      assert.strictEqual(
+        captureTaskRunnerOptions({ id: 'level', modelLevel: 'level2', timeout: 0 }).modelSpecSource,
+        undefined
+      );
+    });
+
+    it('tracks the matching rule source for each iteration', () => {
+      const agentConfig = {
+        id: 'rules',
+        timeout: 0,
+        modelRules: [
+          { iterations: '1', model: 'haiku' },
+          { iterations: '2+', modelLevel: 'level2' },
+        ],
+      };
+
+      assert.strictEqual(captureTaskRunnerOptions(agentConfig, 1).model, 'haiku');
+      assert.strictEqual(captureTaskRunnerOptions(agentConfig, 2).modelLevel, 'level2');
+    });
+  });
+}
+
 function registerDynamicModelRulesTests() {
   describe('Dynamic model rules', () => {
     it('should match exact iteration', () => {
@@ -210,6 +260,7 @@ function registerRealWorldUseCaseTests() {
 describe('Model Selection', () => {
   registerModelSelectionHooks();
   registerStaticModelTests();
+  registerModelSpecSourceTests();
   registerDynamicModelRulesTests();
   registerErrorHandlingTests();
   registerRealWorldUseCaseTests();
