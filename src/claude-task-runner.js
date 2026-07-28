@@ -12,8 +12,11 @@ const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
+const { getTaskBySpawnOwnershipToken } = require('../task-lib/store.js');
 const {
+  TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
   cleanupCallerOwnedCommand,
+  createTaskSpawnOwnershipToken,
   requireTaskIdFromWrapperResult,
   trackTaskWrapperCleanupOwnership,
 } = require('./task-spawn-cleanup-ownership');
@@ -377,17 +380,19 @@ class ClaudeTaskRunner extends TaskRunner {
    * @returns {Promise<string>}
    */
   _spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, _agentId) {
+    const ownershipToken = createTaskSpawnOwnershipToken();
+    const findPersistedTaskId = () => getTaskBySpawnOwnershipToken(ownershipToken)?.id || null;
     return new Promise((resolve, reject) => {
       const proc = spawn(ctPath, args, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: spawnEnv,
+        env: { ...spawnEnv, [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken },
         windowsHide: true,
       });
 
       let stdout = '';
       let stderr = '';
-      const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(proc);
+      const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
       const rejectWithOwnership = (error) => reject(classifyCleanupOwnership(error));
 
       proc.stdout.on('data', (data) => {
@@ -407,6 +412,7 @@ class ClaudeTaskRunner extends TaskRunner {
               stderr,
               parseTaskId: (output) =>
                 output.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/)?.[1],
+              persistedTaskId: findPersistedTaskId(),
             })
           );
         } catch (error) {

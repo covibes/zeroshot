@@ -111,7 +111,7 @@ describe('Task cleanup recovery', function () {
     }
   });
 
-  it('preserves cleanup ownership while a running task has not published its provider PID', async function () {
+  it('persists cancellation and cleanup ownership when the watcher fails before publishing a PID', async function () {
     const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-task-starting-store-'));
     const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
     const killUrl = new URL('../task-lib/commands/kill.js', `file://${__filename}`).href;
@@ -138,7 +138,7 @@ describe('Task cleanup recovery', function () {
           }]
         }
       });
-      await killTaskCommand('starting-task');
+      await killTaskCommand('starting-task', { startupCancelTimeoutMs: 40, pollMs: 5 });
       const task = getTask('starting-task');
       const cleanupExists = fs.existsSync(startingCleanup);
       const exitCode = process.exitCode || 0;
@@ -165,8 +165,110 @@ describe('Task cleanup recovery', function () {
       assert.strictEqual(result.task.status, 'running');
       assert.strictEqual(result.task.pid, null);
       assert.notStrictEqual(result.task.commandCleanup, null);
+      assert.strictEqual(result.task.cancelRequested, true);
       assert.strictEqual(result.cleanupExists, true);
       assert.strictEqual(result.exitCode, 1);
+    } finally {
+      fs.rmSync(taskHome, { recursive: true, force: true });
+    }
+  });
+
+  it('honors persisted cancellation after a late provider PID is published', async function () {
+    const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-task-late-pid-store-'));
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    const killUrl = new URL('../task-lib/commands/kill.js', `file://${__filename}`).href;
+    const runtimeUrl = new URL('../task-lib/watcher-output-runtime.js', `file://${__filename}`)
+      .href;
+    const cleanupUrl = new URL('../task-lib/command-spec-cleanup.js', `file://${__filename}`)
+      .href;
+    const terminationUrl = new URL('../task-lib/process-termination.js', `file://${__filename}`)
+      .href;
+    const script = `
+      import { spawn } from 'child_process';
+      ${commandCleanupFixtureSource}
+      const { addTask, getTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+      const { killTaskCommand } = await import(${JSON.stringify(killUrl)});
+      const { completePendingWatcherCancellation } = await import(${JSON.stringify(runtimeUrl)});
+      const { createCommandSpecCleanup } = await import(${JSON.stringify(cleanupUrl)});
+      const { terminateProcess } = await import(${JSON.stringify(terminationUrl)});
+      addTask({
+        id: 'late-pid-task',
+        status: 'running',
+        pid: null,
+        commandCleanup: {
+          cleanup: [liveCleanup],
+          cleanupMetadata: cleanupMetadata(liveCleanup)
+        }
+      });
+      const cancellation = killTaskCommand('late-pid-task', {
+        startupCancelTimeoutMs: 2000,
+        pollMs: 5
+      });
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        detached: process.platform !== 'win32',
+        stdio: 'ignore'
+      });
+      await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
+      updateTask('late-pid-task', {
+        pid: child.pid,
+        processGroupId: process.platform === 'win32' ? null : child.pid,
+        terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group'
+      });
+      const commandCleanup = createCommandSpecCleanup(
+        getTask('late-pid-task').commandCleanup,
+        () => {}
+      );
+      await completePendingWatcherCancellation({
+        taskId: 'late-pid-task',
+        getTask,
+        commandCleanup,
+        terminateProvider: () => terminateProcess(child.pid, {
+          processGroupId: process.platform === 'win32' ? null : child.pid,
+          terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
+          graceMs: 100,
+          pollMs: 5
+        }).then((result) => result.terminated),
+        updateTask,
+        emergencyLog() {}
+      });
+      await cancellation;
+      const terminal = getTask('late-pid-task');
+      let providerAlive = true;
+      try { process.kill(child.pid, 0); } catch { providerAlive = false; }
+      console.log('RESULT:' + JSON.stringify({
+        terminal,
+        cleanupExists: fs.existsSync(liveCleanup),
+        providerAlive,
+        exitCode: process.exitCode || 0
+      }));
+      try { process.kill(child.pid, 'SIGKILL'); } catch {}
+      fs.rmSync(deadCleanup, { recursive: true, force: true });
+    `;
+
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ['--input-type=module', '-e', script],
+        {
+          env: {
+            ...process.env,
+            HOME: taskHome,
+            USERPROFILE: taskHome,
+            ZEROSHOT_HOME: taskHome,
+          },
+        }
+      );
+      const line = stdout.split('\n').find((entry) => entry.startsWith('RESULT:'));
+      const result = JSON.parse(line.slice('RESULT:'.length));
+      assert.strictEqual(result.terminal.status, 'killed');
+      assert.strictEqual(result.terminal.cancelRequested, false);
+      assert.strictEqual(result.terminal.commandCleanup, null);
+      assert.strictEqual(result.cleanupExists, false);
+      assert.strictEqual(result.providerAlive, false);
+      assert.strictEqual(result.exitCode, 0);
     } finally {
       fs.rmSync(taskHome, { recursive: true, force: true });
     }

@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { getTask, updateTask } from '../store.js';
+import { getTask, requestTaskCancellation, updateTask } from '../store.js';
 import { createCommandSpecCleanup } from '../command-spec-cleanup.js';
 import { terminateProcess } from '../process-termination.js';
 
@@ -29,6 +29,39 @@ async function retryTerminalTaskCleanup(taskId, task) {
   console.log(chalk.yellow(`Warning: command cleanup remains pending for task ${taskId}`));
 }
 
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForStartupCancellation(taskId, options) {
+  const timeoutMs = options.startupCancelTimeoutMs ?? 8000;
+  const pollMs = options.startupCancelPollMs ?? options.pollMs ?? 25;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() <= deadline) {
+    const current = getTask(taskId);
+    if (!current) break;
+    if (TERMINAL_STATUSES.has(current.status)) {
+      await retryTerminalTaskCleanup(taskId, current);
+      if (!getTask(taskId)?.commandCleanup) {
+        console.log(chalk.green(`✓ Cancelled task ${taskId} before provider startup completed`));
+        return true;
+      }
+    }
+    await sleep(pollMs);
+  }
+
+  console.log(
+    chalk.yellow(
+      `Cancellation for task ${taskId} remains pending; provider termination and cleanup were not confirmed`
+    )
+  );
+  process.exitCode = 1;
+  return false;
+}
+
 export async function killTaskCommand(taskId, options = {}) {
   const task = getTask(taskId);
 
@@ -44,12 +77,13 @@ export async function killTaskCommand(taskId, options = {}) {
   }
 
   if (!Number.isInteger(task.pid) || task.pid <= 0) {
+    requestTaskCancellation(taskId);
     console.log(
       chalk.yellow(
-        `Task ${taskId} has not published a provider PID; preserving its running state and command cleanup ownership`
+        `Task ${taskId} has not published a provider PID; persisted cancellation is pending`
       )
     );
-    process.exitCode = 1;
+    await waitForStartupCancellation(taskId, options);
     return;
   }
 
@@ -69,6 +103,7 @@ export async function killTaskCommand(taskId, options = {}) {
       pid: null,
       processGroupId: null,
       error: 'Process died unexpectedly',
+      cancelRequested: false,
       ...cleanupUpdate,
     });
     return;
@@ -87,6 +122,7 @@ export async function killTaskCommand(taskId, options = {}) {
       processGroupId: null,
       exitCode: result.escalated ? 137 : 143,
       error: result.escalated ? 'Killed by user after SIGKILL escalation' : 'Killed by user',
+      cancelRequested: false,
       ...cleanupUpdate,
     });
   } else {

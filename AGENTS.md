@@ -335,10 +335,10 @@ Provider task ownership: task watchers persist an owned termination boundary wit
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
 ownership is persisted with the task and may run only after that boundary is confirmed terminal.
-Once the outer task wrapper process starts, ambiguous rejection, timeout, nonzero exit, or task-ID
-parse failure transfers cleanup ownership to the task lifecycle; only a proven pre-spawn failure may
-eager-clean caller-owned resources. Watcher completion clears a cleanup receipt only after an
-initialized cleanup owner actually succeeds. Cleanup metadata is a closed one-to-one receipt:
+Cleanup ownership transfers only when the detached task row durably records the wrapper's unique
+spawn-ownership token; process spawn and human-readable task-ID output are not receipts. Failures
+before that receipt leave cleanup with the caller. Watcher completion clears a cleanup receipt only
+after an initialized cleanup owner actually succeeds. Cleanup metadata is a closed one-to-one receipt:
 Claude settings overlays must be owned temporary directories, and Codex output-schema files must be
 exact regular, non-symlink UUID JSON files directly inside canonical `zeroshot-schema-*` temp
 directories. Unsafe or uninitialized cleanup remains persisted and warning-visible.
@@ -348,6 +348,9 @@ watcher cleanup retries that persisted cleanup through `kill` without signaling 
 provider boundary; success clears the receipt and failure keeps it retryable. If watcher termination
 cannot confirm that boundary, the task remains nonterminal with its PID, process group, strategy,
 and cleanup ownership intact; retry and cleanup stay blocked until a later kill confirms termination.
+Cancellation before PID publication is a durable task intent. Both watcher paths check it before
+provider spawn and immediately after publishing the owned PID boundary; callers retain their task
+handle until terminal state and command cleanup are both confirmed.
 
 ### Guidance Messaging
 

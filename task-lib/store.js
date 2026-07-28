@@ -53,7 +53,9 @@ function getDb() {
       attachable INTEGER DEFAULT 0,
       process_group_id INTEGER,
       termination_strategy TEXT,
-      command_cleanup TEXT
+      command_cleanup TEXT,
+      cancel_requested INTEGER DEFAULT 0,
+      spawn_ownership_token TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -81,6 +83,13 @@ function getDb() {
   ensureTaskColumn(db, 'process_group_id', 'INTEGER');
   ensureTaskColumn(db, 'termination_strategy', 'TEXT');
   ensureTaskColumn(db, 'command_cleanup', 'TEXT');
+  ensureTaskColumn(db, 'cancel_requested', 'INTEGER DEFAULT 0');
+  ensureTaskColumn(db, 'spawn_ownership_token', 'TEXT');
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_spawn_ownership_token
+      ON tasks(spawn_ownership_token)
+      WHERE spawn_ownership_token IS NOT NULL
+  `);
 
   return db;
 }
@@ -141,6 +150,8 @@ function rowToTask(row) {
     processGroupId: row.process_group_id,
     terminationStrategy: row.termination_strategy,
     commandCleanup: parseCommandCleanup(row.command_cleanup),
+    cancelRequested: Boolean(row.cancel_requested),
+    spawnOwnershipToken: row.spawn_ownership_token,
   };
 }
 
@@ -169,12 +180,12 @@ export function saveTasks(tasks) {
       id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup
+      command_cleanup, cancel_requested, spawn_ownership_token
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup
+      @commandCleanup, @cancelRequested, @spawnOwnershipToken
     )
   `);
 
@@ -204,6 +215,8 @@ export function saveTasks(tasks) {
         processGroupId: task.processGroupId || null,
         terminationStrategy: task.terminationStrategy || null,
         commandCleanup: serializeCommandCleanup(task.commandCleanup),
+        cancelRequested: task.cancelRequested ? 1 : 0,
+        spawnOwnershipToken: task.spawnOwnershipToken || null,
       });
     }
   });
@@ -232,6 +245,24 @@ export function withTasksLock(modifier) {
 export function getTask(id) {
   const row = getDb().prepare('SELECT * FROM tasks WHERE id = ?').get(id);
   return rowToTask(row);
+}
+
+export function getTaskBySpawnOwnershipToken(token) {
+  if (typeof token !== 'string' || token.length === 0) return null;
+  const row = getDb().prepare('SELECT * FROM tasks WHERE spawn_ownership_token = ?').get(token);
+  return rowToTask(row);
+}
+
+export function requestTaskCancellation(id) {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `UPDATE tasks
+       SET cancel_requested = 1, updated_at = ?, error = ?
+       WHERE id = ? AND status = 'running'`
+    )
+    .run(now, 'Cancellation requested before provider startup completed', id);
+  return getTask(id);
 }
 
 /**
@@ -271,7 +302,9 @@ export function updateTask(id, updates) {
       attachable = @attachable,
       process_group_id = @processGroupId,
       termination_strategy = @terminationStrategy,
-      command_cleanup = @commandCleanup
+      command_cleanup = @commandCleanup,
+      cancel_requested =
+        CASE WHEN @hasCancelRequested = 1 THEN @cancelRequested ELSE cancel_requested END
     WHERE id = @id
   `
     )
@@ -295,6 +328,8 @@ export function updateTask(id, updates) {
       processGroupId: updated.processGroupId || null,
       terminationStrategy: updated.terminationStrategy || null,
       commandCleanup: serializeCommandCleanup(updated.commandCleanup),
+      hasCancelRequested: Object.prototype.hasOwnProperty.call(updates, 'cancelRequested') ? 1 : 0,
+      cancelRequested: updated.cancelRequested ? 1 : 0,
     });
 
   return updated;
@@ -320,12 +355,12 @@ export function addTask(task) {
       id, prompt, full_prompt, cwd, status, pid, session_id, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup
+      command_cleanup, cancel_requested, spawn_ownership_token
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup
+      @commandCleanup, @cancelRequested, @spawnOwnershipToken
     )
   `
     )
@@ -350,6 +385,8 @@ export function addTask(task) {
       processGroupId: fullTask.processGroupId || null,
       terminationStrategy: fullTask.terminationStrategy || null,
       commandCleanup: serializeCommandCleanup(fullTask.commandCleanup),
+      cancelRequested: fullTask.cancelRequested ? 1 : 0,
+      spawnOwnershipToken: fullTask.spawnOwnershipToken || null,
     });
 
   return fullTask;

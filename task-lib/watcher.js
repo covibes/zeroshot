@@ -6,10 +6,11 @@
  */
 
 import { appendFileSync } from 'fs';
-import { updateTask } from './store.js';
+import { getTask, updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
 import {
   completeWatcherFailure,
+  completePendingWatcherCancellation,
   completeWatcherTask,
   createWatcherOutputRuntime,
   resolveWatcherCommand,
@@ -54,6 +55,20 @@ const { providerName, env, command, finalArgs } = resolveWatcherCommand(
   normalizeProviderName
 );
 
+if (
+  await completePendingWatcherCancellation({
+    taskId,
+    getTask,
+    commandCleanup,
+    terminateProvider: async () => true,
+    updateTask,
+    emergencyLog,
+  })
+) {
+  process.exit(0);
+}
+
+let crashStarted = false;
 let child = spawnWatcherProvider(command, finalArgs, {
   cwd: commandSpec.cwd || cwd,
   env,
@@ -67,7 +82,21 @@ updateTask(taskId, {
   terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
 });
 
-let crashStarted = false;
+if (
+  await completePendingWatcherCancellation({
+    taskId,
+    getTask,
+    commandCleanup,
+    terminateProvider: terminateOwnedProviderBoundary,
+    updateTask,
+    emergencyLog,
+  })
+) {
+  crashStarted = true;
+  process.exit(0);
+}
+
+
 let stdoutBuffer = '';
 let stderrBuffer = '';
 

@@ -41,6 +41,19 @@ describe('watcher command cleanup ownership', function () {
     });
   }
 
+  for (const watcherName of ['watcher.js', 'attachable-watcher.js']) {
+    it(`${watcherName} honors cancellation before provider spawn`, async function () {
+      const result = await runFixture(watcherName, 'cancel-before-start');
+      assert.strictEqual(result.watcherExit.code, 0, result.watcherOutput);
+      assert.strictEqual(result.providerPid, null);
+      assert.strictEqual(result.providerAlive, false);
+      assert.strictEqual(result.cleanupExists, false);
+      assert.strictEqual(result.status, 'killed');
+      assert.strictEqual(result.cancelRequested, false);
+      assert.strictEqual(result.commandCleanup, null);
+    });
+  }
+
   it('cleans an owned overlay after normal completion', async function () {
     const result = await runFixture('watcher.js', 'exit0');
     assert.strictEqual(result.watcherExit.code, 0);

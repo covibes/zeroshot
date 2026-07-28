@@ -119,6 +119,20 @@ const outputRuntime = watcherOutputRuntime.createWatcherOutputRuntime({
   stopProvider: stopProviderAfterFatalOutput,
 });
 
+if (
+  await watcherOutputRuntime.completePendingWatcherCancellation({
+    taskId,
+    getTask,
+    commandCleanup,
+    terminateProvider: async () => true,
+    updateTask,
+    emergencyLog,
+    terminalUpdates: { socketPath: null },
+  })
+) {
+  process.exit(0);
+}
+
 server = new AttachServer({
   id: taskId,
   socketPath,
@@ -174,6 +188,20 @@ try {
     processGroupId: process.platform === 'win32' ? null : server.pid,
     terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
   });
+
+  if (getTask(taskId)?.cancelRequested) {
+    crashStarted = true;
+    await watcherOutputRuntime.completePendingWatcherCancellation({
+      taskId,
+      getTask,
+      commandCleanup,
+      terminateProvider: stopAttachableProvider,
+      updateTask,
+      emergencyLog,
+      terminalUpdates: { socketPath: null },
+    });
+    process.exit(0);
+  }
 
   log(`[${Date.now()}][SYSTEM] Started with PTY (attachable)\n`);
   log(`[${Date.now()}][SYSTEM] Socket: ${socketPath}\n`);

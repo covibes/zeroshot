@@ -8,6 +8,9 @@ const mode = process.argv[2] || process.env.AMBIGUOUS_TASK_MODE;
 const repoRoot = path.resolve(__dirname, '../..');
 const taskId = process.env.AMBIGUOUS_TASK_ID || `ambiguous-${mode}`;
 const settingsEnv = 'ZEROSHOT_CLAUDE_SETTINGS_FILE';
+const ownershipTokenEnv = 'ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN';
+const scenario = process.env.AMBIGUOUS_TASK_SCENARIO || 'persisted';
+const settingsMarker = process.env.AMBIGUOUS_SETTINGS_MARKER;
 
 function moduleUrl(relativePath) {
   return pathToFileURL(path.join(repoRoot, relativePath)).href;
@@ -25,6 +28,16 @@ function isRunning(pid) {
 async function runAmbiguousWrapper() {
   const { addTask } = await import(moduleUrl('task-lib/store.js'));
   const settingsPath = process.env[settingsEnv];
+  if (settingsMarker) {
+    fs.writeFileSync(settingsMarker, settingsPath, 'utf8');
+  }
+  if (scenario === 'pre-persistence-contract-failure') {
+    const { buildProviderCommand } = await import(moduleUrl('task-lib/provider-helper-runtime.js'));
+    buildProviderCommand('claude', 'unsupported settings test', {
+      claudeSettingsFile: settingsPath,
+      cliFeatures: { supportsSettings: false },
+    });
+  }
   const cleanupPath = path.dirname(settingsPath);
   const provider = childProcess.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
     detached: process.platform !== 'win32',
@@ -41,6 +54,7 @@ async function runAmbiguousWrapper() {
     processGroupId: process.platform === 'win32' ? null : provider.pid,
     terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
     provider: 'claude',
+    spawnOwnershipToken: process.env[ownershipTokenEnv] || null,
     commandCleanup: {
       cleanup: [cleanupPath],
       cleanupMetadata: [
@@ -54,6 +68,7 @@ async function runAmbiguousWrapper() {
     },
   });
   process.stdout.write('wrapper exited after persisting the task\n');
+  process.exitCode = 1;
 }
 
 function createAgent() {
@@ -83,6 +98,7 @@ function createAgent() {
 async function rejectThroughLauncher() {
   process.env.AMBIGUOUS_TASK_WRAPPER = '1';
   process.env.AMBIGUOUS_TASK_ID = taskId;
+  process.env.AMBIGUOUS_TASK_SCENARIO = scenario;
   process.env.AMBIGUOUS_TASK_MODE = mode;
   if (mode === 'runner') {
     const ClaudeTaskRunner = require('../../src/claude-task-runner');
@@ -123,20 +139,26 @@ async function runScenario() {
   } catch (error) {
     rejection = error;
   }
+  const settingsPath = fs.existsSync(settingsMarker)
+    ? fs.readFileSync(settingsMarker, 'utf8')
+    : null;
   const pending = getTask(taskId);
-  if (!pending) {
+  if (scenario === 'persisted' && !pending) {
     throw new Error(`Ambiguous wrapper did not persist ${taskId}`);
   }
-  const cleanupPath = pending.commandCleanup.cleanup[0];
+  const cleanupPath = pending?.commandCleanup?.cleanup?.[0] || path.dirname(settingsPath);
   const overlayExistsAfterReject = fs.existsSync(cleanupPath);
-  const providerAliveAfterReject = isRunning(pending.pid);
+  const providerAliveAfterReject = pending?.pid ? isRunning(pending.pid) : false;
 
-  await killTaskCommand(taskId, {
-    graceMs: 40,
-    hardKillWaitMs: 500,
-    pollMs: 5,
-  });
-  const terminal = getTask(taskId);
+  let terminal = null;
+  if (pending) {
+    await killTaskCommand(taskId, {
+      graceMs: 40,
+      hardKillWaitMs: 500,
+      pollMs: 5,
+    });
+    terminal = getTask(taskId);
+  }
   process.stdout.write(
     `RESULT:${JSON.stringify({
       rejection: {
@@ -148,7 +170,7 @@ async function runScenario() {
       overlayExistsAfterReject,
       providerAliveAfterReject,
       overlayExistsAfterKill: fs.existsSync(cleanupPath),
-      providerAliveAfterKill: isRunning(pending.pid),
+      providerAliveAfterKill: pending?.pid ? isRunning(pending.pid) : false,
     })}\n`
   );
 }

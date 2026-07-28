@@ -92,12 +92,31 @@ export async function completeWatcherTask({
       processGroupId: null,
       exitCode: completion.resolvedCode,
       error: completion.error,
+      cancelRequested: false,
       ...terminalUpdates,
       ...(cleanupSucceeded ? { commandCleanup: null } : {}),
     });
   } catch (error) {
     emergencyLog(`[${Date.now()}][ERROR] Failed to update task status: ${error.message}\n`);
   }
+  return true;
+}
+
+export async function completePendingWatcherCancellation({
+  taskId,
+  getTask,
+  ...completionOptions
+}) {
+  if (!getTask(taskId)?.cancelRequested) return false;
+  await completeWatcherTask({
+    taskId,
+    ...completionOptions,
+    completion: {
+      status: 'killed',
+      resolvedCode: 143,
+      error: 'Cancellation requested before provider startup completed',
+    },
+  });
   return true;
 }
 

@@ -15,7 +15,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
-const { getTask } = require('../../task-lib/store.js');
+const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
 const { loadSettings } = require('../../lib/settings.js');
 const { resolveClaudeAuth } = require('../../lib/settings/claude-auth.js');
 const { prependWorktreeToolBinToEnv } = require('../worktree-tooling-env.js');
@@ -34,7 +34,9 @@ const {
 } = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
 const {
+  TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
   cleanupCallerOwnedCommand,
+  createTaskSpawnOwnershipToken,
   requireTaskIdFromWrapperResult,
   trackTaskWrapperCleanupOwnership,
 } = require('../task-spawn-cleanup-ownership');
@@ -724,12 +726,14 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
 
   // spawn() throws on null bytes in argv; strip them before they get there.
   const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
+  const ownershipToken = createTaskSpawnOwnershipToken();
+  const findPersistedTaskId = () => getTaskBySpawnOwnershipToken(ownershipToken)?.id || null;
 
   return new Promise((resolve, reject) => {
     const proc = spawn(ctPath, safeArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: spawnEnv,
+      env: { ...spawnEnv, [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken },
       windowsHide: true,
     });
 
@@ -740,7 +744,7 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
     let stdout = '';
     let stderr = '';
     let resolved = false;
-    const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(proc);
+    const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
     const rejectWithOwnership = (error) => reject(classifyCleanupOwnership(error));
 
     // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs
@@ -783,6 +787,7 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
           stdout,
           stderr,
           parseTaskId: parseTaskIdFromOutput,
+          persistedTaskId: findPersistedTaskId(),
         });
       } catch (error) {
         rejectWithOwnership(error);
@@ -2163,22 +2168,21 @@ async function killTask(agent, termination = 'Task killed') {
     return killIsolatedTask(agent, currentTask, taskId, reason, code);
   }
 
-  agent._stopLivenessCheck?.();
-
   // Kill the underlying task before resolving the local follower. This keeps
   // retries from racing a provider process that is still shutting down.
   if (taskId) {
-    const ctPath = getClaudeTasksPath();
+    const ctPath = agent.taskCommandPath || getClaudeTasksPath();
     try {
       // `kill` is a top-level smart command. `task kill` has never existed.
       await runCommandWithTimeout(ctPath, ['kill', taskId], { timeout: 10000 });
       agent._log?.(`Killed task ${taskId}`);
     } catch (error) {
-      // Resolve the local follower even if the task is already terminal or the
-      // management CLI is unavailable; shutdown state must still reconcile.
-      agent._log?.(`Note: Could not kill task ${taskId}: ${error.message}`);
+      agent._log?.(`Note: Could not confirm termination for task ${taskId}: ${error.message}`);
+      return { forced: false, reason: error.message };
     }
   }
+
+  agent._stopLivenessCheck?.();
 
   if (currentTask && typeof currentTask.kill === 'function') {
     currentTask.kill(reason, { code });

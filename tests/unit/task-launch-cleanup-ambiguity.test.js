@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-function runFixture(mode) {
+function runFixture(mode, scenario = 'persisted') {
   const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), `zeroshot-ambiguous-${mode}-`));
   try {
     const stdout = execFileSync(
@@ -17,6 +17,8 @@ function runFixture(mode) {
           HOME: taskHome,
           USERPROFILE: taskHome,
           ZEROSHOT_HOME: taskHome,
+          AMBIGUOUS_TASK_SCENARIO: scenario,
+          AMBIGUOUS_SETTINGS_MARKER: path.join(taskHome, 'settings-path'),
         },
         timeout: 30000,
       }
@@ -33,9 +35,9 @@ describe('Ambiguous task-wrapper cleanup ownership', function () {
   this.timeout(40000);
 
   for (const mode of ['runner', 'agent']) {
-    it(`${mode} retains the overlay after an exit-0 task-id parse failure until kill`, function () {
+    it(`${mode} transfers cleanup only after a durable task receipt`, function () {
       const result = runFixture(mode);
-      assert.match(result.rejection.message, /Could not parse task ID/);
+      assert.match(result.rejection.message, /failed with code 1/);
       assert.strictEqual(result.rejection.commandCleanupOwner, 'task-lifecycle');
       assert.strictEqual(result.pending.status, 'running');
       assert.notStrictEqual(result.pending.commandCleanup, null);
@@ -46,5 +48,29 @@ describe('Ambiguous task-wrapper cleanup ownership', function () {
       assert.strictEqual(result.overlayExistsAfterKill, false);
       assert.strictEqual(result.providerAliveAfterKill, false);
     });
+
+    it(`${mode} retains caller cleanup for a pre-persistence provider-contract failure`, function () {
+      const result = runFixture(mode, 'pre-persistence-contract-failure');
+      assert.match(result.rejection.message, /Upgrade Claude Code/);
+      assert.strictEqual(result.rejection.commandCleanupOwner, undefined);
+      assert.strictEqual(result.pending, null);
+      assert.strictEqual(result.overlayExistsAfterReject, false);
+    });
   }
+});
+
+describe('Durable task ownership receipt', function () {
+  it('returns the persisted task id without relying on human wrapper stdout', function () {
+    const { requireTaskIdFromWrapperResult } = require('../../src/task-spawn-cleanup-ownership');
+    assert.strictEqual(
+      requireTaskIdFromWrapperResult({
+        code: 0,
+        stdout: 'human output changed',
+        stderr: '',
+        parseTaskId: () => null,
+        persistedTaskId: 'task-durable-receipt',
+      }),
+      'task-durable-receipt'
+    );
+  });
 });

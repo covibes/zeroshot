@@ -17,6 +17,7 @@ const {
   CLAUDE_SETTINGS_ENV,
   isClaudeSettingsOverlayPath,
 } = require('../src/worktree-claude-config');
+const { TASK_SPAWN_OWNERSHIP_TOKEN_ENV } = require('../src/task-spawn-cleanup-ownership');
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -215,6 +216,8 @@ function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, mode
     attachable: false,
     processGroupId: null,
     terminationStrategy: null,
+    cancelRequested: false,
+    spawnOwnershipToken: process.env[TASK_SPAWN_OWNERSHIP_TOKEN_ENV] || null,
     commandCleanup:
       commandSpec.cleanup?.length > 0
         ? {
@@ -280,6 +283,7 @@ function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfi
 export function buildWatcherEnv(sourceEnv = process.env) {
   const watcherEnv = { ...sourceEnv };
   delete watcherEnv[LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV];
+  delete watcherEnv[TASK_SPAWN_OWNERSHIP_TOKEN_ENV];
   if (watcherEnv[ISOLATED_SETTINGS_FILE_MARKER] === '1') {
     delete watcherEnv[ISOLATED_SETTINGS_FILE_ENV];
     delete watcherEnv[ISOLATED_SETTINGS_FILE_MARKER];

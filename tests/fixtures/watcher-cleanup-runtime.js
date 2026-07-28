@@ -60,6 +60,7 @@ async function main() {
     pid: null,
     logFile,
     provider: 'claude',
+    cancelRequested: mode === 'cancel-before-start',
     commandCleanup: { cleanup: [cleanupDir], cleanupMetadata },
   });
 
@@ -74,7 +75,9 @@ async function main() {
         process.stdout.write('trigger watcher log failure\\n');
         setInterval(() => {}, 1000);
       `
-      : `process.stdout.write('provider output\\n'); process.exit(${providerExitCode});`;
+      : mode === 'cancel-before-start'
+        ? `require('fs').writeFileSync(${JSON.stringify(providerPidFile)}, String(process.pid));`
+        : `process.stdout.write('provider output\\n'); process.exit(${providerExitCode});`;
   const commandSpec = {
     binary: process.execPath,
     args: ['-e', providerSource],
@@ -134,6 +137,7 @@ async function main() {
         status: task.status,
         exitCode: task.exitCode,
         commandCleanup: task.commandCleanup,
+        cancelRequested: task.cancelRequested,
         logOutput,
       })}\n`
     );

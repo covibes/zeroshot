@@ -157,6 +157,41 @@ describe('Agent stuck-task recovery', function () {
     }
   });
 
+  it('retains the caller task handle until durable termination and cleanup are confirmed', async function () {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-kill-pending-'));
+    const fakeZeroshot = path.join(fakeBin, 'zeroshot');
+    fs.writeFileSync(fakeZeroshot, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    let followerKilled = false;
+    let livenessStopped = false;
+    const agent = {
+      currentTask: {
+        kill() {
+          followerKilled = true;
+        },
+      },
+      currentTaskId: 'startup-cancel-pending',
+      taskCommandPath: fakeZeroshot,
+      processPid: null,
+      lastOutputTime: 123,
+      taskStartedAt: 456,
+      _stopLivenessCheck() {
+        livenessStopped = true;
+      },
+      _log() {},
+    };
+
+    try {
+      const result = await killTask(agent, 'Provider inactivity timeout');
+      assert.strictEqual(result.forced, false);
+      assert.strictEqual(agent.currentTaskId, 'startup-cancel-pending');
+      assert.notStrictEqual(agent.currentTask, null);
+      assert.strictEqual(followerKilled, false);
+      assert.strictEqual(livenessStopped, false);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
   async function runMockRecovery({ failures, maxRestartAttempts, maxTotalRestarts }) {
     fs.writeFileSync(
       process.env.ZEROSHOT_SETTINGS_FILE,
