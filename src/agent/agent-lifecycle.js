@@ -1016,6 +1016,7 @@ async function executeTask(agent, triggeringMessage) {
         return;
       }
       if (detectVertexModelError(error.message)) {
+        logTaskAttemptFailure(agent, 1, 1, error);
         // Model unavailability on Vertex is deterministic — retrying wastes nothing but time.
         await handleFinalFailure(agent, triggeringMessage, error, 1);
         return;
