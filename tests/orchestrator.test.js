@@ -17,6 +17,7 @@ const IsolationManager = require('../src/isolation-manager.js');
 const MockTaskRunner = require('./helpers/mock-task-runner.js');
 const LedgerAssertions = require('./helpers/ledger-assertions.js');
 const Ledger = require('../src/ledger.js');
+const { promptIdentity } = require('../src/agent/provider-session.js');
 
 // Isolate tests from user settings (prevents minModel/maxModel conflicts)
 const testSettingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-test-settings-'));
@@ -266,6 +267,25 @@ async function waitForAgentCalls(runner, expectedCalls, timeoutMs = 3000) {
   throw new Error(
     `Agent calls did not reach ${JSON.stringify(expectedCalls)}; actual ${JSON.stringify(actual)}`
   );
+}
+
+async function waitForLifecycleEvent({ messageBus, clusterId, agentId, event, timeoutMs = 3000 }) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const observed = messageBus
+      .query({
+        cluster_id: clusterId,
+        topic: 'AGENT_LIFECYCLE',
+        sender: agentId,
+      })
+      .some((message) => message.content?.data?.event === event);
+    if (observed) {
+      return;
+    }
+    await sleep(20);
+  }
+
+  throw new Error(`Agent ${agentId} did not publish lifecycle event ${event}`);
 }
 
 function publishInterruptedTaskHistory(
@@ -1713,15 +1733,27 @@ function defineLifecycleResumeTests() {
       lifecycleMockRunner.when('worker').returns({ done: true });
 
       const result = await lifecycleOrchestrator.start(config, { text: 'Task' });
+      const runningCluster = lifecycleOrchestrator.getCluster(result.id);
+      await waitForLifecycleEvent({
+        messageBus: runningCluster.messageBus,
+        clusterId: result.id,
+        agentId: 'worker',
+        event: 'TASK_COMPLETED',
+      });
       await lifecycleOrchestrator.stop(result.id);
 
       const cluster = lifecycleOrchestrator.getCluster(result.id);
+      const durableHighWater = cluster.messageBus.query({
+        cluster_id: result.id,
+        order: 'desc',
+        limit: 1,
+      })[0].timestamp;
       cluster.failureInfo = {
         agentId: 'worker',
         taskId: 'persisted-worker-failure',
         iteration: 1,
         error: 'boom',
-        timestamp: Date.now(),
+        timestamp: durableHighWater + 1,
       };
 
       const resumedRunner = new MockTaskRunner();
@@ -1886,8 +1918,10 @@ function defineLifecycleResumeTests() {
       assert.strictEqual(failureInfo.error, 'unresolved validator failure');
     });
 
-    it('should not restore serialized currentTask handles from disk', async function () {
+    it('restores a proven completed session without reviving currentTask handles', async function () {
       const config = createSimpleConfig();
+      const privatePrompt = `PRIVATE-CONTINUATION-PROMPT-${'x'.repeat(16_384)}`;
+      const privatePromptIdentity = promptIdentity(privatePrompt);
       lifecycleMockRunner.when('worker').delays(1000, { done: true });
 
       const result = await lifecycleOrchestrator.start(config, { text: 'Task' });
@@ -1900,8 +1934,48 @@ function defineLifecycleResumeTests() {
       agent.currentTask = { kill() {} };
       agent.currentTaskId = 'task-live';
       agent.processPid = 4242;
+      agent.providerSession = {
+        provider: 'claude',
+        sessionId: 'agent-owned-session',
+        agentId: agent.id,
+        taskId: 'task-complete',
+        generation: agent.iteration,
+        cwd: path.resolve(agent.config.cwd || process.cwd()),
+        worktreePath: null,
+        contextSequence: '41',
+        guidanceSequence: '17',
+        promptIdentity: privatePromptIdentity,
+      };
+      agent.lastGuidanceAppliedId = '17';
+      cluster.messageBus.publish({
+        cluster_id: result.id,
+        topic: 'AGENT_LIFECYCLE',
+        sender: agent.id,
+        content: {
+          text: `${agent.id}: TASK_COMPLETED`,
+          data: {
+            event: 'TASK_COMPLETED',
+            provider: 'claude',
+            taskId: 'task-complete',
+            iteration: agent.iteration,
+            contextSequence: '41',
+            guidanceSequence: '17',
+            promptIdentity: privatePromptIdentity,
+          },
+        },
+      });
 
       await lifecycleOrchestrator._saveClusters();
+      const persistedRegistry = fs.readFileSync(
+        path.join(lifecycleStorageDir, 'clusters.json'),
+        'utf8'
+      );
+      const exportedLedger = lifecycleOrchestrator.export(result.id, 'json');
+      assert.ok(privatePromptIdentity.length <= 71);
+      assert.ok(!persistedRegistry.includes(privatePrompt));
+      assert.ok(!exportedLedger.includes(privatePrompt));
+      assert.ok(!persistedRegistry.includes('"promptText"'));
+      assert.ok(!exportedLedger.includes('"promptText"'));
 
       const reloaded = await Orchestrator.create({
         taskRunner: new MockTaskRunner(),
@@ -1916,7 +1990,92 @@ function defineLifecycleResumeTests() {
 
         assert.strictEqual(restoredAgent.currentTask, null);
         assert.strictEqual(restoredAgent.currentTaskId, 'task-live');
+        assert.deepStrictEqual(restoredAgent.providerSession, {
+          provider: 'claude',
+          sessionId: 'agent-owned-session',
+          agentId: agent.id,
+          taskId: 'task-complete',
+          generation: agent.iteration,
+          cwd: path.resolve(agent.config.cwd || process.cwd()),
+          worktreePath: null,
+          contextSequence: '41',
+          guidanceSequence: '17',
+          promptIdentity: privatePromptIdentity,
+        });
+        assert.strictEqual(restoredAgent.lastGuidanceAppliedId, '17');
         assert.strictEqual(restoredState.currentTask, false);
+      } finally {
+        reloaded.close();
+      }
+    });
+
+    it('drops session state when a crash snapshot ends in a live or failed generation', async function () {
+      const config = createSimpleConfig();
+      lifecycleMockRunner.when('worker').delays(1000, { done: true });
+
+      const result = await lifecycleOrchestrator.start(config, { text: 'Task' });
+      const cluster = lifecycleOrchestrator.getCluster(result.id);
+      const agent = cluster.agents[0];
+      const cwd = path.resolve(agent.config.cwd || process.cwd());
+
+      cluster.state = 'stopped';
+      cluster.pid = null;
+      agent.state = 'executing_task';
+      agent.iteration = 2;
+      agent.currentTaskId = 'task-live-generation-2';
+      agent.providerSession = {
+        provider: 'claude',
+        sessionId: 'completed-generation-1',
+        agentId: agent.id,
+        taskId: 'task-complete-generation-1',
+        generation: 1,
+        cwd,
+        worktreePath: null,
+        contextSequence: 41,
+        guidanceSequence: 17,
+        promptIdentity: promptIdentity(agent._selectPrompt()),
+      };
+      agent.lastGuidanceAppliedId = 17;
+      for (const data of [
+        {
+          event: 'TASK_COMPLETED',
+          provider: 'claude',
+          taskId: 'task-complete-generation-1',
+          iteration: 1,
+          contextSequence: 41,
+          guidanceSequence: 17,
+          promptIdentity: promptIdentity(agent._selectPrompt()),
+        },
+        {
+          event: 'TASK_STARTED',
+          provider: 'claude',
+          taskId: 'task-live-generation-2',
+          iteration: 2,
+        },
+        {
+          event: 'TASK_FAILED',
+          provider: 'claude',
+          taskId: 'task-live-generation-2',
+          iteration: 2,
+        },
+      ]) {
+        cluster.messageBus.publish({
+          cluster_id: result.id,
+          topic: 'AGENT_LIFECYCLE',
+          sender: agent.id,
+          content: { text: `${agent.id}: ${data.event}`, data },
+        });
+      }
+
+      await lifecycleOrchestrator._saveClusters();
+      const reloaded = await Orchestrator.create({
+        taskRunner: new MockTaskRunner(),
+        storageDir: lifecycleStorageDir,
+        quiet: true,
+      });
+
+      try {
+        assert.strictEqual(reloaded.getCluster(result.id).agents[0].providerSession, null);
       } finally {
         reloaded.close();
       }

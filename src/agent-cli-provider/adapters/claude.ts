@@ -1,4 +1,4 @@
-import { stringifyJson } from '../json';
+import { getString, isRecord, stringifyJson, tryParseJson } from '../json';
 import { contractError } from '../contract-errors';
 import {
   type BuildProviderCommandOptions,
@@ -71,6 +71,7 @@ function detectCliFeatures(helpText?: string | null): ClaudeCliFeatures {
     // fail closed before a provider process is spawned.
     supportsSettings: !unknown && /--settings/.test(help),
     supportsMcpConfig: !unknown && /--mcp-config/.test(help),
+    supportsResume: unknown ? true : /--resume/.test(help),
     unknown,
   };
 }
@@ -120,11 +121,17 @@ function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions
 }
 
 function addSessionArgs(args: string[], options: BuildProviderCommandOptions): void {
-  if (options.resumeSessionId) {
+  const features = optionFeatures(options);
+  if ((options.resumeSessionId || options.continueSession) && features.supportsResume === false) {
+    throw new Error(
+      'Claude CLI cannot safely run continuation context because this installation lacks --resume.'
+    );
+  }
+  if (options.resumeSessionId && features.supportsResume !== false) {
     args.push('--resume', options.resumeSessionId);
     return;
   }
-  if (options.continueSession) {
+  if (options.continueSession && features.supportsResume !== false) {
     args.push('--continue');
   }
 }
@@ -161,6 +168,13 @@ function failClosedUnsupportedRunConfig(options: BuildProviderCommandOptions): v
         'Claude CLI does not advertise --mcp-config support required to preserve repository MCP tools. Upgrade Claude Code before running this task.',
     });
   }
+}
+
+function extractSessionId(line: string): string | null {
+  const event = tryParseJson(line.trim());
+  if (!isRecord(event)) return null;
+  const sessionId = getString(event, 'session_id');
+  return sessionId?.trim() || null;
 }
 
 function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[] {
@@ -273,6 +287,7 @@ export const claudeAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  extractSessionId,
   parseEvent: parseClaudeEvent,
   createParserState: () => createParserState('claude'),
   resolveModelSpec,

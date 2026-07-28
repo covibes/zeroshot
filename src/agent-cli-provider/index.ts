@@ -3,6 +3,7 @@ export {
   classifyProviderError,
   detectProviderFatalError,
   detectProviderStreamingModeError,
+  extractProviderSessionId,
   getProviderAdapter,
   listProviderAdapters,
   parseProviderChunk,

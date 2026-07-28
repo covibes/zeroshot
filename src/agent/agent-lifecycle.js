@@ -22,6 +22,7 @@ const { normalizeProviderName } = require('../../lib/provider-names');
 const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
+const { updateAgentProviderSession } = require('./provider-session');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
 
@@ -437,11 +438,16 @@ function attachResultMetadata(agent, result) {
 }
 
 function publishTaskCompleted(agent, result) {
+  const session = result.providerSession;
   agent._publishLifecycle('TASK_COMPLETED', {
     iteration: agent.iteration,
     success: true,
     taskId: agent.currentTaskId,
+    provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
     tokenUsage: result.tokenUsage || null,
+    contextSequence: session?.contextSequence ?? agent.currentContextSequence,
+    guidanceSequence: session?.guidanceSequence ?? agent.currentGuidanceSequence ?? null,
+    promptIdentity: session?.promptIdentity ?? agent.currentPromptIdentity ?? null,
   });
 }
 
@@ -566,11 +572,18 @@ async function runTaskAttempt(agent, triggeringMessage) {
   await applyValidatorJitter(agent);
   publishTaskStarted(agent, triggeringMessage);
 
-  const result = await agent._spawnClaudeTask(context);
+  let result;
+  try {
+    result = await agent._spawnClaudeTask(context);
+  } catch (error) {
+    updateAgentProviderSession(agent, null);
+    throw error;
+  }
   attachResultMetadata(agent, result);
 
   // Check if task execution failed
   if (!result.success) {
+    updateAgentProviderSession(agent, null);
     const error = new Error(result.error || 'Task execution failed');
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
@@ -580,10 +593,23 @@ async function runTaskAttempt(agent, triggeringMessage) {
 
   const fallbackReason = await maybeRetryValidatorInDocker(agent, result);
   if (fallbackReason) {
+    updateAgentProviderSession(agent, null);
     throw new Error(
       `Validator platform mismatch detected (${fallbackReason}). Retrying in Docker isolation.`
     );
   }
+
+  // The hook publishes the logical output of the turn. Until it succeeds, neither
+  // TASK_COMPLETED nor its provider continuation boundary is durable.
+  try {
+    await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
+  } catch (error) {
+    updateAgentProviderSession(agent, null);
+    throw error;
+  }
+
+  updateAgentProviderSession(agent, result.providerSession);
+  agent.lastGuidanceAppliedId = agent.currentGuidanceSequence;
 
   // Set state to idle BEFORE publishing lifecycle event
   // (so lifecycle message includes correct state)
@@ -595,7 +621,6 @@ async function runTaskAttempt(agent, triggeringMessage) {
   publishTaskCompleted(agent, result);
   publishTokenUsage(agent, result);
   clearTransientTaskState(agent);
-  await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
 }
 
 function logTaskAttemptFailure(agent, attempt, maxRetries, error) {
@@ -1003,6 +1028,9 @@ async function executeTask(agent, triggeringMessage) {
       await runTaskAttempt(agent, triggeringMessage);
       return;
     } catch (error) {
+      // Any failed logical attempt invalidates continuation before TASK_FAILED is
+      // published and persisted. Retries must reconstruct a fresh full context.
+      updateAgentProviderSession(agent, null);
       if (!agent.running || agent.state === 'stopped') {
         agent._log(`[${agent.id}] Task interrupted during shutdown; skipping retry`);
         return;

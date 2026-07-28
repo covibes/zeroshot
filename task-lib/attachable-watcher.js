@@ -8,6 +8,7 @@
 import { appendFileSync } from 'fs';
 import { getTask, updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
+import { createProviderSessionCapture } from './provider-session-capture.js';
 import * as watcherOutputRuntime from './watcher-output-runtime.js';
 import { createRequire } from 'module';
 
@@ -102,6 +103,15 @@ const { providerName, env, command, finalArgs } = watcherOutputRuntime.resolveWa
   args,
   normalizeProviderName
 );
+const providerSessionCapture = createProviderSessionCapture({
+  providerName,
+  taskId,
+  updateTask,
+  log,
+  requestedSessionId: persistedTask?.requestedResumeSessionId || null,
+  initialSessionId: persistedTask?.sessionId || null,
+  initialSessionIdConflict: persistedTask?.sessionIdConflict === true,
+});
 let outputBuffer = '';
 
 function stopProviderAfterFatalOutput(timestamp) {
@@ -117,6 +127,7 @@ const outputRuntime = watcherOutputRuntime.createWatcherOutputRuntime({
   providerName,
   log,
   stopProvider: stopProviderAfterFatalOutput,
+  providerSessionCapture,
 });
 
 if (

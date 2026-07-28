@@ -2837,7 +2837,7 @@ taskCmd
   .option('--model <model>', 'Model id override for the provider')
   .option('--model-level <level>', 'Model level override (level1, level2, level3)')
   .option('--reasoning-effort <effort>', 'Reasoning effort (low, medium, high, xhigh, max)')
-  .option('-r, --resume <sessionId>', 'Resume a specific Claude session (claude only)')
+  .option('-r, --resume <sessionId>', 'Resume a specific provider session (Claude or Codex)')
   .option('-c, --continue', 'Continue the most recent Claude session (claude only)')
   .option(
     '-o, --output-format <format>',

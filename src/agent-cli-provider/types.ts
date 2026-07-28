@@ -103,6 +103,7 @@ export interface ClaudeCliFeatures extends BaseCliFeatures {
   readonly supportsEffort: boolean;
   readonly supportsSettings: boolean;
   readonly supportsMcpConfig: boolean;
+  readonly supportsResume: boolean;
 }
 
 export interface CodexCliFeatures extends BaseCliFeatures {
@@ -114,6 +115,7 @@ export interface CodexCliFeatures extends BaseCliFeatures {
   readonly supportsConfigOverride: boolean;
   readonly supportsModel: boolean;
   readonly supportsSkipGitRepoCheck: boolean;
+  readonly supportsResume: boolean;
 }
 
 export interface GeminiCliFeatures extends BaseCliFeatures {
@@ -215,6 +217,7 @@ export interface CliFeatureOverrides {
   readonly supportsNoAskUser?: boolean;
   readonly supportsAddDir?: boolean;
   readonly supportsMcpConfig?: boolean;
+  readonly supportsResume?: boolean;
   readonly supportsBundledRunner?: boolean;
   readonly supportsAcpStdio?: boolean;
   readonly supportsPromptImages?: boolean;
@@ -371,6 +374,7 @@ export interface ProviderAdapter {
   readonly defaultMinLevel: ModelLevel;
   detectCliFeatures(helpText?: string | null): ProviderCliFeatures;
   buildCommand(context: string, options?: BuildProviderCommandOptions): CommandSpec;
+  extractSessionId?(line: string): string | null;
   parseEvent(line: string, state: ProviderParserState): ProviderParseResult;
   createParserState(): ProviderParserState;
   resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec;

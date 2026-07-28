@@ -43,6 +43,7 @@ const CLI_FEATURE_FIELDS = [
   'supportsNoAskUser',
   'supportsAddDir',
   'supportsMcpConfig',
+  'supportsResume',
   'supportsBundledRunner',
   'supportsAcpStdio',
   'supportsPromptImages',

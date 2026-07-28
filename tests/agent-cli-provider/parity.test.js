@@ -698,6 +698,7 @@ test('feature probing is deterministic from injected help text', () => {
     supportsEffort: true,
     supportsSettings: false,
     supportsMcpConfig: false,
+    supportsResume: true,
     unknown: true,
   });
   const claudeFeatures = helper
@@ -707,6 +708,22 @@ test('feature probing is deterministic from injected help text', () => {
   assert.equal(claudeFeatures.supportsMcpConfig, true);
   assert.equal(claudeFeatures.unknown, false);
 
+  assert.equal(
+    helper.getProviderAdapter('claude').detectCliFeatures('claude --resume').supportsResume,
+    true
+  );
+  assert.equal(
+    helper.getProviderAdapter('claude').detectCliFeatures('claude --print').supportsResume,
+    false
+  );
+  assert.equal(
+    helper.getProviderAdapter('codex').detectCliFeatures('codex exec resume').supportsResume,
+    true
+  );
+  assert.equal(
+    helper.getProviderAdapter('codex').detectCliFeatures('codex exec --json').supportsResume,
+    false
+  );
   assert.equal(
     helper
       .getProviderAdapter('codex')

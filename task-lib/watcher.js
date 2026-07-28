@@ -8,6 +8,7 @@
 import { appendFileSync } from 'fs';
 import { getTask, updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
+import { createProviderSessionCapture } from './provider-session-capture.js';
 import {
   completeWatcherFailure,
   completePendingWatcherCancellation,
@@ -54,6 +55,16 @@ const { providerName, env, command, finalArgs } = resolveWatcherCommand(
   args,
   normalizeProviderName
 );
+const storedTask = getTask(taskId);
+const providerSessionCapture = createProviderSessionCapture({
+  providerName,
+  taskId,
+  updateTask,
+  log,
+  requestedSessionId: storedTask?.requestedResumeSessionId || null,
+  initialSessionId: storedTask?.sessionId || null,
+  initialSessionIdConflict: storedTask?.sessionIdConflict === true,
+});
 
 let crashStarted = false;
 let child = null;
@@ -84,6 +95,7 @@ const outputRuntime = createWatcherOutputRuntime({
   providerName,
   log,
   stopProvider: stopProviderAfterFatalOutput,
+  providerSessionCapture,
 });
 
 function terminateOwnedProviderBoundary() {

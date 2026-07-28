@@ -94,6 +94,7 @@ export async function completeWatcherTask({
       error: completion.error,
       cancelRequested: false,
       ...terminalUpdates,
+      ...(completion.terminalUpdates || {}),
       ...(cleanupSucceeded ? { commandCleanup: null } : {}),
     });
   } catch (error) {
@@ -133,7 +134,13 @@ export function completeWatcherFailure({ error, source, ...completionOptions }) 
   });
 }
 
-export function createWatcherOutputRuntime({ config, providerName, log, stopProvider }) {
+export function createWatcherOutputRuntime({
+  config,
+  providerName,
+  log,
+  stopProvider,
+  providerSessionCapture = null,
+}) {
   const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
   const silentJsonMode =
     config.outputFormat === 'json' &&
@@ -143,6 +150,7 @@ export function createWatcherOutputRuntime({ config, providerName, log, stopProv
   let finalResultJson = null;
   let streamingModeError = null;
   let fatalError = null;
+  const captureProviderSession = providerSessionCapture?.captureLine || (() => {});
 
   function maybeHandleFatalError(line, timestamp) {
     if (fatalError) return false;
@@ -172,6 +180,7 @@ export function createWatcherOutputRuntime({ config, providerName, log, stopProv
   }
 
   function handleOutputLine(line, timestamp) {
+    captureProviderSession(line);
     if (silentJsonMode && !line.trim()) return;
     maybeHandleFatalError(line, timestamp);
     if (captureStreamingError(line, timestamp)) return;
@@ -198,6 +207,7 @@ export function createWatcherOutputRuntime({ config, providerName, log, stopProv
 
   function flushOutput(buffer, timestamp) {
     if (!buffer.trim()) return;
+    captureProviderSession(buffer);
     if (!enableRecovery) {
       if (!silentJsonMode) log(`[${timestamp}]${buffer}\n`);
       return;
@@ -239,6 +249,7 @@ export function createWatcherOutputRuntime({ config, providerName, log, stopProv
     flushOutput(outputBuffer, timestamp);
     if (stderrBuffer !== null) flushStderr(stderrBuffer, timestamp);
     const recovered = attemptRecovery(code, timestamp);
+    const sessionIdentityError = providerSessionCapture?.getCompletionError() || null;
     if (silentJsonMode && finalResultJson) log(`${finalResultJson}\n`);
     if (config.outputFormat !== 'json') {
       log(`\n${'='.repeat(50)}\n`);
@@ -249,13 +260,17 @@ export function createWatcherOutputRuntime({ config, providerName, log, stopProv
     if (recovered?.payload) {
       resolvedCode = 0;
     }
-    if (fatalError) {
+    if (fatalError || sessionIdentityError) {
       resolvedCode = 1;
     }
     return {
       resolvedCode,
       status: resolvedCode === 0 ? 'completed' : 'failed',
-      error: fatalError || (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
+      error:
+        fatalError ||
+        sessionIdentityError ||
+        (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
+      terminalUpdates: providerSessionCapture?.getCompletionUpdate(resolvedCode) || {},
     };
   }
 
