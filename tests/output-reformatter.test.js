@@ -5,9 +5,6 @@
  */
 
 const assert = require('assert');
-const { EventEmitter } = require('events');
-const { PassThrough } = require('stream');
-const childProcess = require('child_process');
 const sinon = require('sinon');
 const {
   reformatOutput,
@@ -17,21 +14,6 @@ const {
 } = require('../src/agent/output-reformatter');
 const { parseResultOutput } = require('../src/agent/agent-task-executor');
 
-function createFakeChild() {
-  const child = new EventEmitter();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  child.kill = sinon.spy();
-  return child;
-}
-
-function emitResult(child, { stdout = '', stderr = '', code = 0, signal = null } = {}) {
-  setImmediate(() => {
-    if (stdout) child.stdout.write(stdout);
-    if (stderr) child.stderr.write(stderr);
-    child.emit('close', code, signal);
-  });
-}
 
 function opencodeTextEvent(value) {
   return `${JSON.stringify({
@@ -159,34 +141,27 @@ describe('Output Reformatter', function () {
       additionalProperties: false,
     };
 
-    it('recovers tool-call-only opencode output through the CLI', async function () {
-      const child = createFakeChild();
-      const spawnStub = sinon.stub(childProcess, 'spawn').callsFake(() => {
-        emitResult(child, { stdout: opencodeTextEvent({ plan: 'Inspect the adapter' }) });
-        return child;
-      });
-
+    it('recovers tool-call-only output through the active opencode task runtime', async function () {
+      let capturedPrompt;
       const result = await reformatOutput({
         rawOutput: '{"type":"tool_use","name":"read","input":{"path":"src/adapter.js"}}',
         schema,
         providerName: 'opencode',
+        runReformat: async (prompt) => {
+          capturedPrompt = prompt;
+          return {
+            success: true,
+            output: opencodeTextEvent({ plan: 'Inspect the adapter' }),
+          };
+        },
       });
 
       assert.deepStrictEqual(result, { plan: 'Inspect the adapter' });
-      assert.strictEqual(spawnStub.callCount, 1);
-      const [binary, args, options] = spawnStub.firstCall.args;
-      assert.strictEqual(binary, 'opencode');
-      assert.deepStrictEqual(args.slice(0, 3), ['run', '--format', 'json']);
-      assert.match(args[3], /Do NOT use any tools/);
-      assert.deepStrictEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+      assert.match(capturedPrompt, /Do NOT use any tools/);
     });
 
-    it('recovers the structured-output parser after primary extraction finds no JSON', async function () {
-      const child = createFakeChild();
-      sinon.stub(childProcess, 'spawn').callsFake(() => {
-        emitResult(child, { stdout: opencodeTextEvent({ plan: 'Recovered through fallback' }) });
-        return child;
-      });
+    it('recovers the structured-output parser in the same agent execution context', async function () {
+      const spawnCalls = [];
       const agent = {
         id: 'planner',
         role: 'planner',
@@ -194,6 +169,13 @@ describe('Output Reformatter', function () {
         state: 'executing_task',
         config: { jsonSchema: schema },
         _resolveProvider: () => 'opencode',
+        _spawnClaudeTask: async (prompt, options) => {
+          spawnCalls.push({ prompt, options });
+          return {
+            success: true,
+            output: opencodeTextEvent({ plan: 'Recovered through fallback' }),
+          };
+        },
       };
 
       const result = await parseResultOutput(
@@ -202,29 +184,31 @@ describe('Output Reformatter', function () {
       );
 
       assert.deepStrictEqual(result, { plan: 'Recovered through fallback' });
+      assert.strictEqual(spawnCalls.length, 1);
+      assert.deepStrictEqual(spawnCalls[0].options, { skipStructuredResultCheck: true });
     });
 
     it('retries schema-invalid output and returns the valid recovery', async function () {
       const outputs = [{ wrong: true }, { plan: 'Recovered' }];
-      const spawnStub = sinon.stub(childProcess, 'spawn').callsFake(() => {
-        const child = createFakeChild();
-        emitResult(child, { stdout: opencodeTextEvent(outputs.shift()) });
-        return child;
-      });
+      const prompts = [];
 
       const result = await reformatOutput({
         rawOutput: 'No JSON plan was emitted',
         schema,
         providerName: 'opencode',
+        runReformat: async (prompt) => {
+          prompts.push(prompt);
+          return { success: true, output: opencodeTextEvent(outputs.shift()) };
+        },
       });
 
       assert.deepStrictEqual(result, { plan: 'Recovered' });
-      assert.strictEqual(spawnStub.callCount, 2);
-      assert.match(spawnStub.secondCall.args[1][3], /PREVIOUS ATTEMPT FAILED/);
+      assert.strictEqual(prompts.length, 2);
+      assert.match(prompts[1], /PREVIOUS ATTEMPT FAILED/);
     });
 
-    it('does not invoke opencode for another provider', async function () {
-      const spawnStub = sinon.stub(childProcess, 'spawn');
+    it('does not invoke an opencode runtime for another provider', async function () {
+      const runReformat = sinon.spy();
 
       await assert.rejects(
         () =>
@@ -232,41 +216,57 @@ describe('Output Reformatter', function () {
             rawOutput: 'Some text',
             schema,
             providerName: 'claude',
+            runReformat,
           }),
         /not available for provider "claude"/
       );
-      assert.strictEqual(spawnStub.callCount, 0);
+      assert.strictEqual(runReformat.callCount, 0);
     });
 
-    it('kills an in-flight reformat and does not retry after cancellation', async function () {
+    it('waits for owned task-tree exit before cancellation settles and never retries', async function () {
       let cancelled = false;
-      const child = createFakeChild();
-      const spawnStub = sinon.stub(childProcess, 'spawn').callsFake(() => {
-        setImmediate(() => {
-          cancelled = true;
-        });
-        return child;
-      });
-
-      await assert.rejects(
+      let finishTask;
+      let settled = false;
+      const runReformat = sinon.spy(
         () =>
-          reformatOutput({
-            rawOutput: 'No JSON plan was emitted',
-            schema,
-            providerName: 'opencode',
-            isCancelled: () => cancelled,
-          }),
-        /reformatting cancelled/
+          new Promise((resolve) => {
+            finishTask = resolve;
+          })
       );
-      assert.strictEqual(spawnStub.callCount, 1);
-      sinon.assert.calledOnceWithExactly(child.kill, 'SIGKILL');
+      const recovery = reformatOutput({
+        rawOutput: 'No JSON plan was emitted',
+        schema,
+        providerName: 'opencode',
+        isCancelled: () => cancelled,
+        runReformat,
+      });
+      recovery.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+
+      await new Promise((resolve) => setImmediate(resolve));
+      cancelled = true;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(settled, false);
+      assert.strictEqual(runReformat.callCount, 1);
+
+      finishTask({ success: false, error: 'owned process tree terminated' });
+      await assert.rejects(recovery, (error) => {
+        assert.strictEqual(error.code, 'REFORMAT_CANCELLED');
+        return true;
+      });
+      assert.strictEqual(runReformat.callCount, 1);
     });
 
-    it('reports opencode process failures after the configured attempts', async function () {
-      const spawnStub = sinon.stub(childProcess, 'spawn').callsFake(() => {
-        const child = createFakeChild();
-        emitResult(child, { stderr: 'not authenticated', code: 1 });
-        return child;
+    it('reports task-runtime failures after the configured attempts', async function () {
+      const runReformat = sinon.stub().resolves({
+        success: false,
+        error: 'opencode task failed: not authenticated',
       });
 
       await assert.rejects(
@@ -276,10 +276,39 @@ describe('Output Reformatter', function () {
             schema,
             providerName: 'opencode',
             maxAttempts: 2,
+            runReformat,
           }),
         /not authenticated/
       );
-      assert.strictEqual(spawnStub.callCount, 2);
+      assert.strictEqual(runReformat.callCount, 2);
+    });
+
+    it('propagates cancellation from parseResultOutput without a missing-JSON error', async function () {
+      let cancelled = false;
+      let finishTask;
+      const agent = {
+        id: 'planner',
+        role: 'planner',
+        running: true,
+        state: 'executing_task',
+        config: { jsonSchema: schema },
+        _resolveProvider: () => 'opencode',
+        _spawnClaudeTask: () =>
+          new Promise((resolve) => {
+            finishTask = resolve;
+          }),
+      };
+      const parsing = parseResultOutput(agent, 'Tool call completed without final JSON');
+      await new Promise((resolve) => setImmediate(resolve));
+      cancelled = true;
+      agent.running = false;
+      finishTask({ success: false, error: 'owned process tree terminated' });
+
+      await assert.rejects(parsing, (error) => {
+        assert.strictEqual(error.code, 'REFORMAT_CANCELLED');
+        assert.doesNotMatch(error.message, /missing required JSON block/);
+        return true;
+      });
     });
   });
 });

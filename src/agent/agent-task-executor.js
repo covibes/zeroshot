@@ -589,9 +589,10 @@ function ensureDangerousGitHook(targetClaudeDir = null) {
  * Spawn claude-zeroshots process and stream output via message bus
  * @param {Object} agent - Agent instance
  * @param {String} context - Context to pass to Claude
+ * @param {{skipStructuredResultCheck?: boolean}} [options] - Internal nested-task controls
  * @returns {Promise<Object>} Result object { success, output, error }
  */
-async function spawnClaudeTask(agent, context) {
+async function spawnClaudeTask(agent, context, options = {}) {
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const modelSpec = resolveAgentModelSpec(agent);
 
@@ -628,7 +629,7 @@ async function spawnClaudeTask(agent, context) {
 
   // MOCK SUPPORT: Use injected mock function if provided
   if (agent.mockSpawnFn) {
-    return agent.mockSpawnFn(args, { context });
+    return agent.mockSpawnFn(args, { context, options });
   }
 
   // SAFETY: Fail hard if testMode=true but no mock (should be caught in constructor)
@@ -641,7 +642,7 @@ async function spawnClaudeTask(agent, context) {
 
   // ISOLATION MODE: Run inside Docker container
   if (agent.isolation?.enabled) {
-    return spawnClaudeTaskIsolated(agent, context);
+    return spawnClaudeTaskIsolated(agent, context, options);
   }
 
   // NON-ISOLATION MODE: For Claude, use user's existing Claude config
@@ -703,7 +704,7 @@ async function spawnClaudeTask(agent, context) {
   }
 
   // Now follow the logs and stream output
-  return followClaudeTaskLogs(agent, taskId);
+  return followClaudeTaskLogs(agent, taskId, options);
 }
 
 function resolveAgentModelSpec(agent) {
@@ -1212,7 +1213,9 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
 }
 
 async function buildCompletionResult({ agent, taskId, providerName, state, stdout, success }) {
-  const classified = await evaluateStructuredSuccess({ agent, taskId, state, success });
+  const classified = state.skipStructuredResultCheck
+    ? { success, error: null }
+    : await evaluateStructuredSuccess({ agent, taskId, state, success });
   let errorContext = classified.error;
   if (!errorContext && !classified.success) {
     errorContext = buildFailureContext({ agent, taskId, providerName, state, stdout });
@@ -1401,9 +1404,17 @@ function buildKillHandler({ agent, taskId, state, providerName, resolve }) {
   };
 }
 
-function createLogFollower({ agent, taskId, fsModule, ctPath, providerName }) {
+function createLogFollower({
+  agent,
+  taskId,
+  fsModule,
+  ctPath,
+  providerName,
+  skipStructuredResultCheck = false,
+}) {
   return new Promise((resolve) => {
     const state = createLogFollowState();
+    state.skipStructuredResultCheck = skipStructuredResultCheck;
 
     state.logFilePath = lookupLogFilePath(ctPath, taskId);
     if (state.logFilePath) {
@@ -1463,12 +1474,19 @@ function createLogFollower({ agent, taskId, fsModule, ctPath, providerName }) {
  * @param {String} taskId - Task ID to follow
  * @returns {Promise<Object>} Result object { success, output, error }
  */
-function followClaudeTaskLogs(agent, taskId) {
+function followClaudeTaskLogs(agent, taskId, options = {}) {
   const fsModule = require('fs');
   const ctPath = getClaudeTasksPath();
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
 
-  return createLogFollower({ agent, taskId, fsModule, ctPath, providerName });
+  return createLogFollower({
+    agent,
+    taskId,
+    fsModule,
+    ctPath,
+    providerName,
+    skipStructuredResultCheck: options.skipStructuredResultCheck === true,
+  });
 }
 
 // Cache zeroshot path at module load time (when PATH is correct)
@@ -1506,9 +1524,10 @@ function getClaudeTasksPath() {
  * Runs Claude CLI inside the container for full isolation
  * @param {Object} agent - Agent instance
  * @param {String} context - Context to pass to Claude
+ * @param {{skipStructuredResultCheck?: boolean}} [options] - Internal nested-task controls
  * @returns {Promise<Object>} Result object { success, output, error }
  */
-async function spawnClaudeTaskIsolated(agent, context) {
+async function spawnClaudeTaskIsolated(agent, context, options = {}) {
   const { manager, clusterId } = agent.isolation;
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const modelSpec = resolveAgentModelSpec(agent);
@@ -1626,7 +1645,7 @@ async function spawnClaudeTaskIsolated(agent, context) {
 
   // STEP 2: Install the lifecycle-owned handle before liveness monitoring can
   // observe the task, then follow the task's log file inside the container.
-  const execution = followClaudeTaskLogsIsolated(agent, taskId);
+  const execution = followClaudeTaskLogsIsolated(agent, taskId, options);
   if (agent.enableLivenessCheck) {
     agent.taskStartedAt = Date.now();
     agent.lastOutputTime = agent.taskStartedAt;
@@ -1658,7 +1677,7 @@ async function spawnClaudeTaskIsolated(agent, context) {
  * - Status checks reduced to every 2 seconds (not every poll)
  * - Result: 10-20% overall latency reduction
  */
-function createIsolatedLogState() {
+function createIsolatedLogState(skipStructuredResultCheck = false) {
   return {
     taskExited: false,
     resolved: false,
@@ -1670,6 +1689,7 @@ function createIsolatedLogState() {
     statusCheckInterval: null,
     timeoutTimer: null,
     lineBuffer: '',
+    skipStructuredResultCheck,
   };
 }
 
@@ -1816,7 +1836,9 @@ function settleIsolatedTerminalStatus({
           },
         })
       : null;
-    const parsedResult = await agent._parseResultOutput(state.fullOutput);
+    const parsedResult = state.skipStructuredResultCheck
+      ? null
+      : await agent._parseResultOutput(state.fullOutput);
 
     settleIsolatedFollower({
       agent,
@@ -2056,7 +2078,7 @@ function startIsolatedStatusChecks({
   }, 2000);
 }
 
-function followClaudeTaskLogsIsolated(agent, taskId) {
+function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
   const { isolation } = agent;
   if (!isolation?.manager) {
     throw new Error('followClaudeTaskLogsIsolated: isolation manager not found');
@@ -2067,7 +2089,7 @@ function followClaudeTaskLogsIsolated(agent, taskId) {
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
 
   return new Promise((resolve, reject) => {
-    const state = createIsolatedLogState();
+    const state = createIsolatedLogState(options.skipStructuredResultCheck === true);
     const cleanup = buildIsolatedCleanup(state);
     const onLine = (line) => broadcastIsolatedLine({ agent, providerName, taskId, line });
     state.lifecycleHandle = buildIsolatedLifecycleHandle({
@@ -2203,6 +2225,8 @@ async function parseResultOutput(agent, output) {
         schema: agent.config.jsonSchema,
         providerName,
         isCancelled: () => agent.running === false || agent.state === 'stopped',
+        runReformat: (prompt) =>
+          agent._spawnClaudeTask(prompt, { skipStructuredResultCheck: true }),
         onAttempt: (attempt, lastError) => {
           if (lastError) {
             console.warn(`[Agent ${agent.id}] Reformat attempt ${attempt}: ${lastError}`);
@@ -2214,6 +2238,7 @@ async function parseResultOutput(agent, output) {
         },
       });
     } catch (reformatError) {
+      if (reformatError.code === 'REFORMAT_CANCELLED') throw reformatError;
       // Reformatting failed - fall through to error below
       console.error(`[Agent ${agent.id}] Reformatting failed: ${reformatError.message}`);
     }

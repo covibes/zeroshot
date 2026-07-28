@@ -476,8 +476,8 @@ class AgentWrapper {
    * Spawn claude-zeroshots process and stream output via message bus
    * @private
    */
-  _spawnClaudeTask(context) {
-    return spawnClaudeTask(this, context);
+  _spawnClaudeTask(context, options = {}) {
+    return spawnClaudeTask(this, context, options);
   }
 
   /**

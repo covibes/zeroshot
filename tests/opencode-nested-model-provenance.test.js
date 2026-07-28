@@ -8,6 +8,7 @@ const AgentWrapper = require('../src/agent-wrapper');
 const ClaudeTaskRunner = require('../src/claude-task-runner');
 const { spawnClaudeTaskIsolated } = require('../src/agent/agent-task-executor');
 const { appendTaskRunModelArgs } = require('../src/task-run-model-args');
+const { reformatOutput } = require('../src/agent/output-reformatter');
 
 const EXTERNAL_MODEL = 'kimi/kimi-k2-5';
 const CATALOG_MODEL = 'openai/gpt-5.2-codex';
@@ -24,14 +25,24 @@ function assertConfiguredModelArgs(args) {
   assert.strictEqual(args.includes('--model'), false);
 }
 
-function createClosingProcess(code = 1) {
+function createClosingProcess(code = 1, stdout = '') {
   const proc = new EventEmitter();
   proc.stdout = new PassThrough();
   proc.stderr = new PassThrough();
   proc.pid = 12345;
   proc.kill = () => {};
-  setImmediate(() => proc.emit('close', code, null));
+  setImmediate(() => {
+    if (stdout) proc.stdout.write(stdout);
+    proc.emit('close', code, null);
+  });
   return proc;
+}
+
+function opencodeTextEvent(value) {
+  return `${JSON.stringify({
+    type: 'text',
+    part: { type: 'text', text: JSON.stringify(value) },
+  })}\n`;
 }
 
 before(function () {
@@ -116,6 +127,50 @@ describe('Nested task model argument encoding', function () {
     );
     assert.strictEqual(capturedArgs.includes('--configured-model'), false);
   });
+
+  it('preserves an explicit model during structured-output recovery', async function () {
+    let capturedArgs;
+    let capturedOptions;
+    const schema = {
+      type: 'object',
+      properties: { plan: { type: 'string' } },
+      required: ['plan'],
+    };
+    const agent = new AgentWrapper(
+      {
+        id: 'direct-reformat',
+        role: 'planner',
+        provider: 'opencode',
+        model: CATALOG_MODEL,
+        jsonSchema: schema,
+        timeout: 0,
+      },
+      { publish() {}, subscribe() {} },
+      { id: 'test-cluster', agents: [] },
+      {
+        testMode: true,
+        mockSpawnFn(args, options) {
+          capturedArgs = args;
+          capturedOptions = options;
+          return {
+            success: true,
+            output: opencodeTextEvent({ plan: 'use the configured model' }),
+          };
+        },
+      }
+    );
+    agent.running = true;
+    agent.state = 'executing_task';
+
+    const result = await agent._parseResultOutput('Tool call completed without final JSON');
+
+    assert.deepStrictEqual(result, { plan: 'use the configured model' });
+    assert.deepStrictEqual(
+      capturedArgs.slice(capturedArgs.indexOf('--model'), capturedArgs.indexOf('--model') + 2),
+      ['--model', CATALOG_MODEL]
+    );
+    assert.deepStrictEqual(capturedOptions.options, { skipStructuredResultCheck: true });
+  });
 });
 
 describe('Nested Docker agent model arguments', function () {
@@ -163,6 +218,93 @@ describe('Nested Docker agent model arguments', function () {
       },
     });
     assert.deepStrictEqual(capturedOptions.env, {});
+  });
+});
+
+describe('Isolated opencode structured-output recovery', function () {
+  it('runs the recovery task inside the active container with the resolved model', async function () {
+    this.timeout(6000);
+    const schema = {
+      type: 'object',
+      properties: { plan: { type: 'string' } },
+      required: ['plan'],
+    };
+    const spawnedCommands = [];
+    let spawnCount = 0;
+    const manager = {
+      spawnInContainer(_clusterId, command) {
+        spawnedCommands.push(command);
+        spawnCount++;
+        if (spawnCount === 1) {
+          return createClosingProcess(0, '✓ Task spawned: task-amber-fox-a1\n');
+        }
+        const tail = new EventEmitter();
+        tail.stdout = new PassThrough();
+        tail.stderr = new PassThrough();
+        tail.kill = () => {};
+        return tail;
+      },
+      async execInContainer(_clusterId, command) {
+        const rendered = command.join(' ');
+        if (rendered.includes('get-log-path')) {
+          return { code: 0, stdout: '/tmp/reformat.log\n', stderr: '' };
+        }
+        if (rendered.includes('zeroshot status')) {
+          return { code: 0, stdout: 'Status: completed\n', stderr: '' };
+        }
+        if (rendered.includes('cat "/tmp/reformat.log"')) {
+          return {
+            code: 0,
+            stdout: opencodeTextEvent({ plan: 'isolated recovery' }),
+            stderr: '',
+          };
+        }
+        throw new Error(`Unexpected isolated command: ${rendered}`);
+      },
+    };
+    const agent = {
+      id: 'isolated-reformat',
+      role: 'planner',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 0,
+      enableLivenessCheck: false,
+      config: { jsonSchema: schema, outputFormat: 'json', strictSchema: true },
+      cluster: { id: 'test-cluster' },
+      isolation: { enabled: true, clusterId: 'test-cluster', manager },
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'opencode',
+      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+      _resolveModelSpecSource: () => 'direct',
+      _parseResultOutput: () => {
+        throw new Error('nested structured parsing must be skipped');
+      },
+      _log() {},
+      _publishLifecycle() {},
+      _stopLivenessCheck() {},
+    };
+
+    const result = await reformatOutput({
+      rawOutput: 'Tool call completed without final JSON',
+      schema,
+      providerName: 'opencode',
+      runReformat: (prompt) =>
+        spawnClaudeTaskIsolated(agent, prompt, { skipStructuredResultCheck: true }),
+    });
+
+    assert.deepStrictEqual(result, { plan: 'isolated recovery' });
+    const recoveryCommand = spawnedCommands[0];
+    assert.deepStrictEqual(
+      recoveryCommand.slice(
+        recoveryCommand.indexOf('--model'),
+        recoveryCommand.indexOf('--model') + 2
+      ),
+      ['--model', CATALOG_MODEL]
+    );
+    assert.ok(recoveryCommand.includes('zeroshot'));
+    assert.ok(recoveryCommand.includes('task'));
+    assert.ok(recoveryCommand.includes('run'));
   });
 });
 
