@@ -30,7 +30,7 @@ function createAgent(errorMessage) {
     _publish(message) {
       published.push(message);
     },
-    async _spawnClaudeTask() {
+    _spawnClaudeTask() {
       spawnCalls += 1;
       this.currentTaskId = `vertex-task-${spawnCalls}`;
       return { success: false, error: errorMessage, taskId: this.currentTaskId };
