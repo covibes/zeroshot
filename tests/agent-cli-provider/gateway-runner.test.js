@@ -52,7 +52,9 @@ test('gateway invoke completes deterministic edit task', async () => {
 
   try {
     let requestCount = 0;
-    const response = await withGatewayServer((_req, res) => {
+    const requests = [];
+    const response = await withGatewayServer((_req, res, json) => {
+      requests.push(json);
       requestCount += 1;
       if (requestCount === 1) {
         jsonResponse(res, 200, {
@@ -138,9 +140,143 @@ test('gateway invoke completes deterministic edit task', async () => {
     assert.equal(response.exitCode, 0);
     assert.equal(response.envelope.ok, true);
     assert.equal(fs.readFileSync(targetFile, 'utf8'), 'after\n');
+    assert.equal(requests.length, 3);
+    for (const request of requests) {
+      assert.equal(Object.hasOwn(request, 'max_tokens'), false);
+    }
     assert.deepEqual(
       response.envelope.result.events.map((event) => event.type),
       ['text', 'tool_call', 'tool_result', 'text', 'tool_call', 'tool_result', 'text', 'result']
+    );
+    assert.equal(response.envelope.result.events.at(-1).success, true);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('gateway sends configured token limits to OpenAI-compatible endpoints', async () => {
+  let requestBody;
+  const events = await withGatewayServer((_req, res, json) => {
+    requestBody = json;
+    jsonResponse(res, 200, {
+      choices: [{ message: { content: 'Task complete.' } }],
+    });
+  }, (baseUrl) =>
+    runGatewayRequest({
+      context: 'Complete without tools.',
+      cwd: process.cwd(),
+      gateway: {
+        baseUrl,
+        apiKey: 'gateway-test-key',
+        model: 'openrouter/test-model',
+        maxTokens: 2048,
+        toolPolicy: {
+          roots: ['.'],
+          commands: [],
+        },
+      },
+    })
+  );
+
+  assert.equal(requestBody.max_tokens, 2048);
+  assert.equal(events.at(-1).success, true);
+});
+
+test('gateway sends Anthropic-compatible requests through the configured base URL', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-gateway-anthropic-'));
+  fs.writeFileSync(path.join(tempDir, 'note.txt'), 'gateway note\n', 'utf8');
+  fs.writeFileSync(path.join(tempDir, 'second.txt'), 'second note\n', 'utf8');
+
+  try {
+    const requests = [];
+    const assistantContent = [
+      {
+        type: 'thinking',
+        thinking: 'I should inspect both files.',
+        signature: 'thinking-signature-one',
+      },
+      { type: 'text', text: 'Reading the target files.' },
+      {
+        type: 'tool_use',
+        id: 'tool-read',
+        name: 'read_file',
+        input: { path: 'note.txt' },
+      },
+      {
+        type: 'thinking',
+        thinking: 'The second file is also required.',
+        signature: 'thinking-signature-two',
+      },
+      {
+        type: 'tool_use',
+        id: 'tool-read-second',
+        name: 'read_file',
+        input: { path: 'second.txt' },
+      },
+    ];
+    const response = await withGatewayServer((req, res, json) => {
+      requests.push({ url: req.url, headers: req.headers, body: json });
+      if (requests.length === 1) {
+        jsonResponse(res, 200, {
+          content: assistantContent,
+        });
+        return;
+      }
+      jsonResponse(res, 200, {
+        content: [{ type: 'text', text: 'Task complete.' }],
+      });
+    }, (baseUrl) =>
+      runProviderExecutable(
+        JSON.stringify({
+          schemaVersion: 1,
+          command: 'invoke',
+          provider: 'gateway',
+          context: 'Read note.txt.',
+          options: {
+            cwd: tempDir,
+            gateway: {
+              protocol: 'anthropic',
+              baseUrl: `${baseUrl}/anthropic`,
+              apiKey: 'gateway-test-key',
+              model: 'MiniMax-M2.7',
+              maxTokens: 4096,
+              toolPolicy: {
+                roots: ['.'],
+                commands: [],
+              },
+            },
+          },
+          timeoutMs: 2_000,
+        })
+      )
+    );
+
+    assert.equal(response.exitCode, 0);
+    assert.equal(response.envelope.ok, true);
+    assert.deepEqual(requests.map((request) => request.url), [
+      '/anthropic/v1/messages',
+      '/anthropic/v1/messages',
+    ]);
+    assert.equal(requests[0].headers['x-api-key'], 'gateway-test-key');
+    assert.equal(requests[0].headers['anthropic-version'], '2023-06-01');
+    assert.equal(requests[0].body.model, 'MiniMax-M2.7');
+    assert.equal(requests[0].body.max_tokens, 4096);
+    assert.equal(requests[0].body.messages[0].role, 'user');
+    assert.equal(requests[0].body.tools[0].input_schema.type, 'object');
+    assert.deepEqual(requests[1].body.messages[1], {
+      role: 'assistant',
+      content: assistantContent,
+    });
+    assert.equal(requests[1].body.messages[2].role, 'user');
+    assert.deepEqual(
+      requests[1].body.messages[2].content.map((content) => ({
+        type: content.type,
+        toolUseId: content.tool_use_id,
+      })),
+      [
+        { type: 'tool_result', toolUseId: 'tool-read' },
+        { type: 'tool_result', toolUseId: 'tool-read-second' },
+      ]
     );
     assert.equal(response.envelope.result.events.at(-1).success, true);
   } finally {

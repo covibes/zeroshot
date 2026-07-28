@@ -77,6 +77,16 @@ const invalidNestedOptionCases = [
     field: 'options.gateway.headers.Authorization',
   },
   {
+    name: 'gateway protocol enum',
+    options: { gateway: { protocol: 'messages' } },
+    field: 'options.gateway.protocol',
+  },
+  {
+    name: 'gateway max tokens positive integer',
+    options: { gateway: { maxTokens: 0 } },
+    field: 'options.gateway.maxTokens',
+  },
+  {
     name: 'gateway tool policy object',
     options: { gateway: { toolPolicy: 'all-access' } },
     field: 'options.gateway.toolPolicy',
