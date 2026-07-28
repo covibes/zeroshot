@@ -364,6 +364,14 @@ POSIX providers run in a dedicated process group; Windows providers use the exac
 - Provider names use CLI identifiers: `claude`, `codex`, `gemini`, `opencode`, `pi`, `copilot` (legacy `anthropic`/`openai`/`google` map to these).
 - `model` remains a provider-specific escape hatch.
 - Claude/Codex/Opencode only: `reasoningEffort` (`low|medium|high|xhigh|max`).
+- Configure non-catalog Opencode model IDs only through
+  `providerSettings.opencode.levelOverrides.<level>.model`; direct agent model IDs remain
+  catalog-validated.
+- Provider-level selections crossing nested `zeroshot task run` boundaries carry only their level.
+  Local children re-resolve the concrete model from effective settings. Docker children receive a
+  temporary settings file containing only the requested OpenCode level and model; its path and
+  bootstrap marker are removed before provider spawn. Never trust a public environment overlay,
+  caller-supplied provenance, or a direct/hidden model argument for configured models.
 
 ### Logic Script API
 

@@ -2053,8 +2053,8 @@ function validateProviderSettings(provider, providerSettings) {
         `Invalid model override (must be non-empty string) for provider "${provider}"`
       );
     }
-    if (override?.model) {
-      providerModule.validateModelId(override.model);
+    if (override?.model || (provider === 'opencode' && override?.model === '')) {
+      providerModule.resolveModelSpec(level, { [level]: override });
     }
     if (override?.reasoningEffort && !providerSupportsCapability(provider, 'reasoningEffort')) {
       throw new Error(

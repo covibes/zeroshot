@@ -34,6 +34,11 @@ interface RuntimeProviderSettings {
   readonly gateway?: GatewayBuildOptions;
 }
 
+interface RuntimeCommandContext {
+  readonly cliFeatures: CliFeatureOverrides;
+  readonly authEnv: Readonly<Record<string, string>>;
+}
+
 export interface SingleAgentProviderCommandInput {
   readonly provider?: string | null;
   readonly context: string;
@@ -62,6 +67,7 @@ type MutableModelSpec = {
 
 const MODEL_LEVELS: readonly ModelLevel[] = ['level1', 'level2', 'level3'];
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV = 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON';
 const settingsModule: unknown = require('../../lib/settings');
 const providerDetectionModule: unknown = require('../../lib/provider-detection');
 const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
@@ -76,6 +82,7 @@ const resolveClaudeAuthFn = moduleFunction(claudeAuthModule, 'resolveClaudeAuth'
 export function prepareSingleAgentProviderCommand(
   input: SingleAgentProviderCommandInput
 ): PreparedSingleAgentProviderCommand {
+  rejectCallerSuppliedModelProvenance(input);
   const baseOptions = input.options ?? {};
   const settings = loadRuntimeSettings();
   const adapter = adapterForRuntimeInput(input.provider, settings);
@@ -86,7 +93,10 @@ export function prepareSingleAgentProviderCommand(
   );
   const cliFeatures = resolveRuntimeCliFeatures(adapter.id, baseOptions.cliFeatures);
   const authEnv = baseOptions.authEnv ?? resolveRuntimeAuthEnv(adapter.id, settings);
-  const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, cliFeatures, authEnv);
+  const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
+    cliFeatures,
+    authEnv,
+  });
   return {
     adapter,
     options,
@@ -128,8 +138,7 @@ function mergeAcpFailClosedCliFeatures(
     ...detected,
     ...overrides,
     supportsAcpStdio: detected.supportsAcpStdio && overrides.supportsAcpStdio !== false,
-    supportsPromptImages:
-      detected.supportsPromptImages && overrides.supportsPromptImages !== false,
+    supportsPromptImages: detected.supportsPromptImages && overrides.supportsPromptImages !== false,
     supportsLoadSession: detected.supportsLoadSession && overrides.supportsLoadSession !== false,
     supportsSessionCancel:
       detected.supportsSessionCancel && overrides.supportsSessionCancel !== false,
@@ -162,7 +171,9 @@ export function probeRuntimeProviderCli(provider: string): RuntimeProviderProbe 
   }
 
   const helpText = stringResult(getHelpOutputFn(helpCommand.command, helpCommand.args)).trim();
-  const versionText = stringResult(getVersionOutputFn(helpCommand.command, helpCommand.args)).trim();
+  const versionText = stringResult(
+    getVersionOutputFn(helpCommand.command, helpCommand.args)
+  ).trim();
   const availabilityProbe = getProviderRegistryEntry(adapter.id).availabilityProbe ?? 'command';
 
   return {
@@ -177,8 +188,7 @@ function buildRuntimeOptions(
   baseOptions: BuildProviderCommandOptions,
   adapter: ProviderAdapter,
   providerSettings: RuntimeProviderSettings,
-  cliFeatures: CliFeatureOverrides,
-  authEnv: Readonly<Record<string, string>>
+  runtime: RuntimeCommandContext
 ): BuildProviderCommandOptions {
   const modelSpec = resolveRuntimeModelSpec(adapter, baseOptions.modelSpec, providerSettings);
   const gateway = resolveRuntimeGatewayOptions(
@@ -191,16 +201,16 @@ function buildRuntimeOptions(
     ...baseOptions,
     modelSpec,
     ...(gateway === undefined ? {} : { gateway }),
-    cliFeatures,
+    cliFeatures: runtime.cliFeatures,
   };
   if (baseOptions.jsonSchema && !supportsProviderCapability(adapter.id, 'jsonSchema')) {
-    if (!shouldIncludeAuthEnv(baseOptions, authEnv)) {
+    if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) {
       return { ...resolved, strictSchema: false };
     }
-    return { ...resolved, authEnv, strictSchema: false };
+    return { ...resolved, authEnv: runtime.authEnv, strictSchema: false };
   }
-  if (!shouldIncludeAuthEnv(baseOptions, authEnv)) return resolved;
-  return { ...resolved, authEnv };
+  if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) return resolved;
+  return { ...resolved, authEnv: runtime.authEnv };
 }
 
 function resolveRuntimeGatewayOptions(
@@ -218,23 +228,19 @@ function resolveRuntimeGatewayOptions(
       ? settingsGateway.headers
       : { ...(settingsGateway.headers ?? {}), ...requestGateway.headers };
   const mergedGateway: GatewayBuildOptions = {
-    ...(requestGateway.baseUrl ?? settingsGateway.baseUrl
+    ...((requestGateway.baseUrl ?? settingsGateway.baseUrl)
       ? { baseUrl: requestGateway.baseUrl ?? settingsGateway.baseUrl }
       : {}),
-    ...(requestGateway.apiKey ?? settingsGateway.apiKey
+    ...((requestGateway.apiKey ?? settingsGateway.apiKey)
       ? { apiKey: requestGateway.apiKey ?? settingsGateway.apiKey }
       : {}),
     ...(mergedHeaders === undefined ? {} : { headers: mergedHeaders }),
     model: requestGateway.model ?? modelSpec.model ?? settingsGateway.model ?? null,
-    ...(requestGateway.toolPolicy ?? settingsGateway.toolPolicy
+    ...((requestGateway.toolPolicy ?? settingsGateway.toolPolicy)
       ? { toolPolicy: requestGateway.toolPolicy ?? settingsGateway.toolPolicy }
       : {}),
   };
-  return resolveGatewayConfiguration(
-    mergedGateway,
-    'options.gateway',
-    cwd
-  );
+  return resolveGatewayConfiguration(mergedGateway, 'options.gateway', cwd);
 }
 
 function shouldIncludeAuthEnv(
@@ -286,7 +292,8 @@ function adapterForRuntimeInput(
   provider: string | null | undefined,
   settings: Record<string, unknown>
 ): ProviderAdapter {
-  const configured = provider ?? optionalString(settings.defaultProvider, 'settings.defaultProvider');
+  const configured =
+    provider ?? optionalString(settings.defaultProvider, 'settings.defaultProvider');
   return getProviderAdapter(configured ?? 'claude');
 }
 
@@ -309,16 +316,14 @@ function runtimeProviderSettings(
   );
   const gateway =
     provider === 'gateway'
-      ? normalizeGatewayBuildOptions(
-          providerSettings,
-          'settings.providerSettings.gateway',
-          cwd
-        )
+      ? normalizeGatewayBuildOptions(providerSettings, 'settings.providerSettings.gateway', cwd)
       : undefined;
   if (defaultLevel === undefined) {
     return gateway === undefined ? { levelOverrides } : { levelOverrides, gateway };
   }
-  return gateway === undefined ? { defaultLevel, levelOverrides } : { defaultLevel, levelOverrides, gateway };
+  return gateway === undefined
+    ? { defaultLevel, levelOverrides }
+    : { defaultLevel, levelOverrides, gateway };
 }
 
 function runtimeHelpCommand(provider: ProviderId): CommandParts {
@@ -333,7 +338,11 @@ function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
   try {
     const settings = loadRuntimeSettings();
     const providerSettings = runtimeProviderSettings(settings, 'gateway', process.cwd());
-    resolveGatewayConfiguration(providerSettings.gateway, 'settings.providerSettings.gateway', process.cwd());
+    resolveGatewayConfiguration(
+      providerSettings.gateway,
+      'settings.providerSettings.gateway',
+      process.cwd()
+    );
     return {
       available: true,
       helpText: 'Bundled gateway runner',
@@ -351,8 +360,20 @@ function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
 }
 
 function loadRuntimeSettings(): Record<string, unknown> {
-  const settings = loadSettingsFn();
-  return requiredRecord(settings, 'loadSettings');
+  if (Object.prototype.hasOwnProperty.call(process.env, LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV)) {
+    throw new Error(
+      `${LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV} is not a trusted settings channel; use the settings file.`
+    );
+  }
+  return requiredRecord(loadSettingsFn(), 'loadSettings');
+}
+
+function rejectCallerSuppliedModelProvenance(input: SingleAgentProviderCommandInput): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'modelSpecSource')) {
+    throw new Error(
+      'modelSpecSource is not accepted at the child provider boundary; use modelLevel and effective provider settings.'
+    );
+  }
 }
 
 function moduleFunction(moduleValue: unknown, field: string): UnknownFunction {
@@ -456,10 +477,7 @@ function requiredRecord(value: unknown, field: string): Record<string, unknown> 
   throw new Error(`${field} must be an object.`);
 }
 
-function stringRecordFromUnknown(
-  value: unknown,
-  field: string
-): Readonly<Record<string, string>> {
+function stringRecordFromUnknown(value: unknown, field: string): Readonly<Record<string, string>> {
   if (value === undefined || value === null) return {};
   const record = requiredRecord(value, field);
   const result: Record<string, string> = {};

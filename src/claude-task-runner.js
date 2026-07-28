@@ -13,6 +13,18 @@ const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const { prepareClaudeConfigDir } = require('./worktree-claude-config');
+const {
+  appendTaskRunModelArgs,
+  wrapTaskRunWithIsolatedSettings,
+} = require('./task-run-model-args');
+
+function rejectCallerSuppliedModelProvenance(options) {
+  if (Object.prototype.hasOwnProperty.call(options, 'modelSpecSource')) {
+    throw new Error(
+      'modelSpecSource is derived from model versus modelLevel/default and cannot be supplied.'
+    );
+  }
+}
 
 function runCommand(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -112,10 +124,11 @@ class ClaudeTaskRunner extends TaskRunner {
    * Execute a task via zeroshot CLI
    *
    * @param {string} context - Full prompt/context
-   * @param {{agentId?: string, model?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, cwd?: string, worktreePath?: string|null, isolation?: any}} options - Execution options
+   * @param {{agentId?: string, model?: string, modelLevel?: string, modelSpec?: Object|null, reasoningEffort?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, cwd?: string, worktreePath?: string|null, isolation?: any}} options - Execution options
    * @returns {Promise<{success: boolean, output: string, error: string|null, taskId?: string}>}
    */
   async run(context, options = {}) {
+    rejectCallerSuppliedModelProvenance(options);
     const {
       agentId = 'unknown',
       provider,
@@ -137,7 +150,7 @@ class ClaudeTaskRunner extends TaskRunner {
       providerName,
       settings
     );
-    const resolvedModelSpec = this._resolveModelSpec({
+    const modelSelection = this._resolveModelSelection({
       explicitModelSpec,
       model,
       reasoningEffort,
@@ -146,13 +159,13 @@ class ClaudeTaskRunner extends TaskRunner {
       providerSettings,
       levelOverrides,
     });
+    const resolvedModelSpec = modelSelection.modelSpec;
 
     // Isolation mode delegates to separate method
     if (isolation?.enabled) {
       return this._runIsolated(context, {
         ...options,
         provider: providerName,
-        modelSpec: resolvedModelSpec,
       });
     }
 
@@ -168,6 +181,7 @@ class ClaudeTaskRunner extends TaskRunner {
       providerName,
       runOutputFormat,
       resolvedModelSpec,
+      modelSpecSource: modelSelection.source,
       jsonSchema,
     });
 
@@ -204,25 +218,74 @@ class ClaudeTaskRunner extends TaskRunner {
     providerSettings,
     levelOverrides,
   }) {
-    if (explicitModelSpec) {
-      if (explicitModelSpec.model) {
-        providerModule.validateModelId(explicitModelSpec.model);
-      }
-      return explicitModelSpec;
-    }
+    return this._resolveModelSelection({
+      explicitModelSpec,
+      model,
+      reasoningEffort,
+      modelLevel,
+      providerModule,
+      providerSettings,
+      levelOverrides,
+    }).modelSpec;
+  }
 
+  _resolveModelSelection({
+    explicitModelSpec,
+    model,
+    reasoningEffort,
+    modelLevel,
+    providerModule,
+    providerSettings,
+    levelOverrides,
+  }) {
     if (model) {
       providerModule.validateModelId(model);
-      return { model, reasoningEffort };
+      return {
+        source: 'direct',
+        modelSpec: { model, reasoningEffort },
+      };
     }
 
-    const level = modelLevel || providerSettings.defaultLevel || providerModule.getDefaultLevel();
-    let resolvedModelSpec = providerModule.resolveModelSpec(level, levelOverrides);
-    if (reasoningEffort) {
-      resolvedModelSpec = { ...resolvedModelSpec, reasoningEffort };
+    if (explicitModelSpec?.model !== undefined) {
+      providerModule.validateModelId(explicitModelSpec.model);
+      return {
+        source: 'direct',
+        modelSpec: explicitModelSpec,
+      };
     }
 
-    return resolvedModelSpec;
+    return {
+      source: 'provider-level',
+      modelSpec: this._resolveProviderLevelModelSpec({
+        explicitModelSpec,
+        modelLevel,
+        reasoningEffort,
+        providerModule,
+        providerSettings,
+        levelOverrides,
+      }),
+    };
+  }
+
+  _resolveProviderLevelModelSpec({
+    explicitModelSpec,
+    modelLevel,
+    reasoningEffort,
+    providerModule,
+    providerSettings,
+    levelOverrides,
+  }) {
+    const level =
+      explicitModelSpec?.level ||
+      modelLevel ||
+      providerSettings.defaultLevel ||
+      providerModule.getDefaultLevel();
+    const resolvedModelSpec = providerModule.resolveModelSpec(level, levelOverrides);
+    const resolvedReasoningEffort = explicitModelSpec?.reasoningEffort || reasoningEffort;
+
+    return resolvedReasoningEffort
+      ? { ...resolvedModelSpec, reasoningEffort: resolvedReasoningEffort }
+      : resolvedModelSpec;
   }
 
   _resolveOutputFormat({ outputFormat, jsonSchema, strictSchema }) {
@@ -232,16 +295,16 @@ class ClaudeTaskRunner extends TaskRunner {
     return jsonSchema && outputFormat === 'json' && !strictSchema ? 'stream-json' : outputFormat;
   }
 
-  _buildRunArgs({ context, providerName, runOutputFormat, resolvedModelSpec, jsonSchema }) {
+  _buildRunArgs({
+    context,
+    providerName,
+    runOutputFormat,
+    resolvedModelSpec,
+    modelSpecSource = 'direct',
+    jsonSchema,
+  }) {
     const args = ['task', 'run', '--output-format', runOutputFormat, '--provider', providerName];
-
-    if (resolvedModelSpec?.model) {
-      args.push('--model', resolvedModelSpec.model);
-    }
-
-    if (resolvedModelSpec?.reasoningEffort) {
-      args.push('--reasoning-effort', resolvedModelSpec.reasoningEffort);
-    }
+    appendTaskRunModelArgs(args, resolvedModelSpec, modelSpecSource);
 
     // Pass schema to CLI only when using json output (strictSchema=true or no conflict)
     if (jsonSchema && runOutputFormat === 'json') {
@@ -542,20 +605,40 @@ class ClaudeTaskRunner extends TaskRunner {
   /**
    * Run task in isolated Docker container
    * @param {string} context
-   * @param {{agentId?: string, model?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, isolation?: any}} options
+   * @param {{agentId?: string, provider?: string, model?: string, modelLevel?: string, modelSpec?: Object|null, reasoningEffort?: string, outputFormat?: string, jsonSchema?: any, strictSchema?: boolean, isolation?: any}} options
    * @returns {Promise<{success: boolean, output: string, error: string|null}>}
    */
   _runIsolated(context, options) {
+    rejectCallerSuppliedModelProvenance(options);
     const {
       agentId = 'unknown',
       provider = 'claude',
-      modelSpec = null,
+      model = null,
+      modelLevel = null,
+      modelSpec: explicitModelSpec = null,
+      reasoningEffort = null,
       outputFormat = 'stream-json',
       jsonSchema = null,
       strictSchema = false,
       isolation,
     } = options;
     const { manager, clusterId } = isolation;
+    const settings = loadSettings();
+    const { providerModule, providerSettings, levelOverrides } = this._getProviderContext(
+      provider,
+      settings
+    );
+    const modelSelection = this._resolveModelSelection({
+      explicitModelSpec,
+      model,
+      reasoningEffort,
+      modelLevel,
+      providerModule,
+      providerSettings,
+      levelOverrides,
+    });
+    const modelSpec = modelSelection.modelSpec;
+    const modelSpecSource = modelSelection.source;
 
     this._log(`📦 [${agentId}]: Running task in isolated container...`);
 
@@ -565,7 +648,7 @@ class ClaudeTaskRunner extends TaskRunner {
         ? 'stream-json'
         : desiredOutputFormat;
 
-    const command = [
+    let command = [
       'zeroshot',
       'task',
       'run',
@@ -575,13 +658,7 @@ class ClaudeTaskRunner extends TaskRunner {
       provider,
     ];
 
-    if (modelSpec?.model) {
-      command.push('--model', modelSpec.model);
-    }
-
-    if (modelSpec?.reasoningEffort) {
-      command.push('--reasoning-effort', modelSpec.reasoningEffort);
-    }
+    appendTaskRunModelArgs(command, modelSpec, modelSpecSource);
 
     if (jsonSchema && runOutputFormat === 'json') {
       command.push('--json-schema', JSON.stringify(jsonSchema));
@@ -597,16 +674,23 @@ class ClaudeTaskRunner extends TaskRunner {
     }
 
     command.push(finalContext);
+    command = wrapTaskRunWithIsolatedSettings(command, {
+      providerName: provider,
+      settings,
+      modelSpecSource,
+      modelSpec,
+    });
 
     return new Promise((resolve, reject) => {
       let output = '';
       let resolved = false;
 
       const proc = manager.spawnInContainer(clusterId, command, {
-        env:
-          provider === 'claude' && modelSpec?.model
+        env: {
+          ...(provider === 'claude' && modelSpec?.model
             ? { ANTHROPIC_MODEL: modelSpec.model, ZEROSHOT_BLOCK_ASK_USER: '1' }
-            : {},
+            : {}),
+        },
       });
 
       proc.stdout.on('data', (/** @type {Buffer} */ data) => {

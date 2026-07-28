@@ -727,7 +727,10 @@ class IsolationManager {
 
     args.push(containerId, ...command);
 
-    return spawn('docker', args, {
+    // spawn() throws on null bytes in argv; strip them before they get there.
+    const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
+
+    return spawn('docker', safeArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       ...options.spawnOptions,
     });

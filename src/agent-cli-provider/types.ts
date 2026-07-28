@@ -367,6 +367,7 @@ export interface ProviderAdapter {
   createParserState(): ProviderParserState;
   resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec;
   validateModelId(modelId: string | null | undefined): string | null | undefined;
+  validateConfiguredModelId?(modelId: string | null | undefined): string | null | undefined;
   classifyError(error: unknown): ErrorClassification;
 }
 

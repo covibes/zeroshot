@@ -7,6 +7,11 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { prepareSingleAgentProviderCommand } = require('./provider-helper-runtime.js');
+const {
+  ISOLATED_SETTINGS_FILE_ENV,
+  ISOLATED_SETTINGS_FILE_MARKER,
+  LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV,
+} = require('../src/task-run-model-args.js');
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -25,10 +30,10 @@ export function spawnTask(prompt, options = {}) {
 
   const outputFormat = resolveOutputFormat(options);
   const jsonSchema = resolveJsonSchema(options, outputFormat);
-  const prepared = prepareSingleAgentProviderCommand({
-    provider: options.provider || null,
-    context: prompt,
-    options: buildProviderOptions(options, outputFormat, jsonSchema, cwd),
+  const prepared = prepareTaskProviderCommandFromResolved(prompt, options, {
+    outputFormat,
+    jsonSchema,
+    cwd,
   });
   const providerName = prepared.adapter.id;
   const modelSpec = prepared.options.modelSpec;
@@ -72,6 +77,24 @@ export function spawnTask(prompt, options = {}) {
   return task;
 }
 
+export function prepareTaskProviderCommand(prompt, options = {}) {
+  const outputFormat = resolveOutputFormat(options);
+  return prepareTaskProviderCommandFromResolved(prompt, options, {
+    outputFormat,
+    jsonSchema: resolveJsonSchema(options, outputFormat),
+    cwd: options.cwd || process.cwd(),
+  });
+}
+
+function prepareTaskProviderCommandFromResolved(prompt, options, runtime) {
+  const modelSelection = resolveRequestedModelSelection(options);
+  return prepareSingleAgentProviderCommand({
+    provider: options.provider || null,
+    context: prompt,
+    options: buildProviderOptions(options, runtime, modelSelection),
+  });
+}
+
 function resolveOutputFormat(options) {
   return options.outputFormat || 'stream-json';
 }
@@ -85,13 +108,13 @@ function resolveJsonSchema(options, outputFormat) {
   return jsonSchema;
 }
 
-function buildProviderOptions(options, outputFormat, jsonSchema, cwd) {
+function buildProviderOptions(options, runtime, modelSelection) {
   return {
-    outputFormat,
-    jsonSchema,
-    cwd,
+    outputFormat: runtime.outputFormat,
+    jsonSchema: runtime.jsonSchema,
+    cwd: runtime.cwd,
     autoApprove: true,
-    ...modelSpecOption(options),
+    ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...mcpConfigOption(options),
     ...(options.resume ? { resumeSessionId: options.resume } : {}),
     ...(options.continue ? { continueSession: true } : {}),
@@ -104,27 +127,32 @@ function mcpConfigOption(options) {
   return { mcpConfig: entries };
 }
 
-function modelSpecOption(options) {
-  const modelSpec = resolveRequestedModelSpec(options);
-  return modelSpec === undefined ? {} : { modelSpec };
+function resolveRequestedModelSelection(options) {
+  if (Object.prototype.hasOwnProperty.call(options, 'configuredModel')) {
+    throw new Error(
+      '--configured-model is not supported; configure providerSettings levelOverrides instead'
+    );
+  }
+
+  if (options.model) {
+    return directModelSelection(options);
+  }
+
+  return providerLevelSelection(options);
 }
 
-function resolveRequestedModelSpec(options) {
-  if (options.model) {
-    return {
-      model: options.model,
-      ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
-    };
-  }
+function directModelSelection(options) {
+  const modelSpec = { model: options.model };
+  if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
+  return { modelSpec };
+}
 
-  if (options.reasoningEffort) {
-    return {
-      ...(options.modelLevel ? { level: options.modelLevel } : {}),
-      reasoningEffort: options.reasoningEffort,
-    };
-  }
-  if (options.modelLevel) return { level: options.modelLevel };
-  return undefined;
+function providerLevelSelection(options) {
+  if (!options.reasoningEffort && !options.modelLevel) return undefined;
+  const modelSpec = {};
+  if (options.modelLevel) modelSpec.level = options.modelLevel;
+  if (options.reasoningEffort) modelSpec.reasoningEffort = options.reasoningEffort;
+  return { modelSpec };
 }
 
 function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec }) {
@@ -189,6 +217,7 @@ function resolveWatcherScript(options, providerName) {
 }
 
 function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfig }) {
+  const watcherEnv = buildWatcherEnv();
   const watcher = fork(
     watcherScript,
     [id, cwd, logFile, JSON.stringify(finalArgs), JSON.stringify(watcherConfig)],
@@ -196,9 +225,20 @@ function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfi
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
+      env: watcherEnv,
     }
   );
 
   watcher.unref();
   watcher.disconnect(); // Close IPC channel so parent can exit
+}
+
+export function buildWatcherEnv(sourceEnv = process.env) {
+  const watcherEnv = { ...sourceEnv };
+  delete watcherEnv[LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV];
+  if (watcherEnv[ISOLATED_SETTINGS_FILE_MARKER] === '1') {
+    delete watcherEnv[ISOLATED_SETTINGS_FILE_ENV];
+    delete watcherEnv[ISOLATED_SETTINGS_FILE_MARKER];
+  }
+  return watcherEnv;
 }
