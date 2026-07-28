@@ -180,6 +180,41 @@ describe('Provider settings', function () {
     assert.ok(result.warnings.some((warning) => warning.includes('low|medium|high|xhigh|max')));
   });
 
+  it('validates Anthropic-compatible gateway settings', function () {
+    assert.doesNotThrow(() => {
+      validateProviderSettings('gateway', {
+        protocol: 'anthropic',
+        baseUrl: 'https://api.minimax.io/anthropic',
+        apiKey: 'gateway-key',
+        model: 'MiniMax-M3',
+        maxTokens: 8192,
+        toolPolicy: {
+          roots: ['.'],
+          commands: ['node'],
+        },
+      });
+    });
+
+    assert.throws(() => {
+      validateProviderSettings('gateway', {
+        protocol: 'anthropic',
+        baseUrl: 'https://api.minimax.io/anthropic',
+        apiKey: 'gateway-key',
+        model: 'MiniMax-M3',
+        toolPolicy: {
+          roots: ['.'],
+          commands: ['node'],
+        },
+      });
+    }, /maxTokens is required/);
+  });
+
+  it('registers the supported MiniMax gateway models', function () {
+    const catalog = getProvider('gateway').getModelCatalog();
+    assert.deepStrictEqual(catalog['MiniMax-M3'], { rank: 3 });
+    assert.deepStrictEqual(catalog['MiniMax-M2.7'], { rank: 2 });
+  });
+
   it('applies legacy maxModel to claude levels', function () {
     process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
     fs.writeFileSync(settingsFile, JSON.stringify({ maxModel: 'haiku' }, null, 2), 'utf8');

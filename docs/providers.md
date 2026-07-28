@@ -3,8 +3,8 @@
 Zeroshot supports two provider shapes:
 
 - CLI-backed providers that shell out to a full agent CLI
-- One bundled `gateway` provider that wraps OpenAI-compatible model APIs with a
-  Zeroshot-owned tool runner
+- One bundled `gateway` provider that wraps OpenAI-compatible or Anthropic-compatible
+  model APIs with a Zeroshot-owned tool runner
 
 ## Supported Providers
 
@@ -29,9 +29,9 @@ Zeroshot supports two provider shapes:
 
 ## Gateway Provider
 
-Use `gateway` for OpenAI-compatible model endpoints such as OpenRouter,
-Ollama, vLLM, or self-hosted gateways. These stay model configs behind one
-provider engine; do not add them as standalone provider ids.
+Use `gateway` for OpenAI-compatible or Anthropic-compatible model endpoints.
+These stay model configs behind one provider engine; do not add them as
+standalone provider ids.
 
 Required settings:
 
@@ -39,6 +39,7 @@ Required settings:
 {
   "providerSettings": {
     "gateway": {
+      "protocol": "openai",
       "baseUrl": "http://127.0.0.1:11434",
       "apiKey": "gateway-key",
       "model": "openrouter/meta-llama/test-model",
@@ -53,9 +54,48 @@ Required settings:
 
 Notes:
 
+- `protocol` defaults to `openai`; set it to `anthropic` for Messages API endpoints.
+- Anthropic-compatible configurations require a positive `maxTokens` value.
 - `toolPolicy` is required. There is no default file or shell access.
 - `headers` is optional for extra gateway-specific request headers.
 - `model` may be any non-empty provider-specific model id.
+
+### MiniMax
+
+The gateway model catalog includes `MiniMax-M3` and `MiniMax-M2.7`. Choose the
+region and protocol with the matching base URL:
+
+| Region | Protocol    | Base URL                             |
+| ------ | ----------- | ------------------------------------ |
+| Global | `openai`    | `https://api.minimax.io/v1`          |
+| Global | `anthropic` | `https://api.minimax.io/anthropic`   |
+| China  | `openai`    | `https://api.minimaxi.com/v1`        |
+| China  | `anthropic` | `https://api.minimaxi.com/anthropic` |
+
+Example Anthropic-compatible settings:
+
+```json
+{
+  "providerSettings": {
+    "gateway": {
+      "protocol": "anthropic",
+      "baseUrl": "https://api.minimax.io/anthropic",
+      "apiKey": "your-api-key",
+      "model": "MiniMax-M3",
+      "maxTokens": 8192,
+      "toolPolicy": {
+        "roots": ["/absolute/path/to/worktree"],
+        "commands": ["node"]
+      }
+    }
+  }
+}
+```
+
+Pass the Anthropic base URL exactly as shown. The bundled client appends
+`/v1/messages` for each request. For OpenAI-compatible settings, use
+`"protocol": "openai"` and omit `maxTokens` unless the endpoint needs a custom
+limit.
 
 ## Model Levels
 
