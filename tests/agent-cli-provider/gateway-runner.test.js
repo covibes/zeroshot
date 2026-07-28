@@ -151,6 +151,7 @@ test('gateway invoke completes deterministic edit task', async () => {
 test('gateway sends Anthropic-compatible requests through the configured base URL', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-gateway-anthropic-'));
   fs.writeFileSync(path.join(tempDir, 'note.txt'), 'gateway note\n', 'utf8');
+  fs.writeFileSync(path.join(tempDir, 'second.txt'), 'second note\n', 'utf8');
 
   try {
     const requests = [];
@@ -165,6 +166,12 @@ test('gateway sends Anthropic-compatible requests through the configured base UR
               id: 'tool-read',
               name: 'read_file',
               input: { path: 'note.txt' },
+            },
+            {
+              type: 'tool_use',
+              id: 'tool-read-second',
+              name: 'read_file',
+              input: { path: 'second.txt' },
             },
           ],
         });
@@ -213,7 +220,18 @@ test('gateway sends Anthropic-compatible requests through the configured base UR
     assert.equal(requests[0].body.tools[0].input_schema.type, 'object');
     assert.equal(requests[1].body.messages[1].role, 'assistant');
     assert.equal(requests[1].body.messages[1].content[1].type, 'tool_use');
-    assert.equal(requests[1].body.messages[2].content[0].type, 'tool_result');
+    assert.equal(requests[1].body.messages[1].content[2].type, 'tool_use');
+    assert.equal(requests[1].body.messages[2].role, 'user');
+    assert.deepEqual(
+      requests[1].body.messages[2].content.map((content) => ({
+        type: content.type,
+        toolUseId: content.tool_use_id,
+      })),
+      [
+        { type: 'tool_result', toolUseId: 'tool-read' },
+        { type: 'tool_result', toolUseId: 'tool-read-second' },
+      ]
+    );
     assert.equal(response.envelope.result.events.at(-1).success, true);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

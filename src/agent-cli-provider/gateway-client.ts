@@ -178,21 +178,24 @@ function serializeAnthropicMessages(
   messages: readonly GatewayChatMessage[]
 ): readonly Record<string, unknown>[] {
   const result: Record<string, unknown>[] = [];
+  let pendingToolResults: Record<string, unknown>[] | undefined;
   for (const message of messages) {
     if (message.role === 'system') continue;
     if (message.role === 'tool') {
-      result.push({
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: message.toolCallId,
-            content: message.content,
-          },
-        ],
-      });
+      const toolResult = {
+        type: 'tool_result',
+        tool_use_id: message.toolCallId,
+        content: message.content,
+      };
+      if (pendingToolResults) {
+        pendingToolResults.push(toolResult);
+      } else {
+        pendingToolResults = [toolResult];
+        result.push({ role: 'user', content: pendingToolResults });
+      }
       continue;
     }
+    pendingToolResults = undefined;
     if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
       result.push({
         role: 'assistant',
