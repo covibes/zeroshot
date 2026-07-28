@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { URL } = require('node:url');
 
 const { startLivenessCheck, stopLivenessCheck } = require('../src/agent/agent-lifecycle');
 const { killTask, spawnTaskProcess } = require('../src/agent/agent-task-executor');

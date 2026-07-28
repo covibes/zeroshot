@@ -1543,9 +1543,10 @@ async function spawnClaudeTaskIsolated(agent, context) {
       resolveWrapperClose = resolveClose;
     });
     const markWrapperClosed = () => {
-      if (wrapperClosed) return;
-      wrapperClosed = true;
-      resolveWrapperClose();
+      if (!wrapperClosed) {
+        wrapperClosed = true;
+        resolveWrapperClose();
+      }
     };
     proc.once('close', markWrapperClosed);
     proc.once('error', markWrapperClosed);
@@ -1629,7 +1630,7 @@ async function spawnClaudeTaskIsolated(agent, context) {
     });
 
     proc.on('error', (error) => {
-      if (!isolatedTaskId && agent.currentTask === pendingLaunch) {
+      if (!isolatedTaskId && agent.currentTask === isolatedPendingLaunch) {
         agent.currentTask = null;
       }
       clearTimeout(spawnTimeout);
@@ -2332,15 +2333,15 @@ async function killTask(agent, termination = 'Task killed') {
   const taskId = agent.currentTaskId;
 
   if (currentTask?.pendingLaunch && typeof currentTask.kill === 'function') {
-    const termination = await currentTask.kill(reason, { code });
-    if (termination?.forced === false) return termination;
+    const pendingTermination = await currentTask.kill(reason, { code });
+    if (pendingTermination?.forced === false) return pendingTermination;
     agent._stopLivenessCheck?.();
     agent.currentTask = null;
     agent.currentTaskId = null;
     agent.processPid = null;
     agent.lastOutputTime = null;
     agent.taskStartedAt = null;
-    return termination;
+    return pendingTermination;
   }
 
   if (agent.isolation?.enabled && taskId) {
