@@ -3472,7 +3472,7 @@ Continue from where you left off. Review your previous output to understand what
 
     // Phase 2: Build mock cluster config with proposed agents
     // Collect all agents that would exist after operations complete
-    const existingAgentConfigs = cluster.config.agents || [];
+    const existingAgentConfigs = this._prepareExistingAgentConfigsForValidation(cluster);
     const proposedAgentConfigs = this._buildProposedAgentConfigs(existingAgentConfigs, operations);
 
     // Phase 3: Validate proposed cluster config
@@ -3542,16 +3542,22 @@ Continue from where you left off. Review your previous output to understand what
       if (op.action === 'add_agents' && op.agents) {
         for (const agentConfig of op.agents) {
           const existingIdx = proposedAgentConfigs.findIndex((a) => a.id === agentConfig.id);
+          const proposedAgentConfig = JSON.parse(JSON.stringify(agentConfig));
           if (existingIdx === -1) {
-            proposedAgentConfigs.push(agentConfig);
+            proposedAgentConfigs.push(proposedAgentConfig);
+          } else {
+            proposedAgentConfigs[existingIdx] = proposedAgentConfig;
           }
         }
       } else if (op.action === 'load_config' && op.config) {
         const loadedAgentConfigs = this._resolveLoadConfigAgents(op.config);
         for (const agentConfig of loadedAgentConfigs) {
           const existingIdx = proposedAgentConfigs.findIndex((a) => a.id === agentConfig.id);
+          const proposedAgentConfig = JSON.parse(JSON.stringify(agentConfig));
           if (existingIdx === -1) {
-            proposedAgentConfigs.push(agentConfig);
+            proposedAgentConfigs.push(proposedAgentConfig);
+          } else {
+            proposedAgentConfigs[existingIdx] = proposedAgentConfig;
           }
         }
       } else if (op.action === 'remove_agents' && op.agentIds) {
@@ -3572,38 +3578,42 @@ Continue from where you left off. Review your previous output to understand what
     return proposedAgentConfigs;
   }
 
+  _prepareExistingAgentConfigsForValidation(cluster) {
+    const existingAgentConfigs = JSON.parse(JSON.stringify(cluster?.config?.agents || []));
+
+    // The CLI validates --model before startup, then materializes it into every
+    // initial agent config and persists the override separately on the cluster.
+    // Only those already-accepted configs have that provenance. Strip their
+    // runtime model projection before validating a later operation chain; new
+    // add/load/update payloads stay untouched and must satisfy the authored
+    // modelLevel-only policy even when their value equals the active override.
+    if (cluster?.modelOverride) {
+      for (const agentConfig of existingAgentConfigs) {
+        delete agentConfig.model;
+      }
+    }
+
+    return existingAgentConfigs;
+  }
+
   _resolveLoadConfigAgents(config) {
+    return this._resolveLoadConfig(config).loadedConfig.agents;
+  }
+
+  _resolveLoadConfig(config) {
     if (!config) {
       throw new Error('load_config operation missing config');
     }
 
     const templatesDir = path.join(__dirname, '..', 'cluster-templates');
-    let loadedConfig;
+    const resolver = new TemplateResolver(templatesDir);
+    const resolvedConfig = resolver.resolveConfigReference(config);
 
-    // Parameterized template - resolve with TemplateResolver
-    if (typeof config === 'object' && config.base) {
-      const { base, params } = config;
-      const resolver = new TemplateResolver(templatesDir);
-      loadedConfig = resolver.resolve(base, params || {});
-    } else if (typeof config === 'string') {
-      // Static config - load directly from file
-      const configPath = path.join(templatesDir, `${config}.json`);
-      if (!fs.existsSync(configPath)) {
-        throw new Error(`Config not found: ${config} (looked in ${configPath})`);
-      }
-      const configContent = fs.readFileSync(configPath, 'utf8');
-      loadedConfig = JSON.parse(configContent);
-    } else {
-      throw new Error(
-        `Invalid config format: expected string or {base, params}, got ${typeof config}`
-      );
-    }
-
-    if (!loadedConfig.agents || !Array.isArray(loadedConfig.agents)) {
+    if (!resolvedConfig.loadedConfig.agents || !Array.isArray(resolvedConfig.loadedConfig.agents)) {
       throw new Error(`Config has no agents array`);
     }
 
-    return loadedConfig.agents;
+    return resolvedConfig;
   }
 
   _hasCompletionHandler(agentConfigs) {
@@ -3964,44 +3974,17 @@ Continue from where you left off. Review your previous output to understand what
    */
   async _opLoadConfig(cluster, op, context) {
     const { config } = op;
-    if (!config) {
-      throw new Error('load_config operation missing config');
-    }
+    const resolvedConfig = this._resolveLoadConfig(config);
+    const loadedConfig = resolvedConfig.loadedConfig;
 
-    const templatesDir = path.join(__dirname, '..', 'cluster-templates');
-    let loadedConfig;
-
-    // Check if config is parameterized ({ base, params }) or static (string)
-    if (typeof config === 'object' && config.base) {
-      // Parameterized template - resolve with TemplateResolver
-      const { base, params } = config;
-      this._log(`    Loading parameterized template: ${base}`);
-      this._log(`    Params: ${JSON.stringify(params)}`);
-
-      const resolver = new TemplateResolver(templatesDir);
-      loadedConfig = resolver.resolve(base, params);
-
-      this._log(`    ✓ Resolved template: ${base} → ${loadedConfig.agents?.length || 0} agent(s)`);
-    } else if (typeof config === 'string') {
-      // Static config - load directly from file
-      const configPath = path.join(templatesDir, `${config}.json`);
-
-      if (!fs.existsSync(configPath)) {
-        throw new Error(`Config not found: ${config} (looked in ${configPath})`);
-      }
-
-      this._log(`    Loading static config: ${config}`);
-
-      const configContent = fs.readFileSync(configPath, 'utf8');
-      loadedConfig = JSON.parse(configContent);
-    } else {
-      throw new Error(
-        `Invalid config format: expected string or {base, params}, got ${typeof config}`
+    if (resolvedConfig.kind === 'parameterized') {
+      this._log(`    Loading parameterized template: ${resolvedConfig.name}`);
+      this._log(`    Params: ${JSON.stringify(resolvedConfig.params)}`);
+      this._log(
+        `    ✓ Resolved template: ${resolvedConfig.name} → ${loadedConfig.agents.length} agent(s)`
       );
-    }
-
-    if (!loadedConfig.agents || !Array.isArray(loadedConfig.agents)) {
-      throw new Error(`Config has no agents array`);
+    } else {
+      this._log(`    Loading static config: ${resolvedConfig.name}`);
     }
 
     this._log(`    Found ${loadedConfig.agents.length} agent(s)`);

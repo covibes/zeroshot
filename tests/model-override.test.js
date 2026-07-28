@@ -6,6 +6,17 @@ const { applyModelOverrideToConfig } = require('../cli/index');
 const Orchestrator = require('../src/orchestrator');
 const MockTaskRunner = require('./helpers/mock-task-runner');
 
+const CUSTOM_CODEX_MODEL = 'gpt-5.6-sol';
+
+async function waitFor(predicate, timeoutMs = 5000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Condition not met within ${timeoutMs}ms`);
+}
+
 describe('Model Override (--model flag)', () => {
   let orchestrator;
   let storageDir;
@@ -139,6 +150,201 @@ describe('Model Override (--model flag)', () => {
       addedAgent._selectModel(),
       'opus',
       'Dynamically added agent should have overridden model'
+    );
+  });
+
+  it('should carry a catalogued CLI model through conductor load_config', async function () {
+    const config = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', 'cluster-templates', 'conductor-bootstrap.json'))
+    );
+    config.defaultProvider = 'codex';
+
+    orchestrator.taskRunner.when('junior-conductor').withModel(CUSTOM_CODEX_MODEL).returns({
+      complexity: 'TRIVIAL',
+      taskType: 'TASK',
+      reasoning: 'Exercise the single-worker load_config path.',
+    });
+    orchestrator.taskRunner.when('worker').withModel(CUSTOM_CODEX_MODEL).returns({
+      summary: 'completed',
+      result: 'ok',
+    });
+
+    const result = await orchestrator.start(
+      config,
+      { text: 'test task' },
+      { modelOverride: CUSTOM_CODEX_MODEL }
+    );
+    const cluster = orchestrator.clusters.get(result.id);
+
+    await waitFor(() => cluster.agents.some((agent) => agent.id === 'worker'));
+
+    const loadedAgents = cluster.agents.filter(
+      (agent) => !['junior-conductor', 'senior-conductor'].includes(agent.id)
+    );
+    assert.ok(loadedAgents.length > 0, 'load_config should add runtime agents');
+    for (const agent of loadedAgents) {
+      assert.strictEqual(
+        agent._selectModel(),
+        CUSTOM_CODEX_MODEL,
+        `Dynamically loaded agent ${agent.id} should use the CLI model override`
+      );
+    }
+  });
+
+  it('should reject an authored raw model matching the active CLI override', async function () {
+    const result = await orchestrator.start(
+      {
+        defaultProvider: 'codex',
+        agents: [
+          {
+            id: 'conductor',
+            modelLevel: 'level2',
+            role: 'conductor',
+            triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+          },
+        ],
+      },
+      { text: 'test task' },
+      { modelOverride: CUSTOM_CODEX_MODEL }
+    );
+
+    await assert.rejects(
+      orchestrator._handleOperations(
+        result.id,
+        [
+          {
+            action: 'add_agents',
+            agents: [
+              {
+                id: 'worker',
+                model: CUSTOM_CODEX_MODEL,
+                role: 'implementation',
+                triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+              },
+            ],
+          },
+        ],
+        'conductor'
+      ),
+      /uses 'model: "gpt-5.6-sol"'/
+    );
+  });
+
+  for (const authoredModel of [CUSTOM_CODEX_MODEL, 'gpt-5.4']) {
+    it(`should validate a same-ID add_agents replacement with authored model ${authoredModel}`, async function () {
+      const result = await orchestrator.start(
+        {
+          defaultProvider: 'codex',
+          agents: [
+            {
+              id: 'conductor',
+              modelLevel: 'level2',
+              role: 'conductor',
+              triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+            },
+          ],
+        },
+        { text: 'test task' },
+        { modelOverride: CUSTOM_CODEX_MODEL }
+      );
+
+      await assert.rejects(
+        orchestrator._handleOperations(
+          result.id,
+          [
+            {
+              action: 'add_agents',
+              agents: [
+                {
+                  id: 'conductor',
+                  model: authoredModel,
+                  role: 'conductor',
+                  triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+                },
+              ],
+            },
+          ],
+          'conductor'
+        ),
+        (error) => error.message.includes(`uses 'model: "${authoredModel}"'`)
+      );
+    });
+  }
+
+  it('should validate a same-ID load_config replacement before execution', async function () {
+    const result = await orchestrator.start(
+      {
+        defaultProvider: 'codex',
+        agents: [
+          {
+            id: 'conductor',
+            modelLevel: 'level2',
+            role: 'conductor',
+            triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+          },
+        ],
+      },
+      { text: 'test task' },
+      { modelOverride: CUSTOM_CODEX_MODEL }
+    );
+    const originalResolveLoadConfigAgents = orchestrator._resolveLoadConfigAgents;
+    orchestrator._resolveLoadConfigAgents = () => [
+      {
+        id: 'conductor',
+        model: CUSTOM_CODEX_MODEL,
+        role: 'conductor',
+        triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+      },
+    ];
+
+    try {
+      await assert.rejects(
+        orchestrator._handleOperations(
+          result.id,
+          [{ action: 'load_config', config: 'test-config' }],
+          'conductor'
+        ),
+        /uses 'model: "gpt-5.6-sol"'/
+      );
+    } finally {
+      orchestrator._resolveLoadConfigAgents = originalResolveLoadConfigAgents;
+    }
+  });
+
+  it('should reject authored raw models when no CLI override provenance exists', async function () {
+    const result = await orchestrator.start(
+      {
+        agents: [
+          {
+            id: 'conductor',
+            modelLevel: 'level2',
+            role: 'conductor',
+            triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+          },
+        ],
+      },
+      { text: 'test task' }
+    );
+
+    await assert.rejects(
+      orchestrator._handleOperations(
+        result.id,
+        [
+          {
+            action: 'add_agents',
+            agents: [
+              {
+                id: 'worker',
+                model: 'gpt-5.6-sol',
+                role: 'implementation',
+                triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+              },
+            ],
+          },
+        ],
+        'conductor'
+      ),
+      /uses 'model: "gpt-5.6-sol"'/
     );
   });
 
