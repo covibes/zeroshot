@@ -256,6 +256,32 @@ describe('Opencode provider helper builder', function () {
     assert.ok(result.args.includes('--cwd'));
     assert.deepStrictEqual(result.args.slice(1, 3), ['--cwd', '/tmp/worktree']);
   });
+
+  it('sets commandSpec.cwd even when neither --dir nor --cwd flag is supported', function () {
+    const result = buildCommand('opencode', 'test prompt', {
+      cwd: '/worktrees/spinning-cosmos-71',
+      cliFeatures: { supportsDir: false, supportsCwd: false },
+    });
+
+    assert.strictEqual(result.cwd, '/worktrees/spinning-cosmos-71');
+    assert.ok(!result.args.includes('--dir'));
+    assert.ok(!result.args.includes('--cwd'));
+  });
+
+  it('detects worktree flags from opencode help text', function () {
+    const { opencodeAdapter } = require('../lib/agent-cli-provider/adapters/opencode');
+    const dirFeatures = opencodeAdapter.detectCliFeatures(
+      'Usage: opencode run [options]\n  --dir  Working directory\n  --model  Model to use\n'
+    );
+    const cwdFeatures = opencodeAdapter.detectCliFeatures(
+      'Usage: opencode run [options]\n  --cwd  Working directory\n'
+    );
+
+    assert.strictEqual(dirFeatures.supportsDir, true);
+    assert.strictEqual(dirFeatures.supportsCwd, false);
+    assert.strictEqual(cwdFeatures.supportsDir, false);
+    assert.strictEqual(cwdFeatures.supportsCwd, true);
+  });
 });
 
 describe('Pi provider helper builder', function () {
