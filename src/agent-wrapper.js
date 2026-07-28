@@ -463,7 +463,7 @@ class AgentWrapper {
       messageBus: this.messageBus,
       clusterId: this.cluster.id,
       agentId: this.id,
-      afterId: this.lastGuidanceAppliedId,
+      afterId: providerSession ? this.lastGuidanceAppliedId : undefined,
       throughId: this.currentContextSequence,
     });
     this.currentGuidanceSequence =

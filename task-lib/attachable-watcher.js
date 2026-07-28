@@ -334,12 +334,12 @@ server.on('exit', async ({ exitCode, signal }) => {
       pid: null,
       processGroupId: null,
       exitCode: resolvedCode,
+      ...providerSessionCapture.getCompletionUpdate(resolvedCode),
       error:
         fatalError ||
         sessionIdentityError ||
         (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
       socketPath: null,
-      ...(sessionIdentityError ? { sessionId: null, sessionIdConflict: true } : {}),
     });
   } catch (updateError) {
     log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);

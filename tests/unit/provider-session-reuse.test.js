@@ -163,6 +163,7 @@ describe('agent-owned provider session reuse', function () {
       provider: 'claude',
       status: 'completed',
       requestedResumeSessionId: 'claude-session-1',
+      resumeIdentityVerified: true,
     };
 
     const confirmed = await buildCompletionResult({

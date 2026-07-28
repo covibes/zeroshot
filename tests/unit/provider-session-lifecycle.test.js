@@ -122,6 +122,7 @@ describe('provider-session lifecycle boundaries', function () {
                 provider: 'claude',
                 status: 'completed',
                 requestedResumeSessionId: 'claude-session-1',
+                resumeIdentityVerified: true,
                 sessionId: 'claude-session-1',
                 sessionIdConflict: true,
               },

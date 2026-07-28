@@ -10,6 +10,14 @@ export function buildResumeTaskOptions(task) {
   if (!providerSupportsCapability(task.provider, 'sessionResume')) {
     throw new Error(`Provider ${task.provider} does not support safe session resume.`);
   }
+  if (
+    task.requestedResumeSessionId &&
+    (task.status !== 'completed' || task.resumeIdentityVerified !== true)
+  ) {
+    throw new Error(
+      `Task ${task.id} did not durably verify its requested provider session; refusing resume.`
+    );
+  }
   if (!task.sessionId) {
     throw new Error(
       `Task ${task.id} has no captured provider session ID; refusing cwd-wide continuation.`

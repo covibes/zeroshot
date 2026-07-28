@@ -169,6 +169,9 @@ export function buildTaskRecord({ id, prompt, cwd, options, logFile, providerNam
     sessionId: null,
     sessionIdConflict: false,
     requestedResumeSessionId: options.resume || null,
+    // Resumed tasks start fail-closed. Only the watcher terminal transaction
+    // may prove that the requested identity completed without conflict.
+    resumeIdentityVerified: !options.resume,
     logFile,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

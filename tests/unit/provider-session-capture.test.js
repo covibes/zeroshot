@@ -85,7 +85,11 @@ describe('provider session capture', function () {
     assert.deepStrictEqual(updates, [
       {
         taskId: 'resumed-task',
-        update: { sessionId: null, sessionIdConflict: true },
+        update: {
+          sessionId: null,
+          sessionIdConflict: true,
+          resumeIdentityVerified: false,
+        },
       },
     ]);
   });
@@ -117,6 +121,83 @@ describe('provider session capture', function () {
     assert.strictEqual(writes, 2, 'an in-memory conflict must remain sticky after the failed write');
     assert.match(capture.getCompletionError(), /could not be persisted: database is locked/);
     assert.ok(logs.some((message) => message.includes('Failed to persist provider session')));
+  });
+
+  it('keeps both watcher recovery paths fail closed when conflict and terminal writes fail', async function () {
+    const { createProviderSessionCapture } =
+      await import('../../task-lib/provider-session-capture.js');
+    const { buildTaskRecord } = await import('../../task-lib/runner.js');
+    const { buildResumeTaskOptions } = await import('../../task-lib/commands/resume.js');
+    const { buildCompletionResult } = require('../../src/agent/agent-task-executor');
+
+    for (const watcherName of ['watcher.js', 'attachable-watcher.js']) {
+      let locked = true;
+      let storedTask = buildTaskRecord({
+        id: `${watcherName}-locked-resume`,
+        prompt: 'continue',
+        cwd: '/tmp/project',
+        options: { resume: 'requested-a' },
+        logFile: `/tmp/${watcherName}.log`,
+        providerName: 'claude',
+        modelSpec: {},
+      });
+      const updateTask = (_taskId, update) => {
+        const unsafeWrite =
+          update.sessionIdConflict === true || Object.hasOwn(update, 'status');
+        if (locked && unsafeWrite) {
+          const error = new Error('database is locked');
+          error.code = 'SQLITE_BUSY';
+          throw error;
+        }
+        storedTask = { ...storedTask, ...update };
+      };
+      const capture = createProviderSessionCapture({
+        providerName: 'claude',
+        taskId: storedTask.id,
+        requestedSessionId: storedTask.requestedResumeSessionId,
+        updateTask,
+        log: () => {},
+      });
+
+      capture.captureLine(JSON.stringify({ type: 'system', session_id: 'requested-a' }));
+      capture.captureLine(JSON.stringify({ type: 'result', session_id: 'forked-b' }));
+      assert.strictEqual(storedTask.sessionId, 'requested-a');
+      assert.strictEqual(storedTask.resumeIdentityVerified, false);
+      assert.throws(
+        () =>
+          updateTask(storedTask.id, {
+            status: 'failed',
+            ...capture.getCompletionUpdate(1),
+          }),
+        /database is locked/
+      );
+
+      locked = false;
+      storedTask = { ...storedTask, status: 'stale' };
+      const agent = {
+        id: 'worker',
+        iteration: 2,
+        config: { cwd: '/tmp/project', outputFormat: 'text' },
+        currentContextSequence: '2',
+        currentGuidanceSequence: null,
+        currentPromptIdentity: null,
+        isolation: null,
+        worktree: null,
+      };
+      const recovered = await buildCompletionResult({
+        agent,
+        taskId: storedTask.id,
+        providerName: 'claude',
+        state: { output: 'valid recovered output', logFilePath: null },
+        stdout: 'Status: stale',
+        success: true,
+        taskInfo: storedTask,
+      });
+
+      assert.strictEqual(recovered.success, false);
+      assert.match(recovered.error, /not durably verified/);
+      assert.throws(() => buildResumeTaskOptions(storedTask), /did not durably verify/);
+    }
   });
 
   it('requires an explicit requested identity to be observed exactly', async function () {

@@ -103,7 +103,11 @@ export function createProviderSessionCapture({
         onConflict: () => {
           currentSessionId = null;
           sessionIdConflict = true;
-          persist({ sessionId: null, sessionIdConflict: true });
+          persist({
+            sessionId: null,
+            sessionIdConflict: true,
+            resumeIdentityVerified: false,
+          });
         },
       }));
     } catch (error) {
@@ -111,14 +115,24 @@ export function createProviderSessionCapture({
     }
   }
 
+  function getCompletionError() {
+    return providerSessionCompletionError({
+      requestedSessionId,
+      currentSessionId,
+      sessionIdConflict,
+      persistenceError,
+    });
+  }
+
   return {
     captureLine,
-    getCompletionError: () =>
-      providerSessionCompletionError({
-        requestedSessionId,
-        currentSessionId,
-        sessionIdConflict,
-        persistenceError,
-      }),
+    getCompletionError,
+    getCompletionUpdate: (resolvedCode) => {
+      const error = getCompletionError();
+      return {
+        resumeIdentityVerified: resolvedCode === 0 && !error,
+        ...(error ? { sessionId: null, sessionIdConflict: true } : {}),
+      };
+    },
   };
 }

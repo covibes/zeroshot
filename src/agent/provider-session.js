@@ -149,6 +149,9 @@ function validateCompletedResumeIdentity(taskInfo) {
   if (!requestedSessionId) {
     return null;
   }
+  if (taskInfo?.resumeIdentityVerified !== true) {
+    return 'Provider continuation identity was not durably verified';
+  }
   if (taskInfo?.sessionIdConflict === true) {
     return 'Provider continuation emitted conflicting session identities';
   }

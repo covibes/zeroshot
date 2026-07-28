@@ -232,6 +232,14 @@ describe('provider-session continuation context', function () {
         providerCliFeatures: { claude: { supportsResume: false } },
       },
     });
+    const appliedGuidance = messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'USER_GUIDANCE_AGENT',
+      sender: 'operator',
+      receiver: 'worker',
+      content: { text: 'GUIDANCE-FROM-INVALIDATED-SESSION' },
+    });
+    agent.lastGuidanceAppliedId = appliedGuidance.sequence;
     agent.iteration = 2;
     agent.providerSession = {
       provider: 'claude',
@@ -242,7 +250,7 @@ describe('provider-session continuation context', function () {
       cwd: path.resolve(agent.config.cwd || process.cwd()),
       worktreePath: null,
       contextSequence: '1',
-      guidanceSequence: null,
+      guidanceSequence: appliedGuidance.sequence,
       promptIdentity: promptIdentity('STATIC-OLD-CLI-INSTRUCTIONS'),
     };
 
@@ -253,8 +261,39 @@ describe('provider-session continuation context', function () {
     });
 
     assert.match(context, /STATIC-OLD-CLI-INSTRUCTIONS/);
+    assert.match(context, /GUIDANCE-FROM-INVALIDATED-SESSION/);
     assert.doesNotMatch(context, /Continuation Turn/);
     assert.strictEqual(agent.providerSession, null);
+
+    agent.providerCliFeatures.claude.supportsResume = true;
+    agent.providerSession = {
+      provider: 'claude',
+      sessionId: 'replacement-session',
+      agentId: 'worker',
+      taskId: 'task-generation-2',
+      generation: 2,
+      cwd: path.resolve(agent.config.cwd || process.cwd()),
+      worktreePath: null,
+      contextSequence: agent.currentContextSequence,
+      guidanceSequence: agent.currentGuidanceSequence,
+      promptIdentity: agent.currentPromptIdentity,
+    };
+    agent.lastGuidanceAppliedId = agent.currentGuidanceSequence;
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'USER_GUIDANCE_AGENT',
+      sender: 'operator',
+      receiver: 'worker',
+      content: { text: 'NEW-INCREMENTAL-GUIDANCE' },
+    });
+    agent.iteration = 3;
+    const continuation = agent._buildContext({
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'continue incrementally' },
+    });
+    assert.match(continuation, /NEW-INCREMENTAL-GUIDANCE/);
+    assert.doesNotMatch(continuation, /GUIDANCE-FROM-INVALIDATED-SESSION/);
   });
 
   it('freezes lazy source rendering at the captured durable high-water sequence', function () {

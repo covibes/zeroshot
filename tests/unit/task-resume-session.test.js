@@ -17,6 +17,7 @@ describe('single-task session resume', function () {
     assert.strictEqual(task.requestedResumeSessionId, 'requested-thread');
     assert.strictEqual(task.sessionId, null);
     assert.strictEqual(task.sessionIdConflict, false);
+    assert.strictEqual(task.resumeIdentityVerified, false);
   });
 
   it('uses the captured explicit provider session ID', async function () {
@@ -59,6 +60,19 @@ describe('single-task session resume', function () {
         }),
       /does not support safe session resume/
     );
+    assert.throws(
+      () =>
+        buildResumeTaskOptions({
+          id: 'unverified-resumed-task',
+          provider: 'claude',
+          status: 'stale',
+          requestedResumeSessionId: 'requested-session',
+          sessionId: 'requested-session',
+          resumeIdentityVerified: false,
+          cwd: '/tmp/project',
+        }),
+      /did not durably verify/
+    );
   });
 
   it('migrates legacy requested IDs out of the observed session column with version proof', async function () {
@@ -77,12 +91,13 @@ describe('single-task session resume', function () {
 
       const row = database
         .prepare(
-          'SELECT session_id, session_id_conflict, requested_resume_session_id FROM tasks WHERE id = ?'
+          'SELECT session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified FROM tasks WHERE id = ?'
         )
         .get('legacy-task');
       assert.strictEqual(row.session_id, null);
       assert.strictEqual(row.session_id_conflict, 0);
       assert.strictEqual(row.requested_resume_session_id, 'historically-requested-id');
+      assert.strictEqual(row.resume_identity_verified, 0);
       assert.strictEqual(
         database.pragma('user_version', { simple: true }),
         TASK_STORE_SCHEMA_VERSION
@@ -98,13 +113,14 @@ describe('single-task session resume', function () {
       assert.deepStrictEqual(
         database
           .prepare(
-            'SELECT session_id, session_id_conflict, requested_resume_session_id FROM tasks WHERE id = ?'
+            'SELECT session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified FROM tasks WHERE id = ?'
           )
           .get('captured-task'),
         {
           session_id: 'observed-id',
           session_id_conflict: 0,
           requested_resume_session_id: 'requested-id',
+          resume_identity_verified: 0,
         }
       );
     } finally {
