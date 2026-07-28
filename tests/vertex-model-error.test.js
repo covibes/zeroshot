@@ -81,10 +81,13 @@ function createAgent(rawOutputs) {
 
 describe('Vertex model failure handling', function () {
   let originalSettingsFile;
+  let originalUseVertex;
   let settingsDir;
 
   beforeEach(function () {
     originalSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
+    originalUseVertex = process.env.CLAUDE_CODE_USE_VERTEX;
+    delete process.env.CLAUDE_CODE_USE_VERTEX;
     settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-vertex-error-'));
     process.env.ZEROSHOT_SETTINGS_FILE = path.join(settingsDir, 'settings.json');
     fs.writeFileSync(
@@ -98,6 +101,11 @@ describe('Vertex model failure handling', function () {
       delete process.env.ZEROSHOT_SETTINGS_FILE;
     } else {
       process.env.ZEROSHOT_SETTINGS_FILE = originalSettingsFile;
+    }
+    if (originalUseVertex === undefined) {
+      delete process.env.CLAUDE_CODE_USE_VERTEX;
+    } else {
+      process.env.CLAUDE_CODE_USE_VERTEX = originalUseVertex;
     }
     fs.rmSync(settingsDir, { recursive: true, force: true });
   });
@@ -178,5 +186,39 @@ describe('Vertex model failure handling', function () {
     });
 
     assert.strictEqual(result.vertexModelError, null);
+  });
+
+  it('requires Vertex configuration and a model for the generic Claude 404 fallback', async function () {
+    const { agent } = createAgent([]);
+    const buildClaudeFailure = (result) =>
+      buildCompletionResult({
+        agent,
+        taskId: 'claude-task',
+        providerName: 'claude',
+        state: { output: claudeErrorEnvelope(404, result) },
+        stdout: 'Status: failed',
+        success: false,
+      });
+
+    const genericResource = await buildClaudeFailure(
+      'API Error: resource may not exist or you may not have access'
+    );
+    const unconfiguredModel = await buildClaudeFailure(
+      'API Error: model (claude-sonnet-4-5@20250929) may not exist or you may not have access'
+    );
+    process.env.CLAUDE_CODE_USE_VERTEX = '1';
+    const vertexResource = await buildClaudeFailure(
+      'API Error: resource may not exist or you may not have access'
+    );
+    const vertexModel = await buildClaudeFailure(
+      'API Error: model (claude-sonnet-4-5@20250929) may not exist or you may not have access'
+    );
+
+    assert.strictEqual(genericResource.vertexModelError, null);
+    assert.strictEqual(unconfiguredModel.vertexModelError, null);
+    assert.strictEqual(vertexResource.vertexModelError, null);
+    assert.deepStrictEqual(vertexModel.vertexModelError, {
+      model: 'claude-sonnet-4-5@20250929',
+    });
   });
 });

@@ -1215,7 +1215,11 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
 async function buildCompletionResult({ agent, taskId, providerName, state, stdout, success }) {
   const classified = await evaluateStructuredSuccess({ agent, taskId, state, success });
   const vertexModelError =
-    providerName === 'claude' ? extractClaudeVertexModelError(state.output) : null;
+    providerName === 'claude'
+      ? extractClaudeVertexModelError(state.output, {
+          useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+        })
+      : null;
   if (vertexModelError) {
     classified.success = false;
   }
@@ -1805,7 +1809,11 @@ function settleIsolatedTerminalStatus({
     }
 
     const vertexModelError =
-      providerName === 'claude' ? extractClaudeVertexModelError(state.fullOutput) : null;
+      providerName === 'claude'
+        ? extractClaudeVertexModelError(state.fullOutput, {
+            useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+          })
+        : null;
     const success = status === 'completed' && !vertexModelError;
     const errorContext = !success
       ? extractErrorContext({

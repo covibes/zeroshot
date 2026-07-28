@@ -238,9 +238,10 @@ function extractDirectJson(text) {
  * Extract deterministic Claude Vertex model-unavailability metadata from the raw CLI envelope.
  *
  * @param {string} output - Raw Claude CLI output
- * @returns {{model: string|null}|null} Vertex model metadata or null
+ * @param {{useVertex?: boolean}} [options] - Whether the Claude task was configured for Vertex
+ * @returns {{model: string}|null} Vertex model metadata or null
  */
-function extractClaudeVertexModelError(output) {
+function extractClaudeVertexModelError(output, { useVertex = false } = {}) {
   if (!output || typeof output !== 'string') return null;
 
   for (const line of output.split('\n')) {
@@ -257,13 +258,13 @@ function extractClaudeVertexModelError(output) {
       ) {
         continue;
       }
-      const isVertexModelError =
-        parsed.result.includes('vertex deployment') ||
-        parsed.result.includes('may not exist or you may not have access');
-      if (!isVertexModelError) continue;
-
       const modelMatch = parsed.result.match(/model\s+\(([^)]+)\)/);
-      return { model: modelMatch ? modelMatch[1] : null };
+      const hasExplicitVertexSignal = parsed.result.includes('vertex deployment');
+      const isVertexFallback =
+        useVertex && parsed.result.includes('may not exist or you may not have access');
+      if (!modelMatch || (!hasExplicitVertexSignal && !isVertexFallback)) continue;
+
+      return { model: modelMatch[1] };
     } catch {
       // Not a JSON result envelope.
     }
