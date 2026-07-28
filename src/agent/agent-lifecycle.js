@@ -587,6 +587,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
     const error = new Error(result.error || 'Task execution failed');
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
+    error.vertexModelError = result.vertexModelError || null;
     throw error;
   }
 
@@ -629,6 +630,20 @@ ${'='.repeat(80)}`);
   console.error(`🔴 TASK EXECUTION FAILED - AGENT: ${agent.id} (Attempt ${attempt}/${maxRetries})`);
   console.error(`${'='.repeat(80)}`);
   console.error(`Error: ${error.message}`);
+
+  const vertexError = error.vertexModelError;
+  if (vertexError) {
+    const model = vertexError.model ? `"${vertexError.model}" is` : 'Selected model is';
+    console.error(`
+⚠️  ${model} not available on your Vertex AI deployment.
+    Fix: set explicit model IDs that are enabled on your deployment:
+
+    zeroshot settings set providerSettings.claude.levelOverrides '{"level1": {"model": "claude-sonnet-4-6"}, "level2": {"model": "claude-sonnet-4-6"}, "level3": {"model": "claude-sonnet-4-6"}}'
+
+    Replace "claude-sonnet-4-6" with whichever Claude model your deployment has enabled.
+    You can test a model with: claude --dangerously-skip-permissions -p "hi" --model <model-id>
+`);
+  }
 }
 
 async function handleLockContention() {
@@ -712,6 +727,22 @@ ${'='.repeat(80)}`);
           hookRetries: error.hookRetries ?? null,
           originalHookError: error.originalHookError ?? null,
           error: error.message,
+        },
+      },
+    });
+  }
+
+  if (error?.vertexModelError) {
+    agent._publish({
+      topic: 'CLUSTER_FAILED',
+      receiver: 'broadcast',
+      content: {
+        text: `Cluster failed: Claude model is unavailable on Vertex for ${agent.id}`,
+        data: {
+          reason: 'vertex_model_unavailable',
+          agentId: agent.id,
+          role: agent.role,
+          model: error.vertexModelError.model,
         },
       },
     });
@@ -1011,6 +1042,20 @@ async function executeTask(agent, triggeringMessage) {
       if (error instanceof HookExecutionError) {
         // Hook failures are deterministic; do not waste tokens retrying the provider task.
         await handleFinalFailure(agent, triggeringMessage, error, 1);
+        return;
+      }
+      if (error.vertexModelError) {
+        agent._publishLifecycle('TASK_FAILED', {
+          iteration: agent.iteration,
+          taskId: error.taskId || agent.currentTaskId,
+          error: error.message,
+          code: error.code || null,
+          attempt,
+        });
+        clearTransientTaskState(agent);
+        logTaskAttemptFailure(agent, attempt, maxRetries, error);
+        // Model unavailability on Vertex is deterministic — retrying wastes nothing but time.
+        await handleFinalFailure(agent, triggeringMessage, error, attempt);
         return;
       }
       agent._publishLifecycle('TASK_FAILED', {

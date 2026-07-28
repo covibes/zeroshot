@@ -40,6 +40,7 @@ const MODEL_CATALOG: Readonly<Record<string, ModelCatalogEntry>> = {
   'claude-opus-4-6': { rank: 3 },
   'claude-opus-4-7': { rank: 3 },
   'claude-opus-4-8': { rank: 3 },
+  'claude-opus-5': { rank: 3 },
   fable: { rank: 3 },
   'claude-fable-5': { rank: 3 },
   'claude-mythos-5': { rank: 3 },

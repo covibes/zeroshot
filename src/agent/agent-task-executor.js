@@ -33,6 +33,7 @@ const {
   resolveAgentResumeSessionId,
   validateCompletedResumeIdentity,
 } = require('./provider-session');
+const { extractClaudeVertexModelError } = require('./output-extraction');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -885,8 +886,11 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
 
+  // spawn() throws on null bytes in argv; strip them before they get there.
+  const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
+
   return new Promise((resolve, reject) => {
-    const proc = spawn(ctPath, args, {
+    const proc = spawn(ctPath, safeArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: spawnEnv,
@@ -1233,6 +1237,15 @@ async function buildCompletionResult({
     classified.success = false;
     classified.error = resumeIdentityError;
   }
+  const vertexModelError =
+    providerName === 'claude'
+      ? extractClaudeVertexModelError(state.output, {
+          useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+        })
+      : null;
+  if (vertexModelError) {
+    classified.success = false;
+  }
   let errorContext = classified.error;
   if (!errorContext && !classified.success) {
     errorContext = buildFailureContext({ agent, taskId, providerName, state, stdout });
@@ -1249,6 +1262,7 @@ async function buildCompletionResult({
       taskInfo,
       logicalSuccess: classified.success,
     }),
+    vertexModelError,
   };
 }
 
@@ -1823,7 +1837,13 @@ function settleIsolatedTerminalStatus({
       }
     }
 
-    const success = status === 'completed';
+    const vertexModelError =
+      providerName === 'claude'
+        ? extractClaudeVertexModelError(state.fullOutput, {
+            useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+          })
+        : null;
+    const success = status === 'completed' && !vertexModelError;
     const errorContext = !success
       ? extractErrorContext({
           output: state.fullOutput,
@@ -1842,7 +1862,7 @@ function settleIsolatedTerminalStatus({
           },
         })
       : null;
-    const parsedResult = await agent._parseResultOutput(state.fullOutput);
+    const parsedResult = vertexModelError ? null : await agent._parseResultOutput(state.fullOutput);
 
     settleIsolatedFollower({
       agent,
@@ -1856,6 +1876,7 @@ function settleIsolatedTerminalStatus({
         result: parsedResult,
         error: errorContext,
         tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+        vertexModelError,
       },
     });
   })().catch((error) => {
@@ -2395,6 +2416,7 @@ async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
 module.exports = {
   ensureAskUserQuestionHook,
   spawnClaudeTask,
+  spawnTaskProcess,
   followClaudeTaskLogs,
   followClaudeTaskLogsIsolated,
   waitForTaskReady,

@@ -69,6 +69,7 @@ export type {
   ErrorClassificationKind,
   GatewayBuildOptions,
   GatewayCliFeatures,
+  GatewayProtocol,
   GatewayToolPolicy,
   GeminiCliFeatures,
   KnownProviderName,

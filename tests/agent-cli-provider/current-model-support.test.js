@@ -4,12 +4,24 @@ const { test } = require('node:test');
 const helper = require('../../lib/agent-cli-provider');
 const { runExecutable } = require('./executable-contract-helpers.cjs');
 
-const OPENAI_GPT_56_MODELS = ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
+const BEDROCK_NAMESPACED_CODEX_MODELS = [
+  ['openai.gpt-5.6-sol', 'gpt-5.6-sol'],
+  ['openai.gpt-5.6-terra', 'gpt-5.6-terra'],
+  ['openai.gpt-5.6-luna', 'gpt-5.6-luna'],
+];
+const OPENAI_GPT_56_MODELS = [
+  'gpt-5.6',
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
+  ...BEDROCK_NAMESPACED_CODEX_MODELS.map(([model]) => model),
+];
 
 const CURRENT_CLAUDE_MODELS = [
   'fable',
   'claude-fable-5',
   'claude-opus-4-8',
+  'claude-opus-5',
   'claude-opus-4-7',
   'claude-opus-4-6',
   'claude-opus-4-5',
@@ -32,6 +44,14 @@ test('Codex catalog accepts the GPT-5.6 family and alias', () => {
   }
 });
 
+test('Bedrock-namespaced Codex model ranks match their unprefixed twins', () => {
+  const catalog = helper.getProviderAdapter('codex').modelCatalog;
+
+  for (const [namespacedModel, unprefixedModel] of BEDROCK_NAMESPACED_CODEX_MODELS) {
+    assert.equal(catalog[namespacedModel].rank, catalog[unprefixedModel].rank);
+  }
+});
+
 test('Claude catalog accepts current canonical ids, aliases, and limited-access models', () => {
   const adapter = helper.getProviderAdapter('claude');
 
@@ -40,28 +60,30 @@ test('Claude catalog accepts current canonical ids, aliases, and limited-access 
   }
 });
 
-test('Codex sends max reasoning effort through its config override', () => {
-  const spec = helper.buildProviderCommand('codex', 'test context', {
-    modelSpec: { model: 'gpt-5.6-sol', reasoningEffort: 'max' },
-    cliFeatures: {
-      supportsConfigOverride: true,
-      supportsSkipGitRepoCheck: true,
-    },
-  });
+test('Codex sends Bedrock-namespaced GPT-5.6 models through its command path', () => {
+  for (const [model] of BEDROCK_NAMESPACED_CODEX_MODELS) {
+    const spec = helper.buildProviderCommand('codex', 'test context', {
+      modelSpec: { model, reasoningEffort: 'max' },
+      cliFeatures: {
+        supportsConfigOverride: true,
+        supportsSkipGitRepoCheck: true,
+      },
+    });
 
-  assert.deepEqual(spec.args.slice(spec.args.indexOf('-m'), spec.args.indexOf('-m') + 2), [
-    '-m',
-    'gpt-5.6-sol',
-  ]);
-  assert.deepEqual(
-    spec.args.slice(spec.args.indexOf('--config'), spec.args.indexOf('--config') + 2),
-    ['--config', 'model_reasoning_effort="max"']
-  );
+    assert.deepEqual(spec.args.slice(spec.args.indexOf('-m'), spec.args.indexOf('-m') + 2), [
+      '-m',
+      model,
+    ]);
+    assert.deepEqual(
+      spec.args.slice(spec.args.indexOf('--config'), spec.args.indexOf('--config') + 2),
+      ['--config', 'model_reasoning_effort="max"']
+    );
+  }
 });
 
 test('Claude sends max reasoning effort through the installed CLI effort flag', () => {
   const spec = helper.buildProviderCommand('claude', 'test context', {
-    modelSpec: { model: 'claude-fable-5', reasoningEffort: 'max' },
+    modelSpec: { model: 'claude-opus-5', reasoningEffort: 'max' },
     cliFeatures: {
       supportsModel: true,
       supportsEffort: true,
@@ -70,7 +92,7 @@ test('Claude sends max reasoning effort through the installed CLI effort flag', 
 
   assert.deepEqual(
     spec.args.slice(spec.args.indexOf('--model'), spec.args.indexOf('--model') + 2),
-    ['--model', 'claude-fable-5']
+    ['--model', 'claude-opus-5']
   );
   assert.deepEqual(
     spec.args.slice(spec.args.indexOf('--effort'), spec.args.indexOf('--effort') + 2),

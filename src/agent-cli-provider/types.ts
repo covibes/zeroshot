@@ -17,6 +17,7 @@ export type KnownProviderName = ProviderId | ProviderAlias;
 export type ModelLevel = 'level1' | 'level2' | 'level3';
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type OutputFormat = 'text' | 'json' | 'stream-json';
+export type GatewayProtocol = 'openai' | 'anthropic';
 export type {
   ProviderCapabilities,
   ProviderCapabilityState,
@@ -66,18 +67,22 @@ export interface GatewayToolPolicy {
 }
 
 export interface GatewayBuildOptions {
+  readonly protocol?: GatewayProtocol;
   readonly baseUrl?: string;
   readonly apiKey?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly model?: string | null;
+  readonly maxTokens?: number;
   readonly toolPolicy?: GatewayToolPolicy;
 }
 
 export interface ResolvedGatewayBuildOptions {
+  readonly protocol: GatewayProtocol;
   readonly baseUrl: string;
   readonly apiKey: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly model: string;
+  readonly maxTokens?: number;
   readonly toolPolicy: GatewayToolPolicy;
 }
 
