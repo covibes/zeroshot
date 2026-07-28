@@ -235,6 +235,44 @@ function extractDirectJson(text) {
 }
 
 /**
+ * Extract deterministic Claude Vertex model-unavailability metadata from the raw CLI envelope.
+ *
+ * @param {string} output - Raw Claude CLI output
+ * @returns {{model: string|null}|null} Vertex model metadata or null
+ */
+function extractClaudeVertexModelError(output) {
+  if (!output || typeof output !== 'string') return null;
+
+  for (const line of output.split('\n')) {
+    const content = stripTimestamp(line);
+    if (!content.startsWith('{')) continue;
+
+    try {
+      const parsed = JSON.parse(content);
+      if (
+        parsed.type !== 'result' ||
+        parsed.is_error !== true ||
+        parsed.api_error_status !== 404 ||
+        typeof parsed.result !== 'string'
+      ) {
+        continue;
+      }
+      const isVertexModelError =
+        parsed.result.includes('vertex deployment') ||
+        parsed.result.includes('may not exist or you may not have access');
+      if (!isVertexModelError) continue;
+
+      const modelMatch = parsed.result.match(/model\s+\(([^)]+)\)/);
+      return { model: modelMatch ? modelMatch[1] : null };
+    } catch {
+      // Not a JSON result envelope.
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extract CLI error from provider output (all providers).
  * Returns the error message if the CLI reported an error, null otherwise.
  *
@@ -358,6 +396,7 @@ function extractJsonFromOutput(output, providerName = 'claude') {
 module.exports = {
   extractJsonFromOutput,
   extractCliError,
+  extractClaudeVertexModelError,
   extractFromResultWrapper,
   extractFromTextEvents,
   extractFromMarkdown,

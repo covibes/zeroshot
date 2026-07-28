@@ -574,6 +574,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
     const error = new Error(result.error || 'Task execution failed');
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
+    error.vertexModelError = result.vertexModelError || null;
     throw error;
   }
 
@@ -597,22 +598,6 @@ async function runTaskAttempt(agent, triggeringMessage) {
   await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
 }
 
-function detectVertexModelError(errorMessage) {
-  try {
-    const parsed = JSON.parse(errorMessage);
-    if (parsed.api_error_status !== 404) return null;
-    const result = parsed.result || '';
-    const isVertexModelError =
-      result.includes('vertex deployment') ||
-      result.includes('may not exist or you may not have access');
-    if (!isVertexModelError) return null;
-    const modelMatch = result.match(/model\s+\(([^)]+)\)/);
-    return { model: modelMatch ? modelMatch[1] : null };
-  } catch {
-    return null;
-  }
-}
-
 function logTaskAttemptFailure(agent, attempt, maxRetries, error) {
   // Log attempt failure
   console.error(`
@@ -621,7 +606,7 @@ ${'='.repeat(80)}`);
   console.error(`${'='.repeat(80)}`);
   console.error(`Error: ${error.message}`);
 
-  const vertexError = detectVertexModelError(error.message);
+  const vertexError = error.vertexModelError;
   if (vertexError) {
     const model = vertexError.model ? `"${vertexError.model}" is` : 'Selected model is';
     console.error(`
@@ -717,6 +702,22 @@ ${'='.repeat(80)}`);
           hookRetries: error.hookRetries ?? null,
           originalHookError: error.originalHookError ?? null,
           error: error.message,
+        },
+      },
+    });
+  }
+
+  if (error?.vertexModelError) {
+    agent._publish({
+      topic: 'CLUSTER_FAILED',
+      receiver: 'broadcast',
+      content: {
+        text: `Cluster failed: Claude model is unavailable on Vertex for ${agent.id}`,
+        data: {
+          reason: 'vertex_model_unavailable',
+          agentId: agent.id,
+          role: agent.role,
+          model: error.vertexModelError.model,
         },
       },
     });
@@ -1015,10 +1016,18 @@ async function executeTask(agent, triggeringMessage) {
         await handleFinalFailure(agent, triggeringMessage, error, 1);
         return;
       }
-      if (detectVertexModelError(error.message)) {
-        logTaskAttemptFailure(agent, 1, 1, error);
+      if (error.vertexModelError) {
+        agent._publishLifecycle('TASK_FAILED', {
+          iteration: agent.iteration,
+          taskId: error.taskId || agent.currentTaskId,
+          error: error.message,
+          code: error.code || null,
+          attempt,
+        });
+        clearTransientTaskState(agent);
+        logTaskAttemptFailure(agent, attempt, maxRetries, error);
         // Model unavailability on Vertex is deterministic — retrying wastes nothing but time.
-        await handleFinalFailure(agent, triggeringMessage, error, 1);
+        await handleFinalFailure(agent, triggeringMessage, error, attempt);
         return;
       }
       agent._publishLifecycle('TASK_FAILED', {
