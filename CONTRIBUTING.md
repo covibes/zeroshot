@@ -22,7 +22,9 @@ Thank you for your interest in contributing to Zeroshot! This guide covers every
 - **Node.js 18+** (check: `node --version`)
 - **npm** (bundled with Node)
 - **Docker** (optional, for isolation mode tests)
-- **AI Provider CLI** - At least one: Claude Code (`npm i -g @anthropic-ai/claude-code`), Codex, Gemini CLI, or OpenCode
+- **AI provider** - Configure the bundled Gateway provider or install at least one supported provider
+  CLI: Claude Code, Codex, Gemini, Opencode, Pi, Kiro, or Copilot (see
+  [provider setup and installation instructions](./docs/providers.md))
 - **GitHub CLI** - Required for PR creation features ([install guide](https://cli.github.com/))
 
 ### Installation
