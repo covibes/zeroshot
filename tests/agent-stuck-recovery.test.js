@@ -264,7 +264,7 @@ describe('Agent stuck-task recovery', function () {
           spawnEnv: process.env,
         });
         await waitFor(() => agent.currentTask?.pendingLaunch);
-        if (state === 'post-row') await waitFor(() => getTask(taskId));
+        if (state === 'post-row') await waitFor(() => getTask(taskId), 10000);
         if (state === 'post-id') await launch;
 
         const termination = await killTask(agent, `cancel ${state}`);
