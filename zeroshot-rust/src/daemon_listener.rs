@@ -84,12 +84,14 @@ pub struct DaemonListener {
     profile: NativeProfile,
     locator: DaemonLocator,
     shutdown: Arc<Notify>,
-    accept_task: Option<JoinHandle<()>>,
+    accept_task: Option<JoinHandle<Result<(), ()>>>,
     shutdown_timeout: Duration,
     pending_handshake_limit: usize,
     pending_handshake_permits: Arc<Semaphore>,
     liveness_connection_limit: usize,
     liveness_connection_permits: Arc<Semaphore>,
+    active_session_limit: usize,
+    active_session_permits: Arc<Semaphore>,
 }
 
 impl DaemonListener {
@@ -155,6 +157,7 @@ impl DaemonListener {
         let shutdown = Arc::new(Notify::new());
         let pending_handshake_permits = Arc::new(Semaphore::new(config.max_pending_handshakes));
         let liveness_connection_permits = Arc::new(Semaphore::new(config.max_liveness_connections));
+        let active_session_permits = Arc::new(Semaphore::new(config.max_active_connections));
         let accept_task = tokio::spawn(run_accept_loop(AcceptLoop {
             listener: tcp,
             factory: Arc::new(factory),
@@ -162,6 +165,7 @@ impl DaemonListener {
             shutdown: Arc::clone(&shutdown),
             pending_handshake_permits: Arc::clone(&pending_handshake_permits),
             liveness_connection_permits: Arc::clone(&liveness_connection_permits),
+            active_session_permits: Arc::clone(&active_session_permits),
             config,
         }));
         if let Err(error) = replace_locator_locked(&profile, &locator) {
@@ -181,6 +185,8 @@ impl DaemonListener {
             pending_handshake_permits,
             liveness_connection_limit: config.max_liveness_connections,
             liveness_connection_permits,
+            active_session_limit: config.max_active_connections,
+            active_session_permits,
         })
     }
 
@@ -201,6 +207,12 @@ impl DaemonListener {
             .saturating_sub(self.liveness_connection_permits.available_permits())
     }
 
+    #[must_use]
+    pub fn active_sessions(&self) -> usize {
+        self.active_session_limit
+            .saturating_sub(self.active_session_permits.available_permits())
+    }
+
     pub async fn shutdown(mut self) -> Result<(), DaemonListenerError> {
         let started = Instant::now();
         let deadline = started + self.shutdown_timeout;
@@ -209,12 +221,13 @@ impl DaemonListener {
         self.shutdown.notify_one();
         if let Some(mut task) = self.accept_task.take() {
             match timeout_at(graceful_deadline, &mut task).await {
-                Ok(Ok(())) => {}
-                Ok(Err(_)) => result = Err(DaemonListenerError::Task),
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(()))) | Ok(Err(_)) => result = Err(DaemonListenerError::Task),
                 Err(_) => {
                     task.abort();
                     match timeout_at(deadline, &mut task).await {
-                        Ok(Ok(())) => {}
+                        Ok(Ok(Ok(()))) => {}
+                        Ok(Ok(Err(()))) => result = Err(DaemonListenerError::Task),
                         Ok(Err(error)) if error.is_cancelled() => {}
                         Ok(Err(_)) => result = Err(DaemonListenerError::Task),
                         Err(_) => result = Err(DaemonListenerError::ShutdownTimeout),
@@ -372,9 +385,10 @@ struct AcceptLoop<F> {
     config: ListenerConfig,
     pending_handshake_permits: Arc<Semaphore>,
     liveness_connection_permits: Arc<Semaphore>,
+    active_session_permits: Arc<Semaphore>,
 }
 
-async fn run_accept_loop<F>(host: AcceptLoop<F>)
+async fn run_accept_loop<F>(host: AcceptLoop<F>) -> Result<(), ()>
 where
     F: NativeBackendFactory + Send + Sync + 'static,
 {
@@ -386,15 +400,19 @@ where
         config,
         pending_handshake_permits,
         liveness_connection_permits,
+        active_session_permits,
     } = host;
-    let active_permits = Arc::new(Semaphore::new(config.max_active_connections));
     let mut connections = JoinSet::new();
+    let mut connection_failed = false;
     loop {
         tokio::select! {
             biased;
             () = shutdown.notified() => break,
             completed = connections.join_next(), if !connections.is_empty() => {
-                let _ = completed;
+                if matches!(completed, Some(Err(_))) {
+                    connection_failed = true;
+                    break;
+                }
             }
             accepted = listener.accept() => {
                 let Ok((stream, peer)) = accepted else { break };
@@ -406,7 +424,7 @@ where
                 };
                 let factory = Arc::clone(&factory);
                 let credentials = credentials.clone();
-                let active_permits = Arc::clone(&active_permits);
+                let active_permits = Arc::clone(&active_session_permits);
                 let liveness_connection_permits =
                     Arc::clone(&liveness_connection_permits);
                 connections.spawn(async move {
@@ -430,7 +448,8 @@ where
     let drain_deadline = Instant::now() + config.drain_timeout;
     while !connections.is_empty() {
         match timeout_at(drain_deadline, connections.join_next()).await {
-            Ok(Some(_)) => {}
+            Ok(Some(Ok(()))) => {}
+            Ok(Some(Err(_))) => connection_failed = true,
             Ok(None) => break,
             Err(_) => {
                 connections.abort_all();
@@ -438,6 +457,7 @@ where
             }
         }
     }
+    if connection_failed { Err(()) } else { Ok(()) }
 }
 
 struct ConnectionTask<F> {

@@ -6,8 +6,11 @@ use futures_util::{SinkExt, StreamExt};
 #[path = "support/daemon.rs"]
 mod daemon_support;
 
-use daemon_support::{CountingFactory, TempProfile, authenticated_initialize, locator_credentials};
+use daemon_support::{
+    CountingBackend, CountingFactory, TempProfile, authenticated_initialize, locator_credentials,
+};
 use openengine_cluster_protocol::{ClusterStatus, InitializeResult, ServerCapabilities};
+use openengine_cluster_server::ConnectionContext;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
@@ -24,6 +27,7 @@ use zeroshot_engine::daemon_discovery::{
 use zeroshot_engine::daemon_listener::{
     DaemonListener, DaemonListenerError, ListenerConfig, LivenessOutcome, probe_liveness,
 };
+use zeroshot_engine::NativeBackendFactory;
 
 fn test_config() -> ListenerConfig {
     ListenerConfig {
@@ -35,6 +39,17 @@ fn test_config() -> ListenerConfig {
         max_active_connections: 8,
         max_pending_handshakes: 8,
         max_liveness_connections: 2,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PanicFactory;
+
+impl NativeBackendFactory for PanicFactory {
+    type Backend = CountingBackend;
+
+    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+        panic!("controlled connection factory panic")
     }
 }
 
@@ -142,6 +157,103 @@ async fn raw_handshake_burst_owns_only_the_configured_pre_auth_bound() {
         .await
         .expect("bounded listener shutdown")
         .expect("listener shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordinary_session_overflow_closes_before_backend_construction_or_dispatch() {
+    let profile = TempProfile::new("active-session-bound");
+    let config = ListenerConfig {
+        max_active_connections: 1,
+        ..test_config()
+    };
+    let factory = CountingFactory::default();
+    let listener =
+        DaemonListener::start_with_config(profile.profile.clone(), factory.clone(), config)
+            .await
+            .expect("start listener");
+    let locator = listener.locator().clone();
+    let credentials = locator_credentials(&locator);
+    let address: SocketAddr = locator
+        .endpoint
+        .strip_prefix("ws://")
+        .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+        .expect("session endpoint")
+        .parse()
+        .expect("session address");
+
+    let mut first_request = locator
+        .endpoint
+        .as_str()
+        .into_client_request()
+        .expect("first session request");
+    let first_proof = credentials
+        .apply_to_request(&mut first_request)
+        .expect("first session proof");
+    let first_stream = TcpStream::connect(address)
+        .await
+        .expect("first session connection");
+    let (mut first, first_response) = tokio_tungstenite::client_async(first_request, first_stream)
+        .await
+        .expect("first session upgrade");
+    assert!(first_proof.verify(&first_response));
+    timeout(Duration::from_millis(200), async {
+        while listener.active_sessions() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first session owns active slot");
+    first
+        .send(Message::Text(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "openengine.cluster/v1"}
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("dispatch initialize");
+    let first_result = timeout(Duration::from_millis(200), first.next())
+        .await
+        .expect("bounded initialize")
+        .expect("initialize response")
+        .expect("valid initialize response");
+    assert!(matches!(first_result, Message::Text(_)));
+    assert_eq!(factory.created.load(Ordering::SeqCst), 1);
+    assert_eq!(factory.initialized.load(Ordering::SeqCst), 1);
+
+    let mut overflow_request = locator
+        .endpoint
+        .as_str()
+        .into_client_request()
+        .expect("overflow session request");
+    let overflow_proof = credentials
+        .apply_to_request(&mut overflow_request)
+        .expect("overflow session proof");
+    let overflow_stream = TcpStream::connect(address)
+        .await
+        .expect("overflow session connection");
+    let (mut overflow, overflow_response) =
+        tokio_tungstenite::client_async(overflow_request, overflow_stream)
+            .await
+            .expect("authenticated overflow upgrade");
+    assert!(overflow_proof.verify(&overflow_response));
+    let ended = timeout(Duration::from_millis(200), overflow.next())
+        .await
+        .expect("overflow session closed");
+    if let Some(Ok(message)) = ended {
+        assert!(message.is_close());
+    }
+    assert_eq!(listener.active_sessions(), 1);
+    assert_eq!(factory.created.load(Ordering::SeqCst), 1);
+    assert_eq!(factory.initialized.load(Ordering::SeqCst), 1);
+
+    drop(overflow);
+    drop(first);
+    listener.shutdown().await.expect("shutdown listener");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -311,6 +423,20 @@ async fn authenticated_liveness_burst_owns_only_its_reserved_capacity() {
     })
     .await
     .expect("reserved liveness capacity filled");
+    let contender = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        config,
+    )
+    .await;
+    assert!(matches!(
+        contender,
+        Err(DaemonListenerError::LivenessIndeterminate)
+    ));
+    assert_eq!(
+        read_locator(&profile.profile).expect("preserved liveness owner"),
+        Some(locator.clone())
+    );
 
     let mut overflow_request = locator
         .endpoint
@@ -611,6 +737,13 @@ async fn shutdown_stops_accepting_drains_bounded_releases_port_and_removes_only_
         .as_str()
         .parse()
         .expect("socket address");
+    assert_eq!(
+        TcpListener::bind(address)
+            .await
+            .expect_err("live listener keeps its port")
+            .kind(),
+        std::io::ErrorKind::AddrInUse
+    );
     let stream = TcpStream::connect(address).await.expect("connect");
     let (mut websocket, response) = tokio_tungstenite::client_async(request, stream)
         .await
@@ -672,6 +805,73 @@ async fn shutdown_absolute_deadline_bounds_matching_cleanup_lock_and_reports_tim
     })
     .await
     .expect("timed-out cleanup attempt completed after lock release");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connection_task_panic_releases_listener_and_shutdown_cleans_locator_with_task_error() {
+    let profile = TempProfile::new("connection-task-panic");
+    let listener =
+        DaemonListener::start_with_config(profile.profile.clone(), PanicFactory, test_config())
+            .await
+            .expect("start panic listener");
+    let locator = listener.locator().clone();
+    let credentials = locator_credentials(&locator);
+    let address: SocketAddr = locator
+        .endpoint
+        .strip_prefix("ws://")
+        .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+        .expect("panic endpoint")
+        .parse()
+        .expect("panic address");
+    let mut request = locator
+        .endpoint
+        .as_str()
+        .into_client_request()
+        .expect("panic request");
+    let proof = credentials
+        .apply_to_request(&mut request)
+        .expect("panic authorization");
+    let stream = TcpStream::connect(address).await.expect("panic connection");
+    let (mut websocket, response) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .expect("authorized panic upgrade");
+    assert!(proof.verify(&response));
+    let ended = timeout(Duration::from_millis(300), websocket.next())
+        .await
+        .expect("panicked connection terminated");
+    if let Some(Ok(message)) = ended {
+        assert!(message.is_close());
+    }
+
+    timeout(Duration::from_millis(300), async {
+        loop {
+            match TcpListener::bind(address).await {
+                Ok(rebound) => {
+                    drop(rebound);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("unexpected rebind failure: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("panicked accept loop released listener");
+
+    assert!(matches!(
+        listener.shutdown().await,
+        Err(DaemonListenerError::Task)
+    ));
+    assert_eq!(
+        read_locator(&profile.profile).expect("panic cleanup state"),
+        None
+    );
+    let rebound = TcpListener::bind(address)
+        .await
+        .expect("panic listener remains released");
+    drop(rebound);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
