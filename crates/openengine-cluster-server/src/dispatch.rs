@@ -11,6 +11,7 @@ use openengine_cluster_protocol::{
 use serde_json::{json, Value};
 
 use crate::connection::DecodedRequest;
+use crate::method_registry::{method_descriptor, MethodDescriptor, MethodKind};
 use crate::{
     serialize_backend_error, serialize_error, serialize_success, BackendError, ClusterBackend,
     ConnectionContext, Dispatcher,
@@ -51,26 +52,33 @@ where
     }
 
     pub async fn dispatch_decoded(&self, id: RequestId, method: &str, params: Value) -> String {
-        let Some(method) = ImplementedMethod::from_name(method) else {
+        let Some(descriptor) = method_descriptor(method) else {
             return serialize_error(Some(id), METHOD_NOT_FOUND, "Method not found", None);
         };
+        match descriptor.kind {
+            MethodKind::Unary => {}
+            MethodKind::Subscription(_) => {
+                return serialize_error(Some(id), METHOD_NOT_FOUND, "Method not found", None);
+            }
+        }
         if !params.is_object() {
             return serialize_error(Some(id), INVALID_PARAMS, "Invalid params", None);
         }
-        self.route(method, id, params).await
+        self.route(descriptor, id, params).await
     }
 
-    async fn route(&self, method: ImplementedMethod, id: RequestId, params: Value) -> String {
-        match method {
-            ImplementedMethod::Initialize => self.dispatch_initialize(id, params).await,
-            ImplementedMethod::Plan => self.dispatch_plan(id, params).await,
-            ImplementedMethod::Apply => self.dispatch_apply(id, params).await,
-            ImplementedMethod::Get => self.dispatch_get(id, params).await,
-            ImplementedMethod::Update => self.dispatch_update(id, params).await,
-            ImplementedMethod::Stop => self.dispatch_stop(id, params).await,
-            ImplementedMethod::Retry => self.dispatch_retry(id, params).await,
-            ImplementedMethod::Resubmit => self.dispatch_resubmit(id, params).await,
-            ImplementedMethod::Delete => self.dispatch_delete(id, params).await,
+    async fn route(&self, descriptor: &MethodDescriptor, id: RequestId, params: Value) -> String {
+        match descriptor.name {
+            "initialize" => self.dispatch_initialize(id, params).await,
+            "plan" => self.dispatch_plan(id, params).await,
+            "apply" => self.dispatch_apply(id, params).await,
+            "get" => self.dispatch_get(id, params).await,
+            "update" => self.dispatch_update(id, params).await,
+            "stop" => self.dispatch_stop(id, params).await,
+            "retry" => self.dispatch_retry(id, params).await,
+            "resubmit" => self.dispatch_resubmit(id, params).await,
+            "delete" => self.dispatch_delete(id, params).await,
+            name => unreachable!("unrouted unary method in METHOD_REGISTRY: {name}"),
         }
     }
 
@@ -261,39 +269,5 @@ where
             Ok(result) => serialize_success(id, result),
             Err(error) => serialize_backend_error(id, error),
         }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ImplementedMethod {
-    Initialize,
-    Plan,
-    Apply,
-    Get,
-    Update,
-    Stop,
-    Retry,
-    Resubmit,
-    Delete,
-}
-
-impl ImplementedMethod {
-    const NAMES: &'static [(&'static str, Self)] = &[
-        ("initialize", Self::Initialize),
-        ("plan", Self::Plan),
-        ("apply", Self::Apply),
-        ("get", Self::Get),
-        ("update", Self::Update),
-        ("stop", Self::Stop),
-        ("retry", Self::Retry),
-        ("resubmit", Self::Resubmit),
-        ("delete", Self::Delete),
-    ];
-
-    fn from_name(name: &str) -> Option<Self> {
-        Self::NAMES
-            .iter()
-            .find(|(candidate, _)| *candidate == name)
-            .map(|(_, method)| *method)
     }
 }
