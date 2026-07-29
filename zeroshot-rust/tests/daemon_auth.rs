@@ -49,7 +49,7 @@ fn credentials_are_256_bit_capabilities_with_exact_request_values() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn wrong_stale_profile_nonce_and_route_are_indistinguishable_before_backend_access() {
+async fn wrong_stale_profile_nonce_route_and_query_are_neutral_before_backend_access() {
     let profile = TempProfile::new("auth-rejections");
     let factory = CountingFactory::default();
     let listener = DaemonListener::start_with_config(
@@ -76,6 +76,7 @@ async fn wrong_stale_profile_nonce_and_route_are_indistinguishable_before_backen
     wrong_nonce.daemon_nonce = "2".repeat(64);
     cases.push((DAEMON_ROUTE.to_owned(), wrong_nonce));
     cases.push(("/other".to_owned(), valid.clone()));
+    cases.push((format!("{DAEMON_ROUTE}?probe=1"), valid.clone()));
 
     let address = locator
         .endpoint
