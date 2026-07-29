@@ -21,7 +21,11 @@ const {
   killTask,
   parseResultOutput,
 } = require('../src/agent/agent-task-executor');
-const { stop } = require('../src/agent/agent-lifecycle');
+const {
+  startLivenessCheck,
+  stop,
+  stopLivenessCheck,
+} = require('../src/agent/agent-lifecycle');
 
 afterEach(function () {
   sinon.restore();
@@ -198,6 +202,57 @@ describe('NestedExecutionRegistry', function () {
     assert.match(cancellationDetails.reason, /timed out after 5ms/);
     assert.strictEqual(cancellationDetails.details.code, 'AGENT_TASK_TIMEOUT');
     registry.unregister(handle);
+  });
+
+  it('fails closed the registered child after liveness cleanup is exhausted', async function () {
+    const clock = sinon.useFakeTimers();
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    handle.assignTaskId('nested-task-stuck');
+    let rejectExecution;
+    const executionFailure = new Promise((_resolve, reject) => {
+      rejectExecution = reject;
+    }).catch((error) => error);
+    handle.setFailClosedAction(rejectExecution);
+    const events = [];
+    const agent = {
+      id: 'test-agent',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 1,
+      staleDuration: 1000,
+      taskStartedAt: -1,
+      lastOutputTime: -1,
+      currentTask: null,
+      currentTaskId: null,
+      processPid: null,
+      nestedExecutions: registry,
+      cluster: {},
+      _killTask: () => Promise.resolve({ forced: false, reason: 'cleanup still pending' }),
+      _publishLifecycle(topic, data) {
+        events.push({ topic, data });
+      },
+      _log() {},
+    };
+
+    startLivenessCheck(agent);
+    await clock.tickAsync(120000);
+    stopLivenessCheck(agent);
+    const failure = await executionFailure;
+
+    assert(failure, 'registered child must receive the permanent failure');
+    assert.strictEqual(failure.code, 'ISOLATED_TASK_TERMINATION_EXHAUSTED');
+    assert.strictEqual(failure.taskId, 'nested-task-stuck');
+    assert.deepStrictEqual(failure.nestedTaskIds, ['nested-task-stuck']);
+    assert.strictEqual(failure.permanent, true);
+    assert.strictEqual(failure.retainTaskHandle, true);
+    assert.strictEqual(handle.settled, false);
+    assert.strictEqual(registry.size, 1);
+    assert.strictEqual(agent.currentTask, null);
+    assert.strictEqual(agent.currentTaskId, null);
+    const exhausted = events.find(({ topic }) => topic === 'AGENT_TERMINATION_EXHAUSTED');
+    assert.deepStrictEqual(exhausted.data.nestedTaskIds, ['nested-task-stuck']);
   });
 
   it('killTask reaches nested ownership without overwriting parent identity', async function () {

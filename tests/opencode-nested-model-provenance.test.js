@@ -6,7 +6,10 @@ const path = require('path');
 const { PassThrough } = require('stream');
 const AgentWrapper = require('../src/agent-wrapper');
 const ClaudeTaskRunner = require('../src/claude-task-runner');
-const { spawnClaudeTaskIsolated } = require('../src/agent/agent-task-executor');
+const {
+  buildSpawnEnv,
+  spawnClaudeTaskIsolated,
+} = require('../src/agent/agent-task-executor');
 const { appendTaskRunModelArgs } = require('../src/task-run-model-args');
 const { reformatOutput } = require('../src/agent/output-reformatter');
 
@@ -85,6 +88,36 @@ describe('Nested task model argument encoding', function () {
       'provider-level'
     );
     assertConfiguredModelArgs(args);
+  });
+
+  it('installs a tool-disabled OpenCode profile for formatter launches', function () {
+    const previousConfig = process.env.OPENCODE_CONFIG_CONTENT;
+    process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ share: 'disabled' });
+    try {
+      const env = buildSpawnEnv(
+        { config: {} },
+        'opencode',
+        {},
+        {
+          disableTools: true,
+          applyDarwinKeychainBoundary() {},
+        }
+      );
+      const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
+      const formatter = config.agent[config.default_agent];
+      assert.strictEqual(config.share, 'disabled');
+      assert.strictEqual(config.permission, 'deny');
+      assert.deepStrictEqual(config.tools, { '*': false });
+      assert.strictEqual(formatter.mode, 'primary');
+      assert.deepStrictEqual(formatter.permission, { '*': 'deny' });
+      assert.deepStrictEqual(formatter.tools, { '*': false });
+    } finally {
+      if (previousConfig === undefined) {
+        delete process.env.OPENCODE_CONFIG_CONTENT;
+      } else {
+        process.env.OPENCODE_CONFIG_CONTENT = previousConfig;
+      }
+    }
   });
 
   it('preserves provider-level provenance in actual local agent arguments', async function () {
@@ -173,6 +206,7 @@ describe('Nested task model argument encoding', function () {
     assert.deepStrictEqual(capturedOptions.options, {
       skipStructuredResultCheck: true,
       nested: true,
+      disableTools: true,
     });
   });
 });
@@ -235,9 +269,11 @@ describe('Isolated opencode structured-output recovery', function () {
     };
     const spawnedCommands = [];
     let spawnCount = 0;
+    let recoveryEnv;
     const manager = {
-      spawnInContainer(_clusterId, command) {
+      spawnInContainer(_clusterId, command, options) {
         spawnedCommands.push(command);
+        if (options?.env?.OPENCODE_CONFIG_CONTENT) recoveryEnv = options.env;
         spawnCount++;
         if (spawnCount === 1) {
           return createClosingProcess(0, '✓ Task spawned: task-amber-fox-a1\n');
@@ -304,6 +340,7 @@ describe('Isolated opencode structured-output recovery', function () {
         spawnClaudeTaskIsolated(agent, prompt, {
           skipStructuredResultCheck: true,
           nested: true,
+          disableTools: true,
         }),
     });
 
@@ -319,6 +356,11 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.ok(recoveryCommand.includes('zeroshot'));
     assert.ok(recoveryCommand.includes('task'));
     assert.ok(recoveryCommand.includes('run'));
+    const formatterConfig = JSON.parse(recoveryEnv.OPENCODE_CONFIG_CONTENT);
+    const formatter = formatterConfig.agent[formatterConfig.default_agent];
+    assert.strictEqual(formatterConfig.permission, 'deny');
+    assert.deepStrictEqual(formatter.permission, { '*': 'deny' });
+    assert.deepStrictEqual(formatter.tools, { '*': false });
   });
 
   it('kills and settles a durable nested task when post-ID log setup fails', async function () {

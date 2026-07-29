@@ -24,6 +24,8 @@ class TaskExecutionHandle {
     this._cancelReason = null;
     this._cancelDetails = {};
     this._cancelAction = null;
+    this._failClosedAction = null;
+    this._failClosedError = null;
     this._invokedCancelActions = new Set();
     this._cancelActionPromises = [];
     this._executionFinished = false;
@@ -94,6 +96,26 @@ class TaskExecutionHandle {
       this._invokeCancelAction();
     }
     return previousAction;
+  }
+
+  setFailClosedAction(action) {
+    this._failClosedAction = action;
+    if (this._failClosedError) {
+      action(this._failClosedError);
+    }
+  }
+
+  failClosed(error) {
+    if (this.settled || this._failClosedError) return false;
+    this._retainOwnership = true;
+    this._failClosedError = error;
+    if (!error.taskId && this._taskId) {
+      error.taskId = this._taskId;
+    }
+    if (this._failClosedAction) {
+      this._failClosedAction(error);
+    }
+    return true;
   }
 
   cancel(reason = 'Task cancelled', details = {}) {
@@ -230,6 +252,10 @@ class NestedExecutionRegistry {
     return this._handles.size > 0;
   }
 
+  get activeTaskIds() {
+    return [...this._handles].map((handle) => handle.taskId).filter(Boolean);
+  }
+
   register(handle) {
     if (this._cancellation) {
       const error = new Error(this._cancellation.reason);
@@ -255,6 +281,14 @@ class NestedExecutionRegistry {
       throw new Error('Cannot unregister a nested execution before settlement');
     }
     this._handles.delete(handle);
+  }
+
+  failClosed(error) {
+    let dispatched = false;
+    for (const handle of this._handles) {
+      dispatched = handle.failClosed(error) || dispatched;
+    }
+    return dispatched;
   }
 
   async cancelAll(reason = 'Task cancelled', details = {}) {

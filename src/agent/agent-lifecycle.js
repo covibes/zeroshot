@@ -1197,11 +1197,16 @@ function startLivenessCheck(agent) {
 const MAX_LIVENESS_TERMINATION_ATTEMPTS = 3;
 
 function beginLivenessTermination(agent, settings, reason, code, eventData) {
+  const nestedTaskIds = agent.nestedExecutions?.activeTaskIds || [];
   agent.livenessTerminationContext = {
     taskId: agent.currentTaskId,
+    nestedTaskIds,
     reason,
     code,
-    eventData,
+    eventData: {
+      ...eventData,
+      ...(nestedTaskIds.length > 0 ? { nestedTaskIds } : {}),
+    },
     eventPublished: false,
   };
   agent.livenessTerminationAttempts = 0;
@@ -1252,6 +1257,7 @@ function attemptLivenessTermination(agent, settings) {
       agent.livenessTerminationStarted = false;
       agent._publishLifecycle('AGENT_TERMINATION_RETRY', {
         taskId: context.taskId,
+        nestedTaskIds: context.nestedTaskIds,
         reason: context.reason,
         code: context.code,
         error: error.message,
@@ -1275,13 +1281,17 @@ function exhaustLivenessTermination(agent, context, terminationError) {
 
   const attempts = agent.livenessTerminationAttempts;
   publishLivenessTerminationEvent(agent, context);
+  const taskIdentity =
+    context.taskId || context.nestedTaskIds.join(', ') || 'unknown provider task';
   const error = new Error(
-    `Failed to terminate isolated task ${context.taskId} after ${attempts} attempts; ` +
+    `Failed to terminate provider task ${taskIdentity} after ${attempts} attempts; ` +
       `the provider task may still be running. Manual recovery is required before resume. ` +
       `Last error: ${terminationError.message}`
   );
   error.code = 'ISOLATED_TASK_TERMINATION_EXHAUSTED';
-  error.taskId = context.taskId;
+  error.taskId = context.taskId || context.nestedTaskIds[0] || null;
+  error.parentTaskId = context.taskId;
+  error.nestedTaskIds = context.nestedTaskIds;
   error.permanent = true;
   error.restartExhausted = true;
   error.terminationExhausted = true;
@@ -1292,6 +1302,7 @@ function exhaustLivenessTermination(agent, context, terminationError) {
   agent.cluster.failureInfo = {
     agentId: agent.id,
     taskId: context.taskId,
+    nestedTaskIds: context.nestedTaskIds,
     iteration: agent.iteration,
     type: 'task_termination',
     reason: 'termination_unverified',
@@ -1301,6 +1312,7 @@ function exhaustLivenessTermination(agent, context, terminationError) {
   };
   agent._publishLifecycle('AGENT_TERMINATION_EXHAUSTED', {
     taskId: context.taskId,
+    nestedTaskIds: context.nestedTaskIds,
     reason: context.reason,
     code: error.code,
     terminationCode: context.code,
@@ -1310,10 +1322,12 @@ function exhaustLivenessTermination(agent, context, terminationError) {
     requiresManualRecovery: true,
   });
 
+  let dispatched = agent.nestedExecutions?.failClosed(error) === true;
   if (typeof agent.currentTask?.failClosed === 'function') {
     agent.currentTask.failClosed(error);
-    return;
+    dispatched = true;
   }
+  if (dispatched) return;
 
   agent._log(`[${agent.id}] ${error.message}`);
 }

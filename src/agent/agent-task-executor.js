@@ -53,6 +53,45 @@ const {
 } = require('./provider-session');
 const { extractClaudeVertexModelError } = require('./output-extraction');
 const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
+const OPENCODE_CONFIG_CONTENT_ENV = 'OPENCODE_CONFIG_CONTENT';
+const REFORMATTER_AGENT_NAME = 'zeroshot-output-reformatter';
+
+function applyOpenCodeToolBoundary(env, providerName, options = {}) {
+  if (providerName !== 'opencode' || options.disableTools !== true) return env;
+
+  let config = {};
+  const existingContent = env[OPENCODE_CONFIG_CONTENT_ENV];
+  if (existingContent) {
+    try {
+      config = JSON.parse(existingContent);
+    } catch (error) {
+      throw new Error(
+        `Cannot install tool-disabled OpenCode formatter profile: invalid ${OPENCODE_CONFIG_CONTENT_ENV}: ${error.message}`
+      );
+    }
+  }
+
+  const existingAgents =
+    config.agent && typeof config.agent === 'object' && !Array.isArray(config.agent)
+      ? config.agent
+      : {};
+  env[OPENCODE_CONFIG_CONTENT_ENV] = JSON.stringify({
+    ...config,
+    default_agent: REFORMATTER_AGENT_NAME,
+    permission: 'deny',
+    tools: { '*': false },
+    agent: {
+      ...existingAgents,
+      [REFORMATTER_AGENT_NAME]: {
+        description: 'Convert supplied text to schema-valid JSON without external actions',
+        mode: 'primary',
+        permission: { '*': 'deny' },
+        tools: { '*': false },
+      },
+    },
+  });
+  return env;
+}
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -572,7 +611,10 @@ async function spawnClaudeTask(agent, context, options = {}) {
   let pendingLaunch;
   try {
     try {
-      const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
+      const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, {
+        claudeSettingsPath,
+        disableTools: options.disableTools === true,
+      });
       taskId = await spawnTaskProcess({
         agent,
         ctPath,
@@ -650,6 +692,9 @@ async function spawnClaudeTask(agent, context, options = {}) {
     }
     return result;
   } catch (error) {
+    if (error.terminationExhausted === true && error.retainTaskHandle === true) {
+      throw error;
+    }
     if (
       nested &&
       handle.isCancelled &&
@@ -836,7 +881,7 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
     worktreePath: agent.worktree?.path || null,
   });
 
-  return spawnEnv;
+  return applyOpenCodeToolBoundary(spawnEnv, providerName, options);
 }
 
 function parseTaskIdFromOutput(stdout) {
@@ -1685,6 +1730,12 @@ function createLogFollower({
 
     const killHandler = buildKillHandler({ agent, taskId, state, providerName, resolve });
     if (nested && executionHandle) {
+      executionHandle.setFailClosedAction((error) => {
+        if (state.resolved) return;
+        state.resolved = true;
+        finalizeLogFollow(agent, state);
+        reject(error);
+      });
       let cancelPendingLaunch;
       const cancelExecution = async (reason, details) => {
         const termination = cancelPendingLaunch
@@ -1788,6 +1839,9 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
     }
     return result;
   } catch (error) {
+    if (error.terminationExhausted === true && error.retainTaskHandle === true) {
+      throw error;
+    }
     if (handle.isCancelled && handle.cancelDetails.code !== 'NESTED_SETUP_FAILED') {
       await handle.waitForCancellation();
       throw createNestedCancellationError(handle);
@@ -1843,10 +1897,17 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const ownershipToken = createTaskSpawnOwnershipToken();
   // Auth env vars are injected by IsolationManager; the launch token is the
   // only authoritative bridge back to the detached task row in the container.
-  const isolatedEnv = {
-    ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
-    [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
-  };
+  const isolatedEnv = applyOpenCodeToolBoundary(
+    {
+      ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
+      ...(process.env[OPENCODE_CONFIG_CONTENT_ENV]
+        ? { [OPENCODE_CONFIG_CONTENT_ENV]: process.env[OPENCODE_CONFIG_CONTENT_ENV] }
+        : {}),
+      [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
+    },
+    providerName,
+    options
+  );
 
   let isolatedPendingLaunch = null;
   const taskId = await new Promise((resolve, reject) => {
@@ -2583,6 +2644,11 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
     if (!options.nested) {
       agent.currentTask = state.lifecycleHandle;
     }
+    if (options.nested && options.executionHandle) {
+      options.executionHandle.setFailClosedAction((error) =>
+        rejectIsolatedFollower({ agent, state, cleanup, reject, error })
+      );
+    }
 
     manager
       .execInContainer(clusterId, ['sh', '-c', `zeroshot get-log-path ${taskId}`])
@@ -2709,7 +2775,11 @@ async function parseResultOutput(agent, output) {
         providerName,
         isCancelled: () => agent.running === false || agent.state === 'stopped',
         runReformat: (prompt) =>
-          agent._spawnClaudeTask(prompt, { skipStructuredResultCheck: true, nested: true }),
+          agent._spawnClaudeTask(prompt, {
+            skipStructuredResultCheck: true,
+            nested: true,
+            disableTools: true,
+          }),
         onAttempt: (attempt, lastError) => {
           if (lastError) {
             console.warn(`[Agent ${agent.id}] Reformat attempt ${attempt}: ${lastError}`);
