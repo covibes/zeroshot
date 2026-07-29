@@ -33,6 +33,57 @@ function mutateWorkflowJob(source, jobName, mutateJob) {
   return JSON.stringify(document);
 }
 
+function withRustStageFixture(
+  { requirement, lockedDependencies, includeRegistryNameCollision = false },
+  assertion
+) {
+  const directory = temporaryDirectory();
+  const packageDirectory = path.join(directory, 'zeroshot-rust');
+  const workspacePath = path.join(directory, 'Cargo.toml');
+  const manifestPath = path.join(packageDirectory, 'Cargo.toml');
+  const lockPath = path.join(directory, 'Cargo.lock');
+  fs.mkdirSync(packageDirectory);
+  fs.writeFileSync(
+    workspacePath,
+    `[workspace]\nmembers = ["zeroshot-rust"]\n\n[workspace.dependencies]\nwindows-sys = "${requirement}"\n`
+  );
+  fs.writeFileSync(
+    manifestPath,
+    '[package]\nname = "zeroshot-rust"\nversion = "0.1.0"\nedition = "2024"\n\n[target.\'cfg(windows)\'.dependencies]\nwindows-sys = { workspace = true }\n'
+  );
+  const lockPackages = lockedDependencies.flatMap(({ version, source }) => [
+    '[[package]]',
+    'name = "windows-sys"',
+    `version = "${version}"`,
+    ...(source ? [`source = "${source}"`] : []),
+    '',
+  ]);
+  if (includeRegistryNameCollision) {
+    lockPackages.push(
+      '[[package]]',
+      'name = "zeroshot-rust"',
+      'version = "99.0.0"',
+      'source = "registry+https://github.com/rust-lang/crates.io-index"',
+      ''
+    );
+  }
+  lockPackages.push(
+    '[[package]]',
+    'name = "zeroshot-rust"',
+    'version = "0.1.0"',
+    'dependencies = [',
+    ' "windows-sys",',
+    ']',
+    ''
+  );
+  fs.writeFileSync(lockPath, ['version = 4', '', ...lockPackages].join('\n'));
+  try {
+    return assertion({ lockPath, manifestPath, workspacePath });
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 describe('Rust product distribution', function () {
   it('declares the complete native target and host matrix', function () {
     assert.deepStrictEqual(
@@ -207,6 +258,77 @@ describe('Rust release integration', function () {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('resolves supported Cargo requirements without collapsing lock identities', function () {
+    const registry = 'registry+https://github.com/rust-lang/crates.io-index';
+    withRustStageFixture(
+      {
+        requirement: '0.61.2',
+        lockedDependencies: [
+          { version: '0.52.0', source: registry },
+          { version: '0.61.3', source: registry },
+        ],
+        includeRegistryNameCollision: true,
+      },
+      ({ lockPath, manifestPath, workspacePath }) => {
+        distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath);
+        const lock = fs.readFileSync(lockPath, 'utf8');
+        assert.match(lock, /name = "zeroshot-rust"\nversion = "99\.0\.0"\nsource =/);
+        assert.match(
+          lock,
+          /name = "zeroshot-rust"\nversion = "6\.10\.3"[\s\S]*"windows-sys 0\.61\.3"/
+        );
+      }
+    );
+    withRustStageFixture(
+      {
+        requirement: '=0.61.2',
+        lockedDependencies: [
+          { version: '0.61.2', source: registry },
+          { version: '0.61.3', source: registry },
+        ],
+      },
+      ({ lockPath, manifestPath, workspacePath }) => {
+        distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath);
+        assert.match(fs.readFileSync(lockPath, 'utf8'), /"windows-sys 0\.61\.2"/);
+      }
+    );
+    withRustStageFixture(
+      {
+        requirement: '0.61.2',
+        lockedDependencies: [
+          { version: '0.61.2', source: registry },
+          { version: '0.61.3', source: registry },
+        ],
+      },
+      ({ lockPath, manifestPath, workspacePath }) => {
+        assert.throws(
+          () =>
+            distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
+          /needs exactly one windows-sys package satisfying 0\.61\.2/
+        );
+      }
+    );
+    withRustStageFixture(
+      {
+        requirement: '=0.61.2',
+        lockedDependencies: [
+          { version: '0.61.2', source: registry },
+          {
+            version: '0.61.2',
+            source: 'git+https://example.invalid/windows-rs?rev=fixture',
+          },
+        ],
+      },
+      ({ lockPath, manifestPath, workspacePath }) => {
+        assert.throws(
+          () =>
+            distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
+          /windows-sys 0\.61\.2 has ambiguous sources/
+        );
+      }
+    );
   });
 
   it('causally guards build, matrix, upload, publication, recovery, and shim integrity', function () {

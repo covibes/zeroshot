@@ -214,70 +214,121 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function lockedPackageMatch(cargoLock, packageName) {
-  return cargoLock.match(
-    new RegExp(
-      `\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(packageName)}"\\r?\\nversion = "([^"]+)"[\\s\\S]*?(?=\\r?\\n\\[\\[package\\]\\]|$)`
-    )
-  );
-}
-
-function lockedPackageVersions(cargoLock, packageName) {
-  const versions = [];
-  const pattern = new RegExp(
-    `\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(packageName)}"\\r?\\nversion = "([^"]+)"`,
-    'g'
-  );
-  for (let match = pattern.exec(cargoLock); match; match = pattern.exec(cargoLock)) {
-    versions.push(match[1]);
+function cargoLockPackages(cargoLock, packageName) {
+  const starts = [];
+  const marker = /^\[\[package\]\]\r?$/gm;
+  for (let match = marker.exec(cargoLock); match; match = marker.exec(cargoLock)) {
+    starts.push(match.index);
   }
-  return versions;
+  return starts.flatMap((start, index) => {
+    const text = cargoLock.slice(start, starts[index + 1] ?? cargoLock.length);
+    const name = text.match(/^name = "([^"]+)"\r?$/m)?.[1];
+    const version = text.match(/^version = "([^"]+)"\r?$/m)?.[1];
+    if (name !== packageName || !version) return [];
+    return [
+      {
+        start,
+        text,
+        version,
+        source: text.match(/^source = "([^"]+)"\r?$/m)?.[1],
+      },
+    ];
+  });
 }
 
-function workspaceDependencyVersion(workspaceCargoToml, dependencyName) {
+function workspaceLockPackage(cargoLock) {
+  const candidates = cargoLockPackages(cargoLock, 'zeroshot-rust').filter(
+    (candidate) => candidate.source === undefined
+  );
+  if (candidates.length !== 1) {
+    throw new Error(
+      'RUST_VERSION_STAGE_FAILED: Cargo.lock needs exactly one source-less zeroshot-rust package'
+    );
+  }
+  return candidates[0];
+}
+
+function workspaceDependencyRequirement(workspaceCargoToml, dependencyName) {
   const workspaceDependencies = workspaceCargoToml.match(
     /\[workspace\.dependencies\]([\s\S]*?)(?:\r?\n\[|$)/
   );
-  const version =
+  const requirement =
     workspaceDependencies &&
     workspaceDependencies[1].match(
       new RegExp(`^${escapeRegExp(dependencyName)}\\s*=\\s*"([^"]+)"\\s*$`, 'm')
     );
-  if (!version) {
+  if (!requirement || !/^(\^|=)?\d+\.\d+\.\d+$/.test(requirement[1])) {
     throw new Error(
-      `RUST_VERSION_STAGE_FAILED: workspace dependency ${dependencyName} needs an exact version`
+      `RUST_VERSION_STAGE_FAILED: workspace dependency ${dependencyName} has an unsupported version requirement`
     );
   }
-  return version[1];
+  return requirement[1];
 }
 
-function stagedLockDependencyVersions(workspaceCargoToml) {
-  return STAGED_LOCK_DEPENDENCIES.map((name) => ({
-    name,
-    version: workspaceDependencyVersion(workspaceCargoToml, name),
-  }));
+function parseCargoVersion(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  return match ? match.slice(1).map(Number) : undefined;
+}
+
+function compareCargoVersions(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+}
+
+function cargoRequirementMatches(requirement, version) {
+  const parsedVersion = parseCargoVersion(version);
+  const match = /^(\^|=)?(\d+)\.(\d+)\.(\d+)$/.exec(requirement);
+  if (!parsedVersion || !match) return false;
+  const lower = match.slice(2).map(Number);
+  if (match[1] === '=') return compareCargoVersions(parsedVersion, lower) === 0;
+  const upper =
+    lower[0] > 0
+      ? [lower[0] + 1, 0, 0]
+      : lower[1] > 0
+        ? [0, lower[1] + 1, 0]
+        : [0, 0, lower[2] + 1];
+  return (
+    compareCargoVersions(parsedVersion, lower) >= 0 &&
+    compareCargoVersions(parsedVersion, upper) < 0
+  );
+}
+
+function stagedLockDependencies(cargoLock, workspaceCargoToml) {
+  return STAGED_LOCK_DEPENDENCIES.map((name) => {
+    const requirement = workspaceDependencyRequirement(workspaceCargoToml, name);
+    const candidates = cargoLockPackages(cargoLock, name);
+    const satisfying = candidates.filter((candidate) =>
+      cargoRequirementMatches(requirement, candidate.version)
+    );
+    if (satisfying.length !== 1) {
+      const sourceAmbiguous =
+        satisfying.length > 1 &&
+        new Set(satisfying.map((candidate) => candidate.version)).size === 1;
+      throw new Error(
+        sourceAmbiguous
+          ? `RUST_VERSION_STAGE_FAILED: Cargo.lock ${name} ${satisfying[0].version} has ambiguous sources`
+          : `RUST_VERSION_STAGE_FAILED: Cargo.lock needs exactly one ${name} package satisfying ${requirement}`
+      );
+    }
+    const selected = satisfying[0];
+    return {
+      name,
+      requirement,
+      version: selected.version,
+      reference: candidates.length > 1 ? `${name} ${selected.version}` : name,
+    };
+  });
 }
 
 function stageCargoLock(cargoLock, version, workspaceCargoToml) {
-  const targetPackage = lockedPackageMatch(cargoLock, 'zeroshot-rust');
-  if (!targetPackage) {
-    throw new Error('RUST_VERSION_STAGE_FAILED: Cargo.lock has no zeroshot-rust package entry');
-  }
-  let stagedPackage = targetPackage[0].replace(
+  const targetPackage = workspaceLockPackage(cargoLock);
+  let stagedPackage = targetPackage.text.replace(
     /^(version = ")[^"]+(")$/m,
     `$1${version}$2`
   );
-  for (const dependency of stagedLockDependencyVersions(workspaceCargoToml)) {
-    const lockedVersions = lockedPackageVersions(cargoLock, dependency.name);
-    if (!lockedVersions.includes(dependency.version)) {
-      throw new Error(
-        `RUST_VERSION_STAGE_FAILED: Cargo.lock has no ${dependency.name} ${dependency.version} package`
-      );
-    }
-    const dependencyReference =
-      lockedVersions.length > 1
-        ? `${dependency.name} ${dependency.version}`
-        : dependency.name;
+  for (const dependency of stagedLockDependencies(cargoLock, workspaceCargoToml)) {
     const dependencyPattern = new RegExp(
       `^(\\s*")${escapeRegExp(dependency.name)}(?: [^"]+)?(",\\r?)$`,
       'm'
@@ -289,37 +340,29 @@ function stageCargoLock(cargoLock, version, workspaceCargoToml) {
     }
     stagedPackage = stagedPackage.replace(
       dependencyPattern,
-      `$1${dependencyReference}$2`
+      `$1${dependency.reference}$2`
     );
   }
   return (
-    cargoLock.slice(0, targetPackage.index) +
+    cargoLock.slice(0, targetPackage.start) +
     stagedPackage +
-    cargoLock.slice(targetPackage.index + targetPackage[0].length)
+    cargoLock.slice(targetPackage.start + targetPackage.text.length)
   );
 }
 
 function verifyStagedCargoLock(cargoLock, version, workspaceCargoToml) {
-  const targetPackage = lockedPackageMatch(cargoLock, 'zeroshot-rust');
-  if (!targetPackage || targetPackage[1] !== version) {
+  const targetPackage = workspaceLockPackage(cargoLock);
+  if (targetPackage.version !== version) {
     throw new Error(
-      `${VERSION_ERROR}: release tag version ${version} does not match Cargo.lock zeroshot-rust version ${targetPackage?.[1] || '(missing)'}`
+      `${VERSION_ERROR}: release tag version ${version} does not match Cargo.lock zeroshot-rust version ${targetPackage.version}`
     );
   }
-  for (const dependency of stagedLockDependencyVersions(workspaceCargoToml)) {
-    const lockedVersions = lockedPackageVersions(cargoLock, dependency.name);
-    const dependencyReference =
-      lockedVersions.length > 1
-        ? `${dependency.name} ${dependency.version}`
-        : dependency.name;
+  for (const dependency of stagedLockDependencies(cargoLock, workspaceCargoToml)) {
     const dependencyPattern = new RegExp(
-      `^\\s*"${escapeRegExp(dependencyReference)}",\\r?$`,
+      `^\\s*"${escapeRegExp(dependency.reference)}",\\r?$`,
       'm'
     );
-    if (
-      !lockedVersions.includes(dependency.version) ||
-      !dependencyPattern.test(targetPackage[0])
-    ) {
+    if (!dependencyPattern.test(targetPackage.text)) {
       throw new Error(
         `${VERSION_ERROR}: Cargo.lock zeroshot-rust dependency ${dependency.name} is not coupled to ${dependency.version}`
       );
