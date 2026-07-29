@@ -136,20 +136,27 @@ function cleanupClaudeSettingsOverlay(settingsPath) {
   return true;
 }
 
-function isClaudeSettingsOverlayPath(settingsPath) {
+function isCanonicalClaudeSettingsOverlayPath(settingsPath) {
   if (typeof settingsPath !== 'string' || !settingsPath) {
+    return false;
+  }
+  const resolvedSettingsPath = path.resolve(settingsPath);
+  const overlayDir = path.dirname(resolvedSettingsPath);
+  return (
+    resolvedSettingsPath === settingsPath &&
+    path.basename(resolvedSettingsPath) === SETTINGS_BASENAME &&
+    path.dirname(overlayDir) === path.resolve(os.tmpdir()) &&
+    path.basename(overlayDir).startsWith(OVERLAY_PREFIX)
+  );
+}
+
+function isClaudeSettingsOverlayPath(settingsPath) {
+  if (!isCanonicalClaudeSettingsOverlayPath(settingsPath)) {
     return false;
   }
 
   const resolvedSettingsPath = path.resolve(settingsPath);
   const overlayDir = path.dirname(resolvedSettingsPath);
-  if (
-    path.basename(resolvedSettingsPath) !== SETTINGS_BASENAME ||
-    path.dirname(overlayDir) !== path.resolve(os.tmpdir()) ||
-    !path.basename(overlayDir).startsWith(OVERLAY_PREFIX)
-  ) {
-    return false;
-  }
 
   try {
     const stat = fs.lstatSync(overlayDir);
@@ -159,6 +166,13 @@ function isClaudeSettingsOverlayPath(settingsPath) {
   } catch {
     return false;
   }
+}
+
+function isCanonicalClaudeSettingsOverlayDirectory(overlayDir) {
+  if (typeof overlayDir !== 'string' || !overlayDir) {
+    return false;
+  }
+  return isCanonicalClaudeSettingsOverlayPath(path.join(overlayDir, SETTINGS_BASENAME));
 }
 
 function isClaudeSettingsOverlayDirectory(overlayDir) {
@@ -213,6 +227,8 @@ module.exports = {
   cleanupClaudeSettingsOverlay,
   ensureAskUserQuestionHook,
   ensureDangerousGitHook,
+  isCanonicalClaudeSettingsOverlayDirectory,
+  isCanonicalClaudeSettingsOverlayPath,
   isClaudeSettingsOverlayDirectory,
   isClaudeSettingsOverlayPath,
   prepareClaudeSettingsOverlay,

@@ -14,6 +14,15 @@ function schemaMetadata(schemaPath, overrides = {}) {
   };
 }
 
+function overlayMetadata(overlayPath) {
+  return {
+    kind: 'temp-directory',
+    provider: 'claude',
+    path: overlayPath,
+    reason: 'settings-overlay',
+  };
+}
+
 function createSchemaFile() {
   const schemaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-schema-'));
   const schemaPath = path.join(schemaRoot, `${randomUUID()}.json`);
@@ -154,4 +163,49 @@ describe('Command spec cleanup safety', function () {
       assert.strictEqual(failures.length, 1);
     });
   }
+
+  it('recovers a deleted canonical overlay after receipt persistence fails', async function () {
+    const { createCommandSpecCleanup } = await import('../../task-lib/command-spec-cleanup.js');
+    const { killTaskCommand } = await import('../../task-lib/commands/kill.js');
+    const { addTask, getTask, removeTask } = await import('../../task-lib/store.js');
+    const { prepareClaudeSettingsOverlay } = require('../../src/worktree-claude-config');
+    const settingsPath = prepareClaudeSettingsOverlay();
+    const overlayPath = path.dirname(settingsPath);
+    const taskId = `missing-overlay-${randomUUID()}`;
+    const receipt = {
+      cleanup: [overlayPath],
+      cleanupMetadata: [overlayMetadata(overlayPath)],
+    };
+    addTask({ id: taskId, status: 'failed', pid: null, commandCleanup: receipt });
+
+    try {
+      const firstCleanup = createCommandSpecCleanup(receipt, () => {});
+      assert.strictEqual(await firstCleanup.run(), true);
+      assert.strictEqual(fs.existsSync(overlayPath), false);
+      assert.notStrictEqual(getTask(taskId).commandCleanup, null);
+
+      await killTaskCommand(taskId);
+      assert.strictEqual(getTask(taskId).commandCleanup, null);
+    } finally {
+      removeTask(taskId);
+      fs.rmSync(overlayPath, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a missing noncanonical overlay path', async function () {
+    const { createCommandSpecCleanup } = await import('../../task-lib/command-spec-cleanup.js');
+    const unsafePath = path.join(os.tmpdir(), `unsafe-missing-overlay-${randomUUID()}`);
+    const failures = [];
+    const cleanup = createCommandSpecCleanup(
+      {
+        cleanup: [unsafePath],
+        cleanupMetadata: [overlayMetadata(unsafePath)],
+      },
+      (cleanupPath, error) => failures.push({ cleanupPath, error })
+    );
+
+    assert.strictEqual(await cleanup.run(), false);
+    assert.strictEqual(fs.existsSync(unsafePath), false);
+    assert.strictEqual(failures.length, 1);
+  });
 });

@@ -5,7 +5,10 @@ import { basename, dirname, isAbsolute, resolve } from 'path';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const { isClaudeSettingsOverlayDirectory } = require('../src/worktree-claude-config');
+const {
+  isCanonicalClaudeSettingsOverlayDirectory,
+  isClaudeSettingsOverlayDirectory,
+} = require('../src/worktree-claude-config');
 
 const CLEANUP_METADATA_KEYS = ['kind', 'path', 'provider', 'reason'];
 const SCHEMA_DIRECTORY_PATTERN = /^zeroshot-schema-[A-Za-z0-9_-]+$/u;
@@ -59,10 +62,20 @@ function assertOwnedTempDirectory(cleanupPath, metadata) {
   if (
     metadata.provider !== 'claude' ||
     metadata.reason !== 'settings-overlay' ||
-    !isClaudeSettingsOverlayDirectory(cleanupPath)
+    !isCanonicalClaudeSettingsOverlayDirectory(cleanupPath)
   ) {
     throw new Error(`Refusing unowned temporary directory cleanup: ${cleanupPath}`);
   }
+  if (isClaudeSettingsOverlayDirectory(cleanupPath)) {
+    return false;
+  }
+  try {
+    lstatSync(cleanupPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true;
+    throw error;
+  }
+  throw new Error(`Refusing unowned temporary directory cleanup: ${cleanupPath}`);
 }
 
 function assertCanonicalSchemaPath(cleanupPath, metadata) {
@@ -127,7 +140,7 @@ function assertOwnedSchemaFileSync(cleanupPath, metadata) {
 
 async function removeCleanupPath(cleanupPath, metadata) {
   if (metadata.kind === 'temp-directory') {
-    assertOwnedTempDirectory(cleanupPath, metadata);
+    if (assertOwnedTempDirectory(cleanupPath, metadata)) return;
     await rm(cleanupPath, { recursive: true, force: true });
     return;
   }
@@ -137,7 +150,7 @@ async function removeCleanupPath(cleanupPath, metadata) {
 
 function removeCleanupPathSync(cleanupPath, metadata) {
   if (metadata.kind === 'temp-directory') {
-    assertOwnedTempDirectory(cleanupPath, metadata);
+    if (assertOwnedTempDirectory(cleanupPath, metadata)) return;
     rmSync(cleanupPath, { recursive: true, force: true });
     return;
   }

@@ -7,6 +7,7 @@ const { URL } = require('node:url');
 const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
+const { followClaudeTaskLogs } = require('../src/agent/agent-task-executor');
 const commandCleanupFixtureSource = `
   import fs from 'fs';
   import os from 'os';
@@ -453,6 +454,84 @@ describe('Task cleanup after deferred termination', function () {
       assert.strictEqual(result.cleanupExistsAfterKill, false);
     } finally {
       fs.rmSync(taskHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Host follower terminal cleanup recovery', function () {
+  this.timeout(10000);
+
+  it('does not resolve terminal status until persisted cleanup succeeds', async function () {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-host-follower-cleanup-'));
+    const taskCliPath = path.join(tempDir, 'zeroshot');
+    const logPath = path.join(tempDir, 'task.log');
+    const pendingPath = path.join(tempDir, 'cleanup-pending');
+    const attemptsPath = path.join(tempDir, 'cleanup-attempts');
+    fs.writeFileSync(logPath, '');
+    fs.writeFileSync(pendingPath, 'pending');
+    fs.writeFileSync(
+      taskCliPath,
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+const action = process.argv[2];
+if (action === 'get-log-path') {
+  console.log(${JSON.stringify(logPath)});
+} else if (action === 'status') {
+  console.log('Status: completed');
+  console.log('Cleanup: ' + (fs.existsSync(${JSON.stringify(pendingPath)}) ? 'pending' : 'complete'));
+} else if (action === 'kill') {
+  const attempts = fs.existsSync(${JSON.stringify(attemptsPath)})
+    ? Number(fs.readFileSync(${JSON.stringify(attemptsPath)}, 'utf8')) + 1
+    : 1;
+  fs.writeFileSync(${JSON.stringify(attemptsPath)}, String(attempts));
+  if (attempts === 1) {
+    console.error('cleanup temporarily unavailable');
+    process.exitCode = 1;
+  } else {
+    fs.rmSync(${JSON.stringify(pendingPath)}, { force: true });
+    console.log('cleanup recovered');
+  }
+}
+`,
+      { mode: 0o755 }
+    );
+    const agent = {
+      id: 'host-cleanup-follower',
+      config: { cwd: tempDir, outputFormat: 'text' },
+      worktree: null,
+      isolation: null,
+      currentTask: null,
+      currentTaskId: 'host-cleanup-task',
+      processPid: 123,
+      taskCliPath,
+      quiet: true,
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'codex',
+      _stopLivenessCheck() {},
+      _log() {},
+    };
+    let settled = false;
+
+    try {
+      const execution = followClaudeTaskLogs(agent, agent.currentTaskId).finally(() => {
+        settled = true;
+      });
+      const deadline = Date.now() + 3000;
+      while (!fs.existsSync(attemptsPath) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      assert.strictEqual(fs.readFileSync(attemptsPath, 'utf8'), '1');
+      assert.strictEqual(settled, false);
+      assert.notStrictEqual(agent.currentTask, null);
+
+      const result = await execution;
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(fs.readFileSync(attemptsPath, 'utf8'), '2');
+      assert.strictEqual(fs.existsSync(pendingPath), false);
+      assert.strictEqual(agent.currentTask, null);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });

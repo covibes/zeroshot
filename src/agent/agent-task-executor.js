@@ -1377,10 +1377,26 @@ function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, re
   return true;
 }
 
+function hasPendingCommandCleanup(statusOutput) {
+  return /Cleanup:\s+pending/i.test(stripAnsiCodes(statusOutput));
+}
+
+function retryHostTerminalCleanup({ agent, taskId, state, ctPath }) {
+  if (state.commandCleanupRecoveryPending) return;
+  state.commandCleanupRecoveryPending = true;
+  runCommandWithTimeout(ctPath, ['kill', taskId], { timeout: 10000 }, (error) => {
+    state.commandCleanupRecoveryPending = false;
+    if (error) {
+      agent._log(`[${agent.id}] Terminal command cleanup recovery will retry: ${error.message}`);
+    }
+  });
+}
+
 function handleStatusCompletion({
   agent,
   taskId,
   providerName,
+  ctPath,
   state,
   stdout,
   pollLogFile,
@@ -1391,6 +1407,11 @@ function handleStatusCompletion({
 
   if (!isCompleted && !isFailed && !isStale && !isKilled) {
     return false;
+  }
+
+  if (hasPendingCommandCleanup(cleanStdout)) {
+    retryHostTerminalCleanup({ agent, taskId, state, ctPath });
+    return true;
   }
 
   pollLogFile();
@@ -1487,6 +1508,7 @@ function createLogFollower({ agent, taskId, fsModule, ctPath, providerName }) {
           state.consecutiveExecFailures = 0;
           handleStatusCompletion({
             agent,
+            ctPath,
             taskId,
             providerName,
             state,
@@ -1511,7 +1533,7 @@ function createLogFollower({ agent, taskId, fsModule, ctPath, providerName }) {
  */
 function followClaudeTaskLogs(agent, taskId) {
   const fsModule = require('fs');
-  const ctPath = getClaudeTasksPath();
+  const ctPath = agent.taskCliPath || getClaudeTasksPath();
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
 
   return createLogFollower({ agent, taskId, fsModule, ctPath, providerName });
@@ -1880,6 +1902,13 @@ function rejectIsolatedFollower({ agent, state, cleanup, reject, error }) {
   reject(error);
 }
 
+function rejectIsolatedFollowerRetainingHandle({ state, cleanup, reject, error }) {
+  if (state.resolved || state.failureSettled) return;
+  state.failureSettled = true;
+  cleanup();
+  reject(error);
+}
+
 async function resolveIsolatedTaskIdBySpawnToken(manager, clusterId, ownershipToken) {
   const result = await manager.execInContainer(clusterId, [
     'zeroshot',
@@ -2096,7 +2125,7 @@ function buildIsolatedLifecycleHandle({
     terminate,
     kill: terminate,
     failClosed(error) {
-      rejectIsolatedFollower({ agent, state, cleanup, reject, error });
+      rejectIsolatedFollowerRetainingHandle({ state, cleanup, reject, error });
     },
   };
 }
@@ -2169,6 +2198,7 @@ function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLi
   });
 }
 
+
 async function checkIsolatedStatus({
   agent,
   manager,
@@ -2195,6 +2225,28 @@ async function checkIsolatedStatus({
   const isNotFound = statusOutput.includes('not_found');
 
   if (!status && !isNotFound) {
+    return;
+  }
+
+  if (status && hasPendingCommandCleanup(statusOutput)) {
+    if (!state.commandCleanupRecoveryPromise) {
+      const recovery = manager.execInContainer(clusterId, ['zeroshot', 'kill', taskId]);
+      state.commandCleanupRecoveryPromise = recovery;
+      try {
+        const result = await recovery;
+        if (result.code !== 0) {
+          agent._log(
+            `[${agent.id}] Isolated terminal command cleanup recovery will retry: ${
+              result.stderr || result.stdout || `exit ${result.code}`
+            }`
+          );
+        }
+      } finally {
+        if (state.commandCleanupRecoveryPromise === recovery) {
+          state.commandCleanupRecoveryPromise = null;
+        }
+      }
+    }
     return;
   }
 

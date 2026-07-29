@@ -3,6 +3,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
 const {
+  followClaudeTaskLogsIsolated,
   killTask,
   spawnClaudeTaskIsolated,
 } = require('../src/agent/agent-task-executor');
@@ -265,5 +266,76 @@ describe('Isolated terminal cleanup recovery', function () {
     assert.strictEqual(recovered.alreadyTerminal, true);
     assert.strictEqual(harness.agent.currentTask, null);
     assert.strictEqual(harness.agent.currentTaskId, null);
+  });
+
+  it('retains a terminal follower until persisted cleanup recovery succeeds', async function () {
+    const commands = [];
+    let cleanupPending = true;
+    let cleanupAttempts = 0;
+    const manager = {
+      spawnInContainer() {
+        return createProcess();
+      },
+      async execInContainer(_clusterId, command) {
+        commands.push(command);
+        const commandText = command.join(' ');
+        if (commandText.includes('get-log-path')) {
+          return { code: 0, stdout: '/tmp/provider.log\n', stderr: '' };
+        }
+        if (commandText.includes('status')) {
+          return {
+            code: 0,
+            stdout: `Status: completed\nCleanup: ${cleanupPending ? 'pending' : 'complete'}\n`,
+            stderr: '',
+          };
+        }
+        if (command[1] === 'kill') {
+          cleanupAttempts += 1;
+          if (cleanupAttempts === 1) {
+            return { code: 1, stdout: '', stderr: 'cleanup temporarily unavailable' };
+          }
+          cleanupPending = false;
+          return { code: 0, stdout: 'cleanup recovered\n', stderr: '' };
+        }
+        if (commandText.includes('cat')) {
+          return { code: 0, stdout: '{"summary":"done","result":"ok"}\n', stderr: '' };
+        }
+        throw new Error(`Unexpected command: ${commandText}`);
+      },
+    };
+    const agent = {
+      id: 'terminal-cleanup-follower',
+      cluster: { id: 'cluster-1' },
+      config: { cwd: '/tmp/work' },
+      worktree: null,
+      isolation: { enabled: true, clusterId: 'cluster-1', manager },
+      currentTask: null,
+      currentTaskId: 'terminal-cleanup-task',
+      processPid: 123,
+      timeout: 0,
+      enableLivenessCheck: false,
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'codex',
+      _parseResultOutput: async () => ({ summary: 'done', result: 'ok' }),
+      _stopLivenessCheck() {},
+      _log() {},
+    };
+    let settled = false;
+    const execution = followClaudeTaskLogsIsolated(agent, agent.currentTaskId).finally(() => {
+      settled = true;
+    });
+
+    while (cleanupAttempts < 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.strictEqual(settled, false);
+    assert.notStrictEqual(agent.currentTask, null);
+
+    const result = await execution;
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(cleanupAttempts, 2);
+    assert.strictEqual(cleanupPending, false);
+    assert.strictEqual(agent.currentTask, null);
+    assert.ok(commands.some((command) => command[1] === 'kill'));
   });
 });

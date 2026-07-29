@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { stop } = require('../src/agent/agent-lifecycle');
 
 const {
   runLifecycleRecovery,
@@ -26,7 +27,7 @@ describe('Bounded isolated task recovery', function () {
       assert.strictEqual(recovered.killCalls, 3);
       assert.strictEqual(recovered.manager.maxConcurrentKillCalls, 1);
       assert.strictEqual(recovered.stillMonitored, false);
-      assert.strictEqual(recovered.agent.currentTask, null);
+      assert.notStrictEqual(recovered.agent.currentTask, null);
       assert.strictEqual(recovered.agent.currentTaskId, 'isolated-task');
       assert.strictEqual(recovered.agent.state, 'error');
       assert.strictEqual(recovered.agent.cluster.failureInfo.type, 'task_termination');
@@ -47,6 +48,11 @@ describe('Bounded isolated task recovery', function () {
 
       await sleep(50);
       assert.strictEqual(recovered.manager.killCalls, 3);
+      recovered.manager.allowTermination();
+      recovered.agent.running = true;
+      await stop(recovered.agent);
+      assert.strictEqual(recovered.manager.killCalls, 4);
+      assert.strictEqual(recovered.agent.currentTask, null);
     });
 
     it(`does not retry the provider after permanent ${label}`, async function () {
@@ -68,6 +74,11 @@ describe('Bounded isolated task recovery', function () {
       assert.strictEqual(agentErrors[0].content.data.attempts, 3);
       assert.strictEqual(clusterFailures.length, 1);
       assert.strictEqual(clusterFailures[0].content.data.reason, 'task_termination_unverified');
+      assert.notStrictEqual(recovered.agent.currentTask, null);
+      recovered.manager.allowTermination();
+      await stop(recovered.agent);
+      assert.strictEqual(recovered.manager.killCalls, 4);
+      assert.strictEqual(recovered.agent.currentTask, null);
     });
   }
 });

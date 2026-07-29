@@ -1283,6 +1283,7 @@ function exhaustLivenessTermination(agent, context, terminationError) {
   error.restartExhausted = true;
   error.terminationExhausted = true;
   error.terminationAttempts = attempts;
+  error.retainTaskHandle = true;
 
   agent.state = 'error';
   agent.cluster.failureInfo = {
