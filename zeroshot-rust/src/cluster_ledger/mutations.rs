@@ -5,6 +5,9 @@ use serde_json::Value;
 mod effects;
 
 use crate::fault::{EngineFault, FaultContext};
+use crate::full_v1_reducer::{
+    durable_execution_history_digest, durable_executions_from_replay, ExecutionVoidAuthorization,
+};
 
 use super::record::{
     CanonicalDigest, EffectId, ExecutionId, ExecutionVoidReason, GenerationId, NodeInstanceId,
@@ -73,6 +76,22 @@ pub struct ReductionDispatchRequest {
 pub struct ExecutionVoidRequest {
     pub execution: ExecutionId,
     pub reason: ExecutionVoidReason,
+    authorization: ExecutionVoidAuthorization,
+}
+
+impl ExecutionVoidRequest {
+    #[must_use]
+    pub const fn new(
+        execution: ExecutionId,
+        reason: ExecutionVoidReason,
+        authorization: ExecutionVoidAuthorization,
+    ) -> Self {
+        Self {
+            execution,
+            reason,
+            authorization,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -486,7 +505,11 @@ impl ClusterLedger {
         fingerprint: [u8; 32],
         request: ExecutionVoidRequest,
     ) -> Result<CommitResult<ExecutionVoidResult>, LedgerError> {
-        let ExecutionVoidRequest { execution, reason } = request;
+        let ExecutionVoidRequest {
+            execution,
+            reason,
+            authorization,
+        } = request;
         let state = self.validated_state(FaultContext::Execution).await?;
         if let Some(receipt) = self.existing_receipt(
             &state,
@@ -503,6 +526,34 @@ impl ClusterLedger {
                 self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
             })?
             .run;
+        let admission = state.admission.as_ref().ok_or_else(|| {
+            self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+        })?;
+        let durable = durable_executions_from_replay(&state, run).map_err(|_| {
+            self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+        })?;
+        let history_digest = durable_execution_history_digest(&durable).map_err(|_| {
+            self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+        })?;
+        let (
+            authorized_run,
+            authorized_execution,
+            authorized_reason,
+            authorized_graph,
+            authorized_history,
+            authorized_prefix,
+        ) = authorization.parts();
+        if authorized_run != run
+            || authorized_execution != execution
+            || authorized_reason != reason
+            || authorized_graph != CanonicalDigest::of(&admission.canonical_compiled_ir)
+            || authorized_history != history_digest
+            || authorized_prefix != state.position
+        {
+            return Err(
+                self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+            );
+        }
         let response = ExecutionVoidResult { execution, reason };
         self.commit(
             CommitRequest::new(

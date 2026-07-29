@@ -23,7 +23,7 @@ use crate::cluster_ledger::record::{
 use crate::cluster_ledger::store::Position;
 use crate::cluster_ledger::{ExecutionId, NodeInstanceId, ReplayState, RunSequence};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum DurableExecutionState {
     Active,
     Settled {
@@ -35,8 +35,7 @@ pub enum DurableExecutionState {
         reason: ExecutionVoidReason,
     },
 }
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DurableExecution {
     pub run: RunSequence,
     pub dispatch_position: Position,
@@ -99,10 +98,43 @@ pub fn durable_executions_from_replay(
 #[derive(Clone, Debug)]
 pub struct ReductionInput<'a> {
     pub run: RunSequence,
+    pub prefix_position: Position,
     pub initial_input: &'a Value,
     pub executions: &'a [DurableExecution],
     pub next_node_instance: u64,
     pub next_execution: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionVoidAuthorization {
+    run: RunSequence,
+    execution: ExecutionId,
+    reason: ExecutionVoidReason,
+    graph_digest: CanonicalDigest,
+    history_digest: CanonicalDigest,
+    prefix_position: Position,
+}
+
+impl ExecutionVoidAuthorization {
+    pub(crate) const fn parts(
+        &self,
+    ) -> (
+        RunSequence,
+        ExecutionId,
+        ExecutionVoidReason,
+        CanonicalDigest,
+        CanonicalDigest,
+        Position,
+    ) {
+        (
+            self.run,
+            self.execution,
+            self.reason,
+            self.graph_digest,
+            self.history_digest,
+            self.prefix_position,
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -153,11 +185,17 @@ pub struct Reduction {
     pub run: RunSequence,
     pub decisions: Vec<Decision>,
     pub terminal: Option<TerminalProjection>,
+    void_authorizations: BTreeMap<ExecutionId, ExecutionVoidAuthorization>,
 }
 
 impl Reduction {
     pub fn canonical_decision_bytes(&self) -> Result<Vec<u8>, ReducerError> {
         serde_json::to_vec(&self.decisions).map_err(|_| ReducerError::Encoding)
+    }
+
+    #[must_use]
+    pub fn void_authorization(&self, execution: ExecutionId) -> Option<ExecutionVoidAuthorization> {
+        self.void_authorizations.get(&execution).copied()
     }
 
     pub fn control_records(&self) -> Result<Vec<RecordPayload>, ReducerError> {
@@ -234,6 +272,15 @@ pub enum ReducerError {
     Encoding,
 }
 
+pub(crate) fn durable_execution_history_digest(
+    executions: &[DurableExecution],
+) -> Result<CanonicalDigest, ReducerError> {
+    let mut ordered = executions.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|execution| execution.execution);
+    let bytes = serde_json::to_vec(&ordered).map_err(|_| ReducerError::Encoding)?;
+    Ok(CanonicalDigest::of(&bytes))
+}
+
 pub struct FullV1Reducer<'a> {
     graph: &'a VerifiedGraph,
 }
@@ -245,6 +292,14 @@ impl<'a> FullV1Reducer<'a> {
     }
 
     pub fn reduce(&self, input: ReductionInput<'_>) -> Result<Reduction, ReducerError> {
+        let graph_bytes = self
+            .graph
+            .compiled_ir
+            .canonical_bytes()
+            .map_err(|_| ReducerError::Encoding)?;
+        let graph_digest = CanonicalDigest::of(&graph_bytes);
+        let history_digest = durable_execution_history_digest(input.executions)?;
+        let prefix_position = input.prefix_position;
         let initial_input = input.initial_input.clone();
         let mut engine = Engine::new(input, &self.graph.compiled_ir.root)?;
         let mut context = Context::new(initial_input);
@@ -267,10 +322,33 @@ impl<'a> FullV1Reducer<'a> {
         if let Some(projection) = terminal.clone() {
             engine.decisions.push(Decision::Terminal { projection });
         }
+        let void_authorizations = engine
+            .decisions
+            .iter()
+            .filter_map(|decision| match decision {
+                Decision::VoidLoser {
+                    run,
+                    execution,
+                    reason,
+                } => Some((
+                    *execution,
+                    ExecutionVoidAuthorization {
+                        run: *run,
+                        execution: *execution,
+                        reason: *reason,
+                        graph_digest,
+                        history_digest,
+                        prefix_position,
+                    },
+                )),
+                _ => None,
+            })
+            .collect();
         Ok(Reduction {
             run: engine.run,
             decisions: engine.decisions,
             terminal,
+            void_authorizations,
         })
     }
 }

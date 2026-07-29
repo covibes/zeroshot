@@ -11,6 +11,7 @@ pub mod record;
 pub mod replay;
 pub mod store;
 
+pub use crate::full_v1_reducer::ExecutionVoidAuthorization;
 pub use mutations::{
     AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidRequest, ExecutionVoidResult,
     ReductionDispatchRequest, SafeFaultConsequence, SafeFaultResult, SettlementResult,

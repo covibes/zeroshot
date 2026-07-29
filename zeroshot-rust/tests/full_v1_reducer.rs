@@ -202,6 +202,7 @@ fn reduce(graph: &VerifiedGraph, input: &Value, executions: &[DurableExecution])
     FullV1Reducer::new(graph)
         .reduce(ReductionInput {
             run: RunSequence::new(1).unwrap(),
+            prefix_position: Position::MAX,
             initial_input: input,
             executions,
             next_node_instance: executions
@@ -650,6 +651,7 @@ async fn late_parallel_losers_are_voided_in_canonical_dispatch_order() {
         FullV1Reducer::new(&frontier_graph)
             .reduce(ReductionInput {
                 run: RunSequence::new(1).unwrap(),
+                prefix_position: Position::MAX,
                 initial_input: &json!({}),
                 executions: &invalid_history,
                 next_node_instance: 3,
