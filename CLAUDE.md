@@ -64,20 +64,20 @@ IS THIS HOW A SENIOR STAFF ARCHITECT WOULD DO IT? ACT LIKE ONE.
 
 ## Where to Look
 
-| Concept                  | File                                |
-| ------------------------ | ----------------------------------- |
-| Conductor classification | `src/conductor-bootstrap.js`        |
-| Base templates           | `cluster-templates/base-templates/` |
-| Message bus              | `src/message-bus.js`                |
-| Ledger (SQLite)          | `src/ledger.js`                     |
-| Trigger evaluation       | `src/logic-engine.js`               |
-| Agent wrapper            | `src/agent-wrapper.js`              |
-| Docker mounts/env        | `lib/docker-config.js`              |
-| Container lifecycle      | `src/isolation-manager.js`          |
-| Issue providers          | `src/issue-providers/`              |
-| Git remote detection     | `lib/git-remote-utils.js`           |
-| Input helpers            | `src/input-helpers.js`              |
-| Settings                 | `lib/settings.js`                   |
+| Concept                  | File                                                                                            |
+| ------------------------ | ----------------------------------------------------------------------------------------------- |
+| Conductor classification | `cluster-templates/conductor-bootstrap.json`, `src/orchestrator.js`, `src/template-resolver.js` |
+| Base templates           | `cluster-templates/base-templates/`                                                             |
+| Message bus              | `src/message-bus.js`                                                                            |
+| Ledger (SQLite)          | `src/ledger.js`                                                                                 |
+| Trigger evaluation       | `src/logic-engine.js`                                                                           |
+| Agent wrapper            | `src/agent-wrapper.js`                                                                          |
+| Docker mounts/env        | `lib/docker-config.js`                                                                          |
+| Container lifecycle      | `src/isolation-manager.js`                                                                      |
+| Issue providers          | `src/issue-providers/`                                                                          |
+| Git remote detection     | `lib/git-remote-utils.js`                                                                       |
+| Input helpers            | `src/input-helpers.js`                                                                          |
+| Settings                 | `lib/settings.js`                                                                               |
 
 ## CLI Quick Reference
 
@@ -86,7 +86,7 @@ IS THIS HOW A SENIOR STAFF ARCHITECT WOULD DO IT? ACT LIKE ONE.
 zeroshot run 123                  # Local, no isolation
 zeroshot run 123 --worktree       # Git worktree isolation
 zeroshot run 123 --pr             # Worktree + create PR
-zeroshot run 123 --pr --pr-base dev # PR base: dev, worktree base: origin/dev (incl. -d)
+zeroshot run 123 --pr --pr-base main # PR base: main, worktree base: origin/main (incl. -d)
 zeroshot run 123 --ship           # Worktree + PR + auto-merge
 zeroshot run 123 --docker         # Docker container isolation
 zeroshot run 123 -d               # Background (daemon) mode
@@ -379,32 +379,22 @@ const maxValidators = cluster.config.complexity === 'CRITICAL' ? 5 : 3;
 
 **WHY THIS MATTERS:** Conductor dynamically adjusts based on task complexity.
 
-### 7. Bypassing dev → main Workflow (ENFORCED via CI)
+### 7. Targeting a Branch Other Than `main`
 
-**CI blocks PRs to main from any branch except `dev`.** See `.github/workflows/ci.yml` → `enforce-main-pr-source` job.
-
-**Development branch ownership:**
-
-- `dev` is the integration branch for normal development work.
-- Feature branches merge into `dev`, not `main`.
-- `main` is release-only. Promote `dev` to `main` only when you intentionally want a release.
-- If you are "just shipping a fix" during development, ship it to `dev`.
+**`main` is the only trunk.** `dev` was deleted in `e94b6c2` ("chore(release): cut over to the main trunk", #810). Feature branches PR into `main`.
 
 ```bash
-# ❌ CI WILL BLOCK - PRs to main from feature branches
-gh pr create --base main --head fix/my-feature  # FAILS in CI
+# ✅ CORRECT
+git switch -c fix/my-feature
+gh pr create --base main --head fix/my-feature
 
-# ✅ CORRECT - Always go through dev first
-gh pr create --base dev --head fix/my-feature   # PR to dev
-# After merge to dev:
-gh pr create --base main --head dev --title "Release"  # dev → main (allowed)
+# ❌ WRONG - dev no longer exists; this fails at branch resolution
+gh pr create --base dev --head fix/my-feature
 ```
 
-**POSTMORTEM (2026-01-16):** Agent found merge conflicts between dev and main. Instead of resolving conflicts properly (merge main into dev), created a feature branch directly from main and merged fixes to main. This bypassed dev, created divergence, and left dev without the fixes.
+**HISTORICAL (2026-01-16):** Under the previous dev → main workflow, an agent hit merge conflicts between dev and main and, instead of merging main into dev, branched from main and merged fixes directly to main — bypassing dev and leaving it without the fixes. The trunk cutover made that failure mode structurally impossible.
 
-**FIX:** Added CI enforcement (`enforce-main-pr-source` job). Now mechanically impossible to merge non-dev branches to main.
-
-**POSTMORTEM RULE:** Treat `main` as the release branch, not the development branch. If you are choosing a destination branch for active work, the answer is `dev`.
+**NOTE:** No `enforce-main-pr-source` CI job exists. Earlier revisions of this file claimed one; `.github/workflows/` has never contained it. Branch protection and the merge queue are the actual gates.
 
 ## 🔴 BEHAVIORAL RULES
 
@@ -419,25 +409,23 @@ pre-push hook → lint + typecheck (~5s)
 ↓
 push to origin/feature-branch
 ↓
-gh pr create --base dev
+gh pr create --base main
 ↓
 CI runs tests on PR branch
 ↓
 gh pr merge --auto --squash → enters merge queue
 ↓
-Queue rebases PR on latest dev + runs CI again
+Queue rebases PR on latest main + runs CI again
 ↓
-Merge to dev (only if CI passes on rebased code)
+Merge to main (only if CI passes on rebased code)
 ```
 
-**Pre-push hook blocks:** Direct pushes to `main` or `dev`. Must use PR workflow.
+**Pre-push hook blocks:** Direct pushes to `main`. Must use PR workflow.
 
 **Branch intent:**
 
-- `dev`: active development / integration
-- `main`: release only
-- Feature branch → PR to `dev`
-- `dev` → PR to `main` only for release promotion
+- `main`: the only trunk — active development and releases
+- Feature branch → PR to `main`
 
 **Commands:**
 
@@ -446,11 +434,10 @@ Merge to dev (only if CI passes on rebased code)
 git switch -c feat/my-feature
 # ... make changes ...
 git push -u origin feat/my-feature
-gh pr create --base dev
+gh pr create --base main
 gh pr merge --auto --squash
 
-# Release (dev → main)
-gh pr create --base main --head dev --title "Release"
+# Release: semantic-release publishes from main on merge
 # → CI passes → merge → semantic-release publishes
 ```
 
@@ -485,7 +472,7 @@ touch tests/new-feature.test.js
 # 5. Commit both together
 ```
 
-**Pre-commit hook validates test exists** → Commit allowed only if test file present.
+**Not mechanically enforced.** `.husky/pre-commit` only blocks `-v2`/`-new`/`-old`/`-backup` filenames and runs `rustfmt --check` on staged `.rs`. Writing the test with the code is a convention, not a gate.
 
 ### Validation Workflow
 
@@ -574,7 +561,7 @@ npm run typecheck         # TypeScript (if applicable)
 | ------------------------- | ---------------------------------------- |
 | Dangerous fallbacks       | ESLint ERROR                             |
 | Manual git tags           | Pre-push hook                            |
-| Direct push to main/dev   | Pre-push hook (blocks with instructions) |
+| Direct push to main       | Pre-push hook (blocks with instructions) |
 | Git in validator prompts  | Config validator                         |
 | Multiple impl files (-v2) | Pre-commit hook                          |
 | Spawn without permission  | Runtime check (CLI)                      |
