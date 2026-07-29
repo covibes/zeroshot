@@ -236,10 +236,12 @@ impl<'a> FullV1Reducer<'a> {
         let status = engine.eval(
             &self.graph.compiled_ir.root,
             &mut context,
-            &[],
-            None,
-            EvalMode::Decide,
-            Position::MAX,
+            Traversal {
+                map_indices: &[],
+                item: None,
+                mode: EvalMode::Decide,
+                cutoff: Position::MAX,
+            },
         )?;
         let terminal = match status {
             Status::Terminal { projection, .. } => Some(projection),
@@ -292,6 +294,72 @@ struct ControlKey {
 enum EvalMode {
     Decide,
     Probe,
+}
+
+#[derive(Clone, Copy)]
+struct Traversal<'a> {
+    map_indices: &'a [u64],
+    item: Option<&'a Value>,
+    mode: EvalMode,
+    cutoff: Position,
+}
+
+struct ExecutableSpec<'a> {
+    name: &'a NodeName,
+    worker: &'a WorkerRef,
+    input_bindings: &'a [openengine_cluster_protocol::InputBinding],
+    write_bindings: &'a [openengine_cluster_protocol::WriteBinding],
+    attempt_ceiling: PositiveInteger,
+    verifier: bool,
+}
+
+struct ControlUpdate<'a> {
+    node: &'a NodeName,
+    source: ControlSource,
+    field: Option<&'a str>,
+    label: &'a str,
+    map_indices: &'a [u64],
+}
+
+struct GroupControlUpdate<'a> {
+    node: &'a NodeName,
+    field: &'a str,
+    label: &'a str,
+    map_indices: &'a [u64],
+}
+
+struct MapVoidScope<'a> {
+    common: VoidScope<'a>,
+    winner_scope: &'a [u64],
+}
+
+struct VoidScope<'a> {
+    map_indices: &'a [u64],
+    cutoff: Position,
+    reason: ExecutionVoidReason,
+}
+
+struct WriteApplication<'a> {
+    name: &'a NodeName,
+    output: &'a Value,
+    signals: Option<
+        &'a BTreeMap<
+            openengine_cluster_protocol::FieldName,
+            openengine_cluster_protocol::EnumLabel,
+        >,
+    >,
+    diagnostic: Option<&'a Value>,
+    bindings: &'a [openengine_cluster_protocol::WriteBinding],
+    map_indices: &'a [u64],
+}
+
+struct PromotionRequest<'a> {
+    node: &'a NodeName,
+    paths: &'a [FieldPath],
+    local: &'a Context,
+    parent: &'a mut Context,
+    mode: EvalMode,
+    decisions: &'a mut Vec<Decision>,
 }
 
 #[derive(Clone)]
@@ -365,43 +433,38 @@ impl<'a> Engine<'a> {
         &mut self,
         node: &GraphNode,
         context: &mut Context,
-        map_indices: &[u64],
-        item: Option<&Value>,
-        mode: EvalMode,
-        cutoff: Position,
+        traversal: Traversal<'_>,
     ) -> Result<Status, ReducerError> {
         match node {
             GraphNode::Step(step) => self.eval_executable(
-                &step.name,
-                &step.worker,
-                &step.input_bindings,
-                &step.write_bindings,
-                step.attempts,
-                false,
+                ExecutableSpec {
+                    name: &step.name,
+                    worker: &step.worker,
+                    input_bindings: &step.input_bindings,
+                    write_bindings: &step.write_bindings,
+                    attempt_ceiling: step.attempts,
+                    verifier: false,
+                },
                 context,
-                map_indices,
-                item,
-                mode,
-                cutoff,
+                traversal,
             ),
             GraphNode::Verifier(verifier) => self.eval_executable(
-                &verifier.name,
-                &verifier.worker,
-                &verifier.input_bindings,
-                &verifier.write_bindings,
-                verifier.attempts,
-                true,
+                ExecutableSpec {
+                    name: &verifier.name,
+                    worker: &verifier.worker,
+                    input_bindings: &verifier.input_bindings,
+                    write_bindings: &verifier.write_bindings,
+                    attempt_ceiling: verifier.attempts,
+                    verifier: true,
+                },
                 context,
-                map_indices,
-                item,
-                mode,
-                cutoff,
+                traversal,
             ),
             GraphNode::Seq(group) => {
                 let mut local = context.clone();
                 let mut position = Position::ZERO;
                 for child in group.children.as_slice() {
-                    match self.eval(child, &mut local, map_indices, item, mode, cutoff)? {
+                    match self.eval(child, &mut local, traversal)? {
                         Status::Continue {
                             position: child_position,
                         } => {
@@ -410,28 +473,24 @@ impl<'a> Engine<'a> {
                         other => return Ok(other.after(position)),
                     }
                 }
-                promote(
-                    &group.name,
-                    &group.promoted_state_paths,
-                    &local,
-                    context,
-                    mode,
-                    &mut self.decisions,
-                )?;
-                self.continue_decision(&group.name, mode);
+                promote(PromotionRequest {
+                    node: &group.name,
+                    paths: &group.promoted_state_paths,
+                    local: &local,
+                    parent: context,
+                    mode: traversal.mode,
+                    decisions: &mut self.decisions,
+                })?;
+                self.continue_decision(&group.name, traversal.mode);
                 Ok(Status::Continue { position })
             }
-            GraphNode::Choice(group) => {
-                self.eval_choice(group, context, map_indices, item, mode, cutoff)
-            }
-            GraphNode::Par(group) => {
-                self.eval_parallel(group, context, map_indices, item, mode, cutoff)
-            }
+            GraphNode::Choice(group) => self.eval_choice(group, context, traversal),
+            GraphNode::Par(group) => self.eval_parallel(group, context, traversal),
             GraphNode::Loop(group) => {
                 let mut local = context.clone();
                 let mut position = Position::ZERO;
                 for _iteration in 1..=group.max_iterations.get() {
-                    match self.eval(&group.body, &mut local, map_indices, item, mode, cutoff)? {
+                    match self.eval(&group.body, &mut local, traversal)? {
                         Status::Continue {
                             position: body_position,
                         } => {
@@ -439,47 +498,51 @@ impl<'a> Engine<'a> {
                         }
                         other => return Ok(other.after(position)),
                     }
-                    if self.guard(&group.until, &local, map_indices)? {
+                    if self.guard(&group.until, &local, traversal.map_indices)? {
                         self.set_group_control(
-                            &group.name,
-                            "terminated",
-                            "converged",
                             &mut local,
-                            map_indices,
+                            GroupControlUpdate {
+                                node: &group.name,
+                                field: "terminated",
+                                label: "converged",
+                                map_indices: traversal.map_indices,
+                            },
                         );
-                        promote(
-                            &group.name,
-                            &group.promoted_state_paths,
-                            &local,
-                            context,
-                            mode,
-                            &mut self.decisions,
-                        )?;
-                        self.continue_decision(&group.name, mode);
+                        promote(PromotionRequest {
+                            node: &group.name,
+                            paths: &group.promoted_state_paths,
+                            local: &local,
+                            parent: context,
+                            mode: traversal.mode,
+                            decisions: &mut self.decisions,
+                        })?;
+                        self.continue_decision(&group.name, traversal.mode);
                         return Ok(Status::Continue { position });
                     }
                 }
                 self.set_group_control(
-                    &group.name,
-                    "terminated",
-                    "exhausted",
                     &mut local,
-                    map_indices,
+                    GroupControlUpdate {
+                        node: &group.name,
+                        field: "terminated",
+                        label: "exhausted",
+                        map_indices: traversal.map_indices,
+                    },
                 );
-                promote(
-                    &group.name,
-                    &group.promoted_state_paths,
-                    &local,
-                    context,
-                    mode,
-                    &mut self.decisions,
-                )?;
-                self.continue_decision(&group.name, mode);
+                promote(PromotionRequest {
+                    node: &group.name,
+                    paths: &group.promoted_state_paths,
+                    local: &local,
+                    parent: context,
+                    mode: traversal.mode,
+                    decisions: &mut self.decisions,
+                })?;
+                self.continue_decision(&group.name, traversal.mode);
                 Ok(Status::Continue { position })
             }
-            GraphNode::Map(group) => self.eval_map(group, context, map_indices, item, mode, cutoff),
+            GraphNode::Map(group) => self.eval_map(group, context, traversal),
             GraphNode::Succeed(terminal) => {
-                let output = bind_payload(&terminal.bindings, &context.state, item)?;
+                let output = bind_payload(&terminal.bindings, &context.state, traversal.item)?;
                 Ok(Status::Terminal {
                     position: Position::ZERO,
                     projection: TerminalProjection::Succeeded { output },
@@ -494,21 +557,26 @@ impl<'a> Engine<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn eval_executable(
         &mut self,
-        name: &NodeName,
-        worker: &WorkerRef,
-        input_bindings: &[openengine_cluster_protocol::InputBinding],
-        write_bindings: &[openengine_cluster_protocol::WriteBinding],
-        attempt_ceiling: PositiveInteger,
-        verifier: bool,
+        spec: ExecutableSpec<'_>,
         context: &mut Context,
-        map_indices: &[u64],
-        item: Option<&Value>,
-        mode: EvalMode,
-        cutoff: Position,
+        traversal: Traversal<'_>,
     ) -> Result<Status, ReducerError> {
+        let ExecutableSpec {
+            name,
+            worker,
+            input_bindings,
+            write_bindings,
+            attempt_ceiling,
+            verifier,
+        } = spec;
+        let Traversal {
+            map_indices,
+            item,
+            mode,
+            cutoff,
+        } = traversal;
         let occurrence = StructuralOccurrence {
             node: name.clone(),
             map_indices: map_indices.to_vec(),
@@ -584,23 +652,27 @@ impl<'a> Engine<'a> {
         match outcome {
             WorkerOutcome::Error { code, .. } => {
                 self.set_control(
-                    name,
-                    ControlSource::Error,
-                    None,
-                    code.as_str(),
                     context,
-                    map_indices,
+                    ControlUpdate {
+                        node: name,
+                        source: ControlSource::Error,
+                        field: None,
+                        label: code.as_str(),
+                        map_indices,
+                    },
                 );
             }
             WorkerOutcome::Verified { output, .. } if !verifier => {
                 apply_writes(
-                    name,
-                    output,
-                    None,
-                    None,
-                    write_bindings,
                     context,
-                    map_indices,
+                    WriteApplication {
+                        name,
+                        output,
+                        signals: None,
+                        diagnostic: None,
+                        bindings: write_bindings,
+                        map_indices,
+                    },
                 )?;
             }
             WorkerOutcome::Verifier {
@@ -611,22 +683,26 @@ impl<'a> Engine<'a> {
             } if verifier => {
                 for (field, label) in signals {
                     self.set_control(
-                        name,
-                        ControlSource::Signal,
-                        Some(field.as_str()),
-                        label.as_str(),
                         context,
-                        map_indices,
+                        ControlUpdate {
+                            node: name,
+                            source: ControlSource::Signal,
+                            field: Some(field.as_str()),
+                            label: label.as_str(),
+                            map_indices,
+                        },
                     );
                 }
                 apply_writes(
-                    name,
-                    output,
-                    Some(signals),
-                    Some(diagnostic),
-                    write_bindings,
                     context,
-                    map_indices,
+                    WriteApplication {
+                        name,
+                        output,
+                        signals: Some(signals),
+                        diagnostic: Some(diagnostic),
+                        bindings: write_bindings,
+                        map_indices,
+                    },
                 )?;
             }
             _ => return Err(ReducerError::InconsistentHistory),
@@ -641,10 +717,7 @@ impl<'a> Engine<'a> {
         &mut self,
         group: &ChoiceNode,
         context: &mut Context,
-        map_indices: &[u64],
-        item: Option<&Value>,
-        mode: EvalMode,
-        cutoff: Position,
+        traversal: Traversal<'_>,
     ) -> Result<Status, ReducerError> {
         let mut local = context.clone();
         let selected = group
@@ -652,24 +725,24 @@ impl<'a> Engine<'a> {
             .as_slice()
             .iter()
             .find(|branch| {
-                self.guard(&branch.when, &local, map_indices)
+                self.guard(&branch.when, &local, traversal.map_indices)
                     .unwrap_or(false)
             })
             .map(|branch| &branch.node)
             .or(group.otherwise.as_deref())
             .ok_or(ReducerError::MissingChoiceRoute)?;
-        let status = self.eval(selected, &mut local, map_indices, item, mode, cutoff)?;
+        let status = self.eval(selected, &mut local, traversal)?;
         if let Status::Continue { position } = status {
-            promote(
-                &group.name,
-                &group.promoted_state_paths,
-                &local,
-                context,
-                mode,
-                &mut self.decisions,
-            )?;
+            promote(PromotionRequest {
+                node: &group.name,
+                paths: &group.promoted_state_paths,
+                local: &local,
+                parent: context,
+                mode: traversal.mode,
+                decisions: &mut self.decisions,
+            })?;
             merge_runtime_facts(&local, context);
-            self.continue_decision(&group.name, mode);
+            self.continue_decision(&group.name, traversal.mode);
             Ok(Status::Continue { position })
         } else {
             Ok(status)
@@ -680,10 +753,7 @@ impl<'a> Engine<'a> {
         &mut self,
         group: &ParNode,
         context: &mut Context,
-        map_indices: &[u64],
-        item: Option<&Value>,
-        mode: EvalMode,
-        cutoff: Position,
+        traversal: Traversal<'_>,
     ) -> Result<Status, ReducerError> {
         let mut probes = Vec::new();
         for branch in group.branches.as_slice() {
@@ -692,10 +762,10 @@ impl<'a> Engine<'a> {
                 self.eval(
                     branch,
                     &mut branch_context,
-                    map_indices,
-                    item,
-                    EvalMode::Probe,
-                    cutoff,
+                    Traversal {
+                        mode: EvalMode::Probe,
+                        ..traversal
+                    },
                 )?,
                 branch_context,
             ));
@@ -705,7 +775,7 @@ impl<'a> Engine<'a> {
             .enumerate()
             .filter_map(|(index, (status, branch_context))| match status {
                 Status::Continue { position }
-                    if !matches!(group.join, Join::First { ref when } if !self.guard(when, branch_context, map_indices).unwrap_or(false)) =>
+                    if !matches!(group.join, Join::First { ref when } if !self.guard(when, branch_context, traversal.map_indices).unwrap_or(false)) =>
                 {
                     Some((index, *position))
                 }
@@ -724,17 +794,10 @@ impl<'a> Engine<'a> {
             .all(|(status, _)| !matches!(status, Status::Pending));
         if ordered.len() < required {
             if !settled {
-                if mode == EvalMode::Decide {
+                if traversal.mode == EvalMode::Decide {
                     for branch in group.branches.as_slice() {
                         let mut branch_context = context.clone();
-                        let _ = self.eval(
-                            branch,
-                            &mut branch_context,
-                            map_indices,
-                            item,
-                            mode,
-                            cutoff,
-                        )?;
+                        let _ = self.eval(branch, &mut branch_context, traversal)?;
                     }
                 }
                 return Ok(Status::Pending);
@@ -749,8 +812,16 @@ impl<'a> Engine<'a> {
             } else {
                 "quorum_unreachable"
             };
-            self.set_group_control(&group.name, field, label, context, map_indices);
-            self.continue_decision(&group.name, mode);
+            self.set_group_control(
+                context,
+                GroupControlUpdate {
+                    node: &group.name,
+                    field,
+                    label,
+                    map_indices: traversal.map_indices,
+                },
+            );
+            self.continue_decision(&group.name, traversal.mode);
             return Ok(Status::Continue {
                 position: probes
                     .iter()
@@ -776,10 +847,10 @@ impl<'a> Engine<'a> {
             let status = self.eval(
                 &group.branches.as_slice()[*index],
                 &mut branch_context,
-                map_indices,
-                item,
-                mode,
-                join_position,
+                Traversal {
+                    cutoff: join_position,
+                    ..traversal
+                },
             )?;
             if !matches!(status, Status::Continue { .. }) {
                 return Err(ReducerError::InconsistentHistory);
@@ -787,7 +858,7 @@ impl<'a> Engine<'a> {
             for path in &group.promoted_state_paths {
                 let value = select(&branch_context.state, path)?.clone();
                 set_path(&mut joined.state, path, value.clone())?;
-                if mode == EvalMode::Decide {
+                if traversal.mode == EvalMode::Decide {
                     self.decisions.push(Decision::Promote {
                         node: group.name.clone(),
                         path: path.clone(),
@@ -803,20 +874,30 @@ impl<'a> Engine<'a> {
         } else {
             ("joined", "reached")
         };
-        self.set_group_control(&group.name, field, label, context, map_indices);
-        if mode == EvalMode::Decide && required < probes.len() {
+        self.set_group_control(
+            context,
+            GroupControlUpdate {
+                node: &group.name,
+                field,
+                label,
+                map_indices: traversal.map_indices,
+            },
+        );
+        if traversal.mode == EvalMode::Decide && required < probes.len() {
             for (index, branch) in group.branches.as_slice().iter().enumerate() {
                 if !winner_set.contains(&index) {
                     self.void_active_descendants(
                         branch,
-                        map_indices,
-                        join_position,
-                        ExecutionVoidReason::ParallelJoin,
+                        VoidScope {
+                            map_indices: traversal.map_indices,
+                            cutoff: join_position,
+                            reason: ExecutionVoidReason::ParallelJoin,
+                        },
                     );
                 }
             }
         }
-        self.continue_decision(&group.name, mode);
+        self.continue_decision(&group.name, traversal.mode);
         Ok(Status::Continue {
             position: join_position,
         })
@@ -826,18 +907,23 @@ impl<'a> Engine<'a> {
         &mut self,
         group: &MapNode,
         context: &mut Context,
-        map_indices: &[u64],
-        item: Option<&Value>,
-        mode: EvalMode,
-        cutoff: Position,
+        traversal: Traversal<'_>,
     ) -> Result<Status, ReducerError> {
-        let selected = select_data(&group.over, &context.state, item)?;
+        let selected = select_data(&group.over, &context.state, traversal.item)?;
         let items = selected
             .as_array()
             .ok_or(ReducerError::InvalidDurableValue)?;
         if items.len() as u64 > group.max_items.get() {
-            self.set_group_control(&group.name, "overflow", "overflow", context, map_indices);
-            self.continue_decision(&group.name, mode);
+            self.set_group_control(
+                context,
+                GroupControlUpdate {
+                    node: &group.name,
+                    field: "overflow",
+                    label: "overflow",
+                    map_indices: traversal.map_indices,
+                },
+            );
+            self.continue_decision(&group.name, traversal.mode);
             return Ok(Status::Continue {
                 position: Position::ZERO,
             });
@@ -845,16 +931,17 @@ impl<'a> Engine<'a> {
         let mut local = context.clone();
         let mut item_results = Vec::with_capacity(items.len());
         for (index, item_value) in items.iter().enumerate() {
-            let mut scope = map_indices.to_vec();
+            let mut scope = traversal.map_indices.to_vec();
             scope.push(index as u64);
             let mut item_context = context.clone();
             let status = self.eval(
                 &group.body,
                 &mut item_context,
-                &scope,
-                Some(item_value),
-                mode,
-                cutoff,
+                Traversal {
+                    map_indices: &scope,
+                    item: Some(item_value),
+                    ..traversal
+                },
             )?;
             item_results.push((status, item_context, scope));
         }
@@ -866,12 +953,17 @@ impl<'a> Engine<'a> {
             })
             .min_by_key(|(position, _, scope)| (*position, (*scope).clone()))
         {
-            if mode == EvalMode::Decide {
+            if traversal.mode == EvalMode::Decide {
                 self.void_map_losers(
                     &group.body,
-                    map_indices,
-                    terminal_scope,
-                    terminal.position(),
+                    MapVoidScope {
+                        common: VoidScope {
+                            map_indices: traversal.map_indices,
+                            cutoff: terminal.position(),
+                            reason: ExecutionVoidReason::MapTerminal,
+                        },
+                        winner_scope: terminal_scope,
+                    },
                 );
             }
             return Ok(terminal);
@@ -890,19 +982,27 @@ impl<'a> Engine<'a> {
             let value = Value::Array(values);
             set_path(&mut local.state, path, value.clone())?;
         }
-        self.set_group_control(&group.name, "overflow", "ok", &mut local, map_indices);
-        promote(
-            &group.name,
-            &group.promoted_state_paths,
-            &local,
-            context,
-            mode,
-            &mut self.decisions,
-        )?;
+        self.set_group_control(
+            &mut local,
+            GroupControlUpdate {
+                node: &group.name,
+                field: "overflow",
+                label: "ok",
+                map_indices: traversal.map_indices,
+            },
+        );
+        promote(PromotionRequest {
+            node: &group.name,
+            paths: &group.promoted_state_paths,
+            local: &local,
+            parent: context,
+            mode: traversal.mode,
+            decisions: &mut self.decisions,
+        })?;
         for (_, item_context, _) in &item_results {
             merge_runtime_facts(item_context, context);
         }
-        self.continue_decision(&group.name, mode);
+        self.continue_decision(&group.name, traversal.mode);
         Ok(Status::Continue {
             position: item_results
                 .iter()
@@ -987,42 +1087,29 @@ impl<'a> Engine<'a> {
             .collect()
     }
 
-    fn set_control(
-        &self,
-        node: &NodeName,
-        source: ControlSource,
-        field: Option<&str>,
-        label: &str,
-        context: &mut Context,
-        map_indices: &[u64],
-    ) {
-        let depth = self.map_depths.get(node).copied().unwrap_or(0);
+    fn set_control(&self, context: &mut Context, update: ControlUpdate<'_>) {
+        let depth = self.map_depths.get(update.node).copied().unwrap_or(0);
         context.controls.insert(
             ControlKey {
-                node: node.clone(),
-                source,
-                field: field.map(str::to_owned),
-                map_indices: map_indices[..depth].to_vec(),
+                node: update.node.clone(),
+                source: update.source,
+                field: update.field.map(str::to_owned),
+                map_indices: update.map_indices[..depth].to_vec(),
             },
-            label.to_owned(),
+            update.label.to_owned(),
         );
     }
 
-    fn set_group_control(
-        &self,
-        node: &NodeName,
-        field: &str,
-        label: &str,
-        context: &mut Context,
-        map_indices: &[u64],
-    ) {
+    fn set_group_control(&self, context: &mut Context, update: GroupControlUpdate<'_>) {
         self.set_control(
-            node,
-            ControlSource::Group,
-            Some(field),
-            label,
             context,
-            map_indices,
+            ControlUpdate {
+                node: update.node,
+                source: ControlSource::Group,
+                field: Some(update.field),
+                label: update.label,
+                map_indices: update.map_indices,
+            },
         );
     }
 
@@ -1033,48 +1120,42 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn void_active_descendants(
-        &mut self,
-        node: &GraphNode,
-        map_indices: &[u64],
-        cutoff: Position,
-        reason: ExecutionVoidReason,
-    ) {
+    fn void_active_descendants(&mut self, node: &GraphNode, scope: VoidScope<'_>) {
         let descendants = descendant_names(node);
         for execution in self.executions {
             if descendants.contains(&execution.occurrence.node)
-                && execution.occurrence.map_indices.starts_with(map_indices)
-                && execution.dispatch_position <= cutoff
+                && execution
+                    .occurrence
+                    .map_indices
+                    .starts_with(scope.map_indices)
+                && execution.dispatch_position <= scope.cutoff
                 && matches!(execution.state, DurableExecutionState::Active)
             {
                 self.decisions.push(Decision::VoidLoser {
                     run: self.run,
                     execution: execution.execution,
-                    reason,
+                    reason: scope.reason,
                 });
             }
         }
     }
 
-    fn void_map_losers(
-        &mut self,
-        body: &GraphNode,
-        map_indices: &[u64],
-        winner_scope: &[u64],
-        cutoff: Position,
-    ) {
+    fn void_map_losers(&mut self, body: &GraphNode, scope: MapVoidScope<'_>) {
         let descendants = descendant_names(body);
         for execution in self.executions {
             if descendants.contains(&execution.occurrence.node)
-                && execution.occurrence.map_indices.starts_with(map_indices)
-                && execution.occurrence.map_indices != winner_scope
-                && execution.dispatch_position <= cutoff
+                && execution
+                    .occurrence
+                    .map_indices
+                    .starts_with(scope.common.map_indices)
+                && execution.occurrence.map_indices != scope.winner_scope
+                && execution.dispatch_position <= scope.common.cutoff
                 && matches!(execution.state, DurableExecutionState::Active)
             {
                 self.decisions.push(Decision::VoidLoser {
                     run: self.run,
                     execution: execution.execution,
-                    reason: ExecutionVoidReason::MapTerminal,
+                    reason: scope.common.reason,
                 });
             }
         }
@@ -1237,16 +1318,17 @@ fn set_path(value: &mut Value, path: &FieldPath, selected: Value) -> Result<(), 
 }
 
 fn apply_writes(
-    name: &NodeName,
-    output: &Value,
-    signals: Option<
-        &BTreeMap<openengine_cluster_protocol::FieldName, openengine_cluster_protocol::EnumLabel>,
-    >,
-    diagnostic: Option<&Value>,
-    bindings: &[openengine_cluster_protocol::WriteBinding],
     context: &mut Context,
-    map_indices: &[u64],
+    application: WriteApplication<'_>,
 ) -> Result<(), ReducerError> {
+    let WriteApplication {
+        name,
+        output,
+        signals,
+        diagnostic,
+        bindings,
+        map_indices,
+    } = application;
     let channel = Channels {
         output: output.clone(),
         signals: signals
@@ -1299,14 +1381,15 @@ fn apply_writes(
     Ok(())
 }
 
-fn promote(
-    node: &NodeName,
-    paths: &[FieldPath],
-    local: &Context,
-    parent: &mut Context,
-    mode: EvalMode,
-    decisions: &mut Vec<Decision>,
-) -> Result<(), ReducerError> {
+fn promote(request: PromotionRequest<'_>) -> Result<(), ReducerError> {
+    let PromotionRequest {
+        node,
+        paths,
+        local,
+        parent,
+        mode,
+        decisions,
+    } = request;
     for path in paths {
         let value = select(&local.state, path)?.clone();
         set_path(&mut parent.state, path, value.clone())?;
