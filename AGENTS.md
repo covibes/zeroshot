@@ -520,6 +520,11 @@ Core principle: tests passing != implementation works. The ONLY verification is:
 | `~/.zeroshot/clusters.json` | Cluster metadata      |
 | `~/.zeroshot/<id>.db`       | SQLite message ledger |
 
+All production writes to the global settings file must use `lib/settings.js::mutateSettings`.
+Callers provide only their intended mutation; they must never write a previously loaded full
+snapshot. The shared primitive re-reads under one `proper-lockfile` lock and publishes by
+same-directory atomic rename. Global settings reads remain lock-free.
+
 Clusters survive crashes. Resume: `zeroshot resume <id>`.
 
 ## Known Limitations

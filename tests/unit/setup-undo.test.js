@@ -155,7 +155,7 @@ describe('setup-undo', function () {
 
   it('full round trip: plan -> apply -> undo returns global settings to exact pre-apply bytes', function () {
     const { buildSetupPlan } = require('../../lib/setup-plan');
-    const { loadSettings, saveSettings, settingsFileExists } = require('../../lib/settings');
+    const { loadSettings, mutateSettings, settingsFileExists } = require('../../lib/settings');
     const { readRepoSettings } = require('../../lib/repo-settings');
 
     // Establish a concrete pre-apply settings file (simulates a user who has
@@ -164,8 +164,9 @@ describe('setup-undo', function () {
     // (which recomputes providerSettings.claude.maxLevel on every loadSettings()
     // call) - picking it keeps this test isolated to the apply/undo round trip.
     const preExisting = loadSettings();
-    preExisting.logLevel = 'verbose';
-    saveSettings(preExisting);
+    mutateSettings((settings) => {
+      Object.assign(settings, preExisting);
+    });
     const preApplyBytes = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
 
     const cwd = repoRoot;

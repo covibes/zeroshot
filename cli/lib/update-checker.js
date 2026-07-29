@@ -1,19 +1,16 @@
 /**
- * Update Checker - Checks npm registry for newer versions
+ * Update Checker - cached startup notices and the explicit npm updater.
  *
- * Features:
- * - 24-hour check interval (avoids registry spam)
- * - 5-second timeout (non-blocking if offline)
- * - Interactive prompt for manual update
- * - Respects quiet mode (no prompts in CI/scripts)
+ * Automatic startup work is notification-only and stale-while-revalidate.
+ * Installation remains exclusive to the explicit `zeroshot update` command.
  */
 
 const https = require('https');
 const childProcess = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const readline = require('readline');
-const { loadSettings, saveSettings } = require('../../lib/settings');
+const { loadSettings, mutateSettings } = require('../../lib/settings');
 
 const NEW_PACKAGE_NAME = '@the-open-engine/zeroshot';
 const LEGACY_PACKAGE_NAME = '@covibes/zeroshot';
@@ -27,6 +24,12 @@ const FETCH_TIMEOUT_MS = 5000;
 
 // npm registry URL
 const REGISTRY_URL = `https://registry.npmjs.org/${NEW_PACKAGE_NAME}/latest`;
+
+const MAX_RESPONSE_BYTES = 64 * 1024;
+const STABLE_VERSION_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z.-]+)?$/;
+
+let inFlightRefresh = null;
 
 function getPackageMetadata() {
   return require('../../package.json');
@@ -199,89 +202,130 @@ function buildInstallArgs(updateTarget) {
   return args;
 }
 
+function parseStableVersion(version) {
+  if (typeof version !== 'string') return null;
+  const match = STABLE_VERSION_PATTERN.exec(version);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
 /**
- * Compare semver versions
- * @param {string} current - Current version (e.g., "1.5.0")
- * @param {string} latest - Latest version (e.g., "1.6.0")
- * @returns {boolean} True if latest > current
+ * Compare validated stable semver versions.
+ * @param {string} current
+ * @param {string} latest
+ * @returns {boolean}
  */
 function isNewerVersion(current, latest) {
-  const currentParts = current.split('.').map(Number);
-  const latestParts = latest.split('.').map(Number);
+  const currentParts = parseStableVersion(current);
+  const latestParts = parseStableVersion(latest);
+  if (!currentParts || !latestParts) return false;
 
-  for (let i = 0; i < 3; i++) {
-    const c = currentParts[i] || 0;
-    const l = latestParts[i] || 0;
-    if (l > c) return true;
-    if (l < c) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if (latestParts[index] > currentParts[index]) return true;
+    if (latestParts[index] < currentParts[index]) return false;
   }
   return false;
 }
 
+function validatedManifestVersion(manifest) {
+  if (
+    !manifest ||
+    typeof manifest !== 'object' ||
+    manifest.name !== NEW_PACKAGE_NAME ||
+    !parseStableVersion(manifest.version) ||
+    !manifest.dist ||
+    typeof manifest.dist !== 'object' ||
+    typeof manifest.dist.tarball !== 'string' ||
+    !manifest.dist.tarball.trim().startsWith('https://') ||
+    typeof manifest.dist.integrity !== 'string' ||
+    manifest.dist.integrity.trim().length === 0
+  ) {
+    return null;
+  }
+  return manifest.version;
+}
+
 /**
- * Fetch latest version from npm registry
- * @returns {Promise<string|null>} Latest version or null on failure
+ * Fetch and validate the installable npm latest manifest.
+ * @param {object} options
+ * @returns {Promise<string|null>}
  */
-function fetchLatestVersion() {
+function fetchLatestVersion(options = {}) {
+  const httpsModule = options.httpsModule || https;
+  const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const maxResponseBytes = options.maxResponseBytes ?? MAX_RESPONSE_BYTES;
+  const scheduleTimeout = options.setTimeout || setTimeout;
+  const cancelTimeout = options.clearTimeout || clearTimeout;
+
   return new Promise((resolve) => {
-    const req = https.get(REGISTRY_URL, { timeout: FETCH_TIMEOUT_MS }, (res) => {
-      if (res.statusCode !== 200) {
-        resolve(null);
-        return;
-      }
+    let request;
+    let safetyTimer;
+    let settled = false;
 
-      let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (safetyTimer) cancelTimeout(safetyTimer);
+      request?.setTimeout?.(0);
+      resolve(value);
+    };
 
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          resolve(json.version || null);
-        } catch {
-          resolve(null);
+    try {
+      request = httpsModule.get(REGISTRY_URL, { timeout: timeoutMs }, (response) => {
+        if (response.statusCode !== 200) {
+          response.destroy?.();
+          request.destroy?.();
+          finish(null);
+          return;
         }
+
+        const chunks = [];
+        let size = 0;
+        response.on('data', (chunk) => {
+          if (settled) return;
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += buffer.length;
+          if (size > maxResponseBytes) {
+            response.destroy?.();
+            request.destroy?.();
+            finish(null);
+            return;
+          }
+          chunks.push(buffer);
+        });
+        response.on('error', () => finish(null));
+        response.on('end', () => {
+          if (settled) return;
+          try {
+            const manifest = JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
+            finish(validatedManifestVersion(manifest));
+          } catch {
+            finish(null);
+          }
+        });
       });
-    });
+    } catch {
+      finish(null);
+      return;
+    }
 
-    req.on('error', () => {
-      resolve(null);
+    request.on('error', () => finish(null));
+    request.on('timeout', () => {
+      request.destroy();
+      finish(null);
     });
+    if (options.unref) {
+      request.on('socket', (socket) => socket.unref?.());
+    }
 
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(null);
-    });
-
-    // Additional safety timeout
-    setTimeout(() => {
-      req.destroy();
-      resolve(null);
-    }, FETCH_TIMEOUT_MS + 1000);
+    safetyTimer = scheduleTimeout(() => {
+      request.destroy();
+      finish(null);
+    }, timeoutMs + 1000);
+    safetyTimer.unref?.();
   });
 }
 
-/**
- * Prompt user for update confirmation
- * @param {string} currentVersion
- * @param {string} latestVersion
- * @returns {Promise<boolean>} True if user wants to update
- */
-function promptForUpdate(currentVersion, latestVersion) {
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-
-    console.log(`\n📦 Update available: ${currentVersion} → ${latestVersion}`);
-    rl.question('   Install now? [y/N] ', (answer) => {
-      rl.close();
-      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
-    });
-  });
-}
 
 /**
  * Check if we have write permission to npm global directory
@@ -349,98 +393,224 @@ function runUpdate(options = {}) {
   });
 }
 
-/**
- * Check if update check should run
- * @param {object} settings - Current settings
- * @returns {boolean}
- */
-function shouldCheckForUpdates(settings) {
-  // Disabled by user
-  if (!settings.autoCheckUpdates) {
-    return false;
+function optionIndex(argv, longName, shortName = null) {
+  const end = argv.indexOf('--');
+  const limit = end === -1 ? argv.length : end;
+  for (let index = 0; index < limit; index += 1) {
+    const token = argv[index];
+    if (token === longName || (shortName && token === shortName)) return index;
+    if (token.startsWith(`${longName}=`)) return index;
   }
+  return -1;
+}
 
-  // Never checked before
-  if (!settings.lastUpdateCheckAt) {
-    return true;
+function optionValue(argv, longName) {
+  const index = optionIndex(argv, longName);
+  if (index === -1) return null;
+  const token = argv[index];
+  if (token.startsWith(`${longName}=`)) return token.slice(longName.length + 1);
+  return argv[index + 1] ?? null;
+}
+
+function commandPath(argv) {
+  const positional = [];
+  const optionsWithValues = new Set([
+    '--format',
+    '--output-format',
+    '--json-schema',
+    '--mcp-config',
+  ]);
+  const end = argv.indexOf('--');
+  const limit = end === -1 ? argv.length : end;
+
+  for (let index = 0; index < limit; index += 1) {
+    const token = argv[index];
+    if (optionsWithValues.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (!token.startsWith('-')) positional.push(token);
   }
-
-  // Check if 24 hours have passed
-  const elapsed = Date.now() - settings.lastUpdateCheckAt;
-  return elapsed >= CHECK_INTERVAL_MS;
+  return positional;
 }
 
 /**
- * Main entry point - check for updates
- * @param {object} options
- * @param {boolean} options.quiet - Skip interactive prompts
- * @returns {Promise<void>}
+ * Pure classification for optional automatic update work.
  */
-async function checkForUpdates(options = {}) {
-  const settings = loadSettings();
+function isAutomaticUpdateEligible(options = {}) {
+  const argv = options.argv || process.argv.slice(2);
+  const env = options.env || process.env;
+  const stdin = options.stdin || process.stdin;
+  const stdout = options.stdout || process.stdout;
+  const stderr = options.stderr || process.stderr;
+  const currentVersion = options.currentVersion || getCurrentVersion();
+  const packageName = options.packageName || getCurrentPackageName();
 
-  // Skip check if not due
-  if (!shouldCheckForUpdates(settings)) {
-    return;
+  if (
+    packageName !== NEW_PACKAGE_NAME ||
+    !parseStableVersion(currentVersion) ||
+    argv.length === 0 ||
+    stdin.isTTY !== true ||
+    stdout.isTTY !== true ||
+    stderr.isTTY !== true ||
+    (env.CI !== undefined && env.CI !== null && String(env.CI).length > 0) ||
+    env.ZEROSHOT_DAEMON === '1'
+  ) {
+    return false;
   }
 
-  const currentVersion = getCurrentVersion();
-  const latestVersion = await fetchLatestVersion();
-
-  // Update last check timestamp regardless of result
-  settings.lastUpdateCheckAt = Date.now();
-  saveSettings(settings);
-
-  // Network failure - silently skip
-  if (!latestVersion) {
-    return;
+  if (
+    optionIndex(argv, '--quiet', '-q') !== -1 ||
+    optionIndex(argv, '--help', '-h') !== -1 ||
+    optionIndex(argv, '--version', '-V') !== -1 ||
+    optionIndex(argv, '--completion') !== -1
+  ) {
+    return false;
   }
 
-  // No update available
-  if (!isNewerVersion(currentVersion, latestVersion)) {
-    return;
+  const [command, subcommand] = commandPath(argv);
+  if (
+    command === 'update' ||
+    command === 'get-log-path' ||
+    (command === 'task' && subcommand === 'run') ||
+    (command === 'setup' && ['plan', 'apply', 'undo'].includes(subcommand)) ||
+    (command === 'cmdproof' && ['prove', 'verify', 'check'].includes(subcommand))
+  ) {
+    return false;
   }
 
-  // Already notified about this version
-  if (settings.lastSeenVersion === latestVersion) {
-    return;
+  if (
+    optionIndex(argv, '--json') !== -1 ||
+    optionIndex(argv, '--silent-json-output') !== -1 ||
+    optionIndex(argv, '--json-schema') !== -1
+  ) {
+    return false;
   }
 
-  // Update lastSeenVersion so we don't nag about the same version
-  settings.lastSeenVersion = latestVersion;
-  saveSettings(settings);
+  const outputFormat = optionValue(argv, '--output-format');
+  if (outputFormat === 'json' || outputFormat === 'stream-json') return false;
+  if (command === 'export' && optionValue(argv, '--format') === 'json') return false;
 
-  // Check write permissions upfront
-  const hasWriteAccess = canWriteToNpmGlobal();
+  return true;
+}
 
-  // Quiet mode - just inform, no prompt
-  if (options.quiet) {
-    console.log(`📦 Update available: ${currentVersion} → ${latestVersion}`);
-    if (hasWriteAccess) {
-      console.log(`   Run: ${buildManualInstallCommand(getInstallPrefix(), false)}\n`);
-    } else {
-      console.log(`   Run: ${buildManualInstallCommand(getInstallPrefix(), true)}\n`);
+function shouldCheckForUpdates(settings, now = Date.now()) {
+  if (settings.autoCheckUpdates !== true) return false;
+  const timestamp = settings.lastUpdateCheckAt;
+  if (!Number.isFinite(timestamp) || timestamp < 0 || timestamp > now) return true;
+  return now - timestamp >= CHECK_INTERVAL_MS;
+}
+
+async function refreshUpdateCache(options) {
+  const now = options.now || Date.now;
+  const transaction = options.mutateSettings || mutateSettings;
+  const fetcher = options.fetchLatestVersion || fetchLatestVersion;
+  const generateClaimId = options.generateClaimId || (() => crypto.randomUUID());
+  const attemptAt = now();
+  const claimId = generateClaimId();
+  let claim;
+
+  try {
+    claim = transaction(
+      (settings) => {
+        if (!shouldCheckForUpdates(settings, attemptAt)) return null;
+        settings.lastUpdateCheckAt = attemptAt;
+        settings.lastUpdateCheckClaim = claimId;
+        return { attemptAt, claimId };
+      },
+      { lockTimeoutMs: 0 }
+    );
+  } catch {
+    return;
+  }
+  if (!claim) return;
+
+  let latestVersion;
+  try {
+    latestVersion = await fetcher({ unref: true });
+  } catch {
+    return;
+  }
+  if (!parseStableVersion(latestVersion)) return;
+
+  try {
+    transaction(
+      (settings) => {
+        if (
+          settings.autoCheckUpdates !== true ||
+          settings.lastUpdateCheckAt !== attemptAt ||
+          settings.lastUpdateCheckClaim !== claimId
+        ) {
+          return false;
+        }
+        settings.lastSeenVersion = latestVersion;
+        settings.lastUpdateCheckClaim = null;
+        return true;
+      },
+      { lockTimeoutMs: 0 }
+    );
+  } catch {
+    // Optional cache persistence must never affect command dispatch or output.
+  }
+}
+
+/**
+ * Synchronously render the startup cache and begin a due refresh without awaiting it.
+ * @returns {Promise<void>|null} the shared refresh, exposed for deterministic tests
+ */
+function checkForUpdates(options = {}) {
+  if (!options.eligibilityChecked && !isAutomaticUpdateEligible(options)) return null;
+
+  const currentVersion = options.currentVersion || getCurrentVersion();
+  if (!parseStableVersion(currentVersion)) return null;
+  const readSettings = options.loadSettings || loadSettings;
+  let settings;
+  try {
+    settings = readSettings({ silent: true });
+  } catch {
+    return null;
+  }
+  if (settings.autoCheckUpdates !== true) return null;
+
+  if (
+    parseStableVersion(settings.lastSeenVersion) &&
+    isNewerVersion(currentVersion, settings.lastSeenVersion)
+  ) {
+    try {
+      const stderr = options.stderr || process.stderr;
+      stderr.write(
+        `Update available: ${currentVersion} → ${settings.lastSeenVersion}. Run \`zeroshot update\`.\n`
+      );
+    } catch {
+      // Optional notification output failures are contained.
     }
-    return;
   }
 
-  // No write permission - inform user but don't offer interactive prompt
-  // (they'd say yes then get an error, which is frustrating UX)
-  if (!hasWriteAccess) {
-    console.log(`\n📦 Update available: ${currentVersion} → ${latestVersion}`);
-    console.log(`   Run: ${buildManualInstallCommand(getInstallPrefix(), true)}\n`);
-    return;
-  }
+  const now = options.now || Date.now;
+  if (!shouldCheckForUpdates(settings, now())) return null;
+  if (inFlightRefresh) return inFlightRefresh;
 
-  // Interactive mode - prompt for update (only if we have write access)
-  const wantsUpdate = await promptForUpdate(currentVersion, latestVersion);
-  if (wantsUpdate) {
-    await runUpdate();
-  }
+  const refresh = new Promise((resolve) => {
+    const schedule = options.scheduleRefresh || setImmediate;
+    const handle = schedule(() => {
+      Promise.resolve(refreshUpdateCache(options))
+        .catch(() => {})
+        .then(resolve);
+    });
+    handle?.unref?.();
+  });
+  inFlightRefresh = refresh;
+  refresh.then(() => {
+    if (inFlightRefresh === refresh) inFlightRefresh = null;
+  });
+  return refresh;
 }
 
 module.exports = {
   checkForUpdates,
+  isAutomaticUpdateEligible,
+  parseStableVersion,
+  validatedManifestVersion,
   // Exported for testing and CLI update command
   NEW_PACKAGE_NAME,
   LEGACY_PACKAGE_NAME,
@@ -459,4 +629,5 @@ module.exports = {
   shouldCheckForUpdates,
   canWriteToNpmGlobal,
   CHECK_INTERVAL_MS,
+  MAX_RESPONSE_BYTES,
 };

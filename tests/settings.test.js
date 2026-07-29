@@ -66,7 +66,8 @@ function registerSettingsHooks() {
 function registerSettingsExportsTests() {
   it('should export required functions and constants', function () {
     assert.ok(typeof settingsModule.loadSettings === 'function');
-    assert.ok(typeof settingsModule.saveSettings === 'function');
+    assert.ok(typeof settingsModule.mutateSettings === 'function');
+    assert.strictEqual(settingsModule.saveSettings, undefined);
     assert.ok(typeof settingsModule.validateSetting === 'function');
     assert.ok(typeof settingsModule.coerceValue === 'function');
     assert.ok(typeof settingsModule.DEFAULT_SETTINGS === 'object');
@@ -84,6 +85,10 @@ function registerSettingsDefaultTests() {
     assert.strictEqual(DEFAULT_SETTINGS.logLevel, 'normal');
     assert.strictEqual(DEFAULT_SETTINGS.defaultProvider, 'claude');
     assert.ok(DEFAULT_SETTINGS.providerSettings);
+    assert.strictEqual(DEFAULT_SETTINGS.autoCheckUpdates, true);
+    assert.strictEqual(DEFAULT_SETTINGS.lastUpdateCheckAt, null);
+    assert.strictEqual(DEFAULT_SETTINGS.lastSeenVersion, null);
+    assert.strictEqual(DEFAULT_SETTINGS.lastUpdateCheckClaim, null);
   });
 
   it('should load default settings when file does not exist', function () {

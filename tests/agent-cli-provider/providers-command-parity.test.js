@@ -21,7 +21,7 @@ afterEach(() => {
   console.log = originalConsoleLog;
 });
 
-function loadCommands({ detected, providerFactory, settings, saveSettings = () => {} }) {
+function loadCommands({ detected, providerFactory, settings, mutateSettings }) {
   require.cache[providersModulePath].exports = {
     ...originalProvidersModule,
     detectProviders: async () => {
@@ -33,7 +33,7 @@ function loadCommands({ detected, providerFactory, settings, saveSettings = () =
   require.cache[settingsModulePath].exports = {
     ...originalSettingsModule,
     loadSettings: () => settings,
-    saveSettings,
+    mutateSettings: mutateSettings || ((mutator) => mutator(settings)),
   };
   delete require.cache[commandModulePath];
   return require(commandModulePath);
@@ -116,7 +116,10 @@ test('provider setup prints install and auth instructions from registry metadata
   const { setupCommand } = loadCommands({
     detected: {},
     settings,
-    saveSettings: (next) => saved.push(next),
+    mutateSettings: (mutator) => {
+      mutator(settings);
+      saved.push(structuredClone(settings));
+    },
     providerFactory: () => ({
       displayName: metadata.displayName,
       cliCommand: metadata.binary,
