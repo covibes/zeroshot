@@ -38,6 +38,7 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
   /** @type {string[]} */
   let tempDirs = [];
   let originalPath;
+  let originalMixedCasePath;
 
   function makeTempDir(prefix) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -47,6 +48,7 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
 
   beforeEach(function () {
     originalPath = process.env.PATH;
+    originalMixedCasePath = process.env.Path;
   });
 
   afterEach(function () {
@@ -54,6 +56,11 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
       delete process.env.PATH;
     } else {
       process.env.PATH = originalPath;
+    }
+    if (originalMixedCasePath === undefined) {
+      delete process.env.Path;
+    } else {
+      process.env.Path = originalMixedCasePath;
     }
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -298,6 +305,7 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
       const fallbackBinDir = path.join(worktreeRoot, 'fallback-bin');
       const cwd = path.join(worktreeRoot, 'nested', 'cwd');
       const shimBaseDir = path.join(worktreeRoot, 'managed-keychain-shim');
+      const nonAuthoritativePath = path.join(worktreeRoot, 'non-authoritative-path');
       fs.mkdirSync(toolBinDir, { recursive: true });
       fs.mkdirSync(fallbackBinDir, { recursive: true });
       fs.mkdirSync(cwd, { recursive: true });
@@ -316,6 +324,7 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
         toolBinDir,
         fallbackBinDir,
         cwd,
+        nonAuthoritativePath,
         shimBaseDir,
         fakePath,
         logFile,
@@ -329,6 +338,12 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
           shimBaseDir: fixture.shimBaseDir,
           realSecurityPath: fixture.fakePath,
         });
+    }
+
+    function setBothPathKeys(fixture) {
+      delete process.env.PATH;
+      process.env.Path = fixture.nonAuthoritativePath;
+      process.env.PATH = fixture.fallbackBinDir;
     }
 
     function runPathResolvedInteractiveSecurityGrandchild(spawnEnv) {
@@ -394,6 +409,23 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
       assertProductionBoundary(spawnEnv, fixture);
     });
 
+    it('buildSpawnEnv keeps worktree tools on exact PATH when Path also exists', function () {
+      const fixture = createProductionFixture();
+      setBothPathKeys(fixture);
+      const spawnEnv = executor.buildSpawnEnv(
+        {
+          config: { cwd: fixture.cwd },
+          worktree: { enabled: true, path: fixture.worktreeRoot },
+        },
+        'codex',
+        { model: 'gpt-5-codex' },
+        { applyDarwinKeychainBoundary: injectDarwinBoundary(fixture) }
+      );
+
+      assertProductionBoundary(spawnEnv, fixture);
+      assert.strictEqual(spawnEnv.Path, fixture.nonAuthoritativePath);
+    });
+
     it('ClaudeTaskRunner._buildSpawnEnv enforces the same production boundary', function () {
       const fixture = createProductionFixture();
       process.env.PATH = fixture.fallbackBinDir;
@@ -407,6 +439,22 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
       });
 
       assertProductionBoundary(spawnEnv, fixture);
+    });
+
+    it('ClaudeTaskRunner keeps worktree tools on exact PATH when Path also exists', function () {
+      const fixture = createProductionFixture();
+      setBothPathKeys(fixture);
+      const runner = new ClaudeTaskRunner({
+        quiet: true,
+        applyDarwinKeychainBoundary: injectDarwinBoundary(fixture),
+      });
+      const spawnEnv = runner._buildSpawnEnv('codex', null, {
+        cwd: fixture.cwd,
+        worktreePath: fixture.worktreeRoot,
+      });
+
+      assertProductionBoundary(spawnEnv, fixture);
+      assert.strictEqual(spawnEnv.Path, fixture.nonAuthoritativePath);
     });
   });
 });
