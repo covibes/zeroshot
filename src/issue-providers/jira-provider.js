@@ -174,7 +174,7 @@ class JiraProvider extends IssueProvider {
       const issueKey = this._extractIssueKey(identifier, settings);
 
       // Fetch issue using jira CLI
-      const cmd = `jira issue view ${issueKey} --template json`;
+      const cmd = `jira view ${issueKey} --template json`;
       const output = execSync(cmd, { encoding: 'utf8' });
       const issue = JSON.parse(output);
 
