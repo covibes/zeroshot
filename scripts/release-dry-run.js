@@ -66,12 +66,11 @@ async function main() {
       }
     );
 
-    if (!result) {
-      console.log('RELEASE_DRY_RUN_RESULT=no-release');
-      return;
+    const version = result?.nextRelease.version || '';
+    if (process.env.GITHUB_OUTPUT) {
+      fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
     }
-
-    console.log(`RELEASE_DRY_RUN_RESULT=${result.nextRelease.version}`);
+    console.log(`RELEASE_DRY_RUN_RESULT=${version || 'no-release'}`);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

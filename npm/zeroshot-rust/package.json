@@ -1,0 +1,29 @@
+{
+  "name": "@the-open-engine/zeroshot-rust",
+  "version": "0.0.0-development",
+  "description": "Verified prebuilt binary installer for the standalone Zeroshot Rust engine",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/the-open-engine/zeroshot.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "zeroshot-rust": "bin/zeroshot-rust.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "install.js",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

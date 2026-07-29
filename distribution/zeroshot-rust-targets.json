@@ -1,0 +1,37 @@
+[
+  {
+    "target": "x86_64-unknown-linux-gnu",
+    "runner": "ubuntu-latest",
+    "platform": "linux",
+    "arch": "x64",
+    "executable": "zeroshot-rust"
+  },
+  {
+    "target": "aarch64-unknown-linux-gnu",
+    "runner": "ubuntu-24.04-arm",
+    "platform": "linux",
+    "arch": "arm64",
+    "executable": "zeroshot-rust"
+  },
+  {
+    "target": "x86_64-apple-darwin",
+    "runner": "macos-15-intel",
+    "platform": "darwin",
+    "arch": "x64",
+    "executable": "zeroshot-rust"
+  },
+  {
+    "target": "aarch64-apple-darwin",
+    "runner": "macos-14",
+    "platform": "darwin",
+    "arch": "arm64",
+    "executable": "zeroshot-rust"
+  },
+  {
+    "target": "x86_64-pc-windows-msvc",
+    "runner": "windows-latest",
+    "platform": "win32",
+    "arch": "x64",
+    "executable": "zeroshot-rust.exe"
+  }
+]

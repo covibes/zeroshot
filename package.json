@@ -55,6 +55,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "protocol:check": "cargo run -p openengine-cluster-testkit --bin generate-cluster-protocol -- --check",
+    "rust:distribution:check": "node scripts/rust-distribution.js check-repository",
     "rust:check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
     "deadcode": "ts-prune --skip node_modules",
     "deadcode:files": "unimported",

@@ -91,6 +91,8 @@ jobs:
           NODE
 
   dry-run:
+    outputs:
+      tag: ${{ steps.rust-version.outputs.tag }}
     needs: [install-matrix]
     if: |
       github.event_name == 'workflow_dispatch' &&
@@ -139,9 +141,23 @@ jobs:
           "$prefix_dir/bin/zeroshot" list
 
       - name: Run semantic-release dry run
+        id: semantic-dry-run
         run: node scripts/release-dry-run.js
 
+      - name: Resolve dry-run Rust version
+        id: rust-version
+        shell: bash
+        run: |
+          version="${{ steps.semantic-dry-run.outputs.version }}"
+          if [[ -z "$version" ]]; then
+            version="$(node scripts/rust-distribution.js print-version)"
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
   release:
+    outputs:
+      created: ${{ steps.semantic-release.outputs.created }}
+      tag: ${{ steps.semantic-release.outputs.tag }}
     needs: [install-matrix]
     if: |
       always() &&
@@ -217,6 +233,20 @@ jobs:
           "$prefix_dir/bin/zeroshot" --help
           "$prefix_dir/bin/zeroshot" list
 
+      - name: Resolve semantic-release version before publication
+        id: release-plan
+        if: steps.candidate.outputs.current == 'true'
+        env:
+          GITHUB_REF_NAME: main
+        run: node scripts/release-dry-run.js
+
+      - name: Enforce Rust release version coupling before publication
+        if: steps.release-plan.outputs.version != ''
+        env:
+          RELEASE_VERSION: ${{ steps.release-plan.outputs.version }}
+        run: node scripts/rust-distribution.js check-version --tag "v$RELEASE_VERSION"
+        shell: bash
+
       - name: Recheck main immediately before publication
         if: steps.candidate.outputs.current == 'true'
         shell: bash
@@ -230,16 +260,229 @@ jobs:
           fi
 
       - name: Run semantic-release
+        id: semantic-release
         if: steps.candidate.outputs.current == 'true'
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: npx semantic-release
+        run: |
+          set -euo pipefail
+          tags_before="$(git tag --points-at HEAD --list 'v*')"
+          npx semantic-release
+          tags_after="$(git tag --points-at HEAD --list 'v*')"
+          if [[ -n "$tags_after" && "$tags_after" != "$tags_before" ]]; then
+            [[ "$(printf '%s\n' "$tags_after" | wc -l)" -eq 1 ]] || {
+              echo "::error::semantic-release created more than one tag at HEAD"
+              exit 1
+            }
+            echo "created=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$tags_after" >> "$GITHUB_OUTPUT"
+          else
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Assert release state
         if: steps.candidate.outputs.current == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run release:assert-published
+
+  rust-binaries:
+    needs: [dry-run, release]
+    if: |
+      always() &&
+      (
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.action == 'dry-run' &&
+          needs.dry-run.result == 'success'
+        ) ||
+        (
+          github.event_name == 'workflow_run' &&
+          needs.release.result == 'success' &&
+          needs.release.outputs.created == 'true'
+        )
+      )
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            executable: zeroshot-rust
+            c-compiler: cc
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            executable: zeroshot-rust.exe
+            c-compiler: cl.exe
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && needs.dry-run.outputs.tag || needs.release.outputs.tag }}
+      BINARY_PATH: target/${{ matrix.target }}/release/${{ matrix.executable }}
+    steps:
+      - name: Checkout immutable release source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || needs.release.outputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+
+      - name: Setup Rust 1.97.0 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.0
+          targets: ${{ matrix.target }}
+
+      - name: Verify bundled SQLite C toolchain
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          C_COMPILER: ${{ matrix.c-compiler }}
+        run: command -v "$C_COMPILER"
+
+      - name: Verify bundled SQLite MSVC toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) {
+            throw 'MSVC C toolchain required by bundled SQLite is unavailable'
+          }
+
+      - name: Verify Rust and release tag versions are coupled
+        run: node scripts/rust-distribution.js check-version --tag "$RELEASE_TAG"
+        shell: bash
+
+      - name: Build standalone Rust release binary
+        run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}
+
+      - name: Run standalone Rust release binary
+        run: node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"
+        shell: bash
+
+      - name: Package target archive
+        run: |
+          node scripts/rust-distribution.js package \
+            --target "${{ matrix.target }}" \
+            --version "$RELEASE_TAG" \
+            --binary "$BINARY_PATH" \
+            --out rust-release
+        shell: bash
+
+      - name: Run executable extracted from target archive
+        run: |
+          node scripts/rust-distribution.js smoke-archive \
+            --target "${{ matrix.target }}" \
+            --archive "rust-release/zeroshot-rust-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
+        shell: bash
+
+      - name: Upload target archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-${{ matrix.target }}
+          path: rust-release/*.tar.gz
+          if-no-files-found: error
+
+  rust-manifest:
+    needs: [dry-run, release, rust-binaries]
+    if: always() && needs.rust-binaries.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && needs.dry-run.outputs.tag || needs.release.outputs.tag }}
+    steps:
+      - name: Checkout release tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || needs.release.outputs.tag }}
+
+      - name: Download every target archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: zeroshot-rust-*
+          path: rust-release
+          merge-multiple: true
+
+      - name: Build and verify complete checksum manifest
+        run: node scripts/rust-distribution.js manifest --version "$RELEASE_TAG" --dir rust-release
+        shell: bash
+
+      - name: Upload complete dry-run distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-${{ env.RELEASE_TAG }}
+          path: |
+            rust-release/*.tar.gz
+            rust-release/SHA256SUMS
+          if-no-files-found: error
+
+  rust-publish:
+    needs: [release, rust-manifest]
+    if: |
+      needs.release.result == 'success' &&
+      needs.release.outputs.created == 'true' &&
+      needs.rust-manifest.result == 'success'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout immutable release tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Download complete Rust distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: zeroshot-rust-${{ needs.release.outputs.tag }}
+          path: rust-release
+
+      - name: Attach verified binaries to semantic-release GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: gh release upload "$RELEASE_TAG" rust-release/*
+
+      - name: Stage coupled shim package version
+        working-directory: npm/zeroshot-rust
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: npm version "${RELEASE_TAG#v}" --no-git-tag-version
+        shell: bash
+
+      - name: Publish standalone Rust shim package
+        working-directory: npm/zeroshot-rust
+        run: npm publish --provenance --access public
 
   recover:
     if: |
