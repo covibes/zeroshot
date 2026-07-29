@@ -52,6 +52,13 @@ async function waitForStartupCancellation(taskId, options) {
         return true;
       }
     }
+    if (Number.isInteger(current.pid) && current.pid > 0) {
+      await killTaskCommand(taskId, options);
+      const terminal = getTask(taskId);
+      return Boolean(
+        terminal && TERMINAL_STATUSES.has(terminal.status) && !terminal.commandCleanup
+      );
+    }
     await sleep(pollMs);
   }
 
@@ -89,15 +96,33 @@ export async function killTaskCommand(taskId, options = {}) {
     return;
   }
 
+  const platform = options.platform || process.platform;
+  const terminate = options.terminateProcessFn || terminateProcess;
+  const processOptions = { ...options };
+  delete processOptions.platform;
+  delete processOptions.terminateProcessFn;
+
   const terminationOptions = {
-    ...options,
+    ...processOptions,
     processGroupId: task.processGroupId,
     terminationStrategy: task.terminationStrategy || 'process',
   };
 
-  const result = await terminateProcess(task.pid, terminationOptions);
+  const result = await terminate(task.pid, terminationOptions);
 
   if (result.terminated && result.alreadyDead) {
+    if (platform === 'win32' && task.terminationStrategy === 'process-tree') {
+      console.log(
+        chalk.yellow(
+          `Warning: Windows task root ${task.pid} is gone but descendant termination is unverified; preserving cleanup ownership`
+        )
+      );
+      updateTask(taskId, {
+        error: 'Windows process-tree termination could not be confirmed after root exit',
+      });
+      process.exitCode = 1;
+      return;
+    }
     console.log(chalk.yellow('Process already dead, updating status...'));
     const cleanupUpdate = await cleanupTerminatedTask(task);
     updateTask(taskId, {

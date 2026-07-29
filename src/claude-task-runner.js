@@ -520,6 +520,7 @@ class ClaudeTaskRunner extends TaskRunner {
       let statusCheckInterval = null;
       let resolved = false;
       let lineBuffer = '';
+      let cleanupRecoveryPending = false;
 
       // Get log file path
       try {
@@ -654,33 +655,43 @@ class ClaudeTaskRunner extends TaskRunner {
 
       statusCheckInterval = setInterval(() => {
         runCommand(ctPath, ['status', taskId], {}, (error, stdout) => {
-          if (resolved) return;
-
-          if (
-            !error &&
-            (stdout.includes('Status:     completed') || stdout.includes('Status:     failed'))
-          ) {
-            const success = stdout.includes('Status:     completed');
-
-            pollLogFile();
-
-            setTimeout(() => {
-              if (resolved) return;
-              resolved = true;
-
-              if (pollInterval) clearInterval(pollInterval);
-              if (statusCheckInterval) clearInterval(statusCheckInterval);
-
-              const errorContext = extractErrorContext(success, stdout);
-
-              resolve({
-                success,
-                output,
-                error: errorContext,
-                taskId,
+          if (resolved || error) return;
+          const terminalMatch = stdout.match(/Status:\s+(completed|failed)/i);
+          if (!terminalMatch) return;
+          if (/Cleanup:\s+pending/i.test(stdout)) {
+            if (!cleanupRecoveryPending) {
+              cleanupRecoveryPending = true;
+              runCommand(ctPath, ['kill', taskId], { timeout: 10000 }, (cleanupError) => {
+                cleanupRecoveryPending = false;
+                if (cleanupError) {
+                  this._log(
+                    `⚠️ [${agentId}]: Terminal cleanup recovery will retry: ${cleanupError.message}`
+                  );
+                }
               });
-            }, 500);
+            }
+            return;
           }
+
+          const success = terminalMatch[1].toLowerCase() === 'completed';
+          pollLogFile();
+
+          setTimeout(() => {
+            if (resolved) return;
+            resolved = true;
+
+            clearInterval(pollInterval);
+            clearInterval(statusCheckInterval);
+
+            const errorContext = extractErrorContext(success, stdout);
+
+            resolve({
+              success,
+              output,
+              error: errorContext,
+              taskId,
+            });
+          }, 500);
         });
       }, 1000);
 

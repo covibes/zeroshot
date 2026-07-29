@@ -22,7 +22,7 @@ function runFixture(mode) {
     );
     assert.strictEqual(
       execution.status,
-      mode === 'retry' ? 0 : 1,
+      ['unsafe', 'unsafe-file', 'clean-unsafe'].includes(mode) ? 1 : 0,
       execution.stderr || execution.stdout
     );
     const { stdout } = execution;
@@ -71,4 +71,22 @@ describe('Terminal task cleanup recovery', function () {
     assert.match(stdout, /cleanup remains pending/i);
     assert.match(stdout, /Refusing (?:unowned|non-canonical) output-schema cleanup/);
   });
+  for (const cleanMode of ['completed', 'failed', 'all']) {
+    it(`recovers cleanup before deleting rows selected by --${cleanMode}`, function () {
+      const { result } = runFixture(`clean-${cleanMode}`);
+      assert.strictEqual(result.retained, null);
+      assert.strictEqual(result.cleanupExists, false);
+      assert.strictEqual(result.exitCode, 0);
+    });
+  }
+
+  it('retains a selected row when clean cannot recover its receipt', function () {
+    const { result, stdout } = runFixture('clean-unsafe');
+    assert.notStrictEqual(result.retained, null);
+    assert.notStrictEqual(result.retained.commandCleanup, null);
+    assert.strictEqual(result.cleanupExists, true);
+    assert.strictEqual(result.exitCode, 1);
+    assert.match(stdout, /Retained: clean-all-unsafe/);
+  });
+
 });

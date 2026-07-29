@@ -7,6 +7,7 @@ const {
   cleanupClaudeSettingsOverlay,
   ensureAskUserQuestionHook,
   ensureDangerousGitHook,
+  isCanonicalClaudeSettingsOverlayDirectory,
   isClaudeSettingsOverlayDirectory,
   isClaudeSettingsOverlayPath,
   prepareClaudeSettingsOverlay,
@@ -35,8 +36,10 @@ describe('worktree-claude-config', function () {
       settings.hooks.PreToolUse.map((entry) => entry.matcher),
       ['AskUserQuestion']
     );
-    assert.strictEqual(fs.statSync(settingsPath).mode & 0o777, 0o600);
-    assert.strictEqual(fs.statSync(path.dirname(settingsPath)).mode & 0o777, 0o700);
+    if (process.platform !== 'win32') {
+      assert.strictEqual(fs.statSync(settingsPath).mode & 0o777, 0o600);
+      assert.strictEqual(fs.statSync(path.dirname(settingsPath)).mode & 0o777, 0o700);
+    }
     assert.ok(
       fs.existsSync(path.join(path.dirname(settingsPath), 'hooks', 'block-ask-user-question.py'))
     );
@@ -145,6 +148,42 @@ describe('worktree-claude-config', function () {
     );
     assert.deepStrictEqual(fs.readdirSync(insecureDir), []);
   });
+  it('accepts Windows overlay directories without relying on POSIX mode bits', function () {
+    const overlayDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-settings-win-'));
+    const settingsPath = path.join(overlayDir, 'settings.json');
+    tempDirs.push(overlayDir);
+    fs.chmodSync(overlayDir, 0o755);
+
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath), process.platform === 'win32');
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath, 'win32'), true);
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath, 'linux'), false);
+  });
+
+  it('rejects noncanonical overlay directory spellings before path normalization', function () {
+    const settingsPath = prepareClaudeSettingsOverlay();
+    const overlayDir = path.dirname(settingsPath);
+    const variants = [
+      `${overlayDir}${path.sep}.`,
+      `${overlayDir}${path.sep}missing${path.sep}..`,
+      `${overlayDir}${path.sep}${path.sep}`,
+    ];
+
+    assert.strictEqual(isCanonicalClaudeSettingsOverlayDirectory(overlayDir), true);
+    for (const variant of variants) {
+      assert.strictEqual(isCanonicalClaudeSettingsOverlayDirectory(variant), false, variant);
+    }
+
+    assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
+    assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
+    for (const variant of variants) {
+      assert.strictEqual(
+        cleanupClaudeSettingsOverlay(`${variant}${path.sep}settings.json`),
+        false,
+        variant
+      );
+    }
+  });
+
 
 
   it('prefers root MCP config and supports the legacy Claude-directory fallback', function () {

@@ -1,6 +1,7 @@
 import { unlinkSync, existsSync } from 'fs';
 import chalk from 'chalk';
 import { loadTasks, saveTasks } from '../store.js';
+import { createCommandSpecCleanup } from '../command-spec-cleanup.js';
 
 export function cleanTasks(options = {}) {
   const tasks = loadTasks();
@@ -11,6 +12,8 @@ export function cleanTasks(options = {}) {
     return;
   }
 
+  let cleanupFailed = false;
+  let removedCount = 0;
   const toRemove = [];
 
   for (const task of taskList) {
@@ -33,18 +36,38 @@ export function cleanTasks(options = {}) {
   console.log(chalk.dim(`Removing ${toRemove.length} task(s)...\n`));
 
   for (const task of toRemove) {
-    // Delete log file
+    if (task.commandCleanup) {
+      let recovered = false;
+      try {
+        const cleanup = createCommandSpecCleanup(task.commandCleanup, (cleanupPath, error) => {
+          console.log(chalk.yellow(`Warning: failed to clean up ${cleanupPath}: ${error.message}`));
+        });
+        recovered = cleanup.runSync();
+      } catch (error) {
+        console.log(
+          chalk.yellow(`Warning: failed to validate cleanup for task ${task.id}: ${error.message}`)
+        );
+      }
+      if (!recovered) {
+        cleanupFailed = true;
+        console.log(
+          chalk.yellow(`  Retained: ${task.id} [${task.status}] (command cleanup pending)`)
+        );
+        continue;
+      }
+      task.commandCleanup = null;
+    }
     if (task.logFile && existsSync(task.logFile)) {
       unlinkSync(task.logFile);
     }
 
-    // Remove from tasks
-    delete tasks[task.id];
-
     console.log(chalk.dim(`  Removed: ${task.id} [${task.status}]`));
+    delete tasks[task.id];
+    removedCount++;
   }
 
   saveTasks(tasks);
 
-  console.log(chalk.green(`\n✓ Cleaned ${toRemove.length} task(s)`));
+  console.log(chalk.green(`\n✓ Cleaned ${removedCount} task(s)`));
+  if (cleanupFailed) process.exitCode = 1;
 }

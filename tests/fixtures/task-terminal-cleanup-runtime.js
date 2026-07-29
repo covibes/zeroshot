@@ -161,10 +161,27 @@ async function runUnsafeFileScenario(store, killTaskCommand) {
   }
 }
 
+function runCleanScenario(store, cleanTasks, cleanMode, unsafe = false) {
+  const cleanupPath = unsafe
+    ? path.join(process.env.ZEROSHOT_HOME, 'user-cleanup')
+    : fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-settings-run-clean-'));
+  if (unsafe) fs.mkdirSync(cleanupPath);
+  const status = cleanMode === 'completed' ? 'completed' : 'failed';
+  const taskId = `clean-${cleanMode}${unsafe ? '-unsafe' : ''}`;
+  store.addTask(taskRecord(taskId, status, cleanupReceipt(cleanupPath)));
+  cleanTasks({ [cleanMode]: true });
+  return {
+    retained: store.getTask(taskId) || null,
+    cleanupExists: fs.existsSync(cleanupPath),
+    exitCode: process.exitCode || 0,
+  };
+}
+
 async function main() {
   const store = await import(moduleUrl('task-lib/store.js'));
   const { killTaskCommand } = await import(moduleUrl('task-lib/commands/kill.js'));
   const { completeWatcherTask } = await import(moduleUrl('task-lib/watcher-output-runtime.js'));
+  const { cleanTasks } = await import(moduleUrl('task-lib/commands/clean.js'));
   let result;
   if (mode === 'retry') {
     result = await runRetryScenario(store, killTaskCommand, completeWatcherTask);
@@ -172,6 +189,14 @@ async function main() {
     result = await runUnsafeScenario(store, killTaskCommand);
   } else if (mode === 'unsafe-file') {
     result = await runUnsafeFileScenario(store, killTaskCommand);
+  } else if (mode === 'clean-completed') {
+    result = runCleanScenario(store, cleanTasks, 'completed');
+  } else if (mode === 'clean-failed') {
+    result = runCleanScenario(store, cleanTasks, 'failed');
+  } else if (mode === 'clean-all') {
+    result = runCleanScenario(store, cleanTasks, 'all');
+  } else if (mode === 'clean-unsafe') {
+    result = runCleanScenario(store, cleanTasks, 'all', true);
   } else {
     throw new Error(`Unknown terminal cleanup fixture mode: ${mode}`);
   }

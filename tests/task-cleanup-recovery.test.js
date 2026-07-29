@@ -8,6 +8,7 @@ const { promisify } = require('node:util');
 
 const execFileAsync = promisify(execFile);
 const { followClaudeTaskLogs } = require('../src/agent/agent-task-executor');
+const ClaudeTaskRunner = require('../src/claude-task-runner');
 const commandCleanupFixtureSource = `
   import fs from 'fs';
   import os from 'os';
@@ -180,20 +181,11 @@ describe('Task cleanup recovery', function () {
     const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-task-late-pid-store-'));
     const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
     const killUrl = new URL('../task-lib/commands/kill.js', `file://${__filename}`).href;
-    const runtimeUrl = new URL('../task-lib/watcher-output-runtime.js', `file://${__filename}`)
-      .href;
-    const cleanupUrl = new URL('../task-lib/command-spec-cleanup.js', `file://${__filename}`)
-      .href;
-    const terminationUrl = new URL('../task-lib/process-termination.js', `file://${__filename}`)
-      .href;
     const script = `
       import { spawn } from 'child_process';
       ${commandCleanupFixtureSource}
       const { addTask, getTask, updateTask } = await import(${JSON.stringify(storeUrl)});
       const { killTaskCommand } = await import(${JSON.stringify(killUrl)});
-      const { completePendingWatcherCancellation } = await import(${JSON.stringify(runtimeUrl)});
-      const { createCommandSpecCleanup } = await import(${JSON.stringify(cleanupUrl)});
-      const { terminateProcess } = await import(${JSON.stringify(terminationUrl)});
       addTask({
         id: 'late-pid-task',
         status: 'running',
@@ -207,6 +199,9 @@ describe('Task cleanup recovery', function () {
         startupCancelTimeoutMs: 2000,
         pollMs: 5
       });
+      while (!getTask('late-pid-task').cancelRequested) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
       const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
         detached: process.platform !== 'win32',
         stdio: 'ignore'
@@ -219,23 +214,6 @@ describe('Task cleanup recovery', function () {
         pid: child.pid,
         processGroupId: process.platform === 'win32' ? null : child.pid,
         terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group'
-      });
-      const commandCleanup = createCommandSpecCleanup(
-        getTask('late-pid-task').commandCleanup,
-        () => {}
-      );
-      await completePendingWatcherCancellation({
-        taskId: 'late-pid-task',
-        getTask,
-        commandCleanup,
-        terminateProvider: () => terminateProcess(child.pid, {
-          processGroupId: process.platform === 'win32' ? null : child.pid,
-          terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
-          graceMs: 100,
-          pollMs: 5
-        }).then((result) => result.terminated),
-        updateTask,
-        emergencyLog() {}
       });
       await cancellation;
       const terminal = getTask('late-pid-task');
@@ -272,6 +250,67 @@ describe('Task cleanup recovery', function () {
       assert.strictEqual(result.cleanupExists, false);
       assert.strictEqual(result.providerAlive, false);
       assert.strictEqual(result.exitCode, 0);
+    } finally {
+      fs.rmSync(taskHome, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves Windows process-tree cleanup ownership when the root is already gone', async function () {
+    const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-task-win-root-gone-'));
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    const killUrl = new URL('../task-lib/commands/kill.js', `file://${__filename}`).href;
+    const script = `
+      ${commandCleanupFixtureSource}
+      const { addTask, getTask } = await import(${JSON.stringify(storeUrl)});
+      const { killTaskCommand } = await import(${JSON.stringify(killUrl)});
+      addTask({
+        id: 'win-root-gone',
+        status: 'running',
+        pid: 424242,
+        terminationStrategy: 'process-tree',
+        commandCleanup: {
+          cleanup: [liveCleanup],
+          cleanupMetadata: cleanupMetadata(liveCleanup)
+        }
+      });
+      await killTaskCommand('win-root-gone', {
+        platform: 'win32',
+        terminateProcessFn: async () => ({
+          terminated: true,
+          alreadyDead: true,
+          scope: 'process-tree'
+        })
+      });
+      const exitCode = process.exitCode || 0;
+      process.exitCode = 0;
+      console.log('RESULT:' + JSON.stringify({
+        task: getTask('win-root-gone'),
+        cleanupExists: fs.existsSync(liveCleanup),
+        exitCode
+      }));
+      fs.rmSync(deadCleanup, { recursive: true, force: true });
+    `;
+
+    try {
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        ['--input-type=module', '-e', script],
+        {
+          env: {
+            ...process.env,
+            HOME: taskHome,
+            USERPROFILE: taskHome,
+            ZEROSHOT_HOME: taskHome,
+          },
+        }
+      );
+      const line = stdout.split('\n').find((entry) => entry.startsWith('RESULT:'));
+      const result = JSON.parse(line.slice('RESULT:'.length));
+      assert.strictEqual(result.task.status, 'running');
+      assert.strictEqual(result.task.pid, 424242);
+      assert.notStrictEqual(result.task.commandCleanup, null);
+      assert.strictEqual(result.cleanupExists, true);
+      assert.strictEqual(result.exitCode, 1);
     } finally {
       fs.rmSync(taskHome, { recursive: true, force: true });
     }
@@ -530,6 +569,63 @@ if (action === 'get-log-path') {
       assert.strictEqual(fs.readFileSync(attemptsPath, 'utf8'), '2');
       assert.strictEqual(fs.existsSync(pendingPath), false);
       assert.strictEqual(agent.currentTask, null);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Direct runner terminal cleanup recovery', function () {
+  this.timeout(10000);
+
+  it('does not resolve terminal status until persisted cleanup succeeds', async function () {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-direct-cleanup-'));
+    const taskCliPath = path.join(tempDir, 'zeroshot');
+    const logPath = path.join(tempDir, 'task.log');
+    const pendingPath = path.join(tempDir, 'cleanup-pending');
+    const attemptsPath = path.join(tempDir, 'cleanup-attempts');
+    fs.writeFileSync(logPath, '');
+    fs.writeFileSync(pendingPath, 'pending');
+    fs.writeFileSync(
+      taskCliPath,
+      `#!/usr/bin/env node
+      const fs = require('node:fs');
+      const action = process.argv[2];
+      if (action === 'get-log-path') {
+        process.stdout.write(${JSON.stringify(logPath)} + '\\n');
+      } else if (action === 'status') {
+        const cleanup = fs.existsSync(${JSON.stringify(pendingPath)}) ? 'pending' : 'complete';
+        process.stdout.write('Status: completed\\nCleanup: ' + cleanup + '\\n');
+      } else if (action === 'kill') {
+        const attempts = fs.existsSync(${JSON.stringify(attemptsPath)})
+          ? Number(fs.readFileSync(${JSON.stringify(attemptsPath)}, 'utf8'))
+          : 0;
+        fs.writeFileSync(${JSON.stringify(attemptsPath)}, String(attempts + 1));
+        if (attempts === 0) process.exit(1);
+        fs.rmSync(${JSON.stringify(pendingPath)}, { force: true });
+      }
+      `,
+      { mode: 0o755 }
+    );
+
+    const runner = new ClaudeTaskRunner({ quiet: true, timeout: 8000 });
+    let settled = false;
+    try {
+      const execution = runner._followLogs(taskCliPath, 'direct-cleanup-task', 'direct-agent');
+      execution.finally(() => {
+        settled = true;
+      });
+      const deadline = Date.now() + 4000;
+      while (!fs.existsSync(attemptsPath) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      assert.strictEqual(fs.readFileSync(attemptsPath, 'utf8'), '1');
+      assert.strictEqual(settled, false);
+      const result = await execution;
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(fs.readFileSync(attemptsPath, 'utf8'), '2');
+      assert.strictEqual(fs.existsSync(pendingPath), false);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

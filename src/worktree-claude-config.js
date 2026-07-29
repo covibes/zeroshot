@@ -127,11 +127,18 @@ function prepareClaudeSettingsOverlay(options = {}) {
 }
 
 function cleanupClaudeSettingsOverlay(settingsPath) {
+  if (!isCanonicalClaudeSettingsOverlayPath(settingsPath)) {
+    return false;
+  }
+
+  const overlayDir = path.dirname(settingsPath);
+  if (!fs.existsSync(overlayDir)) {
+    return true;
+  }
   if (!isClaudeSettingsOverlayPath(settingsPath)) {
     return false;
   }
 
-  const overlayDir = path.dirname(path.resolve(settingsPath));
   fs.rmSync(overlayDir, { recursive: true, force: true });
   return true;
 }
@@ -150,7 +157,7 @@ function isCanonicalClaudeSettingsOverlayPath(settingsPath) {
   );
 }
 
-function isClaudeSettingsOverlayPath(settingsPath) {
+function isClaudeSettingsOverlayPath(settingsPath, platform = process.platform) {
   if (!isCanonicalClaudeSettingsOverlayPath(settingsPath)) {
     return false;
   }
@@ -162,14 +169,19 @@ function isClaudeSettingsOverlayPath(settingsPath) {
     const stat = fs.lstatSync(overlayDir);
     const ownedByProcess =
       typeof process.getuid !== 'function' || stat.uid === process.getuid();
-    return stat.isDirectory() && !stat.isSymbolicLink() && ownedByProcess && (stat.mode & 0o777) === 0o700;
+    const privateMode = platform === 'win32' || (stat.mode & 0o777) === 0o700;
+    return stat.isDirectory() && !stat.isSymbolicLink() && ownedByProcess && privateMode;
   } catch {
     return false;
   }
 }
 
 function isCanonicalClaudeSettingsOverlayDirectory(overlayDir) {
-  if (typeof overlayDir !== 'string' || !overlayDir) {
+  if (
+    typeof overlayDir !== 'string' ||
+    !overlayDir ||
+    path.resolve(overlayDir) !== overlayDir
+  ) {
     return false;
   }
   return isCanonicalClaudeSettingsOverlayPath(path.join(overlayDir, SETTINGS_BASENAME));
