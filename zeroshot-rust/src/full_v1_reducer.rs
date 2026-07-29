@@ -461,7 +461,31 @@ impl<'a> Engine<'a> {
         }
     }
 
+    fn push_void_decision(&mut self, execution: ExecutionId, reason: ExecutionVoidReason) {
+        if !self.decisions.iter().any(|decision| {
+            matches!(
+                decision,
+                Decision::VoidLoser {
+                    run,
+                    execution: existing,
+                    ..
+                } if *run == self.run && *existing == execution
+            )
+        }) {
+            self.decisions.push(Decision::VoidLoser {
+                run: self.run,
+                execution,
+                reason,
+            });
+        }
+    }
+
     fn canonicalize_void_decisions(&mut self) {
+        let mut unique_voids = BTreeSet::new();
+        self.decisions.retain(|decision| match decision {
+            Decision::VoidLoser { execution, .. } => unique_voids.insert(*execution),
+            _ => true,
+        });
         let mut slots = Vec::new();
         let mut voids = Vec::new();
         for (index, decision) in self.decisions.iter().enumerate() {
@@ -1250,23 +1274,19 @@ impl<'a> Engine<'a> {
             .iter()
             .filter(|execution| {
                 execution.run == self.run
+                    && self.consumed_executions.contains(&execution.execution)
                     && descendants.contains(&execution.occurrence.node)
                     && execution
                         .occurrence
                         .map_indices
                         .starts_with(scope.map_indices)
+                    && matches!(execution.state, DurableExecutionState::Active)
             })
+            .map(|execution| (execution.dispatch_position, execution.execution))
             .collect::<Vec<_>>();
-        losers.sort_by_key(|execution| (execution.dispatch_position, execution.execution));
-        for execution in losers {
-            self.consumed_executions.insert(execution.execution);
-            if matches!(execution.state, DurableExecutionState::Active) {
-                self.decisions.push(Decision::VoidLoser {
-                    run: self.run,
-                    execution: execution.execution,
-                    reason: scope.reason,
-                });
-            }
+        losers.sort_unstable();
+        for (_, execution) in losers {
+            self.push_void_decision(execution, scope.reason);
         }
     }
 
@@ -1277,24 +1297,23 @@ impl<'a> Engine<'a> {
             .iter()
             .filter(|execution| {
                 execution.run == self.run
+                    && self.consumed_executions.contains(&execution.execution)
                     && descendants.contains(&execution.occurrence.node)
                     && execution
                         .occurrence
                         .map_indices
                         .starts_with(scope.common.map_indices)
-                    && execution.occurrence.map_indices != scope.winner_scope
+                    && !execution
+                        .occurrence
+                        .map_indices
+                        .starts_with(scope.winner_scope)
+                    && matches!(execution.state, DurableExecutionState::Active)
             })
+            .map(|execution| (execution.dispatch_position, execution.execution))
             .collect::<Vec<_>>();
-        losers.sort_by_key(|execution| (execution.dispatch_position, execution.execution));
-        for execution in losers {
-            self.consumed_executions.insert(execution.execution);
-            if matches!(execution.state, DurableExecutionState::Active) {
-                self.decisions.push(Decision::VoidLoser {
-                    run: self.run,
-                    execution: execution.execution,
-                    reason: scope.common.reason,
-                });
-            }
+        losers.sort_unstable();
+        for (_, execution) in losers {
+            self.push_void_decision(execution, scope.common.reason);
         }
     }
 }

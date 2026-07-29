@@ -326,6 +326,54 @@ async fn equal_position_parallel_ties_are_broken_by_authored_branch_position() {
 }
 
 #[tokio::test]
+async fn earlier_ledger_position_wins_first_independent_of_authored_and_history_order() {
+    let first = json!({
+        "kind":"par","name":"position_first","state":boundary_state(),
+        "branches":[verifier("authored_first",1),verifier("settled_first",1)],
+        "promotedStatePaths":[],
+        "join":{"kind":"first","when":{
+            "kind":"k_of_n","count":1,
+            "values":[
+                {"name":"authored_first","source":"signal","field":"verdict"},
+                {"name":"settled_first","source":"signal","field":"verdict"}
+            ],
+            "labels":["accepted"]
+        }}
+    });
+    let graph = verified(
+        seq(vec![first, succeed("position_done")]),
+        json!({"authored_first":1,"settled_first":1}),
+    )
+    .await;
+    let authored = execution(
+        ExecutionSpec::new(1, 1, "authored_first").settled_at(10),
+        verdict("accepted"),
+    );
+    let earlier = execution(
+        ExecutionSpec::new(2, 2, "settled_first").settled_at(3),
+        verdict("accepted"),
+    );
+    let first_order = FullV1Reducer::new(&graph)
+        .reduce(input(&json!({}), &[authored.clone(), earlier.clone()]))
+        .unwrap();
+    let reversed_order = FullV1Reducer::new(&graph)
+        .reduce(input(&json!({}), &[earlier, authored]))
+        .unwrap();
+    assert!(first_order.decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::Continue { node } if node.as_str() == "settled_first"
+    )));
+    assert!(!first_order.decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::Continue { node } if node.as_str() == "authored_first"
+    )));
+    assert_eq!(
+        first_order.canonical_decision_bytes().unwrap(),
+        reversed_order.canonical_decision_bytes().unwrap()
+    );
+}
+
+#[tokio::test]
 async fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
     let graph = verified(
         seq(vec![step("work", 2), succeed("done")]),

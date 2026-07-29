@@ -13,7 +13,8 @@ use openengine_cluster_server::admission::{CancellationSignal, CommitProposal};
 use openengine_cluster_server::lifecycle::LifecycleStore;
 use zeroshot_engine::cluster_ledger::adapters::ClusterLedgerAdapters;
 use zeroshot_engine::cluster_ledger::mutations::{
-    AdmissionRequest, ExecutionVoidRequest, ReductionDispatchRequest, SafeFaultConsequence,
+    AdmissionRequest, DispatchAllocation, ExecutionVoidRequest, ReductionDispatchRequest,
+    SafeFaultConsequence,
 };
 use zeroshot_engine::cluster_ledger::record::{
     CanonicalDigest, RecordKind, RecordPayload, StoredRecord, MAX_APPEND_RECORDS,
@@ -215,6 +216,145 @@ async fn reducer_execution_context_attempts_and_voids_replay_exactly() {
 }
 
 #[tokio::test]
+async fn replay_rejects_node_instance_aliases_across_distinct_occurrences() {
+    let (store, ledger) = ledger("reducer-node-alias").await;
+    ledger
+        .admit(key("alias-admit"), [51; 32], admission(b"alias"))
+        .await
+        .unwrap();
+    let first_occurrence = StructuralOccurrence {
+        node: "first-work".parse().unwrap(),
+        map_indices: Vec::new(),
+    };
+    let second_occurrence = StructuralOccurrence {
+        node: "second-work".parse().unwrap(),
+        map_indices: Vec::new(),
+    };
+    let first = ledger
+        .dispatch_reduction(
+            key("alias-first"),
+            [52; 32],
+            ReductionDispatchRequest {
+                occurrence: first_occurrence,
+                attempt: PositiveInteger::new(1).unwrap(),
+                canonical_input: b"null".to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .value;
+    let second = ledger
+        .dispatch_reduction(
+            key("alias-second"),
+            [53; 32],
+            ReductionDispatchRequest {
+                occurrence: second_occurrence.clone(),
+                attempt: PositiveInteger::new(1).unwrap(),
+                canonical_input: b"null".to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .value;
+    let mut snapshot = store
+        .read_prefix(&resource("reducer-node-alias"), None)
+        .await
+        .unwrap();
+    let dispatch_index = snapshot
+        .records
+        .iter()
+        .position(|record| {
+            matches!(
+                RecordPayload::decode(record.kind, record.version, &record.payload).unwrap(),
+                RecordPayload::Dispatch { execution, .. } if execution == second.execution
+            )
+        })
+        .unwrap();
+    replace_payload(
+        &mut snapshot,
+        dispatch_index,
+        RecordPayload::Dispatch {
+            run: second.run,
+            node_instance: first.node_instance,
+            execution: second.execution,
+        },
+    );
+    let context_index = snapshot
+        .records
+        .iter()
+        .position(|record| {
+            matches!(
+                RecordPayload::decode(record.kind, record.version, &record.payload).unwrap(),
+                RecordPayload::ExecutionContext { execution, .. } if execution == second.execution
+            )
+        })
+        .unwrap();
+    replace_payload(
+        &mut snapshot,
+        context_index,
+        RecordPayload::ExecutionContext {
+            run: second.run,
+            node_instance: first.node_instance,
+            execution: second.execution,
+            occurrence: second_occurrence,
+            attempt: PositiveInteger::new(1).unwrap(),
+            canonical_input: b"null".to_vec(),
+        },
+    );
+
+    let aliased_response = serde_json::to_vec(&DispatchAllocation {
+        run: second.run,
+        node_instance: first.node_instance,
+        execution: second.execution,
+    })
+    .unwrap();
+    let stored_receipt = snapshot
+        .receipts
+        .iter_mut()
+        .find(|receipt| {
+            receipt.method == "reducer_dispatch"
+                && serde_json::from_slice::<DispatchAllocation>(&receipt.response)
+                    .is_ok_and(|response| response.execution == second.execution)
+        })
+        .unwrap();
+    stored_receipt.response.clone_from(&aliased_response);
+    let receipt_index = snapshot
+        .records
+        .iter()
+        .position(|record| {
+            matches!(
+                RecordPayload::decode(record.kind, record.version, &record.payload).unwrap(),
+                RecordPayload::MutationReceipt { ref receipt }
+                    if receipt.method == "reducer_dispatch"
+                        && serde_json::from_slice::<DispatchAllocation>(&receipt.response)
+                            .is_ok_and(|response| response.execution == second.execution)
+            )
+        })
+        .unwrap();
+    let mut receipt = match RecordPayload::decode(
+        snapshot.records[receipt_index].kind,
+        snapshot.records[receipt_index].version,
+        &snapshot.records[receipt_index].payload,
+    )
+    .unwrap()
+    {
+        RecordPayload::MutationReceipt { receipt } => receipt,
+        _ => unreachable!(),
+    };
+    receipt.response = aliased_response;
+    replace_payload(
+        &mut snapshot,
+        receipt_index,
+        RecordPayload::MutationReceipt { receipt },
+    );
+
+    assert_eq!(
+        replay(&snapshot, &resource("reducer-node-alias")).unwrap_err(),
+        ReplayError::InvalidOrder
+    );
+}
+
+#[tokio::test]
 async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
     let (_store, ledger) = ledger("reducer-control-negative").await;
     ledger
@@ -256,4 +396,71 @@ async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
         .await
         .unwrap_err();
     assert_eq!(unmapped.kind(), &LedgerErrorKind::InvalidLifecycle);
+
+    let reducer_owned = ledger
+        .dispatch_reduction(
+            key("reducer-owned"),
+            [45; 32],
+            ReductionDispatchRequest {
+                occurrence: StructuralOccurrence {
+                    node: "reducer-work".parse().unwrap(),
+                    map_indices: Vec::new(),
+                },
+                attempt: PositiveInteger::new(1).unwrap(),
+                canonical_input: b"null".to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .value;
+    let outcome = WorkerOutcome::Verified {
+        output: serde_json::json!({"result":"complete"}),
+        artifacts: Vec::new(),
+    };
+    let outcome_bytes = serde_json::to_vec(&outcome).unwrap();
+    let outcome_digest = CanonicalDigest::of(&outcome_bytes);
+    let missing_outcome = ledger
+        .settle(
+            key("missing-reducer-outcome"),
+            [46; 32],
+            reducer_owned.execution,
+            outcome_digest,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(missing_outcome.kind(), &LedgerErrorKind::Encoding);
+
+    let fault = FaultFactory::new(&NoopObservationSink).create(ModuleEvidence::new(
+        FaultModule::Worker,
+        FaultContext::Execution,
+        EvidenceClass::ProcessExited,
+    ));
+    let reducer_safe_fault = ledger
+        .record_safe_fault(
+            key("reducer-safe-fault"),
+            [47; 32],
+            &fault,
+            SafeFaultConsequence::Settle {
+                execution: reducer_owned.execution,
+                outcome_digest,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        reducer_safe_fault.kind(),
+        &LedgerErrorKind::InvalidSettlement
+    );
+
+    ledger
+        .settle(
+            key("canonical-reducer-outcome"),
+            [48; 32],
+            reducer_owned.execution,
+            outcome_digest,
+            Some(outcome_bytes),
+        )
+        .await
+        .unwrap();
 }

@@ -11,8 +11,8 @@ use zeroshot_engine::cluster_ledger::{
     ExecutionId, ExecutionVoidReason, NodeInstanceId, RunSequence, StructuralOccurrence,
 };
 use zeroshot_engine::full_v1_reducer::{
-    Decision, DurableExecution, DurableExecutionState, FullV1Reducer, Reduction, ReductionInput,
-    TerminalProjection,
+    Decision, DurableExecution, DurableExecutionState, FullV1Reducer, ReducerError, Reduction,
+    ReductionInput, TerminalProjection,
 };
 
 struct TestWorkers;
@@ -523,13 +523,13 @@ async fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
     parallel_root["state"] = parallel_state;
     let graph = verified(parallel_root, json!({"left":1,"right":1})).await;
     let history = [
-        settled(SettledSpec::new(1, 1, "left").position(8), success(7)),
-        settled(SettledSpec::new(2, 2, "right").position(9), success(9)),
+        settled(SettledSpec::new(1, 1, "left").position(10), success(7)),
+        settled(SettledSpec::new(2, 2, "right").position(8), success(9)),
     ];
     assert_eq!(
         reduce(&graph, &json!({}), &history).terminal,
         Some(TerminalProjection::Succeeded {
-            output: json!({"result":7})
+            output: json!({"result":9})
         })
     );
 
@@ -619,6 +619,45 @@ async fn late_parallel_losers_are_voided_in_canonical_dispatch_order() {
         })
         .collect::<Vec<_>>();
     assert_eq!(voids, vec![3, 1]);
+
+    let frontier_graph = verified(
+        sequence(
+            "frontier_root",
+            vec![
+                json!({
+                    "kind":"par","name":"frontier_race","state":{"kind":"record","fields":{}},
+                    "branches":[step("frontier_loser",2),step("frontier_winner",1)],
+                    "promotedStatePaths":[],"join":{"kind":"any"}
+                }),
+                succeed("frontier_done"),
+            ],
+        ),
+        json!({"frontier_loser":2,"frontier_winner":1}),
+    )
+    .await;
+    let loser = settled(
+        SettledSpec::new(1, 1, "frontier_loser").position(12),
+        success(1),
+    );
+    let mut unreachable_attempt = active(2, 1, "frontier_loser", 14);
+    unreachable_attempt.attempt = PositiveInteger::new(2).unwrap();
+    let winner = settled(
+        SettledSpec::new(3, 2, "frontier_winner").position(10),
+        success(2),
+    );
+    let invalid_history = [loser, unreachable_attempt, winner];
+    assert_eq!(
+        FullV1Reducer::new(&frontier_graph)
+            .reduce(ReductionInput {
+                run: RunSequence::new(1).unwrap(),
+                initial_input: &json!({}),
+                executions: &invalid_history,
+                next_node_instance: 3,
+                next_execution: 4,
+            })
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
 }
 
 #[tokio::test]
@@ -659,6 +698,56 @@ async fn map_terminal_is_lazy_and_voids_late_active_items() {
         decision,
         Decision::Dispatch { occurrence, .. } if occurrence.map_indices == [1]
     )));
+
+    let nested_state = json!({
+        "kind":"record",
+        "fields":{
+            "outerItems":{"type":{"kind":"array","items":{"kind":"null"}},"required":true},
+            "innerItems":{"type":{"kind":"array","items":{"kind":"null"}},"required":true}
+        }
+    });
+    let inner_body = json!({
+        "kind":"seq","name":"nested_item_body","state":nested_state.clone(),
+        "children":[step("nested_work",1),succeed("nested_item_done")],
+        "promotedStatePaths":[]
+    });
+    let inner = json!({
+        "kind":"map","name":"inner_terminal_map","state":nested_state.clone(),
+        "over":{"source":"state","path":["innerItems"]},"maxItems":2,
+        "body":inner_body,"promotedStatePaths":[]
+    });
+    let outer = json!({
+        "kind":"map","name":"outer_terminal_map","state":nested_state.clone(),
+        "over":{"source":"state","path":["outerItems"]},"maxItems":1,
+        "body":inner,"promotedStatePaths":[]
+    });
+    let mut nested_root = sequence("nested_root", vec![outer, succeed("nested_empty_done")]);
+    nested_root["state"] = nested_state;
+    let nested_graph = verified(nested_root, json!({"nested_work":1})).await;
+    let nested_winner = settled(
+        SettledSpec::new(1, 1, "nested_work")
+            .map_indices(vec![0, 0])
+            .position(4),
+        success(1),
+    );
+    let mut nested_loser = active(2, 2, "nested_work", 10);
+    nested_loser.occurrence.map_indices = vec![0, 1];
+    let nested_reduction = reduce(
+        &nested_graph,
+        &json!({"outerItems":[null],"innerItems":[null,null]}),
+        &[nested_loser, nested_winner],
+    );
+    assert_eq!(
+        nested_reduction
+            .decisions
+            .iter()
+            .filter(|decision| matches!(
+                decision,
+                Decision::VoidLoser { execution, .. } if execution.get() == 2
+            ))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

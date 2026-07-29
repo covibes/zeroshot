@@ -581,10 +581,13 @@ impl ClusterLedger {
             return Ok(receipt);
         }
         self.require_settleable(&state)?;
-        if request
-            .verified_output
-            .as_ref()
-            .is_some_and(|bytes| CanonicalDigest::of(bytes) != outcome_digest)
+        let reducer_owned_first_settlement = state.active_dispatches.contains_key(&execution)
+            && state.execution_contexts.contains_key(&execution);
+        if (reducer_owned_first_settlement && request.verified_output.is_none())
+            || request
+                .verified_output
+                .as_ref()
+                .is_some_and(|bytes| CanonicalDigest::of(bytes) != outcome_digest)
         {
             return Err(self.domain_error(FaultContext::Settlement, LedgerErrorKind::Encoding));
         }
