@@ -1229,6 +1229,7 @@ function spawnTaskProcess({
           classifiedError.restartExhausted = true;
           classifiedError.terminationExhausted = true;
           classifiedError.terminationAttempts = 1;
+          if (nested) handle?.retainOwnership();
           classifiedError.taskId = nested ? handle?.taskId || null : agent.currentTaskId || null;
         } else if (!nested && agent.currentTask === pendingLaunch) {
           agent.currentTask = null;
@@ -2143,6 +2144,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
         rejection.restartExhausted = true;
         rejection.terminationExhausted = true;
         rejection.terminationAttempts = 1;
+        if (options.nested) options.executionHandle?.retainOwnership();
         rejection.taskId =
           isolatedTaskId || (!options.nested ? agent.currentTaskId : null) || null;
       } else if (!options.nested && agent.currentTask === isolatedPendingLaunch) {
@@ -2578,6 +2580,23 @@ function buildIsolatedLifecycleHandle({
       const termination = await terminateIsolatedTask(manager, clusterId, taskId);
       state.durableTaskTerminal = true;
       state.durableTaskStatus = termination.status;
+      if (!termination.forced && state.nested) {
+        settleIsolatedFollower({
+          agent,
+          state,
+          cleanup,
+          resolve,
+          result: {
+            success: false,
+            output: state.fullOutput,
+            error: reason,
+            code: details.code || null,
+            taskId,
+            tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+          },
+        });
+        return termination;
+      }
       if (!termination.forced) {
         await settleIsolatedTerminalStatus({
           agent,

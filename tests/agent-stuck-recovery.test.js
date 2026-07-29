@@ -6,6 +6,10 @@ const { URL } = require('node:url');
 
 const { startLivenessCheck, stopLivenessCheck, stop } = require('../src/agent/agent-lifecycle');
 const { killTask, spawnTaskProcess } = require('../src/agent/agent-task-executor');
+const {
+  NestedExecutionRegistry,
+  TaskExecutionHandle,
+} = require('../src/agent/task-execution-handle');
 const Orchestrator = require('../src/orchestrator');
 const MockTaskRunner = require('./helpers/mock-task-runner');
 
@@ -127,6 +131,11 @@ async function createPendingLaunchFixture() {
         spawnOwnershipToken: process.env.ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN,
         commandCleanup: null
       });
+      if (action === 'failed-row') {
+        process.stderr.write('simulated wrapper failure\\n');
+        process.exitCode = 1;
+        return;
+      }
       if (action === 'post-row' || action === 'timeout-row') {
         setInterval(() => {}, 1000);
         return;
@@ -364,6 +373,51 @@ describe('Agent stuck-task recovery', function () {
       assert.strictEqual(agent.currentTask, null);
       assert.strictEqual(getTask(taskId)?.status, 'killed');
       await rejection;
+    } finally {
+      removeTask(taskId);
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a nested local launch after unconfirmed wrapper cleanup', async function () {
+    const { fakeBin, fakeZeroshot, getTask, removeTask } =
+      await createPendingLaunchFixture();
+    const taskId = 'launch-retry-task';
+    removeTask(taskId);
+    const agent = createPendingLaunchAgent();
+    agent.id = 'nested-local-launch';
+    const registry = new NestedExecutionRegistry(agent.id);
+    const handle = registry.register(new TaskExecutionHandle(agent.id));
+
+    try {
+      let rejection;
+      try {
+        await spawnTaskProcess({
+          agent,
+          ctPath: fakeZeroshot,
+          args: ['failed-row', taskId],
+          cwd: process.cwd(),
+          spawnEnv: process.env,
+          handle,
+          nested: true,
+        });
+      } catch (error) {
+        rejection = error;
+      }
+
+      assert.strictEqual(rejection?.retainTaskHandle, true);
+      assert.strictEqual(rejection?.taskId, taskId);
+      handle.finishExecution();
+      assert.strictEqual(handle.settled, false);
+      assert.strictEqual(registry.size, 1);
+      assert.deepStrictEqual(registry.activeTaskIds, [taskId]);
+      assert.strictEqual(getTask(taskId)?.status, 'running');
+
+      const termination = await registry.cancelAll('retry retained local cleanup');
+      assert.notStrictEqual(termination?.forced, false);
+      assert.strictEqual(registry.size, 0);
+      assert.strictEqual(handle.settled, true);
+      assert.strictEqual(getTask(taskId)?.status, 'killed');
     } finally {
       removeTask(taskId);
       fs.rmSync(fakeBin, { recursive: true, force: true });

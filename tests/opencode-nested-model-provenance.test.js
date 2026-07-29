@@ -605,6 +605,81 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.strictEqual(spawnCount, 0);
   });
 
+  it('retains an isolated nested launch after unconfirmed wrapper cleanup', async function () {
+    this.timeout(1000);
+    const taskId = 'task-retained-launch-a1';
+    let status = 'running';
+    let killAttempts = 0;
+    const manager = {
+      getContainerEnvironmentValue() {
+        return null;
+      },
+      spawnInContainer() {
+        return createClosingProcess(1, 'wrapper failed before receipt\n');
+      },
+      execInContainer(_clusterId, command) {
+        const rendered = command.join(' ');
+        if (rendered.includes('get-task-id-by-spawn-token')) {
+          return Promise.resolve({ code: 0, stdout: `${taskId}\n`, stderr: '' });
+        }
+        if (command[1] === 'status') {
+          return Promise.resolve({ code: 0, stdout: `Status: ${status}\n`, stderr: '' });
+        }
+        if (command[1] === 'kill') {
+          killAttempts++;
+          if (killAttempts === 1) {
+            return Promise.resolve({ code: 1, stdout: '', stderr: 'cleanup unavailable' });
+          }
+          status = 'killed';
+          return Promise.resolve({ code: 0, stdout: `Killed ${taskId}\n`, stderr: '' });
+        }
+        return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
+      },
+    };
+    const agent = {
+      id: 'isolated-retained-launch',
+      role: 'planner',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 0,
+      enableLivenessCheck: false,
+      config: { outputFormat: 'json', strictSchema: true },
+      cluster: { id: 'test-cluster' },
+      isolation: { enabled: true, clusterId: 'test-cluster', manager },
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'opencode',
+      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+      _resolveModelSpecSource: () => 'direct',
+      _log() {},
+      _publishLifecycle() {},
+      _stopLivenessCheck() {},
+    };
+
+    let rejection;
+    try {
+      await spawnClaudeTaskIsolated(agent, 'test context', {
+        skipStructuredResultCheck: true,
+        nested: true,
+        disableTools: true,
+      });
+    } catch (error) {
+      rejection = error;
+    }
+
+    assert.strictEqual(rejection?.retainTaskHandle, true);
+    assert.strictEqual(rejection?.taskId, taskId);
+    assert.strictEqual(agent.nestedExecutions.size, 1);
+    assert.deepStrictEqual(agent.nestedExecutions.activeTaskIds, [taskId]);
+    assert.strictEqual(status, 'running');
+
+    const termination = await agent.nestedExecutions.cancelAll('retry retained isolated cleanup');
+    assert.notStrictEqual(termination?.forced, false);
+    assert.strictEqual(killAttempts, 2);
+    assert.strictEqual(status, 'killed');
+    assert.strictEqual(agent.nestedExecutions.size, 0);
+  });
+
   it('settles a durable nested task while isolated log-path lookup is stalled', async function () {
     this.timeout(1000);
     const taskId = 'task-slow-log-a1';
@@ -698,6 +773,97 @@ describe('Isolated opencode structured-output recovery', function () {
     resolveLogPath({ code: 0, stdout: '/tmp/late-reformat.log\n', stderr: '' });
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(spawnCount, 1, 'late lookup must not start a tail process');
+  });
+
+  it('settles cancelled terminal task without a second stalled log lookup', async function () {
+    this.timeout(1000);
+    const taskId = 'task-terminal-log-a1';
+    let resolveLogPath;
+    let logPathLookups = 0;
+    let spawnCount = 0;
+    const manager = {
+      getContainerEnvironmentValue() {
+        return null;
+      },
+      spawnInContainer() {
+        spawnCount++;
+        if (spawnCount === 1) {
+          return createClosingProcess(0, `✓ Task spawned: ${taskId}\n`);
+        }
+        const tail = new EventEmitter();
+        tail.stdout = new PassThrough();
+        tail.stderr = new PassThrough();
+        tail.kill = () => {};
+        return tail;
+      },
+      execInContainer(_clusterId, command) {
+        const rendered = command.join(' ');
+        if (rendered.includes('get-task-id-by-spawn-token')) {
+          return Promise.resolve({ code: 0, stdout: `${taskId}\n`, stderr: '' });
+        }
+        if (rendered.includes('get-log-path')) {
+          logPathLookups++;
+          return new Promise((resolve) => {
+            resolveLogPath = resolve;
+          });
+        }
+        if (command[1] === 'status') {
+          return Promise.resolve({ code: 0, stdout: 'Status: completed\n', stderr: '' });
+        }
+        if (command[1] === 'kill') {
+          return Promise.resolve({ code: 0, stdout: `Already completed ${taskId}\n`, stderr: '' });
+        }
+        return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
+      },
+    };
+    const agent = {
+      id: 'isolated-terminal-slow-log',
+      role: 'planner',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 0,
+      enableLivenessCheck: false,
+      config: { outputFormat: 'json', strictSchema: true },
+      cluster: { id: 'test-cluster' },
+      isolation: { enabled: true, clusterId: 'test-cluster', manager },
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'opencode',
+      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+      _resolveModelSpecSource: () => 'direct',
+      _log() {},
+      _publishLifecycle() {},
+      _stopLivenessCheck() {},
+    };
+    const launch = spawnClaudeTaskIsolated(agent, 'test context', {
+      skipStructuredResultCheck: true,
+      nested: true,
+      disableTools: true,
+    });
+    while (!resolveLogPath) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const startedAt = Date.now();
+    const cancellation = agent.nestedExecutions.cancelAll('Nested task timed out', {
+      code: 'AGENT_TASK_TIMEOUT',
+    });
+
+    await assert.rejects(launch, (error) => {
+      assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
+      assert.strictEqual(error.nestedExecutionCancellation, true);
+      return true;
+    });
+    await cancellation;
+
+    assert.ok(Date.now() - startedAt < 750, 'terminal cancellation must not re-enter log lookup');
+    assert.strictEqual(logPathLookups, 1);
+    assert.strictEqual(spawnCount, 1);
+    assert.strictEqual(agent.nestedExecutions.size, 0);
+
+    resolveLogPath({ code: 0, stdout: '/tmp/late-terminal.log\n', stderr: '' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(logPathLookups, 1);
+    assert.strictEqual(spawnCount, 1);
   });
 
   it('kills and settles a durable nested task when post-ID log setup fails', async function () {
