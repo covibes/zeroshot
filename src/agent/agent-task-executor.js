@@ -202,15 +202,12 @@ function applyOpenCodeToolBoundary(env, providerName, options = {}) {
   return env;
 }
 
-async function resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName) {
+function resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName) {
   if (
     providerName === 'opencode' &&
     typeof manager.getContainerEnvironmentValue === 'function'
   ) {
-    return await manager.getContainerEnvironmentValue(
-      clusterId,
-      OPENCODE_CONFIG_CONTENT_ENV
-    );
+    return manager.getContainerEnvironmentValue(clusterId, OPENCODE_CONFIG_CONTENT_ENV);
   }
   return process.env[OPENCODE_CONFIG_CONTENT_ENV] || null;
 }
