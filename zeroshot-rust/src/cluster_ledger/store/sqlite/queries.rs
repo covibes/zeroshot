@@ -202,27 +202,23 @@ pub(super) const fn kind_to_i64(kind: RecordKind) -> i64 {
 }
 
 fn kind_from_i64(value: i64) -> Result<RecordKind, StoreError> {
-    const KINDS: [RecordKind; 11] = [
-        RecordKind::Admission,
-        RecordKind::Dispatch,
-        RecordKind::Settlement,
-        RecordKind::SafeFault,
-        RecordKind::EffectIntent,
-        RecordKind::EffectReceipt,
-        RecordKind::Terminal,
-        RecordKind::CleanupReceipt,
-        RecordKind::VerifiedInput,
-        RecordKind::VerifiedOutput,
-        RecordKind::MutationReceipt,
-    ];
-    let index = usize::try_from(
-        value
-            .checked_sub(1)
-            .ok_or(StoreError::Corrupt("record kind"))?,
-    )
-    .map_err(|_| StoreError::Corrupt("record kind"))?;
-    KINDS
-        .get(index)
-        .copied()
-        .ok_or(StoreError::Corrupt("record kind"))
+    match value {
+        1 => Ok(RecordKind::Admission),
+        2 => Ok(RecordKind::Dispatch),
+        3 => Ok(RecordKind::Settlement),
+        4 => Ok(RecordKind::SafeFault),
+        5 => Ok(RecordKind::EffectIntent),
+        6 => Ok(RecordKind::EffectReceipt),
+        7 => Ok(RecordKind::Terminal),
+        8 => Ok(RecordKind::CleanupReceipt),
+        9 => Ok(RecordKind::VerifiedInput),
+        10 => Ok(RecordKind::VerifiedOutput),
+        11 => Ok(RecordKind::MutationReceipt),
+        12 => Ok(RecordKind::RequiredProofIntent),
+        13 => Ok(RecordKind::RequiredProofReceipt),
+        14 => Ok(RecordKind::RequiredProofAcceptance),
+        15 => Ok(RecordKind::ExecutionContext),
+        16 => Ok(RecordKind::ExecutionVoid),
+        _ => Err(StoreError::Corrupt("record kind")),
+    }
 }

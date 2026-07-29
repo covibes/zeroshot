@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use super::super::record::{
-    CanonicalDigest, EffectId, ExecutionId, GenerationId, IdentityCounters, NodeInstanceId,
-    RunSequence,
+    CanonicalDigest, EffectId, ExecutionId, ExecutionVoidReason, GenerationId, IdentityCounters,
+    NodeInstanceId, RunSequence, StructuralOccurrence,
 };
+use openengine_cluster_protocol::PositiveInteger;
 use super::super::store::{IdempotencyId, MutationReceipt, Position, ResourceId};
+use super::super::{LedgerAuthority, ReductionSnapshot};
 use super::ReplayError;
 use crate::required_proof::{AcceptedProofRef, ProofAttemptIntent, ProofAttemptReceipt};
 
@@ -39,6 +42,25 @@ pub struct DispatchState {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionContextState {
+    pub run: RunSequence,
+    pub node_instance: NodeInstanceId,
+    pub execution: ExecutionId,
+    pub occurrence: StructuralOccurrence,
+    pub attempt: PositiveInteger,
+    pub canonical_input: Vec<u8>,
+    pub position: Position,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionVoidState {
+    pub run: RunSequence,
+    pub execution: ExecutionId,
+    pub reason: ExecutionVoidReason,
+    pub position: Position,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EffectState {
     pub run: RunSequence,
     pub effect: EffectId,
@@ -61,6 +83,9 @@ pub struct ReplayState {
     pub identities: IdentityCounters,
     pub admission: Option<AdmissionState>,
     pub active_dispatches: BTreeMap<ExecutionId, DispatchState>,
+    pub dispatches: BTreeMap<ExecutionId, DispatchState>,
+    pub execution_contexts: BTreeMap<ExecutionId, ExecutionContextState>,
+    pub execution_voids: BTreeMap<ExecutionId, ExecutionVoidState>,
     pub settlements: BTreeMap<ExecutionId, CanonicalDigest>,
     pub settlement_runs: BTreeMap<ExecutionId, RunSequence>,
     pub effects: BTreeMap<EffectId, EffectState>,
@@ -71,6 +96,8 @@ pub struct ReplayState {
     pub cleanup_receipts: Vec<CanonicalDigest>,
     pub required_proofs: Vec<RequiredProofAttemptState>,
     pub mutation_receipts: BTreeMap<IdempotencyId, MutationReceipt>,
+    #[serde(skip)]
+    pub(crate) reduction_authority: Option<Arc<LedgerAuthority>>,
 }
 
 impl ReplayState {
@@ -83,6 +110,9 @@ impl ReplayState {
             identities: IdentityCounters::initial(),
             admission: None,
             active_dispatches: BTreeMap::new(),
+            dispatches: BTreeMap::new(),
+            execution_contexts: BTreeMap::new(),
+            execution_voids: BTreeMap::new(),
             settlements: BTreeMap::new(),
             settlement_runs: BTreeMap::new(),
             effects: BTreeMap::new(),
@@ -93,10 +123,26 @@ impl ReplayState {
             cleanup_receipts: Vec::new(),
             required_proofs: Vec::new(),
             mutation_receipts: BTreeMap::new(),
+            reduction_authority: None,
         }
     }
 
     pub fn public_bytes(&self) -> Result<Vec<u8>, ReplayError> {
         serde_json::to_vec(self).map_err(|_| ReplayError::Encoding)
+    }
+
+    pub(crate) fn authorize_reduction(&mut self, authority: Arc<LedgerAuthority>) {
+        self.reduction_authority = Some(authority);
+    }
+
+    #[must_use]
+    pub fn reduction_snapshot(&self) -> Option<ReductionSnapshot> {
+        self.reduction_authority
+            .as_ref()
+            .map(|authority| ReductionSnapshot {
+                position: self.position,
+                last_hash: self.last_hash,
+                authority: Arc::clone(authority),
+            })
     }
 }
