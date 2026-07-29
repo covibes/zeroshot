@@ -34,8 +34,8 @@ function emergencyLog(msg) {
   }
 }
 
-function stopAttachableProvider() {
-  return watcherOutputRuntime.terminateWatcherProvider(server);
+function stopAttachableProvider(exitObserved = false) {
+  return watcherOutputRuntime.terminateWatcherProvider(server, { exitObserved });
 }
 
 async function failWatcher(error, source) {
@@ -166,7 +166,7 @@ server.on('exit', async ({ exitCode, signal }) => {
     taskId,
     completion,
     commandCleanup,
-    terminateProvider: stopAttachableProvider,
+    terminateProvider: () => stopAttachableProvider(true),
     updateTask,
     emergencyLog,
     terminalUpdates: { socketPath: null },

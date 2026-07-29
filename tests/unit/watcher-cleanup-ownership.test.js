@@ -68,9 +68,9 @@ describe('watcher command cleanup ownership', function () {
       const completionOptions = {
         taskId: `win-root-gone-${watcherName}`,
         commandCleanup: {
-          async run() {
+          run() {
             cleanupRuns++;
-            return true;
+            return Promise.resolve(true);
           },
         },
         terminateProvider: () =>
@@ -78,14 +78,15 @@ describe('watcher command cleanup ownership', function () {
             { pid: task.pid },
             {
               platform: 'win32',
-              terminateProcessFn: async () => ({
-                terminated: true,
-                alreadyDead: true,
-                scope: 'process-tree',
-              }),
+              terminateProcessFn: () =>
+                Promise.resolve({
+                  terminated: true,
+                  alreadyDead: true,
+                  scope: 'process-tree',
+                }),
             }
           ),
-        updateTask: async (_taskId, updates) => Object.assign(task, updates),
+        updateTask: (_taskId, updates) => Promise.resolve(Object.assign(task, updates)),
         emergencyLog() {},
       };
 
@@ -106,6 +107,40 @@ describe('watcher command cleanup ownership', function () {
       assert.strictEqual(task.pid, 424242);
       assert.strictEqual(task.commandCleanup, receipt);
       assert.strictEqual(cleanupRuns, 0);
+
+      task.status = 'running';
+      task.pid = 424242;
+      task.commandCleanup = receipt;
+      completionOptions.terminateProvider = () =>
+        runtime.terminateWatcherProvider(
+          { pid: task.pid },
+          {
+            platform: 'win32',
+            exitObserved: true,
+            terminateProcessFn: () =>
+              Promise.resolve({
+                terminated: true,
+                alreadyDead: true,
+                scope: 'process-tree',
+              }),
+          }
+        );
+      const observedCompletion =
+        watcherName === 'watcher.js'
+          ? await runtime.completeWatcherTask({
+              ...completionOptions,
+              completion: { status: 'completed', resolvedCode: 0, error: null },
+            })
+          : await runtime.completeWatcherFailure({
+              ...completionOptions,
+              error: new Error('simulated attachable watcher failure'),
+              source: 'uncaughtException',
+            });
+      assert.strictEqual(observedCompletion, true);
+      assert.notStrictEqual(task.status, 'running');
+      assert.strictEqual(task.pid, null);
+      assert.strictEqual(task.commandCleanup, null);
+      assert.strictEqual(cleanupRuns, 1);
     });
   }
 

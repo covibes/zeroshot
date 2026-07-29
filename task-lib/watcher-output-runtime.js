@@ -26,7 +26,7 @@ export async function terminateWatcherProvider(providerProcess, options = {}) {
     processGroupId: platform === 'win32' ? null : pid,
     terminationStrategy,
   });
-  if (terminationStrategy === 'process-tree' && result.alreadyDead) {
+  if (terminationStrategy === 'process-tree' && result.alreadyDead && !options.exitObserved) {
     return false;
   }
   return result.terminated;

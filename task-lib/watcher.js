@@ -98,8 +98,8 @@ const outputRuntime = createWatcherOutputRuntime({
   providerSessionCapture,
 });
 
-function terminateOwnedProviderBoundary() {
-  return terminateWatcherProvider(child);
+function terminateOwnedProviderBoundary(exitObserved = false) {
+  return terminateWatcherProvider(child, { exitObserved });
 }
 
 async function crashWithError(error, source) {
@@ -165,7 +165,7 @@ child.on('close', async (code, signal) => {
     taskId,
     completion,
     commandCleanup,
-    terminateProvider: terminateOwnedProviderBoundary,
+    terminateProvider: () => terminateOwnedProviderBoundary(true),
     updateTask,
     emergencyLog,
   });
