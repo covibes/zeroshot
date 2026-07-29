@@ -548,6 +548,99 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
 }
 
 #[tokio::test]
+async fn nested_parallel_void_provenance_is_owned_during_outer_map_probing() {
+    let inner_parallel = json!({
+        "kind":"par","name":"nested_inner_race","state":boundary_state(),
+        "branches":[step("nested_inner_loser",1),step("nested_inner_winner",1)],
+        "promotedStatePaths":[],"join":{"kind":"any"}
+    });
+    let map_body = json!({
+        "kind":"seq","name":"nested_item_body","state":boundary_state(),
+        "children":[inner_parallel,step("nested_after_inner",1),succeed("nested_item_done")],
+        "promotedStatePaths":[]
+    });
+    let nested_map = json!({
+        "kind":"map","name":"nested_outer_map","state":boundary_state(),
+        "over":{"source":"state","path":["items"]},"maxItems":2,
+        "body":map_body,"promotedStatePaths":[]
+    });
+    let graph = verified(
+        seq(vec![nested_map, succeed("nested_empty_done")]),
+        json!({
+            "nested_inner_loser":1,
+            "nested_inner_winner":1,
+            "nested_after_inner":1
+        }),
+    )
+    .await;
+
+    let mut inner_loser = execution(
+        ExecutionSpec::new(1, 1, "nested_inner_loser")
+            .indices(vec![0])
+            .settled_at(2),
+        success(),
+    );
+    inner_loser.state = DurableExecutionState::Voided {
+        position: Position::new(4).unwrap(),
+        reason: ExecutionVoidReason::ParallelJoin,
+    };
+    let item_zero_inner_winner = execution(
+        ExecutionSpec::new(2, 2, "nested_inner_winner")
+            .indices(vec![0])
+            .settled_at(3),
+        success(),
+    );
+    let item_one_inner_winner = execution(
+        ExecutionSpec::new(3, 3, "nested_inner_winner")
+            .indices(vec![1])
+            .settled_at(6),
+        success(),
+    );
+    let item_one_terminal = execution(
+        ExecutionSpec::new(4, 4, "nested_after_inner")
+            .indices(vec![1])
+            .settled_at(8),
+        success(),
+    );
+    let history = [
+        inner_loser.clone(),
+        item_zero_inner_winner.clone(),
+        item_one_inner_winner.clone(),
+        item_one_terminal.clone(),
+    ];
+    let reduction = FullV1Reducer::new(&graph)
+        .reduce(input(&json!({"items":[null,null]}), &history))
+        .unwrap();
+    assert!(reduction.terminal.is_some());
+    assert!(!reduction.decisions.iter().any(|decision| {
+        matches!(
+            decision,
+            Decision::VoidLoser { execution, .. } if *execution == inner_loser.execution
+        )
+    }));
+
+    let mut wrong_reason = inner_loser;
+    wrong_reason.state = DurableExecutionState::Voided {
+        position: Position::new(4).unwrap(),
+        reason: ExecutionVoidReason::MapTerminal,
+    };
+    assert_eq!(
+        FullV1Reducer::new(&graph)
+            .reduce(input(
+                &json!({"items":[null,null]}),
+                &[
+                    wrong_reason,
+                    item_zero_inner_winner,
+                    item_one_inner_winner,
+                    item_one_terminal,
+                ],
+            ))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
+}
+
+#[tokio::test]
 async fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
     let graph = verified(
         seq(vec![step("work", 2), succeed("done")]),

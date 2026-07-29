@@ -354,6 +354,7 @@ struct VoidScope<'a> {
     map_indices: &'a [u64],
     authorization: Position,
     reason: ExecutionVoidReason,
+    emit_decisions: bool,
 }
 
 struct WriteApplication<'a> {
@@ -997,7 +998,7 @@ impl<'a> Engine<'a> {
                 map_indices: traversal.map_indices,
             },
         );
-        if traversal.mode == EvalMode::Decide && required < probes.len() {
+        if required < probes.len() {
             for (index, branch) in group.branches.as_slice().iter().enumerate() {
                 if !winner_set.contains(&index) {
                     self.void_active_descendants(
@@ -1006,6 +1007,7 @@ impl<'a> Engine<'a> {
                             map_indices: traversal.map_indices,
                             authorization: join_position,
                             reason: ExecutionVoidReason::ParallelJoin,
+                            emit_decisions: traversal.mode == EvalMode::Decide,
                         },
                     );
                 }
@@ -1070,8 +1072,8 @@ impl<'a> Engine<'a> {
             .min_by_key(|(index, position, _)| (*position, *index))
             .map(|(index, _, status)| (index, status))
         {
+            let terminal_scope = &probe_results[terminal_index].2;
             if traversal.mode == EvalMode::Decide {
-                let terminal_scope = &probe_results[terminal_index].2;
                 let mut terminal_context = context.clone();
                 let terminal = self.eval(
                     &group.body,
@@ -1090,12 +1092,25 @@ impl<'a> Engine<'a> {
                             map_indices: traversal.map_indices,
                             authorization: terminal.position(),
                             reason: ExecutionVoidReason::MapTerminal,
+                            emit_decisions: true,
                         },
                         winner_scope: terminal_scope,
                     },
                 );
                 return Ok(terminal);
             }
+            self.void_map_losers(
+                &group.body,
+                MapVoidScope {
+                    common: VoidScope {
+                        map_indices: traversal.map_indices,
+                        authorization: terminal.position(),
+                        reason: ExecutionVoidReason::MapTerminal,
+                        emit_decisions: false,
+                    },
+                    winner_scope: terminal_scope,
+                },
+            );
             return Ok(terminal);
         }
 
@@ -1306,7 +1321,7 @@ impl<'a> Engine<'a> {
         losers.sort_unstable();
         for (_, execution, active) in losers {
             self.legitimized_voids.insert(execution);
-            if active {
+            if active && scope.emit_decisions {
                 self.push_void_decision(execution, scope.reason);
             }
         }
@@ -1348,7 +1363,7 @@ impl<'a> Engine<'a> {
         losers.sort_unstable();
         for (_, execution, active) in losers {
             self.legitimized_voids.insert(execution);
-            if active {
+            if active && scope.common.emit_decisions {
                 self.push_void_decision(execution, scope.common.reason);
             }
         }
