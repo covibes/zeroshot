@@ -72,6 +72,10 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Graph verifier facade        | `crates/openengine-cluster-server/src/graph_verifier.rs`                |
 | Graph verifier analysis      | `crates/openengine-cluster-server/src/graph_verifier/`                  |
 | Native product construction  | `zeroshot-rust/`                                                        |
+| Native release targets       | `distribution/zeroshot-rust-targets.json`                               |
+| Native npm binary shim       | `npm/zeroshot-rust/`                                                    |
+| Native distribution tooling  | `scripts/rust-distribution.js`                                          |
+| Native distribution decision | `docs/zeroshot-rust-distribution.md`                                    |
 | Native cluster ledger        | `zeroshot-rust/src/cluster_ledger.rs`                                   |
 | Ledger store port/fake       | `zeroshot-rust/src/cluster_ledger/store.rs`, `store/fake.rs`            |
 | SQLite ledger store          | `zeroshot-rust/src/cluster_ledger/store/sqlite.rs`, `store/sqlite/`     |
@@ -130,6 +134,9 @@ Cluster Protocol Rust types are the source of truth. Files under
 `cargo run -p openengine-cluster-testkit --bin generate-cluster-protocol -- --write` and
 verify byte-for-byte drift with `npm run protocol:check`. These generator-formatted artifacts
 are excluded from Prettier; never format them independently.
+Native release metadata and npm installer code stay outside the Rust-only `zeroshot-rust/`
+package. `distribution/zeroshot-rust-targets.json` is the authoritative release target list;
+the workflow matrix and checksum coverage must match it exactly.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
 Portable external conformance is the immutable public catalog in the testkit and covers only
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
