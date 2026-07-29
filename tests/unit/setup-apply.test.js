@@ -231,7 +231,9 @@ describe('setup-apply', function () {
   it('prints a login command and stores nothing when applying defaultIssueSource=github unauthenticated', function () {
     // Default settings already default to defaultIssueSource='github', so start
     // from a different value to force an actual write (not a no-op 'unchanged').
-    settingsModule.saveSettings({ ...settingsModule.loadSettings(), defaultIssueSource: 'gitlab' });
+    settingsModule.mutateSettings((settings) => {
+      settings.defaultIssueSource = 'gitlab';
+    });
 
     const logs = [];
     const originalLog = console.log;

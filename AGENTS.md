@@ -68,7 +68,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Artifact receipts            | `crates/openengine-cluster-protocol/src/artifact.rs`                    |
 | Graph diagnostics/bounds     | `crates/openengine-cluster-protocol/src/diagnostic.rs`                  |
 | Shared wire-value bounds     | `crates/openengine-cluster-protocol/src/value.rs`                       |
-| Cluster dispatch/stdio       | `crates/openengine-cluster-server/`                                     |
+| Cluster server crate         | `crates/openengine-cluster-server/`                                     |
 | Graph verifier facade        | `crates/openengine-cluster-server/src/graph_verifier.rs`                |
 | Graph verifier analysis      | `crates/openengine-cluster-server/src/graph_verifier/`                  |
 | Native product construction  | `zeroshot-rust/`                                                        |
@@ -83,6 +83,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Issue provider contracts     | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                |
 | Source provider contracts    | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`    |
 | Provider value bounds        | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                |
+| Native worker catalog        | `zeroshot-rust/src/worker_catalog.rs`                                   |
 | Execution runtime seam       | `zeroshot-rust/src/execution.rs`, `execution/types.rs`                  |
 | Local runtime + drivers      | `zeroshot-rust/src/execution/{local,driver}.rs`                         |
 | Local process runner         | `zeroshot-rust/src/execution/process.rs`                                |
@@ -103,10 +104,11 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Client watch/reconnect       | `crates/openengine-cluster-client/src/watch.rs`                         |
 | NDJSON stdio binding         | `crates/openengine-cluster-server/src/stdio.rs`                         |
 | NDJSON watch client          | `crates/openengine-cluster-client/src/ndjson_watch.rs`                  |
-| NDJSON task admission        | `crates/openengine-cluster-server/src/stdio/admission.rs`               |
+| Connection core/admission    | `crates/openengine-cluster-server/src/connection.rs`, `connection/`     |
 | NDJSON response pump         | `crates/openengine-cluster-client/src/ndjson_pump.rs`                   |
 | Cluster typed transports     | `crates/openengine-cluster-client/`                                     |
 | Cluster fixtures/artifacts   | `crates/openengine-cluster-testkit/`                                    |
+| Portable backend conformance | `crates/openengine-cluster-testkit/src/conformance.rs`                  |
 | Scripted admission fixtures  | `crates/openengine-cluster-testkit/src/admission.rs`                    |
 | Fixture inspection controls  | `crates/openengine-cluster-testkit/src/admission/inspection.rs`         |
 | Scripted lifecycle helpers   | `crates/openengine-cluster-testkit/src/lifecycle.rs`                    |
@@ -129,6 +131,10 @@ Cluster Protocol Rust types are the source of truth. Files under
 verify byte-for-byte drift with `npm run protocol:check`. These generator-formatted artifacts
 are excluded from Prettier; never format them independently.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
+Portable external conformance is the immutable public catalog in the testkit and covers only
+backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
+The existing integration binaries remain the richer reference regression suite; their
+implementation-specific vectors are not represented as portable external certification.
 `zeroshot-rust/` owns the concrete `NativeBackend`, product-local `NativeBackendFactory`
 construction root, product-private artifact byte-store port/local CAS, and product-private,
 secret-free issue/source provider contracts. Artifact stages, bytes, roots, filesystem paths,
@@ -138,6 +144,10 @@ filesystem store, and must preserve ref-first release plus synchronized blob-the
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
 Keep protocol, transport, daemon, compatibility, adapter, credential resolution, ledger, and
 workspace behavior outside it.
+`worker_catalog` is the native product's sole hand-authored, versioned worker-provider inventory.
+It owns bounded provider policy and deterministic identity only; keep role contracts, registries,
+configuration, credential acquisition, executable codecs, concrete drivers, protocol descriptors,
+and Node registry synchronization outside it.
 `ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair
 scheduler are engine-private seams. They own local dispatch placement, fencing, deadlines,
 workspace conflict arbitration, cancellation, and local-process containment only. They do not own
@@ -152,6 +162,8 @@ them in `EngineFault`, observations, protocol responses, persistence, or exports
 injected through `ObservationSink` and uses only the fixed metrics and closed dimensions in
 `observability.rs`; retry disposition is descriptive data, not retry authorization. Do not install
 global telemetry state or caller-defined labels.
+A lost node-instance session terminates the affected execution; its descriptive fault disposition
+must never authorize retry or replacement-session recovery.
 `ClusterLedger` is the only native durable domain authority. Its closed/versioned record algebra,
 identity allocation, replay, lifecycle/CAS/idempotency rules, and safe-fault consequences stay
 above the backend-neutral `LedgerStore` port. Control and verified I/O share one ordered hash
@@ -219,6 +231,15 @@ The NDJSON server caps and continuously reaps per-connection request/subscriptio
 per-subscription consumer: local queue overflow closes that stream as `SLOW_CONSUMER` from its
 exact caller-delivered cursor and cancels the server subscription. Watch request IDs are allocated
 by the shared transport, never by individual watch-client facades.
+Outbound Cluster WebSocket TLS is client-only: rustls 0.23/tokio-rustls 0.26 is the sole workspace
+TLS stack, and only `openengine-cluster-client` enables tokio-tungstenite's rustls native-root
+feature. System roots are mandatory by default; private roots and the off-by-default
+`bundled-roots` feature only augment them and never hide system-store load failures. Every `ws://`
+dial, including loopback, requires `WebSocketDialOptions::allow_plaintext(true)` per connection.
+Endpoint preflight rejects non-ws(s), userinfo, query, and fragment before network I/O; redirects
+are never followed or downgraded. Keep `serve_websocket` plaintext/front-proxy terminated and keep
+TLS out of `zeroshot-rust`. Do not introduce native-tls: its Linux `openssl-sys` dependency breaks
+cross-compilation and static-musl builds.
 Authoritative admission snapshots fail closed: `empty` has no durable fields, `running` has the
 complete matching control/seed tuple, and transient `admitting` preserves one of those two shapes.
 Operational suspend is a dispatch gate: existing leases may land verified I/O, but successors wait
@@ -519,6 +540,11 @@ Core principle: tests passing != implementation works. The ONLY verification is:
 | --------------------------- | --------------------- |
 | `~/.zeroshot/clusters.json` | Cluster metadata      |
 | `~/.zeroshot/<id>.db`       | SQLite message ledger |
+
+All production writes to the global settings file must use `lib/settings.js::mutateSettings`.
+Callers provide only their intended mutation; they must never write a previously loaded full
+snapshot. The shared primitive re-reads under one `proper-lockfile` lock and publishes by
+same-directory atomic rename. Global settings reads remain lock-free.
 
 Clusters survive crashes. Resume: `zeroshot resume <id>`.
 

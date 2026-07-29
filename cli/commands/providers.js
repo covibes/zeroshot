@@ -1,5 +1,5 @@
 const readline = require('readline');
-const { loadSettings, saveSettings } = require('../../lib/settings');
+const { loadSettings, mutateSettings } = require('../../lib/settings');
 const {
   VALID_PROVIDERS,
   normalizeProviderName,
@@ -55,9 +55,9 @@ function setDefaultCommand(args) {
     process.exit(1);
   }
 
-  const settings = loadSettings();
-  settings.defaultProvider = provider;
-  saveSettings(settings);
+  mutateSettings((settings) => {
+    settings.defaultProvider = provider;
+  });
 
   console.log(`Default provider set to: ${provider}`);
 }
@@ -135,15 +135,15 @@ async function setupCommand(args) {
       }
     }
 
-    const settings = loadSettings();
-    settings.providerSettings = settings.providerSettings || {};
-    settings.providerSettings[provider] = {
-      maxLevel: levelKeys[maxIdx - 1],
-      minLevel: levelKeys[minIdx - 1],
-      defaultLevel: levelKeys[defaultIdxNum - 1],
-      levelOverrides,
-    };
-    saveSettings(settings);
+    mutateSettings((settings) => {
+      settings.providerSettings = settings.providerSettings || {};
+      settings.providerSettings[provider] = {
+        maxLevel: levelKeys[maxIdx - 1],
+        minLevel: levelKeys[minIdx - 1],
+        defaultLevel: levelKeys[defaultIdxNum - 1],
+        levelOverrides,
+      };
+    });
 
     console.log(`\n✓ ${providerModule.displayName} configured successfully`);
   } finally {

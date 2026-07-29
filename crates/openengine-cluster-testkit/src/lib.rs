@@ -6,6 +6,7 @@ pub mod agent_attach;
 mod agent_attach_artifacts;
 pub mod artifacts;
 pub mod capability_vectors;
+pub mod conformance;
 pub mod fixture;
 pub mod graph_verifier_artifacts;
 pub mod lifecycle;
@@ -18,6 +19,8 @@ pub mod watch;
 mod watch_artifacts;
 pub mod worker_artifacts;
 pub mod worker_profiles;
+
+pub use conformance::{run_backend_conformance, BackendFactory};
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{

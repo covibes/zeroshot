@@ -2,10 +2,10 @@
 
 This document defines the production Rust WebSocket binding: the wire framing that carries the
 backend-neutral `Dispatcher` and the generic subscription framing defined in
-[`watch.md`](./watch.md) over one WebSocket connection, plus the boundary between that binding and
-everything that hosts it. It adds no protocol method or event semantics of its own beyond
-`$/cancelRequest`; every method, event, and generic subscription notification is unchanged from the
-in-process and NDJSON stdio bindings.
+[`watch.md`](./watch.md) through `openengine-cluster-server`'s transport-neutral `connection` core
+over one WebSocket connection, plus the boundary between that binding and everything that hosts it.
+It adds no protocol method or event semantics of its own beyond `$/cancelRequest`; every method,
+event, and generic subscription notification is unchanged from the in-process and NDJSON bindings.
 
 ## Framing
 
@@ -64,6 +64,35 @@ A hosting process is expected to accept the raw connection, resolve and inject t
 `ConnectionContext`, and hand the rest to `serve_websocket`; this document defines only what happens
 from that handoff onward.
 
+## Client dialing and TLS
+
+`openengine-cluster-client::dial_websocket` is the outbound network boundary, separate from the
+plaintext server binding above. It accepts only `ws://` and `wss://` endpoints with a host and
+rejects userinfo, query strings, and fragments before opening a socket. It connects only to the
+validated endpoint supplied by its caller: WebSocket redirect handshake responses are errors, their
+`Location` targets are never opened, and `wss://` is never downgraded to `ws://`.
+
+The workspace TLS implementation is rustls 0.23 with tokio-rustls 0.26, selected through
+tokio-tungstenite's rustls native-root connector. A `wss://` connection loads platform/system roots
+by default and fails closed if they cannot be loaded. Callers may explicitly add private CA roots
+for one connection. The optional `bundled-roots` client feature is disabled by default and augments
+the successfully loaded system store; bundled roots are never an automatic fallback for an
+unavailable system store. A `ws://` endpoint, including loopback, is refused unless that individual
+connection uses `WebSocketDialOptions::allow_plaintext(true)`.
+
+Native TLS is intentionally excluded: on Linux it resolves to `openssl-sys`, imposing a system
+OpenSSL build dependency that breaks cross-compilation and static-musl builds. TLS features are
+enabled only by the dialing client; `openengine-cluster-server::serve_websocket` remains a
+plaintext, accepted-stream binding whose production TLS termination stays in its front proxy.
+
+## Future cloud HTTP binding
+
+A future cloud HTTP binding may use the same rustls/tokio-rustls stack inside
+`openengine-cluster-server`: accept TCP, perform the TLS handshake with a server `rustls`
+configuration, and hand the resulting asynchronous stream to an HTTP server implementation. This
+issue does not implement that listener, certificate provisioning, or HTTP binding. `reqwest` is an
+HTTP client and cannot serve the binding; selecting an HTTP server remains a separate decision.
+
 ## Fixture and test boundary
 
 `crates/openengine-cluster-server/tests/websocket.rs` covers this binding's own framing and
@@ -71,5 +100,7 @@ admission behavior directly against raw tungstenite frames.
 `crates/openengine-cluster-client/tests/websocket.rs` covers the typed `WebSocketTransport` client
 against the same binding. `crates/openengine-cluster-testkit/tests/protocol_websocket.rs` proves
 byte-equivalence against the in-process and NDJSON bindings and exercises two independently
-authorized connections sharing one backend. All three drive `serve_websocket` over an in-memory
-duplex pipe; none of them involve real network I/O, TLS, or the hosting concerns listed above.
+authorized connections sharing one backend. Those established framing suites continue to drive
+`serve_websocket` over an in-memory duplex pipe. Real loopback TCP, TLS trust, plaintext opt-in,
+preflight, and redirect behavior belongs to
+`crates/openengine-cluster-client/tests/tls_dialer.rs`.

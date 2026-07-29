@@ -1,11 +1,10 @@
-//! Bounded per-connection NDJSON admission and outbound writing.
+//! Bounded per-connection request admission.
 
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use openengine_cluster_protocol::{DomainErrorData, RequestId, APPLICATION_ERROR, INVALID_REQUEST};
 use parking_lot::Mutex;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use super::serialize_error;
@@ -60,21 +59,6 @@ pub(crate) async fn acquire_task_slot(
                     .await;
             }
             None
-        }
-    }
-}
-
-/// Drains the bounded outbound queue until the peer closes or every sender is dropped.
-pub(super) async fn run_writer<W>(mut writer: W, mut outbound_rx: mpsc::Receiver<String>)
-where
-    W: AsyncWrite + Unpin,
-{
-    while let Some(line) = outbound_rx.recv().await {
-        if writer.write_all(line.as_bytes()).await.is_err()
-            || writer.write_all(b"\n").await.is_err()
-            || writer.flush().await.is_err()
-        {
-            break;
         }
     }
 }

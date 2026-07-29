@@ -8,10 +8,10 @@ use openengine_cluster_server::{
 };
 use serde_json::{json, Value};
 use zeroshot_engine::fault::{
-    BoundedFaultSummary, EngineFault, EvidenceClass, FaultContext, FaultError, FaultFactory,
-    FaultModule, ModuleEvidence, RawDiagnostic, RedactionMarker, SafeSourceFrame,
-    MAX_ENGINE_FAULT_BYTES, MAX_EPHEMERAL_DIAGNOSTIC_BYTES, MAX_FAULT_SOURCES,
-    MAX_FAULT_SUMMARY_BYTES,
+    BoundedFaultSummary, EngineFault, EvidenceClass, FaultCode, FaultContext, FaultError,
+    FaultFactory, FaultModule, FaultSeverity, ModuleEvidence, RawDiagnostic, RedactionMarker,
+    RetryDisposition, SafeSourceFrame, UserAction, MAX_ENGINE_FAULT_BYTES,
+    MAX_EPHEMERAL_DIAGNOSTIC_BYTES, MAX_FAULT_SOURCES, MAX_FAULT_SUMMARY_BYTES,
 };
 use zeroshot_engine::observability::NoopObservationSink;
 
@@ -46,6 +46,49 @@ const CLASSES: [EvidenceClass; 10] = [
     EvidenceClass::InvariantViolation,
 ];
 
+const GOLDEN_EXECUTION_FAULTS: [(EvidenceClass, &str); 10] = [
+    (
+        EvidenceClass::Unavailable,
+        r#"{"code":"unavailable","consequence":"execution_interrupted","retryDisposition":"retry_after_backoff","userAction":"retry_later","severity":"error","summary":"A required engine resource is unavailable.","sources":[{"module":"worker","context":"execution","evidenceClass":"unavailable"}]}"#,
+    ),
+    (
+        EvidenceClass::ResourceExhausted,
+        r#"{"code":"resource_exhausted","consequence":"execution_interrupted","retryDisposition":"retry_after_backoff","userAction":"free_resources","severity":"error","summary":"A required engine resource is exhausted.","sources":[{"module":"worker","context":"execution","evidenceClass":"resource_exhausted"}]}"#,
+    ),
+    (
+        EvidenceClass::Timeout,
+        r#"{"code":"timeout","consequence":"execution_interrupted","retryDisposition":"retry_after_backoff","userAction":"retry_later","severity":"warning","summary":"A native engine operation timed out.","sources":[{"module":"worker","context":"execution","evidenceClass":"timeout"}]}"#,
+    ),
+    (
+        EvidenceClass::PermissionDenied,
+        r#"{"code":"permission_denied","consequence":"execution_interrupted","retryDisposition":"retry_after_user_action","userAction":"grant_permission","severity":"error","summary":"A required engine permission was denied.","sources":[{"module":"worker","context":"execution","evidenceClass":"permission_denied"}]}"#,
+    ),
+    (
+        EvidenceClass::AuthenticationRequired,
+        r#"{"code":"authentication_required","consequence":"execution_interrupted","retryDisposition":"retry_after_user_action","userAction":"authenticate","severity":"error","summary":"Authentication is required for a native engine operation.","sources":[{"module":"worker","context":"execution","evidenceClass":"authentication_required"}]}"#,
+    ),
+    (
+        EvidenceClass::MalformedExternalData,
+        r#"{"code":"malformed_external_data","consequence":"execution_interrupted","retryDisposition":"retry_after_user_action","userAction":"repair_external_data","severity":"error","summary":"External data did not satisfy the native engine contract.","sources":[{"module":"worker","context":"execution","evidenceClass":"malformed_external_data"}]}"#,
+    ),
+    (
+        EvidenceClass::IntegrityFailure,
+        r#"{"code":"integrity_failure","consequence":"execution_interrupted","retryDisposition":"do_not_retry","userAction":"contact_support","severity":"critical","summary":"Native engine integrity verification failed.","sources":[{"module":"worker","context":"execution","evidenceClass":"integrity_failure"}]}"#,
+    ),
+    (
+        EvidenceClass::ProcessExited,
+        r#"{"code":"process_exited","consequence":"execution_interrupted","retryDisposition":"retry_after_backoff","userAction":"restart_operation","severity":"error","summary":"A required native process exited unexpectedly.","sources":[{"module":"worker","context":"execution","evidenceClass":"process_exited"}]}"#,
+    ),
+    (
+        EvidenceClass::SessionLost,
+        r#"{"code":"session_lost","consequence":"execution_interrupted","retryDisposition":"do_not_retry","userAction":"contact_support","severity":"error","summary":"A lost native engine session terminated the affected execution.","sources":[{"module":"worker","context":"execution","evidenceClass":"session_lost"}]}"#,
+    ),
+    (
+        EvidenceClass::InvariantViolation,
+        r#"{"code":"invariant_violation","consequence":"execution_interrupted","retryDisposition":"do_not_retry","userAction":"contact_support","severity":"critical","summary":"A native engine invariant was violated.","sources":[{"module":"worker","context":"execution","evidenceClass":"invariant_violation"}]}"#,
+    ),
+];
+
 fn factory() -> FaultFactory<'static> {
     static SINK: NoopObservationSink = NoopObservationSink;
     FaultFactory::new(&SINK)
@@ -75,6 +118,60 @@ fn every_closed_evidence_triple_is_deterministic() {
                 assert!(first.summary().len() <= MAX_FAULT_SUMMARY_BYTES);
                 assert!(first.encode_json().unwrap().len() <= MAX_ENGINE_FAULT_BYTES);
             }
+        }
+    }
+}
+
+#[test]
+fn canonical_fault_encodings_are_exhaustive_and_byte_compatible() {
+    for (class, golden) in GOLDEN_EXECUTION_FAULTS {
+        let fault = factory().create(ModuleEvidence::new(
+            FaultModule::Worker,
+            FaultContext::Execution,
+            class,
+        ));
+        assert_eq!(
+            fault.encode_json().unwrap(),
+            golden.as_bytes(),
+            "encoded fixture drifted for {class:?}"
+        );
+        assert_eq!(
+            EngineFault::decode_json(golden.as_bytes()).unwrap(),
+            fault,
+            "golden fixture failed canonical decode for {class:?}"
+        );
+    }
+}
+
+#[test]
+fn session_loss_is_identically_non_retryable_for_every_source_context() {
+    const SUMMARY: &str = "A lost native engine session terminated the affected execution.";
+
+    for module in MODULES {
+        for context in CONTEXTS {
+            let fault = factory().create(ModuleEvidence::new(
+                module,
+                context,
+                EvidenceClass::SessionLost,
+            ));
+            assert_eq!(fault.code(), FaultCode::SessionLost);
+            assert_eq!(fault.retry_disposition(), RetryDisposition::DoNotRetry);
+            assert_eq!(fault.user_action(), UserAction::ContactSupport);
+            assert_eq!(fault.severity(), FaultSeverity::Error);
+            assert_eq!(fault.summary(), SUMMARY);
+            let encoded = fault.encode_json().unwrap();
+            assert_eq!(
+                EngineFault::decode_json(&encoded).unwrap(),
+                fault,
+                "{module:?}/{context:?}"
+            );
+            let mut legacy_retry: Value = serde_json::from_slice(&encoded).unwrap();
+            legacy_retry["retryDisposition"] = json!("retry_after_backoff");
+            assert_eq!(
+                EngineFault::decode_json(&serde_json::to_vec(&legacy_retry).unwrap()),
+                Err(FaultError::InvalidFaultSemantics),
+                "legacy retry semantics decoded for {module:?}/{context:?}"
+            );
         }
     }
 }

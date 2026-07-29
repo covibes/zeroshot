@@ -1,11 +1,9 @@
 //! Production WebSocket transport binding the backend-neutral [`Dispatcher`] and generic
-//! subscription framing to the wire. One JSON-RPC object per text message; this module reuses
-//! `stdio::serve_ndjson`'s exact classification, admission, and subscription-streaming machinery
-//! ([`crate::stdio::ConnectionState`], `classify_ndjson_line`, `dispatch_classified_line`) so
-//! results, events, and errors stay byte-equivalent between the stdio and WebSocket bindings.
+//! subscription framing to the wire. One JSON-RPC object per text message; this module reuses the
+//! transport-neutral connection core's exact admission and subscription-streaming machinery so
+//! results, events, and errors stay byte-equivalent between the NDJSON and WebSocket bindings.
 //! Framing rules unique to WebSocket -- binary rejection, the 1,048,576 UTF-8 byte bound, and
-//! cooperative, ownership-safe `$/cancelRequest` -- live only here; `stdio::serve_ndjson` itself
-//! is untouched.
+//! cooperative, ownership-safe `$/cancelRequest` -- live only here.
 
 use std::collections::HashMap;
 use std::io;
@@ -23,11 +21,11 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::{Error as WsError, Message, Utf8Bytes};
 use tokio_tungstenite::WebSocketStream;
 
-use crate::stdio::{
-    classify_ndjson_line, dispatch_classified_line, new_connection_setup, race_cancel_or_next,
-    shutdown_connection, ConnectionSetup, ConnectionState, DispatchCtx, LineDispatch, ShutdownArgs,
+use crate::connection::{
+    dispatch_classified_request, new_connection_setup, race_cancel_or_next, shutdown_connection,
+    ConnectionSetup, ConnectionState, DispatchCtx, RequestDispatch, ShutdownArgs,
 };
-use crate::{ClusterBackend, Dispatcher};
+use crate::{classify_ndjson_line, ClusterBackend, Dispatcher};
 
 /// Bounded WebSocket text-frame length: a text message whose UTF-8 byte length exceeds this
 /// closes the connection with code 1009 (message too big), matching `stdio::serve_ndjson`'s
@@ -182,9 +180,9 @@ where
 }
 
 /// Handles one `Message::Text` frame: enforces [`MAX_FRAME_BYTES`], routes a `$/cancelRequest`
-/// notification inline, and otherwise classifies and dispatches the line exactly like
-/// `stdio::serve_ndjson` via [`dispatch_classified_line`] -- spawning this binding's own
-/// passthrough task (with `cancel_registry` tracking) for a [`LineDispatch::Passthrough`] result.
+/// notification inline, and otherwise classifies and dispatches the request through
+/// [`dispatch_classified_request`] -- spawning this binding's own passthrough task (with
+/// `cancel_registry` tracking) for a [`RequestDispatch::Passthrough`] result.
 async fn handle_text_frame<B>(text: Utf8Bytes, ctx: &mut WsCtx<'_, B>) -> FrameOutcome
 where
     B: ClusterBackend,
@@ -197,7 +195,7 @@ where
         // Notify only -- never remove here. Removal happens exactly once, in the owning task's
         // own ownership-checked cleanup (`run_passthrough_request`), so the map always has a
         // single source of truth for "who owns this entry". This intentionally diverges from
-        // `dispatch_classified_line`'s `subscription/cancel` handling (which does remove-then-
+        // `dispatch_classified_request`'s `subscription/cancel` handling (which does remove-then-
         // notify): subscription ids are minted once and never reused, so eager removal is safe
         // there, whereas JSON-RPC `RequestId`s are explicitly retryable/reusable by clients, which
         // is exactly what makes eager removal here unsafe (a same-id retry could register between
@@ -208,8 +206,8 @@ where
         return FrameOutcome::Continue;
     }
     let kind = classify_ndjson_line(&text);
-    if let LineDispatch::Passthrough { id, permit } =
-        dispatch_classified_line(kind, &mut ctx.dispatch).await
+    if let RequestDispatch::Passthrough { id, permit } =
+        dispatch_classified_request(kind, &mut ctx.dispatch).await
     {
         spawn_passthrough(ctx, id, permit, text.as_str().to_owned());
     }
@@ -265,17 +263,17 @@ struct PassthroughRequest<B> {
 }
 
 /// Dispatches a non-subscription request or notification frame, racing its completion against a
-/// cooperative `$/cancelRequest` signal via [`race_cancel_or_next`] -- the same idiom
-/// `stdio::race_cancel_or_next` already uses for subscription cancellation -- so cancellation and
-/// normal completion resume into the exact same cleanup code below regardless of which side wins;
-/// no exit path can skip it, unlike external task abortion. Once the race settles, unconditionally
-/// releases the request's in-flight id and -- only if this task's own cancellation entry is still
-/// the one registered under `id`, checked via `Arc::ptr_eq` -- its cancel-registry entry, so a
-/// same-id retry's fresh registration (inserted by its own [`spawn_passthrough`] call) is never
-/// disturbed by this task's cleanup. A response is enqueued only when the race resolved to
-/// completion; a cancelled request produces no response, preserving the no-rollback/at-most-one-
-/// terminal-response contract. Mirrors `stdio::run_passthrough_request`, plus the `cancel_registry`
-/// cleanup that binding has no notion of.
+/// cooperative `$/cancelRequest` signal via [`race_cancel_or_next`] -- the same idiom the
+/// connection core uses for subscription cancellation -- so cancellation and normal completion
+/// resume into the exact same cleanup code below regardless of which side wins; no exit path can
+/// skip it, unlike external task abortion. Once the race settles, unconditionally releases the
+/// request's in-flight id and -- only if this task's own cancellation entry is still the one
+/// registered under `id`, checked via `Arc::ptr_eq` -- its cancel-registry entry, so a same-id
+/// retry's fresh registration (inserted by its own [`spawn_passthrough`] call) is never disturbed
+/// by this task's cleanup. A response is enqueued only when the race resolved to completion; a
+/// cancelled request produces no response, preserving the no-rollback/at-most-one-terminal-
+/// response contract. Mirrors the NDJSON passthrough runner, plus the `cancel_registry` cleanup
+/// that binding has no notion of.
 async fn run_passthrough_request<B>(request: PassthroughRequest<B>)
 where
     B: ClusterBackend,

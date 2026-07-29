@@ -239,10 +239,10 @@ class LinearProvider extends IssueProvider {
     }
 
     const key = teams[0].key;
-    const { loadSettings, saveSettings } = require('../../lib/settings');
-    const current = loadSettings();
-    current.linearTeam = key;
-    saveSettings(current);
+    const { mutateSettings } = require('../../lib/settings');
+    mutateSettings((current) => {
+      current.linearTeam = key;
+    });
     return key;
   }
 

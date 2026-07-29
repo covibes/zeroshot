@@ -1,5 +1,5 @@
 //! Shared "establish, then forward notifications until the stream ends" machinery for every
-//! `serve_ndjson` subscription kind (`watch`, `logs`, `agent_attach`). [`EventSource`] lets
+//! connection subscription kind (`watch`, `logs`, `agent_attach`). [`EventSource`] lets
 //! [`run_established_subscription`] drive `watch`'s [`crate::watch::WatchEventStream`] and the
 //! bounded `logs`/`agent_attach` capabilities' [`BoundedEventStream`] through exactly one
 //! establish/loop/cleanup implementation despite their differently-shaped per-item payloads;

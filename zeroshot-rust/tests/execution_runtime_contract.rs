@@ -1,10 +1,25 @@
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use zeroshot_engine::cluster_ledger::NodeInstanceId;
+use zeroshot_engine::execution::driver::{
+    DriverCancellation, DriverRequest, DriverStartOutcome, ExecutionSiteResolution,
+    ExecutionSiteResolver, ResolvedExecutionSite, SessionCapability, WorkerDriver,
+    WorkspaceCapability,
+};
+use zeroshot_engine::execution::local::LocalExecutionRuntime;
+use zeroshot_engine::fault::{
+    EngineFault, EvidenceClass, FaultContext, FaultFactory, FaultModule, ModuleEvidence,
+    RetryDisposition, UserAction,
+};
+use zeroshot_engine::observability::NoopObservationSink;
 use rust_decimal::Decimal;
 use serde_json::json;
 use zeroshot_engine::cluster_ledger::ExecutionId;
 use zeroshot_engine::execution::{
     CancelObservation, CompletionEvidence, DispatchFence, DispatchObservation, ExecutionCandidate,
     ExecutionCommand, ExecutionControl, ExecutionInput, ExecutionObservation, ExecutionResult,
-    InlineExecutionInput, SessionScope, UsageObservation, UsageObservationSpec,
+    ExecutionRuntime, InlineExecutionInput, SessionScope, UsageObservation, UsageObservationSpec,
     MAX_EXECUTION_CANDIDATE_BYTES, MAX_EXECUTION_INLINE_BYTES,
 };
 
@@ -24,6 +39,140 @@ fn command(input: ExecutionInput) -> ExecutionCommand {
         },
         input,
     )
+}
+
+struct FaultingDriver {
+    starts: Arc<Mutex<Vec<NodeInstanceId>>>,
+    fault: EngineFault,
+}
+
+#[async_trait]
+impl WorkerDriver for FaultingDriver {
+    async fn start(
+        &self,
+        request: DriverRequest,
+        _cancellation: DriverCancellation,
+    ) -> DriverStartOutcome {
+        self.starts
+            .lock()
+            .expect("session start mutex must not be poisoned")
+            .push(request.control.node_instance());
+        DriverStartOutcome::DefinitelyNotStarted {
+            fault: Some(self.fault.clone()),
+        }
+    }
+}
+
+struct FaultingResolver {
+    driver: Arc<dyn WorkerDriver>,
+}
+
+#[async_trait]
+impl ExecutionSiteResolver for FaultingResolver {
+    async fn resolve(&self, command: &ExecutionCommand) -> ExecutionSiteResolution {
+        ExecutionSiteResolution::Resolved(Box::new(ResolvedExecutionSite::Agent {
+            driver: Arc::clone(&self.driver),
+            request: DriverRequest {
+                control: command.control(),
+                input: command.input().clone(),
+                workspace: WorkspaceCapability {
+                    current_dir: "/tmp/zeroshot-runtime".into(),
+                    mode: command.workspace().mode(),
+                },
+                credentials: Vec::new(),
+                provider: None,
+                session: SessionCapability { reuse_key: None },
+                environment: Default::default(),
+            },
+        }))
+    }
+}
+
+fn runtime_for_fault(
+    fault: EngineFault,
+    starts: Arc<Mutex<Vec<NodeInstanceId>>>,
+) -> LocalExecutionRuntime {
+    let driver: Arc<dyn WorkerDriver> = Arc::new(FaultingDriver { starts, fault });
+    LocalExecutionRuntime::new(Arc::new(FaultingResolver { driver }))
+}
+
+#[tokio::test]
+async fn session_loss_terminates_without_authorizing_retry_or_a_replacement_session() {
+    let fault = FaultFactory::new(&NoopObservationSink).create(ModuleEvidence::new(
+        FaultModule::Worker,
+        FaultContext::Execution,
+        EvidenceClass::SessionLost,
+    ));
+    assert_eq!(fault.retry_disposition(), RetryDisposition::DoNotRetry);
+    assert_eq!(fault.user_action(), UserAction::ContactSupport);
+
+    let retryable_fault = FaultFactory::new(&NoopObservationSink).create(ModuleEvidence::new(
+        FaultModule::Worker,
+        FaultContext::Execution,
+        EvidenceClass::ProcessExited,
+    ));
+    assert_eq!(
+        retryable_fault.retry_disposition(),
+        RetryDisposition::RetryAfterBackoff
+    );
+    let retryable_starts = Arc::new(Mutex::new(Vec::new()));
+    let retryable_runtime = runtime_for_fault(retryable_fault, Arc::clone(&retryable_starts));
+    let retryable_command = command_with_input(
+        CommandSpec {
+            execution: 14,
+            fence: 4,
+            recovery: "recovery-14",
+            target: agent_target(true),
+            scope: SessionScope::NodeInstance,
+        },
+        ExecutionInput::Inline(InlineExecutionInput::new("{\"ok\":true}").unwrap()),
+    );
+    let retryable_first = retryable_runtime.dispatch(retryable_command.clone()).await;
+    assert_eq!(
+        retryable_runtime.dispatch(retryable_command.clone()).await,
+        retryable_first
+    );
+    assert_eq!(
+        *retryable_starts
+            .lock()
+            .expect("session start mutex must not be poisoned"),
+        vec![retryable_command.node_instance()],
+        "descriptive backoff disposition must not authorize runtime retry"
+    );
+
+    let starts = Arc::new(Mutex::new(Vec::new()));
+    let runtime = runtime_for_fault(fault.clone(), Arc::clone(&starts));
+    let command = command_with_input(
+        CommandSpec {
+            execution: 15,
+            fence: 4,
+            recovery: "recovery-15",
+            target: agent_target(true),
+            scope: SessionScope::NodeInstance,
+        },
+        ExecutionInput::Inline(InlineExecutionInput::new("{\"ok\":true}").unwrap()),
+    );
+
+    let first = runtime.dispatch(command.clone()).await;
+    assert!(matches!(
+        &first,
+        DispatchObservation::Indeterminate {
+            fault: Some(observed),
+            ..
+        } if observed == &fault
+    ));
+    assert_eq!(runtime.tracked_counts().await, (0, 0, 1));
+    assert!(!runtime.is_recovery_registered(command.recovery_ref()).await);
+
+    let redispatch = runtime.dispatch(command.clone()).await;
+    assert_eq!(redispatch, first);
+    assert_eq!(
+        *starts
+            .lock()
+            .expect("session start mutex must not be poisoned"),
+        vec![command.node_instance()],
+        "terminal session loss must not start a retry or replacement NodeInstance session"
+    );
 }
 
 #[test]

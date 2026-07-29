@@ -9,7 +9,7 @@
  */
 
 const readline = require('readline');
-const { loadSettings, saveSettings } = require('../../lib/settings');
+const { loadSettings, mutateSettings } = require('../../lib/settings');
 const { listProviderMetadata } = require('../../lib/provider-names');
 const { detectProviders } = require('../../src/providers');
 
@@ -175,8 +175,9 @@ async function checkFirstRun(options = {}) {
 
   // Quiet mode - use defaults, mark complete
   if (options.quiet) {
-    settings.firstRunComplete = true;
-    saveSettings(settings);
+    mutateSettings((current) => {
+      current.firstRunComplete = true;
+    });
     return true;
   }
 
@@ -188,22 +189,22 @@ async function checkFirstRun(options = {}) {
   try {
     const detected = await detectProviders();
     const provider = await promptProvider(rl, detected);
-    settings.defaultProvider = provider;
-
     // Model ceiling selection
     const model = await promptModel(rl);
-    settings.maxModel = model;
 
     // Auto-update preference
     const autoUpdate = await promptAutoUpdate(rl);
-    settings.autoCheckUpdates = autoUpdate;
 
-    // Mark complete
-    settings.firstRunComplete = true;
-    saveSettings(settings);
+    const savedSettings = mutateSettings((current) => {
+      current.defaultProvider = provider;
+      current.maxModel = model;
+      current.autoCheckUpdates = autoUpdate;
+      current.firstRunComplete = true;
+      return current;
+    });
 
     // Print completion
-    printComplete(settings);
+    printComplete(savedSettings);
 
     return true;
   } finally {

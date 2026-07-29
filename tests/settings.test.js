@@ -12,12 +12,28 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const assert = require('assert');
+const { spawnSync } = require('child_process');
 
 // Test storage directory (isolated)
 const TEST_STORAGE_DIR = path.join(os.tmpdir(), 'zeroshot-settings-test-' + Date.now());
 const TEST_SETTINGS_FILE = path.join(TEST_STORAGE_DIR, 'settings.json');
+const CLI_ENTRY = path.join(__dirname, '..', 'cli', 'index.js');
+
+function runSettingsCli(args) {
+  return spawnSync(process.execPath, [CLI_ENTRY, 'settings', ...args], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CI: '1',
+      NODE_ENV: 'test',
+      ZEROSHOT_DAEMON: '1',
+      ZEROSHOT_SETTINGS_FILE: TEST_SETTINGS_FILE,
+    },
+  });
+}
 
 let settingsModule;
+let originalSettingsFileEnv;
 
 function writeSettingsFile(settings) {
   const dir = path.dirname(TEST_SETTINGS_FILE);
@@ -37,15 +53,11 @@ function loadSettingsWithDefaults() {
 
 function registerSettingsHooks() {
   before(function () {
-    if (!fs.existsSync(TEST_STORAGE_DIR)) {
-      fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
-    }
-
+    originalSettingsFileEnv = process.env.ZEROSHOT_SETTINGS_FILE;
+    process.env.ZEROSHOT_SETTINGS_FILE = TEST_SETTINGS_FILE;
+    fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
     settingsModule = require('../lib/settings');
-    Object.defineProperty(settingsModule, 'SETTINGS_FILE', {
-      value: TEST_SETTINGS_FILE,
-      writable: false,
-    });
+    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
   });
 
   after(function () {
@@ -53,10 +65,18 @@ function registerSettingsHooks() {
       fs.rmSync(TEST_STORAGE_DIR, { recursive: true, force: true });
     } catch (e) {
       console.error('Cleanup failed:', e.message);
+    } finally {
+      if (originalSettingsFileEnv === undefined) {
+        delete process.env.ZEROSHOT_SETTINGS_FILE;
+      } else {
+        process.env.ZEROSHOT_SETTINGS_FILE = originalSettingsFileEnv;
+      }
     }
   });
 
   beforeEach(function () {
+    assert.strictEqual(process.env.ZEROSHOT_SETTINGS_FILE, TEST_SETTINGS_FILE);
+    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
     if (fs.existsSync(TEST_SETTINGS_FILE)) {
       fs.unlinkSync(TEST_SETTINGS_FILE);
     }
@@ -66,7 +86,8 @@ function registerSettingsHooks() {
 function registerSettingsExportsTests() {
   it('should export required functions and constants', function () {
     assert.ok(typeof settingsModule.loadSettings === 'function');
-    assert.ok(typeof settingsModule.saveSettings === 'function');
+    assert.ok(typeof settingsModule.mutateSettings === 'function');
+    assert.strictEqual(settingsModule.saveSettings, undefined);
     assert.ok(typeof settingsModule.validateSetting === 'function');
     assert.ok(typeof settingsModule.coerceValue === 'function');
     assert.ok(typeof settingsModule.DEFAULT_SETTINGS === 'object');
@@ -84,6 +105,10 @@ function registerSettingsDefaultTests() {
     assert.strictEqual(DEFAULT_SETTINGS.logLevel, 'normal');
     assert.strictEqual(DEFAULT_SETTINGS.defaultProvider, 'claude');
     assert.ok(DEFAULT_SETTINGS.providerSettings);
+    assert.strictEqual(DEFAULT_SETTINGS.autoCheckUpdates, true);
+    assert.strictEqual(DEFAULT_SETTINGS.lastUpdateCheckAt, null);
+    assert.strictEqual(DEFAULT_SETTINGS.lastSeenVersion, null);
+    assert.strictEqual(DEFAULT_SETTINGS.lastUpdateCheckClaim, null);
   });
 
   it('should load default settings when file does not exist', function () {
@@ -312,6 +337,171 @@ function registerStrictSchemaPropagationTests() {
     });
   });
 }
+function registerTransactionalRecoveryTests() {
+  describe('transactional malformed-file recovery and diagnostics', function () {
+    function writeRawSettings(raw) {
+      fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
+      fs.writeFileSync(TEST_SETTINGS_FILE, raw, 'utf8');
+    }
+
+    function writeMalformedSettings() {
+      writeRawSettings('{"truncated":');
+    }
+
+    it('repairs malformed settings through reset --yes even when defaults are a semantic no-op', function () {
+      writeMalformedSettings();
+      const result = runSettingsCli(['reset', '--yes']);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes('Settings reset to defaults'));
+      const repaired = JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'));
+      assert.strictEqual(repaired.autoCheckUpdates, true);
+      assert.strictEqual(repaired.lastUpdateCheckAt, null);
+      assert.strictEqual(repaired.lastSeenVersion, null);
+      assert.strictEqual(repaired.lastUpdateCheckClaim, null);
+    });
+
+    it('repairs malformed settings while applying an intended settings set mutation', function () {
+      writeMalformedSettings();
+      const result = runSettingsCli(['set', 'logLevel', 'verbose']);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes('Set logLevel = "verbose"'));
+      assert.strictEqual(JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel, 'verbose');
+    });
+
+    it('repairs a null settings document through reset --yes', function () {
+      writeRawSettings('null');
+      const result = runSettingsCli(['reset', '--yes']);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const repaired = JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'));
+      assert.strictEqual(repaired.autoCheckUpdates, true);
+      assert.strictEqual(repaired.lastUpdateCheckClaim, null);
+    });
+
+    for (const [name, raw] of [
+      ['null', 'null'],
+      ['boolean', 'true'],
+      ['number', '42'],
+      ['string', '"invalid"'],
+      ['array', '[]'],
+    ]) {
+      it(`repairs a ${name} settings document while applying settings set`, function () {
+        writeRawSettings(raw);
+        const result = runSettingsCli(['set', 'logLevel', 'verbose']);
+
+        assert.strictEqual(result.status, 0, result.stderr);
+        assert.strictEqual(
+          JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel,
+          'verbose'
+        );
+      });
+    }
+
+    it('surfaces a settings read failure without replacing the existing file', function () {
+      writeSettingsFile({ logLevel: 'verbose', unrelated: 'preserved' });
+      assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const originalReadFileSync = fs.readFileSync;
+      fs.readFileSync = (filePath, ...args) => {
+        if (path.resolve(filePath) === path.resolve(TEST_SETTINGS_FILE)) {
+          throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        }
+        return originalReadFileSync(filePath, ...args);
+      };
+      try {
+        assert.throws(
+          () =>
+            settingsModule.mutateSettings((settings) => {
+              settings.logLevel = 'normal';
+            }),
+          /Unable to persist global settings: permission denied/
+        );
+      } finally {
+        fs.readFileSync = originalReadFileSync;
+      }
+      assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+    });
+
+    for (const [name, initialMode, expectedMode] of [
+      ['broad permissions', 0o644, 0o600],
+      ['stricter permissions', 0o400, 0o400],
+    ]) {
+      it(`publishes atomic settings with ${name} restricted`, function () {
+        writeSettingsFile({ logLevel: 'normal' });
+        fs.chmodSync(TEST_SETTINGS_FILE, initialMode);
+        settingsModule.mutateSettings((settings) => {
+          settings.logLevel = 'verbose';
+        });
+
+        assert.strictEqual(fs.statSync(TEST_SETTINGS_FILE).mode & 0o777, expectedMode);
+      });
+    }
+
+    it('removes its restricted temporary file after an atomic rename failure', function () {
+      writeSettingsFile({ logLevel: 'normal' });
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const originalRenameSync = fs.renameSync;
+      let temporaryFile;
+      fs.renameSync = (source, destination) => {
+        if (path.resolve(destination) === path.resolve(TEST_SETTINGS_FILE)) {
+          temporaryFile = source;
+          assert.strictEqual(fs.statSync(source).mode & 0o777, 0o600);
+          throw Object.assign(new Error('rename denied'), { code: 'EACCES' });
+        }
+        return originalRenameSync(source, destination);
+      };
+      try {
+        assert.throws(
+          () =>
+            settingsModule.mutateSettings((settings) => {
+              settings.logLevel = 'verbose';
+            }),
+          /Unable to persist global settings: rename denied/
+        );
+      } finally {
+        fs.renameSync = originalRenameSync;
+      }
+      assert.ok(temporaryFile);
+      assert.strictEqual(fs.existsSync(temporaryFile), false);
+      assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+    });
+
+    it('reports an invalid nested provider level without persistence wording or a write', function () {
+      writeSettingsFile({});
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const result = runSettingsCli([
+        'set',
+        'providerSettings.claude.defaultLevel',
+        'level9',
+      ]);
+
+      assert.strictEqual(result.status, 1);
+      assert.ok(result.stderr.includes('Invalid defaultLevel for claude: level9'));
+      assert.ok(!result.stderr.includes('Unable to persist global settings'));
+      assert.ok(!result.stdout.includes('✓ Set'));
+      assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+    });
+
+    it('distinguishes a persistence failure and never prints false success', function () {
+      writeSettingsFile({ logLevel: 'normal' });
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const lockPath = `${TEST_SETTINGS_FILE}.lock`;
+      fs.mkdirSync(lockPath);
+      try {
+        const result = runSettingsCli(['set', 'logLevel', 'verbose']);
+        assert.strictEqual(result.status, 1);
+        assert.ok(result.stderr.includes('Unable to persist global settings'));
+        assert.ok(!result.stderr.includes('Invalid defaultLevel'));
+        assert.ok(!result.stdout.includes('✓ Set'));
+        assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+      } finally {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+      }
+    });
+  });
+}
 
 describe('Settings System', function () {
   this.timeout(10000);
@@ -324,4 +514,5 @@ describe('Settings System', function () {
   registerSettingsCoercionTests();
   registerSettingsFileFormatTests();
   registerStrictSchemaPropagationTests();
+  registerTransactionalRecoveryTests();
 });
