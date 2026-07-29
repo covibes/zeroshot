@@ -217,7 +217,9 @@ const FIXTURE: &[ExpectedProvider] = &[
 fn canonical_catalog_matches_the_exact_versioned_fixture() {
     let catalog = worker_catalog();
     assert_eq!(catalog.version(), WORKER_CATALOG_VERSION);
-    assert_eq!(catalog.providers().len(), WORKER_PROVIDER_COUNT);
+    assert_eq!(catalog.providers().len(), 8);
+    assert_eq!(WORKER_PROVIDER_COUNT, 8);
+    assert_eq!(FIXTURE.len(), 8);
     assert_eq!(
         catalog.default_provider_id().as_str(),
         DEFAULT_WORKER_PROVIDER
@@ -354,6 +356,10 @@ fn canonical_bytes_and_digest_are_stable_across_order_and_repetition() {
     );
     assert_eq!(built_in.digest(), worker_catalog().digest());
     assert_eq!(built_in.digest().as_str().len(), 64);
+    assert_eq!(
+        built_in.digest().as_str(),
+        "6c0a0ca77d200e7429598b2bc69756a042e4bc6eee101251a04bc9b1facdc3e5"
+    );
 }
 
 #[test]

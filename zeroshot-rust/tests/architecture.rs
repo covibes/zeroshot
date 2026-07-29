@@ -16,6 +16,10 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
     assert!(root.join("Cargo.lock").is_file());
     assert!(!product.join("Cargo.lock").exists());
     assert!(!product.join("package.json").exists());
+    assert!(
+        !product.join("build.rs").exists(),
+        "native product must not add an unowned build script"
+    );
     assert!(!read(&product.join("Cargo.toml")).contains("[workspace]"));
 
     let mut files = BTreeSet::new();
@@ -42,6 +46,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "src/scheduler.rs",
         "src/issue_provider.rs",
         "src/source_code_provider.rs",
+        "src/worker_catalog.rs",
         "tests/architecture.rs",
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
@@ -54,6 +59,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "tests/provider_contracts.rs",
         "tests/provider_bounds.rs",
         "tests/scheduler_contract.rs",
+        "tests/worker_catalog.rs",
     ] {
         assert!(files.contains(required), "missing product file: {required}");
     }
@@ -61,6 +67,53 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         assert!(
             file == "Cargo.toml" || file.ends_with(".rs"),
             "native product must remain Rust-only: {file}"
+        );
+    }
+}
+
+#[test]
+fn worker_catalog_has_no_build_or_node_typescript_source_inputs() {
+    let product = product_root();
+    let manifest = read(&product.join("Cargo.toml"));
+    assert!(
+        !manifest
+            .lines()
+            .any(|line| line.trim_start().starts_with("build =")),
+        "native product manifest must not configure a build script"
+    );
+
+    let metadata = workspace_metadata();
+    let has_build_target = product_package(&metadata)["targets"]
+        .as_array()
+        .expect("package targets must be an array")
+        .iter()
+        .any(|target| {
+            target["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "custom-build"))
+        });
+    assert!(
+        !has_build_target,
+        "native product must not have a custom build target"
+    );
+
+    let build_and_source_inputs = format!("{manifest}\n{}", rust_sources(&["src"]));
+    for forbidden in [
+        "agent-cli-provider",
+        "provider-registry",
+        "node_modules",
+        "package.json",
+        "tsconfig",
+        ".ts\"",
+        ".tsx\"",
+        ".js\"",
+        ".jsx\"",
+        "Command::new(\"node\")",
+        "Command::new(\"npm\")",
+    ] {
+        assert!(
+            !build_and_source_inputs.contains(forbidden),
+            "native crate input consumes Node/TypeScript source: {forbidden}"
         );
     }
 }
@@ -402,6 +455,53 @@ fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_b
         assert!(
             !contracts.contains(forbidden),
             "provider contracts crossed an owned boundary: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn worker_catalog_adds_no_out_of_scope_product_construction() {
+    let product_source = rust_sources(&["src"]);
+    for forbidden in [
+        "pub struct RoleContract",
+        "pub enum RoleContract",
+        "RoleContractPack",
+        "RoleManifest",
+        "pub mod worker_registry",
+        "mod worker_registry;",
+        "struct WorkerRegistry",
+        "impl WorkerRegistry",
+        "impl WorkerRegistry for",
+        "pub mod config",
+        "mod config;",
+        "mod native_config",
+        "struct NativeConfig",
+        "struct WorkerConfig",
+        "struct ProviderConfig",
+        "struct NativeSettings",
+        "mod credentials;",
+        "mod credential;",
+        "CredentialResolver",
+        "CredentialLease",
+        "CredentialCodec",
+        "resolve_credentials",
+        "decode_credentials",
+        "ExecutableCodec",
+        "encode_executable",
+        "decode_executable",
+        "struct GatewayDriver",
+        "struct CliProcessDriver",
+        "struct AcpStdioDriver",
+        "impl WorkerDriver for",
+        "impl BuiltinWorkerDriver for",
+        "struct ProtocolDescriptor",
+        "struct WorkerDescriptor",
+        "WorkerDescriptor::new",
+        "openengine_cluster_protocol::worker",
+    ] {
+        assert!(
+            !product_source.contains(forbidden),
+            "worker catalog crossed an issue-owned product boundary: {forbidden}"
         );
     }
 }
