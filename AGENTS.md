@@ -273,6 +273,15 @@ Endpoint preflight rejects non-ws(s), userinfo, query, and fragment before netwo
 are never followed or downgraded. Keep `serve_websocket` plaintext/front-proxy terminated and keep
 TLS out of `zeroshot-rust`. Do not introduce native-tls: its Linux `openssl-sys` dependency breaks
 cross-compilation and static-musl builds.
+Connection identity is binding-injected and never wire-carried. Every accepted NDJSON or WebSocket
+binding resolves exactly one immutable `ConnectionIdentity` before decoding its first frame;
+principal and tenant are opaque typed IDs, expiry is required, and binding attributes remain opaque
+to the dispatcher. Check expiry at every request decode boundary before admission/backend work
+(`4401` for WebSocket; one terminal diagnostic then close for NDJSON). Protocol params named
+`principal`, `tenant`, or `expiresAt` remain strict unknown fields and must never alter context.
+Tenant partitioning is exclusively a backend decision: the dispatcher neither adds nor removes it.
+`ConnectionBinding` must preserve the host-supplied cancellation signal in the backend-visible
+context; identity resolution must not replace the host's connection/shutdown ownership.
 Each binding parses inbound JSON once into the duplicate-preserving connection frame. Preserve the
 legacy typed-request classification used for duplicate-ID and task-slot admission before the strict
 envelope outcome; malformed and wrong-version responses still cross that shared admission boundary.

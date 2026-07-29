@@ -1,6 +1,11 @@
-use openengine_cluster_server::stdio::serve_stdio;
+use std::sync::Arc;
+
 use openengine_cluster_server::admission::AdmissionCoordinator;
-use openengine_cluster_server::{ConnectionContext, Dispatcher};
+use openengine_cluster_server::identity::{
+    BindingAttributes, ConnectionBinding, ConnectionIdentity, ConnectionIdentityConfig,
+    PrincipalId, StaticConnectionIdentityResolver, SystemConnectionTime, TenantId,
+};
+use openengine_cluster_server::stdio::serve_stdio;
 use openengine_cluster_testkit::admission::{
     compiled_from_graph_fixture, graph_fixture, InMemoryAdmissionStore, ScriptedOutcome,
     ScriptedVerifier,
@@ -18,8 +23,20 @@ async fn main() {
         ScriptedVerifier::new(outcomes),
         InMemoryAdmissionStore::default(),
     );
-    let dispatcher = Dispatcher::new(backend, ConnectionContext::default());
-    if let Err(error) = serve_stdio(dispatcher).await {
+    let identity = ConnectionIdentity::new(ConnectionIdentityConfig {
+        principal: PrincipalId::new("stdio-fixture"),
+        tenant: TenantId::new("stdio-fixture"),
+        issued_at_ms: None,
+        expires_at_ms: u64::MAX,
+        binding_attributes: BindingAttributes::default(),
+    });
+    let binding = ConnectionBinding::new(
+        Arc::new(backend),
+        StaticConnectionIdentityResolver::new(identity),
+        SystemConnectionTime,
+        Default::default(),
+    );
+    if let Err(error) = serve_stdio(binding).await {
         eprintln!("cluster protocol stdio server failed: {error}");
         std::process::exit(1);
     }

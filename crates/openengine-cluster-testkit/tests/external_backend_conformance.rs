@@ -43,7 +43,12 @@ impl ClusterBackend for OptionalCapabilityBackend {
         context: &ConnectionContext,
         _params: InitializeParams,
     ) -> Result<InitializeResult, BackendError> {
-        if context.peer_label.is_none() {
+        if !context
+            .identity()
+            .tenant()
+            .as_str()
+            .starts_with("portable-conformance:")
+        {
             return Err(BackendError::new(
                 "CONTEXT_NOT_ISOLATED",
                 "runner context was missing",
@@ -60,7 +65,12 @@ impl ClusterBackend for OptionalCapabilityBackend {
         context: &ConnectionContext,
         _params: GetParams,
     ) -> Result<GetResult, BackendError> {
-        if context.peer_label.is_none() {
+        if !context
+            .identity()
+            .tenant()
+            .as_str()
+            .starts_with("portable-conformance:")
+        {
             return Err(BackendError::new(
                 "CONTEXT_NOT_ISOLATED",
                 "runner context was missing",

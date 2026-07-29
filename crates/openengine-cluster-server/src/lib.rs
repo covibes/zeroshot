@@ -3,6 +3,7 @@
 pub mod admission;
 pub mod agent_attach;
 pub mod graph_verifier;
+pub mod identity;
 pub mod lifecycle;
 pub mod logs;
 pub mod method_registry;
@@ -32,11 +33,36 @@ use thiserror::Error;
 use crate::agent_attach::{AgentAttachEventStream, AgentAttachHandle};
 use crate::logs::{LogEventStream, LogsHandle};
 use crate::watch::{WatchEventStream, WatchHandle};
+use crate::identity::ConnectionIdentity;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionContext {
-    pub peer_label: Option<String>,
+    identity: ConnectionIdentity,
     pub cancellation: admission::CancellationSignal,
+}
+
+impl ConnectionContext {
+    #[must_use]
+    pub fn new(identity: ConnectionIdentity, cancellation: admission::CancellationSignal) -> Self {
+        Self {
+            identity,
+            cancellation,
+        }
+    }
+
+    #[must_use]
+    pub fn identity(&self) -> &ConnectionIdentity {
+        &self.identity
+    }
+}
+
+impl Default for ConnectionContext {
+    fn default() -> Self {
+        Self::new(
+            ConnectionIdentity::local_default(),
+            admission::CancellationSignal::default(),
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
