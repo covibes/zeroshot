@@ -419,6 +419,7 @@ struct Engine<'a> {
     decisions: Vec<Decision>,
     map_depths: BTreeMap<NodeName, usize>,
     consumed_executions: BTreeSet<ExecutionId>,
+    legitimized_voids: BTreeSet<ExecutionId>,
 }
 
 impl<'a> Engine<'a> {
@@ -446,15 +447,16 @@ impl<'a> Engine<'a> {
             decisions: Vec::new(),
             map_depths,
             consumed_executions: BTreeSet::new(),
+            legitimized_voids: BTreeSet::new(),
         })
     }
 
     fn ensure_history_consumed(&self) -> Result<(), ReducerError> {
-        if self
-            .executions
-            .iter()
-            .all(|execution| self.consumed_executions.contains(&execution.execution))
-        {
+        if self.executions.iter().all(|execution| {
+            self.consumed_executions.contains(&execution.execution)
+                && (!matches!(execution.state, DurableExecutionState::Voided { .. })
+                    || self.legitimized_voids.contains(&execution.execution))
+        }) {
             Ok(())
         } else {
             Err(ReducerError::InconsistentHistory)
@@ -1280,13 +1282,25 @@ impl<'a> Engine<'a> {
                         .occurrence
                         .map_indices
                         .starts_with(scope.map_indices)
-                    && matches!(execution.state, DurableExecutionState::Active)
+                    && matches!(
+                        execution.state,
+                        DurableExecutionState::Active | DurableExecutionState::Voided { .. }
+                    )
             })
-            .map(|execution| (execution.dispatch_position, execution.execution))
+            .map(|execution| {
+                (
+                    execution.dispatch_position,
+                    execution.execution,
+                    matches!(execution.state, DurableExecutionState::Active),
+                )
+            })
             .collect::<Vec<_>>();
         losers.sort_unstable();
-        for (_, execution) in losers {
-            self.push_void_decision(execution, scope.reason);
+        for (_, execution, active) in losers {
+            self.legitimized_voids.insert(execution);
+            if active {
+                self.push_void_decision(execution, scope.reason);
+            }
         }
     }
 
@@ -1307,13 +1321,25 @@ impl<'a> Engine<'a> {
                         .occurrence
                         .map_indices
                         .starts_with(scope.winner_scope)
-                    && matches!(execution.state, DurableExecutionState::Active)
+                    && matches!(
+                        execution.state,
+                        DurableExecutionState::Active | DurableExecutionState::Voided { .. }
+                    )
             })
-            .map(|execution| (execution.dispatch_position, execution.execution))
+            .map(|execution| {
+                (
+                    execution.dispatch_position,
+                    execution.execution,
+                    matches!(execution.state, DurableExecutionState::Active),
+                )
+            })
             .collect::<Vec<_>>();
         losers.sort_unstable();
-        for (_, execution) in losers {
-            self.push_void_decision(execution, scope.common.reason);
+        for (_, execution, active) in losers {
+            self.legitimized_voids.insert(execution);
+            if active {
+                self.push_void_decision(execution, scope.common.reason);
+            }
         }
     }
 }

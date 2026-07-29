@@ -374,6 +374,62 @@ async fn earlier_ledger_position_wins_first_independent_of_authored_and_history_
 }
 
 #[tokio::test]
+async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
+    let sequential = verified(
+        seq(vec![step("ordinary_work", 1), succeed("ordinary_done")]),
+        json!({"ordinary_work":1}),
+    )
+    .await;
+    let mut unowned = execution(
+        ExecutionSpec::new(1, 1, "ordinary_work").settled_at(2),
+        success(),
+    );
+    unowned.state = DurableExecutionState::Voided {
+        position: Position::new(5).unwrap(),
+    };
+    assert_eq!(
+        FullV1Reducer::new(&sequential)
+            .reduce(input(&json!({}), std::slice::from_ref(&unowned)))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
+
+    let parallel = verified(
+        seq(vec![
+            json!({
+                "kind":"par","name":"owned_race","state":boundary_state(),
+                "branches":[step("owned_loser",1),step("owned_winner",1)],
+                "promotedStatePaths":[],"join":{"kind":"any"}
+            }),
+            succeed("owned_done"),
+        ]),
+        json!({"owned_loser":1,"owned_winner":1}),
+    )
+    .await;
+    let mut owned = execution(
+        ExecutionSpec::new(1, 1, "owned_loser").settled_at(2),
+        success(),
+    );
+    owned.state = DurableExecutionState::Voided {
+        position: Position::new(5).unwrap(),
+    };
+    let winner = execution(
+        ExecutionSpec::new(2, 2, "owned_winner").settled_at(3),
+        success(),
+    );
+    let reduction = FullV1Reducer::new(&parallel)
+        .reduce(input(&json!({}), &[owned, winner]))
+        .unwrap();
+    assert!(reduction.terminal.is_some());
+    assert!(
+        !reduction
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::VoidLoser { .. }))
+    );
+}
+
+#[tokio::test]
 async fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
     let graph = verified(
         seq(vec![step("work", 2), succeed("done")]),
