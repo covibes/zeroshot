@@ -1,5 +1,6 @@
 mod io;
 mod platform;
+mod session;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -14,7 +15,12 @@ use io::{
     ProcessEvent, collect_remaining_events, join_errors, record_process_event, spawn_reader_task,
     spawn_stdin_task,
 };
-use platform::{capture_process_tree, terminate_process_tree};
+use platform::{capture_process_tree, register_process_tree, terminate_process_tree};
+pub use session::{
+    MAX_PROCESS_FRAME_BYTES, MAX_PROCESS_FRAMING_OVERHEAD_BYTES, MAX_PROCESS_MESSAGE_BYTES,
+    PROCESS_STDIN_CAPACITY, PROCESS_STDOUT_CAPACITY, ProcessFrame, ProcessOutputChunk,
+    ProcessSession, ProcessSessionCommand, ProcessSessionOutput,
+};
 
 pub const MAX_PROCESS_DIAGNOSTIC_BYTES: usize = 64 * 1024;
 pub const MAX_PROCESS_ARGV_ITEMS: usize = 256;
@@ -36,17 +42,7 @@ pub struct ProcessCommand {
 
 impl ProcessCommand {
     pub fn validate(&self) -> Result<(), ProcessRunnerError> {
-        validate_program(&self.program)?;
-        validate_collection(
-            CollectionLimit::new("argv", MAX_PROCESS_ARGV_ITEMS, MAX_PROCESS_ARGV_BYTES),
-            self.argv.len(),
-            format_arg_bytes(&self.program, &self.argv)?,
-        )?;
-        validate_collection(
-            CollectionLimit::new("environment", MAX_PROCESS_ENV_ITEMS, MAX_PROCESS_ENV_BYTES),
-            self.environment.len(),
-            total_env_bytes(&self.environment)?,
-        )?;
+        validate_launch_fields(&self.program, &self.argv, &self.environment)?;
         self.stdin.validate()?;
         Ok(())
     }
@@ -104,6 +100,18 @@ pub enum ProcessRunnerError {
     Io(String),
 }
 
+impl ProcessRunnerError {
+    #[must_use]
+    pub const fn launch_evidence(&self) -> ProcessLaunchEvidence {
+        match self {
+            Self::InvalidCommand(_) | Self::Launch(_) => {
+                ProcessLaunchEvidence::DefinitelyNotStarted
+            }
+            Self::Io(_) => ProcessLaunchEvidence::MayHaveStarted,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LocalProcessRunner;
 
@@ -120,10 +128,27 @@ impl LocalProcessRunner {
     ) -> Result<ProcessRunOutput, ProcessRunnerError> {
         command.validate()?;
 
-        let mut child = build_child_command(&command)
-            .spawn()
-            .map_err(|error| ProcessRunnerError::Launch(error.to_string()))?;
-        let process_tree = capture_process_tree(&child);
+        let process_tree_registration = register_process_tree().map_err(|_| {
+            ProcessRunnerError::Launch("process containment registration failed".to_owned())
+        })?;
+        let mut child = build_child_command(
+            &command.program,
+            &command.argv,
+            &command.environment,
+            &command.workspace,
+        )
+        .spawn()
+        .map_err(|error| ProcessRunnerError::Launch(error.to_string()))?;
+        let process_tree = match capture_process_tree(process_tree_registration, &mut child) {
+            Ok(process_tree) => process_tree,
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return Err(ProcessRunnerError::Io(
+                    "process containment capture failed".to_owned(),
+                ));
+            }
+        };
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         spawn_stdin_task(
             child.stdin.take(),
@@ -145,6 +170,7 @@ impl LocalProcessRunner {
         drop(event_tx);
 
         let mut state = RunState::default();
+        let mut io_events_open = true;
         let deadline = sleep_until(command.deadline);
         tokio::pin!(deadline);
 
@@ -153,15 +179,17 @@ impl LocalProcessRunner {
                 status = child.wait() => handle_wait(status, &mut state).await,
                 _ = cancellation.cancelled() => cancel_child(&process_tree, &mut child, &mut state).await,
                 _ = &mut deadline => timeout_child(&process_tree, &mut child, &mut state).await,
-                event = event_rx.recv() => {
-                    let Some(event) = event else {
-                        break;
-                    };
-                    handle_event(event, &process_tree, &mut child, &mut state).await;
+                event = event_rx.recv(), if io_events_open => {
+                    if let Some(event) = event {
+                        handle_event(event, &process_tree, &mut child, &mut state).await;
+                    } else {
+                        io_events_open = false;
+                    }
                 }
             }
         }
 
+        let post_launch_error_count = state.post_launch_errors.len();
         collect_remaining_events(
             &mut event_rx,
             io::PendingIo::new(
@@ -172,6 +200,11 @@ impl LocalProcessRunner {
             ),
         )
         .await;
+        if state.cleanup == ProcessCleanupEvidence::NotRequired
+            && state.post_launch_errors.len() > post_launch_error_count
+        {
+            apply_termination(&process_tree, &mut child, &mut state).await;
+        }
         Ok(ProcessRunOutput {
             launch_evidence: ProcessLaunchEvidence::MayHaveStarted,
             exit_code: state.exit_status.and_then(|status| status.code()),
@@ -213,12 +246,17 @@ impl CollectionLimit {
     }
 }
 
-fn build_child_command(command: &ProcessCommand) -> Command {
-    let mut child = Command::new(&command.program);
-    child.args(&command.argv);
-    child.current_dir(PathBuf::from(&command.workspace.current_dir));
+fn build_child_command(
+    program: &str,
+    argv: &[String],
+    environment: &BTreeMap<String, String>,
+    workspace: &WorkspaceCapability,
+) -> Command {
+    let mut child = Command::new(program);
+    child.args(argv);
+    child.current_dir(PathBuf::from(&workspace.current_dir));
     child.env_clear();
-    child.envs(command.environment.iter());
+    child.envs(environment.iter());
     child.stdin(std::process::Stdio::piped());
     child.stdout(std::process::Stdio::piped());
     child.stderr(std::process::Stdio::piped());
@@ -226,6 +264,23 @@ fn build_child_command(command: &ProcessCommand) -> Command {
     child
 }
 
+fn validate_launch_fields(
+    program: &str,
+    argv: &[String],
+    environment: &BTreeMap<String, String>,
+) -> Result<(), ProcessRunnerError> {
+    validate_program(program)?;
+    validate_collection(
+        CollectionLimit::new("argv", MAX_PROCESS_ARGV_ITEMS, MAX_PROCESS_ARGV_BYTES),
+        argv.len(),
+        format_arg_bytes(program, argv)?,
+    )?;
+    validate_collection(
+        CollectionLimit::new("environment", MAX_PROCESS_ENV_ITEMS, MAX_PROCESS_ENV_BYTES),
+        environment.len(),
+        total_env_bytes(environment)?,
+    )
+}
 fn validate_program(program: &str) -> Result<(), ProcessRunnerError> {
     if program.is_empty() {
         return Err(ProcessRunnerError::InvalidCommand(

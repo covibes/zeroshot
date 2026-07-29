@@ -111,6 +111,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | NDJSON watch client          | `crates/openengine-cluster-client/src/ndjson_watch.rs`                  |
 | Connection core/admission    | `crates/openengine-cluster-server/src/connection.rs`, `connection/`     |
 | JSON-RPC envelope/routing    | `crates/openengine-cluster-server/src/dispatch.rs`                      |
+| Protocol method registry     | `crates/openengine-cluster-server/src/method_registry.rs`               |
 | NDJSON response pump         | `crates/openengine-cluster-client/src/ndjson_pump.rs`                   |
 | Cluster typed transports     | `crates/openengine-cluster-client/`                                     |
 | TypeScript cluster client    | `src/cluster/`                                                          |
@@ -182,6 +183,11 @@ ledger mutation, durable attempt state, protocol methods, provider catalog/confi
 credential resolution, workspace lifecycle, real CLI/ACP/Gateway drivers, built-in registration,
 or `NativeBackend` composition. Runtime command/control values remain serializable, secret-free,
 and input-free after control reconstruction.
+`LocalProcessRunner` is also the sole contained stdio-session seam: recovery is registered before
+spawn, stdout and diagnostics stay bounded, and close/release owns termination and reaping exactly
+once. Provider framing and candidate decoding remain in the provider drivers.
+Windows children stay suspended until assignment to their kill-on-close Job Object; never reopen
+the pre-assignment execution window.
 Native engine faults must be constructed only by `FaultFactory` from closed `ModuleEvidence`.
 Decoded faults must match the canonical semantics derived from their required primary source frame.
 Raw diagnostic values are replaced wholesale with typed markers and remain ephemeral; never put
@@ -272,6 +278,9 @@ legacy typed-request classification used for duplicate-ID and task-slot admissio
 envelope outcome; malformed and wrong-version responses still cross that shared admission boundary.
 `Dispatcher::dispatch_decoded` owns method lookup before params-shape validation, while
 `Dispatcher::dispatch` is only the JSON-RPC envelope decoder.
+`method_registry.rs` is the sole source of truth for server method names, unary/subscription kind,
+transport requirements, and advertised OpenRPC order/metadata. Bindings resolve subscription kinds
+through that registry; the connection core exhaustively maps every `SubscriptionKind` to its runner.
 Authoritative admission snapshots fail closed: `empty` has no durable fields, `running` has the
 complete matching control/seed tuple, and transient `admitting` preserves one of those two shapes.
 Operational suspend is a dispatch gate: existing leases may land verified I/O, but successors wait

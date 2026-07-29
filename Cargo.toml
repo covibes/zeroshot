@@ -39,6 +39,7 @@ time = "=0.3.41"
 futures-util = "0.3"
 jsonschema = { version = "0.29.1", default-features = false }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
+windows-sys = "0.61.2"
 
 openengine-cluster-protocol = { path = "crates/openengine-cluster-protocol" }
 openengine-cluster-server = { path = "crates/openengine-cluster-server" }

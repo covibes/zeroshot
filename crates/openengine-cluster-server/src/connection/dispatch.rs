@@ -17,6 +17,7 @@ use super::{
     agent_attach, logs, run_watch_subscription, ConnectionState, DecodedOutcome, RequestKind,
     SubscriptionMap,
 };
+use crate::method_registry::SubscriptionKind;
 use crate::{ClusterBackend, Dispatcher};
 
 /// Grace period given to already-spawned bounded backend dispatches to finish once the connection
@@ -47,8 +48,7 @@ pub(crate) struct DispatchCtx<'a, B> {
 }
 
 /// Spawns `run` as a bounded, duplicate-id-rejecting, admission-controlled subscription task for
-/// `id`/`params` -- shared by [`dispatch_classified_request`]'s `Watch`/`Logs`/`AgentAttach` arms,
-/// which otherwise differ only in which subscription runner they spawn.
+/// `id`/`params`.
 async fn spawn_subscription_task<B, F, Fut>(
     ctx: &mut DispatchCtx<'_, B>,
     id: RequestId,
@@ -76,9 +76,8 @@ async fn spawn_subscription_task<B, F, Fut>(
     });
 }
 
-/// Handles the transport-neutral core for one classified request: `subscription/cancel`
-/// notifications and `watch`/`logs`/`agent/attach` establishment, including their admission
-/// control (duplicate-id rejection, task-slot acquisition). Only
+/// Handles the transport-neutral core for one classified request: `subscription/cancel` and
+/// subscription establishment, including duplicate-id rejection and task-slot admission. Only
 /// [`RequestKind::Passthrough`] is handed back to the caller as
 /// [`RequestDispatch::Passthrough`], with its own admission already applied, so each binding can
 /// run its own passthrough dispatch.
@@ -96,17 +95,24 @@ where
             }
             RequestDispatch::Handled
         }
-        RequestKind::Watch { id, params } => {
-            spawn_subscription_task(ctx, id, params, run_watch_subscription).await;
-            RequestDispatch::Handled
-        }
-        RequestKind::Logs { id, params } => {
-            spawn_subscription_task(ctx, id, params, logs::run_logs_subscription).await;
-            RequestDispatch::Handled
-        }
-        RequestKind::AgentAttach { id, params } => {
-            spawn_subscription_task(ctx, id, params, agent_attach::run_agent_attach_subscription)
-                .await;
+        RequestKind::Subscription { kind, id, params } => {
+            match kind {
+                SubscriptionKind::Watch => {
+                    spawn_subscription_task(ctx, id, params, run_watch_subscription).await;
+                }
+                SubscriptionKind::Logs => {
+                    spawn_subscription_task(ctx, id, params, logs::run_logs_subscription).await;
+                }
+                SubscriptionKind::AgentAttach => {
+                    spawn_subscription_task(
+                        ctx,
+                        id,
+                        params,
+                        agent_attach::run_agent_attach_subscription,
+                    )
+                    .await;
+                }
+            }
             RequestDispatch::Handled
         }
         RequestKind::Passthrough {

@@ -29,6 +29,7 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
 
+use crate::method_registry::SubscriptionKind;
 use crate::watch::{WatchEventStream, WatchHandle, WatchStreamItem};
 use crate::{serialize_backend_error, serialize_error, serialize_success, ClusterBackend, Dispatcher};
 
@@ -141,15 +142,8 @@ pub(crate) enum DecodedOutcome {
 
 /// A decoded request classified for the shared connection multiplexer.
 pub(crate) enum RequestKind {
-    Watch {
-        id: RequestId,
-        params: Value,
-    },
-    Logs {
-        id: RequestId,
-        params: Value,
-    },
-    AgentAttach {
+    Subscription {
+        kind: SubscriptionKind,
         id: RequestId,
         params: Value,
     },
