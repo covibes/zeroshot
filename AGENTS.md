@@ -109,6 +109,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | NDJSON stdio binding         | `crates/openengine-cluster-server/src/stdio.rs`                         |
 | NDJSON watch client          | `crates/openengine-cluster-client/src/ndjson_watch.rs`                  |
 | Connection core/admission    | `crates/openengine-cluster-server/src/connection.rs`, `connection/`     |
+| JSON-RPC envelope/routing    | `crates/openengine-cluster-server/src/dispatch.rs`                      |
 | NDJSON response pump         | `crates/openengine-cluster-client/src/ndjson_pump.rs`                   |
 | Cluster typed transports     | `crates/openengine-cluster-client/`                                     |
 | TypeScript cluster client    | `src/cluster/`                                                          |
@@ -258,6 +259,11 @@ Endpoint preflight rejects non-ws(s), userinfo, query, and fragment before netwo
 are never followed or downgraded. Keep `serve_websocket` plaintext/front-proxy terminated and keep
 TLS out of `zeroshot-rust`. Do not introduce native-tls: its Linux `openssl-sys` dependency breaks
 cross-compilation and static-musl builds.
+Each binding parses inbound JSON once into the duplicate-preserving connection frame. Preserve the
+legacy typed-request classification used for duplicate-ID and task-slot admission before the strict
+envelope outcome; malformed and wrong-version responses still cross that shared admission boundary.
+`Dispatcher::dispatch_decoded` owns method lookup before params-shape validation, while
+`Dispatcher::dispatch` is only the JSON-RPC envelope decoder.
 Authoritative admission snapshots fail closed: `empty` has no durable fields, `running` has the
 complete matching control/seed tuple, and transient `admitting` preserves one of those two shapes.
 Operational suspend is a dispatch gate: existing leases may land verified I/O, but successors wait
