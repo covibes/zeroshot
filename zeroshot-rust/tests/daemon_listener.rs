@@ -1,7 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 #[path = "support/daemon.rs"]
 mod daemon_support;
@@ -9,8 +11,10 @@ mod daemon_support;
 use daemon_support::{
     CountingBackend, CountingFactory, TempProfile, authenticated_initialize, locator_credentials,
 };
-use openengine_cluster_protocol::{ClusterStatus, InitializeResult, ServerCapabilities};
-use openengine_cluster_server::ConnectionContext;
+use openengine_cluster_protocol::{
+    ClusterStatus, GetParams, GetResult, InitializeParams, InitializeResult, ServerCapabilities,
+};
+use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
@@ -50,6 +54,60 @@ impl NativeBackendFactory for PanicFactory {
 
     fn create(&self, _context: &ConnectionContext) -> Self::Backend {
         panic!("controlled connection factory panic")
+    }
+}
+
+#[derive(Clone, Default)]
+struct PendingInitializeFactory {
+    created: Arc<AtomicUsize>,
+    initialize_started: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+
+struct PendingInitializeBackend {
+    initialize_started: Arc<AtomicUsize>,
+    dropped: Arc<AtomicUsize>,
+}
+
+impl NativeBackendFactory for PendingInitializeFactory {
+    type Backend = PendingInitializeBackend;
+
+    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+        self.created.fetch_add(1, Ordering::SeqCst);
+        PendingInitializeBackend {
+            initialize_started: Arc::clone(&self.initialize_started),
+            dropped: Arc::clone(&self.dropped),
+        }
+    }
+}
+
+impl Drop for PendingInitializeBackend {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl ClusterBackend for PendingInitializeBackend {
+    async fn initialize(
+        &self,
+        _context: &ConnectionContext,
+        _params: InitializeParams,
+    ) -> Result<InitializeResult, BackendError> {
+        self.initialize_started.fetch_add(1, Ordering::SeqCst);
+        std::future::pending().await
+    }
+
+    async fn get(
+        &self,
+        _context: &ConnectionContext,
+        _params: GetParams,
+    ) -> Result<GetResult, BackendError> {
+        Ok(GetResult {
+            spec: None,
+            status: ClusterStatus::empty(),
+            at_cursor: None,
+        })
     }
 }
 
@@ -712,6 +770,95 @@ async fn authenticated_liveness_releases_its_permit_at_server_timeout_without_cl
         .get_ref()
         .peer_addr()
         .expect("client websocket remains owned after server timeout");
+
+    drop(websocket);
+    listener.shutdown().await.expect("shutdown listener");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn liveness_deadline_cancels_pending_initialize_dispatch_without_response_or_leak() {
+    let profile = TempProfile::new("liveness-dispatch-timeout");
+    let config = ListenerConfig {
+        liveness_timeout: Duration::from_millis(300),
+        max_liveness_connections: 1,
+        ..test_config()
+    };
+    let factory = PendingInitializeFactory::default();
+    let listener =
+        DaemonListener::start_with_config(profile.profile.clone(), factory.clone(), config)
+            .await
+            .expect("start dispatch-timeout listener");
+    let locator = listener.locator().clone();
+    let credentials = locator_credentials(&locator);
+    let address: SocketAddr = locator
+        .endpoint
+        .strip_prefix("ws://")
+        .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+        .expect("dispatch-timeout endpoint")
+        .parse()
+        .expect("dispatch-timeout address");
+    let mut request = locator
+        .endpoint
+        .as_str()
+        .into_client_request()
+        .expect("liveness dispatch request");
+    let proof = credentials
+        .prepare_request(&mut request, ConnectionPurpose::Liveness)
+        .expect("liveness dispatch proof");
+    let stream = TcpStream::connect(address)
+        .await
+        .expect("liveness dispatch connection");
+    let (mut websocket, response) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .expect("authenticated liveness dispatch upgrade");
+    assert!(proof.verify(&response));
+    websocket
+        .send(Message::Text(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "pending-liveness",
+                "method": "initialize",
+                "params": {"protocolVersion": "openengine.cluster/v1"}
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("send valid pending initialize");
+    timeout(Duration::from_millis(200), async {
+        while factory.initialize_started.load(Ordering::SeqCst) != 1
+            || listener.active_liveness_connections() != 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("pending initialize dispatch started under liveness permit");
+
+    timeout(Duration::from_millis(500), async {
+        while listener.active_liveness_connections() != 0
+            || factory.dropped.load(Ordering::SeqCst) != 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("absolute liveness deadline cancelled dispatch and released backend");
+    assert_eq!(factory.created.load(Ordering::SeqCst), 1);
+    assert_eq!(factory.initialize_started.load(Ordering::SeqCst), 1);
+    assert_eq!(factory.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(listener.pending_handshakes(), 0);
+    assert_eq!(listener.active_sessions(), 0);
+
+    let ended = timeout(Duration::from_millis(200), websocket.next())
+        .await
+        .expect("timed-out liveness connection terminated");
+    if let Some(Ok(message)) = ended {
+        assert!(
+            !matches!(message, Message::Text(_)),
+            "cancelled liveness dispatch emitted a response"
+        );
+    }
 
     drop(websocket);
     listener.shutdown().await.expect("shutdown listener");

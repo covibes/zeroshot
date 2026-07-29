@@ -504,25 +504,27 @@ where
         let Ok(_liveness_permit) = liveness_connection_permits.try_acquire_owned() else {
             return;
         };
-        let Ok(Some(Ok(Message::Text(request)))) =
-            timeout(liveness_timeout, websocket.next()).await
-        else {
-            return;
+        let deadline = Instant::now() + liveness_timeout;
+        let transaction = async {
+            let Some(Ok(Message::Text(request))) = websocket.next().await else {
+                return;
+            };
+            let Ok(value) = serde_json::from_str::<Value>(request.as_ref()) else {
+                return;
+            };
+            if value.get("method").and_then(Value::as_str) != Some("initialize") {
+                return;
+            }
+            let context = ConnectionContext {
+                peer_label: Some(peer.to_string()),
+                ..ConnectionContext::default()
+            };
+            let dispatcher = dispatcher_for_route(factory.as_ref(), context);
+            let response = dispatcher.dispatch(request.as_ref()).await;
+            let _ = websocket.send(Message::Text(response.into())).await;
+            let _ = websocket.close(None).await;
         };
-        let Ok(value) = serde_json::from_str::<Value>(request.as_ref()) else {
-            return;
-        };
-        if value.get("method").and_then(Value::as_str) != Some("initialize") {
-            return;
-        }
-        let context = ConnectionContext {
-            peer_label: Some(peer.to_string()),
-            ..ConnectionContext::default()
-        };
-        let dispatcher = dispatcher_for_route(factory.as_ref(), context);
-        let response = dispatcher.dispatch(request.as_ref()).await;
-        let _ = websocket.send(Message::Text(response.into())).await;
-        let _ = websocket.close(None).await;
+        let _ = timeout_at(deadline, transaction).await;
         return;
     }
     let Ok(_permit) = active_permits.try_acquire_owned() else {
