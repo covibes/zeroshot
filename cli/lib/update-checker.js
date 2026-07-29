@@ -402,6 +402,13 @@ function runUpdate(options = {}) {
   });
 }
 
+function runLegacyUpdateIfRequested(argv, options = {}) {
+  const packageName = options.packageName || getCurrentPackageName();
+  if (!shouldForceLegacyUpdate(argv, packageName)) return null;
+  const installer = options.runUpdate || runUpdate;
+  return Promise.resolve(installer());
+}
+
 function optionIndex(argv, longName, shortName = null) {
   const end = argv.indexOf('--');
   const limit = end === -1 ? argv.length : end;
@@ -651,6 +658,7 @@ module.exports = {
   isNewerVersion,
   fetchLatestVersion,
   runUpdate,
+  runLegacyUpdateIfRequested,
   shouldCheckForUpdates,
   canWriteToNpmGlobal,
   CHECK_INTERVAL_MS,

@@ -86,8 +86,7 @@ const {
   checkForUpdates,
   isAutomaticUpdateEligible,
   printLegacyDistroNotice,
-  runUpdate,
-  shouldForceLegacyUpdate,
+  runLegacyUpdateIfRequested,
 } = require('./lib/update-checker');
 const { checkBinDirOnPath, printPathWarning } = require('../lib/path-check');
 const { StatusFooter, AGENT_STATE, ACTIVE_STATES } = require('../src/status-footer');
@@ -5940,7 +5939,7 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
 }
 
 // Main entry point
-function main() {
+async function main() {
   printLegacyDistroNotice();
 
   try {
@@ -5953,8 +5952,10 @@ function main() {
   }
 
   const startupArgs = process.argv.slice(2);
-  if (shouldForceLegacyUpdate(startupArgs)) {
-    runUpdate();
+  const legacyUpdate = runLegacyUpdateIfRequested(startupArgs);
+  if (legacyUpdate !== null) {
+    const success = await legacyUpdate;
+    process.exitCode = success ? 0 : 1;
     return;
   }
 
@@ -5993,12 +5994,10 @@ function main() {
 
 // Run main
 if (require.main === module) {
-  try {
-    main();
-  } catch (err) {
+  main().catch((err) => {
     console.error('Fatal error:', err.message);
     process.exit(1);
-  }
+  });
 }
 
 module.exports = {

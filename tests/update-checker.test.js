@@ -636,20 +636,35 @@ describe('Update Checker', function () {
       );
     });
 
-    it('forces every legacy first-argument update form through takeover', function () {
-      for (const argv of [['update'], ['update', '--check']]) {
-        assert.strictEqual(
-          updateChecker.shouldForceLegacyUpdate(argv, '@covibes/zeroshot'),
-          true
-        );
+    it('dispatches every legacy first-argument update form and preserves its result', async function () {
+      const invocations = [];
+      for (const [argv, success] of [
+        [['update'], true],
+        [['update', '--check'], false],
+      ]) {
+        const result = await updateChecker.runLegacyUpdateIfRequested(argv, {
+          packageName: '@covibes/zeroshot',
+          runUpdate: () => {
+            invocations.push(argv);
+            return success;
+          },
+        });
+        assert.strictEqual(result, success);
       }
+      assert.deepStrictEqual(invocations, [['update'], ['update', '--check']]);
       assert.strictEqual(
-        updateChecker.shouldForceLegacyUpdate(['update', '--check'], '@the-open-engine/zeroshot'),
-        false
+        updateChecker.runLegacyUpdateIfRequested(['update', '--check'], {
+          packageName: '@the-open-engine/zeroshot',
+          runUpdate: () => assert.fail('current-package check must not force takeover'),
+        }),
+        null
       );
       assert.strictEqual(
-        updateChecker.shouldForceLegacyUpdate(['list'], '@covibes/zeroshot'),
-        false
+        updateChecker.runLegacyUpdateIfRequested(['list'], {
+          packageName: '@covibes/zeroshot',
+          runUpdate: () => assert.fail('non-update command must not force takeover'),
+        }),
+        null
       );
     });
 
