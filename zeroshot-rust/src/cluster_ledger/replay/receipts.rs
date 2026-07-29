@@ -152,9 +152,11 @@ fn validate_execution_void_receipt(
     let response =
         decode_receipt_response::<super::super::mutations::ExecutionVoidResult>(receipt)?;
     match records {
-        [RecordPayload::ExecutionVoid {
-            execution, reason, ..
-        }] if response.execution == *execution && response.reason == *reason => Ok(()),
+        [
+            RecordPayload::ExecutionVoid {
+                execution, reason, ..
+            },
+        ] if response.execution == *execution && response.reason == *reason => Ok(()),
         _ => Err(ReplayError::ReceiptCorrupt),
     }
 }

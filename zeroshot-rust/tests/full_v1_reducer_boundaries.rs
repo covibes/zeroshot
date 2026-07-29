@@ -19,7 +19,8 @@ fn verified(root: Value, attempts: Value) -> VerifiedGraph {
                 "maxNodeExecutions":65536,"peakConcurrency":1024,"attemptsPerNode":attempts,
                 "termination":{"kind":"acyclic","order":["root"]}
             }
-        })).unwrap(),
+        }))
+        .unwrap(),
         diagnostics: Vec::new(),
     }
 }
@@ -65,7 +66,10 @@ fn execution(
         dispatch_position: Position::new(settled_at - 1).unwrap(),
         node_instance: NodeInstanceId::new(node_instance).unwrap(),
         execution: ExecutionId::new(id).unwrap(),
-        occurrence: StructuralOccurrence { node: node.parse().unwrap(), map_indices: indices },
+        occurrence: StructuralOccurrence {
+            node: node.parse().unwrap(),
+            map_indices: indices,
+        },
         attempt: PositiveInteger::new(attempt).unwrap(),
         input: Value::Null,
         state: DurableExecutionState::Settled {
@@ -76,7 +80,10 @@ fn execution(
 }
 
 fn success() -> WorkerOutcome {
-    WorkerOutcome::Verified { output: json!({}), artifacts: Vec::new() }
+    WorkerOutcome::Verified {
+        output: json!({}),
+        artifacts: Vec::new(),
+    }
 }
 
 fn verdict(label: &str) -> WorkerOutcome {
@@ -95,8 +102,18 @@ fn input<'a>(initial: &'a Value, executions: &'a [DurableExecution]) -> Reductio
         run: RunSequence::new(1).unwrap(),
         initial_input: initial,
         executions,
-        next_node_instance: executions.iter().map(|item| item.node_instance.get()).max().unwrap_or(0) + 1,
-        next_execution: executions.iter().map(|item| item.execution.get()).max().unwrap_or(0) + 1,
+        next_node_instance: executions
+            .iter()
+            .map(|item| item.node_instance.get())
+            .max()
+            .unwrap_or(0)
+            + 1,
+        next_execution: executions
+            .iter()
+            .map(|item| item.execution.get())
+            .max()
+            .unwrap_or(0)
+            + 1,
     }
 }
 
@@ -112,13 +129,22 @@ fn exact_map_limit_dispatches_every_item_but_overflow_prunes_all_identities() {
         .reduce(input(&json!({"items":[1,2]}), &[]))
         .unwrap();
     assert_eq!(
-        at_limit.decisions.iter().filter(|decision| matches!(decision, Decision::Dispatch { .. })).count(),
+        at_limit
+            .decisions
+            .iter()
+            .filter(|decision| matches!(decision, Decision::Dispatch { .. }))
+            .count(),
         2
     );
     let overflow = FullV1Reducer::new(&graph)
         .reduce(input(&json!({"items":[1,2,3]}), &[]))
         .unwrap();
-    assert!(!overflow.decisions.iter().any(|decision| matches!(decision, Decision::Dispatch { .. })));
+    assert!(
+        !overflow
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::Dispatch { .. }))
+    );
     assert!(overflow.terminal.is_some());
 }
 
@@ -131,15 +157,22 @@ fn attempt_ceiling_terminalizes_authored_reentry_without_automatic_retry() {
         "maxIterations":2,"promotedStatePaths":[]
     });
     let graph = verified(seq(vec![loop_node, succeed("done")]), json!({"check":1}));
-    let history = [execution(1,1,"check",vec![],1,2,verdict("rejected"))];
+    let history = [execution(1, 1, "check", vec![], 1, 2, verdict("rejected"))];
     let reduction = FullV1Reducer::new(&graph)
         .reduce(input(&json!({}), &history))
         .unwrap();
     assert_eq!(
         reduction.terminal,
-        Some(TerminalProjection::Failed { reason: "attempts_exhausted".to_owned() })
+        Some(TerminalProjection::Failed {
+            reason: "attempts_exhausted".to_owned()
+        })
     );
-    assert!(!reduction.decisions.iter().any(|decision| matches!(decision, Decision::Dispatch { .. })));
+    assert!(
+        !reduction
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::Dispatch { .. }))
+    );
 }
 
 #[test]
@@ -161,11 +194,14 @@ fn loop_exhaustion_is_a_routable_group_control_not_an_implicit_retry_or_failure(
     });
     let graph = verified(seq(vec![loop_node, route]), json!({"check":2}));
     let history = [
-        execution(1,1,"check",vec![],1,2,verdict("rejected")),
-        execution(2,1,"check",vec![],2,4,verdict("rejected")),
+        execution(1, 1, "check", vec![], 1, 2, verdict("rejected")),
+        execution(2, 1, "check", vec![], 2, 4, verdict("rejected")),
     ];
     assert!(matches!(
-        FullV1Reducer::new(&graph).reduce(input(&json!({}), &history)).unwrap().terminal,
+        FullV1Reducer::new(&graph)
+            .reduce(input(&json!({}), &history))
+            .unwrap()
+            .terminal,
         Some(TerminalProjection::Succeeded { .. })
     ));
 }
@@ -176,44 +212,57 @@ fn equal_position_parallel_ties_are_broken_by_authored_branch_position() {
         "kind":"par","name":"race","state":{"kind":"record","fields":{}},
         "branches":[step("left",1),step("right",1)],"promotedStatePaths":[],"join":{"kind":"any"}
     });
-    let graph = verified(seq(vec![par,succeed("done")]), json!({"left":1,"right":1}));
+    let graph = verified(seq(vec![par, succeed("done")]), json!({"left":1,"right":1}));
     let history = [
-        execution(2,2,"right",vec![],1,5,success()),
-        execution(1,1,"left",vec![],1,5,success()),
+        execution(2, 2, "right", vec![], 1, 5, success()),
+        execution(1, 1, "left", vec![], 1, 5, success()),
     ];
     let reduction = FullV1Reducer::new(&graph)
         .reduce(input(&json!({}), &history))
         .unwrap();
-    let continued = reduction.decisions.iter().filter_map(|decision| match decision {
-        Decision::Continue { node } => Some(node.as_str()),
-        _ => None,
-    }).collect::<Vec<_>>();
+    let continued = reduction
+        .decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Continue { node } => Some(node.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert!(continued.contains(&"left"));
     assert!(!continued.contains(&"right"));
 }
 
 #[test]
 fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
-    let graph = verified(seq(vec![step("work",2),succeed("done")]), json!({"work":2}));
+    let graph = verified(
+        seq(vec![step("work", 2), succeed("done")]),
+        json!({"work":2}),
+    );
     let duplicate = [
-        execution(1,1,"work",vec![],1,2,success()),
-        execution(1,1,"work",vec![],2,4,success()),
+        execution(1, 1, "work", vec![], 1, 2, success()),
+        execution(1, 1, "work", vec![], 2, 4, success()),
     ];
     assert_eq!(
-        FullV1Reducer::new(&graph).reduce(input(&json!({}), &duplicate)).unwrap_err(),
+        FullV1Reducer::new(&graph)
+            .reduce(input(&json!({}), &duplicate))
+            .unwrap_err(),
         ReducerError::InconsistentHistory
     );
-    let gap = [execution(2,1,"work",vec![],2,4,success())];
+    let gap = [execution(2, 1, "work", vec![], 2, 4, success())];
     assert_eq!(
-        FullV1Reducer::new(&graph).reduce(input(&json!({}), &gap)).unwrap_err(),
+        FullV1Reducer::new(&graph)
+            .reduce(input(&json!({}), &gap))
+            .unwrap_err(),
         ReducerError::InconsistentHistory
     );
     let crossed = [
-        execution(1,1,"work",vec![],1,2,success()),
-        execution(2,2,"work",vec![],2,4,success()),
+        execution(1, 1, "work", vec![], 1, 2, success()),
+        execution(2, 2, "work", vec![], 2, 4, success()),
     ];
     assert_eq!(
-        FullV1Reducer::new(&graph).reduce(input(&json!({}), &crossed)).unwrap_err(),
+        FullV1Reducer::new(&graph)
+            .reduce(input(&json!({}), &crossed))
+            .unwrap_err(),
         ReducerError::InconsistentHistory
     );
 }
@@ -230,10 +279,10 @@ fn nested_map_item_attempt_counters_are_independent() {
             "maxIterations":2,"promotedStatePaths":[]
         }
     });
-    let graph = verified(seq(vec![map,succeed("done")]), json!({"check":2}));
+    let graph = verified(seq(vec![map, succeed("done")]), json!({"check":2}));
     let history = [
-        execution(1,1,"check",vec![0],1,2,verdict("rejected")),
-        execution(2,2,"check",vec![1],1,3,verdict("accepted")),
+        execution(1, 1, "check", vec![0], 1, 2, verdict("rejected")),
+        execution(2, 2, "check", vec![1], 1, 3, verdict("accepted")),
     ];
     let reduction = FullV1Reducer::new(&graph)
         .reduce(input(&json!({"items":[1,2]}), &history))
@@ -266,7 +315,10 @@ fn unreachable_quorum_and_first_no_satisfier_expose_failure_controls() {
     });
     let graph = verified(seq(vec![failed_parallel, joined_route]), json!({}));
     assert!(matches!(
-        FullV1Reducer::new(&graph).reduce(input(&json!({}), &[])).unwrap().terminal,
+        FullV1Reducer::new(&graph)
+            .reduce(input(&json!({}), &[]))
+            .unwrap()
+            .terminal,
         Some(TerminalProjection::Succeeded { .. })
     ));
 
@@ -293,11 +345,14 @@ fn unreachable_quorum_and_first_no_satisfier_expose_failure_controls() {
     });
     let graph = verified(seq(vec![first, raced_route]), json!({"a":1,"b":1}));
     let history = [
-        execution(1,1,"a",vec![],1,2,verdict("rejected")),
-        execution(2,2,"b",vec![],1,3,verdict("rejected")),
+        execution(1, 1, "a", vec![], 1, 2, verdict("rejected")),
+        execution(2, 2, "b", vec![], 1, 3, verdict("rejected")),
     ];
     assert!(matches!(
-        FullV1Reducer::new(&graph).reduce(input(&json!({}), &history)).unwrap().terminal,
+        FullV1Reducer::new(&graph)
+            .reduce(input(&json!({}), &history))
+            .unwrap()
+            .terminal,
         Some(TerminalProjection::Succeeded { .. })
     ));
 }

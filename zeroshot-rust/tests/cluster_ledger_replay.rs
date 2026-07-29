@@ -192,17 +192,13 @@ async fn reducer_execution_context_attempts_and_voids_replay_exactly() {
         state.execution_contexts[&second.execution].occurrence,
         occurrence
     );
-    assert_eq!(
-        state.execution_contexts[&second.execution].attempt.get(),
-        2
-    );
+    assert_eq!(state.execution_contexts[&second.execution].attempt.get(), 2);
     assert!(!state.active_dispatches.contains_key(&second.execution));
     assert_eq!(
         state.execution_voids[&second.execution].reason,
         ExecutionVoidReason::ParallelJoin
     );
-    let durable =
-        zeroshot_engine::full_v1_reducer::durable_executions_from_replay(&state).unwrap();
+    let durable = zeroshot_engine::full_v1_reducer::durable_executions_from_replay(&state).unwrap();
     assert_eq!(durable.len(), 2);
 }
 

@@ -120,12 +120,7 @@ fn settled(
     }
 }
 
-fn active(
-    execution: u64,
-    node_instance: u64,
-    node: &str,
-    position: u64,
-) -> DurableExecution {
+fn active(execution: u64, node_instance: u64, node: &str, position: u64) -> DurableExecution {
     DurableExecution {
         dispatch_position: Position::new(position).unwrap(),
         node_instance: NodeInstanceId::new(node_instance).unwrap(),
@@ -150,12 +145,9 @@ fn success(value: i64) -> WorkerOutcome {
 fn verdict(label: &str) -> WorkerOutcome {
     WorkerOutcome::Verifier {
         output: json!({}),
-        signals: [(
-            "verdict".parse().unwrap(),
-            label.parse().unwrap(),
-        )]
-        .into_iter()
-        .collect(),
+        signals: [("verdict".parse().unwrap(), label.parse().unwrap())]
+            .into_iter()
+            .collect(),
         diagnostic: json!({}),
         artifacts: Vec::new(),
     }
@@ -249,10 +241,12 @@ fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
         reduction.terminal,
         Some(TerminalProjection::Succeeded { .. })
     ));
-    assert!(!reduction
-        .decisions
-        .iter()
-        .any(|decision| matches!(decision, Decision::Dispatch { .. })));
+    assert!(
+        !reduction
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, Decision::Dispatch { .. }))
+    );
 }
 
 #[test]
@@ -271,7 +265,10 @@ fn parallel_any_uses_ledger_position_and_voids_only_active_losers() {
         ),
         json!({"left":1,"pruned":1,"right":1}),
     );
-    let history = [active(1, 1, "left", 1), settled(2, 2, "right", vec![], 1, 4, success(2))];
+    let history = [
+        active(1, 1, "left", 1),
+        settled(2, 2, "right", vec![], 1, 4, success(2)),
+    ];
     let reduction = reduce(&graph, &json!({}), &history);
     assert!(reduction.decisions.iter().any(|decision| matches!(
         decision,
@@ -308,8 +305,14 @@ fn all_any_quorum_and_first_use_exact_authored_join_rules() {
             ),
             json!({"a":1,"b":1}),
         );
-        let history = [settled(1, 1, "a", vec![], 1, 5, success(1)), active(2, 2, "b", 2)];
-        assert_eq!(reduce(&graph, &json!({}), &history).terminal.is_none(), expected_pending);
+        let history = [
+            settled(1, 1, "a", vec![], 1, 5, success(1)),
+            active(2, 2, "b", 2),
+        ];
+        assert_eq!(
+            reduce(&graph, &json!({}), &history).terminal.is_none(),
+            expected_pending
+        );
     }
 
     let graph = verified(
@@ -358,7 +361,11 @@ fn bounded_do_while_reuses_occurrence_and_advances_positive_attempts() {
             if node_instance.get() == 1 && attempt.get() == 2
     )));
     let second = settled(2, 1, "check", vec![], 2, 6, verdict("accepted"));
-    assert!(reduce(&graph, &json!({}), &[first, second]).terminal.is_some());
+    assert!(
+        reduce(&graph, &json!({}), &[first, second])
+            .terminal
+            .is_some()
+    );
 }
 
 #[test]
@@ -372,7 +379,10 @@ fn map_is_input_ordered_total_and_assigns_stable_nested_indices() {
             "body":step("mapped",1)
         }
     });
-    let graph = verified(sequence("root", vec![nested, succeed("done")]), json!({"mapped":1}));
+    let graph = verified(
+        sequence("root", vec![nested, succeed("done")]),
+        json!({"mapped":1}),
+    );
     let reduction = reduce(
         &graph,
         &json!({"items":[{"inner":[{"v":1},{"v":2}]},{"inner":[{"v":3}]}]}),
@@ -443,14 +453,19 @@ fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
         "output":{"kind":"record","fields":{"result":{"type":{"kind":"integer"},"required":true}}},
         "bindings":[{"target":["result"],"value":{"source":"state","path":["result"]}}]
     });
-    let graph = verified(sequence("root", vec![par, terminal]), json!({"left":1,"right":1}));
+    let graph = verified(
+        sequence("root", vec![par, terminal]),
+        json!({"left":1,"right":1}),
+    );
     let history = [
-        settled(1,1,"left",vec![],1,8,success(7)),
-        settled(2,2,"right",vec![],1,9,success(9)),
+        settled(1, 1, "left", vec![], 1, 8, success(7)),
+        settled(2, 2, "right", vec![], 1, 9, success(9)),
     ];
     assert_eq!(
         reduce(&graph, &json!({}), &history).terminal,
-        Some(TerminalProjection::Succeeded { output: json!({"result":7}) })
+        Some(TerminalProjection::Succeeded {
+            output: json!({"result":7})
+        })
     );
 
     let mapped = json!({
@@ -468,11 +483,13 @@ fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
         json!({"mapped_value":1}),
     );
     let map_history = [
-        settled(2,2,"mapped_value",vec![1],1,3,success(20)),
-        settled(1,1,"mapped_value",vec![0],1,7,success(10)),
+        settled(2, 2, "mapped_value", vec![1], 1, 3, success(20)),
+        settled(1, 1, "mapped_value", vec![0], 1, 7, success(10)),
     ];
     assert_eq!(
         reduce(&map_graph, &json!({"items":[1,2]}), &map_history).terminal,
-        Some(TerminalProjection::Succeeded { output: json!({"result":[10,20]}) })
+        Some(TerminalProjection::Succeeded {
+            output: json!({"result":[10,20]})
+        })
     );
 }

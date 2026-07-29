@@ -103,7 +103,9 @@ fn fold_payload(
         payload @ RecordPayload::ExecutionContext { .. } => {
             fold_execution_context(state, payload, position)
         }
-        payload @ RecordPayload::ExecutionVoid { .. } => fold_execution_void(state, payload, position),
+        payload @ RecordPayload::ExecutionVoid { .. } => {
+            fold_execution_void(state, payload, position)
+        }
         payload @ (RecordPayload::EffectIntent { .. }
         | RecordPayload::EffectReceipt { .. }
         | RecordPayload::Terminal { .. }

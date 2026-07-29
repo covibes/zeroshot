@@ -46,7 +46,6 @@ pub struct DurableExecution {
     pub state: DurableExecutionState,
 }
 
-
 pub fn durable_executions_from_replay(
     state: &ReplayState,
 ) -> Result<Vec<DurableExecution>, ReducerError> {
@@ -96,8 +95,6 @@ pub struct ReductionInput<'a> {
     pub next_node_instance: u64,
     pub next_execution: u64,
 }
-
-
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -300,7 +297,9 @@ enum EvalMode {
 #[derive(Clone)]
 enum Status {
     Pending,
-    Continue { position: Position },
+    Continue {
+        position: Position,
+    },
     Terminal {
         position: Position,
         projection: TerminalProjection,
@@ -403,7 +402,9 @@ impl<'a> Engine<'a> {
                 let mut position = Position::ZERO;
                 for child in group.children.as_slice() {
                     match self.eval(child, &mut local, map_indices, item, mode, cutoff)? {
-                        Status::Continue { position: child_position } => {
+                        Status::Continue {
+                            position: child_position,
+                        } => {
                             position = position.max(child_position);
                         }
                         other => return Ok(other.after(position)),
@@ -420,14 +421,9 @@ impl<'a> Engine<'a> {
                 self.continue_decision(&group.name, mode);
                 Ok(Status::Continue { position })
             }
-            GraphNode::Choice(group) => self.eval_choice(
-                group,
-                context,
-                map_indices,
-                item,
-                mode,
-                cutoff,
-            ),
+            GraphNode::Choice(group) => {
+                self.eval_choice(group, context, map_indices, item, mode, cutoff)
+            }
             GraphNode::Par(group) => {
                 self.eval_parallel(group, context, map_indices, item, mode, cutoff)
             }
@@ -436,7 +432,9 @@ impl<'a> Engine<'a> {
                 let mut position = Position::ZERO;
                 for _iteration in 1..=group.max_iterations.get() {
                     match self.eval(&group.body, &mut local, map_indices, item, mode, cutoff)? {
-                        Status::Continue { position: body_position } => {
+                        Status::Continue {
+                            position: body_position,
+                        } => {
                             position = position.max(body_position);
                         }
                         other => return Ok(other.after(position)),
@@ -479,9 +477,7 @@ impl<'a> Engine<'a> {
                 self.continue_decision(&group.name, mode);
                 Ok(Status::Continue { position })
             }
-            GraphNode::Map(group) => {
-                self.eval_map(group, context, map_indices, item, mode, cutoff)
-            }
+            GraphNode::Map(group) => self.eval_map(group, context, map_indices, item, mode, cutoff),
             GraphNode::Succeed(terminal) => {
                 let output = bind_payload(&terminal.bindings, &context.state, item)?;
                 Ok(Status::Terminal {
@@ -597,7 +593,15 @@ impl<'a> Engine<'a> {
                 );
             }
             WorkerOutcome::Verified { output, .. } if !verifier => {
-                apply_writes(name, output, None, None, write_bindings, context, map_indices)?;
+                apply_writes(
+                    name,
+                    output,
+                    None,
+                    None,
+                    write_bindings,
+                    context,
+                    map_indices,
+                )?;
             }
             WorkerOutcome::Verifier {
                 output,
@@ -628,7 +632,9 @@ impl<'a> Engine<'a> {
             _ => return Err(ReducerError::InconsistentHistory),
         }
         self.continue_decision(name, mode);
-        Ok(Status::Continue { position: *position })
+        Ok(Status::Continue {
+            position: *position,
+        })
     }
 
     fn eval_choice(
@@ -645,7 +651,10 @@ impl<'a> Engine<'a> {
             .branches
             .as_slice()
             .iter()
-            .find(|branch| self.guard(&branch.when, &local, map_indices).unwrap_or(false))
+            .find(|branch| {
+                self.guard(&branch.when, &local, map_indices)
+                    .unwrap_or(false)
+            })
             .map(|branch| &branch.node)
             .or(group.otherwise.as_deref())
             .ok_or(ReducerError::MissingChoiceRoute)?;
@@ -757,7 +766,10 @@ impl<'a> Engine<'a> {
             .map(|(_, position)| *position)
             .max()
             .unwrap_or(Position::ZERO);
-        let winner_set = winners.iter().map(|(index, _)| *index).collect::<BTreeSet<_>>();
+        let winner_set = winners
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<BTreeSet<_>>();
         let mut joined = context.clone();
         for (index, _) in &winners {
             let mut branch_context = context.clone();
@@ -855,7 +867,12 @@ impl<'a> Engine<'a> {
             .min_by_key(|(position, _, scope)| (*position, (*scope).clone()))
         {
             if mode == EvalMode::Decide {
-                self.void_map_losers(&group.body, map_indices, terminal_scope, terminal.position());
+                self.void_map_losers(
+                    &group.body,
+                    map_indices,
+                    terminal_scope,
+                    terminal.position(),
+                );
             }
             return Ok(terminal);
         }
@@ -906,18 +923,12 @@ impl<'a> Engine<'a> {
                 .control_values(value, context, map_indices)
                 .iter()
                 .any(|actual| labels.values().iter().any(|label| label.as_str() == actual))),
-            Guard::All { guards } => guards
-                .as_slice()
-                .iter()
-                .try_fold(true, |matches, guard| {
-                    Ok(matches && self.guard(guard, context, map_indices)?)
-                }),
-            Guard::Any { guards } => guards
-                .as_slice()
-                .iter()
-                .try_fold(false, |matches, guard| {
-                    Ok(matches || self.guard(guard, context, map_indices)?)
-                }),
+            Guard::All { guards } => guards.as_slice().iter().try_fold(true, |matches, guard| {
+                Ok(matches && self.guard(guard, context, map_indices)?)
+            }),
+            Guard::Any { guards } => guards.as_slice().iter().try_fold(false, |matches, guard| {
+                Ok(matches || self.guard(guard, context, map_indices)?)
+            }),
             Guard::Not { guard } => Ok(!self.guard(guard, context, map_indices)?),
             Guard::KOfN {
                 count,
@@ -940,7 +951,12 @@ impl<'a> Engine<'a> {
             } => Ok(self
                 .control_values(value, context, map_indices)
                 .iter()
-                .filter(|actual| labels.values().iter().any(|label| label.as_str() == *actual))
+                .filter(|actual| {
+                    labels
+                        .values()
+                        .iter()
+                        .any(|label| label.as_str() == *actual)
+                })
                 .count() as u64
                 >= count.get()),
         }
@@ -1012,7 +1028,8 @@ impl<'a> Engine<'a> {
 
     fn continue_decision(&mut self, node: &NodeName, mode: EvalMode) {
         if mode == EvalMode::Decide {
-            self.decisions.push(Decision::Continue { node: node.clone() });
+            self.decisions
+                .push(Decision::Continue { node: node.clone() });
         }
     }
 
@@ -1064,7 +1081,6 @@ impl<'a> Engine<'a> {
     }
 }
 
-
 fn collect_map_depths(node: &GraphNode, depth: usize, depths: &mut BTreeMap<NodeName, usize>) {
     depths.insert(node.name().clone(), depth);
     match node {
@@ -1088,7 +1104,10 @@ fn collect_map_depths(node: &GraphNode, depth: usize, depths: &mut BTreeMap<Node
         }
         GraphNode::Loop(group) => collect_map_depths(&group.body, depth, depths),
         GraphNode::Map(group) => collect_map_depths(&group.body, depth + 1, depths),
-        GraphNode::Step(_) | GraphNode::Verifier(_) | GraphNode::Succeed(_) | GraphNode::Fail(_) => {}
+        GraphNode::Step(_)
+        | GraphNode::Verifier(_)
+        | GraphNode::Succeed(_)
+        | GraphNode::Fail(_) => {}
     }
 }
 
@@ -1137,7 +1156,11 @@ fn visit_key(name: &NodeName, map_indices: &[u64]) -> ControlKey {
     }
 }
 
-fn next_visit(name: &NodeName, map_indices: &[u64], controls: &BTreeMap<ControlKey, String>) -> u64 {
+fn next_visit(
+    name: &NodeName,
+    map_indices: &[u64],
+    controls: &BTreeMap<ControlKey, String>,
+) -> u64 {
     controls
         .get(&visit_key(name, map_indices))
         .and_then(|value| value.parse::<u64>().ok())
@@ -1177,7 +1200,9 @@ fn select_data<'a>(
 ) -> Result<&'a Value, ReducerError> {
     match selector {
         DataSelector::State { path } => select(state, path),
-        DataSelector::Item { path } => select(item.ok_or(ReducerError::MissingSelectedValue)?, path),
+        DataSelector::Item { path } => {
+            select(item.ok_or(ReducerError::MissingSelectedValue)?, path)
+        }
     }
 }
 
@@ -1214,7 +1239,9 @@ fn set_path(value: &mut Value, path: &FieldPath, selected: Value) -> Result<(), 
 fn apply_writes(
     name: &NodeName,
     output: &Value,
-    signals: Option<&BTreeMap<openengine_cluster_protocol::FieldName, openengine_cluster_protocol::EnumLabel>>,
+    signals: Option<
+        &BTreeMap<openengine_cluster_protocol::FieldName, openengine_cluster_protocol::EnumLabel>,
+    >,
     diagnostic: Option<&Value>,
     bindings: &[openengine_cluster_protocol::WriteBinding],
     context: &mut Context,
@@ -1254,7 +1281,11 @@ fn apply_writes(
                     .signals
                     .get(first.as_str())
                     .ok_or(ReducerError::MissingSelectedValue)?;
-                set_path(&mut context.state, &binding.target, Value::String(label.clone()))?;
+                set_path(
+                    &mut context.state,
+                    &binding.target,
+                    Value::String(label.clone()),
+                )?;
                 continue;
             }
             NodeOutputChannel::Diagnostic => channels
