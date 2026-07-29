@@ -13,6 +13,7 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { TaskExecutionHandle } = require('./task-execution-handle');
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
 const { getTask } = require('../../task-lib/store.js');
@@ -659,15 +660,25 @@ async function spawnClaudeTask(agent, context, options = {}) {
 
   ensureProviderHooks(agent, providerName, claudeConfigDir);
   const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeConfigDir });
+
+  // Create the execution handle BEFORE spawning so cancellation is possible
+  // even before a task ID or PID exists.
+  const handle = new TaskExecutionHandle(agent.id);
+  const nested = options.nested === true;
+
   const taskId = await spawnTaskProcess({
     agent,
     ctPath,
     args,
     cwd,
     spawnEnv,
+    handle,
+    nested,
   });
 
-  agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
+  if (!nested) {
+    agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
+  }
 
   // Wait for task to be registered in zeroshot storage (race condition fix)
   await waitForTaskReady(agent, taskId);
@@ -694,12 +705,15 @@ async function spawnClaudeTask(agent, context, options = {}) {
   }
 
   if (realPid) {
-    agent.processPid = realPid;
-    agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
-    agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
-  } else if (terminalBeforePidObservation) {
+    handle.assignPid(realPid);
+    if (!nested) {
+      agent.processPid = realPid;
+      agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
+      agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
+    }
+  } else if (!nested && terminalBeforePidObservation) {
     agent._log(`📋 Agent ${agent.id}: Task finished before PID observation`);
-  } else {
+  } else if (!nested) {
     agent._log(`⚠️ Agent ${agent.id}: PID not available (task may use non-standard watcher)`);
   }
 
@@ -872,7 +886,7 @@ function parseTaskIdFromOutput(stdout) {
   return match ? match[1] : null;
 }
 
-function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
+function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv, handle, nested }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
   const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
 
@@ -886,6 +900,12 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
       env: spawnEnv,
       windowsHide: true,
     });
+
+    // Attach to the execution handle BEFORE any async work so cancel() can
+    // reach the process immediately, even before a task ID is known.
+    if (handle) {
+      handle.attachProcess(proc);
+    }
 
     // NOTE: Don't emit PROCESS_SPAWNED here - proc.pid is a wrapper that exits immediately.
     // Real PID comes from task store after watcher spawns the actual CLI process.
@@ -931,14 +951,20 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv }) {
         // Format: <adjective>-<noun>-<digits> (may or may not have task- prefix)
         const spawnedTaskId = parseTaskIdFromOutput(stdout);
         if (spawnedTaskId) {
-          agent.currentTaskId = spawnedTaskId; // Track for resume capability
-          agent._publishLifecycle('TASK_ID_ASSIGNED', {
-            pid: agent.processPid,
-            taskId: spawnedTaskId,
-          });
+          // Assign to the execution handle (always). Only mirror to agent
+          // globals for top-level (non-nested) tasks so nested reformat
+          // launches never overwrite the parent's identity.
+          if (handle) handle.assignTaskId(spawnedTaskId);
+          if (!nested) {
+            agent.currentTaskId = spawnedTaskId;
+            agent._publishLifecycle('TASK_ID_ASSIGNED', {
+              pid: agent.processPid,
+              taskId: spawnedTaskId,
+            });
+          }
 
-          // Start liveness monitoring
-          if (agent.enableLivenessCheck) {
+          // Start liveness monitoring (top-level only)
+          if (!nested && agent.enableLivenessCheck) {
             agent.taskStartedAt = Date.now();
             agent.lastOutputTime = agent.taskStartedAt;
             agent._startLivenessCheck();
@@ -1183,7 +1209,10 @@ async function evaluateStructuredSuccess({ agent, taskId, state, success }) {
     return { success, error: null };
   }
   try {
-    await agent._parseResultOutput(state.output);
+    // Cache the validated parsed object so completion hooks and {{result.*}}
+    // substitution consume it directly instead of re-parsing (which could
+    // trigger a second recovery model call).
+    state._cachedParsedResult = await agent._parseResultOutput(state.output);
     return { success: true, error: null };
   } catch (error) {
     const errorContext = sanitizeErrorMessage(error.message);
@@ -1224,6 +1253,9 @@ async function buildCompletionResult({ agent, taskId, providerName, state, stdou
   return {
     success: classified.success,
     output: state.output,
+    // Carry the validated parsed object (from recovery or direct extraction)
+    // so downstream hooks and {{result.*}} substitution never re-parse.
+    parsedResult: state._cachedParsedResult || null,
     error: errorContext,
     tokenUsage: extractTokenUsage(state.output, providerName),
   };
@@ -1411,6 +1443,7 @@ function createLogFollower({
   ctPath,
   providerName,
   skipStructuredResultCheck = false,
+  nested = false,
 }) {
   return new Promise((resolve) => {
     const state = createLogFollowState();
@@ -1463,7 +1496,12 @@ function createLogFollower({
       );
     }, 1000);
 
-    agent.currentTask = buildKillHandler({ agent, taskId, state, providerName, resolve });
+    // Only register the kill handler on the agent for top-level tasks.
+    // Nested (reformat) launches get their own handle; the parent's identity
+    // on agent.currentTask is preserved.
+    if (!nested) {
+      agent.currentTask = buildKillHandler({ agent, taskId, state, providerName, resolve });
+    }
   });
 }
 
@@ -1486,6 +1524,7 @@ function followClaudeTaskLogs(agent, taskId, options = {}) {
     ctPath,
     providerName,
     skipStructuredResultCheck: options.skipStructuredResultCheck === true,
+    nested: options.nested === true,
   });
 }
 
@@ -1575,9 +1614,12 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
       env: isolatedEnv,
     });
 
-    // Track PID for resource monitoring
-    agent.processPid = proc.pid;
-    agent._publishLifecycle('PROCESS_SPAWNED', { pid: proc.pid });
+    // Track PID for resource monitoring (top-level only; nested reformat
+    // launches must not overwrite the parent's identity).
+    if (!options.nested) {
+      agent.processPid = proc.pid;
+      agent._publishLifecycle('PROCESS_SPAWNED', { pid: proc.pid });
+    }
 
     let stdout = '';
     let stderr = '';
@@ -1618,11 +1660,13 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
         // Parse task ID from output: "✓ Task spawned: xxx-yyy-nn"
         const spawnedTaskId = parseTaskIdFromOutput(stdout);
         if (spawnedTaskId) {
-          agent.currentTaskId = spawnedTaskId; // Track for resume capability
-          agent._publishLifecycle('TASK_ID_ASSIGNED', {
-            pid: agent.processPid,
-            taskId: spawnedTaskId,
-          });
+          if (!options.nested) {
+            agent.currentTaskId = spawnedTaskId;
+            agent._publishLifecycle('TASK_ID_ASSIGNED', {
+              pid: agent.processPid,
+              taskId: spawnedTaskId,
+            });
+          }
 
           resolve(spawnedTaskId);
         } else {
@@ -2104,7 +2148,10 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
       reject,
       onLine,
     });
-    agent.currentTask = state.lifecycleHandle;
+    // Only register the lifecycle handle on the agent for top-level tasks.
+    if (!options.nested) {
+      agent.currentTask = state.lifecycleHandle;
+    }
 
     manager
       .execInContainer(clusterId, ['sh', '-c', `zeroshot get-log-path ${taskId}`])
@@ -2226,7 +2273,7 @@ async function parseResultOutput(agent, output) {
         providerName,
         isCancelled: () => agent.running === false || agent.state === 'stopped',
         runReformat: (prompt) =>
-          agent._spawnClaudeTask(prompt, { skipStructuredResultCheck: true }),
+          agent._spawnClaudeTask(prompt, { skipStructuredResultCheck: true, nested: true }),
         onAttempt: (attempt, lastError) => {
           if (lastError) {
             console.warn(`[Agent ${agent.id}] Reformat attempt ${attempt}: ${lastError}`);

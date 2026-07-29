@@ -185,7 +185,7 @@ describe('Output Reformatter', function () {
 
       assert.deepStrictEqual(result, { plan: 'Recovered through fallback' });
       assert.strictEqual(spawnCalls.length, 1);
-      assert.deepStrictEqual(spawnCalls[0].options, { skipStructuredResultCheck: true });
+      assert.deepStrictEqual(spawnCalls[0].options, { skipStructuredResultCheck: true, nested: true });
     });
 
     it('retries schema-invalid output and returns the valid recovery', async function () {

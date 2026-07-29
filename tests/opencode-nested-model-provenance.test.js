@@ -169,7 +169,7 @@ describe('Nested task model argument encoding', function () {
       capturedArgs.slice(capturedArgs.indexOf('--model'), capturedArgs.indexOf('--model') + 2),
       ['--model', CATALOG_MODEL]
     );
-    assert.deepStrictEqual(capturedOptions.options, { skipStructuredResultCheck: true });
+    assert.deepStrictEqual(capturedOptions.options, { skipStructuredResultCheck: true, nested: true });
   });
 });
 
