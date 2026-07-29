@@ -36,6 +36,7 @@ test('request allocation and reconnect ownership invariants are mechanically sin
   assert.equal([...connection.matchAll(/#sequence\+\+/g)].length, 1);
   const nextBodies = subscriptions.match(/async next\(\)[\s\S]*?\n[ ]{2}\}/g) ?? [];
   for (const body of nextBodies) assert.equal(body.includes('.reconnect('), false);
+  assert.doesNotMatch(subscriptions, /\b(?:new\s+Set|Set<)/);
   const runtime = contentsBelow(sourceRoot)
     .map(({ content }) => content)
     .join('\n');

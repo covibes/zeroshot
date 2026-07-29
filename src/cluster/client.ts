@@ -69,7 +69,6 @@ export class ClusterClient {
   async watch(
     params: WatchParams = {},
     options?: CallOptions,
-    seen?: Set<string>,
   ): Promise<WatchSubscription> {
     const established = await this.connection.openSubscription('watch', params, options);
     return {
@@ -79,7 +78,6 @@ export class ClusterClient {
         registration: established.registration,
         result: established.result,
         params,
-        ...(seen === undefined ? {} : { seen }),
       }),
     };
   }

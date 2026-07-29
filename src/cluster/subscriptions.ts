@@ -124,12 +124,14 @@ type WatchStreamInit = {
   readonly registration: SubscriptionRegistration;
   readonly result: WatchResult;
   readonly params: WatchParams;
-  readonly seen?: Set<string>;
+  readonly lastSeenRunId?: string;
+  readonly lastSeenCursor?: string;
 };
 export class WatchSubscriptionStream implements AsyncIterator<WatchSubscriptionItem>, AsyncIterable<WatchSubscriptionItem> {
   readonly #connection: Connection;
   readonly #registration: SubscriptionRegistration;
-  readonly #seen: Set<string>;
+  #lastSeenRunId: string | undefined;
+  #lastSeenCursor: string | undefined;
   #lastDelivered: string | null | undefined;
   #runId: string | null | undefined;
   #done = false;
@@ -138,7 +140,8 @@ export class WatchSubscriptionStream implements AsyncIterator<WatchSubscriptionI
   constructor(init: WatchStreamInit) {
     this.#connection = init.connection;
     this.#registration = init.registration;
-    this.#seen = init.seen ?? new Set<string>();
+    this.#lastSeenRunId = init.lastSeenRunId;
+    this.#lastSeenCursor = init.lastSeenCursor;
     this.#lastDelivered = init.params.fromCursor;
     this.#runId = init.result.runId ?? init.params.runId;
   }
@@ -183,10 +186,9 @@ export class WatchSubscriptionStream implements AsyncIterator<WatchSubscriptionI
     const { runId, cursor, event } = frame.params as {
       readonly runId: string; readonly cursor: string; readonly event: WatchEvent;
     };
-    const key = JSON.stringify([runId, cursor]);
-    this.#runId ??= runId;
-    if (this.#seen.has(key)) return undefined;
-    this.#seen.add(key); this.#lastDelivered = cursor;
+    if (this.#lastSeenRunId === runId && this.#lastSeenCursor === cursor) return undefined;
+    this.#lastSeenRunId = runId; this.#lastSeenCursor = cursor;
+    this.#runId = runId; this.#lastDelivered = cursor;
     return { type: 'event', runId, cursor, event };
   }
   async return(): Promise<IteratorResult<WatchSubscriptionItem>> {
@@ -218,7 +220,8 @@ export class WatchSubscriptionStream implements AsyncIterator<WatchSubscriptionI
           registration: established.registration,
           result: established.result,
           params,
-          seen: this.#seen,
+          ...(this.#lastSeenRunId === undefined ? {} : { lastSeenRunId: this.#lastSeenRunId }),
+          ...(this.#lastSeenCursor === undefined ? {} : { lastSeenCursor: this.#lastSeenCursor }),
         }),
       };
     } catch (error) { await freshConnection.close(); throw error; }

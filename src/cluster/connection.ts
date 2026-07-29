@@ -7,13 +7,12 @@ import {
   ClusterConfigError, ClusterInternalError, ClusterProtocolError, ClusterRpcError,
   ClusterStateError, ClusterTimeoutError, ClusterTransportError, requestAbortError,
 } from './errors.js';
-import { byteLength, frameText, isRecord } from './frames.js';
+import { boundedFrameText, isRecord } from './frames.js';
 import type { FrameRecord } from './frames.js';
 import { BoundedQueue } from './queue.js';
 import { addSocketListener } from './socket.js';
 import type { WebSocketLike } from './socket.js';
 import { assertDefinition, assertMethodResult } from './validators.js';
-
 if (!Object.prototype.hasOwnProperty.call(Symbol, 'asyncDispose')) {
   Object.defineProperty(Symbol, 'asyncDispose', {
     configurable: false, enumerable: false,
@@ -169,9 +168,10 @@ export class Connection {
   }
   #onMessage(event: unknown): void {
     if (this.#state !== 'OPEN') return;
-    const text = frameText(event);
-    if (text === undefined) { this.#recordProtocolError('WebSocket message is not text or bytes'); return; }
-    const bytes = byteLength(text); if (bytes > MAX_FRAME_BYTES) { this.#recordProtocolError(`frame exceeds ${MAX_FRAME_BYTES} bytes`); return; }
+    const inbound = boundedFrameText(event, MAX_FRAME_BYTES);
+    if (inbound.kind === 'unsupported') { this.#recordProtocolError('WebSocket message is not text or bytes'); return; }
+    if (inbound.kind === 'oversized') { this.#recordProtocolError(`frame exceeds ${MAX_FRAME_BYTES} bytes`); return; }
+    const { text, bytes } = inbound;
     let frame: unknown; try { frame = JSON.parse(text); } catch (cause) { this.#recordProtocolError('invalid JSON frame', cause); return; }
     if (!isRecord(frame)) { this.#recordProtocolError('invalid JSON-RPC frame'); return; }
     if ('id' in frame) { this.#routeResponse(frame); return; }

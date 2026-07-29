@@ -9,6 +9,7 @@ const {
   Connection,
   connect,
   LogsSubscriptionStream,
+  MAX_FRAME_BYTES,
   SUBSCRIPTION_QUEUE_CAPACITY,
 } = require('../../lib/cluster/index.cjs');
 const { FakeWebSocket, assertClean, deferred, settle } = require('./harness');
@@ -112,6 +113,29 @@ test('queue byte bound and frame byte bound prevent peer-controlled growth', asy
   socket.emit('message', { data: 'x'.repeat(1_048_577) });
   assert.equal(connection.state, 'OPEN');
   assert.equal(connection.protocolDiagnostics.at(-1).code, 'INVALID_PEER_FRAME');
+  await connection.close();
+});
+
+test('oversized binary and multibyte ingress is rejected before routing', async () => {
+  const socket = new FakeWebSocket();
+  const connection = new Connection(socket);
+  const pending = new ClusterClient(connection).get();
+  await settle();
+  const request = socket.request('get');
+  const oversizedFrames = [
+    new Uint8Array(MAX_FRAME_BYTES + 1),
+    'é'.repeat(Math.floor(MAX_FRAME_BYTES / 2) + 1),
+  ];
+  for (const data of oversizedFrames) {
+    const diagnosticsBefore = connection.protocolDiagnostics.length;
+    socket.emit('message', { data });
+    assert.equal(connection.state, 'OPEN');
+    assert.equal(connection.pendingSize, 1);
+    assert.equal(connection.protocolDiagnostics.length, diagnosticsBefore + 1);
+    assert.match(connection.protocolDiagnostics.at(-1).message, /frame exceeds/);
+  }
+  socket.respond(request.id, { status: { phase: 'empty' } });
+  await pending;
   await connection.close();
 });
 

@@ -94,6 +94,30 @@ test('watch serializes logical reads so dedup cannot reverse concurrent callers'
   await connection.close();
 });
 
+test('watch dedup state remains bounded across many unique events', async () => {
+  const socket = new FakeWebSocket();
+  const connection = new Connection(socket);
+  const opening = new ClusterClient(connection).watch({});
+  await settle();
+  socket.respond(socket.request('watch').id, {
+    subscriptionId: 'bounded-dedup',
+    runId: 'run-1',
+  });
+  const { stream } = await opening;
+  for (let index = 0; index < 4_096; index += 1) {
+    socket.notify('event', {
+      subscriptionId: 'bounded-dedup',
+      runId: 'run-1',
+      cursor: `cursor-${index}`,
+      event: { type: 'bookmark' },
+    });
+    assert.equal((await stream.next()).value.cursor, `cursor-${index}`);
+    assert.equal(stream.retainedCount, 0);
+  }
+  await stream.cancel();
+  await connection.close();
+});
+
 test('authoritative schemas reject every malformed unary and establishment result', async () => {
   const socket = new FakeWebSocket();
   const connection = new Connection(socket);
