@@ -271,25 +271,40 @@ function findStep(job, name) {
 }
 
 const RUST_DISTRIBUTION_INVOCATION =
-  /(?:(?:\bnode\s+(?:\.\/)?)|(?:^|[\s"'(])\.\/)scripts\/rust-distribution\.js(?=$|[\s"'`)])/;
+  /(?:(?:\bnode\s+)|(?:^|[\s(]))["']?(?:\.\/)?scripts\/rust-distribution\.js["']?(?=$|[\s)`;&|])/;
 
 const SCRIPT_INSTALL_CONTRACTS = Object.freeze([
-  { jobName: 'dry-run', installName: 'Install pinned dependencies', command: 'npm ci' },
-  { jobName: 'release', installName: 'Install pinned dependencies', command: 'npm ci' },
+  {
+    jobName: 'dry-run',
+    installName: 'Install pinned dependencies',
+    command: 'npm ci',
+    checkoutRef: '${{ github.sha }}',
+  },
+  {
+    jobName: 'release',
+    installName: 'Install pinned dependencies',
+    command: 'npm ci',
+    checkoutRef: '${{ github.event.workflow_run.head_sha }}',
+  },
   {
     jobName: 'rust-binaries',
     installName: 'Install pinned script dependencies',
     command: 'npm ci --ignore-scripts',
+    checkoutRef:
+      "${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}",
   },
   {
     jobName: 'rust-manifest',
     installName: 'Install pinned script dependencies',
     command: 'npm ci --ignore-scripts',
+    checkoutRef:
+      "${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}",
   },
   {
     jobName: 'rust-publish',
     installName: 'Install pinned script dependencies',
     command: 'npm ci --ignore-scripts',
+    checkoutRef: '${{ env.RELEASE_TAG }}',
   },
 ]);
 
@@ -299,17 +314,32 @@ function invokesRustDistribution(step) {
   );
 }
 
-function checkScriptInstall(job, { jobName, installName, command }) {
+function checkScriptInstall(job, { jobName, installName, command, checkoutRef }) {
   if (!job) failIntegrity(`release workflow has no ${jobName} job`);
   const install = findStep(job, installName);
-  if (install.if !== undefined || install.run?.trim() !== command) {
-    failIntegrity(`${jobName} dependency install must execute exactly: ${command}`);
+  if (
+    install.if !== undefined ||
+    install['working-directory'] !== undefined ||
+    install.run?.trim() !== command
+  ) {
+    failIntegrity(`${jobName} dependency install must execute at workspace root: ${command}`);
+  }
+  const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+  if (
+    !checkout ||
+    checkout.if !== undefined ||
+    checkout.with?.path !== undefined ||
+    (checkout.with?.repository !== undefined &&
+      checkout.with.repository !== '${{ github.repository }}') ||
+    checkout.with?.ref !== checkoutRef
+  ) {
+    failIntegrity(
+      `${jobName} must checkout expected current repository source at workspace root`
+    );
   }
   const installIndex = job.steps.indexOf(install);
-  const checkoutIndex = job.steps.findIndex((step) =>
-    step.uses?.startsWith('actions/checkout@')
-  );
-  if (checkoutIndex === -1 || checkoutIndex >= installIndex) {
+  const checkoutIndex = job.steps.indexOf(checkout);
+  if (checkoutIndex >= installIndex) {
     failIntegrity(`${jobName} must checkout source before dependency installation`);
   }
   if (job.steps.slice(0, installIndex).some(invokesRustDistribution)) {
@@ -518,6 +548,15 @@ function checkShimTargets(shimTargets) {
   exactJson('npm shim host mapping', projected, actual);
 }
 
+function hasValidSri(integrity) {
+  if (typeof integrity !== 'string') return false;
+  const match = /^(sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})$/.exec(integrity);
+  if (!match) return false;
+  const expectedBytes = { sha256: 32, sha384: 48, sha512: 64 }[match[1]];
+  const digest = Buffer.from(match[2], 'base64');
+  return digest.length === expectedBytes && digest.toString('base64') === match[2];
+}
+
 function checkScriptDependencies(packageManifest, packageLock) {
   const directSpec = packageManifest.devDependencies?.['js-yaml'];
   if (typeof directSpec !== 'string' || directSpec.length === 0) {
@@ -530,8 +569,10 @@ function checkScriptDependencies(packageManifest, packageLock) {
   const resolved = packageLock.packages?.['node_modules/js-yaml'];
   if (
     typeof resolved?.version !== 'string' ||
+    resolved.version.trim().length === 0 ||
     typeof resolved.resolved !== 'string' ||
-    !/^sha(?:256|384|512)-/.test(resolved.integrity || '')
+    resolved.resolved.trim().length === 0 ||
+    !hasValidSri(resolved.integrity)
   ) {
     failIntegrity('package-lock must contain an integrity-pinned resolved js-yaml package');
   }

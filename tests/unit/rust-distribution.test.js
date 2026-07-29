@@ -174,7 +174,7 @@ describe('Rust release integration', function () {
                 `${installCommand} --foreground-scripts`;
             })
           ),
-        new RegExp(`${jobName} dependency install must execute exactly`)
+        new RegExp(`${jobName} dependency install must execute at workspace root`)
       );
       assert.throws(
         () =>
@@ -202,6 +202,14 @@ describe('Rust release integration', function () {
       for (const command of [
         'node ./scripts/rust-distribution.js print-version',
         './scripts/rust-distribution.js print-version',
+        'node "scripts/rust-distribution.js" print-version',
+        "node 'scripts/rust-distribution.js' print-version",
+        'node "./scripts/rust-distribution.js" print-version',
+        "node './scripts/rust-distribution.js' print-version",
+        '"scripts/rust-distribution.js" print-version',
+        "'scripts/rust-distribution.js' print-version",
+        '"./scripts/rust-distribution.js" print-version',
+        "'./scripts/rust-distribution.js' print-version",
       ]) {
         assert.throws(
           () =>
@@ -216,6 +224,43 @@ describe('Rust release integration', function () {
           new RegExp(`${jobName} must install dependencies before every`)
         );
       }
+      for (const mutateCheckout of [
+        (checkout) => {
+          checkout.if = false;
+        },
+        (checkout) => {
+          checkout.with.path = 'nested';
+        },
+        (checkout) => {
+          checkout.with.repository = 'other/repository';
+        },
+        (checkout) => {
+          checkout.with.ref = 'main';
+        },
+      ]) {
+        assert.throws(
+          () =>
+            distribution.checkRepository(
+              mutateInstall((job) => {
+                const checkout = job.steps.find((step) =>
+                  step.uses?.startsWith('actions/checkout@')
+                );
+                mutateCheckout(checkout);
+              })
+            ),
+          new RegExp(`${jobName} must checkout expected current repository source`)
+        );
+      }
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps.find((step) => step.name === installName)['working-directory'] =
+                'nested';
+            })
+          ),
+        new RegExp(`${jobName} dependency install must execute at workspace root`)
+      );
       assert.throws(
         () =>
           distribution.checkRepository(
@@ -298,6 +343,31 @@ describe('Rust release integration', function () {
         ),
       /integrity-pinned resolved js-yaml/
     );
+    for (const mutateResolution of [
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].version = '';
+      },
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].resolved = ' ';
+      },
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].integrity = 'sha512-';
+      },
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].integrity = 'sha512-YQ==';
+      },
+    ]) {
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            workflow,
+            undefined,
+            packageManifest,
+            mutatePackageLock(mutateResolution)
+          ),
+        /integrity-pinned resolved js-yaml/
+      );
+    }
 
     assert.throws(
       () =>
