@@ -691,6 +691,21 @@ function createNestedCancellationError(handle) {
   return error;
 }
 
+function retainUnconfirmedNestedTermination(handle, error, termination) {
+  error.nestedExecutionLifecycle = true;
+  handle.retainOwnership();
+  error.message += ` Nested task cleanup was not confirmed: ${
+    termination?.reason || 'termination status unavailable'
+  }`;
+  error.retainTaskHandle = true;
+  error.permanent = true;
+  error.restartExhausted = true;
+  error.terminationExhausted = true;
+  error.terminationAttempts = 1;
+  error.taskId = handle.taskId;
+  return error;
+}
+
 async function terminateNestedSetupFailure(handle, error) {
   let termination;
   try {
@@ -699,15 +714,7 @@ async function terminateNestedSetupFailure(handle, error) {
     termination = { forced: false, reason: cleanupError.message };
   }
   if (!isTerminationConfirmed(termination)) {
-    error.nestedExecutionLifecycle = true;
-    handle.retainOwnership();
-    error.message += ` Nested task cleanup was not confirmed: ${termination.reason}`;
-    error.retainTaskHandle = true;
-    error.permanent = true;
-    error.restartExhausted = true;
-    error.terminationExhausted = true;
-    error.terminationAttempts = 1;
-    error.taskId = handle.taskId;
+    retainUnconfirmedNestedTermination(handle, error, termination);
   }
 }
 
@@ -864,8 +871,12 @@ async function spawnClaudeTask(agent, context, options = {}) {
       handle.isCancelled &&
       handle.cancelDetails.code !== 'NESTED_SETUP_FAILED'
     ) {
-      await handle.waitForCancellation();
-      throw createNestedCancellationError(handle);
+      const termination = await handle.waitForCancellation();
+      const cancellationError = createNestedCancellationError(handle);
+      if (!isTerminationConfirmed(termination)) {
+        throw retainUnconfirmedNestedTermination(handle, cancellationError, termination);
+      }
+      throw cancellationError;
     }
     if (nested && taskId) {
       await terminateNestedSetupFailure(handle, error);
@@ -2439,9 +2450,9 @@ async function terminateIsolatedTask(manager, clusterId, taskId) {
       }`
     );
   }
-
   return {
-    alreadyTerminal: Boolean(beforeStatus),
+    alreadyTerminal:
+      Boolean(beforeStatus) || Boolean(afterStatus && afterStatus !== 'killed'),
     forced: !beforeStatus && afterStatus === 'killed',
     status: beforeStatus || afterStatus,
   };

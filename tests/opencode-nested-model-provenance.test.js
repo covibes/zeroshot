@@ -775,6 +775,99 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.strictEqual(spawnCount, 1, 'late lookup must not start a tail process');
   });
 
+  it('confirms every terminal status observed after isolated kill', async function () {
+    this.timeout(2000);
+    for (const postKillStatus of ['completed', 'failed', 'killed']) {
+      const taskId = `task-race-${postKillStatus}-a1`;
+      let resolveLogPath;
+      let spawnCount = 0;
+      let statusChecks = 0;
+      let killAttempts = 0;
+      const manager = {
+        getContainerEnvironmentValue() {
+          return null;
+        },
+        spawnInContainer() {
+          spawnCount++;
+          if (spawnCount === 1) {
+            return createClosingProcess(0, `✓ Task spawned: ${taskId}\n`);
+          }
+          const tail = new EventEmitter();
+          tail.stdout = new PassThrough();
+          tail.stderr = new PassThrough();
+          tail.kill = () => {};
+          return tail;
+        },
+        execInContainer(_clusterId, command) {
+          const rendered = command.join(' ');
+          if (rendered.includes('get-task-id-by-spawn-token')) {
+            return Promise.resolve({ code: 0, stdout: `${taskId}\n`, stderr: '' });
+          }
+          if (rendered.includes('get-log-path')) {
+            return new Promise((resolve) => {
+              resolveLogPath = resolve;
+            });
+          }
+          if (command[1] === 'status') {
+            statusChecks++;
+            const status = statusChecks === 1 ? 'running' : postKillStatus;
+            return Promise.resolve({ code: 0, stdout: `Status: ${status}\n`, stderr: '' });
+          }
+          if (command[1] === 'kill') {
+            killAttempts++;
+            return Promise.resolve({ code: 0, stdout: `Kill raced ${taskId}\n`, stderr: '' });
+          }
+          return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
+        },
+      };
+      const agent = {
+        id: `isolated-race-${postKillStatus}`,
+        role: 'planner',
+        iteration: 1,
+        running: true,
+        state: 'executing_task',
+        timeout: 0,
+        enableLivenessCheck: false,
+        config: { outputFormat: 'json', strictSchema: true },
+        cluster: { id: 'test-cluster' },
+        isolation: { enabled: true, clusterId: 'test-cluster', manager },
+        messageBus: { publish() {} },
+        _resolveProvider: () => 'opencode',
+        _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+        _resolveModelSpecSource: () => 'direct',
+        _log() {},
+        _publishLifecycle() {},
+        _stopLivenessCheck() {},
+      };
+      const launch = spawnClaudeTaskIsolated(agent, 'test context', {
+        skipStructuredResultCheck: true,
+        nested: true,
+        disableTools: true,
+      });
+      while (!resolveLogPath) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const cancellation = agent.nestedExecutions.cancelAll('cluster shutdown', {
+        code: 'REFORMAT_CANCELLED',
+      });
+
+      await assert.rejects(launch, (error) => {
+        assert.strictEqual(error.code, 'REFORMAT_CANCELLED', postKillStatus);
+        assert.strictEqual(error.nestedExecutionCancellation, true, postKillStatus);
+        return true;
+      });
+      const termination = await cancellation;
+
+      assert.notStrictEqual(termination?.forced, false, postKillStatus);
+      assert.strictEqual(statusChecks, 2, postKillStatus);
+      assert.strictEqual(killAttempts, 1, postKillStatus);
+      assert.strictEqual(agent.nestedExecutions.size, 0, postKillStatus);
+      resolveLogPath({ code: 0, stdout: `/tmp/late-${postKillStatus}.log\n`, stderr: '' });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(spawnCount, 1, postKillStatus);
+    }
+  });
+
   it('settles cancelled terminal task without a second stalled log lookup', async function () {
     this.timeout(1000);
     const taskId = 'task-terminal-log-a1';

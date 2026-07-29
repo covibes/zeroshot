@@ -10,6 +10,7 @@ const {
   NestedExecutionRegistry,
   TaskExecutionHandle,
 } = require('../src/agent/task-execution-handle');
+const AgentWrapper = require('../src/agent-wrapper');
 const Orchestrator = require('../src/orchestrator');
 const MockTaskRunner = require('./helpers/mock-task-runner');
 
@@ -418,6 +419,113 @@ describe('Agent stuck-task recovery', function () {
       assert.strictEqual(registry.size, 0);
       assert.strictEqual(handle.settled, true);
       assert.strictEqual(getTask(taskId)?.status, 'killed');
+    } finally {
+      removeTask(taskId);
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a timed-out nested local task before follower handoff', async function () {
+    this.timeout(5000);
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-local-handoff-'));
+    const fakeZeroshot = path.join(fakeBin, 'zeroshot');
+    const killCountFile = path.join(fakeBin, 'kill-count');
+    const taskId = 'task-local-window-a1';
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    fs.writeFileSync(
+      fakeZeroshot,
+      `#!/usr/bin/env node
+      (async () => {
+        const fs = require('node:fs');
+        const { addTask, getTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+        const action = process.argv[2];
+        const taskId = ${JSON.stringify(taskId)};
+        if (action === 'task') {
+          addTask({
+            id: taskId,
+            status: 'running',
+            pid: null,
+            spawnOwnershipToken: process.env.ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN,
+            commandCleanup: null
+          });
+          process.stdout.write('Task spawned: ' + taskId + '\\n');
+          return;
+        }
+        if (action === 'status') {
+          const task = getTask(process.argv[3]);
+          process.stdout.write(task ? 'Status: ' + task.status + '\\n' : 'Task not found\\n');
+          return;
+        }
+        if (action === 'kill') {
+          const count = fs.existsSync(${JSON.stringify(killCountFile)})
+            ? Number(fs.readFileSync(${JSON.stringify(killCountFile)}, 'utf8'))
+            : 0;
+          fs.writeFileSync(${JSON.stringify(killCountFile)}, String(count + 1));
+          if (count < 3) {
+            process.stderr.write('cleanup unavailable\\n');
+            process.exitCode = 1;
+            return;
+          }
+          updateTask(process.argv[3], { status: 'killed', commandCleanup: null });
+          return;
+        }
+        process.exitCode = 2;
+      })().catch((error) => {
+        process.stderr.write(error.stack + '\\n');
+        process.exitCode = 1;
+      });
+      `,
+      { mode: 0o755 }
+    );
+    const { getTask, removeTask } = await import(storeUrl);
+    removeTask(taskId);
+    const agent = new AgentWrapper(
+      {
+        id: 'local-handoff-timeout',
+        role: 'planner',
+        provider: 'opencode',
+        model: 'openai/gpt-5.2-codex',
+        outputFormat: 'text',
+        timeout: 50,
+      },
+      { publish() {}, subscribe() {} },
+      { id: 'test-cluster', agents: [] },
+      { testMode: false }
+    );
+    agent.taskCliPath = fakeZeroshot;
+    agent.running = true;
+    agent.state = 'executing_task';
+
+    try {
+      let rejection;
+      try {
+        await agent._spawnClaudeTask('nested local handoff', {
+          nested: true,
+          disableTools: true,
+          skipStructuredResultCheck: true,
+        });
+      } catch (error) {
+        rejection = error;
+      }
+
+      assert.strictEqual(rejection?.code, 'AGENT_TASK_TIMEOUT');
+      assert.strictEqual(rejection?.permanent, true);
+      assert.strictEqual(rejection?.retainTaskHandle, true);
+      assert.strictEqual(rejection?.taskId, taskId);
+      await waitFor(
+        () =>
+          fs.existsSync(killCountFile) &&
+          Number(fs.readFileSync(killCountFile, 'utf8')) === 3,
+        2000
+      );
+      assert.strictEqual(agent.nestedExecutions.size, 1);
+      assert.deepStrictEqual(agent.nestedExecutions.activeTaskIds, [taskId]);
+      assert.strictEqual(getTask(taskId)?.status, 'running');
+
+      const termination = await agent.nestedExecutions.cancelAll('retry local handoff cleanup');
+      assert.notStrictEqual(termination?.forced, false);
+      assert.strictEqual(getTask(taskId)?.status, 'killed');
+      assert.strictEqual(agent.nestedExecutions.size, 0);
     } finally {
       removeTask(taskId);
       fs.rmSync(fakeBin, { recursive: true, force: true });
