@@ -238,6 +238,15 @@ where
     R: ConnectionIdentityResolver,
     T: ConnectionTimeSource,
 {
+    /// Resolves the binding-owned identity before exposing a dispatcher to a specialized host.
+    ///
+    /// General-purpose transports should use their `serve_*` entry point so per-request identity
+    /// expiry is enforced by the binding. This escape hatch is for bounded host handshakes whose
+    /// injected identity cannot expire during the transaction.
+    pub async fn into_dispatcher(self) -> io::Result<Dispatcher<B>> {
+        Ok(self.resolve().await?.dispatcher)
+    }
+
     pub(crate) async fn resolve(self) -> io::Result<ResolvedConnection<B, T>> {
         let identity = self
             .identity_resolver

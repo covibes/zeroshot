@@ -81,7 +81,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | SQLite ledger store          | `zeroshot-rust/src/cluster_ledger/store/sqlite.rs`, `store/sqlite/`     |
 | SQLite append/query helpers  | `zeroshot-rust/src/cluster_ledger/store/sqlite/{operations,queries}.rs` |
 | Ledger records/replay        | `zeroshot-rust/src/cluster_ledger/record.rs`, `replay.rs`               |
-| Full-v1 pure graph reducer    | `zeroshot-rust/src/full_v1_reducer.rs`                              |
+| Full-v1 pure graph reducer   | `zeroshot-rust/src/full_v1_reducer.rs`                                  |
 | Protocol ledger adapters     | `zeroshot-rust/src/cluster_ledger/adapters.rs`                          |
 | Artifact store port/fake     | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`         |
 | Product-local artifact CAS   | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`           |
@@ -201,8 +201,11 @@ have independent finite capacity. Full ordinary capacity cannot consume reserved
 These are resource bounds, not an availability claim against unbounded sustained unauthenticated
 arrivals on the single endpoint, which cannot be classified before reading the upgrade. Graceful
 shutdown uses one absolute deadline across acceptance stop, abort/reap, and matching locator
-cleanup; timeout paths still attempt cleanup and report the defined failure. The daemon host reuses
-the server crate's WebSocket binding and dispatcher; keep protocol definitions, compatibility,
+cleanup; timeout paths still attempt cleanup and report the defined failure. Every accepted daemon
+session and liveness handshake enters through the server crate's `ConnectionBinding`, with an
+immutable profile-digest principal and tenant identity resolved before backend access; the daemon
+host never constructs `ConnectionContext` directly and reuses the server WebSocket dispatcher.
+Keep protocol definitions, compatibility,
 credential resolution, ledger/catalog/recovery, runtime/scheduler/pools, exporter, CLI,
 hosted/cloud control-plane, Node-daemon, and workspace behavior outside these modules.
 `ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair

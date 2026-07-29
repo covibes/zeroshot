@@ -52,7 +52,7 @@ struct PanicFactory;
 impl NativeBackendFactory for PanicFactory {
     type Backend = CountingBackend;
 
-    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+    fn create(&self) -> Self::Backend {
         panic!("controlled connection factory panic")
     }
 }
@@ -72,7 +72,7 @@ struct PendingInitializeBackend {
 impl NativeBackendFactory for PendingInitializeFactory {
     type Backend = PendingInitializeBackend;
 
-    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+    fn create(&self) -> Self::Backend {
         self.created.fetch_add(1, Ordering::SeqCst);
         PendingInitializeBackend {
             initialize_started: Arc::clone(&self.initialize_started),
@@ -119,7 +119,7 @@ struct ErrorInitializeBackend;
 impl NativeBackendFactory for ErrorInitializeFactory {
     type Backend = ErrorInitializeBackend;
 
-    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+    fn create(&self) -> Self::Backend {
         ErrorInitializeBackend
     }
 }
@@ -684,6 +684,42 @@ async fn liveness_purpose_accepts_only_initialize_before_backend_access() {
     }
     assert_eq!(factory.created.load(Ordering::SeqCst), 0);
     assert_eq!(factory.initialized.load(Ordering::SeqCst), 0);
+    listener.shutdown().await.expect("shutdown listener");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_and_liveness_inject_the_authenticated_profile_identity() {
+    let profile = TempProfile::new("connection-identity");
+    let expected_digest = profile.profile.digest().to_owned();
+    let factory = CountingFactory::default();
+    let listener =
+        DaemonListener::start_with_config(profile.profile.clone(), factory.clone(), test_config())
+            .await
+            .expect("start listener");
+
+    let response = authenticated_initialize(listener.locator()).await;
+    assert_eq!(
+        response["result"]["protocolVersion"],
+        "openengine.cluster/v1"
+    );
+    let contender = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        test_config(),
+    )
+    .await;
+    assert!(matches!(
+        contender,
+        Err(DaemonListenerError::AlreadyRunning)
+    ));
+
+    {
+        let identities = factory.identities.lock().expect("recorded identities");
+        assert_eq!(identities.len(), 2, "session and liveness initialize");
+        assert!(identities.iter().all(|(principal, tenant)| {
+            principal == &expected_digest && tenant == &expected_digest
+        }));
+    }
     listener.shutdown().await.expect("shutdown listener");
 }
 

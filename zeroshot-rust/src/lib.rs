@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 pub mod artifact_store;
 pub mod cluster_ledger;
 pub mod daemon_auth;
@@ -15,6 +17,9 @@ pub mod worker_catalog;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ClusterStatus, GetParams, GetResult, InitializeParams, InitializeResult, ServerCapabilities,
+};
+use openengine_cluster_server::identity::{
+    ConnectionBinding, ConnectionIdentity, StaticConnectionIdentityResolver, SystemConnectionTime,
 };
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
 
@@ -53,7 +58,7 @@ impl ClusterBackend for NativeBackend {
 pub trait NativeBackendFactory {
     type Backend: ClusterBackend;
 
-    fn create(&self, context: &ConnectionContext) -> Self::Backend;
+    fn create(&self) -> Self::Backend;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -62,7 +67,7 @@ pub struct ProductionNativeBackendFactory;
 impl NativeBackendFactory for ProductionNativeBackendFactory {
     type Backend = NativeBackend;
 
-    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+    fn create(&self) -> Self::Backend {
         NativeBackend
     }
 }
@@ -72,6 +77,22 @@ pub fn dispatcher_for_route<F>(factory: &F, context: ConnectionContext) -> Dispa
 where
     F: NativeBackendFactory,
 {
-    let backend = factory.create(&context);
+    let backend = factory.create();
     Dispatcher::new(backend, context)
+}
+
+#[must_use]
+pub fn binding_for_route<F>(
+    factory: &F,
+    identity: ConnectionIdentity,
+) -> ConnectionBinding<F::Backend, StaticConnectionIdentityResolver, SystemConnectionTime>
+where
+    F: NativeBackendFactory,
+{
+    ConnectionBinding::new(
+        Arc::new(factory.create()),
+        StaticConnectionIdentityResolver::new(identity),
+        SystemConnectionTime,
+        Default::default(),
+    )
 }

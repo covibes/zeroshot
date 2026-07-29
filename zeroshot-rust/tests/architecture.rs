@@ -534,6 +534,8 @@ fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary()
         "authorize_request",
         "accept_hdr_async_with_config",
         "serve_websocket",
+        "binding_for_route",
+        "into_dispatcher",
         "probe_liveness",
         "remove_locator_if_matches",
         "openengine.cluster/v1",
@@ -548,6 +550,10 @@ fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary()
             "missing native daemon boundary: {required}"
         );
     }
+    assert!(
+        !daemon.contains("ConnectionContext::new"),
+        "daemon host bypassed binding-injected connection identity"
+    );
     for required in [
         "#[cfg(unix)]\nmod platform",
         "#[cfg(windows)]\nmod platform",

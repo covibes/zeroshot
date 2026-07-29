@@ -9,8 +9,10 @@ use std::time::Duration;
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use openengine_cluster_protocol::{InitializeResult, JSON_RPC_VERSION, PROTOCOL_VERSION};
+use openengine_cluster_server::identity::{
+    BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
+};
 use openengine_cluster_server::websocket::{serve_websocket, websocket_config};
-use openengine_cluster_server::ConnectionContext;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
@@ -28,7 +30,7 @@ use crate::daemon_discovery::{
     acquire_start_guard, read_locator_locked, remove_locator_if_matches,
     remove_locator_if_matches_locked, replace_locator_locked,
 };
-use crate::{NativeBackendFactory, dispatcher_for_route};
+use crate::{NativeBackendFactory, binding_for_route};
 
 #[derive(Clone, Copy, Debug)]
 pub struct ListenerConfig {
@@ -364,6 +366,16 @@ fn classify_liveness_response(response: &Value) -> LivenessOutcome {
     }
 }
 
+fn identity_for_profile(profile_digest: &str) -> ConnectionIdentity {
+    ConnectionIdentity::new(ConnectionIdentityConfig {
+        principal: PrincipalId::new(profile_digest),
+        tenant: TenantId::new(profile_digest),
+        issued_at_ms: None,
+        expires_at_ms: u64::MAX,
+        binding_attributes: BindingAttributes::default(),
+    })
+}
+
 fn rotate_away_from(value: &mut String, previous: &str) {
     if value == previous {
         let replacement = if value.starts_with('0') { "1" } else { "0" };
@@ -458,7 +470,7 @@ where
                 }
             }
             accepted = acceptor.accept() => {
-                let (stream, peer) = match accepted {
+                let (stream, _peer) = match accepted {
                     Ok(accepted) => accepted,
                     Err(_) => {
                         connection_failed = true;
@@ -479,7 +491,6 @@ where
                 connections.spawn(async move {
                     serve_connection(ConnectionTask {
                         stream,
-                        peer,
                         factory,
                         credentials,
                         active_permits,
@@ -511,7 +522,6 @@ where
 
 struct ConnectionTask<F> {
     stream: TcpStream,
-    peer: SocketAddr,
     factory: Arc<F>,
     credentials: DaemonCredentials,
     active_permits: Arc<Semaphore>,
@@ -527,7 +537,6 @@ where
 {
     let ConnectionTask {
         stream,
-        peer,
         factory,
         credentials,
         active_permits,
@@ -536,6 +545,7 @@ where
         handshake_timeout,
         liveness_timeout,
     } = connection;
+    let identity = identity_for_profile(&credentials.profile_digest);
     let (callback, receipt) = AuthorizationCallback::new(credentials);
     let handshake = accept_hdr_async_with_config(stream, callback, Some(websocket_config()));
     let Ok(Ok(mut websocket)) = timeout(handshake_timeout, handshake).await else {
@@ -560,11 +570,10 @@ where
             if value.get("method").and_then(Value::as_str) != Some("initialize") {
                 return;
             }
-            let context = ConnectionContext {
-                peer_label: Some(peer.to_string()),
-                ..ConnectionContext::default()
+            let binding = binding_for_route(factory.as_ref(), identity);
+            let Ok(dispatcher) = binding.into_dispatcher().await else {
+                return;
             };
-            let dispatcher = dispatcher_for_route(factory.as_ref(), context);
             let response = dispatcher.dispatch(request.as_ref()).await;
             let _ = websocket.send(Message::Text(response.into())).await;
             let _ = websocket.close(None).await;
@@ -576,12 +585,8 @@ where
         return;
     };
 
-    let context = ConnectionContext {
-        peer_label: Some(peer.to_string()),
-        ..ConnectionContext::default()
-    };
-    let dispatcher = dispatcher_for_route(factory.as_ref(), context);
-    let _ = serve_websocket(dispatcher, websocket).await;
+    let binding = binding_for_route(factory.as_ref(), identity);
+    let _ = serve_websocket(binding, websocket).await;
 }
 
 #[cfg(test)]

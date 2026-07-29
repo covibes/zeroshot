@@ -118,17 +118,13 @@ async fn valid_unsupported_operations_reach_backend_defaults() {
 
 struct FakeFactory;
 
-struct FakeBackend {
-    route: String,
-}
+struct FakeBackend;
 
 impl NativeBackendFactory for FakeFactory {
     type Backend = FakeBackend;
 
-    fn create(&self, context: &ConnectionContext) -> Self::Backend {
-        FakeBackend {
-            route: context.identity().tenant().as_str().to_owned(),
-        }
+    fn create(&self) -> Self::Backend {
+        FakeBackend
     }
 }
 
@@ -147,19 +143,19 @@ impl ClusterBackend for FakeBackend {
 
     async fn get(
         &self,
-        _context: &ConnectionContext,
+        context: &ConnectionContext,
         _params: GetParams,
     ) -> Result<GetResult, BackendError> {
         Ok(GetResult {
             spec: None,
             status: ClusterStatus::empty(),
-            at_cursor: Some(Cursor::new(self.route.clone())),
+            at_cursor: Some(Cursor::new(context.identity().tenant().as_str())),
         })
     }
 }
 
 #[tokio::test]
-async fn factory_injection_composes_the_selected_backend_with_its_route() {
+async fn factory_injection_composes_the_selected_backend_with_an_injected_route() {
     let context = ConnectionContext::new(
         ConnectionIdentity::new(ConnectionIdentityConfig {
             principal: PrincipalId::new("principal-7"),

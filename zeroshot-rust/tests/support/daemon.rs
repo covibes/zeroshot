@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
@@ -23,19 +24,22 @@ pub use temp_profile::TempProfile;
 pub struct CountingFactory {
     pub created: Arc<AtomicUsize>,
     pub initialized: Arc<AtomicUsize>,
+    pub identities: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 pub struct CountingBackend {
     initialized: Arc<AtomicUsize>,
+    identities: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl NativeBackendFactory for CountingFactory {
     type Backend = CountingBackend;
 
-    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+    fn create(&self) -> Self::Backend {
         self.created.fetch_add(1, Ordering::SeqCst);
         CountingBackend {
             initialized: Arc::clone(&self.initialized),
+            identities: Arc::clone(&self.identities),
         }
     }
 }
@@ -44,10 +48,17 @@ impl NativeBackendFactory for CountingFactory {
 impl ClusterBackend for CountingBackend {
     async fn initialize(
         &self,
-        _context: &ConnectionContext,
+        context: &ConnectionContext,
         _params: InitializeParams,
     ) -> Result<InitializeResult, BackendError> {
         self.initialized.fetch_add(1, Ordering::SeqCst);
+        self.identities
+            .lock()
+            .expect("identity recorder lock")
+            .push((
+                context.identity().principal().as_str().to_owned(),
+                context.identity().tenant().as_str().to_owned(),
+            ));
         Ok(InitializeResult::new(
             ServerCapabilities::default(),
             ClusterStatus::empty(),
