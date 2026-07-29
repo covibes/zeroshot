@@ -365,6 +365,10 @@ jobs:
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 24
+          cache: npm
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
 
       - name: Setup Rust 1.97.0 target
         uses: dtolnay/rust-toolchain@stable
@@ -441,6 +445,15 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
 
       - name: Download every target archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -585,7 +598,11 @@ jobs:
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 24
+          cache: npm
           registry-url: https://registry.npmjs.org
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
 
       - name: Download complete Rust distribution
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

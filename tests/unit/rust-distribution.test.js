@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const jsYaml = require('js-yaml');
 
 const distribution = require('../../scripts/rust-distribution');
 const shim = require('../../npm/zeroshot-rust/lib/install');
@@ -22,6 +23,14 @@ function relativeFiles(root, directory = root) {
 function mutation(source, before, after = '') {
   assert(source.includes(before), `mutation precondition missing: ${before}`);
   return source.replace(before, after);
+}
+
+function mutateWorkflowJob(source, jobName, mutateJob) {
+  const document = jsYaml.load(source);
+  const job = document.jobs[jobName];
+  assert(job, `workflow job missing: ${jobName}`);
+  mutateJob(job);
+  return JSON.stringify(document);
 }
 
 describe('Rust product distribution', function () {
@@ -148,6 +157,250 @@ describe('Rust release integration', function () {
       'utf8'
     );
     assert.strictEqual(distribution.checkRepository(workflow), true);
+
+    for (const [jobName, installName, installCommand] of [
+      ['dry-run', 'Install pinned dependencies', 'npm ci'],
+      ['release', 'Install pinned dependencies', 'npm ci'],
+      ['rust-binaries', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
+      ['rust-manifest', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
+      ['rust-publish', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
+    ]) {
+      const mutateInstall = (mutateJob) => mutateWorkflowJob(workflow, jobName, mutateJob);
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps.find((step) => step.name === installName).run =
+                `${installCommand} --foreground-scripts`;
+            })
+          ),
+        new RegExp(`${jobName} dependency install must execute at workspace root`)
+      );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps = job.steps.filter((step) => step.name !== installName);
+            })
+          ),
+        new RegExp(installName)
+      );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              const installIndex = job.steps.findIndex((step) => step.name === installName);
+              const [install] = job.steps.splice(installIndex, 1);
+              const invocationIndex = job.steps.findIndex((step) =>
+                step.run?.includes('scripts/rust-distribution.js')
+              );
+              job.steps.splice(invocationIndex + 1, 0, install);
+            })
+          ),
+        new RegExp(`${jobName} must install dependencies before every`)
+      );
+      for (const command of [
+        'node ./scripts/rust-distribution.js print-version',
+        './scripts/rust-distribution.js print-version',
+        'node "scripts/rust-distribution.js" print-version',
+        "node 'scripts/rust-distribution.js' print-version",
+        'node "./scripts/rust-distribution.js" print-version',
+        "node './scripts/rust-distribution.js' print-version",
+        '"scripts/rust-distribution.js" print-version',
+        "'scripts/rust-distribution.js' print-version",
+        '"./scripts/rust-distribution.js" print-version',
+        "'./scripts/rust-distribution.js' print-version",
+      ]) {
+        assert.throws(
+          () =>
+            distribution.checkRepository(
+              mutateInstall((job) => {
+                job.steps.unshift({
+                  name: 'Invoke Rust distribution before dependency installation',
+                  run: command,
+                });
+              })
+            ),
+          new RegExp(`${jobName} must install dependencies before every`)
+        );
+      }
+      for (const mutateCheckout of [
+        (checkout) => {
+          checkout.if = false;
+        },
+        (checkout) => {
+          checkout.with.path = 'nested';
+        },
+        (checkout) => {
+          checkout.with.repository = 'other/repository';
+        },
+        (checkout) => {
+          checkout.with.ref = 'main';
+        },
+      ]) {
+        assert.throws(
+          () =>
+            distribution.checkRepository(
+              mutateInstall((job) => {
+                const checkout = job.steps.find((step) =>
+                  step.uses?.startsWith('actions/checkout@')
+                );
+                mutateCheckout(checkout);
+              })
+            ),
+          new RegExp(`${jobName} must checkout expected current repository source`)
+        );
+      }
+      for (const mutateNodeSetup of [
+        (job, setup) => {
+          job.steps = job.steps.filter((step) => step !== setup);
+        },
+        (_job, setup) => {
+          setup.if = false;
+        },
+        (_job, setup) => {
+          setup.with.cache = '';
+        },
+        (_job, setup) => {
+          setup.with['node-version'] = 20;
+        },
+        (job, setup) => {
+          const setupIndex = job.steps.indexOf(setup);
+          job.steps.splice(setupIndex, 1);
+          const installIndex = job.steps.findIndex((step) => step.name === installName);
+          job.steps.splice(installIndex + 1, 0, setup);
+        },
+      ]) {
+        assert.throws(
+          () =>
+            distribution.checkRepository(
+              mutateInstall((job) => {
+                const setup = job.steps.find((step) =>
+                  step.uses?.startsWith('actions/setup-node@')
+                );
+                mutateNodeSetup(job, setup);
+              })
+            ),
+          new RegExp(`${jobName} must enable pinned Node 24 npm cache`)
+        );
+      }
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps.find((step) => step.name === installName)['working-directory'] =
+                'nested';
+            })
+          ),
+        new RegExp(`${jobName} dependency install must execute at workspace root`)
+      );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              const installIndex = job.steps.findIndex((step) => step.name === installName);
+              const [install] = job.steps.splice(installIndex, 1);
+              const checkoutIndex = job.steps.findIndex((step) =>
+                step.uses?.startsWith('actions/checkout@')
+              );
+              job.steps.splice(checkoutIndex, 0, install);
+            })
+          ),
+        new RegExp(`${jobName} must checkout source before dependency installation`)
+      );
+    }
+
+    const packageManifest = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')
+    );
+    const packageWithoutYaml = JSON.parse(JSON.stringify(packageManifest));
+    delete packageWithoutYaml.devDependencies['js-yaml'];
+    assert.throws(
+      () => distribution.checkRepository(workflow, undefined, packageWithoutYaml),
+      /direct js-yaml devDependency/
+    );
+
+    const packageLock = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, 'package-lock.json'), 'utf8')
+    );
+    const mutatePackageLock = (mutateLock) => {
+      const candidate = JSON.parse(JSON.stringify(packageLock));
+      mutateLock(candidate);
+      return candidate;
+    };
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          workflow,
+          undefined,
+          packageManifest,
+          mutatePackageLock((candidate) => {
+            delete candidate.packages[''].devDependencies['js-yaml'];
+          })
+        ),
+      /package-lock root js-yaml spec must match/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          workflow,
+          undefined,
+          packageManifest,
+          mutatePackageLock((candidate) => {
+            candidate.packages[''].devDependencies['js-yaml'] = '^9.0.0';
+          })
+        ),
+      /package-lock root js-yaml spec must match/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          workflow,
+          undefined,
+          packageManifest,
+          mutatePackageLock((candidate) => {
+            delete candidate.packages['node_modules/js-yaml'];
+          })
+        ),
+      /integrity-pinned resolved js-yaml/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          workflow,
+          undefined,
+          packageManifest,
+          mutatePackageLock((candidate) => {
+            delete candidate.packages['node_modules/js-yaml'].integrity;
+          })
+        ),
+      /integrity-pinned resolved js-yaml/
+    );
+    for (const mutateResolution of [
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].version = '';
+      },
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].resolved = ' ';
+      },
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].integrity = 'sha512-';
+      },
+      (candidate) => {
+        candidate.packages['node_modules/js-yaml'].integrity = 'sha512-YQ==';
+      },
+    ]) {
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            workflow,
+            undefined,
+            packageManifest,
+            mutatePackageLock(mutateResolution)
+          ),
+        /integrity-pinned resolved js-yaml/
+      );
+    }
 
     assert.throws(
       () =>

@@ -270,6 +270,104 @@ function findStep(job, name) {
   return step;
 }
 
+const RUST_DISTRIBUTION_INVOCATION =
+  /(?:(?:\bnode\s+)|(?:^|[\s(]))["']?(?:\.\/)?scripts\/rust-distribution\.js["']?(?=$|[\s)`;&|])/;
+
+const SCRIPT_INSTALL_CONTRACTS = Object.freeze([
+  {
+    jobName: 'dry-run',
+    installName: 'Install pinned dependencies',
+    command: 'npm ci',
+    checkoutRef: '${{ github.sha }}',
+  },
+  {
+    jobName: 'release',
+    installName: 'Install pinned dependencies',
+    command: 'npm ci',
+    checkoutRef: '${{ github.event.workflow_run.head_sha }}',
+  },
+  {
+    jobName: 'rust-binaries',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+    checkoutRef:
+      "${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}",
+  },
+  {
+    jobName: 'rust-manifest',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+    checkoutRef:
+      "${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}",
+  },
+  {
+    jobName: 'rust-publish',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+    checkoutRef: '${{ env.RELEASE_TAG }}',
+  },
+]);
+
+function invokesRustDistribution(step) {
+  return (
+    typeof step.run === 'string' && RUST_DISTRIBUTION_INVOCATION.test(step.run)
+  );
+}
+
+function checkScriptInstall(job, { jobName, installName, command, checkoutRef }) {
+  if (!job) failIntegrity(`release workflow has no ${jobName} job`);
+  const install = findStep(job, installName);
+  if (
+    install.if !== undefined ||
+    install['working-directory'] !== undefined ||
+    install.run?.trim() !== command
+  ) {
+    failIntegrity(`${jobName} dependency install must execute at workspace root: ${command}`);
+  }
+  const checkout = job.steps.find((step) => step.uses?.startsWith('actions/checkout@'));
+  if (
+    !checkout ||
+    checkout.if !== undefined ||
+    checkout.with?.path !== undefined ||
+    (checkout.with?.repository !== undefined &&
+      checkout.with.repository !== '${{ github.repository }}') ||
+    checkout.with?.ref !== checkoutRef
+  ) {
+    failIntegrity(
+      `${jobName} must checkout expected current repository source at workspace root`
+    );
+  }
+  const installIndex = job.steps.indexOf(install);
+  const checkoutIndex = job.steps.indexOf(checkout);
+  if (checkoutIndex >= installIndex) {
+    failIntegrity(`${jobName} must checkout source before dependency installation`);
+  }
+  const nodeSetup = job.steps.find((step) => step.uses?.startsWith('actions/setup-node@'));
+  const nodeSetupIndex = job.steps.indexOf(nodeSetup);
+  if (
+    !nodeSetup ||
+    nodeSetup.if !== undefined ||
+    nodeSetup.uses !== 'actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903' ||
+    String(nodeSetup.with?.['node-version']) !== '24' ||
+    nodeSetup.with?.cache !== 'npm' ||
+    nodeSetupIndex <= checkoutIndex ||
+    nodeSetupIndex >= installIndex
+  ) {
+    failIntegrity(`${jobName} must enable pinned Node 24 npm cache before dependency installation`);
+  }
+  if (job.steps.slice(0, installIndex).some(invokesRustDistribution)) {
+    failIntegrity(
+      `${jobName} must install dependencies before every rust-distribution.js invocation`
+    );
+  }
+}
+
+function checkScriptInstalls(jobs) {
+  for (const contract of SCRIPT_INSTALL_CONTRACTS) {
+    checkScriptInstall(jobs[contract.jobName], contract);
+  }
+}
+
 function checkBuildJob(jobs) {
   const job = jobs['rust-binaries'];
   if (!job) failIntegrity('release workflow has no rust-binaries job');
@@ -463,6 +561,36 @@ function checkShimTargets(shimTargets) {
   exactJson('npm shim host mapping', projected, actual);
 }
 
+function hasValidSri(integrity) {
+  if (typeof integrity !== 'string') return false;
+  const match = /^(sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})$/.exec(integrity);
+  if (!match) return false;
+  const expectedBytes = { sha256: 32, sha384: 48, sha512: 64 }[match[1]];
+  const digest = Buffer.from(match[2], 'base64');
+  return digest.length === expectedBytes && digest.toString('base64') === match[2];
+}
+
+function checkScriptDependencies(packageManifest, packageLock) {
+  const directSpec = packageManifest.devDependencies?.['js-yaml'];
+  if (typeof directSpec !== 'string' || directSpec.length === 0) {
+    failIntegrity('rust-distribution.js requires a direct js-yaml devDependency');
+  }
+  const lockSpec = packageLock.packages?.['']?.devDependencies?.['js-yaml'];
+  if (lockSpec !== directSpec) {
+    failIntegrity('package-lock root js-yaml spec must match package.json');
+  }
+  const resolved = packageLock.packages?.['node_modules/js-yaml'];
+  if (
+    typeof resolved?.version !== 'string' ||
+    resolved.version.trim().length === 0 ||
+    typeof resolved.resolved !== 'string' ||
+    resolved.resolved.trim().length === 0 ||
+    !hasValidSri(resolved.integrity)
+  ) {
+    failIntegrity('package-lock must contain an integrity-pinned resolved js-yaml package');
+  }
+}
+
 function checkRepository(
   workflow = fs.readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'release.yml'),
@@ -470,6 +598,12 @@ function checkRepository(
   ),
   shimTargets = JSON.parse(
     fs.readFileSync(path.join(repositoryRoot, 'npm', 'zeroshot-rust', 'targets.json'), 'utf8')
+  ),
+  packageManifest = JSON.parse(
+    fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8')
+  ),
+  packageLock = JSON.parse(
+    fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8')
   )
 ) {
   let document;
@@ -479,10 +613,12 @@ function checkRepository(
     failIntegrity(`release workflow is invalid YAML: ${error.message}`);
   }
   if (!document?.jobs) failIntegrity('release workflow has no jobs');
+  checkScriptInstalls(document.jobs);
   checkBuildJob(document.jobs);
   checkManifestJob(document.jobs);
   checkPublicationJobs(document, document.jobs);
   checkShimTargets(shimTargets);
+  checkScriptDependencies(packageManifest, packageLock);
   return true;
 }
 
