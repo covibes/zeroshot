@@ -187,6 +187,7 @@ describe('Output Reformatter', function () {
       assert.deepStrictEqual(spawnCalls[0].options, {
         skipStructuredResultCheck: true,
         nested: true,
+        disableTools: true,
       });
     });
 
