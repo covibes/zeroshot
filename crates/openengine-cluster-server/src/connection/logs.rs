@@ -1,7 +1,7 @@
-//! `logs` subscription NDJSON streaming and dispatch, split out from `stdio.rs` to keep that
-//! file's `watch` counterpart readable -- mirrors `run_watch_subscription`/`dispatch_watch`
-//! exactly, sharing the same generic `subscriptions` cancellation map and outbound queue, since
-//! `logs` reuses the identical wire notification methods and cancellation framing.
+//! Transport-neutral `logs` subscription streaming and dispatch. Mirrors
+//! `run_watch_subscription`/`dispatch_watch` exactly, sharing the same generic `subscriptions`
+//! cancellation map and outbound queue because `logs` reuses the identical wire notification
+//! methods and cancellation framing.
 
 use openengine_cluster_protocol::{
     DomainErrorData, JsonRpcNotification, LogEventNotification, LogsClosedNotification, LogsParams,
@@ -63,7 +63,7 @@ impl<B> Dispatcher<B>
 where
     B: ClusterBackend,
 {
-    /// NDJSON-only counterpart to [`Dispatcher::dispatch`] for the `logs` method. Mirrors
+    /// Connection-core counterpart to [`Dispatcher::dispatch`] for the `logs` method. Mirrors
     /// [`Dispatcher::dispatch_watch`] exactly; only the Rust param/result types differ.
     pub(crate) async fn dispatch_logs(
         &self,

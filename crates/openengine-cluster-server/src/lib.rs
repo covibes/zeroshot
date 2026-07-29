@@ -1,4 +1,4 @@
-//! Backend-neutral Cluster Protocol dispatcher.
+//! Backend-neutral Cluster Protocol dispatcher and transport-neutral connection core.
 
 pub mod admission;
 pub mod agent_attach;
@@ -10,10 +10,12 @@ pub mod watch;
 pub mod websocket;
 pub mod worker_registry;
 
+mod connection;
 mod dispatch;
 mod subscription_stream;
 mod wire;
 pub(crate) use wire::{serialize_backend_error, serialize_error, serialize_success};
+pub(crate) use stdio::classify_ndjson_line;
 
 use std::sync::Arc;
 

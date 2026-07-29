@@ -68,7 +68,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Artifact receipts            | `crates/openengine-cluster-protocol/src/artifact.rs`                    |
 | Graph diagnostics/bounds     | `crates/openengine-cluster-protocol/src/diagnostic.rs`                  |
 | Shared wire-value bounds     | `crates/openengine-cluster-protocol/src/value.rs`                       |
-| Cluster dispatch/stdio       | `crates/openengine-cluster-server/`                                     |
+| Cluster server crate         | `crates/openengine-cluster-server/`                                     |
 | Graph verifier facade        | `crates/openengine-cluster-server/src/graph_verifier.rs`                |
 | Graph verifier analysis      | `crates/openengine-cluster-server/src/graph_verifier/`                  |
 | Native product construction  | `zeroshot-rust/`                                                        |
@@ -104,7 +104,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Client watch/reconnect       | `crates/openengine-cluster-client/src/watch.rs`                         |
 | NDJSON stdio binding         | `crates/openengine-cluster-server/src/stdio.rs`                         |
 | NDJSON watch client          | `crates/openengine-cluster-client/src/ndjson_watch.rs`                  |
-| NDJSON task admission        | `crates/openengine-cluster-server/src/stdio/admission.rs`               |
+| Connection core/admission    | `crates/openengine-cluster-server/src/connection.rs`, `connection/`     |
 | NDJSON response pump         | `crates/openengine-cluster-client/src/ndjson_pump.rs`                   |
 | Cluster typed transports     | `crates/openengine-cluster-client/`                                     |
 | Cluster fixtures/artifacts   | `crates/openengine-cluster-testkit/`                                    |
