@@ -135,7 +135,10 @@ const FIXTURE: &[ExpectedProvider] = &[
             stable(WorkerCapability::ToolUse),
             stable(WorkerCapability::WorkspaceIsolation),
             stable(WorkerCapability::McpServers),
-            (WorkerCapability::JsonSchema, CapabilitySupport::Experimental),
+            (
+                WorkerCapability::JsonSchema,
+                CapabilitySupport::Experimental,
+            ),
             stable(WorkerCapability::StreamEvents),
             stable(WorkerCapability::Thinking),
         ],
@@ -181,7 +184,10 @@ const FIXTURE: &[ExpectedProvider] = &[
             stable(WorkerCapability::ToolUse),
             stable(WorkerCapability::WorkspaceIsolation),
             stable(WorkerCapability::McpServers),
-            (WorkerCapability::JsonSchema, CapabilitySupport::Experimental),
+            (
+                WorkerCapability::JsonSchema,
+                CapabilitySupport::Experimental,
+            ),
             stable(WorkerCapability::StreamEvents),
             stable(WorkerCapability::Thinking),
             stable(WorkerCapability::ReasoningEffort),
@@ -212,18 +218,28 @@ fn canonical_catalog_matches_the_exact_versioned_fixture() {
     let catalog = worker_catalog();
     assert_eq!(catalog.version(), WORKER_CATALOG_VERSION);
     assert_eq!(catalog.providers().len(), WORKER_PROVIDER_COUNT);
-    assert_eq!(catalog.default_provider_id().as_str(), DEFAULT_WORKER_PROVIDER);
+    assert_eq!(
+        catalog.default_provider_id().as_str(),
+        DEFAULT_WORKER_PROVIDER
+    );
     assert_eq!(catalog.default_provider().id().as_str(), "claude");
 
     for (provider, expected) in catalog.providers().iter().zip(FIXTURE) {
         assert_eq!(provider.id().as_str(), expected.id);
         assert_eq!(
-            provider.aliases().iter().map(ProviderAlias::as_str).collect::<Vec<_>>(),
+            provider
+                .aliases()
+                .iter()
+                .map(ProviderAlias::as_str)
+                .collect::<Vec<_>>(),
             expected.aliases
         );
         assert_eq!(provider.display_name().as_str(), expected.display);
         assert_eq!(provider.driver_family(), expected.family);
-        assert_eq!(provider.driver_family().token(), provider.driver_family_id().as_str());
+        assert_eq!(
+            provider.driver_family().token(),
+            provider.driver_family_id().as_str()
+        );
 
         match (provider.executable(), expected.executable) {
             (None, None) => {}
@@ -246,8 +262,14 @@ fn canonical_catalog_matches_the_exact_versioned_fixture() {
             .into_iter()
             .enumerate()
         {
-            let selection = provider.models().selection(level).expect("fixture model level");
-            assert_eq!(selection.model().map(ModelId::as_str), expected.models[index]);
+            let selection = provider
+                .models()
+                .selection(level)
+                .expect("fixture model level");
+            assert_eq!(
+                selection.model().map(ModelId::as_str),
+                expected.models[index]
+            );
             assert_eq!(
                 selection.default_reasoning_effort(),
                 expected.reasoning_defaults[index]
@@ -255,7 +277,12 @@ fn canonical_catalog_matches_the_exact_versioned_fixture() {
         }
         assert_eq!(provider.models().default_level(), ModelLevel::Level2);
         assert_eq!(
-            provider.reasoning().efforts().iter().copied().collect::<Vec<_>>(),
+            provider
+                .reasoning()
+                .efforts()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
             expected.reasoning
         );
         assert_eq!(
@@ -294,7 +321,12 @@ fn canonical_aliases_resolve_directly_to_their_owner() {
         ("gemini", "gemini"),
         ("google", "gemini"),
     ] {
-        assert_eq!(catalog.resolve(identity).map(|provider| provider.id().as_str()), Some(canonical));
+        assert_eq!(
+            catalog
+                .resolve(identity)
+                .map(|provider| provider.id().as_str()),
+            Some(canonical)
+        );
     }
     assert!(catalog.resolve("Anthropic").is_none());
     assert!(catalog.resolve("unknown").is_none());
@@ -316,7 +348,10 @@ fn canonical_bytes_and_digest_are_stable_across_order_and_repetition() {
     assert_eq!(left.digest(), left.digest());
 
     let built_in = worker_catalog();
-    assert_eq!(built_in.canonical_bytes(), worker_catalog().canonical_bytes());
+    assert_eq!(
+        built_in.canonical_bytes(),
+        worker_catalog().canonical_bytes()
+    );
     assert_eq!(built_in.digest(), worker_catalog().digest());
     assert_eq!(built_in.digest().as_str().len(), 64);
 }
@@ -377,14 +412,12 @@ fn invalid_family_session_model_and_reasoning_policies_fail_closed() {
     .expect_err("missing default model level must fail");
     assert_eq!(missing_default.field(), "default model level");
 
-    let duplicate_reasoning =
-        ReasoningPolicy::new([ReasoningEffort::High, ReasoningEffort::High])
-            .expect_err("duplicate reasoning effort must fail");
+    let duplicate_reasoning = ReasoningPolicy::new([ReasoningEffort::High, ReasoningEffort::High])
+        .expect_err("duplicate reasoning effort must fail");
     assert_eq!(duplicate_reasoning.field(), "reasoning policy");
 
-    let duplicate_scope =
-        SessionPolicy::new([SessionScope::Execution, SessionScope::Execution])
-            .expect_err("duplicate session scope must fail");
+    let duplicate_scope = SessionPolicy::new([SessionScope::Execution, SessionScope::Execution])
+        .expect_err("duplicate session scope must fail");
     assert_eq!(duplicate_scope.field(), "session policy");
 
     let mut gateway_with_process = valid_spec("gateway", "Gateway", &[]);
@@ -418,11 +451,7 @@ fn invalid_family_session_model_and_reasoning_policies_fail_closed() {
         ModelLevel::Level2,
         [
             ModelSelection::new(ModelLevel::Level1, None, None),
-            ModelSelection::new(
-                ModelLevel::Level2,
-                None,
-                Some(ReasoningEffort::High),
-            ),
+            ModelSelection::new(ModelLevel::Level2, None, Some(ReasoningEffort::High)),
         ],
     )
     .expect("model structure is bounded");

@@ -16,11 +16,30 @@ pub const DEFAULT_WORKER_PROVIDER: &str = "claude";
 crate::provider_value::contract_error_type!(WorkerCatalogError);
 crate::provider_value::provider_id_type!(ProviderId, WorkerCatalogError, "provider id");
 crate::provider_value::provider_id_type!(ProviderAlias, WorkerCatalogError, "provider alias");
-crate::provider_value::bounded_text_type!(ProviderDisplayName, 64, WorkerCatalogError, "provider display name");
+crate::provider_value::bounded_text_type!(
+    ProviderDisplayName,
+    64,
+    WorkerCatalogError,
+    "provider display name"
+);
 crate::provider_value::bounded_bytes_type!(ModelId, 128, WorkerCatalogError, "model id");
-crate::provider_value::bounded_bytes_type!(ExecutableName, 128, WorkerCatalogError, "executable name");
-crate::provider_value::bounded_bytes_type!(ExecutableArgument, 256, WorkerCatalogError, "executable argument");
-crate::provider_value::provider_id_type!(CredentialRequirementName, WorkerCatalogError, "credential requirement name");
+crate::provider_value::bounded_bytes_type!(
+    ExecutableName,
+    128,
+    WorkerCatalogError,
+    "executable name"
+);
+crate::provider_value::bounded_bytes_type!(
+    ExecutableArgument,
+    256,
+    WorkerCatalogError,
+    "executable argument"
+);
+crate::provider_value::provider_id_type!(
+    CredentialRequirementName,
+    WorkerCatalogError,
+    "credential requirement name"
+);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -267,9 +286,7 @@ impl ReasoningPolicy {
 pub struct SessionPolicy(BTreeSet<SessionScope>);
 
 impl SessionPolicy {
-    pub fn new(
-        scopes: impl IntoIterator<Item = SessionScope>,
-    ) -> Result<Self, WorkerCatalogError> {
+    pub fn new(scopes: impl IntoIterator<Item = SessionScope>) -> Result<Self, WorkerCatalogError> {
         let mut unique = BTreeSet::new();
         for scope in scopes {
             if !unique.insert(scope) {
@@ -804,7 +821,10 @@ fn canonical_catalog_spec() -> WorkerCatalogSpec {
                     stable(WorkerCapability::ToolUse),
                     stable(WorkerCapability::WorkspaceIsolation),
                     stable(WorkerCapability::McpServers),
-                    (WorkerCapability::JsonSchema, CapabilitySupport::Experimental),
+                    (
+                        WorkerCapability::JsonSchema,
+                        CapabilitySupport::Experimental,
+                    ),
                     stable(WorkerCapability::StreamEvents),
                     stable(WorkerCapability::Thinking),
                 ],
@@ -833,7 +853,10 @@ fn canonical_catalog_spec() -> WorkerCatalogSpec {
                     stable(WorkerCapability::ToolUse),
                     stable(WorkerCapability::WorkspaceIsolation),
                     stable(WorkerCapability::McpServers),
-                    (WorkerCapability::JsonSchema, CapabilitySupport::Experimental),
+                    (
+                        WorkerCapability::JsonSchema,
+                        CapabilitySupport::Experimental,
+                    ),
                     stable(WorkerCapability::StreamEvents),
                     stable(WorkerCapability::Thinking),
                     stable(WorkerCapability::ReasoningEffort),
@@ -916,24 +939,29 @@ fn provider(source: ProviderSource) -> ProviderDescriptor {
         .into_iter()
         .zip(source.level_models)
         .zip(source.level_reasoning)
-        .map(|((level, model), effort)| {
-            ModelSelection::new(level, model.map(model_id), effort)
-        });
+        .map(|((level, model), effort)| ModelSelection::new(level, model.map(model_id), effort));
     ProviderDescriptor::new(ProviderDescriptorSpec {
         id: provider_id(source.id),
         aliases: source.aliases.iter().copied().map(provider_alias).collect(),
-        display_name: ProviderDisplayName::new(source.display_name).expect("built-in display name is valid"),
+        display_name: ProviderDisplayName::new(source.display_name)
+            .expect("built-in display name is valid"),
         driver_family: source.family,
-        models: ModelPolicy::new(ModelLevel::Level2, levels).expect("built-in model policy is valid"),
-        reasoning: ReasoningPolicy::new(source.reasoning.iter().copied()).expect("built-in reasoning policy is valid"),
-        sessions: SessionPolicy::new([SessionScope::Execution]).expect("built-in session policy is valid"),
-        capabilities: CapabilityPolicy::new(source.capabilities.iter().copied()).expect("built-in capability policy is valid"),
+        models: ModelPolicy::new(ModelLevel::Level2, levels)
+            .expect("built-in model policy is valid"),
+        reasoning: ReasoningPolicy::new(source.reasoning.iter().copied())
+            .expect("built-in reasoning policy is valid"),
+        sessions: SessionPolicy::new([SessionScope::Execution])
+            .expect("built-in session policy is valid"),
+        capabilities: CapabilityPolicy::new(source.capabilities.iter().copied())
+            .expect("built-in capability policy is valid"),
         executable: source.executable.map(|(name, arguments, probe)| {
             ExecutableMetadata::new(
                 ExecutableName::new(name).expect("built-in executable name is valid"),
                 arguments
                     .iter()
-                    .map(|argument| ExecutableArgument::new(*argument).expect("built-in argument is valid"))
+                    .map(|argument| {
+                        ExecutableArgument::new(*argument).expect("built-in argument is valid")
+                    })
                     .collect(),
                 probe,
             )
