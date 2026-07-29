@@ -3,6 +3,7 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { URL } = require('node:url');
 const { PassThrough } = require('stream');
 const AgentWrapper = require('../src/agent-wrapper');
 const ClaudeTaskRunner = require('../src/claude-task-runner');
@@ -602,6 +603,94 @@ describe('Isolated opencode structured-output recovery', function () {
     resolveLookup('{}');
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(spawnCount, 0);
+  });
+
+  it('settles a durable nested task while isolated log-path lookup is stalled', async function () {
+    this.timeout(1000);
+    const taskId = 'task-amber-fox-slow-log';
+    const commands = [];
+    let status = 'running';
+    let spawnCount = 0;
+    let resolveLogPath;
+    const manager = {
+      getContainerEnvironmentValue() {
+        return null;
+      },
+      spawnInContainer() {
+        spawnCount++;
+        if (spawnCount === 1) {
+          return createClosingProcess(0, `✓ Task spawned: ${taskId}\n`);
+        }
+        const tail = new EventEmitter();
+        tail.stdout = new PassThrough();
+        tail.stderr = new PassThrough();
+        tail.kill = () => {};
+        return tail;
+      },
+      execInContainer(_clusterId, command) {
+        commands.push(command);
+        const rendered = command.join(' ');
+        if (rendered.includes('get-task-id-by-spawn-token')) {
+          return Promise.resolve({ code: 0, stdout: `${taskId}\n`, stderr: '' });
+        }
+        if (rendered.includes('get-log-path')) {
+          return new Promise((resolve) => {
+            resolveLogPath = resolve;
+          });
+        }
+        if (command[1] === 'status') {
+          return Promise.resolve({ code: 0, stdout: `Status: ${status}\n`, stderr: '' });
+        }
+        if (command[1] === 'kill') {
+          status = 'killed';
+          return Promise.resolve({ code: 0, stdout: `Killed ${taskId}\n`, stderr: '' });
+        }
+        return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
+      },
+    };
+    const agent = {
+      id: 'isolated-slow-log-path',
+      role: 'planner',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 100,
+      enableLivenessCheck: false,
+      config: { outputFormat: 'json', strictSchema: true },
+      cluster: { id: 'test-cluster' },
+      isolation: { enabled: true, clusterId: 'test-cluster', manager },
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'opencode',
+      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+      _resolveModelSpecSource: () => 'direct',
+      _log() {},
+      _publishLifecycle() {},
+      _stopLivenessCheck() {},
+    };
+    const startedAt = Date.now();
+
+    await assert.rejects(
+      spawnClaudeTaskIsolated(agent, 'test context', {
+        skipStructuredResultCheck: true,
+        nested: true,
+        disableTools: true,
+      }),
+      (error) => {
+        assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
+        assert.strictEqual(error.nestedExecutionCancellation, true);
+        return true;
+      }
+    );
+
+    assert.ok(Date.now() - startedAt < 750, 'cancellation must not await the stalled log lookup');
+    assert.strictEqual(status, 'killed');
+    assert.ok(commands.some((command) => command[1] === 'kill'));
+    assert.strictEqual(spawnCount, 1);
+    assert.strictEqual(agent.nestedExecutions.size, 0);
+
+    resolveLogPath({ code: 0, stdout: '/tmp/late-reformat.log\n', stderr: '' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(spawnCount, 1, 'late lookup must not start a tail process');
   });
 
   it('kills and settles a durable nested task when post-ID log setup fails', async function () {

@@ -2825,6 +2825,9 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
       options.executionHandle.setFailClosedAction((error) =>
         rejectIsolatedFollower({ agent, state, cleanup, reject, error })
       );
+      options.executionHandle.setCancelAction((reason, details) =>
+        state.lifecycleHandle.terminate(reason, details)
+      );
     }
 
     manager
@@ -2853,7 +2856,11 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
           });
         }
         state.logFilePath = logFilePath;
-        if (state.resolved || state.taskExited) {
+        if (
+          state.resolved ||
+          state.taskExited ||
+          (options.nested && options.executionHandle?.isCancelled)
+        ) {
           return;
         }
 
@@ -2881,11 +2888,6 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
           reject,
           onLine,
         });
-        if (options.nested && options.executionHandle) {
-          options.executionHandle.setCancelAction((reason, details) =>
-            state.lifecycleHandle.terminate(reason, details)
-          );
-        }
 
         if (agent.timeout > 0 && !agent.enableLivenessCheck && !options.nested) {
           state.timeoutTimer = setTimeout(() => {
