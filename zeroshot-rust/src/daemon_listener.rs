@@ -113,6 +113,10 @@ impl DaemonListener {
         if config.max_active_connections == 0
             || config.max_pending_handshakes == 0
             || config.max_liveness_connections == 0
+            || config.startup_lock_timeout.is_zero()
+            || config.liveness_timeout.is_zero()
+            || config.handshake_timeout.is_zero()
+            || config.drain_timeout.is_zero()
             || config.shutdown_timeout.is_zero()
         {
             return Err(DaemonListenerError::InvalidConfiguration);

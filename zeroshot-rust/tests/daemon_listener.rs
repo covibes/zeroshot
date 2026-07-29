@@ -53,6 +53,72 @@ impl NativeBackendFactory for PanicFactory {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_capacity_or_deadline_is_rejected_before_profile_or_listener_creation() {
+    let mut cases = Vec::new();
+
+    let mut config = test_config();
+    config.max_active_connections = 0;
+    cases.push(("active-capacity", config));
+    let mut config = test_config();
+    config.max_pending_handshakes = 0;
+    cases.push(("handshake-capacity", config));
+    let mut config = test_config();
+    config.max_liveness_connections = 0;
+    cases.push(("liveness-capacity", config));
+    let mut config = test_config();
+    config.startup_lock_timeout = Duration::ZERO;
+    cases.push(("startup-lock-deadline", config));
+    let mut config = test_config();
+    config.liveness_timeout = Duration::ZERO;
+    cases.push(("liveness-deadline", config));
+    let mut config = test_config();
+    config.handshake_timeout = Duration::ZERO;
+    cases.push(("handshake-deadline", config));
+    let mut config = test_config();
+    config.drain_timeout = Duration::ZERO;
+    cases.push(("drain-deadline", config));
+    let mut config = test_config();
+    config.shutdown_timeout = Duration::ZERO;
+    cases.push(("shutdown-deadline", config));
+
+    for (name, invalid) in cases {
+        let profile = TempProfile::new(name);
+        assert!(matches!(
+            DaemonListener::start_with_config(
+                profile.profile.clone(),
+                CountingFactory::default(),
+                invalid,
+            )
+            .await,
+            Err(DaemonListenerError::InvalidConfiguration)
+        ));
+        assert!(
+            !profile.profile.root().exists(),
+            "{name} created profile resources before validation"
+        );
+        assert_eq!(
+            read_locator(&profile.profile).expect("invalid config locator state"),
+            None
+        );
+
+        let valid = ListenerConfig {
+            max_active_connections: 1,
+            max_pending_handshakes: 1,
+            max_liveness_connections: 1,
+            ..test_config()
+        };
+        let listener = DaemonListener::start_with_config(
+            profile.profile.clone(),
+            CountingFactory::default(),
+            valid,
+        )
+        .await
+        .expect("limit-plus-valid config starts");
+        listener.shutdown().await.expect("valid listener shutdown");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_profile_start_has_one_owner_and_loser_cannot_remove_it() {
     let profile = TempProfile::new("concurrent-start");

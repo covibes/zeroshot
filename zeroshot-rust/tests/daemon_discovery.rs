@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Read;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -151,6 +151,49 @@ fn same_owner_hard_links_fail_closed_for_locator_and_startup_lock() {
     assert_eq!(lock_metadata.nlink(), 2);
     assert!(matches!(
         acquire_start_guard(&profile.profile, Duration::from_millis(20)),
+        Err(DiscoveryError::InsecureFile)
+    ));
+}
+
+#[test]
+fn same_owner_symbolic_links_fail_closed_for_locator_and_startup_lock() {
+    let locator_profile = TempProfile::new("locator-symlink");
+    let current = locator(&locator_profile, 30203);
+    replace_locator(&locator_profile.profile, &current).expect("publish locator");
+    let locator_target = locator_profile
+        .profile
+        .root()
+        .join("locator-symlink-target");
+    fs::rename(locator_profile.profile.locator_path(), &locator_target)
+        .expect("move locator to same-owner target");
+    symlink(&locator_target, locator_profile.profile.locator_path()).expect("symlink locator path");
+    let target_metadata = fs::metadata(&locator_target).expect("locator target metadata");
+    assert_eq!(target_metadata.mode() & 0o777, 0o600);
+    assert_eq!(target_metadata.uid(), unsafe { libc::geteuid() });
+    assert_eq!(target_metadata.nlink(), 1);
+    assert!(matches!(
+        read_locator(&locator_profile.profile),
+        Err(DiscoveryError::InsecureFile)
+    ));
+
+    let lock_profile = TempProfile::new("startup-lock-symlink");
+    drop(
+        acquire_start_guard(&lock_profile.profile, Duration::from_secs(1))
+            .expect("create startup lock"),
+    );
+    let lock_path = lock_profile.profile.root().join(".daemon-start.lock");
+    let lock_target = lock_profile
+        .profile
+        .root()
+        .join("startup-lock-symlink-target");
+    fs::rename(&lock_path, &lock_target).expect("move startup lock to same-owner target");
+    symlink(&lock_target, &lock_path).expect("symlink startup lock path");
+    let target_metadata = fs::metadata(&lock_target).expect("startup lock target metadata");
+    assert_eq!(target_metadata.mode() & 0o777, 0o600);
+    assert_eq!(target_metadata.uid(), unsafe { libc::geteuid() });
+    assert_eq!(target_metadata.nlink(), 1);
+    assert!(matches!(
+        acquire_start_guard(&lock_profile.profile, Duration::from_millis(20)),
         Err(DiscoveryError::InsecureFile)
     ));
 }

@@ -221,11 +221,10 @@ pub(crate) fn random_hex() -> Result<String, DiscoveryError> {
 fn read_locator_existing(profile: &NativeProfile) -> Result<Option<DaemonLocator>, DiscoveryError> {
     let file = match open_owner_file(&profile.locator_path(), false) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
-            return Err(DiscoveryError::InsecureFile);
+        Err(DiscoveryError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(None);
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(error),
     };
     let opened_metadata = file.metadata()?;
     validate_open_locator_file(&opened_metadata)?;
@@ -287,7 +286,7 @@ fn validate_open_locator_file(metadata: &fs::Metadata) -> Result<(), DiscoveryEr
     Ok(())
 }
 
-fn open_owner_file(path: &Path, create: bool) -> io::Result<File> {
+fn open_owner_file(path: &Path, create: bool) -> Result<File, DiscoveryError> {
     OpenOptions::new()
         .read(true)
         .write(create)
@@ -295,6 +294,13 @@ fn open_owner_file(path: &Path, create: bool) -> io::Result<File> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
+        .map_err(|error| {
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                DiscoveryError::InsecureFile
+            } else {
+                error.into()
+            }
+        })
 }
 
 fn is_lower_hex(value: &str, len: usize) -> bool {
