@@ -8,17 +8,44 @@ const jiraProviderPath = require.resolve('../src/issue-providers/jira-provider')
 describe('JiraProvider.fetchIssue', function () {
   let execSyncStub;
   let JiraProvider;
+  let originalJiraProviderCacheEntry;
+  let jiraProviderCacheCaptured = false;
+  let jiraProviderCacheReplaced = false;
 
   beforeEach(function () {
+    originalJiraProviderCacheEntry = require.cache[jiraProviderPath];
+    jiraProviderCacheCaptured = true;
+
     // Stub before requiring so the provider's destructured `execSync` is the stub.
     execSyncStub = sinon.stub(safeExec, 'execSync');
     delete require.cache[jiraProviderPath];
+    jiraProviderCacheReplaced = true;
     JiraProvider = require(jiraProviderPath);
   });
 
   afterEach(function () {
-    sinon.restore();
-    delete require.cache[jiraProviderPath];
+    const cacheWasCaptured = jiraProviderCacheCaptured;
+    const cacheWasReplaced = jiraProviderCacheReplaced;
+    const cacheEntryToRestore = originalJiraProviderCacheEntry;
+
+    try {
+      sinon.restore();
+    } finally {
+      if (cacheWasReplaced) {
+        delete require.cache[jiraProviderPath];
+        if (cacheEntryToRestore) {
+          require.cache[jiraProviderPath] = cacheEntryToRestore;
+        }
+      }
+
+      originalJiraProviderCacheEntry = undefined;
+      jiraProviderCacheCaptured = false;
+      jiraProviderCacheReplaced = false;
+
+      if (cacheWasCaptured) {
+        assert.strictEqual(require.cache[jiraProviderPath], cacheEntryToRestore);
+      }
+    }
   });
 
   it('fetches an issue with the supported jira view command and parses its JSON', function () {
