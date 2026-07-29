@@ -251,6 +251,39 @@ describe('Rust release integration', function () {
           new RegExp(`${jobName} must checkout expected current repository source`)
         );
       }
+      for (const mutateNodeSetup of [
+        (job, setup) => {
+          job.steps = job.steps.filter((step) => step !== setup);
+        },
+        (_job, setup) => {
+          setup.if = false;
+        },
+        (_job, setup) => {
+          setup.with.cache = '';
+        },
+        (_job, setup) => {
+          setup.with['node-version'] = 20;
+        },
+        (job, setup) => {
+          const setupIndex = job.steps.indexOf(setup);
+          job.steps.splice(setupIndex, 1);
+          const installIndex = job.steps.findIndex((step) => step.name === installName);
+          job.steps.splice(installIndex + 1, 0, setup);
+        },
+      ]) {
+        assert.throws(
+          () =>
+            distribution.checkRepository(
+              mutateInstall((job) => {
+                const setup = job.steps.find((step) =>
+                  step.uses?.startsWith('actions/setup-node@')
+                );
+                mutateNodeSetup(job, setup);
+              })
+            ),
+          new RegExp(`${jobName} must enable pinned Node 24 npm cache`)
+        );
+      }
       assert.throws(
         () =>
           distribution.checkRepository(

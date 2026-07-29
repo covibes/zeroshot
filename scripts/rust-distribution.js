@@ -342,6 +342,19 @@ function checkScriptInstall(job, { jobName, installName, command, checkoutRef })
   if (checkoutIndex >= installIndex) {
     failIntegrity(`${jobName} must checkout source before dependency installation`);
   }
+  const nodeSetup = job.steps.find((step) => step.uses?.startsWith('actions/setup-node@'));
+  const nodeSetupIndex = job.steps.indexOf(nodeSetup);
+  if (
+    !nodeSetup ||
+    nodeSetup.if !== undefined ||
+    nodeSetup.uses !== 'actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903' ||
+    String(nodeSetup.with?.['node-version']) !== '24' ||
+    nodeSetup.with?.cache !== 'npm' ||
+    nodeSetupIndex <= checkoutIndex ||
+    nodeSetupIndex >= installIndex
+  ) {
+    failIntegrity(`${jobName} must enable pinned Node 24 npm cache before dependency installation`);
+  }
   if (job.steps.slice(0, installIndex).some(invokesRustDistribution)) {
     failIntegrity(
       `${jobName} must install dependencies before every rust-distribution.js invocation`
