@@ -95,6 +95,7 @@ describe('Update Checker', function () {
       ['short quiet after command', ['list', '-q']],
       ['long quiet before command', ['--quiet', 'list']],
       ['CI pseudo-TTY', ['list'], { env: { CI: 'false' } }],
+      ['boolean CI pseudo-TTY', ['list'], { env: { CI: true } }],
       ['option terminator without a command', ['--']],
       ['daemon child', ['list'], { env: { ZEROSHOT_DAEMON: '1' } }],
       ['short help', ['list', '-h']],
