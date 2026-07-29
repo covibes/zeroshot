@@ -123,28 +123,86 @@ describe('Rust release integration', function () {
     assert.strictEqual(distribution.checkVersionCoupling('v1.2.2', cargoToml), '1.2.2');
   });
 
-  it('stages the planned version in Cargo.toml and Cargo.lock before coupling', function () {
+  it('stages the planned version and target lock resolution before coupling', function () {
     const directory = temporaryDirectory();
-    const manifestPath = path.join(directory, 'Cargo.toml');
+    const packageDirectory = path.join(directory, 'zeroshot-rust');
+    const workspacePath = path.join(directory, 'Cargo.toml');
+    const manifestPath = path.join(packageDirectory, 'Cargo.toml');
     const lockPath = path.join(directory, 'Cargo.lock');
+    fs.mkdirSync(packageDirectory);
+    fs.writeFileSync(
+      workspacePath,
+      '[workspace]\nmembers = ["zeroshot-rust"]\n\n[workspace.dependencies]\nwindows-sys = "0.61.2"\n'
+    );
     fs.writeFileSync(
       manifestPath,
-      '[package]\nname = "zeroshot-rust"\nversion = "0.1.0"\nedition = "2024"\n'
+      '[package]\nname = "zeroshot-rust"\nversion = "0.1.0"\nedition = "2024"\n\n[target.\'cfg(windows)\'.dependencies]\nwindows-sys = { workspace = true }\n'
     );
     fs.writeFileSync(
       lockPath,
-      'version = 4\n\n[[package]]\nname = "zeroshot-rust"\nversion = "0.1.0"\n'
+      [
+        'version = 4',
+        '',
+        '[[package]]',
+        'name = "windows-sys"',
+        'version = "0.52.0"',
+        '',
+        '[[package]]',
+        'name = "windows-sys"',
+        'version = "0.61.2"',
+        '',
+        '[[package]]',
+        'name = "zeroshot-rust"',
+        'version = "0.1.0"',
+        'dependencies = [',
+        ' "windows-sys",',
+        ']',
+        '',
+      ].join('\n')
     );
     try {
-      assert.deepStrictEqual(distribution.stageVersion('v6.10.3', manifestPath, lockPath), {
-        currentVersion: '0.1.0',
-        version: '6.10.3',
-      });
+      assert.deepStrictEqual(
+        distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
+        {
+          currentVersion: '0.1.0',
+          version: '6.10.3',
+        }
+      );
       const stagedManifest = fs.readFileSync(manifestPath, 'utf8');
-      assert.strictEqual(distribution.checkVersionCoupling('v6.10.3', stagedManifest), '6.10.3');
+      const stagedLock = fs.readFileSync(lockPath, 'utf8');
+      const workspaceManifest = fs.readFileSync(workspacePath, 'utf8');
+      assert.strictEqual(
+        distribution.checkVersionCoupling(
+          'v6.10.3',
+          stagedManifest,
+          stagedLock,
+          workspaceManifest
+        ),
+        '6.10.3'
+      );
       assert.match(
-        fs.readFileSync(lockPath, 'utf8'),
-        /name = "zeroshot-rust"\nversion = "6\.10\.3"/
+        stagedLock,
+        /name = "zeroshot-rust"\nversion = "6\.10\.3"[\s\S]*"windows-sys 0\.61\.2"/
+      );
+      assert.throws(
+        () =>
+          distribution.checkVersionCoupling(
+            'v6.10.3',
+            stagedManifest,
+            stagedLock.replace('"windows-sys 0.61.2"', '"windows-sys"'),
+            workspaceManifest
+          ),
+        /RUST_VERSION_MISMATCH: Cargo\.lock zeroshot-rust dependency windows-sys/
+      );
+      assert.throws(
+        () =>
+          distribution.checkVersionCoupling(
+            'v6.10.3',
+            stagedManifest,
+            stagedLock.replace('version = "6.10.3"', 'version = "0.1.0"'),
+            workspaceManifest
+          ),
+        /RUST_VERSION_MISMATCH: release tag version 6\.10\.3.*Cargo\.lock.*0\.1\.0/
       );
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });

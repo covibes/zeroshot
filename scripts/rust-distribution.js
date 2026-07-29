@@ -208,10 +208,130 @@ function cargoVersion(cargoToml) {
   return version[1];
 }
 
+const STAGED_LOCK_DEPENDENCIES = Object.freeze(['windows-sys']);
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function lockedPackageMatch(cargoLock, packageName) {
+  return cargoLock.match(
+    new RegExp(
+      `\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(packageName)}"\\r?\\nversion = "([^"]+)"[\\s\\S]*?(?=\\r?\\n\\[\\[package\\]\\]|$)`
+    )
+  );
+}
+
+function lockedPackageVersions(cargoLock, packageName) {
+  const versions = [];
+  const pattern = new RegExp(
+    `\\[\\[package\\]\\]\\r?\\nname = "${escapeRegExp(packageName)}"\\r?\\nversion = "([^"]+)"`,
+    'g'
+  );
+  for (let match = pattern.exec(cargoLock); match; match = pattern.exec(cargoLock)) {
+    versions.push(match[1]);
+  }
+  return versions;
+}
+
+function workspaceDependencyVersion(workspaceCargoToml, dependencyName) {
+  const workspaceDependencies = workspaceCargoToml.match(
+    /\[workspace\.dependencies\]([\s\S]*?)(?:\r?\n\[|$)/
+  );
+  const version =
+    workspaceDependencies &&
+    workspaceDependencies[1].match(
+      new RegExp(`^${escapeRegExp(dependencyName)}\\s*=\\s*"([^"]+)"\\s*$`, 'm')
+    );
+  if (!version) {
+    throw new Error(
+      `RUST_VERSION_STAGE_FAILED: workspace dependency ${dependencyName} needs an exact version`
+    );
+  }
+  return version[1];
+}
+
+function stagedLockDependencyVersions(workspaceCargoToml) {
+  return STAGED_LOCK_DEPENDENCIES.map((name) => ({
+    name,
+    version: workspaceDependencyVersion(workspaceCargoToml, name),
+  }));
+}
+
+function stageCargoLock(cargoLock, version, workspaceCargoToml) {
+  const targetPackage = lockedPackageMatch(cargoLock, 'zeroshot-rust');
+  if (!targetPackage) {
+    throw new Error('RUST_VERSION_STAGE_FAILED: Cargo.lock has no zeroshot-rust package entry');
+  }
+  let stagedPackage = targetPackage[0].replace(
+    /^(version = ")[^"]+(")$/m,
+    `$1${version}$2`
+  );
+  for (const dependency of stagedLockDependencyVersions(workspaceCargoToml)) {
+    const lockedVersions = lockedPackageVersions(cargoLock, dependency.name);
+    if (!lockedVersions.includes(dependency.version)) {
+      throw new Error(
+        `RUST_VERSION_STAGE_FAILED: Cargo.lock has no ${dependency.name} ${dependency.version} package`
+      );
+    }
+    const dependencyReference =
+      lockedVersions.length > 1
+        ? `${dependency.name} ${dependency.version}`
+        : dependency.name;
+    const dependencyPattern = new RegExp(
+      `^(\\s*")${escapeRegExp(dependency.name)}(?: [^"]+)?(",\\r?)$`,
+      'm'
+    );
+    if (!dependencyPattern.test(stagedPackage)) {
+      throw new Error(
+        `RUST_VERSION_STAGE_FAILED: Cargo.lock zeroshot-rust entry has no ${dependency.name} dependency`
+      );
+    }
+    stagedPackage = stagedPackage.replace(
+      dependencyPattern,
+      `$1${dependencyReference}$2`
+    );
+  }
+  return (
+    cargoLock.slice(0, targetPackage.index) +
+    stagedPackage +
+    cargoLock.slice(targetPackage.index + targetPackage[0].length)
+  );
+}
+
+function verifyStagedCargoLock(cargoLock, version, workspaceCargoToml) {
+  const targetPackage = lockedPackageMatch(cargoLock, 'zeroshot-rust');
+  if (!targetPackage || targetPackage[1] !== version) {
+    throw new Error(
+      `${VERSION_ERROR}: release tag version ${version} does not match Cargo.lock zeroshot-rust version ${targetPackage?.[1] || '(missing)'}`
+    );
+  }
+  for (const dependency of stagedLockDependencyVersions(workspaceCargoToml)) {
+    const lockedVersions = lockedPackageVersions(cargoLock, dependency.name);
+    const dependencyReference =
+      lockedVersions.length > 1
+        ? `${dependency.name} ${dependency.version}`
+        : dependency.name;
+    const dependencyPattern = new RegExp(
+      `^\\s*"${escapeRegExp(dependencyReference)}",\\r?$`,
+      'm'
+    );
+    if (
+      !lockedVersions.includes(dependency.version) ||
+      !dependencyPattern.test(targetPackage[0])
+    ) {
+      throw new Error(
+        `${VERSION_ERROR}: Cargo.lock zeroshot-rust dependency ${dependency.name} is not coupled to ${dependency.version}`
+      );
+    }
+  }
+}
+
 function stageVersion(
   tag,
   cargoManifestPath = path.join(repositoryRoot, 'zeroshot-rust', 'Cargo.toml'),
-  cargoLockPath = path.join(repositoryRoot, 'Cargo.lock')
+  cargoLockPath = path.join(repositoryRoot, 'Cargo.lock'),
+  workspaceManifestPath = path.join(repositoryRoot, 'Cargo.toml')
 ) {
   const version = normalizeVersion(tag);
   const cargoToml = fs.readFileSync(cargoManifestPath, 'utf8');
@@ -225,26 +345,36 @@ function stageVersion(
   }
 
   const cargoLock = fs.readFileSync(cargoLockPath, 'utf8');
-  const lockPattern = /(\[\[package\]\]\r?\nname = "zeroshot-rust"\r?\nversion = ")[^"]+(")/;
-  if (!lockPattern.test(cargoLock)) {
-    throw new Error('RUST_VERSION_STAGE_FAILED: Cargo.lock has no zeroshot-rust package entry');
-  }
-  const stagedLock = cargoLock.replace(lockPattern, `$1${version}$2`);
+  const workspaceCargoToml = fs.readFileSync(workspaceManifestPath, 'utf8');
+  const stagedLock = stageCargoLock(cargoLock, version, workspaceCargoToml);
+  verifyStagedCargoLock(stagedLock, version, workspaceCargoToml);
   fs.writeFileSync(cargoManifestPath, stagedManifest);
   fs.writeFileSync(cargoLockPath, stagedLock);
   return { currentVersion, version };
 }
 
-function checkVersionCoupling(
-  tag,
-  cargoToml = fs.readFileSync(path.join(repositoryRoot, 'zeroshot-rust', 'Cargo.toml'), 'utf8')
-) {
+function checkVersionCoupling(tag, cargoToml, cargoLock, workspaceCargoToml) {
+  const useRepositoryFiles = cargoToml === undefined;
+  const manifest =
+    cargoToml ??
+    fs.readFileSync(path.join(repositoryRoot, 'zeroshot-rust', 'Cargo.toml'), 'utf8');
   const releaseVersion = normalizeVersion(tag);
-  const manifestVersion = cargoVersion(cargoToml);
+  const manifestVersion = cargoVersion(manifest);
   if (releaseVersion !== manifestVersion) {
     throw new Error(
       `${VERSION_ERROR}: release tag version ${releaseVersion} does not match zeroshot-rust/Cargo.toml version ${manifestVersion}`
     );
+  }
+  const lock =
+    cargoLock ??
+    (useRepositoryFiles
+      ? fs.readFileSync(path.join(repositoryRoot, 'Cargo.lock'), 'utf8')
+      : undefined);
+  if (lock !== undefined) {
+    const workspace =
+      workspaceCargoToml ??
+      fs.readFileSync(path.join(repositoryRoot, 'Cargo.toml'), 'utf8');
+    verifyStagedCargoLock(lock, releaseVersion, workspace);
   }
   return releaseVersion;
 }
