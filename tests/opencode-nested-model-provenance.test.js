@@ -627,7 +627,7 @@ describe('Isolated opencode structured-output recovery', function () {
         }
         if (command[1] === 'kill') {
           killAttempts++;
-          if (killAttempts === 1) {
+          if (killAttempts <= 2) {
             return Promise.resolve({ code: 1, stdout: '', stderr: 'cleanup unavailable' });
           }
           status = 'killed';
@@ -675,7 +675,7 @@ describe('Isolated opencode structured-output recovery', function () {
 
     const termination = await agent.nestedExecutions.cancelAll('retry retained isolated cleanup');
     assert.notStrictEqual(termination?.forced, false);
-    assert.strictEqual(killAttempts, 2);
+    assert.strictEqual(killAttempts, 3);
     assert.strictEqual(status, 'killed');
     assert.strictEqual(agent.nestedExecutions.size, 0);
   });
