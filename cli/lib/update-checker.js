@@ -469,6 +469,7 @@ function isAutomaticUpdateEligible(options = {}) {
   }
 
   const [command, subcommand] = commandPath(argv);
+  if (!command) return false;
   if (
     command === 'update' ||
     command === 'get-log-path' ||
