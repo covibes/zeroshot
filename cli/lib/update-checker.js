@@ -26,8 +26,8 @@ const FETCH_TIMEOUT_MS = 5000;
 const REGISTRY_URL = `https://registry.npmjs.org/${NEW_PACKAGE_NAME}/latest`;
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
-const STABLE_VERSION_PATTERN =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+const STABLE_CORE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const BUILD_IDENTIFIER_PATTERN = /^[0-9A-Za-z-]+$/;
 const MAX_VERSION_LENGTH = 256;
 
 let inFlightRefresh = null;
@@ -209,7 +209,15 @@ function buildInstallArgs(updateTarget) {
 
 function parseStableVersion(version) {
   if (typeof version !== 'string' || version.length > MAX_VERSION_LENGTH) return null;
-  const match = STABLE_VERSION_PATTERN.exec(version);
+  const plusIndex = version.indexOf('+');
+  const core = plusIndex === -1 ? version : version.slice(0, plusIndex);
+  if (plusIndex !== -1) {
+    const build = version.slice(plusIndex + 1);
+    if (!build || build.split('.').some((part) => !BUILD_IDENTIFIER_PATTERN.test(part))) {
+      return null;
+    }
+  }
+  const match = STABLE_CORE_VERSION_PATTERN.exec(core);
   if (!match) return null;
   const parts = [Number(match[1]), Number(match[2]), Number(match[3])];
   return parts.every(Number.isSafeInteger) ? parts : null;
