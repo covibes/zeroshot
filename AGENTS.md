@@ -182,6 +182,11 @@ ledger mutation, durable attempt state, protocol methods, provider catalog/confi
 credential resolution, workspace lifecycle, real CLI/ACP/Gateway drivers, built-in registration,
 or `NativeBackend` composition. Runtime command/control values remain serializable, secret-free,
 and input-free after control reconstruction.
+`LocalProcessRunner` is also the sole contained stdio-session seam: recovery is registered before
+spawn, stdout and diagnostics stay bounded, and close/release owns termination and reaping exactly
+once. Provider framing and candidate decoding remain in the provider drivers.
+Windows children stay suspended until assignment to their kill-on-close Job Object; never reopen
+the pre-assignment execution window.
 Native engine faults must be constructed only by `FaultFactory` from closed `ModuleEvidence`.
 Decoded faults must match the canonical semantics derived from their required primary source frame.
 Raw diagnostic values are replaced wholesale with typed markers and remain ephemeral; never put
