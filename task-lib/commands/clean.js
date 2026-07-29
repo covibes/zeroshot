@@ -37,6 +37,13 @@ export function cleanTasks(options = {}) {
 
   for (const task of toRemove) {
     if (task.commandCleanup) {
+      if (task.status === 'running') {
+        cleanupFailed = true;
+        console.log(
+          chalk.yellow(`  Retained: ${task.id} [running] (live command cleanup ownership)`)
+        );
+        continue;
+      }
       let recovered = false;
       try {
         const cleanup = createCommandSpecCleanup(task.commandCleanup, (cleanupPath, error) => {

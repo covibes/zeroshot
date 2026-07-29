@@ -22,7 +22,7 @@ function runFixture(mode) {
     );
     assert.strictEqual(
       execution.status,
-      ['unsafe', 'unsafe-file', 'clean-unsafe'].includes(mode) ? 1 : 0,
+      ['unsafe', 'unsafe-file', 'clean-unsafe', 'clean-running'].includes(mode) ? 1 : 0,
       execution.stderr || execution.stdout
     );
     const { stdout } = execution;
@@ -88,5 +88,14 @@ describe('Terminal task cleanup recovery', function () {
     assert.strictEqual(result.exitCode, 1);
     assert.match(stdout, /Retained: clean-all-unsafe/);
   });
+  it('retains a running row and live overlay selected by --all', function () {
+    const { result, stdout } = runFixture('clean-running');
+    assert.strictEqual(result.retained.status, 'running');
+    assert.notStrictEqual(result.retained.commandCleanup, null);
+    assert.strictEqual(result.cleanupExists, true);
+    assert.strictEqual(result.exitCode, 1);
+    assert.match(stdout, /Retained: clean-all-running \[running\] \(live command cleanup ownership\)/);
+  });
+
 
 });

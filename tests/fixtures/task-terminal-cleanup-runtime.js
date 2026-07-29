@@ -161,13 +161,19 @@ async function runUnsafeFileScenario(store, killTaskCommand) {
   }
 }
 
-function runCleanScenario(store, cleanTasks, cleanMode, unsafe = false) {
+function runCleanScenario(store, cleanTasks, cleanMode, unsafe = false, statusOverride = null) {
   const cleanupPath = unsafe
     ? path.join(process.env.ZEROSHOT_HOME, 'user-cleanup')
     : fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-settings-run-clean-'));
   if (unsafe) fs.mkdirSync(cleanupPath);
-  const status = cleanMode === 'completed' ? 'completed' : 'failed';
-  const taskId = `clean-${cleanMode}${unsafe ? '-unsafe' : ''}`;
+  const status = statusOverride || (cleanMode === 'completed' ? 'completed' : 'failed');
+  const taskId = [
+    `clean-${cleanMode}`,
+    unsafe ? 'unsafe' : null,
+    statusOverride,
+  ]
+    .filter(Boolean)
+    .join('-');
   store.addTask(taskRecord(taskId, status, cleanupReceipt(cleanupPath)));
   cleanTasks({ [cleanMode]: true });
   return {
@@ -197,6 +203,8 @@ async function main() {
     result = runCleanScenario(store, cleanTasks, 'all');
   } else if (mode === 'clean-unsafe') {
     result = runCleanScenario(store, cleanTasks, 'all', true);
+  } else if (mode === 'clean-running') {
+    result = runCleanScenario(store, cleanTasks, 'all', false, 'running');
   } else {
     throw new Error(`Unknown terminal cleanup fixture mode: ${mode}`);
   }
