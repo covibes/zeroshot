@@ -259,6 +259,45 @@ describe('Update Checker', function () {
         assert.strictEqual(eligible(argv), true);
       });
     }
+
+    for (const [name, argv, expected] of [
+      [
+        'repeated long options ending in JSON',
+        ['export', 'id', '--format', 'markdown', '--format', 'json'],
+        false,
+      ],
+      [
+        'repeated long options ending in markdown',
+        ['export', 'id', '--format', 'json', '--format', 'markdown'],
+        true,
+      ],
+      ['repeated joined shorts ending in JSON', ['export', 'id', '-fmarkdown', '-fjson'], false],
+      ['repeated joined shorts ending in markdown', ['export', 'id', '-fjson', '-fmarkdown'], true],
+      [
+        'repeated separated shorts ending in JSON',
+        ['export', 'id', '-f', 'markdown', '-f', 'json'],
+        false,
+      ],
+      [
+        'repeated separated shorts ending in markdown',
+        ['export', 'id', '-f', 'json', '-f', 'markdown'],
+        true,
+      ],
+      [
+        'mixed forms ending in JSON',
+        ['export', 'id', '--format', 'markdown', '-fjson'],
+        false,
+      ],
+      [
+        'mixed forms ending in markdown',
+        ['export', 'id', '-fjson', '--format', 'markdown'],
+        true,
+      ],
+    ]) {
+      it(`uses the final value for ${name}`, function () {
+        assert.strictEqual(eligible(argv), expected);
+      });
+    }
   });
 
   describe('version and attempt validation', function () {

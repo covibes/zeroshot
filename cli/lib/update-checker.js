@@ -511,22 +511,25 @@ function consumeOptionValue(match, argv, index, limit) {
 }
 
 function classifyCommanderArguments(program, argv, defaultCommandName) {
-  const commandPath = [];
+  const selectedCommandPath = [];
   const occurrences = [];
   const hierarchy = [program];
+  let consumedValueIndex = -1;
   let command = program;
   let positionalSeen = false;
-  const end = argv.indexOf('--');
-  const limit = end === -1 ? argv.length : end;
 
-  for (let index = 0; index < limit; index += 1) {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (index === consumedValueIndex) continue;
     const token = argv[index];
+    if (token === '--') break;
     const maps = optionMaps(hierarchy);
     const match = token.startsWith('--')
       ? matchLongOption(token, maps)
       : matchShortOptions(token, maps);
     if (match) {
-      index += consumeOptionValue(match, argv, index, limit);
+      if (consumeOptionValue(match, argv, index, argv.length) === 1) {
+        consumedValueIndex = index + 1;
+      }
       occurrences.push(...match.occurrences);
       continue;
     }
@@ -536,21 +539,21 @@ function classifyCommanderArguments(program, argv, defaultCommandName) {
     if (child) {
       command = child;
       hierarchy.push(child);
-      commandPath.push(child.name());
+      selectedCommandPath.push(child.name());
       positionalSeen = false;
       continue;
     }
-    if (command === program && commandPath.length === 0 && defaultCommandName) {
+    if (command === program && selectedCommandPath.length === 0 && defaultCommandName) {
       const defaultCommand = findSubcommand(program, defaultCommandName);
       if (defaultCommand) {
         command = defaultCommand;
         hierarchy.push(defaultCommand);
-        commandPath.push(defaultCommand.name());
+        selectedCommandPath.push(defaultCommand.name());
       }
     }
     positionalSeen = true;
   }
-  return { commandPath, occurrences };
+  return { selectedCommandPath, occurrences };
 }
 
 function parsedOptionPresent(metadata, argv, longName, shortName = null) {
@@ -562,10 +565,13 @@ function parsedOptionPresent(metadata, argv, longName, shortName = null) {
 
 function parsedOptionValue(metadata, argv, longName, shortName = null) {
   if (!metadata) return optionValue(argv, longName, shortName);
-  const occurrence = metadata.occurrences.find((entry) => {
-    return entry.long === longName || (shortName && entry.short === shortName);
-  });
-  return occurrence?.value ?? null;
+  for (let index = metadata.occurrences.length - 1; index >= 0; index -= 1) {
+    const entry = metadata.occurrences[index];
+    if (entry.long === longName || (shortName && entry.short === shortName)) {
+      return entry.value;
+    }
+  }
+  return null;
 }
 
 function optionIndex(argv, longName, shortName = null) {
@@ -671,7 +677,7 @@ function isAutomaticUpdateEligible(options = {}) {
     return false;
   }
 
-  const [command, subcommand] = metadata ? metadata.commandPath : commandPath(argv);
+  const [command, subcommand] = metadata ? metadata.selectedCommandPath : commandPath(argv);
   if (!command) return false;
   if (
     command === 'update' ||

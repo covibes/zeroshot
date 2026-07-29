@@ -58,6 +58,23 @@ describe('startup update option integration', function () {
     assert.strictEqual(isStartupUpdateEligible(['export', 'nonexistent', '-oq'], options), true);
   });
 
+  it('uses the final repeated production option value', function () {
+    assert.strictEqual(
+      isStartupUpdateEligible(
+        ['export', 'nonexistent', '--format', 'markdown', '--format', 'json'],
+        options
+      ),
+      false
+    );
+    assert.strictEqual(
+      isStartupUpdateEligible(
+        ['export', 'nonexistent', '--format', 'json', '--format', 'markdown'],
+        options
+      ),
+      true
+    );
+  });
+
   it('combines global flags with compatible subcommand booleans only', function () {
     assert.strictEqual(isStartupUpdateEligible(['logs', 'nonexistent', '-fq'], options), false);
     assert.strictEqual(isStartupUpdateEligible(['run', 'hello', '-qX'], options), true);
