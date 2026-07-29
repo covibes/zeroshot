@@ -2,18 +2,25 @@
 //! watch transcript (cursor progression and event algebra) as the in-process `Dispatcher::watch`
 //! passthrough from #647 and the NDJSON binding from #745 (see `protocol_ndjson.rs`), while
 //! sharing its connection with ordinary unary traffic and honoring `subscription/cancel`. Also
-//! proves two independently-authorized WebSocket connections sharing one backend (AC3) preserve
-//! CAS/idempotency and cannot observe each other's injected `ConnectionContext`, since
-//! `ConnectionContext` is constructed once per connection and never derived from protocol params.
+//! proves independently accepted WebSocket connections receive stable injected identities while
+//! tenant sharing or isolation remains exactly the shared backend's decision.
 
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
 use openengine_cluster_client::{ClusterClient, WatchSubscriptionClient, WebSocketTransport};
-use openengine_cluster_protocol::{GetParams, StopMode, WatchParams};
+use openengine_cluster_protocol::{
+    ApplyParams, ApplyResult, GetParams, GetResult, InitializeParams, InitializeResult, StopMode,
+    WatchParams,
+};
 use openengine_cluster_server::admission::AdmissionCoordinator;
+use openengine_cluster_server::identity::{
+    BindingAttributes, ConnectionBinding, ConnectionIdentity, ConnectionIdentityConfig,
+    PrincipalId, StaticConnectionIdentityResolver, SystemConnectionTime, TenantId,
+};
 use openengine_cluster_server::watch::fixtures::{await_websocket_shutdown, spawn_websocket};
-use openengine_cluster_server::{ClusterBackend, ConnectionContext, Dispatcher};
+use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext};
 use openengine_cluster_testkit::admission::{
     compiled_from_graph_fixture, graph_fixture, InMemoryAdmissionStore, ScriptedOutcome,
     ScriptedVerifier,
@@ -90,15 +97,11 @@ async fn websocket_watch_transcript_matches_in_process_and_shares_its_connection
     await_websocket_shutdown(server).await;
 }
 
-/// Wires `backend` to a fresh [`openengine_cluster_server::websocket::serve_websocket`] task over
-/// an in-memory duplex pipe pair, injecting `peer_label` into that connection's
-/// [`ConnectionContext`] -- unlike [`spawn_websocket`], which always uses
-/// [`Dispatcher::new`]/[`ConnectionContext::default`], this uses
-/// [`Dispatcher::from_shared`] so multiple independently-authorized connections can share one
-/// backend, exactly as AC3 requires.
+/// Wires a shared backend to one accepted WebSocket connection. The binding resolves the supplied
+/// tenant exactly once before it decodes a frame; sharing or partitioning remains backend-owned.
 async fn spawn_websocket_with_shared_backend<B>(
     backend: Arc<B>,
-    peer_label: &str,
+    tenant: &str,
 ) -> (
     tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
     tokio::task::JoinHandle<std::io::Result<()>>,
@@ -107,12 +110,18 @@ where
     B: ClusterBackend,
 {
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let dispatcher = Dispatcher::from_shared(
+    let identity = ConnectionIdentity::new(ConnectionIdentityConfig {
+        principal: PrincipalId::new(format!("principal-for-{tenant}")),
+        tenant: TenantId::new(tenant.to_owned()),
+        issued_at_ms: Some(1),
+        expires_at_ms: u64::MAX,
+        binding_attributes: BindingAttributes::default(),
+    });
+    let binding = ConnectionBinding::new(
         backend,
-        ConnectionContext {
-            peer_label: Some(peer_label.to_owned()),
-            ..ConnectionContext::default()
-        },
+        StaticConnectionIdentityResolver::new(identity),
+        SystemConnectionTime,
+        Default::default(),
     );
     let server = tokio::spawn(async move {
         let ws = tokio_tungstenite::accept_async_with_config(
@@ -121,7 +130,7 @@ where
         )
         .await
         .expect("server handshake must succeed");
-        openengine_cluster_server::websocket::serve_websocket(dispatcher, ws).await
+        openengine_cluster_server::websocket::serve_websocket(binding, ws).await
     });
     let (client, _response) =
         tokio_tungstenite::client_async("ws://localhost/websocket", client_io)
@@ -131,8 +140,7 @@ where
 }
 
 #[tokio::test]
-async fn two_websocket_connections_share_one_backend_with_isolated_context_and_shared_idempotency()
-{
+async fn same_tenant_connections_share_backend_cas_and_idempotency() {
     let graph = graph_fixture("worker", serde_json::json!({"kind":"null"}));
     let verifier = Arc::new(ScriptedVerifier::new(vec![ScriptedOutcome::approve(
         compiled_from_graph_fixture(&graph),
@@ -142,9 +150,9 @@ async fn two_websocket_connections_share_one_backend_with_isolated_context_and_s
     let backend = Arc::new(AdmissionCoordinator::from_shared(verifier, store));
 
     let (conn_a, server_a) =
-        spawn_websocket_with_shared_backend(Arc::clone(&backend), "connection-a").await;
+        spawn_websocket_with_shared_backend(Arc::clone(&backend), "tenant-shared").await;
     let (conn_b, server_b) =
-        spawn_websocket_with_shared_backend(Arc::clone(&backend), "connection-b").await;
+        spawn_websocket_with_shared_backend(Arc::clone(&backend), "tenant-shared").await;
 
     let transport_a = WebSocketTransport::new(conn_a);
     let transport_b = WebSocketTransport::new(conn_b);
@@ -166,9 +174,7 @@ async fn two_websocket_connections_share_one_backend_with_isolated_context_and_s
         .unwrap();
     assert!(!apply_a.deduped);
 
-    // AC3: connection B replays the exact same idempotency key/params and dedups against A's
-    // commit, proving CAS/idempotency state is shared across independently-authorized connections
-    // on one backend rather than partitioned per connection.
+    // The backend shares one CAS/idempotency domain for this tenant across both connections.
     let apply_b = client_b
         .apply(committed(
             graph.clone(),
@@ -182,13 +188,164 @@ async fn two_websocket_connections_share_one_backend_with_isolated_context_and_s
     assert_eq!(apply_b.generation, apply_a.generation);
     assert_eq!(apply_b.run_id, apply_a.run_id);
 
-    // AC3: both connections observe the same committed spec via `get`, independent of which
-    // connection created it -- `ConnectionContext` carries no route/tenant field that could
-    // partition visibility between them.
+    // Identity is stable per connection, while state ownership remains with the shared backend.
     let get_a = client_a.get(GetParams::default()).await.unwrap();
     let get_b = client_b.get(GetParams::default()).await.unwrap();
     assert_eq!(get_a.spec, Some(graph.clone()));
     assert_eq!(get_a, get_b);
+
+    drop(transport_a);
+    drop(transport_b);
+    await_websocket_shutdown(server_a).await;
+    await_websocket_shutdown(server_b).await;
+}
+
+type FixtureCoordinator = AdmissionCoordinator<ScriptedVerifier, InMemoryAdmissionStore>;
+
+struct TenantPartitioningBackend {
+    tenant_a: FixtureCoordinator,
+    tenant_b: FixtureCoordinator,
+}
+
+impl TenantPartitioningBackend {
+    fn select(&self, context: &ConnectionContext) -> &FixtureCoordinator {
+        match context.identity().tenant().as_str() {
+            "tenant-a" => &self.tenant_a,
+            "tenant-b" => &self.tenant_b,
+            tenant => panic!("unexpected fixture tenant {tenant}"),
+        }
+    }
+}
+
+#[async_trait]
+impl ClusterBackend for TenantPartitioningBackend {
+    async fn initialize(
+        &self,
+        context: &ConnectionContext,
+        params: InitializeParams,
+    ) -> Result<InitializeResult, BackendError> {
+        self.select(context).initialize(context, params).await
+    }
+
+    async fn apply(
+        &self,
+        context: &ConnectionContext,
+        params: ApplyParams,
+    ) -> Result<ApplyResult, BackendError> {
+        self.select(context).apply(context, params).await
+    }
+
+    async fn get(
+        &self,
+        context: &ConnectionContext,
+        params: GetParams,
+    ) -> Result<GetResult, BackendError> {
+        self.select(context).get(context, params).await
+    }
+}
+
+#[tokio::test]
+async fn distinct_tenants_share_state_when_backend_does_not_partition() {
+    let graph = graph_fixture("worker", serde_json::json!({"kind":"null"}));
+    let verifier = Arc::new(ScriptedVerifier::new(vec![ScriptedOutcome::approve(
+        compiled_from_graph_fixture(&graph),
+        vec![],
+    )]));
+    let store = Arc::new(InMemoryAdmissionStore::default());
+    let backend = Arc::new(AdmissionCoordinator::from_shared(verifier, store));
+    let (conn_a, server_a) =
+        spawn_websocket_with_shared_backend(Arc::clone(&backend), "tenant-a").await;
+    let (conn_b, server_b) =
+        spawn_websocket_with_shared_backend(Arc::clone(&backend), "tenant-b").await;
+    let transport_a = WebSocketTransport::new(conn_a);
+    let transport_b = WebSocketTransport::new(conn_b);
+    let client_a = ClusterClient::new(&transport_a);
+    let client_b = ClusterClient::new(&transport_b);
+    client_a.initialize().await.unwrap();
+    client_b.initialize().await.unwrap();
+
+    let first = client_a
+        .apply(committed(
+            graph.clone(),
+            Value::Null,
+            0,
+            "non-partitioning-key",
+        ))
+        .await
+        .unwrap();
+    let second = client_b
+        .apply(committed(
+            graph.clone(),
+            Value::Null,
+            0,
+            "non-partitioning-key",
+        ))
+        .await
+        .unwrap();
+    assert!(!first.deduped);
+    assert!(second.deduped);
+    assert_eq!(
+        client_b.get(GetParams::default()).await.unwrap().spec,
+        Some(graph)
+    );
+
+    drop(transport_a);
+    drop(transport_b);
+    await_websocket_shutdown(server_a).await;
+    await_websocket_shutdown(server_b).await;
+}
+
+#[tokio::test]
+async fn distinct_tenants_are_isolated_only_when_backend_partitions() {
+    let graph_a = graph_fixture("worker-a", serde_json::json!({"kind":"null"}));
+    let graph_b = graph_fixture("worker-b", serde_json::json!({"kind":"null"}));
+    let backend = Arc::new(TenantPartitioningBackend {
+        tenant_a: AdmissionCoordinator::new(
+            ScriptedVerifier::new(vec![ScriptedOutcome::approve(
+                compiled_from_graph_fixture(&graph_a),
+                vec![],
+            )]),
+            InMemoryAdmissionStore::default(),
+        ),
+        tenant_b: AdmissionCoordinator::new(
+            ScriptedVerifier::new(vec![ScriptedOutcome::approve(
+                compiled_from_graph_fixture(&graph_b),
+                vec![],
+            )]),
+            InMemoryAdmissionStore::default(),
+        ),
+    });
+    let (conn_a, server_a) =
+        spawn_websocket_with_shared_backend(Arc::clone(&backend), "tenant-a").await;
+    let (conn_b, server_b) =
+        spawn_websocket_with_shared_backend(Arc::clone(&backend), "tenant-b").await;
+    let transport_a = WebSocketTransport::new(conn_a);
+    let transport_b = WebSocketTransport::new(conn_b);
+    let client_a = ClusterClient::new(&transport_a);
+    let client_b = ClusterClient::new(&transport_b);
+    client_a.initialize().await.unwrap();
+    client_b.initialize().await.unwrap();
+
+    let first = client_a
+        .apply(committed(graph_a.clone(), Value::Null, 0, "same-key"))
+        .await
+        .unwrap();
+    assert!(!first.deduped);
+    assert_eq!(client_b.get(GetParams::default()).await.unwrap().spec, None);
+
+    let second = client_b
+        .apply(committed(graph_b.clone(), Value::Null, 0, "same-key"))
+        .await
+        .unwrap();
+    assert!(!second.deduped);
+    assert_eq!(
+        client_a.get(GetParams::default()).await.unwrap().spec,
+        Some(graph_a)
+    );
+    assert_eq!(
+        client_b.get(GetParams::default()).await.unwrap().spec,
+        Some(graph_b)
+    );
 
     drop(transport_a);
     drop(transport_b);
