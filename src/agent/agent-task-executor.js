@@ -1322,7 +1322,7 @@ function spawnTaskProcess({
  * @returns {Promise<void>}
  */
 async function waitForTaskReady(agent, taskId, maxRetries = 10, delayMs = 200) {
-  const ctPath = getClaudeTasksPath();
+  const ctPath = agent.taskCliPath || getClaudeTasksPath();
 
   for (let i = 0; i < maxRetries; i++) {
     let exists = false;
