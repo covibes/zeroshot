@@ -152,6 +152,8 @@ them in `EngineFault`, observations, protocol responses, persistence, or exports
 injected through `ObservationSink` and uses only the fixed metrics and closed dimensions in
 `observability.rs`; retry disposition is descriptive data, not retry authorization. Do not install
 global telemetry state or caller-defined labels.
+A lost node-instance session terminates the affected execution; its descriptive fault disposition
+must never authorize retry or replacement-session recovery.
 `ClusterLedger` is the only native durable domain authority. Its closed/versioned record algebra,
 identity allocation, replay, lifecycle/CAS/idempotency rules, and safe-fault consequences stay
 above the backend-neutral `LedgerStore` port. Control and verified I/O share one ordered hash
