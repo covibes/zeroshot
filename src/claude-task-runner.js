@@ -12,6 +12,7 @@ const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
+const { applyDarwinKeychainBoundaryToEnv } = require('./darwin-keychain-boundary');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../task-lib/store.js');
 const {
   TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
@@ -151,6 +152,7 @@ class ClaudeTaskRunner extends TaskRunner {
    * @param {boolean} [options.quiet] - Suppress console logging
    * @param {number} [options.timeout] - Task timeout in ms (default: 1 hour)
    * @param {Function} [options.onOutput] - Callback for output lines
+   * @param {Function} [options.applyDarwinKeychainBoundary] - Boundary injection seam for tests
    */
   constructor(options = {}) {
     super();
@@ -158,6 +160,8 @@ class ClaudeTaskRunner extends TaskRunner {
     this.quiet = options.quiet || false;
     this.timeout = options.timeout || 60 * 60 * 1000;
     this.onOutput = options.onOutput || null;
+    this.applyDarwinKeychainBoundary =
+      options.applyDarwinKeychainBoundary || applyDarwinKeychainBoundaryToEnv;
   }
 
   /**
@@ -376,17 +380,28 @@ class ClaudeTaskRunner extends TaskRunner {
     const spawnEnv = {
       ...process.env,
     };
+    let claudeSettingsPath = null;
     if (providerName === 'claude' && resolvedModelSpec?.model) {
       spawnEnv.ANTHROPIC_MODEL = resolvedModelSpec.model;
     }
     if (providerName === 'claude') {
-      spawnEnv[CLAUDE_SETTINGS_ENV] = prepareClaudeSettingsOverlay({
+      claudeSettingsPath = prepareClaudeSettingsOverlay({
         includeDangerousGit: Boolean(worktreePath),
       });
+      spawnEnv[CLAUDE_SETTINGS_ENV] = claudeSettingsPath;
       const mcpConfigPath = resolveRepoMcpConfigPath({ cwd, worktreePath });
       if (mcpConfigPath) {
         spawnEnv[CLAUDE_MCP_CONFIG_ENV] = mcpConfigPath;
       }
+    }
+
+    // KEYCHAIN BOUNDARY (darwin only): keep non-interactive worker descendants
+    // away from the user's GUI Keychain session (issue #704).
+    try {
+      this.applyDarwinKeychainBoundary(spawnEnv);
+    } catch (error) {
+      if (claudeSettingsPath) cleanupClaudeSettingsOverlay(claudeSettingsPath);
+      throw error;
     }
 
     prependWorktreeToolBinToEnv(spawnEnv, { cwd, worktreePath });
