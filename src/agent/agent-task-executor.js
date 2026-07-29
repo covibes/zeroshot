@@ -1208,6 +1208,11 @@ async function evaluateStructuredSuccess({ agent, taskId, state, success }) {
   if (!success || !requiresStructuredResult(agent)) {
     return { success, error: null };
   }
+  // Short-circuit: if a previous pass already validated and cached the parsed
+  // result (e.g. recovery model call), reuse it without a second parse.
+  if (state._cachedParsedResult) {
+    return { success: true, error: null };
+  }
   try {
     // Cache the validated parsed object so completion hooks and {{result.*}}
     // substitution consume it directly instead of re-parsing (which could
@@ -1685,12 +1690,14 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
     });
   });
 
-  agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId} in container...`);
+  if (!options.nested) {
+    agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId} in container...`);
+  }
 
   // STEP 2: Install the lifecycle-owned handle before liveness monitoring can
   // observe the task, then follow the task's log file inside the container.
   const execution = followClaudeTaskLogsIsolated(agent, taskId, options);
-  if (agent.enableLivenessCheck) {
+  if (!options.nested && agent.enableLivenessCheck) {
     agent.taskStartedAt = Date.now();
     agent.lastOutputTime = agent.taskStartedAt;
     agent._startLivenessCheck();

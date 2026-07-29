@@ -169,7 +169,10 @@ describe('Nested task model argument encoding', function () {
       capturedArgs.slice(capturedArgs.indexOf('--model'), capturedArgs.indexOf('--model') + 2),
       ['--model', CATALOG_MODEL]
     );
-    assert.deepStrictEqual(capturedOptions.options, { skipStructuredResultCheck: true, nested: true });
+    assert.deepStrictEqual(capturedOptions.options, {
+      skipStructuredResultCheck: true,
+      nested: true,
+    });
   });
 });
 
@@ -244,22 +247,22 @@ describe('Isolated opencode structured-output recovery', function () {
         tail.kill = () => {};
         return tail;
       },
-      async execInContainer(_clusterId, command) {
+      execInContainer(_clusterId, command) {
         const rendered = command.join(' ');
         if (rendered.includes('get-log-path')) {
-          return { code: 0, stdout: '/tmp/reformat.log\n', stderr: '' };
+          return Promise.resolve({ code: 0, stdout: '/tmp/reformat.log\n', stderr: '' });
         }
         if (rendered.includes('zeroshot status')) {
-          return { code: 0, stdout: 'Status: completed\n', stderr: '' };
+          return Promise.resolve({ code: 0, stdout: 'Status: completed\n', stderr: '' });
         }
         if (rendered.includes('cat "/tmp/reformat.log"')) {
-          return {
+          return Promise.resolve({
             code: 0,
             stdout: opencodeTextEvent({ plan: 'isolated recovery' }),
             stderr: '',
-          };
+          });
         }
-        throw new Error(`Unexpected isolated command: ${rendered}`);
+        return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
       },
     };
     const agent = {

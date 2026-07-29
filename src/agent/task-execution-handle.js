@@ -24,6 +24,8 @@ class TaskExecutionHandle {
     /** @type {Promise<void>|null} Resolves when the owned process exits. */
     this._settlePromise = null;
     this._resolveSettle = null;
+    /** @type {ReturnType<typeof setTimeout>|null} Force-kill timer. */
+    this._killTimer = null;
   }
 
   // ── Immutable-ish identity accessors ──────────────────────────────────
@@ -54,10 +56,12 @@ class TaskExecutionHandle {
     });
     proc.once('close', () => {
       this.settled = true;
+      this._clearKillTimer();
       if (this._resolveSettle) this._resolveSettle();
     });
     proc.once('error', () => {
       this.settled = true;
+      this._clearKillTimer();
       if (this._resolveSettle) this._resolveSettle();
     });
     // If already cancelled before the process was attached, kill it now.
@@ -101,13 +105,22 @@ class TaskExecutionHandle {
   }
 
   /** @private */
+  _clearKillTimer() {
+    if (this._killTimer) {
+      clearTimeout(this._killTimer);
+      this._killTimer = null;
+    }
+  }
+
+  /** @private */
   _killProcess() {
     if (this._proc && !this.settled) {
       try {
         this._proc.kill('SIGTERM');
         // Force-kill after a grace period if still alive.
         const proc = this._proc;
-        setTimeout(() => {
+        this._killTimer = setTimeout(() => {
+          this._killTimer = null;
           if (!this.settled) {
             try {
               proc.kill('SIGKILL');

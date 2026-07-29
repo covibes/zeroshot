@@ -14,7 +14,6 @@ const {
 } = require('../src/agent/output-reformatter');
 const { parseResultOutput } = require('../src/agent/agent-task-executor');
 
-
 function opencodeTextEvent(value) {
   return `${JSON.stringify({
     type: 'text',
@@ -147,7 +146,7 @@ describe('Output Reformatter', function () {
         rawOutput: '{"type":"tool_use","name":"read","input":{"path":"src/adapter.js"}}',
         schema,
         providerName: 'opencode',
-        runReformat: async (prompt) => {
+        runReformat: (prompt) => {
           capturedPrompt = prompt;
           return {
             success: true,
@@ -169,7 +168,7 @@ describe('Output Reformatter', function () {
         state: 'executing_task',
         config: { jsonSchema: schema },
         _resolveProvider: () => 'opencode',
-        _spawnClaudeTask: async (prompt, options) => {
+        _spawnClaudeTask: (prompt, options) => {
           spawnCalls.push({ prompt, options });
           return {
             success: true,
@@ -185,7 +184,10 @@ describe('Output Reformatter', function () {
 
       assert.deepStrictEqual(result, { plan: 'Recovered through fallback' });
       assert.strictEqual(spawnCalls.length, 1);
-      assert.deepStrictEqual(spawnCalls[0].options, { skipStructuredResultCheck: true, nested: true });
+      assert.deepStrictEqual(spawnCalls[0].options, {
+        skipStructuredResultCheck: true,
+        nested: true,
+      });
     });
 
     it('retries schema-invalid output and returns the valid recovery', async function () {
@@ -196,7 +198,7 @@ describe('Output Reformatter', function () {
         rawOutput: 'No JSON plan was emitted',
         schema,
         providerName: 'opencode',
-        runReformat: async (prompt) => {
+        runReformat: (prompt) => {
           prompts.push(prompt);
           return { success: true, output: opencodeTextEvent(outputs.shift()) };
         },
@@ -284,7 +286,6 @@ describe('Output Reformatter', function () {
     });
 
     it('propagates cancellation from parseResultOutput without a missing-JSON error', async function () {
-      let cancelled = false;
       let finishTask;
       const agent = {
         id: 'planner',
@@ -300,7 +301,6 @@ describe('Output Reformatter', function () {
       };
       const parsing = parseResultOutput(agent, 'Tool call completed without final JSON');
       await new Promise((resolve) => setImmediate(resolve));
-      cancelled = true;
       agent.running = false;
       finishTask({ success: false, error: 'owned process tree terminated' });
 

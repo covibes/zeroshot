@@ -12,10 +12,7 @@ const assert = require('assert');
 const sinon = require('sinon');
 const { TaskExecutionHandle } = require('../src/agent/task-execution-handle');
 const { reformatOutput } = require('../src/agent/output-reformatter');
-const {
-  parseResultOutput,
-  buildCompletionResult,
-} = require('../src/agent/agent-task-executor');
+const { parseResultOutput, buildCompletionResult } = require('../src/agent/agent-task-executor');
 
 afterEach(function () {
   sinon.restore();
@@ -160,12 +157,14 @@ describe('Cached parsed result — one recovery model call', function () {
   });
 
   it('skips re-parse when state already has a cached result', async function () {
+    let parseCallCount = 0;
     const agent = {
       id: 'planner',
       role: 'planner',
       config: { jsonSchema: schema, outputFormat: 'json' },
       _resolveProvider: () => 'opencode',
       _parseResultOutput: () => {
+        parseCallCount++;
         return { plan: 'should not be called again' };
       },
     };
@@ -176,11 +175,8 @@ describe('Cached parsed result — one recovery model call', function () {
       _cachedParsedResult: { plan: 'already cached' },
     };
 
-    // evaluateStructuredSuccess will call _parseResultOutput again because
-    // it doesn't check _cachedParsedResult. This test documents that the
-    // cache is SET by evaluateStructuredSuccess, not read by it.
-    // The downstream benefit is that hooks read state._cachedParsedResult
-    // instead of calling parseResultOutput a second time.
+    // evaluateStructuredSuccess short-circuits when _cachedParsedResult is
+    // already populated — no second parse, no second model call.
     const result = await buildCompletionResult({
       agent,
       taskId: 'task-1',
@@ -191,8 +187,12 @@ describe('Cached parsed result — one recovery model call', function () {
     });
 
     assert.strictEqual(result.success, true);
-    // parsedResult comes from the fresh parse (evaluateStructuredSuccess overwrites cache).
-    assert.deepStrictEqual(result.parsedResult, { plan: 'should not be called again' });
+    assert.deepStrictEqual(result.parsedResult, { plan: 'already cached' });
+    assert.strictEqual(
+      parseCallCount,
+      0,
+      '_parseResultOutput must not be called when cache exists'
+    );
   });
 });
 
