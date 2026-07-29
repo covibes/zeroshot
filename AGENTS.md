@@ -156,6 +156,10 @@ locks, and manifests remain product-private; only verified protocol `ArtifactRef
 the engine boundary. `LocalCasArtifactStore` takes an explicit root, is a single-writer local
 filesystem store, and must preserve ref-first release plus synchronized blob-then-ref publication.
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
+Mutating source calls carry an exclusively borrowed, non-serializable verified-workspace capability;
+their serializable intent and closed operation-specific receipts contain only canonical workspace,
+pre-effect, branch/revision, review, policy/conclusion, and idempotency identities. Successful or
+uncertain effects reconcile only through exact authoritative post-effect inspection.
 Keep protocol, transport, daemon, compatibility, adapter, credential resolution, ledger, and
 workspace behavior outside it.
 `worker_catalog` is the native product's sole hand-authored, versioned worker-provider inventory.

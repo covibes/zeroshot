@@ -194,6 +194,47 @@ impl<'a> SourceMaterializationDestination<'a> {
         self.handle.downcast_mut::<T>()
     }
 }
+/// Ephemeral proof that a previously verified workspace is the mutation target.
+///
+/// The capability is neither cloneable nor serializable, and its exclusive runtime handle makes
+/// one capability single-use. Normal safe callers cannot mint one; serializable requests carry
+/// only the stable, secret-free workspace identity.
+pub struct SourceWorkspaceCapability<'a> {
+    workspace: SourceWorkspaceId,
+    handle: &'a mut (dyn Any + Send),
+}
+
+impl<'a> SourceWorkspaceCapability<'a> {
+    pub(crate) fn from_verified<T: Any + Send>(
+        workspace: SourceWorkspaceId,
+        handle: &'a mut T,
+    ) -> Self {
+        Self { workspace, handle }
+    }
+
+    /// Test-support escape hatch for contract tests that have no product workspace authority.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure `workspace` is the verified identity of `handle`. Production code
+    /// must use the crate-private verified-workspace authority instead.
+    #[doc(hidden)]
+    pub unsafe fn from_verified_contract_test<T: Any + Send>(
+        workspace: SourceWorkspaceId,
+        handle: &'a mut T,
+    ) -> Self {
+        Self::from_verified(workspace, handle)
+    }
+
+    #[must_use]
+    pub fn workspace(&self) -> &SourceWorkspaceId {
+        &self.workspace
+    }
+
+    pub fn downcast_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
+        self.handle.downcast_mut::<T>()
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

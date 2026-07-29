@@ -311,37 +311,64 @@ fn repository_requests_and_inspections_round_trip() {
 #[test]
 fn source_operations_inspections_and_receipts_round_trip() {
     let repository = repository();
+    let review = source_review();
+    let policy = source_policy();
     let operations = [
         SourceOperation::Branch {
-            expected_base: SourceRevisionId::new("base").unwrap(),
+            expected_parent: SourceRevisionId::new("base").unwrap(),
             branch: SourceBranchId::new("feature").unwrap(),
+            pre_effect: SourceStateDigest::new(digest('1')).unwrap(),
         },
         SourceOperation::Commit {
             expected_head: SourceRevisionId::new("head").unwrap(),
+            branch: SourceBranchId::new("feature").unwrap(),
+            message_digest: SourceMessageDigest::new(digest('2')).unwrap(),
             change_digest: SourceContentDigest::new(digest('d')).unwrap(),
+            pre_effect: SourceStateDigest::new(digest('3')).unwrap(),
         },
         SourceOperation::Push {
             expected_head: SourceRevisionId::new("head").unwrap(),
+            branch: SourceBranchId::new("feature").unwrap(),
+            remote: SourceRemoteId::new("origin").unwrap(),
+            expected_remote_head: Some(SourceRevisionId::new("base").unwrap()),
             revision: SourceRevisionId::new("next").unwrap(),
+            pre_effect: SourceStateDigest::new(digest('4')).unwrap(),
         },
         SourceOperation::PullRequest {
+            review: review.clone(),
             expected_base: SourceRevisionId::new("base").unwrap(),
             expected_head: SourceRevisionId::new("head").unwrap(),
+            checked_revision: SourceRevisionId::new("head").unwrap(),
+            policy: policy.clone(),
         },
         SourceOperation::Checks {
-            revision: SourceRevisionId::new("head").unwrap(),
+            review: review.clone(),
+            expected_base: SourceRevisionId::new("base").unwrap(),
+            expected_head: SourceRevisionId::new("head").unwrap(),
+            checked_revision: SourceRevisionId::new("head").unwrap(),
+            policy: policy.clone(),
         },
         SourceOperation::AutoMerge {
+            review: review.clone(),
             expected_base: SourceRevisionId::new("base").unwrap(),
             expected_head: SourceRevisionId::new("head").unwrap(),
+            checked_revision: SourceRevisionId::new("head").unwrap(),
+            policy: policy.clone(),
         },
         SourceOperation::MergeQueue {
+            review: review.clone(),
             expected_base: SourceRevisionId::new("base").unwrap(),
             expected_head: SourceRevisionId::new("head").unwrap(),
+            checked_revision: SourceRevisionId::new("head").unwrap(),
+            policy: policy.clone(),
         },
         SourceOperation::Merge {
+            review,
             expected_base: SourceRevisionId::new("base").unwrap(),
             expected_head: SourceRevisionId::new("head").unwrap(),
+            checked_revision: SourceRevisionId::new("head").unwrap(),
+            policy,
+            integrated_revision: SourceRevisionId::new("merge").unwrap(),
         },
     ];
     for (index, operation) in operations.into_iter().enumerate() {
@@ -350,8 +377,8 @@ fn source_operations_inspections_and_receipts_round_trip() {
                 repository.clone(),
                 SourceCredentialHandleId::new("github-lease").unwrap(),
                 (
+                    SourceWorkspaceId::new(digest('8')).unwrap(),
                     SourceOperationId::new(format!("operation-{index}")).unwrap(),
-                    SourceOperationFingerprint::new(digest('e')).unwrap(),
                 ),
                 operation,
             )

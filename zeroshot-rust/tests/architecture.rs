@@ -58,6 +58,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "tests/observability_contract.rs",
         "tests/provider_contracts.rs",
         "tests/provider_bounds.rs",
+        "tests/source_authority_contract.rs",
         "tests/scheduler_contract.rs",
         "tests/worker_catalog.rs",
     ] {
@@ -167,6 +168,7 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
         ("local_execution_runtime".to_owned(), "test".to_owned()),
         ("local_process_runner".to_owned(), "test".to_owned()),
         ("observability_contract".to_owned(), "test".to_owned()),
+        ("source_authority_contract".to_owned(), "test".to_owned()),
         ("scheduler_contract".to_owned(), "test".to_owned()),
     ] {
         assert!(
@@ -451,6 +453,13 @@ fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_b
         read(&product.join("src/lib.rs")).contains("mod provider_value;"),
         "bounded provider helpers must remain product-private"
     );
+    assert!(
+        contracts.contains("pub struct SourceWorkspaceCapability<'a>")
+            && contracts.contains("pub(crate) fn from_verified")
+            && contracts.contains("pub unsafe fn from_verified_contract_test")
+            && !contracts.contains("pub mod fake"),
+        "safe callers must receive workspace capabilities only from verified product state"
+    );
     for forbidden in [
         "pub trait Provider",
         "PlatformProfile",
@@ -472,6 +481,8 @@ fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_b
         "openengine_cluster_protocol",
         "openengine_cluster_server",
         "Adapter",
+        "std::process",
+        "reqwest",
     ] {
         assert!(
             !contracts.contains(forbidden),

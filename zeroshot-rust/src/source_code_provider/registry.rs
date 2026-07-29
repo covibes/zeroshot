@@ -1,14 +1,20 @@
 use super::*;
 use std::collections::BTreeMap;
+use crate::provider_value::validate_serialized;
 
 fn validate_operation_inspection(
     request: &SourceOperationRequest,
     inspection: SourceOperationInspection,
 ) -> Result<SourceOperationInspection, SourceCallError> {
+    if validate_serialized(&inspection).is_err() {
+        return Err(SourceCallError::InvalidEvidence {
+            reason: "operation inspection exceeded the canonical serialized bound",
+        });
+    }
     if let SourceOperationInspection::Applied(receipt) = &inspection {
         if !receipt.matches_request(request) {
             return Err(SourceCallError::InvalidEvidence {
-                reason: "applied inspection changed repository, operation, fingerprint, or merge expectation identity",
+                reason: "applied inspection changed exact source operation authority",
             });
         }
     }
@@ -36,6 +42,12 @@ pub enum SourceRegistryError {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceInvocationOutcome {
+    ReturnedReceipt,
+    Indeterminate,
+}
+
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum SourceCallError {
     #[error(transparent)]
@@ -45,6 +57,25 @@ pub enum SourceCallError {
     #[error("source operation cannot be invoked from inspection state {inspection:?}")]
     UnsafeToInvoke {
         inspection: SourceOperationInspection,
+    },
+    #[error("source workspace capability does not match operation workspace")]
+    WorkspaceMismatch,
+    #[error(
+        "source operation remains uncertain after {outcome:?} and authoritative inspection: {inspection:?}"
+    )]
+    UnreconciledUncertainty {
+        outcome: SourceInvocationOutcome,
+        inspection: SourceOperationInspection,
+    },
+    #[error("source operation authoritative inspection failed after {outcome:?}: {failure}")]
+    PostEffectInspectionFailed {
+        outcome: SourceInvocationOutcome,
+        failure: SourceProviderFailure,
+    },
+    #[error("source operation evidence is invalid after {outcome:?}: {reason}")]
+    PostEffectInvalidEvidence {
+        outcome: SourceInvocationOutcome,
+        reason: &'static str,
     },
     #[error("source provider returned evidence that does not match the request: {reason}")]
     InvalidEvidence { reason: &'static str },
@@ -219,7 +250,11 @@ impl SourceCodeProviderRegistry {
     pub async fn operate(
         &self,
         request: &SourceOperationRequest,
+        workspace: SourceWorkspaceCapability<'_>,
     ) -> Result<SourceOperationReceipt, SourceCallError> {
+        if workspace.workspace() != request.workspace() {
+            return Err(SourceCallError::WorkspaceMismatch);
+        }
         let repository = request.repository();
         let capability = request.operation().capability();
         let profile_descriptor =
@@ -235,13 +270,68 @@ impl SourceCodeProviderRegistry {
         if !inspection.permits_invocation(native_idempotency) {
             return Err(SourceCallError::UnsafeToInvoke { inspection });
         }
-        let receipt = provider.operate(request).await?;
-        if !receipt.matches_request(request) {
-            return Err(SourceCallError::InvalidEvidence {
-                reason: "operation receipt changed repository, operation, fingerprint, or merge expectation identity",
-            });
+
+        let performed = provider.operate(request, workspace).await;
+        match performed {
+            Ok(receipt) => {
+                let outcome = SourceInvocationOutcome::ReturnedReceipt;
+                let observed = provider
+                    .inspect_operation(request)
+                    .await
+                    .map_err(|failure| SourceCallError::PostEffectInspectionFailed {
+                        outcome,
+                        failure,
+                    })?;
+                let authoritative = validate_operation_inspection(request, observed).map_err(
+                    |_| SourceCallError::PostEffectInvalidEvidence {
+                        outcome,
+                        reason: "post-effect inspection changed exact source operation authority",
+                    },
+                )?;
+                match authoritative {
+                    SourceOperationInspection::Applied(observed)
+                        if receipt.matches_request(request) && *observed == receipt =>
+                    {
+                        Ok(receipt)
+                    }
+                    SourceOperationInspection::Applied(_) => {
+                        Err(SourceCallError::PostEffectInvalidEvidence {
+                            outcome,
+                            reason: "direct and inspected receipts did not prove the same exact authority",
+                        })
+                    }
+                    inspection => Err(SourceCallError::UnreconciledUncertainty {
+                        outcome,
+                        inspection,
+                    }),
+                }
+            }
+            Err(failure) if failure.code() == SourceProviderFailureCode::Indeterminate => {
+                let outcome = SourceInvocationOutcome::Indeterminate;
+                let observed = provider
+                    .inspect_operation(request)
+                    .await
+                    .map_err(|failure| SourceCallError::PostEffectInspectionFailed {
+                        outcome,
+                        failure,
+                    })?;
+                let authoritative =
+                    validate_operation_inspection(request, observed).map_err(|_| {
+                        SourceCallError::PostEffectInvalidEvidence {
+                            outcome,
+                            reason: "post-uncertainty inspection changed exact source operation authority",
+                        }
+                    })?;
+                match authoritative {
+                    SourceOperationInspection::Applied(receipt) => Ok(*receipt),
+                    inspection => Err(SourceCallError::UnreconciledUncertainty {
+                        outcome,
+                        inspection,
+                    }),
+                }
+            }
+            Err(failure) => Err(SourceCallError::Provider(failure)),
         }
-        Ok(receipt)
     }
 }
 

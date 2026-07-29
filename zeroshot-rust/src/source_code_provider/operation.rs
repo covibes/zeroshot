@@ -1,50 +1,175 @@
+use std::collections::BTreeMap;
+
+use sha2::{Digest, Sha256};
+
 use super::*;
 
-/// Caller-owned stable operation identifier and canonical fingerprint.
-pub type SourceOperationIdentity = (SourceOperationId, SourceOperationFingerprint);
-
-/// Optional revision and bounded public URL evidence for a source operation.
-pub type SourceRevisionEvidence = (Option<SourceRevisionId>, Vec<SourcePublicUrl>);
-
-/// Expected base and head revisions for a merge.
-pub type SourceMergeExpectation = (SourceRevisionId, SourceRevisionId);
-
-/// Integrated revision and bounded public URL evidence for a merge.
-pub type SourceMergeEvidence = (SourceRevisionId, Vec<SourcePublicUrl>);
-
+/// Canonical, provider-independent identity of one code review.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SourceReviewIdentity {
+    review: SourceReviewId,
+    base_branch: SourceBranchId,
+    head_branch: SourceBranchId,
+}
+
+impl SourceReviewIdentity {
+    pub fn new(
+        review: SourceReviewId,
+        base_branch: SourceBranchId,
+        head_branch: SourceBranchId,
+    ) -> Result<Self, SourceContractError> {
+        SourceContractError::checked(Self {
+            review,
+            base_branch,
+            head_branch,
+        })
+    }
+
+    #[must_use]
+    pub fn review(&self) -> &SourceReviewId {
+        &self.review
+    }
+
+    #[must_use]
+    pub fn base_branch(&self) -> &SourceBranchId {
+        &self.base_branch
+    }
+
+    #[must_use]
+    pub fn head_branch(&self) -> &SourceBranchId {
+        &self.head_branch
+    }
+}
+
+/// Closed conclusion vocabulary used as authoritative check evidence.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCheckConclusion {
+    Pending,
+    Satisfied,
+    Failed,
+    Cancelled,
+    Skipped,
+}
+
+/// Exact required-policy identity and its canonical, sorted conclusions.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "SourceRequiredPolicyWire", rename_all = "camelCase")]
+pub struct SourceRequiredPolicy {
+    digest: SourcePolicyDigest,
+    conclusions: BoundedMap<SourceCheckId, SourceCheckConclusion>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceRequiredPolicyWire {
+    digest: SourcePolicyDigest,
+    conclusions: BoundedMap<SourceCheckId, SourceCheckConclusion>,
+}
+
+impl TryFrom<SourceRequiredPolicyWire> for SourceRequiredPolicy {
+    type Error = SourceContractError;
+
+    fn try_from(wire: SourceRequiredPolicyWire) -> Result<Self, Self::Error> {
+        SourceContractError::checked(Self {
+            digest: wire.digest,
+            conclusions: wire.conclusions,
+        })
+    }
+}
+
+impl SourceRequiredPolicy {
+    pub fn new(
+        digest: SourcePolicyDigest,
+        conclusions: BTreeMap<SourceCheckId, SourceCheckConclusion>,
+    ) -> Result<Self, SourceContractError> {
+        SourceContractError::checked(Self {
+            digest,
+            conclusions: BoundedMap::new(conclusions)
+                .map_err(|error| SourceContractError::new("required check conclusions", error))?,
+        })
+    }
+
+    #[must_use]
+    pub fn digest(&self) -> &SourcePolicyDigest {
+        &self.digest
+    }
+
+    #[must_use]
+    pub fn conclusions(&self) -> &BTreeMap<SourceCheckId, SourceCheckConclusion> {
+        self.conclusions.as_map()
+    }
+
+    #[must_use]
+    pub fn is_satisfied(&self) -> bool {
+        !self.conclusions().is_empty()
+            && self
+                .conclusions()
+                .values()
+                .all(|conclusion| *conclusion == SourceCheckConclusion::Satisfied)
+    }
+}
+
+/// Closed source mutation intent. Every field is stable, bounded, and secret-free.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 pub enum SourceOperation {
     Branch {
-        expected_base: SourceRevisionId,
+        expected_parent: SourceRevisionId,
         branch: SourceBranchId,
+        pre_effect: SourceStateDigest,
     },
     Commit {
         expected_head: SourceRevisionId,
+        branch: SourceBranchId,
+        message_digest: SourceMessageDigest,
         change_digest: SourceContentDigest,
+        pre_effect: SourceStateDigest,
     },
     Push {
         expected_head: SourceRevisionId,
+        branch: SourceBranchId,
+        remote: SourceRemoteId,
+        expected_remote_head: Option<SourceRevisionId>,
         revision: SourceRevisionId,
+        pre_effect: SourceStateDigest,
     },
     PullRequest {
+        review: SourceReviewIdentity,
         expected_base: SourceRevisionId,
         expected_head: SourceRevisionId,
+        checked_revision: SourceRevisionId,
+        policy: SourceRequiredPolicy,
     },
     Checks {
-        revision: SourceRevisionId,
+        review: SourceReviewIdentity,
+        expected_base: SourceRevisionId,
+        expected_head: SourceRevisionId,
+        checked_revision: SourceRevisionId,
+        policy: SourceRequiredPolicy,
     },
     AutoMerge {
+        review: SourceReviewIdentity,
         expected_base: SourceRevisionId,
         expected_head: SourceRevisionId,
+        checked_revision: SourceRevisionId,
+        policy: SourceRequiredPolicy,
     },
     MergeQueue {
+        review: SourceReviewIdentity,
         expected_base: SourceRevisionId,
         expected_head: SourceRevisionId,
+        checked_revision: SourceRevisionId,
+        policy: SourceRequiredPolicy,
     },
     Merge {
+        review: SourceReviewIdentity,
         expected_base: SourceRevisionId,
         expected_head: SourceRevisionId,
+        checked_revision: SourceRevisionId,
+        policy: SourceRequiredPolicy,
+        integrated_revision: SourceRevisionId,
     },
 }
 
@@ -64,27 +189,114 @@ impl SourceOperation {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceOperationRequest {
     repository: CanonicalRepository,
     credential_handle: SourceCredentialHandleId,
+    workspace: SourceWorkspaceId,
     operation_id: SourceOperationId,
     fingerprint: SourceOperationFingerprint,
     operation: SourceOperation,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceOperationRequestWire {
+    repository: CanonicalRepository,
+    credential_handle: SourceCredentialHandleId,
+    workspace: SourceWorkspaceId,
+    operation_id: SourceOperationId,
+    fingerprint: SourceOperationFingerprint,
+    operation: SourceOperation,
+}
+
+struct SourceOperationRequestInput {
+    repository: CanonicalRepository,
+    credential_handle: SourceCredentialHandleId,
+    workspace: SourceWorkspaceId,
+    operation_id: SourceOperationId,
+    operation: SourceOperation,
+}
+
+impl<'de> Deserialize<'de> for SourceOperationRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let SourceOperationRequestWire {
+            repository,
+            credential_handle,
+            workspace,
+            operation_id,
+            fingerprint,
+            operation,
+        } = SourceOperationRequestWire::deserialize(deserializer)?;
+        let request = Self::build(SourceOperationRequestInput {
+            repository,
+            credential_handle,
+            workspace,
+            operation_id,
+            operation,
+        })
+        .map_err(serde::de::Error::custom)?;
+        if request.fingerprint != fingerprint {
+            return Err(serde::de::Error::custom(
+                "source operation fingerprint does not match canonical intent",
+            ));
+        }
+        Ok(request)
+    }
 }
 
 impl SourceOperationRequest {
     pub fn new(
         repository: CanonicalRepository,
         credential_handle: SourceCredentialHandleId,
-        identity: SourceOperationIdentity,
+        identity: (SourceWorkspaceId, SourceOperationId),
         operation: SourceOperation,
     ) -> Result<Self, SourceContractError> {
-        let (operation_id, fingerprint) = identity;
+        let (workspace, operation_id) = identity;
+        Self::build(SourceOperationRequestInput {
+            repository,
+            credential_handle,
+            workspace,
+            operation_id,
+            operation,
+        })
+    }
+
+    fn build(input: SourceOperationRequestInput) -> Result<Self, SourceContractError> {
+        let SourceOperationRequestInput {
+            repository,
+            credential_handle,
+            workspace,
+            operation_id,
+            operation,
+        } = input;
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct CanonicalIntent<'a> {
+            repository: &'a CanonicalRepository,
+            credential_handle: &'a SourceCredentialHandleId,
+            workspace: &'a SourceWorkspaceId,
+            operation_id: &'a SourceOperationId,
+            operation: &'a SourceOperation,
+        }
+
+        let bytes = serde_json::to_vec(&CanonicalIntent {
+            repository: &repository,
+            credential_handle: &credential_handle,
+            workspace: &workspace,
+            operation_id: &operation_id,
+            operation: &operation,
+        })
+        .map_err(|error| SourceContractError::new("canonical source intent", error))?;
+        let fingerprint = SourceOperationFingerprint::new(format!("{:x}", Sha256::digest(bytes)))?;
         SourceContractError::checked(Self {
             repository,
             credential_handle,
+            workspace,
             operation_id,
             fingerprint,
             operation,
@@ -99,6 +311,11 @@ impl SourceOperationRequest {
     #[must_use]
     pub fn credential_handle(&self) -> &SourceCredentialHandleId {
         &self.credential_handle
+    }
+
+    #[must_use]
+    pub fn workspace(&self) -> &SourceWorkspaceId {
+        &self.workspace
     }
 
     #[must_use]
@@ -117,217 +334,154 @@ impl SourceOperationRequest {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "SourceAppliedReceiptWire")]
-#[serde(rename_all = "camelCase")]
-pub struct SourceAppliedReceipt {
-    repository: CanonicalRepository,
-    operation_id: SourceOperationId,
-    fingerprint: SourceOperationFingerprint,
-    capability: SourceCapability,
-    revision: Option<SourceRevisionId>,
-    public_urls: BoundedVec<SourcePublicUrl>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceAppliedReceiptWire {
-    repository: CanonicalRepository,
-    operation_id: SourceOperationId,
-    fingerprint: SourceOperationFingerprint,
-    capability: SourceCapability,
-    revision: Option<SourceRevisionId>,
-    public_urls: BoundedVec<SourcePublicUrl>,
-}
-
-impl TryFrom<SourceAppliedReceiptWire> for SourceAppliedReceipt {
-    type Error = SourceContractError;
-
-    fn try_from(wire: SourceAppliedReceiptWire) -> Result<Self, Self::Error> {
-        if wire.capability == SourceCapability::Merge {
-            return Err(SourceContractError {
-                field: "source applied receipt capability",
-                reason: "merge requires SourceMergeReceipt".to_owned(),
-            });
+macro_rules! source_receipt {
+    ($name:ident, $variant:ident, $capability:ident, $field:ident : $field_ty:ty, $valid:expr) => {
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct $name {
+            request: SourceOperationRequest,
+            $field: $field_ty,
         }
-        SourceContractError::checked(Self {
-            repository: wire.repository,
-            operation_id: wire.operation_id,
-            fingerprint: wire.fingerprint,
-            capability: wire.capability,
-            revision: wire.revision,
-            public_urls: wire.public_urls,
-        })
-    }
-}
 
-impl SourceAppliedReceipt {
-    pub fn new(
-        repository: CanonicalRepository,
-        identity: SourceOperationIdentity,
-        capability: SourceCapability,
-        evidence: SourceRevisionEvidence,
-    ) -> Result<Self, SourceContractError> {
-        let (operation_id, fingerprint) = identity;
-        let (revision, public_urls) = evidence;
-        if capability == SourceCapability::Merge {
-            return Err(SourceContractError {
-                field: "source applied receipt capability",
-                reason: "merge requires SourceMergeReceipt".to_owned(),
-            });
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct $variant {
+            request: SourceOperationRequest,
+            $field: $field_ty,
         }
-        SourceContractError::checked(Self {
-            repository,
-            operation_id,
-            fingerprint,
-            capability,
-            revision,
-            public_urls: BoundedVec::new(public_urls)
-                .map_err(|error| SourceContractError::new("public URLs", error))?,
-        })
-    }
 
-    #[must_use]
-    pub fn repository(&self) -> &CanonicalRepository {
-        &self.repository
-    }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let wire = $variant::deserialize(deserializer)?;
+                Self::new(wire.request, wire.$field).map_err(serde::de::Error::custom)
+            }
+        }
 
-    #[must_use]
-    pub fn operation_id(&self) -> &SourceOperationId {
-        &self.operation_id
-    }
+        impl $name {
+            pub fn new(
+                request: SourceOperationRequest,
+                $field: $field_ty,
+            ) -> Result<Self, SourceContractError> {
+                if request.operation().capability() != SourceCapability::$capability {
+                    return Err(SourceContractError::new(
+                        "source operation receipt",
+                        concat!(
+                            stringify!($name),
+                            " requires a ",
+                            stringify!($capability),
+                            " request"
+                        ),
+                    ));
+                }
+                if !($valid)(&request, &$field) {
+                    return Err(SourceContractError::new(
+                        "source operation receipt evidence",
+                        concat!(stringify!($name), " contradicts its request"),
+                    ));
+                }
+                SourceContractError::checked(Self { request, $field })
+            }
 
-    #[must_use]
-    pub fn fingerprint(&self) -> &SourceOperationFingerprint {
-        &self.fingerprint
-    }
+            #[must_use]
+            pub fn request(&self) -> &SourceOperationRequest {
+                &self.request
+            }
 
-    #[must_use]
-    pub fn capability(&self) -> SourceCapability {
-        self.capability
-    }
-
-    #[must_use]
-    pub fn revision(&self) -> Option<&SourceRevisionId> {
-        self.revision.as_ref()
-    }
-
-    #[must_use]
-    pub fn public_urls(&self) -> &[SourcePublicUrl] {
-        self.public_urls.as_slice()
-    }
+            #[must_use]
+            pub fn $field(&self) -> &$field_ty {
+                &self.$field
+            }
+        }
+    };
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceMergedState {
-    Merged,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(try_from = "SourceMergeReceiptWire")]
-#[serde(rename_all = "camelCase")]
-pub struct SourceMergeReceipt {
-    repository: CanonicalRepository,
-    operation_id: SourceOperationId,
-    fingerprint: SourceOperationFingerprint,
-    expected_base: SourceRevisionId,
-    expected_head: SourceRevisionId,
+source_receipt!(
+    SourceBranchReceipt,
+    SourceBranchReceiptWire,
+    Branch,
+    resulting_head: SourceRevisionId,
+    |request: &SourceOperationRequest, evidence: &SourceRevisionId| matches!(
+        request.operation(),
+        SourceOperation::Branch {
+            expected_parent,
+            ..
+        } if evidence == expected_parent
+    )
+);
+source_receipt!(
+    SourceCommitReceipt,
+    SourceCommitReceiptWire,
+    Commit,
+    committed_revision: SourceRevisionId,
+    |_request: &SourceOperationRequest, _evidence: &SourceRevisionId| true
+);
+source_receipt!(
+    SourcePushReceipt,
+    SourcePushReceiptWire,
+    Push,
+    pushed_revision: SourceRevisionId,
+    |request: &SourceOperationRequest, evidence: &SourceRevisionId| matches!(
+        request.operation(),
+        SourceOperation::Push { revision, .. } if evidence == revision
+    )
+);
+source_receipt!(
+    SourcePullRequestReceipt,
+    SourcePullRequestReceiptWire,
+    PullRequest,
+    review: SourceReviewIdentity,
+    |request: &SourceOperationRequest, evidence: &SourceReviewIdentity| matches!(
+        request.operation(),
+        SourceOperation::PullRequest { review, .. } if evidence == review
+    )
+);
+source_receipt!(
+    SourceChecksReceipt,
+    SourceChecksReceiptWire,
+    Checks,
+    policy: SourceRequiredPolicy,
+    |request: &SourceOperationRequest, evidence: &SourceRequiredPolicy| matches!(
+        request.operation(),
+        SourceOperation::Checks { policy, .. }
+            if evidence == policy && policy.is_satisfied()
+    )
+);
+source_receipt!(
+    SourceAutoMergeReceipt,
+    SourceAutoMergeReceiptWire,
+    AutoMerge,
+    review: SourceReviewIdentity,
+    |request: &SourceOperationRequest, evidence: &SourceReviewIdentity| matches!(
+        request.operation(),
+        SourceOperation::AutoMerge { review, policy, .. }
+            if evidence == review && policy.is_satisfied()
+    )
+);
+source_receipt!(
+    SourceMergeQueueReceipt,
+    SourceMergeQueueReceiptWire,
+    MergeQueue,
+    review: SourceReviewIdentity,
+    |request: &SourceOperationRequest, evidence: &SourceReviewIdentity| matches!(
+        request.operation(),
+        SourceOperation::MergeQueue { review, policy, .. }
+            if evidence == review && policy.is_satisfied()
+    )
+);
+source_receipt!(
+    SourceMergeReceipt,
+    SourceMergeReceiptWire,
+    Merge,
     integrated_revision: SourceRevisionId,
-    merged_state: SourceMergedState,
-    public_urls: BoundedVec<SourcePublicUrl>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceMergeReceiptWire {
-    repository: CanonicalRepository,
-    operation_id: SourceOperationId,
-    fingerprint: SourceOperationFingerprint,
-    expected_base: SourceRevisionId,
-    expected_head: SourceRevisionId,
-    integrated_revision: SourceRevisionId,
-    merged_state: SourceMergedState,
-    public_urls: BoundedVec<SourcePublicUrl>,
-}
-
-impl TryFrom<SourceMergeReceiptWire> for SourceMergeReceipt {
-    type Error = SourceContractError;
-
-    fn try_from(wire: SourceMergeReceiptWire) -> Result<Self, Self::Error> {
-        SourceContractError::checked(Self {
-            repository: wire.repository,
-            operation_id: wire.operation_id,
-            fingerprint: wire.fingerprint,
-            expected_base: wire.expected_base,
-            expected_head: wire.expected_head,
-            integrated_revision: wire.integrated_revision,
-            merged_state: wire.merged_state,
-            public_urls: wire.public_urls,
-        })
-    }
-}
-
-impl SourceMergeReceipt {
-    pub fn new(
-        repository: CanonicalRepository,
-        identity: SourceOperationIdentity,
-        expectation: SourceMergeExpectation,
-        evidence: SourceMergeEvidence,
-    ) -> Result<Self, SourceContractError> {
-        let (operation_id, fingerprint) = identity;
-        let (expected_base, expected_head) = expectation;
-        let (integrated_revision, public_urls) = evidence;
-        SourceContractError::checked(Self {
-            repository,
-            operation_id,
-            fingerprint,
-            expected_base,
-            expected_head,
+    |request: &SourceOperationRequest, evidence: &SourceRevisionId| matches!(
+        request.operation(),
+        SourceOperation::Merge {
+            policy,
             integrated_revision,
-            merged_state: SourceMergedState::Merged,
-            public_urls: BoundedVec::new(public_urls)
-                .map_err(|error| SourceContractError::new("public URLs", error))?,
-        })
-    }
-
-    #[must_use]
-    pub fn repository(&self) -> &CanonicalRepository {
-        &self.repository
-    }
-
-    #[must_use]
-    pub fn operation_id(&self) -> &SourceOperationId {
-        &self.operation_id
-    }
-
-    #[must_use]
-    pub fn fingerprint(&self) -> &SourceOperationFingerprint {
-        &self.fingerprint
-    }
-
-    #[must_use]
-    pub fn expected_base(&self) -> &SourceRevisionId {
-        &self.expected_base
-    }
-
-    #[must_use]
-    pub fn expected_head(&self) -> &SourceRevisionId {
-        &self.expected_head
-    }
-
-    #[must_use]
-    pub fn integrated_revision(&self) -> &SourceRevisionId {
-        &self.integrated_revision
-    }
-
-    #[must_use]
-    pub fn merged_state(&self) -> SourceMergedState {
-        self.merged_state
-    }
-
-    #[must_use]
-    pub fn public_urls(&self) -> &[SourcePublicUrl] {
-        self.public_urls.as_slice()
-    }
-}
+            ..
+        } if evidence == integrated_revision && policy.is_satisfied()
+    )
+);

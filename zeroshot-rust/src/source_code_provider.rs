@@ -63,17 +63,30 @@
 //! let destination = SourceMaterializationDestination::new(&mut destination);
 //! serde_json::to_string(&destination).unwrap();
 //! ```
+//!
+//! A verified workspace capability cannot be minted, serialized, or cloned by safe downstream
+//! code:
+//!
+//! ```compile_fail
+//! use zeroshot_engine::source_code_provider::{SourceWorkspaceCapability, SourceWorkspaceId};
+//!
+//! let id = SourceWorkspaceId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+//! let mut runtime = ();
+//! let capability = SourceWorkspaceCapability::from_verified(id, &mut runtime);
+//! serde_json::to_string(&capability).unwrap();
+//! let _replay = capability.clone();
+//! ```
 
 use std::any::Any;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde::{ser, Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::provider_value::{
     bounded_bytes_type, bounded_text_type, digest_type, profile_descriptor_type,
-    provider_contract_types, provider_descriptor_type, validate_serialized, BoundedVec, ValueError,
+    provider_contract_types, provider_descriptor_type, BoundedMap, BoundedVec, ValueError,
 };
 
 const PROFILE_ID_MAX: usize = 128;
@@ -116,6 +129,24 @@ bounded_text_type!(
     SourceContractError,
     "branch id"
 );
+bounded_text_type!(
+    SourceReviewId,
+    EXTERNAL_ID_MAX,
+    SourceContractError,
+    "review id"
+);
+bounded_text_type!(
+    SourceRemoteId,
+    EXTERNAL_ID_MAX,
+    SourceContractError,
+    "remote id"
+);
+bounded_text_type!(
+    SourceCheckId,
+    EXTERNAL_ID_MAX,
+    SourceContractError,
+    "check id"
+);
 bounded_bytes_type!(
     SourcePublicUrl,
     PUBLIC_URL_MAX,
@@ -129,6 +160,22 @@ bounded_text_type!(
     "failure message"
 );
 digest_type!(SourceContentDigest, SourceContractError, "content digest");
+digest_type!(SourceWorkspaceId, SourceContractError, "workspace id");
+digest_type!(
+    SourceStateDigest,
+    SourceContractError,
+    "pre-effect state digest"
+);
+digest_type!(
+    SourceMessageDigest,
+    SourceContractError,
+    "commit message digest"
+);
+digest_type!(
+    SourcePolicyDigest,
+    SourceContractError,
+    "required policy digest"
+);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -165,7 +212,7 @@ provider_descriptor_type!(
 );
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CanonicalRepository {
     provider: SourceProviderRef,
     profile: SourceProfileId,
