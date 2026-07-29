@@ -328,31 +328,31 @@ describe('Nested task model argument encoding', function () {
     const { removeTask } = await import(storeUrl);
     removeTask(taskId);
     const previousZeroshotHome = process.env.ZEROSHOT_HOME;
-    process.env.ZEROSHOT_HOME = fixtureDir;
-    assert.notStrictEqual(taskStoreHome, process.env.ZEROSHOT_HOME);
-    const schema = {
-      type: 'object',
-      properties: { plan: { type: 'string' } },
-      required: ['plan'],
-    };
-    const agent = new AgentWrapper(
-      {
-        id: 'local-env-reformat',
-        role: 'planner',
-        provider: 'opencode',
-        model: CATALOG_MODEL,
-        jsonSchema: schema,
-        timeout: 0,
-      },
-      { publish() {}, subscribe() {} },
-      { id: 'test-cluster', agents: [] },
-      { testMode: false }
-    );
-    agent.taskCliPath = fakeZeroshot;
-    agent.running = true;
-    agent.state = 'executing_task';
-
     try {
+      process.env.ZEROSHOT_HOME = fixtureDir;
+      assert.notStrictEqual(taskStoreHome, process.env.ZEROSHOT_HOME);
+      const schema = {
+        type: 'object',
+        properties: { plan: { type: 'string' } },
+        required: ['plan'],
+      };
+      const agent = new AgentWrapper(
+        {
+          id: 'local-env-reformat',
+          role: 'planner',
+          provider: 'opencode',
+          model: CATALOG_MODEL,
+          jsonSchema: schema,
+          timeout: 0,
+        },
+        { publish() {}, subscribe() {} },
+        { id: 'test-cluster', agents: [] },
+        { testMode: false }
+      );
+      agent.taskCliPath = fakeZeroshot;
+      agent.running = true;
+      agent.state = 'executing_task';
+
       const result = await agent._parseResultOutput('Tool call completed without final JSON');
       const captured = JSON.parse(fs.readFileSync(captureFile, 'utf8'));
       const config = JSON.parse(captured.config);
