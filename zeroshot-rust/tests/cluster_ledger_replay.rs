@@ -107,6 +107,8 @@ async fn admit_and_dispatch(
 mod protocol;
 #[path = "cluster_ledger_replay/races.rs"]
 mod races;
+#[path = "cluster_ledger_replay/required_proof.rs"]
+mod required_proof;
 #[path = "cluster_ledger_replay/snapshot_race_store.rs"]
 mod snapshot_race_store;
 #[path = "cluster_ledger_replay/validation.rs"]

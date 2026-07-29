@@ -200,6 +200,9 @@ pub enum RecordKind {
     VerifiedInput = 9,
     VerifiedOutput = 10,
     MutationReceipt = 11,
+    RequiredProofIntent = 12,
+    RequiredProofReceipt = 13,
+    RequiredProofAcceptance = 14,
 }
 
 impl RecordKind {
@@ -277,6 +280,24 @@ pub enum RecordPayload {
     VerifiedOutput {
         run: RunSequence,
         execution: ExecutionId,
+        digest: CanonicalDigest,
+        canonical_bytes: Vec<u8>,
+    },
+    RequiredProofIntent {
+        run: RunSequence,
+        attempt: u32,
+        digest: CanonicalDigest,
+        canonical_bytes: Vec<u8>,
+    },
+    RequiredProofReceipt {
+        run: RunSequence,
+        attempt: u32,
+        digest: CanonicalDigest,
+        canonical_bytes: Vec<u8>,
+    },
+    RequiredProofAcceptance {
+        run: RunSequence,
+        attempt: u32,
         digest: CanonicalDigest,
         canonical_bytes: Vec<u8>,
     },

@@ -3,11 +3,15 @@ mod receipts;
 mod state;
 
 pub use error::ReplayError;
-pub use state::{AdmissionState, DispatchState, EffectState, ReplayState, VerifiedValue};
+pub use state::{
+    AdmissionState, DispatchState, EffectState, ReplayState, RequiredProofAttemptState,
+    VerifiedValue,
+};
 use receipts::validate_receipt_binding;
 
 use super::record::{CanonicalDigest, RecordPayload, RunSequence, StoredRecord};
 use super::store::{MutationReceipt, Position, PrefixSnapshot, ResourceId};
+use crate::required_proof::{AcceptedProofRef, ProofAttemptIntent, ProofAttemptReceipt};
 
 pub fn replay(
     snapshot: &PrefixSnapshot,
@@ -103,6 +107,11 @@ fn fold_payload(
         payload @ (RecordPayload::VerifiedInput { .. } | RecordPayload::VerifiedOutput { .. }) => {
             fold_verified_payload(state, payload, position)
         }
+        payload @ (RecordPayload::RequiredProofIntent { .. }
+        | RecordPayload::RequiredProofReceipt { .. }
+        | RecordPayload::RequiredProofAcceptance { .. }) => {
+            fold_required_proof_payload(state, payload)
+        }
         RecordPayload::MutationReceipt { receipt } => {
             fold_mutation_receipt(state, pending_mutation, receipt, position)
         }
@@ -147,6 +156,79 @@ fn fold_verified_payload(
             fold_verified_output(state, payload, position)
         }
         _ => unreachable!("verified fold receives verified payload"),
+    }
+}
+
+fn fold_required_proof_payload(
+    state: &mut ReplayState,
+    payload: RecordPayload,
+) -> Result<(), ReplayError> {
+    match payload {
+        RecordPayload::RequiredProofIntent {
+            run,
+            attempt,
+            canonical_bytes,
+            ..
+        } => {
+            let intent = ProofAttemptIntent::decode(&canonical_bytes)
+                .map_err(|_| ReplayError::InvalidOrder)?;
+            require_current_run(state, run)?;
+            if intent.run() != run
+                || intent.attempt() != attempt
+                || state
+                    .required_proofs
+                    .iter()
+                    .any(|proof| proof.intent.run() == run && proof.intent.attempt() == attempt)
+            {
+                return Err(ReplayError::InvalidOrder);
+            }
+            state.required_proofs.push(RequiredProofAttemptState {
+                intent,
+                receipt: None,
+                accepted: None,
+            });
+            Ok(())
+        }
+        RecordPayload::RequiredProofReceipt {
+            run,
+            attempt,
+            canonical_bytes,
+            ..
+        } => {
+            let receipt = ProofAttemptReceipt::decode(&canonical_bytes)
+                .map_err(|_| ReplayError::InvalidOrder)?;
+            let proof = state
+                .required_proofs
+                .iter_mut()
+                .find(|proof| proof.intent.run() == run && proof.intent.attempt() == attempt)
+                .ok_or(ReplayError::InvalidOrder)?;
+            if proof.receipt.is_some() || receipt.matches_intent(&proof.intent).is_err() {
+                return Err(ReplayError::InvalidOrder);
+            }
+            proof.receipt = Some(receipt);
+            Ok(())
+        }
+        RecordPayload::RequiredProofAcceptance {
+            run,
+            attempt,
+            canonical_bytes,
+            ..
+        } => {
+            let accepted = AcceptedProofRef::decode(&canonical_bytes)
+                .map_err(|_| ReplayError::InvalidOrder)?;
+            let proof = state
+                .required_proofs
+                .iter_mut()
+                .find(|proof| proof.intent.run() == run && proof.intent.attempt() == attempt)
+                .ok_or(ReplayError::InvalidOrder)?;
+            let receipt = proof.receipt.as_ref().ok_or(ReplayError::InvalidOrder)?;
+            if proof.accepted.is_some() || accepted.matches(&proof.intent, receipt).is_err() {
+                return Err(ReplayError::InvalidOrder);
+            }
+            proof.accepted = Some(accepted);
+            Ok(())
+        }
+        _ => unreachable!("required proof fold receives required proof payload"),
     }
 }
 

@@ -1,13 +1,17 @@
+use std::io::Cursor;
 use std::sync::Arc;
 
-use openengine_cluster_protocol::{ByteLength, RunId};
+use async_trait::async_trait;
+use openengine_cluster_protocol::{ArtifactId, ArtifactRef, ByteLength, RunId, Sha256Digest};
 use tokio::io::AsyncReadExt;
 use zeroshot_engine::artifact_store::fake::{FakeArtifactStore, FakeFailurePoint};
 use zeroshot_engine::artifact_store::{
-    ArtifactStore, ArtifactStoreFailureKind, ArtifactStoreOperation, DiscardResult,
-    MAX_ARTIFACT_BYTES, ReleaseResult, derive_artifact_id,
+    ArtifactByteStream, ArtifactIntent, ArtifactStore, ArtifactStoreFailure,
+    ArtifactStoreFailureKind, ArtifactStoreOperation, DiscardResult, MAX_ARTIFACT_BYTES,
+    ReleaseResult, StagedArtifact, VerifiedArtifactStream, derive_artifact_id,
 };
 use zeroshot_engine::fault::{EvidenceClass, FaultContext, FaultModule};
+use zeroshot_engine::required_proof::{ArtifactReverification, RequiredProofError};
 
 #[path = "support/artifacts.rs"]
 mod artifacts;
@@ -331,4 +335,119 @@ fn failure_mapping_is_closed_and_contains_no_raw_text() {
         assert!(!failure.to_string().contains('/'));
         assert!(!format!("{failure:?}").contains("path"));
     }
+}
+
+struct CorruptOpenStore {
+    artifact_ref: ArtifactRef,
+    bytes: Vec<u8>,
+}
+
+#[async_trait]
+impl ArtifactStore for CorruptOpenStore {
+    async fn stage(
+        &self,
+        _intent: ArtifactIntent,
+        _bytes: ArtifactByteStream,
+    ) -> Result<StagedArtifact, ArtifactStoreFailure> {
+        Err(ArtifactStoreFailure::new(
+            ArtifactStoreFailureKind::InvalidStage,
+        ))
+    }
+
+    async fn publish(&self, _staged: &StagedArtifact) -> Result<ArtifactRef, ArtifactStoreFailure> {
+        Err(ArtifactStoreFailure::new(
+            ArtifactStoreFailureKind::InvalidStage,
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> Result<Option<ArtifactRef>, ArtifactStoreFailure> {
+        Ok((artifact_id == &self.artifact_ref.artifact_id).then(|| self.artifact_ref.clone()))
+    }
+
+    async fn open(
+        &self,
+        artifact_id: &ArtifactId,
+    ) -> Result<VerifiedArtifactStream, ArtifactStoreFailure> {
+        if artifact_id != &self.artifact_ref.artifact_id {
+            return Err(ArtifactStoreFailure::new(
+                ArtifactStoreFailureKind::MissingCommittedContent,
+            ));
+        }
+        Ok(Box::new(Cursor::new(self.bytes.clone())))
+    }
+
+    async fn discard(
+        &self,
+        _staged: &StagedArtifact,
+    ) -> Result<DiscardResult, ArtifactStoreFailure> {
+        Err(ArtifactStoreFailure::new(
+            ArtifactStoreFailureKind::InvalidStage,
+        ))
+    }
+
+    async fn release(
+        &self,
+        _artifact_id: &ArtifactId,
+    ) -> Result<ReleaseResult, ArtifactStoreFailure> {
+        Err(ArtifactStoreFailure::new(
+            ArtifactStoreFailureKind::InvalidStage,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn required_proof_reverification_hashes_exact_short_and_overlong_streams() {
+    let source = FakeArtifactStore::new();
+    let expected_bytes = b"proof output".to_vec();
+    let staged = source
+        .stage(
+            intent(&expected_bytes, "proof-corrupt-open"),
+            stream(expected_bytes.clone()),
+        )
+        .await
+        .unwrap();
+    let artifact_ref = source.publish(&staged).await.unwrap();
+
+    for bytes in [
+        vec![b'x'; expected_bytes.len()],
+        expected_bytes[..expected_bytes.len() - 1].to_vec(),
+        [expected_bytes.as_slice(), b"x"].concat(),
+    ] {
+        let store = CorruptOpenStore {
+            artifact_ref: artifact_ref.clone(),
+            bytes,
+        };
+        assert_eq!(
+            ArtifactReverification::reverify(&store, &artifact_ref)
+                .await
+                .unwrap_err(),
+            RequiredProofError::ArtifactMismatch
+        );
+    }
+}
+
+#[tokio::test]
+async fn required_proof_reverification_checks_exact_ref_length_and_digest() {
+    let store = FakeArtifactStore::new();
+    let bytes = b"proof output".to_vec();
+    let staged = store
+        .stage(intent(&bytes, "proof-reverify"), stream(bytes))
+        .await
+        .unwrap();
+    let artifact_ref = store.publish(&staged).await.unwrap();
+    ArtifactReverification::reverify(&store, &artifact_ref)
+        .await
+        .unwrap();
+
+    let mut forged = artifact_ref;
+    forged.sha256 = Sha256Digest::new("0".repeat(64)).unwrap();
+    assert_eq!(
+        ArtifactReverification::reverify(&store, &forged)
+            .await
+            .unwrap_err(),
+        RequiredProofError::ArtifactMismatch
+    );
 }
