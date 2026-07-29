@@ -12,7 +12,7 @@ use openengine_cluster_server::ConnectionContext;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, timeout, timeout_at};
 use tokio_tungstenite::accept_hdr_async_with_config;
@@ -33,7 +33,9 @@ pub struct ListenerConfig {
     pub liveness_timeout: Duration,
     pub handshake_timeout: Duration,
     pub drain_timeout: Duration,
+    pub shutdown_timeout: Duration,
     pub max_active_connections: usize,
+    pub max_pending_handshakes: usize,
 }
 
 impl Default for ListenerConfig {
@@ -43,7 +45,9 @@ impl Default for ListenerConfig {
             liveness_timeout: Duration::from_millis(500),
             handshake_timeout: Duration::from_secs(2),
             drain_timeout: Duration::from_millis(250),
+            shutdown_timeout: Duration::from_secs(1),
             max_active_connections: 64,
+            max_pending_handshakes: 64,
         }
     }
 }
@@ -60,6 +64,8 @@ pub enum DaemonListenerError {
     Io(#[from] io::Error),
     #[error("daemon listener task failed")]
     Task,
+    #[error("daemon shutdown exceeded its outer deadline")]
+    ShutdownTimeout,
 }
 
 pub struct DaemonListener {
@@ -67,6 +73,9 @@ pub struct DaemonListener {
     locator: DaemonLocator,
     shutdown: Arc<Notify>,
     accept_task: Option<JoinHandle<()>>,
+    shutdown_timeout: Duration,
+    pending_handshake_limit: usize,
+    pending_handshake_permits: Arc<Semaphore>,
 }
 
 impl DaemonListener {
@@ -85,7 +94,10 @@ impl DaemonListener {
     where
         F: NativeBackendFactory + Send + Sync + 'static,
     {
-        if config.max_active_connections == 0 {
+        if config.max_active_connections == 0
+            || config.max_pending_handshakes == 0
+            || config.shutdown_timeout.is_zero()
+        {
             return Err(DaemonListenerError::InvalidConfiguration);
         }
         let lock_profile = profile.clone();
@@ -122,11 +134,13 @@ impl DaemonListener {
         };
 
         let shutdown = Arc::new(Notify::new());
+        let pending_handshake_permits = Arc::new(Semaphore::new(config.max_pending_handshakes));
         let accept_task = tokio::spawn(run_accept_loop(AcceptLoop {
             listener: tcp,
             factory: Arc::new(factory),
             credentials,
             shutdown: Arc::clone(&shutdown),
+            pending_handshake_permits: Arc::clone(&pending_handshake_permits),
             config,
         }));
         if let Err(error) = replace_locator_locked(&profile, &locator) {
@@ -141,6 +155,9 @@ impl DaemonListener {
             locator,
             shutdown,
             accept_task: Some(accept_task),
+            shutdown_timeout: config.shutdown_timeout,
+            pending_handshake_limit: config.max_pending_handshakes,
+            pending_handshake_permits,
         })
     }
 
@@ -149,10 +166,27 @@ impl DaemonListener {
         &self.locator
     }
 
+    #[must_use]
+    pub fn pending_handshakes(&self) -> usize {
+        self.pending_handshake_limit
+            .saturating_sub(self.pending_handshake_permits.available_permits())
+    }
+
     pub async fn shutdown(mut self) -> Result<(), DaemonListenerError> {
         self.shutdown.notify_one();
-        if let Some(task) = self.accept_task.take() {
-            task.await.map_err(|_| DaemonListenerError::Task)?;
+        if let Some(mut task) = self.accept_task.take() {
+            match timeout(self.shutdown_timeout, &mut task).await {
+                Ok(result) => result.map_err(|_| DaemonListenerError::Task)?,
+                Err(_) => {
+                    task.abort();
+                    let completion = timeout(self.shutdown_timeout, &mut task)
+                        .await
+                        .map_err(|_| DaemonListenerError::ShutdownTimeout)?;
+                    if completion.is_err_and(|error| !error.is_cancelled()) {
+                        return Err(DaemonListenerError::Task);
+                    }
+                }
+            }
         }
         let profile = self.profile.clone();
         let locator = self.locator.clone();
@@ -231,7 +265,6 @@ fn valid_liveness_response(response: &Value) -> bool {
     };
     object.get("jsonrpc").and_then(Value::as_str) == Some(JSON_RPC_VERSION)
         && object.get("id").and_then(Value::as_str) == Some("daemon-liveness")
-        && object.get("result").is_some_and(Value::is_object)
         && !object.contains_key("error")
         && response
             .pointer("/result/protocolVersion")
@@ -269,6 +302,7 @@ struct AcceptLoop<F> {
     credentials: DaemonCredentials,
     shutdown: Arc<Notify>,
     config: ListenerConfig,
+    pending_handshake_permits: Arc<Semaphore>,
 }
 
 async fn run_accept_loop<F>(host: AcceptLoop<F>)
@@ -281,8 +315,9 @@ where
         credentials,
         shutdown,
         config,
+        pending_handshake_permits,
     } = host;
-    let permits = Arc::new(Semaphore::new(config.max_active_connections));
+    let active_permits = Arc::new(Semaphore::new(config.max_active_connections));
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -293,16 +328,23 @@ where
             }
             accepted = listener.accept() => {
                 let Ok((stream, peer)) = accepted else { break };
+                let Ok(handshake_permit) =
+                    Arc::clone(&pending_handshake_permits).try_acquire_owned()
+                else {
+                    drop(stream);
+                    continue;
+                };
                 let factory = Arc::clone(&factory);
                 let credentials = credentials.clone();
-                let permits = Arc::clone(&permits);
+                let active_permits = Arc::clone(&active_permits);
                 connections.spawn(async move {
                     serve_connection(ConnectionTask {
                         stream,
                         peer,
                         factory,
                         credentials,
-                        permits,
+                        active_permits,
+                        handshake_permit,
                         handshake_timeout: config.handshake_timeout,
                         liveness_timeout: config.liveness_timeout,
                     }).await;
@@ -319,7 +361,6 @@ where
             Ok(None) => break,
             Err(_) => {
                 connections.abort_all();
-                while connections.join_next().await.is_some() {}
                 break;
             }
         }
@@ -331,7 +372,8 @@ struct ConnectionTask<F> {
     peer: SocketAddr,
     factory: Arc<F>,
     credentials: DaemonCredentials,
-    permits: Arc<Semaphore>,
+    active_permits: Arc<Semaphore>,
+    handshake_permit: OwnedSemaphorePermit,
     handshake_timeout: Duration,
     liveness_timeout: Duration,
 }
@@ -345,7 +387,8 @@ where
         peer,
         factory,
         credentials,
-        permits,
+        active_permits,
+        handshake_permit,
         handshake_timeout,
         liveness_timeout,
     } = connection;
@@ -354,6 +397,7 @@ where
     let Ok(Ok(mut websocket)) = timeout(handshake_timeout, handshake).await else {
         return;
     };
+    drop(handshake_permit);
     let Some(purpose) = receipt.take() else {
         return;
     };
@@ -379,7 +423,7 @@ where
         let _ = websocket.close(None).await;
         return;
     }
-    let Ok(_permit) = permits.try_acquire_owned() else {
+    let Ok(_permit) = active_permits.try_acquire_owned() else {
         return;
     };
 

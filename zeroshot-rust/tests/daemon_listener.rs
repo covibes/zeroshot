@@ -30,7 +30,9 @@ fn test_config() -> ListenerConfig {
         liveness_timeout: Duration::from_millis(150),
         handshake_timeout: Duration::from_millis(200),
         drain_timeout: Duration::from_millis(80),
+        shutdown_timeout: Duration::from_millis(300),
         max_active_connections: 8,
+        max_pending_handshakes: 8,
     }
 }
 
@@ -65,6 +67,64 @@ async fn concurrent_profile_start_has_one_owner_and_loser_cannot_remove_it() {
         read_locator(&profile.profile).expect("locator removed"),
         None
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_handshake_burst_owns_only_the_configured_pre_auth_bound() {
+    let profile = TempProfile::new("pre-auth-bound");
+    let config = ListenerConfig {
+        handshake_timeout: Duration::from_secs(2),
+        max_pending_handshakes: 2,
+        ..test_config()
+    };
+    let listener = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        config,
+    )
+    .await
+    .expect("start listener");
+    let address: SocketAddr = listener
+        .locator()
+        .endpoint
+        .strip_prefix("ws://")
+        .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+        .expect("listener endpoint")
+        .parse()
+        .expect("listener address");
+
+    let mut sockets = Vec::new();
+    for _ in 0..2 {
+        let mut socket = TcpStream::connect(address).await.expect("raw connection");
+        socket.write_all(b"G").await.expect("partial handshake");
+        sockets.push(socket);
+    }
+    timeout(Duration::from_millis(200), async {
+        while listener.pending_handshakes() != config.max_pending_handshakes {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("listener admitted bounded raw handshakes");
+
+    for _ in 0..16 {
+        if let Ok(mut socket) = TcpStream::connect(address).await {
+            let _ = socket.write_all(b"G").await;
+            sockets.push(socket);
+        }
+        assert!(
+            listener.pending_handshakes() <= config.max_pending_handshakes,
+            "accepted pre-auth ownership exceeded its finite bound"
+        );
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(listener.pending_handshakes(), config.max_pending_handshakes);
+
+    drop(sockets);
+    timeout(Duration::from_millis(500), listener.shutdown())
+        .await
+        .expect("bounded listener shutdown")
+        .expect("listener shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -384,7 +444,11 @@ async fn shutdown_stops_accepting_drains_bounded_releases_port_and_removes_only_
     let listener = DaemonListener::start_with_config(
         profile.profile.clone(),
         CountingFactory::default(),
-        test_config(),
+        ListenerConfig {
+            drain_timeout: Duration::from_secs(2),
+            shutdown_timeout: Duration::from_millis(30),
+            ..test_config()
+        },
     )
     .await
     .expect("start listener");
