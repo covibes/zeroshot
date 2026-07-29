@@ -358,7 +358,7 @@ function registerTransactionalRecoveryTests() {
       const result = runSettingsCli(['set', 'logLevel', 'verbose']);
 
       assert.strictEqual(result.status, 0, result.stderr);
-      assert.ok(result.stdout.includes('Set logLevel = \"verbose\"'));
+      assert.ok(result.stdout.includes('Set logLevel = "verbose"'));
       assert.strictEqual(JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel, 'verbose');
     });
 
