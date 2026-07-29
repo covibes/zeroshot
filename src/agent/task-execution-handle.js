@@ -29,6 +29,7 @@ class TaskExecutionHandle {
     this._failClosedError = null;
     this._invokedCancelActions = new Set();
     this._cancelActionPromises = [];
+    this._lastCancellationResult = undefined;
     this._executionFinished = false;
     this._retainOwnership = false;
     this.settled = false;
@@ -145,8 +146,15 @@ class TaskExecutionHandle {
       this._cancelActionPromises = [];
       throw error;
     }
-    const termination = results.at(-1);
-    if (results.length === 0 || termination == null) {
+    const observedTermination = results.at(-1);
+    if (observedTermination !== undefined && observedTermination !== null) {
+      this._lastCancellationResult = observedTermination;
+    }
+    const termination =
+      observedTermination !== undefined && observedTermination !== null
+        ? observedTermination
+        : this._lastCancellationResult;
+    if (termination === undefined || termination === null) {
       return termination;
     }
     if (!isTerminationConfirmed(termination)) {

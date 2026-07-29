@@ -101,6 +101,33 @@ describe('TaskExecutionHandle', function () {
     assert.strictEqual(ordinary.settled, true);
   });
 
+  it('preserves a consumed unconfirmed cleanup result until retry succeeds', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    let attempts = 0;
+    handle.assignTaskId('consumed-cleanup-result');
+    handle.setCancelAction(() => {
+      attempts++;
+      return attempts === 1
+        ? { forced: false, reason: 'cleanup still pending' }
+        : { forced: true };
+    });
+
+    const firstTermination = await handle.cancel('deadline cleanup');
+    assert.strictEqual(firstTermination.forced, false);
+    const consumedTermination = await handle.waitForCancellation();
+    assert.strictEqual(consumedTermination.forced, false);
+    assert.strictEqual(consumedTermination.reason, 'cleanup still pending');
+    handle.finishExecution();
+    assert.strictEqual(handle.settled, false);
+    assert.deepStrictEqual(registry.activeTaskIds, ['consumed-cleanup-result']);
+
+    await registry.cancelAll('later cleanup retry');
+    assert.strictEqual(attempts, 2);
+    assert.strictEqual(handle.settled, true);
+    assert.strictEqual(registry.size, 0);
+  });
+
   it('fails closed an unkillable local child after bounded deadline cleanup', async function () {
     const clock = sinon.useFakeTimers();
     const handle = new TaskExecutionHandle('test-agent');
