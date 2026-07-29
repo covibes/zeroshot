@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openengine_cluster_protocol::PROTOCOL_VERSION;
+use openengine_cluster_server::method_registry::METHOD_REGISTRY;
 use openengine_cluster_testkit::artifacts::{
     ArtifactError, check_artifacts, generate_artifacts, write_artifacts,
 };
@@ -123,23 +124,11 @@ async fn openrpc_exposes_only_the_implemented_protocol_methods() {
         .iter()
         .map(|method| method["name"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        methods,
-        [
-            "initialize",
-            "plan",
-            "apply",
-            "update",
-            "stop",
-            "retry",
-            "resubmit",
-            "delete",
-            "get",
-            "watch",
-            "logs",
-            "agent/attach"
-        ]
-    );
+    let registry_methods = METHOD_REGISTRY
+        .iter()
+        .map(|descriptor| descriptor.name)
+        .collect::<Vec<_>>();
+    assert_eq!(methods, registry_methods);
     for component in [
         "GraphSpec",
         "CompiledGraphIr",

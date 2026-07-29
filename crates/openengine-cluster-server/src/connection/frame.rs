@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use super::{DecodedOutcome, DecodedRequest, RequestKind};
+use crate::method_registry::{method_descriptor, MethodKind};
 use crate::serialize_error;
 
 /// One-pass JSON tree retaining duplicate object members until transport-specific notification
@@ -202,26 +203,14 @@ impl DecodedFrame {
         match DecodedRequest::from_value(self.root.into_value()) {
             Ok(request) => {
                 if legacy_classified {
-                    match request.method.as_str() {
-                        "watch" => {
-                            return RequestKind::Watch {
-                                id: request.id,
-                                params: request.params,
-                            };
-                        }
-                        "logs" => {
-                            return RequestKind::Logs {
-                                id: request.id,
-                                params: request.params,
-                            };
-                        }
-                        "agent/attach" => {
-                            return RequestKind::AgentAttach {
-                                id: request.id,
-                                params: request.params,
-                            };
-                        }
-                        _ => {}
+                    if let Some(MethodKind::Subscription(kind)) =
+                        method_descriptor(&request.method).map(|descriptor| descriptor.kind)
+                    {
+                        return RequestKind::Subscription {
+                            kind,
+                            id: request.id,
+                            params: request.params,
+                        };
                     }
                 }
                 RequestKind::Passthrough {

@@ -53,6 +53,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/InitializeResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -72,6 +77,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/PlanResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -123,6 +133,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/ApplyResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -252,6 +267,11 @@
         ],
         "title": "UpdateParams",
         "type": "object"
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -290,6 +310,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/StopResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -321,6 +346,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/RetryResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -364,6 +394,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/ResubmitResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -405,6 +440,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/DeleteResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -427,6 +467,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/GetResult"
         }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
       }
     },
     {
@@ -459,6 +504,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/WatchResult"
         }
+      },
+      "x-subscription": true,
+      "x-transport-requirements": {
+        "inboundNotifications": true,
+        "serverPush": true
       }
     },
     {
@@ -470,6 +520,11 @@
         "schema": {
           "$ref": "schema.json#/$defs/LogsResult"
         }
+      },
+      "x-subscription": true,
+      "x-transport-requirements": {
+        "inboundNotifications": true,
+        "serverPush": true
       }
     },
     {
@@ -492,12 +547,17 @@
         "schema": {
           "$ref": "schema.json#/$defs/AgentAttachResult"
         }
+      },
+      "x-subscription": true,
+      "x-transport-requirements": {
+        "inboundNotifications": true,
+        "serverPush": true
       }
     }
   ],
   "openrpc": "1.3.2",
   "x-generic-subscription-framing": {
-    "description": "watch, logs, and agent/attach each establish a subscription via one normal JSON-RPC result; subsequent delivery uses the generic notification methods below, shared by every subscription-based method. There is no watch/event, watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the wire. `$/cancelRequest` is a transport-level best-effort cancellation of any in-flight unary request by its RequestId; it is silently a no-op for an unknown or already-completed id and carries no rollback claim after backend commit.",
+    "description": "watch, logs, and agent/attach each establish a subscription via one normal JSON-RPC result; subsequent delivery uses the generic notification methods below, shared by every subscription-based method. watch, logs, and agent/attach are established through the connection layer and are not answerable by Dispatcher::dispatch alone. There is no watch/event, watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the wire. `$/cancelRequest` is a transport-level best-effort cancellation of any in-flight unary request by its RequestId; it is silently a no-op for an unknown or already-completed id and carries no rollback claim after backend commit.",
     "notifications": {
       "$/cancelRequest": {
         "$ref": "schema.json#/$defs/CancelRequestParams"

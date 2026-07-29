@@ -5,6 +5,7 @@ pub mod agent_attach;
 pub mod graph_verifier;
 pub mod lifecycle;
 pub mod logs;
+pub mod method_registry;
 pub mod stdio;
 pub mod watch;
 pub mod websocket;

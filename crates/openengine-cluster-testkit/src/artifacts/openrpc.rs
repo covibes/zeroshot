@@ -2,30 +2,22 @@ use openengine_cluster_protocol::{
     AgentAttachParams, ApplyParams, DeleteParams, ResubmitParams, RetryParams, StopParams,
     UpdateParams,
 };
+use openengine_cluster_server::method_registry::{MethodDescriptor, MethodKind, METHOD_REGISTRY};
 use schemars::schema_for;
 use serde_json::{json, Value};
 
 pub(super) fn document() -> Value {
+    let methods = METHOD_REGISTRY
+        .iter()
+        .map(method_document)
+        .collect::<Vec<_>>();
     json!({
         "openrpc": "1.3.2",
         "info": {
             "title": "Open Engine Cluster Protocol",
             "version": "1.0.0"
         },
-        "methods": [
-            initialize_method(),
-            plan_method(),
-            apply_method(),
-            update_method(),
-            stop_method(),
-            retry_method(),
-            resubmit_method(),
-            delete_method(),
-            get_method(),
-            watch_method(),
-            logs_method(),
-            agent_attach_method(),
-        ],
+        "methods": methods,
         "components": {
             "schemas": {
                 "GraphSpec": { "$ref": "graph.schema.json" },
@@ -38,12 +30,14 @@ pub(super) fn document() -> Value {
         "x-generic-subscription-framing": {
             "description": "watch, logs, and agent/attach each establish a subscription via one \
                 normal JSON-RPC result; subsequent delivery uses the generic notification methods \
-                below, shared by every subscription-based method. There is no watch/event, \
-                watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, \
-                agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the \
-                wire. `$/cancelRequest` is a transport-level best-effort cancellation of any \
-                in-flight unary request by its RequestId; it is silently a no-op for an unknown \
-                or already-completed id and carries no rollback claim after backend commit.",
+                below, shared by every subscription-based method. watch, logs, and agent/attach \
+                are established through the connection layer and are not answerable by \
+                Dispatcher::dispatch alone. There is no watch/event, watch/cancel, watch/closed, \
+                logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or \
+                agent/attach/closed method on the wire. `$/cancelRequest` is a transport-level \
+                best-effort cancellation of any in-flight unary request by its RequestId; it is \
+                silently a no-op for an unknown or already-completed id and carries no rollback \
+                claim after backend commit.",
             "notifications": {
                 "event": { "$ref": "schema.json#/$defs/EventNotification" },
                 "subscription/cancel": { "$ref": "schema.json#/$defs/SubscriptionCancelParams" },
@@ -53,10 +47,42 @@ pub(super) fn document() -> Value {
         }
     })
 }
+fn method_document(descriptor: &MethodDescriptor) -> Value {
+    let mut method = match descriptor.name {
+        "initialize" => initialize_method(),
+        "plan" => plan_method(),
+        "apply" => apply_method(),
+        "update" => update_method(),
+        "stop" => stop_method(),
+        "retry" => retry_method(),
+        "resubmit" => resubmit_method(),
+        "delete" => delete_method(),
+        "get" => get_method(),
+        "watch" => watch_method(),
+        "logs" => logs_method(),
+        "agent/attach" => agent_attach_method(),
+        name => panic!("METHOD_REGISTRY method has no OpenRPC schema: {name}"),
+    };
+    let object = method
+        .as_object_mut()
+        .expect("OpenRPC method builders must return objects");
+    object.insert("name".to_owned(), json!(descriptor.name));
+    object.insert(
+        "x-subscription".to_owned(),
+        json!(matches!(descriptor.kind, MethodKind::Subscription(_))),
+    );
+    object.insert(
+        "x-transport-requirements".to_owned(),
+        json!({
+            "serverPush": descriptor.transport_requirements.server_push,
+            "inboundNotifications": descriptor.transport_requirements.inbound_notifications,
+        }),
+    );
+    method
+}
 
 fn initialize_method() -> Value {
     json!({
-        "name": "initialize",
         "paramStructure": "by-name",
         "params": [{
             "name": "protocolVersion",
@@ -75,7 +101,6 @@ fn initialize_method() -> Value {
 
 fn plan_method() -> Value {
     json!({
-        "name": "plan",
         "paramStructure": "by-name",
         "params": [{
             "name": "graph",
@@ -93,7 +118,6 @@ fn apply_method() -> Value {
     let apply_schema = serde_json::to_value(schema_for!(ApplyParams))
         .expect("apply parameter JSON Schema serialization must succeed");
     json!({
-        "name": "apply",
         "paramStructure": "by-name",
         "params": [
             {
@@ -132,7 +156,6 @@ fn update_method() -> Value {
     let schema = serde_json::to_value(schema_for!(UpdateParams))
         .expect("update parameter JSON Schema serialization must succeed");
     json!({
-        "name": "update",
         "paramStructure": "by-name",
         "x-params-schema": schema,
         "params": [
@@ -153,7 +176,6 @@ fn stop_method() -> Value {
     let schema = serde_json::to_value(schema_for!(StopParams))
         .expect("stop parameter JSON Schema serialization must succeed");
     json!({
-        "name": "stop",
         "paramStructure": "by-name",
         "params": [
             { "name": "mode", "required": true, "schema": { "$ref": "schema.json#/$defs/StopMode" } },
@@ -171,7 +193,6 @@ fn retry_method() -> Value {
     let schema = serde_json::to_value(schema_for!(RetryParams))
         .expect("retry parameter JSON Schema serialization must succeed");
     json!({
-        "name": "retry",
         "paramStructure": "by-name",
         "params": [
             { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
@@ -188,7 +209,6 @@ fn resubmit_method() -> Value {
     let schema = serde_json::to_value(schema_for!(ResubmitParams))
         .expect("resubmit parameter JSON Schema serialization must succeed");
     json!({
-        "name": "resubmit",
         "paramStructure": "by-name",
         "params": [
             { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
@@ -207,7 +227,6 @@ fn delete_method() -> Value {
     let schema = serde_json::to_value(schema_for!(DeleteParams))
         .expect("delete parameter JSON Schema serialization must succeed");
     json!({
-        "name": "delete",
         "paramStructure": "by-name",
         "params": [
             { "name": "ifGeneration", "required": true, "schema": property_schema(&schema, "ifGeneration") },
@@ -230,7 +249,6 @@ fn property_schema(schema: &Value, property: &str) -> Value {
 
 fn get_method() -> Value {
     json!({
-        "name": "get",
         "paramStructure": "by-name",
         "params": [{
             "name": "atCursor",
@@ -246,7 +264,6 @@ fn get_method() -> Value {
 
 fn watch_method() -> Value {
     json!({
-        "name": "watch",
         "paramStructure": "by-name",
         "params": [
             {
@@ -267,7 +284,6 @@ fn watch_method() -> Value {
 
 fn logs_method() -> Value {
     json!({
-        "name": "logs",
         "paramStructure": "by-name",
         "params": [],
         "result": {
@@ -284,7 +300,6 @@ fn agent_attach_method() -> Value {
     let schema = serde_json::to_value(schema_for!(AgentAttachParams))
         .expect("agent_attach parameter JSON Schema serialization must succeed");
     json!({
-        "name": "agent/attach",
         "paramStructure": "by-name",
         "params": [{
             "name": "execution",
