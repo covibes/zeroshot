@@ -386,10 +386,10 @@ async fn idempotency_and_cancellation_before_create_has_zero_effects() {
     let cancellation = CancellationSignal::default();
     let dispatcher = Dispatcher::new(
         backend,
-        ConnectionContext {
-            peer_label: None,
-            cancellation: cancellation.clone(),
-        },
+        ConnectionContext::new(
+            ConnectionContext::default().identity().clone(),
+            cancellation.clone(),
+        ),
     );
     let cancelled_client = Arc::new(ClusterClient::new(InProcessTransport::new(dispatcher)));
     let task_client = Arc::clone(&cancelled_client);
@@ -427,10 +427,10 @@ async fn idempotency_and_cancellation_restores_existing_run_and_replays_after_co
     let update_client = Arc::new(ClusterClient::new(InProcessTransport::new(
         Dispatcher::new(
             backend,
-            ConnectionContext {
-                peer_label: None,
-                cancellation: cancellation.clone(),
-            },
+            ConnectionContext::new(
+                ConnectionContext::default().identity().clone(),
+                cancellation.clone(),
+            ),
         ),
     )));
     let update_task_client = Arc::clone(&update_client);
@@ -453,10 +453,10 @@ async fn idempotency_and_cancellation_restores_existing_run_and_replays_after_co
     already_cancelled.cancel();
     let replay_client = ClusterClient::new(InProcessTransport::new(Dispatcher::new(
         replay_backend,
-        ConnectionContext {
-            peer_label: None,
-            cancellation: already_cancelled,
-        },
+        ConnectionContext::new(
+            ConnectionContext::default().identity().clone(),
+            already_cancelled,
+        ),
     )));
     let recovered = replay_client
         .apply(committed(graph, json!(1), 0, "stable-key"))

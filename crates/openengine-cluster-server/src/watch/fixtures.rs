@@ -25,9 +25,34 @@ use super::{
     ResolvedSubscription, SubscribeRequest, WatchEventStream, WatchHandle,
 };
 use crate::admission::StoreError;
-use crate::stdio::serve_ndjson;
+use crate::identity::{
+    BindingAttributes, ConnectionBinding, ConnectionIdentity, ConnectionIdentityConfig,
+    PrincipalId, StaticConnectionIdentityResolver, SystemConnectionTime, TenantId,
+};
+use crate::stdio::{serve_ndjson, NdjsonIo};
 use crate::websocket::{serve_websocket, websocket_config};
-use crate::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
+use crate::{BackendError, ClusterBackend, ConnectionContext};
+
+fn fixture_binding<B>(
+    backend: B,
+) -> ConnectionBinding<B, StaticConnectionIdentityResolver, SystemConnectionTime>
+where
+    B: ClusterBackend,
+{
+    let identity = ConnectionIdentity::new(ConnectionIdentityConfig {
+        principal: PrincipalId::new("fixture-principal"),
+        tenant: TenantId::new("fixture-tenant"),
+        issued_at_ms: None,
+        expires_at_ms: u64::MAX,
+        binding_attributes: BindingAttributes::default(),
+    });
+    ConnectionBinding::new(
+        Arc::new(backend),
+        StaticConnectionIdentityResolver::new(identity),
+        SystemConnectionTime,
+        Default::default(),
+    )
+}
 
 /// Wires `backend` to a fresh [`serve_ndjson`] task over an in-memory duplex pipe pair, returning
 /// the pipe's client-facing write/read halves and the server task's join handle. Shared by this
@@ -39,12 +64,9 @@ where
 {
     let (client_write, server_read) = tokio::io::duplex(1 << 16);
     let (server_write, client_read) = tokio::io::duplex(1 << 16);
-    let dispatcher = Dispatcher::new(backend, ConnectionContext::default());
     let server = tokio::spawn(serve_ndjson(
-        dispatcher,
-        server_read,
-        server_write,
-        tokio::io::sink(),
+        fixture_binding(backend),
+        NdjsonIo::new(server_read, server_write, tokio::io::sink()),
     ));
     (client_write, client_read, server)
 }
@@ -73,12 +95,12 @@ where
     B: ClusterBackend,
 {
     let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let dispatcher = Dispatcher::new(backend, ConnectionContext::default());
+    let binding = fixture_binding(backend);
     let server = tokio::spawn(async move {
         let ws = tokio_tungstenite::accept_async_with_config(server_io, Some(websocket_config()))
             .await
             .expect("server handshake must succeed");
-        serve_websocket(dispatcher, ws).await
+        serve_websocket(binding, ws).await
     });
     let (client, _response) =
         tokio_tungstenite::client_async("ws://localhost/websocket", client_io)

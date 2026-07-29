@@ -26,6 +26,9 @@ use crate::connection::{
     ConnectionSetup, ConnectionState, DecodedFrame, DecodedOutcome, DecodedRequest, DispatchCtx,
     RequestDispatch, RequestKind, ShutdownArgs,
 };
+use crate::identity::{
+    ConnectionBinding, ConnectionIdentityResolver, ConnectionTimeSource, ResolvedConnection,
+};
 use crate::{ClusterBackend, Dispatcher};
 
 /// Bounded WebSocket text-frame length: a text message whose UTF-8 byte length exceeds this
@@ -59,16 +62,23 @@ pub fn websocket_config() -> WebSocketConfig {
 /// Serves one already-handshaken WebSocket connection: demultiplexes unary requests and `watch`/
 /// `logs`/`agent/attach` subscriptions sharing this connection exactly like `stdio::serve_ndjson`,
 /// plus per-connection cooperative `$/cancelRequest`. Binary frames close with code 1003;
-/// oversized or capacity-rejected text frames close with code 1009. Never returns an `Err`:
-/// transport failures close the connection and this simply returns once torn down.
-pub async fn serve_websocket<B, S>(
-    dispatcher: Dispatcher<B>,
+/// oversized or capacity-rejected text frames close with code 1009, and an expired identity closes
+/// before text-frame decoding with code 4401. Identity-resolution failures are returned as I/O
+/// errors; transport failures after resolution tear down the connection and return `Ok`.
+pub async fn serve_websocket<B, S, I, T>(
+    binding: ConnectionBinding<B, I, T>,
     ws: WebSocketStream<S>,
 ) -> io::Result<()>
 where
     B: ClusterBackend,
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    I: ConnectionIdentityResolver,
+    T: ConnectionTimeSource,
 {
+    let ResolvedConnection {
+        dispatcher,
+        time_source,
+    } = binding.resolve().await?;
     let (sink, mut stream) = ws.split();
     let (outbound_tx, outbound_rx) = mpsc::channel::<String>(OUTBOUND_QUEUE_CAPACITY);
     let (close_tx, close_rx) = oneshot::channel::<CloseFrame>();
@@ -84,6 +94,19 @@ where
     let mut close_tx = Some(close_tx);
 
     while let Some(message) = next_incoming_message(&mut tasks, &mut stream, &mut close_tx).await {
+        if message.is_text()
+            && dispatcher
+                .context()
+                .identity()
+                .is_expired_at(time_source.now_ms())
+        {
+            signal_close(
+                &mut close_tx,
+                CloseCode::Library(4401),
+                "connection identity expired",
+            );
+            break;
+        }
         let mut ctx = WsCtx {
             dispatch: DispatchCtx {
                 dispatcher: &dispatcher,

@@ -36,13 +36,19 @@ instead, exactly as over NDJSON.
 
 ## Connection isolation over a shared backend
 
-One backend instance can be shared by multiple independently authorized WebSocket connections. Each
-connection is constructed with its own injected `ConnectionContext`; the wire protocol carries no
-auth, tenant, or route field, and no protocol parameter is ever interpreted as one -- that
-identity/authorization decision is made once, by whatever hosts this binding, at connection
-acceptance time, not by anything this crate parses from a request. CAS and idempotency guarantees
-are enforced by the shared backend itself, so two connections against one backend cannot double
-commit or observe effects attributable to another connection's context.
+One backend instance can be shared by multiple independently accepted WebSocket connections. At
+acceptance, the binding invokes its host-owned identity resolver exactly once, before decoding the
+first frame, and constructs an immutable `ConnectionContext` containing the resulting typed
+`ConnectionIdentity`: opaque principal and tenant identifiers, optional issuance time, required
+hard expiry, and binding-specific opaque attributes. Identity has no serde/wire representation.
+`principal`, `tenant`, and `expiresAt` keys in protocol params are ordinary unknown fields and fail
+typed parameter decoding with `INVALID_PARAMS`; they never change the connection identity.
+
+The binding checks expiry at every inbound request decode boundary. A frame observed at or after
+`expires_at_ms` reaches neither admission nor the backend: WebSocket closes with application code
+`4401`, while NDJSON writes one terminal diagnostic and closes. The dispatcher never partitions
+state. Connections with the same or distinct tenants observe exactly the sharing or isolation
+chosen by the backend that receives their read-only contexts.
 
 ## Capsule data-plane placement
 
@@ -53,16 +59,17 @@ upstream of an accepted connection is owned by whatever hosts that capsule, not 
 - provisioning or scheduling the capsule itself;
 - TLS termination (this binding speaks plain WebSocket text frames; TLS, if any, terminates in
   front of it);
-- resolving tenancy, routing, or authentication/authorization for a connection before it reaches
-  `serve_websocket`;
+- resolving the principal, tenant, expiry, and opaque binding attributes supplied to the
+  connection's identity resolver;
 - billing and usage metering;
 - workspace or secret storage/services;
 - artifact bytes (this protocol carries status, events, and control -- never artifact payloads);
 - issuing or validating the token/credential that authorized the connection.
 
-A hosting process is expected to accept the raw connection, resolve and inject that connection's
-`ConnectionContext`, and hand the rest to `serve_websocket`; this document defines only what happens
-from that handoff onward.
+A hosting process accepts the raw connection and supplies `ConnectionBinding` with its shared
+backend, identity resolver, time source, and connection cancellation signal. `serve_websocket`
+preserves that cancellation handle while resolving identity and constructing the context before
+reading frames; this document defines only what happens from that handoff onward.
 
 ## Client dialing and TLS
 
