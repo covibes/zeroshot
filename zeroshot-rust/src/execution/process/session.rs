@@ -180,6 +180,11 @@ impl ProcessSession {
         self.stdout.recv().await
     }
 
+    /// Waits for process completion without consuming the bounded stdout queue.
+    ///
+    /// Callers that need complete stdout must drain [`Self::recv_stdout`] to `None` before
+    /// calling this method. Waiting with unread stdout can fill the queue, trigger the bounded
+    /// I/O-drain timeout, and discard output that the stdout pump could not enqueue.
     pub async fn wait(&mut self) -> Result<ProcessSessionOutput, ProcessRunnerError> {
         await_completion(&mut self.completion).await
     }
