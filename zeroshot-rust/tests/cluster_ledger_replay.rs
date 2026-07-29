@@ -379,6 +379,39 @@ async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
         .unwrap_err();
     assert_eq!(gap.kind(), &LedgerErrorKind::InvalidLifecycle);
 
+    let active_occurrence = StructuralOccurrence {
+        node: "active-work".parse().unwrap(),
+        map_indices: Vec::new(),
+    };
+    ledger
+        .dispatch_reduction(
+            key("active-attempt-1"),
+            [54; 32],
+            ReductionDispatchRequest {
+                occurrence: active_occurrence.clone(),
+                attempt: PositiveInteger::new(1).unwrap(),
+                canonical_input: b"null".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let concurrent_attempt = ledger
+        .dispatch_reduction(
+            key("active-attempt-2"),
+            [55; 32],
+            ReductionDispatchRequest {
+                occurrence: active_occurrence,
+                attempt: PositiveInteger::new(2).unwrap(),
+                canonical_input: b"null".to_vec(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        concurrent_attempt.kind(),
+        &LedgerErrorKind::InvalidLifecycle
+    );
+
     let ordinary = ledger
         .dispatch(key("ordinary"), [43; 32])
         .await
