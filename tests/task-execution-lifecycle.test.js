@@ -10,9 +10,18 @@
  */
 const assert = require('assert');
 const sinon = require('sinon');
-const { TaskExecutionHandle } = require('../src/agent/task-execution-handle');
+const {
+  NestedExecutionRegistry,
+  TaskExecutionHandle,
+} = require('../src/agent/task-execution-handle');
 const { reformatOutput } = require('../src/agent/output-reformatter');
-const { parseResultOutput, buildCompletionResult } = require('../src/agent/agent-task-executor');
+const { executeHook } = require('../src/agent/agent-hook-executor');
+const {
+  buildCompletionResult,
+  killTask,
+  parseResultOutput,
+} = require('../src/agent/agent-task-executor');
+const { stop } = require('../src/agent/agent-lifecycle');
 
 afterEach(function () {
   sinon.restore();
@@ -60,17 +69,147 @@ describe('TaskExecutionHandle', function () {
     assert.strictEqual(handle.pid, 9999);
   });
 
-  it('settle resolves when the process exits', async function () {
+  it('settle resolves only after the complete nested execution settles', async function () {
     const handle = new TaskExecutionHandle('test-agent');
-    const { EventEmitter } = require('events');
-    const proc = new EventEmitter();
-    proc.kill = () => {};
-    handle.attachProcess(proc);
+    let resolved = false;
+    const settled = handle.settle().then(() => {
+      resolved = true;
+    });
 
-    const settled = handle.settle();
-    proc.emit('close', 0, null);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(resolved, false);
+
+    handle.markSettled();
     await settled;
     assert.strictEqual(handle.settled, true);
+  });
+});
+
+describe('NestedExecutionRegistry', function () {
+  it('cancels a pre-launch handle and waits for its settlement', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    let cancellationObserved = false;
+
+    handle.setCancelAction(async () => {
+      cancellationObserved = true;
+      await new Promise((resolve) => setImmediate(resolve));
+      handle.markSettled();
+      return { forced: true };
+    });
+
+    await registry.cancelAll('cluster shutdown');
+
+    assert.strictEqual(cancellationObserved, true);
+    assert.strictEqual(handle.isCancelled, true);
+    assert.strictEqual(handle.settled, true);
+    assert.strictEqual(registry.size, 0);
+  });
+
+  it('does not settle cancellation until durable task cleanup finishes', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    let releaseCleanup;
+    let cleanupFinished = false;
+
+    handle.assignTaskId('task-nested-race1');
+    handle.setCancelAction(
+      () =>
+        new Promise((resolve) => {
+          releaseCleanup = () => {
+            cleanupFinished = true;
+            handle.markSettled();
+            resolve({ forced: true, taskId: handle.taskId });
+          };
+        })
+    );
+
+    const cancellation = registry.cancelAll('retry boundary');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(cleanupFinished, false);
+    assert.strictEqual(registry.size, 1, 'retry must still observe the active child');
+
+    releaseCleanup();
+    await cancellation;
+    assert.strictEqual(cleanupFinished, true);
+    assert.strictEqual(registry.size, 0);
+  });
+
+  it('routes nested deadlines through the same cancellation owner', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    let cancellationDetails;
+
+    handle.setCancelAction(async (reason, details) => {
+      cancellationDetails = { reason, details };
+      handle.markSettled();
+      return { forced: true };
+    });
+    handle.armDeadline(5);
+
+    await handle.settle();
+    assert.match(cancellationDetails.reason, /timed out after 5ms/);
+    assert.strictEqual(cancellationDetails.details.code, 'AGENT_TASK_TIMEOUT');
+    registry.unregister(handle);
+  });
+
+  it('killTask reaches nested ownership without overwriting parent identity', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    const agent = {
+      currentTask: null,
+      currentTaskId: 'parent-task-42',
+      processPid: 1111,
+      nestedExecutions: registry,
+      _stopLivenessCheck() {},
+      _log() {},
+    };
+
+    handle.setCancelAction(async () => {
+      handle.markSettled();
+      return { forced: true, taskId: 'nested-task-1' };
+    });
+
+    const termination = await killTask(agent, 'cluster shutdown');
+
+    assert.notStrictEqual(termination?.forced, false);
+    assert.strictEqual(handle.isCancelled, true);
+    assert.strictEqual(registry.size, 0);
+    assert.strictEqual(agent.currentTask, null);
+    assert.strictEqual(agent.currentTaskId, 'parent-task-42');
+    assert.strictEqual(agent.processPid, 1111);
+  });
+
+  it('stop cancels an active nested execution even after the parent follower is gone', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    const agent = {
+      id: 'test-agent',
+      running: true,
+      state: 'executing_task',
+      currentTask: null,
+      currentTaskId: 'parent-task-42',
+      processPid: 1111,
+      nestedExecutions: registry,
+      unsubscribe: null,
+      _currentExecution: null,
+      _stopLivenessCheck() {},
+      _killTask(reason) {
+        return killTask(this, reason);
+      },
+      _log() {},
+    };
+    handle.setCancelAction(async () => {
+      handle.markSettled();
+      return { forced: true, taskId: 'nested-task-2' };
+    });
+
+    await stop(agent);
+
+    assert.strictEqual(agent.running, false);
+    assert.strictEqual(agent.state, 'stopped');
+    assert.strictEqual(registry.size, 0);
+    assert.strictEqual(handle.isCancelled, true);
   });
 });
 
@@ -109,6 +248,74 @@ describe('Parent identity preserved across nested reformat', function () {
     assert.strictEqual(agent.currentTaskId, 'parent-task-42');
     assert.strictEqual(agent.processPid, 1111);
     assert.ok(agent.currentTask, 'parent currentTask handle must survive');
+  });
+});
+
+describe('Cached parsed result hook consumers', function () {
+  it('reuses parsedResult for hook logic, transforms, and templates', async function () {
+    const published = [];
+    const agent = {
+      id: 'planner',
+      role: 'planner',
+      iteration: 1,
+      cluster: { id: 'test-cluster', agents: [] },
+      _parseResultOutput() {
+        throw new Error('cached hook result must not be parsed again');
+      },
+      _log() {},
+      _publish(message) {
+        published.push(message);
+      },
+    };
+    const result = {
+      success: true,
+      output: 'tool-only output requiring recovery',
+      parsedResult: { plan: 'cached plan', approved: true },
+    };
+
+    await executeHook({
+      hook: {
+        action: 'publish_message',
+        logic: {
+          engine: 'javascript',
+          script: 'return { receiver: result.approved ? "worker" : "broadcast" };',
+        },
+        config: {
+          topic: 'PLAN_READY',
+          receiver: 'broadcast',
+          content: { data: { plan: '{{result.plan}}' } },
+        },
+      },
+      agent,
+      message: { topic: 'ISSUE_OPENED' },
+      result,
+      cluster: agent.cluster,
+    });
+
+    await executeHook({
+      hook: {
+        action: 'publish_message',
+        transform: {
+          engine: 'javascript',
+          script:
+            'return { topic: "VALIDATION_RESULT", content: { data: { approved: result.approved } } };',
+        },
+      },
+      agent,
+      message: { topic: 'PLAN_READY' },
+      result,
+      cluster: agent.cluster,
+    });
+
+    assert.deepStrictEqual(published[0], {
+      topic: 'PLAN_READY',
+      receiver: 'worker',
+      content: { data: { plan: 'cached plan' } },
+    });
+    assert.deepStrictEqual(published[1], {
+      topic: 'VALIDATION_RESULT',
+      content: { data: { approved: true } },
+    });
   });
 });
 

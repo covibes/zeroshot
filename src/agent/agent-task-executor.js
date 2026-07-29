@@ -13,7 +13,10 @@
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { TaskExecutionHandle } = require('./task-execution-handle');
+const {
+  getNestedExecutionRegistry,
+  TaskExecutionHandle,
+} = require('./task-execution-handle');
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
@@ -453,17 +456,60 @@ function extractTokenUsage(output, providerName = 'claude') {
  * @param {{skipStructuredResultCheck?: boolean}} [options] - Internal nested-task controls
  * @returns {Promise<Object>} Result object { success, output, error }
  */
+function createExecutionHandle(agent, nested) {
+  const handle = new TaskExecutionHandle(agent.id);
+  if (!nested) return { handle, registry: null };
+
+  const registry = getNestedExecutionRegistry(agent);
+  registry.register(handle);
+  if (agent.timeout > 0) {
+    handle.armDeadline(agent.timeout);
+  }
+  return { handle, registry };
+}
+
+function createNestedCancellationError(handle) {
+  const error = new Error(handle.cancelReason || 'Nested task cancelled');
+  error.code = handle.cancelDetails.code || 'REFORMAT_CANCELLED';
+  error.taskId = handle.taskId;
+  return error;
+}
+
+async function terminateNestedSetupFailure(handle, error) {
+  let termination;
+  try {
+    termination = await handle.cancel(error.message, { code: 'NESTED_SETUP_FAILED' });
+  } catch (cleanupError) {
+    termination = { forced: false, reason: cleanupError.message };
+  }
+  if (termination?.forced === false) {
+    handle.retainOwnership();
+    error.message += ` Nested task cleanup was not confirmed: ${termination.reason}`;
+    error.retainTaskHandle = true;
+    error.permanent = true;
+    error.restartExhausted = true;
+    error.terminationExhausted = true;
+    error.terminationAttempts = 1;
+    error.taskId = handle.taskId;
+  }
+}
+
+async function settleRegisteredNestedHandle(registry, handle) {
+  await handle.waitForCancellation().catch(() => {
+    // A cleanup failure retains the handle for a later shutdown/kill retry.
+  });
+  handle.finishExecution();
+  if (handle.settled) {
+    registry.unregister(handle);
+  }
+}
+
 async function spawnClaudeTask(agent, context, options = {}) {
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const modelSpec = resolveAgentModelSpec(agent);
 
   const ctPath = getClaudeTasksPath();
   const cwd = agent.config.cwd || process.cwd();
-
-  // Build zeroshot task run args.
-  // CRITICAL: Default to strict schema validation to prevent cluster crashes from parse failures
-  // strictSchema=true uses Claude CLI's native --json-schema enforcement (no streaming but guaranteed structure)
-  // strictSchema=false uses stream-json with post-run validation (live logs but fragile)
   const { desiredOutputFormat, runOutputFormat } = resolveOutputFormatConfig(agent);
   const args = buildTaskRunArgs({
     agent,
@@ -472,28 +518,20 @@ async function spawnClaudeTask(agent, context, options = {}) {
     runOutputFormat,
   });
 
-  // NOTE: maxRetries is handled by the agent wrapper's internal retry loop,
-  // not passed to the CLI. See _handleTrigger() for retry logic.
-
   maybeLogStreamJsonNotice(agent, runOutputFormat);
 
-  // If schema enforcement is desired but we had to run stream-json for live logs,
-  // add explicit output instructions so the model still knows the required shape.
   const finalContext = buildFinalContext({
     agent,
     context,
     desiredOutputFormat,
     runOutputFormat,
   });
-
   args.push(finalContext);
 
-  // MOCK SUPPORT: Use injected mock function if provided
   if (agent.mockSpawnFn) {
     return agent.mockSpawnFn(args, { context, options });
   }
 
-  // SAFETY: Fail hard if testMode=true but no mock (should be caught in constructor)
   if (agent.testMode) {
     throw new Error(
       `AgentWrapper: testMode=true but attempting real Claude API call for agent '${agent.id}'. ` +
@@ -501,16 +539,10 @@ async function spawnClaudeTask(agent, context, options = {}) {
     );
   }
 
-  // ISOLATION MODE: Run inside Docker container
   if (agent.isolation?.enabled) {
     return spawnClaudeTaskIsolated(agent, context, options);
   }
 
-  // NON-ISOLATION MODE: Load safety hooks through an additional per-run settings file. Claude
-  // still reads the user's normal config and the repository's project/local config.
-  // AskUserQuestion blocking handled via:
-  // 1. Prompt injection (see agent-context-builder)
-  // 2. PreToolUse hook (defense-in-depth) - activated by ZEROSHOT_BLOCK_ASK_USER env var
   const claudeSettingsPath =
     providerName === 'claude'
       ? prepareClaudeSettingsOverlay({
@@ -519,74 +551,106 @@ async function spawnClaudeTask(agent, context, options = {}) {
       : null;
 
   const nested = options.nested === true;
-  const handle = new TaskExecutionHandle(agent.id);
+  const { handle, registry } = createExecutionHandle(agent, nested);
   let taskId;
   let pendingLaunch;
   try {
-    const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
-    taskId = await spawnTaskProcess({
-      agent,
-      ctPath,
-      args,
-      cwd,
-      spawnEnv,
-      handle,
-      nested,
-    });
-    pendingLaunch = nested ? handle : agent.currentTask;
-  } catch (error) {
-    cleanupCallerOwnedCommand(error, () => cleanupClaudeSettingsOverlay(claudeSettingsPath));
-    throw error;
-  }
-
-  // The task ID transfers provider and cleanup ownership to the detached
-  // watcher. From this point, follower/PID observation failures must not remove
-  // files that a live provider still reads.
-  if (!nested) {
-    agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
-  }
-  await waitForTaskReady(agent, taskId);
-  if (pendingLaunch?.cancelled || pendingLaunch?.isCancelled) {
-    throw new Error(`Task launch cancelled: ${taskId}`);
-  }
-
-  const MAX_PID_POLLS = 30;
-  const PID_POLL_DELAY = 100;
-  let realPid = null;
-  let terminalBeforePidObservation = false;
-
-  for (let i = 0; i < MAX_PID_POLLS; i++) {
-    const taskInfo = getTask(taskId);
-    if (taskInfo?.pid) {
-      realPid = taskInfo.pid;
-      break;
+    try {
+      const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
+      taskId = await spawnTaskProcess({
+        agent,
+        ctPath,
+        args,
+        cwd,
+        spawnEnv,
+        handle,
+        nested,
+      });
+      pendingLaunch = nested ? handle : agent.currentTask;
+    } catch (error) {
+      cleanupCallerOwnedCommand(error, () => cleanupClaudeSettingsOverlay(claudeSettingsPath));
+      throw error;
     }
-    if (taskInfo && ['completed', 'failed', 'killed', 'stale'].includes(taskInfo.status)) {
-      terminalBeforePidObservation = true;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, PID_POLL_DELAY));
-  }
 
-  if (pendingLaunch?.cancelled || pendingLaunch?.isCancelled) {
-    throw new Error(`Task launch cancelled: ${taskId}`);
-  }
-
-  if (realPid) {
-    handle.assignPid(realPid);
     if (!nested) {
-      agent.processPid = realPid;
-      agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
-      agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
+      agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
     }
-  } else if (!nested && terminalBeforePidObservation) {
-    agent._log(`📋 Agent ${agent.id}: Task finished before PID observation`);
-  } else if (!nested) {
-    agent._log(`⚠️ Agent ${agent.id}: PID not available (task may use non-standard watcher)`);
-  }
+    await waitForTaskReady(agent, taskId);
+    if (pendingLaunch?.cancelled || pendingLaunch?.isCancelled) {
+      throw nested
+        ? createNestedCancellationError(handle)
+        : new Error(`Task launch cancelled: ${taskId}`);
+    }
 
-  // Now follow the logs and stream output
-  return followClaudeTaskLogs(agent, taskId, options);
+    const MAX_PID_POLLS = 30;
+    const PID_POLL_DELAY = 100;
+    let realPid = null;
+    let terminalBeforePidObservation = false;
+
+    for (let i = 0; i < MAX_PID_POLLS; i++) {
+      const taskInfo = getTask(taskId);
+      if (taskInfo?.pid) {
+        realPid = taskInfo.pid;
+        break;
+      }
+      if (taskInfo && TASK_TERMINAL_STATUSES.has(taskInfo.status)) {
+        terminalBeforePidObservation = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, PID_POLL_DELAY));
+    }
+
+    if (pendingLaunch?.cancelled || pendingLaunch?.isCancelled) {
+      throw nested
+        ? createNestedCancellationError(handle)
+        : new Error(`Task launch cancelled: ${taskId}`);
+    }
+
+    if (realPid) {
+      handle.assignPid(realPid);
+      if (!nested) {
+        agent.processPid = realPid;
+        agent._publishLifecycle('PROCESS_SPAWNED', { pid: realPid });
+        agent._log(`📋 Agent ${agent.id}: Process PID: ${realPid}`);
+      }
+    } else if (!nested && terminalBeforePidObservation) {
+      agent._log(`📋 Agent ${agent.id}: Task finished before PID observation`);
+    } else if (!nested) {
+      agent._log(`⚠️ Agent ${agent.id}: PID not available (task may use non-standard watcher)`);
+    }
+    const result = await followClaudeTaskLogs(agent, taskId, {
+      ...options,
+      executionHandle: nested ? handle : null,
+    });
+    if (nested && !result.success && !handle.isCancelled) {
+      const failure = new Error(result.error || `Nested task ${taskId} failed`);
+      await terminateNestedSetupFailure(handle, failure);
+      if (failure.permanent) throw failure;
+      return result;
+    }
+    if (nested && handle.isCancelled) {
+      await handle.waitForCancellation();
+      throw createNestedCancellationError(handle);
+    }
+    return result;
+  } catch (error) {
+    if (
+      nested &&
+      handle.isCancelled &&
+      handle.cancelDetails.code !== 'NESTED_SETUP_FAILED'
+    ) {
+      await handle.waitForCancellation();
+      throw createNestedCancellationError(handle);
+    }
+    if (nested && taskId) {
+      await terminateNestedSetupFailure(handle, error);
+    }
+    throw error;
+  } finally {
+    if (nested) {
+      await settleRegisteredNestedHandle(registry, handle);
+    }
+  }
 }
 
 function resolveAgentModelSpec(agent) {
@@ -804,6 +868,14 @@ function createPendingTaskLaunchHandle({
             commandError = error;
           }
         };
+        const findLateTaskId = async () => {
+          for (let attempt = 0; attempt < 10; attempt++) {
+            const persistedTaskId = findPersistedTaskId();
+            if (persistedTaskId) return persistedTaskId;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          return null;
+        };
         if (taskId) await cancelTask(taskId);
 
         if (!isWrapperClosed()) {
@@ -811,7 +883,7 @@ function createPendingTaskLaunchHandle({
           await waitForWrapperClose;
         }
 
-        taskId = taskId || findPersistedTaskId();
+        taskId = taskId || (await findLateTaskId());
         if (taskId && !commandAttempted) await cancelTask(taskId);
         if (taskId && commandError === null) {
           const task = getTask(taskId);
@@ -901,6 +973,9 @@ function spawnTaskProcess({
         ? (taskId) => handle?.assignTaskId(taskId)
         : (taskId) => assignDurableTaskId(agent, taskId),
     });
+    if (nested) {
+      handle.setCancelAction((reason) => pendingLaunch.kill(reason));
+    }
     if (!nested) agent.currentTask = pendingLaunch;
 
     // NOTE: Don't emit PROCESS_SPAWNED here - proc.pid is a wrapper that exits immediately.
@@ -1121,7 +1196,9 @@ function broadcastAgentLine({ agent, providerName, state, line }) {
   const isValidJson = isValidJsonLine(content);
   state.output += content + '\n';
 
-  agent.lastOutputTime = Date.now();
+  if (!state.nested) {
+    agent.lastOutputTime = Date.now();
+  }
 
   agent._publish({
     topic: 'AGENT_OUTPUT',
@@ -1329,7 +1406,9 @@ function finalizeLogFollow(agent, state) {
   if (state.statusCheckInterval) {
     clearInterval(state.statusCheckInterval);
   }
-  agent.currentTask = null;
+  if (!state.nested) {
+    agent.currentTask = null;
+  }
 }
 
 function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, resolve }) {
@@ -1505,7 +1584,9 @@ function buildKillHandler({ agent, taskId, state, providerName, resolve }) {
       if (state.resolved) return;
       state.resolved = true;
       finalizeLogFollow(agent, state);
-      agent._stopLivenessCheck();
+      if (!state.nested) {
+        agent._stopLivenessCheck();
+      }
       resolve({
         success: false,
         output: state.output,
@@ -1526,10 +1607,12 @@ function createLogFollower({
   providerName,
   skipStructuredResultCheck = false,
   nested = false,
+  executionHandle = null,
 }) {
   return new Promise((resolve) => {
     const state = createLogFollowState();
     state.skipStructuredResultCheck = skipStructuredResultCheck;
+    state.nested = nested;
 
     state.logFilePath = lookupLogFilePath(ctPath, taskId);
     if (state.logFilePath) {
@@ -1579,11 +1662,21 @@ function createLogFollower({
       );
     }, 1000);
 
-    // Only register the kill handler on the agent for top-level tasks.
-    // Nested (reformat) launches get their own handle; the parent's identity
-    // on agent.currentTask is preserved.
-    if (!nested) {
-      agent.currentTask = buildKillHandler({ agent, taskId, state, providerName, resolve });
+    const killHandler = buildKillHandler({ agent, taskId, state, providerName, resolve });
+    if (nested && executionHandle) {
+      let cancelPendingLaunch;
+      const cancelExecution = async (reason, details) => {
+        const termination = cancelPendingLaunch
+          ? await cancelPendingLaunch(reason, details)
+          : { forced: true, taskId };
+        if (termination?.forced !== false) {
+          killHandler.kill(reason, details);
+        }
+        return termination;
+      };
+      cancelPendingLaunch = executionHandle.setCancelAction(cancelExecution);
+    } else {
+      agent.currentTask = killHandler;
     }
   });
 }
@@ -1608,6 +1701,7 @@ function followClaudeTaskLogs(agent, taskId, options = {}) {
     providerName,
     skipStructuredResultCheck: options.skipStructuredResultCheck === true,
     nested: options.nested === true,
+    executionHandle: options.executionHandle || null,
   });
 }
 
@@ -1650,6 +1744,43 @@ function getClaudeTasksPath() {
  * @returns {Promise<Object>} Result object { success, output, error }
  */
 async function spawnClaudeTaskIsolated(agent, context, options = {}) {
+  const nested = options.nested === true;
+  if (!nested) {
+    return spawnClaudeTaskIsolatedExecution(agent, context, options);
+  }
+
+  const { handle, registry } = createExecutionHandle(agent, true);
+  try {
+    const result = await spawnClaudeTaskIsolatedExecution(agent, context, {
+      ...options,
+      executionHandle: handle,
+    });
+    if (!result.success && !handle.isCancelled) {
+      const failure = new Error(result.error || `Nested isolated task ${handle.taskId} failed`);
+      await terminateNestedSetupFailure(handle, failure);
+      if (failure.permanent) throw failure;
+      return result;
+    }
+    if (handle.isCancelled) {
+      await handle.waitForCancellation();
+      throw createNestedCancellationError(handle);
+    }
+    return result;
+  } catch (error) {
+    if (handle.isCancelled && handle.cancelDetails.code !== 'NESTED_SETUP_FAILED') {
+      await handle.waitForCancellation();
+      throw createNestedCancellationError(handle);
+    }
+    if (handle.taskId) {
+      await terminateNestedSetupFailure(handle, error);
+    }
+    throw error;
+  } finally {
+    await settleRegisteredNestedHandle(registry, handle);
+  }
+}
+
+async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const { manager, clusterId } = agent.isolation;
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const modelSpec = resolveAgentModelSpec(agent);
@@ -1701,6 +1832,7 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
     const proc = manager.spawnInContainer(clusterId, command, {
       env: isolatedEnv,
     });
+    options.executionHandle?.attachProcess(proc);
 
     let isolatedTaskId = null;
     let wrapperClosed = false;
@@ -1728,9 +1860,18 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
       );
       if (persistedTaskId) {
         isolatedTaskId = persistedTaskId;
+        options.executionHandle?.assignTaskId(persistedTaskId);
         if (!options.nested) assignDurableTaskId(agent, persistedTaskId);
       }
       return persistedTaskId;
+    };
+    const findLatePersistedTaskId = async () => {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const persistedTaskId = await findPersistedTaskId();
+        if (persistedTaskId) return persistedTaskId;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return null;
     };
     const rejectLaunch = (error, { retainHandle = false } = {}) => {
       if (resolved) return;
@@ -1777,7 +1918,8 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
           }
 
           try {
-            const persistedTaskId = isolatedTaskId || (await findPersistedTaskId());
+            const persistedTaskId =
+              isolatedTaskId || (await findLatePersistedTaskId());
             if (persistedTaskId && !termination) {
               termination = await terminateIsolatedTask(manager, clusterId, persistedTaskId);
               commandError = null;
@@ -1810,6 +1952,9 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
         return termination;
       },
     };
+    if (options.nested && options.executionHandle) {
+      options.executionHandle.setCancelAction((reason) => isolatedPendingLaunch.kill(reason));
+    }
     if (!options.nested) {
       agent.currentTask = isolatedPendingLaunch;
       agent.processPid = proc.pid;
@@ -1857,6 +2002,7 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
           persistedTaskId,
         });
         isolatedTaskId = spawnedTaskId;
+        options.executionHandle?.assignTaskId(spawnedTaskId);
         if (!options.nested) assignDurableTaskId(agent, spawnedTaskId);
         resolved = true;
         resolve(spawnedTaskId);
@@ -1917,7 +2063,7 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
  * - Status checks reduced to every 2 seconds (not every poll)
  * - Result: 10-20% overall latency reduction
  */
-function createIsolatedLogState(skipStructuredResultCheck = false) {
+function createIsolatedLogState(skipStructuredResultCheck = false, nested = false) {
   return {
     taskExited: false,
     resolved: false,
@@ -1930,6 +2076,7 @@ function createIsolatedLogState(skipStructuredResultCheck = false) {
     timeoutTimer: null,
     lineBuffer: '',
     skipStructuredResultCheck,
+    nested,
   };
 }
 
@@ -1955,6 +2102,7 @@ function buildIsolatedCleanup(state) {
 }
 
 function clearIsolatedLifecycleHandle(agent, state) {
+  if (state.nested) return;
   if (agent.currentTask === state.lifecycleHandle) {
     agent.currentTask = null;
   }
@@ -2126,7 +2274,7 @@ function settleIsolatedTerminalStatus({
         success,
         output: state.fullOutput,
         taskId,
-        result: parsedResult,
+        parsedResult,
         error: errorContext,
         tokenUsage: extractTokenUsage(state.fullOutput, providerName),
         vertexModelError,
@@ -2210,7 +2358,7 @@ function buildIsolatedLifecycleHandle({
   };
 }
 
-function broadcastIsolatedLine({ agent, providerName, taskId, line }) {
+function broadcastIsolatedLine({ agent, providerName, taskId, state, line }) {
   const timestampMatch = line.match(/^\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*(.*)$/);
   const timestamp = timestampMatch ? new Date(timestampMatch[1]).getTime() : Date.now();
   const content = timestampMatch ? timestampMatch[2] : line;
@@ -2231,7 +2379,9 @@ function broadcastIsolatedLine({ agent, providerName, taskId, line }) {
     timestamp,
   });
 
-  agent.lastOutputTime = Date.now();
+  if (!state?.nested) {
+    agent.lastOutputTime = Date.now();
+  }
 }
 
 function appendIsolatedContent(state, content, onLine) {
@@ -2389,9 +2539,13 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
 
   return new Promise((resolve, reject) => {
-    const state = createIsolatedLogState(options.skipStructuredResultCheck === true);
+    const state = createIsolatedLogState(
+      options.skipStructuredResultCheck === true,
+      options.nested === true
+    );
     const cleanup = buildIsolatedCleanup(state);
-    const onLine = (line) => broadcastIsolatedLine({ agent, providerName, taskId, line });
+    const onLine = (line) =>
+      broadcastIsolatedLine({ agent, providerName, taskId, state, line });
     state.lifecycleHandle = buildIsolatedLifecycleHandle({
       agent,
       manager,
@@ -2463,8 +2617,13 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
           reject,
           onLine,
         });
+        if (options.nested && options.executionHandle) {
+          options.executionHandle.setCancelAction((reason, details) =>
+            state.lifecycleHandle.terminate(reason, details)
+          );
+        }
 
-        if (agent.timeout > 0 && !agent.enableLivenessCheck) {
+        if (agent.timeout > 0 && !agent.enableLivenessCheck && !options.nested) {
           state.timeoutTimer = setTimeout(() => {
             state.lifecycleHandle
               .terminate(`Task timed out after ${agent.timeout}ms`, {
@@ -2541,7 +2700,12 @@ async function parseResultOutput(agent, output) {
         },
       });
     } catch (reformatError) {
-      if (reformatError.code === 'REFORMAT_CANCELLED') throw reformatError;
+      if (
+        reformatError.code === 'REFORMAT_CANCELLED' ||
+        reformatError.code === 'AGENT_TASK_TIMEOUT'
+      ) {
+        throw reformatError;
+      }
       // Reformatting failed - fall through to error below
       console.error(`[Agent ${agent.id}] Reformatting failed: ${reformatError.message}`);
     }
@@ -2634,6 +2798,19 @@ async function killTask(agent, termination = 'Task killed') {
   const { reason, code } = normalizeTermination(termination);
   const currentTask = agent.currentTask;
   const taskId = agent.currentTaskId;
+  const nestedRegistry = agent.nestedExecutions;
+  const hadNestedExecutions = nestedRegistry?.hasActive === true;
+  let nestedTermination = null;
+
+  if (hadNestedExecutions) {
+    try {
+      nestedTermination = await nestedRegistry.cancelAll(reason, { code });
+    } catch (error) {
+      return { forced: false, reason: error.message };
+    }
+    if (nestedTermination?.forced === false) return nestedTermination;
+    if (!currentTask) return nestedTermination;
+  }
 
   if (currentTask?.pendingLaunch && typeof currentTask.kill === 'function') {
     const pendingTermination = await currentTask.kill(reason, { code });
@@ -2676,6 +2853,7 @@ async function killTask(agent, termination = 'Task killed') {
   agent.processPid = null;
   agent.lastOutputTime = null;
   agent.taskStartedAt = null;
+  return nestedTermination || undefined;
 }
 
 async function killIsolatedTask(agent, currentTask, taskId, reason, code) {

@@ -136,7 +136,7 @@ async function reformatOutput({
 
       return parsed;
     } catch (err) {
-      if (err.code === 'REFORMAT_CANCELLED') throw err;
+      if (err.code === 'REFORMAT_CANCELLED' || err.code === 'AGENT_TASK_TIMEOUT') throw err;
       lastError = err.message;
     }
   }

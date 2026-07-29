@@ -250,6 +250,13 @@ describe('Isolated opencode structured-output recovery', function () {
       },
       execInContainer(_clusterId, command) {
         const rendered = command.join(' ');
+        if (rendered.includes('get-task-id-by-spawn-token')) {
+          return Promise.resolve({
+            code: 0,
+            stdout: 'task-amber-fox-a1\n',
+            stderr: '',
+          });
+        }
         if (rendered.includes('get-log-path')) {
           return Promise.resolve({ code: 0, stdout: '/tmp/reformat.log\n', stderr: '' });
         }
@@ -294,7 +301,10 @@ describe('Isolated opencode structured-output recovery', function () {
       schema,
       providerName: 'opencode',
       runReformat: (prompt) =>
-        spawnClaudeTaskIsolated(agent, prompt, { skipStructuredResultCheck: true }),
+        spawnClaudeTaskIsolated(agent, prompt, {
+          skipStructuredResultCheck: true,
+          nested: true,
+        }),
     });
 
     assert.deepStrictEqual(result, { plan: 'isolated recovery' });
@@ -309,6 +319,74 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.ok(recoveryCommand.includes('zeroshot'));
     assert.ok(recoveryCommand.includes('task'));
     assert.ok(recoveryCommand.includes('run'));
+  });
+
+  it('kills and settles a durable nested task when post-ID log setup fails', async function () {
+    this.timeout(3000);
+    const taskId = 'task-amber-fox-b2';
+    const commands = [];
+    let status = 'running';
+    const manager = {
+      spawnInContainer() {
+        return createClosingProcess(0, `✓ Task spawned: ${taskId}\n`);
+      },
+      execInContainer(_clusterId, command) {
+        commands.push(command);
+        const rendered = command.join(' ');
+        if (rendered.includes('get-task-id-by-spawn-token')) {
+          return { code: 0, stdout: `${taskId}\n`, stderr: '' };
+        }
+        if (rendered.includes('get-log-path')) {
+          return { code: 1, stdout: '', stderr: 'log path unavailable' };
+        }
+        if (command[1] === 'status') {
+          return { code: 0, stdout: `Status: ${status}\n`, stderr: '' };
+        }
+        if (command[1] === 'kill') {
+          status = 'killed';
+          return { code: 0, stdout: `Killed ${taskId}\n`, stderr: '' };
+        }
+        throw new Error(`Unexpected isolated command: ${rendered}`);
+      },
+    };
+    const parentTask = { kill() {} };
+    const agent = {
+      id: 'isolated-setup-failure',
+      role: 'planner',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 0,
+      enableLivenessCheck: false,
+      currentTask: parentTask,
+      currentTaskId: 'parent-task-7',
+      processPid: 777,
+      config: { outputFormat: 'json', strictSchema: true },
+      cluster: { id: 'test-cluster' },
+      isolation: { enabled: true, clusterId: 'test-cluster', manager },
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'opencode',
+      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+      _resolveModelSpecSource: () => 'direct',
+      _log() {},
+      _publishLifecycle() {},
+      _stopLivenessCheck() {},
+    };
+
+    await assert.rejects(
+      spawnClaudeTaskIsolated(agent, 'test context', {
+        skipStructuredResultCheck: true,
+        nested: true,
+      }),
+      /Failed to get log path/
+    );
+
+    assert.ok(commands.some((command) => command[1] === 'kill'));
+    assert.strictEqual(status, 'killed');
+    assert.strictEqual(agent.nestedExecutions.size, 0);
+    assert.strictEqual(agent.currentTask, parentTask);
+    assert.strictEqual(agent.currentTaskId, 'parent-task-7');
+    assert.strictEqual(agent.processPid, 777);
   });
 });
 

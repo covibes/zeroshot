@@ -201,7 +201,8 @@ function start(agent) {
 async function stop(agent) {
   stopLivenessCheck(agent);
 
-  if (!agent.running && !agent.currentTask) {
+  const hasNestedExecutions = agent.nestedExecutions?.hasActive === true;
+  if (!agent.running && !agent.currentTask && !hasNestedExecutions) {
     return;
   }
 
@@ -213,8 +214,8 @@ async function stop(agent) {
     agent.unsubscribe = null;
   }
 
-  // Kill current task if any
-  if (agent.currentTask) {
+  // Kill parent and child executions through the shared ownership boundary.
+  if (agent.currentTask || hasNestedExecutions) {
     const termination = await agent._killTask('Task stopped by cluster shutdown');
     if (termination?.forced === false) {
       throw new Error(`Task shutdown could not confirm termination: ${termination.reason}`);
@@ -1132,7 +1133,9 @@ function startLivenessCheck(agent) {
 
   agent.livenessCheckInterval = setInterval(() => {
     const hasRecoverableTask =
-      Boolean(agent.currentTask) || Boolean(agent.isolation?.enabled && agent.currentTaskId);
+      Boolean(agent.currentTask) ||
+      Boolean(agent.isolation?.enabled && agent.currentTaskId) ||
+      agent.nestedExecutions?.hasActive === true;
     if (!hasRecoverableTask || agent.livenessTerminationStarted) {
       return;
     }

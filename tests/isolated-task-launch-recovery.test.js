@@ -341,6 +341,7 @@ describe('Isolated terminal cleanup recovery', function () {
 
     const result = await execution;
     assert.strictEqual(result.success, true);
+    assert.deepStrictEqual(result.parsedResult, { summary: 'done', result: 'ok' });
     assert.strictEqual(cleanupAttempts, 2);
     assert.strictEqual(cleanupPending, false);
     assert.strictEqual(agent.currentTask, null);
