@@ -88,6 +88,19 @@ describe('TaskExecutionHandle', function () {
     assert.strictEqual(handle.settled, true);
   });
 
+  it('does not erase explicit retention when no cleanup result exists', async function () {
+    const retained = new TaskExecutionHandle('test-agent');
+    retained.retainOwnership();
+    await retained.waitForCancellation();
+    retained.finishExecution();
+    assert.strictEqual(retained.settled, false);
+
+    const ordinary = new TaskExecutionHandle('test-agent');
+    await ordinary.waitForCancellation();
+    ordinary.finishExecution();
+    assert.strictEqual(ordinary.settled, true);
+  });
+
   it('fails closed an unkillable local child after bounded deadline cleanup', async function () {
     const clock = sinon.useFakeTimers();
     const handle = new TaskExecutionHandle('test-agent');

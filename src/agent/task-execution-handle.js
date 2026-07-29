@@ -146,6 +146,9 @@ class TaskExecutionHandle {
       throw error;
     }
     const termination = results.at(-1);
+    if (results.length === 0 || termination == null) {
+      return termination;
+    }
     if (!isTerminationConfirmed(termination)) {
       this._retainOwnership = true;
       this._invokedCancelActions.delete(this._cancelAction);
