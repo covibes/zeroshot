@@ -14,7 +14,10 @@ impl RecordPayload {
             | Self::CleanupReceipt { .. }
             | Self::VerifiedInput { .. }
             | Self::VerifiedOutput { .. }
-            | Self::MutationReceipt { .. } => self.final_kind(),
+            | Self::MutationReceipt { .. }
+            | Self::RequiredProofIntent { .. }
+            | Self::RequiredProofReceipt { .. }
+            | Self::RequiredProofAcceptance { .. } => self.final_kind(),
         }
     }
 
@@ -37,6 +40,9 @@ impl RecordPayload {
             Self::VerifiedInput { .. } => RecordKind::VerifiedInput,
             Self::VerifiedOutput { .. } => RecordKind::VerifiedOutput,
             Self::MutationReceipt { .. } => RecordKind::MutationReceipt,
+            Self::RequiredProofIntent { .. } => RecordKind::RequiredProofIntent,
+            Self::RequiredProofReceipt { .. } => RecordKind::RequiredProofReceipt,
+            Self::RequiredProofAcceptance { .. } => RecordKind::RequiredProofAcceptance,
             _ => unreachable!(),
         }
     }
@@ -65,6 +71,7 @@ impl RecordPayload {
         }
         value.validate_verified_digest()?;
         value.validate_graph_digest()?;
+        value.validate_required_proof()?;
         Ok(value)
     }
 
@@ -101,5 +108,45 @@ impl RecordPayload {
             return Err(RecordError::DigestMismatch);
         }
         Ok(())
+    }
+    fn validate_required_proof(&self) -> Result<(), RecordError> {
+        use crate::required_proof::{AcceptedProofRef, ProofAttemptIntent, ProofAttemptReceipt};
+
+        let valid = match self {
+            Self::RequiredProofIntent {
+                run,
+                attempt,
+                digest,
+                canonical_bytes,
+            } => ProofAttemptIntent::decode(canonical_bytes).is_ok_and(|value| {
+                value.run() == *run && value.attempt() == *attempt && value.intent_id() == *digest
+            }),
+            Self::RequiredProofReceipt {
+                run,
+                attempt,
+                digest,
+                canonical_bytes,
+            } => ProofAttemptReceipt::decode(canonical_bytes).is_ok_and(|value| {
+                value.run() == *run
+                    && value.attempt() == *attempt
+                    && value.receipt_digest() == *digest
+            }),
+            Self::RequiredProofAcceptance {
+                run,
+                attempt,
+                digest,
+                canonical_bytes,
+            } => AcceptedProofRef::decode(canonical_bytes).is_ok_and(|value| {
+                value.run() == *run
+                    && value.attempt() == *attempt
+                    && value.acceptance_digest() == *digest
+            }),
+            _ => return Ok(()),
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(RecordError::DigestMismatch)
+        }
     }
 }

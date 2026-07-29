@@ -84,6 +84,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Protocol ledger adapters     | `zeroshot-rust/src/cluster_ledger/adapters.rs`                          |
 | Artifact store port/fake     | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`         |
 | Product-local artifact CAS   | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`           |
+| Required-proof contracts     | `zeroshot-rust/src/required_proof.rs`                                   |
 | Issue provider contracts     | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                |
 | Source provider contracts    | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`    |
 | Provider value bounds        | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                |
@@ -161,6 +162,13 @@ Mutating source calls carry an exclusively borrowed, non-serializable verified-w
 their serializable intent and closed operation-specific receipts contain only canonical workspace,
 pre-effect, branch/revision, review, policy/conclusion, and idempotency identities. Successful or
 uncertain effects reconcile only through exact authoritative post-effect inspection.
+Required-command proof gates, immutable attempt intents/receipts, acceptance references, and
+artifact re-verification remain product-private in `required_proof.rs`. Graph-visible selection is
+limited to an admitted gate ID and repository/base/head revision bindings. Explicit environment
+entries use the fixed non-secret name/value set, and proof output artifact lineage must match the
+native `run:<sequence>` and attempt. Proof persistence uses the existing `ClusterLedger`
+record/fold and mutation-receipt path, while output bytes, paths, environment credentials, and
+command execution remain outside both ledger and protocol.
 Keep protocol, transport, daemon, compatibility, adapter, credential resolution, ledger, and
 workspace behavior outside it.
 `worker_catalog` is the native product's sole hand-authored, versioned worker-provider inventory.

@@ -43,6 +43,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "src/main.rs",
         "src/observability.rs",
         "src/provider_value.rs",
+        "src/required_proof.rs",
         "src/scheduler.rs",
         "src/issue_provider.rs",
         "src/source_code_provider.rs",
@@ -57,6 +58,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "tests/local_process_runner.rs",
         "tests/observability_contract.rs",
         "tests/provider_contracts.rs",
+        "tests/required_proof_contract.rs",
         "tests/provider_bounds.rs",
         "tests/source_authority_contract.rs",
         "tests/scheduler_contract.rs",
@@ -169,6 +171,7 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
         ("local_process_runner".to_owned(), "test".to_owned()),
         ("observability_contract".to_owned(), "test".to_owned()),
         ("source_authority_contract".to_owned(), "test".to_owned()),
+        ("required_proof_contract".to_owned(), "test".to_owned()),
         ("scheduler_contract".to_owned(), "test".to_owned()),
     ] {
         assert!(
@@ -522,6 +525,7 @@ fn worker_catalog_adds_no_out_of_scope_product_construction() {
             "observability.rs",
             "provider_value",
             "provider_value.rs",
+            "required_proof.rs",
             "scheduler.rs",
             "source_code_provider",
             "source_code_provider.rs",
@@ -571,6 +575,72 @@ fn worker_catalog_adds_no_out_of_scope_product_construction() {
         assert!(
             !catalog_source.contains(forbidden),
             "worker catalog crossed its owned boundary: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn required_proof_contract_stays_product_private_byte_free_and_non_executing() {
+    let product = product_root();
+    let proof = read(&product.join("src/required_proof.rs"));
+    let ledger = rust_sources(&["src/cluster_ledger.rs", "src/cluster_ledger"]);
+    let protocol = rust_sources(&[
+        "../crates/openengine-cluster-protocol/src",
+        "../crates/openengine-cluster-server/src",
+    ]);
+    assert!(read(&product.join("src/lib.rs")).contains("pub mod required_proof;"));
+    for required in [
+        "struct TrustedGate",
+        "struct ProofAttemptIntent",
+        "struct ProofAttemptReceipt",
+        "struct AcceptedProofRef",
+        "trait ArtifactReverification",
+        "struct PerformProofAttempt",
+        "struct InspectProofAttempt",
+        "struct ReconcileProofAttempt",
+        "reconcile_after_uncertainty",
+    ] {
+        assert!(
+            proof.contains(required),
+            "missing required-proof contract: {required}"
+        );
+    }
+    for required in [
+        "RequiredProofIntent",
+        "RequiredProofReceipt",
+        "RequiredProofAcceptance",
+        "required_proofs",
+    ] {
+        assert!(
+            ledger.contains(required),
+            "ledger misses required-proof fold: {required}"
+        );
+    }
+    for forbidden in [
+        "std::process",
+        "tokio::process",
+        "Command::new",
+        "PathBuf",
+        "gh issue",
+        "octocrab",
+        "reqwest",
+        "SourceCodeProvider",
+    ] {
+        assert!(
+            !proof.contains(forbidden),
+            "required-proof contract crossed a non-goal boundary: {forbidden}"
+        );
+    }
+    for private_type in [
+        "TrustedGate",
+        "ProofAttemptIntent",
+        "ProofAttemptReceipt",
+        "AcceptedProofRef",
+        "ArtifactReverification",
+    ] {
+        assert!(
+            !protocol.contains(private_type),
+            "product-private proof type leaked into protocol/server: {private_type}"
         );
     }
 }
