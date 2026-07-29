@@ -42,9 +42,10 @@ const {
 } = require('./message-formatter-utils');
 const {
   loadSettings,
-  saveSettings,
+  mutateSettings,
   validateSetting,
   coerceValue,
+  SettingsValidationError,
   DEFAULT_SETTINGS,
   settingsFileExists,
 } = require('../lib/settings');
@@ -81,7 +82,12 @@ const {
 } = require('../lib/detached-startup');
 const { isProcessRunning: isClusterProcessAlive } = require('../lib/process-liveness');
 // Setup wizard removed - use: zeroshot settings set <key> <value>
-const { checkForUpdates, printLegacyDistroNotice } = require('./lib/update-checker');
+const {
+  checkForUpdates,
+  isAutomaticUpdateEligible,
+  printLegacyDistroNotice,
+  runLegacyUpdateIfRequested,
+} = require('./lib/update-checker');
 const { checkBinDirOnPath, printPathWarning } = require('../lib/path-check');
 const { StatusFooter, AGENT_STATE, ACTIVE_STATES } = require('../src/status-footer');
 const { EVENT_COPY, formatMergeStatus } = require('./event-copy');
@@ -3853,6 +3859,11 @@ for (const providerName of VALID_PROVIDERS) {
 
 // Settings management
 const settingsCmd = program.command('settings').description('Manage zeroshot settings');
+const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim']);
+
+function visibleSettingKeys() {
+  return Object.keys(DEFAULT_SETTINGS).filter((key) => !INTERNAL_SETTINGS_KEYS.has(key));
+}
 
 function printSettingsUsage() {
   const mountPresetList = Object.keys(MOUNT_PRESETS).join(', ');
@@ -3873,7 +3884,7 @@ function printSettingsUsage() {
 function printNonDockerSettings(settings) {
   const dockerKeys = new Set(['dockerMounts', 'dockerEnvPassthrough', 'dockerContainerHome']);
   for (const [key, value] of Object.entries(settings)) {
-    if (dockerKeys.has(key)) {
+    if (dockerKeys.has(key) || INTERNAL_SETTINGS_KEYS.has(key)) {
       continue;
     }
     const displayValue =
@@ -4227,6 +4238,13 @@ function parseSettingValue(value) {
   }
 }
 
+function resetGlobalSettings() {
+  mutateSettings((settings) => {
+    for (const key of Object.keys(settings)) delete settings[key];
+    Object.assign(settings, JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS })));
+  });
+}
+
 settingsCmd
   .command('get <key>')
   .description(
@@ -4235,7 +4253,10 @@ settingsCmd
   .action((key) => {
     const settings = loadSettings();
 
-    // Support dot-notation for nested values
+    if (INTERNAL_SETTINGS_KEYS.has(key.split('.')[0])) {
+      console.error(chalk.red(`Setting not found: ${key}`));
+      process.exit(1);
+    }
     if (key.includes('.')) {
       const { value, found } = getNestedValue(settings, key);
       if (!found) {
@@ -4249,7 +4270,7 @@ settingsCmd
     if (!(key in settings)) {
       console.error(chalk.red(`Unknown setting: ${key}`));
       console.log(chalk.dim('\nAvailable settings:'));
-      Object.keys(DEFAULT_SETTINGS).forEach((k) => console.log(chalk.dim(`  - ${k}`)));
+      visibleSettingKeys().forEach((k) => console.log(chalk.dim(`  - ${k}`)));
       process.exit(1);
     }
     console.log(
@@ -4263,34 +4284,35 @@ settingsCmd
     'Set a setting value (supports dot-notation: providerSettings.claude.anthropicApiKey)'
   )
   .action((key, value) => {
-    const settings = loadSettings();
-
+    if (INTERNAL_SETTINGS_KEYS.has(key.split('.')[0])) {
+      console.error(chalk.red(`Unknown setting: ${key}`));
+      process.exit(1);
+    }
     // Support dot-notation for nested values
     if (key.includes('.')) {
-      const parts = key.split('.');
-      const rootKey = parts[0];
+      const rootKey = key.split('.')[0];
 
-      // Validate root key exists in defaults
       if (!(rootKey in DEFAULT_SETTINGS)) {
         console.error(chalk.red(`Unknown setting: ${rootKey}`));
         console.log(chalk.dim('\nAvailable settings:'));
-        Object.keys(DEFAULT_SETTINGS).forEach((k) => console.log(chalk.dim(`  - ${k}`)));
+        visibleSettingKeys().forEach((k) => console.log(chalk.dim(`  - ${k}`)));
         process.exit(1);
       }
 
       const parsedValue = parseSettingValue(value);
-
-      // Set nested value
-      setNestedValue(settings, key, parsedValue);
-
-      // Validate the root key after modification
-      const validationError = validateSetting(rootKey, settings[rootKey]);
-      if (validationError) {
-        console.error(chalk.red(validationError));
-        process.exit(1);
+      try {
+        mutateSettings((settings) => {
+          setNestedValue(settings, key, parsedValue);
+          const validationError = validateSetting(rootKey, settings[rootKey]);
+          if (validationError) throw new SettingsValidationError(validationError);
+        });
+      } catch (error) {
+        if (!(error instanceof SettingsValidationError)) throw error;
+        console.error(chalk.red(error.message));
+        process.exitCode = 1;
+        return;
       }
 
-      saveSettings(settings);
       const displayValue =
         typeof parsedValue === 'string' ? parsedValue : JSON.stringify(parsedValue);
       console.log(chalk.green(`✓ Set ${key} = ${displayValue}`));
@@ -4301,7 +4323,7 @@ settingsCmd
     if (!(key in DEFAULT_SETTINGS)) {
       console.error(chalk.red(`Unknown setting: ${key}`));
       console.log(chalk.dim('\nAvailable settings:'));
-      Object.keys(DEFAULT_SETTINGS).forEach((k) => console.log(chalk.dim(`  - ${k}`)));
+      visibleSettingKeys().forEach((k) => console.log(chalk.dim(`  - ${k}`)));
       process.exit(1);
     }
 
@@ -4321,8 +4343,9 @@ settingsCmd
       process.exit(1);
     }
 
-    settings[key] = parsedValue;
-    saveSettings(settings);
+    mutateSettings((settings) => {
+      settings[key] = parsedValue;
+    });
     console.log(chalk.green(`✓ Set ${key} = ${JSON.stringify(parsedValue)}`));
   });
 
@@ -4344,11 +4367,16 @@ settingsCmd
           console.log('Aborted.');
           return;
         }
-        saveSettings(DEFAULT_SETTINGS);
-        console.log(chalk.green('✓ Settings reset to defaults'));
+        try {
+          resetGlobalSettings();
+          console.log(chalk.green('✓ Settings reset to defaults'));
+        } catch (error) {
+          console.error(chalk.red(error.message));
+          process.exitCode = 1;
+        }
       });
     } else {
-      saveSettings(DEFAULT_SETTINGS);
+      resetGlobalSettings();
       console.log(chalk.green('✓ Settings reset to defaults'));
     }
   });
@@ -5910,11 +5938,17 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
   formatGenericMessage(msg, prefix, timestamp, safePrint);
 }
 
-// Main async entry point
-async function main() {
-  const isTest = process.env.NODE_ENV === 'test';
-  const isQuiet = process.argv.includes('-q') || process.argv.includes('--quiet') || isTest;
+function isStartupUpdateEligible(argv, options = {}) {
+  return isAutomaticUpdateEligible({
+    ...options,
+    argv,
+    commanderProgram: program,
+    defaultCommandName: 'run',
+  });
+}
 
+// Main entry point
+async function main() {
   printLegacyDistroNotice();
 
   try {
@@ -5926,12 +5960,19 @@ async function main() {
     // Never block CLI startup on a PATH check failure
   }
 
-  // Check for updates (non-blocking if offline)
-  if (!isTest) {
-    await checkForUpdates({ quiet: isQuiet });
+  const startupArgs = process.argv.slice(2);
+  const legacyUpdate = runLegacyUpdateIfRequested(startupArgs);
+  if (legacyUpdate !== null) {
+    const success = await legacyUpdate;
+    process.exitCode = success ? 0 : 1;
+    return;
   }
 
-  let args = process.argv.slice(2);
+  if (isStartupUpdateEligible(startupArgs)) {
+    checkForUpdates({ argv: startupArgs, eligibilityChecked: true });
+  }
+
+  let args = startupArgs;
 
   if (args.length === 0) {
     program.outputHelp();
@@ -5973,5 +6014,6 @@ module.exports = {
   inspectAgentAttachment,
   printAttachableAgentList,
   renderRecentMessagesToTerminal,
+  isStartupUpdateEligible,
   resolveRunMode,
 };

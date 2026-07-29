@@ -88,4 +88,38 @@ describe('CLI stdin task input', function () {
     assert.strictEqual(result.status, 0, result.stderr);
     assert.deepStrictEqual(JSON.parse(result.stdout), { text: taskBody });
   });
+
+  it('excludes piped run input before settings, registry, or stdin work', function () {
+    const { checkForUpdates } = require('../../cli/lib/update-checker');
+    const sentinel = Readable.from(['byte-for-byte input']);
+    let settingsLoads = 0;
+    let fetches = 0;
+
+    const result = checkForUpdates({
+      argv: ['run', '-'],
+      env: {},
+      packageName: '@the-open-engine/zeroshot',
+      currentVersion: '1.0.0',
+      stdin: sentinel,
+      stdout: { isTTY: false },
+      stderr: { isTTY: false, write: () => assert.fail('unexpected update notice') },
+      loadSettings: () => {
+        settingsLoads += 1;
+        return {
+          autoCheckUpdates: true,
+          lastSeenVersion: '2.0.0',
+          lastUpdateCheckAt: null,
+        };
+      },
+      fetchLatestVersion: () => {
+        fetches += 1;
+        return '2.0.0';
+      },
+    });
+
+    assert.strictEqual(result, null);
+    assert.strictEqual(settingsLoads, 0);
+    assert.strictEqual(fetches, 0);
+    assert.strictEqual(sentinel.read().toString(), 'byte-for-byte input');
+  });
 });
