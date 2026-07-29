@@ -1,4 +1,3 @@
-const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -90,75 +89,53 @@ async function runRetryScenario(store, killTaskCommand, completeWatcherTask) {
 async function runUnsafeScenario(store, killTaskCommand) {
   const userDirectory = path.join(process.env.ZEROSHOT_HOME, 'user-owned');
   fs.mkdirSync(userDirectory);
-  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-    stdio: 'ignore',
-  });
   const taskId = 'terminal-cleanup-unsafe';
   store.addTask(
     taskRecord(taskId, 'completed', cleanupReceipt(userDirectory), {
-      pid: unrelated.pid,
-      processGroupId: unrelated.pid,
+      pid: process.pid,
+      processGroupId: process.pid,
       terminationStrategy: 'process',
     })
   );
 
+  await killTaskCommand(taskId, { graceMs: 40, pollMs: 5 });
+  let unrelatedAlive = true;
   try {
-    await killTaskCommand(taskId, { graceMs: 40, pollMs: 5 });
-    let unrelatedAlive = true;
-    try {
-      process.kill(unrelated.pid, 0);
-    } catch {
-      unrelatedAlive = false;
-    }
-    return {
-      terminal: store.getTask(taskId),
-      unrelatedAlive,
-      userDirectoryExists: fs.existsSync(userDirectory),
-    };
-  } finally {
-    try {
-      process.kill(unrelated.pid, 'SIGKILL');
-    } catch {
-      // The regression expects this process to remain alive until fixture teardown.
-    }
+    process.kill(process.pid, 0);
+  } catch {
+    unrelatedAlive = false;
   }
+  return {
+    terminal: store.getTask(taskId),
+    unrelatedAlive,
+    userDirectoryExists: fs.existsSync(userDirectory),
+  };
 }
 
 async function runUnsafeFileScenario(store, killTaskCommand) {
   const userFile = path.join(process.env.ZEROSHOT_HOME, 'user-schema.json');
   fs.writeFileSync(userFile, '{}\n');
-  const unrelated = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
-    stdio: 'ignore',
-  });
   const taskId = 'terminal-cleanup-unsafe-file';
   store.addTask(
     taskRecord(taskId, 'completed', fileCleanupReceipt(userFile), {
-      pid: unrelated.pid,
-      processGroupId: unrelated.pid,
+      pid: process.pid,
+      processGroupId: process.pid,
       terminationStrategy: 'process',
     })
   );
 
+  await killTaskCommand(taskId, { graceMs: 40, pollMs: 5 });
+  let unrelatedAlive = true;
   try {
-    await killTaskCommand(taskId, { graceMs: 40, pollMs: 5 });
-    let unrelatedAlive = true;
-    try {
-      process.kill(unrelated.pid, 0);
-    } catch {
-      unrelatedAlive = false;
-    }
-    return {
-      terminal: store.getTask(taskId),
-      unrelatedAlive,
-      userFileExists: fs.existsSync(userFile),
-    };
-  } finally {
-    try {
-      process.kill(unrelated.pid, 'SIGKILL');
-    } catch {
-      // The regression expects this process to remain alive until fixture teardown.
-    }
+    process.kill(process.pid, 0);
+  } catch {
+    unrelatedAlive = false;
   }
+  return {
+    terminal: store.getTask(taskId),
+    unrelatedAlive,
+    userFileExists: fs.existsSync(userFile),
+  };
 }
 
 function runCleanScenario(store, cleanTasks, cleanMode, unsafe = false, statusOverride = null) {

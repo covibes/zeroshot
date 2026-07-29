@@ -27,7 +27,7 @@ function runFixture(mode) {
     );
     const { stdout } = execution;
     const resultLine = stdout.split('\n').find((entry) => entry.startsWith('RESULT:'));
-    assert.ok(resultLine, stdout);
+    assert.ok(resultLine, execution.stderr || stdout);
     return {
       stdout,
       result: JSON.parse(resultLine.slice('RESULT:'.length)),
