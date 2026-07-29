@@ -5938,6 +5938,15 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
   formatGenericMessage(msg, prefix, timestamp, safePrint);
 }
 
+function isStartupUpdateEligible(argv, options = {}) {
+  return isAutomaticUpdateEligible({
+    ...options,
+    argv,
+    commanderProgram: program,
+    defaultCommandName: 'run',
+  });
+}
+
 // Main entry point
 async function main() {
   printLegacyDistroNotice();
@@ -5959,7 +5968,7 @@ async function main() {
     return;
   }
 
-  if (isAutomaticUpdateEligible({ argv: startupArgs })) {
+  if (isStartupUpdateEligible(startupArgs)) {
     checkForUpdates({ argv: startupArgs, eligibilityChecked: true });
   }
 
@@ -6005,5 +6014,6 @@ module.exports = {
   inspectAgentAttachment,
   printAttachableAgentList,
   renderRecentMessagesToTerminal,
+  isStartupUpdateEligible,
   resolveRunMode,
 };

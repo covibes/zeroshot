@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { resolveRunMode } = require('../cli/index.js');
+const { isStartupUpdateEligible, resolveRunMode } = require('../cli/index.js');
 
 describe('resolveRunMode', () => {
   it('returns "ship" when options.ship is set', () => {
@@ -34,6 +34,44 @@ describe('resolveRunMode', () => {
     assert.strictEqual(
       resolveRunMode({ ship: true, pr: true, docker: true, worktree: true }),
       'ship+docker'
+    );
+  });
+});
+
+describe('startup update option integration', function () {
+  const tty = { isTTY: true };
+  const options = {
+    currentVersion: '1.2.3',
+    packageName: '@the-open-engine/zeroshot',
+    stdin: tty,
+    stdout: tty,
+    stderr: tty,
+    env: {},
+  };
+
+  it('uses the built CLI metadata for mixed global and export short options', function () {
+    assert.strictEqual(
+      isStartupUpdateEligible(['export', 'nonexistent', '-qfjson'], options),
+      false
+    );
+    assert.strictEqual(isStartupUpdateEligible(['export', 'nonexistent', '-fq'], options), true);
+    assert.strictEqual(isStartupUpdateEligible(['export', 'nonexistent', '-oq'], options), true);
+  });
+
+  it('combines global flags with compatible subcommand booleans only', function () {
+    assert.strictEqual(isStartupUpdateEligible(['logs', 'nonexistent', '-fq'], options), false);
+    assert.strictEqual(isStartupUpdateEligible(['run', 'hello', '-qX'], options), true);
+    assert.strictEqual(isStartupUpdateEligible(['run', 'hello', '-query'], options), true);
+  });
+
+  it('does not parse prompt text or tokens after the option terminator', function () {
+    assert.strictEqual(
+      isStartupUpdateEligible(['run', 'Explain -qfjson and -query'], options),
+      true
+    );
+    assert.strictEqual(
+      isStartupUpdateEligible(['export', 'nonexistent', '--', '-qfjson'], options),
+      true
     );
   });
 });

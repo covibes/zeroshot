@@ -436,6 +436,138 @@ function hasGroupedGlobalShortFlag(argv) {
   return false;
 }
 
+function findSubcommand(command, name) {
+  return (command.commands || []).find((candidate) => {
+    return candidate.name() === name || candidate.aliases().includes(name);
+  });
+}
+
+function optionMaps(commandHierarchy) {
+  const short = new Map();
+  const long = new Map();
+  for (const command of commandHierarchy) {
+    const helpOption = command._getHelpOption?.();
+    for (const option of [helpOption, ...(command.options || [])]) {
+      if (!option) continue;
+      if (option.short) short.set(option.short, option);
+      if (option.long) long.set(option.long, option);
+    }
+  }
+  return { short, long };
+}
+
+function optionOccurrence(option, value = null) {
+  return { short: option.short || null, long: option.long || null, value };
+}
+
+function matchLongOption(token, maps) {
+  const equalsIndex = token.indexOf('=');
+  const name = equalsIndex === -1 ? token : token.slice(0, equalsIndex);
+  const option = maps.long.get(name);
+  if (!option) return null;
+  if (equalsIndex !== -1 && !option.required && !option.optional) return null;
+  const value = equalsIndex === -1 ? null : token.slice(equalsIndex + 1);
+  return {
+    occurrences: [optionOccurrence(option, value)],
+    needsValue: equalsIndex === -1 && (option.required || option.optional),
+    optionalValue: option.optional,
+  };
+}
+
+function matchShortOptions(token, maps) {
+  const exact = maps.short.get(token);
+  if (exact) {
+    return {
+      occurrences: [optionOccurrence(exact)],
+      needsValue: exact.required || exact.optional,
+      optionalValue: exact.optional,
+    };
+  }
+  if (token.length < 3 || !token.startsWith('-') || token.startsWith('--')) return null;
+
+  const occurrences = [];
+  for (let index = 1; index < token.length; index += 1) {
+    const option = maps.short.get(`-${token[index]}`);
+    if (!option) return null;
+    if (option.required || option.optional) {
+      occurrences.push(optionOccurrence(option, token.slice(index + 1) || null));
+      return {
+        occurrences,
+        needsValue: index === token.length - 1,
+        optionalValue: option.optional,
+      };
+    }
+    occurrences.push(optionOccurrence(option));
+  }
+  return { occurrences, needsValue: false, optionalValue: false };
+}
+
+function consumeOptionValue(match, argv, index, limit) {
+  if (!match.needsValue || index + 1 >= limit) return 0;
+  const value = argv[index + 1];
+  if (match.optionalValue && value.startsWith('-')) return 0;
+  match.occurrences[match.occurrences.length - 1].value = value;
+  return 1;
+}
+
+function classifyCommanderArguments(program, argv, defaultCommandName) {
+  const commandPath = [];
+  const occurrences = [];
+  const hierarchy = [program];
+  let command = program;
+  let positionalSeen = false;
+  const end = argv.indexOf('--');
+  const limit = end === -1 ? argv.length : end;
+
+  for (let index = 0; index < limit; index += 1) {
+    const token = argv[index];
+    const maps = optionMaps(hierarchy);
+    const match = token.startsWith('--')
+      ? matchLongOption(token, maps)
+      : matchShortOptions(token, maps);
+    if (match) {
+      index += consumeOptionValue(match, argv, index, limit);
+      occurrences.push(...match.occurrences);
+      continue;
+    }
+    if (token.startsWith('-')) continue;
+
+    const child = positionalSeen ? null : findSubcommand(command, token);
+    if (child) {
+      command = child;
+      hierarchy.push(child);
+      commandPath.push(child.name());
+      positionalSeen = false;
+      continue;
+    }
+    if (command === program && commandPath.length === 0 && defaultCommandName) {
+      const defaultCommand = findSubcommand(program, defaultCommandName);
+      if (defaultCommand) {
+        command = defaultCommand;
+        hierarchy.push(defaultCommand);
+        commandPath.push(defaultCommand.name());
+      }
+    }
+    positionalSeen = true;
+  }
+  return { commandPath, occurrences };
+}
+
+function parsedOptionPresent(metadata, argv, longName, shortName = null) {
+  if (!metadata) return optionIndex(argv, longName, shortName) !== -1;
+  return metadata.occurrences.some((entry) => {
+    return entry.long === longName || (shortName && entry.short === shortName);
+  });
+}
+
+function parsedOptionValue(metadata, argv, longName, shortName = null) {
+  if (!metadata) return optionValue(argv, longName, shortName);
+  const occurrence = metadata.occurrences.find((entry) => {
+    return entry.long === longName || (shortName && entry.short === shortName);
+  });
+  return occurrence?.value ?? null;
+}
+
 function optionIndex(argv, longName, shortName = null) {
   const end = argv.indexOf('--');
   const limit = end === -1 ? argv.length : end;
@@ -516,17 +648,30 @@ function isAutomaticUpdateEligible(options = {}) {
     return false;
   }
 
+  let metadata = null;
+  if (options.commanderProgram) {
+    try {
+      metadata = classifyCommanderArguments(
+        options.commanderProgram,
+        argv,
+        options.defaultCommandName
+      );
+    } catch {
+      return false;
+    }
+  }
+
   if (
-    optionIndex(argv, '--quiet', '-q') !== -1 ||
-    optionIndex(argv, '--help', '-h') !== -1 ||
-    optionIndex(argv, '--version', '-V') !== -1 ||
-    hasGroupedGlobalShortFlag(argv) ||
+    parsedOptionPresent(metadata, argv, '--quiet', '-q') ||
+    parsedOptionPresent(metadata, argv, '--help', '-h') ||
+    parsedOptionPresent(metadata, argv, '--version', '-V') ||
+    (!metadata && hasGroupedGlobalShortFlag(argv)) ||
     optionIndex(argv, '--completion') !== -1
   ) {
     return false;
   }
 
-  const [command, subcommand] = commandPath(argv);
+  const [command, subcommand] = metadata ? metadata.commandPath : commandPath(argv);
   if (!command) return false;
   if (
     command === 'update' ||
@@ -539,16 +684,18 @@ function isAutomaticUpdateEligible(options = {}) {
   }
 
   if (
-    optionIndex(argv, '--json') !== -1 ||
-    optionIndex(argv, '--silent-json-output') !== -1 ||
-    optionIndex(argv, '--json-schema') !== -1
+    parsedOptionPresent(metadata, argv, '--json') ||
+    parsedOptionPresent(metadata, argv, '--silent-json-output') ||
+    parsedOptionPresent(metadata, argv, '--json-schema')
   ) {
     return false;
   }
 
-  const outputFormat = optionValue(argv, '--output-format');
+  const outputFormat = parsedOptionValue(metadata, argv, '--output-format');
   if (outputFormat === 'json' || outputFormat === 'stream-json') return false;
-  if (command === 'export' && optionValue(argv, '--format', '-f') === 'json') return false;
+  if (command === 'export' && parsedOptionValue(metadata, argv, '--format', '-f') === 'json') {
+    return false;
+  }
 
   return true;
 }

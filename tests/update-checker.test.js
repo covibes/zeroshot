@@ -4,6 +4,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { Command } = require('commander');
 
 const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-update-checker-'));
 const TEST_SETTINGS_FILE = path.join(TEST_DIR, 'settings.json');
@@ -23,6 +24,20 @@ const PUBLISHED = {
   stderr: TTY,
   env: {},
 };
+
+function buildCommanderEligibilityFixture() {
+  const cli = new Command();
+  cli.name('zeroshot').version('1.2.3').option('-q, --quiet');
+  cli.command('run <input>').option('-d, --detach').option('-o, --output-format <format>');
+  cli
+    .command('export <cluster-id>')
+    .option('-f, --format <format>')
+    .option('-o, --output <file>');
+  cli.command('logs [id]').option('-f, --follow').option('-w, --watch');
+  const task = cli.command('task');
+  task.command('run <prompt>').option('-o, --output-format <format>');
+  return cli;
+}
 
 function resetSettingsFile() {
   fs.rmSync(TEST_SETTINGS_FILE, { force: true });
@@ -198,6 +213,52 @@ describe('Update Checker', function () {
         true
       );
     });
+  });
+
+  describe('Commander option metadata integration', function () {
+    const commanderProgram = buildCommanderEligibilityFixture();
+
+    function eligible(argv) {
+      return updateChecker.isAutomaticUpdateEligible({
+        ...PUBLISHED,
+        argv,
+        commanderProgram,
+        defaultCommandName: 'run',
+      });
+    }
+
+    for (const [name, argv] of [
+      ['quiet plus joined JSON export format', ['export', 'id', '-qfjson']],
+      ['quiet plus separated JSON export format', ['export', 'id', '-qf', 'json']],
+      ['quiet after a compatible command flag', ['logs', 'id', '-fq']],
+      ['quiet before a compatible command flag', ['logs', 'id', '-qf']],
+      ['help after a compatible command flag', ['logs', 'id', '-fh']],
+      ['version before a compatible command flag', ['logs', 'id', '-Vw']],
+      ['multiple globals before a joined value option', ['export', 'id', '-qhVfjson']],
+      ['global quiet before the subcommand', ['-q', 'export', 'id', '-fmarkdown']],
+    ]) {
+      it(`rejects ${name}`, function () {
+        assert.strictEqual(eligible(argv), false);
+      });
+    }
+
+    for (const [name, argv] of [
+      ['joined format value containing q', ['export', 'id', '-fq']],
+      ['joined output path containing q', ['export', 'id', '-oq']],
+      ['unknown mixed short cluster', ['run', 'hello', '-qX']],
+      ['long-looking single-dash word', ['run', 'hello', '-query']],
+      ['joined non-JSON export format', ['export', 'id', '-fmarkdown']],
+      ['joined format word', ['export', 'id', '-follow']],
+      [
+        'option text inside one prompt argument',
+        ['run', 'Explain -qfjson, -query, -follow, and -fmarkdown'],
+      ],
+      ['options after the terminator', ['export', 'id', '--', '-qfjson']],
+    ]) {
+      it(`accepts ${name}`, function () {
+        assert.strictEqual(eligible(argv), true);
+      });
+    }
   });
 
   describe('version and attempt validation', function () {
