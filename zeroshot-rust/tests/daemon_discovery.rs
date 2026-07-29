@@ -95,6 +95,37 @@ fn locator_permissions_and_profile_permissions_fail_closed() {
 }
 
 #[test]
+fn same_owner_hard_links_fail_closed_for_locator_and_startup_lock() {
+    let profile = TempProfile::new("hard-links");
+    let current = locator(&profile, 30202);
+    replace_locator(&profile.profile, &current).expect("publish locator");
+
+    let locator_alias = profile.profile.root().join("locator-hard-link");
+    fs::hard_link(profile.profile.locator_path(), &locator_alias).expect("hard-link locator");
+    let locator_metadata = fs::metadata(profile.profile.locator_path()).expect("locator metadata");
+    assert_eq!(locator_metadata.mode() & 0o777, 0o600);
+    assert_eq!(locator_metadata.uid(), unsafe { libc::geteuid() });
+    assert_eq!(locator_metadata.nlink(), 2);
+    assert!(matches!(
+        read_locator(&profile.profile),
+        Err(DiscoveryError::InsecureFile)
+    ));
+    fs::remove_file(locator_alias).expect("remove locator hard link");
+
+    let lock_path = profile.profile.root().join(".daemon-start.lock");
+    let lock_alias = profile.profile.root().join("startup-lock-hard-link");
+    fs::hard_link(&lock_path, &lock_alias).expect("hard-link startup lock");
+    let lock_metadata = fs::metadata(&lock_path).expect("lock metadata");
+    assert_eq!(lock_metadata.mode() & 0o777, 0o600);
+    assert_eq!(lock_metadata.uid(), unsafe { libc::geteuid() });
+    assert_eq!(lock_metadata.nlink(), 2);
+    assert!(matches!(
+        acquire_start_guard(&profile.profile, Duration::from_millis(20)),
+        Err(DiscoveryError::InsecureFile)
+    ));
+}
+
+#[test]
 fn oversized_locator_is_rejected_without_partial_parsing() {
     let profile = TempProfile::new("oversize");
     let _guard =
