@@ -7,15 +7,21 @@ use std::sync::Arc;
 
 use ledger::{key, owner, resource, temp_root};
 use ledger_admission::admission_request;
+use openengine_cluster_protocol::PositiveInteger;
 use tokio::sync::Barrier;
 use zeroshot_engine::cluster_ledger::mutations::{AdmissionAllocation, AdmissionRequest};
-use zeroshot_engine::cluster_ledger::record::CanonicalDigest;
+use zeroshot_engine::cluster_ledger::record::{
+    CanonicalDigest, RecordKind, RecordPayload, StoredRecord,
+};
 use zeroshot_engine::cluster_ledger::store::fake::ManualLedgerClock;
 use zeroshot_engine::cluster_ledger::store::sqlite::{
     SqliteLedgerStore, APPLICATION_ID, SCHEMA_VERSION,
 };
-use zeroshot_engine::cluster_ledger::store::{LedgerStore, StoreError};
-use zeroshot_engine::cluster_ledger::{ClusterLedger, GenerationId, LedgerErrorKind, RunSequence};
+use zeroshot_engine::cluster_ledger::store::{AppendBatch, LedgerStore, Position, StoreError};
+use zeroshot_engine::cluster_ledger::{
+    ClusterLedger, ExecutionId, ExecutionVoidReason, GenerationId, LedgerErrorKind, NodeInstanceId,
+    RunSequence, StructuralOccurrence,
+};
 use zeroshot_engine::fault::FaultCode;
 
 fn admission() -> AdmissionRequest {
@@ -50,6 +56,115 @@ async fn sqlite_uses_required_settings_and_digest_named_database() {
     assert_eq!(settings.application_id, i64::from(APPLICATION_ID));
     assert_eq!(settings.schema_version, SCHEMA_VERSION);
 
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_round_trips_required_proof_and_reducer_record_tags() {
+    let root = temp_root("record-kind-tags");
+    let store = SqliteLedgerStore::with_clock(&root, ManualLedgerClock::new(100)).unwrap();
+    let resource = resource("record-kind-tags-cluster");
+    let (_, fence) = store
+        .create_fenced(&resource, &owner("record-kind-owner"), 10_000)
+        .await
+        .unwrap();
+    let run = RunSequence::new(1).unwrap();
+    let node_instance = NodeInstanceId::new(1).unwrap();
+    let execution = ExecutionId::new(1).unwrap();
+    let proof_intent = b"proof-intent".to_vec();
+    let proof_receipt = b"proof-receipt".to_vec();
+    let proof_acceptance = b"proof-acceptance".to_vec();
+    let payloads = vec![
+        RecordPayload::RequiredProofIntent {
+            run,
+            attempt: 1,
+            digest: CanonicalDigest::of(&proof_intent),
+            canonical_bytes: proof_intent,
+        },
+        RecordPayload::RequiredProofReceipt {
+            run,
+            attempt: 1,
+            digest: CanonicalDigest::of(&proof_receipt),
+            canonical_bytes: proof_receipt,
+        },
+        RecordPayload::RequiredProofAcceptance {
+            run,
+            attempt: 1,
+            digest: CanonicalDigest::of(&proof_acceptance),
+            canonical_bytes: proof_acceptance,
+        },
+        RecordPayload::ExecutionContext {
+            run,
+            node_instance,
+            execution,
+            occurrence: StructuralOccurrence {
+                node: "sqlite-work".parse().unwrap(),
+                map_indices: vec![2, 1],
+            },
+            attempt: PositiveInteger::new(1).unwrap(),
+            canonical_input: b"null".to_vec(),
+        },
+        RecordPayload::ExecutionVoid {
+            run,
+            execution,
+            reason: ExecutionVoidReason::ParallelJoin,
+        },
+    ];
+    let mut previous_hash = [0; 32];
+    let records = payloads
+        .iter()
+        .enumerate()
+        .map(|(index, payload)| {
+            let record = StoredRecord::build(
+                resource.clone(),
+                Position::new(u64::try_from(index + 1).unwrap()).unwrap(),
+                payload,
+                previous_hash,
+            )
+            .unwrap();
+            previous_hash = record.record_hash;
+            record
+        })
+        .collect::<Vec<_>>();
+    store
+        .compare_and_append(
+            &resource,
+            &fence,
+            Position::ZERO,
+            AppendBatch::new(records.clone(), None).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let expected_kinds = [
+        RecordKind::RequiredProofIntent,
+        RecordKind::RequiredProofReceipt,
+        RecordKind::RequiredProofAcceptance,
+        RecordKind::ExecutionContext,
+        RecordKind::ExecutionVoid,
+    ];
+    let snapshot = store.read_prefix(&resource, None).await.unwrap();
+    assert_eq!(
+        snapshot
+            .records
+            .iter()
+            .map(|record| record.kind)
+            .collect::<Vec<_>>(),
+        expected_kinds
+    );
+    assert_eq!(snapshot.records, records);
+
+    let connection = rusqlite::Connection::open(store.path_for(&resource)).unwrap();
+    let raw_tags = connection
+        .prepare("SELECT kind FROM records ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(raw_tags, vec![12, 13, 14, 15, 16]);
+    drop(connection);
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }
