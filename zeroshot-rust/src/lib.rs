@@ -5,6 +5,7 @@ pub mod issue_provider;
 mod provider_value;
 pub mod scheduler;
 pub mod source_code_provider;
+pub mod worker_catalog;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
