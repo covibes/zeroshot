@@ -111,8 +111,10 @@ async fn unsupported_source_capability_is_rejected_before_fake_invocation() {
     ));
     let mut registry = SourceCodeProviderRegistry::new();
     registry.register(provider.clone()).unwrap();
+    let request = source_operation(canonical_repository(reference.clone()));
+    let mut workspace = verified_workspace(&request);
     let error = registry
-        .operate(&source_operation(canonical_repository(reference.clone())))
+        .operate(&request, workspace.capability())
         .await
         .unwrap_err();
     assert_eq!(
@@ -153,7 +155,7 @@ async fn unsupported_issue_capability_is_rejected_before_fake_invocation() {
 }
 
 #[tokio::test]
-async fn inspect_before_repeat_only_invokes_with_positive_or_native_evidence() {
+async fn inspect_before_repeat_invokes_only_from_proven_unobserved_state() {
     let reference = source_ref("source.github", 1);
     let provider = Arc::new(FakeSourceProvider::new(
         source_descriptor(
@@ -166,12 +168,19 @@ async fn inspect_before_repeat_only_invokes_with_positive_or_native_evidence() {
     let mut registry = SourceCodeProviderRegistry::new();
     registry.register(provider.clone()).unwrap();
     let request = source_operation(canonical_repository(reference));
+    let mut workspace = verified_workspace(&request);
 
     let applied = SourceOperationReceipt::Merge(provider.merge_receipt(&request));
     provider.set_inspection(SourceOperationInspection::Applied(Box::new(
         applied.clone(),
     )));
-    assert_eq!(registry.operate(&request).await.unwrap(), applied);
+    assert_eq!(
+        registry
+            .operate(&request, workspace.capability())
+            .await
+            .unwrap(),
+        applied
+    );
     assert_eq!(provider.operation_calls.load(Ordering::SeqCst), 0);
 
     for inspection in [
@@ -185,7 +194,10 @@ async fn inspect_before_repeat_only_invokes_with_positive_or_native_evidence() {
     ] {
         provider.set_inspection(inspection.clone());
         assert_eq!(
-            registry.operate(&request).await.unwrap_err(),
+            registry
+                .operate(&request, workspace.capability())
+                .await
+                .unwrap_err(),
             SourceCallError::UnsafeToInvoke { inspection }
         );
     }
@@ -193,7 +205,10 @@ async fn inspect_before_repeat_only_invokes_with_positive_or_native_evidence() {
 
     provider.set_inspection(SourceOperationInspection::Unobserved);
     assert!(matches!(
-        registry.operate(&request).await.unwrap(),
+        registry
+            .operate(&request, workspace.capability())
+            .await
+            .unwrap(),
         SourceOperationReceipt::Merge(_)
     ));
     assert_eq!(provider.operation_calls.load(Ordering::SeqCst), 1);
@@ -210,16 +225,23 @@ async fn inspect_before_repeat_only_invokes_with_positive_or_native_evidence() {
     let mut native_registry = SourceCodeProviderRegistry::new();
     native_registry.register(native.clone()).unwrap();
     let native_request = source_operation(canonical_repository(native_reference));
+    let mut native_workspace = verified_workspace(&native_request);
     for inspection in [
         SourceOperationInspection::Pending,
         SourceOperationInspection::Indeterminate {
             evidence: SourceFailureMessage::new("connection ended after submission").unwrap(),
         },
     ] {
-        native.set_inspection(inspection);
-        native_registry.operate(&native_request).await.unwrap();
+        native.set_inspection(inspection.clone());
+        assert_eq!(
+            native_registry
+                .operate(&native_request, native_workspace.capability())
+                .await
+                .unwrap_err(),
+            SourceCallError::UnsafeToInvoke { inspection }
+        );
     }
-    assert_eq!(native.operation_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(native.operation_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -292,12 +314,13 @@ async fn applied_inspections_must_match_the_authoritative_request() {
         repository,
         SourceCredentialHandleId::new("source-lease-7").unwrap(),
         (
+            source_request.workspace().clone(),
             SourceOperationId::new("different-operation").unwrap(),
-            source_request.fingerprint().clone(),
         ),
         source_request.operation().clone(),
     )
     .unwrap();
+    let mut source_workspace = verified_workspace(&source_request);
     let source = Arc::new(FakeSourceProvider::new(
         source_descriptor(source_reference, [SourceCapability::Merge], []),
         SourceOperationInspection::Unobserved,
@@ -308,7 +331,9 @@ async fn applied_inspections_must_match_the_authoritative_request() {
     let mut sources = SourceCodeProviderRegistry::new();
     sources.register(source.clone()).unwrap();
     assert!(matches!(
-        sources.operate(&source_request).await,
+        sources
+            .operate(&source_request, source_workspace.capability())
+            .await,
         Err(SourceCallError::InvalidEvidence { .. })
     ));
     assert_eq!(source.operation_calls.load(Ordering::SeqCst), 0);
@@ -362,13 +387,15 @@ async fn linear_issue_close_is_gated_by_github_merge_receipt() {
     )
     .unwrap();
     let repository = sources.identify_repository(&identify).await.unwrap();
+    let request = source_operation(repository);
+    let mut workspace = verified_workspace(&request);
     let merge = match sources
-        .operate(&source_operation(repository))
+        .operate(&request, workspace.capability())
         .await
         .unwrap()
     {
         SourceOperationReceipt::Merge(receipt) => receipt,
-        SourceOperationReceipt::Applied(_) => panic!("merge must return a typed merge receipt"),
+        other => panic!("merge must return a typed merge receipt, got {other:?}"),
     };
 
     let issue_reference = issue_ref("issue.linear", 1);
@@ -410,7 +437,7 @@ async fn linear_issue_close_is_gated_by_github_merge_receipt() {
     let close_receipt = issues.close(&close_request).await.unwrap();
 
     assert_eq!(close_receipt.source_merge(), &merge);
-    assert_eq!(merge.repository().provider(), &source_reference);
+    assert_eq!(merge.request().repository().provider(), &source_reference);
     assert_eq!(close_receipt.issue().provider(), &issue_reference);
     assert_eq!(source.identify_calls.load(Ordering::SeqCst), 1);
     assert_eq!(source.operation_calls.load(Ordering::SeqCst), 1);

@@ -9,6 +9,53 @@ use zeroshot_engine::source_code_provider::*;
 fn digest(character: char) -> String {
     std::iter::repeat_n(character, 64).collect()
 }
+fn source_workspace(character: char) -> SourceWorkspaceId {
+    SourceWorkspaceId::new(digest(character)).unwrap()
+}
+
+fn review() -> SourceReviewIdentity {
+    SourceReviewIdentity::new(
+        SourceReviewId::new("review-7").unwrap(),
+        SourceBranchId::new("main").unwrap(),
+        SourceBranchId::new("delivery/7").unwrap(),
+    )
+    .unwrap()
+}
+
+fn satisfied_policy() -> SourceRequiredPolicy {
+    SourceRequiredPolicy::new(
+        SourcePolicyDigest::new(digest('9')).unwrap(),
+        BTreeMap::from([(
+            SourceCheckId::new("required/build").unwrap(),
+            SourceCheckConclusion::Satisfied,
+        )]),
+    )
+    .unwrap()
+}
+
+struct ContractWorkspace {
+    identity: SourceWorkspaceId,
+    runtime_marker: (),
+}
+
+impl ContractWorkspace {
+    fn capability(&mut self) -> SourceWorkspaceCapability<'_> {
+        // SAFETY: this test-only marker is the runtime handle for exactly `identity`.
+        unsafe {
+            SourceWorkspaceCapability::from_verified_contract_test(
+                self.identity.clone(),
+                &mut self.runtime_marker,
+            )
+        }
+    }
+}
+
+fn verified_workspace(request: &SourceOperationRequest) -> ContractWorkspace {
+    ContractWorkspace {
+        identity: request.workspace().clone(),
+        runtime_marker: (),
+    }
+}
 
 fn source_ref(id: &str, version: u32) -> SourceProviderRef {
     SourceProviderRef::new(SourceProviderId::new(id).unwrap(), version).unwrap()
@@ -52,12 +99,16 @@ fn source_operation(repository: CanonicalRepository) -> SourceOperationRequest {
         repository,
         SourceCredentialHandleId::new("source-lease-7").unwrap(),
         (
+            source_workspace('7'),
             SourceOperationId::new("merge-7").unwrap(),
-            SourceOperationFingerprint::new(digest('a')).unwrap(),
         ),
         SourceOperation::Merge {
+            review: review(),
             expected_base: SourceRevisionId::new("base-sha").unwrap(),
             expected_head: SourceRevisionId::new("head-sha").unwrap(),
+            checked_revision: SourceRevisionId::new("head-sha").unwrap(),
+            policy: satisfied_policy(),
+            integrated_revision: SourceRevisionId::new("integrated-sha").unwrap(),
         },
     )
     .unwrap()
@@ -94,25 +145,13 @@ impl FakeSourceProvider {
 
     fn merge_receipt(&self, request: &SourceOperationRequest) -> SourceMergeReceipt {
         let SourceOperation::Merge {
-            expected_base,
-            expected_head,
+            integrated_revision,
+            ..
         } = request.operation()
         else {
             panic!("fake expected merge request")
         };
-        SourceMergeReceipt::new(
-            request.repository().clone(),
-            (
-                request.operation_id().clone(),
-                request.fingerprint().clone(),
-            ),
-            (expected_base.clone(), expected_head.clone()),
-            (
-                SourceRevisionId::new("integrated-sha").unwrap(),
-                vec![SourcePublicUrl::new("https://github.com/pull/7").unwrap()],
-            ),
-        )
-        .unwrap()
+        SourceMergeReceipt::new(request.clone(), integrated_revision.clone()).unwrap()
     }
 }
 
@@ -175,12 +214,18 @@ impl SourceCodeProvider for FakeSourceProvider {
     async fn operate(
         &self,
         request: &SourceOperationRequest,
+        _workspace: SourceWorkspaceCapability<'_>,
     ) -> Result<SourceOperationReceipt, SourceProviderFailure> {
         self.operation_calls.fetch_add(1, Ordering::SeqCst);
-        if let Some(receipt) = self.operation_result.lock().unwrap().clone() {
-            return Ok(receipt);
-        }
-        Ok(SourceOperationReceipt::Merge(self.merge_receipt(request)))
+        let receipt = self
+            .operation_result
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| SourceOperationReceipt::Merge(self.merge_receipt(request)));
+        *self.inspection.lock().unwrap() =
+            SourceOperationInspection::Applied(Box::new(receipt.clone()));
+        Ok(receipt)
     }
 }
 
@@ -212,19 +257,8 @@ fn issue_descriptor(
 }
 
 fn merge_receipt_for_issue() -> SourceMergeReceipt {
-    SourceMergeReceipt::new(
-        canonical_repository(source_ref("source.github", 1)),
-        (
-            SourceOperationId::new("merge-for-close").unwrap(),
-            SourceOperationFingerprint::new(digest('e')).unwrap(),
-        ),
-        (
-            SourceRevisionId::new("base-sha").unwrap(),
-            SourceRevisionId::new("head-sha").unwrap(),
-        ),
-        (SourceRevisionId::new("integrated-sha").unwrap(), Vec::new()),
-    )
-    .unwrap()
+    let request = source_operation(canonical_repository(source_ref("source.github", 1)));
+    SourceMergeReceipt::new(request, SourceRevisionId::new("integrated-sha").unwrap()).unwrap()
 }
 
 fn resolved_linear_issue(reference: IssueProviderRef) -> ResolvedIssue {

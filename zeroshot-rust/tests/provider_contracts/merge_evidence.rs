@@ -5,17 +5,32 @@ fn mismatched_receipt(
     receipt_base: SourceRevisionId,
     receipt_head: SourceRevisionId,
 ) -> SourceOperationReceipt {
+    let SourceOperation::Merge {
+        review,
+        checked_revision,
+        policy,
+        integrated_revision,
+        ..
+    } = request.operation()
+    else {
+        panic!("test request must be a merge")
+    };
+    let mismatched_request = SourceOperationRequest::new(
+        request.repository().clone(),
+        request.credential_handle().clone(),
+        (request.workspace().clone(), request.operation_id().clone()),
+        SourceOperation::Merge {
+            review: review.clone(),
+            expected_base: receipt_base,
+            expected_head: receipt_head,
+            checked_revision: checked_revision.clone(),
+            policy: policy.clone(),
+            integrated_revision: integrated_revision.clone(),
+        },
+    )
+    .unwrap();
     SourceOperationReceipt::Merge(
-        SourceMergeReceipt::new(
-            request.repository().clone(),
-            (
-                request.operation_id().clone(),
-                request.fingerprint().clone(),
-            ),
-            (receipt_base, receipt_head),
-            (SourceRevisionId::new("integrated-sha").unwrap(), Vec::new()),
-        )
-        .unwrap(),
+        SourceMergeReceipt::new(mismatched_request, integrated_revision.clone()).unwrap(),
     )
 }
 
@@ -31,9 +46,12 @@ async fn assert_mismatch_rejected(
     ));
     let mut inspection_registry = SourceCodeProviderRegistry::new();
     inspection_registry.register(inspected.clone()).unwrap();
+    let mut workspace = verified_workspace(request);
     assert!(
         matches!(
-            inspection_registry.operate(request).await,
+            inspection_registry
+                .operate(request, workspace.capability())
+                .await,
             Err(SourceCallError::InvalidEvidence { .. })
         ),
         "applied inspection with mismatched {field} was accepted"
@@ -49,8 +67,10 @@ async fn assert_mismatch_rejected(
     invocation_registry.register(invoked.clone()).unwrap();
     assert!(
         matches!(
-            invocation_registry.operate(request).await,
-            Err(SourceCallError::InvalidEvidence { .. })
+            invocation_registry
+                .operate(request, workspace.capability())
+                .await,
+            Err(SourceCallError::PostEffectInvalidEvidence { .. })
         ),
         "invocation result with mismatched {field} was accepted"
     );
@@ -64,6 +84,7 @@ async fn merge_evidence_must_match_requested_base_and_head() {
     let SourceOperation::Merge {
         expected_base,
         expected_head,
+        ..
     } = request.operation()
     else {
         panic!("test request must be a merge")

@@ -1,17 +1,29 @@
 use super::*;
+use serde::{ser, Serializer};
+use crate::provider_value::validate_serialized;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(try_from = "SourceOperationReceiptWire")]
-#[serde(rename_all = "snake_case", tag = "kind", content = "receipt")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceOperationReceipt {
-    Applied(SourceAppliedReceipt),
+    Branch(SourceBranchReceipt),
+    Commit(SourceCommitReceipt),
+    Push(SourcePushReceipt),
+    PullRequest(SourcePullRequestReceipt),
+    Checks(SourceChecksReceipt),
+    AutoMerge(SourceAutoMergeReceipt),
+    MergeQueue(SourceMergeQueueReceipt),
     Merge(SourceMergeReceipt),
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "receipt")]
 enum SourceOperationReceiptRef<'a> {
-    Applied(&'a SourceAppliedReceipt),
+    Branch(&'a SourceBranchReceipt),
+    Commit(&'a SourceCommitReceipt),
+    Push(&'a SourcePushReceipt),
+    PullRequest(&'a SourcePullRequestReceipt),
+    Checks(&'a SourceChecksReceipt),
+    AutoMerge(&'a SourceAutoMergeReceipt),
+    MergeQueue(&'a SourceMergeQueueReceipt),
     Merge(&'a SourceMergeReceipt),
 }
 
@@ -21,7 +33,13 @@ impl Serialize for SourceOperationReceipt {
         S: Serializer,
     {
         let wire = match self {
-            Self::Applied(receipt) => SourceOperationReceiptRef::Applied(receipt),
+            Self::Branch(receipt) => SourceOperationReceiptRef::Branch(receipt),
+            Self::Commit(receipt) => SourceOperationReceiptRef::Commit(receipt),
+            Self::Push(receipt) => SourceOperationReceiptRef::Push(receipt),
+            Self::PullRequest(receipt) => SourceOperationReceiptRef::PullRequest(receipt),
+            Self::Checks(receipt) => SourceOperationReceiptRef::Checks(receipt),
+            Self::AutoMerge(receipt) => SourceOperationReceiptRef::AutoMerge(receipt),
+            Self::MergeQueue(receipt) => SourceOperationReceiptRef::MergeQueue(receipt),
             Self::Merge(receipt) => SourceOperationReceiptRef::Merge(receipt),
         };
         validate_serialized(&wire).map_err(ser::Error::custom)?;
@@ -30,9 +48,20 @@ impl Serialize for SourceOperationReceipt {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "receipt")]
+#[serde(
+    rename_all = "snake_case",
+    tag = "kind",
+    content = "receipt",
+    deny_unknown_fields
+)]
 enum SourceOperationReceiptWire {
-    Applied(SourceAppliedReceipt),
+    Branch(SourceBranchReceipt),
+    Commit(SourceCommitReceipt),
+    Push(SourcePushReceipt),
+    PullRequest(SourcePullRequestReceipt),
+    Checks(SourceChecksReceipt),
+    AutoMerge(SourceAutoMergeReceipt),
+    MergeQueue(SourceMergeQueueReceipt),
     Merge(SourceMergeReceipt),
 }
 
@@ -41,9 +70,26 @@ impl TryFrom<SourceOperationReceiptWire> for SourceOperationReceipt {
 
     fn try_from(wire: SourceOperationReceiptWire) -> Result<Self, Self::Error> {
         SourceContractError::checked(match wire {
-            SourceOperationReceiptWire::Applied(receipt) => Self::Applied(receipt),
+            SourceOperationReceiptWire::Branch(receipt) => Self::Branch(receipt),
+            SourceOperationReceiptWire::Commit(receipt) => Self::Commit(receipt),
+            SourceOperationReceiptWire::Push(receipt) => Self::Push(receipt),
+            SourceOperationReceiptWire::PullRequest(receipt) => Self::PullRequest(receipt),
+            SourceOperationReceiptWire::Checks(receipt) => Self::Checks(receipt),
+            SourceOperationReceiptWire::AutoMerge(receipt) => Self::AutoMerge(receipt),
+            SourceOperationReceiptWire::MergeQueue(receipt) => Self::MergeQueue(receipt),
             SourceOperationReceiptWire::Merge(receipt) => Self::Merge(receipt),
         })
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceOperationReceipt {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        SourceOperationReceiptWire::deserialize(deserializer)?
+            .try_into()
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -51,60 +97,75 @@ impl SourceOperationReceipt {
     #[must_use]
     pub fn capability(&self) -> SourceCapability {
         match self {
-            Self::Applied(receipt) => receipt.capability(),
+            Self::Branch(_) => SourceCapability::Branch,
+            Self::Commit(_) => SourceCapability::Commit,
+            Self::Push(_) => SourceCapability::Push,
+            Self::PullRequest(_) => SourceCapability::PullRequest,
+            Self::Checks(_) => SourceCapability::Checks,
+            Self::AutoMerge(_) => SourceCapability::AutoMerge,
+            Self::MergeQueue(_) => SourceCapability::MergeQueue,
             Self::Merge(_) => SourceCapability::Merge,
         }
     }
 
-    fn operation_identity(
-        &self,
-    ) -> (
-        &CanonicalRepository,
-        &SourceOperationId,
-        &SourceOperationFingerprint,
-    ) {
+    #[must_use]
+    pub fn request(&self) -> &SourceOperationRequest {
         match self {
-            Self::Applied(receipt) => (
-                receipt.repository(),
-                receipt.operation_id(),
-                receipt.fingerprint(),
-            ),
-            Self::Merge(receipt) => (
-                receipt.repository(),
-                receipt.operation_id(),
-                receipt.fingerprint(),
-            ),
+            Self::Branch(receipt) => receipt.request(),
+            Self::Commit(receipt) => receipt.request(),
+            Self::Push(receipt) => receipt.request(),
+            Self::PullRequest(receipt) => receipt.request(),
+            Self::Checks(receipt) => receipt.request(),
+            Self::AutoMerge(receipt) => receipt.request(),
+            Self::MergeQueue(receipt) => receipt.request(),
+            Self::Merge(receipt) => receipt.request(),
         }
     }
 
-    fn matches_operation(&self, operation: &SourceOperation) -> bool {
-        match (self, operation) {
+    fn evidence_matches_operation(&self) -> bool {
+        match (self, self.request().operation()) {
+            (
+                Self::Branch(receipt),
+                SourceOperation::Branch {
+                    expected_parent, ..
+                },
+            ) => receipt.resulting_head() == expected_parent,
+            (Self::Commit(_), SourceOperation::Commit { .. }) => true,
+            (Self::Push(receipt), SourceOperation::Push { revision, .. }) => {
+                receipt.pushed_revision() == revision
+            }
+            (Self::PullRequest(receipt), SourceOperation::PullRequest { review, .. }) => {
+                receipt.review() == review
+            }
+            (Self::AutoMerge(receipt), SourceOperation::AutoMerge { review, policy, .. }) => {
+                receipt.review() == review && policy.is_satisfied()
+            }
+            (Self::MergeQueue(receipt), SourceOperation::MergeQueue { review, policy, .. }) => {
+                receipt.review() == review && policy.is_satisfied()
+            }
+            (Self::Checks(receipt), SourceOperation::Checks { policy, .. }) => {
+                receipt.policy() == policy && receipt.policy().is_satisfied()
+            }
             (
                 Self::Merge(receipt),
                 SourceOperation::Merge {
-                    expected_base,
-                    expected_head,
+                    integrated_revision,
+                    policy,
+                    ..
                 },
-            ) => {
-                receipt.expected_base() == expected_base && receipt.expected_head() == expected_head
-            }
-            (Self::Applied(receipt), _) => receipt.capability() == operation.capability(),
-            (Self::Merge(_), _) => false,
+            ) => receipt.integrated_revision() == integrated_revision && policy.is_satisfied(),
+            _ => false,
         }
     }
 
-    pub(super) fn matches_request(&self, request: &SourceOperationRequest) -> bool {
-        let (repository, operation_id, fingerprint) = self.operation_identity();
-        repository == request.repository()
-            && operation_id == request.operation_id()
-            && fingerprint == request.fingerprint()
-            && self.matches_operation(request.operation())
+    pub fn matches_request(&self, request: &SourceOperationRequest) -> bool {
+        self.request() == request
+            && self.evidence_matches_operation()
+            && validate_serialized(self).is_ok()
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(try_from = "SourceOperationInspectionWire")]
-#[serde(rename_all = "snake_case", tag = "state", content = "evidence")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceOperationInspection {
     Unobserved,
     Pending,
@@ -155,7 +216,12 @@ impl Serialize for SourceOperationInspection {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case", tag = "state", content = "evidence")]
+#[serde(
+    rename_all = "snake_case",
+    tag = "state",
+    content = "evidence",
+    deny_unknown_fields
+)]
 enum SourceOperationInspectionWire {
     Unobserved,
     Pending,
@@ -188,12 +254,21 @@ impl TryFrom<SourceOperationInspectionWire> for SourceOperationInspection {
     }
 }
 
+impl<'de> Deserialize<'de> for SourceOperationInspection {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        SourceOperationInspectionWire::deserialize(deserializer)?
+            .try_into()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 impl SourceOperationInspection {
     #[must_use]
-    pub fn permits_invocation(&self, provider_native_idempotency: bool) -> bool {
+    pub fn permits_invocation(&self, _provider_native_idempotency: bool) -> bool {
         matches!(self, Self::Unobserved)
-            || (provider_native_idempotency
-                && matches!(self, Self::Pending | Self::Indeterminate { .. }))
     }
 }
 
@@ -209,7 +284,7 @@ pub enum SourceProviderFailureCode {
 
 #[derive(Clone, Debug, Deserialize, Eq, Error, PartialEq, Serialize)]
 #[error("source provider {code:?}: {message}")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceProviderFailure {
     code: SourceProviderFailureCode,
     message: SourceFailureMessage,
@@ -262,5 +337,6 @@ pub trait SourceCodeProvider: Send + Sync {
     async fn operate(
         &self,
         request: &SourceOperationRequest,
+        workspace: SourceWorkspaceCapability<'_>,
     ) -> Result<SourceOperationReceipt, SourceProviderFailure>;
 }

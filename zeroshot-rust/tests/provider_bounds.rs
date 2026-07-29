@@ -53,24 +53,48 @@ fn repository() -> CanonicalRepository {
     )
     .unwrap()
 }
-
-fn merge_receipt() -> SourceMergeReceipt {
-    SourceMergeReceipt::new(
-        repository(),
-        (
-            SourceOperationId::new("merge-1").unwrap(),
-            SourceOperationFingerprint::new(digest('a')).unwrap(),
-        ),
-        (
-            SourceRevisionId::new("base-sha").unwrap(),
-            SourceRevisionId::new("head-sha").unwrap(),
-        ),
-        (
-            SourceRevisionId::new("merge-sha").unwrap(),
-            vec![SourcePublicUrl::new("https://github.com/pull/1").unwrap()],
-        ),
+fn source_review() -> SourceReviewIdentity {
+    SourceReviewIdentity::new(
+        SourceReviewId::new("review-1").unwrap(),
+        SourceBranchId::new("main").unwrap(),
+        SourceBranchId::new("feature").unwrap(),
     )
     .unwrap()
+}
+
+fn source_policy() -> SourceRequiredPolicy {
+    SourceRequiredPolicy::new(
+        SourcePolicyDigest::new(digest('9')).unwrap(),
+        BTreeMap::from([(
+            SourceCheckId::new("required/build").unwrap(),
+            SourceCheckConclusion::Satisfied,
+        )]),
+    )
+    .unwrap()
+}
+
+fn merge_request() -> SourceOperationRequest {
+    SourceOperationRequest::new(
+        repository(),
+        SourceCredentialHandleId::new("github-lease").unwrap(),
+        (
+            SourceWorkspaceId::new(digest('8')).unwrap(),
+            SourceOperationId::new("merge-1").unwrap(),
+        ),
+        SourceOperation::Merge {
+            review: source_review(),
+            expected_base: SourceRevisionId::new("base-sha").unwrap(),
+            expected_head: SourceRevisionId::new("head-sha").unwrap(),
+            checked_revision: SourceRevisionId::new("head-sha").unwrap(),
+            policy: source_policy(),
+            integrated_revision: SourceRevisionId::new("merge-sha").unwrap(),
+        },
+    )
+    .unwrap()
+}
+
+fn merge_receipt() -> SourceMergeReceipt {
+    SourceMergeReceipt::new(merge_request(), SourceRevisionId::new("merge-sha").unwrap()).unwrap()
 }
 
 fn issue_reference() -> IssueProviderRef {
@@ -170,31 +194,30 @@ fn bounded_provider_failure_evidence_round_trips() {
 }
 
 #[test]
-fn applied_source_receipts_round_trip_and_cannot_claim_merge() {
-    let identity = (
-        SourceOperationId::new("branch-1").unwrap(),
-        SourceOperationFingerprint::new(digest('c')).unwrap(),
-    );
-    let receipt = SourceAppliedReceipt::new(
+fn operation_specific_source_receipts_round_trip_and_reject_cross_operation_use() {
+    let request = SourceOperationRequest::new(
         repository(),
-        identity.clone(),
-        SourceCapability::Branch,
+        SourceCredentialHandleId::new("github-lease").unwrap(),
         (
-            Some(SourceRevisionId::new("branch-sha").unwrap()),
-            vec![SourcePublicUrl::new("https://github.com/branch/1").unwrap()],
+            SourceWorkspaceId::new(digest('8')).unwrap(),
+            SourceOperationId::new("branch-1").unwrap(),
         ),
+        SourceOperation::Branch {
+            expected_parent: SourceRevisionId::new("branch-sha").unwrap(),
+            branch: SourceBranchId::new("feature").unwrap(),
+            pre_effect: SourceStateDigest::new(digest('c')).unwrap(),
+        },
+    )
+    .unwrap();
+    let receipt = SourceBranchReceipt::new(
+        request.clone(),
+        SourceRevisionId::new("branch-sha").unwrap(),
     )
     .unwrap();
     round_trip(&receipt);
-    round_trip(&SourceOperationReceipt::Applied(receipt));
+    round_trip(&SourceOperationReceipt::Branch(receipt));
     assert!(
-        SourceAppliedReceipt::new(
-            repository(),
-            identity,
-            SourceCapability::Merge,
-            (None, Vec::new()),
-        )
-        .is_err()
+        SourceMergeReceipt::new(request, SourceRevisionId::new("branch-sha").unwrap()).is_err()
     );
 }
 

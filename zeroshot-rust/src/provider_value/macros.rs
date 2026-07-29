@@ -123,7 +123,7 @@ macro_rules! contract_error_type {
 macro_rules! provider_ref_type {
     ($name:ident, $id:ident, $error:ident, $field:expr) => {
         #[derive(Clone, Debug, serde::Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         pub struct $name { id: $id, version: std::num::NonZeroU32 }
         impl $name {
             pub fn new(id: $id, version: u32) -> Result<Self, $error> {
@@ -153,7 +153,7 @@ macro_rules! profile_descriptor_type {
             provider_native_idempotency: $crate::provider_value::BoundedSet<$capability>,
         }
         #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct $wire {
             capabilities: $crate::provider_value::BoundedSet<$capability>,
             provider_native_idempotency: $crate::provider_value::BoundedSet<$capability>,
@@ -273,7 +273,7 @@ macro_rules! provider_descriptor_type {
             profiles: $crate::provider_value::BoundedMap<$profile_id, $profile>,
         }
         #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct $wire {
             provider: $provider_ref,
             profiles: $crate::provider_value::BoundedMap<$profile_id, $profile>,
