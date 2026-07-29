@@ -626,8 +626,11 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
         .split("\n}")
         .next()
         .unwrap();
-    assert!(!authorization_impl.contains("\n    pub fn new("));
-    assert!(!authorization_impl.contains("\n    pub const fn new("));
+    assert!(
+        !authorization_impl
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub "))
+    );
     let ledger = read(&product_root().join("src/cluster_ledger.rs"));
     let snapshot_fields = ledger
         .split("pub struct ReductionSnapshot {")
@@ -644,8 +647,14 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
         .split("\n}")
         .next()
         .unwrap();
-    assert!(!snapshot_impl.contains("\n    pub fn new("));
-    assert!(!snapshot_impl.contains("\n    pub const fn new("));
+    assert!(
+        !snapshot_impl
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub "))
+    );
+    assert!(snapshot_impl.contains("self.position == state.position"));
+    assert!(snapshot_impl.contains("self.last_hash == state.last_hash"));
+    assert!(snapshot_impl.contains("Arc::ptr_eq(&self.authority, authority)"));
     for forbidden in [
         "tokio::",
         "async fn",

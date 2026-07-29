@@ -208,6 +208,7 @@ struct VoidFixture {
     authorization_b: ExecutionVoidAuthorization,
     forged_input_authorization: ExecutionVoidAuthorization,
     cross_graph_authorization: ExecutionVoidAuthorization,
+    reduction: Reduction,
 }
 
 async fn prepare_void_fixture(ledger: &ClusterLedger) -> VoidFixture {
@@ -299,6 +300,7 @@ async fn prepare_void_fixture(ledger: &ClusterLedger) -> VoidFixture {
         cross_graph_authorization: cross_graph_reduction
             .void_authorization(loser_a.execution)
             .unwrap(),
+        reduction,
     }
 }
 
@@ -403,14 +405,15 @@ async fn execution_void_requires_exact_reducer_authorization_and_preserves_rejec
             .contains_key(&fixture.loser_b)
     );
 
-    ledger
+    let authorization = fixture.authorization_a;
+    let first = ledger
         .void_execution(
             key("void-authorized"),
             [68; 32],
             ExecutionVoidRequest::new(
                 fixture.loser_a,
                 ExecutionVoidReason::ParallelJoin,
-                fixture.authorization_a,
+                authorization.clone(),
             ),
         )
         .await
@@ -426,6 +429,122 @@ async fn execution_void_requires_exact_reducer_authorization_and_preserves_rejec
             .active_dispatches
             .contains_key(&fixture.loser_b)
     );
+
+    let replayed = ledger
+        .void_execution(
+            key("void-authorized"),
+            [68; 32],
+            ExecutionVoidRequest::new(
+                fixture.loser_a,
+                ExecutionVoidReason::ParallelJoin,
+                authorization,
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(replayed.replayed);
+    assert_eq!(replayed.value, first.value);
+    assert_eq!(replayed.position, first.position);
+    let after_replay = store.read_prefix(&resource(label), None).await.unwrap();
+    assert_eq!(after_replay.position, accepted.position);
+    assert_eq!(after_replay.records, accepted.records);
+    assert_eq!(after_replay.receipts, accepted.receipts);
+}
+#[tokio::test]
+async fn equivalent_reductions_ignore_local_authority_but_void_proofs_do_not_cross_ledgers() {
+    let label = "reducer-void-ledger-authority";
+    let (store_a, ledger_a) = ledger(label).await;
+    let (store_b, ledger_b) = ledger(label).await;
+    let fixture_a = prepare_void_fixture(&ledger_a).await;
+    let fixture_b = prepare_void_fixture(&ledger_b).await;
+    let state_a = ledger_a.state().await.unwrap();
+    let state_b = ledger_b.state().await.unwrap();
+
+    assert_eq!(state_a.position, state_b.position);
+    assert_eq!(state_a.last_hash, state_b.last_hash);
+    assert_eq!(fixture_a.reduction, fixture_b.reduction);
+    assert_eq!(
+        fixture_a.reduction.canonical_decision_bytes().unwrap(),
+        fixture_b.reduction.canonical_decision_bytes().unwrap()
+    );
+    assert_eq!(fixture_a.authorization_a, fixture_b.authorization_a);
+    assert_eq!(fixture_a.loser_a, fixture_b.loser_a);
+
+    let before = store_b.read_prefix(&resource(label), None).await.unwrap();
+    let rejection = ledger_b
+        .void_execution(
+            key("foreign-ledger-proof"),
+            [73; 32],
+            ExecutionVoidRequest::new(
+                fixture_b.loser_a,
+                ExecutionVoidReason::ParallelJoin,
+                fixture_a.authorization_a,
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(rejection.kind(), &LedgerErrorKind::InvalidLifecycle);
+    let after = store_b.read_prefix(&resource(label), None).await.unwrap();
+    assert_eq!(after.position, before.position);
+    assert_eq!(after.records, before.records);
+    assert_eq!(after.receipts, before.receipts);
+
+    drop(store_a);
+}
+
+#[tokio::test]
+async fn reducer_void_proof_history_must_match_the_current_fold() {
+    let label = "reducer-void-history";
+    let (store, ledger) = ledger(label).await;
+    let fixture = prepare_void_fixture(&ledger).await;
+    let graph = reducer_void_graph().await;
+    let before_void = ledger.state().await.unwrap();
+    let run = before_void.admission.as_ref().unwrap().run;
+    let stale_history = durable_executions_from_replay(&before_void, run).unwrap();
+
+    ledger
+        .void_execution(
+            key("history-first-void"),
+            [74; 32],
+            ExecutionVoidRequest::new(
+                fixture.loser_a,
+                ExecutionVoidReason::ParallelJoin,
+                fixture.authorization_a,
+            ),
+        )
+        .await
+        .unwrap();
+    let current = ledger.state().await.unwrap();
+    let stale_reduction = FullV1Reducer::new(&graph)
+        .reduce(ReductionInput {
+            run,
+            snapshot: current.reduction_snapshot(),
+            initial_input: &serde_json::json!({}),
+            executions: &stale_history,
+            next_node_instance: current.identities.next_node_instance,
+            next_execution: current.identities.next_execution,
+        })
+        .unwrap();
+    let stale_proof = stale_reduction.void_authorization(fixture.loser_b).unwrap();
+    let before_rejection = store.read_prefix(&resource(label), None).await.unwrap();
+
+    let rejection = ledger
+        .void_execution(
+            key("stale-history-proof"),
+            [75; 32],
+            ExecutionVoidRequest::new(
+                fixture.loser_b,
+                ExecutionVoidReason::ParallelJoin,
+                stale_proof,
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(rejection.kind(), &LedgerErrorKind::InvalidLifecycle);
+    let after_rejection = store.read_prefix(&resource(label), None).await.unwrap();
+    assert_eq!(after_rejection.position, before_rejection.position);
+    assert_eq!(after_rejection.records, before_rejection.records);
+    assert_eq!(after_rejection.receipts, before_rejection.receipts);
 }
 
 #[tokio::test]

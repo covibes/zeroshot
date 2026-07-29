@@ -40,9 +40,7 @@ pub struct ReductionSnapshot {
 
 impl PartialEq for ReductionSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        self.position == other.position
-            && self.last_hash == other.last_hash
-            && Arc::ptr_eq(&self.authority, &other.authority)
+        self.position == other.position && self.last_hash == other.last_hash
     }
 }
 

@@ -201,6 +201,8 @@ Reducer-owned loser voids require an opaque authorization bound to the admitted 
 verified input, durable execution history, execution, reason, and a folded position/hash capability
 issued only by that `ClusterLedger`; caller-selected positions, identities, or reasons cannot
 authorize an `ExecutionVoid` append.
+Process-local authority identity participates only in ledger mutation validation; semantic
+`Reduction` equality remains deterministic across equivalent ledgers and process reopen.
 Every committed mutation ends in a hash-chained `MutationReceipt` record that exactly
 matches its atomic idempotency projection, so missing or forged projection rows fail replay. Matching
 receipt retries return an explicit replay outcome; receipt equality cannot distinguish a new commit from a concurrent
