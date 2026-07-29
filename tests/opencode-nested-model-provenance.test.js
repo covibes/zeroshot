@@ -272,16 +272,22 @@ describe('Nested task model argument encoding', function () {
       `#!/usr/bin/env node
       (async () => {
         const fs = require('node:fs');
-        const { addTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+        const { addTask, removeTask, updateTask } = await import(${JSON.stringify(storeUrl)});
         const action = process.argv[2];
         const taskId = ${JSON.stringify(taskId)};
         if (action === 'task') {
+          const spawnOwnershipToken = process.env.ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN;
+          if (!spawnOwnershipToken) {
+            throw new Error('Missing durable task spawn ownership token');
+          }
+          removeTask(taskId);
           addTask({
             id: taskId,
             status: 'completed',
             provider: 'opencode',
             logFile: ${JSON.stringify(logFile)},
-            commandCleanup: null
+            commandCleanup: null,
+            spawnOwnershipToken
           });
           fs.writeFileSync(
             ${JSON.stringify(captureFile)},
