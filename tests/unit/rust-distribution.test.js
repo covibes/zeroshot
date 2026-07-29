@@ -34,7 +34,12 @@ function mutateWorkflowJob(source, jobName, mutateJob) {
 }
 
 function withRustStageFixture(
-  { requirement, lockedDependencies, includeRegistryNameCollision = false },
+  {
+    requirement,
+    lockedDependencies,
+    includeRegistryNameCollision = false,
+    trailingTables = [],
+  },
   assertion
 ) {
   const directory = temporaryDirectory();
@@ -76,6 +81,7 @@ function withRustStageFixture(
     ']',
     ''
   );
+  lockPackages.push(...trailingTables);
   fs.writeFileSync(lockPath, ['version = 4', '', ...lockPackages].join('\n'));
   try {
     return assertion({ lockPath, manifestPath, workspacePath });
@@ -270,6 +276,13 @@ describe('Rust release integration', function () {
           { version: '0.61.3', source: registry },
         ],
         includeRegistryNameCollision: true,
+        trailingTables: [
+          '[[patch.unused]]',
+          'name = "unused-windows-sys"',
+          'version = "0.1.0"',
+          'source = "git+https://example.invalid/unused?rev=fixture"',
+          '',
+        ],
       },
       ({ lockPath, manifestPath, workspacePath }) => {
         distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath);
@@ -279,6 +292,7 @@ describe('Rust release integration', function () {
           lock,
           /name = "zeroshot-rust"\nversion = "6\.10\.3"[\s\S]*"windows-sys 0\.61\.3"/
         );
+        assert.match(lock, /\[\[patch\.unused\]\][\s\S]*source = "git\+https:/);
       }
     );
     withRustStageFixture(
@@ -288,10 +302,12 @@ describe('Rust release integration', function () {
           { version: '0.61.2', source: registry },
           { version: '0.61.3', source: registry },
         ],
+        trailingTables: ['[metadata]', 'fixture = "preserved"', ''],
       },
       ({ lockPath, manifestPath, workspacePath }) => {
         distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath);
         assert.match(fs.readFileSync(lockPath, 'utf8'), /"windows-sys 0\.61\.2"/);
+        assert.match(fs.readFileSync(lockPath, 'utf8'), /\[metadata\]\nfixture = "preserved"/);
       }
     );
     withRustStageFixture(

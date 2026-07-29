@@ -215,19 +215,20 @@ function escapeRegExp(value) {
 }
 
 function cargoLockPackages(cargoLock, packageName) {
-  const starts = [];
-  const marker = /^\[\[package\]\]\r?$/gm;
+  const tables = [];
+  const marker = /^\[{1,2}[^\r\n]+\]{1,2}\r?$/gm;
   for (let match = marker.exec(cargoLock); match; match = marker.exec(cargoLock)) {
-    starts.push(match.index);
+    tables.push({ header: match[0].trim(), start: match.index });
   }
-  return starts.flatMap((start, index) => {
-    const text = cargoLock.slice(start, starts[index + 1] ?? cargoLock.length);
+  return tables.flatMap((table, index) => {
+    if (table.header !== '[[package]]') return [];
+    const text = cargoLock.slice(table.start, tables[index + 1]?.start ?? cargoLock.length);
     const name = text.match(/^name = "([^"]+)"\r?$/m)?.[1];
     const version = text.match(/^version = "([^"]+)"\r?$/m)?.[1];
     if (name !== packageName || !version) return [];
     return [
       {
-        start,
+        start: table.start,
         text,
         version,
         source: text.match(/^source = "([^"]+)"\r?$/m)?.[1],
