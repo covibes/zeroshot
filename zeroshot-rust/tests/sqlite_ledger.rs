@@ -164,7 +164,14 @@ async fn sqlite_round_trips_required_proof_and_reducer_record_tags() {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(raw_tags, vec![12, 13, 14, 15, 16]);
+    connection
+        .execute("UPDATE records SET kind = 17 WHERE sequence = 1", [])
+        .unwrap();
     drop(connection);
+    assert!(matches!(
+        store.read_prefix(&resource, None).await,
+        Err(StoreError::Corrupt("record kind"))
+    ));
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
 }

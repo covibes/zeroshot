@@ -34,7 +34,9 @@ const EXPECTED_TOP_LEVEL_SOURCE_ENTRIES: [&str; 21] = [
 fn is_architecture_guard(relative: &str) -> bool {
     matches!(
         relative,
-        "tests/architecture.rs" | "tests/worker_catalog_architecture.rs"
+        "tests/architecture.rs"
+            | "tests/required_proof_architecture.rs"
+            | "tests/worker_catalog_architecture.rs"
     )
 }
 
