@@ -210,15 +210,18 @@ function parseStableVersion(version) {
 }
 
 /**
- * Compare validated stable semver versions.
+ * Compare a running version with a validated stable registry release.
+ * Non-release source versions are older for the explicit update command;
+ * automatic eligibility independently rejects them before checker work.
  * @param {string} current
  * @param {string} latest
  * @returns {boolean}
  */
 function isNewerVersion(current, latest) {
-  const currentParts = parseStableVersion(current);
   const latestParts = parseStableVersion(latest);
-  if (!currentParts || !latestParts) return false;
+  if (!latestParts) return false;
+  const currentParts = parseStableVersion(current);
+  if (!currentParts) return true;
 
   for (let index = 0; index < 3; index += 1) {
     if (latestParts[index] > currentParts[index]) return true;
@@ -404,8 +407,8 @@ function optionIndex(argv, longName, shortName = null) {
   return -1;
 }
 
-function optionValue(argv, longName) {
-  const index = optionIndex(argv, longName);
+function optionValue(argv, longName, shortName = null) {
+  const index = optionIndex(argv, longName, shortName);
   if (index === -1) return null;
   const token = argv[index];
   if (token.startsWith(`${longName}=`)) return token.slice(longName.length + 1);
@@ -416,17 +419,23 @@ function commandPath(argv) {
   const positional = [];
   const optionsWithValues = new Set([
     '--format',
+    '-f',
     '--output-format',
     '--json-schema',
     '--mcp-config',
   ]);
   const end = argv.indexOf('--');
   const limit = end === -1 ? argv.length : end;
+  let skipNext = false;
 
   for (let index = 0; index < limit; index += 1) {
     const token = argv[index];
+    if (skipNext) {
+      skipNext = false;
+      continue;
+    }
     if (optionsWithValues.has(token)) {
-      index += 1;
+      skipNext = true;
       continue;
     }
     if (!token.startsWith('-')) positional.push(token);
@@ -490,7 +499,7 @@ function isAutomaticUpdateEligible(options = {}) {
 
   const outputFormat = optionValue(argv, '--output-format');
   if (outputFormat === 'json' || outputFormat === 'stream-json') return false;
-  if (command === 'export' && optionValue(argv, '--format') === 'json') return false;
+  if (command === 'export' && optionValue(argv, '--format', '-f') === 'json') return false;
 
   return true;
 }

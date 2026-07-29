@@ -111,7 +111,7 @@ describe('CLI stdin task input', function () {
           lastUpdateCheckAt: null,
         };
       },
-      fetchLatestVersion: async () => {
+      fetchLatestVersion: () => {
         fetches += 1;
         return '2.0.0';
       },

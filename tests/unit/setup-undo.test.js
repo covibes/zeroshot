@@ -164,6 +164,7 @@ describe('setup-undo', function () {
     // (which recomputes providerSettings.claude.maxLevel on every loadSettings()
     // call) - picking it keeps this test isolated to the apply/undo round trip.
     const preExisting = loadSettings();
+    preExisting.logLevel = 'verbose';
     mutateSettings((settings) => {
       Object.assign(settings, preExisting);
     });

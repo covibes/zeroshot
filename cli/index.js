@@ -5929,9 +5929,8 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
   formatGenericMessage(msg, prefix, timestamp, safePrint);
 }
 
-// Main async entry point
-async function main() {
-
+// Main entry point
+function main() {
   printLegacyDistroNotice();
 
   try {
@@ -5979,10 +5978,12 @@ async function main() {
 
 // Run main
 if (require.main === module) {
-  main().catch((err) => {
+  try {
+    main();
+  } catch (err) {
     console.error('Fatal error:', err.message);
     process.exit(1);
-  });
+  }
 }
 
 module.exports = {

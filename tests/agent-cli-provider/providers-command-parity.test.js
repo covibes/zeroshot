@@ -118,7 +118,7 @@ test('provider setup prints install and auth instructions from registry metadata
     settings,
     mutateSettings: (mutator) => {
       mutator(settings);
-      saved.push(structuredClone(settings));
+      saved.push(JSON.parse(JSON.stringify(settings)));
     },
     providerFactory: () => ({
       displayName: metadata.displayName,

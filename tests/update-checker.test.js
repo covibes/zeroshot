@@ -121,6 +121,7 @@ describe('Update Checker', function () {
       ['stream JSON output equals', ['run', 'hello', '--output-format=stream-json']],
       ['JSON export separated', ['export', 'id', '--format', 'json']],
       ['JSON export equals', ['export', 'id', '--format=json']],
+      ['JSON export short format', ['export', 'id', '-f', 'json']],
       ['development build', ['list'], { currentVersion: '0.0.0-development' }],
       ['prerelease build', ['list'], { currentVersion: '1.0.0-rc.1' }],
       ['legacy package', ['list'], { packageName: '@covibes/zeroshot' }],
@@ -146,7 +147,7 @@ describe('Update Checker', function () {
       assert.strictEqual(
         updateChecker.isAutomaticUpdateEligible({
           ...PUBLISHED,
-          argv: ['run', 'Explain why --json and --output-format=json are mentioned'],
+          argv: ['run', 'Explain why --json, -f json, and --output-format=json are mentioned'],
         }),
         true
       );
@@ -161,12 +162,13 @@ describe('Update Checker', function () {
   });
 
   describe('version and attempt validation', function () {
-    it('compares only stable semantic versions', function () {
+    it('compares stable releases and treats non-release current builds as explicitly updatable', function () {
       assert.strictEqual(updateChecker.isNewerVersion('1.9.9', '1.10.0'), true);
       assert.strictEqual(updateChecker.isNewerVersion('2.0.0', '1.9.9'), false);
       assert.strictEqual(updateChecker.isNewerVersion('1.0.0', '1.0.0'), false);
       assert.strictEqual(updateChecker.isNewerVersion('1.0.0', '1.1.0-rc.1'), false);
-      assert.strictEqual(updateChecker.isNewerVersion('development', '2.0.0'), false);
+      assert.strictEqual(updateChecker.isNewerVersion('0.0.0-development', '2.0.0'), true);
+      assert.strictEqual(updateChecker.isNewerVersion('1.0.0-rc.1', '2.0.0'), true);
     });
 
     it('uses the exact 24-hour boundary', function () {
@@ -294,7 +296,7 @@ describe('Update Checker', function () {
       let fetches = 0;
       const refresh = updateChecker.checkForUpdates(
         checkerOptions(state, {
-          fetchLatestVersion: async () => {
+          fetchLatestVersion: () => {
             fetches += 1;
             assert.strictEqual(state.lastUpdateCheckClaim, 'claim-a');
             return '2.0.0';
@@ -329,9 +331,7 @@ describe('Update Checker', function () {
           claims += 1;
           return base.mutateSettings(mutator);
         },
-        fetchLatestVersion: async () => {
-          throw new Error('offline');
-        },
+        fetchLatestVersion: () => Promise.reject(new Error('offline')),
       });
 
       assert.strictEqual(claims, 0);
@@ -379,7 +379,7 @@ describe('Update Checker', function () {
       const claimIds = ['claim-a', 'claim-b'];
       const options = checkerOptions(state, {
         generateClaimId: () => claimIds.shift(),
-        fetchLatestVersion: async () => null,
+        fetchLatestVersion: () => null,
       });
 
       await updateChecker.checkForUpdates(options);
@@ -429,7 +429,7 @@ describe('Update Checker', function () {
             mutateSettings: () => {
               throw new Error('lock unavailable');
             },
-            fetchLatestVersion: async () => {
+            fetchLatestVersion: () => {
               fetches += 1;
               return '2.0.0';
             },
@@ -598,6 +598,51 @@ describe('Update Checker', function () {
       );
     });
 
+
+    it('keeps source-build explicit checks available and installs the current package without force', async function () {
+      assert.strictEqual(updateChecker.isNewerVersion('0.0.0-development', '2.0.0'), true);
+      assert.strictEqual(
+        updateChecker.isAutomaticUpdateEligible({
+          ...PUBLISHED,
+          argv: ['list'],
+          currentVersion: '0.0.0-development',
+        }),
+        false
+      );
+
+      const originalSpawn = childProcess.spawn;
+      const installPrefix = path.join(TEST_DIR, 'source-prefix');
+      fs.mkdirSync(path.join(installPrefix, 'lib', 'node_modules'), { recursive: true });
+      let observed;
+      childProcess.spawn = (command, args, options) => {
+        observed = { command, args, options };
+        const child = new EventEmitter();
+        process.nextTick(() => child.emit('close', 0));
+        return child;
+      };
+
+      try {
+        const success = await updateChecker.runUpdate({
+          packageName: '@the-open-engine/zeroshot',
+          installPrefix,
+          npmCommand: '/tmp/npm-for-test',
+        });
+        assert.strictEqual(success, true);
+        assert.deepStrictEqual(observed, {
+          command: '/tmp/npm-for-test',
+          args: [
+            'install',
+            '-g',
+            '--prefix',
+            installPrefix,
+            '@the-open-engine/zeroshot@latest',
+          ],
+          options: { stdio: 'inherit', shell: false },
+        });
+      } finally {
+        childProcess.spawn = originalSpawn;
+      }
+    });
     it('spawns resolved npm with inherited stdio and shell disabled', async function () {
       const originalSpawn = childProcess.spawn;
       const installPrefix = path.join(TEST_DIR, 'legacy-prefix');
