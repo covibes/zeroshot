@@ -45,6 +45,7 @@ const {
   mutateSettings,
   validateSetting,
   coerceValue,
+  SettingsValidationError,
   DEFAULT_SETTINGS,
   settingsFileExists,
 } = require('../lib/settings');
@@ -4298,11 +4299,18 @@ settingsCmd
       }
 
       const parsedValue = parseSettingValue(value);
-      mutateSettings((settings) => {
-        setNestedValue(settings, key, parsedValue);
-        const validationError = validateSetting(rootKey, settings[rootKey]);
-        if (validationError) throw new Error(validationError);
-      });
+      try {
+        mutateSettings((settings) => {
+          setNestedValue(settings, key, parsedValue);
+          const validationError = validateSetting(rootKey, settings[rootKey]);
+          if (validationError) throw new SettingsValidationError(validationError);
+        });
+      } catch (error) {
+        if (!(error instanceof SettingsValidationError)) throw error;
+        console.error(chalk.red(error.message));
+        process.exitCode = 1;
+        return;
+      }
 
       const displayValue =
         typeof parsedValue === 'string' ? parsedValue : JSON.stringify(parsedValue);

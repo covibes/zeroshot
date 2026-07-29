@@ -408,11 +408,19 @@ function optionIndex(argv, longName, shortName = null) {
 }
 
 function optionValue(argv, longName, shortName = null) {
-  const index = optionIndex(argv, longName, shortName);
-  if (index === -1) return null;
-  const token = argv[index];
-  if (token.startsWith(`${longName}=`)) return token.slice(longName.length + 1);
-  return argv[index + 1] ?? null;
+  const end = argv.indexOf('--');
+  const limit = end === -1 ? argv.length : end;
+  for (let index = 0; index < limit; index += 1) {
+    const token = argv[index];
+    if (token === longName || (shortName && token === shortName)) {
+      return argv[index + 1] ?? null;
+    }
+    if (token.startsWith(`${longName}=`)) return token.slice(longName.length + 1);
+    if (shortName && token.startsWith(shortName) && token.length > shortName.length) {
+      return token.slice(shortName.length);
+    }
+  }
+  return null;
 }
 
 function commandPath(argv) {

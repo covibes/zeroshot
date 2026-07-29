@@ -12,10 +12,25 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const assert = require('assert');
+const { spawnSync } = require('child_process');
 
 // Test storage directory (isolated)
 const TEST_STORAGE_DIR = path.join(os.tmpdir(), 'zeroshot-settings-test-' + Date.now());
 const TEST_SETTINGS_FILE = path.join(TEST_STORAGE_DIR, 'settings.json');
+const CLI_ENTRY = path.join(__dirname, '..', 'cli', 'index.js');
+
+function runSettingsCli(args) {
+  return spawnSync(process.execPath, [CLI_ENTRY, 'settings', ...args], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      CI: '1',
+      NODE_ENV: 'test',
+      ZEROSHOT_DAEMON: '1',
+      ZEROSHOT_SETTINGS_FILE: TEST_SETTINGS_FILE,
+    },
+  });
+}
 
 let settingsModule;
 
@@ -318,6 +333,70 @@ function registerStrictSchemaPropagationTests() {
   });
 }
 
+function registerTransactionalRecoveryTests() {
+  describe('transactional malformed-file recovery and diagnostics', function () {
+    function writeMalformedSettings() {
+      fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
+      fs.writeFileSync(TEST_SETTINGS_FILE, '{"truncated":', 'utf8');
+    }
+
+    it('repairs malformed settings through reset --yes even when defaults are a semantic no-op', function () {
+      writeMalformedSettings();
+      const result = runSettingsCli(['reset', '--yes']);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes('Settings reset to defaults'));
+      const repaired = JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'));
+      assert.strictEqual(repaired.autoCheckUpdates, true);
+      assert.strictEqual(repaired.lastUpdateCheckAt, null);
+      assert.strictEqual(repaired.lastSeenVersion, null);
+      assert.strictEqual(repaired.lastUpdateCheckClaim, null);
+    });
+
+    it('repairs malformed settings while applying an intended settings set mutation', function () {
+      writeMalformedSettings();
+      const result = runSettingsCli(['set', 'logLevel', 'verbose']);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.ok(result.stdout.includes('Set logLevel = \"verbose\"'));
+      assert.strictEqual(JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel, 'verbose');
+    });
+
+    it('reports an invalid nested provider level without persistence wording or a write', function () {
+      writeSettingsFile({});
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const result = runSettingsCli([
+        'set',
+        'providerSettings.claude.defaultLevel',
+        'level9',
+      ]);
+
+      assert.strictEqual(result.status, 1);
+      assert.ok(result.stderr.includes('Invalid defaultLevel for claude: level9'));
+      assert.ok(!result.stderr.includes('Unable to persist global settings'));
+      assert.ok(!result.stdout.includes('✓ Set'));
+      assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+    });
+
+    it('distinguishes a persistence failure and never prints false success', function () {
+      writeSettingsFile({ logLevel: 'normal' });
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const lockPath = `${TEST_SETTINGS_FILE}.lock`;
+      fs.mkdirSync(lockPath);
+      try {
+        const result = runSettingsCli(['set', 'logLevel', 'verbose']);
+        assert.strictEqual(result.status, 1);
+        assert.ok(result.stderr.includes('Unable to persist global settings'));
+        assert.ok(!result.stderr.includes('Invalid defaultLevel'));
+        assert.ok(!result.stdout.includes('✓ Set'));
+        assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+      } finally {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+      }
+    });
+  });
+}
+
 describe('Settings System', function () {
   this.timeout(10000);
 
@@ -329,4 +408,5 @@ describe('Settings System', function () {
   registerSettingsCoercionTests();
   registerSettingsFileFormatTests();
   registerStrictSchemaPropagationTests();
+  registerTransactionalRecoveryTests();
 });

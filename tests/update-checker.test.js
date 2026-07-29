@@ -122,6 +122,7 @@ describe('Update Checker', function () {
       ['JSON export separated', ['export', 'id', '--format', 'json']],
       ['JSON export equals', ['export', 'id', '--format=json']],
       ['JSON export short format', ['export', 'id', '-f', 'json']],
+      ['JSON export joined short format', ['export', 'id', '-fjson']],
       ['development build', ['list'], { currentVersion: '0.0.0-development' }],
       ['prerelease build', ['list'], { currentVersion: '1.0.0-rc.1' }],
       ['legacy package', ['list'], { packageName: '@covibes/zeroshot' }],
@@ -147,7 +148,7 @@ describe('Update Checker', function () {
       assert.strictEqual(
         updateChecker.isAutomaticUpdateEligible({
           ...PUBLISHED,
-          argv: ['run', 'Explain why --json, -f json, and --output-format=json are mentioned'],
+          argv: ['run', 'Explain why --json, -f json, -fjson, and --output-format=json are mentioned'],
         }),
         true
       );
@@ -156,6 +157,30 @@ describe('Update Checker', function () {
     it('honors the option terminator', function () {
       assert.strictEqual(
         updateChecker.isAutomaticUpdateEligible({ ...PUBLISHED, argv: ['run', '--', '--json'] }),
+        true
+      );
+    });
+
+    it('does not overmatch non-JSON joined short values or unrelated short-looking flags', function () {
+      assert.strictEqual(
+        updateChecker.isAutomaticUpdateEligible({
+          ...PUBLISHED,
+          argv: ['export', 'id', '-fmarkdown'],
+        }),
+        true
+      );
+      assert.strictEqual(
+        updateChecker.isAutomaticUpdateEligible({ ...PUBLISHED, argv: ['run', 'hello', '-follow'] }),
+        true
+      );
+    });
+
+    it('ignores a joined short value after the option terminator', function () {
+      assert.strictEqual(
+        updateChecker.isAutomaticUpdateEligible({
+          ...PUBLISHED,
+          argv: ['run', '--', '-fjson'],
+        }),
         true
       );
     });
