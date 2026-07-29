@@ -75,7 +75,7 @@ async fn sqlite_round_trips_required_proof_and_reducer_record_tags() {
     let proof_intent = b"proof-intent".to_vec();
     let proof_receipt = b"proof-receipt".to_vec();
     let proof_acceptance = b"proof-acceptance".to_vec();
-    let payloads = vec![
+    let payloads = [
         RecordPayload::RequiredProofIntent {
             run,
             attempt: 1,
