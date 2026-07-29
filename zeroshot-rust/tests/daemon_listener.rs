@@ -1388,9 +1388,17 @@ async fn crash_leaves_stale_locator_that_next_owner_cleans_without_reusing_secre
     )
     .await
     .expect("clean stale crash locator");
-    assert_ne!(replacement.locator().endpoint, stale.endpoint);
     assert_ne!(replacement.locator().capability, stale.capability);
     assert_ne!(replacement.locator().daemon_nonce, stale.daemon_nonce);
+    let response = authenticated_initialize(replacement.locator()).await;
+    assert_eq!(
+        response["result"]["protocolVersion"],
+        "openengine.cluster/v1"
+    );
+    assert_eq!(
+        probe_liveness(&stale, Duration::from_millis(250)).await,
+        LivenessOutcome::DefinitelyStale
+    );
     assert_eq!(
         read_locator(&profile.profile).expect("replacement locator"),
         Some(replacement.locator().clone())
