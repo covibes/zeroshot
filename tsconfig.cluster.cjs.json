@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.cluster.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "rootDir": "src/cluster",
+    "outDir": ".cluster-build/cjs",
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": false,
+    "declarationMap": false
+  },
+  "include": ["src/cluster/**/*.ts"]
+}

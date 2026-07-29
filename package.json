@@ -40,21 +40,26 @@
     "test:coverage:report": "c8 --reporter=html npm run test:unit && echo 'Coverage report generated at coverage/index.html'",
     "postinstall": "node scripts/fix-node-pty-permissions.js && node scripts/check-path.js",
     "start": "node cli/index.js",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run typecheck:cluster",
     "typecheck:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.json",
+    "typecheck:cluster": "tsc --project tsconfig.cluster.json",
     "lint:agent-cli-provider": "eslint \"src/agent-cli-provider/**/*.ts\" \"tests/agent-cli-provider/**/*.ts\"",
     "build:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.build.json",
+    "build:cluster": "npm run protocol:generate && tsc --project tsconfig.cluster.cjs.json && tsc --project tsconfig.cluster.esm.json && node scripts/build-cluster.js",
     "test:agent-cli-provider": "node --test tests/agent-cli-provider/*.test.js",
     "test:providers:live": "npm run build:agent-cli-provider && node scripts/live-provider-smoke.js",
     "check:agent-cli-provider": "npm run check:agent-cli-provider:ci",
     "check:agent-cli-provider:ci": "npm run typecheck:agent-cli-provider && npm run lint:agent-cli-provider && npm run build:agent-cli-provider && npm run test:agent-cli-provider",
+    "test:cluster-client": "npm run build:cluster && node --test tests/cluster/client.test.js tests/cluster/parity.test.js tests/cluster/architecture.test.js tests/cluster/verifier-regressions.test.js",
+    "test:cluster-package": "npm run build:cluster && node --test tests/cluster/package.test.js",
     "dev:link": "npm link",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "validate:templates": "node scripts/validate-templates.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "protocol:check": "cargo run -p openengine-cluster-testkit --bin generate-cluster-protocol -- --check",
+    "protocol:generate": "node scripts/generate-cluster-types.js",
+    "protocol:check": "cargo run -p openengine-cluster-testkit --bin generate-cluster-protocol -- --check && node scripts/generate-cluster-types.js --check",
     "rust:distribution:check": "node scripts/rust-distribution.js check-repository",
     "rust:check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
     "deadcode": "ts-prune --skip node_modules",
@@ -68,6 +73,7 @@
     "release:preflight": "node scripts/release-preflight.js",
     "release:recover": "node scripts/release-recovery.js",
     "release:assert-published": "node scripts/assert-release-published.js",
+    "prepack": "npm run build:cluster",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run check:agent-cli-provider:ci",
     "prepare": "npm run build:agent-cli-provider && husky"
   },
@@ -115,6 +121,17 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
+  "exports": {
+    ".": "./src/orchestrator.js",
+    "./cluster": {
+      "types": "./lib/cluster/index.d.ts",
+      "import": "./lib/cluster/index.mjs",
+      "require": "./lib/cluster/index.cjs",
+      "default": "./lib/cluster/index.cjs"
+    },
+    "./package.json": "./package.json",
+    "./*": "./*"
+  },
   "files": [
     "src/",
     "lib/",
@@ -141,6 +158,9 @@
     "omelette": "^0.4.17",
     "pidusage": "^4.0.1",
     "proper-lockfile": "^4.1.2"
+  },
+  "optionalDependencies": {
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.8.1",

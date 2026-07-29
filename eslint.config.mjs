@@ -329,6 +329,7 @@ export default [
       'hooks/**',
       'lib/tui-backend/**',
       'lib/agent-cli-provider/**',
+      'lib/cluster/**',
     ],
   },
   prettierConfig,
