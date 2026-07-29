@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use openengine_cluster_protocol::{JSON_RPC_VERSION, PROTOCOL_VERSION};
+use openengine_cluster_protocol::{InitializeResult, JSON_RPC_VERSION, PROTOCOL_VERSION};
 use openengine_cluster_server::websocket::{serve_websocket, websocket_config};
 use openengine_cluster_server::ConnectionContext;
 use serde_json::Value;
@@ -324,13 +324,20 @@ fn valid_liveness_response(response: &Value) -> bool {
     let Some(object) = response.as_object() else {
         return false;
     };
-    object.get("jsonrpc").and_then(Value::as_str) == Some(JSON_RPC_VERSION)
-        && object.get("id").and_then(Value::as_str) == Some("daemon-liveness")
-        && !object.contains_key("error")
-        && response
-            .pointer("/result/protocolVersion")
-            .and_then(Value::as_str)
-            == Some(PROTOCOL_VERSION)
+    if object.len() != 3
+        || object.get("jsonrpc").and_then(Value::as_str) != Some(JSON_RPC_VERSION)
+        || object.get("id").and_then(Value::as_str) != Some("daemon-liveness")
+    {
+        return false;
+    }
+    let Some(raw_result) = object.get("result") else {
+        return false;
+    };
+    let Ok(result) = serde_json::from_value::<InitializeResult>(raw_result.clone()) else {
+        return false;
+    };
+    result.validate_protocol_version().is_ok()
+        && serde_json::to_value(result).ok().as_ref() == Some(raw_result)
 }
 
 fn rotate_away_from(value: &mut String, previous: &str) {

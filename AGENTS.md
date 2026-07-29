@@ -183,22 +183,26 @@ configuration, credential acquisition, executable codecs, concrete drivers, prot
 and Node registry synchronization outside it.
 Daemon locators are owner-only connection hints, never liveness evidence. Startup holds the
 profile lock only through stale authenticated-initialize probing and atomic bind/publication.
+Locator reads open `O_NOFOLLOW` first: a mode-0600 same-owner file with more than one link is
+insecure, while an opened descriptor concurrently unlinked to zero links may yield its complete
+prior value. Never reclassify that proven unlink-after-open race as corruption.
 Upgrade authorization uses domain-separated client/server challenge proofs: capability and daemon
 nonce are never transmitted, the server proof is verified before initialize, and the exact route,
 profile digest, nonce, and rotating 256-bit capability must be proven before backend construction.
 Probe results are closed: authenticated initialize is `Alive`, connection refusal or conclusive
 invalid-owner/protocol proof is `DefinitelyStale`, and capacity/reset/timeout ambiguity is
-`Indeterminate`; only `DefinitelyStale` authorizes locator removal and handoff. Pre-auth handshake
-task/FD ownership, authenticated liveness, and ordinary active sessions each have independent
-finite capacity. Full ordinary capacity cannot consume the reserved liveness capacity. These are
-resource bounds, not an availability claim against unbounded sustained unauthenticated arrivals on
-the single endpoint, which cannot be classified before reading the upgrade. Graceful shutdown uses
-one absolute deadline across acceptance stop, abort/reap, and matching locator cleanup; timeout
-paths still attempt cleanup and report the defined failure. The daemon host reuses the server
-crate's WebSocket binding and dispatcher; keep
-protocol definitions, compatibility, credential resolution, ledger/catalog/recovery,
-runtime/scheduler/pools, exporter, CLI, hosted/cloud control-plane, Node-daemon, and workspace
-behavior outside these modules.
+`Indeterminate`; only `DefinitelyStale` authorizes locator removal and handoff. The response
+envelope is exactly correlated and its result is decoded and canonicalized through the
+authoritative protocol `InitializeResult`; partial or unknown result fields are not liveness.
+Pre-auth handshake task/FD ownership, authenticated liveness, and ordinary active sessions each
+have independent finite capacity. Full ordinary capacity cannot consume reserved liveness.
+These are resource bounds, not an availability claim against unbounded sustained unauthenticated
+arrivals on the single endpoint, which cannot be classified before reading the upgrade. Graceful
+shutdown uses one absolute deadline across acceptance stop, abort/reap, and matching locator
+cleanup; timeout paths still attempt cleanup and report the defined failure. The daemon host reuses
+the server crate's WebSocket binding and dispatcher; keep protocol definitions, compatibility,
+credential resolution, ledger/catalog/recovery, runtime/scheduler/pools, exporter, CLI,
+hosted/cloud control-plane, Node-daemon, and workspace behavior outside these modules.
 `ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair
 scheduler are engine-private seams. They own local dispatch placement, fencing, deadlines,
 workspace conflict arbitration, cancellation, and local-process containment only. They do not own

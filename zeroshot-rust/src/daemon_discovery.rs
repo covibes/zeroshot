@@ -219,19 +219,16 @@ pub(crate) fn random_hex() -> Result<String, DiscoveryError> {
 }
 
 fn read_locator_existing(profile: &NativeProfile) -> Result<Option<DaemonLocator>, DiscoveryError> {
-    let path = profile.locator_path();
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
+    let file = match open_owner_file(&profile.locator_path(), false) {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
+            return Err(DiscoveryError::InsecureFile);
+        }
         Err(error) => return Err(error.into()),
     };
-    validate_owner_file(&metadata)?;
-    if metadata.len() > MAX_LOCATOR_BYTES {
-        return Err(DiscoveryError::LocatorTooLarge);
-    }
-    let file = open_owner_file(&path, false)?;
     let opened_metadata = file.metadata()?;
-    validate_owner_file(&opened_metadata)?;
+    validate_open_locator_file(&opened_metadata)?;
     if opened_metadata.len() > MAX_LOCATOR_BYTES {
         return Err(DiscoveryError::LocatorTooLarge);
     }
@@ -279,15 +276,25 @@ fn validate_owner_file(metadata: &fs::Metadata) -> Result<(), DiscoveryError> {
     Ok(())
 }
 
-fn open_owner_file(path: &Path, create: bool) -> Result<File, DiscoveryError> {
-    let file = OpenOptions::new()
+fn validate_open_locator_file(metadata: &fs::Metadata) -> Result<(), DiscoveryError> {
+    if !metadata.file_type().is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.mode() & 0o077 != 0
+        || metadata.nlink() > 1
+    {
+        return Err(DiscoveryError::InsecureFile);
+    }
+    Ok(())
+}
+
+fn open_owner_file(path: &Path, create: bool) -> io::Result<File> {
+    OpenOptions::new()
         .read(true)
         .write(create)
         .create(create)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    Ok(file)
+        .open(path)
 }
 
 fn is_lower_hex(value: &str, len: usize) -> bool {

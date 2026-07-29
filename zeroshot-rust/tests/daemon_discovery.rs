@@ -71,6 +71,36 @@ fn atomic_rotation_is_owner_only_and_old_owner_cannot_remove_winner() {
 }
 
 #[test]
+fn reader_opened_before_matching_removal_retains_complete_prior_locator() {
+    let profile = TempProfile::new("reader-removal-race");
+    let current = locator(&profile, 30103);
+    replace_locator(&profile.profile, &current).expect("publish locator");
+    let mut opened_before_removal =
+        fs::File::open(profile.profile.locator_path()).expect("open locator");
+
+    assert!(remove_locator_if_matches(&profile.profile, &current).expect("matching removal"));
+    assert_eq!(
+        opened_before_removal
+            .metadata()
+            .expect("opened metadata")
+            .nlink(),
+        0
+    );
+    let mut bytes = Vec::new();
+    opened_before_removal
+        .read_to_end(&mut bytes)
+        .expect("read unlinked prior locator");
+    assert_eq!(
+        serde_json::from_slice::<DaemonLocator>(&bytes).expect("complete prior locator"),
+        current
+    );
+    assert_eq!(
+        read_locator(&profile.profile).expect("locator absent"),
+        None
+    );
+}
+
+#[test]
 fn locator_permissions_and_profile_permissions_fail_closed() {
     let profile = TempProfile::new("permissions");
     let current = locator(&profile, 30201);

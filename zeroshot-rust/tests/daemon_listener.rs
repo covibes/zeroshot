@@ -381,6 +381,20 @@ async fn liveness_response_requires_exact_json_rpc_correlation_and_shape() {
         .as_object_mut()
         .expect("result object")
         .remove("protocolVersion");
+    let mut missing_capabilities = valid.clone();
+    missing_capabilities["result"]
+        .as_object_mut()
+        .expect("result object")
+        .remove("capabilities");
+    let mut missing_status = valid.clone();
+    missing_status["result"]
+        .as_object_mut()
+        .expect("result object")
+        .remove("status");
+    let mut unknown_result_field = valid.clone();
+    unknown_result_field["result"]["unexpected"] = serde_json::json!(true);
+    let mut unknown_top_level_field = valid.clone();
+    unknown_top_level_field["unexpected"] = serde_json::json!(true);
     let mut result_and_error = valid.clone();
     result_and_error["error"] = serde_json::json!({"code": -32603, "message": "stale response"});
     let cases = vec![
@@ -447,6 +461,22 @@ async fn liveness_response_requires_exact_json_rpc_correlation_and_shape() {
         ),
         ("wrong protocol", wrong_protocol.to_string(), false),
         ("missing protocol", missing_protocol.to_string(), false),
+        (
+            "missing capabilities",
+            missing_capabilities.to_string(),
+            false,
+        ),
+        ("missing status", missing_status.to_string(), false),
+        (
+            "unknown result field",
+            unknown_result_field.to_string(),
+            false,
+        ),
+        (
+            "unknown top-level field",
+            unknown_top_level_field.to_string(),
+            false,
+        ),
         ("result and error", result_and_error.to_string(), false),
         (
             "error only",
