@@ -226,6 +226,13 @@ fn read_locator_existing(profile: &NativeProfile) -> Result<Option<DaemonLocator
         }
         Err(error) => return Err(error),
     };
+    decode_open_locator(profile, file).map(Some)
+}
+
+fn decode_open_locator(
+    profile: &NativeProfile,
+    file: File,
+) -> Result<DaemonLocator, DiscoveryError> {
     let opened_metadata = file.metadata()?;
     validate_open_locator_file(&opened_metadata)?;
     if opened_metadata.len() > MAX_LOCATOR_BYTES {
@@ -239,7 +246,7 @@ fn read_locator_existing(profile: &NativeProfile) -> Result<Option<DaemonLocator
     let locator: DaemonLocator =
         serde_json::from_slice(&bytes).map_err(|_| DiscoveryError::InvalidLocator)?;
     locator.validate_for(profile)?;
-    Ok(Some(locator))
+    Ok(locator)
 }
 
 fn ensure_profile_directory(path: &Path) -> Result<(), DiscoveryError> {
@@ -318,4 +325,38 @@ fn hex(bytes: &[u8]) -> String {
         output.push(DIGITS[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn production_locator_decoder_accepts_an_opened_owner_inode_unlinked_during_read() {
+        let root = std::env::temp_dir().join(format!(
+            "zeroshot-open-locator-race-{}-{}",
+            std::process::id(),
+            random_hex().expect("temporary profile suffix")
+        ));
+        let profile = NativeProfile::new(&root, "native-profile:opened-locator");
+        let locator = DaemonLocator {
+            endpoint: "ws://127.0.0.1:30109/daemon/initialize".to_owned(),
+            cluster_protocol: CLUSTER_PROTOCOL.to_owned(),
+            daemon_protocol: DAEMON_PROTOCOL.to_owned(),
+            profile_digest: profile.digest().to_owned(),
+            daemon_nonce: "a".repeat(64),
+            capability: "b".repeat(64),
+        };
+        replace_locator(&profile, &locator).expect("publish locator");
+        let file = open_owner_file(&profile.locator_path(), false).expect("open locator");
+
+        fs::remove_file(profile.locator_path()).expect("unlink opened locator");
+        assert_eq!(file.metadata().expect("opened metadata").nlink(), 0);
+        assert_eq!(
+            decode_open_locator(&profile, file).expect("decode opened owner inode"),
+            locator
+        );
+
+        fs::remove_dir_all(root).expect("remove temporary profile");
+    }
 }

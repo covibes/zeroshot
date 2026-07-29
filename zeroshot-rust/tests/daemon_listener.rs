@@ -119,6 +119,71 @@ async fn zero_capacity_or_deadline_is_rejected_before_profile_or_listener_creati
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_nanosecond_deadlines_pass_validation_and_leave_no_locator_or_socket() {
+    let mut cases = Vec::new();
+    let mut config = test_config();
+    config.startup_lock_timeout = Duration::from_nanos(1);
+    cases.push(("startup-lock-positive-boundary", config));
+    let mut config = test_config();
+    config.liveness_timeout = Duration::from_nanos(1);
+    cases.push(("liveness-positive-boundary", config));
+    let mut config = test_config();
+    config.handshake_timeout = Duration::from_nanos(1);
+    cases.push(("handshake-positive-boundary", config));
+    let mut config = test_config();
+    config.drain_timeout = Duration::from_nanos(1);
+    cases.push(("drain-positive-boundary", config));
+    let mut config = test_config();
+    config.shutdown_timeout = Duration::from_nanos(1);
+    cases.push(("shutdown-positive-boundary", config));
+
+    for (name, boundary) in cases {
+        let profile = TempProfile::new(name);
+        let listener = DaemonListener::start_with_config(
+            profile.profile.clone(),
+            CountingFactory::default(),
+            boundary,
+        )
+        .await
+        .expect("positive deadline boundary passes validation");
+        let address: SocketAddr = listener
+            .locator()
+            .endpoint
+            .strip_prefix("ws://")
+            .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+            .expect("boundary endpoint")
+            .parse()
+            .expect("boundary address");
+        assert!(matches!(
+            listener.shutdown().await,
+            Ok(()) | Err(DaemonListenerError::ShutdownTimeout)
+        ));
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let locator_removed = read_locator(&profile.profile)
+                    .expect("boundary cleanup state")
+                    .is_none();
+                let socket_released = match TcpListener::bind(address).await {
+                    Ok(rebound) => {
+                        drop(rebound);
+                        true
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => false,
+                    Err(error) => panic!("unexpected boundary rebind failure: {error}"),
+                };
+                if locator_removed && socket_released {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("boundary shutdown released locator and socket");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_profile_start_has_one_owner_and_loser_cannot_remove_it() {
     let profile = TempProfile::new("concurrent-start");
@@ -223,6 +288,56 @@ async fn raw_handshake_burst_owns_only_the_configured_pre_auth_bound() {
         .await
         .expect("bounded listener shutdown")
         .expect("listener shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partial_raw_handshake_releases_its_permit_at_server_timeout_without_client_drop() {
+    let profile = TempProfile::new("raw-handshake-timeout");
+    let config = ListenerConfig {
+        handshake_timeout: Duration::from_millis(30),
+        max_pending_handshakes: 1,
+        ..test_config()
+    };
+    let listener = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        config,
+    )
+    .await
+    .expect("start handshake-timeout listener");
+    let address: SocketAddr = listener
+        .locator()
+        .endpoint
+        .strip_prefix("ws://")
+        .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+        .expect("handshake-timeout endpoint")
+        .parse()
+        .expect("handshake-timeout address");
+    let mut socket = TcpStream::connect(address)
+        .await
+        .expect("raw handshake connection");
+    socket.write_all(b"G").await.expect("partial raw handshake");
+    timeout(Duration::from_millis(200), async {
+        while listener.pending_handshakes() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("raw handshake owns permit");
+
+    timeout(Duration::from_millis(500), async {
+        while listener.pending_handshakes() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("server handshake timeout released permit");
+    socket
+        .peer_addr()
+        .expect("client socket remains owned after server timeout");
+
+    drop(socket);
+    listener.shutdown().await.expect("shutdown listener");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -537,6 +652,69 @@ async fn authenticated_liveness_burst_owns_only_its_reserved_capacity() {
         .await
         .expect("bounded liveness shutdown")
         .expect("liveness shutdown");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_liveness_releases_its_permit_at_server_timeout_without_client_drop() {
+    let profile = TempProfile::new("authenticated-liveness-timeout");
+    let config = ListenerConfig {
+        liveness_timeout: Duration::from_millis(30),
+        max_liveness_connections: 1,
+        ..test_config()
+    };
+    let listener = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        config,
+    )
+    .await
+    .expect("start liveness-timeout listener");
+    let locator = listener.locator().clone();
+    let credentials = locator_credentials(&locator);
+    let address: SocketAddr = locator
+        .endpoint
+        .strip_prefix("ws://")
+        .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+        .expect("liveness-timeout endpoint")
+        .parse()
+        .expect("liveness-timeout address");
+    let mut request = locator
+        .endpoint
+        .as_str()
+        .into_client_request()
+        .expect("liveness request");
+    let proof = credentials
+        .prepare_request(&mut request, ConnectionPurpose::Liveness)
+        .expect("liveness proof");
+    let stream = TcpStream::connect(address)
+        .await
+        .expect("liveness connection");
+    let (websocket, response) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .expect("authenticated liveness upgrade");
+    assert!(proof.verify(&response));
+    timeout(Duration::from_millis(200), async {
+        while listener.active_liveness_connections() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("liveness owns permit");
+
+    timeout(Duration::from_millis(500), async {
+        while listener.active_liveness_connections() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("server liveness timeout released permit");
+    websocket
+        .get_ref()
+        .peer_addr()
+        .expect("client websocket remains owned after server timeout");
+
+    drop(websocket);
+    listener.shutdown().await.expect("shutdown listener");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
