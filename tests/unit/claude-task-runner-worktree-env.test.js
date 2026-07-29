@@ -157,6 +157,25 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
     );
     assert.ok(!fs.existsSync(path.dirname(settingsPath)));
   });
+
+  it('cleans the overlay when the darwin Keychain boundary fails closed', function () {
+    let settingsPath;
+    const runner = new ClaudeTaskRunner({
+      quiet: true,
+      applyDarwinKeychainBoundary(spawnEnv) {
+        settingsPath = spawnEnv[CLAUDE_SETTINGS_ENV];
+        settingsOverlays.push(settingsPath);
+        assert.ok(fs.existsSync(settingsPath), 'the overlay must exist before boundary setup');
+        throw new Error('Keychain boundary installation failed');
+      },
+    });
+
+    assert.throws(
+      () => runner._buildSpawnEnv('claude', null),
+      /Keychain boundary installation failed/
+    );
+    assert.ok(!fs.existsSync(path.dirname(settingsPath)));
+  });
 });
 
 describe('ClaudeTaskRunner isolated MCP forwarding', function () {

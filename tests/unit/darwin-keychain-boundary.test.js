@@ -152,7 +152,10 @@ describe('darwin worker Keychain boundary (issue #704)', function () {
         shimBaseDir: emptyShimDir,
       });
 
-      assert.strictEqual(unsetEnv.PATH, unsetShimDir);
+      assert.strictEqual(
+        unsetEnv.PATH,
+        [unsetShimDir, '/usr/bin', '/bin'].join(path.delimiter)
+      );
       assert.strictEqual(emptyEnv.PATH, `${emptyShimDir}${path.delimiter}`);
     });
 

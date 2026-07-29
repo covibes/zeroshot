@@ -156,11 +156,11 @@ function applyDarwinKeychainBoundaryToEnv(env, options = {}) {
   // Darwin environment keys are case-sensitive: descendants consult PATH,
   // never a differently-cased key such as Path. Preserve empty components
   // because POSIX interprets them as the current directory. An absent PATH
-  // becomes only the shim, while an explicitly empty PATH retains its empty
-  // component after the shim (`<shim>:`).
+  // retains Node/libuv's default Unix search path after the shim, while an
+  // explicitly empty PATH retains its empty component (`<shim>:`).
   const existingEntries =
     env.PATH === undefined
-      ? []
+      ? ['/usr/bin', '/bin']
       : String(env.PATH)
           .split(path.delimiter)
           .filter((entry) => entry !== shimDir);

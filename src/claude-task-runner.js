@@ -380,13 +380,15 @@ class ClaudeTaskRunner extends TaskRunner {
     const spawnEnv = {
       ...process.env,
     };
+    let claudeSettingsPath = null;
     if (providerName === 'claude' && resolvedModelSpec?.model) {
       spawnEnv.ANTHROPIC_MODEL = resolvedModelSpec.model;
     }
     if (providerName === 'claude') {
-      spawnEnv[CLAUDE_SETTINGS_ENV] = prepareClaudeSettingsOverlay({
+      claudeSettingsPath = prepareClaudeSettingsOverlay({
         includeDangerousGit: Boolean(worktreePath),
       });
+      spawnEnv[CLAUDE_SETTINGS_ENV] = claudeSettingsPath;
       const mcpConfigPath = resolveRepoMcpConfigPath({ cwd, worktreePath });
       if (mcpConfigPath) {
         spawnEnv[CLAUDE_MCP_CONFIG_ENV] = mcpConfigPath;
@@ -395,7 +397,12 @@ class ClaudeTaskRunner extends TaskRunner {
 
     // KEYCHAIN BOUNDARY (darwin only): keep non-interactive worker descendants
     // away from the user's GUI Keychain session (issue #704).
-    this.applyDarwinKeychainBoundary(spawnEnv);
+    try {
+      this.applyDarwinKeychainBoundary(spawnEnv);
+    } catch (error) {
+      if (claudeSettingsPath) cleanupClaudeSettingsOverlay(claudeSettingsPath);
+      throw error;
+    }
 
     prependWorktreeToolBinToEnv(spawnEnv, { cwd, worktreePath });
 
