@@ -71,10 +71,10 @@ const EVIDENCE_SEMANTICS: [EvidenceSemantics; 10] = [
     },
     EvidenceSemantics {
         code: FaultCode::SessionLost,
-        retry_disposition: RetryDisposition::RetryAfterBackoff,
-        user_action: UserAction::RestartOperation,
+        retry_disposition: RetryDisposition::DoNotRetry,
+        user_action: UserAction::ContactSupport,
         severity: FaultSeverity::Error,
-        summary: "A required native engine session was lost.",
+        summary: "A lost native engine session terminated the affected execution.",
     },
     EvidenceSemantics {
         code: FaultCode::InvariantViolation,

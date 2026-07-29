@@ -1,6 +1,6 @@
 use zeroshot_engine::fault::{
-    EvidenceClass, FaultContext, FaultFactory, FaultModule, ModuleEvidence, RawDiagnostic,
-    RedactionMarker,
+    EvidenceClass, FaultCode, FaultConsequence, FaultContext, FaultFactory, FaultModule,
+    FaultSeverity, ModuleEvidence, RawDiagnostic, RedactionMarker,
 };
 use zeroshot_engine::observability::{
     CounterMetricName, HistogramMetricName, InMemoryObservationSink, NoopObservationSink,
@@ -40,6 +40,42 @@ fn fault_creation_emits_exactly_one_bounded_typed_observation() {
     assert_eq!(record.severity, fault.severity());
     assert!(record.diagnostic_redacted);
     assert!(!format!("{snapshot:?}").contains(secret));
+}
+
+#[test]
+fn session_loss_observation_is_terminal_typed_and_identifier_free() {
+    let sink = InMemoryObservationSink::default();
+    let identifier = "private-node-session-42";
+    let fault = FaultFactory::new(&sink).create(
+        ModuleEvidence::new(
+            FaultModule::Worker,
+            FaultContext::Execution,
+            EvidenceClass::SessionLost,
+        )
+        .with_diagnostic(
+            RawDiagnostic::new(RedactionMarker::SessionIdentifier, identifier).unwrap(),
+        ),
+    );
+
+    let snapshot = sink.snapshot();
+    assert_eq!(snapshot.faults_total, 1);
+    assert_eq!(snapshot.diagnostics_redacted_total, 1);
+    assert_eq!(snapshot.faults.len(), 1);
+    assert_eq!(
+        snapshot.fault_size_bytes,
+        vec![fault.encode_json().unwrap().len() as u16]
+    );
+    let record = snapshot.faults[0];
+    assert_eq!(record.module, ObservationModule::Worker);
+    assert_eq!(record.operation, ObservationOperation::Execution);
+    assert_eq!(record.outcome, ObservationOutcome::Faulted);
+    assert_eq!(record.fault_code, FaultCode::SessionLost);
+    assert_eq!(record.consequence, FaultConsequence::ExecutionInterrupted);
+    assert_eq!(record.severity, FaultSeverity::Error);
+    assert!(record.diagnostic_redacted);
+    let observed = format!("{snapshot:?}");
+    assert!(!observed.contains(identifier));
+    assert!(!observed.contains("RetryAfter"));
 }
 
 #[test]
