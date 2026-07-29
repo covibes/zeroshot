@@ -276,29 +276,37 @@ describe('Isolated terminal cleanup recovery', function () {
       spawnInContainer() {
         return createProcess();
       },
-      async execInContainer(_clusterId, command) {
+      execInContainer(_clusterId, command) {
         commands.push(command);
         const commandText = command.join(' ');
         if (commandText.includes('get-log-path')) {
-          return { code: 0, stdout: '/tmp/provider.log\n', stderr: '' };
+          return Promise.resolve({ code: 0, stdout: '/tmp/provider.log\n', stderr: '' });
         }
         if (commandText.includes('status')) {
-          return {
+          return Promise.resolve({
             code: 0,
             stdout: `Status: completed\nCleanup: ${cleanupPending ? 'pending' : 'complete'}\n`,
             stderr: '',
-          };
+          });
         }
         if (command[1] === 'kill') {
           cleanupAttempts += 1;
           if (cleanupAttempts === 1) {
-            return { code: 1, stdout: '', stderr: 'cleanup temporarily unavailable' };
+            return Promise.resolve({
+              code: 1,
+              stdout: '',
+              stderr: 'cleanup temporarily unavailable',
+            });
           }
           cleanupPending = false;
-          return { code: 0, stdout: 'cleanup recovered\n', stderr: '' };
+          return Promise.resolve({ code: 0, stdout: 'cleanup recovered\n', stderr: '' });
         }
         if (commandText.includes('cat')) {
-          return { code: 0, stdout: '{"summary":"done","result":"ok"}\n', stderr: '' };
+          return Promise.resolve({
+            code: 0,
+            stdout: '{"summary":"done","result":"ok"}\n',
+            stderr: '',
+          });
         }
         throw new Error(`Unexpected command: ${commandText}`);
       },
@@ -316,7 +324,7 @@ describe('Isolated terminal cleanup recovery', function () {
       enableLivenessCheck: false,
       messageBus: { publish() {} },
       _resolveProvider: () => 'codex',
-      _parseResultOutput: async () => ({ summary: 'done', result: 'ok' }),
+      _parseResultOutput: () => ({ summary: 'done', result: 'ok' }),
       _stopLivenessCheck() {},
       _log() {},
     };
