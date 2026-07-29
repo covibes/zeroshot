@@ -415,6 +415,12 @@ impl Status {
     }
 }
 
+#[derive(Clone, Copy)]
+struct VoidAuthorization {
+    position: Position,
+    reason: ExecutionVoidReason,
+}
+
 struct Engine<'a> {
     run: RunSequence,
     executions: &'a [DurableExecution],
@@ -423,7 +429,7 @@ struct Engine<'a> {
     decisions: Vec<Decision>,
     map_depths: BTreeMap<NodeName, usize>,
     consumed_executions: BTreeSet<ExecutionId>,
-    legitimized_voids: BTreeSet<ExecutionId>,
+    void_authorizations: BTreeMap<ExecutionId, VoidAuthorization>,
 }
 
 impl<'a> Engine<'a> {
@@ -451,15 +457,22 @@ impl<'a> Engine<'a> {
             decisions: Vec::new(),
             map_depths,
             consumed_executions: BTreeSet::new(),
-            legitimized_voids: BTreeSet::new(),
+            void_authorizations: BTreeMap::new(),
         })
     }
 
     fn ensure_history_consumed(&self) -> Result<(), ReducerError> {
         if self.executions.iter().all(|execution| {
             self.consumed_executions.contains(&execution.execution)
-                && (!matches!(execution.state, DurableExecutionState::Voided { .. })
-                    || self.legitimized_voids.contains(&execution.execution))
+                && match &execution.state {
+                    DurableExecutionState::Voided { position, reason } => self
+                        .void_authorizations
+                        .get(&execution.execution)
+                        .is_some_and(|authorization| {
+                            *position > authorization.position && *reason == authorization.reason
+                        }),
+                    DurableExecutionState::Active | DurableExecutionState::Settled { .. } => true,
+                }
         }) {
             Ok(())
         } else {
@@ -1289,6 +1302,22 @@ impl<'a> Engine<'a> {
         }
     }
 
+    fn record_void_authorization(
+        &mut self,
+        execution: ExecutionId,
+        position: Position,
+        reason: ExecutionVoidReason,
+    ) -> ExecutionVoidReason {
+        let authorization = self
+            .void_authorizations
+            .entry(execution)
+            .or_insert(VoidAuthorization { position, reason });
+        if position < authorization.position {
+            *authorization = VoidAuthorization { position, reason };
+        }
+        authorization.reason
+    }
+
     fn void_active_descendants(&mut self, node: &GraphNode, scope: VoidScope<'_>) {
         let descendants = descendant_names(node);
         let mut losers = self
@@ -1302,13 +1331,7 @@ impl<'a> Engine<'a> {
                         .occurrence
                         .map_indices
                         .starts_with(scope.map_indices)
-                    && match &execution.state {
-                        DurableExecutionState::Active => true,
-                        DurableExecutionState::Voided { position, reason } => {
-                            *position > scope.authorization && *reason == scope.reason
-                        }
-                        DurableExecutionState::Settled { .. } => false,
-                    }
+                    && !matches!(execution.state, DurableExecutionState::Settled { .. })
             })
             .map(|execution| {
                 (
@@ -1320,9 +1343,10 @@ impl<'a> Engine<'a> {
             .collect::<Vec<_>>();
         losers.sort_unstable();
         for (_, execution, active) in losers {
-            self.legitimized_voids.insert(execution);
+            let reason =
+                self.record_void_authorization(execution, scope.authorization, scope.reason);
             if active && scope.emit_decisions {
-                self.push_void_decision(execution, scope.reason);
+                self.push_void_decision(execution, reason);
             }
         }
     }
@@ -1344,13 +1368,7 @@ impl<'a> Engine<'a> {
                         .occurrence
                         .map_indices
                         .starts_with(scope.winner_scope)
-                    && match &execution.state {
-                        DurableExecutionState::Active => true,
-                        DurableExecutionState::Voided { position, reason } => {
-                            *position > scope.common.authorization && *reason == scope.common.reason
-                        }
-                        DurableExecutionState::Settled { .. } => false,
-                    }
+                    && !matches!(execution.state, DurableExecutionState::Settled { .. })
             })
             .map(|execution| {
                 (
@@ -1362,9 +1380,13 @@ impl<'a> Engine<'a> {
             .collect::<Vec<_>>();
         losers.sort_unstable();
         for (_, execution, active) in losers {
-            self.legitimized_voids.insert(execution);
+            let reason = self.record_void_authorization(
+                execution,
+                scope.common.authorization,
+                scope.common.reason,
+            );
             if active && scope.common.emit_decisions {
-                self.push_void_decision(execution, scope.common.reason);
+                self.push_void_decision(execution, reason);
             }
         }
     }

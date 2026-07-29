@@ -638,6 +638,73 @@ async fn nested_parallel_void_provenance_is_owned_during_outer_map_probing() {
             .unwrap_err(),
         ReducerError::InconsistentHistory
     );
+
+    let mut post_prune_inner_loser = execution(
+        ExecutionSpec::new(5, 5, "nested_inner_loser")
+            .indices(vec![0])
+            .settled_at(15),
+        success(),
+    );
+    post_prune_inner_loser.state = DurableExecutionState::Voided {
+        position: Position::new(22).unwrap(),
+        reason: ExecutionVoidReason::ParallelJoin,
+    };
+    let late_item_zero_inner_winner = execution(
+        ExecutionSpec::new(6, 6, "nested_inner_winner")
+            .indices(vec![0])
+            .settled_at(20),
+        success(),
+    );
+    let early_item_one_inner_winner = execution(
+        ExecutionSpec::new(7, 7, "nested_inner_winner")
+            .indices(vec![1])
+            .settled_at(16),
+        success(),
+    );
+    let early_item_one_terminal = execution(
+        ExecutionSpec::new(8, 8, "nested_after_inner")
+            .indices(vec![1])
+            .settled_at(18),
+        success(),
+    );
+    assert_eq!(
+        FullV1Reducer::new(&graph)
+            .reduce(input(
+                &json!({"items":[null,null]}),
+                &[
+                    post_prune_inner_loser.clone(),
+                    late_item_zero_inner_winner.clone(),
+                    early_item_one_inner_winner.clone(),
+                    early_item_one_terminal.clone(),
+                ],
+            ))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
+
+    post_prune_inner_loser.state = DurableExecutionState::Voided {
+        position: Position::new(22).unwrap(),
+        reason: ExecutionVoidReason::MapTerminal,
+    };
+    let post_prune_execution = post_prune_inner_loser.execution;
+    let reduction = FullV1Reducer::new(&graph)
+        .reduce(input(
+            &json!({"items":[null,null]}),
+            &[
+                post_prune_inner_loser,
+                late_item_zero_inner_winner,
+                early_item_one_inner_winner,
+                early_item_one_terminal,
+            ],
+        ))
+        .unwrap();
+    assert!(reduction.terminal.is_some());
+    assert!(!reduction.decisions.iter().any(|decision| {
+        matches!(
+            decision,
+            Decision::VoidLoser { execution, .. } if *execution == post_prune_execution
+        )
+    }));
 }
 
 #[tokio::test]
