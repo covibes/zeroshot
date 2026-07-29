@@ -417,6 +417,25 @@ function runLegacyUpdateIfRequested(argv, options = {}) {
   return Promise.resolve(installer());
 }
 
+const GROUPABLE_GLOBAL_SHORT_FLAGS = new Set(['q', 'h', 'V']);
+
+function hasGroupedGlobalShortFlag(argv) {
+  const end = argv.indexOf('--');
+  const limit = end === -1 ? argv.length : end;
+  for (let index = 0; index < limit; index += 1) {
+    const token = argv[index];
+    if (
+      token.length > 2 &&
+      token.startsWith('-') &&
+      !token.startsWith('--') &&
+      [...token.slice(1)].every((flag) => GROUPABLE_GLOBAL_SHORT_FLAGS.has(flag))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function optionIndex(argv, longName, shortName = null) {
   const end = argv.indexOf('--');
   const limit = end === -1 ? argv.length : end;
@@ -501,6 +520,7 @@ function isAutomaticUpdateEligible(options = {}) {
     optionIndex(argv, '--quiet', '-q') !== -1 ||
     optionIndex(argv, '--help', '-h') !== -1 ||
     optionIndex(argv, '--version', '-V') !== -1 ||
+    hasGroupedGlobalShortFlag(argv) ||
     optionIndex(argv, '--completion') !== -1
   ) {
     return false;

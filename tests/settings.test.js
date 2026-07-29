@@ -33,6 +33,7 @@ function runSettingsCli(args) {
 }
 
 let settingsModule;
+let originalSettingsFileEnv;
 
 function writeSettingsFile(settings) {
   const dir = path.dirname(TEST_SETTINGS_FILE);
@@ -52,15 +53,11 @@ function loadSettingsWithDefaults() {
 
 function registerSettingsHooks() {
   before(function () {
-    if (!fs.existsSync(TEST_STORAGE_DIR)) {
-      fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
-    }
-
+    originalSettingsFileEnv = process.env.ZEROSHOT_SETTINGS_FILE;
+    process.env.ZEROSHOT_SETTINGS_FILE = TEST_SETTINGS_FILE;
+    fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
     settingsModule = require('../lib/settings');
-    Object.defineProperty(settingsModule, 'SETTINGS_FILE', {
-      value: TEST_SETTINGS_FILE,
-      writable: false,
-    });
+    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
   });
 
   after(function () {
@@ -68,10 +65,18 @@ function registerSettingsHooks() {
       fs.rmSync(TEST_STORAGE_DIR, { recursive: true, force: true });
     } catch (e) {
       console.error('Cleanup failed:', e.message);
+    } finally {
+      if (originalSettingsFileEnv === undefined) {
+        delete process.env.ZEROSHOT_SETTINGS_FILE;
+      } else {
+        process.env.ZEROSHOT_SETTINGS_FILE = originalSettingsFileEnv;
+      }
     }
   });
 
   beforeEach(function () {
+    assert.strictEqual(process.env.ZEROSHOT_SETTINGS_FILE, TEST_SETTINGS_FILE);
+    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
     if (fs.existsSync(TEST_SETTINGS_FILE)) {
       fs.unlinkSync(TEST_SETTINGS_FILE);
     }
@@ -332,12 +337,15 @@ function registerStrictSchemaPropagationTests() {
     });
   });
 }
-
 function registerTransactionalRecoveryTests() {
   describe('transactional malformed-file recovery and diagnostics', function () {
-    function writeMalformedSettings() {
+    function writeRawSettings(raw) {
       fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
-      fs.writeFileSync(TEST_SETTINGS_FILE, '{"truncated":', 'utf8');
+      fs.writeFileSync(TEST_SETTINGS_FILE, raw, 'utf8');
+    }
+
+    function writeMalformedSettings() {
+      writeRawSettings('{"truncated":');
     }
 
     it('repairs malformed settings through reset --yes even when defaults are a semantic no-op', function () {
@@ -362,8 +370,38 @@ function registerTransactionalRecoveryTests() {
       assert.strictEqual(JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel, 'verbose');
     });
 
+    it('repairs a null settings document through reset --yes', function () {
+      writeRawSettings('null');
+      const result = runSettingsCli(['reset', '--yes']);
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      const repaired = JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'));
+      assert.strictEqual(repaired.autoCheckUpdates, true);
+      assert.strictEqual(repaired.lastUpdateCheckClaim, null);
+    });
+
+    for (const [name, raw] of [
+      ['null', 'null'],
+      ['boolean', 'true'],
+      ['number', '42'],
+      ['string', '"invalid"'],
+      ['array', '[]'],
+    ]) {
+      it(`repairs a ${name} settings document while applying settings set`, function () {
+        writeRawSettings(raw);
+        const result = runSettingsCli(['set', 'logLevel', 'verbose']);
+
+        assert.strictEqual(result.status, 0, result.stderr);
+        assert.strictEqual(
+          JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel,
+          'verbose'
+        );
+      });
+    }
+
     it('surfaces a settings read failure without replacing the existing file', function () {
       writeSettingsFile({ logLevel: 'verbose', unrelated: 'preserved' });
+      assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
       const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
       const originalReadFileSync = fs.readFileSync;
       fs.readFileSync = (filePath, ...args) => {
@@ -383,6 +421,50 @@ function registerTransactionalRecoveryTests() {
       } finally {
         fs.readFileSync = originalReadFileSync;
       }
+      assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+    });
+
+    for (const [name, initialMode, expectedMode] of [
+      ['broad permissions', 0o644, 0o600],
+      ['stricter permissions', 0o400, 0o400],
+    ]) {
+      it(`publishes atomic settings with ${name} restricted`, function () {
+        writeSettingsFile({ logLevel: 'normal' });
+        fs.chmodSync(TEST_SETTINGS_FILE, initialMode);
+        settingsModule.mutateSettings((settings) => {
+          settings.logLevel = 'verbose';
+        });
+
+        assert.strictEqual(fs.statSync(TEST_SETTINGS_FILE).mode & 0o777, expectedMode);
+      });
+    }
+
+    it('removes its restricted temporary file after an atomic rename failure', function () {
+      writeSettingsFile({ logLevel: 'normal' });
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const originalRenameSync = fs.renameSync;
+      let temporaryFile;
+      fs.renameSync = (source, destination) => {
+        if (path.resolve(destination) === path.resolve(TEST_SETTINGS_FILE)) {
+          temporaryFile = source;
+          assert.strictEqual(fs.statSync(source).mode & 0o777, 0o600);
+          throw Object.assign(new Error('rename denied'), { code: 'EACCES' });
+        }
+        return originalRenameSync(source, destination);
+      };
+      try {
+        assert.throws(
+          () =>
+            settingsModule.mutateSettings((settings) => {
+              settings.logLevel = 'verbose';
+            }),
+          /Unable to persist global settings: rename denied/
+        );
+      } finally {
+        fs.renameSync = originalRenameSync;
+      }
+      assert.ok(temporaryFile);
+      assert.strictEqual(fs.existsSync(temporaryFile), false);
       assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
     });
 

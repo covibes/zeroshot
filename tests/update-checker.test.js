@@ -94,6 +94,9 @@ describe('Update Checker', function () {
       ['stderr is not a TTY', ['list'], { stderr: NOT_TTY }],
       ['short quiet after command', ['list', '-q']],
       ['long quiet before command', ['--quiet', 'list']],
+      ['grouped quiet and version before command', ['-qV', 'list']],
+      ['grouped quiet and help after command', ['list', '-qh']],
+      ['grouped version and quiet before command', ['-Vq', 'list']],
       ['CI pseudo-TTY', ['list'], { env: { CI: 'false' } }],
       ['boolean CI pseudo-TTY', ['list'], { env: { CI: true } }],
       ['option terminator without a command', ['--']],
@@ -148,7 +151,10 @@ describe('Update Checker', function () {
       assert.strictEqual(
         updateChecker.isAutomaticUpdateEligible({
           ...PUBLISHED,
-          argv: ['run', 'Explain why --json, -f json, -fjson, and --output-format=json are mentioned'],
+          argv: [
+            'run',
+            'Explain why --json, -qV, -f json, -fjson, and --output-format=json are mentioned',
+          ],
         }),
         true
       );
@@ -157,6 +163,10 @@ describe('Update Checker', function () {
     it('honors the option terminator', function () {
       assert.strictEqual(
         updateChecker.isAutomaticUpdateEligible({ ...PUBLISHED, argv: ['run', '--', '--json'] }),
+        true
+      );
+      assert.strictEqual(
+        updateChecker.isAutomaticUpdateEligible({ ...PUBLISHED, argv: ['run', '--', '-qV'] }),
         true
       );
     });
@@ -171,6 +181,10 @@ describe('Update Checker', function () {
       );
       assert.strictEqual(
         updateChecker.isAutomaticUpdateEligible({ ...PUBLISHED, argv: ['run', 'hello', '-follow'] }),
+        true
+      );
+      assert.strictEqual(
+        updateChecker.isAutomaticUpdateEligible({ ...PUBLISHED, argv: ['run', 'hello', '-qX'] }),
         true
       );
     });
@@ -271,6 +285,7 @@ describe('Update Checker', function () {
         now: () => 100 * updateChecker.CHECK_INTERVAL_MS,
         generateClaimId: () => 'claim-a',
         stderr: { write: () => {} },
+        scheduleRefresh: (callback) => setImmediate(callback),
         ...overrides,
       };
     }
@@ -349,7 +364,7 @@ describe('Update Checker', function () {
       assert.strictEqual(state.unrelated, 'preserved');
     });
 
-    it('defers claim and rejection work until after synchronous command dispatch', async function () {
+    it('production scheduling is unrefed and defers work until after command dispatch', async function () {
       const state = {
         autoCheckUpdates: true,
         lastSeenVersion: null,
@@ -357,22 +372,34 @@ describe('Update Checker', function () {
         lastUpdateCheckClaim: null,
       };
       let scheduled;
+      let unrefs = 0;
       let claims = 0;
-      const base = checkerOptions(state);
-      const refresh = updateChecker.checkForUpdates({
-        ...base,
-        scheduleRefresh: (callback) => {
-          scheduled = callback;
-          return { unref() {} };
-        },
-        mutateSettings: (mutator) => {
-          claims += 1;
-          return base.mutateSettings(mutator);
-        },
-        fetchLatestVersion: () => Promise.reject(new Error('offline')),
-      });
+      const originalSetImmediate = global.setImmediate;
+      global.setImmediate = (callback) => {
+        scheduled = callback;
+        return {
+          unref() {
+            unrefs += 1;
+          },
+        };
+      };
+      const base = checkerOptions(state, { scheduleRefresh: undefined });
+      let refresh;
+      try {
+        refresh = updateChecker.checkForUpdates({
+          ...base,
+          mutateSettings: (mutator) => {
+            claims += 1;
+            return base.mutateSettings(mutator);
+          },
+          fetchLatestVersion: () => Promise.reject(new Error('offline')),
+        });
+      } finally {
+        global.setImmediate = originalSetImmediate;
+      }
 
       assert.strictEqual(claims, 0);
+      assert.strictEqual(unrefs, 1);
       assert.strictEqual(typeof scheduled, 'function');
       scheduled();
       await refresh;
