@@ -12,6 +12,12 @@ const {
   ISOLATED_SETTINGS_FILE_MARKER,
   LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV,
 } = require('../src/task-run-model-args.js');
+const {
+  CLAUDE_MCP_CONFIG_ENV,
+  CLAUDE_SETTINGS_ENV,
+  isClaudeSettingsOverlayPath,
+} = require('../src/worktree-claude-config');
+const { TASK_SPAWN_OWNERSHIP_TOKEN_ENV } = require('../src/task-spawn-cleanup-ownership');
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -37,7 +43,7 @@ export function spawnTask(prompt, options = {}) {
   });
   const providerName = prepared.adapter.id;
   const modelSpec = prepared.options.modelSpec;
-  const commandSpec = prepared.commandSpec;
+  const commandSpec = attachClaudeOverlayCleanup(prepared.commandSpec, providerName);
 
   const task = buildTaskRecord({
     id,
@@ -47,6 +53,7 @@ export function spawnTask(prompt, options = {}) {
     logFile,
     providerName,
     modelSpec,
+    commandSpec,
   });
 
   addTask(task);
@@ -116,14 +123,24 @@ function buildProviderOptions(options, runtime, modelSelection) {
     autoApprove: true,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...mcpConfigOption(options),
+    ...claudeSettingsFileOption(),
     ...(options.resume ? { resumeSessionId: options.resume } : {}),
     ...(options.continue ? { continueSession: true } : {}),
   };
 }
 
+function claudeSettingsFileOption() {
+  const settingsPath = process.env[CLAUDE_SETTINGS_ENV]?.trim();
+  return settingsPath ? { claudeSettingsFile: settingsPath } : {};
+}
+
 function mcpConfigOption(options) {
-  const entries = options.mcpConfig;
-  if (!Array.isArray(entries) || entries.length === 0) return {};
+  const entries = Array.isArray(options.mcpConfig) ? [...options.mcpConfig] : [];
+  const claudeMcpConfigPath = process.env[CLAUDE_MCP_CONFIG_ENV]?.trim();
+  if (claudeMcpConfigPath && !entries.includes(claudeMcpConfigPath)) {
+    entries.push(claudeMcpConfigPath);
+  }
+  if (entries.length === 0) return {};
   return { mcpConfig: entries };
 }
 
@@ -155,7 +172,37 @@ function providerLevelSelection(options) {
   return { modelSpec };
 }
 
-export function buildTaskRecord({ id, prompt, cwd, options, logFile, providerName, modelSpec }) {
+export function attachClaudeOverlayCleanup(commandSpec, providerName) {
+  if (providerName !== 'claude') return commandSpec;
+  const settingsPath = process.env[CLAUDE_SETTINGS_ENV]?.trim();
+  if (!isClaudeSettingsOverlayPath(settingsPath)) return commandSpec;
+
+  const overlayDir = dirname(settingsPath);
+  return {
+    ...commandSpec,
+    cleanup: [...(commandSpec.cleanup || []), overlayDir],
+    cleanupMetadata: [
+      ...(commandSpec.cleanupMetadata || []),
+      {
+        kind: 'temp-directory',
+        provider: 'claude',
+        path: overlayDir,
+        reason: 'settings-overlay',
+      },
+    ],
+  };
+}
+
+export function buildTaskRecord({
+  id,
+  prompt,
+  cwd,
+  options,
+  logFile,
+  providerName,
+  modelSpec,
+  commandSpec = {},
+}) {
   return {
     id,
     prompt: prompt.slice(0, 200) + (prompt.length > 200 ? '...' : ''),
@@ -186,6 +233,15 @@ export function buildTaskRecord({ id, prompt, cwd, options, logFile, providerNam
     attachable: false,
     processGroupId: null,
     terminationStrategy: null,
+    cancelRequested: false,
+    spawnOwnershipToken: process.env[TASK_SPAWN_OWNERSHIP_TOKEN_ENV] || null,
+    commandCleanup:
+      commandSpec.cleanup?.length > 0
+        ? {
+            cleanup: commandSpec.cleanup,
+            cleanupMetadata: commandSpec.cleanupMetadata || [],
+          }
+        : null,
   };
 }
 
@@ -244,6 +300,7 @@ function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfi
 export function buildWatcherEnv(sourceEnv = process.env) {
   const watcherEnv = { ...sourceEnv };
   delete watcherEnv[LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV];
+  delete watcherEnv[TASK_SPAWN_OWNERSHIP_TOKEN_ENV];
   if (watcherEnv[ISOLATED_SETTINGS_FILE_MARKER] === '1') {
     delete watcherEnv[ISOLATED_SETTINGS_FILE_ENV];
     delete watcherEnv[ISOLATED_SETTINGS_FILE_MARKER];

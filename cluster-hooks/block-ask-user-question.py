@@ -2,9 +2,8 @@
 """
 PreToolUse hook to block AskUserQuestion in zeroshot agent mode.
 
-This hook is installed globally but ONLY activates when the environment
-variable ZEROSHOT_BLOCK_ASK_USER=1 is set. This keeps the blocking
-specific to zeroshot invocations without affecting normal Claude usage.
+This hook is loaded from a per-run Zeroshot settings overlay and only activates
+when the environment variable ZEROSHOT_BLOCK_ASK_USER=1 is set.
 
 Exit codes:
 - 0 with JSON: Normal execution (allow/deny decision)

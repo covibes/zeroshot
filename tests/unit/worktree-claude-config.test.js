@@ -2,178 +2,201 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const sinon = require('sinon');
 
-const { prepareClaudeConfigDir } = require('../../src/worktree-claude-config');
-const safeExec = require('../../src/lib/safe-exec');
-
-function withPlatform(value, fn) {
-  const original = Object.getOwnPropertyDescriptor(os, 'platform');
-  Object.defineProperty(os, 'platform', { value: () => value, configurable: true });
-  try {
-    return fn();
-  } finally {
-    Object.defineProperty(os, 'platform', original);
-  }
-}
-
-function loadWorktreeClaudeConfigWithStubbedCredentials(execSyncStub) {
-  sinon.stub(safeExec, 'execSync').callsFake(execSyncStub);
-  delete require.cache[require.resolve('../../src/claude-credentials')];
-  delete require.cache[require.resolve('../../src/worktree-claude-config')];
-  return require('../../src/worktree-claude-config');
-}
+const {
+  cleanupClaudeSettingsOverlay,
+  ensureAskUserQuestionHook,
+  ensureDangerousGitHook,
+  isCanonicalClaudeSettingsOverlayDirectory,
+  isClaudeSettingsOverlayDirectory,
+  isClaudeSettingsOverlayPath,
+  prepareClaudeSettingsOverlay,
+  resolveRepoMcpConfigPath,
+} = require('../../src/worktree-claude-config');
 
 describe('worktree-claude-config', function () {
-  /** @type {string[]} */
-  let tempDirs = [];
+  const tempDirs = [];
+  const settingsOverlays = [];
 
   afterEach(function () {
-    sinon.restore();
-    delete require.cache[require.resolve('../../src/claude-credentials')];
-    delete require.cache[require.resolve('../../src/worktree-claude-config')];
+    for (const settingsPath of settingsOverlays.splice(0)) {
+      cleanupClaudeSettingsOverlay(settingsPath);
+    }
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('returns null when the worktree has no repo-owned claude config', function () {
+  it('creates an AskUserQuestion settings overlay for every Claude run', function () {
+    const settingsPath = prepareClaudeSettingsOverlay();
+    settingsOverlays.push(settingsPath);
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepStrictEqual(
+      settings.hooks.PreToolUse.map((entry) => entry.matcher),
+      ['AskUserQuestion']
+    );
+    if (process.platform !== 'win32') {
+      assert.strictEqual(fs.statSync(settingsPath).mode & 0o777, 0o600);
+      assert.strictEqual(fs.statSync(path.dirname(settingsPath)).mode & 0o777, 0o700);
+    }
+    assert.ok(
+      fs.existsSync(path.join(path.dirname(settingsPath), 'hooks', 'block-ask-user-question.py'))
+    );
+  });
+
+  it('gives retry and restart runs independently owned overlays', function () {
+    const first = prepareClaudeSettingsOverlay();
+    const retry = prepareClaudeSettingsOverlay();
+    settingsOverlays.push(first, retry);
+
+    assert.notStrictEqual(first, retry);
+    assert.ok(fs.existsSync(first));
+    assert.ok(fs.existsSync(retry));
+    assert.strictEqual(cleanupClaudeSettingsOverlay(first), true);
+    assert.ok(!fs.existsSync(path.dirname(first)));
+    assert.ok(fs.existsSync(retry), 'cleaning one run must not affect the next run');
+  });
+
+  it('rewrites hooks when a cleaned overlay path is reused after many runs', function () {
+    const settingsPaths = Array.from({ length: 40 }, () =>
+      prepareClaudeSettingsOverlay({ includeDangerousGit: true })
+    );
+    const reusedDir = path.dirname(settingsPaths[0]);
+    for (const settingsPath of settingsPaths) {
+      assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
+    }
+
+    fs.mkdirSync(reusedDir, { recursive: true });
+    fs.chmodSync(reusedDir, 0o700);
+    fs.writeFileSync(path.join(reusedDir, 'settings.json'), '{}\n', { mode: 0o600 });
+    ensureAskUserQuestionHook(reusedDir);
+    ensureDangerousGitHook(reusedDir);
+
+    const settings = JSON.parse(fs.readFileSync(path.join(reusedDir, 'settings.json'), 'utf8'));
+    assert.deepStrictEqual(
+      settings.hooks.PreToolUse.map((entry) => entry.matcher),
+      ['AskUserQuestion', 'Bash']
+    );
+    assert.ok(fs.existsSync(path.join(reusedDir, 'hooks', 'block-ask-user-question.py')));
+    assert.ok(fs.existsSync(path.join(reusedDir, 'hooks', 'block-dangerous-git.py')));
+    tempDirs.push(reusedDir);
+  });
+
+  it('adds the dangerous-git hook only for worktree runs', function () {
+    const settingsPath = prepareClaudeSettingsOverlay({ includeDangerousGit: true });
+    settingsOverlays.push(settingsPath);
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepStrictEqual(
+      settings.hooks.PreToolUse.map((entry) => entry.matcher),
+      ['AskUserQuestion', 'Bash']
+    );
+    assert.ok(
+      fs.existsSync(path.join(path.dirname(settingsPath), 'hooks', 'block-dangerous-git.py'))
+    );
+  });
+
+  it('only cleans up Zeroshot-owned settings overlays', function () {
+    const unrelatedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-source-'));
+    const unrelatedSettingsPath = path.join(unrelatedDir, 'settings.json');
+    tempDirs.push(unrelatedDir);
+    fs.writeFileSync(unrelatedSettingsPath, '{}\n', 'utf8');
+
+    const settingsPath = prepareClaudeSettingsOverlay();
+    assert.ok(fs.existsSync(settingsPath));
+
+    assert.strictEqual(cleanupClaudeSettingsOverlay(unrelatedSettingsPath), false);
+    assert.strictEqual(isClaudeSettingsOverlayPath(unrelatedSettingsPath), false);
+    assert.strictEqual(isClaudeSettingsOverlayDirectory(unrelatedDir), false);
+    assert.ok(fs.existsSync(unrelatedSettingsPath));
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath), true);
+    assert.strictEqual(isClaudeSettingsOverlayDirectory(path.dirname(settingsPath)), true);
+    assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
+    assert.ok(!fs.existsSync(path.dirname(settingsPath)));
+  });
+
+  it('refuses to install safety hooks into arbitrary user directories', function () {
+    const askUserDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-user-ask-'));
+    const dangerousGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-user-git-'));
+    tempDirs.push(askUserDir, dangerousGitDir);
+
+    assert.throws(
+      () => ensureAskUserQuestionHook(askUserDir),
+      /Zeroshot-owned Claude settings overlay/
+    );
+    assert.throws(
+      () => ensureDangerousGitHook(dangerousGitDir),
+      /Zeroshot-owned Claude settings overlay/
+    );
+    assert.deepStrictEqual(fs.readdirSync(askUserDir), []);
+    assert.deepStrictEqual(fs.readdirSync(dangerousGitDir), []);
+  });
+  it('rejects predictable overlay-shaped directories without private ownership mode', function () {
+    const insecureDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'zeroshot-claude-settings-insecure-')
+    );
+    const insecureSettingsPath = path.join(insecureDir, 'settings.json');
+    tempDirs.push(insecureDir);
+    fs.chmodSync(insecureDir, 0o755);
+
+    assert.strictEqual(isClaudeSettingsOverlayPath(insecureSettingsPath), false);
+    assert.strictEqual(isClaudeSettingsOverlayDirectory(insecureDir), false);
+    assert.throws(
+      () => ensureAskUserQuestionHook(insecureDir),
+      /Zeroshot-owned Claude settings overlay/
+    );
+    assert.deepStrictEqual(fs.readdirSync(insecureDir), []);
+  });
+  it('accepts Windows overlay directories without relying on POSIX mode bits', function () {
+    const overlayDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-settings-win-'));
+    const settingsPath = path.join(overlayDir, 'settings.json');
+    tempDirs.push(overlayDir);
+    fs.chmodSync(overlayDir, 0o755);
+
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath), process.platform === 'win32');
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath, 'win32'), true);
+    assert.strictEqual(isClaudeSettingsOverlayPath(settingsPath, 'linux'), false);
+  });
+
+  it('rejects noncanonical overlay directory spellings before path normalization', function () {
+    const settingsPath = prepareClaudeSettingsOverlay();
+    const overlayDir = path.dirname(settingsPath);
+    const variants = [
+      `${overlayDir}${path.sep}.`,
+      `${overlayDir}${path.sep}missing${path.sep}..`,
+      `${overlayDir}${path.sep}${path.sep}`,
+    ];
+
+    assert.strictEqual(isCanonicalClaudeSettingsOverlayDirectory(overlayDir), true);
+    for (const variant of variants) {
+      assert.strictEqual(isCanonicalClaudeSettingsOverlayDirectory(variant), false, variant);
+    }
+
+    assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
+    assert.strictEqual(cleanupClaudeSettingsOverlay(settingsPath), true);
+    for (const variant of variants) {
+      assert.strictEqual(
+        cleanupClaudeSettingsOverlay(`${variant}${path.sep}settings.json`),
+        false,
+        variant
+      );
+    }
+  });
+
+
+
+  it('prefers root MCP config and supports the legacy Claude-directory fallback', function () {
     const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-worktree-'));
     tempDirs.push(worktreeRoot);
     fs.writeFileSync(path.join(worktreeRoot, '.git'), 'gitdir: test\n', 'utf8');
-
-    assert.strictEqual(prepareClaudeConfigDir({ worktreePath: worktreeRoot }), null);
-  });
-
-  it('merges repo-owned settings and MCP config into a temporary overlay config dir', function () {
-    const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-worktree-'));
-    const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-source-'));
-    tempDirs.push(worktreeRoot, sourceDir);
-
-    fs.writeFileSync(path.join(worktreeRoot, '.git'), 'gitdir: test\n', 'utf8');
     fs.mkdirSync(path.join(worktreeRoot, '.claude'), { recursive: true });
-    fs.writeFileSync(
-      path.join(worktreeRoot, '.claude', 'settings.json'),
-      JSON.stringify(
-        {
-          hooks: {
-            PreToolUse: [
-              {
-                matcher: 'Edit|Write',
-                hooks: [
-                  { type: 'command', command: '$CLAUDE_PROJECT_DIR/.claude/hooks/pre_tool_use.sh' },
-                ],
-              },
-            ],
-          },
-        },
-        null,
-        2
-      )
-    );
-    fs.writeFileSync(
-      path.join(worktreeRoot, '.claude', '.mcp.json'),
-      JSON.stringify(
-        {
-          mcpServers: {
-            repo: {
-              command: 'repo-tool',
-              args: ['serve'],
-            },
-          },
-        },
-        null,
-        2
-      )
-    );
+    const legacyMcpPath = path.join(worktreeRoot, '.claude', '.mcp.json');
+    const rootMcpPath = path.join(worktreeRoot, '.mcp.json');
+    fs.writeFileSync(legacyMcpPath, '{"mcpServers":{"legacy":{}}}\n', 'utf8');
 
-    fs.writeFileSync(path.join(sourceDir, '.credentials.json'), '{"token":"secret"}\n', 'utf8');
-    fs.writeFileSync(
-      path.join(sourceDir, 'settings.json'),
-      JSON.stringify(
-        {
-          hooks: {
-            PreToolUse: [
-              {
-                matcher: 'AskUserQuestion',
-                hooks: [{ type: 'command', command: '/tmp/block-ask.py' }],
-              },
-            ],
-          },
-        },
-        null,
-        2
-      )
-    );
-    fs.writeFileSync(
-      path.join(sourceDir, '.mcp.json'),
-      JSON.stringify(
-        {
-          mcpServers: {
-            shared: {
-              command: 'npx',
-              args: ['-y', '@acme/shared-mcp'],
-            },
-          },
-        },
-        null,
-        2
-      )
-    );
-
-    const overlayDir = prepareClaudeConfigDir({ worktreePath: worktreeRoot, sourceDir });
-    tempDirs.push(overlayDir);
-
-    assert.ok(overlayDir, 'expected an overlay config dir');
-    assert.ok(fs.existsSync(path.join(overlayDir, '.credentials.json')));
-
-    const mergedSettings = JSON.parse(
-      fs.readFileSync(path.join(overlayDir, 'settings.json'), 'utf8')
-    );
-    assert.strictEqual(mergedSettings.hooks.PreToolUse.length, 2);
-    assert.deepStrictEqual(mergedSettings.hooks.PreToolUse.map((entry) => entry.matcher).sort(), [
-      'AskUserQuestion',
-      'Edit|Write',
-    ]);
-
-    const mergedMcp = JSON.parse(fs.readFileSync(path.join(overlayDir, '.mcp.json'), 'utf8'));
-    assert.deepStrictEqual(Object.keys(mergedMcp.mcpServers).sort(), ['repo', 'shared']);
-  });
-
-  it('materializes macOS Keychain credentials into the isolated overlay config dir', function () {
-    const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-worktree-'));
-    const sourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-claude-source-no-creds-'));
-    tempDirs.push(worktreeRoot, sourceDir);
-
-    fs.writeFileSync(path.join(worktreeRoot, '.git'), 'gitdir: test\n', 'utf8');
-    fs.mkdirSync(path.join(worktreeRoot, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(worktreeRoot, '.claude', 'settings.json'), '{}\n', 'utf8');
-
-    const keychainJson = '{"claudeAiOauth":{"accessToken":"keychain-token"}}';
-    const { prepareClaudeConfigDir: prepareWithStubbedKeychain } =
-      loadWorktreeClaudeConfigWithStubbedCredentials((command) => {
-        assert.strictEqual(
-          command,
-          'security find-generic-password -s "Claude Code-credentials" -w'
-        );
-        return `${keychainJson}\n`;
-      });
-
-    const overlayDir = withPlatform('darwin', () =>
-      prepareWithStubbedKeychain({ worktreePath: worktreeRoot, sourceDir })
-    );
-    tempDirs.push(overlayDir);
-
-    assert.ok(overlayDir, 'expected an overlay config dir');
-    assert.strictEqual(
-      fs.readFileSync(path.join(overlayDir, '.credentials.json'), 'utf8'),
-      keychainJson,
-      'isolated CLAUDE_CONFIG_DIR must receive materialized Keychain credentials'
-    );
-    assert.strictEqual(
-      fs.statSync(path.join(overlayDir, '.credentials.json')).mode & 0o777,
-      0o600,
-      'materialized credentials should be owner-readable only'
-    );
+    assert.strictEqual(resolveRepoMcpConfigPath({ worktreePath: worktreeRoot }), legacyMcpPath);
+    fs.writeFileSync(rootMcpPath, '{"mcpServers":{"root":{}}}\n', 'utf8');
+    assert.strictEqual(resolveRepoMcpConfigPath({ worktreePath: worktreeRoot }), rootMcpPath);
   });
 });

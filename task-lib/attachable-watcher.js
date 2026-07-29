@@ -5,16 +5,11 @@
  * Runs detached from parent, provides Unix socket for attach clients.
  */
 
-import { appendFileSync, unlinkSync } from 'fs';
-import { unlink } from 'fs/promises';
+import { appendFileSync } from 'fs';
 import { getTask, updateTask } from './store.js';
-import {
-  detectProviderFatalError,
-  detectProviderStreamingModeError,
-  recoverProviderStructuredOutput,
-  supportsProviderStructuredOutputRecovery,
-} from './provider-helper-runtime.js';
+import { createCommandSpecCleanup } from './command-spec-cleanup.js';
 import { createProviderSessionCapture } from './provider-session-capture.js';
+import * as watcherOutputRuntime from './watcher-output-runtime.js';
 import { createRequire } from 'module';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -23,8 +18,9 @@ import { createRequire } from 'module';
 // ═══════════════════════════════════════════════════════════════════════════
 
 const [, , taskIdArg, cwdArg, logFileArg, argsJsonArg, configJsonArg] = process.argv;
-let commandSpecCleanup = [];
-let cleanupStarted = false;
+let commandCleanup = watcherOutputRuntime.COMMAND_CLEANUP_UNINITIALIZED;
+let crashStarted = false;
+let server = null;
 
 function emergencyLog(msg) {
   if (logFileArg) {
@@ -38,36 +34,46 @@ function emergencyLog(msg) {
   }
 }
 
-function crashWithError(error, source) {
-  const timestamp = Date.now();
-  const errorMsg = error instanceof Error ? error.stack || error.message : String(error);
+function stopAttachableProvider(exitObserved = false) {
+  return watcherOutputRuntime.terminateWatcherProvider(server, { exitObserved });
+}
 
-  emergencyLog(`\n[${timestamp}][CRASH] ${source}: ${errorMsg}\n`);
-  emergencyLog(`[${timestamp}][CRASH] Process terminating due to unhandled error\n`);
-  cleanupCommandSpecSync();
-
+async function failWatcher(error, source) {
+  if (crashStarted) return;
+  crashStarted = true;
   if (taskIdArg) {
-    try {
-      updateTask(taskIdArg, {
-        status: 'failed',
-        error: `${source}: ${errorMsg}`,
-        socketPath: null,
-      });
-    } catch (updateError) {
-      emergencyLog(`[${timestamp}][CRASH] Failed to update task status: ${updateError.message}\n`);
-    }
+    await watcherOutputRuntime.completeWatcherFailure({
+      taskId: taskIdArg,
+      error,
+      source,
+      commandCleanup,
+      terminateProvider: stopAttachableProvider,
+      updateTask,
+      emergencyLog,
+      terminalUpdates: { socketPath: null },
+    });
   }
 
   process.exit(1);
 }
 
 process.on('uncaughtException', (error) => {
-  crashWithError(error, 'uncaughtException');
+  void failWatcher(error, 'uncaughtException');
 });
 
 process.on('unhandledRejection', (reason) => {
-  crashWithError(reason, 'unhandledRejection');
+  void failWatcher(reason, 'unhandledRejection');
 });
+
+const persistedTask = taskIdArg ? getTask(taskIdArg) : null;
+if (persistedTask) {
+  commandCleanup = createCommandSpecCleanup(
+    persistedTask.commandCleanup || { cleanup: [], cleanupMetadata: [] },
+    (cleanupPath, error) => {
+      emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${cleanupPath}: ${error.message}\n`);
+    }
+  );
+}
 
 const require = createRequire(import.meta.url);
 const { AttachServer } = require('../src/attach');
@@ -85,202 +91,57 @@ const commandSpec = config.commandSpec || {
   env: config.env || {},
   cleanup: [],
 };
-commandSpecCleanup = commandSpec.cleanup || [];
-let server = null;
-
 const socketPath = getTaskSocketPath(taskId);
 
 function log(msg) {
   appendFileSync(logFile, msg);
 }
 
-const providerName = normalizeProviderName(config.provider || 'claude');
-const enableRecovery = supportsProviderStructuredOutputRecovery(providerName);
-const storedTask = getTask(taskId);
+const { providerName, env, command, finalArgs } = watcherOutputRuntime.resolveWatcherCommand(
+  config,
+  commandSpec,
+  args,
+  normalizeProviderName
+);
 const providerSessionCapture = createProviderSessionCapture({
   providerName,
   taskId,
   updateTask,
   log,
-  requestedSessionId: storedTask?.requestedResumeSessionId || null,
-  initialSessionId: storedTask?.sessionId || null,
-  initialSessionIdConflict: storedTask?.sessionIdConflict === true,
+  requestedSessionId: persistedTask?.requestedResumeSessionId || null,
+  initialSessionId: persistedTask?.sessionId || null,
+  initialSessionIdConflict: persistedTask?.sessionIdConflict === true,
 });
-const maybeCaptureProviderSession = providerSessionCapture.captureLine;
-
-const env = { ...process.env, ...(commandSpec.env || {}) };
-const command = commandSpec.binary;
-const finalArgs = [...(commandSpec.args || args)];
-
-const silentJsonMode =
-  config.outputFormat === 'json' &&
-  config.jsonSchema &&
-  config.silentJsonOutput &&
-  supportsProviderStructuredOutputRecovery(providerName);
-
-let finalResultJson = null;
 let outputBuffer = '';
-let streamingModeError = null;
-let fatalError = null;
 
-function splitBufferLines(buffer, chunk) {
-  const nextBuffer = buffer + chunk;
-  const lines = nextBuffer.split('\n');
-  const remaining = lines.pop() || '';
-  return { lines, remaining };
-}
-
-function maybeHandleFatalError(line, timestamp) {
-  if (fatalError) {
-    return false;
-  }
-
-  const detected = detectProviderFatalError(providerName, line);
-  if (!detected) {
-    return false;
-  }
-
-  fatalError = detected;
-
-  if (silentJsonMode) {
-    log(`[${timestamp}]${line}\n`);
-  }
-  log(`[${timestamp}][FATAL] ${detected}\n`);
-
+function stopProviderAfterFatalOutput(timestamp) {
   if (server) {
     server.stop('SIGTERM').catch((error) => {
       log(`[${timestamp}][FATAL] Attach server stop failed: ${error.message}\n`);
     });
   }
-  return true;
 }
 
-function captureStreamingError(line, timestamp) {
-  const detectedError = detectProviderStreamingModeError(providerName, line);
-  if (!detectedError) {
-    return false;
-  }
+const outputRuntime = watcherOutputRuntime.createWatcherOutputRuntime({
+  config,
+  providerName,
+  log,
+  stopProvider: stopProviderAfterFatalOutput,
+  providerSessionCapture,
+});
 
-  streamingModeError = { ...detectedError, timestamp };
-  return true;
-}
-
-function maybeCaptureStructuredOutput(line) {
-  try {
-    const json = JSON.parse(line);
-    if (json.structured_output) {
-      finalResultJson = line;
-    }
-  } catch {
-    // Not JSON, skip
-  }
-}
-
-function handleSilentJsonLines(lines, timestamp) {
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    maybeCaptureProviderSession(line);
-    maybeHandleFatalError(line, timestamp);
-    if (captureStreamingError(line, timestamp)) {
-      continue;
-    }
-    maybeCaptureStructuredOutput(line);
-  }
-}
-
-function handleStreamingLines(lines, timestamp) {
-  for (const line of lines) {
-    maybeCaptureProviderSession(line);
-    maybeHandleFatalError(line, timestamp);
-    if (captureStreamingError(line, timestamp)) {
-      continue;
-    }
-    log(`[${timestamp}]${line}\n`);
-  }
-}
-
-function flushOutputBuffer(timestamp) {
-  if (!outputBuffer.trim()) {
-    return;
-  }
-
-  maybeCaptureProviderSession(outputBuffer);
-  if (!enableRecovery) {
-    if (!silentJsonMode) {
-      log(`[${timestamp}]${outputBuffer}\n`);
-    }
-    return;
-  }
-
-  maybeHandleFatalError(outputBuffer, timestamp);
-  if (captureStreamingError(outputBuffer, timestamp)) {
-    return;
-  }
-
-  if (silentJsonMode) {
-    maybeCaptureStructuredOutput(outputBuffer);
-    return;
-  }
-
-  log(`[${timestamp}]${outputBuffer}\n`);
-}
-
-function attemptRecovery(code, timestamp) {
-  if (!(code !== 0 && streamingModeError?.sessionId)) {
-    return null;
-  }
-
-  const recovered = recoverProviderStructuredOutput(providerName, streamingModeError.sessionId);
-  if (recovered?.payload) {
-    const recoveredLine = JSON.stringify(recovered.payload);
-    if (silentJsonMode) {
-      finalResultJson = recoveredLine;
-    } else {
-      log(`[${timestamp}]${recoveredLine}\n`);
-    }
-  } else if (streamingModeError.line) {
-    if (silentJsonMode) {
-      log(streamingModeError.line + '\n');
-    } else {
-      log(`[${streamingModeError.timestamp}]${streamingModeError.line}\n`);
-    }
-  }
-
-  return recovered;
-}
-
-async function cleanupCommandSpec() {
-  if (cleanupStarted) return;
-  cleanupStarted = true;
-  for (const file of commandSpecCleanup) {
-    try {
-      await unlink(file);
-    } catch (error) {
-      log(`[${Date.now()}][CLEANUP] Failed to delete ${file}: ${error.message}\n`);
-    }
-  }
-}
-
-function cleanupCommandSpecSync() {
-  if (cleanupStarted) return;
-  cleanupStarted = true;
-  for (const file of commandSpecCleanup) {
-    try {
-      unlinkSync(file);
-    } catch (error) {
-      emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${file}: ${error.message}\n`);
-    }
-  }
-}
-
-function writeCompletionFooter(code, signal) {
-  if (config.outputFormat === 'json') {
-    return;
-  }
-
-  log(`\n${'='.repeat(50)}\n`);
-  log(`Finished: ${new Date().toISOString()}\n`);
-  log(`Exit code: ${code}, Signal: ${signal}\n`);
+if (
+  await watcherOutputRuntime.completePendingWatcherCancellation({
+    taskId,
+    getTask,
+    commandCleanup,
+    terminateProvider: () => true,
+    updateTask,
+    emergencyLog,
+    terminalUpdates: { socketPath: null },
+  })
+) {
+  process.exit(0);
 }
 
 server = new AttachServer({
@@ -295,55 +156,21 @@ server = new AttachServer({
 });
 
 server.on('output', (data) => {
-  const chunk = data.toString();
-  const timestamp = Date.now();
-
-  const { lines, remaining } = splitBufferLines(outputBuffer, chunk);
-  outputBuffer = remaining;
-
-  if (silentJsonMode) {
-    handleSilentJsonLines(lines, timestamp);
-  } else {
-    handleStreamingLines(lines, timestamp);
-  }
+  outputBuffer = outputRuntime.consumeOutput(outputBuffer, data);
 });
 
 server.on('exit', async ({ exitCode, signal }) => {
-  const timestamp = Date.now();
-  const code = exitCode;
-
-  flushOutputBuffer(timestamp);
-
-  const recovered = attemptRecovery(code, timestamp);
-
-  if (silentJsonMode && finalResultJson) {
-    log(finalResultJson + '\n');
-  }
-
-  const sessionIdentityError = providerSessionCapture.getCompletionError();
-  const resolvedCode =
-    fatalError || sessionIdentityError ? 1 : recovered?.payload ? 0 : code;
-  const status = resolvedCode === 0 ? 'completed' : 'failed';
-
-  writeCompletionFooter(resolvedCode, signal);
-  await cleanupCommandSpec();
-
-  try {
-    await updateTask(taskId, {
-      status,
-      pid: null,
-      processGroupId: null,
-      exitCode: resolvedCode,
-      ...providerSessionCapture.getCompletionUpdate(resolvedCode),
-      error:
-        fatalError ||
-        sessionIdentityError ||
-        (resolvedCode !== 0 && signal ? `Killed by ${signal}` : null),
-      socketPath: null,
-    });
-  } catch (updateError) {
-    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
-  }
+  if (crashStarted) return;
+  const completion = outputRuntime.complete({ code: exitCode, signal, outputBuffer });
+  await watcherOutputRuntime.completeWatcherTask({
+    taskId,
+    completion,
+    commandCleanup,
+    terminateProvider: () => stopAttachableProvider(true),
+    updateTask,
+    emergencyLog,
+    terminalUpdates: { socketPath: null },
+  });
 
   setTimeout(() => {
     process.exit(0);
@@ -351,19 +178,7 @@ server.on('exit', async ({ exitCode, signal }) => {
 });
 
 server.on('error', async (err) => {
-  log(`\nError: ${err.message}\n`);
-  await cleanupCommandSpec();
-  try {
-    await updateTask(taskId, {
-      status: 'failed',
-      pid: null,
-      processGroupId: null,
-      error: err.message,
-    });
-  } catch (updateError) {
-    log(`[${Date.now()}][ERROR] Failed to update task status: ${updateError.message}\n`);
-  }
-  process.exit(1);
+  await failWatcher(err, 'attach server error');
 });
 
 server.on('clientAttach', ({ clientId }) => {
@@ -385,22 +200,33 @@ try {
     terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
   });
 
+  if (getTask(taskId)?.cancelRequested) {
+    crashStarted = true;
+    await watcherOutputRuntime.completePendingWatcherCancellation({
+      taskId,
+      getTask,
+      commandCleanup,
+      terminateProvider: stopAttachableProvider,
+      updateTask,
+      emergencyLog,
+      terminalUpdates: { socketPath: null },
+    });
+    process.exit(0);
+  }
+
   log(`[${Date.now()}][SYSTEM] Started with PTY (attachable)\n`);
   log(`[${Date.now()}][SYSTEM] Socket: ${socketPath}\n`);
   log(`[${Date.now()}][SYSTEM] PID: ${server.pid}\n`);
 } catch (err) {
-  log(`\nFailed to start: ${err.message}\n`);
-  await cleanupCommandSpec();
-  updateTask(taskId, { status: 'failed', error: err.message });
-  process.exit(1);
+  await failWatcher(err, 'attach server start');
 }
 
 process.on('SIGTERM', async () => {
   log(`[${Date.now()}][SYSTEM] Received SIGTERM, stopping...\n`);
-  await server.stop('SIGTERM');
+  await stopAttachableProvider();
 });
 
 process.on('SIGINT', async () => {
   log(`[${Date.now()}][SYSTEM] Received SIGINT, stopping...\n`);
-  await server.stop('SIGINT');
+  await stopAttachableProvider();
 });

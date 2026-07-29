@@ -35,6 +35,11 @@ const invalidNestedOptionCases = [
     options: { cliFeatures: { supportsDir: 'true' } },
     field: 'options.cliFeatures.supportsDir',
   },
+  {
+    name: 'cliFeatures supportsSettings boolean',
+    options: { cliFeatures: { supportsSettings: 'true' } },
+    field: 'options.cliFeatures.supportsSettings',
+  },
   { name: 'modelSpec object', options: { modelSpec: 'level2' }, field: 'options.modelSpec' },
   {
     name: 'modelSpec level enum',

@@ -1,4 +1,5 @@
 import { getString, isRecord, stringifyJson, tryParseJson } from '../json';
+import { contractError } from '../contract-errors';
 import {
   type BuildProviderCommandOptions,
   type ClaudeCliFeatures,
@@ -66,6 +67,10 @@ function detectCliFeatures(helpText?: string | null): ClaudeCliFeatures {
     supportsVerbose: unknown ? true : /--verbose/.test(help),
     supportsModel: unknown ? true : /--model/.test(help),
     supportsEffort: unknown ? true : /--effort/.test(help),
+    // Settings carry mandatory safety hooks, so an unprobed or old CLI must
+    // fail closed before a provider process is spawned.
+    supportsSettings: !unknown && /--settings/.test(help),
+    supportsMcpConfig: !unknown && /--mcp-config/.test(help),
     supportsResume: unknown ? true : /--resume/.test(help),
     unknown,
   };
@@ -131,6 +136,40 @@ function addSessionArgs(args: string[], options: BuildProviderCommandOptions): v
   }
 }
 
+function addSettingsArgs(args: string[], options: BuildProviderCommandOptions): void {
+  const settingsPath = options.claudeSettingsFile?.trim();
+  if (settingsPath) {
+    args.push('--settings', settingsPath);
+  }
+}
+
+function addMcpConfigArgs(args: string[], options: BuildProviderCommandOptions): void {
+  if (!options.mcpConfig?.length) return;
+  args.push('--mcp-config', ...options.mcpConfig);
+}
+
+function failClosedUnsupportedRunConfig(options: BuildProviderCommandOptions): void {
+  const features = optionFeatures(options);
+  if (options.claudeSettingsFile?.trim() && features.supportsSettings === false) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.cliFeatures.supportsSettings',
+      exitCode: 2,
+      message:
+        'Claude CLI does not advertise --settings support required for Zeroshot safety hooks. Upgrade Claude Code before running this task.',
+    });
+  }
+  if (options.mcpConfig?.length && features.supportsMcpConfig === false) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.cliFeatures.supportsMcpConfig',
+      exitCode: 2,
+      message:
+        'Claude CLI does not advertise --mcp-config support required to preserve repository MCP tools. Upgrade Claude Code before running this task.',
+    });
+  }
+}
+
 function extractSessionId(line: string): string | null {
   const event = tryParseJson(line.trim());
   if (!isRecord(event)) return null;
@@ -185,15 +224,21 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
 }
 
 function buildCommand(context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
+  failClosedUnsupportedRunConfig(options);
   const { command, args: commandPrefix } = resolveClaudeCommand();
-  const args: string[] = [...commandPrefix, '--print', '--input-format', 'text'];
+  const args: string[] = [...commandPrefix, '--print'];
   const authEnv = options.authEnv ?? {};
 
+  // --mcp-config is variadic. A following option terminates its values before
+  // the positional prompt.
+  addMcpConfigArgs(args, options);
+  args.push('--input-format', 'text');
   addOutputArgs(args, options);
   addSchemaArgs(args, options);
   addModelArgs(args, options);
   addAutoApproveArgs(args, options);
   addSessionArgs(args, options);
+  addSettingsArgs(args, options);
 
   args.push(context);
 

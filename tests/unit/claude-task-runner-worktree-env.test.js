@@ -2,22 +2,48 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
 
 const ClaudeTaskRunner = require('../../src/claude-task-runner');
+const {
+  CLAUDE_MCP_CONFIG_ENV,
+  CLAUDE_SETTINGS_ENV,
+  cleanupClaudeSettingsOverlay,
+} = require('../../src/worktree-claude-config');
 
 describe('ClaudeTaskRunner worktree env forwarding', function () {
   /** @type {string[]} */
   let tempDirs = [];
+  /** @type {string[]} */
+  let settingsOverlays = [];
+  let originalClaudeConfigDir;
+
+  beforeEach(function () {
+    originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  });
 
   afterEach(function () {
+    if (originalClaudeConfigDir === undefined) {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    } else {
+      process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+    }
+    for (const settingsPath of settingsOverlays.splice(0)) {
+      cleanupClaudeSettingsOverlay(settingsPath);
+    }
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('prepends worktree-local tool bins when cwd is inside a nested submodule', function () {
+  it('preserves user config while forwarding a per-run hook overlay and worktree tools', function () {
     const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runner-worktree-'));
-    tempDirs.push(worktreeRoot);
+    const userConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runner-claude-user-'));
+    tempDirs.push(worktreeRoot, userConfigDir);
+    const userSettingsPath = path.join(userConfigDir, 'settings.json');
+    const userSettings = '{"enabledPlugins":{"example@marketplace":true}}\n';
+    fs.writeFileSync(userSettingsPath, userSettings, 'utf8');
+    process.env.CLAUDE_CONFIG_DIR = userConfigDir;
 
     const toolBinDir = path.join(worktreeRoot, '.zeroshot', 'bin');
     const submoduleCwd = path.join(worktreeRoot, 'external', 'zeroshot', 'src');
@@ -38,6 +64,8 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
       'gitdir: nested-submodule\n',
       'utf8'
     );
+    const mcpPath = path.join(worktreeRoot, '.mcp.json');
+    fs.writeFileSync(mcpPath, '{"mcpServers":{"repo":{}}}\n', 'utf8');
 
     const runner = new ClaudeTaskRunner({ quiet: true });
     const originalPathEntries = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
@@ -46,8 +74,26 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
       cwd: submoduleCwd,
       worktreePath: worktreeRoot,
     });
+    settingsOverlays.push(spawnEnv[CLAUDE_SETTINGS_ENV]);
 
     const pathEntries = spawnEnv.PATH.split(path.delimiter);
+    assert.strictEqual(
+      spawnEnv.CLAUDE_CONFIG_DIR,
+      userConfigDir,
+      'the user config source must remain active'
+    );
+    assert.ok(spawnEnv[CLAUDE_SETTINGS_ENV], 'Claude runs should receive a settings overlay');
+    assert.strictEqual(
+      spawnEnv[CLAUDE_MCP_CONFIG_ENV],
+      mcpPath,
+      'Claude runs should explicitly receive the repository MCP config'
+    );
+    assert.strictEqual(fs.readFileSync(userSettingsPath, 'utf8'), userSettings);
+    const overlaySettings = JSON.parse(fs.readFileSync(spawnEnv[CLAUDE_SETTINGS_ENV], 'utf8'));
+    assert.deepStrictEqual(
+      overlaySettings.hooks.PreToolUse.map((entry) => entry.matcher),
+      ['AskUserQuestion', 'Bash']
+    );
     assert.strictEqual(pathEntries[0], toolBinDir);
     for (const entry of originalPathEntries) {
       assert.ok(pathEntries.includes(entry));
@@ -76,4 +122,93 @@ describe('ClaudeTaskRunner worktree env forwarding', function () {
       ['--reasoning-effort', 'max']
     );
   });
+
+  it('keeps the overlay after task creation transfers ownership to the watcher', async function () {
+    const runner = new ClaudeTaskRunner({ quiet: true });
+    let settingsPath;
+    runner._spawnAndGetTaskId = (_command, _args, _cwd, spawnEnv) => {
+      settingsPath = spawnEnv[CLAUDE_SETTINGS_ENV];
+      return 'task-owned-overlay';
+    };
+    runner._waitForTaskReady = () => {};
+    runner._followLogs = () => {
+      throw new Error('log follower timed out');
+    };
+
+    await assert.rejects(
+      runner.run('context', { provider: 'claude', cwd: process.cwd() }),
+      /log follower timed out/
+    );
+    settingsOverlays.push(settingsPath);
+    assert.ok(fs.existsSync(settingsPath), 'the detached task must retain its live settings file');
+  });
+
+  it('cleans the overlay when task creation fails before ownership transfer', async function () {
+    const runner = new ClaudeTaskRunner({ quiet: true });
+    let settingsPath;
+    runner._spawnAndGetTaskId = (_command, _args, _cwd, spawnEnv) => {
+      settingsPath = spawnEnv[CLAUDE_SETTINGS_ENV];
+      throw new Error('task creation failed');
+    };
+
+    await assert.rejects(
+      runner.run('context', { provider: 'claude', cwd: process.cwd() }),
+      /task creation failed/
+    );
+    assert.ok(!fs.existsSync(path.dirname(settingsPath)));
+  });
+});
+
+describe('ClaudeTaskRunner isolated MCP forwarding', function () {
+  const tempDirs = [];
+
+  afterEach(function () {
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  for (const relativeMcpPath of ['.mcp.json', path.join('.claude', '.mcp.json')]) {
+    it(`uses the container workspace path for ${relativeMcpPath} in isolated runs`, async function () {
+      const worktreeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runner-mcp-'));
+      tempDirs.push(worktreeRoot);
+      fs.writeFileSync(path.join(worktreeRoot, '.git'), 'gitdir: isolated-test\n');
+      const mcpPath = path.join(worktreeRoot, relativeMcpPath);
+      fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
+      fs.writeFileSync(mcpPath, '{"mcpServers":{"repo":{}}}\n');
+
+      let spawnedCommand;
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter();
+      proc.stderr = new EventEmitter();
+      proc.kill = () => {};
+      const runner = new ClaudeTaskRunner({ quiet: true, timeout: 20 });
+      const resultPromise = runner._runIsolated('context', {
+        provider: 'claude',
+        cwd: worktreeRoot,
+        worktreePath: worktreeRoot,
+        isolation: {
+          enabled: true,
+          clusterId: 'isolated-mcp',
+          manager: {
+            spawnInContainer(_clusterId, command) {
+              spawnedCommand = command;
+              process.nextTick(() => proc.emit('close', 0));
+              return proc;
+            },
+          },
+        },
+      });
+
+      const result = await resultPromise;
+      const mcpIndex = spawnedCommand.indexOf('--mcp-config');
+      assert.strictEqual(result.success, true);
+      assert.ok(mcpIndex > 0, JSON.stringify(spawnedCommand));
+      assert.strictEqual(
+        spawnedCommand[mcpIndex + 1],
+        path.posix.join('/workspace', relativeMcpPath.split(path.sep).join('/'))
+      );
+      assert.ok(!spawnedCommand.includes(mcpPath));
+    });
+  }
 });

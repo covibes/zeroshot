@@ -201,7 +201,7 @@ function start(agent) {
 async function stop(agent) {
   stopLivenessCheck(agent);
 
-  if (!agent.running) {
+  if (!agent.running && !agent.currentTask) {
     return;
   }
 
@@ -215,7 +215,10 @@ async function stop(agent) {
 
   // Kill current task if any
   if (agent.currentTask) {
-    await agent._killTask('Task stopped by cluster shutdown');
+    const termination = await agent._killTask('Task stopped by cluster shutdown');
+    if (termination?.forced === false) {
+      throw new Error(`Task shutdown could not confirm termination: ${termination.reason}`);
+    }
   }
 
   // Wait for in-flight execution to complete (up to 5 seconds)
@@ -477,7 +480,8 @@ function publishTokenUsage(agent, result) {
   });
 }
 
-function clearTransientTaskState(agent) {
+function clearTransientTaskState(agent, error = null) {
+  if (error?.retainTaskHandle) return;
   stopLivenessCheck(agent);
   agent.currentTask = null;
   agent.currentTaskId = null;
@@ -1052,7 +1056,7 @@ async function executeTask(agent, triggeringMessage) {
           code: error.code || null,
           attempt,
         });
-        clearTransientTaskState(agent);
+        clearTransientTaskState(agent, error);
         logTaskAttemptFailure(agent, attempt, maxRetries, error);
         // Model unavailability on Vertex is deterministic — retrying wastes nothing but time.
         await handleFinalFailure(agent, triggeringMessage, error, attempt);
@@ -1065,7 +1069,7 @@ async function executeTask(agent, triggeringMessage) {
         code: error.code || null,
         attempt,
       });
-      clearTransientTaskState(agent);
+      clearTransientTaskState(agent, error);
       const stuckTaskResult = await handleRecoverableStuckTaskFailure({
         agent,
         triggeringMessage,
@@ -1228,7 +1232,9 @@ function attemptLivenessTermination(agent, settings) {
   Promise.resolve()
     .then(() => agent._killTask({ reason: context.reason, code: context.code }))
     .then((termination) => {
-      if (termination?.forced === false) return;
+      if (termination?.forced === false) {
+        throw new Error(termination.reason || 'Task termination was not confirmed');
+      }
       publishLivenessTerminationEvent(agent, context);
     })
     .catch((error) => {
@@ -1277,6 +1283,7 @@ function exhaustLivenessTermination(agent, context, terminationError) {
   error.restartExhausted = true;
   error.terminationExhausted = true;
   error.terminationAttempts = attempts;
+  error.retainTaskHandle = true;
 
   agent.state = 'error';
   agent.cluster.failureInfo = {

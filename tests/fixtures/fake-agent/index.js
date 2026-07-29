@@ -126,10 +126,32 @@ function isVersionProbe(argv) {
   return argv.includes('--version') && !argv.includes('--print');
 }
 
+function isHelpProbe(argv) {
+  return argv.includes('--help') && !argv.includes('--print');
+}
+
 function main() {
   const argv = process.argv.slice(2);
   if (isVersionProbe(argv)) {
     process.stdout.write('1.0.0 (fake-agent)\n');
+    process.exit(0);
+  }
+  if (isHelpProbe(argv)) {
+    process.stdout.write(
+      [
+        'Usage: claude [options]',
+        '  --output-format <format>',
+        '  --json-schema <schema>',
+        '  --dangerously-skip-permissions',
+        '  --include-partial-messages',
+        '  --verbose',
+        '  --model <model>',
+        '  --effort <effort>',
+        '  --settings <path>',
+        '  --mcp-config <path>',
+        '  stream-json',
+      ].join('\n')
+    );
     process.exit(0);
   }
 
