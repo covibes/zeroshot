@@ -86,6 +86,8 @@ const {
   checkForUpdates,
   isAutomaticUpdateEligible,
   printLegacyDistroNotice,
+  runUpdate,
+  shouldForceLegacyUpdate,
 } = require('./lib/update-checker');
 const { checkBinDirOnPath, printPathWarning } = require('../lib/path-check');
 const { StatusFooter, AGENT_STATE, ACTIVE_STATES } = require('../src/status-footer');
@@ -5951,6 +5953,11 @@ function main() {
   }
 
   const startupArgs = process.argv.slice(2);
+  if (shouldForceLegacyUpdate(startupArgs)) {
+    runUpdate();
+    return;
+  }
+
   if (isAutomaticUpdateEligible({ argv: startupArgs })) {
     checkForUpdates({ argv: startupArgs, eligibilityChecked: true });
   }

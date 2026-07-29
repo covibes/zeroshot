@@ -362,6 +362,30 @@ function registerTransactionalRecoveryTests() {
       assert.strictEqual(JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel, 'verbose');
     });
 
+    it('surfaces a settings read failure without replacing the existing file', function () {
+      writeSettingsFile({ logLevel: 'verbose', unrelated: 'preserved' });
+      const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
+      const originalReadFileSync = fs.readFileSync;
+      fs.readFileSync = (filePath, ...args) => {
+        if (path.resolve(filePath) === path.resolve(TEST_SETTINGS_FILE)) {
+          throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        }
+        return originalReadFileSync(filePath, ...args);
+      };
+      try {
+        assert.throws(
+          () =>
+            settingsModule.mutateSettings((settings) => {
+              settings.logLevel = 'normal';
+            }),
+          /Unable to persist global settings: permission denied/
+        );
+      } finally {
+        fs.readFileSync = originalReadFileSync;
+      }
+      assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
+    });
+
     it('reports an invalid nested provider level without persistence wording or a write', function () {
       writeSettingsFile({});
       const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');

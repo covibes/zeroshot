@@ -196,6 +196,19 @@ describe('Update Checker', function () {
       assert.strictEqual(updateChecker.isNewerVersion('1.0.0-rc.1', '2.0.0'), true);
     });
 
+    it('accepts only finite stable SemVer with well-formed build identifiers', function () {
+      assert.deepStrictEqual(updateChecker.parseStableVersion('2.0.0+build.7'), [2, 0, 0]);
+      for (const version of [
+        '2.0.0+foo..bar',
+        '2.0.0+.foo',
+        '2.0.0+foo.',
+        '9007199254740992.0.0',
+        `1.0.0+${'a'.repeat(257)}`,
+      ]) {
+        assert.strictEqual(updateChecker.parseStableVersion(version), null, version);
+      }
+    });
+
     it('uses the exact 24-hour boundary', function () {
       const now = 10 * updateChecker.CHECK_INTERVAL_MS;
       assert.strictEqual(
@@ -620,6 +633,23 @@ describe('Update Checker', function () {
       assert.deepStrictEqual(
         updateChecker.buildInstallArgs({ installPrefix: '/tmp/prefix', legacy: false }),
         ['install', '-g', '--prefix', '/tmp/prefix', '@the-open-engine/zeroshot@latest']
+      );
+    });
+
+    it('forces every legacy first-argument update form through takeover', function () {
+      for (const argv of [['update'], ['update', '--check']]) {
+        assert.strictEqual(
+          updateChecker.shouldForceLegacyUpdate(argv, '@covibes/zeroshot'),
+          true
+        );
+      }
+      assert.strictEqual(
+        updateChecker.shouldForceLegacyUpdate(['update', '--check'], '@the-open-engine/zeroshot'),
+        false
+      );
+      assert.strictEqual(
+        updateChecker.shouldForceLegacyUpdate(['list'], '@covibes/zeroshot'),
+        false
       );
     });
 
