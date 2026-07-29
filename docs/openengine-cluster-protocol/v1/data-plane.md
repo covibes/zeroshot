@@ -2,10 +2,10 @@
 
 This document defines the production Rust WebSocket binding: the wire framing that carries the
 backend-neutral `Dispatcher` and the generic subscription framing defined in
-[`watch.md`](./watch.md) over one WebSocket connection, plus the boundary between that binding and
-everything that hosts it. It adds no protocol method or event semantics of its own beyond
-`$/cancelRequest`; every method, event, and generic subscription notification is unchanged from the
-in-process and NDJSON stdio bindings.
+[`watch.md`](./watch.md) through `openengine-cluster-server`'s transport-neutral `connection` core
+over one WebSocket connection, plus the boundary between that binding and everything that hosts it.
+It adds no protocol method or event semantics of its own beyond `$/cancelRequest`; every method,
+event, and generic subscription notification is unchanged from the in-process and NDJSON bindings.
 
 ## Framing
 

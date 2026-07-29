@@ -1,7 +1,7 @@
-//! `agent/attach` subscription NDJSON streaming and dispatch, split out from `stdio.rs` to keep
-//! that file's `watch` counterpart readable -- mirrors `run_logs_subscription`/`dispatch_logs`
-//! exactly, sharing the same generic `subscriptions` cancellation map and outbound queue, since
-//! `agent/attach` reuses the identical wire notification methods and cancellation framing.
+//! Transport-neutral `agent/attach` subscription streaming and dispatch. Mirrors
+//! `run_logs_subscription`/`dispatch_logs` exactly, sharing the same generic `subscriptions`
+//! cancellation map and outbound queue because `agent/attach` reuses the identical wire
+//! notification methods and cancellation framing.
 
 use openengine_cluster_protocol::{
     AgentAttachClosedNotification, AgentAttachEventNotification, AgentAttachParams,
@@ -64,8 +64,8 @@ impl<B> Dispatcher<B>
 where
     B: ClusterBackend,
 {
-    /// NDJSON-only counterpart to [`Dispatcher::dispatch`] for the `agent/attach` method. Mirrors
-    /// [`Dispatcher::dispatch_logs`] exactly; only the Rust param/result types differ.
+    /// Connection-core counterpart to [`Dispatcher::dispatch`] for the `agent/attach` method.
+    /// Mirrors [`Dispatcher::dispatch_logs`] exactly; only the Rust param/result types differ.
     pub(crate) async fn dispatch_agent_attach(
         &self,
         id: RequestId,

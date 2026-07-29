@@ -1,37 +1,21 @@
-//! NDJSON stdio transport: multiplexes unary JSON-RPC request/response traffic and generic
-//! `watch`/`logs`/`agent/attach` subscription notifications over one bounded-frame connection.
+//! NDJSON framing and stdin/stdout binding for the transport-neutral connection core.
 
-pub(crate) mod admission;
-pub(crate) mod agent_attach;
-pub(crate) mod dispatch;
-pub(crate) mod logs;
-pub(crate) mod subscription;
-
-pub(crate) use dispatch::{
-    dispatch_classified_line, new_connection_setup, shutdown_connection, ConnectionSetup,
-    DispatchCtx, LineDispatch, ShutdownArgs,
-};
-
-use admission::{run_writer, InFlightIds};
-
-use std::collections::HashMap;
 use std::io;
-use std::sync::Arc;
 
-use parking_lot::Mutex;
 use openengine_cluster_protocol::{
-    DomainErrorData, EventNotification, JsonRpcNotification, JsonRpcRequest, RequestId,
-    SubscriptionCancelParams, SubscriptionClosedNotification, SubscriptionId, WatchParams,
-    INVALID_PARAMS, JSON_RPC_VERSION, PARSE_ERROR, SCHEMA_VIOLATION,
+    JsonRpcNotification, JsonRpcRequest, RequestId, SubscriptionCancelParams, PARSE_ERROR,
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
-use crate::watch::{WatchEventStream, WatchHandle, WatchStreamItem};
-use crate::{serialize_backend_error, serialize_error, serialize_success, ClusterBackend, Dispatcher};
+use crate::connection::{
+    dispatch_classified_request, new_connection_setup, shutdown_connection, ConnectionSetup,
+    ConnectionState, DispatchCtx, RequestDispatch, RequestKind, ShutdownArgs,
+};
+use crate::{serialize_error, ClusterBackend, Dispatcher};
 
 /// Bounded NDJSON frame length. A line exceeding this (with no terminating newline found first)
 /// is rejected with a `PARSE_ERROR` frame rather than buffered without limit.
@@ -42,39 +26,18 @@ const MAX_FRAME_BYTES: usize = 1_048_576;
 /// than growing memory without bound.
 const OUTBOUND_QUEUE_CAPACITY: usize = 256;
 
-/// Per-subscription cancellation signal: notifying it wakes `run_watch_subscription`'s streaming
-/// loop immediately, even while parked awaiting the next live event, instead of relying solely on
-/// `WatchEventStream`'s own cancelled flag, which is only re-checked at the top of `next()` and so
-/// never observed on an idle run once the task is parked inside `next_live`'s
-/// `receiver.recv().await`.
-pub(crate) type SubscriptionMap = Arc<Mutex<HashMap<SubscriptionId, Arc<Notify>>>>;
-
-/// Per-connection state shared by every spawned request/subscription task: the outbound write
-/// queue and the tracking maps used for cancellation and duplicate-id rejection. Shared verbatim
-/// with the sibling `websocket` transport module so both bindings drive the exact same
-/// subscription-establishment and cancellation machinery.
-#[derive(Clone)]
-pub(crate) struct ConnectionState {
-    pub(crate) outbound_tx: mpsc::Sender<String>,
-    pub(crate) subscriptions: SubscriptionMap,
-    pub(crate) in_flight_ids: InFlightIds,
-}
-
-/// Races `next` against `cancel`, `biased` toward the cancellation so a `subscription/cancel` that
-/// arrives while parked awaiting the next live event wakes the loop immediately instead of only
-/// being observed the next time the stream is polled -- which never happens again on an idle run.
-/// `biased` also ensures a pending cancellation is never starved by an unbounded run of
-/// already-buffered stream items. Shared by `run_watch_subscription` and
-/// `subscription::run_bounded_event_subscription`, and by the sibling `websocket` transport
-/// module's identical subscription runner reuse.
-pub(crate) async fn race_cancel_or_next<T>(
-    cancel: &Notify,
-    next: impl std::future::Future<Output = Option<T>>,
-) -> Option<T> {
-    tokio::select! {
-        biased;
-        () = cancel.notified() => None,
-        item = next => item,
+/// Drains the bounded outbound queue until the peer closes or every sender is dropped.
+async fn run_writer<W>(mut writer: W, mut outbound_rx: mpsc::Receiver<String>)
+where
+    W: AsyncWrite + Unpin,
+{
+    while let Some(line) = outbound_rx.recv().await {
+        if writer.write_all(line.as_bytes()).await.is_err()
+            || writer.write_all(b"\n").await.is_err()
+            || writer.flush().await.is_err()
+        {
+            break;
+        }
     }
 }
 
@@ -118,15 +81,13 @@ where
                 let _ = outbound_tx
                     .send(serialize_error(None, PARSE_ERROR, "Parse error", None))
                     .await;
-                // `Framed`'s stream terminates for good after yielding any decode error (it
-                // never calls `decode` again), so `LinesCodec`'s own discard-until-next-newline
-                // resync would otherwise never run. Rebuilding via `from_parts`/`into_parts`
-                // (rather than `Framed::new` + manually restoring the read buffer) matters: the
-                // buffer's leftover bytes may already contain one or more complete lines past the
-                // discarded one, and only `from_parts` marks the rebuilt reader immediately
-                // readable from that carried-over buffer — reconstructing via `new` and copying
-                // the buffer in by hand leaves it believing the buffer is empty, so it blocks on
-                // a fresh read instead of decoding what is already buffered.
+                // `Framed`'s stream terminates for good after yielding any decode error, so
+                // `LinesCodec`'s discard-until-next-newline resync would otherwise never run.
+                // Rebuilding via `from_parts`/`into_parts` matters: the buffer's leftover bytes
+                // may already contain complete lines past the discarded one, and only
+                // `from_parts` marks the rebuilt reader immediately readable from that buffer.
+                // Reconstructing via `Framed::new` and copying the buffer leaves it believing the
+                // buffer is empty, so it blocks on a fresh read instead of decoding buffered data.
                 lines = Framed::from_parts(lines.into_parts());
                 continue;
             }
@@ -140,23 +101,13 @@ where
             None => break,
         };
 
-        let kind = classify_ndjson_line(&line);
         let mut ctx = DispatchCtx {
             dispatcher: &dispatcher,
             state: &state,
             task_slots: &task_slots,
             tasks: &mut tasks,
         };
-        if let LineDispatch::Passthrough { id, permit } =
-            dispatch_classified_line(kind, &mut ctx).await
-        {
-            let task_dispatcher = dispatcher.clone();
-            let task_state = state.clone();
-            tasks.spawn(async move {
-                let _permit = permit;
-                run_passthrough_request(task_dispatcher, id, line, task_state).await;
-            });
-        }
+        dispatch_ndjson_line(line, &mut ctx).await;
     }
 
     shutdown_connection(ShutdownArgs {
@@ -168,6 +119,25 @@ where
     })
     .await;
     Ok(())
+}
+
+/// Classifies and dispatches one decoded NDJSON line, spawning passthrough work after the shared
+/// connection core applies duplicate-id rejection and task admission.
+async fn dispatch_ndjson_line<B>(line: String, ctx: &mut DispatchCtx<'_, B>)
+where
+    B: ClusterBackend,
+{
+    let kind = classify_ndjson_line(&line);
+    if let RequestDispatch::Passthrough { id, permit } =
+        dispatch_classified_request(kind, ctx).await
+    {
+        let task_dispatcher = ctx.dispatcher.clone();
+        let task_state = ctx.state.clone();
+        ctx.tasks.spawn(async move {
+            let _permit = permit;
+            run_passthrough_request(task_dispatcher, id, line, task_state).await;
+        });
+    }
 }
 
 /// Dispatches a non-`watch` request or notification line, releasing its in-flight id (if any)
@@ -187,70 +157,6 @@ async fn run_passthrough_request<B>(
     let _ = state.outbound_tx.send(response).await;
 }
 
-/// Establishes a `watch` subscription and, on success, streams its `event`/`subscription/closed`
-/// notifications until the stream ends (overflow, backend close, or cancellation), via
-/// `subscription::run_established_subscription` -- the same shared establish/loop/cleanup
-/// `subscription::run_bounded_event_subscription` uses. The established [`WatchHandle`] is kept
-/// alive for the duration purely to hold its backing flag false: dropping it early would trip
-/// `WatchEventStream`'s own cancellation check before anything ever streams. Reused verbatim by
-/// the sibling `websocket` transport module.
-pub(crate) async fn run_watch_subscription<B>(
-    dispatcher: Dispatcher<B>,
-    id: RequestId,
-    params: Value,
-    state: ConnectionState,
-) where
-    B: ClusterBackend,
-{
-    let ConnectionState {
-        outbound_tx,
-        subscriptions,
-        in_flight_ids,
-    } = state;
-    let (response, established) = dispatcher.dispatch_watch(id.clone(), params).await;
-    in_flight_ids.lock().remove(&id);
-    let channels = subscription::SubscriptionChannels {
-        outbound_tx,
-        subscriptions,
-    };
-    let Some((established, _handle)) =
-        subscription::establish_subscription(&channels, response, established).await
-    else {
-        return;
-    };
-
-    let encode_subscription_id = established.subscription_id.clone();
-    subscription::run_established_subscription(established, channels, move |item| {
-        Some(match item {
-            WatchStreamItem::Record(record) => serde_json::to_string(&JsonRpcNotification {
-                jsonrpc: JSON_RPC_VERSION.to_owned(),
-                method: "event".to_owned(),
-                params: EventNotification {
-                    subscription_id: encode_subscription_id.clone(),
-                    run_id: record.run_id,
-                    cursor: record.cursor,
-                    event: record.event,
-                },
-            })
-            .expect("event notification serialization must succeed"),
-            WatchStreamItem::Closed {
-                reason,
-                last_delivered_cursor,
-            } => serde_json::to_string(&JsonRpcNotification {
-                jsonrpc: JSON_RPC_VERSION.to_owned(),
-                method: "subscription/closed".to_owned(),
-                params: SubscriptionClosedNotification {
-                    subscription_id: encode_subscription_id.clone(),
-                    reason,
-                    last_delivered_cursor,
-                },
-            })
-            .expect("subscription closed notification serialization must succeed"),
-        })
-    })
-    .await;
-}
-
 pub async fn serve_stdio<B>(dispatcher: Dispatcher<B>) -> io::Result<()>
 where
     B: ClusterBackend,
@@ -264,86 +170,31 @@ where
     .await
 }
 
-impl<B> Dispatcher<B>
-where
-    B: ClusterBackend,
-{
-    /// NDJSON-only counterpart to [`Dispatcher::dispatch`] for the `watch` method: returns the
-    /// response frame plus, on success, the minted subscription identity and stream/handle to
-    /// register for event fan-out. Never called from [`Dispatcher::dispatch`] since `watch` is a
-    /// subscription establishment method, not a plain unary one.
-    pub(crate) async fn dispatch_watch(
-        &self,
-        id: RequestId,
-        params: Value,
-    ) -> (
-        String,
-        Option<(SubscriptionId, WatchEventStream, WatchHandle)>,
-    ) {
-        let params = match serde_json::from_value::<WatchParams>(params) {
-            Ok(params) => params,
-            Err(_) => {
-                return (
-                    serialize_error(
-                        Some(id),
-                        INVALID_PARAMS,
-                        "Invalid params",
-                        Some(DomainErrorData::new(SCHEMA_VIOLATION)),
-                    ),
-                    None,
-                );
-            }
-        };
-        match self.watch(params).await {
-            Ok((result, stream, handle)) => {
-                let subscription_id = result.subscription_id.clone();
-                (
-                    serialize_success(id, result),
-                    Some((subscription_id, stream, handle)),
-                )
-            }
-            Err(error) => (serialize_backend_error(id, error), None),
-        }
-    }
-}
-
-/// Result of classifying one decoded NDJSON line for [`serve_ndjson`]'s multiplexer. `Passthrough`
-/// carries the request id when the line parsed as a well-formed non-`watch` request, so the
-/// multiplexer can still apply duplicate-in-flight-id detection to ordinary unary methods; it is
-/// `None` for malformed lines or notifications, which [`Dispatcher::dispatch`] handles on its own.
-pub(crate) enum NdjsonLineKind {
-    Watch { id: RequestId, params: Value },
-    Logs { id: RequestId, params: Value },
-    AgentAttach { id: RequestId, params: Value },
-    Cancel(SubscriptionId),
-    Passthrough { id: Option<RequestId> },
-}
-
 /// Classifies a decoded NDJSON line without fully deserializing its params: a `watch`/`logs`/
 /// `agent/attach` request is pulled out for subscription handling, a `subscription/cancel`
 /// notification is pulled out for inline cancellation, and everything else (including malformed
 /// JSON) passes through to [`Dispatcher::dispatch`] unchanged.
-pub(crate) fn classify_ndjson_line(line: &str) -> NdjsonLineKind {
+pub(crate) fn classify_ndjson_line(line: &str) -> RequestKind {
     if let Ok(request) = serde_json::from_str::<JsonRpcRequest<Value>>(line) {
         if request.method == "watch" {
-            return NdjsonLineKind::Watch {
+            return RequestKind::Watch {
                 id: request.id,
                 params: request.params,
             };
         }
         if request.method == "logs" {
-            return NdjsonLineKind::Logs {
+            return RequestKind::Logs {
                 id: request.id,
                 params: request.params,
             };
         }
         if request.method == "agent/attach" {
-            return NdjsonLineKind::AgentAttach {
+            return RequestKind::AgentAttach {
                 id: request.id,
                 params: request.params,
             };
         }
-        return NdjsonLineKind::Passthrough {
+        return RequestKind::Passthrough {
             id: Some(request.id),
         };
     }
@@ -351,11 +202,8 @@ pub(crate) fn classify_ndjson_line(line: &str) -> NdjsonLineKind {
         serde_json::from_str::<JsonRpcNotification<SubscriptionCancelParams>>(line)
     {
         if notification.method == "subscription/cancel" {
-            return NdjsonLineKind::Cancel(notification.params.subscription_id);
+            return RequestKind::Cancel(notification.params.subscription_id);
         }
     }
-    NdjsonLineKind::Passthrough { id: None }
+    RequestKind::Passthrough { id: None }
 }
-
-#[cfg(test)]
-mod tests;
