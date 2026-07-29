@@ -1,11 +1,13 @@
 //! One authenticated loopback WebSocket listener per native profile.
 
+use std::future::Future;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use openengine_cluster_protocol::{InitializeResult, JSON_RPC_VERSION, PROTOCOL_VERSION};
 use openengine_cluster_server::websocket::{serve_websocket, websocket_config};
 use openengine_cluster_server::ConnectionContext;
@@ -163,7 +165,7 @@ impl DaemonListener {
         let liveness_connection_permits = Arc::new(Semaphore::new(config.max_liveness_connections));
         let active_session_permits = Arc::new(Semaphore::new(config.max_active_connections));
         let host = AcceptLoop {
-            listener: tcp,
+            acceptor: tcp,
             factory: Arc::new(factory),
             credentials,
             shutdown: Arc::clone(&shutdown),
@@ -386,8 +388,18 @@ fn loopback_address(
     ))
 }
 
-struct AcceptLoop<F> {
-    listener: TcpListener,
+trait ConnectionAcceptor: Send + Sync + 'static {
+    fn accept(&self) -> impl Future<Output = io::Result<(TcpStream, SocketAddr)>> + Send;
+}
+
+impl ConnectionAcceptor for TcpListener {
+    fn accept(&self) -> impl Future<Output = io::Result<(TcpStream, SocketAddr)>> + Send {
+        TcpListener::accept(self)
+    }
+}
+
+struct AcceptLoop<A, F> {
+    acceptor: A,
     factory: Arc<F>,
     credentials: DaemonCredentials,
     shutdown: Arc<Notify>,
@@ -397,15 +409,19 @@ struct AcceptLoop<F> {
     active_session_permits: Arc<Semaphore>,
 }
 
-async fn run_owned_accept_loop<F>(
-    host: AcceptLoop<F>,
+async fn run_owned_accept_loop<A, F>(
+    host: AcceptLoop<A, F>,
     profile: NativeProfile,
     locator: DaemonLocator,
 ) -> Result<(), ()>
 where
+    A: ConnectionAcceptor,
     F: NativeBackendFactory + Send + Sync + 'static,
 {
-    let result = run_accept_loop(host).await;
+    let result = AssertUnwindSafe(run_accept_loop(host))
+        .catch_unwind()
+        .await
+        .unwrap_or(Err(()));
     let cleanup =
         tokio::task::spawn_blocking(move || remove_locator_if_matches(&profile, &locator)).await;
     match cleanup {
@@ -414,12 +430,13 @@ where
     }
 }
 
-async fn run_accept_loop<F>(host: AcceptLoop<F>) -> Result<(), ()>
+async fn run_accept_loop<A, F>(host: AcceptLoop<A, F>) -> Result<(), ()>
 where
+    A: ConnectionAcceptor,
     F: NativeBackendFactory + Send + Sync + 'static,
 {
     let AcceptLoop {
-        listener,
+        acceptor,
         factory,
         credentials,
         shutdown,
@@ -440,8 +457,14 @@ where
                     break;
                 }
             }
-            accepted = listener.accept() => {
-                let Ok((stream, peer)) = accepted else { break };
+            accepted = acceptor.accept() => {
+                let (stream, peer) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(_) => {
+                        connection_failed = true;
+                        break;
+                    }
+                };
                 let Ok(handshake_permit) =
                     Arc::clone(&pending_handshake_permits).try_acquire_owned()
                 else {
@@ -469,7 +492,7 @@ where
             }
         }
     }
-    drop(listener);
+    drop(acceptor);
 
     let drain_deadline = Instant::now() + config.drain_timeout;
     while !connections.is_empty() {
@@ -559,4 +582,151 @@ where
     };
     let dispatcher = dispatcher_for_route(factory.as_ref(), context);
     let _ = serve_websocket(dispatcher, websocket).await;
+}
+
+#[cfg(test)]
+mod accept_loop_tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::ProductionNativeBackendFactory;
+    use crate::daemon_discovery::{random_hex, read_locator, replace_locator};
+
+    #[derive(Clone, Copy)]
+    enum FailureMode {
+        Error,
+        Panic,
+    }
+
+    struct FailingAcceptor {
+        _listener: TcpListener,
+        mode: FailureMode,
+    }
+
+    impl ConnectionAcceptor for FailingAcceptor {
+        fn accept(&self) -> impl Future<Output = io::Result<(TcpStream, SocketAddr)>> + Send {
+            let mode = self.mode;
+            async move {
+                match mode {
+                    FailureMode::Error => Err(io::Error::other("controlled accept failure")),
+                    FailureMode::Panic => panic!("controlled accept loop panic"),
+                }
+            }
+        }
+    }
+
+    struct TestProfile {
+        profile: NativeProfile,
+        root: PathBuf,
+    }
+
+    impl Drop for TestProfile {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    async fn failing_owner(
+        mode: FailureMode,
+        label: &str,
+    ) -> (DaemonListener, TestProfile, SocketAddr) {
+        let root = std::env::temp_dir().join(format!(
+            "zeroshot-accept-{label}-{}-{}",
+            std::process::id(),
+            random_hex().expect("temporary profile suffix")
+        ));
+        let profile = NativeProfile::new(&root, format!("native-profile:{label}"));
+        let tcp = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("bind controlled acceptor");
+        let address = tcp.local_addr().expect("controlled acceptor address");
+        let credentials =
+            DaemonCredentials::generate(profile.digest().to_owned()).expect("credentials");
+        let locator = DaemonLocator {
+            endpoint: format!("ws://{address}{DAEMON_ROUTE}"),
+            cluster_protocol: CLUSTER_PROTOCOL.to_owned(),
+            daemon_protocol: DAEMON_PROTOCOL.to_owned(),
+            profile_digest: credentials.profile_digest.clone(),
+            daemon_nonce: credentials.daemon_nonce.clone(),
+            capability: credentials.capability.clone(),
+        };
+        replace_locator(&profile, &locator).expect("publish controlled locator");
+        let config = ListenerConfig::default();
+        let shutdown = Arc::new(Notify::new());
+        let pending_handshake_permits = Arc::new(Semaphore::new(config.max_pending_handshakes));
+        let liveness_connection_permits = Arc::new(Semaphore::new(config.max_liveness_connections));
+        let active_session_permits = Arc::new(Semaphore::new(config.max_active_connections));
+        let host = AcceptLoop {
+            acceptor: FailingAcceptor {
+                _listener: tcp,
+                mode,
+            },
+            factory: Arc::new(ProductionNativeBackendFactory),
+            credentials,
+            shutdown: Arc::clone(&shutdown),
+            config,
+            pending_handshake_permits: Arc::clone(&pending_handshake_permits),
+            liveness_connection_permits: Arc::clone(&liveness_connection_permits),
+            active_session_permits: Arc::clone(&active_session_permits),
+        };
+        let accept_task = tokio::spawn(run_owned_accept_loop(
+            host,
+            profile.clone(),
+            locator.clone(),
+        ));
+        let owner = DaemonListener {
+            profile: profile.clone(),
+            locator,
+            shutdown,
+            accept_task: Some(accept_task),
+            shutdown_timeout: config.shutdown_timeout,
+            pending_handshake_limit: config.max_pending_handshakes,
+            pending_handshake_permits,
+            liveness_connection_limit: config.max_liveness_connections,
+            liveness_connection_permits,
+            active_session_limit: config.max_active_connections,
+            active_session_permits,
+        };
+        (owner, TestProfile { profile, root }, address)
+    }
+
+    async fn assert_failure_cleanup_before_shutdown(mode: FailureMode, label: &str) {
+        let (owner, profile, address) = failing_owner(mode, label).await;
+        timeout(Duration::from_millis(500), async {
+            loop {
+                let locator_removed = read_locator(&profile.profile)
+                    .expect("automatic failure cleanup state")
+                    .is_none();
+                let socket_released = match TcpListener::bind(address).await {
+                    Ok(rebound) => {
+                        drop(rebound);
+                        true
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AddrInUse => false,
+                    Err(error) => panic!("unexpected rebind failure: {error}"),
+                };
+                if locator_removed && socket_released {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owned accept failure released locator and socket");
+        assert!(matches!(
+            owner.shutdown().await,
+            Err(DaemonListenerError::Task)
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accept_error_cleans_owner_before_shutdown_and_remains_task_failure() {
+        assert_failure_cleanup_before_shutdown(FailureMode::Error, "accept-error").await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accept_loop_panic_cleans_owner_before_shutdown_and_remains_task_failure() {
+        assert_failure_cleanup_before_shutdown(FailureMode::Panic, "accept-panic").await;
+    }
 }

@@ -554,6 +554,7 @@ fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary()
         "FILE_FLAG_OPEN_REPARSE_POINT",
         "PROTECTED_DACL_SECURITY_INFORMATION",
         "MoveFileExW",
+        "validate_directory_shape(&directory)?",
     ] {
         assert!(
             daemon.contains(required),

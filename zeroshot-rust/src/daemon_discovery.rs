@@ -252,6 +252,11 @@ fn decode_open_locator(
     Ok(locator)
 }
 
+#[cfg(any(windows, test))]
+fn secure_directory_handle_shape(is_directory: bool, is_reparse_point: bool, links: u32) -> bool {
+    is_directory && !is_reparse_point && links == 1
+}
+
 #[cfg(unix)]
 mod platform {
     use std::fs::{self, File, OpenOptions};
@@ -422,6 +427,7 @@ mod platform {
                     return Err(DiscoveryError::InsecureProfileDirectory);
                 }
                 let directory = open_directory(path, false)?;
+                validate_directory_shape(&directory)?;
                 validate_owner_acl(&directory, true)
                     .map_err(|_| DiscoveryError::InsecureProfileDirectory)
             }
@@ -429,6 +435,7 @@ mod platform {
                 fs::create_dir_all(path)?;
                 let directory = open_directory(path, true)?;
                 set_owner_only_acl(&directory)?;
+                validate_directory_shape(&directory)?;
                 validate_owner_acl(&directory, true)
                     .map_err(|_| DiscoveryError::InsecureProfileDirectory)
             }
@@ -550,6 +557,19 @@ mod platform {
             DiscoveryError::InsecureFile
         } else {
             error.into()
+        }
+    }
+
+    fn validate_directory_shape(file: &File) -> Result<(), DiscoveryError> {
+        let information = file_information(file)?;
+        if super::secure_directory_handle_shape(
+            information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+            information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+            information.nNumberOfLinks,
+        ) {
+            Ok(())
+        } else {
+            Err(DiscoveryError::InsecureProfileDirectory)
         }
     }
 
@@ -737,6 +757,19 @@ fn hex(bytes: &[u8]) -> String {
         output.push(DIGITS[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+#[cfg(test)]
+mod platform_shape_tests {
+    use super::secure_directory_handle_shape;
+
+    #[test]
+    fn opened_windows_directory_shape_rejects_same_owner_reparse_substitution() {
+        assert!(secure_directory_handle_shape(true, false, 1));
+        assert!(!secure_directory_handle_shape(true, true, 1));
+        assert!(!secure_directory_handle_shape(false, false, 1));
+        assert!(!secure_directory_handle_shape(true, false, 2));
+    }
 }
 
 #[cfg(all(test, unix))]
