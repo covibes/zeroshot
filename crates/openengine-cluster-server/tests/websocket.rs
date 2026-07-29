@@ -28,9 +28,13 @@ use gated_backend_support::GatedBackend;
 #[path = "admission_bound_support/mod.rs"]
 mod admission_bound_support;
 use admission_bound_support::{
-    assert_duplicate_in_flight_ids_are_rejected,
-    assert_excess_requests_are_rejected_with_server_busy, spawn_gated_harness, GatedHarnessSpawn,
-    RequestChannel,
+    assert_duplicate_cancellation_is_malformed, assert_duplicate_in_flight_ids_are_rejected,
+    assert_excess_requests_are_rejected_with_server_busy,
+    assert_malformed_frame_is_dropped_at_task_saturation,
+    assert_subscription_envelope_validation_for_binding,
+    assert_wrong_version_envelope_retains_duplicate_precedence, spawn_gated_harness,
+    DuplicateCancellationChannel, GatedHarnessSpawn, RequestChannel, SubscriptionCountingBackend,
+    SubscriptionValidationHarness,
 };
 
 /// Matches `serve_websocket`'s documented `MAX_FRAME_BYTES` bound; hardcoded rather than imported
@@ -56,16 +60,20 @@ async fn send_text(client: &mut WebSocketStream<DuplexStream>, text: impl Into<S
     client.send(Message::text(text.into())).await.unwrap();
 }
 
-async fn recv_json(client: &mut WebSocketStream<DuplexStream>) -> Value {
+async fn recv_text(client: &mut WebSocketStream<DuplexStream>) -> String {
     match client
         .next()
         .await
         .expect("connection closed unexpectedly while awaiting a frame")
     {
-        Ok(Message::Text(text)) => serde_json::from_str(&text).unwrap(),
+        Ok(Message::Text(text)) => text.to_string(),
         Ok(other) => panic!("expected a text frame, got {other:?}"),
         Err(error) => panic!("websocket read failed: {error}"),
     }
+}
+
+async fn recv_json(client: &mut WebSocketStream<DuplexStream>) -> Value {
+    serde_json::from_str(&recv_text(client).await).unwrap()
 }
 
 fn request_text(id: i64, method: &str, params: Value) -> String {
@@ -205,6 +213,14 @@ impl RequestChannel for Harness {
         send_text(&mut self.client, request_text(id, "get", json!({}))).await;
     }
 
+    async fn send_raw(&mut self, text: &str) {
+        send_text(&mut self.client, text).await;
+    }
+
+    async fn recv_raw(&mut self) -> String {
+        recv_text(&mut self.client).await
+    }
+
     async fn recv_value(&mut self) -> Value {
         recv_json(&mut self.client).await
     }
@@ -213,6 +229,71 @@ impl RequestChannel for Harness {
 impl GatedHarnessSpawn for Harness {
     async fn spawn_gated(backend: GatedBackend) -> Self {
         spawn_server(backend).await
+    }
+
+    async fn shut_down(self) {
+        shut_down(self).await;
+    }
+}
+
+impl SubscriptionValidationHarness for Harness {
+    async fn spawn_subscription_validation(backend: SubscriptionCountingBackend) -> Self {
+        spawn_server(backend).await
+    }
+}
+
+struct WebsocketDuplicateCancellation<'a> {
+    harness: &'a mut Harness,
+    gate: Arc<tokio::sync::Notify>,
+}
+
+impl DuplicateCancellationChannel for WebsocketDuplicateCancellation<'_> {
+    async fn arrange_targets(&mut self) {
+        self.harness.send_get(1).await;
+        self.harness.send_get(2).await;
+    }
+
+    async fn send_duplicate_cancellation(&mut self) {
+        self.harness
+            .send_raw(r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":1,"id":2}}"#)
+            .await;
+    }
+
+    async fn recv_raw(&mut self) -> String {
+        self.harness.recv_raw().await
+    }
+
+    async fn assert_targets_remain_active(&mut self) {
+        let mut completed_ids = Vec::new();
+        for _ in 0..2 {
+            self.gate.notify_one();
+            completed_ids.push(self.harness.recv_value().await["id"].as_i64().unwrap());
+        }
+        completed_ids.sort_unstable();
+        assert_eq!(completed_ids, [1, 2]);
+    }
+
+    async fn assert_unknown_member_cancellation_is_accepted(&mut self) {
+        self.harness.send_get(3).await;
+        self.harness
+            .send_raw(
+                r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":3},"extension":true}"#,
+            )
+            .await;
+        self.harness
+            .send_raw(
+                r#"{"jsonrpc":"2.0","id":99,"method":"initialize","params":{"protocolVersion":"openengine.cluster/v1"}}"#,
+            )
+            .await;
+        let sync = self.harness.recv_value().await;
+        assert_eq!(sync["id"], 99);
+        assert!(sync.get("result").is_some(), "{sync}");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), self.harness.recv_raw())
+                .await
+                .is_err(),
+            "$/cancelRequest with an unknown top-level member must cancel the request"
+        );
     }
 }
 
@@ -231,6 +312,38 @@ async fn excess_requests_are_rejected_with_server_busy() {
 
     assert_excess_requests_are_rejected_with_server_busy(&mut harness, MAX_CONNECTION_TASKS).await;
 
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn wrong_version_envelope_retains_duplicate_id_precedence() {
+    let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
+    assert_wrong_version_envelope_retains_duplicate_precedence(&mut harness, &gate).await;
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn wrong_version_subscription_methods_are_invalid_requests() {
+    assert_subscription_envelope_validation_for_binding::<Harness>().await;
+}
+
+#[tokio::test]
+async fn malformed_frame_remains_subject_to_task_slot_saturation() {
+    let (mut harness, _gate) = spawn_gated_harness::<Harness>().await;
+    assert_malformed_frame_is_dropped_at_task_saturation(&mut harness, MAX_CONNECTION_TASKS).await;
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn duplicate_cancel_request_keys_are_malformed_and_cancel_nothing() {
+    let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
+    {
+        let mut channel = WebsocketDuplicateCancellation {
+            harness: &mut harness,
+            gate,
+        };
+        assert_duplicate_cancellation_is_malformed(&mut channel).await;
+    }
     shut_down(harness).await;
 }
 

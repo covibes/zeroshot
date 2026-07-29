@@ -2,9 +2,9 @@
 //! classify-then-spawn loop so results, events, and errors stay byte-equivalent between bindings.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
-use std::future::Future;
 
 use openengine_cluster_protocol::RequestId;
 use parking_lot::Mutex;
@@ -13,7 +13,10 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 
 use super::admission::{acquire_task_slot, reject_duplicate, InFlightIds, MAX_CONNECTION_TASKS};
-use super::{agent_attach, logs, run_watch_subscription, ConnectionState, RequestKind, SubscriptionMap};
+use super::{
+    agent_attach, logs, run_watch_subscription, ConnectionState, DecodedOutcome, RequestKind,
+    SubscriptionMap,
+};
 use crate::{ClusterBackend, Dispatcher};
 
 /// Grace period given to already-spawned bounded backend dispatches to finish once the connection
@@ -28,7 +31,8 @@ const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(200);
 pub(crate) enum RequestDispatch {
     Handled,
     Passthrough {
-        id: Option<RequestId>,
+        admission_id: Option<RequestId>,
+        outcome: DecodedOutcome,
         permit: OwnedSemaphorePermit,
     },
 }
@@ -105,21 +109,29 @@ where
                 .await;
             RequestDispatch::Handled
         }
-        RequestKind::Passthrough { id } => {
-            if let Some(id) = id.clone() {
+        RequestKind::Passthrough {
+            admission_id,
+            outcome,
+        } => {
+            if let Some(id) = admission_id.clone() {
                 if reject_duplicate(&ctx.state.in_flight_ids, &ctx.state.outbound_tx, id).await {
                     return RequestDispatch::Handled;
                 }
             }
             let Some(permit) =
-                acquire_task_slot(ctx.task_slots, &ctx.state.outbound_tx, id.clone()).await
+                acquire_task_slot(ctx.task_slots, &ctx.state.outbound_tx, admission_id.clone())
+                    .await
             else {
-                if let Some(id) = id {
+                if let Some(id) = admission_id {
                     ctx.state.in_flight_ids.lock().remove(&id);
                 }
                 return RequestDispatch::Handled;
             };
-            RequestDispatch::Passthrough { id, permit }
+            RequestDispatch::Passthrough {
+                admission_id,
+                outcome,
+                permit,
+            }
         }
     }
 }

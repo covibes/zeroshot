@@ -15,7 +15,6 @@ mod dispatch;
 mod subscription_stream;
 mod wire;
 pub(crate) use wire::{serialize_backend_error, serialize_error, serialize_success};
-pub(crate) use stdio::classify_ndjson_line;
 
 use std::sync::Arc;
 
