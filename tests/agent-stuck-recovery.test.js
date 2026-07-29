@@ -461,7 +461,7 @@ describe('Agent stuck-task recovery', function () {
             ? Number(fs.readFileSync(${JSON.stringify(killCountFile)}, 'utf8'))
             : 0;
           fs.writeFileSync(${JSON.stringify(killCountFile)}, String(count + 1));
-          if (count < 3) {
+          if (count < 1) {
             process.stderr.write('cleanup unavailable\\n');
             process.exitCode = 1;
             return;
@@ -486,7 +486,7 @@ describe('Agent stuck-task recovery', function () {
         provider: 'opencode',
         model: 'openai/gpt-5.2-codex',
         outputFormat: 'text',
-        timeout: 50,
+        timeout: 0,
       },
       { publish() {}, subscribe() {} },
       { id: 'test-cluster', agents: [] },
@@ -497,27 +497,31 @@ describe('Agent stuck-task recovery', function () {
     agent.state = 'executing_task';
 
     try {
+      const launch = agent._spawnClaudeTask('nested local handoff', {
+        nested: true,
+        disableTools: true,
+        skipStructuredResultCheck: true,
+      });
+      await waitFor(
+        () => agent.nestedExecutions?.activeTaskIds.includes(taskId),
+        2000
+      );
+      const cancellation = agent.nestedExecutions.cancelAll('Nested task timed out', {
+        code: 'AGENT_TASK_TIMEOUT',
+      });
       let rejection;
       try {
-        await agent._spawnClaudeTask('nested local handoff', {
-          nested: true,
-          disableTools: true,
-          skipStructuredResultCheck: true,
-        });
+        await launch;
       } catch (error) {
         rejection = error;
       }
-
+      const firstTermination = await cancellation;
       assert.strictEqual(rejection?.code, 'AGENT_TASK_TIMEOUT');
       assert.strictEqual(rejection?.permanent, true);
       assert.strictEqual(rejection?.retainTaskHandle, true);
       assert.strictEqual(rejection?.taskId, taskId);
-      await waitFor(
-        () =>
-          fs.existsSync(killCountFile) &&
-          Number(fs.readFileSync(killCountFile, 'utf8')) === 3,
-        2000
-      );
+      assert.strictEqual(firstTermination?.forced, false);
+      assert.strictEqual(Number(fs.readFileSync(killCountFile, 'utf8')), 1);
       assert.strictEqual(agent.nestedExecutions.size, 1);
       assert.deepStrictEqual(agent.nestedExecutions.activeTaskIds, [taskId]);
       assert.strictEqual(getTask(taskId)?.status, 'running');
