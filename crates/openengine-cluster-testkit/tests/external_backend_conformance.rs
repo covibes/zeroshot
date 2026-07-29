@@ -172,6 +172,46 @@ impl BackendFactory for ScriptedBackendFactory {
     }
 }
 
+struct ReorderedProfileFactory;
+
+#[async_trait]
+impl BackendFactory for ReorderedProfileFactory {
+    type Backend = OptionalCapabilityBackend;
+    type Error = Infallible;
+
+    fn registration(&self) -> BackendRegistration<'_> {
+        BackendRegistration {
+            graph_profiles: &[GraphProfile::SingleWorker, GraphProfile::Full],
+            optional: RegisteredOptionalCapabilities::default(),
+        }
+    }
+
+    async fn create(&self) -> Result<Self::Backend, Self::Error> {
+        Ok(OptionalCapabilityBackend {
+            capabilities: ServerCapabilities {
+                graph_profiles: GraphProfileSet::new(vec![
+                    GraphProfile::Full,
+                    GraphProfile::SingleWorker,
+                ])
+                .unwrap(),
+                logs: false,
+                agent_attach: false,
+            },
+            observations: Arc::new(InMemoryAdmissionStore::default()),
+            logs: Arc::new(InMemoryLogStore::default()),
+            agent_attach: Arc::new(InMemoryAgentAttachStore::default()),
+        })
+    }
+
+    async fn reset(&self, _backend: &Self::Backend) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn cleanup(&self, _backend: Self::Backend) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
 struct OptionalCapabilityFactory;
 
 #[async_trait]
@@ -298,6 +338,16 @@ async fn scripted_backend_factory_runs_every_portable_required_case() {
 }
 
 #[tokio::test]
+async fn graph_profile_registration_order_is_semantic() {
+    let report = run_backend_conformance(&ReorderedProfileFactory)
+        .await
+        .unwrap();
+
+    assert_eq!(report.passed(), 16);
+    assert_eq!(report.skipped(), 2);
+}
+
+#[tokio::test]
 async fn graph_profile_mismatch_fails_but_still_resets_and_cleans() {
     let factory = ScriptedBackendFactory::new(vec![GraphProfile::SingleWorker]);
     let failures = run_backend_conformance(&factory).await.unwrap_err();
@@ -308,6 +358,12 @@ async fn graph_profile_mismatch_fails_but_still_resets_and_cleans() {
             .iter()
             .any(|failure| failure.message().contains("did not match registration"))
     );
+    assert_eq!(
+        failures.cases().len() + failures.failures().len(),
+        conformance_catalog().len()
+    );
+    assert_eq!(failures.passed(), 15);
+    assert_eq!(failures.skipped(), 2);
     assert_eq!(
         factory.creates.load(Ordering::SeqCst),
         factory.resets.load(Ordering::SeqCst)

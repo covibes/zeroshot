@@ -53,15 +53,12 @@ impl ConformanceReport {
 
     #[must_use]
     pub fn passed(&self) -> usize {
-        self.cases
-            .iter()
-            .filter(|case| case.disposition == CaseDisposition::Passed)
-            .count()
+        count_passed(&self.cases)
     }
 
     #[must_use]
     pub fn skipped(&self) -> usize {
-        self.cases.len() - self.passed()
+        count_skipped(&self.cases)
     }
 }
 
@@ -85,13 +82,29 @@ impl CaseFailure {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConformanceFailures {
+    cases: Vec<CaseResult>,
     failures: Vec<CaseFailure>,
 }
 
 impl ConformanceFailures {
     #[must_use]
+    pub fn cases(&self) -> &[CaseResult] {
+        &self.cases
+    }
+
+    #[must_use]
     pub fn failures(&self) -> &[CaseFailure] {
         &self.failures
+    }
+
+    #[must_use]
+    pub fn passed(&self) -> usize {
+        count_passed(&self.cases)
+    }
+
+    #[must_use]
+    pub fn skipped(&self) -> usize {
+        count_skipped(&self.cases)
     }
 }
 
@@ -110,6 +123,17 @@ impl fmt::Display for ConformanceFailures {
 }
 
 impl Error for ConformanceFailures {}
+
+fn count_passed(cases: &[CaseResult]) -> usize {
+    cases
+        .iter()
+        .filter(|case| case.disposition == CaseDisposition::Passed)
+        .count()
+}
+
+fn count_skipped(cases: &[CaseResult]) -> usize {
+    cases.len() - count_passed(cases)
+}
 
 pub async fn run_backend_conformance<F>(
     factory: &F,
@@ -144,7 +168,10 @@ where
     if failures.is_empty() {
         Ok(ConformanceReport { cases: results })
     } else {
-        Err(ConformanceFailures { failures })
+        Err(ConformanceFailures {
+            cases: results,
+            failures,
+        })
     }
 }
 
@@ -317,11 +344,18 @@ fn validate_initialize(
         .ok_or_else(|| format!("initialize failed: {response}"))?;
     let initialized: InitializeResult = serde_json::from_value(result)
         .map_err(|error| format!("invalid initialize result: {error}"))?;
-    if initialized.capabilities.graph_profiles.values() != registration.graph_profiles {
+    let advertised_profiles = initialized.capabilities.graph_profiles.values();
+    let registered_profiles = registration.graph_profiles;
+    if advertised_profiles.len() != registered_profiles.len()
+        || !advertised_profiles
+            .iter()
+            .all(|profile| registered_profiles.contains(profile))
+        || !registered_profiles
+            .iter()
+            .all(|profile| advertised_profiles.contains(profile))
+    {
         return Err(format!(
-            "advertised graph profiles {:?} did not match registration {:?}",
-            initialized.capabilities.graph_profiles.values(),
-            registration.graph_profiles
+            "advertised graph profiles {advertised_profiles:?} did not match registration {registered_profiles:?}"
         ));
     }
     if initialized.capabilities.logs != registration.optional.logs
