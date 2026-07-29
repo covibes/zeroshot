@@ -310,12 +310,21 @@ function checkBuildJob(jobs) {
     failIntegrity('Windows bundled-SQLite MSVC setup is missing');
   }
 
+  const install = findStep(job, 'Install pinned script dependencies');
+  if (
+    install.if !== undefined ||
+    install.run?.trim() !== 'npm ci --ignore-scripts'
+  ) {
+    failIntegrity('pinned script dependencies must install without lifecycle scripts');
+  }
+
   const stage = findStep(job, 'Stage planned Rust package version');
   if (
     stage.if !== undefined ||
-    stage.run?.trim() !== 'node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"'
+    stage.run?.trim() !== 'node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"' ||
+    job.steps.indexOf(install) > job.steps.indexOf(stage)
   ) {
-    failIntegrity('planned Rust version staging is missing before locked target builds');
+    failIntegrity('planned Rust version staging requires pinned script dependencies first');
   }
   const coupling = findStep(job, 'Verify Rust and release tag versions are coupled');
   if (
@@ -463,6 +472,12 @@ function checkShimTargets(shimTargets) {
   exactJson('npm shim host mapping', projected, actual);
 }
 
+function checkScriptDependencies(packageManifest) {
+  if (!Object.hasOwn(packageManifest.devDependencies || {}, 'js-yaml')) {
+    failIntegrity('rust-distribution.js requires a direct js-yaml devDependency');
+  }
+}
+
 function checkRepository(
   workflow = fs.readFileSync(
     path.join(repositoryRoot, '.github', 'workflows', 'release.yml'),
@@ -470,6 +485,9 @@ function checkRepository(
   ),
   shimTargets = JSON.parse(
     fs.readFileSync(path.join(repositoryRoot, 'npm', 'zeroshot-rust', 'targets.json'), 'utf8')
+  ),
+  packageManifest = JSON.parse(
+    fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8')
   )
 ) {
   let document;
@@ -483,6 +501,7 @@ function checkRepository(
   checkManifestJob(document.jobs);
   checkPublicationJobs(document, document.jobs);
   checkShimTargets(shimTargets);
+  checkScriptDependencies(packageManifest);
   return true;
 }
 

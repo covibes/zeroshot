@@ -149,6 +149,48 @@ describe('Rust release integration', function () {
     );
     assert.strictEqual(distribution.checkRepository(workflow), true);
 
+    for (const [before, after] of [
+      ['run: npm ci --ignore-scripts', 'run: echo npm ci --ignore-scripts'],
+      [
+        `      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+`,
+        '',
+      ],
+    ]) {
+      assert.throws(
+        () => distribution.checkRepository(mutation(workflow, before, after)),
+        /pinned script dependencies/
+      );
+    }
+
+    const installStep = `      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+`;
+    const stageStep = `      - name: Stage planned Rust package version
+        run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"
+        shell: bash
+`;
+    const workflowWithLateInstall = mutation(
+      mutation(workflow, `${installStep}\n`, ''),
+      stageStep,
+      `${stageStep}
+${installStep}`
+    );
+    assert.throws(
+      () => distribution.checkRepository(workflowWithLateInstall),
+      /requires pinned script dependencies first/
+    );
+
+    const packageManifest = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')
+    );
+    delete packageManifest.devDependencies['js-yaml'];
+    assert.throws(
+      () => distribution.checkRepository(workflow, undefined, packageManifest),
+      /direct js-yaml devDependency/
+    );
+
     assert.throws(
       () =>
         distribution.checkRepository(
