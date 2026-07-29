@@ -6,6 +6,8 @@ impl RecordPayload {
         match self {
             Self::Admission { .. }
             | Self::Dispatch { .. }
+            | Self::ExecutionContext { .. }
+            | Self::ExecutionVoid { .. }
             | Self::Settlement { .. }
             | Self::SafeFault { .. }
             | Self::EffectIntent { .. }
@@ -25,6 +27,8 @@ impl RecordPayload {
         match self {
             Self::Admission { .. } => RecordKind::Admission,
             Self::Dispatch { .. } => RecordKind::Dispatch,
+            Self::ExecutionContext { .. } => RecordKind::ExecutionContext,
+            Self::ExecutionVoid { .. } => RecordKind::ExecutionVoid,
             Self::Settlement { .. } => RecordKind::Settlement,
             Self::SafeFault { .. } => RecordKind::SafeFault,
             Self::EffectIntent { .. } => RecordKind::EffectIntent,

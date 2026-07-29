@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::super::record::{
-    CanonicalDigest, EffectId, ExecutionId, GenerationId, IdentityCounters, NodeInstanceId,
-    RunSequence,
+    CanonicalDigest, EffectId, ExecutionId, ExecutionVoidReason, GenerationId, IdentityCounters,
+    NodeInstanceId, RunSequence, StructuralOccurrence,
 };
+use openengine_cluster_protocol::PositiveInteger;
 use super::super::store::{IdempotencyId, MutationReceipt, Position, ResourceId};
 use super::ReplayError;
 use crate::required_proof::{AcceptedProofRef, ProofAttemptIntent, ProofAttemptReceipt};
@@ -39,6 +40,25 @@ pub struct DispatchState {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionContextState {
+    pub run: RunSequence,
+    pub node_instance: NodeInstanceId,
+    pub execution: ExecutionId,
+    pub occurrence: StructuralOccurrence,
+    pub attempt: PositiveInteger,
+    pub canonical_input: Vec<u8>,
+    pub position: Position,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionVoidState {
+    pub run: RunSequence,
+    pub execution: ExecutionId,
+    pub reason: ExecutionVoidReason,
+    pub position: Position,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EffectState {
     pub run: RunSequence,
     pub effect: EffectId,
@@ -61,6 +81,9 @@ pub struct ReplayState {
     pub identities: IdentityCounters,
     pub admission: Option<AdmissionState>,
     pub active_dispatches: BTreeMap<ExecutionId, DispatchState>,
+    pub dispatches: BTreeMap<ExecutionId, DispatchState>,
+    pub execution_contexts: BTreeMap<ExecutionId, ExecutionContextState>,
+    pub execution_voids: BTreeMap<ExecutionId, ExecutionVoidState>,
     pub settlements: BTreeMap<ExecutionId, CanonicalDigest>,
     pub settlement_runs: BTreeMap<ExecutionId, RunSequence>,
     pub effects: BTreeMap<EffectId, EffectState>,
@@ -83,6 +106,9 @@ impl ReplayState {
             identities: IdentityCounters::initial(),
             admission: None,
             active_dispatches: BTreeMap::new(),
+            dispatches: BTreeMap::new(),
+            execution_contexts: BTreeMap::new(),
+            execution_voids: BTreeMap::new(),
             settlements: BTreeMap::new(),
             settlement_runs: BTreeMap::new(),
             effects: BTreeMap::new(),

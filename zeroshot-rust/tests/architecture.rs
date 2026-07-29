@@ -660,3 +660,38 @@ fn manifest_has_no_client_testkit_or_node_dependencies() {
         );
     }
 }
+
+#[test]
+fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
+    let reducer = read(&product_root().join("src/full_v1_reducer.rs"));
+    assert!(reducer.contains("VerifiedGraph"));
+    assert!(reducer.contains("ProductionGraphVerifier"));
+    assert!(!reducer.contains("GraphSpec"));
+    assert!(!reducer.contains("PayloadType"));
+    for forbidden in [
+        "tokio::",
+        "async fn",
+        "std::process",
+        "std::time",
+        "std::thread",
+        "crate::execution",
+        "crate::scheduler",
+        "crate::artifact_store",
+        "crate::issue_provider",
+        "crate::source_code_provider",
+        "ClusterBackend",
+        "Dispatcher",
+    ] {
+        assert!(
+            !reducer.contains(forbidden),
+            "pure reducer imported an effectful concern: {forbidden}"
+        );
+    }
+
+    let records = read(&product_root().join("src/cluster_ledger/record.rs"));
+    assert!(records.contains("ExecutionContext"));
+    assert!(records.contains("ExecutionVoid"));
+    let replay = read(&product_root().join("src/cluster_ledger/replay.rs"));
+    assert!(replay.contains("fold_execution_context"));
+    assert!(replay.contains("fold_execution_void"));
+}

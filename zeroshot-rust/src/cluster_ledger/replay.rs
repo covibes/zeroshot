@@ -4,8 +4,8 @@ mod state;
 
 pub use error::ReplayError;
 pub use state::{
-    AdmissionState, DispatchState, EffectState, ReplayState, RequiredProofAttemptState,
-    VerifiedValue,
+    AdmissionState, DispatchState, EffectState, ExecutionContextState, ExecutionVoidState,
+    ReplayState, RequiredProofAttemptState, VerifiedValue,
 };
 use receipts::validate_receipt_binding;
 
@@ -100,6 +100,10 @@ fn fold_payload(
         | RecordPayload::Dispatch { .. }
         | RecordPayload::Settlement { .. }
         | RecordPayload::SafeFault { .. }) => fold_execution_payload(state, payload),
+        payload @ RecordPayload::ExecutionContext { .. } => {
+            fold_execution_context(state, payload, position)
+        }
+        payload @ RecordPayload::ExecutionVoid { .. } => fold_execution_void(state, payload, position),
         payload @ (RecordPayload::EffectIntent { .. }
         | RecordPayload::EffectReceipt { .. }
         | RecordPayload::Terminal { .. }
@@ -291,16 +295,117 @@ fn fold_dispatch(state: &mut ReplayState, payload: RecordPayload) -> Result<(), 
     {
         return Err(ReplayError::InvalidOrder);
     }
-    state.identities.next_node_instance =
-        advance_identity(state.identities.next_node_instance, node_instance.get())?;
+    if node_instance.get() == state.identities.next_node_instance {
+        state.identities.next_node_instance =
+            advance_identity(state.identities.next_node_instance, node_instance.get())?;
+    } else if !state
+        .dispatches
+        .values()
+        .any(|dispatch| dispatch.node_instance == node_instance)
+    {
+        return Err(ReplayError::InvalidOrder);
+    }
     state.identities.next_execution =
         advance_identity(state.identities.next_execution, execution.get())?;
-    state.active_dispatches.insert(
+    let dispatch = DispatchState {
+        run,
+        node_instance,
         execution,
-        DispatchState {
+    };
+    state.active_dispatches.insert(execution, dispatch.clone());
+    state.dispatches.insert(execution, dispatch);
+    Ok(())
+}
+
+fn fold_execution_context(
+    state: &mut ReplayState,
+    payload: RecordPayload,
+    position: Position,
+) -> Result<(), ReplayError> {
+    let RecordPayload::ExecutionContext {
+        run,
+        node_instance,
+        execution,
+        occurrence,
+        attempt,
+        canonical_input,
+    } = payload
+    else {
+        unreachable!("execution-context fold receives execution-context payload");
+    };
+    require_current_run(state, run)?;
+    let dispatch = state
+        .dispatches
+        .get(&execution)
+        .ok_or(ReplayError::InvalidOrder)?;
+    if dispatch.run != run
+        || dispatch.node_instance != node_instance
+        || state.execution_contexts.contains_key(&execution)
+        || serde_json::from_slice::<serde_json::Value>(&canonical_input)
+            .ok()
+            .and_then(|value| serde_json::to_vec(&value).ok())
+            .as_deref()
+            != Some(canonical_input.as_slice())
+    {
+        return Err(ReplayError::InvalidOrder);
+    }
+    let previous = state
+        .execution_contexts
+        .values()
+        .filter(|context| context.occurrence == occurrence)
+        .max_by_key(|context| context.attempt);
+    match previous {
+        Some(previous)
+            if previous.node_instance != node_instance
+                || attempt.get() != previous.attempt.get() + 1 =>
+        {
+            return Err(ReplayError::InvalidOrder);
+        }
+        None if attempt.get() != 1 => return Err(ReplayError::InvalidOrder),
+        Some(_) | None => {}
+    }
+    state.execution_contexts.insert(
+        execution,
+        state::ExecutionContextState {
             run,
             node_instance,
             execution,
+            occurrence,
+            attempt,
+            canonical_input,
+            position,
+        },
+    );
+    Ok(())
+}
+
+fn fold_execution_void(
+    state: &mut ReplayState,
+    payload: RecordPayload,
+    position: Position,
+) -> Result<(), ReplayError> {
+    let RecordPayload::ExecutionVoid {
+        run,
+        execution,
+        reason,
+    } = payload
+    else {
+        unreachable!("execution-void fold receives execution-void payload");
+    };
+    require_current_run(state, run)?;
+    if !state.execution_contexts.contains_key(&execution)
+        || state.execution_voids.contains_key(&execution)
+        || state.active_dispatches.remove(&execution).is_none()
+    {
+        return Err(ReplayError::InvalidOrder);
+    }
+    state.execution_voids.insert(
+        execution,
+        state::ExecutionVoidState {
+            run,
+            execution,
+            reason,
+            position,
         },
     );
     Ok(())

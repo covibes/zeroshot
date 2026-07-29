@@ -81,6 +81,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | SQLite ledger store          | `zeroshot-rust/src/cluster_ledger/store/sqlite.rs`, `store/sqlite/`     |
 | SQLite append/query helpers  | `zeroshot-rust/src/cluster_ledger/store/sqlite/{operations,queries}.rs` |
 | Ledger records/replay        | `zeroshot-rust/src/cluster_ledger/record.rs`, `replay.rs`               |
+| Full-v1 pure graph reducer    | `zeroshot-rust/src/full_v1_reducer.rs`                              |
 | Protocol ledger adapters     | `zeroshot-rust/src/cluster_ledger/adapters.rs`                          |
 | Artifact store port/fake     | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`         |
 | Product-local artifact CAS   | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`           |
@@ -209,6 +210,12 @@ Initial resource creation and its owner fence are one store operation. Guarded a
 cancellation inside the store transaction immediately before their first write, after idempotent
 receipt lookup. SQLite removal leaves an explicit empty tombstone until file unlink; missing live
 metadata without that tombstone is corruption and must never authorize replacement.
+Full-v1 reduction accepts only verifier-produced `VerifiedGraph`/`CompiledGraphIr` and durable
+ordered outcomes. It is a pure authored-order fold: ledger position is the only concurrent
+tie-break, map indices and positive attempts are part of the central ledger execution context, and
+early-join loser voids are central ledger control records. Keep scheduling capacity, clocks, tasks,
+channels, runtime/provider/artifact concerns, public protocol methods, and automatic retry outside
+the reducer.
 Graph syntax, payload subtyping, compiled IR, diagnostics, and artifact receipt Rust types remain
 authoritative protocol contracts. `ProductionGraphVerifier` is the one reusable production
 semantic verifier for `openengine.graph.full/v1`; it resolves workers through `WorkerRegistry` and

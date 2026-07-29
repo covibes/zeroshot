@@ -202,7 +202,7 @@ pub(super) const fn kind_to_i64(kind: RecordKind) -> i64 {
 }
 
 fn kind_from_i64(value: i64) -> Result<RecordKind, StoreError> {
-    const KINDS: [RecordKind; 11] = [
+    const KINDS: [RecordKind; 13] = [
         RecordKind::Admission,
         RecordKind::Dispatch,
         RecordKind::Settlement,
@@ -214,6 +214,8 @@ fn kind_from_i64(value: i64) -> Result<RecordKind, StoreError> {
         RecordKind::VerifiedInput,
         RecordKind::VerifiedOutput,
         RecordKind::MutationReceipt,
+        RecordKind::ExecutionContext,
+        RecordKind::ExecutionVoid,
     ];
     let index = usize::try_from(
         value

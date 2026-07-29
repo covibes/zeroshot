@@ -5,13 +5,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use openengine_cluster_protocol::{PositiveInteger, WorkerOutcome};
 use ledger::{key, owner, resource, temp_root};
 use tokio::sync::Barrier;
 use openengine_cluster_server::admission::{AdmissionStore, ControlJournal, VerifiedIoLedger};
 use openengine_cluster_server::admission::{CancellationSignal, CommitProposal};
 use openengine_cluster_server::lifecycle::LifecycleStore;
 use zeroshot_engine::cluster_ledger::adapters::ClusterLedgerAdapters;
-use zeroshot_engine::cluster_ledger::mutations::{AdmissionRequest, SafeFaultConsequence};
+use zeroshot_engine::cluster_ledger::mutations::{
+    AdmissionRequest, ReductionDispatchRequest, SafeFaultConsequence,
+};
 use zeroshot_engine::cluster_ledger::record::{
     CanonicalDigest, RecordKind, RecordPayload, StoredRecord, MAX_APPEND_RECORDS,
     MAX_RECORD_PAYLOAD_BYTES,
@@ -24,7 +27,9 @@ use zeroshot_engine::cluster_ledger::store::{
     MutationReceipt, OwnerId, Position, PrefixSnapshot, ResourceId, ResourceInfo, StoreError,
     MAX_DISCOVERY_PAGE, MAX_IDENTIFIER_BYTES,
 };
-use zeroshot_engine::cluster_ledger::{ClusterLedger, LedgerErrorKind};
+use zeroshot_engine::cluster_ledger::{
+    ClusterLedger, ExecutionVoidReason, LedgerErrorKind, StructuralOccurrence,
+};
 use zeroshot_engine::fault::{
     EvidenceClass, FaultContext, FaultFactory, FaultModule, ModuleEvidence, RawDiagnostic,
     RedactionMarker,
@@ -113,3 +118,132 @@ mod required_proof;
 mod snapshot_race_store;
 #[path = "cluster_ledger_replay/validation.rs"]
 mod validation;
+
+#[tokio::test]
+async fn reducer_execution_context_attempts_and_voids_replay_exactly() {
+    let (store, ledger) = ledger("reducer-control-replay").await;
+    ledger
+        .admit(key("reduce-admit"), [31; 32], admission(b"reducer"))
+        .await
+        .unwrap();
+    let occurrence = StructuralOccurrence {
+        node: "work".parse().unwrap(),
+        map_indices: vec![3, 1],
+    };
+    let first = ledger
+        .dispatch_reduction(
+            key("reduce-dispatch-1"),
+            [32; 32],
+            ReductionDispatchRequest {
+                occurrence: occurrence.clone(),
+                attempt: PositiveInteger::new(1).unwrap(),
+                canonical_input: br#"{"task":"first"}"#.to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .value;
+    let outcome = WorkerOutcome::Verified {
+        output: serde_json::json!({"value":1}),
+        artifacts: Vec::new(),
+    };
+    let outcome_bytes = serde_json::to_vec(&outcome).unwrap();
+    ledger
+        .settle(
+            key("reduce-settle-1"),
+            [33; 32],
+            first.execution,
+            CanonicalDigest::of(&outcome_bytes),
+            Some(outcome_bytes),
+        )
+        .await
+        .unwrap();
+    let second = ledger
+        .dispatch_reduction(
+            key("reduce-dispatch-2"),
+            [34; 32],
+            ReductionDispatchRequest {
+                occurrence: occurrence.clone(),
+                attempt: PositiveInteger::new(2).unwrap(),
+                canonical_input: br#"{"task":"second"}"#.to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .value;
+    assert_eq!(first.node_instance, second.node_instance);
+    ledger
+        .void_execution(
+            key("reduce-void-2"),
+            [35; 32],
+            second.execution,
+            ExecutionVoidReason::ParallelJoin,
+        )
+        .await
+        .unwrap();
+
+    let snapshot = store
+        .read_prefix(&resource("reducer-control-replay"), None)
+        .await
+        .unwrap();
+    let state = replay(&snapshot, &resource("reducer-control-replay")).unwrap();
+    assert_eq!(state.execution_contexts.len(), 2);
+    assert_eq!(
+        state.execution_contexts[&second.execution].occurrence,
+        occurrence
+    );
+    assert_eq!(
+        state.execution_contexts[&second.execution].attempt.get(),
+        2
+    );
+    assert!(!state.active_dispatches.contains_key(&second.execution));
+    assert_eq!(
+        state.execution_voids[&second.execution].reason,
+        ExecutionVoidReason::ParallelJoin
+    );
+    let durable =
+        zeroshot_engine::full_v1_reducer::durable_executions_from_replay(&state).unwrap();
+    assert_eq!(durable.len(), 2);
+}
+
+#[tokio::test]
+async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
+    let (_store, ledger) = ledger("reducer-control-negative").await;
+    ledger
+        .admit(key("negative-admit"), [41; 32], admission(b"negative"))
+        .await
+        .unwrap();
+    let occurrence = StructuralOccurrence {
+        node: "work".parse().unwrap(),
+        map_indices: Vec::new(),
+    };
+    let gap = ledger
+        .dispatch_reduction(
+            key("gap"),
+            [42; 32],
+            ReductionDispatchRequest {
+                occurrence,
+                attempt: PositiveInteger::new(2).unwrap(),
+                canonical_input: b"null".to_vec(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(gap.kind(), &LedgerErrorKind::InvalidLifecycle);
+
+    let ordinary = ledger
+        .dispatch(key("ordinary"), [43; 32])
+        .await
+        .unwrap()
+        .value;
+    let unmapped = ledger
+        .void_execution(
+            key("unmapped"),
+            [44; 32],
+            ordinary.execution,
+            ExecutionVoidReason::ParallelJoin,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unmapped.kind(), &LedgerErrorKind::InvalidLifecycle);
+}

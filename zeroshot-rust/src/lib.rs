@@ -1,6 +1,7 @@
 pub mod artifact_store;
 pub mod cluster_ledger;
 pub mod execution;
+pub mod full_v1_reducer;
 pub mod issue_provider;
 mod provider_value;
 pub mod required_proof;

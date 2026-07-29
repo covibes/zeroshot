@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
+use openengine_cluster_protocol::PositiveInteger;
+use serde_json::Value;
 
 mod effects;
 
 use crate::fault::{EngineFault, FaultContext};
 
 use super::record::{
-    CanonicalDigest, EffectId, ExecutionId, GenerationId, NodeInstanceId, RecordPayload,
-    RunSequence,
+    CanonicalDigest, EffectId, ExecutionId, ExecutionVoidReason, GenerationId, NodeInstanceId,
+    RecordPayload, RunSequence, StructuralOccurrence,
 };
 use super::store::{IdempotencyId, Position};
 use super::{
@@ -58,6 +60,19 @@ pub struct DispatchAllocation {
     pub run: RunSequence,
     pub node_instance: NodeInstanceId,
     pub execution: ExecutionId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReductionDispatchRequest {
+    pub occurrence: StructuralOccurrence,
+    pub attempt: PositiveInteger,
+    pub canonical_input: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ExecutionVoidResult {
+    pub execution: ExecutionId,
+    pub reason: ExecutionVoidReason,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -360,6 +375,140 @@ impl ClusterLedger {
                 run,
                 node_instance,
                 execution,
+            }]),
+        )
+        .await
+    }
+
+    pub async fn dispatch_reduction(
+        &self,
+        key: IdempotencyId,
+        fingerprint: [u8; 32],
+        request: ReductionDispatchRequest,
+    ) -> Result<CommitResult<DispatchAllocation>, LedgerError> {
+        let ReductionDispatchRequest {
+            occurrence,
+            attempt,
+            canonical_input,
+        } = request;
+        let mut state = self.validated_state(FaultContext::Execution).await?;
+        if let Some(receipt) = self.existing_receipt(
+            &state,
+            &key,
+            ReceiptExpectation::new(FaultContext::Execution, "reducer_dispatch", fingerprint),
+        )? {
+            return Ok(receipt);
+        }
+        let run = state
+            .admission
+            .as_ref()
+            .ok_or_else(|| {
+                self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+            })?
+            .run;
+        if state.terminal_outcome.is_some()
+            || serde_json::from_slice::<Value>(&canonical_input)
+                .ok()
+                .and_then(|value| serde_json::to_vec(&value).ok())
+                .as_deref()
+                != Some(canonical_input.as_slice())
+        {
+            return Err(
+                self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+            );
+        }
+        let previous = state
+            .execution_contexts
+            .values()
+            .filter(|context| context.occurrence == occurrence)
+            .max_by_key(|context| context.attempt);
+        let node_instance = match previous {
+            Some(previous)
+                if attempt.get() == previous.attempt.get() + 1
+                    && state.settlements.contains_key(&previous.execution) =>
+            {
+                previous.node_instance
+            }
+            None if attempt.get() == 1 => {
+                state.identities.allocate_node_instance().map_err(|_| {
+                    self.domain_error(FaultContext::Execution, LedgerErrorKind::BoundViolation)
+                })?
+            }
+            Some(_) | None => {
+                return Err(
+                    self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+                );
+            }
+        };
+        let execution = state.identities.allocate_execution().map_err(|_| {
+            self.domain_error(FaultContext::Execution, LedgerErrorKind::BoundViolation)
+        })?;
+        let response = DispatchAllocation {
+            run,
+            node_instance,
+            execution,
+        };
+        self.commit(
+            CommitRequest::new(
+                FaultContext::Execution,
+                &state,
+                MutationIdentity::new(key, "reducer_dispatch", fingerprint),
+                &response,
+            )
+            .with_payloads(vec![
+                RecordPayload::Dispatch {
+                    run,
+                    node_instance,
+                    execution,
+                },
+                RecordPayload::ExecutionContext {
+                    run,
+                    node_instance,
+                    execution,
+                    occurrence,
+                    attempt,
+                    canonical_input,
+                },
+            ]),
+        )
+        .await
+    }
+
+    pub async fn void_execution(
+        &self,
+        key: IdempotencyId,
+        fingerprint: [u8; 32],
+        execution: ExecutionId,
+        reason: ExecutionVoidReason,
+    ) -> Result<CommitResult<ExecutionVoidResult>, LedgerError> {
+        let state = self.validated_state(FaultContext::Execution).await?;
+        if let Some(receipt) = self.existing_receipt(
+            &state,
+            &key,
+            ReceiptExpectation::new(FaultContext::Execution, "execution_void", fingerprint),
+        )? {
+            return Ok(receipt);
+        }
+        let run = state
+            .active_dispatches
+            .get(&execution)
+            .filter(|dispatch| state.execution_contexts.contains_key(&execution))
+            .ok_or_else(|| {
+                self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
+            })?
+            .run;
+        let response = ExecutionVoidResult { execution, reason };
+        self.commit(
+            CommitRequest::new(
+                FaultContext::Execution,
+                &state,
+                MutationIdentity::new(key, "execution_void", fingerprint),
+                &response,
+            )
+            .with_payloads(vec![RecordPayload::ExecutionVoid {
+                run,
+                execution,
+                reason,
             }]),
         )
         .await

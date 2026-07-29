@@ -12,11 +12,14 @@ pub mod replay;
 pub mod store;
 
 pub use mutations::{
-    AdmissionRequest, CommitResult, DispatchAllocation, SafeFaultConsequence, SafeFaultResult,
-    SettlementResult,
+    AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidResult,
+    ReductionDispatchRequest, SafeFaultConsequence, SafeFaultResult, SettlementResult,
 };
 pub use error::{LedgerError, LedgerErrorKind};
-pub use record::{CanonicalDigest, EffectId, ExecutionId, GenerationId, NodeInstanceId, RunSequence};
+pub use record::{
+    CanonicalDigest, EffectId, ExecutionId, ExecutionVoidReason, GenerationId, NodeInstanceId,
+    RunSequence, StructuralOccurrence,
+};
 pub use replay::{replay, ReplayState};
 pub use store::{LedgerStore, OwnerId, ResourceId};
 
