@@ -54,6 +54,61 @@ describe('watcher command cleanup ownership', function () {
     });
   }
 
+  for (const watcherName of ['watcher.js', 'attachable-watcher.js']) {
+    it(`${watcherName} retains ownership when a Windows process-tree root is gone`, async function () {
+      const runtime = await import('../../task-lib/watcher-output-runtime.js');
+      const receipt = { cleanup: ['owned-overlay'], cleanupMetadata: [] };
+      const task = {
+        status: 'running',
+        pid: 424242,
+        processGroupId: null,
+        commandCleanup: receipt,
+      };
+      let cleanupRuns = 0;
+      const completionOptions = {
+        taskId: `win-root-gone-${watcherName}`,
+        commandCleanup: {
+          async run() {
+            cleanupRuns++;
+            return true;
+          },
+        },
+        terminateProvider: () =>
+          runtime.terminateWatcherProvider(
+            { pid: task.pid },
+            {
+              platform: 'win32',
+              terminateProcessFn: async () => ({
+                terminated: true,
+                alreadyDead: true,
+                scope: 'process-tree',
+              }),
+            }
+          ),
+        updateTask: async (_taskId, updates) => Object.assign(task, updates),
+        emergencyLog() {},
+      };
+
+      const completed =
+        watcherName === 'watcher.js'
+          ? await runtime.completeWatcherTask({
+              ...completionOptions,
+              completion: { status: 'completed', resolvedCode: 0, error: null },
+            })
+          : await runtime.completeWatcherFailure({
+              ...completionOptions,
+              error: new Error('simulated attachable watcher failure'),
+              source: 'uncaughtException',
+            });
+
+      assert.strictEqual(completed, false);
+      assert.strictEqual(task.status, 'running');
+      assert.strictEqual(task.pid, 424242);
+      assert.strictEqual(task.commandCleanup, receipt);
+      assert.strictEqual(cleanupRuns, 0);
+    });
+  }
+
   it('fails durably when the provider executable disappears before spawn', async function () {
     const result = await runFixture('watcher.js', 'missing-command');
     assert.strictEqual(result.watcherExit.code, 1, result.watcherOutput);

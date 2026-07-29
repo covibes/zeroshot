@@ -16,13 +16,19 @@ export function spawnWatcherProvider(command, finalArgs, options) {
   });
 }
 
-export async function terminateWatcherProvider(providerProcess) {
+export async function terminateWatcherProvider(providerProcess, options = {}) {
   const pid = providerProcess?.pid;
   if (!pid) return true;
-  const result = await terminateProcess(pid, {
-    processGroupId: process.platform === 'win32' ? null : pid,
-    terminationStrategy: process.platform === 'win32' ? 'process-tree' : 'process-group',
+  const platform = options.platform || process.platform;
+  const terminate = options.terminateProcessFn || terminateProcess;
+  const terminationStrategy = platform === 'win32' ? 'process-tree' : 'process-group';
+  const result = await terminate(pid, {
+    processGroupId: platform === 'win32' ? null : pid,
+    terminationStrategy,
   });
+  if (terminationStrategy === 'process-tree' && result.alreadyDead) {
+    return false;
+  }
   return result.terminated;
 }
 
