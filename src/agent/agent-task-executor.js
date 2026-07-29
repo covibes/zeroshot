@@ -2327,6 +2327,8 @@ function createIsolatedLogState(skipStructuredResultCheck = false, nested = fals
     taskExited: false,
     resolved: false,
     terminationPromise: null,
+    durableTaskTerminal: false,
+    durableTaskStatus: null,
     lifecycleHandle: null,
     logFilePath: null,
     fullOutput: '',
@@ -2478,6 +2480,10 @@ function settleIsolatedTerminalStatus({
   if (state.terminalSettlementPromise) return state.terminalSettlementPromise;
 
   state.taskExited = true;
+  if (status) {
+    state.durableTaskTerminal = true;
+    state.durableTaskStatus = status;
+  }
   const settlement = (async () => {
     const logFilePath = await resolveIsolatedLogFilePath(manager, clusterId, taskId, state);
     await new Promise((settle) => setTimeout(settle, 200));
@@ -2559,11 +2565,19 @@ function buildIsolatedLifecycleHandle({
   onLine,
 }) {
   const terminate = (reason = 'Task killed', details = {}) => {
-    if (state.resolved || state.taskExited) return;
+    if (state.durableTaskTerminal) {
+      return Promise.resolve({
+        alreadyTerminal: true,
+        forced: false,
+        status: state.durableTaskStatus,
+      });
+    }
     if (state.terminationPromise) return state.terminationPromise;
 
     const terminationPromise = (async () => {
       const termination = await terminateIsolatedTask(manager, clusterId, taskId);
+      state.durableTaskTerminal = true;
+      state.durableTaskStatus = termination.status;
       if (!termination.forced) {
         await settleIsolatedTerminalStatus({
           agent,

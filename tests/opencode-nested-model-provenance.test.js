@@ -654,7 +654,7 @@ describe('Isolated opencode structured-output recovery', function () {
       iteration: 1,
       running: true,
       state: 'executing_task',
-      timeout: 100,
+      timeout: 0,
       enableLivenessCheck: false,
       config: { outputFormat: 'json', strictSchema: true },
       cluster: { id: 'test-cluster' },
@@ -667,20 +667,27 @@ describe('Isolated opencode structured-output recovery', function () {
       _publishLifecycle() {},
       _stopLivenessCheck() {},
     };
+    const launch = spawnClaudeTaskIsolated(agent, 'test context', {
+      skipStructuredResultCheck: true,
+      nested: true,
+      disableTools: true,
+    });
+    while (!resolveLogPath) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     const startedAt = Date.now();
-
+    const cancellation = agent.nestedExecutions.cancelAll('Nested task timed out', {
+      code: 'AGENT_TASK_TIMEOUT',
+    });
     await assert.rejects(
-      spawnClaudeTaskIsolated(agent, 'test context', {
-        skipStructuredResultCheck: true,
-        nested: true,
-        disableTools: true,
-      }),
+      launch,
       (error) => {
         assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
         assert.strictEqual(error.nestedExecutionCancellation, true);
         return true;
       }
     );
+    await cancellation;
 
     assert.ok(Date.now() - startedAt < 750, 'cancellation must not await the stalled log lookup');
     assert.strictEqual(status, 'killed');
