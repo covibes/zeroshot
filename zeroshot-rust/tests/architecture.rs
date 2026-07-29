@@ -24,6 +24,19 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
 
     let mut files = BTreeSet::new();
     relative_files(&product, &product, &mut files);
+    for file in files {
+        assert!(
+            file == "Cargo.toml" || file.ends_with(".rs"),
+            "native product must remain Rust-only: {file}"
+        );
+    }
+}
+
+#[test]
+fn product_contains_the_required_native_files() {
+    let product = product_root();
+    let mut files = BTreeSet::new();
+    relative_files(&product, &product, &mut files);
     for required in [
         "Cargo.toml",
         "src/artifact_store.rs",
@@ -49,6 +62,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "src/source_code_provider.rs",
         "src/worker_catalog.rs",
         "tests/architecture.rs",
+        "tests/worker_catalog_architecture.rs",
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
         "tests/execution_runtime_contract.rs",
@@ -65,80 +79,6 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "tests/worker_catalog.rs",
     ] {
         assert!(files.contains(required), "missing product file: {required}");
-    }
-    for file in files {
-        assert!(
-            file == "Cargo.toml" || file.ends_with(".rs"),
-            "native product must remain Rust-only: {file}"
-        );
-    }
-}
-
-#[test]
-fn worker_catalog_has_no_build_or_node_typescript_source_inputs() {
-    let product = product_root();
-    let manifest = read(&product.join("Cargo.toml"));
-    assert!(
-        !manifest
-            .lines()
-            .any(|line| line.trim_start().starts_with("build =")),
-        "native product manifest must not configure a build script"
-    );
-
-    let metadata = workspace_metadata();
-    let has_build_target = product_package(&metadata)["targets"]
-        .as_array()
-        .expect("package targets must be an array")
-        .iter()
-        .any(|target| {
-            target["kind"]
-                .as_array()
-                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "custom-build"))
-        });
-    assert!(
-        !has_build_target,
-        "native product must not have a custom build target"
-    );
-
-    let mut product_files = BTreeSet::new();
-    relative_files(&product, &product, &mut product_files);
-    let mut build_and_source_inputs = manifest;
-    for relative in product_files.iter().filter(|relative| {
-        relative.ends_with(".rs") && relative.as_str() != "tests/architecture.rs"
-    }) {
-        build_and_source_inputs.push('\n');
-        build_and_source_inputs.push_str(&read(&product.join(relative)));
-    }
-    for target in product_package(&metadata)["targets"]
-        .as_array()
-        .expect("package targets must be an array")
-    {
-        let source = target["src_path"]
-            .as_str()
-            .expect("Cargo target must have a source path");
-        let source = std::path::Path::new(source);
-        if source.starts_with(&product) && source != product.join("tests/architecture.rs") {
-            build_and_source_inputs.push('\n');
-            build_and_source_inputs.push_str(&read(source));
-        }
-    }
-    for forbidden in [
-        "agent-cli-provider",
-        "provider-registry",
-        "node_modules",
-        "package.json",
-        "tsconfig",
-        ".ts\"",
-        ".tsx\"",
-        ".js\"",
-        ".jsx\"",
-        "Command::new(\"node\")",
-        "Command::new(\"npm\")",
-    ] {
-        assert!(
-            !build_and_source_inputs.contains(forbidden),
-            "native crate input consumes Node/TypeScript source: {forbidden}"
-        );
     }
 }
 
