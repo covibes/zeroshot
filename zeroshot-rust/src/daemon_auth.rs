@@ -149,16 +149,17 @@ pub fn authorize_request(request: &Request, expected: &DaemonCredentials) -> boo
     authorized_request(request, expected).is_some()
 }
 
-pub(crate) struct AuthorizationCallback {
+/// Server-side WebSocket upgrade callback plus its one-shot authenticated-purpose receipt.
+pub struct AuthorizationCallback {
     expected: DaemonCredentials,
     receipt: AuthorizationReceipt,
 }
 
 #[derive(Clone)]
-pub(crate) struct AuthorizationReceipt(Arc<Mutex<Option<ConnectionPurpose>>>);
+pub struct AuthorizationReceipt(Arc<Mutex<Option<ConnectionPurpose>>>);
 
 impl AuthorizationCallback {
-    pub(crate) fn new(expected: DaemonCredentials) -> (Self, AuthorizationReceipt) {
+    pub fn new(expected: DaemonCredentials) -> (Self, AuthorizationReceipt) {
         let receipt = AuthorizationReceipt(Arc::new(Mutex::new(None)));
         (
             Self {
@@ -171,7 +172,7 @@ impl AuthorizationCallback {
 }
 
 impl AuthorizationReceipt {
-    pub(crate) fn take(&self) -> Option<ConnectionPurpose> {
+    pub fn take(&self) -> Option<ConnectionPurpose> {
         self.0.lock().ok()?.take()
     }
 }

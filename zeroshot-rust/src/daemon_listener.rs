@@ -220,15 +220,23 @@ async fn probe_liveness_inner(locator: &DaemonLocator) -> Result<bool, ()> {
             continue;
         };
         let response: Value = serde_json::from_str(text.as_ref()).map_err(|_| ())?;
-        return Ok(
-            response.get("id") == Some(&Value::String("daemon-liveness".to_owned()))
-                && response
-                    .pointer("/result/protocolVersion")
-                    .and_then(Value::as_str)
-                    == Some(PROTOCOL_VERSION),
-        );
+        return Ok(valid_liveness_response(&response));
     }
     Ok(false)
+}
+
+fn valid_liveness_response(response: &Value) -> bool {
+    let Some(object) = response.as_object() else {
+        return false;
+    };
+    object.get("jsonrpc").and_then(Value::as_str) == Some(JSON_RPC_VERSION)
+        && object.get("id").and_then(Value::as_str) == Some("daemon-liveness")
+        && object.get("result").is_some_and(Value::is_object)
+        && !object.contains_key("error")
+        && response
+            .pointer("/result/protocolVersion")
+            .and_then(Value::as_str)
+            == Some(PROTOCOL_VERSION)
 }
 
 fn rotate_away_from(value: &mut String, previous: &str) {

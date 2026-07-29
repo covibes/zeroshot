@@ -7,16 +7,22 @@ use futures_util::{SinkExt, StreamExt};
 mod daemon_support;
 
 use daemon_support::{CountingFactory, TempProfile, authenticated_initialize, locator_credentials};
+use openengine_cluster_protocol::{ClusterStatus, InitializeResult, ServerCapabilities};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
+use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use zeroshot_engine::daemon_auth::{ConnectionPurpose, DAEMON_ROUTE, DaemonCredentials};
+use zeroshot_engine::daemon_auth::{
+    AuthorizationCallback, ConnectionPurpose, DAEMON_ROUTE, DaemonCredentials,
+};
 use zeroshot_engine::daemon_discovery::{
     CLUSTER_PROTOCOL, DAEMON_PROTOCOL, DaemonLocator, read_locator, replace_locator,
 };
-use zeroshot_engine::daemon_listener::{DaemonListener, DaemonListenerError, ListenerConfig};
+use zeroshot_engine::daemon_listener::{
+    DaemonListener, DaemonListenerError, ListenerConfig, probe_liveness,
+};
 
 fn test_config() -> ListenerConfig {
     ListenerConfig {
@@ -175,6 +181,162 @@ async fn liveness_purpose_accepts_only_initialize_before_backend_access() {
     assert_eq!(factory.created.load(Ordering::SeqCst), 0);
     assert_eq!(factory.initialized.load(Ordering::SeqCst), 0);
     listener.shutdown().await.expect("shutdown listener");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn liveness_response_requires_exact_json_rpc_correlation_and_shape() {
+    let profile = TempProfile::new("liveness-response");
+    let credentials =
+        DaemonCredentials::generate(profile.profile.digest()).expect("locator credentials");
+    let responder = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("stale responder");
+    let address = responder.local_addr().expect("responder address");
+    let locator = DaemonLocator {
+        endpoint: format!("ws://{address}{DAEMON_ROUTE}"),
+        cluster_protocol: CLUSTER_PROTOCOL.to_owned(),
+        daemon_protocol: DAEMON_PROTOCOL.to_owned(),
+        profile_digest: credentials.profile_digest.clone(),
+        daemon_nonce: credentials.daemon_nonce.clone(),
+        capability: credentials.capability.clone(),
+    };
+    let initialize_result = serde_json::to_value(InitializeResult::new(
+        ServerCapabilities::default(),
+        ClusterStatus::empty(),
+    ))
+    .expect("initialize result");
+    let valid = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "daemon-liveness",
+        "result": initialize_result.clone()
+    });
+    let mut wrong_protocol = valid.clone();
+    wrong_protocol["result"]["protocolVersion"] = serde_json::json!("other/v1");
+    let mut missing_protocol = valid.clone();
+    missing_protocol["result"]
+        .as_object_mut()
+        .expect("result object")
+        .remove("protocolVersion");
+    let mut result_and_error = valid.clone();
+    result_and_error["error"] = serde_json::json!({"code": -32603, "message": "stale response"});
+    let cases = vec![
+        ("valid", valid.to_string(), true),
+        (
+            "wrong id with correct result",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "other-request",
+                "result": initialize_result.clone()
+            })
+            .to_string(),
+            false,
+        ),
+        (
+            "missing id",
+            serde_json::json!({"jsonrpc": "2.0", "result": initialize_result.clone()}).to_string(),
+            false,
+        ),
+        (
+            "numeric id",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": initialize_result.clone()
+            })
+            .to_string(),
+            false,
+        ),
+        (
+            "wrong jsonrpc version",
+            serde_json::json!({
+                "jsonrpc": "1.0",
+                "id": "daemon-liveness",
+                "result": initialize_result.clone()
+            })
+            .to_string(),
+            false,
+        ),
+        (
+            "missing jsonrpc version",
+            serde_json::json!({
+                "id": "daemon-liveness",
+                "result": initialize_result.clone()
+            })
+            .to_string(),
+            false,
+        ),
+        ("top-level array", serde_json::json!([]).to_string(), false),
+        (
+            "missing result",
+            serde_json::json!({"jsonrpc": "2.0", "id": "daemon-liveness"}).to_string(),
+            false,
+        ),
+        (
+            "non-object result",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "daemon-liveness",
+                "result": null
+            })
+            .to_string(),
+            false,
+        ),
+        ("wrong protocol", wrong_protocol.to_string(), false),
+        ("missing protocol", missing_protocol.to_string(), false),
+        ("result and error", result_and_error.to_string(), false),
+        (
+            "error only",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "daemon-liveness",
+                "error": {"code": -32603, "message": "stale response"}
+            })
+            .to_string(),
+            false,
+        ),
+        ("malformed json", "{".to_owned(), false),
+    ];
+    let responses = cases
+        .iter()
+        .map(|(_, response, _)| response.clone())
+        .collect::<Vec<_>>();
+    let responder_task = tokio::spawn(async move {
+        for response in responses {
+            let (stream, _) = responder.accept().await.expect("probe connection");
+            let (callback, receipt) = AuthorizationCallback::new(credentials.clone());
+            let mut websocket = accept_hdr_async(stream, callback)
+                .await
+                .expect("authenticated responder");
+            assert_eq!(receipt.take(), Some(ConnectionPurpose::Liveness));
+            let request = timeout(Duration::from_millis(200), websocket.next())
+                .await
+                .expect("bounded initialize request")
+                .expect("initialize request")
+                .expect("valid initialize frame");
+            let Message::Text(request) = request else {
+                panic!("liveness request must be text");
+            };
+            let request: serde_json::Value =
+                serde_json::from_str(request.as_ref()).expect("initialize JSON");
+            assert_eq!(request["id"], "daemon-liveness");
+            websocket
+                .send(Message::Text(response.into()))
+                .await
+                .expect("stale response");
+        }
+    });
+
+    for (name, _, expected) in &cases {
+        assert_eq!(
+            probe_liveness(&locator, Duration::from_millis(250)).await,
+            *expected,
+            "case: {name}"
+        );
+    }
+    timeout(Duration::from_secs(4), responder_task)
+        .await
+        .expect("bounded responder matrix")
+        .expect("responder task");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
