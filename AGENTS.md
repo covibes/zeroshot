@@ -94,6 +94,9 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Local runtime + drivers      | `zeroshot-rust/src/execution/{local,driver}.rs`                         |
 | Local process runner         | `zeroshot-rust/src/execution/process.rs`                                |
 | Fair scheduler               | `zeroshot-rust/src/scheduler.rs`                                        |
+| Durable workspace leases     | `zeroshot-rust/src/workspace_lease.rs`, `workspace_lease/`              |
+| Workspace lease stores       | `zeroshot-rust/src/workspace_lease/store/{fake,sqlite}.rs`              |
+| Workspace resource adapters  | `zeroshot-rust/src/workspace_lease/{resource,adapters,borrowed}.rs`     |
 | Native safe faults           | `zeroshot-rust/src/fault.rs`                                            |
 | Native fault taxonomy        | `zeroshot-rust/src/fault/taxonomy.rs`                                   |
 | Native diagnostic redaction  | `zeroshot-rust/src/fault/redaction.rs`                                  |
@@ -220,6 +223,37 @@ spawn, stdout and diagnostics stay bounded, and close/release owns termination a
 once. Provider framing and candidate decoding remain in the provider drivers.
 Windows children stay suspended until assignment to their kill-on-close Job Object; never reopen
 the pre-assignment execution window.
+`WorkspaceLeaseManager` is the engine-private durable authority for borrowed, worktree, and Docker
+workspace preparation and cleanup. It persists the deterministic `WorkspaceLeaseId`, owner fence,
+stable mode inputs, and `CreatePending` before effects; uncertain create/cleanup advances only from
+authoritative `WorkspaceResourcePort` inspection through owner-fenced store CAS. A matching owned
+resource may move directly from `CreatePending` to `CleanupRequired`, allowing correct-owner cleanup
+to remain retryable without a separate restart call. Production lease state uses the Linux-only
+`SqliteWorkspaceLeaseStore`; other targets fail closed before opening or creating a database. The
+store canonicalizes relative/symlink spellings to one database, rejects multiple hard links, and
+revalidates both the pinned file and canonical pathname identity. Its operation fence is a global
+OS lock on an independently opened, identity-checked descriptor for that sole database inode;
+replaceable companion pathnames are never lock authority. Every rusqlite connection opens through
+the retained `/proc/self/fd` path for that verified database descriptor, then revalidates both the
+descriptor and canonical pathname before any application pragma/query; path races may fail closed
+before rows or effects and must be cleanly retryable. The fence serializes authoritative absence
+through the following effect across store instances and processes. Lease IDs reuse `ResourceId`;
+execution isolation adds the already-committed `ExecutionId` and never creates a second scheduling
+identity. Borrowed roots are never owned or deleted. Fingerprinting opens the canonical root once
+with no-follow semantics, traverses descendants descriptor-relatively, hashes collision-free
+platform path bytes, and revalidates every named descriptor identity. Owned roots require Linux
+descriptor-relative filesystem support, are fixed beneath a canonical private
+`<product-root>/zeroshot/workspaces` base, and must already satisfy owner-only permissions; never
+chmod an arbitrary supplied root. Each worktree uses a lease-owned container with a stable
+lease/owner marker and an inner source directory, so partial scaffolding remains `CleanupRequired`
+without contaminating source contents. Worktree cleanup quarantines and identity-checks named
+children before removal; substitutions are preserved as mismatches. Worktree source delivery and
+all worktree/Docker inspect, create, and cleanup effects receive pinned directory capabilities
+rather than mutable host pathnames. Docker mount handles are atomically created/opened relative to
+that pinned base with no-follow semantics. Docker socket handles and socket/symlink targets are
+denied.
+Persisted lease values contain no credentials, runtime IDs, arbitrary handles,
+or host paths. Cleanup state never mutates graph outcomes.
 Native engine faults must be constructed only by `FaultFactory` from closed `ModuleEvidence`.
 Decoded faults must match the canonical semantics derived from their required primary source frame.
 Raw diagnostic values are replaced wholesale with typed markers and remain ephemeral; never put

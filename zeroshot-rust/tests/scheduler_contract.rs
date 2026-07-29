@@ -3,9 +3,17 @@ use std::sync::Arc;
 #[path = "support/scheduler.rs"]
 mod scheduler_support;
 
+#[allow(dead_code)]
+#[path = "support/workspace.rs"]
+mod workspace_support;
+
 use tokio::time::Duration;
 use zeroshot_engine::execution::WorkspaceAccessMode;
 use zeroshot_engine::scheduler::{FairScheduler, SchedulerConfig, SchedulerError};
+use zeroshot_engine::workspace_lease::fake::FakeEffectFailure;
+use zeroshot_engine::workspace_lease::{
+    WorkspaceLeaseManager, WorkspaceLeaseOwnerRequest, WorkspaceLeaseState,
+};
 
 use scheduler_support::{BlockingRuntime, CommandSpec, RunningRuntime, command};
 
@@ -91,6 +99,58 @@ async fn non_terminal_dispatch_keeps_lane_and_global_permits_until_terminal_rele
             .await
     );
     assert_eq!(scheduler.active_len().await, 0);
+}
+
+#[tokio::test]
+async fn durable_workspace_identity_holds_capacity_across_restart_and_cleanup_failure() {
+    let fixture = workspace_support::LeaseFixture::new();
+    let ready = fixture
+        .manager
+        .prepare(workspace_support::docker_request("owner-a"))
+        .await
+        .unwrap();
+    let runtime = Arc::new(BlockingRuntime::default());
+    let scheduler = scheduler(
+        runtime.clone(),
+        SchedulerConfig {
+            global_active: 2,
+            per_cluster_active: 2,
+            per_lane_active: 2,
+            max_queued: 16,
+        },
+    );
+    let workspace = ready.access().lease_key().as_str().to_owned();
+    let first = command(spec(60, "lane.alpha", "cluster.a", &workspace));
+    scheduler.submit(first.clone()).await.unwrap();
+    runtime.wait_for_started(1).await;
+
+    fixture
+        .resources
+        .fail_next_cleanup(FakeEffectFailure::BeforeEffect);
+    let owner = WorkspaceLeaseOwnerRequest {
+        id: ready.id.clone(),
+        owner: ready.owner.clone(),
+    };
+    fixture.manager.cleanup(owner.clone()).await.unwrap_err();
+    let restarted = WorkspaceLeaseManager::new(fixture.store.clone(), fixture.resources.clone())
+        .restart(owner)
+        .await
+        .unwrap();
+    assert_eq!(restarted.state, WorkspaceLeaseState::CleanupRequired);
+    assert_eq!(restarted.access(), ready.access());
+
+    let recovered_workspace = restarted.access().lease_key().as_str().to_owned();
+    assert_eq!(recovered_workspace, workspace);
+    let blocked = command(spec(61, "lane.beta", "cluster.a", &recovered_workspace));
+    scheduler.submit(blocked.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(scheduler.active_len().await, 1);
+    assert_eq!(scheduler.queued_len().await, 1);
+
+    complete_and_release(&scheduler, &runtime, &first, 2).await;
+    runtime.release(61);
+    runtime.wait_for_completion(61).await;
+    assert!(scheduler.release_terminal(&blocked.control()).await);
 }
 
 async fn exclusive_workspace_conflicts_only_until_release() {
