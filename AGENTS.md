@@ -198,8 +198,8 @@ above the backend-neutral `LedgerStore` port. Control and verified I/O share one
 chain and transaction. Semantic validation and append CAS use the same folded position/hash; never
 reread a newer prefix while committing payloads derived from an older one.
 Reducer-owned loser voids require an opaque reducer-issued authorization bound to the admitted
-compiled IR, exact folded prefix, durable execution history, execution, and reason; caller-supplied
-execution identity or reason alone can never authorize an `ExecutionVoid` append.
+compiled IR, verified input, exact folded prefix, durable execution history, execution, and reason;
+caller-supplied execution identity or reason alone can never authorize an `ExecutionVoid` append.
 Every committed mutation ends in a hash-chained `MutationReceipt` record that exactly
 matches its atomic idempotency projection, so missing or forged projection rows fail replay. Matching
 receipt retries return an explicit replay outcome; receipt equality cannot distinguish a new commit from a concurrent

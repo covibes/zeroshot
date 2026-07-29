@@ -202,6 +202,7 @@ struct VoidFixture {
     loser_b: zeroshot_engine::cluster_ledger::ExecutionId,
     authorization_a: ExecutionVoidAuthorization,
     authorization_b: ExecutionVoidAuthorization,
+    forged_input_authorization: ExecutionVoidAuthorization,
 }
 
 async fn prepare_void_fixture(
@@ -255,6 +256,19 @@ async fn prepare_void_fixture(
     let snapshot = store.read_prefix(&resource(label), None).await.unwrap();
     let state = replay(&snapshot, &resource(label)).unwrap();
     let reduction = reducer_reduction(&state, &graph);
+    let executions =
+        durable_executions_from_replay(&state, state.admission.as_ref().unwrap().run).unwrap();
+    let forged_input = serde_json::json!({"forged":true});
+    let forged_input_reduction = FullV1Reducer::new(&graph)
+        .reduce(ReductionInput {
+            run: state.admission.as_ref().unwrap().run,
+            prefix_position: state.position,
+            initial_input: &forged_input,
+            executions: &executions,
+            next_node_instance: state.identities.next_node_instance,
+            next_execution: state.identities.next_execution,
+        })
+        .unwrap();
     assert_eq!(
         reduction
             .decisions
@@ -268,6 +282,9 @@ async fn prepare_void_fixture(
         loser_b: loser_b.execution,
         authorization_a: reduction.void_authorization(loser_a.execution).unwrap(),
         authorization_b: reduction.void_authorization(loser_b.execution).unwrap(),
+        forged_input_authorization: forged_input_reduction
+            .void_authorization(loser_a.execution)
+            .unwrap(),
     }
 }
 
@@ -330,6 +347,19 @@ async fn execution_void_requires_exact_reducer_authorization_and_preserves_rejec
         .await
         .unwrap_err();
     assert_eq!(wrong_reason.kind(), &LedgerErrorKind::InvalidLifecycle);
+    let wrong_input = ledger
+        .void_execution(
+            key("void-wrong-input"),
+            [69; 32],
+            ExecutionVoidRequest::new(
+                fixture.loser_a,
+                ExecutionVoidReason::ParallelJoin,
+                fixture.forged_input_authorization,
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(wrong_input.kind(), &LedgerErrorKind::InvalidLifecycle);
 
     let after_rejections = store.read_prefix(&resource(label), None).await.unwrap();
     assert_eq!(after_rejections.position, before.position);

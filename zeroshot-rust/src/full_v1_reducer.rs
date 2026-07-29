@@ -111,6 +111,7 @@ pub struct ExecutionVoidAuthorization {
     execution: ExecutionId,
     reason: ExecutionVoidReason,
     graph_digest: CanonicalDigest,
+    input_digest: CanonicalDigest,
     history_digest: CanonicalDigest,
     prefix_position: Position,
 }
@@ -124,6 +125,7 @@ impl ExecutionVoidAuthorization {
         ExecutionVoidReason,
         CanonicalDigest,
         CanonicalDigest,
+        CanonicalDigest,
         Position,
     ) {
         (
@@ -131,6 +133,7 @@ impl ExecutionVoidAuthorization {
             self.execution,
             self.reason,
             self.graph_digest,
+            self.input_digest,
             self.history_digest,
             self.prefix_position,
         )
@@ -298,6 +301,9 @@ impl<'a> FullV1Reducer<'a> {
             .canonical_bytes()
             .map_err(|_| ReducerError::Encoding)?;
         let graph_digest = CanonicalDigest::of(&graph_bytes);
+        let input_bytes =
+            serde_json::to_vec(input.initial_input).map_err(|_| ReducerError::Encoding)?;
+        let input_digest = CanonicalDigest::of(&input_bytes);
         let history_digest = durable_execution_history_digest(input.executions)?;
         let prefix_position = input.prefix_position;
         let initial_input = input.initial_input.clone();
@@ -337,6 +343,7 @@ impl<'a> FullV1Reducer<'a> {
                         execution: *execution,
                         reason: *reason,
                         graph_digest,
+                        input_digest,
                         history_digest,
                         prefix_position,
                     },

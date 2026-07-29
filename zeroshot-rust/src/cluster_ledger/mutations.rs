@@ -540,6 +540,7 @@ impl ClusterLedger {
             authorized_execution,
             authorized_reason,
             authorized_graph,
+            authorized_input,
             authorized_history,
             authorized_prefix,
         ) = authorization.parts();
@@ -547,6 +548,7 @@ impl ClusterLedger {
             || authorized_execution != execution
             || authorized_reason != reason
             || authorized_graph != CanonicalDigest::of(&admission.canonical_compiled_ir)
+            || authorized_input != admission.input_digest
             || authorized_history != history_digest
             || authorized_prefix != state.position
         {
