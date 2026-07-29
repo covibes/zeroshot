@@ -136,7 +136,16 @@ async function reformatOutput({
 
       return parsed;
     } catch (err) {
-      if (err.code === 'REFORMAT_CANCELLED' || err.code === 'AGENT_TASK_TIMEOUT') throw err;
+      if (
+        err.code === 'REFORMAT_CANCELLED' ||
+        err.code === 'AGENT_TASK_TIMEOUT' ||
+        err.nestedExecutionLifecycle === true ||
+        err.retainTaskHandle === true ||
+        err.permanent === true ||
+        err.terminationExhausted === true
+      ) {
+        throw err;
+      }
       lastError = err.message;
     }
   }

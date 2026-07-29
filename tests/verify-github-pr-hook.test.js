@@ -140,6 +140,34 @@ describe('verify_pull_request hook action', () => {
     assert.strictEqual(agent.lastPublished.topic, 'CLUSTER_COMPLETE');
   });
 
+  it('prefers cached parsedResult claims over unrecoverable raw output', async function () {
+    const agent = createMockAgent();
+    const hook = { action: 'verify_pull_request' };
+    const result = {
+      output: 'Tool call completed without a final JSON response',
+      parsedResult: {
+        summary: 'Created pull request',
+        pr_url: 'https://github.com/org/repo/pull/123',
+        pr_number: 123,
+      },
+    };
+
+    mockSpawnSyncFn = () =>
+      spawnSuccess(
+        JSON.stringify({
+          number: 123,
+          state: 'MERGED',
+          mergedAt: '2026-01-15T10:30:00Z',
+          url: 'https://github.com/org/repo/pull/123',
+        })
+      );
+
+    await executeHook({ hook, agent, result });
+
+    assert.strictEqual(agent.lastPublished.topic, 'CLUSTER_COMPLETE');
+    assert.strictEqual(agent.lastPublished.content.data.pr_number, 123);
+  });
+
   it('should throw when PR does not exist in GitHub', async function () {
     const agent = createMockAgent();
     const hook = { action: 'verify_pull_request' };

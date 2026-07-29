@@ -52,6 +52,7 @@ const {
   validateCompletedResumeIdentity,
 } = require('./provider-session');
 const { extractClaudeVertexModelError } = require('./output-extraction');
+const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -468,10 +469,24 @@ function createExecutionHandle(agent, nested) {
   return { handle, registry };
 }
 
+function isNestedLifecycleError(error) {
+  return (
+    error?.nestedExecutionLifecycle === true ||
+    error?.retainTaskHandle === true ||
+    error?.terminationExhausted === true
+  );
+}
+
+function isTerminationConfirmed(termination) {
+  return termination?.forced !== false || termination?.alreadyTerminal === true;
+}
+
 function createNestedCancellationError(handle) {
   const error = new Error(handle.cancelReason || 'Nested task cancelled');
   error.code = handle.cancelDetails.code || 'REFORMAT_CANCELLED';
   error.taskId = handle.taskId;
+  error.nestedExecutionCancellation = true;
+  error.nestedExecutionLifecycle = true;
   return error;
 }
 
@@ -482,7 +497,8 @@ async function terminateNestedSetupFailure(handle, error) {
   } catch (cleanupError) {
     termination = { forced: false, reason: cleanupError.message };
   }
-  if (termination?.forced === false) {
+  if (!isTerminationConfirmed(termination)) {
+    error.nestedExecutionLifecycle = true;
     handle.retainOwnership();
     error.message += ` Nested task cleanup was not confirmed: ${termination.reason}`;
     error.retainTaskHandle = true;
@@ -827,8 +843,6 @@ function parseTaskIdFromOutput(stdout) {
   const match = stdout.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/);
   return match ? match[1] : null;
 }
-
-const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
 
 function assignDurableTaskId(agent, taskId) {
   if (!taskId || agent.currentTaskId === taskId) return;
@@ -1324,6 +1338,7 @@ async function evaluateStructuredSuccess({ agent, taskId, state, success }) {
     state._cachedParsedResult = await agent._parseResultOutput(state.output);
     return { success: true, error: null };
   } catch (error) {
+    if (isNestedLifecycleError(error)) throw error;
     const errorContext = sanitizeErrorMessage(error.message);
     console.warn(
       `[Agent ${agent.id}] Task ${taskId} reported completed but produced invalid structured output; ` +
@@ -1530,6 +1545,7 @@ function handleStatusCompletion({
   stdout,
   pollLogFile,
   resolve,
+  reject,
 }) {
   const cleanStdout = stripAnsiCodes(stdout);
   const { isCompleted, isFailed, isStale, isKilled } = parseStatusFlags(cleanStdout);
@@ -1566,6 +1582,10 @@ function handleStatusCompletion({
     })
       .then(resolve)
       .catch((error) => {
+        if (isNestedLifecycleError(error)) {
+          reject(error);
+          return;
+        }
         resolve({
           success: false,
           output: state.output,
@@ -1609,7 +1629,7 @@ function createLogFollower({
   nested = false,
   executionHandle = null,
 }) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const state = createLogFollowState();
     state.skipStructuredResultCheck = skipStructuredResultCheck;
     state.nested = nested;
@@ -1657,6 +1677,7 @@ function createLogFollower({
             stdout,
             pollLogFile,
             resolve,
+            reject,
           });
         }
       );
@@ -1669,7 +1690,7 @@ function createLogFollower({
         const termination = cancelPendingLaunch
           ? await cancelPendingLaunch(reason, details)
           : { forced: true, taskId };
-        if (termination?.forced !== false) {
+        if (isTerminationConfirmed(termination)) {
           killHandler.kill(reason, details);
         }
         return termination;
@@ -1869,7 +1890,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
       for (let attempt = 0; attempt < 10; attempt++) {
         const persistedTaskId = await findPersistedTaskId();
         if (persistedTaskId) return persistedTaskId;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
       }
       return null;
     };
@@ -2702,7 +2723,9 @@ async function parseResultOutput(agent, output) {
     } catch (reformatError) {
       if (
         reformatError.code === 'REFORMAT_CANCELLED' ||
-        reformatError.code === 'AGENT_TASK_TIMEOUT'
+        reformatError.code === 'AGENT_TASK_TIMEOUT' ||
+        reformatError.permanent === true ||
+        isNestedLifecycleError(reformatError)
       ) {
         throw reformatError;
       }

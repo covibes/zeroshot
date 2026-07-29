@@ -135,12 +135,59 @@ describe('NestedExecutionRegistry', function () {
     assert.strictEqual(registry.size, 0);
   });
 
+  it('blocks new children while an inactivity cancellation snapshot settles', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    let releaseCancellation;
+    handle.setCancelAction(
+      () =>
+        new Promise((resolve) => {
+          releaseCancellation = () => {
+            handle.markSettled();
+            resolve({ forced: true });
+          };
+        })
+    );
+
+    const cancellation = registry.cancelAll('Provider produced no output', {
+      code: 'PROVIDER_INACTIVITY_TIMEOUT',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.throws(
+      () => registry.register(new TaskExecutionHandle('test-agent')),
+      (error) => {
+        assert.strictEqual(error.code, 'PROVIDER_INACTIVITY_TIMEOUT');
+        assert.strictEqual(error.nestedExecutionCancellation, true);
+        return true;
+      }
+    );
+
+    releaseCancellation();
+    await cancellation;
+    assert.strictEqual(registry.size, 0);
+  });
+
+  it('settles a child already confirmed terminal during cancellation', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    handle.setCancelAction(() => {
+      handle.markSettled();
+      return { forced: false, alreadyTerminal: true, status: 'completed' };
+    });
+
+    const termination = await registry.cancelAll('shutdown race');
+
+    assert.strictEqual(termination.forced, true);
+    assert.strictEqual(registry.size, 0);
+  });
+
   it('routes nested deadlines through the same cancellation owner', async function () {
     const registry = new NestedExecutionRegistry('test-agent');
     const handle = registry.register(new TaskExecutionHandle('test-agent'));
     let cancellationDetails;
 
-    handle.setCancelAction(async (reason, details) => {
+    handle.setCancelAction((reason, details) => {
       cancellationDetails = { reason, details };
       handle.markSettled();
       return { forced: true };
@@ -165,7 +212,7 @@ describe('NestedExecutionRegistry', function () {
       _log() {},
     };
 
-    handle.setCancelAction(async () => {
+    handle.setCancelAction(() => {
       handle.markSettled();
       return { forced: true, taskId: 'nested-task-1' };
     });
@@ -199,7 +246,7 @@ describe('NestedExecutionRegistry', function () {
       },
       _log() {},
     };
-    handle.setCancelAction(async () => {
+    handle.setCancelAction(() => {
       handle.markSettled();
       return { forced: true, taskId: 'nested-task-2' };
     });
@@ -312,10 +359,8 @@ describe('Cached parsed result hook consumers', function () {
       receiver: 'worker',
       content: { data: { plan: 'cached plan' } },
     });
-    assert.deepStrictEqual(published[1], {
-      topic: 'VALIDATION_RESULT',
-      content: { data: { approved: true } },
-    });
+    assert.strictEqual(published[1].topic, 'VALIDATION_RESULT');
+    assert.strictEqual(published[1].content.data.approved, true);
   });
 });
 
@@ -401,6 +446,42 @@ describe('Cached parsed result — one recovery model call', function () {
       '_parseResultOutput must not be called when cache exists'
     );
   });
+
+  it('preserves unconfirmed nested cleanup metadata through structured success', async function () {
+    const lifecycleError = new Error('nested cleanup was not confirmed');
+    lifecycleError.nestedExecutionLifecycle = true;
+    lifecycleError.retainTaskHandle = true;
+    lifecycleError.permanent = true;
+    lifecycleError.restartExhausted = true;
+    lifecycleError.terminationExhausted = true;
+    lifecycleError.taskId = 'nested-task-retained';
+    const agent = {
+      id: 'planner',
+      role: 'planner',
+      config: { jsonSchema: schema, outputFormat: 'json' },
+      _parseResultOutput() {
+        throw lifecycleError;
+      },
+    };
+
+    await assert.rejects(
+      buildCompletionResult({
+        agent,
+        taskId: 'parent-task-1',
+        providerName: 'opencode',
+        state: { output: 'tool-only output', skipStructuredResultCheck: false },
+        stdout: 'Status: completed',
+        success: true,
+      }),
+      (error) => {
+        assert.strictEqual(error, lifecycleError);
+        assert.strictEqual(error.taskId, 'nested-task-retained');
+        assert.strictEqual(error.terminationExhausted, true);
+        return true;
+      }
+    );
+  });
+
 });
 
 describe('Cancellation identity end-to-end', function () {
@@ -462,5 +543,68 @@ describe('Cancellation identity end-to-end', function () {
       }
     );
     assert.strictEqual(attempts, 1, 'must not retry after cancellation');
+  });
+
+  it('does not retry after an unconfirmed cleanup failure', async function () {
+    let attempts = 0;
+    const lifecycleError = new Error('durable child cleanup unconfirmed');
+    lifecycleError.nestedExecutionLifecycle = true;
+    lifecycleError.retainTaskHandle = true;
+    lifecycleError.permanent = true;
+    lifecycleError.terminationExhausted = true;
+
+    const agent = {
+      id: 'planner',
+      role: 'planner',
+      running: true,
+      state: 'executing_task',
+      config: { jsonSchema: schema },
+      _resolveProvider: () => 'opencode',
+      _spawnClaudeTask() {
+        attempts++;
+        throw lifecycleError;
+      },
+    };
+
+    await assert.rejects(
+      parseResultOutput(agent, 'Tool call completed without final JSON'),
+      (error) => {
+        assert.strictEqual(error, lifecycleError);
+        assert.strictEqual(error.terminationExhausted, true);
+        return true;
+      }
+    );
+    assert.strictEqual(attempts, 1);
+  });
+
+  it('preserves provider-inactivity cancellation without launching another child', async function () {
+    let attempts = 0;
+    const cancellation = new Error('Provider produced no output');
+    cancellation.code = 'PROVIDER_INACTIVITY_TIMEOUT';
+    cancellation.nestedExecutionCancellation = true;
+    cancellation.nestedExecutionLifecycle = true;
+
+    const agent = {
+      id: 'planner',
+      role: 'planner',
+      running: true,
+      state: 'executing_task',
+      config: { jsonSchema: schema },
+      _resolveProvider: () => 'opencode',
+      _spawnClaudeTask() {
+        attempts++;
+        throw cancellation;
+      },
+    };
+
+    await assert.rejects(
+      parseResultOutput(agent, 'Tool call completed without final JSON'),
+      (error) => {
+        assert.strictEqual(error, cancellation);
+        assert.strictEqual(error.code, 'PROVIDER_INACTIVITY_TIMEOUT');
+        return true;
+      }
+    );
+    assert.strictEqual(attempts, 1);
   });
 });

@@ -1,3 +1,7 @@
+function isTerminationConfirmed(termination) {
+  return termination?.forced !== false || termination?.alreadyTerminal === true;
+}
+
 /**
  * TaskExecutionHandle — first-class reentrant task-execution handle.
  *
@@ -119,7 +123,7 @@ class TaskExecutionHandle {
       throw error;
     }
     const termination = results.at(-1);
-    if (termination?.forced === false) {
+    if (!isTerminationConfirmed(termination)) {
       this._retainOwnership = true;
       this._invokedCancelActions.delete(this._cancelAction);
       this._cancelActionPromises = [];
@@ -131,7 +135,7 @@ class TaskExecutionHandle {
   }
 
   armDeadline(timeoutMs) {
-    if (!(timeoutMs > 0) || this.settled) return;
+    if (timeoutMs <= 0 || this.settled) return;
     this._clearDeadlineTimer();
     this._deadlineTimer = setTimeout(() => {
       this._deadlineTimer = null;
@@ -215,6 +219,7 @@ class NestedExecutionRegistry {
   constructor(agentId) {
     this.agentId = agentId;
     this._handles = new Set();
+    this._cancellation = null;
   }
 
   get size() {
@@ -226,6 +231,13 @@ class NestedExecutionRegistry {
   }
 
   register(handle) {
+    if (this._cancellation) {
+      const error = new Error(this._cancellation.reason);
+      error.code = this._cancellation.details.code || 'REFORMAT_CANCELLED';
+      error.nestedExecutionCancellation = true;
+      error.nestedExecutionLifecycle = true;
+      throw error;
+    }
     if (!(handle instanceof TaskExecutionHandle)) {
       throw new TypeError('Nested execution registry accepts TaskExecutionHandle instances only');
     }
@@ -246,19 +258,26 @@ class NestedExecutionRegistry {
   }
 
   async cancelAll(reason = 'Task cancelled', details = {}) {
-    const handles = [...this._handles];
-    const terminations = await Promise.all(
-      handles.map(async (handle) => {
-        const termination = await handle.cancel(reason, details);
-        if (termination?.forced !== false) {
-          await handle.settle();
-          this.unregister(handle);
-        }
-        return termination;
-      })
-    );
-    const failed = terminations.find((termination) => termination?.forced === false);
-    return failed || { forced: true, nested: terminations };
+    this._cancellation = { reason, details };
+    try {
+      const handles = [...this._handles];
+      const terminations = await Promise.all(
+        handles.map(async (handle) => {
+          const termination = await handle.cancel(reason, details);
+          if (isTerminationConfirmed(termination)) {
+            await handle.settle();
+            this.unregister(handle);
+          }
+          return termination;
+        })
+      );
+      const failed = terminations.find(
+        (termination) => !isTerminationConfirmed(termination)
+      );
+      return failed || { forced: true, nested: terminations };
+    } finally {
+      this._cancellation = null;
+    }
   }
 }
 

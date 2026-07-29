@@ -334,19 +334,19 @@ describe('Isolated opencode structured-output recovery', function () {
         commands.push(command);
         const rendered = command.join(' ');
         if (rendered.includes('get-task-id-by-spawn-token')) {
-          return { code: 0, stdout: `${taskId}\n`, stderr: '' };
+          return Promise.resolve({ code: 0, stdout: `${taskId}\n`, stderr: '' });
         }
         if (rendered.includes('get-log-path')) {
-          return { code: 1, stdout: '', stderr: 'log path unavailable' };
+          return Promise.resolve({ code: 1, stdout: '', stderr: 'log path unavailable' });
         }
         if (command[1] === 'status') {
-          return { code: 0, stdout: `Status: ${status}\n`, stderr: '' };
+          return Promise.resolve({ code: 0, stdout: `Status: ${status}\n`, stderr: '' });
         }
         if (command[1] === 'kill') {
           status = 'killed';
-          return { code: 0, stdout: `Killed ${taskId}\n`, stderr: '' };
+          return Promise.resolve({ code: 0, stdout: `Killed ${taskId}\n`, stderr: '' });
         }
-        throw new Error(`Unexpected isolated command: ${rendered}`);
+        return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
       },
     };
     const parentTask = { kill() {} };
