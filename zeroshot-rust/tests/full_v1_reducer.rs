@@ -94,27 +94,56 @@ fn sequence(name: &str, children: Vec<Value>) -> Value {
     })
 }
 
-fn settled(
+struct SettledSpec<'a> {
     execution: u64,
     node_instance: u64,
-    node: &str,
+    node: &'a str,
     map_indices: Vec<u64>,
     attempt: u64,
     position: u64,
-    outcome: WorkerOutcome,
-) -> DurableExecution {
+}
+
+impl<'a> SettledSpec<'a> {
+    fn new(execution: u64, node_instance: u64, node: &'a str) -> Self {
+        Self {
+            execution,
+            node_instance,
+            node,
+            map_indices: Vec::new(),
+            attempt: 1,
+            position: 1,
+        }
+    }
+
+    fn map_indices(mut self, map_indices: Vec<u64>) -> Self {
+        self.map_indices = map_indices;
+        self
+    }
+
+    fn attempt(mut self, attempt: u64) -> Self {
+        self.attempt = attempt;
+        self
+    }
+
+    fn position(mut self, position: u64) -> Self {
+        self.position = position;
+        self
+    }
+}
+
+fn settled(spec: SettledSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
     DurableExecution {
-        dispatch_position: Position::new(position.saturating_sub(1)).unwrap(),
-        node_instance: NodeInstanceId::new(node_instance).unwrap(),
-        execution: ExecutionId::new(execution).unwrap(),
+        dispatch_position: Position::new(spec.position.saturating_sub(1)).unwrap(),
+        node_instance: NodeInstanceId::new(spec.node_instance).unwrap(),
+        execution: ExecutionId::new(spec.execution).unwrap(),
         occurrence: StructuralOccurrence {
-            node: node.parse().unwrap(),
-            map_indices,
+            node: spec.node.parse().unwrap(),
+            map_indices: spec.map_indices,
         },
-        attempt: PositiveInteger::new(attempt).unwrap(),
+        attempt: PositiveInteger::new(spec.attempt).unwrap(),
         input: Value::Null,
         state: DurableExecutionState::Settled {
-            position: Position::new(position).unwrap(),
+            position: Position::new(spec.position).unwrap(),
             outcome,
         },
     }
@@ -210,12 +239,18 @@ fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
         sequence("root", vec![verifier("check", 1), choice]),
         json!({"check":1}),
     );
-    let accepted = [settled(1, 1, "check", vec![], 1, 10, verdict("accepted"))];
+    let accepted = [settled(
+        SettledSpec::new(1, 1, "check").position(10),
+        verdict("accepted"),
+    )];
     assert!(matches!(
         reduce(&graph, &json!({}), &accepted).terminal,
         Some(TerminalProjection::Succeeded { .. })
     ));
-    let rejected = [settled(1, 1, "check", vec![], 1, 10, verdict("rejected"))];
+    let rejected = [settled(
+        SettledSpec::new(1, 1, "check").position(10),
+        verdict("rejected"),
+    )];
     assert_eq!(
         reduce(&graph, &json!({}), &rejected).terminal,
         Some(TerminalProjection::Failed {
@@ -228,12 +263,7 @@ fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
         json!({"work":1}),
     );
     let failed = [settled(
-        1,
-        1,
-        "work",
-        vec![],
-        1,
-        3,
+        SettledSpec::new(1, 1, "work").position(3),
         WorkerOutcome::declared_failure(openengine_cluster_protocol::WorkerErrorCode::Crash),
     )];
     let reduction = reduce(&failed_step_graph, &json!({}), &failed);
@@ -267,7 +297,7 @@ fn parallel_any_uses_ledger_position_and_voids_only_active_losers() {
     );
     let history = [
         active(1, 1, "left", 1),
-        settled(2, 2, "right", vec![], 1, 4, success(2)),
+        settled(SettledSpec::new(2, 2, "right").position(4), success(2)),
     ];
     let reduction = reduce(&graph, &json!({}), &history);
     assert!(reduction.decisions.iter().any(|decision| matches!(
@@ -306,7 +336,7 @@ fn all_any_quorum_and_first_use_exact_authored_join_rules() {
             json!({"a":1,"b":1}),
         );
         let history = [
-            settled(1, 1, "a", vec![], 1, 5, success(1)),
+            settled(SettledSpec::new(1, 1, "a").position(5), success(1)),
             active(2, 2, "b", 2),
         ];
         assert_eq!(
@@ -330,8 +360,14 @@ fn all_any_quorum_and_first_use_exact_authored_join_rules() {
         json!({"early":1,"later":1}),
     );
     let history = [
-        settled(1, 1, "early", vec![], 1, 2, verdict("rejected")),
-        settled(2, 2, "later", vec![], 1, 7, verdict("accepted")),
+        settled(
+            SettledSpec::new(1, 1, "early").position(2),
+            verdict("rejected"),
+        ),
+        settled(
+            SettledSpec::new(2, 2, "later").position(7),
+            verdict("accepted"),
+        ),
     ];
     assert!(reduce(&graph, &json!({}), &history).terminal.is_some());
 }
@@ -353,14 +389,20 @@ fn bounded_do_while_reuses_occurrence_and_advances_positive_attempts() {
         ),
         json!({"check":2}),
     );
-    let first = settled(1, 1, "check", vec![], 1, 3, verdict("rejected"));
-    let reduction = reduce(&graph, &json!({}), &[first.clone()]);
+    let first = settled(
+        SettledSpec::new(1, 1, "check").position(3),
+        verdict("rejected"),
+    );
+    let reduction = reduce(&graph, &json!({}), std::slice::from_ref(&first));
     assert!(reduction.decisions.iter().any(|decision| matches!(
         decision,
         Decision::Dispatch { node_instance, attempt, .. }
             if node_instance.get() == 1 && attempt.get() == 2
     )));
-    let second = settled(2, 1, "check", vec![], 2, 6, verdict("accepted"));
+    let second = settled(
+        SettledSpec::new(2, 1, "check").attempt(2).position(6),
+        verdict("accepted"),
+    );
     assert!(
         reduce(&graph, &json!({}), &[first, second])
             .terminal
@@ -417,8 +459,8 @@ fn authored_frontier_and_bytes_ignore_history_container_order() {
         ),
         json!({"left":1,"right":1}),
     );
-    let left = settled(1, 1, "left", vec![], 1, 10, success(1));
-    let right = settled(2, 2, "right", vec![], 1, 10, success(2));
+    let left = settled(SettledSpec::new(1, 1, "left").position(10), success(1));
+    let right = settled(SettledSpec::new(2, 2, "right").position(10), success(2));
     let first = reduce(&graph, &json!({}), &[left.clone(), right.clone()]);
     let second = reduce(&graph, &json!({}), &[right, left]);
     assert_eq!(
@@ -458,8 +500,8 @@ fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
         json!({"left":1,"right":1}),
     );
     let history = [
-        settled(1, 1, "left", vec![], 1, 8, success(7)),
-        settled(2, 2, "right", vec![], 1, 9, success(9)),
+        settled(SettledSpec::new(1, 1, "left").position(8), success(7)),
+        settled(SettledSpec::new(2, 2, "right").position(9), success(9)),
     ];
     assert_eq!(
         reduce(&graph, &json!({}), &history).terminal,
@@ -483,8 +525,18 @@ fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
         json!({"mapped_value":1}),
     );
     let map_history = [
-        settled(2, 2, "mapped_value", vec![1], 1, 3, success(20)),
-        settled(1, 1, "mapped_value", vec![0], 1, 7, success(10)),
+        settled(
+            SettledSpec::new(2, 2, "mapped_value")
+                .map_indices(vec![1])
+                .position(3),
+            success(20),
+        ),
+        settled(
+            SettledSpec::new(1, 1, "mapped_value")
+                .map_indices(vec![0])
+                .position(7),
+            success(10),
+        ),
     ];
     assert_eq!(
         reduce(&map_graph, &json!({"items":[1,2]}), &map_history).terminal,
