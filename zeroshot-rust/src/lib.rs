@@ -1,5 +1,8 @@
 pub mod artifact_store;
 pub mod cluster_ledger;
+pub mod daemon_auth;
+pub mod daemon_discovery;
+pub mod daemon_listener;
 pub mod execution;
 pub mod full_v1_reducer;
 pub mod issue_provider;
