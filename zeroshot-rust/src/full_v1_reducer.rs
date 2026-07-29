@@ -21,7 +21,7 @@ use crate::cluster_ledger::record::{
     CanonicalDigest, ExecutionVoidReason, RecordPayload, StructuralOccurrence,
 };
 use crate::cluster_ledger::store::Position;
-use crate::cluster_ledger::{ExecutionId, NodeInstanceId, ReplayState, RunSequence};
+use crate::cluster_ledger::{ExecutionId, NodeInstanceId, ReductionSnapshot, ReplayState, RunSequence};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub enum DurableExecutionState {
@@ -98,14 +98,14 @@ pub fn durable_executions_from_replay(
 #[derive(Clone, Debug)]
 pub struct ReductionInput<'a> {
     pub run: RunSequence,
-    pub prefix_position: Position,
+    pub snapshot: Option<ReductionSnapshot>,
     pub initial_input: &'a Value,
     pub executions: &'a [DurableExecution],
     pub next_node_instance: u64,
     pub next_execution: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionVoidAuthorization {
     run: RunSequence,
     execution: ExecutionId,
@@ -113,11 +113,11 @@ pub struct ExecutionVoidAuthorization {
     graph_digest: CanonicalDigest,
     input_digest: CanonicalDigest,
     history_digest: CanonicalDigest,
-    prefix_position: Position,
+    snapshot: ReductionSnapshot,
 }
 
 impl ExecutionVoidAuthorization {
-    pub(crate) const fn parts(
+    pub(crate) fn parts(
         &self,
     ) -> (
         RunSequence,
@@ -126,7 +126,7 @@ impl ExecutionVoidAuthorization {
         CanonicalDigest,
         CanonicalDigest,
         CanonicalDigest,
-        Position,
+        &ReductionSnapshot,
     ) {
         (
             self.run,
@@ -135,7 +135,7 @@ impl ExecutionVoidAuthorization {
             self.graph_digest,
             self.input_digest,
             self.history_digest,
-            self.prefix_position,
+            &self.snapshot,
         )
     }
 }
@@ -198,7 +198,7 @@ impl Reduction {
 
     #[must_use]
     pub fn void_authorization(&self, execution: ExecutionId) -> Option<ExecutionVoidAuthorization> {
-        self.void_authorizations.get(&execution).copied()
+        self.void_authorizations.get(&execution).cloned()
     }
 
     pub fn control_records(&self) -> Result<Vec<RecordPayload>, ReducerError> {
@@ -305,7 +305,7 @@ impl<'a> FullV1Reducer<'a> {
             serde_json::to_vec(input.initial_input).map_err(|_| ReducerError::Encoding)?;
         let input_digest = CanonicalDigest::of(&input_bytes);
         let history_digest = durable_execution_history_digest(input.executions)?;
-        let prefix_position = input.prefix_position;
+        let reduction_snapshot = input.snapshot.clone();
         let initial_input = input.initial_input.clone();
         let mut engine = Engine::new(input, &self.graph.compiled_ir.root)?;
         let mut context = Context::new(initial_input);
@@ -336,18 +336,20 @@ impl<'a> FullV1Reducer<'a> {
                     run,
                     execution,
                     reason,
-                } => Some((
-                    *execution,
-                    ExecutionVoidAuthorization {
-                        run: *run,
-                        execution: *execution,
-                        reason: *reason,
-                        graph_digest,
-                        input_digest,
-                        history_digest,
-                        prefix_position,
-                    },
-                )),
+                } => reduction_snapshot.as_ref().map(|snapshot| {
+                    (
+                        *execution,
+                        ExecutionVoidAuthorization {
+                            run: *run,
+                            execution: *execution,
+                            reason: *reason,
+                            graph_digest,
+                            input_digest,
+                            history_digest,
+                            snapshot: snapshot.clone(),
+                        },
+                    )
+                }),
                 _ => None,
             })
             .collect();

@@ -74,7 +74,7 @@ impl WorkerRegistry for ReducerWorkers {
     }
 }
 
-async fn reducer_void_graph() -> VerifiedGraph {
+async fn reducer_void_graph_with_terminal(terminal_name: &str) -> VerifiedGraph {
     let state = serde_json::json!({"kind":"record","fields":{}});
     let step = |name: &str| {
         serde_json::json!({
@@ -94,7 +94,7 @@ async fn reducer_void_graph() -> VerifiedGraph {
                 "branches":[step("void_loser_a"),step("void_loser_b"),step("void_winner")],
                 "promotedStatePaths":[],"join":{"kind":"any"}
             },{
-                "kind":"succeed","name":"void_done","output":{"kind":"null"},"bindings":[]
+                "kind":"succeed","name":terminal_name,"output":{"kind":"null"},"bindings":[]
             }],
             "promotedStatePaths":[]
         }
@@ -104,6 +104,10 @@ async fn reducer_void_graph() -> VerifiedGraph {
         .verify(&graph)
         .await
         .unwrap()
+}
+
+async fn reducer_void_graph() -> VerifiedGraph {
+    reducer_void_graph_with_terminal("void_done").await
 }
 
 fn reducer_admission(graph: &VerifiedGraph) -> AdmissionRequest {
@@ -131,7 +135,7 @@ fn reducer_reduction(
     FullV1Reducer::new(graph)
         .reduce(ReductionInput {
             run,
-            prefix_position: state.position,
+            snapshot: state.reduction_snapshot(),
             initial_input: &serde_json::json!({}),
             executions: &executions,
             next_node_instance: state.identities.next_node_instance,
@@ -203,13 +207,10 @@ struct VoidFixture {
     authorization_a: ExecutionVoidAuthorization,
     authorization_b: ExecutionVoidAuthorization,
     forged_input_authorization: ExecutionVoidAuthorization,
+    cross_graph_authorization: ExecutionVoidAuthorization,
 }
 
-async fn prepare_void_fixture(
-    ledger: &ClusterLedger,
-    store: &dyn LedgerStore,
-    label: &str,
-) -> VoidFixture {
+async fn prepare_void_fixture(ledger: &ClusterLedger) -> VoidFixture {
     let graph = reducer_void_graph().await;
     ledger
         .admit(key("void-admit"), [61; 32], reducer_admission(&graph))
@@ -253,8 +254,7 @@ async fn prepare_void_fixture(
         )
         .await
         .unwrap();
-    let snapshot = store.read_prefix(&resource(label), None).await.unwrap();
-    let state = replay(&snapshot, &resource(label)).unwrap();
+    let state = ledger.state().await.unwrap();
     let reduction = reducer_reduction(&state, &graph);
     let executions =
         durable_executions_from_replay(&state, state.admission.as_ref().unwrap().run).unwrap();
@@ -262,8 +262,19 @@ async fn prepare_void_fixture(
     let forged_input_reduction = FullV1Reducer::new(&graph)
         .reduce(ReductionInput {
             run: state.admission.as_ref().unwrap().run,
-            prefix_position: state.position,
+            snapshot: state.reduction_snapshot(),
             initial_input: &forged_input,
+            executions: &executions,
+            next_node_instance: state.identities.next_node_instance,
+            next_execution: state.identities.next_execution,
+        })
+        .unwrap();
+    let cross_graph = reducer_void_graph_with_terminal("different_done").await;
+    let cross_graph_reduction = FullV1Reducer::new(&cross_graph)
+        .reduce(ReductionInput {
+            run: state.admission.as_ref().unwrap().run,
+            snapshot: state.reduction_snapshot(),
+            initial_input: &serde_json::json!({}),
             executions: &executions,
             next_node_instance: state.identities.next_node_instance,
             next_execution: state.identities.next_execution,
@@ -283,6 +294,9 @@ async fn prepare_void_fixture(
         authorization_a: reduction.void_authorization(loser_a.execution).unwrap(),
         authorization_b: reduction.void_authorization(loser_b.execution).unwrap(),
         forged_input_authorization: forged_input_reduction
+            .void_authorization(loser_a.execution)
+            .unwrap(),
+        cross_graph_authorization: cross_graph_reduction
             .void_authorization(loser_a.execution)
             .unwrap(),
     }
@@ -318,7 +332,7 @@ mod validation;
 async fn execution_void_requires_exact_reducer_authorization_and_preserves_rejected_state() {
     let label = "reducer-void-authorization";
     let (store, ledger) = ledger(label).await;
-    let fixture = prepare_void_fixture(&ledger, store.as_ref(), label).await;
+    let fixture = prepare_void_fixture(&ledger).await;
     let before = store.read_prefix(&resource(label), None).await.unwrap();
 
     let wrong_scope = ledger
@@ -328,7 +342,7 @@ async fn execution_void_requires_exact_reducer_authorization_and_preserves_rejec
             ExecutionVoidRequest::new(
                 fixture.loser_b,
                 ExecutionVoidReason::ParallelJoin,
-                fixture.authorization_a,
+                fixture.authorization_a.clone(),
             ),
         )
         .await
@@ -361,6 +375,19 @@ async fn execution_void_requires_exact_reducer_authorization_and_preserves_rejec
         .unwrap_err();
     assert_eq!(wrong_input.kind(), &LedgerErrorKind::InvalidLifecycle);
 
+    let wrong_graph = ledger
+        .void_execution(
+            key("void-wrong-graph"),
+            [72; 32],
+            ExecutionVoidRequest::new(
+                fixture.loser_a,
+                ExecutionVoidReason::ParallelJoin,
+                fixture.cross_graph_authorization,
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(wrong_graph.kind(), &LedgerErrorKind::InvalidLifecycle);
     let after_rejections = store.read_prefix(&resource(label), None).await.unwrap();
     assert_eq!(after_rejections.position, before.position);
     let rejected_state = replay(&after_rejections, &resource(label)).unwrap();
@@ -402,10 +429,48 @@ async fn execution_void_requires_exact_reducer_authorization_and_preserves_rejec
 }
 
 #[tokio::test]
+async fn reducer_void_proof_cannot_preclaim_a_future_prefix() {
+    let label = "reducer-void-future-prefix";
+    let (store, ledger) = ledger(label).await;
+    let fixture = prepare_void_fixture(&ledger).await;
+    let proof_prefix = store.read_prefix(&resource(label), None).await.unwrap();
+
+    ledger
+        .dispatch(key("unrelated-dispatch"), [70; 32])
+        .await
+        .unwrap();
+    let advanced = store.read_prefix(&resource(label), None).await.unwrap();
+    assert!(advanced.position > proof_prefix.position);
+
+    let rejection = ledger
+        .void_execution(
+            key("stale-void-proof"),
+            [71; 32],
+            ExecutionVoidRequest::new(
+                fixture.loser_a,
+                ExecutionVoidReason::ParallelJoin,
+                fixture.authorization_a,
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(rejection.kind(), &LedgerErrorKind::InvalidLifecycle);
+
+    let after_rejection = store.read_prefix(&resource(label), None).await.unwrap();
+    assert_eq!(after_rejection.position, advanced.position);
+    assert_eq!(after_rejection.records, advanced.records);
+    assert_eq!(after_rejection.receipts, advanced.receipts);
+    let state = replay(&after_rejection, &resource(label)).unwrap();
+    assert!(state.reduction_snapshot().is_none());
+    assert!(state.execution_voids.is_empty());
+    assert!(state.active_dispatches.contains_key(&fixture.loser_a));
+}
+
+#[tokio::test]
 async fn concurrent_authorized_voids_share_one_folded_prefix_and_cas() {
     let label = "reducer-void-cas";
     let (race_store, ledger) = snapshot_race_store::race_ledger(label).await;
-    let fixture = prepare_void_fixture(&ledger, &race_store, label).await;
+    let fixture = prepare_void_fixture(&ledger).await;
     race_store.arm();
     let (first, second) = tokio::join!(
         ledger.void_execution(

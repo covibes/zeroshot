@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +9,7 @@ use super::super::record::{
 };
 use openengine_cluster_protocol::PositiveInteger;
 use super::super::store::{IdempotencyId, MutationReceipt, Position, ResourceId};
+use super::super::{LedgerAuthority, ReductionSnapshot};
 use super::ReplayError;
 use crate::required_proof::{AcceptedProofRef, ProofAttemptIntent, ProofAttemptReceipt};
 
@@ -94,6 +96,8 @@ pub struct ReplayState {
     pub cleanup_receipts: Vec<CanonicalDigest>,
     pub required_proofs: Vec<RequiredProofAttemptState>,
     pub mutation_receipts: BTreeMap<IdempotencyId, MutationReceipt>,
+    #[serde(skip)]
+    pub(crate) reduction_authority: Option<Arc<LedgerAuthority>>,
 }
 
 impl ReplayState {
@@ -119,10 +123,26 @@ impl ReplayState {
             cleanup_receipts: Vec::new(),
             required_proofs: Vec::new(),
             mutation_receipts: BTreeMap::new(),
+            reduction_authority: None,
         }
     }
 
     pub fn public_bytes(&self) -> Result<Vec<u8>, ReplayError> {
         serde_json::to_vec(self).map_err(|_| ReplayError::Encoding)
+    }
+
+    pub(crate) fn authorize_reduction(&mut self, authority: Arc<LedgerAuthority>) {
+        self.reduction_authority = Some(authority);
+    }
+
+    #[must_use]
+    pub fn reduction_snapshot(&self) -> Option<ReductionSnapshot> {
+        self.reduction_authority
+            .as_ref()
+            .map(|authority| ReductionSnapshot {
+                position: self.position,
+                last_hash: self.last_hash,
+                authority: Arc::clone(authority),
+            })
     }
 }

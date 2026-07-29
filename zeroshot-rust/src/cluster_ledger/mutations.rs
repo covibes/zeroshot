@@ -71,8 +71,7 @@ pub struct ReductionDispatchRequest {
     pub attempt: PositiveInteger,
     pub canonical_input: Vec<u8>,
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionVoidRequest {
     pub execution: ExecutionId,
     pub reason: ExecutionVoidReason,
@@ -542,7 +541,7 @@ impl ClusterLedger {
             authorized_graph,
             authorized_input,
             authorized_history,
-            authorized_prefix,
+            authorized_snapshot,
         ) = authorization.parts();
         if authorized_run != run
             || authorized_execution != execution
@@ -550,7 +549,7 @@ impl ClusterLedger {
             || authorized_graph != CanonicalDigest::of(&admission.canonical_compiled_ir)
             || authorized_input != admission.input_digest
             || authorized_history != history_digest
-            || authorized_prefix != state.position
+            || !authorized_snapshot.matches(&state, &self.reduction_authority)
         {
             return Err(
                 self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)

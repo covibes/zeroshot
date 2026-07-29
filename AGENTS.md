@@ -197,9 +197,10 @@ identity allocation, replay, lifecycle/CAS/idempotency rules, and safe-fault con
 above the backend-neutral `LedgerStore` port. Control and verified I/O share one ordered hash
 chain and transaction. Semantic validation and append CAS use the same folded position/hash; never
 reread a newer prefix while committing payloads derived from an older one.
-Reducer-owned loser voids require an opaque reducer-issued authorization bound to the admitted
-compiled IR, verified input, exact folded prefix, durable execution history, execution, and reason;
-caller-supplied execution identity or reason alone can never authorize an `ExecutionVoid` append.
+Reducer-owned loser voids require an opaque authorization bound to the admitted compiled IR,
+verified input, durable execution history, execution, reason, and a folded position/hash capability
+issued only by that `ClusterLedger`; caller-selected positions, identities, or reasons cannot
+authorize an `ExecutionVoid` append.
 Every committed mutation ends in a hash-chained `MutationReceipt` record that exactly
 matches its atomic idempotency projection, so missing or forged projection rows fail replay. Matching
 receipt retries return an explicit replay outcome; receipt equality cannot distinguish a new commit from a concurrent

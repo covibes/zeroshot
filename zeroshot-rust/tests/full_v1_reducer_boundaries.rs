@@ -186,7 +186,7 @@ fn verdict(label: &str) -> WorkerOutcome {
 fn input<'a>(initial: &'a Value, executions: &'a [DurableExecution]) -> ReductionInput<'a> {
     ReductionInput {
         run: RunSequence::new(1).unwrap(),
-        prefix_position: Position::MAX,
+        snapshot: None,
         initial_input: initial,
         executions,
         next_node_instance: executions

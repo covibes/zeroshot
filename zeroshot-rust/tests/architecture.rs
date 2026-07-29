@@ -609,6 +609,43 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
     assert!(!reducer.contains("GraphSpec"));
     assert!(!reducer.contains("CompiledGraphIr"));
     assert!(!reducer.contains("PayloadType"));
+    assert!(!reducer.contains("pub prefix_position"));
+    assert!(reducer.contains("pub snapshot: Option<ReductionSnapshot>"));
+    let authorization_fields = reducer
+        .split("pub struct ExecutionVoidAuthorization {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(!authorization_fields.contains("pub "));
+    let authorization_impl = reducer
+        .split("impl ExecutionVoidAuthorization {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(!authorization_impl.contains("\n    pub fn new("));
+    assert!(!authorization_impl.contains("\n    pub const fn new("));
+    let ledger = read(&product_root().join("src/cluster_ledger.rs"));
+    let snapshot_fields = ledger
+        .split("pub struct ReductionSnapshot {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(!snapshot_fields.contains("pub "));
+    let snapshot_impl = ledger
+        .split("impl ReductionSnapshot {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(!snapshot_impl.contains("\n    pub fn new("));
+    assert!(!snapshot_impl.contains("\n    pub const fn new("));
     for forbidden in [
         "tokio::",
         "async fn",
