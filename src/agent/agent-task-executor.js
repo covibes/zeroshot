@@ -11,6 +11,7 @@
  */
 
 const { spawn, spawnSync } = require('child_process');
+const { randomUUID } = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const {
@@ -54,16 +55,108 @@ const {
 const { extractClaudeVertexModelError } = require('./output-extraction');
 const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
 const OPENCODE_CONFIG_CONTENT_ENV = 'OPENCODE_CONFIG_CONTENT';
-const REFORMATTER_AGENT_NAME = 'zeroshot-output-reformatter';
+const OPENCODE_AGENT_ENV = 'ZEROSHOT_OPENCODE_AGENT';
+const REFORMATTER_AGENT_PREFIX = 'zeroshot-output-reformatter-';
+
+function parseOpenCodeJsonc(content) {
+  let withoutComments = '';
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < content.length; index++) {
+    const char = content[index];
+    const next = content[index + 1];
+    if (inString) {
+      withoutComments += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      withoutComments += char;
+      continue;
+    }
+    if (char === '/' && next === '/') {
+      while (index < content.length && content[index] !== '\n') index++;
+      withoutComments += '\n';
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      index += 2;
+      while (
+        index < content.length &&
+        !(content[index] === '*' && content[index + 1] === '/')
+      ) {
+        if (content[index] === '\n') withoutComments += '\n';
+        index++;
+      }
+      if (index >= content.length) {
+        throw new SyntaxError('Unterminated block comment in OpenCode inline config');
+      }
+      index++;
+      continue;
+    }
+    withoutComments += char;
+  }
+
+  let withoutTrailingCommas = '';
+  inString = false;
+  escaped = false;
+  for (let index = 0; index < withoutComments.length; index++) {
+    const char = withoutComments[index];
+    if (inString) {
+      withoutTrailingCommas += char;
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      withoutTrailingCommas += char;
+      continue;
+    }
+    if (char === ',') {
+      let nextIndex = index + 1;
+      while (/\s/.test(withoutComments[nextIndex] || '')) nextIndex++;
+      if (withoutComments[nextIndex] === '}' || withoutComments[nextIndex] === ']') {
+        continue;
+      }
+    }
+    withoutTrailingCommas += char;
+  }
+  return JSON.parse(withoutTrailingCommas);
+}
+
+function ensureFormatterLaunchOptions(providerName, options) {
+  if (providerName !== 'opencode' || options.disableTools !== true) return options;
+  if (options.formatterAgentName) return options;
+  return {
+    ...options,
+    formatterAgentName: `${REFORMATTER_AGENT_PREFIX}${randomUUID()}`,
+  };
+}
 
 function applyOpenCodeToolBoundary(env, providerName, options = {}) {
   if (providerName !== 'opencode' || options.disableTools !== true) return env;
+  if (!options.formatterAgentName) {
+    throw new Error('Tool-disabled OpenCode formatter launch is missing its unique agent identity');
+  }
 
   let config = {};
   const existingContent = env[OPENCODE_CONFIG_CONTENT_ENV];
   if (existingContent) {
     try {
-      config = JSON.parse(existingContent);
+      config = parseOpenCodeJsonc(existingContent);
     } catch (error) {
       throw new Error(
         `Cannot install tool-disabled OpenCode formatter profile: invalid ${OPENCODE_CONFIG_CONTENT_ENV}: ${error.message}`
@@ -75,22 +168,42 @@ function applyOpenCodeToolBoundary(env, providerName, options = {}) {
     config.agent && typeof config.agent === 'object' && !Array.isArray(config.agent)
       ? config.agent
       : {};
+  const existingModes =
+    config.mode && typeof config.mode === 'object' && !Array.isArray(config.mode)
+      ? config.mode
+      : {};
+  const formatterProfile = {
+    description: 'Convert supplied text to schema-valid JSON without external actions',
+    mode: 'primary',
+    permission: { '*': 'deny' },
+    tools: { '*': false },
+  };
+  env[OPENCODE_AGENT_ENV] = options.formatterAgentName;
   env[OPENCODE_CONFIG_CONTENT_ENV] = JSON.stringify({
     ...config,
-    default_agent: REFORMATTER_AGENT_NAME,
+    default_agent: options.formatterAgentName,
     permission: 'deny',
     tools: { '*': false },
     agent: {
       ...existingAgents,
-      [REFORMATTER_AGENT_NAME]: {
-        description: 'Convert supplied text to schema-valid JSON without external actions',
-        mode: 'primary',
-        permission: { '*': 'deny' },
-        tools: { '*': false },
-      },
+      [options.formatterAgentName]: formatterProfile,
+    },
+    mode: {
+      ...existingModes,
+      [options.formatterAgentName]: formatterProfile,
     },
   });
   return env;
+}
+
+async function resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName) {
+  if (
+    providerName === 'opencode' &&
+    typeof manager.getContainerEnvironmentValue === 'function'
+  ) {
+    return manager.getContainerEnvironmentValue(clusterId, OPENCODE_CONFIG_CONTENT_ENV);
+  }
+  return process.env[OPENCODE_CONFIG_CONTENT_ENV] || null;
 }
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
@@ -597,6 +710,7 @@ async function spawnClaudeTask(agent, context, options = {}) {
   if (agent.isolation?.enabled) {
     return spawnClaudeTaskIsolated(agent, context, options);
   }
+  options = ensureFormatterLaunchOptions(providerName, options);
 
   const claudeSettingsPath =
     providerName === 'claude'
@@ -1858,6 +1972,7 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
 async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const { manager, clusterId } = agent.isolation;
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
+  options = ensureFormatterLaunchOptions(providerName, options);
   const modelSpec = resolveAgentModelSpec(agent);
   const modelSpecSource = agent._resolveModelSpecSource
     ? agent._resolveModelSpecSource()
@@ -1897,11 +2012,15 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const ownershipToken = createTaskSpawnOwnershipToken();
   // Auth env vars are injected by IsolationManager; the launch token is the
   // only authoritative bridge back to the detached task row in the container.
+  const effectiveOpenCodeConfig =
+    options.disableTools === true
+      ? await resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName)
+      : null;
   const isolatedEnv = applyOpenCodeToolBoundary(
     {
       ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
-      ...(process.env[OPENCODE_CONFIG_CONTENT_ENV]
-        ? { [OPENCODE_CONFIG_CONTENT_ENV]: process.env[OPENCODE_CONFIG_CONTENT_ENV] }
+      ...(effectiveOpenCodeConfig
+        ? { [OPENCODE_CONFIG_CONTENT_ENV]: effectiveOpenCodeConfig }
         : {}),
       [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
     },

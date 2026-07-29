@@ -90,9 +90,23 @@ describe('Nested task model argument encoding', function () {
     assertConfiguredModelArgs(args);
   });
 
-  it('installs a tool-disabled OpenCode profile for formatter launches', function () {
+  it('installs a unique tool-disabled profile while preserving hostile JSONC config', function () {
     const previousConfig = process.env.OPENCODE_CONFIG_CONTENT;
-    process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ share: 'disabled' });
+    const formatterAgentName = 'zeroshot-output-reformatter-unique-local-test';
+    process.env.OPENCODE_CONFIG_CONTENT = `{
+      // OpenCode accepts comments and trailing commas.
+      "share": "disabled",
+      "provider": { "container-only": { "npm": "@ai-sdk/openai-compatible", }, },
+      "agent": {
+        "zeroshot-output-reformatter": {
+          "permission": { "*": "allow", "bash": "allow", },
+          "tools": { "*": true, },
+        },
+      },
+      "mode": {
+        "zeroshot-output-reformatter": { "tools": { "bash": true, }, },
+      },
+    }`;
     try {
       const env = buildSpawnEnv(
         { config: {} },
@@ -100,22 +114,56 @@ describe('Nested task model argument encoding', function () {
         {},
         {
           disableTools: true,
+          formatterAgentName,
           applyDarwinKeychainBoundary() {},
         }
       );
       const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
-      const formatter = config.agent[config.default_agent];
+      const formatter = config.agent[formatterAgentName];
+      assert.strictEqual(env.ZEROSHOT_OPENCODE_AGENT, formatterAgentName);
+      assert.strictEqual(config.default_agent, formatterAgentName);
       assert.strictEqual(config.share, 'disabled');
+      assert.deepStrictEqual(config.provider, {
+        'container-only': { npm: '@ai-sdk/openai-compatible' },
+      });
       assert.strictEqual(config.permission, 'deny');
       assert.deepStrictEqual(config.tools, { '*': false });
       assert.strictEqual(formatter.mode, 'primary');
       assert.deepStrictEqual(formatter.permission, { '*': 'deny' });
       assert.deepStrictEqual(formatter.tools, { '*': false });
+      assert.deepStrictEqual(config.mode[formatterAgentName].permission, { '*': 'deny' });
+      assert.deepStrictEqual(config.mode[formatterAgentName].tools, { '*': false });
+      assert.strictEqual(config.agent['zeroshot-output-reformatter'].permission.bash, 'allow');
+      assert.strictEqual(config.mode['zeroshot-output-reformatter'].tools.bash, true);
     } finally {
       if (previousConfig === undefined) {
         delete process.env.OPENCODE_CONFIG_CONTENT;
       } else {
         process.env.OPENCODE_CONFIG_CONTENT = previousConfig;
+      }
+    }
+  });
+
+  it('selects the unique formatter identity explicitly in the OpenCode command', async function () {
+    const previousAgent = process.env.ZEROSHOT_OPENCODE_AGENT;
+    const formatterAgentName = 'zeroshot-output-reformatter-command-test';
+    process.env.ZEROSHOT_OPENCODE_AGENT = formatterAgentName;
+    try {
+      const { prepareTaskProviderCommand } = await import('../task-lib/runner.js');
+      const prepared = prepareTaskProviderCommand('format this', {
+        provider: 'opencode',
+        outputFormat: 'json',
+      });
+      const agentIndex = prepared.commandSpec.args.indexOf('--agent');
+      assert.deepStrictEqual(prepared.commandSpec.args.slice(agentIndex, agentIndex + 2), [
+        '--agent',
+        formatterAgentName,
+      ]);
+    } finally {
+      if (previousAgent === undefined) {
+        delete process.env.ZEROSHOT_OPENCODE_AGENT;
+      } else {
+        process.env.ZEROSHOT_OPENCODE_AGENT = previousAgent;
       }
     }
   });
@@ -270,6 +318,22 @@ describe('Isolated opencode structured-output recovery', function () {
     const spawnedCommands = [];
     let spawnCount = 0;
     let recoveryEnv;
+    const containerConfig = `{
+      "provider": {
+        "container-only": {
+          "npm": "@ai-sdk/openai-compatible",
+          "options": { "baseURL": "https://container.invalid/v1", },
+        },
+      },
+      "agent": {
+        "zeroshot-output-reformatter": {
+          "permission": { "*": "allow", "bash": "allow", },
+        },
+      },
+      "mode": {
+        "zeroshot-output-reformatter": { "tools": { "bash": true, }, },
+      },
+    }`;
     const manager = {
       spawnInContainer(_clusterId, command, options) {
         spawnedCommands.push(command);
@@ -283,6 +347,10 @@ describe('Isolated opencode structured-output recovery', function () {
         tail.stderr = new PassThrough();
         tail.kill = () => {};
         return tail;
+      },
+      getContainerEnvironmentValue(_clusterId, name) {
+        assert.strictEqual(name, 'OPENCODE_CONFIG_CONTENT');
+        return Promise.resolve(containerConfig);
       },
       execInContainer(_clusterId, command) {
         const rendered = command.join(' ');
@@ -358,8 +426,26 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.ok(recoveryCommand.includes('run'));
     const formatterConfig = JSON.parse(recoveryEnv.OPENCODE_CONFIG_CONTENT);
     const formatter = formatterConfig.agent[formatterConfig.default_agent];
+    assert.strictEqual(recoveryEnv.ZEROSHOT_OPENCODE_AGENT, formatterConfig.default_agent);
+    assert.match(
+      formatterConfig.default_agent,
+      /^zeroshot-output-reformatter-[0-9a-f-]{36}$/
+    );
+    assert.notStrictEqual(formatterConfig.default_agent, 'zeroshot-output-reformatter');
+    assert.deepStrictEqual(formatterConfig.provider, {
+      'container-only': {
+        npm: '@ai-sdk/openai-compatible',
+        options: { baseURL: 'https://container.invalid/v1' },
+      },
+    });
     assert.strictEqual(formatterConfig.permission, 'deny');
     assert.deepStrictEqual(formatter.permission, { '*': 'deny' });
+    assert.deepStrictEqual(formatterConfig.mode[formatterConfig.default_agent].permission, {
+      '*': 'deny',
+    });
+    assert.deepStrictEqual(formatterConfig.mode[formatterConfig.default_agent].tools, {
+      '*': false,
+    });
     assert.deepStrictEqual(formatter.tools, { '*': false });
   });
 

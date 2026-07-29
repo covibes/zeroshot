@@ -87,6 +87,58 @@ describe('TaskExecutionHandle', function () {
     await settled;
     assert.strictEqual(handle.settled, true);
   });
+
+  it('fails closed an unkillable local child after bounded deadline cleanup', async function () {
+    const clock = sinon.useFakeTimers();
+    const handle = new TaskExecutionHandle('test-agent');
+    handle.assignTaskId('local-deadline-child');
+    let attempts = 0;
+    handle.setCancelAction(() => {
+      attempts++;
+      return { forced: false, reason: 'local cleanup pending' };
+    });
+    const failurePromise = new Promise((resolve) => {
+      handle.setFailClosedAction(resolve);
+    });
+
+    handle.armDeadline(5);
+    await clock.tickAsync(5);
+    const failure = await failurePromise;
+    handle.finishExecution();
+
+    assert.strictEqual(attempts, 3);
+    assert.strictEqual(failure.code, 'NESTED_TASK_TERMINATION_EXHAUSTED');
+    assert.strictEqual(failure.taskId, 'local-deadline-child');
+    assert.strictEqual(failure.terminationAttempts, 3);
+    assert.strictEqual(failure.retainTaskHandle, true);
+    assert.strictEqual(handle.settled, false);
+  });
+
+  it('fails closed an isolated child when deadline cleanup keeps rejecting', async function () {
+    const clock = sinon.useFakeTimers();
+    const handle = new TaskExecutionHandle('test-agent');
+    handle.assignTaskId('isolated-deadline-child');
+    let attempts = 0;
+    handle.setCancelAction(() => {
+      attempts++;
+      return Promise.reject(new Error('isolated cleanup command failed'));
+    });
+    const failurePromise = new Promise((resolve) => {
+      handle.setFailClosedAction(resolve);
+    });
+
+    handle.armDeadline(5);
+    await clock.tickAsync(5);
+    const failure = await failurePromise;
+    handle.finishExecution();
+
+    assert.strictEqual(attempts, 3);
+    assert.strictEqual(failure.code, 'NESTED_TASK_TERMINATION_EXHAUSTED');
+    assert.strictEqual(failure.taskId, 'isolated-deadline-child');
+    assert.match(failure.message, /isolated cleanup command failed/);
+    assert.strictEqual(failure.permanent, true);
+    assert.strictEqual(handle.settled, false);
+  });
 });
 
 describe('NestedExecutionRegistry', function () {

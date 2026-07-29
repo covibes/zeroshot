@@ -1,6 +1,7 @@
 function isTerminationConfirmed(termination) {
   return termination?.forced !== false || termination?.alreadyTerminal === true;
 }
+const MAX_DEADLINE_CLEANUP_ATTEMPTS = 3;
 
 /**
  * TaskExecutionHandle — first-class reentrant task-execution handle.
@@ -161,12 +162,41 @@ class TaskExecutionHandle {
     this._clearDeadlineTimer();
     this._deadlineTimer = setTimeout(() => {
       this._deadlineTimer = null;
-      this.cancel(`Nested task timed out after ${timeoutMs}ms`, {
-        code: 'AGENT_TASK_TIMEOUT',
-      }).catch(() => {
-        // The execution owner observes cancellation failure while settling.
+      this._cancelAtDeadline(timeoutMs).catch(() => {
+        // failClosed records the permanent error before notifying the execution owner.
       });
     }, timeoutMs);
+  }
+
+  async _cancelAtDeadline(timeoutMs) {
+    const reason = `Nested task timed out after ${timeoutMs}ms`;
+    let lastError = null;
+    let termination = null;
+    let attempts = 0;
+    for (attempts = 1; attempts <= MAX_DEADLINE_CLEANUP_ATTEMPTS; attempts++) {
+      try {
+        termination = await this.cancel(reason, { code: 'AGENT_TASK_TIMEOUT' });
+        if (termination && isTerminationConfirmed(termination)) return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    const detail =
+      lastError?.message || termination?.reason || 'task termination was not confirmed';
+    const error = new Error(
+      `Failed to terminate nested task ${this._taskId || 'before task ID assignment'} ` +
+        `after ${attempts - 1} deadline cleanup attempts: ${detail}`
+    );
+    error.code = 'NESTED_TASK_TERMINATION_EXHAUSTED';
+    error.taskId = this._taskId;
+    error.permanent = true;
+    error.restartExhausted = true;
+    error.terminationExhausted = true;
+    error.terminationAttempts = attempts - 1;
+    error.retainTaskHandle = true;
+    error.nestedExecutionLifecycle = true;
+    this.failClosed(error);
   }
 
   retainOwnership() {
@@ -221,6 +251,7 @@ class TaskExecutionHandle {
     try {
       this._proc.kill('SIGTERM');
       const proc = this._proc;
+      this._clearKillTimer();
       this._killTimer = setTimeout(() => {
         this._killTimer = null;
         if (!this.settled) {

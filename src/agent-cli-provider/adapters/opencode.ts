@@ -55,6 +55,9 @@ function addOpencodeOptionalArgs(args: string[], options: BuildProviderCommandOp
   ) {
     args.push('--format', 'json');
   }
+  if (options.agentName) {
+    args.push('--agent', options.agentName);
+  }
 
   if (options.modelSpec?.model) {
     args.push('--model', options.modelSpec.model);
