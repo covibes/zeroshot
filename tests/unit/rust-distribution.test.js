@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const jsYaml = require('js-yaml');
 
 const distribution = require('../../scripts/rust-distribution');
 const shim = require('../../npm/zeroshot-rust/lib/install');
@@ -22,6 +23,14 @@ function relativeFiles(root, directory = root) {
 function mutation(source, before, after = '') {
   assert(source.includes(before), `mutation precondition missing: ${before}`);
   return source.replace(before, after);
+}
+
+function mutateWorkflowJob(source, jobName, mutateJob) {
+  const document = jsYaml.load(source);
+  const job = document.jobs[jobName];
+  assert(job, `workflow job missing: ${jobName}`);
+  mutateJob(job);
+  return JSON.stringify(document);
 }
 
 describe('Rust product distribution', function () {
@@ -149,38 +158,59 @@ describe('Rust release integration', function () {
     );
     assert.strictEqual(distribution.checkRepository(workflow), true);
 
-    for (const [before, after] of [
-      ['run: npm ci --ignore-scripts', 'run: echo npm ci --ignore-scripts'],
-      [
-        `      - name: Install pinned script dependencies
-        run: npm ci --ignore-scripts
-`,
-        '',
-      ],
-    ]) {
+    for (const jobName of ['rust-binaries', 'rust-manifest', 'rust-publish']) {
+      const mutateInstall = (mutateJob) => mutateWorkflowJob(workflow, jobName, mutateJob);
       assert.throws(
-        () => distribution.checkRepository(mutation(workflow, before, after)),
-        /pinned script dependencies/
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps.find(
+                (step) => step.name === 'Install pinned script dependencies'
+              ).run = 'npm ci';
+            })
+          ),
+        new RegExp(`${jobName} must install pinned script dependencies`)
+      );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps = job.steps.filter(
+                (step) => step.name !== 'Install pinned script dependencies'
+              );
+            })
+          ),
+        /Install pinned script dependencies/
+      );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              const installIndex = job.steps.findIndex(
+                (step) => step.name === 'Install pinned script dependencies'
+              );
+              const [install] = job.steps.splice(installIndex, 1);
+              const invocationIndex = job.steps.findIndex((step) =>
+                step.run?.includes('node scripts/rust-distribution.js')
+              );
+              job.steps.splice(invocationIndex + 1, 0, install);
+            })
+          ),
+        new RegExp(`${jobName} must install pinned script dependencies before every invocation`)
+      );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps.unshift({
+                name: 'Invoke Rust distribution before dependency installation',
+                run: 'node scripts/rust-distribution.js print-version',
+              });
+            })
+          ),
+        new RegExp(`${jobName} must install pinned script dependencies before every invocation`)
       );
     }
-
-    const installStep = `      - name: Install pinned script dependencies
-        run: npm ci --ignore-scripts
-`;
-    const stageStep = `      - name: Stage planned Rust package version
-        run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"
-        shell: bash
-`;
-    const workflowWithLateInstall = mutation(
-      mutation(workflow, `${installStep}\n`, ''),
-      stageStep,
-      `${stageStep}
-${installStep}`
-    );
-    assert.throws(
-      () => distribution.checkRepository(workflowWithLateInstall),
-      /requires pinned script dependencies first/
-    );
 
     const packageManifest = JSON.parse(
       fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')

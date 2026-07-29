@@ -445,6 +445,9 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}
 
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
+
       - name: Download every target archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -589,6 +592,9 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+
+      - name: Install pinned script dependencies
+        run: npm ci --ignore-scripts
 
       - name: Download complete Rust distribution
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

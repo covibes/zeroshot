@@ -270,6 +270,22 @@ function findStep(job, name) {
   return step;
 }
 
+function checkScriptInstall(job, jobName) {
+  const install = findStep(job, 'Install pinned script dependencies');
+  if (install.if !== undefined || install.run?.trim() !== 'npm ci --ignore-scripts') {
+    failIntegrity(`${jobName} must install pinned script dependencies without lifecycle scripts`);
+  }
+  if (
+    job.steps.some(
+      (step, index) =>
+        index < job.steps.indexOf(install) &&
+        step.run?.includes('node scripts/rust-distribution.js')
+    )
+  ) {
+    failIntegrity(`${jobName} must install pinned script dependencies before every invocation`);
+  }
+}
+
 function checkBuildJob(jobs) {
   const job = jobs['rust-binaries'];
   if (!job) failIntegrity('release workflow has no rust-binaries job');
@@ -310,21 +326,14 @@ function checkBuildJob(jobs) {
     failIntegrity('Windows bundled-SQLite MSVC setup is missing');
   }
 
-  const install = findStep(job, 'Install pinned script dependencies');
-  if (
-    install.if !== undefined ||
-    install.run?.trim() !== 'npm ci --ignore-scripts'
-  ) {
-    failIntegrity('pinned script dependencies must install without lifecycle scripts');
-  }
+  checkScriptInstall(job, 'rust-binaries');
 
   const stage = findStep(job, 'Stage planned Rust package version');
   if (
     stage.if !== undefined ||
-    stage.run?.trim() !== 'node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"' ||
-    job.steps.indexOf(install) > job.steps.indexOf(stage)
+    stage.run?.trim() !== 'node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"'
   ) {
-    failIntegrity('planned Rust version staging requires pinned script dependencies first');
+    failIntegrity('planned Rust version staging is missing before locked target builds');
   }
   const coupling = findStep(job, 'Verify Rust and release tag versions are coupled');
   if (
@@ -380,6 +389,7 @@ function checkManifestJob(jobs) {
     ['dry-run', 'release-plan', 'rust-binaries', 'rust-recovery-plan'],
     [...(job.needs || [])].sort()
   );
+  checkScriptInstall(job, 'rust-manifest');
   const manifest = findStep(job, 'Build and verify complete checksum manifest');
   if (
     manifest.run?.trim() !==
@@ -443,6 +453,7 @@ function checkPublicationJobs(document, jobs) {
     ['release', 'rust-manifest', 'rust-recovery-plan'],
     [...(publish?.needs || [])].sort()
   );
+  checkScriptInstall(publish, 'rust-publish');
   if (!publish.if?.includes("inputs.action == 'recover-rust-distribution'")) {
     failIntegrity('post-tag Rust publication is not recoverable');
   }
