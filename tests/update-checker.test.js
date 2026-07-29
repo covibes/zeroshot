@@ -272,6 +272,13 @@ describe('Update Checker', function () {
   });
 
   describe('cached notices and claim lifecycle', function () {
+    function scheduleLifecycleRefresh(callback) {
+      setImmediate(callback);
+      const lifecycleHandle = {};
+      assert.strictEqual(typeof lifecycleHandle.unref, 'undefined');
+      return lifecycleHandle;
+    }
+
     function checkerOptions(state, overrides = {}) {
       return {
         eligibilityChecked: true,
@@ -285,7 +292,7 @@ describe('Update Checker', function () {
         now: () => 100 * updateChecker.CHECK_INTERVAL_MS,
         generateClaimId: () => 'claim-a',
         stderr: { write: () => {} },
-        scheduleRefresh: (callback) => setImmediate(callback),
+        scheduleRefresh: scheduleLifecycleRefresh,
         ...overrides,
       };
     }
