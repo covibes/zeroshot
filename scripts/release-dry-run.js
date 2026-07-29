@@ -5,6 +5,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const projectRoot = path.resolve(__dirname, '..');
 
@@ -55,7 +56,7 @@ async function main() {
       {
         ...releaseConfig,
         branches: [branch],
-        repositoryUrl: mirrorPath,
+        repositoryUrl: pathToFileURL(mirrorPath).href,
         plugins: validationPlugins(releaseConfig),
         dryRun: true,
         ci: false,
@@ -66,12 +67,11 @@ async function main() {
       }
     );
 
-    if (!result) {
-      console.log('RELEASE_DRY_RUN_RESULT=no-release');
-      return;
+    const version = result?.nextRelease.version || '';
+    if (process.env.GITHUB_OUTPUT) {
+      fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
     }
-
-    console.log(`RELEASE_DRY_RUN_RESULT=${result.nextRelease.version}`);
+    console.log(`RELEASE_DRY_RUN_RESULT=${version || 'no-release'}`);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
