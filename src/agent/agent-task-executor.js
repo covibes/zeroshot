@@ -2489,11 +2489,13 @@ function settleIsolatedTerminalStatus({
   const settlement = (async () => {
     const logFilePath = await resolveIsolatedLogFilePath(manager, clusterId, taskId, state);
     await new Promise((settle) => setTimeout(settle, 200));
+    if (state.resolved) return;
     const finalReadResult = await manager.execInContainer(clusterId, [
       'sh',
       '-c',
       `cat "${logFilePath}" 2>/dev/null || echo ""`,
     ]);
+    if (state.resolved) return;
 
     if (finalReadResult.code === 0 && finalReadResult.stdout) {
       state.fullOutput = finalReadResult.stdout;
@@ -2566,8 +2568,24 @@ function buildIsolatedLifecycleHandle({
   reject,
   onLine,
 }) {
+  const settleCancellation = (reason, details) =>
+    settleIsolatedFollower({
+      agent,
+      state,
+      cleanup,
+      resolve,
+      result: {
+        success: false,
+        output: state.fullOutput,
+        error: reason,
+        code: details.code || null,
+        taskId,
+        tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+      },
+    });
   const terminate = (reason = 'Task killed', details = {}) => {
     if (state.durableTaskTerminal) {
+      if (state.nested) settleCancellation(reason, details);
       return Promise.resolve({
         alreadyTerminal: true,
         forced: false,
@@ -2581,20 +2599,7 @@ function buildIsolatedLifecycleHandle({
       state.durableTaskTerminal = true;
       state.durableTaskStatus = termination.status;
       if (!termination.forced && state.nested) {
-        settleIsolatedFollower({
-          agent,
-          state,
-          cleanup,
-          resolve,
-          result: {
-            success: false,
-            output: state.fullOutput,
-            error: reason,
-            code: details.code || null,
-            taskId,
-            tokenUsage: extractTokenUsage(state.fullOutput, providerName),
-          },
-        });
+        settleCancellation(reason, details);
         return termination;
       }
       if (!termination.forced) {
@@ -2614,20 +2619,7 @@ function buildIsolatedLifecycleHandle({
         return termination;
       }
 
-      settleIsolatedFollower({
-        agent,
-        state,
-        cleanup,
-        resolve,
-        result: {
-          success: false,
-          output: state.fullOutput,
-          error: reason,
-          code: details.code || null,
-          taskId,
-          tokenUsage: extractTokenUsage(state.fullOutput, providerName),
-        },
-      });
+      settleCancellation(reason, details);
       return termination;
     })();
     state.terminationPromise = terminationPromise;

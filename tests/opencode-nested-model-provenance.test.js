@@ -866,6 +866,101 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.strictEqual(spawnCount, 1);
   });
 
+  it('cancels promptly while an observed terminal task final read is stalled', async function () {
+    this.timeout(4000);
+    const taskId = 'task-terminal-drain-a1';
+    let resolveFinalRead;
+    let finalReadCount = 0;
+    let spawnCount = 0;
+    let tailKills = 0;
+    const manager = {
+      getContainerEnvironmentValue() {
+        return null;
+      },
+      spawnInContainer() {
+        spawnCount++;
+        if (spawnCount === 1) {
+          return createClosingProcess(0, `✓ Task spawned: ${taskId}\n`);
+        }
+        const tail = new EventEmitter();
+        tail.stdout = new PassThrough();
+        tail.stderr = new PassThrough();
+        tail.kill = () => {
+          tailKills++;
+        };
+        return tail;
+      },
+      execInContainer(_clusterId, command) {
+        const rendered = command.join(' ');
+        if (rendered.includes('get-task-id-by-spawn-token')) {
+          return Promise.resolve({ code: 0, stdout: `${taskId}\n`, stderr: '' });
+        }
+        if (rendered.includes('get-log-path')) {
+          return Promise.resolve({ code: 0, stdout: '/tmp/terminal-drain.log\n', stderr: '' });
+        }
+        if (rendered.includes('zeroshot status')) {
+          return Promise.resolve({ code: 0, stdout: 'Status: completed\n', stderr: '' });
+        }
+        if (rendered.includes('cat "/tmp/terminal-drain.log"')) {
+          finalReadCount++;
+          return new Promise((resolve) => {
+            resolveFinalRead = resolve;
+          });
+        }
+        return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
+      },
+    };
+    const agent = {
+      id: 'isolated-terminal-drain',
+      role: 'planner',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 0,
+      enableLivenessCheck: false,
+      config: { outputFormat: 'json', strictSchema: true },
+      cluster: { id: 'test-cluster' },
+      isolation: { enabled: true, clusterId: 'test-cluster', manager },
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'opencode',
+      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+      _resolveModelSpecSource: () => 'direct',
+      _log() {},
+      _publishLifecycle() {},
+      _stopLivenessCheck() {},
+    };
+    const launch = spawnClaudeTaskIsolated(agent, 'test context', {
+      skipStructuredResultCheck: true,
+      nested: true,
+      disableTools: true,
+    });
+    while (!resolveFinalRead) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const startedAt = Date.now();
+    const cancellation = agent.nestedExecutions.cancelAll('Nested task timed out', {
+      code: 'AGENT_TASK_TIMEOUT',
+    });
+
+    await assert.rejects(launch, (error) => {
+      assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
+      assert.strictEqual(error.nestedExecutionCancellation, true);
+      return true;
+    });
+    await cancellation;
+
+    assert.ok(Date.now() - startedAt < 750, 'cancellation must not await the final log read');
+    assert.strictEqual(finalReadCount, 1);
+    assert.strictEqual(spawnCount, 2);
+    assert.strictEqual(tailKills, 1);
+    assert.strictEqual(agent.nestedExecutions.size, 0);
+
+    resolveFinalRead({ code: 0, stdout: opencodeTextEvent({ plan: 'too late' }), stderr: '' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(finalReadCount, 1);
+    assert.strictEqual(spawnCount, 2);
+  });
+
   it('kills and settles a durable nested task when post-ID log setup fails', async function () {
     this.timeout(3000);
     const taskId = 'task-amber-fox-b2';

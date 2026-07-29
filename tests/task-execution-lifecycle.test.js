@@ -139,6 +139,52 @@ describe('TaskExecutionHandle', function () {
     assert.strictEqual(failure.permanent, true);
     assert.strictEqual(handle.settled, false);
   });
+
+  it('settles after cleanup is confirmed before execution finishes', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    let attempts = 0;
+    handle.setCancelAction(() => {
+      attempts++;
+      return attempts === 1
+        ? { forced: false, reason: 'cleanup temporarily unavailable' }
+        : { forced: true };
+    });
+
+    const firstTermination = await handle.cancel('first cleanup attempt');
+    assert.strictEqual(firstTermination.forced, false);
+    const cancellation = registry.cancelAll('retry cleanup');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(handle.settled, false);
+
+    handle.finishExecution();
+    await cancellation;
+    assert.strictEqual(attempts, 2);
+    assert.strictEqual(handle.settled, true);
+    assert.strictEqual(registry.size, 0);
+  });
+
+  it('settles after cleanup is confirmed following execution finish', async function () {
+    const registry = new NestedExecutionRegistry('test-agent');
+    const handle = registry.register(new TaskExecutionHandle('test-agent'));
+    let attempts = 0;
+    handle.setCancelAction(() => {
+      attempts++;
+      return attempts === 1
+        ? { forced: false, reason: 'cleanup temporarily unavailable' }
+        : { forced: true };
+    });
+
+    const firstTermination = await handle.cancel('first cleanup attempt');
+    assert.strictEqual(firstTermination.forced, false);
+    handle.finishExecution();
+    assert.strictEqual(handle.settled, false);
+
+    await registry.cancelAll('retry cleanup');
+    assert.strictEqual(attempts, 2);
+    assert.strictEqual(handle.settled, true);
+    assert.strictEqual(registry.size, 0);
+  });
 });
 
 describe('NestedExecutionRegistry', function () {

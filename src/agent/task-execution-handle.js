@@ -150,9 +150,11 @@ class TaskExecutionHandle {
       this._retainOwnership = true;
       this._invokedCancelActions.delete(this._cancelAction);
       this._cancelActionPromises = [];
-    } else if (this._executionFinished) {
+    } else {
       this._retainOwnership = false;
-      this.markSettled();
+      if (this._executionFinished) {
+        this.markSettled();
+      }
     }
     return termination;
   }
