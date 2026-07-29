@@ -257,6 +257,100 @@ describe('Nested task model argument encoding', function () {
       disableTools: true,
     });
   });
+
+  it('applies the unique tool boundary before a real local task launch', async function () {
+    this.timeout(5000);
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-local-reformat-env-'));
+    const fakeZeroshot = path.join(fixtureDir, 'zeroshot');
+    const captureFile = path.join(fixtureDir, 'launch-env.json');
+    const logFile = path.join(fixtureDir, 'task.log');
+    const taskId = 'task-local-env-a1';
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    fs.writeFileSync(logFile, opencodeTextEvent({ plan: 'local env recovery' }));
+    fs.writeFileSync(
+      fakeZeroshot,
+      `#!/usr/bin/env node
+      (async () => {
+        const fs = require('node:fs');
+        const { addTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+        const action = process.argv[2];
+        const taskId = ${JSON.stringify(taskId)};
+        if (action === 'task') {
+          addTask({
+            id: taskId,
+            status: 'completed',
+            provider: 'opencode',
+            logFile: ${JSON.stringify(logFile)},
+            commandCleanup: null
+          });
+          fs.writeFileSync(
+            ${JSON.stringify(captureFile)},
+            JSON.stringify({
+              config: process.env.OPENCODE_CONFIG_CONTENT,
+              agent: process.env.ZEROSHOT_OPENCODE_AGENT
+            })
+          );
+          process.stdout.write('Task spawned: ' + taskId + '\\n');
+          return;
+        }
+        if (action === 'get-log-path') {
+          process.stdout.write(${JSON.stringify(`${logFile}\n`)});
+          return;
+        }
+        if (action === 'status') {
+          process.stdout.write('Status: completed\\n');
+          return;
+        }
+        if (action === 'kill') {
+          updateTask(process.argv[3], { status: 'killed', commandCleanup: null });
+          return;
+        }
+        process.exitCode = 2;
+      })().catch((error) => {
+        process.stderr.write(error.stack + '\\n');
+        process.exitCode = 1;
+      });
+      `,
+      { mode: 0o755 }
+    );
+    const { removeTask } = await import(storeUrl);
+    removeTask(taskId);
+    const schema = {
+      type: 'object',
+      properties: { plan: { type: 'string' } },
+      required: ['plan'],
+    };
+    const agent = new AgentWrapper(
+      {
+        id: 'local-env-reformat',
+        role: 'planner',
+        provider: 'opencode',
+        model: CATALOG_MODEL,
+        jsonSchema: schema,
+        timeout: 0,
+      },
+      { publish() {}, subscribe() {} },
+      { id: 'test-cluster', agents: [] },
+      { testMode: false }
+    );
+    agent.taskCliPath = fakeZeroshot;
+    agent.running = true;
+    agent.state = 'executing_task';
+
+    try {
+      const result = await agent._parseResultOutput('Tool call completed without final JSON');
+      const captured = JSON.parse(fs.readFileSync(captureFile, 'utf8'));
+      const config = JSON.parse(captured.config);
+      assert.deepStrictEqual(result, { plan: 'local env recovery' });
+      assert.strictEqual(captured.agent, config.default_agent);
+      assert.match(captured.agent, /^zeroshot-output-reformatter-[0-9a-f-]{36}$/);
+      assert.deepStrictEqual(config.agent[captured.agent].permission, { '*': 'deny' });
+      assert.deepStrictEqual(config.agent[captured.agent].tools, { '*': false });
+    } finally {
+      removeTask(taskId);
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Nested Docker agent model arguments', function () {
@@ -447,6 +541,61 @@ describe('Isolated opencode structured-output recovery', function () {
       '*': false,
     });
     assert.deepStrictEqual(formatter.tools, { '*': false });
+  });
+
+  it('aborts a stalled container-config lookup before any child launch', async function () {
+    this.timeout(1000);
+    let resolveLookup;
+    let spawnCount = 0;
+    const manager = {
+      getContainerEnvironmentValue() {
+        return new Promise((resolve) => {
+          resolveLookup = resolve;
+        });
+      },
+      spawnInContainer() {
+        spawnCount++;
+        throw new Error('child launch must not occur after setup timeout');
+      },
+    };
+    const agent = {
+      id: 'isolated-config-timeout',
+      role: 'planner',
+      iteration: 1,
+      running: true,
+      state: 'executing_task',
+      timeout: 10,
+      enableLivenessCheck: false,
+      config: { outputFormat: 'json', strictSchema: true },
+      cluster: { id: 'test-cluster' },
+      isolation: { enabled: true, clusterId: 'test-cluster', manager },
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'opencode',
+      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
+      _resolveModelSpecSource: () => 'direct',
+      _log() {},
+      _publishLifecycle() {},
+      _stopLivenessCheck() {},
+    };
+
+    await assert.rejects(
+      spawnClaudeTaskIsolated(agent, 'format this', {
+        skipStructuredResultCheck: true,
+        nested: true,
+        disableTools: true,
+      }),
+      (error) => {
+        assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
+        assert.strictEqual(error.nestedExecutionCancellation, true);
+        return true;
+      }
+    );
+    assert.strictEqual(spawnCount, 0);
+    assert.strictEqual(agent.nestedExecutions.size, 0);
+
+    resolveLookup('{}');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(spawnCount, 0);
   });
 
   it('kills and settles a durable nested task when post-ID log setup fails', async function () {

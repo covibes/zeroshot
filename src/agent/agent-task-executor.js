@@ -212,6 +212,49 @@ function resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName) 
   return process.env[OPENCODE_CONFIG_CONTENT_ENV] || null;
 }
 
+async function resolveIsolatedOpenCodeConfigUnderOwnership({
+  manager,
+  clusterId,
+  providerName,
+  executionHandle,
+}) {
+  if (!executionHandle) {
+    return resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName);
+  }
+
+  let setupPending = true;
+  let rejectSetup;
+  const setupFailure = new Promise((_resolve, reject) => {
+    rejectSetup = reject;
+  });
+  executionHandle.setCancelAction((reason, details = {}) => {
+    if (setupPending) {
+      const error = new Error(reason || 'Nested task setup cancelled');
+      error.code = details.code || 'REFORMAT_CANCELLED';
+      error.nestedExecutionCancellation = true;
+      error.nestedExecutionLifecycle = true;
+      rejectSetup(error);
+    }
+    return { forced: true, beforeLaunch: true };
+  });
+  executionHandle.setFailClosedAction((error) => {
+    if (setupPending) rejectSetup(error);
+  });
+
+  try {
+    const config = await Promise.race([
+      Promise.resolve(resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName)),
+      setupFailure,
+    ]);
+    if (executionHandle.isCancelled) {
+      throw createNestedCancellationError(executionHandle);
+    }
+    return config;
+  } finally {
+    setupPending = false;
+  }
+}
+
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
   if (timeout <= 0) {
@@ -682,7 +725,7 @@ async function spawnClaudeTask(agent, context, options = {}) {
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const modelSpec = resolveAgentModelSpec(agent);
 
-  const ctPath = getClaudeTasksPath();
+  const ctPath = agent.taskCliPath || getClaudeTasksPath();
   const cwd = agent.config.cwd || process.cwd();
   const { desiredOutputFormat, runOutputFormat } = resolveOutputFormatConfig(agent);
   const args = buildTaskRunArgs({
@@ -734,6 +777,7 @@ async function spawnClaudeTask(agent, context, options = {}) {
       const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, {
         claudeSettingsPath,
         disableTools: options.disableTools === true,
+        formatterAgentName: options.formatterAgentName,
       });
       taskId = await spawnTaskProcess({
         agent,
@@ -2020,7 +2064,12 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   // only authoritative bridge back to the detached task row in the container.
   const effectiveOpenCodeConfig =
     options.disableTools === true
-      ? await resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName)
+      ? await resolveIsolatedOpenCodeConfigUnderOwnership({
+          manager,
+          clusterId,
+          providerName,
+          executionHandle: options.executionHandle,
+        })
       : null;
   const isolatedEnv = applyOpenCodeToolBoundary(
     {
@@ -2034,6 +2083,9 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
     options
   );
 
+  if (options.executionHandle?.isCancelled) {
+    throw createNestedCancellationError(options.executionHandle);
+  }
   let isolatedPendingLaunch = null;
   const taskId = await new Promise((resolve, reject) => {
     const proc = manager.spawnInContainer(clusterId, command, {
