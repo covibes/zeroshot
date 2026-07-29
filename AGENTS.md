@@ -83,6 +83,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Issue provider contracts     | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                |
 | Source provider contracts    | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`    |
 | Provider value bounds        | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                |
+| Native worker catalog        | `zeroshot-rust/src/worker_catalog.rs`                                   |
 | Execution runtime seam       | `zeroshot-rust/src/execution.rs`, `execution/types.rs`                  |
 | Local runtime + drivers      | `zeroshot-rust/src/execution/{local,driver}.rs`                         |
 | Local process runner         | `zeroshot-rust/src/execution/process.rs`                                |
@@ -138,6 +139,10 @@ filesystem store, and must preserve ref-first release plus synchronized blob-the
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
 Keep protocol, transport, daemon, compatibility, adapter, credential resolution, ledger, and
 workspace behavior outside it.
+`worker_catalog` is the native product's sole hand-authored, versioned worker-provider inventory.
+It owns bounded provider policy and deterministic identity only; keep role contracts, registries,
+configuration, credential acquisition, executable codecs, concrete drivers, protocol descriptors,
+and Node registry synchronization outside it.
 `ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair
 scheduler are engine-private seams. They own local dispatch placement, fencing, deadlines,
 workspace conflict arbitration, cancellation, and local-process containment only. They do not own
