@@ -25,6 +25,7 @@ const {
 const { findMatchingTrigger, evaluateTrigger } = require('./agent/agent-trigger-evaluator');
 const { executeHook } = require('./agent/agent-hook-executor');
 const { injectInput: injectAgentInput } = require('./agent/agent-input-injector');
+const { NestedExecutionRegistry } = require('./agent/task-execution-handle');
 const {
   spawnClaudeTask,
   followClaudeTaskLogs,
@@ -78,6 +79,8 @@ class AgentWrapper {
     this.currentPromptIdentity = null;
     /** @type {number | null} */
     this.processPid = null; // Track process PID for resource monitoring
+    /** Active child executions never overwrite the parent task identity fields. */
+    this.nestedExecutions = new NestedExecutionRegistry(this.id);
     this.running = false;
     /** @type {Function | null} */
     this.unsubscribe = null;
@@ -512,8 +515,8 @@ class AgentWrapper {
    * Spawn claude-zeroshots process and stream output via message bus
    * @private
    */
-  _spawnClaudeTask(context) {
-    return spawnClaudeTask(this, context);
+  _spawnClaudeTask(context, options = {}) {
+    return spawnClaudeTask(this, context, options);
   }
 
   /**

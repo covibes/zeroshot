@@ -4,15 +4,19 @@
  * When an LLM outputs markdown/text instead of JSON despite schema instructions,
  * this module attempts to extract/reformat the content into valid JSON.
  *
- * STATUS: SDK NOT IMPLEMENTED - Reformatting is not available.
- * This module exists for future extension when SDK support is added.
- *
- * To enable reformatting:
- * 1. Implement SDK support in the provider (getSDKEnvVar, callSimple)
- * 2. The reformatOutput() function will then work automatically
+ * Opencode output can be reformatted through its CLI when direct JSON extraction fails.
+ * Other providers remain on their own extraction paths and never depend on the opencode binary.
  */
 
 const DEFAULT_MAX_ATTEMPTS = 3;
+
+
+function createCancellationError() {
+  const error = new Error('Output reformatting cancelled');
+  error.code = 'REFORMAT_CANCELLED';
+  return error;
+}
+
 
 /**
  * Build the reformatting prompt
@@ -27,7 +31,9 @@ function buildReformatPrompt(rawOutput, schema, previousError = null) {
   // Truncate long outputs to avoid context limits
   const truncatedOutput = rawOutput.length > 4000 ? rawOutput.slice(-4000) : rawOutput;
 
-  let prompt = `Convert this text into a JSON object matching the schema.
+  let prompt = `CRITICAL: Do NOT use any tools. Do NOT read, write, or edit any files. Do NOT explore the codebase. This is a pure text-to-JSON transformation — respond with JSON only.
+
+Convert this text into a JSON object matching the schema.
 
 ## SCHEMA
 \`\`\`json
@@ -58,44 +64,45 @@ Fix this issue in your response.`;
 }
 
 /**
- * Attempt to reformat non-JSON output into valid JSON
- *
- * STATUS: SDK NOT IMPLEMENTED - This function always throws.
- * When SDK support is added to providers, this will work automatically.
+ * This fallback is intentionally scoped to opencode agents. It participates in agent
+ * cancellation so retries cannot outlive cluster shutdown.
  *
  * @param {Object} options
  * @param {string} options.rawOutput - The non-JSON output to reformat
  * @param {Object} options.schema - Target JSON schema
- * @param {string} options.providerName - Provider name (claude, codex, gemini, opencode)
+ * @param {string} options.providerName - Active provider name
  * @param {number} [options.maxAttempts=3] - Maximum reformatting attempts
  * @param {Function} [options.onAttempt] - Callback for each attempt (attempt, error)
+ * @param {Function} [options.isCancelled] - Returns true after agent cancellation
+ * @param {Function} options.runReformat - Runs the prompt in the active agent execution context
  * @returns {Promise<Object>} The reformatted JSON object
- * @throws {Error} Always throws - SDK not implemented
+ * @throws {Error} If the provider is unsupported, cancellation occurs, or attempts fail
  */
-function reformatOutput({
+async function reformatOutput({
   rawOutput,
-  schema: _schema,
+  schema,
   providerName,
-  maxAttempts: _maxAttempts = DEFAULT_MAX_ATTEMPTS,
-  onAttempt: _onAttempt,
+  maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  onAttempt,
+  isCancelled = () => false,
+  runReformat,
 }) {
-  // SDK not implemented - reformatting not available
-  // When SDK support is added, uncomment the implementation below
-  return Promise.reject(
-    new Error(
-      `Output reformatting not available: SDK not implemented for provider "${providerName}". ` +
+  if (providerName !== 'opencode') {
+    throw new Error(
+      `Output reformatting not available for provider "${providerName}". ` +
         `Agent output must be valid JSON. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
-    )
-  );
+    );
+  }
+  if (typeof runReformat !== 'function') {
+    throw new Error('Output reformatting requires the active agent execution context');
+  }
 
-  // FUTURE: When SDK support is added to providers, uncomment this:
-  /*
-  const { getProvider } = require('../providers');
-  const provider = getProvider(providerName);
 
+  const { extractJsonFromOutput } = require('./output-extraction');
   let lastError = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (isCancelled()) throw createCancellationError();
     if (onAttempt) {
       onAttempt(attempt, lastError);
     }
@@ -103,23 +110,19 @@ function reformatOutput({
     const prompt = buildReformatPrompt(rawOutput, schema, lastError);
 
     try {
-      const result = await provider.callSimple(prompt, {
-        level: 'level1',
-        maxTokens: 2000,
-      });
-
+      const result = await runReformat(prompt);
+      if (isCancelled()) throw createCancellationError();
       if (!result?.success) {
-        lastError = result?.error || 'API call failed';
+        lastError = result?.error || 'reformat task failed';
+        continue;
+      }
+      const output = result.output;
+      if (!output) {
+        lastError = 'reformat task returned no output';
         continue;
       }
 
-      if (!result?.text) {
-        lastError = 'Empty response from reformatting model';
-        continue;
-      }
-
-      const parsed = extractJsonFromOutput(result.text, providerName);
-
+      const parsed = extractJsonFromOutput(output, 'opencode');
       if (!parsed) {
         lastError = 'Could not extract JSON from reformatted output';
         continue;
@@ -133,14 +136,24 @@ function reformatOutput({
 
       return parsed;
     } catch (err) {
+      if (
+        err.code === 'REFORMAT_CANCELLED' ||
+        err.code === 'AGENT_TASK_TIMEOUT' ||
+        err.nestedExecutionLifecycle === true ||
+        err.retainTaskHandle === true ||
+        err.permanent === true ||
+        err.terminationExhausted === true
+      ) {
+        throw err;
+      }
       lastError = err.message;
     }
   }
 
   throw new Error(
-    `Failed to reformat output after ${maxAttempts} attempts. Last error: ${lastError}`
+    `Failed to reformat output after ${maxAttempts} attempts (provider "${providerName}"). ` +
+      `Last error: ${lastError}. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
   );
-  */
 }
 
 /**

@@ -335,9 +335,12 @@ function resolveFieldValue(structuredOutput, fieldNames) {
   return null;
 }
 
-function resolvePrClaimsFromOutput({ output, providerName, adapter }) {
+function resolvePrClaimsFromOutput({ output, parsedResult, providerName, adapter }) {
   const { extractJsonFromOutput } = require('./output-extraction');
-  const structuredOutput = extractJsonFromOutput(output, providerName) || {};
+  const structuredOutput =
+    parsedResult && typeof parsedResult === 'object'
+      ? parsedResult
+      : extractJsonFromOutput(output, providerName) || {};
 
   const structuredUrl = resolveFieldValue(structuredOutput, getClaimUrlFieldCandidates(adapter));
   const structuredNumber = resolveFieldValue(
@@ -586,7 +589,12 @@ async function verifyPullRequest({ result, agent, autoMerge }) {
   const adapter = getVerificationAdapter(platform);
   const providerName =
     typeof agent?._resolveProvider === 'function' ? agent._resolveProvider() : 'claude';
-  const claims = resolvePrClaimsFromOutput({ output: result.output, providerName, adapter });
+  const claims = resolvePrClaimsFromOutput({
+    output: result.output,
+    parsedResult: result.parsedResult,
+    providerName,
+    adapter,
+  });
 
   if (handleBlockedPusherOutcome({ claims, platform, agent })) {
     return;

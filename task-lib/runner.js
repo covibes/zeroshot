@@ -125,6 +125,9 @@ function buildProviderOptions(options, runtime, modelSelection) {
     ...mcpConfigOption(options),
     ...claudeSettingsFileOption(),
     ...(options.resume ? { resumeSessionId: options.resume } : {}),
+    ...(process.env.ZEROSHOT_OPENCODE_AGENT?.trim()
+      ? { agentName: process.env.ZEROSHOT_OPENCODE_AGENT.trim() }
+      : {}),
     ...(options.continue ? { continueSession: true } : {}),
   };
 }

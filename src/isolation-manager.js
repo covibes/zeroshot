@@ -699,6 +699,22 @@ class IsolationManager {
     });
   }
 
+  async getContainerEnvironmentValue(clusterId, name) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new Error(`Invalid container environment variable name: ${name}`);
+    }
+    const result = await this.execInContainer(clusterId, ['printenv', name]);
+    if (result.code === 1) return null;
+    if (result.code !== 0) {
+      throw new Error(
+        `Failed to read container environment variable ${name}: ${
+          result.stderr || `exit ${result.code}`
+        }`
+      );
+    }
+    return result.stdout.replace(/\r?\n$/, '');
+  }
+
   /**
    * Spawn a PTY-like process inside the container
    * Returns a child process that can be used like a PTY

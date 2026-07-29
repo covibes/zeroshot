@@ -40,7 +40,12 @@ function deepMerge(target, source) {
   return result;
 }
 
+function hasCachedParsedResult(result) {
+  return result?.parsedResult !== undefined && result.parsedResult !== null;
+}
+
 async function parseResultDataForHookLogic({ agent, result }) {
+  if (hasCachedParsedResult(result)) return result.parsedResult;
   if (!result?.output) return null;
   try {
     return await agent._parseResultOutput(result.output);
@@ -178,10 +183,12 @@ function logMissingResultFields({ agent, context, accessedFields, missingFields,
 }
 
 async function parseTransformResultData({ context, agent, script, scriptUsesResult }) {
-  if (context.result?.output) {
-    let resultData = null;
+  if (hasCachedParsedResult(context.result) || context.result?.output) {
+    let resultData = context.result?.parsedResult ?? null;
     try {
-      resultData = await agent._parseResultOutput(context.result.output);
+      if (!hasCachedParsedResult(context.result)) {
+        resultData = await agent._parseResultOutput(context.result.output);
+      }
     } catch (parseError) {
       logTransformParseFailure({ agent, context, parseError });
       throw new Error(
@@ -423,7 +430,7 @@ async function substituteTemplate(params) {
           `Agent: ${agent.id}, TaskID: ${agent.currentTaskId}, Iteration: ${agent.iteration}`
       );
     }
-    if (!context.result.output) {
+    if (!context.result.output && !hasCachedParsedResult(context.result)) {
       // Log detailed context for debugging
       const taskId = context.result.taskId || agent.currentTaskId || 'UNKNOWN';
       console.error(`\n${'='.repeat(80)}`);
@@ -478,8 +485,9 @@ async function substituteTemplate(params) {
           `Task logs posted to message bus.`
       );
     }
-    // Parse result output - WILL THROW if no JSON block
-    resultData = await agent._parseResultOutput(context.result.output);
+    resultData = hasCachedParsedResult(context.result)
+      ? context.result.parsedResult
+      : await agent._parseResultOutput(context.result.output);
   }
 
   // Helper to escape a value for JSON string substitution

@@ -268,6 +268,7 @@ export interface BuildProviderCommandOptions {
   readonly outputFormat?: OutputFormat;
   readonly jsonSchema?: unknown;
   readonly cwd?: string;
+  readonly agentName?: string;
   readonly autoApprove?: boolean;
   readonly resumeSessionId?: string;
   readonly continueSession?: boolean;
