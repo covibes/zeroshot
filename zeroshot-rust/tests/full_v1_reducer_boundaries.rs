@@ -7,7 +7,9 @@ use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
 use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryError};
 use serde_json::{json, Value};
 use zeroshot_engine::cluster_ledger::store::Position;
-use zeroshot_engine::cluster_ledger::{ExecutionId, NodeInstanceId, RunSequence, StructuralOccurrence};
+use zeroshot_engine::cluster_ledger::{
+    ExecutionId, ExecutionVoidReason, NodeInstanceId, RunSequence, StructuralOccurrence,
+};
 use zeroshot_engine::full_v1_reducer::{
     Decision, DurableExecution, DurableExecutionState, FullV1Reducer, ReducerError, ReductionInput,
     TerminalProjection,
@@ -386,6 +388,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
     );
     unowned.state = DurableExecutionState::Voided {
         position: Position::new(5).unwrap(),
+        reason: ExecutionVoidReason::ParallelJoin,
     };
     assert_eq!(
         FullV1Reducer::new(&sequential)
@@ -412,6 +415,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
     );
     premature_parallel.state = DurableExecutionState::Voided {
         position: Position::new(2).unwrap(),
+        reason: ExecutionVoidReason::ParallelJoin,
     };
     let later_parallel_winner = execution(
         ExecutionSpec::new(2, 2, "owned_winner").settled_at(5),
@@ -456,15 +460,56 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
     );
     premature_map_void.state = DurableExecutionState::Voided {
         position: Position::new(2).unwrap(),
+        reason: ExecutionVoidReason::MapTerminal,
     };
     assert_eq!(
         FullV1Reducer::new(&map_graph)
             .reduce(input(
                 &json!({"items":[null,null]}),
-                &[premature_map_void, map_winner],
+                &[premature_map_void, map_winner.clone()],
             ))
             .unwrap_err(),
         ReducerError::InconsistentHistory
+    );
+
+    let mut wrong_map_reason = execution(
+        ExecutionSpec::new(2, 2, "causal_map_work")
+            .indices(vec![1])
+            .settled_at(6),
+        success(),
+    );
+    wrong_map_reason.state = DurableExecutionState::Voided {
+        position: Position::new(6).unwrap(),
+        reason: ExecutionVoidReason::ParallelJoin,
+    };
+    assert_eq!(
+        FullV1Reducer::new(&map_graph)
+            .reduce(input(
+                &json!({"items":[null,null]}),
+                &[wrong_map_reason, map_winner.clone()],
+            ))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
+    let mut correct_map_reason = execution(
+        ExecutionSpec::new(2, 2, "causal_map_work")
+            .indices(vec![1])
+            .settled_at(6),
+        success(),
+    );
+    correct_map_reason.state = DurableExecutionState::Voided {
+        position: Position::new(6).unwrap(),
+        reason: ExecutionVoidReason::MapTerminal,
+    };
+    assert!(
+        FullV1Reducer::new(&map_graph)
+            .reduce(input(
+                &json!({"items":[null,null]}),
+                &[correct_map_reason, map_winner],
+            ))
+            .unwrap()
+            .terminal
+            .is_some()
     );
 
     let mut owned = execution(
@@ -473,10 +518,22 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
     );
     owned.state = DurableExecutionState::Voided {
         position: Position::new(5).unwrap(),
+        reason: ExecutionVoidReason::ParallelJoin,
     };
     let winner = execution(
         ExecutionSpec::new(2, 2, "owned_winner").settled_at(3),
         success(),
+    );
+    let mut wrong_parallel_reason = owned.clone();
+    wrong_parallel_reason.state = DurableExecutionState::Voided {
+        position: Position::new(5).unwrap(),
+        reason: ExecutionVoidReason::MapTerminal,
+    };
+    assert_eq!(
+        FullV1Reducer::new(&parallel)
+            .reduce(input(&json!({}), &[wrong_parallel_reason, winner.clone()],))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
     );
     let reduction = FullV1Reducer::new(&parallel)
         .reduce(input(&json!({}), &[owned, winner]))

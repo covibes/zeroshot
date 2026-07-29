@@ -32,6 +32,7 @@ pub enum DurableExecutionState {
     },
     Voided {
         position: Position,
+        reason: ExecutionVoidReason,
     },
 }
 
@@ -62,6 +63,7 @@ pub fn durable_executions_from_replay(
         let execution_state = if let Some(voided) = state.execution_voids.get(&context.execution) {
             DurableExecutionState::Voided {
                 position: voided.position,
+                reason: voided.reason,
             }
         } else if state.settlements.contains_key(&context.execution) {
             let output = state
@@ -1287,8 +1289,8 @@ impl<'a> Engine<'a> {
                         .starts_with(scope.map_indices)
                     && match &execution.state {
                         DurableExecutionState::Active => true,
-                        DurableExecutionState::Voided { position } => {
-                            *position > scope.authorization
+                        DurableExecutionState::Voided { position, reason } => {
+                            *position > scope.authorization && *reason == scope.reason
                         }
                         DurableExecutionState::Settled { .. } => false,
                     }
@@ -1329,8 +1331,8 @@ impl<'a> Engine<'a> {
                         .starts_with(scope.winner_scope)
                     && match &execution.state {
                         DurableExecutionState::Active => true,
-                        DurableExecutionState::Voided { position } => {
-                            *position > scope.common.authorization
+                        DurableExecutionState::Voided { position, reason } => {
+                            *position > scope.common.authorization && *reason == scope.common.reason
                         }
                         DurableExecutionState::Settled { .. } => false,
                     }

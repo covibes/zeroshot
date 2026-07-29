@@ -205,6 +205,16 @@ async fn reducer_execution_context_attempts_and_voids_replay_exactly() {
         zeroshot_engine::full_v1_reducer::durable_executions_from_replay(&state, first.run)
             .unwrap();
     assert_eq!(durable.len(), 2);
+    assert!(durable.iter().any(|execution| {
+        execution.execution == second.execution
+            && matches!(
+                &execution.state,
+                zeroshot_engine::full_v1_reducer::DurableExecutionState::Voided {
+                    reason: ExecutionVoidReason::ParallelJoin,
+                    ..
+                }
+            )
+    }));
     assert!(
         zeroshot_engine::full_v1_reducer::durable_executions_from_replay(
             &state,
