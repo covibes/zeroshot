@@ -173,6 +173,33 @@ async fn cancellation_and_deadline_return_cleanup_evidence_and_reap_descendants(
 }
 
 #[tokio::test]
+async fn closed_stdio_does_not_release_a_live_child_before_deadline() {
+    let pid_file = unique_temp_path("zeroshot-local-process-closed-stdio.pid");
+    let script = format!(
+        "printf %s $$ > {}; exec 0<&- 1>&- 2>&-; exec /bin/sleep 30",
+        shell_quote(pid_file.to_string_lossy().as_ref())
+    );
+    let (_cancel_tx, cancellation) = cancellation_pair();
+    let mut timed = command("/bin/sh", vec!["-c", &script]);
+    timed.deadline = Instant::now() + Duration::from_millis(150);
+    let handle = tokio::spawn(async move {
+        LocalProcessRunner::new()
+            .run(timed, cancellation)
+            .await
+            .unwrap()
+    });
+    let child_pid = wait_for_child_pid(&pid_file).await;
+    let output = tokio::time::timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("closed stdio must not bypass the deadline")
+        .unwrap();
+    assert!(output.timed_out);
+    assert_eq!(output.cleanup, ProcessCleanupEvidence::Reaped);
+    wait_for_process_exit(child_pid).await;
+    let _ = fs::remove_file(pid_file);
+}
+
+#[tokio::test]
 async fn diagnostics_are_bounded() {
     let (_cancel_tx, cancellation) = cancellation_pair();
     let output = LocalProcessRunner::new()
