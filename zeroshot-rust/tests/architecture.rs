@@ -97,7 +97,28 @@ fn worker_catalog_has_no_build_or_node_typescript_source_inputs() {
         "native product must not have a custom build target"
     );
 
-    let build_and_source_inputs = format!("{manifest}\n{}", rust_sources(&["src"]));
+    let mut product_files = BTreeSet::new();
+    relative_files(&product, &product, &mut product_files);
+    let mut build_and_source_inputs = manifest;
+    for relative in product_files.iter().filter(|relative| {
+        relative.ends_with(".rs") && relative.as_str() != "tests/architecture.rs"
+    }) {
+        build_and_source_inputs.push('\n');
+        build_and_source_inputs.push_str(&read(&product.join(relative)));
+    }
+    for target in product_package(&metadata)["targets"]
+        .as_array()
+        .expect("package targets must be an array")
+    {
+        let source = target["src_path"]
+            .as_str()
+            .expect("Cargo target must have a source path");
+        let source = std::path::Path::new(source);
+        if source.starts_with(&product) && source != product.join("tests/architecture.rs") {
+            build_and_source_inputs.push('\n');
+            build_and_source_inputs.push_str(&read(source));
+        }
+    }
     for forbidden in [
         "agent-cli-provider",
         "provider-registry",
@@ -461,7 +482,44 @@ fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_b
 
 #[test]
 fn worker_catalog_adds_no_out_of_scope_product_construction() {
-    let product_source = rust_sources(&["src"]);
+    let product = product_root();
+    let mut product_files = BTreeSet::new();
+    relative_files(&product, &product.join("src"), &mut product_files);
+    let top_level_source_entries = product_files
+        .iter()
+        .filter_map(|relative| {
+            relative
+                .strip_prefix("src/")
+                .and_then(|path| path.split('/').next())
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        top_level_source_entries,
+        BTreeSet::from([
+            "artifact_store",
+            "artifact_store.rs",
+            "cluster_ledger",
+            "cluster_ledger.rs",
+            "execution",
+            "execution.rs",
+            "fault",
+            "fault.rs",
+            "issue_provider",
+            "issue_provider.rs",
+            "lib.rs",
+            "main.rs",
+            "observability.rs",
+            "provider_value",
+            "provider_value.rs",
+            "scheduler.rs",
+            "source_code_provider",
+            "source_code_provider.rs",
+            "worker_catalog.rs",
+        ]),
+        "new product modules require an issue-authorized architecture amendment"
+    );
+
+    let catalog_source = read(&product.join("src/worker_catalog.rs"));
     for forbidden in [
         "pub struct RoleContract",
         "pub enum RoleContract",
@@ -500,8 +558,8 @@ fn worker_catalog_adds_no_out_of_scope_product_construction() {
         "openengine_cluster_protocol::worker",
     ] {
         assert!(
-            !product_source.contains(forbidden),
-            "worker catalog crossed an issue-owned product boundary: {forbidden}"
+            !catalog_source.contains(forbidden),
+            "worker catalog crossed its owned boundary: {forbidden}"
         );
     }
 }
