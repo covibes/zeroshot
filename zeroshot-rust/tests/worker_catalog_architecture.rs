@@ -7,7 +7,7 @@ use architecture_support::{product_package, product_root, read, relative_files, 
 
 const _: fn() -> String = architecture_support::runtime_source;
 const _: fn(&[&str]) -> String = architecture_support::rust_sources;
-const EXPECTED_TOP_LEVEL_SOURCE_ENTRIES: [&str; 20] = [
+const EXPECTED_TOP_LEVEL_SOURCE_ENTRIES: [&str; 21] = [
     "artifact_store",
     "artifact_store.rs",
     "cluster_ledger",
@@ -24,6 +24,7 @@ const EXPECTED_TOP_LEVEL_SOURCE_ENTRIES: [&str; 20] = [
     "observability.rs",
     "provider_value",
     "provider_value.rs",
+    "required_proof.rs",
     "scheduler.rs",
     "source_code_provider",
     "source_code_provider.rs",

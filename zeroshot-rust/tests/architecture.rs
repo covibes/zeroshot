@@ -63,6 +63,7 @@ fn product_contains_the_required_native_files() {
         "src/worker_catalog.rs",
         "tests/architecture.rs",
         "tests/worker_catalog_architecture.rs",
+        "tests/required_proof_architecture.rs",
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
         "tests/execution_runtime_contract.rs",
@@ -112,6 +113,7 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
         ("observability_contract".to_owned(), "test".to_owned()),
         ("source_authority_contract".to_owned(), "test".to_owned()),
         ("required_proof_contract".to_owned(), "test".to_owned()),
+        ("required_proof_architecture".to_owned(), "test".to_owned()),
         ("scheduler_contract".to_owned(), "test".to_owned()),
     ] {
         assert!(
@@ -435,91 +437,6 @@ fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_b
 }
 
 #[test]
-fn worker_catalog_adds_no_out_of_scope_product_construction() {
-    let product = product_root();
-    let mut product_files = BTreeSet::new();
-    relative_files(&product, &product.join("src"), &mut product_files);
-    let top_level_source_entries = product_files
-        .iter()
-        .filter_map(|relative| {
-            relative
-                .strip_prefix("src/")
-                .and_then(|path| path.split('/').next())
-        })
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        top_level_source_entries,
-        BTreeSet::from([
-            "artifact_store",
-            "artifact_store.rs",
-            "cluster_ledger",
-            "cluster_ledger.rs",
-            "execution",
-            "execution.rs",
-            "fault",
-            "fault.rs",
-            "issue_provider",
-            "issue_provider.rs",
-            "lib.rs",
-            "main.rs",
-            "observability.rs",
-            "provider_value",
-            "provider_value.rs",
-            "required_proof.rs",
-            "scheduler.rs",
-            "source_code_provider",
-            "source_code_provider.rs",
-            "worker_catalog.rs",
-        ]),
-        "new product modules require an issue-authorized architecture amendment"
-    );
-
-    let catalog_source = read(&product.join("src/worker_catalog.rs"));
-    for forbidden in [
-        "pub struct RoleContract",
-        "pub enum RoleContract",
-        "RoleContractPack",
-        "RoleManifest",
-        "pub mod worker_registry",
-        "mod worker_registry;",
-        "struct WorkerRegistry",
-        "impl WorkerRegistry",
-        "impl WorkerRegistry for",
-        "pub mod config",
-        "mod config;",
-        "mod native_config",
-        "struct NativeConfig",
-        "struct WorkerConfig",
-        "struct ProviderConfig",
-        "struct NativeSettings",
-        "mod credentials;",
-        "mod credential;",
-        "CredentialResolver",
-        "CredentialLease",
-        "CredentialCodec",
-        "resolve_credentials",
-        "decode_credentials",
-        "ExecutableCodec",
-        "encode_executable",
-        "decode_executable",
-        "struct GatewayDriver",
-        "struct CliProcessDriver",
-        "struct AcpStdioDriver",
-        "impl WorkerDriver for",
-        "impl BuiltinWorkerDriver for",
-        "struct ProtocolDescriptor",
-        "struct WorkerDescriptor",
-        "WorkerDescriptor::new",
-        "openengine_cluster_protocol::worker",
-    ] {
-        assert!(
-            !catalog_source.contains(forbidden),
-            "worker catalog crossed its owned boundary: {forbidden}"
-        );
-    }
-}
-
-#[test]
 fn required_proof_contract_stays_product_private_byte_free_and_non_executing() {
     let product = product_root();
     let proof = read(&product.join("src/required_proof.rs"));
@@ -581,22 +498,6 @@ fn required_proof_contract_stays_product_private_byte_free_and_non_executing() {
         assert!(
             !protocol.contains(private_type),
             "product-private proof type leaked into protocol/server: {private_type}"
-        );
-    }
-}
-
-#[test]
-fn manifest_has_no_client_testkit_or_node_dependencies() {
-    let manifest = read(&product_root().join("Cargo.toml"));
-    for forbidden_dependency in [
-        "openengine-cluster-client",
-        "openengine-cluster-testkit",
-        "node",
-        "npm",
-    ] {
-        assert!(
-            !manifest.contains(forbidden_dependency),
-            "forbidden product dependency: {forbidden_dependency}"
         );
     }
 }
