@@ -2,10 +2,7 @@
 
 use std::io;
 
-use openengine_cluster_protocol::{
-    JsonRpcNotification, JsonRpcRequest, RequestId, SubscriptionCancelParams, PARSE_ERROR,
-};
-use serde_json::Value;
+use openengine_cluster_protocol::{RequestId, PARSE_ERROR};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -13,7 +10,8 @@ use tokio_util::codec::{Framed, LinesCodec, LinesCodecError};
 
 use crate::connection::{
     dispatch_classified_request, new_connection_setup, shutdown_connection, ConnectionSetup,
-    ConnectionState, DispatchCtx, RequestDispatch, RequestKind, ShutdownArgs,
+    ConnectionState, DecodedFrame, DecodedOutcome, DecodedRequest, DispatchCtx, RequestDispatch,
+    RequestKind, ShutdownArgs,
 };
 use crate::{serialize_error, ClusterBackend, Dispatcher};
 
@@ -121,37 +119,51 @@ where
     Ok(())
 }
 
-/// Classifies and dispatches one decoded NDJSON line, spawning passthrough work after the shared
-/// connection core applies duplicate-id rejection and task admission.
+/// Decodes and dispatches one NDJSON line, spawning every passthrough outcome after the shared
+/// connection core applies the legacy duplicate-id and task-slot admission boundary.
 async fn dispatch_ndjson_line<B>(line: String, ctx: &mut DispatchCtx<'_, B>)
 where
     B: ClusterBackend,
 {
-    let kind = classify_ndjson_line(&line);
-    if let RequestDispatch::Passthrough { id, permit } =
-        dispatch_classified_request(kind, ctx).await
+    let kind = match DecodedFrame::decode(&line) {
+        Ok(frame) => frame.into_request_kind(),
+        Err(response) => RequestKind::Passthrough {
+            admission_id: None,
+            outcome: DecodedOutcome::Response(response),
+        },
+    };
+    if let RequestDispatch::Passthrough {
+        admission_id,
+        outcome,
+        permit,
+    } = dispatch_classified_request(kind, ctx).await
     {
         let task_dispatcher = ctx.dispatcher.clone();
         let task_state = ctx.state.clone();
         ctx.tasks.spawn(async move {
             let _permit = permit;
-            run_passthrough_request(task_dispatcher, id, line, task_state).await;
+            run_passthrough_request(task_dispatcher, admission_id, outcome, task_state).await;
         });
     }
 }
 
-/// Dispatches a non-`watch` request or notification line, releasing its in-flight id (if any)
-/// once the backend call returns and before the response is enqueued.
+/// Resolves one admitted decoded outcome and releases its legacy classification id before the
+/// response is enqueued.
 async fn run_passthrough_request<B>(
     dispatcher: Dispatcher<B>,
-    id: Option<RequestId>,
-    line: String,
+    admission_id: Option<RequestId>,
+    outcome: DecodedOutcome,
     state: ConnectionState,
 ) where
     B: ClusterBackend,
 {
-    let response = dispatcher.dispatch(&line).await;
-    if let Some(id) = id {
+    let response = match outcome {
+        DecodedOutcome::Request(DecodedRequest { id, method, params }) => {
+            dispatcher.dispatch_decoded(id, &method, params).await
+        }
+        DecodedOutcome::Response(response) => response,
+    };
+    if let Some(id) = admission_id {
         state.in_flight_ids.lock().remove(&id);
     }
     let _ = state.outbound_tx.send(response).await;
@@ -168,42 +180,4 @@ where
         tokio::io::stderr(),
     )
     .await
-}
-
-/// Classifies a decoded NDJSON line without fully deserializing its params: a `watch`/`logs`/
-/// `agent/attach` request is pulled out for subscription handling, a `subscription/cancel`
-/// notification is pulled out for inline cancellation, and everything else (including malformed
-/// JSON) passes through to [`Dispatcher::dispatch`] unchanged.
-pub(crate) fn classify_ndjson_line(line: &str) -> RequestKind {
-    if let Ok(request) = serde_json::from_str::<JsonRpcRequest<Value>>(line) {
-        if request.method == "watch" {
-            return RequestKind::Watch {
-                id: request.id,
-                params: request.params,
-            };
-        }
-        if request.method == "logs" {
-            return RequestKind::Logs {
-                id: request.id,
-                params: request.params,
-            };
-        }
-        if request.method == "agent/attach" {
-            return RequestKind::AgentAttach {
-                id: request.id,
-                params: request.params,
-            };
-        }
-        return RequestKind::Passthrough {
-            id: Some(request.id),
-        };
-    }
-    if let Ok(notification) =
-        serde_json::from_str::<JsonRpcNotification<SubscriptionCancelParams>>(line)
-    {
-        if notification.method == "subscription/cancel" {
-            return RequestKind::Cancel(notification.params.subscription_id);
-        }
-    }
-    RequestKind::Passthrough { id: None }
 }

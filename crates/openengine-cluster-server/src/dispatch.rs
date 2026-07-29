@@ -5,11 +5,12 @@ use std::sync::Arc;
 use openengine_cluster_protocol::{
     ApplyParams, DeleteParams, DomainErrorData, GetParams, InitializeParams, PlanParams, RequestId,
     ResubmitParams, RetryParams, StopParams, UpdateParams, APPLICATION_ERROR, INTERNAL_ERROR_CODE,
-    INVALID_PARAMS, INVALID_REQUEST, JSON_RPC_VERSION, METHOD_NOT_FOUND, PARSE_ERROR,
-    PROTOCOL_VERSION, SCHEMA_VIOLATION, UNSUPPORTED_PROTOCOL_VERSION,
+    INVALID_PARAMS, METHOD_NOT_FOUND, PROTOCOL_VERSION, SCHEMA_VIOLATION,
+    UNSUPPORTED_PROTOCOL_VERSION,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
+use crate::connection::DecodedRequest;
 use crate::{
     serialize_backend_error, serialize_error, serialize_success, BackendError, ClusterBackend,
     ConnectionContext, Dispatcher,
@@ -41,90 +42,22 @@ where
     }
 
     pub async fn dispatch(&self, input: &str) -> String {
-        let value = match serde_json::from_str::<Value>(input) {
-            Ok(value) => value,
-            Err(_) => return serialize_error(None, PARSE_ERROR, "Parse error", None),
-        };
-
-        let object = match value {
-            Value::Object(object) => object,
-            Value::Array(_) => {
-                return serialize_error(None, INVALID_REQUEST, "Invalid Request", None);
-            }
-            _ => return serialize_error(None, INVALID_REQUEST, "Invalid Request", None),
-        };
-
-        self.dispatch_object(object).await
-    }
-
-    async fn dispatch_object(&self, object: Map<String, Value>) -> String {
-        let (id, method, params) = match Self::parse_request(&object) {
-            Ok(parsed) => parsed,
+        let request = match DecodedRequest::decode(input) {
+            Ok(request) => request,
             Err(response) => return response,
         };
-
-        self.route(method, id, params).await
+        let DecodedRequest { id, method, params } = request;
+        self.dispatch_decoded(id, &method, params).await
     }
 
-    fn parse_request(
-        object: &Map<String, Value>,
-    ) -> Result<(RequestId, ImplementedMethod, Value), String> {
-        if object.get("jsonrpc") != Some(&Value::String(JSON_RPC_VERSION.to_owned())) {
-            return Err(serialize_error(
-                None,
-                INVALID_REQUEST,
-                "Invalid Request",
-                None,
-            ));
+    pub async fn dispatch_decoded(&self, id: RequestId, method: &str, params: Value) -> String {
+        let Some(method) = ImplementedMethod::from_name(method) else {
+            return serialize_error(Some(id), METHOD_NOT_FOUND, "Method not found", None);
+        };
+        if !params.is_object() {
+            return serialize_error(Some(id), INVALID_PARAMS, "Invalid params", None);
         }
-
-        let Some(Value::String(method_name)) = object.get("method") else {
-            return Err(serialize_error(
-                None,
-                INVALID_REQUEST,
-                "Invalid Request",
-                None,
-            ));
-        };
-        let Some(id_value) = object.get("id") else {
-            return Err(serialize_error(
-                None,
-                INVALID_REQUEST,
-                "Invalid Request",
-                None,
-            ));
-        };
-        let Some(id) = RequestId::from_json_value(id_value) else {
-            return Err(serialize_error(
-                None,
-                INVALID_REQUEST,
-                "Invalid Request",
-                None,
-            ));
-        };
-
-        let Some(method) = ImplementedMethod::from_name(method_name) else {
-            return Err(serialize_error(
-                Some(id),
-                METHOD_NOT_FOUND,
-                "Method not found",
-                None,
-            ));
-        };
-
-        let params = match object.get("params") {
-            Some(Value::Object(params)) => Value::Object(params.clone()),
-            _ => {
-                return Err(serialize_error(
-                    Some(id),
-                    INVALID_PARAMS,
-                    "Invalid params",
-                    None,
-                ));
-            }
-        };
-
-        Ok((id, method, params))
+        self.route(method, id, params).await
     }
 
     async fn route(&self, method: ImplementedMethod, id: RequestId, params: Value) -> String {

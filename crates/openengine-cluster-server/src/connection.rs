@@ -4,6 +4,7 @@
 pub(crate) mod admission;
 pub(crate) mod agent_attach;
 pub(crate) mod dispatch;
+mod frame;
 pub(crate) mod logs;
 pub(crate) mod subscription;
 
@@ -11,6 +12,7 @@ pub(crate) use dispatch::{
     dispatch_classified_request, new_connection_setup, shutdown_connection, ConnectionSetup,
     DispatchCtx, RequestDispatch, ShutdownArgs,
 };
+pub(crate) use frame::DecodedFrame;
 
 use admission::InFlightIds;
 
@@ -20,8 +22,8 @@ use std::sync::Arc;
 
 use openengine_cluster_protocol::{
     DomainErrorData, EventNotification, JsonRpcNotification, RequestId,
-    SubscriptionClosedNotification, SubscriptionId, WatchParams, INVALID_PARAMS, JSON_RPC_VERSION,
-    SCHEMA_VIOLATION,
+    SubscriptionClosedNotification, SubscriptionId, WatchParams, INVALID_PARAMS, INVALID_REQUEST,
+    JSON_RPC_VERSION, SCHEMA_VIOLATION,
 };
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -29,6 +31,71 @@ use tokio::sync::{mpsc, Notify};
 
 use crate::watch::{WatchEventStream, WatchHandle, WatchStreamItem};
 use crate::{serialize_backend_error, serialize_error, serialize_success, ClusterBackend, Dispatcher};
+
+/// A JSON-RPC request after transport framing and envelope decoding, but before method lookup or
+/// typed parameter decoding.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DecodedRequest {
+    pub(crate) id: RequestId,
+    pub(crate) method: String,
+    pub(crate) params: Value,
+}
+
+impl DecodedRequest {
+    pub(crate) fn decode(input: &str) -> Result<Self, String> {
+        DecodedFrame::decode(input).and_then(|frame| Self::from_value(frame.into_value()))
+    }
+
+    pub(crate) fn from_value(value: Value) -> Result<Self, String> {
+        let Value::Object(mut object) = value else {
+            return Err(serialize_error(
+                None,
+                INVALID_REQUEST,
+                "Invalid Request",
+                None,
+            ));
+        };
+
+        if object.remove("jsonrpc") != Some(Value::String(JSON_RPC_VERSION.to_owned())) {
+            return Err(serialize_error(
+                None,
+                INVALID_REQUEST,
+                "Invalid Request",
+                None,
+            ));
+        }
+        let Some(Value::String(method)) = object.remove("method") else {
+            return Err(serialize_error(
+                None,
+                INVALID_REQUEST,
+                "Invalid Request",
+                None,
+            ));
+        };
+        let Some(id_value) = object.remove("id") else {
+            return Err(serialize_error(
+                None,
+                INVALID_REQUEST,
+                "Invalid Request",
+                None,
+            ));
+        };
+        let Some(id) = RequestId::from_json_value(&id_value) else {
+            return Err(serialize_error(
+                None,
+                INVALID_REQUEST,
+                "Invalid Request",
+                None,
+            ));
+        };
+
+        Ok(Self {
+            id,
+            method,
+            params: object.remove("params").unwrap_or(Value::Null),
+        })
+    }
+}
 
 /// Per-subscription cancellation signal: notifying it wakes `run_watch_subscription`'s streaming
 /// loop immediately, even while parked awaiting the next live event, instead of relying solely on
@@ -65,16 +132,32 @@ pub(crate) async fn race_cancel_or_next<T>(
     }
 }
 
-/// A decoded request classified for the shared connection multiplexer. `Passthrough` carries the
-/// request id when the input was a well-formed non-subscription request, so the connection can
-/// apply duplicate-in-flight-id detection to ordinary unary methods; it is `None` for malformed
-/// inputs or notifications, which [`Dispatcher::dispatch`] handles on its own.
+/// A decoded passthrough result. Envelope failures are pre-encoded so they can retain the legacy
+/// admission boundary without reparsing the frame in a dispatcher task.
+pub(crate) enum DecodedOutcome {
+    Request(DecodedRequest),
+    Response(String),
+}
+
+/// A decoded request classified for the shared connection multiplexer.
 pub(crate) enum RequestKind {
-    Watch { id: RequestId, params: Value },
-    Logs { id: RequestId, params: Value },
-    AgentAttach { id: RequestId, params: Value },
+    Watch {
+        id: RequestId,
+        params: Value,
+    },
+    Logs {
+        id: RequestId,
+        params: Value,
+    },
+    AgentAttach {
+        id: RequestId,
+        params: Value,
+    },
     Cancel(SubscriptionId),
-    Passthrough { id: Option<RequestId> },
+    Passthrough {
+        admission_id: Option<RequestId>,
+        outcome: DecodedOutcome,
+    },
 }
 
 /// Establishes a `watch` subscription and, on success, streams its `event`/`subscription/closed`

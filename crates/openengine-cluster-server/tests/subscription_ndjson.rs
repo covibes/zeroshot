@@ -28,9 +28,13 @@ use gated_backend_support::GatedBackend;
 #[path = "admission_bound_support/mod.rs"]
 mod admission_bound_support;
 use admission_bound_support::{
-    assert_duplicate_in_flight_ids_are_rejected,
-    assert_excess_requests_are_rejected_with_server_busy, spawn_gated_harness, GatedHarnessSpawn,
-    RequestChannel,
+    assert_duplicate_cancellation_is_malformed, assert_duplicate_in_flight_ids_are_rejected,
+    assert_excess_requests_are_rejected_with_server_busy,
+    assert_malformed_frame_is_dropped_at_task_saturation,
+    assert_subscription_envelope_validation_for_binding,
+    assert_wrong_version_envelope_retains_duplicate_precedence, spawn_gated_harness,
+    DuplicateCancellationChannel, GatedHarnessSpawn, RequestChannel, SubscriptionCountingBackend,
+    SubscriptionValidationHarness,
 };
 
 /// Matches the issue's documented "> 1 MiB" oversized-frame threshold; the exact bound is an
@@ -60,6 +64,14 @@ impl RequestChannel for Harness {
         write_line(&mut self.write, &request_line(id, "get", json!({}))).await;
     }
 
+    async fn send_raw(&mut self, text: &str) {
+        write_line(&mut self.write, text).await;
+    }
+
+    async fn recv_raw(&mut self) -> String {
+        read_line(&mut self.read).await
+    }
+
     async fn recv_value(&mut self) -> Value {
         read_value(&mut self.read).await
     }
@@ -68,6 +80,81 @@ impl RequestChannel for Harness {
 impl GatedHarnessSpawn for Harness {
     async fn spawn_gated(backend: GatedBackend) -> Self {
         spawn_server(backend)
+    }
+
+    async fn shut_down(self) {
+        shut_down(self).await;
+    }
+}
+
+impl SubscriptionValidationHarness for Harness {
+    async fn spawn_subscription_validation(backend: SubscriptionCountingBackend) -> Self {
+        spawn_server(backend)
+    }
+}
+
+struct NdjsonDuplicateCancellation<'a> {
+    harness: &'a mut Harness,
+    store: Arc<FixtureStore>,
+    subscription_id: Option<String>,
+}
+
+impl DuplicateCancellationChannel for NdjsonDuplicateCancellation<'_> {
+    async fn arrange_targets(&mut self) {
+        self.harness
+            .send_raw(&request_line(1, "watch", json!({})))
+            .await;
+        let established = self.harness.recv_value().await;
+        self.subscription_id = Some(
+            established["result"]["subscriptionId"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+
+    async fn send_duplicate_cancellation(&mut self) {
+        let subscription_id = self.subscription_id.as_deref().unwrap();
+        self.harness
+            .send_raw(&format!(
+                r#"{{"jsonrpc":"2.0","method":"subscription/cancel","params":{{"subscriptionId":"other","subscriptionId":"{subscription_id}"}}}}"#
+            ))
+            .await;
+    }
+
+    async fn recv_raw(&mut self) -> String {
+        self.harness.recv_raw().await
+    }
+
+    async fn assert_targets_remain_active(&mut self) {
+        self.store.publish(WatchEvent::Bookmark).await;
+        let event = self.harness.recv_value().await;
+        assert_eq!(event["method"], "event");
+        assert_eq!(
+            event["params"]["subscriptionId"],
+            self.subscription_id.as_deref().unwrap()
+        );
+    }
+
+    async fn assert_unknown_member_cancellation_is_accepted(&mut self) {
+        let subscription_id = self.subscription_id.as_deref().unwrap();
+        self.harness
+            .send_raw(&format!(
+                r#"{{"jsonrpc":"2.0","method":"subscription/cancel","params":{{"subscriptionId":"{subscription_id}"}},"extension":true}}"#
+            ))
+            .await;
+        self.harness.send_get(99).await;
+        let sync = self.harness.recv_value().await;
+        assert_eq!(sync["id"], 99);
+        assert!(sync.get("result").is_some(), "{sync}");
+
+        self.store.publish(WatchEvent::Bookmark).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), self.harness.recv_raw())
+                .await
+                .is_err(),
+            "subscription/cancel with an unknown top-level member must cancel the subscription"
+        );
     }
 }
 
@@ -158,6 +245,40 @@ async fn duplicate_request_ids_are_rejected() {
 
     assert_duplicate_in_flight_ids_are_rejected(&mut harness, &gate).await;
 
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn wrong_version_envelope_retains_duplicate_id_precedence() {
+    let (mut harness, gate) = spawn_gated_harness::<Harness>().await;
+    assert_wrong_version_envelope_retains_duplicate_precedence(&mut harness, &gate).await;
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn wrong_version_subscription_methods_are_invalid_requests() {
+    assert_subscription_envelope_validation_for_binding::<Harness>().await;
+}
+
+#[tokio::test]
+async fn malformed_frame_remains_subject_to_task_slot_saturation() {
+    let (mut harness, _gate) = spawn_gated_harness::<Harness>().await;
+    assert_malformed_frame_is_dropped_at_task_saturation(&mut harness, 256).await;
+    shut_down(harness).await;
+}
+
+#[tokio::test]
+async fn duplicate_subscription_cancel_keys_are_malformed_and_cancel_nothing() {
+    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
+    let mut harness = spawn_server(FixtureBackend::new(Arc::clone(&store)));
+    {
+        let mut channel = NdjsonDuplicateCancellation {
+            harness: &mut harness,
+            store,
+            subscription_id: None,
+        };
+        assert_duplicate_cancellation_is_malformed(&mut channel).await;
+    }
     shut_down(harness).await;
 }
 

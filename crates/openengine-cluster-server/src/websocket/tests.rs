@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     GetParams, GetResult, InitializeParams, InitializeResult, RequestId, RunId,
 };
+use serde_json::Value;
 use tokio::sync::{Notify, Semaphore};
 
 use super::*;
@@ -47,8 +48,12 @@ fn fixture_backend() -> FixtureBackend {
     FixtureBackend::new(store)
 }
 
-fn get_request_line(id: i64) -> String {
-    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"get","params":{{}}}}"#)
+fn get_request(id: i64) -> DecodedRequest {
+    DecodedRequest {
+        id: RequestId::Integer(id),
+        method: "get".to_owned(),
+        params: Value::Object(serde_json::Map::new()),
+    }
 }
 
 fn test_permit(task_slots: &Arc<Semaphore>) -> OwnedSemaphorePermit {
@@ -95,7 +100,12 @@ async fn spawn_passthrough_registers_cancellation_before_the_task_can_run() {
             cancel_registry: &cancel_registry,
             close_tx: &mut close_tx,
         };
-        spawn_passthrough(&mut ctx, Some(id.clone()), permit, get_request_line(1));
+        spawn_passthrough(
+            &mut ctx,
+            Some(id.clone()),
+            DecodedOutcome::Request(get_request(1)),
+            permit,
+        );
     }
 
     // `spawn_passthrough` has no `.await` of its own, so returning here happens strictly after the
@@ -128,8 +138,8 @@ async fn run_passthrough_request_on_instant_completion_leaves_registry_empty() {
 
     run_passthrough_request(PassthroughRequest {
         dispatcher,
-        id: Some(id.clone()),
-        line: get_request_line(7),
+        admission_id: Some(id.clone()),
+        outcome: DecodedOutcome::Request(get_request(7)),
         state: state.clone(),
         cancel_registry: Arc::clone(&cancel_registry),
         cancel_notify,
