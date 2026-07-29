@@ -34,6 +34,8 @@ fn receipt_validator(method: &str) -> Result<ReceiptValidator, ReplayError> {
     match method {
         "admit" => Ok(validate_admission_receipt),
         "dispatch" => Ok(validate_dispatch_receipt),
+        "reducer_dispatch" => Ok(validate_reducer_dispatch_receipt),
+        "execution_void" => Ok(validate_execution_void_receipt),
         "settle" => Ok(validate_settlement_receipt),
         "safe_fault" => Ok(validate_safe_fault_receipt),
         "effect_intent" | "effect_receipt" => Ok(validate_effect_receipt),
@@ -106,6 +108,55 @@ fn validate_dispatch_receipt(
         {
             Ok(())
         }
+        _ => Err(ReplayError::ReceiptCorrupt),
+    }
+}
+
+fn validate_reducer_dispatch_receipt(
+    receipt: &MutationReceipt,
+    _state: &ReplayState,
+    records: &[RecordPayload],
+) -> Result<(), ReplayError> {
+    let response = decode_receipt_response::<super::super::mutations::DispatchAllocation>(receipt)?;
+    match records {
+        [
+            RecordPayload::Dispatch {
+                run,
+                node_instance,
+                execution,
+            },
+            RecordPayload::ExecutionContext {
+                run: context_run,
+                node_instance: context_node_instance,
+                execution: context_execution,
+                ..
+            },
+        ] if response.run == *run
+            && response.node_instance == *node_instance
+            && response.execution == *execution
+            && context_run == run
+            && context_node_instance == node_instance
+            && context_execution == execution =>
+        {
+            Ok(())
+        }
+        _ => Err(ReplayError::ReceiptCorrupt),
+    }
+}
+
+fn validate_execution_void_receipt(
+    receipt: &MutationReceipt,
+    _state: &ReplayState,
+    records: &[RecordPayload],
+) -> Result<(), ReplayError> {
+    let response =
+        decode_receipt_response::<super::super::mutations::ExecutionVoidResult>(receipt)?;
+    match records {
+        [
+            RecordPayload::ExecutionVoid {
+                execution, reason, ..
+            },
+        ] if response.execution == *execution && response.reason == *reason => Ok(()),
         _ => Err(ReplayError::ReceiptCorrupt),
     }
 }

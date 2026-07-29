@@ -11,19 +11,48 @@ pub mod record;
 pub mod replay;
 pub mod store;
 
+pub use crate::full_v1_reducer::ExecutionVoidAuthorization;
 pub use mutations::{
-    AdmissionRequest, CommitResult, DispatchAllocation, SafeFaultConsequence, SafeFaultResult,
-    SettlementResult,
+    AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidRequest, ExecutionVoidResult,
+    ReductionDispatchRequest, SafeFaultConsequence, SafeFaultResult, SettlementResult,
 };
 pub use error::{LedgerError, LedgerErrorKind};
-pub use record::{CanonicalDigest, EffectId, ExecutionId, GenerationId, NodeInstanceId, RunSequence};
+pub use record::{
+    CanonicalDigest, EffectId, ExecutionId, ExecutionVoidReason, GenerationId, NodeInstanceId,
+    RunSequence, StructuralOccurrence,
+};
 pub use replay::{replay, ReplayState};
 pub use store::{LedgerStore, OwnerId, ResourceId};
 
 pub(crate) use commit::{CommitRequest, MutationIdentity, ReceiptExpectation};
 use error::map_store_error;
 use replay::ReplayError;
-use store::{Fence, IdempotencyId, MutationReceipt, StoreError};
+use store::{Fence, IdempotencyId, MutationReceipt, Position, StoreError};
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct LedgerAuthority;
+
+#[derive(Clone, Debug)]
+pub struct ReductionSnapshot {
+    position: Position,
+    last_hash: [u8; 32],
+    authority: Arc<LedgerAuthority>,
+}
+
+impl PartialEq for ReductionSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.position == other.position && self.last_hash == other.last_hash
+    }
+}
+
+impl Eq for ReductionSnapshot {}
+
+impl ReductionSnapshot {
+    pub(crate) fn matches(&self, state: &ReplayState, authority: &Arc<LedgerAuthority>) -> bool {
+        self.position == state.position
+            && self.last_hash == state.last_hash
+            && Arc::ptr_eq(&self.authority, authority)
+    }
+}
 
 #[derive(Clone)]
 pub struct ClusterLedger {
@@ -31,6 +60,7 @@ pub struct ClusterLedger {
     resource: ResourceId,
     fence: Arc<Mutex<Fence>>,
     observations: Arc<dyn ObservationSink>,
+    reduction_authority: Arc<LedgerAuthority>,
 }
 
 #[derive(Clone)]
@@ -105,6 +135,7 @@ impl ClusterLedger {
             resource,
             fence: Arc::new(Mutex::new(fence)),
             observations,
+            reduction_authority: Arc::new(LedgerAuthority),
         })
     }
 
@@ -178,6 +209,7 @@ impl ClusterLedger {
             resource,
             fence: Arc::new(Mutex::new(fence)),
             observations,
+            reduction_authority: Arc::new(LedgerAuthority),
         })
     }
 
@@ -229,7 +261,10 @@ impl ClusterLedger {
             .read_prefix(&self.resource, None)
             .await
             .map_err(|error| self.store_error(context, error))?;
-        replay::replay(&snapshot, &self.resource).map_err(|error| self.replay_error(context, error))
+        let mut state = replay::replay(&snapshot, &self.resource)
+            .map_err(|error| self.replay_error(context, error))?;
+        state.authorize_reduction(Arc::clone(&self.reduction_authority));
+        Ok(state)
     }
 
     pub async fn remove_terminal(&self) -> Result<(), LedgerError> {

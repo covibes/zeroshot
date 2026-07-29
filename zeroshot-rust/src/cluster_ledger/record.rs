@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
+use openengine_cluster_protocol::{NodeName, PositiveInteger};
 use sha2::{Digest as _, Sha256};
 
 use super::store::{MutationReceipt, Position, ResourceId};
@@ -79,6 +80,20 @@ pub type RunSequence = DurableId<RunIdentity>;
 pub type NodeInstanceId = DurableId<NodeInstanceIdentity>;
 pub type ExecutionId = DurableId<ExecutionIdentity>;
 pub type EffectId = DurableId<EffectIdentity>;
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct StructuralOccurrence {
+    pub node: NodeName,
+    pub map_indices: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionVoidReason {
+    ParallelJoin,
+    MapTerminal,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct IdentityCounters {
@@ -203,6 +218,8 @@ pub enum RecordKind {
     RequiredProofIntent = 12,
     RequiredProofReceipt = 13,
     RequiredProofAcceptance = 14,
+    ExecutionContext = 15,
+    ExecutionVoid = 16,
 }
 
 impl RecordKind {
@@ -243,6 +260,19 @@ pub enum RecordPayload {
         run: RunSequence,
         node_instance: NodeInstanceId,
         execution: ExecutionId,
+    },
+    ExecutionContext {
+        run: RunSequence,
+        node_instance: NodeInstanceId,
+        execution: ExecutionId,
+        occurrence: StructuralOccurrence,
+        attempt: PositiveInteger,
+        canonical_input: Vec<u8>,
+    },
+    ExecutionVoid {
+        run: RunSequence,
+        execution: ExecutionId,
+        reason: ExecutionVoidReason,
     },
     Settlement {
         run: RunSequence,

@@ -29,17 +29,21 @@ impl ClusterLedger {
             SafeFaultConsequence::Settle {
                 execution,
                 outcome_digest,
-            } if state.active_dispatches.contains_key(&execution) => (
-                Some(execution),
-                false,
-                outcome_digest,
-                RecordPayload::Settlement {
-                    run,
-                    execution,
+            } if state.active_dispatches.contains_key(&execution)
+                && !state.execution_contexts.contains_key(&execution) =>
+            {
+                (
+                    Some(execution),
+                    false,
                     outcome_digest,
-                    accepted: true,
-                },
-            ),
+                    RecordPayload::Settlement {
+                        run,
+                        execution,
+                        outcome_digest,
+                        accepted: true,
+                    },
+                )
+            }
             SafeFaultConsequence::Settle { .. } => {
                 return Err(
                     self.domain_error(FaultContext::Settlement, LedgerErrorKind::InvalidSettlement)

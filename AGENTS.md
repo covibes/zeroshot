@@ -81,6 +81,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | SQLite ledger store          | `zeroshot-rust/src/cluster_ledger/store/sqlite.rs`, `store/sqlite/`     |
 | SQLite append/query helpers  | `zeroshot-rust/src/cluster_ledger/store/sqlite/{operations,queries}.rs` |
 | Ledger records/replay        | `zeroshot-rust/src/cluster_ledger/record.rs`, `replay.rs`               |
+| Full-v1 pure graph reducer    | `zeroshot-rust/src/full_v1_reducer.rs`                              |
 | Protocol ledger adapters     | `zeroshot-rust/src/cluster_ledger/adapters.rs`                          |
 | Artifact store port/fake     | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`         |
 | Product-local artifact CAS   | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`           |
@@ -201,10 +202,16 @@ must never authorize retry or replacement-session recovery.
 identity allocation, replay, lifecycle/CAS/idempotency rules, and safe-fault consequences stay
 above the backend-neutral `LedgerStore` port. Control and verified I/O share one ordered hash
 chain and transaction. Semantic validation and append CAS use the same folded position/hash; never
-reread a newer prefix while committing payloads derived from an older one. Every committed mutation
-ends in a hash-chained `MutationReceipt` record that exactly matches its atomic idempotency
-projection, so missing or forged projection rows fail replay. Matching receipt retries return an
-explicit replay outcome; receipt equality cannot distinguish a new commit from a concurrent
+reread a newer prefix while committing payloads derived from an older one.
+Reducer-owned loser voids require an opaque authorization bound to the admitted compiled IR,
+verified input, durable execution history, execution, reason, and a folded position/hash capability
+issued only by that `ClusterLedger`; caller-selected positions, identities, or reasons cannot
+authorize an `ExecutionVoid` append.
+Process-local authority identity participates only in ledger mutation validation; semantic
+`Reduction` equality remains deterministic across equivalent ledgers and process reopen.
+Every committed mutation ends in a hash-chained `MutationReceipt` record that exactly
+matches its atomic idempotency projection, so missing or forged projection rows fail replay. Matching
+receipt retries return an explicit replay outcome; receipt equality cannot distinguish a new commit from a concurrent
 identical retry. `SqliteLedgerStore` is the sole v1 production store. SQLite creation initializes
 a private same-directory database and atomically publishes the digest-named path, so losing
 creators never remove the winning resource. Projections are
@@ -215,6 +222,13 @@ Initial resource creation and its owner fence are one store operation. Guarded a
 cancellation inside the store transaction immediately before their first write, after idempotent
 receipt lookup. SQLite removal leaves an explicit empty tombstone until file unlink; missing live
 metadata without that tombstone is corruption and must never authorize replacement.
+Full-v1 reduction accepts only verifier-produced `VerifiedGraph` values containing authoritative
+`CompiledGraphIr` and durable ordered outcomes. It never accepts compiled IR directly.
+It is a pure authored-order fold: ledger position is the only concurrent
+tie-break, map indices and positive attempts are part of the central ledger execution context, and
+early-join loser voids are central ledger control records. Keep scheduling capacity, clocks, tasks,
+channels, runtime/provider/artifact concerns, public protocol methods, and automatic retry outside
+the reducer.
 Graph syntax, payload subtyping, compiled IR, diagnostics, and artifact receipt Rust types remain
 authoritative protocol contracts. `ProductionGraphVerifier` is the one reusable production
 semantic verifier for `openengine.graph.full/v1`; it resolves workers through `WorkerRegistry` and

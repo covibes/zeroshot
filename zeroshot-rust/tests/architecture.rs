@@ -24,6 +24,19 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
 
     let mut files = BTreeSet::new();
     relative_files(&product, &product, &mut files);
+    for file in files {
+        assert!(
+            file == "Cargo.toml" || file.ends_with(".rs"),
+            "native product must remain Rust-only: {file}"
+        );
+    }
+}
+
+#[test]
+fn product_contains_the_required_native_files() {
+    let product = product_root();
+    let mut files = BTreeSet::new();
+    relative_files(&product, &product, &mut files);
     for required in [
         "Cargo.toml",
         "src/artifact_store.rs",
@@ -49,6 +62,8 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "src/source_code_provider.rs",
         "src/worker_catalog.rs",
         "tests/architecture.rs",
+        "tests/worker_catalog_architecture.rs",
+        "tests/required_proof_architecture.rs",
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
         "tests/execution_runtime_contract.rs",
@@ -65,80 +80,6 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
         "tests/worker_catalog.rs",
     ] {
         assert!(files.contains(required), "missing product file: {required}");
-    }
-    for file in files {
-        assert!(
-            file == "Cargo.toml" || file.ends_with(".rs"),
-            "native product must remain Rust-only: {file}"
-        );
-    }
-}
-
-#[test]
-fn worker_catalog_has_no_build_or_node_typescript_source_inputs() {
-    let product = product_root();
-    let manifest = read(&product.join("Cargo.toml"));
-    assert!(
-        !manifest
-            .lines()
-            .any(|line| line.trim_start().starts_with("build =")),
-        "native product manifest must not configure a build script"
-    );
-
-    let metadata = workspace_metadata();
-    let has_build_target = product_package(&metadata)["targets"]
-        .as_array()
-        .expect("package targets must be an array")
-        .iter()
-        .any(|target| {
-            target["kind"]
-                .as_array()
-                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "custom-build"))
-        });
-    assert!(
-        !has_build_target,
-        "native product must not have a custom build target"
-    );
-
-    let mut product_files = BTreeSet::new();
-    relative_files(&product, &product, &mut product_files);
-    let mut build_and_source_inputs = manifest;
-    for relative in product_files.iter().filter(|relative| {
-        relative.ends_with(".rs") && relative.as_str() != "tests/architecture.rs"
-    }) {
-        build_and_source_inputs.push('\n');
-        build_and_source_inputs.push_str(&read(&product.join(relative)));
-    }
-    for target in product_package(&metadata)["targets"]
-        .as_array()
-        .expect("package targets must be an array")
-    {
-        let source = target["src_path"]
-            .as_str()
-            .expect("Cargo target must have a source path");
-        let source = std::path::Path::new(source);
-        if source.starts_with(&product) && source != product.join("tests/architecture.rs") {
-            build_and_source_inputs.push('\n');
-            build_and_source_inputs.push_str(&read(source));
-        }
-    }
-    for forbidden in [
-        "agent-cli-provider",
-        "provider-registry",
-        "node_modules",
-        "package.json",
-        "tsconfig",
-        ".ts\"",
-        ".tsx\"",
-        ".js\"",
-        ".jsx\"",
-        "Command::new(\"node\")",
-        "Command::new(\"npm\")",
-    ] {
-        assert!(
-            !build_and_source_inputs.contains(forbidden),
-            "native crate input consumes Node/TypeScript source: {forbidden}"
-        );
     }
 }
 
@@ -172,6 +113,7 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
         ("observability_contract".to_owned(), "test".to_owned()),
         ("source_authority_contract".to_owned(), "test".to_owned()),
         ("required_proof_contract".to_owned(), "test".to_owned()),
+        ("required_proof_architecture".to_owned(), "test".to_owned()),
         ("scheduler_contract".to_owned(), "test".to_owned()),
     ] {
         assert!(
@@ -495,168 +437,83 @@ fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_b
 }
 
 #[test]
-fn worker_catalog_adds_no_out_of_scope_product_construction() {
-    let product = product_root();
-    let mut product_files = BTreeSet::new();
-    relative_files(&product, &product.join("src"), &mut product_files);
-    let top_level_source_entries = product_files
-        .iter()
-        .filter_map(|relative| {
-            relative
-                .strip_prefix("src/")
-                .and_then(|path| path.split('/').next())
-        })
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        top_level_source_entries,
-        BTreeSet::from([
-            "artifact_store",
-            "artifact_store.rs",
-            "cluster_ledger",
-            "cluster_ledger.rs",
-            "execution",
-            "execution.rs",
-            "fault",
-            "fault.rs",
-            "issue_provider",
-            "issue_provider.rs",
-            "lib.rs",
-            "main.rs",
-            "observability.rs",
-            "provider_value",
-            "provider_value.rs",
-            "required_proof.rs",
-            "scheduler.rs",
-            "source_code_provider",
-            "source_code_provider.rs",
-            "worker_catalog.rs",
-        ]),
-        "new product modules require an issue-authorized architecture amendment"
+fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
+    let reducer = read(&product_root().join("src/full_v1_reducer.rs"));
+    assert!(reducer.contains("VerifiedGraph"));
+    assert!(reducer.contains("ProductionGraphVerifier"));
+    assert!(!reducer.contains("GraphSpec"));
+    assert!(!reducer.contains("CompiledGraphIr"));
+    assert!(!reducer.contains("PayloadType"));
+    assert!(!reducer.contains("pub prefix_position"));
+    assert!(reducer.contains("pub snapshot: Option<ReductionSnapshot>"));
+    let authorization_fields = reducer
+        .split("pub struct ExecutionVoidAuthorization {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(!authorization_fields.contains("pub "));
+    let authorization_impl = reducer
+        .split("impl ExecutionVoidAuthorization {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(
+        !authorization_impl
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub "))
     );
-
-    let catalog_source = read(&product.join("src/worker_catalog.rs"));
+    let ledger = read(&product_root().join("src/cluster_ledger.rs"));
+    let snapshot_fields = ledger
+        .split("pub struct ReductionSnapshot {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(!snapshot_fields.contains("pub "));
+    let snapshot_impl = ledger
+        .split("impl ReductionSnapshot {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(
+        !snapshot_impl
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub "))
+    );
+    assert!(snapshot_impl.contains("self.position == state.position"));
+    assert!(snapshot_impl.contains("self.last_hash == state.last_hash"));
+    assert!(snapshot_impl.contains("Arc::ptr_eq(&self.authority, authority)"));
     for forbidden in [
-        "pub struct RoleContract",
-        "pub enum RoleContract",
-        "RoleContractPack",
-        "RoleManifest",
-        "pub mod worker_registry",
-        "mod worker_registry;",
-        "struct WorkerRegistry",
-        "impl WorkerRegistry",
-        "impl WorkerRegistry for",
-        "pub mod config",
-        "mod config;",
-        "mod native_config",
-        "struct NativeConfig",
-        "struct WorkerConfig",
-        "struct ProviderConfig",
-        "struct NativeSettings",
-        "mod credentials;",
-        "mod credential;",
-        "CredentialResolver",
-        "CredentialLease",
-        "CredentialCodec",
-        "resolve_credentials",
-        "decode_credentials",
-        "ExecutableCodec",
-        "encode_executable",
-        "decode_executable",
-        "struct GatewayDriver",
-        "struct CliProcessDriver",
-        "struct AcpStdioDriver",
-        "impl WorkerDriver for",
-        "impl BuiltinWorkerDriver for",
-        "struct ProtocolDescriptor",
-        "struct WorkerDescriptor",
-        "WorkerDescriptor::new",
-        "openengine_cluster_protocol::worker",
-    ] {
-        assert!(
-            !catalog_source.contains(forbidden),
-            "worker catalog crossed its owned boundary: {forbidden}"
-        );
-    }
-}
-
-#[test]
-fn required_proof_contract_stays_product_private_byte_free_and_non_executing() {
-    let product = product_root();
-    let proof = read(&product.join("src/required_proof.rs"));
-    let ledger = rust_sources(&["src/cluster_ledger.rs", "src/cluster_ledger"]);
-    let protocol = rust_sources(&[
-        "../crates/openengine-cluster-protocol/src",
-        "../crates/openengine-cluster-server/src",
-    ]);
-    assert!(read(&product.join("src/lib.rs")).contains("pub mod required_proof;"));
-    for required in [
-        "struct TrustedGate",
-        "struct ProofAttemptIntent",
-        "struct ProofAttemptReceipt",
-        "struct AcceptedProofRef",
-        "trait ArtifactReverification",
-        "struct PerformProofAttempt",
-        "struct InspectProofAttempt",
-        "struct ReconcileProofAttempt",
-        "reconcile_after_uncertainty",
-    ] {
-        assert!(
-            proof.contains(required),
-            "missing required-proof contract: {required}"
-        );
-    }
-    for required in [
-        "RequiredProofIntent",
-        "RequiredProofReceipt",
-        "RequiredProofAcceptance",
-        "required_proofs",
-    ] {
-        assert!(
-            ledger.contains(required),
-            "ledger misses required-proof fold: {required}"
-        );
-    }
-    for forbidden in [
+        "tokio::",
+        "async fn",
         "std::process",
-        "tokio::process",
-        "Command::new",
-        "PathBuf",
-        "gh issue",
-        "octocrab",
-        "reqwest",
-        "SourceCodeProvider",
+        "std::time",
+        "std::thread",
+        "crate::execution",
+        "crate::scheduler",
+        "crate::artifact_store",
+        "crate::issue_provider",
+        "crate::source_code_provider",
+        "ClusterBackend",
+        "Dispatcher",
     ] {
         assert!(
-            !proof.contains(forbidden),
-            "required-proof contract crossed a non-goal boundary: {forbidden}"
+            !reducer.contains(forbidden),
+            "pure reducer imported an effectful concern: {forbidden}"
         );
     }
-    for private_type in [
-        "TrustedGate",
-        "ProofAttemptIntent",
-        "ProofAttemptReceipt",
-        "AcceptedProofRef",
-        "ArtifactReverification",
-    ] {
-        assert!(
-            !protocol.contains(private_type),
-            "product-private proof type leaked into protocol/server: {private_type}"
-        );
-    }
-}
 
-#[test]
-fn manifest_has_no_client_testkit_or_node_dependencies() {
-    let manifest = read(&product_root().join("Cargo.toml"));
-    for forbidden_dependency in [
-        "openengine-cluster-client",
-        "openengine-cluster-testkit",
-        "node",
-        "npm",
-    ] {
-        assert!(
-            !manifest.contains(forbidden_dependency),
-            "forbidden product dependency: {forbidden_dependency}"
-        );
-    }
+    let records = read(&product_root().join("src/cluster_ledger/record.rs"));
+    assert!(records.contains("ExecutionContext"));
+    assert!(records.contains("ExecutionVoid"));
+    let replay = read(&product_root().join("src/cluster_ledger/replay.rs"));
+    assert!(replay.contains("fold_execution_context"));
+    assert!(replay.contains("fold_execution_void"));
 }
