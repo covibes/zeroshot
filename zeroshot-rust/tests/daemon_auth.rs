@@ -21,7 +21,9 @@ use zeroshot_engine::daemon_auth::{
     DaemonCredentials, authorize_request,
 };
 use zeroshot_engine::daemon_discovery::{CLUSTER_PROTOCOL, DAEMON_PROTOCOL, DaemonLocator};
-use zeroshot_engine::daemon_listener::{DaemonListener, ListenerConfig, probe_liveness};
+use zeroshot_engine::daemon_listener::{
+    DaemonListener, ListenerConfig, LivenessOutcome, probe_liveness,
+};
 
 #[test]
 fn credentials_are_256_bit_capabilities_with_exact_request_values() {
@@ -227,7 +229,10 @@ async fn stale_port_cannot_learn_secrets_or_forge_server_liveness_by_reflection(
         }
     });
 
-    assert!(!probe_liveness(&locator, Duration::from_millis(250)).await);
+    assert_eq!(
+        probe_liveness(&locator, Duration::from_millis(250)).await,
+        LivenessOutcome::DefinitelyStale
+    );
     let exposed_headers = captured_rx.await.expect("captured proof request");
     assert!(exposed_headers.iter().all(|value| {
         !value

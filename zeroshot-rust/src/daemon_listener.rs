@@ -16,6 +16,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, timeout, timeout_at};
 use tokio_tungstenite::accept_hdr_async_with_config;
+use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
@@ -36,6 +37,7 @@ pub struct ListenerConfig {
     pub shutdown_timeout: Duration,
     pub max_active_connections: usize,
     pub max_pending_handshakes: usize,
+    pub max_liveness_connections: usize,
 }
 
 impl Default for ListenerConfig {
@@ -48,6 +50,7 @@ impl Default for ListenerConfig {
             shutdown_timeout: Duration::from_secs(1),
             max_active_connections: 64,
             max_pending_handshakes: 64,
+            max_liveness_connections: 8,
         }
     }
 }
@@ -56,7 +59,9 @@ impl Default for ListenerConfig {
 pub enum DaemonListenerError {
     #[error("an authenticated daemon already owns this native profile")]
     AlreadyRunning,
-    #[error("daemon listener configuration requires at least one active connection slot")]
+    #[error("daemon liveness is indeterminate; preserving the incumbent locator")]
+    LivenessIndeterminate,
+    #[error("daemon listener configuration requires non-zero connection bounds and deadlines")]
     InvalidConfiguration,
     #[error("daemon discovery failed: {0}")]
     Discovery(#[from] DiscoveryError),
@@ -68,6 +73,13 @@ pub enum DaemonListenerError {
     ShutdownTimeout,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LivenessOutcome {
+    Alive,
+    DefinitelyStale,
+    Indeterminate,
+}
+
 pub struct DaemonListener {
     profile: NativeProfile,
     locator: DaemonLocator,
@@ -76,6 +88,8 @@ pub struct DaemonListener {
     shutdown_timeout: Duration,
     pending_handshake_limit: usize,
     pending_handshake_permits: Arc<Semaphore>,
+    liveness_connection_limit: usize,
+    liveness_connection_permits: Arc<Semaphore>,
 }
 
 impl DaemonListener {
@@ -96,6 +110,7 @@ impl DaemonListener {
     {
         if config.max_active_connections == 0
             || config.max_pending_handshakes == 0
+            || config.max_liveness_connections == 0
             || config.shutdown_timeout.is_zero()
         {
             return Err(DaemonListenerError::InvalidConfiguration);
@@ -108,8 +123,12 @@ impl DaemonListener {
                 .map_err(|_| DaemonListenerError::Task)??;
 
         let previous_secrets = if let Some(existing) = read_locator_locked(&profile)? {
-            if probe_liveness(&existing, config.liveness_timeout).await {
-                return Err(DaemonListenerError::AlreadyRunning);
+            match probe_liveness(&existing, config.liveness_timeout).await {
+                LivenessOutcome::Alive => return Err(DaemonListenerError::AlreadyRunning),
+                LivenessOutcome::Indeterminate => {
+                    return Err(DaemonListenerError::LivenessIndeterminate);
+                }
+                LivenessOutcome::DefinitelyStale => {}
             }
             remove_locator_if_matches_locked(&profile, &existing)?;
             Some((existing.capability, existing.daemon_nonce))
@@ -135,12 +154,14 @@ impl DaemonListener {
 
         let shutdown = Arc::new(Notify::new());
         let pending_handshake_permits = Arc::new(Semaphore::new(config.max_pending_handshakes));
+        let liveness_connection_permits = Arc::new(Semaphore::new(config.max_liveness_connections));
         let accept_task = tokio::spawn(run_accept_loop(AcceptLoop {
             listener: tcp,
             factory: Arc::new(factory),
             credentials,
             shutdown: Arc::clone(&shutdown),
             pending_handshake_permits: Arc::clone(&pending_handshake_permits),
+            liveness_connection_permits: Arc::clone(&liveness_connection_permits),
             config,
         }));
         if let Err(error) = replace_locator_locked(&profile, &locator) {
@@ -158,6 +179,8 @@ impl DaemonListener {
             shutdown_timeout: config.shutdown_timeout,
             pending_handshake_limit: config.max_pending_handshakes,
             pending_handshake_permits,
+            liveness_connection_limit: config.max_liveness_connections,
+            liveness_connection_permits,
         })
     }
 
@@ -172,30 +195,45 @@ impl DaemonListener {
             .saturating_sub(self.pending_handshake_permits.available_permits())
     }
 
+    #[must_use]
+    pub fn active_liveness_connections(&self) -> usize {
+        self.liveness_connection_limit
+            .saturating_sub(self.liveness_connection_permits.available_permits())
+    }
+
     pub async fn shutdown(mut self) -> Result<(), DaemonListenerError> {
+        let started = Instant::now();
+        let deadline = started + self.shutdown_timeout;
+        let graceful_deadline = started + self.shutdown_timeout / 2;
+        let mut result = Ok(());
         self.shutdown.notify_one();
         if let Some(mut task) = self.accept_task.take() {
-            match timeout(self.shutdown_timeout, &mut task).await {
-                Ok(result) => result.map_err(|_| DaemonListenerError::Task)?,
+            match timeout_at(graceful_deadline, &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => result = Err(DaemonListenerError::Task),
                 Err(_) => {
                     task.abort();
-                    let completion = timeout(self.shutdown_timeout, &mut task)
-                        .await
-                        .map_err(|_| DaemonListenerError::ShutdownTimeout)?;
-                    if completion.is_err_and(|error| !error.is_cancelled()) {
-                        return Err(DaemonListenerError::Task);
+                    match timeout_at(deadline, &mut task).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) if error.is_cancelled() => {}
+                        Ok(Err(_)) => result = Err(DaemonListenerError::Task),
+                        Err(_) => result = Err(DaemonListenerError::ShutdownTimeout),
                     }
                 }
             }
         }
+
         let profile = self.profile.clone();
         let locator = self.locator.clone();
-        let removed =
-            tokio::task::spawn_blocking(move || remove_locator_if_matches(&profile, &locator))
-                .await
-                .map_err(|_| DaemonListenerError::Task)??;
-        let _ = removed;
-        Ok(())
+        let cleanup =
+            tokio::task::spawn_blocking(move || remove_locator_if_matches(&profile, &locator));
+        match timeout_at(deadline, cleanup).await {
+            Ok(Ok(Ok(_))) => {}
+            Ok(Ok(Err(error))) => return Err(DaemonListenerError::Discovery(error)),
+            Ok(Err(_)) => return Err(DaemonListenerError::Task),
+            Err(_) => return Err(DaemonListenerError::ShutdownTimeout),
+        }
+        result
     }
 }
 
@@ -207,33 +245,43 @@ impl Drop for DaemonListener {
     }
 }
 
-pub async fn probe_liveness(locator: &DaemonLocator, deadline: Duration) -> bool {
+pub async fn probe_liveness(locator: &DaemonLocator, deadline: Duration) -> LivenessOutcome {
     timeout(deadline, probe_liveness_inner(locator))
         .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or(false)
+        .unwrap_or(LivenessOutcome::Indeterminate)
 }
 
-async fn probe_liveness_inner(locator: &DaemonLocator) -> Result<bool, ()> {
+async fn probe_liveness_inner(locator: &DaemonLocator) -> LivenessOutcome {
     if locator.cluster_protocol != CLUSTER_PROTOCOL || locator.daemon_protocol != DAEMON_PROTOCOL {
-        return Ok(false);
+        return LivenessOutcome::DefinitelyStale;
     }
-    let mut request = locator
-        .endpoint
-        .as_str()
-        .into_client_request()
-        .map_err(|_| ())?;
-    let address = loopback_address(&request).ok_or(())?;
-    let expectation = DaemonCredentials::from_locator(locator)
+    let mut request = match locator.endpoint.as_str().into_client_request() {
+        Ok(request) => request,
+        Err(_) => return LivenessOutcome::DefinitelyStale,
+    };
+    let Some(address) = loopback_address(&request) else {
+        return LivenessOutcome::DefinitelyStale;
+    };
+    let expectation = match DaemonCredentials::from_locator(locator)
         .prepare_request(&mut request, ConnectionPurpose::Liveness)
-        .map_err(|_| ())?;
-    let stream = TcpStream::connect(address).await.map_err(|_| ())?;
-    let (mut websocket, response) = tokio_tungstenite::client_async(request, stream)
-        .await
-        .map_err(|_| ())?;
+    {
+        Ok(expectation) => expectation,
+        Err(_) => return LivenessOutcome::Indeterminate,
+    };
+    let stream = match TcpStream::connect(address).await {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
+            return LivenessOutcome::DefinitelyStale;
+        }
+        Err(_) => return LivenessOutcome::Indeterminate,
+    };
+    let (mut websocket, response) = match tokio_tungstenite::client_async(request, stream).await {
+        Ok(connected) => connected,
+        Err(WebSocketError::Http(_)) => return LivenessOutcome::DefinitelyStale,
+        Err(_) => return LivenessOutcome::Indeterminate,
+    };
     if !expectation.verify(&response) {
-        return Ok(false);
+        return LivenessOutcome::DefinitelyStale;
     }
     let initialize = serde_json::json!({
         "jsonrpc": JSON_RPC_VERSION,
@@ -241,22 +289,35 @@ async fn probe_liveness_inner(locator: &DaemonLocator) -> Result<bool, ()> {
         "method": "initialize",
         "params": { "protocolVersion": PROTOCOL_VERSION }
     });
-    websocket
+    if websocket
         .send(Message::Text(initialize.to_string().into()))
         .await
-        .map_err(|_| ())?;
+        .is_err()
+    {
+        return LivenessOutcome::Indeterminate;
+    }
     while let Some(message) = websocket.next().await {
-        let message = message.map_err(|_| ())?;
+        let message = match message {
+            Ok(message) => message,
+            Err(_) => return LivenessOutcome::Indeterminate,
+        };
         let Message::Text(text) = message else {
             if message.is_close() {
-                return Ok(false);
+                return LivenessOutcome::Indeterminate;
             }
             continue;
         };
-        let response: Value = serde_json::from_str(text.as_ref()).map_err(|_| ())?;
-        return Ok(valid_liveness_response(&response));
+        let response: Value = match serde_json::from_str(text.as_ref()) {
+            Ok(response) => response,
+            Err(_) => return LivenessOutcome::DefinitelyStale,
+        };
+        return if valid_liveness_response(&response) {
+            LivenessOutcome::Alive
+        } else {
+            LivenessOutcome::DefinitelyStale
+        };
     }
-    Ok(false)
+    LivenessOutcome::Indeterminate
 }
 
 fn valid_liveness_response(response: &Value) -> bool {
@@ -303,6 +364,7 @@ struct AcceptLoop<F> {
     shutdown: Arc<Notify>,
     config: ListenerConfig,
     pending_handshake_permits: Arc<Semaphore>,
+    liveness_connection_permits: Arc<Semaphore>,
 }
 
 async fn run_accept_loop<F>(host: AcceptLoop<F>)
@@ -316,6 +378,7 @@ where
         shutdown,
         config,
         pending_handshake_permits,
+        liveness_connection_permits,
     } = host;
     let active_permits = Arc::new(Semaphore::new(config.max_active_connections));
     let mut connections = JoinSet::new();
@@ -337,6 +400,8 @@ where
                 let factory = Arc::clone(&factory);
                 let credentials = credentials.clone();
                 let active_permits = Arc::clone(&active_permits);
+                let liveness_connection_permits =
+                    Arc::clone(&liveness_connection_permits);
                 connections.spawn(async move {
                     serve_connection(ConnectionTask {
                         stream,
@@ -344,6 +409,7 @@ where
                         factory,
                         credentials,
                         active_permits,
+                        liveness_connection_permits,
                         handshake_permit,
                         handshake_timeout: config.handshake_timeout,
                         liveness_timeout: config.liveness_timeout,
@@ -373,6 +439,7 @@ struct ConnectionTask<F> {
     factory: Arc<F>,
     credentials: DaemonCredentials,
     active_permits: Arc<Semaphore>,
+    liveness_connection_permits: Arc<Semaphore>,
     handshake_permit: OwnedSemaphorePermit,
     handshake_timeout: Duration,
     liveness_timeout: Duration,
@@ -388,6 +455,7 @@ where
         factory,
         credentials,
         active_permits,
+        liveness_connection_permits,
         handshake_permit,
         handshake_timeout,
         liveness_timeout,
@@ -402,6 +470,9 @@ where
         return;
     };
     if purpose == ConnectionPurpose::Liveness {
+        let Ok(_liveness_permit) = liveness_connection_permits.try_acquire_owned() else {
+            return;
+        };
         let Ok(Some(Ok(Message::Text(request)))) =
             timeout(liveness_timeout, websocket.next()).await
         else {

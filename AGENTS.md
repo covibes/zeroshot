@@ -186,13 +186,16 @@ profile lock only through stale authenticated-initialize probing and atomic bind
 Upgrade authorization uses domain-separated client/server challenge proofs: capability and daemon
 nonce are never transmitted, the server proof is verified before initialize, and the exact route,
 profile digest, nonce, and rotating 256-bit capability must be proven before backend construction.
-Pre-auth handshake task/FD ownership is finite; ordinary active-session capacity applies only after
-an authenticated upgrade, and authenticated liveness does not consume an ordinary session slot.
-This is a resource bound, not an availability claim against unbounded sustained unauthenticated
-arrivals on the single endpoint, which cannot be classified before reading the upgrade. Graceful
-shutdown has an outer deadline as well as bounded connection drain, releases the loopback socket,
-and removes only its matching locator. The daemon host reuses the server crate's WebSocket binding
-and dispatcher; keep
+Probe results are closed: authenticated initialize is `Alive`, connection refusal or conclusive
+invalid-owner/protocol proof is `DefinitelyStale`, and capacity/reset/timeout ambiguity is
+`Indeterminate`; only `DefinitelyStale` authorizes locator removal and handoff. Pre-auth handshake
+task/FD ownership, authenticated liveness, and ordinary active sessions each have independent
+finite capacity. Full ordinary capacity cannot consume the reserved liveness capacity. These are
+resource bounds, not an availability claim against unbounded sustained unauthenticated arrivals on
+the single endpoint, which cannot be classified before reading the upgrade. Graceful shutdown uses
+one absolute deadline across acceptance stop, abort/reap, and matching locator cleanup; timeout
+paths still attempt cleanup and report the defined failure. The daemon host reuses the server
+crate's WebSocket binding and dispatcher; keep
 protocol definitions, compatibility, credential resolution, ledger/catalog/recovery,
 runtime/scheduler/pools, exporter, CLI, hosted/cloud control-plane, Node-daemon, and workspace
 behavior outside these modules.

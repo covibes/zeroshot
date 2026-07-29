@@ -18,10 +18,11 @@ use zeroshot_engine::daemon_auth::{
     AuthorizationCallback, ConnectionPurpose, DAEMON_ROUTE, DaemonCredentials,
 };
 use zeroshot_engine::daemon_discovery::{
-    CLUSTER_PROTOCOL, DAEMON_PROTOCOL, DaemonLocator, read_locator, replace_locator,
+    CLUSTER_PROTOCOL, DAEMON_PROTOCOL, DaemonLocator, acquire_start_guard, read_locator,
+    replace_locator,
 };
 use zeroshot_engine::daemon_listener::{
-    DaemonListener, DaemonListenerError, ListenerConfig, probe_liveness,
+    DaemonListener, DaemonListenerError, ListenerConfig, LivenessOutcome, probe_liveness,
 };
 
 fn test_config() -> ListenerConfig {
@@ -33,6 +34,7 @@ fn test_config() -> ListenerConfig {
         shutdown_timeout: Duration::from_millis(300),
         max_active_connections: 8,
         max_pending_handshakes: 8,
+        max_liveness_connections: 2,
     }
 }
 
@@ -106,6 +108,21 @@ async fn raw_handshake_burst_owns_only_the_configured_pre_auth_bound() {
     })
     .await
     .expect("listener admitted bounded raw handshakes");
+    let incumbent = listener.locator().clone();
+    let contender = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        config,
+    )
+    .await;
+    assert!(matches!(
+        contender,
+        Err(DaemonListenerError::LivenessIndeterminate)
+    ));
+    assert_eq!(
+        read_locator(&profile.profile).expect("preserved incumbent locator"),
+        Some(incumbent)
+    );
 
     for _ in 0..16 {
         if let Ok(mut socket) = TcpStream::connect(address).await {
@@ -241,6 +258,93 @@ async fn liveness_purpose_accepts_only_initialize_before_backend_access() {
     assert_eq!(factory.created.load(Ordering::SeqCst), 0);
     assert_eq!(factory.initialized.load(Ordering::SeqCst), 0);
     listener.shutdown().await.expect("shutdown listener");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn authenticated_liveness_burst_owns_only_its_reserved_capacity() {
+    let profile = TempProfile::new("liveness-capacity");
+    let config = ListenerConfig {
+        liveness_timeout: Duration::from_secs(2),
+        max_liveness_connections: 2,
+        ..test_config()
+    };
+    let listener = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        config,
+    )
+    .await
+    .expect("start listener");
+    let locator = listener.locator().clone();
+    let credentials = locator_credentials(&locator);
+    let address: SocketAddr = locator
+        .endpoint
+        .strip_prefix("ws://")
+        .and_then(|endpoint| endpoint.strip_suffix(DAEMON_ROUTE))
+        .expect("liveness endpoint")
+        .parse()
+        .expect("liveness address");
+
+    let mut held = Vec::new();
+    for _ in 0..config.max_liveness_connections {
+        let mut request = locator
+            .endpoint
+            .as_str()
+            .into_client_request()
+            .expect("liveness request");
+        let proof = credentials
+            .prepare_request(&mut request, ConnectionPurpose::Liveness)
+            .expect("liveness proof");
+        let stream = TcpStream::connect(address)
+            .await
+            .expect("liveness connection");
+        let (websocket, response) = tokio_tungstenite::client_async(request, stream)
+            .await
+            .expect("liveness upgrade");
+        assert!(proof.verify(&response));
+        held.push(websocket);
+    }
+    timeout(Duration::from_millis(200), async {
+        while listener.active_liveness_connections() != config.max_liveness_connections {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reserved liveness capacity filled");
+
+    let mut overflow_request = locator
+        .endpoint
+        .as_str()
+        .into_client_request()
+        .expect("overflow request");
+    let overflow_proof = credentials
+        .prepare_request(&mut overflow_request, ConnectionPurpose::Liveness)
+        .expect("overflow proof");
+    let overflow_stream = TcpStream::connect(address)
+        .await
+        .expect("overflow connection");
+    let (mut overflow, overflow_response) =
+        tokio_tungstenite::client_async(overflow_request, overflow_stream)
+            .await
+            .expect("authenticated overflow upgrade");
+    assert!(overflow_proof.verify(&overflow_response));
+    let ended = timeout(Duration::from_millis(200), overflow.next())
+        .await
+        .expect("overflow liveness rejected");
+    if let Some(Ok(message)) = ended {
+        assert!(message.is_close());
+    }
+    assert_eq!(
+        listener.active_liveness_connections(),
+        config.max_liveness_connections
+    );
+
+    drop(overflow);
+    drop(held);
+    timeout(Duration::from_millis(500), listener.shutdown())
+        .await
+        .expect("bounded liveness shutdown")
+        .expect("liveness shutdown");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -387,9 +491,14 @@ async fn liveness_response_requires_exact_json_rpc_correlation_and_shape() {
     });
 
     for (name, _, expected) in &cases {
+        let expected = if *expected {
+            LivenessOutcome::Alive
+        } else {
+            LivenessOutcome::DefinitelyStale
+        };
         assert_eq!(
             probe_liveness(&locator, Duration::from_millis(250)).await,
-            *expected,
+            expected,
             "case: {name}"
         );
     }
@@ -400,7 +509,7 @@ async fn liveness_response_requires_exact_json_rpc_correlation_and_shape() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn open_port_without_authenticated_initialize_is_stale_and_rotated() {
+async fn open_port_timeout_is_indeterminate_and_preserves_incumbent_locator() {
     let profile = TempProfile::new("initialize-only-liveness");
     let impostor = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
         .await
@@ -423,19 +532,22 @@ async fn open_port_without_authenticated_initialize_is_stale_and_rotated() {
     };
     replace_locator(&profile.profile, &stale).expect("publish stale locator");
 
-    let listener = DaemonListener::start_with_config(
+    let contender = DaemonListener::start_with_config(
         profile.profile.clone(),
         CountingFactory::default(),
         test_config(),
     )
-    .await
-    .expect("replace unauthenticated port");
-    assert_ne!(listener.locator().endpoint, stale.endpoint);
-    assert_ne!(listener.locator().capability, stale.capability);
-    assert_ne!(listener.locator().daemon_nonce, stale.daemon_nonce);
+    .await;
+    assert!(matches!(
+        contender,
+        Err(DaemonListenerError::LivenessIndeterminate)
+    ));
+    assert_eq!(
+        read_locator(&profile.profile).expect("preserved ambiguous locator"),
+        Some(stale)
+    );
     impostor_task.abort();
     let _ = impostor_task.await;
-    listener.shutdown().await.expect("shutdown replacement");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -488,6 +600,48 @@ async fn shutdown_stops_accepting_drains_bounded_releases_port_and_removes_only_
     if let Some(Ok(message)) = ended {
         assert!(message.is_close());
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_absolute_deadline_bounds_matching_cleanup_lock_and_reports_timeout() {
+    let profile = TempProfile::new("shutdown-cleanup-deadline");
+    let listener = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        CountingFactory::default(),
+        ListenerConfig {
+            shutdown_timeout: Duration::from_millis(60),
+            ..test_config()
+        },
+    )
+    .await
+    .expect("start listener");
+    let locator = listener.locator().clone();
+    let cleanup_blocker =
+        acquire_start_guard(&profile.profile, Duration::from_millis(100)).expect("hold lock");
+
+    let result = timeout(Duration::from_millis(200), listener.shutdown())
+        .await
+        .expect("shutdown respected absolute product deadline");
+    assert!(matches!(result, Err(DaemonListenerError::ShutdownTimeout)));
+    assert_eq!(
+        read_locator(&profile.profile).expect("locator preserved while cleanup blocked"),
+        Some(locator)
+    );
+
+    drop(cleanup_blocker);
+    timeout(Duration::from_millis(500), async {
+        loop {
+            if read_locator(&profile.profile)
+                .expect("eventual cleanup state")
+                .is_none()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("timed-out cleanup attempt completed after lock release");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
