@@ -8,6 +8,9 @@ use openengine_cluster_protocol::{
     AgentAttachParams, ExecutionRef, GetResult, InitializeResult, LogsParams, WatchParams,
     NOT_FOUND,
 };
+use openengine_cluster_server::identity::{
+    BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
+};
 use openengine_cluster_server::{ClusterBackend, ConnectionContext, Dispatcher};
 use serde_json::Value;
 
@@ -207,10 +210,16 @@ where
         .await
         .map_err(|error| format!("create failed: {error}"))?;
     let backend = Arc::new(backend);
-    let context = ConnectionContext {
-        peer_label: Some(format!("portable-conformance:{ordinal}")),
-        ..ConnectionContext::default()
-    };
+    let context = ConnectionContext::new(
+        ConnectionIdentity::new(ConnectionIdentityConfig {
+            principal: PrincipalId::new(format!("portable-conformance:{ordinal}")),
+            tenant: TenantId::new(format!("portable-conformance:{ordinal}")),
+            issued_at_ms: None,
+            expires_at_ms: u64::MAX,
+            binding_attributes: BindingAttributes::default(),
+        }),
+        Default::default(),
+    );
     let dispatcher = Dispatcher::from_shared(Arc::clone(&backend), context);
     let exercise = exercise(&dispatcher, registration, case).await;
     drop(dispatcher);

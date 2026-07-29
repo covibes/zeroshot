@@ -13,6 +13,9 @@ use crate::connection::{
     ConnectionState, DecodedFrame, DecodedOutcome, DecodedRequest, DispatchCtx, RequestDispatch,
     RequestKind, ShutdownArgs,
 };
+use crate::identity::{
+    ConnectionBinding, ConnectionIdentityResolver, ConnectionTimeSource, ResolvedConnection,
+};
 use crate::{serialize_error, ClusterBackend, Dispatcher};
 
 /// Bounded NDJSON frame length. A line exceeding this (with no terminating newline found first)
@@ -39,18 +42,45 @@ where
     }
 }
 
-pub async fn serve_ndjson<B, R, W, E>(
-    dispatcher: Dispatcher<B>,
+/// The three byte streams owned by one NDJSON connection.
+pub struct NdjsonIo<R, W, E> {
     reader: R,
     writer: W,
-    mut diagnostics: E,
+    diagnostics: E,
+}
+
+impl<R, W, E> NdjsonIo<R, W, E> {
+    #[must_use]
+    pub fn new(reader: R, writer: W, diagnostics: E) -> Self {
+        Self {
+            reader,
+            writer,
+            diagnostics,
+        }
+    }
+}
+
+pub async fn serve_ndjson<B, R, W, E, I, T>(
+    binding: ConnectionBinding<B, I, T>,
+    io: NdjsonIo<R, W, E>,
 ) -> io::Result<()>
 where
     B: ClusterBackend,
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
     E: AsyncWrite + Send + Unpin + 'static,
+    I: ConnectionIdentityResolver,
+    T: ConnectionTimeSource,
 {
+    let ResolvedConnection {
+        dispatcher,
+        time_source,
+    } = binding.resolve().await?;
+    let NdjsonIo {
+        reader,
+        writer,
+        mut diagnostics,
+    } = io;
     let (outbound_tx, outbound_rx) = mpsc::channel::<String>(OUTBOUND_QUEUE_CAPACITY);
     let writer_task = tokio::spawn(run_writer(writer, outbound_rx));
 
@@ -73,9 +103,23 @@ where
                 line = lines.next() => break line,
             }
         };
+        let Some(next_line) = next_line else {
+            break;
+        };
+        if dispatcher
+            .context()
+            .identity()
+            .is_expired_at(time_source.now_ms())
+        {
+            diagnostics
+                .write_all(b"cluster protocol connection identity expired\n")
+                .await?;
+            diagnostics.flush().await?;
+            break;
+        }
         let line = match next_line {
-            Some(Ok(line)) => line,
-            Some(Err(LinesCodecError::MaxLineLengthExceeded)) => {
+            Ok(line) => line,
+            Err(LinesCodecError::MaxLineLengthExceeded) => {
                 let _ = outbound_tx
                     .send(serialize_error(None, PARSE_ERROR, "Parse error", None))
                     .await;
@@ -89,14 +133,13 @@ where
                 lines = Framed::from_parts(lines.into_parts());
                 continue;
             }
-            Some(Err(LinesCodecError::Io(error))) => {
+            Err(LinesCodecError::Io(error)) => {
                 diagnostics
                     .write_all(format!("cluster protocol input error: {error}\n").as_bytes())
                     .await?;
                 diagnostics.flush().await?;
                 break;
             }
-            None => break,
         };
 
         let mut ctx = DispatchCtx {
@@ -169,15 +212,15 @@ async fn run_passthrough_request<B>(
     let _ = state.outbound_tx.send(response).await;
 }
 
-pub async fn serve_stdio<B>(dispatcher: Dispatcher<B>) -> io::Result<()>
+pub async fn serve_stdio<B, I, T>(binding: ConnectionBinding<B, I, T>) -> io::Result<()>
 where
     B: ClusterBackend,
+    I: ConnectionIdentityResolver,
+    T: ConnectionTimeSource,
 {
     serve_ndjson(
-        dispatcher,
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-        tokio::io::stderr(),
+        binding,
+        NdjsonIo::new(tokio::io::stdin(), tokio::io::stdout(), tokio::io::stderr()),
     )
     .await
 }

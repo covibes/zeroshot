@@ -3,6 +3,9 @@ use openengine_cluster_protocol::{
     ClusterStatus, Cursor, GetParams, GetResult, InitializeParams, InitializeResult,
     ServerCapabilities, APPLICATION_ERROR, INVALID_PHASE, PROTOCOL_VERSION,
 };
+use openengine_cluster_server::identity::{
+    BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
+};
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext};
 use serde_json::{json, Value};
 use zeroshot_engine::{dispatcher_for_route, NativeBackendFactory, ProductionNativeBackendFactory};
@@ -124,10 +127,7 @@ impl NativeBackendFactory for FakeFactory {
 
     fn create(&self, context: &ConnectionContext) -> Self::Backend {
         FakeBackend {
-            route: context
-                .peer_label
-                .clone()
-                .expect("test route must identify its isolated cluster"),
+            route: context.identity().tenant().as_str().to_owned(),
         }
     }
 }
@@ -160,10 +160,16 @@ impl ClusterBackend for FakeBackend {
 
 #[tokio::test]
 async fn factory_injection_composes_the_selected_backend_with_its_route() {
-    let context = ConnectionContext {
-        peer_label: Some("cluster-route-7".to_owned()),
-        ..ConnectionContext::default()
-    };
+    let context = ConnectionContext::new(
+        ConnectionIdentity::new(ConnectionIdentityConfig {
+            principal: PrincipalId::new("principal-7"),
+            tenant: TenantId::new("cluster-route-7"),
+            issued_at_ms: Some(1),
+            expires_at_ms: u64::MAX,
+            binding_attributes: BindingAttributes::default(),
+        }),
+        Default::default(),
+    );
     let dispatcher = dispatcher_for_route(&FakeFactory, context);
     let response: Value = serde_json::from_str(
         &dispatcher

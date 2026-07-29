@@ -42,9 +42,10 @@ mod tests {
             _params: InitializeParams,
         ) -> Result<InitializeResult, BackendError> {
             if !context
-                .peer_label
-                .as_deref()
-                .is_some_and(|label| label.starts_with("portable-conformance:"))
+                .identity()
+                .tenant()
+                .as_str()
+                .starts_with("portable-conformance:")
             {
                 return Err(BackendError::new(
                     "CONTEXT_NOT_ISOLATED",
@@ -67,7 +68,12 @@ mod tests {
             context: &ConnectionContext,
             _params: GetParams,
         ) -> Result<GetResult, BackendError> {
-            if context.peer_label.is_none() {
+            if !context
+                .identity()
+                .tenant()
+                .as_str()
+                .starts_with("portable-conformance:")
+            {
                 return Err(BackendError::new(
                     "CONTEXT_NOT_ISOLATED",
                     "runner context was missing",
