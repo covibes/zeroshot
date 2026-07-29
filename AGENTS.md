@@ -219,6 +219,15 @@ The NDJSON server caps and continuously reaps per-connection request/subscriptio
 per-subscription consumer: local queue overflow closes that stream as `SLOW_CONSUMER` from its
 exact caller-delivered cursor and cancels the server subscription. Watch request IDs are allocated
 by the shared transport, never by individual watch-client facades.
+Outbound Cluster WebSocket TLS is client-only: rustls 0.23/tokio-rustls 0.26 is the sole workspace
+TLS stack, and only `openengine-cluster-client` enables tokio-tungstenite's rustls native-root
+feature. System roots are mandatory by default; private roots and the off-by-default
+`bundled-roots` feature only augment them and never hide system-store load failures. Every `ws://`
+dial, including loopback, requires `WebSocketDialOptions::allow_plaintext(true)` per connection.
+Endpoint preflight rejects non-ws(s), userinfo, query, and fragment before network I/O; redirects
+are never followed or downgraded. Keep `serve_websocket` plaintext/front-proxy terminated and keep
+TLS out of `zeroshot-rust`. Do not introduce native-tls: its Linux `openssl-sys` dependency breaks
+cross-compilation and static-musl builds.
 Authoritative admission snapshots fail closed: `empty` has no durable fields, `running` has the
 complete matching control/seed tuple, and transient `admitting` preserves one of those two shapes.
 Operational suspend is a dispatch gate: existing leases may land verified I/O, but successors wait
