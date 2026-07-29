@@ -62,9 +62,10 @@ function parseOpenCodeJsonc(content) {
   let withoutComments = '';
   let inString = false;
   let escaped = false;
-  for (let index = 0; index < content.length; index++) {
-    const char = content[index];
-    const next = content[index + 1];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const char = content[cursor];
+    const next = content[cursor + 1];
     if (inString) {
       withoutComments += char;
       if (escaped) {
@@ -74,34 +75,39 @@ function parseOpenCodeJsonc(content) {
       } else if (char === '"') {
         inString = false;
       }
+      cursor += 1;
       continue;
     }
     if (char === '"') {
       inString = true;
       withoutComments += char;
+      cursor += 1;
       continue;
     }
     if (char === '/' && next === '/') {
-      while (index < content.length && content[index] !== '\n') index++;
+      cursor += 2;
+      while (cursor < content.length && content[cursor] !== '\n') cursor += 1;
       withoutComments += '\n';
+      cursor += 1;
       continue;
     }
     if (char === '/' && next === '*') {
-      index += 2;
+      cursor += 2;
       while (
-        index < content.length &&
-        !(content[index] === '*' && content[index + 1] === '/')
+        cursor < content.length &&
+        !(content[cursor] === '*' && content[cursor + 1] === '/')
       ) {
-        if (content[index] === '\n') withoutComments += '\n';
-        index++;
+        if (content[cursor] === '\n') withoutComments += '\n';
+        cursor += 1;
       }
-      if (index >= content.length) {
+      if (cursor >= content.length) {
         throw new SyntaxError('Unterminated block comment in OpenCode inline config');
       }
-      index++;
+      cursor += 2;
       continue;
     }
     withoutComments += char;
+    cursor += 1;
   }
 
   let withoutTrailingCommas = '';
@@ -201,7 +207,10 @@ async function resolveIsolatedOpenCodeConfigContent(manager, clusterId, provider
     providerName === 'opencode' &&
     typeof manager.getContainerEnvironmentValue === 'function'
   ) {
-    return manager.getContainerEnvironmentValue(clusterId, OPENCODE_CONFIG_CONTENT_ENV);
+    return await manager.getContainerEnvironmentValue(
+      clusterId,
+      OPENCODE_CONFIG_CONTENT_ENV
+    );
   }
   return process.env[OPENCODE_CONFIG_CONTENT_ENV] || null;
 }
