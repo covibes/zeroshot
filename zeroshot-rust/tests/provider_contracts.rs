@@ -190,11 +190,11 @@ impl SourceCodeProvider for FakeSourceProvider {
     async fn materialize(
         &self,
         request: &SourceMaterializeRequest,
-        mut destination: SourceMaterializationDestination<'_>,
+        destination: SourceMaterializationDestination<'_>,
     ) -> Result<SourceMaterializationReceipt, SourceProviderFailure> {
-        if let Some(written) = destination.downcast_mut::<bool>() {
-            *written = true;
-        }
+        destination
+            .write_file("materialized", b"provider-contract")
+            .expect("the engine-owned contract target accepts bounded writes");
         Ok(SourceMaterializationReceipt::new(
             request.repository().clone(),
             request.revision().clone(),

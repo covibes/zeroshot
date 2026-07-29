@@ -15,10 +15,11 @@ use zeroshot_engine::workspace_lease::{
     BorrowedWorkspace, BorrowedWorkspaceAdapter, BorrowedWorkspaceFingerprintPort,
     CanonicalWorkspaceRoot, DockerImageDigest, DockerMountHandleId, DockerResourceId,
     DockerResourceRequest, DockerWorkspace, DockerWorkspaceAdapter, DockerWorkspaceEffects,
-    FilesystemBorrowedWorkspaceFingerprint, PrepareWorkspaceRequest, WorkspaceFingerprint,
-    WorkspaceIsolation, WorkspaceLeaseError, WorkspaceLeaseErrorKind, WorkspaceLeaseId,
-    WorkspaceLeaseKey, WorkspaceLeaseManager, WorkspaceLeaseOwnerRequest, WorkspaceLeaseState,
-    WorkspaceLeaseStore, WorkspaceMaterializationId, WorkspaceMode, WorkspaceName,
+    FilesystemBorrowedWorkspaceFingerprint, FilesystemBorrowedWorkspaceFingerprintHooks,
+    PrepareWorkspaceRequest, WorkspaceFingerprint, WorkspaceIsolation, WorkspaceLeaseError,
+    WorkspaceLeaseErrorKind, WorkspaceLeaseId, WorkspaceLeaseKey, WorkspaceLeaseManager,
+    WorkspaceLeaseOwnerRequest, WorkspaceLeaseState, WorkspaceLeaseStore,
+    WorkspaceMaterializationId, WorkspaceMode, WorkspaceName, WorkspaceProductRootHooks,
     WorkspaceProductRoots, WorkspaceProfile, WorkspaceResourceObservation, WorktreeResourceRequest,
     WorktreeWorkspace, WorktreeWorkspaceAdapter, WorktreeWorkspaceEffects,
 };
@@ -28,7 +29,7 @@ fn injected_resource_unavailable() -> WorkspaceLeaseError {
         "zeroshot-injected-absent-workspace-{}",
         std::process::id()
     ));
-    FilesystemBorrowedWorkspaceFingerprint
+    FilesystemBorrowedWorkspaceFingerprint::default()
         .fingerprint(&absent)
         .unwrap_err()
 }
@@ -88,6 +89,12 @@ fn exact_mode_values_are_canonical_bounded_and_secret_free() {
         "a".repeat(64)
     );
     assert!(serde_json::from_str::<DockerWorkspace>(&invalid_docker).is_err());
+    let mut mode_with_unknown_field = serde_json::to_value(&mode).unwrap();
+    mode_with_unknown_field
+        .as_object_mut()
+        .unwrap()
+        .insert("unexpected".to_owned(), serde_json::json!(true));
+    assert!(serde_json::from_value::<WorkspaceMode>(mode_with_unknown_field).is_err());
 }
 
 #[cfg(target_os = "linux")]
@@ -168,12 +175,53 @@ fn worktree_and_docker_roots_are_private_disjoint_and_never_broad() {
     std::fs::remove_dir_all(scope).unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn product_base_ancestor_swap_after_descriptor_open_fails_before_child_creation() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let (scope, base) = private_product_base("base-construction-swap");
+    let detached = scope.with_extension("detached");
+    let outside_scope = scope.with_extension("outside");
+    let outside_base = outside_scope.join("zeroshot/workspaces");
+    std::fs::create_dir_all(&outside_base).unwrap();
+    std::fs::set_permissions(&outside_base, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let hooks = WorkspaceProductRootHooks {
+        after_base_open: Some(Arc::new({
+            let scope = scope.clone();
+            let detached = detached.clone();
+            let outside_scope = outside_scope.clone();
+            move || {
+                std::fs::rename(&scope, &detached).unwrap();
+                symlink(&outside_scope, &scope).unwrap();
+            }
+        })),
+        ..WorkspaceProductRootHooks::default()
+    };
+    assert_eq!(
+        WorkspaceProductRoots::new_with_hooks(
+            CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            hooks,
+        )
+        .err()
+        .unwrap()
+        .kind(),
+        WorkspaceLeaseErrorKind::ResourceMismatch
+    );
+    assert!(!outside_base.join("worktrees").exists());
+    assert!(!outside_base.join("mounts").exists());
+    std::fs::remove_file(&scope).unwrap();
+    std::fs::rename(&detached, &scope).unwrap();
+    std::fs::remove_dir_all(scope).unwrap();
+    std::fs::remove_dir_all(outside_scope).unwrap();
+}
+
 #[tokio::test]
 async fn borrowed_workspace_is_inspected_but_never_owned_or_deleted() {
     let path = std::env::temp_dir().join(format!("zeroshot-borrowed-{}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     let canonical = std::fs::canonicalize(&path).unwrap();
-    let fingerprint = FilesystemBorrowedWorkspaceFingerprint
+    let fingerprint = FilesystemBorrowedWorkspaceFingerprint::default()
         .fingerprint(&canonical)
         .unwrap();
     let request = PrepareWorkspaceRequest {
@@ -237,97 +285,38 @@ async fn borrowed_workspace_is_inspected_but_never_owned_or_deleted() {
 }
 
 #[cfg(target_os = "linux")]
-struct PausingBorrowedFingerprint {
-    armed: AtomicBool,
-    reached: std::sync::mpsc::SyncSender<()>,
-    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-#[cfg(target_os = "linux")]
-impl BorrowedWorkspaceFingerprintPort for PausingBorrowedFingerprint {
-    fn fingerprint(
-        &self,
-        root: &std::path::Path,
-    ) -> Result<WorkspaceFingerprint, WorkspaceLeaseError> {
-        if self.armed.swap(false, Ordering::SeqCst) {
-            self.reached.send(()).unwrap();
-            self.resume
-                .lock()
-                .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .map_err(|_| injected_resource_unavailable())?;
-        }
-        FilesystemBorrowedWorkspaceFingerprint.fingerprint(root)
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn borrowed_root_swap_between_canonical_check_and_fingerprint_fails_closed() {
-    use std::os::unix::fs::symlink;
-
+#[test]
+fn borrowed_root_replacement_after_descriptor_traversal_fails_final_revalidation() {
     let scope = std::env::temp_dir().join(format!("zeroshot-borrowed-swap-{}", std::process::id()));
     let root = scope.join("root");
     let aside = scope.join("root-aside");
-    let outside = scope.join("outside");
+    let replacement = scope.join("replacement");
     std::fs::create_dir_all(&root).unwrap();
-    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(&replacement).unwrap();
     std::fs::write(root.join("same"), b"content").unwrap();
-    std::fs::write(outside.join("same"), b"content").unwrap();
+    std::fs::write(replacement.join("same"), b"content").unwrap();
     let canonical = std::fs::canonicalize(&root).unwrap();
-    let fingerprint = FilesystemBorrowedWorkspaceFingerprint
-        .fingerprint(&canonical)
-        .unwrap();
-    let request = PrepareWorkspaceRequest {
-        key: WorkspaceLeaseKey {
-            cluster: ResourceId::new("cluster.borrowed-swap").unwrap(),
-            run: RunSequence::new(1).unwrap(),
-            logical_key: ResourceId::new("logical.borrowed-swap").unwrap(),
-            isolation: WorkspaceIsolation::Shared,
-        },
-        owner: OwnerId::new("owner-a").unwrap(),
-        access_mode: WorkspaceAccessMode::ReadOnly,
-        mode: WorkspaceMode::Borrowed(BorrowedWorkspace {
-            canonical_root: CanonicalWorkspaceRoot::new(canonical.to_string_lossy()).unwrap(),
-            fingerprint,
-        }),
+    let hooks = FilesystemBorrowedWorkspaceFingerprintHooks {
+        before_root_revalidation: Some(Arc::new({
+            let root = root.clone();
+            let aside = aside.clone();
+            let replacement = replacement.clone();
+            move || {
+                std::fs::rename(&root, &aside).unwrap();
+                std::fs::rename(&replacement, &root).unwrap();
+            }
+        })),
     };
-    let (reached_tx, reached_rx) = std::sync::mpsc::sync_channel(1);
-    let (resume_tx, resume_rx) = std::sync::mpsc::sync_channel(1);
-    let fingerprints = Arc::new(PausingBorrowedFingerprint {
-        armed: AtomicBool::new(true),
-        reached: reached_tx,
-        resume: std::sync::Mutex::new(resume_rx),
-    });
-    let manager = WorkspaceLeaseManager::new(
-        Arc::new(FakeWorkspaceLeaseStore::default()),
-        Arc::new(BorrowedWorkspaceAdapter::new(fingerprints)),
-    );
-    let worker_request = request.clone();
-    let worker = std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let result = runtime.block_on(manager.prepare(worker_request));
-        (manager, result)
-    });
-    reached_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("borrowed inspection did not reach the fingerprint boundary");
-    std::fs::rename(&root, &aside).unwrap();
-    symlink(&outside, &root).unwrap();
-    resume_tx.send(()).unwrap();
-    let (manager, result) = worker.join().unwrap();
-    assert_eq!(
-        result.unwrap_err().kind(),
-        WorkspaceLeaseErrorKind::ResourceUnavailable
-    );
-    std::fs::remove_file(&root).unwrap();
+    let error = FilesystemBorrowedWorkspaceFingerprint::new_with_hooks(hooks)
+        .fingerprint(&canonical)
+        .unwrap_err();
+    assert_eq!(error.kind(), WorkspaceLeaseErrorKind::ResourceUnavailable);
+    std::fs::rename(&root, &replacement).unwrap();
     std::fs::rename(&aside, &root).unwrap();
-    assert_eq!(
-        manager.prepare(request).await.unwrap().state,
-        WorkspaceLeaseState::Ready
+    assert!(
+        FilesystemBorrowedWorkspaceFingerprint::default()
+            .fingerprint(&canonical)
+            .is_ok()
     );
     std::fs::remove_dir_all(scope).unwrap();
 }
@@ -406,17 +395,15 @@ impl WorktreeWorkspaceEffects for CapturingWorktreeEffects {
     async fn create(
         &self,
         request: WorktreeResourceRequest<'_>,
-        mut destination: SourceMaterializationDestination<'_>,
+        destination: SourceMaterializationDestination<'_>,
     ) -> Result<(), WorkspaceLeaseError> {
-        use std::os::unix::fs::MetadataExt;
-        let root = destination
-            .downcast_mut::<std::path::PathBuf>()
-            .expect("adapter provides only the ephemeral destination capability");
-        assert!(root.starts_with("/proc/self/fd"));
-        let destination_metadata = std::fs::metadata(root).unwrap();
-        let capability_metadata = request.root_directory.metadata().unwrap();
-        assert_eq!(destination_metadata.dev(), capability_metadata.dev());
-        assert_eq!(destination_metadata.ino(), capability_metadata.ino());
+        destination
+            .write_file("capability-probe", b"pinned")
+            .expect("adapter provides only a scoped destination operation");
+        assert!(request.is_available());
+        request
+            .remove_file("capability-probe")
+            .expect("request capability addresses the same pinned workspace");
         self.destination_seen.store(true, Ordering::SeqCst);
         self.exists.store(true, Ordering::SeqCst);
         Ok(())
@@ -480,6 +467,124 @@ impl WorktreeWorkspaceEffects for FailingCreateWorktreeEffects {
 }
 
 #[cfg(target_os = "linux")]
+struct PartialCreateMismatchEffects {
+    cleanup_calls: AtomicUsize,
+    fail_cleanup_once: AtomicBool,
+    inspect_calls: AtomicUsize,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for PartialCreateMismatchEffects {
+    fn default() -> Self {
+        Self {
+            cleanup_calls: AtomicUsize::new(0),
+            fail_cleanup_once: AtomicBool::new(true),
+            inspect_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[async_trait]
+impl WorktreeWorkspaceEffects for PartialCreateMismatchEffects {
+    async fn inspect(
+        &self,
+        _request: WorktreeResourceRequest<'_>,
+    ) -> Result<WorkspaceResourceObservation, WorkspaceLeaseError> {
+        self.inspect_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(WorkspaceResourceObservation::Mismatch)
+    }
+
+    async fn create(
+        &self,
+        _request: WorktreeResourceRequest<'_>,
+        destination: SourceMaterializationDestination<'_>,
+    ) -> Result<(), WorkspaceLeaseError> {
+        destination
+            .write_file("partial", b"incomplete")
+            .expect("adapter provides the scoped materialization operation");
+        Err(injected_resource_unavailable())
+    }
+
+    async fn cleanup(
+        &self,
+        request: WorktreeResourceRequest<'_>,
+    ) -> Result<(), WorkspaceLeaseError> {
+        self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail_cleanup_once.swap(false, Ordering::SeqCst) {
+            return Err(injected_resource_unavailable());
+        }
+        request.remove_file("partial").unwrap();
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn partial_private_materialization_restarts_into_retryable_owner_cleanup() {
+    let (scope, base) = private_product_base("partial-private-materialization");
+    let store = Arc::new(FakeWorkspaceLeaseStore::default());
+    let effects = Arc::new(PartialCreateMismatchEffects::default());
+    let manager = WorkspaceLeaseManager::new(
+        store.clone(),
+        Arc::new(WorktreeWorkspaceAdapter::new(
+            WorkspaceProductRoots::new(
+                CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            )
+            .unwrap(),
+            effects.clone(),
+        )),
+    );
+    let request = worktree_request_for("partial-private-materialization");
+    let id = WorkspaceLeaseId::derive(&request.key);
+    let owner = request.owner.clone();
+    assert_eq!(
+        manager.prepare(request).await.unwrap_err().kind(),
+        WorkspaceLeaseErrorKind::ResourceUnavailable
+    );
+    let partial = base.join("worktrees/.lease-a.create-pending/.workspace.create-pending/partial");
+    assert_eq!(std::fs::read(&partial).unwrap(), b"incomplete");
+    assert!(!base.join("worktrees/lease-a").exists());
+
+    for expect_success in [false, true] {
+        let restarted_manager = WorkspaceLeaseManager::new(
+            store.clone(),
+            Arc::new(WorktreeWorkspaceAdapter::new(
+                WorkspaceProductRoots::new(
+                    CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+                )
+                .unwrap(),
+                effects.clone(),
+            )),
+        );
+        let result = restarted_manager
+            .restart(WorkspaceLeaseOwnerRequest {
+                id: id.clone(),
+                owner: owner.clone(),
+            })
+            .await;
+        if expect_success {
+            assert_eq!(result.unwrap().state, WorkspaceLeaseState::Cleaned);
+        } else {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                WorkspaceLeaseErrorKind::ResourceUnavailable
+            );
+            assert_eq!(
+                store.load(&id).await.unwrap().unwrap().state,
+                WorkspaceLeaseState::CleanupRequired
+            );
+            assert!(partial.is_file());
+        }
+    }
+    assert_eq!(effects.inspect_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 2);
+    assert!(!base.join("worktrees/.lease-a.create-pending").exists());
+    assert!(!base.join("worktrees/lease-a").exists());
+    std::fs::remove_dir_all(scope).unwrap();
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn worktree_create_failure_leaves_owned_scaffolding_for_retryable_cleanup() {
     let (scope, base) = private_product_base("worktree-create-failure");
@@ -500,7 +605,10 @@ async fn worktree_create_failure_leaves_owned_scaffolding_for_retryable_cleanup(
         manager.prepare(request).await.unwrap_err().kind(),
         WorkspaceLeaseErrorKind::ResourceUnavailable
     );
-    assert!(base.join("worktrees/lease-a/workspace").is_dir());
+    assert!(
+        base.join("worktrees/.lease-a.create-pending/.workspace.create-pending")
+            .is_dir()
+    );
     assert_eq!(
         manager
             .cleanup(WorkspaceLeaseOwnerRequest { id, owner })
@@ -511,6 +619,311 @@ async fn worktree_create_failure_leaves_owned_scaffolding_for_retryable_cleanup(
     );
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
     assert!(!base.join("worktrees/lease-a").exists());
+    std::fs::remove_dir_all(scope).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn worktree_staging_crash_boundaries_remain_owner_cleanup_recoverable() {
+    let cases = [
+        (
+            "staging-directory-crash",
+            WorkspaceProductRootHooks {
+                fail_after_staging_directory: Some(Arc::new({
+                    let armed = AtomicBool::new(true);
+                    move || armed.swap(false, Ordering::SeqCst)
+                })),
+                ..WorkspaceProductRootHooks::default()
+            },
+        ),
+        (
+            "owner-marker-crash",
+            WorkspaceProductRootHooks {
+                fail_after_owner_marker_create: Some(Arc::new({
+                    let armed = AtomicBool::new(true);
+                    move || armed.swap(false, Ordering::SeqCst)
+                })),
+                ..WorkspaceProductRootHooks::default()
+            },
+        ),
+        (
+            "owner-marker-synced-crash",
+            WorkspaceProductRootHooks {
+                fail_after_owner_marker_sync: Some(Arc::new({
+                    let armed = AtomicBool::new(true);
+                    move || armed.swap(false, Ordering::SeqCst)
+                })),
+                ..WorkspaceProductRootHooks::default()
+            },
+        ),
+    ];
+    for (label, hooks) in cases {
+        let (scope, base) = private_product_base(label);
+        let roots = WorkspaceProductRoots::new_with_hooks(
+            CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            hooks,
+        )
+        .unwrap();
+        let store = Arc::new(FakeWorkspaceLeaseStore::default());
+        let effects = Arc::new(CapturingWorktreeEffects::default());
+        let manager = WorkspaceLeaseManager::new(
+            store.clone(),
+            Arc::new(WorktreeWorkspaceAdapter::new(roots, effects.clone())),
+        );
+        let request = worktree_request_for(label);
+        let id = WorkspaceLeaseId::derive(&request.key);
+        let owner = request.owner.clone();
+        assert_eq!(
+            manager.prepare(request).await.unwrap_err().kind(),
+            WorkspaceLeaseErrorKind::ResourceUnavailable
+        );
+        assert!(!base.join("worktrees/lease-a").exists());
+        assert!(base.join("worktrees/.lease-a.create-pending").is_dir());
+        let restarted_manager = WorkspaceLeaseManager::new(
+            store,
+            Arc::new(WorktreeWorkspaceAdapter::new(
+                WorkspaceProductRoots::new(
+                    CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+                )
+                .unwrap(),
+                effects,
+            )),
+        );
+        assert_eq!(
+            restarted_manager
+                .restart(WorkspaceLeaseOwnerRequest { id, owner })
+                .await
+                .unwrap()
+                .state,
+            WorkspaceLeaseState::Cleaned
+        );
+        assert!(!base.join("worktrees/.lease-a.create-pending").exists());
+        std::fs::remove_dir_all(scope).unwrap();
+    }
+}
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn staging_cleanup_quarantine_is_restartable_without_mutable_name_unlink() {
+    use std::os::unix::fs::symlink;
+    let (scope, base) = private_product_base("staging-quarantine-restart");
+    let store = Arc::new(FakeWorkspaceLeaseStore::default());
+    let effects = Arc::new(CapturingWorktreeEffects::default());
+    let create_roots = WorkspaceProductRoots::new_with_hooks(
+        CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+        WorkspaceProductRootHooks {
+            fail_after_owner_marker_sync: Some(Arc::new(|| true)),
+            ..WorkspaceProductRootHooks::default()
+        },
+    )
+    .unwrap();
+    let manager = WorkspaceLeaseManager::new(
+        store.clone(),
+        Arc::new(WorktreeWorkspaceAdapter::new(create_roots, effects.clone())),
+    );
+    let request = worktree_request_for("staging-quarantine-restart");
+    let id = WorkspaceLeaseId::derive(&request.key);
+    let owner = request.owner.clone();
+    assert_eq!(
+        manager.prepare(request).await.unwrap_err().kind(),
+        WorkspaceLeaseErrorKind::ResourceUnavailable
+    );
+
+    let cleanup_roots = WorkspaceProductRoots::new_with_hooks(
+        CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+        WorkspaceProductRootHooks {
+            fail_after_staging_quarantine: Some(Arc::new({
+                let armed = AtomicBool::new(true);
+                move || armed.swap(false, Ordering::SeqCst)
+            })),
+            ..WorkspaceProductRootHooks::default()
+        },
+    )
+    .unwrap();
+    let interrupted = WorkspaceLeaseManager::new(
+        store.clone(),
+        Arc::new(WorktreeWorkspaceAdapter::new(
+            cleanup_roots,
+            effects.clone(),
+        )),
+    );
+    assert_eq!(
+        interrupted
+            .restart(WorkspaceLeaseOwnerRequest {
+                id: id.clone(),
+                owner: owner.clone(),
+            })
+            .await
+            .unwrap_err()
+            .kind(),
+        WorkspaceLeaseErrorKind::ResourceUnavailable
+    );
+    let staging = base.join("worktrees/.lease-a.create-pending");
+    let quarantine = base.join("worktrees/..lease-a.create-pending.cleanup");
+    assert!(!staging.exists());
+    assert!(quarantine.is_dir());
+    assert_eq!(
+        store.load(&id).await.unwrap().unwrap().state,
+        WorkspaceLeaseState::CleanupRequired
+    );
+
+    let detached = quarantine.with_extension("detached");
+    std::fs::rename(&quarantine, &detached).unwrap();
+    symlink(&detached, &quarantine).unwrap();
+    let substituted = WorkspaceLeaseManager::new(
+        store.clone(),
+        Arc::new(WorktreeWorkspaceAdapter::new(
+            WorkspaceProductRoots::new(
+                CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            )
+            .unwrap(),
+            effects.clone(),
+        )),
+    );
+    assert_eq!(
+        substituted
+            .restart(WorkspaceLeaseOwnerRequest {
+                id: id.clone(),
+                owner: owner.clone(),
+            })
+            .await
+            .unwrap_err()
+            .kind(),
+        WorkspaceLeaseErrorKind::ResourceMismatch
+    );
+    assert!(detached.is_dir());
+    assert!(quarantine.is_symlink());
+    assert_eq!(
+        store.load(&id).await.unwrap().unwrap().state,
+        WorkspaceLeaseState::CleanupRequired
+    );
+    std::fs::remove_file(&quarantine).unwrap();
+    std::fs::rename(&detached, &quarantine).unwrap();
+
+    let restarted = WorkspaceLeaseManager::new(
+        store,
+        Arc::new(WorktreeWorkspaceAdapter::new(
+            WorkspaceProductRoots::new(
+                CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            )
+            .unwrap(),
+            effects,
+        )),
+    );
+    assert_eq!(
+        restarted
+            .restart(WorkspaceLeaseOwnerRequest { id, owner })
+            .await
+            .unwrap()
+            .state,
+        WorkspaceLeaseState::Cleaned
+    );
+    assert!(!quarantine.exists());
+    std::fs::remove_dir_all(scope).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn foreign_content_in_interrupted_staging_is_preserved_as_mismatch() {
+    let (scope, base) = private_product_base("foreign-staging");
+    let hooks = WorkspaceProductRootHooks {
+        fail_after_owner_marker_sync: Some(Arc::new(|| true)),
+        ..WorkspaceProductRootHooks::default()
+    };
+    let roots = WorkspaceProductRoots::new_with_hooks(
+        CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+        hooks,
+    )
+    .unwrap();
+    let store = Arc::new(FakeWorkspaceLeaseStore::default());
+    let effects = Arc::new(CapturingWorktreeEffects::default());
+    let manager = WorkspaceLeaseManager::new(
+        store.clone(),
+        Arc::new(WorktreeWorkspaceAdapter::new(roots, effects.clone())),
+    );
+    let request = worktree_request_for("foreign-staging");
+    let id = WorkspaceLeaseId::derive(&request.key);
+    let owner = request.owner.clone();
+    assert!(manager.prepare(request).await.is_err());
+    let foreign = base.join("worktrees/.lease-a.create-pending/foreign");
+    std::fs::write(&foreign, b"preserve").unwrap();
+    let restarted_manager = WorkspaceLeaseManager::new(
+        store,
+        Arc::new(WorktreeWorkspaceAdapter::new(
+            WorkspaceProductRoots::new(
+                CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            )
+            .unwrap(),
+            effects,
+        )),
+    );
+    assert_eq!(
+        restarted_manager
+            .restart(WorkspaceLeaseOwnerRequest { id, owner })
+            .await
+            .unwrap_err()
+            .kind(),
+        WorkspaceLeaseErrorKind::ResourceMismatch
+    );
+    assert_eq!(std::fs::read(&foreign).unwrap(), b"preserve");
+    std::fs::remove_dir_all(scope).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn ready_public_container_foreign_sibling_is_preserved_before_effects() {
+    let (scope, base) = private_product_base("foreign-public-sibling");
+    let store = Arc::new(FakeWorkspaceLeaseStore::default());
+    let effects = Arc::new(CapturingWorktreeEffects::default());
+    let manager = WorkspaceLeaseManager::new(
+        store.clone(),
+        Arc::new(WorktreeWorkspaceAdapter::new(
+            WorkspaceProductRoots::new(
+                CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            )
+            .unwrap(),
+            effects.clone(),
+        )),
+    );
+    let request = worktree_request_for("foreign-public-sibling");
+    let id = WorkspaceLeaseId::derive(&request.key);
+    let owner = request.owner.clone();
+    assert_eq!(
+        manager.prepare(request).await.unwrap().state,
+        WorkspaceLeaseState::Ready
+    );
+    let foreign = base.join("worktrees/lease-a/foreign");
+    std::fs::write(&foreign, b"preserve").unwrap();
+    let restarted_manager = WorkspaceLeaseManager::new(
+        store,
+        Arc::new(WorktreeWorkspaceAdapter::new(
+            WorkspaceProductRoots::new(
+                CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            )
+            .unwrap(),
+            effects,
+        )),
+    );
+    assert_eq!(
+        restarted_manager
+            .restart(WorkspaceLeaseOwnerRequest {
+                id: id.clone(),
+                owner: owner.clone(),
+            })
+            .await
+            .unwrap_err()
+            .kind(),
+        WorkspaceLeaseErrorKind::ResourceMismatch
+    );
+    assert_eq!(
+        restarted_manager
+            .cleanup(WorkspaceLeaseOwnerRequest { id, owner })
+            .await
+            .unwrap_err()
+            .kind(),
+        WorkspaceLeaseErrorKind::ResourceMismatch
+    );
+    assert_eq!(std::fs::read(&foreign).unwrap(), b"preserve");
+    assert!(base.join("worktrees/lease-a/workspace").is_dir());
     std::fs::remove_dir_all(scope).unwrap();
 }
 
@@ -540,12 +953,7 @@ impl WorktreeWorkspaceEffects for ResidualCleanupWorktreeEffects {
         request: WorktreeResourceRequest<'_>,
         _destination: SourceMaterializationDestination<'_>,
     ) -> Result<(), WorkspaceLeaseError> {
-        use std::os::fd::AsRawFd;
-        let root = PathBuf::from(format!(
-            "/proc/self/fd/{}",
-            request.root_directory.as_raw_fd()
-        ));
-        std::fs::write(root.join("residual"), b"still present").unwrap();
+        request.write_file("residual", b"still present").unwrap();
         self.exists.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -596,7 +1004,7 @@ async fn worktree_root_removal_failure_stays_cleanup_required_and_retries() {
         store.load(&id).await.unwrap().unwrap().state,
         WorkspaceLeaseState::CleanupRequired
     );
-    std::fs::remove_file(base.join("worktrees/lease-a/workspace/residual")).unwrap();
+    std::fs::remove_file(base.join("worktrees/lease-a/.workspace.cleanup/residual")).unwrap();
     assert_eq!(
         manager
             .cleanup(WorkspaceLeaseOwnerRequest { id, owner })
@@ -605,8 +1013,187 @@ async fn worktree_root_removal_failure_stays_cleanup_required_and_retries() {
             .state,
         WorkspaceLeaseState::Cleaned
     );
-    assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
     std::fs::remove_dir_all(scope).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cleanup_quarantine_crash_boundaries_reconcile_without_orphans() {
+    for (label, boundary) in [
+        ("inner-cleanup-quarantine-crash", 0),
+        ("outer-cleanup-quarantine-crash", 1),
+        ("owner-marker-removal-crash", 2),
+    ] {
+        let armed = Arc::new(AtomicBool::new(true));
+        let failpoint = Arc::new({
+            let armed = armed.clone();
+            move || armed.swap(false, Ordering::SeqCst)
+        });
+        let hooks = WorkspaceProductRootHooks {
+            fail_after_inner_quarantine: (boundary == 0).then_some(failpoint.clone()),
+            fail_after_outer_quarantine: (boundary == 1).then_some(failpoint.clone()),
+            fail_after_owner_marker_removal: (boundary == 2).then_some(failpoint),
+            ..WorkspaceProductRootHooks::default()
+        };
+        let (scope, base) = private_product_base(label);
+        let roots = WorkspaceProductRoots::new_with_hooks(
+            CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+            hooks,
+        )
+        .unwrap();
+        let effects = Arc::new(CapturingWorktreeEffects::default());
+        let store = Arc::new(FakeWorkspaceLeaseStore::default());
+        let manager = WorkspaceLeaseManager::new(
+            store.clone(),
+            Arc::new(WorktreeWorkspaceAdapter::new(roots, effects.clone())),
+        );
+        let request = worktree_request_for(label);
+        let id = WorkspaceLeaseId::derive(&request.key);
+        let owner = request.owner.clone();
+        assert_eq!(
+            manager.prepare(request).await.unwrap().state,
+            WorkspaceLeaseState::Ready
+        );
+        assert_eq!(
+            manager
+                .cleanup(WorkspaceLeaseOwnerRequest {
+                    id: id.clone(),
+                    owner: owner.clone(),
+                })
+                .await
+                .unwrap_err()
+                .kind(),
+            WorkspaceLeaseErrorKind::ResourceUnavailable
+        );
+        assert_eq!(
+            store.load(&id).await.unwrap().unwrap().state,
+            WorkspaceLeaseState::CleanupRequired
+        );
+        let quarantine = if boundary == 0 {
+            base.join("worktrees/lease-a/.workspace.cleanup")
+        } else {
+            base.join("worktrees/.lease-a.cleanup")
+        };
+        assert!(quarantine.exists());
+        let restarted_manager = WorkspaceLeaseManager::new(
+            store.clone(),
+            Arc::new(WorktreeWorkspaceAdapter::new(
+                WorkspaceProductRoots::new(
+                    CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+                )
+                .unwrap(),
+                effects.clone(),
+            )),
+        );
+        assert_eq!(
+            restarted_manager
+                .restart(WorkspaceLeaseOwnerRequest { id, owner })
+                .await
+                .unwrap()
+                .state,
+            WorkspaceLeaseState::Cleaned
+        );
+        assert!(!effects.exists.load(Ordering::SeqCst));
+        for path in [
+            base.join("worktrees/lease-a"),
+            base.join("worktrees/.lease-a.create-pending"),
+            base.join("worktrees/.lease-a.cleanup"),
+        ] {
+            assert!(!path.exists(), "orphaned {}", path.display());
+        }
+        std::fs::remove_dir_all(scope).unwrap();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn fresh_restart_preserves_substituted_quarantine_for_every_cleanup_boundary() {
+    use std::os::unix::fs::symlink;
+
+    for (label, boundary) in [
+        ("inner-quarantine-substitution", 0),
+        ("outer-quarantine-substitution", 1),
+        ("marker-removal-quarantine-substitution", 2),
+    ] {
+        let armed = Arc::new(AtomicBool::new(true));
+        let failpoint = Arc::new({
+            let armed = armed.clone();
+            move || armed.swap(false, Ordering::SeqCst)
+        });
+        let hooks = WorkspaceProductRootHooks {
+            fail_after_inner_quarantine: (boundary == 0).then_some(failpoint.clone()),
+            fail_after_outer_quarantine: (boundary == 1).then_some(failpoint.clone()),
+            fail_after_owner_marker_removal: (boundary == 2).then_some(failpoint),
+            ..WorkspaceProductRootHooks::default()
+        };
+        let (scope, base) = private_product_base(label);
+        let store = Arc::new(FakeWorkspaceLeaseStore::default());
+        let effects = Arc::new(CapturingWorktreeEffects::default());
+        let manager = WorkspaceLeaseManager::new(
+            store.clone(),
+            Arc::new(WorktreeWorkspaceAdapter::new(
+                WorkspaceProductRoots::new_with_hooks(
+                    CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+                    hooks,
+                )
+                .unwrap(),
+                effects.clone(),
+            )),
+        );
+        let request = worktree_request_for(label);
+        let id = WorkspaceLeaseId::derive(&request.key);
+        let owner = request.owner.clone();
+        assert_eq!(
+            manager.prepare(request).await.unwrap().state,
+            WorkspaceLeaseState::Ready
+        );
+        assert_eq!(
+            manager
+                .cleanup(WorkspaceLeaseOwnerRequest {
+                    id: id.clone(),
+                    owner: owner.clone(),
+                })
+                .await
+                .unwrap_err()
+                .kind(),
+            WorkspaceLeaseErrorKind::ResourceUnavailable
+        );
+        let quarantine = if boundary == 0 {
+            base.join("worktrees/lease-a/.workspace.cleanup")
+        } else {
+            base.join("worktrees/.lease-a.cleanup")
+        };
+        let detached = quarantine.with_extension("detached");
+        std::fs::rename(&quarantine, &detached).unwrap();
+        symlink(&detached, &quarantine).unwrap();
+        let restarted_manager = WorkspaceLeaseManager::new(
+            store,
+            Arc::new(WorktreeWorkspaceAdapter::new(
+                WorkspaceProductRoots::new(
+                    CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap(),
+                )
+                .unwrap(),
+                effects,
+            )),
+        );
+        assert_eq!(
+            restarted_manager
+                .restart(WorkspaceLeaseOwnerRequest { id, owner })
+                .await
+                .unwrap_err()
+                .kind(),
+            WorkspaceLeaseErrorKind::ResourceMismatch
+        );
+        assert!(
+            std::fs::symlink_metadata(&quarantine)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(detached.is_dir());
+        std::fs::remove_dir_all(scope).unwrap();
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -619,6 +1206,7 @@ async fn worktree_effects_remain_pinned_after_product_parent_symlink_swap() {
         WorkspaceProductRoots::new(CanonicalWorkspaceRoot::new(base.to_string_lossy()).unwrap())
             .unwrap();
     let effects = Arc::new(RacingWorktreeEffects::default());
+
     let manager = WorkspaceLeaseManager::new(
         Arc::new(FakeWorkspaceLeaseStore::default()),
         Arc::new(WorktreeWorkspaceAdapter::new(roots, effects.clone())),
@@ -682,7 +1270,7 @@ impl WorktreeWorkspaceEffects for RacingWorktreeEffects {
         &self,
         request: WorktreeResourceRequest<'_>,
     ) -> Result<WorkspaceResourceObservation, WorkspaceLeaseError> {
-        assert!(request.root_directory.metadata().unwrap().is_dir());
+        assert!(request.is_available());
         Ok(if self.exists.load(Ordering::SeqCst) {
             WorkspaceResourceObservation::Matching
         } else {
@@ -693,15 +1281,14 @@ impl WorktreeWorkspaceEffects for RacingWorktreeEffects {
     async fn create(
         &self,
         request: WorktreeResourceRequest<'_>,
-        mut destination: SourceMaterializationDestination<'_>,
+        destination: SourceMaterializationDestination<'_>,
     ) -> Result<(), WorkspaceLeaseError> {
         self.received.notify_one();
         self.resume.notified().await;
-        assert!(request.root_directory.metadata().unwrap().is_dir());
-        let root = destination
-            .downcast_mut::<PathBuf>()
-            .expect("worktree destination remains an ephemeral capability");
-        std::fs::write(root.join("materialized"), b"safe").unwrap();
+        destination
+            .write_file("materialized", b"safe")
+            .expect("worktree destination remains an ephemeral operation capability");
+        assert!(request.is_available());
         self.exists.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -710,12 +1297,7 @@ impl WorktreeWorkspaceEffects for RacingWorktreeEffects {
         &self,
         request: WorktreeResourceRequest<'_>,
     ) -> Result<(), WorkspaceLeaseError> {
-        use std::os::fd::AsRawFd;
-        let root = PathBuf::from(format!(
-            "/proc/self/fd/{}",
-            request.root_directory.as_raw_fd()
-        ));
-        std::fs::remove_file(root.join("materialized")).unwrap();
+        request.remove_file("materialized").unwrap();
         self.exists.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -748,12 +1330,7 @@ impl WorktreeWorkspaceEffects for PausingCleanupWorktreeEffects {
         request: WorktreeResourceRequest<'_>,
         _destination: SourceMaterializationDestination<'_>,
     ) -> Result<(), WorkspaceLeaseError> {
-        use std::os::fd::AsRawFd;
-        let root = PathBuf::from(format!(
-            "/proc/self/fd/{}",
-            request.root_directory.as_raw_fd()
-        ));
-        std::fs::write(root.join("materialized"), b"owned").unwrap();
+        request.write_file("materialized", b"owned").unwrap();
         self.exists.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -762,7 +1339,6 @@ impl WorktreeWorkspaceEffects for PausingCleanupWorktreeEffects {
         &self,
         request: WorktreeResourceRequest<'_>,
     ) -> Result<(), WorkspaceLeaseError> {
-        use std::os::fd::AsRawFd;
         self.cleanup_started.notify_one();
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -770,11 +1346,7 @@ impl WorktreeWorkspaceEffects for PausingCleanupWorktreeEffects {
         )
         .await
         .map_err(|_| injected_resource_unavailable())?;
-        let root = PathBuf::from(format!(
-            "/proc/self/fd/{}",
-            request.root_directory.as_raw_fd()
-        ));
-        std::fs::remove_file(root.join("materialized")).unwrap();
+        request.remove_file("materialized").unwrap();
         self.exists.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -867,7 +1439,7 @@ fn borrowed_fingerprint_distinguishes_non_utf8_path_bytes() {
     std::fs::create_dir_all(&second).unwrap();
     std::fs::write(first.join(OsString::from_vec(vec![0x80])), b"x").unwrap();
     std::fs::write(second.join(OsString::from_vec(vec![0x81])), b"x").unwrap();
-    let fingerprints = FilesystemBorrowedWorkspaceFingerprint;
+    let fingerprints = FilesystemBorrowedWorkspaceFingerprint::default();
     assert_ne!(
         fingerprints.fingerprint(&first).unwrap(),
         fingerprints.fingerprint(&second).unwrap()

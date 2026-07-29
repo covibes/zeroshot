@@ -58,7 +58,7 @@ impl WorkspaceLeaseManager {
         self.prepare_record(record).await
     }
 
-    /// Restart recovery is inspect-only: it never invents absence or repeats an effect.
+    /// Restart reconciles durable intent and finishes recognized owner-fenced recovery scaffolding.
     pub async fn restart(
         &self,
         request: WorkspaceLeaseOwnerRequest,
@@ -69,7 +69,23 @@ impl WorkspaceLeaseManager {
             .store
             .acquire_operation(&request.id, &request.owner)
             .await?;
-        self.inspect_unlocked(&request).await
+        let mut record = self.load_owned(&request).await?;
+        if record.state == WorkspaceLeaseState::Cleaned {
+            return self.reconcile_cleaned(record).await;
+        }
+        if matches!(record.mode, super::WorkspaceMode::Borrowed(_)) {
+            return self.inspect_borrowed(record).await;
+        }
+        let observation = self.resources.inspect(&record).await?;
+        if observation == WorkspaceResourceObservation::CleanupRequired {
+            if record.state != WorkspaceLeaseState::CleanupRequired {
+                record = self
+                    .transition(&record, WorkspaceLeaseState::CleanupRequired)
+                    .await?;
+            }
+            return self.cleanup_owned(record).await;
+        }
+        self.reconcile_owned_inspection(record, observation).await
     }
 
     /// Authoritatively reconciles durable state without performing create or cleanup.
@@ -98,6 +114,14 @@ impl WorkspaceLeaseManager {
             return self.inspect_borrowed(record).await;
         }
         let observation = self.resources.inspect(&record).await?;
+        self.reconcile_owned_inspection(record, observation).await
+    }
+
+    async fn reconcile_owned_inspection(
+        &self,
+        record: WorkspaceLeaseRecord,
+        observation: WorkspaceResourceObservation,
+    ) -> Result<WorkspaceLeaseRecord, WorkspaceLeaseError> {
         match (record.state, observation) {
             (WorkspaceLeaseState::CreatePending, WorkspaceResourceObservation::Matching) => {
                 self.transition(&record, WorkspaceLeaseState::Ready).await

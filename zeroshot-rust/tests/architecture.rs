@@ -621,6 +621,26 @@ fn manifest_has_no_client_testkit_or_node_dependencies() {
 }
 
 #[test]
+fn workspace_leases_cannot_mutate_graph_outcomes() {
+    let leases = rust_sources(&["src/workspace_lease.rs", "src/workspace_lease"]);
+    for forbidden in [
+        "ClusterLedger",
+        "CommitRequest",
+        "MutationIdentity",
+        "RecordPayload",
+        "ExecutionVoid",
+        "TerminalProjection",
+        "full_v1_reducer",
+        "crate::scheduler",
+    ] {
+        assert!(
+            !leases.contains(forbidden),
+            "workspace leases imported graph outcome authority: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn product_modules_require_issue_authorization() {
     let product = product_root();
     let mut product_files = BTreeSet::new();

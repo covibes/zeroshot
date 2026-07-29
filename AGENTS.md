@@ -244,14 +244,20 @@ with no-follow semantics, traverses descendants descriptor-relatively, hashes co
 platform path bytes, and revalidates every named descriptor identity. Owned roots require Linux
 descriptor-relative filesystem support, are fixed beneath a canonical private
 `<product-root>/zeroshot/workspaces` base, and must already satisfy owner-only permissions; never
-chmod an arbitrary supplied root. Each worktree uses a lease-owned container with a stable
-lease/owner marker and an inner source directory, so partial scaffolding remains `CleanupRequired`
-without contaminating source contents. Worktree cleanup quarantines and identity-checks named
-children before removal; substitutions are preserved as mismatches. Worktree source delivery and
-all worktree/Docker inspect, create, and cleanup effects receive pinned directory capabilities
-rather than mutable host pathnames. Docker mount handles are atomically created/opened relative to
-that pinned base with no-follow semantics. Docker socket handles and socket/symlink targets are
-denied.
+chmod an arbitrary supplied root. Each worktree creates a complete, synced lease/owner marker in a
+private staging container before atomically publishing its inner source directory. Abandoned
+staging and deterministic inner/public/staging cleanup quarantines are authoritative recovery
+states: restart finishes correct-owner scaffolding removal through identity-checked quarantine
+names, while conflicting names, content, or identities are preserved as mismatches. Linux has no
+identity-conditional directory unlink, so the final name-based `unlinkat` relies on the private
+0700 product root and lease operation fence for supported manager writers; uncooperative
+same-UID namespace mutation is outside the local adapter trust boundary and requires process/UID
+isolation or a broker. Keep the immediate name/inode recheck so cooperative and recovery races fail
+closed. Worktree effects receive non-cloneable, non-serializable scoped operations backed by pinned
+directory descriptors; never expose a host pathname, descriptor number, or retained handle to
+source materialization. Docker effects receive pinned mount descriptors rather than mutable host
+pathnames. Docker mount handles are atomically created/opened relative to that pinned base with
+no-follow semantics. Docker socket handles and socket/symlink targets are denied.
 Persisted lease values contain no credentials, runtime IDs, arbitrary handles,
 or host paths. Cleanup state never mutates graph outcomes.
 Native engine faults must be constructed only by `FaultFactory` from closed `ModuleEvidence`.

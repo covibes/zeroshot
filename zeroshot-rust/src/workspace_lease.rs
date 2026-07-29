@@ -19,7 +19,10 @@ pub use adapters::{
     DockerWorkspaceEffects, WorkspaceResourceRouter, WorktreeResourceRequest,
     WorktreeWorkspaceAdapter, WorktreeWorkspaceEffects,
 };
-pub use borrowed::{BorrowedWorkspaceFingerprintPort, FilesystemBorrowedWorkspaceFingerprint};
+pub use borrowed::{
+    BorrowedWorkspaceFingerprintPort, FilesystemBorrowedWorkspaceFingerprint,
+    FilesystemBorrowedWorkspaceFingerprintHooks,
+};
 pub use manager::{WorkspaceLeaseManager, WorkspaceLeaseOwnerRequest};
 pub use resource::{WorkspaceResourceObservation, WorkspaceResourcePort};
 pub use store::{
@@ -32,7 +35,7 @@ pub use types::{
     DockerResourceId, DockerWorkspace, PrepareWorkspaceRequest, WorkspaceFingerprint,
     WorkspaceIsolation, WorkspaceLeaseId, WorkspaceLeaseKey, WorkspaceLeaseRecord,
     WorkspaceLeaseState, WorkspaceMaterializationId, WorkspaceMode, WorkspaceName,
-    WorkspaceProductRoots, WorkspaceProfile, WorktreeWorkspace,
+    WorkspaceProductRootHooks, WorkspaceProductRoots, WorkspaceProfile, WorktreeWorkspace,
 };
 
 pub mod fake {

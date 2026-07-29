@@ -461,14 +461,13 @@ async fn materialization_uses_only_an_ephemeral_destination_handle() {
         SourceRevisionId::new("head-sha").unwrap(),
     )
     .unwrap();
-    let mut written = false;
+    // SAFETY: this harness is used only for the external provider contract and carries no path,
+    // descriptor, or persisted workspace authority.
+    let target = unsafe { SourceMaterializationContractHarness::new() };
     let receipt = registry
-        .materialize(
-            &request,
-            SourceMaterializationDestination::new(&mut written),
-        )
+        .materialize(&request, target.destination())
         .await
         .unwrap();
-    assert!(written);
+    assert_eq!(target.write_count(), 1);
     assert_eq!(receipt.repository(), &repository);
 }

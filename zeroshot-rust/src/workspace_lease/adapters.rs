@@ -2,7 +2,9 @@ use std::fs::File;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crate::source_code_provider::SourceMaterializationDestination;
+use crate::source_code_provider::{
+    SourceMaterializationDestination, SourceMaterializationError, SourceMaterializationTarget,
+};
 use super::borrowed::{BorrowedWorkspaceFingerprintPort, FilesystemBorrowedWorkspaceFingerprint};
 
 use super::{
@@ -76,7 +78,7 @@ impl BorrowedWorkspaceAdapter {
 
 impl Default for BorrowedWorkspaceAdapter {
     fn default() -> Self {
-        Self::new(Arc::new(FilesystemBorrowedWorkspaceFingerprint))
+        Self::new(Arc::new(FilesystemBorrowedWorkspaceFingerprint::default()))
     }
 }
 
@@ -128,7 +130,46 @@ impl WorkspaceResourcePort for BorrowedWorkspaceAdapter {
 pub struct WorktreeResourceRequest<'a> {
     pub lease: &'a WorkspaceLeaseRecord,
     pub mode: &'a WorktreeWorkspace,
-    pub root_directory: Arc<File>,
+    target: &'a dyn SourceMaterializationTarget,
+}
+
+impl WorktreeResourceRequest<'_> {
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        self.target.is_available()
+    }
+
+    pub fn remove_file(&self, name: &str) -> Result<(), SourceMaterializationError> {
+        self.target.remove_file(name)
+    }
+
+    pub fn write_file(
+        &self,
+        name: &str,
+        contents: &[u8],
+    ) -> Result<(), SourceMaterializationError> {
+        self.target.write_file(name, contents)
+    }
+}
+
+struct PinnedMaterializationTarget<'a> {
+    directory: &'a File,
+}
+
+impl SourceMaterializationTarget for PinnedMaterializationTarget<'_> {
+    fn is_available(&self) -> bool {
+        self.directory
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_dir())
+    }
+
+    fn remove_file(&self, name: &str) -> Result<(), SourceMaterializationError> {
+        remove_materialized_file(self.directory, name)
+    }
+
+    fn write_file(&self, name: &str, contents: &[u8]) -> Result<(), SourceMaterializationError> {
+        write_materialized_file(self.directory, name, contents)
+    }
 }
 
 #[async_trait]
@@ -172,21 +213,21 @@ impl WorkspaceResourcePort for WorktreeWorkspaceAdapter {
         let WorkspaceMode::Worktree(mode) = &lease.mode else {
             return Err(wrong_mode());
         };
-        let Some(root_directory) = self.roots.inspect_worktree(&mode.name)? else {
+        let Some(root_directory) = self.roots.inspect_worktree(&mode.name, lease)? else {
             return Ok(WorkspaceResourceObservation::Absent);
         };
-        if !self.roots.worktree_owned_by(&root_directory, lease)? {
-            return Ok(WorkspaceResourceObservation::Mismatch);
-        }
-        let Some(workspace) = root_directory.workspace() else {
+        let Some(workspace) = root_directory.workspace_for_inspect_effect() else {
             return Ok(WorkspaceResourceObservation::CleanupRequired);
+        };
+        let target = PinnedMaterializationTarget {
+            directory: workspace.as_ref(),
         };
         let observation = self
             .effects
             .inspect(WorktreeResourceRequest {
                 lease,
                 mode,
-                root_directory: workspace.clone(),
+                target: &target,
             })
             .await?;
         Ok(match observation {
@@ -200,42 +241,42 @@ impl WorkspaceResourcePort for WorktreeWorkspaceAdapter {
             return Err(wrong_mode());
         };
         let root_directory = self.roots.create_worktree(&mode.name, lease)?;
-        let mut destination_root = self.roots.worktree_destination(&root_directory)?;
-        let request = WorktreeResourceRequest {
-            lease,
-            mode,
-            root_directory: root_directory
-                .workspace()
-                .expect("created worktree has a workspace directory")
-                .clone(),
+        let workspace = root_directory
+            .workspace_for_create_effect()
+            .expect("created worktree has a private source staging directory");
+        let target = PinnedMaterializationTarget {
+            directory: workspace.as_ref(),
         };
         self.effects
             .create(
-                request,
-                SourceMaterializationDestination::new(&mut destination_root),
+                WorktreeResourceRequest {
+                    lease,
+                    mode,
+                    target: &target,
+                },
+                SourceMaterializationDestination::new(&target),
             )
-            .await
+            .await?;
+        self.roots
+            .publish_worktree(&mode.name, &root_directory, lease)
     }
 
     async fn cleanup(&self, lease: &WorkspaceLeaseRecord) -> Result<(), WorkspaceLeaseError> {
         let WorkspaceMode::Worktree(mode) = &lease.mode else {
             return Err(wrong_mode());
         };
-        let Some(root_directory) = self.roots.inspect_worktree(&mode.name)? else {
+        let Some(root_directory) = self.roots.inspect_worktree(&mode.name, lease)? else {
             return Ok(());
         };
-        if !self.roots.worktree_owned_by(&root_directory, lease)? {
-            return Err(WorkspaceLeaseError::new(
-                WorkspaceLeaseErrorKind::ResourceMismatch,
-                "workspace worktree owner marker changed before cleanup",
-            ));
-        }
-        if let Some(workspace) = root_directory.workspace() {
+        if let Some(workspace) = root_directory.workspace_for_cleanup_effect() {
+            let target = PinnedMaterializationTarget {
+                directory: workspace.as_ref(),
+            };
             self.effects
                 .cleanup(WorktreeResourceRequest {
                     lease,
                     mode,
-                    root_directory: workspace.clone(),
+                    target: &target,
                 })
                 .await?;
         }
@@ -316,6 +357,78 @@ impl WorkspaceResourcePort for DockerWorkspaceAdapter {
             })
             .await
     }
+}
+
+#[cfg(target_os = "linux")]
+fn write_materialized_file(
+    directory: &File,
+    name: &str,
+    contents: &[u8],
+) -> Result<(), SourceMaterializationError> {
+    use std::io::Write;
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    let name = materialized_name(name)?;
+    let descriptor = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if descriptor < 0 {
+        return Err(SourceMaterializationError);
+    }
+    let mut file = unsafe { File::from_raw_fd(descriptor) };
+    file.write_all(contents)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| directory.sync_all())
+        .map_err(|_| SourceMaterializationError)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_materialized_file(
+    _directory: &File,
+    _name: &str,
+    _contents: &[u8],
+) -> Result<(), SourceMaterializationError> {
+    Err(SourceMaterializationError)
+}
+
+#[cfg(target_os = "linux")]
+fn remove_materialized_file(
+    directory: &File,
+    name: &str,
+) -> Result<(), SourceMaterializationError> {
+    use std::os::fd::AsRawFd;
+
+    let name = materialized_name(name)?;
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), name.as_ptr(), 0) } != 0 {
+        return Err(SourceMaterializationError);
+    }
+    directory.sync_all().map_err(|_| SourceMaterializationError)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn remove_materialized_file(
+    _directory: &File,
+    _name: &str,
+) -> Result<(), SourceMaterializationError> {
+    Err(SourceMaterializationError)
+}
+
+#[cfg(target_os = "linux")]
+fn materialized_name(name: &str) -> Result<std::ffi::CString, SourceMaterializationError> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.len() > 255
+        || name.as_bytes().contains(&b'/')
+    {
+        return Err(SourceMaterializationError);
+    }
+    std::ffi::CString::new(name).map_err(|_| SourceMaterializationError)
 }
 
 fn wrong_mode() -> WorkspaceLeaseError {

@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -11,8 +12,22 @@ pub trait BorrowedWorkspaceFingerprintPort: Send + Sync {
     fn fingerprint(&self, root: &Path) -> Result<WorkspaceFingerprint, WorkspaceLeaseError>;
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FilesystemBorrowedWorkspaceFingerprint;
+#[derive(Clone, Default)]
+pub struct FilesystemBorrowedWorkspaceFingerprintHooks {
+    pub before_root_revalidation: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+#[derive(Clone, Default)]
+pub struct FilesystemBorrowedWorkspaceFingerprint {
+    hooks: FilesystemBorrowedWorkspaceFingerprintHooks,
+}
+
+impl FilesystemBorrowedWorkspaceFingerprint {
+    #[must_use]
+    pub fn new_with_hooks(hooks: FilesystemBorrowedWorkspaceFingerprintHooks) -> Self {
+        Self { hooks }
+    }
+}
 
 impl BorrowedWorkspaceFingerprintPort for FilesystemBorrowedWorkspaceFingerprint {
     fn fingerprint(&self, root: &Path) -> Result<WorkspaceFingerprint, WorkspaceLeaseError> {
@@ -25,7 +40,7 @@ impl BorrowedWorkspaceFingerprintPort for FilesystemBorrowedWorkspaceFingerprint
         }
         #[cfg(target_os = "linux")]
         {
-            fingerprint_linux(root)
+            fingerprint_linux(root, &self.hooks)
         }
     }
 }
@@ -38,7 +53,10 @@ struct FingerprintBounds {
 }
 
 #[cfg(target_os = "linux")]
-fn fingerprint_linux(root: &Path) -> Result<WorkspaceFingerprint, WorkspaceLeaseError> {
+fn fingerprint_linux(
+    root: &Path,
+    hooks: &FilesystemBorrowedWorkspaceFingerprintHooks,
+) -> Result<WorkspaceFingerprint, WorkspaceLeaseError> {
     let directory = open_directory_no_follow(root)?;
     let identity = file_identity(&directory)?;
     verify_canonical_directory(root, identity)?;
@@ -48,6 +66,9 @@ fn fingerprint_linux(root: &Path) -> Result<WorkspaceFingerprint, WorkspaceLease
     digest.update(b"unix-path-bytes\0");
     let mut bounds = FingerprintBounds::default();
     fingerprint_directory(&directory, Path::new(""), &mut digest, &mut bounds)?;
+    if let Some(hook) = &hooks.before_root_revalidation {
+        hook();
+    }
     verify_canonical_directory(root, identity)?;
     WorkspaceFingerprint::new(format!("{:x}", digest.finalize()))
 }
