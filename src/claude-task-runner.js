@@ -152,6 +152,7 @@ class ClaudeTaskRunner extends TaskRunner {
    * @param {boolean} [options.quiet] - Suppress console logging
    * @param {number} [options.timeout] - Task timeout in ms (default: 1 hour)
    * @param {Function} [options.onOutput] - Callback for output lines
+   * @param {Function} [options.applyDarwinKeychainBoundary] - Boundary injection seam for tests
    */
   constructor(options = {}) {
     super();
@@ -159,6 +160,8 @@ class ClaudeTaskRunner extends TaskRunner {
     this.quiet = options.quiet || false;
     this.timeout = options.timeout || 60 * 60 * 1000;
     this.onOutput = options.onOutput || null;
+    this.applyDarwinKeychainBoundary =
+      options.applyDarwinKeychainBoundary || applyDarwinKeychainBoundaryToEnv;
   }
 
   /**
@@ -392,7 +395,7 @@ class ClaudeTaskRunner extends TaskRunner {
 
     // KEYCHAIN BOUNDARY (darwin only): keep non-interactive worker descendants
     // away from the user's GUI Keychain session (issue #704).
-    applyDarwinKeychainBoundaryToEnv(spawnEnv);
+    this.applyDarwinKeychainBoundary(spawnEnv);
 
     prependWorktreeToolBinToEnv(spawnEnv, { cwd, worktreePath });
 

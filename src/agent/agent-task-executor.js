@@ -690,7 +690,10 @@ function buildFinalContext({ agent, context, desiredOutputFormat, runOutputForma
 }
 
 function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
-  const { claudeSettingsPath = null } = options;
+  const {
+    claudeSettingsPath = null,
+    applyDarwinKeychainBoundary = applyDarwinKeychainBoundaryToEnv,
+  } = options;
   const spawnEnv = { ...process.env };
   const agentCwd = agent.config?.cwd || agent.worktree?.path || process.cwd();
   const clusterId = agent.cluster?.id || agent.cluster_id || process.env.ZEROSHOT_CLUSTER_ID;
@@ -730,7 +733,7 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
   // Docker isolation never reaches buildSpawnEnv (see spawnClaudeTaskIsolated).
   // Applied before the worktree tool bins so repo-managed tool substitutes
   // stay first on PATH.
-  applyDarwinKeychainBoundaryToEnv(spawnEnv);
+  applyDarwinKeychainBoundary(spawnEnv);
 
   prependWorktreeToolBinToEnv(spawnEnv, {
     cwd: agentCwd,
@@ -830,14 +833,7 @@ function createPendingTaskLaunchHandle({
   return handle;
 }
 
-function spawnTaskProcess({
-  agent,
-  ctPath,
-  args,
-  cwd,
-  spawnEnv,
-  spawnTimeoutMs = 30000,
-}) {
+function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv, spawnTimeoutMs = 30000 }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it.
   const SPAWN_TIMEOUT_MS = spawnTimeoutMs;
   // spawn() throws on null bytes in argv; strip them before they get there.
@@ -886,10 +882,7 @@ function spawnTaskProcess({
     const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
     const rejectWithOwnership = async (error) => {
       const classifiedError = classifyCleanupOwnership(error);
-      if (
-        !callerOwnsCommandCleanup(classifiedError) &&
-        agent.currentTask === pendingLaunch
-      ) {
+      if (!callerOwnsCommandCleanup(classifiedError) && agent.currentTask === pendingLaunch) {
         let termination;
         try {
           termination = await pendingLaunch.kill(classifiedError.message);
@@ -2205,7 +2198,6 @@ function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLi
     agent._log(`[${agent.id}] tail process error: ${err.message}`);
   });
 }
-
 
 async function checkIsolatedStatus({
   agent,

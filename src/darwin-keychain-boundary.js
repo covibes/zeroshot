@@ -19,14 +19,11 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { randomUUID } = require('node:crypto');
 
 const SHIM_DIR_RELATIVE_PATH = path.join('.zeroshot', 'keychain-shim');
 const REAL_SECURITY_PATH = '/usr/bin/security';
 const OPT_OUT_ENV_VAR = 'ZEROSHOT_ALLOW_INTERACTIVE_KEYCHAIN';
-
-function pathKeyForEnv(env) {
-  return Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
-}
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
@@ -96,10 +93,27 @@ function ensureDarwinKeychainShimDir(options = {}) {
     // Missing or unreadable: (re)write below.
   }
   if (existing !== script) {
-    fs.writeFileSync(shimPath, script, { mode: 0o755 });
+    const tempPath = path.join(shimDir, `.security.${process.pid}.${randomUUID()}.tmp`);
+    try {
+      fs.writeFileSync(tempPath, script, { mode: 0o755, flag: 'wx' });
+      // The creation mode is subject to umask. Set the final mode before the
+      // rename so the live path is never observable as non-executable.
+      fs.chmodSync(tempPath, 0o755);
+      fs.renameSync(tempPath, shimPath);
+    } catch (error) {
+      try {
+        // Remove any unpublished partial file without masking the publication
+        // failure that caused this cleanup path.
+        fs.rmSync(tempPath, { force: true });
+      } catch (cleanupError) {
+        error.message += ` Cleanup also failed: ${cleanupError.message}.`;
+      }
+      throw error;
+    }
+  } else {
+    // An existing matching shim may have drifted permissions.
+    fs.chmodSync(shimPath, 0o755);
   }
-  // writeFileSync's mode only applies on creation; enforce it unconditionally.
-  fs.chmodSync(shimPath, 0o755);
 
   return shimDir;
 }
@@ -139,11 +153,18 @@ function applyDarwinKeychainBoundaryToEnv(env, options = {}) {
     );
   }
 
-  const pathKey = pathKeyForEnv(env);
-  const existingEntries = (env[pathKey] || '')
-    .split(path.delimiter)
-    .filter((entry) => entry && entry !== shimDir);
-  env[pathKey] = [shimDir, ...existingEntries].join(path.delimiter);
+  // Darwin environment keys are case-sensitive: descendants consult PATH,
+  // never a differently-cased key such as Path. Preserve empty components
+  // because POSIX interprets them as the current directory. An absent PATH
+  // becomes only the shim, while an explicitly empty PATH retains its empty
+  // component after the shim (`<shim>:`).
+  const existingEntries =
+    env.PATH === undefined
+      ? []
+      : String(env.PATH)
+          .split(path.delimiter)
+          .filter((entry) => entry !== shimDir);
+  env.PATH = [shimDir, ...existingEntries].join(path.delimiter);
   return env;
 }
 
