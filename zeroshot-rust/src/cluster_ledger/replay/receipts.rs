@@ -40,6 +40,27 @@ fn receipt_validator(method: &str) -> Result<ReceiptValidator, ReplayError> {
         "terminal" => Ok(validate_terminal_receipt),
         "cleanup_receipt" => Ok(validate_cleanup_receipt),
         "protocol_apply" => Ok(validate_protocol_apply_receipt),
+        "required_proof_intent" | "required_proof_receipt" | "required_proof_acceptance" => {
+            Ok(validate_required_proof_receipt)
+        }
+        _ => Err(ReplayError::ReceiptCorrupt),
+    }
+}
+
+fn validate_required_proof_receipt(
+    receipt: &MutationReceipt,
+    _state: &ReplayState,
+    records: &[RecordPayload],
+) -> Result<(), ReplayError> {
+    let response = decode_receipt_response::<CanonicalDigest>(receipt)?;
+    match (receipt.method.as_str(), records) {
+        ("required_proof_intent", [RecordPayload::RequiredProofIntent { digest, .. }])
+        | ("required_proof_receipt", [RecordPayload::RequiredProofReceipt { digest, .. }])
+        | ("required_proof_acceptance", [RecordPayload::RequiredProofAcceptance { digest, .. }])
+            if response == *digest && receipt.fingerprint == digest.as_bytes() =>
+        {
+            Ok(())
+        }
         _ => Err(ReplayError::ReceiptCorrupt),
     }
 }

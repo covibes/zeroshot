@@ -8,6 +8,14 @@ use super::super::record::{
 };
 use super::super::store::{IdempotencyId, MutationReceipt, Position, ResourceId};
 use super::ReplayError;
+use crate::required_proof::{AcceptedProofRef, ProofAttemptIntent, ProofAttemptReceipt};
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RequiredProofAttemptState {
+    pub intent: ProofAttemptIntent,
+    pub receipt: Option<ProofAttemptReceipt>,
+    pub accepted: Option<AcceptedProofRef>,
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AdmissionState {
@@ -61,6 +69,7 @@ pub struct ReplayState {
     pub safe_faults: Vec<Vec<u8>>,
     pub terminal_outcome: Option<CanonicalDigest>,
     pub cleanup_receipts: Vec<CanonicalDigest>,
+    pub required_proofs: Vec<RequiredProofAttemptState>,
     pub mutation_receipts: BTreeMap<IdempotencyId, MutationReceipt>,
 }
 
@@ -82,6 +91,7 @@ impl ReplayState {
             safe_faults: Vec::new(),
             terminal_outcome: None,
             cleanup_receipts: Vec::new(),
+            required_proofs: Vec::new(),
             mutation_receipts: BTreeMap::new(),
         }
     }

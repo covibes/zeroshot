@@ -3,6 +3,7 @@ pub mod cluster_ledger;
 pub mod execution;
 pub mod issue_provider;
 mod provider_value;
+pub mod required_proof;
 pub mod scheduler;
 pub mod source_code_provider;
 pub mod worker_catalog;
