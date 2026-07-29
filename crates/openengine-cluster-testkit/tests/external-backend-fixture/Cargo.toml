@@ -1,0 +1,12 @@
+[package]
+name = "openengine-external-backend-conformance-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+async-trait = "0.1.89"
+openengine-cluster-protocol = { path = "../../../openengine-cluster-protocol" }
+openengine-cluster-server = { path = "../../../openengine-cluster-server" }
+openengine-cluster-testkit = { path = "../.." }
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }

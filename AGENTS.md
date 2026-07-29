@@ -108,6 +108,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | NDJSON response pump         | `crates/openengine-cluster-client/src/ndjson_pump.rs`                   |
 | Cluster typed transports     | `crates/openengine-cluster-client/`                                     |
 | Cluster fixtures/artifacts   | `crates/openengine-cluster-testkit/`                                    |
+| Portable backend conformance | `crates/openengine-cluster-testkit/src/conformance.rs`                  |
 | Scripted admission fixtures  | `crates/openengine-cluster-testkit/src/admission.rs`                    |
 | Fixture inspection controls  | `crates/openengine-cluster-testkit/src/admission/inspection.rs`         |
 | Scripted lifecycle helpers   | `crates/openengine-cluster-testkit/src/lifecycle.rs`                    |
@@ -130,6 +131,10 @@ Cluster Protocol Rust types are the source of truth. Files under
 verify byte-for-byte drift with `npm run protocol:check`. These generator-formatted artifacts
 are excluded from Prettier; never format them independently.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
+Portable external conformance is the immutable public catalog in the testkit and covers only
+backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
+The existing integration binaries remain the richer reference regression suite; their
+implementation-specific vectors are not represented as portable external certification.
 `zeroshot-rust/` owns the concrete `NativeBackend`, product-local `NativeBackendFactory`
 construction root, product-private artifact byte-store port/local CAS, and product-private,
 secret-free issue/source provider contracts. Artifact stages, bytes, roots, filesystem paths,
