@@ -11,6 +11,7 @@ const { appendTaskRunModelArgs } = require('../src/task-run-model-args');
 const { reformatOutput } = require('../src/agent/output-reformatter');
 
 const EXTERNAL_MODEL = 'kimi/kimi-k2-5';
+const OWNERSHIP_ENV = 'ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN';
 const CATALOG_MODEL = 'openai/gpt-5.2-codex';
 let settingsDir;
 let settingsFile;
@@ -192,6 +193,9 @@ describe('Nested Docker agent model arguments', function () {
             capturedOptions = options;
             return createClosingProcess();
           },
+          execInContainer() {
+            return { code: 2, stdout: '', stderr: '' };
+          },
         },
       },
       enableLivenessCheck: false,
@@ -206,10 +210,7 @@ describe('Nested Docker agent model arguments', function () {
       _publishLifecycle() {},
     };
 
-    await assert.rejects(
-      spawnClaudeTaskIsolated(agent, 'test context'),
-      /zeroshot task run failed with code 1/
-    );
+    await assert.rejects(spawnClaudeTaskIsolated(agent, 'test context'), /Task launch cancelled/);
     assertConfiguredModelArgs(capturedCommand);
     assert.deepStrictEqual(JSON.parse(capturedCommand[3]), {
       providerSettings: {
@@ -220,7 +221,7 @@ describe('Nested Docker agent model arguments', function () {
         },
       },
     });
-    assert.deepStrictEqual(capturedOptions.env, {});
+    assert.strictEqual(typeof capturedOptions.env[OWNERSHIP_ENV], 'string');
   });
 });
 

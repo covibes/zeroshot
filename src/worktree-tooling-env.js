@@ -6,6 +6,9 @@ const DEFAULT_TOOL_BIN_RELATIVE_PATHS = ['.zeroshot/bin', '.worktree-tool-bin'];
 const FALLBACK_BIN_PREFIX = '.worktree-tool-bin.';
 
 function pathKeyForEnv(env) {
+  if (Object.prototype.hasOwnProperty.call(env, 'PATH')) {
+    return 'PATH';
+  }
   return Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
 }
 

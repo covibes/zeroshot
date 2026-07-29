@@ -17,6 +17,11 @@ const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { buildContext } = require('./agent/agent-context-builder');
 const { collectQueuedGuidance } = require('./agent/guidance-queue');
+const {
+  promptIdentity,
+  resolveAgentProviderSession,
+  updateAgentProviderSession,
+} = require('./agent/provider-session');
 const { findMatchingTrigger, evaluateTrigger } = require('./agent/agent-trigger-evaluator');
 const { executeHook } = require('./agent/agent-hook-executor');
 const { injectInput: injectAgentInput } = require('./agent/agent-input-injector');
@@ -66,6 +71,11 @@ class AgentWrapper {
     this.currentTask = null;
     /** @type {string | null} */
     this.currentTaskId = null; // Track spawned task ID for resume capability
+    /** @type {{provider: string, sessionId: string, agentId: string, taskId: string, generation: number, cwd: string, worktreePath: string|null, contextSequence: string, guidanceSequence: string|null, promptIdentity: string|null} | null} */
+    this.providerSession = null; // Provider continuation state, owned by this logical agent only
+    this.currentContextSequence = '0';
+    this.currentGuidanceSequence = null;
+    this.currentPromptIdentity = null;
     /** @type {number | null} */
     this.processPid = null; // Track process PID for resource monitoring
     this.running = false;
@@ -76,7 +86,7 @@ class AgentWrapper {
     /** @type {number | null} */
     this.lastAgentStartTime = null; // Track when agent last began executing (for context filtering)
     /** @type {number | null} */
-    this.lastGuidanceAppliedAt = null; // Track last queued guidance applied to prompt
+    this.lastGuidanceAppliedId = null; // Track last queued guidance sequence applied to prompt
 
     // LIVENESS DETECTION - Track output freshness to detect stuck agents
     /** @type {number | null} */
@@ -119,6 +129,7 @@ class AgentWrapper {
 
     this.testMode = options.testMode || false;
     this.quiet = options.quiet || false;
+    this.providerCliFeatures = options.providerCliFeatures || null;
 
     // ISOLATION SUPPORT - Run tasks inside Docker container
     this.isolation = options.isolation || null;
@@ -435,12 +446,29 @@ class AgentWrapper {
    */
   _buildContext(triggeringMessage) {
     const previousAgentStart = this.lastAgentStartTime;
+    const providerName = this._resolveProvider();
+    let providerSession = resolveAgentProviderSession(this, providerName);
+    if (providerSession && !this._providerSupportsSessionResume(providerName)) {
+      updateAgentProviderSession(this, null);
+      providerSession = null;
+    }
+    const contextMode = providerSession ? 'continuation' : 'full';
+    const selectedPrompt = this._selectPrompt();
+    const latestMessage = this.messageBus.findLast({
+      cluster_id: this.cluster.id,
+      orderBySequence: true,
+    });
+    this.currentContextSequence = latestMessage?.sequence || '0';
     const queuedGuidance = collectQueuedGuidance({
       messageBus: this.messageBus,
       clusterId: this.cluster.id,
       agentId: this.id,
-      lastDeliveredAt: this.lastGuidanceAppliedAt,
+      afterId: this.lastGuidanceAppliedId,
+      throughId: this.currentContextSequence,
     });
+    this.currentGuidanceSequence =
+      queuedGuidance.latestSequence ?? this.lastGuidanceAppliedId ?? null;
+    this.currentPromptIdentity = promptIdentity(selectedPrompt);
     const context = buildContext({
       id: this.id,
       role: this.role,
@@ -451,25 +479,33 @@ class AgentWrapper {
       lastTaskEndTime: this.lastTaskEndTime,
       lastAgentStartTime: previousAgentStart,
       triggeringMessage,
-      selectedPrompt: this._selectPrompt(),
+      selectedPrompt,
       queuedGuidance: queuedGuidance.guidanceBlock,
+      mode: contextMode,
+      continuationSequence: providerSession?.contextSequence,
+      contextThroughId: this.currentContextSequence,
+      previousPromptIdentity: providerSession?.promptIdentity,
+      currentPromptIdentity: this.currentPromptIdentity,
       // Pass isolation state for conditional git restriction
       worktree: this.worktree,
       isolation: this.isolation,
     });
 
     // Record when this iteration started so future "since: last_agent_start" filters work.
-    const latestMessage = this.messageBus.findLast({ cluster_id: this.cluster.id });
     const latestTimestamp = latestMessage?.timestamp;
     const now = Date.now();
     this.lastAgentStartTime =
       typeof latestTimestamp === 'number' ? Math.max(now, latestTimestamp + 1) : now;
 
-    if (queuedGuidance.latestTimestamp !== null) {
-      this.lastGuidanceAppliedAt = queuedGuidance.latestTimestamp;
-    }
-
     return context;
+  }
+
+  _providerSupportsSessionResume(providerName) {
+    const override = this.providerCliFeatures?.[providerName];
+    if (override && Object.hasOwn(override, 'supportsResume')) {
+      return override.supportsResume === true;
+    }
+    return getProvider(providerName).getCliFeatures().supportsResume === true;
   }
 
   /**

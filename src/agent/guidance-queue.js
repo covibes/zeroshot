@@ -1,5 +1,6 @@
 const GUIDANCE_BLOCK_START = '<<GUIDANCE_QUEUE_START>>';
 const GUIDANCE_BLOCK_END = '<<GUIDANCE_QUEUE_END>>';
+const { compareMessageSequences } = require('../ledger-sequence');
 
 function formatGuidanceMessage(message) {
   const timestamp = Number.isFinite(message.timestamp)
@@ -21,10 +22,19 @@ function formatGuidanceMessage(message) {
   return formatted.trimEnd();
 }
 
-function formatGuidanceBlock(messages) {
+function orderGuidanceMessages(messages, orderBySequence) {
+  return messages.slice().sort((a, b) => {
+    if (orderBySequence) {
+      return compareMessageSequences(a.sequence || '0', b.sequence || '0');
+    }
+    return (a.timestamp || 0) - (b.timestamp || 0);
+  });
+}
+
+function formatGuidanceBlock(messages, { orderBySequence = false } = {}) {
   if (!Array.isArray(messages) || messages.length === 0) return '';
 
-  const ordered = messages.slice().sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  const ordered = orderGuidanceMessages(messages, orderBySequence);
 
   let block = '## Guidance (Queued)\n\n';
   block += `${GUIDANCE_BLOCK_START}\n`;
@@ -40,7 +50,15 @@ function formatGuidanceBlock(messages) {
   return block;
 }
 
-function collectQueuedGuidance({ messageBus, clusterId, agentId, lastDeliveredAt, limit }) {
+function collectQueuedGuidance({
+  messageBus,
+  clusterId,
+  agentId,
+  afterId,
+  throughId,
+  lastDeliveredAt,
+  limit,
+}) {
   if (!messageBus) {
     throw new Error('collectQueuedGuidance: messageBus is required');
   }
@@ -54,19 +72,23 @@ function collectQueuedGuidance({ messageBus, clusterId, agentId, lastDeliveredAt
   const messages = messageBus.queryGuidanceMailbox({
     cluster_id: clusterId,
     target_agent_id: agentId,
+    afterId,
+    throughId,
     lastDeliveredAt,
     limit,
   });
 
   if (!messages.length) {
-    return { messages: [], latestTimestamp: null, guidanceBlock: '' };
+    return { messages: [], latestSequence: null, latestTimestamp: null, guidanceBlock: '' };
   }
 
-  const ordered = messages.slice().sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  const sequenceBounded = afterId !== undefined || throughId !== undefined;
+  const ordered = orderGuidanceMessages(messages, sequenceBounded);
+  const latestSequence = ordered[ordered.length - 1].sequence;
   const latestTimestamp = ordered[ordered.length - 1].timestamp;
-  const guidanceBlock = formatGuidanceBlock(ordered);
+  const guidanceBlock = formatGuidanceBlock(ordered, { orderBySequence: sequenceBounded });
 
-  return { messages: ordered, latestTimestamp, guidanceBlock };
+  return { messages: ordered, latestSequence, latestTimestamp, guidanceBlock };
 }
 
 module.exports = {

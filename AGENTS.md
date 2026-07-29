@@ -49,6 +49,10 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Gateway tools/policy         | `src/agent-cli-provider/gateway-tools.ts`                               |
 | Provider detection           | `lib/provider-detection.js`                                             |
 | Provider capabilities        | `src/providers/capabilities.js`                                         |
+| Claude settings overlay      | `src/worktree-claude-config.js`                                         |
+| Detached task cleanup owner  | `task-lib/command-spec-cleanup.js`                                      |
+| Shared watcher output path   | `task-lib/watcher-output-runtime.js`                                    |
+| Provider session reuse       | `src/agent/provider-session.js`                                         |
 | Start-cluster helper         | `lib/start-cluster.js`                                                  |
 | Legacy worker facade         | `lib/cluster-worker/`                                                   |
 | Legacy worker executable     | `bin/zeroshot-cluster-worker.js`                                        |
@@ -330,14 +334,56 @@ Restart persistence: orchestrator publishes `AGENT_RESTART_ATTEMPT` to the ledge
 
 Provider task ownership: task watchers persist an owned termination boundary with each active task.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
-`taskkill /T`. Recovery must terminate that recorded boundary before retrying work.
+`taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
+ownership is persisted with the task and may run only after that boundary is confirmed terminal.
+Cleanup ownership transfers only when the detached task row durably records the wrapper's unique
+spawn-ownership token; process spawn and human-readable task-ID output are not receipts. Failures
+before that receipt leave cleanup with the caller. Watcher completion clears a cleanup receipt only
+after an initialized cleanup owner actually succeeds. Cleanup metadata is a closed one-to-one receipt:
+Claude settings overlays must be owned temporary directories, and Codex output-schema files must be
+exact regular, non-symlink UUID JSON files directly inside canonical `zeroshot-schema-*` temp
+directories. Unsafe or uninitialized cleanup remains persisted and warning-visible.
+Killed/stale recovery consumes the persisted cleanup, and recursive cleanup is restricted to
+Zeroshot-owned provider overlays. A terminal task that retains cleanup ownership after a failed
+watcher cleanup retries that persisted cleanup through `kill` without signaling the already-terminal
+provider boundary; success clears the receipt and failure keeps it retryable. If watcher termination
+cannot confirm that boundary, the task remains nonterminal with its PID, process group, strategy,
+and cleanup ownership intact; retry and cleanup stay blocked until a later kill confirms termination.
+Cancellation before PID publication is a durable task intent. Both watcher paths check it before
+provider spawn and immediately after publishing the owned PID boundary; callers retain their task
+handle until terminal state and command cleanup are both confirmed.
+Provider continuation is agent- and generation-owned and becomes durable only after logical output
+validation and the `onComplete` hook succeed. A requested resume is successful only when the
+watcher captures that exact same nonempty provider session ID; absent or forked identity fails the
+attempt before hooks and forces the retry to rebuild full context. Watchers track every unique
+session ID observed in a task; once two IDs differ, the persisted capture is permanently ambiguous
+even if a later event repeats the requested ID. Persist SQLite rowid high-water and applied-guidance
+cursors as canonical decimal strings, bind them to SQLite as `BigInt`, and never coerce them through
+JavaScript `Number`. Persist those cursors and a bounded SHA-256 selected-prompt identity with the
+observed provider session; never persist the selected prompt text. Restored
+continuations fail closed unless the final durable `TASK_COMPLETED` boundary and all provenance
+match. Full and continuation source/guidance reads are bounded through the captured high-water;
+continuations query strictly after their prior sequence and de-duplicate the exact triggering
+message by ledger ID. Timestamps are display/filter metadata, not continuation cursors: concurrent
+writers can share one millisecond. If the installed CLI cannot resume, rebuild full context or fail
+before launch—never send a continuation delta to a fresh provider session.
+
+Provider session reuse is explicit-ID and agent-owned. Watcher-observed IDs are distinct from
+requested resume IDs. Commit continuation only after logical/structured success and bind it to the
+completed task, agent, generation, provider, cwd, and worktree. A resumed turn sends only new
+trigger/guidance context; it never replays static prompts or ISSUE_OPENED/PLAN_READY packs already in
+the provider session. Persist continuation in that agent's `agentStates` entry, never in native
+`ClusterLedger`, never select a cwd-wide "latest" session, and never share across agents. Durable
+restore fails closed unless the last lifecycle boundary is the exact matching `TASK_COMPLETED`;
+live, failed, retry/backoff, provider-switch, unsupported, Docker, and workspace-drift states start
+fresh.
 
 ### Guidance Messaging
 
 - Topics: `USER_GUIDANCE_CLUSTER`, `USER_GUIDANCE_AGENT` (see `src/guidance-topics.js`).
 - Mailbox helper: `ledger.queryGuidanceMailbox()` with `messageBus.queryGuidanceMailbox()` passthrough.
 - Live injection: `Orchestrator.sendGuidanceToAgent()` uses `agent.injectInput()` to attempt PTY stdin; always persists `USER_GUIDANCE_AGENT` with `metadata.delivery` (`status: injected|unsupported`, `method: pty`, `taskId`, `reason`).
-- Safe-point queue fallback: `AgentWrapper._buildContext()` pulls queued guidance via `collectQueuedGuidance()` and injects a delimited block in `agent-context-builder` between Instructions and Output Schema. Cursor: `agent.lastGuidanceAppliedAt`.
+- Safe-point queue fallback: `AgentWrapper._buildContext()` pulls queued guidance via `collectQueuedGuidance()` and injects a delimited block in `agent-context-builder` between Instructions and Output Schema. Durable sequence: `agent.lastGuidanceAppliedId`.
 
 ### Agent Configuration (Minimal)
 

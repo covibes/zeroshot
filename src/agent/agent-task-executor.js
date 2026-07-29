@@ -16,12 +16,18 @@ const fs = require('fs');
 const { TaskExecutionHandle } = require('./task-execution-handle');
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
-const { getTask } = require('../../task-lib/store.js');
+const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
 const { loadSettings } = require('../../lib/settings.js');
 const { resolveClaudeAuth } = require('../../lib/settings/claude-auth.js');
 const { prependWorktreeToolBinToEnv } = require('../worktree-tooling-env.js');
+const { applyDarwinKeychainBoundaryToEnv } = require('../darwin-keychain-boundary.js');
 const {
-  prepareClaudeConfigDir,
+  CLAUDE_SETTINGS_ENV,
+  cleanupClaudeSettingsOverlay,
+  ensureAskUserQuestionHook,
+  ensureDangerousGitHook,
+  prepareClaudeSettingsOverlay,
+  resolveContainerMcpConfigPath,
   resolveRepoMcpConfigPath,
 } = require('../worktree-claude-config.js');
 const {
@@ -29,6 +35,20 @@ const {
   wrapTaskRunWithIsolatedSettings,
 } = require('../task-run-model-args.js');
 const { buildRawLogOnlyMetadata } = require('./context-replay-policy');
+const {
+  TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
+  cleanupCallerOwnedCommand,
+  callerOwnsCommandCleanup,
+  createTaskSpawnOwnershipToken,
+  requireTaskIdFromWrapperResult,
+  trackTaskWrapperCleanupOwnership,
+} = require('../task-spawn-cleanup-ownership');
+const {
+  providerSessionFromCompletedTask,
+  resolveAgentResumeSessionId,
+  validateCompletedResumeIdentity,
+} = require('./provider-session');
+const { extractClaudeVertexModelError } = require('./output-extraction');
 
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -373,10 +393,6 @@ function extractErrorContext({ output, statusOutput, taskId, isNotFound = false,
   return sanitizeErrorMessage(`Task failed. Output: ${trimmedOutput}`);
 }
 
-// Track which config dirs already have zeroshot-installed hooks.
-const askUserQuestionHookInstalledDirs = new Set();
-const dangerousGitHookInstalledDirs = new Set();
-
 /**
  * Extract token usage from NDJSON output.
  * Looks for the 'result' event line which contains usage data.
@@ -428,162 +444,6 @@ function extractTokenUsage(output, providerName = 'claude') {
     durationMs: resultEvent.duration || null,
     modelUsage: resultEvent.modelUsage || null,
   };
-}
-
-/**
- * Ensure the AskUserQuestion blocking hook is installed in user's Claude config.
- * This adds defense-in-depth by blocking the tool at the Claude CLI level.
- * Modifies ~/.claude/settings.json and copies hook script to ~/.claude/hooks/
- *
- * Safe to call multiple times - only modifies config once per process.
- */
-function ensureAskUserQuestionHook(targetClaudeDir = null) {
-  const userClaudeDir =
-    targetClaudeDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  if (askUserQuestionHookInstalledDirs.has(userClaudeDir)) {
-    return;
-  }
-  const hooksDir = path.join(userClaudeDir, 'hooks');
-  const settingsPath = path.join(userClaudeDir, 'settings.json');
-  const hookScriptName = 'block-ask-user-question.py';
-  const hookScriptDst = path.join(hooksDir, hookScriptName);
-
-  // Ensure hooks directory exists
-  if (!fs.existsSync(hooksDir)) {
-    fs.mkdirSync(hooksDir, { recursive: true });
-  }
-
-  // Copy hook script if not present or outdated
-  const hookScriptSrc = path.join(__dirname, '..', '..', 'cluster-hooks', hookScriptName);
-  if (fs.existsSync(hookScriptSrc)) {
-    // Always copy to ensure latest version
-    fs.copyFileSync(hookScriptSrc, hookScriptDst);
-    fs.chmodSync(hookScriptDst, 0o755);
-  }
-
-  // Read existing settings or create new
-  let settings = {};
-  if (fs.existsSync(settingsPath)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    } catch (e) {
-      console.warn(`[AgentTaskExecutor] Could not parse settings.json, creating new: ${e.message}`);
-      settings = {};
-    }
-  }
-
-  // Ensure hooks structure exists
-  if (!settings.hooks) {
-    settings.hooks = {};
-  }
-  if (!settings.hooks.PreToolUse) {
-    settings.hooks.PreToolUse = [];
-  }
-
-  // Check if AskUserQuestion hook already exists
-  const hasHook = settings.hooks.PreToolUse.some(
-    (entry) =>
-      entry.matcher === 'AskUserQuestion' ||
-      (entry.hooks && entry.hooks.some((h) => h.command && h.command.includes(hookScriptName)))
-  );
-
-  if (!hasHook) {
-    // Add the hook
-    settings.hooks.PreToolUse.push({
-      matcher: 'AskUserQuestion',
-      hooks: [
-        {
-          type: 'command',
-          command: hookScriptDst,
-        },
-      ],
-    });
-
-    // Write updated settings
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    console.log(`[AgentTaskExecutor] Installed AskUserQuestion blocking hook in ${settingsPath}`);
-  }
-
-  askUserQuestionHookInstalledDirs.add(userClaudeDir);
-}
-
-/**
- * Ensure the dangerous git blocking hook is installed in user's Claude config.
- * This blocks dangerous git commands like stash, checkout --, reset --hard, etc.
- * Modifies ~/.claude/settings.json and copies hook script to ~/.claude/hooks/
- *
- * Only used in worktree mode - Docker isolation mode has its own git-safe.sh wrapper.
- * Safe to call multiple times - only modifies config once per process.
- */
-function ensureDangerousGitHook(targetClaudeDir = null) {
-  const userClaudeDir =
-    targetClaudeDir || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  if (dangerousGitHookInstalledDirs.has(userClaudeDir)) {
-    return;
-  }
-  const hooksDir = path.join(userClaudeDir, 'hooks');
-  const settingsPath = path.join(userClaudeDir, 'settings.json');
-  const hookScriptName = 'block-dangerous-git.py';
-  const hookScriptDst = path.join(hooksDir, hookScriptName);
-
-  // Ensure hooks directory exists
-  if (!fs.existsSync(hooksDir)) {
-    fs.mkdirSync(hooksDir, { recursive: true });
-  }
-
-  // Copy hook script if not present or outdated
-  const hookScriptSrc = path.join(__dirname, '..', '..', 'cluster-hooks', hookScriptName);
-  if (fs.existsSync(hookScriptSrc)) {
-    // Always copy to ensure latest version
-    fs.copyFileSync(hookScriptSrc, hookScriptDst);
-    fs.chmodSync(hookScriptDst, 0o755);
-  }
-
-  // Read existing settings or create new
-  let settings = {};
-  if (fs.existsSync(settingsPath)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    } catch (e) {
-      console.warn(`[AgentTaskExecutor] Could not parse settings.json, creating new: ${e.message}`);
-      settings = {};
-    }
-  }
-
-  // Ensure hooks structure exists
-  if (!settings.hooks) {
-    settings.hooks = {};
-  }
-  if (!settings.hooks.PreToolUse) {
-    settings.hooks.PreToolUse = [];
-  }
-
-  // Check if dangerous git hook already exists
-  const hasHook = settings.hooks.PreToolUse.some(
-    (entry) =>
-      entry.matcher === 'Bash' &&
-      entry.hooks &&
-      entry.hooks.some((h) => h.command && h.command.includes(hookScriptName))
-  );
-
-  if (!hasHook) {
-    // Add the hook - matches Bash tool to check for dangerous git commands
-    settings.hooks.PreToolUse.push({
-      matcher: 'Bash',
-      hooks: [
-        {
-          type: 'command',
-          command: hookScriptDst,
-        },
-      ],
-    });
-
-    // Write updated settings
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    console.log(`[AgentTaskExecutor] Installed dangerous git blocking hook in ${settingsPath}`);
-  }
-
-  dangerousGitHookInstalledDirs.add(userClaudeDir);
 }
 
 /**
@@ -646,47 +506,51 @@ async function spawnClaudeTask(agent, context, options = {}) {
     return spawnClaudeTaskIsolated(agent, context, options);
   }
 
-  // NON-ISOLATION MODE: For Claude, use user's existing Claude config
+  // NON-ISOLATION MODE: Load safety hooks through an additional per-run settings file. Claude
+  // still reads the user's normal config and the repository's project/local config.
   // AskUserQuestion blocking handled via:
   // 1. Prompt injection (see agent-context-builder)
   // 2. PreToolUse hook (defense-in-depth) - activated by ZEROSHOT_BLOCK_ASK_USER env var
-  const claudeConfigDir =
+  const claudeSettingsPath =
     providerName === 'claude'
-      ? prepareClaudeConfigDir({
-          cwd,
-          worktreePath: agent.worktree?.path || null,
+      ? prepareClaudeSettingsOverlay({
+          includeDangerousGit: Boolean(agent.worktree?.enabled),
         })
       : null;
 
-  ensureProviderHooks(agent, providerName, claudeConfigDir);
-  const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeConfigDir });
-
-  // Create the execution handle BEFORE spawning so cancellation is possible
-  // even before a task ID or PID exists.
-  const handle = new TaskExecutionHandle(agent.id);
   const nested = options.nested === true;
+  const handle = new TaskExecutionHandle(agent.id);
+  let taskId;
+  let pendingLaunch;
+  try {
+    const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
+    taskId = await spawnTaskProcess({
+      agent,
+      ctPath,
+      args,
+      cwd,
+      spawnEnv,
+      handle,
+      nested,
+    });
+    pendingLaunch = nested ? handle : agent.currentTask;
+  } catch (error) {
+    cleanupCallerOwnedCommand(error, () => cleanupClaudeSettingsOverlay(claudeSettingsPath));
+    throw error;
+  }
 
-  const taskId = await spawnTaskProcess({
-    agent,
-    ctPath,
-    args,
-    cwd,
-    spawnEnv,
-    handle,
-    nested,
-  });
-
+  // The task ID transfers provider and cleanup ownership to the detached
+  // watcher. From this point, follower/PID observation failures must not remove
+  // files that a live provider still reads.
   if (!nested) {
     agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId}`);
   }
-
-  // Wait for task to be registered in zeroshot storage (race condition fix)
   await waitForTaskReady(agent, taskId);
+  if (pendingLaunch?.cancelled || pendingLaunch?.isCancelled) {
+    throw new Error(`Task launch cancelled: ${taskId}`);
+  }
 
-  // CRITICAL: Poll for REAL process PID from task store
-  // The watcher spawns the actual CLI and writes PID to SQLite asynchronously.
-  // We must poll because the watcher runs in a forked process.
-  const MAX_PID_POLLS = 30; // 3 seconds max
+  const MAX_PID_POLLS = 30;
   const PID_POLL_DELAY = 100;
   let realPid = null;
   let terminalBeforePidObservation = false;
@@ -702,6 +566,10 @@ async function spawnClaudeTask(agent, context, options = {}) {
       break;
     }
     await new Promise((r) => setTimeout(r, PID_POLL_DELAY));
+  }
+
+  if (pendingLaunch?.cancelled || pendingLaunch?.isCancelled) {
+    throw new Error(`Task launch cancelled: ${taskId}`);
   }
 
   if (realPid) {
@@ -758,11 +626,16 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
     args.push('--json-schema', schema);
   }
 
-  // MCP servers: providers whose CLI accepts an MCP config flag (e.g. Copilot's
-  // --additional-mcp-config) cannot use the Claude config-dir overlay, so forward the repo's
-  // `.mcp.json` (the same MCP source Claude consumes) inline via `--mcp-config`.
+  // MCP servers: explicitly forward the repo config through the task CLI.
+  // Claude receives the path; providers such as Copilot receive inlined JSON
+  // so it survives container path translation.
   for (const mcpArg of resolveMcpConfigArgs(agent, providerName)) {
     args.push(mcpArg);
+  }
+
+  const resumeSessionId = resolveAgentResumeSessionId(agent, providerName);
+  if (resumeSessionId) {
+    args.push('--resume', resumeSessionId);
   }
 
   return args;
@@ -771,19 +644,27 @@ function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
 /**
  * Build the `--mcp-config` args for a task-run invocation, or [] when they don't apply.
  *
- * Only providers whose adapter models an MCP config CLI flag receive it — Claude consumes MCP via
- * the config-dir `.mcp.json` overlay (see prepareClaudeConfigDir) and needs no flag. The repo
- * `.mcp.json` content is inlined (not passed as an @<path> reference) so the identical value works
- * under local, worktree, and Docker isolation without host/container path translation.
+ * Claude receives the config path because its CLI supports `--mcp-config`.
+ * Other providers whose adapter models an MCP config flag receive inlined
+ * content so the identical value works under Docker isolation.
  */
 function resolveMcpConfigArgs(agent, providerName) {
-  if (!providerModelsMcpConfigFlag(providerName)) return [];
-
   const mcpPath = resolveRepoMcpConfigPath({
     cwd: agent.config?.cwd || process.cwd(),
     worktreePath: agent.worktree?.path || null,
   });
   if (!mcpPath) return [];
+
+  if (providerName === 'claude') {
+    const forwardedPath = agent.isolation?.enabled
+      ? resolveContainerMcpConfigPath({
+          cwd: agent.config?.cwd || process.cwd(),
+          worktreePath: agent.worktree?.path || null,
+        })
+      : mcpPath;
+    return forwardedPath ? ['--mcp-config', forwardedPath] : [];
+  }
+  if (!providerModelsMcpConfigFlag(providerName)) return [];
 
   const content = fs.readFileSync(mcpPath, 'utf8').trim();
   if (content.length === 0) return [];
@@ -824,21 +705,11 @@ function buildFinalContext({ agent, context, desiredOutputFormat, runOutputForma
   return context;
 }
 
-function ensureProviderHooks(agent, providerName, claudeConfigDir = null) {
-  if (providerName !== 'claude') {
-    return;
-  }
-
-  ensureAskUserQuestionHook(claudeConfigDir);
-
-  // WORKTREE MODE: Install git safety hook (blocks dangerous git commands)
-  if (agent.worktree?.enabled) {
-    ensureDangerousGitHook(claudeConfigDir);
-  }
-}
-
 function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
-  const { claudeConfigDir = null } = options;
+  const {
+    claudeSettingsPath = null,
+    applyDarwinKeychainBoundary = applyDarwinKeychainBoundaryToEnv,
+  } = options;
   const spawnEnv = { ...process.env };
   const agentCwd = agent.config?.cwd || agent.worktree?.path || process.cwd();
   const clusterId = agent.cluster?.id || agent.cluster_id || process.env.ZEROSHOT_CLUSTER_ID;
@@ -863,8 +734,8 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
 
   if (providerName === 'claude') {
     Object.assign(spawnEnv, buildClaudeEnv(modelSpec));
-    if (claudeConfigDir) {
-      spawnEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+    if (claudeSettingsPath) {
+      spawnEnv[CLAUDE_SETTINGS_ENV] = claudeSettingsPath;
     }
 
     // WORKTREE MODE: Activate git safety hook via environment variable
@@ -872,6 +743,13 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
       spawnEnv.ZEROSHOT_WORKTREE = '1';
     }
   }
+
+  // KEYCHAIN BOUNDARY (darwin only): non-interactive local/worktree worker
+  // descendants must not reach the user's GUI Keychain session (issue #704).
+  // Docker isolation never reaches buildSpawnEnv (see spawnClaudeTaskIsolated).
+  // Applied before the worktree tool bins so repo-managed tool substitutes
+  // stay first on PATH.
+  applyDarwinKeychainBoundary(spawnEnv);
 
   prependWorktreeToolBinToEnv(spawnEnv, {
     cwd: agentCwd,
@@ -886,26 +764,144 @@ function parseTaskIdFromOutput(stdout) {
   return match ? match[1] : null;
 }
 
-function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv, handle, nested }) {
-  // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
-  const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
+const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
 
+function assignDurableTaskId(agent, taskId) {
+  if (!taskId || agent.currentTaskId === taskId) return;
+  agent.currentTaskId = taskId;
+  agent._publishLifecycle('TASK_ID_ASSIGNED', {
+    pid: agent.processPid,
+    taskId,
+  });
+}
+
+function createPendingTaskLaunchHandle({
+  agent,
+  proc,
+  ctPath,
+  findPersistedTaskId,
+  waitForWrapperClose,
+  isWrapperClosed,
+  assignTaskId = (taskId) => assignDurableTaskId(agent, taskId),
+}) {
+  let cancellation = null;
+  const handle = {
+    pendingLaunch: true,
+    cancelled: false,
+    kill(reason = 'Task killed') {
+      handle.cancelled = true;
+      if (cancellation) return cancellation;
+      const cancellationAttempt = (async () => {
+        let taskId = findPersistedTaskId();
+        let commandError = null;
+        let commandAttempted = false;
+        const cancelTask = async (persistedTaskId) => {
+          commandAttempted = true;
+          assignTaskId(persistedTaskId);
+          try {
+            await runCommandWithTimeout(ctPath, ['kill', persistedTaskId], { timeout: 10000 });
+          } catch (error) {
+            commandError = error;
+          }
+        };
+        if (taskId) await cancelTask(taskId);
+
+        if (!isWrapperClosed()) {
+          proc.kill('SIGKILL');
+          await waitForWrapperClose;
+        }
+
+        taskId = taskId || findPersistedTaskId();
+        if (taskId && !commandAttempted) await cancelTask(taskId);
+        if (taskId && commandError === null) {
+          const task = getTask(taskId);
+          if (!task || !TASK_TERMINAL_STATUSES.has(task.status) || task.commandCleanup) {
+            commandError = new Error(
+              `Task ${taskId} termination and command cleanup were not confirmed`
+            );
+          }
+        } else if (taskId) {
+          const task = getTask(taskId);
+          if (task && TASK_TERMINAL_STATUSES.has(task.status) && !task.commandCleanup) {
+            commandError = null;
+          }
+        }
+
+        if (commandError) {
+          return { forced: false, reason: commandError.message };
+        }
+        agent._log?.(`Cancelled pending task launch${taskId ? ` ${taskId}` : ''}: ${reason}`);
+        return { forced: true, taskId: taskId || null };
+      })();
+      cancellation = cancellationAttempt;
+      cancellationAttempt.then(
+        (termination) => {
+          if (termination?.forced === false && cancellation === cancellationAttempt) {
+            cancellation = null;
+          }
+        },
+        () => {
+          if (cancellation === cancellationAttempt) cancellation = null;
+        }
+      );
+      return cancellationAttempt;
+    },
+  };
+  return handle;
+}
+
+function spawnTaskProcess({
+  agent,
+  ctPath,
+  args,
+  cwd,
+  spawnEnv,
+  spawnTimeoutMs = 30000,
+  handle = null,
+  nested = false,
+}) {
+  // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it.
+  const SPAWN_TIMEOUT_MS = spawnTimeoutMs;
   // spawn() throws on null bytes in argv; strip them before they get there.
   const safeArgs = args.map((arg) => (typeof arg === 'string' ? arg.replace(/\0/g, '') : arg));
+  const ownershipToken = createTaskSpawnOwnershipToken();
+  const findPersistedTaskId = () => getTaskBySpawnOwnershipToken(ownershipToken)?.id || null;
 
   return new Promise((resolve, reject) => {
     const proc = spawn(ctPath, safeArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: spawnEnv,
+      env: { ...spawnEnv, [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken },
       windowsHide: true,
     });
 
-    // Attach to the execution handle BEFORE any async work so cancel() can
-    // reach the process immediately, even before a task ID is known.
-    if (handle) {
-      handle.attachProcess(proc);
-    }
+    // Nested launches retain their own immutable process identity instead of
+    // overwriting the parent agent's lifecycle fields.
+    handle?.attachProcess(proc);
+    let wrapperClosed = false;
+    let resolveWrapperClose;
+    const waitForWrapperClose = new Promise((resolveClose) => {
+      resolveWrapperClose = resolveClose;
+    });
+    const markWrapperClosed = () => {
+      if (wrapperClosed) return;
+      wrapperClosed = true;
+      resolveWrapperClose();
+    };
+    proc.once('close', markWrapperClosed);
+    proc.once('error', markWrapperClosed);
+    const pendingLaunch = createPendingTaskLaunchHandle({
+      agent,
+      proc,
+      ctPath,
+      findPersistedTaskId,
+      waitForWrapperClose,
+      isWrapperClosed: () => wrapperClosed,
+      assignTaskId: nested
+        ? (taskId) => handle?.assignTaskId(taskId)
+        : (taskId) => assignDurableTaskId(agent, taskId),
+    });
+    if (!nested) agent.currentTask = pendingLaunch;
 
     // NOTE: Don't emit PROCESS_SPAWNED here - proc.pid is a wrapper that exits immediately.
     // Real PID comes from task store after watcher spawns the actual CLI process.
@@ -914,18 +910,49 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv, handle, nested }
     let stdout = '';
     let stderr = '';
     let resolved = false;
+    let timeoutError = null;
+    const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
+    const rejectWithOwnership = async (error) => {
+      const classifiedError = classifyCleanupOwnership(error);
+      if (
+        !callerOwnsCommandCleanup(classifiedError) &&
+        (nested || agent.currentTask === pendingLaunch)
+      ) {
+        let termination;
+        try {
+          termination = await pendingLaunch.kill(classifiedError.message);
+        } catch (cleanupError) {
+          termination = { forced: false, reason: cleanupError.message };
+        }
+        if (termination?.forced === false) {
+          classifiedError.message += ` Task cleanup was not confirmed: ${termination.reason}`;
+          classifiedError.retainTaskHandle = true;
+          classifiedError.permanent = true;
+          classifiedError.restartExhausted = true;
+          classifiedError.terminationExhausted = true;
+          classifiedError.terminationAttempts = 1;
+          classifiedError.taskId = nested ? handle?.taskId || null : agent.currentTaskId || null;
+        } else if (!nested && agent.currentTask === pendingLaunch) {
+          agent.currentTask = null;
+          agent.currentTaskId = null;
+          agent.processPid = null;
+          agent.lastOutputTime = null;
+          agent.taskStartedAt = null;
+        }
+      } else if (!nested && wrapperClosed && agent.currentTask === pendingLaunch) {
+        agent.currentTask = null;
+      }
+      reject(classifiedError);
+    };
 
     // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs
     const spawnTimeout = setTimeout(() => {
       if (resolved) return;
-      resolved = true;
-      proc.kill('SIGKILL');
-      reject(
-        new Error(
-          `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
-            `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
-        )
+      timeoutError = new Error(
+        `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
+          `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
       );
+      proc.kill('SIGKILL');
     }, SPAWN_TIMEOUT_MS);
 
     proc.stdout.on('data', (data) => {
@@ -936,54 +963,54 @@ function spawnTaskProcess({ agent, ctPath, args, cwd, spawnEnv, handle, nested }
       stderr += data.toString();
     });
 
-    proc.on('close', (code, signal) => {
+    proc.on('close', async (code, signal) => {
       clearTimeout(spawnTimeout);
       if (resolved) return;
       resolved = true;
+      if (timeoutError) {
+        await rejectWithOwnership(timeoutError);
+        return;
+      }
       // Handle process killed by signal (e.g., SIGTERM, SIGKILL, SIGSTOP)
       if (signal) {
-        reject(new Error(`Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`));
+        await rejectWithOwnership(
+          new Error(`Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`)
+        );
         return;
       }
 
-      if (code === 0) {
-        // Parse task ID from output: "✓ Task spawned: xxx-yyy-nn"
-        // Format: <adjective>-<noun>-<digits> (may or may not have task- prefix)
-        const spawnedTaskId = parseTaskIdFromOutput(stdout);
-        if (spawnedTaskId) {
-          // Assign to the execution handle (always). Only mirror to agent
-          // globals for top-level (non-nested) tasks so nested reformat
-          // launches never overwrite the parent's identity.
-          if (handle) handle.assignTaskId(spawnedTaskId);
-          if (!nested) {
-            agent.currentTaskId = spawnedTaskId;
-            agent._publishLifecycle('TASK_ID_ASSIGNED', {
-              pid: agent.processPid,
-              taskId: spawnedTaskId,
-            });
-          }
-
-          // Start liveness monitoring (top-level only)
-          if (!nested && agent.enableLivenessCheck) {
-            agent.taskStartedAt = Date.now();
-            agent.lastOutputTime = agent.taskStartedAt;
-            agent._startLivenessCheck();
-          }
-
-          resolve(spawnedTaskId);
-        } else {
-          reject(new Error(`Could not parse task ID from output: ${stdout}`));
-        }
-      } else {
-        reject(new Error(`zeroshot task run failed with code ${code}: ${stderr}`));
+      let spawnedTaskId;
+      try {
+        spawnedTaskId = requireTaskIdFromWrapperResult({
+          code,
+          stdout,
+          stderr,
+          parseTaskId: parseTaskIdFromOutput,
+          persistedTaskId: findPersistedTaskId(),
+        });
+      } catch (error) {
+        await rejectWithOwnership(error);
+        return;
       }
+
+      handle?.assignTaskId(spawnedTaskId);
+      if (!nested) assignDurableTaskId(agent, spawnedTaskId);
+
+      // Start liveness monitoring for top-level tasks only.
+      if (!nested && agent.enableLivenessCheck) {
+        agent.taskStartedAt = Date.now();
+        agent.lastOutputTime = agent.taskStartedAt;
+        agent._startLivenessCheck();
+      }
+
+      resolve(spawnedTaskId);
     });
 
     proc.on('error', (error) => {
       clearTimeout(spawnTimeout);
       if (resolved) return;
       resolved = true;
-      reject(error);
+      rejectWithOwnership(error);
     });
   });
 }
@@ -1246,10 +1273,32 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
   });
 }
 
-async function buildCompletionResult({ agent, taskId, providerName, state, stdout, success }) {
+async function buildCompletionResult({
+  agent,
+  taskId,
+  providerName,
+  state,
+  stdout,
+  success,
+  taskInfo = getTask(taskId),
+}) {
   const classified = state.skipStructuredResultCheck
     ? { success, error: null }
     : await evaluateStructuredSuccess({ agent, taskId, state, success });
+  const resumeIdentityError = classified.success ? validateCompletedResumeIdentity(taskInfo) : null;
+  if (resumeIdentityError) {
+    classified.success = false;
+    classified.error = resumeIdentityError;
+  }
+  const vertexModelError =
+    providerName === 'claude'
+      ? extractClaudeVertexModelError(state.output, {
+          useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+        })
+      : null;
+  if (vertexModelError) {
+    classified.success = false;
+  }
   let errorContext = classified.error;
   if (!errorContext && !classified.success) {
     errorContext = buildFailureContext({ agent, taskId, providerName, state, stdout });
@@ -1263,6 +1312,13 @@ async function buildCompletionResult({ agent, taskId, providerName, state, stdou
     parsedResult: state._cachedParsedResult || null,
     error: errorContext,
     tokenUsage: extractTokenUsage(state.output, providerName),
+    providerSession: providerSessionFromCompletedTask({
+      agent,
+      providerName,
+      taskInfo,
+      logicalSuccess: classified.success,
+    }),
+    vertexModelError,
   };
 }
 
@@ -1371,10 +1427,26 @@ function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, re
   return true;
 }
 
+function hasPendingCommandCleanup(statusOutput) {
+  return /Cleanup:\s+pending/i.test(stripAnsiCodes(statusOutput));
+}
+
+function retryHostTerminalCleanup({ agent, taskId, state, ctPath }) {
+  if (state.commandCleanupRecoveryPending) return;
+  state.commandCleanupRecoveryPending = true;
+  runCommandWithTimeout(ctPath, ['kill', taskId], { timeout: 10000 }, (error) => {
+    state.commandCleanupRecoveryPending = false;
+    if (error) {
+      agent._log(`[${agent.id}] Terminal command cleanup recovery will retry: ${error.message}`);
+    }
+  });
+}
+
 function handleStatusCompletion({
   agent,
   taskId,
   providerName,
+  ctPath,
   state,
   stdout,
   pollLogFile,
@@ -1385,6 +1457,11 @@ function handleStatusCompletion({
 
   if (!isCompleted && !isFailed && !isStale && !isKilled) {
     return false;
+  }
+
+  if (hasPendingCommandCleanup(cleanStdout)) {
+    retryHostTerminalCleanup({ agent, taskId, state, ctPath });
+    return true;
   }
 
   pollLogFile();
@@ -1490,6 +1567,7 @@ function createLogFollower({
           state.consecutiveExecFailures = 0;
           handleStatusCompletion({
             agent,
+            ctPath,
             taskId,
             providerName,
             state,
@@ -1519,7 +1597,7 @@ function createLogFollower({
  */
 function followClaudeTaskLogs(agent, taskId, options = {}) {
   const fsModule = require('fs');
-  const ctPath = getClaudeTasksPath();
+  const ctPath = agent.taskCliPath || getClaudeTasksPath();
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
 
   return createLogFollower({
@@ -1609,38 +1687,146 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
 
   // STEP 1: Spawn task and extract task ID (same as non-isolated mode)
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it
-  const SPAWN_TIMEOUT_MS = 30000; // 30 seconds to spawn task
-  // Note: Auth env vars are injected by IsolationManager, we only need model mapping here
-  const isolatedEnv =
-    providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {};
+  const SPAWN_TIMEOUT_MS = agent.spawnTimeoutMs ?? 30000;
+  const ownershipToken = createTaskSpawnOwnershipToken();
+  // Auth env vars are injected by IsolationManager; the launch token is the
+  // only authoritative bridge back to the detached task row in the container.
+  const isolatedEnv = {
+    ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
+    [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
+  };
 
+  let isolatedPendingLaunch = null;
   const taskId = await new Promise((resolve, reject) => {
     const proc = manager.spawnInContainer(clusterId, command, {
       env: isolatedEnv,
     });
 
-    // Track PID for resource monitoring (top-level only; nested reformat
-    // launches must not overwrite the parent's identity).
+    let isolatedTaskId = null;
+    let wrapperClosed = false;
+    let resolveWrapperClose;
+    let stdout = '';
+    let stderr = '';
+    let resolved = false;
+    let timeoutError = null;
+    let spawnTimeout = null;
+    let cancellation = null;
+    const waitForWrapperClose = new Promise((resolveClose) => {
+      resolveWrapperClose = resolveClose;
+    });
+    const markWrapperClosed = () => {
+      if (!wrapperClosed) {
+        wrapperClosed = true;
+        resolveWrapperClose();
+      }
+    };
+    const findPersistedTaskId = async () => {
+      const persistedTaskId = await resolveIsolatedTaskIdBySpawnToken(
+        manager,
+        clusterId,
+        ownershipToken
+      );
+      if (persistedTaskId) {
+        isolatedTaskId = persistedTaskId;
+        if (!options.nested) assignDurableTaskId(agent, persistedTaskId);
+      }
+      return persistedTaskId;
+    };
+    const rejectLaunch = (error, { retainHandle = false } = {}) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(spawnTimeout);
+      const rejection = error instanceof Error ? error : new Error(String(error));
+      if (retainHandle) {
+        rejection.retainTaskHandle = true;
+        rejection.permanent = true;
+        rejection.restartExhausted = true;
+        rejection.terminationExhausted = true;
+        rejection.terminationAttempts = 1;
+        rejection.taskId =
+          isolatedTaskId || (!options.nested ? agent.currentTaskId : null) || null;
+      } else if (!options.nested && agent.currentTask === isolatedPendingLaunch) {
+        agent.currentTask = null;
+      }
+      reject(rejection);
+    };
+
+    proc.once('close', markWrapperClosed);
+    proc.once('error', markWrapperClosed);
+    isolatedPendingLaunch = {
+      pendingLaunch: true,
+      cancelled: false,
+      async kill(reason = 'Task killed') {
+        isolatedPendingLaunch.cancelled = true;
+        if (cancellation) return cancellation;
+        cancellation = (async () => {
+          let termination = null;
+          let commandError = null;
+          try {
+            const persistedTaskId = isolatedTaskId || (await findPersistedTaskId());
+            if (persistedTaskId) {
+              termination = await terminateIsolatedTask(manager, clusterId, persistedTaskId);
+            }
+          } catch (error) {
+            commandError = error;
+          }
+
+          if (!wrapperClosed) {
+            proc.kill('SIGKILL');
+            await waitForWrapperClose;
+          }
+
+          try {
+            const persistedTaskId = isolatedTaskId || (await findPersistedTaskId());
+            if (persistedTaskId && !termination) {
+              termination = await terminateIsolatedTask(manager, clusterId, persistedTaskId);
+              commandError = null;
+            }
+          } catch (error) {
+            commandError ||= error;
+          }
+
+          if (commandError) {
+            return { forced: false, reason: commandError.message };
+          }
+          agent._log?.(`Cancelled pending isolated task launch: ${reason}`);
+          return termination
+            ? { ...termination, forced: true, taskId: isolatedTaskId }
+            : { forced: true, taskId: null };
+        })();
+
+        const termination = await cancellation;
+        if (termination?.forced === false) cancellation = null;
+        if (!resolved) {
+          const error =
+            timeoutError ||
+            new Error(
+              termination?.forced === false
+                ? `Task launch cancellation was not confirmed: ${termination.reason}`
+                : `Task launch cancelled: ${isolatedTaskId || 'before persistence'}`
+            );
+          rejectLaunch(error, { retainHandle: termination?.forced === false });
+        }
+        return termination;
+      },
+    };
     if (!options.nested) {
+      agent.currentTask = isolatedPendingLaunch;
       agent.processPid = proc.pid;
       agent._publishLifecycle('PROCESS_SPAWNED', { pid: proc.pid });
     }
 
-    let stdout = '';
-    let stderr = '';
-    let resolved = false;
-
-    // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs
-    const spawnTimeout = setTimeout(() => {
+    // CRITICAL: Timeout to prevent infinite hang if provider CLI hangs. Timeout
+    // uses the same cancellation path so a durable child cannot outlive it.
+    spawnTimeout = setTimeout(() => {
       if (resolved) return;
-      resolved = true;
-      proc.kill('SIGKILL');
-      reject(
-        new Error(
-          `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
-            `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
-        )
+      timeoutError = new Error(
+        `Spawn timeout after ${SPAWN_TIMEOUT_MS / 1000}s - provider CLI hung. ` +
+          `stdout: ${stdout.slice(-500)}, stderr: ${stderr.slice(-500)}`
       );
+      isolatedPendingLaunch.kill(timeoutError.message).catch((error) => {
+        rejectLaunch(error, { retainHandle: true });
+      });
     }, SPAWN_TIMEOUT_MS);
 
     proc.stdout.on('data', (data) => {
@@ -1651,44 +1837,47 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
       stderr += data.toString();
     });
 
-    proc.on('close', (code, signal) => {
+    proc.on('close', async (code, signal) => {
       clearTimeout(spawnTimeout);
-      if (resolved) return;
-      resolved = true;
-      // Handle process killed by signal
+      if (resolved || isolatedPendingLaunch.cancelled) return;
       if (signal) {
-        reject(new Error(`Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`));
+        await isolatedPendingLaunch.kill(
+          `Process killed by signal ${signal}${stderr ? `: ${stderr}` : ''}`
+        );
         return;
       }
 
-      if (code === 0) {
-        // Parse task ID from output: "✓ Task spawned: xxx-yyy-nn"
-        const spawnedTaskId = parseTaskIdFromOutput(stdout);
-        if (spawnedTaskId) {
-          if (!options.nested) {
-            agent.currentTaskId = spawnedTaskId;
-            agent._publishLifecycle('TASK_ID_ASSIGNED', {
-              pid: agent.processPid,
-              taskId: spawnedTaskId,
-            });
-          }
-
-          resolve(spawnedTaskId);
-        } else {
-          reject(new Error(`Could not parse task ID from output: ${stdout}`));
+      try {
+        const persistedTaskId = await findPersistedTaskId();
+        const spawnedTaskId = requireTaskIdFromWrapperResult({
+          code,
+          stdout,
+          stderr,
+          parseTaskId: parseTaskIdFromOutput,
+          persistedTaskId,
+        });
+        isolatedTaskId = spawnedTaskId;
+        if (!options.nested) assignDurableTaskId(agent, spawnedTaskId);
+        resolved = true;
+        resolve(spawnedTaskId);
+      } catch (error) {
+        const termination = await isolatedPendingLaunch.kill(error.message);
+        if (!resolved) {
+          rejectLaunch(error, { retainHandle: termination?.forced === false });
         }
-      } else {
-        reject(new Error(`zeroshot task run failed with code ${code}: ${stderr}`));
       }
     });
 
-    proc.on('error', (error) => {
+    proc.on('error', async (error) => {
       clearTimeout(spawnTimeout);
-      if (resolved) return;
-      resolved = true;
-      reject(error);
+      if (resolved || isolatedPendingLaunch.cancelled) return;
+      const termination = await isolatedPendingLaunch.kill(error.message);
+      if (termination?.forced === false && !resolved) {
+        rejectLaunch(error, { retainHandle: true });
+      }
     });
   });
+  if (isolatedPendingLaunch?.cancelled) throw new Error(`Task launch cancelled: ${taskId}`);
 
   if (!options.nested) {
     agent._log(`📋 Agent ${agent.id}: Following zeroshot logs for ${taskId} in container...`);
@@ -1790,6 +1979,32 @@ function rejectIsolatedFollower({ agent, state, cleanup, reject, error }) {
   reject(error);
 }
 
+function rejectIsolatedFollowerRetainingHandle({ state, cleanup, reject, error }) {
+  if (state.resolved || state.failureSettled) return;
+  state.failureSettled = true;
+  cleanup();
+  reject(error);
+}
+
+async function resolveIsolatedTaskIdBySpawnToken(manager, clusterId, ownershipToken) {
+  const result = await manager.execInContainer(clusterId, [
+    'zeroshot',
+    'get-task-id-by-spawn-token',
+    ownershipToken,
+  ]);
+  if (result.code === 2) return null;
+  if (result.code !== 0) {
+    throw new Error(
+      `Failed to resolve isolated task ownership: ${result.stderr || result.stdout || `exit ${result.code}`}`
+    );
+  }
+  const taskId = result.stdout.trim();
+  if (!taskId) {
+    throw new Error('Isolated task ownership lookup returned an empty task ID');
+  }
+  return taskId;
+}
+
 function parseIsolatedStatus(output) {
   return output.match(/Status:\s+(completed|failed|killed|stale|cancelled)/i)?.[1].toLowerCase();
 }
@@ -1797,23 +2012,27 @@ function parseIsolatedStatus(output) {
 async function terminateIsolatedTask(manager, clusterId, taskId) {
   const before = await manager.execInContainer(clusterId, ['zeroshot', 'status', taskId]);
   const beforeStatus = before.code === 0 ? parseIsolatedStatus(before.stdout) : null;
-  if (beforeStatus) {
-    return { alreadyTerminal: true, forced: false, status: beforeStatus };
-  }
-
   const result = await manager.execInContainer(clusterId, ['zeroshot', 'kill', taskId]);
-  const status = await manager.execInContainer(clusterId, ['zeroshot', 'status', taskId]);
-  const afterStatus = status.code === 0 ? parseIsolatedStatus(status.stdout) : null;
-  if (!afterStatus) {
+  if (result.code !== 0) {
     throw new Error(
       `Failed to terminate isolated task ${taskId}: ${result.stderr || result.stdout || `exit ${result.code}`}`
     );
   }
 
+  const status = await manager.execInContainer(clusterId, ['zeroshot', 'status', taskId]);
+  const afterStatus = status.code === 0 ? parseIsolatedStatus(status.stdout) : null;
+  if (!afterStatus) {
+    throw new Error(
+      `Failed to confirm isolated task ${taskId} after cleanup recovery: ${
+        status.stderr || status.stdout || `exit ${status.code}`
+      }`
+    );
+  }
+
   return {
-    alreadyTerminal: false,
-    forced: afterStatus === 'killed',
-    status: afterStatus,
+    alreadyTerminal: Boolean(beforeStatus),
+    forced: !beforeStatus && afterStatus === 'killed',
+    status: beforeStatus || afterStatus,
   };
 }
 
@@ -1868,7 +2087,13 @@ function settleIsolatedTerminalStatus({
       }
     }
 
-    const success = status === 'completed';
+    const vertexModelError =
+      providerName === 'claude'
+        ? extractClaudeVertexModelError(state.fullOutput, {
+            useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
+          })
+        : null;
+    const success = status === 'completed' && !vertexModelError;
     const errorContext = !success
       ? extractErrorContext({
           output: state.fullOutput,
@@ -1887,9 +2112,10 @@ function settleIsolatedTerminalStatus({
           },
         })
       : null;
-    const parsedResult = state.skipStructuredResultCheck
-      ? null
-      : await agent._parseResultOutput(state.fullOutput);
+    const parsedResult =
+      state.skipStructuredResultCheck || vertexModelError
+        ? null
+        : await agent._parseResultOutput(state.fullOutput);
 
     settleIsolatedFollower({
       agent,
@@ -1903,6 +2129,7 @@ function settleIsolatedTerminalStatus({
         result: parsedResult,
         error: errorContext,
         tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+        vertexModelError,
       },
     });
   })().catch((error) => {
@@ -1978,7 +2205,7 @@ function buildIsolatedLifecycleHandle({
     terminate,
     kill: terminate,
     failClosed(error) {
-      rejectIsolatedFollower({ agent, state, cleanup, reject, error });
+      rejectIsolatedFollowerRetainingHandle({ state, cleanup, reject, error });
     },
   };
 }
@@ -2077,6 +2304,28 @@ async function checkIsolatedStatus({
   const isNotFound = statusOutput.includes('not_found');
 
   if (!status && !isNotFound) {
+    return;
+  }
+
+  if (status && hasPendingCommandCleanup(statusOutput)) {
+    if (!state.commandCleanupRecoveryPromise) {
+      const recovery = manager.execInContainer(clusterId, ['zeroshot', 'kill', taskId]);
+      state.commandCleanupRecoveryPromise = recovery;
+      try {
+        const result = await recovery;
+        if (result.code !== 0) {
+          agent._log(
+            `[${agent.id}] Isolated terminal command cleanup recovery will retry: ${
+              result.stderr || result.stdout || `exit ${result.code}`
+            }`
+          );
+        }
+      } finally {
+        if (state.commandCleanupRecoveryPromise === recovery) {
+          state.commandCleanupRecoveryPromise = null;
+        }
+      }
+    }
     return;
   }
 
@@ -2386,29 +2635,40 @@ async function killTask(agent, termination = 'Task killed') {
   const currentTask = agent.currentTask;
   const taskId = agent.currentTaskId;
 
+  if (currentTask?.pendingLaunch && typeof currentTask.kill === 'function') {
+    const pendingTermination = await currentTask.kill(reason, { code });
+    if (pendingTermination?.forced === false) return pendingTermination;
+    agent._stopLivenessCheck?.();
+    agent.currentTask = null;
+    agent.currentTaskId = null;
+    agent.processPid = null;
+    agent.lastOutputTime = null;
+    agent.taskStartedAt = null;
+    return pendingTermination;
+  }
+
   if (agent.isolation?.enabled && taskId) {
     return killIsolatedTask(agent, currentTask, taskId, reason, code);
   }
 
-  agent._stopLivenessCheck?.();
-
   // Kill the underlying task before resolving the local follower. This keeps
   // retries from racing a provider process that is still shutting down.
   if (taskId) {
-    const ctPath = getClaudeTasksPath();
+    const ctPath = agent.taskCommandPath || getClaudeTasksPath();
     try {
       // `kill` is a top-level smart command. `task kill` has never existed.
       await runCommandWithTimeout(ctPath, ['kill', taskId], { timeout: 10000 });
       agent._log?.(`Killed task ${taskId}`);
     } catch (error) {
-      // Resolve the local follower even if the task is already terminal or the
-      // management CLI is unavailable; shutdown state must still reconcile.
-      agent._log?.(`Note: Could not kill task ${taskId}: ${error.message}`);
+      agent._log?.(`Note: Could not confirm termination for task ${taskId}: ${error.message}`);
+      return { forced: false, reason: error.message };
     }
   }
 
+  agent._stopLivenessCheck?.();
+
   if (currentTask && typeof currentTask.kill === 'function') {
-    currentTask.kill(reason, { code });
+    await currentTask.kill(reason, { code });
   }
 
   agent.currentTask = null;
@@ -2420,24 +2680,28 @@ async function killTask(agent, termination = 'Task killed') {
 
 async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
   let termination;
-  if (currentTask && typeof currentTask.terminate === 'function') {
-    termination = await currentTask.terminate(reason, { code });
-  } else {
-    termination = await terminateIsolatedTask(
-      agent.isolation.manager,
-      agent.isolation.clusterId,
-      taskId
-    );
-    if (currentTask && typeof currentTask.kill === 'function') {
-      currentTask.kill(reason, { code });
+  try {
+    if (currentTask && typeof currentTask.terminate === 'function') {
+      termination = await currentTask.terminate(reason, { code });
+    } else {
+      termination = await terminateIsolatedTask(
+        agent.isolation.manager,
+        agent.isolation.clusterId,
+        taskId
+      );
+      if (currentTask && typeof currentTask.kill === 'function') {
+        currentTask.kill(reason, { code });
+      }
     }
+  } catch (error) {
+    return { forced: false, reason: error.message };
   }
 
-  agent._stopLivenessCheck?.();
-  if (termination?.forced === false) {
+  if (termination?.forced === false && !termination.alreadyTerminal) {
     return termination;
   }
 
+  agent._stopLivenessCheck?.();
   agent.currentTask = null;
   agent.currentTaskId = null;
   agent.processPid = null;
@@ -2448,6 +2712,9 @@ async function killIsolatedTask(agent, currentTask, taskId, reason, code) {
 
 module.exports = {
   ensureAskUserQuestionHook,
+  ensureDangerousGitHook,
+  resolveMcpConfigArgs,
+  buildSpawnEnv,
   spawnClaudeTask,
   spawnTaskProcess,
   followClaudeTaskLogs,
@@ -2459,5 +2726,6 @@ module.exports = {
   broadcastIsolatedLine,
   parseResultOutput,
   buildCompletionResult,
+  buildTaskRunArgs,
   killTask,
 };

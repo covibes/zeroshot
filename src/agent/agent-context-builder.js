@@ -94,7 +94,8 @@ function buildStaticSections(params) {
 }
 
 function buildPacks(params) {
-  const { strategy, messageBus, cluster, lastTaskEndTime, lastAgentStartTime } = params;
+  const { strategy, messageBus, cluster, lastTaskEndTime, lastAgentStartTime, triggeringMessage } =
+    params;
   const sections = buildStaticSections(params);
   const packs = [];
   let order = 0;
@@ -116,7 +117,14 @@ function buildPacks(params) {
   order = appendSourcePacks(
     packs,
     strategy,
-    { messageBus, cluster, lastTaskEndTime, lastAgentStartTime },
+    {
+      messageBus,
+      cluster,
+      lastTaskEndTime,
+      lastAgentStartTime,
+      throughId: params.contextThroughId,
+      triggeringMessageId: triggeringMessage?.id,
+    },
     order
   );
   order = pushStaticPack({
@@ -131,6 +139,81 @@ function buildPacks(params) {
     packId: 'triggeringMessage',
     section: 'triggeringMessage',
     text: sections.triggeringMessage,
+    order,
+    options: { preserve: true },
+  });
+
+  return packs;
+}
+
+function buildContinuationPacks(params) {
+  const {
+    id,
+    iteration,
+    config,
+    selectedPrompt,
+    queuedGuidance,
+    triggeringMessage,
+    strategy,
+    messageBus,
+    cluster,
+    lastTaskEndTime,
+    lastAgentStartTime,
+    continuationSequence,
+    contextThroughId,
+    previousPromptIdentity,
+    currentPromptIdentity,
+  } = params;
+  const packs = [];
+  let order = 0;
+
+  order = pushStaticPack({
+    packs,
+    packId: 'continuationHeader',
+    section: 'continuationHeader',
+    text: `## Continuation Turn\n\nAgent: ${id}\nIteration: ${iteration}\n\nApply only the new material below while retaining the existing session instructions.\n\n`,
+    order,
+  });
+
+  // Iteration-rule prompts may intentionally change between turns. Static prompts,
+  // repository tooling, ISSUE_OPENED/PLAN_READY sources, and output contracts are
+  // already present in the provider session and must not be replayed.
+  if (config.promptConfig?.type === 'rules' && currentPromptIdentity !== previousPromptIdentity) {
+    order = pushStaticPack({
+      packs,
+      packId: 'iterationInstructions',
+      section: 'iterationInstructions',
+      text: buildInstructionsSection({ config, selectedPrompt, id }),
+      order,
+    });
+  }
+
+  order = pushStaticPack({
+    packs,
+    packId: 'queuedGuidance',
+    section: 'queuedGuidance',
+    text: queuedGuidance || '',
+    order,
+  });
+  order = appendSourcePacks(
+    packs,
+    strategy,
+    {
+      messageBus,
+      cluster,
+      lastTaskEndTime,
+      lastAgentStartTime,
+      afterId: continuationSequence,
+      throughId: contextThroughId,
+      triggeringMessageId: triggeringMessage?.id,
+    },
+    order
+  );
+  pushStaticPack({
+    packs,
+    packId: 'triggeringMessage',
+    section: 'triggeringMessage',
+    text: buildTriggeringMessageSection(triggeringMessage),
     order,
     options: { preserve: true },
   });
@@ -157,7 +240,10 @@ function buildPacks(params) {
  */
 function buildContext(params) {
   const strategy = params.config.contextStrategy || { sources: [] };
-  const packs = buildPacks({ ...params, strategy });
+  const continuation = params.mode === 'continuation';
+  const packs = continuation
+    ? buildContinuationPacks({ ...params, strategy })
+    : buildPacks({ ...params, strategy });
   const maxTokens = resolveLegacyMaxTokens(strategy);
   const packResult = buildContextPacks({
     packs,
@@ -171,7 +257,7 @@ function buildContext(params) {
     role: params.role,
     iteration: params.iteration,
     triggeringMessage: params.triggeringMessage,
-    strategy,
+    strategy: { ...strategy, contextMode: continuation ? 'continuation' : 'full' },
     packs: packResult.packDecisions,
     budget: packResult.budget,
     truncation: packResult.truncation,

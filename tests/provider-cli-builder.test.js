@@ -26,24 +26,31 @@ function buildCommand(provider, context, options = {}) {
 }
 
 describe('Codex provider helper builder', function () {
-  it('warns when unsupported session control options are ignored', function () {
+  it('resumes an explicit session without cwd-wide continuation', function () {
     const resumed = buildCommand('codex', 'test context', {
       resumeSessionId: 'session-123',
+      cwd: '/tmp/project',
     });
-    assert.ok(!resumed.args.includes('--resume'));
-    assert.ok(
-      resumed.warnings.some(
-        (warning) =>
-          warning.code === 'unsupported-session-control' &&
-          warning.message === 'resume/continue is only supported for Claude CLI; ignoring.'
-      )
-    );
+    assert.deepStrictEqual(resumed.args.slice(0, 2), ['exec', 'resume']);
+    assert.deepStrictEqual(resumed.args.slice(-2), ['session-123', 'test context']);
+    assert.ok(!resumed.args.includes('-C'));
 
     const continued = buildCommand('codex', 'test context', {
       continueSession: true,
     });
     assert.ok(!continued.args.includes('--continue'));
     assert.ok(continued.warnings.some((warning) => warning.code === 'unsupported-session-control'));
+  });
+
+  it('fails closed when the installed Codex CLI cannot resume', function () {
+    assert.throws(
+      () =>
+        buildCommand('codex', 'delta-only context', {
+          resumeSessionId: 'session-123',
+          cliFeatures: { supportsResume: false },
+        }),
+      /cannot safely run continuation context/
+    );
   });
 
   it('passes --output-schema when CLI supports it', function () {
@@ -122,7 +129,8 @@ describe('Gemini provider helper builder', function () {
       resumed.warnings.some(
         (warning) =>
           warning.code === 'unsupported-session-control' &&
-          warning.message === 'resume/continue is only supported for Claude CLI; ignoring.'
+          warning.message ===
+            'Provider gemini does not support resume/continue session control; ignoring.'
       )
     );
 
@@ -189,7 +197,8 @@ describe('Opencode provider helper builder', function () {
       resumed.warnings.some(
         (warning) =>
           warning.code === 'unsupported-session-control' &&
-          warning.message === 'resume/continue is only supported for Claude CLI; ignoring.'
+          warning.message ===
+            'Provider opencode does not support resume/continue session control; ignoring.'
       )
     );
 
@@ -255,6 +264,32 @@ describe('Opencode provider helper builder', function () {
     assert.ok(!result.args.includes('--dir'));
     assert.ok(result.args.includes('--cwd'));
     assert.deepStrictEqual(result.args.slice(1, 3), ['--cwd', '/tmp/worktree']);
+  });
+
+  it('sets commandSpec.cwd even when neither --dir nor --cwd flag is supported', function () {
+    const result = buildCommand('opencode', 'test prompt', {
+      cwd: '/worktrees/spinning-cosmos-71',
+      cliFeatures: { supportsDir: false, supportsCwd: false },
+    });
+
+    assert.strictEqual(result.cwd, '/worktrees/spinning-cosmos-71');
+    assert.ok(!result.args.includes('--dir'));
+    assert.ok(!result.args.includes('--cwd'));
+  });
+
+  it('detects worktree flags from opencode help text', function () {
+    const { opencodeAdapter } = require('../lib/agent-cli-provider/adapters/opencode');
+    const dirFeatures = opencodeAdapter.detectCliFeatures(
+      'Usage: opencode run [options]\n  --dir  Working directory\n  --model  Model to use\n'
+    );
+    const cwdFeatures = opencodeAdapter.detectCliFeatures(
+      'Usage: opencode run [options]\n  --cwd  Working directory\n'
+    );
+
+    assert.strictEqual(dirFeatures.supportsDir, true);
+    assert.strictEqual(dirFeatures.supportsCwd, false);
+    assert.strictEqual(cwdFeatures.supportsDir, false);
+    assert.strictEqual(cwdFeatures.supportsCwd, true);
   });
 });
 
@@ -361,6 +396,17 @@ describe('Claude provider helper builder', function () {
       continueSession: true,
     });
     assert.deepStrictEqual(continued.args.slice(-2), ['--continue', 'test context']);
+  });
+
+  it('fails closed when the installed Claude CLI cannot resume', function () {
+    assert.throws(
+      () =>
+        buildCommand('claude', 'delta-only context', {
+          resumeSessionId: 'session-123',
+          cliFeatures: { supportsResume: false },
+        }),
+      /cannot safely run continuation context/
+    );
   });
 
   it('honors configured Claude executable selection inside the helper', function () {

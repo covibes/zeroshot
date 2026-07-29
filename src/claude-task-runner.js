@@ -12,7 +12,24 @@ const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
-const { prepareClaudeConfigDir } = require('./worktree-claude-config');
+const { applyDarwinKeychainBoundaryToEnv } = require('./darwin-keychain-boundary');
+const { getTask, getTaskBySpawnOwnershipToken } = require('../task-lib/store.js');
+const {
+  TASK_SPAWN_OWNERSHIP_TOKEN_ENV,
+  cleanupCallerOwnedCommand,
+  callerOwnsCommandCleanup,
+  createTaskSpawnOwnershipToken,
+  requireTaskIdFromWrapperResult,
+  trackTaskWrapperCleanupOwnership,
+} = require('./task-spawn-cleanup-ownership');
+const {
+  CLAUDE_MCP_CONFIG_ENV,
+  CLAUDE_SETTINGS_ENV,
+  cleanupClaudeSettingsOverlay,
+  prepareClaudeSettingsOverlay,
+  resolveContainerMcpConfigPath,
+  resolveRepoMcpConfigPath,
+} = require('./worktree-claude-config');
 const {
   appendTaskRunModelArgs,
   wrapTaskRunWithIsolatedSettings,
@@ -80,6 +97,28 @@ function runCommand(command, args, options = {}, callback = null) {
   });
 }
 
+const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale', 'cancelled']);
+
+async function cleanupPersistedTaskAfterLaunchFailure(ctPath, taskId) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let commandError = null;
+    try {
+      await runCommand(ctPath, ['kill', taskId], { timeout: 10000 });
+    } catch (error) {
+      commandError = error;
+    }
+    const task = getTask(taskId);
+    if (!task || (TASK_TERMINAL_STATUSES.has(task.status) && !task.commandCleanup)) {
+      return;
+    }
+    lastError =
+      commandError ||
+      new Error(`Task ${taskId} termination and command cleanup were not confirmed`);
+  }
+  throw lastError || new Error(`Task ${taskId} cleanup failed`);
+}
+
 function runCommandSync(command, args, options = {}) {
   const timeout = options.timeout ?? 30000;
   const result = spawnSync(command, args, { ...options, timeout });
@@ -95,6 +134,17 @@ function runCommandSync(command, args, options = {}) {
   return result.stdout?.toString() || '';
 }
 
+function appendIsolatedMcpConfigArgs(command, provider, options) {
+  if (provider !== 'claude') return;
+  const mcpConfigPath = resolveContainerMcpConfigPath({
+    cwd: options.cwd || process.cwd(),
+    worktreePath: options.worktreePath || null,
+  });
+  if (mcpConfigPath) {
+    command.push('--mcp-config', mcpConfigPath);
+  }
+}
+
 class ClaudeTaskRunner extends TaskRunner {
   /**
    * @param {Object} options
@@ -102,6 +152,7 @@ class ClaudeTaskRunner extends TaskRunner {
    * @param {boolean} [options.quiet] - Suppress console logging
    * @param {number} [options.timeout] - Task timeout in ms (default: 1 hour)
    * @param {Function} [options.onOutput] - Callback for output lines
+   * @param {Function} [options.applyDarwinKeychainBoundary] - Boundary injection seam for tests
    */
   constructor(options = {}) {
     super();
@@ -109,6 +160,8 @@ class ClaudeTaskRunner extends TaskRunner {
     this.quiet = options.quiet || false;
     this.timeout = options.timeout || 60 * 60 * 1000;
     this.onOutput = options.onOutput || null;
+    this.applyDarwinKeychainBoundary =
+      options.applyDarwinKeychainBoundary || applyDarwinKeychainBoundaryToEnv;
   }
 
   /**
@@ -191,14 +244,20 @@ class ClaudeTaskRunner extends TaskRunner {
       worktreePath,
     });
 
-    const taskId = await this._spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, agentId);
+    let taskId;
+    try {
+      taskId = await this._spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, agentId);
+    } catch (error) {
+      cleanupCallerOwnedCommand(error, () =>
+        cleanupClaudeSettingsOverlay(spawnEnv[CLAUDE_SETTINGS_ENV])
+      );
+      throw error;
+    }
 
+    // Once a task ID is returned, the detached watcher owns provider
+    // termination and command cleanup.
     this._log(`📋 [${agentId}]: Following zeroshot logs for ${taskId}`);
-
-    // Wait for task registration
     await this._waitForTaskReady(ctPath, taskId);
-
-    // Follow logs until completion
     return this._followLogs(ctPath, taskId, agentId);
   }
 
@@ -321,14 +380,28 @@ class ClaudeTaskRunner extends TaskRunner {
     const spawnEnv = {
       ...process.env,
     };
+    let claudeSettingsPath = null;
     if (providerName === 'claude' && resolvedModelSpec?.model) {
       spawnEnv.ANTHROPIC_MODEL = resolvedModelSpec.model;
     }
     if (providerName === 'claude') {
-      const claudeConfigDir = prepareClaudeConfigDir({ cwd, worktreePath });
-      if (claudeConfigDir) {
-        spawnEnv.CLAUDE_CONFIG_DIR = claudeConfigDir;
+      claudeSettingsPath = prepareClaudeSettingsOverlay({
+        includeDangerousGit: Boolean(worktreePath),
+      });
+      spawnEnv[CLAUDE_SETTINGS_ENV] = claudeSettingsPath;
+      const mcpConfigPath = resolveRepoMcpConfigPath({ cwd, worktreePath });
+      if (mcpConfigPath) {
+        spawnEnv[CLAUDE_MCP_CONFIG_ENV] = mcpConfigPath;
       }
+    }
+
+    // KEYCHAIN BOUNDARY (darwin only): keep non-interactive worker descendants
+    // away from the user's GUI Keychain session (issue #704).
+    try {
+      this.applyDarwinKeychainBoundary(spawnEnv);
+    } catch (error) {
+      if (claudeSettingsPath) cleanupClaudeSettingsOverlay(claudeSettingsPath);
+      throw error;
     }
 
     prependWorktreeToolBinToEnv(spawnEnv, { cwd, worktreePath });
@@ -345,16 +418,49 @@ class ClaudeTaskRunner extends TaskRunner {
    * @returns {Promise<string>}
    */
   _spawnAndGetTaskId(ctPath, args, cwd, spawnEnv, _agentId) {
+    const ownershipToken = createTaskSpawnOwnershipToken();
+    const findPersistedTaskId = () => getTaskBySpawnOwnershipToken(ownershipToken)?.id || null;
     return new Promise((resolve, reject) => {
       const proc = spawn(ctPath, args, {
         cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: spawnEnv,
+        env: { ...spawnEnv, [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken },
         windowsHide: true,
       });
 
       let stdout = '';
       let stderr = '';
+      let settled = false;
+      const classifyCleanupOwnership = trackTaskWrapperCleanupOwnership(findPersistedTaskId);
+      const rejectWithOwnership = async (error) => {
+        if (settled) return;
+        settled = true;
+        const classifiedError = classifyCleanupOwnership(error);
+        if (!callerOwnsCommandCleanup(classifiedError)) {
+          classifiedError.spawnOwnershipToken = ownershipToken;
+          let persistedTaskId = null;
+          let lookupError = null;
+          try {
+            persistedTaskId = findPersistedTaskId();
+          } catch (lookupFailure) {
+            lookupError = lookupFailure;
+          }
+          classifiedError.taskId = persistedTaskId;
+          try {
+            if (lookupError) throw lookupError;
+            if (persistedTaskId) {
+              await cleanupPersistedTaskAfterLaunchFailure(ctPath, persistedTaskId);
+            }
+          } catch (cleanupError) {
+            classifiedError.message += ` Task cleanup was not confirmed: ${cleanupError.message}`;
+            classifiedError.permanent = true;
+            classifiedError.restartExhausted = true;
+            classifiedError.terminationExhausted = true;
+            classifiedError.terminationAttempts = persistedTaskId ? 3 : 1;
+          }
+        }
+        reject(classifiedError);
+      };
 
       proc.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -364,21 +470,26 @@ class ClaudeTaskRunner extends TaskRunner {
         stderr += data.toString();
       });
 
-      proc.on('close', (code) => {
-        if (code === 0) {
-          const match = stdout.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/);
-          if (match) {
-            resolve(match[1]);
-          } else {
-            reject(new Error(`Could not parse task ID from output: ${stdout}`));
-          }
-        } else {
-          reject(new Error(`zeroshot task run failed with code ${code}: ${stderr}`));
+      proc.on('close', async (code) => {
+        if (settled) return;
+        try {
+          const taskId = requireTaskIdFromWrapperResult({
+            code,
+            stdout,
+            stderr,
+            parseTaskId: (output) =>
+              output.match(/Task spawned: ((?:task-)?[a-z]+-[a-z]+-[a-z0-9]+)/)?.[1],
+            persistedTaskId: findPersistedTaskId(),
+          });
+          settled = true;
+          resolve(taskId);
+        } catch (error) {
+          await rejectWithOwnership(error);
         }
       });
 
-      proc.on('error', (error) => {
-        reject(error);
+      proc.on('error', async (error) => {
+        await rejectWithOwnership(error);
       });
     });
   }
@@ -424,6 +535,7 @@ class ClaudeTaskRunner extends TaskRunner {
       let statusCheckInterval = null;
       let resolved = false;
       let lineBuffer = '';
+      let cleanupRecoveryPending = false;
 
       // Get log file path
       try {
@@ -558,33 +670,43 @@ class ClaudeTaskRunner extends TaskRunner {
 
       statusCheckInterval = setInterval(() => {
         runCommand(ctPath, ['status', taskId], {}, (error, stdout) => {
-          if (resolved) return;
-
-          if (
-            !error &&
-            (stdout.includes('Status:     completed') || stdout.includes('Status:     failed'))
-          ) {
-            const success = stdout.includes('Status:     completed');
-
-            pollLogFile();
-
-            setTimeout(() => {
-              if (resolved) return;
-              resolved = true;
-
-              if (pollInterval) clearInterval(pollInterval);
-              if (statusCheckInterval) clearInterval(statusCheckInterval);
-
-              const errorContext = extractErrorContext(success, stdout);
-
-              resolve({
-                success,
-                output,
-                error: errorContext,
-                taskId,
+          if (resolved || error) return;
+          const terminalMatch = stdout.match(/Status:\s+(completed|failed)/i);
+          if (!terminalMatch) return;
+          if (/Cleanup:\s+pending/i.test(stdout)) {
+            if (!cleanupRecoveryPending) {
+              cleanupRecoveryPending = true;
+              runCommand(ctPath, ['kill', taskId], { timeout: 10000 }, (cleanupError) => {
+                cleanupRecoveryPending = false;
+                if (cleanupError) {
+                  this._log(
+                    `⚠️ [${agentId}]: Terminal cleanup recovery will retry: ${cleanupError.message}`
+                  );
+                }
               });
-            }, 500);
+            }
+            return;
           }
+
+          const success = terminalMatch[1].toLowerCase() === 'completed';
+          pollLogFile();
+
+          setTimeout(() => {
+            if (resolved) return;
+            resolved = true;
+
+            clearInterval(pollInterval);
+            clearInterval(statusCheckInterval);
+
+            const errorContext = extractErrorContext(success, stdout);
+
+            resolve({
+              success,
+              output,
+              error: errorContext,
+              taskId,
+            });
+          }, 500);
         });
       }, 1000);
 
@@ -663,6 +785,8 @@ class ClaudeTaskRunner extends TaskRunner {
     if (jsonSchema && runOutputFormat === 'json') {
       command.push('--json-schema', JSON.stringify(jsonSchema));
     }
+
+    appendIsolatedMcpConfigArgs(command, provider, options);
 
     let finalContext = context;
     if (jsonSchema && desiredOutputFormat === 'json' && runOutputFormat === 'stream-json') {

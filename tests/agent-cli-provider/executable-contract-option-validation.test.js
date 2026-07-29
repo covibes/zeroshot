@@ -35,6 +35,11 @@ const invalidNestedOptionCases = [
     options: { cliFeatures: { supportsDir: 'true' } },
     field: 'options.cliFeatures.supportsDir',
   },
+  {
+    name: 'cliFeatures supportsSettings boolean',
+    options: { cliFeatures: { supportsSettings: 'true' } },
+    field: 'options.cliFeatures.supportsSettings',
+  },
   { name: 'modelSpec object', options: { modelSpec: 'level2' }, field: 'options.modelSpec' },
   {
     name: 'modelSpec level enum',
@@ -75,6 +80,16 @@ const invalidNestedOptionCases = [
     name: 'gateway headers string values',
     options: { gateway: { headers: { Authorization: 123 } } },
     field: 'options.gateway.headers.Authorization',
+  },
+  {
+    name: 'gateway protocol enum',
+    options: { gateway: { protocol: 'messages' } },
+    field: 'options.gateway.protocol',
+  },
+  {
+    name: 'gateway max tokens positive integer',
+    options: { gateway: { maxTokens: 0 } },
+    field: 'options.gateway.maxTokens',
   },
   {
     name: 'gateway tool policy object',

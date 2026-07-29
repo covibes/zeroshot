@@ -80,6 +80,30 @@ test('build-command preserves Claude resume and continue options through JSON co
   assert.deepEqual(continued.envelope.result.commandSpec.args.slice(-2), ['--continue', 'ctx']);
 });
 
+test('build-command preserves Codex explicit session resume through JSON contract', () => {
+  const resumed = runExecutable({
+    schemaVersion: 1,
+    command: 'build-command',
+    provider: 'codex',
+    context: 'ctx',
+    options: {
+      resumeSessionId: 'thread-1',
+      cwd: '/tmp/project',
+      cliFeatures: {
+        supportsResume: true,
+        supportsCwd: true,
+      },
+    },
+  });
+
+  assert.equal(resumed.exitCode, 0);
+  assert.equal(resumed.envelope.ok, true);
+  assert.deepEqual(resumed.envelope.result.commandSpec.args.slice(0, 2), ['exec', 'resume']);
+  assert.deepEqual(resumed.envelope.result.commandSpec.args.slice(-2), ['thread-1', 'ctx']);
+  assert.equal(resumed.envelope.result.commandSpec.args.includes('-C'), false);
+  assert.equal(resumed.envelope.result.commandSpec.cwd, '/tmp/project');
+});
+
 test('build-command redacts adapter auth env values from command spec output', () => {
   const secret = 'plain-secret';
   const response = runExecutable({

@@ -5,6 +5,7 @@ import { contractError, invalidField } from './contract-errors';
 import { getString, isRecord, unknownToMessage } from './json';
 import type {
   GatewayBuildOptions,
+  GatewayProtocol,
   GatewayToolPolicy,
   ResolvedGatewayBuildOptions,
 } from './types';
@@ -48,15 +49,19 @@ export function normalizeGatewayBuildOptions(
   }
 
   const result: Record<string, unknown> = {};
+  const protocol = optionalGatewayProtocol(value.protocol, `${field}.protocol`);
   const baseUrl = optionalString(value.baseUrl, `${field}.baseUrl`);
   const apiKey = optionalString(value.apiKey, `${field}.apiKey`);
   const model = optionalNullableString(value.model, `${field}.model`);
+  const maxTokens = optionalNullablePositiveInteger(value.maxTokens, `${field}.maxTokens`);
   const headers = optionalStringRecord(value.headers, `${field}.headers`);
   const toolPolicy = optionalGatewayToolPolicy(value.toolPolicy, `${field}.toolPolicy`, cwd);
 
+  if (protocol !== undefined) result.protocol = protocol;
   if (baseUrl !== undefined) result.baseUrl = baseUrl;
   if (typeof apiKey === 'string') result.apiKey = apiKey;
   if (model !== undefined) result.model = model;
+  if (maxTokens !== undefined) result.maxTokens = maxTokens;
   if (headers !== undefined) result.headers = headers;
   if (toolPolicy !== undefined) result.toolPolicy = toolPolicy;
 
@@ -76,27 +81,51 @@ export function resolveGatewayConfiguration(
       message: `${field} is required for the gateway provider.`,
     });
   }
+  const protocol = value.protocol ?? 'openai';
   const baseUrl = requiredNonEmptyString(value.baseUrl, `${field}.baseUrl`);
   const apiKey = requiredNonEmptyString(value.apiKey, `${field}.apiKey`);
   const model = requiredNonEmptyString(value.model, `${field}.model`);
+  const maxTokens = value.maxTokens;
   const headers = value.headers ?? {};
   const toolPolicy = requiredGatewayToolPolicy(value.toolPolicy, `${field}.toolPolicy`, cwd);
 
+  if (protocol === 'anthropic' && maxTokens === undefined) {
+    invalidField(
+      `${field}.maxTokens`,
+      `${field}.maxTokens is required when ${field}.protocol is "anthropic".`
+    );
+  }
   assertValidGatewayBaseUrl(baseUrl, `${field}.baseUrl`);
   return {
+    protocol,
     baseUrl: normalizeBaseUrl(baseUrl),
     apiKey,
     headers,
     model,
+    ...(maxTokens === undefined ? {} : { maxTokens }),
     toolPolicy,
   };
 }
 
 export function validateGatewaySettings(settings: Record<string, unknown>): string | null {
   try {
+    const protocol = optionalGatewayProtocol(
+      settings.protocol,
+      'providerSettings.gateway.protocol'
+    );
     optionalString(settings.baseUrl, 'providerSettings.gateway.baseUrl');
     optionalString(settings.apiKey, 'providerSettings.gateway.apiKey');
     optionalNullableString(settings.model, 'providerSettings.gateway.model');
+    const maxTokens = optionalNullablePositiveInteger(
+      settings.maxTokens,
+      'providerSettings.gateway.maxTokens'
+    );
+    if (protocol === 'anthropic' && maxTokens === undefined) {
+      invalidField(
+        'providerSettings.gateway.maxTokens',
+        'providerSettings.gateway.maxTokens is required when providerSettings.gateway.protocol is "anthropic".'
+      );
+    }
     optionalStringRecord(settings.headers, 'providerSettings.gateway.headers');
     optionalGatewayToolPolicy(
       settings.toolPolicy,
@@ -593,6 +622,17 @@ function requiredArrayIfPresent(
 function optionalFiniteInteger(value: unknown, field: string): number | undefined {
   if (value === undefined) return undefined;
   return requiredFiniteInteger(value, field);
+}
+
+function optionalNullablePositiveInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  return requiredFiniteInteger(value, field);
+}
+
+function optionalGatewayProtocol(value: unknown, field: string): GatewayProtocol | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'openai' || value === 'anthropic') return value;
+  invalidField(field, `${field} must be "openai" or "anthropic".`);
 }
 
 function requiredFiniteInteger(value: unknown, field: string): number {

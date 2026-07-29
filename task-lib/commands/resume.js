@@ -1,6 +1,34 @@
 import chalk from 'chalk';
+import { createRequire } from 'module';
 import { getTask } from '../store.js';
 import { spawnTask } from '../runner.js';
+
+const require = createRequire(import.meta.url);
+const { providerSupportsCapability } = require('../../lib/provider-names.js');
+
+export function buildResumeTaskOptions(task) {
+  if (!providerSupportsCapability(task.provider, 'sessionResume')) {
+    throw new Error(`Provider ${task.provider} does not support safe session resume.`);
+  }
+  if (
+    task.requestedResumeSessionId &&
+    (task.status !== 'completed' || task.resumeIdentityVerified !== true)
+  ) {
+    throw new Error(
+      `Task ${task.id} did not durably verify its requested provider session; refusing resume.`
+    );
+  }
+  if (!task.sessionId) {
+    throw new Error(
+      `Task ${task.id} has no captured provider session ID; refusing cwd-wide continuation.`
+    );
+  }
+  return {
+    cwd: task.cwd,
+    resume: task.sessionId,
+    provider: task.provider,
+  };
+}
 
 export async function resumeTask(taskId, newPrompt) {
   const task = getTask(taskId);
@@ -23,12 +51,7 @@ export async function resumeTask(taskId, newPrompt) {
   console.log(chalk.dim(`Original prompt: ${task.prompt}`));
   console.log(chalk.dim(`Resume prompt: ${prompt}`));
 
-  const newTask = await spawnTask(prompt, {
-    cwd: task.cwd,
-    continue: true, // Use --continue to load most recent session in that directory
-    sessionId: task.sessionId,
-    provider: task.provider,
-  });
+  const newTask = await spawnTask(prompt, buildResumeTaskOptions(task));
 
   console.log(chalk.green(`\n✓ Resumed as new task: ${chalk.cyan(newTask.id)}`));
   console.log(chalk.dim(`  PID: ${newTask.pid}`));

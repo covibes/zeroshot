@@ -17,6 +17,7 @@ export type KnownProviderName = ProviderId | ProviderAlias;
 export type ModelLevel = 'level1' | 'level2' | 'level3';
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type OutputFormat = 'text' | 'json' | 'stream-json';
+export type GatewayProtocol = 'openai' | 'anthropic';
 export type {
   ProviderCapabilities,
   ProviderCapabilityState,
@@ -66,18 +67,22 @@ export interface GatewayToolPolicy {
 }
 
 export interface GatewayBuildOptions {
+  readonly protocol?: GatewayProtocol;
   readonly baseUrl?: string;
   readonly apiKey?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly model?: string | null;
+  readonly maxTokens?: number;
   readonly toolPolicy?: GatewayToolPolicy;
 }
 
 export interface ResolvedGatewayBuildOptions {
+  readonly protocol: GatewayProtocol;
   readonly baseUrl: string;
   readonly apiKey: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly model: string;
+  readonly maxTokens?: number;
   readonly toolPolicy: GatewayToolPolicy;
 }
 
@@ -96,6 +101,9 @@ export interface ClaudeCliFeatures extends BaseCliFeatures {
   readonly supportsVerbose: boolean;
   readonly supportsModel: boolean;
   readonly supportsEffort: boolean;
+  readonly supportsSettings: boolean;
+  readonly supportsMcpConfig: boolean;
+  readonly supportsResume: boolean;
 }
 
 export interface CodexCliFeatures extends BaseCliFeatures {
@@ -107,6 +115,7 @@ export interface CodexCliFeatures extends BaseCliFeatures {
   readonly supportsConfigOverride: boolean;
   readonly supportsModel: boolean;
   readonly supportsSkipGitRepoCheck: boolean;
+  readonly supportsResume: boolean;
 }
 
 export interface GeminiCliFeatures extends BaseCliFeatures {
@@ -188,6 +197,7 @@ export interface CliFeatureOverrides {
   readonly supportsVerbose?: boolean;
   readonly supportsModel?: boolean;
   readonly supportsEffort?: boolean;
+  readonly supportsSettings?: boolean;
   readonly supportsJson?: boolean;
   readonly supportsOutputSchema?: boolean;
   readonly supportsDir?: boolean;
@@ -207,6 +217,7 @@ export interface CliFeatureOverrides {
   readonly supportsNoAskUser?: boolean;
   readonly supportsAddDir?: boolean;
   readonly supportsMcpConfig?: boolean;
+  readonly supportsResume?: boolean;
   readonly supportsBundledRunner?: boolean;
   readonly supportsAcpStdio?: boolean;
   readonly supportsPromptImages?: boolean;
@@ -223,10 +234,10 @@ export interface CliFeatureOverrides {
 }
 
 export interface CleanupMetadata {
-  readonly kind: 'temp-file';
+  readonly kind: 'temp-file' | 'temp-directory';
   readonly provider: ProviderId;
   readonly path: string;
-  readonly reason: 'output-schema';
+  readonly reason: 'output-schema' | 'settings-overlay';
 }
 
 export interface WarningMetadata {
@@ -260,14 +271,14 @@ export interface BuildProviderCommandOptions {
   readonly autoApprove?: boolean;
   readonly resumeSessionId?: string;
   readonly continueSession?: boolean;
+  readonly claudeSettingsFile?: string;
   readonly cliFeatures?: CliFeatureOverrides;
   readonly authEnv?: Readonly<Record<string, string>>;
   readonly strictSchema?: boolean;
   readonly gateway?: GatewayBuildOptions;
-  // MCP server configs forwarded to providers that accept an MCP config CLI flag (currently
-  // Copilot's `--additional-mcp-config`). Each entry is an inline JSON string (the standard
-  // `{"mcpServers": {...}}` envelope) or an `@<path>` file reference; adapters emit one flag per
-  // entry. Providers whose adapter models no MCP flag ignore this field.
+  // MCP server configs forwarded to providers that accept an MCP config CLI flag. Claude accepts
+  // one variadic `--mcp-config` followed by file paths; adapters such as Copilot accept repeated
+  // flags with inline JSON so configs survive container path translation.
   readonly mcpConfig?: readonly string[];
 }
 
@@ -363,6 +374,7 @@ export interface ProviderAdapter {
   readonly defaultMinLevel: ModelLevel;
   detectCliFeatures(helpText?: string | null): ProviderCliFeatures;
   buildCommand(context: string, options?: BuildProviderCommandOptions): CommandSpec;
+  extractSessionId?(line: string): string | null;
   parseEvent(line: string, state: ProviderParserState): ProviderParseResult;
   createParserState(): ProviderParserState;
   resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec;

@@ -15,6 +15,8 @@ const fallbackSettingsFile = path.join(
 const testSettingsFile = inheritedSettingsFile || fallbackSettingsFile;
 const ambientRunVariables = [
   'ZEROSHOT_CLOSE_ISSUE',
+  'ZEROSHOT_CLAUDE_MCP_CONFIG_FILE',
+  'ZEROSHOT_CLAUDE_SETTINGS_FILE',
   'ZEROSHOT_CLUSTER_ID',
   'ZEROSHOT_CWD',
   'ZEROSHOT_DAEMON',

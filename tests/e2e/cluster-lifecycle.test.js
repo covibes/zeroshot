@@ -113,4 +113,76 @@ describe('e2e: cluster lifecycle (daemon mode + observability commands)', functi
 
     fs.rmSync(issueDir, { recursive: true, force: true });
   });
+
+  it('preserves a CLI model override through detached conductor load_config', async function () {
+    const issueDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-e2e-issue-'));
+    const issuePath = path.join(issueDir, 'model-override.md');
+    const scenarioFile = path.join(issueDir, 'conductor-trivial-task.json');
+    let clusterId = null;
+    fs.writeFileSync(issuePath, '# Model override\n\nExercise dynamic config loading.\n');
+    fs.writeFileSync(
+      scenarioFile,
+      JSON.stringify({
+        messages: [
+          JSON.stringify({
+            complexity: 'TRIVIAL',
+            taskType: 'TASK',
+            reasoning: 'Use the single-worker route.',
+          }),
+        ],
+        exitCode: 0,
+      })
+    );
+
+    try {
+      const configPath = path.join(
+        __dirname,
+        '..',
+        '..',
+        'cluster-templates',
+        'conductor-bootstrap.json'
+      );
+      const startResult = runZeroshot(
+        env,
+        ['run', issuePath, '-d', '--config', configPath, '--model', 'sonnet'],
+        {
+          FAKE_AGENT_SCENARIO: scenarioFile,
+          timeout: 15000,
+        }
+      );
+      assert.strictEqual(
+        startResult.status,
+        0,
+        `zeroshot run -d exited ${startResult.status}\nSTDOUT:\n${startResult.stdout}\nSTDERR:\n${startResult.stderr}`
+      );
+
+      const clusterIdMatch = /Started (\S+)/.exec(startResult.stdout);
+      assert.ok(clusterIdMatch, `expected "Started <id>" in stdout, got:\n${startResult.stdout}`);
+      clusterId = clusterIdMatch[1];
+      const cluster = await pollUntil(() => {
+        const current = readCluster(env, clusterId);
+        return current?.state === 'stopped' ? current : null;
+      }, 30000);
+
+      assert.strictEqual(cluster.modelOverride, 'sonnet');
+      assert.ok(
+        cluster.config.agents.some((agent) => agent.id === 'worker'),
+        'detached conductor should load the worker config'
+      );
+      for (const agent of cluster.config.agents) {
+        assert.strictEqual(
+          agent.model,
+          'sonnet',
+          `persisted agent ${agent.id} should retain the CLI model override`
+        );
+      }
+      assert.strictEqual(cluster.failureInfo, null);
+    } finally {
+      const cluster = clusterId ? readCluster(env, clusterId) : null;
+      if (cluster && !['stopped', 'killed'].includes(cluster.state)) {
+        runZeroshot(env, ['kill', clusterId], { timeout: 15000 });
+      }
+      fs.rmSync(issueDir, { recursive: true, force: true });
+    }
+  });
 });

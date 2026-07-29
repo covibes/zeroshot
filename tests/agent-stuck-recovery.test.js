@@ -2,9 +2,10 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { URL } = require('node:url');
 
-const { startLivenessCheck, stopLivenessCheck } = require('../src/agent/agent-lifecycle');
-const { killTask } = require('../src/agent/agent-task-executor');
+const { startLivenessCheck, stopLivenessCheck, stop } = require('../src/agent/agent-lifecycle');
+const { killTask, spawnTaskProcess } = require('../src/agent/agent-task-executor');
 const Orchestrator = require('../src/orchestrator');
 const MockTaskRunner = require('./helpers/mock-task-runner');
 
@@ -67,6 +68,81 @@ function workerConfig() {
   };
 }
 
+function createPendingLaunchAgent() {
+  return {
+    currentTask: null,
+    currentTaskId: null,
+    processPid: null,
+    lastOutputTime: null,
+    taskStartedAt: null,
+    _publishLifecycle() {},
+    _stopLivenessCheck() {},
+    _log() {},
+  };
+}
+
+async function createPendingLaunchFixture() {
+  const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-launch-windows-'));
+  const fakeZeroshot = path.join(fakeBin, 'zeroshot');
+  const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+  const retryKillMarker = path.join(fakeBin, 'retry-kill-marker');
+  fs.writeFileSync(
+    fakeZeroshot,
+    `#!/usr/bin/env node
+    (async () => {
+      const fs = require('node:fs');
+      const { addTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+      const action = process.argv[2];
+      const taskId = process.argv[3];
+      if (
+        action === 'kill' &&
+        taskId === 'launch-retry-task' &&
+        !fs.existsSync(${JSON.stringify(retryKillMarker)})
+      ) {
+        fs.writeFileSync(${JSON.stringify(retryKillMarker)}, 'failed once\\n');
+        process.exitCode = 1;
+        return;
+      }
+      if (action === 'kill') {
+        updateTask(taskId, {
+          status: 'killed',
+          pid: null,
+          processGroupId: null,
+          cancelRequested: false,
+          commandCleanup: null
+        });
+        return;
+      }
+      if (action === 'pre-row') {
+        setInterval(() => {}, 1000);
+        return;
+      }
+      if (action === 'timeout-row') {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      addTask({
+        id: taskId,
+        status: 'running',
+        pid: null,
+        spawnOwnershipToken: process.env.ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN,
+        commandCleanup: null
+      });
+      if (action === 'post-row' || action === 'timeout-row') {
+        setInterval(() => {}, 1000);
+        return;
+      }
+      process.stdout.write('Task spawned: ' + taskId + '\\n');
+    })().catch((error) => {
+      process.stderr.write(error.stack + '\\n');
+      process.exitCode = 1;
+    });
+    `,
+    { mode: 0o755 }
+  );
+  const { getTask, removeTask } = await import(storeUrl);
+  return { fakeBin, fakeZeroshot, getTask, removeTask };
+}
+
 describe('Agent stuck-task recovery', function () {
   this.timeout(10000);
   let settingsDir;
@@ -85,6 +161,36 @@ describe('Agent stuck-task recovery', function () {
         jitterFactor: 0,
       })
     );
+  });
+
+  it('retries shutdown termination while an unconfirmed task handle remains', async function () {
+    let terminationAttempts = 0;
+    const agent = {
+      id: 'shutdown-retry',
+      running: true,
+      state: 'running',
+      currentTask: {},
+      livenessCheckInterval: null,
+      unsubscribe: null,
+      _currentExecution: null,
+      _log() {},
+      _killTask() {
+        terminationAttempts += 1;
+        if (terminationAttempts === 1) {
+          return { forced: false, reason: 'provider still running' };
+        }
+        this.currentTask = null;
+        return { forced: true };
+      },
+    };
+
+    await assert.rejects(stop(agent), /could not confirm termination/);
+    assert.strictEqual(agent.running, false);
+    assert.notStrictEqual(agent.currentTask, null);
+
+    await stop(agent);
+    assert.strictEqual(terminationAttempts, 2);
+    assert.strictEqual(agent.currentTask, null);
   });
 
   afterEach(function () {
@@ -157,6 +263,145 @@ describe('Agent stuck-task recovery', function () {
     }
   });
 
+  it('retains the caller task handle until durable termination and cleanup are confirmed', async function () {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-kill-pending-'));
+    const fakeZeroshot = path.join(fakeBin, 'zeroshot');
+    fs.writeFileSync(fakeZeroshot, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    let followerKilled = false;
+    let livenessStopped = false;
+    const agent = {
+      currentTask: {
+        kill() {
+          followerKilled = true;
+        },
+      },
+      currentTaskId: 'startup-cancel-pending',
+      taskCommandPath: fakeZeroshot,
+      processPid: null,
+      lastOutputTime: 123,
+      taskStartedAt: 456,
+      _stopLivenessCheck() {
+        livenessStopped = true;
+      },
+      _log() {},
+    };
+
+    try {
+      const result = await killTask(agent, 'Provider inactivity timeout');
+      assert.strictEqual(result.forced, false);
+      assert.strictEqual(agent.currentTaskId, 'startup-cancel-pending');
+      assert.notStrictEqual(agent.currentTask, null);
+      assert.strictEqual(followerKilled, false);
+      assert.strictEqual(livenessStopped, false);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+
+  it('cancels pending launches before persistence, before wrapper close, and before follower install', async function () {
+    const { fakeBin, fakeZeroshot, getTask, removeTask } =
+      await createPendingLaunchFixture();
+    const taskIds = ['launch-prerow-task', 'launch-postrow-task', 'launch-postid-task'];
+
+    try {
+      for (const state of ['pre-row', 'post-row', 'post-id']) {
+        const taskId = `launch-${state.replace('-', '')}-task`;
+        removeTask(taskId);
+        const agent = createPendingLaunchAgent();
+        const launch = spawnTaskProcess({
+          agent,
+          ctPath: fakeZeroshot,
+          args: [state, taskId],
+          cwd: process.cwd(),
+          spawnEnv: process.env,
+        });
+        const launchRejection =
+          state === 'post-id' ? null : assert.rejects(launch, /killed by signal/i);
+        await waitFor(() => agent.currentTask?.pendingLaunch);
+        if (state === 'post-row') await waitFor(() => getTask(taskId), 10000);
+        if (state === 'post-id') await launch;
+
+        const termination = await killTask(agent, `cancel ${state}`);
+        assert.notStrictEqual(termination?.forced, false, state);
+        assert.strictEqual(agent.currentTask, null, state);
+        assert.strictEqual(agent.currentTaskId, null, state);
+        if (state !== 'pre-row') {
+          assert.strictEqual(getTask(taskId)?.status, 'killed', state);
+        }
+        if (launchRejection) await launchRejection;
+      }
+    } finally {
+      for (const taskId of taskIds) removeTask(taskId);
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('retries an unconfirmed pending-launch cancellation', async function () {
+    const { fakeBin, fakeZeroshot, getTask, removeTask } =
+      await createPendingLaunchFixture();
+    const taskId = 'launch-retry-task';
+    removeTask(taskId);
+    const agent = createPendingLaunchAgent();
+
+    try {
+      const launch = spawnTaskProcess({
+        agent,
+        ctPath: fakeZeroshot,
+        args: ['post-row', taskId],
+        cwd: process.cwd(),
+        spawnEnv: process.env,
+      });
+      const rejection = assert.rejects(launch, /killed by signal/i);
+      await waitFor(() => getTask(taskId), 10000);
+
+      const firstTermination = await killTask(agent, 'first cancellation attempt');
+      assert.strictEqual(firstTermination?.forced, false);
+      assert.notStrictEqual(agent.currentTask, null);
+
+      const secondTermination = await killTask(agent, 'second cancellation attempt');
+      assert.notStrictEqual(secondTermination?.forced, false);
+      assert.strictEqual(agent.currentTask, null);
+      assert.strictEqual(getTask(taskId)?.status, 'killed');
+      await rejection;
+    } finally {
+      removeTask(taskId);
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('terminates a durable child after a pending-launch timeout', async function () {
+    const { fakeBin, fakeZeroshot, getTask, removeTask } =
+      await createPendingLaunchFixture();
+    const taskId = 'launch-timeout-task';
+    removeTask(taskId);
+    const agent = createPendingLaunchAgent();
+
+    try {
+      let timeoutError;
+      try {
+        await spawnTaskProcess({
+          agent,
+          ctPath: fakeZeroshot,
+          args: ['timeout-row', taskId],
+          cwd: process.cwd(),
+          spawnEnv: process.env,
+          spawnTimeoutMs: 300,
+        });
+      } catch (error) {
+        timeoutError = error;
+      }
+
+      assert.match(timeoutError?.message || '', /Spawn timeout/);
+      assert.strictEqual(timeoutError.commandCleanupOwner, 'task-lifecycle');
+      assert.strictEqual(getTask(taskId)?.status, 'killed');
+      assert.strictEqual(agent.currentTask, null);
+      assert.strictEqual(agent.currentTaskId, null);
+    } finally {
+      removeTask(taskId);
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
   async function runMockRecovery({ failures, maxRestartAttempts, maxTotalRestarts }) {
     fs.writeFileSync(
       process.env.ZEROSHOT_SETTINGS_FILE,

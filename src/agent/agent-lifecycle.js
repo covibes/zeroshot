@@ -22,6 +22,7 @@ const { normalizeProviderName } = require('../../lib/provider-names');
 const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
+const { updateAgentProviderSession } = require('./provider-session');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
 
@@ -200,7 +201,7 @@ function start(agent) {
 async function stop(agent) {
   stopLivenessCheck(agent);
 
-  if (!agent.running) {
+  if (!agent.running && !agent.currentTask) {
     return;
   }
 
@@ -214,7 +215,10 @@ async function stop(agent) {
 
   // Kill current task if any
   if (agent.currentTask) {
-    await agent._killTask('Task stopped by cluster shutdown');
+    const termination = await agent._killTask('Task stopped by cluster shutdown');
+    if (termination?.forced === false) {
+      throw new Error(`Task shutdown could not confirm termination: ${termination.reason}`);
+    }
   }
 
   // Wait for in-flight execution to complete (up to 5 seconds)
@@ -437,11 +441,16 @@ function attachResultMetadata(agent, result) {
 }
 
 function publishTaskCompleted(agent, result) {
+  const session = result.providerSession;
   agent._publishLifecycle('TASK_COMPLETED', {
     iteration: agent.iteration,
     success: true,
     taskId: agent.currentTaskId,
+    provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
     tokenUsage: result.tokenUsage || null,
+    contextSequence: session?.contextSequence ?? agent.currentContextSequence,
+    guidanceSequence: session?.guidanceSequence ?? agent.currentGuidanceSequence ?? null,
+    promptIdentity: session?.promptIdentity ?? agent.currentPromptIdentity ?? null,
   });
 }
 
@@ -471,7 +480,8 @@ function publishTokenUsage(agent, result) {
   });
 }
 
-function clearTransientTaskState(agent) {
+function clearTransientTaskState(agent, error = null) {
+  if (error?.retainTaskHandle) return;
   stopLivenessCheck(agent);
   agent.currentTask = null;
   agent.currentTaskId = null;
@@ -566,23 +576,44 @@ async function runTaskAttempt(agent, triggeringMessage) {
   await applyValidatorJitter(agent);
   publishTaskStarted(agent, triggeringMessage);
 
-  const result = await agent._spawnClaudeTask(context);
+  let result;
+  try {
+    result = await agent._spawnClaudeTask(context);
+  } catch (error) {
+    updateAgentProviderSession(agent, null);
+    throw error;
+  }
   attachResultMetadata(agent, result);
 
   // Check if task execution failed
   if (!result.success) {
+    updateAgentProviderSession(agent, null);
     const error = new Error(result.error || 'Task execution failed');
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
+    error.vertexModelError = result.vertexModelError || null;
     throw error;
   }
 
   const fallbackReason = await maybeRetryValidatorInDocker(agent, result);
   if (fallbackReason) {
+    updateAgentProviderSession(agent, null);
     throw new Error(
       `Validator platform mismatch detected (${fallbackReason}). Retrying in Docker isolation.`
     );
   }
+
+  // The hook publishes the logical output of the turn. Until it succeeds, neither
+  // TASK_COMPLETED nor its provider continuation boundary is durable.
+  try {
+    await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
+  } catch (error) {
+    updateAgentProviderSession(agent, null);
+    throw error;
+  }
+
+  updateAgentProviderSession(agent, result.providerSession);
+  agent.lastGuidanceAppliedId = agent.currentGuidanceSequence;
 
   // Set state to idle BEFORE publishing lifecycle event
   // (so lifecycle message includes correct state)
@@ -594,7 +625,6 @@ async function runTaskAttempt(agent, triggeringMessage) {
   publishTaskCompleted(agent, result);
   publishTokenUsage(agent, result);
   clearTransientTaskState(agent);
-  await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
 }
 
 function logTaskAttemptFailure(agent, attempt, maxRetries, error) {
@@ -604,6 +634,20 @@ ${'='.repeat(80)}`);
   console.error(`🔴 TASK EXECUTION FAILED - AGENT: ${agent.id} (Attempt ${attempt}/${maxRetries})`);
   console.error(`${'='.repeat(80)}`);
   console.error(`Error: ${error.message}`);
+
+  const vertexError = error.vertexModelError;
+  if (vertexError) {
+    const model = vertexError.model ? `"${vertexError.model}" is` : 'Selected model is';
+    console.error(`
+⚠️  ${model} not available on your Vertex AI deployment.
+    Fix: set explicit model IDs that are enabled on your deployment:
+
+    zeroshot settings set providerSettings.claude.levelOverrides '{"level1": {"model": "claude-sonnet-4-6"}, "level2": {"model": "claude-sonnet-4-6"}, "level3": {"model": "claude-sonnet-4-6"}}'
+
+    Replace "claude-sonnet-4-6" with whichever Claude model your deployment has enabled.
+    You can test a model with: claude --dangerously-skip-permissions -p "hi" --model <model-id>
+`);
+  }
 }
 
 async function handleLockContention() {
@@ -687,6 +731,22 @@ ${'='.repeat(80)}`);
           hookRetries: error.hookRetries ?? null,
           originalHookError: error.originalHookError ?? null,
           error: error.message,
+        },
+      },
+    });
+  }
+
+  if (error?.vertexModelError) {
+    agent._publish({
+      topic: 'CLUSTER_FAILED',
+      receiver: 'broadcast',
+      content: {
+        text: `Cluster failed: Claude model is unavailable on Vertex for ${agent.id}`,
+        data: {
+          reason: 'vertex_model_unavailable',
+          agentId: agent.id,
+          role: agent.role,
+          model: error.vertexModelError.model,
         },
       },
     });
@@ -972,6 +1032,9 @@ async function executeTask(agent, triggeringMessage) {
       await runTaskAttempt(agent, triggeringMessage);
       return;
     } catch (error) {
+      // Any failed logical attempt invalidates continuation before TASK_FAILED is
+      // published and persisted. Retries must reconstruct a fresh full context.
+      updateAgentProviderSession(agent, null);
       if (!agent.running || agent.state === 'stopped') {
         agent._log(`[${agent.id}] Task interrupted during shutdown; skipping retry`);
         return;
@@ -985,6 +1048,20 @@ async function executeTask(agent, triggeringMessage) {
         await handleFinalFailure(agent, triggeringMessage, error, 1);
         return;
       }
+      if (error.vertexModelError) {
+        agent._publishLifecycle('TASK_FAILED', {
+          iteration: agent.iteration,
+          taskId: error.taskId || agent.currentTaskId,
+          error: error.message,
+          code: error.code || null,
+          attempt,
+        });
+        clearTransientTaskState(agent, error);
+        logTaskAttemptFailure(agent, attempt, maxRetries, error);
+        // Model unavailability on Vertex is deterministic — retrying wastes nothing but time.
+        await handleFinalFailure(agent, triggeringMessage, error, attempt);
+        return;
+      }
       agent._publishLifecycle('TASK_FAILED', {
         iteration: agent.iteration,
         taskId: error.taskId || agent.currentTaskId,
@@ -992,7 +1069,7 @@ async function executeTask(agent, triggeringMessage) {
         code: error.code || null,
         attempt,
       });
-      clearTransientTaskState(agent);
+      clearTransientTaskState(agent, error);
       const stuckTaskResult = await handleRecoverableStuckTaskFailure({
         agent,
         triggeringMessage,
@@ -1155,7 +1232,9 @@ function attemptLivenessTermination(agent, settings) {
   Promise.resolve()
     .then(() => agent._killTask({ reason: context.reason, code: context.code }))
     .then((termination) => {
-      if (termination?.forced === false) return;
+      if (termination?.forced === false) {
+        throw new Error(termination.reason || 'Task termination was not confirmed');
+      }
       publishLivenessTerminationEvent(agent, context);
     })
     .catch((error) => {
@@ -1204,6 +1283,7 @@ function exhaustLivenessTermination(agent, context, terminationError) {
   error.restartExhausted = true;
   error.terminationExhausted = true;
   error.terminationAttempts = attempts;
+  error.retainTaskHandle = true;
 
   agent.state = 'error';
   agent.cluster.failureInfo = {

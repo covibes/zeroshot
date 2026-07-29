@@ -18,7 +18,10 @@ import { classifyBaseProviderError, commandSpec, createParserState, envRedaction
 import { resolveGatewayConfiguration, validateGatewaySettings } from '../gateway-tools';
 import { getBoolean, getString, isRecord, tryParseJson } from '../json';
 
-const MODEL_CATALOG: Readonly<Record<string, ModelCatalogEntry>> = {};
+const MODEL_CATALOG: Readonly<Record<string, ModelCatalogEntry>> = {
+  'MiniMax-M3': { rank: 3 },
+  'MiniMax-M2.7': { rank: 2 },
+};
 
 const LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
   level1: { rank: 1, model: null },
@@ -27,10 +30,12 @@ const LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
 };
 
 export const gatewaySettingsDefaults: Readonly<Record<string, unknown>> = Object.freeze({
+  protocol: 'openai',
   baseUrl: null,
   apiKey: null,
   headers: null,
   model: null,
+  maxTokens: null,
   toolPolicy: null,
 });
 
@@ -52,8 +57,10 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
     context,
     cwd,
     gateway: {
+      protocol: gateway.protocol,
       baseUrl: gateway.baseUrl,
       model: gateway.model,
+      ...(gateway.maxTokens === undefined ? {} : { maxTokens: gateway.maxTokens }),
       toolPolicy: gateway.toolPolicy,
     },
     ...(Object.keys(headerEnv.mapping).length === 0 ? {} : { gatewayHeaderEnv: headerEnv.mapping }),
@@ -160,7 +167,7 @@ function classifyError(error: unknown): ErrorClassification {
       /\bmust be a valid url\b/i,
       /\btoolpolicy\b/i,
       /\bnon-empty model identifier\b/i,
-      /\bgateway\.(?:baseUrl|apiKey|model|toolPolicy)\b/i,
+      /\bgateway\.(?:protocol|baseUrl|apiKey|model|maxTokens|toolPolicy)\b/i,
     ]
   );
 }

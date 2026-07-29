@@ -19,6 +19,7 @@ export interface ProviderCapabilities {
   readonly streamJson: ProviderCapabilityState;
   readonly thinkingMode: ProviderCapabilityState;
   readonly reasoningEffort: ProviderCapabilityState;
+  readonly sessionResume: ProviderCapabilityState;
 }
 
 interface FixedProviderCommandSpec {
@@ -93,13 +94,22 @@ export interface ProviderRegistryEntry {
 }
 
 const STANDARD_CAPABILITIES: Readonly<
-  Pick<ProviderCapabilities, 'dockerIsolation' | 'worktreeIsolation' | 'mcpServers' | 'streamJson' | 'thinkingMode'>
+  Pick<
+    ProviderCapabilities,
+    | 'dockerIsolation'
+    | 'worktreeIsolation'
+    | 'mcpServers'
+    | 'streamJson'
+    | 'thinkingMode'
+    | 'sessionResume'
+  >
 > = {
   dockerIsolation: true,
   worktreeIsolation: true,
   mcpServers: true,
   streamJson: true,
   thinkingMode: true,
+  sessionResume: false,
 };
 
 const CLAUDE_DOCKER_ENV_PASSTHROUGH = [
@@ -161,6 +171,7 @@ export const providerRegistry = [
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
       reasoningEffort: true,
+      sessionResume: true,
     },
     docs: {
       label: 'Claude',
@@ -197,6 +208,7 @@ export const providerRegistry = [
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
       reasoningEffort: true,
+      sessionResume: true,
     },
     docs: {
       label: 'Codex',
@@ -227,10 +239,18 @@ export const providerRegistry = [
     invoke: SPAWN_INVOKE,
     installInstructions: 'Bundled with Zeroshot; no external provider CLI install is required.',
     authInstructions:
-      'Configure providerSettings.gateway.baseUrl, apiKey, model, and toolPolicy in Zeroshot settings.',
+      'Configure providerSettings.gateway.protocol, baseUrl, apiKey, model, maxTokens when required, and toolPolicy in Zeroshot settings.',
     credentialPaths: [],
     credentialEnvKeys: gatewayAdapter.credentialEnvKeys,
-    settingsFields: ['baseUrl', 'apiKey', 'headers', 'model', 'toolPolicy'],
+    settingsFields: [
+      'protocol',
+      'baseUrl',
+      'apiKey',
+      'headers',
+      'model',
+      'maxTokens',
+      'toolPolicy',
+    ],
     settingsDefaults: gatewaySettingsDefaults,
     settingsValidator: validateGatewaySettings,
     capabilities: {

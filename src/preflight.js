@@ -426,11 +426,12 @@ function validateGatewayProvider() {
     errors: [
       formatError(
         'Gateway provider not configured',
-        'providerSettings.gateway must define baseUrl, apiKey, model, and toolPolicy before gateway can run.',
+        'providerSettings.gateway must define protocol, baseUrl, apiKey, model, and toolPolicy before gateway can run.',
         [
           'Run: zeroshot settings',
-          'Set providerSettings.gateway.baseUrl to your OpenAI-compatible endpoint base URL',
+          'Set providerSettings.gateway.protocol and baseUrl for your compatible endpoint',
           'Set providerSettings.gateway.apiKey and providerSettings.gateway.model',
+          'Set providerSettings.gateway.maxTokens when protocol is anthropic',
           'Set providerSettings.gateway.toolPolicy.roots and toolPolicy.commands explicitly',
         ]
       ),
