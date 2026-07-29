@@ -607,7 +607,7 @@ describe('Isolated opencode structured-output recovery', function () {
 
   it('settles a durable nested task while isolated log-path lookup is stalled', async function () {
     this.timeout(1000);
-    const taskId = 'task-amber-fox-slow-log';
+    const taskId = 'task-slow-log-a1';
     const commands = [];
     let status = 'running';
     let spawnCount = 0;
