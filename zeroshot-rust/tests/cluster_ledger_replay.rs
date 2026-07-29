@@ -13,7 +13,7 @@ use openengine_cluster_server::admission::{CancellationSignal, CommitProposal};
 use openengine_cluster_server::lifecycle::LifecycleStore;
 use zeroshot_engine::cluster_ledger::adapters::ClusterLedgerAdapters;
 use zeroshot_engine::cluster_ledger::mutations::{
-    AdmissionRequest, ReductionDispatchRequest, SafeFaultConsequence,
+    AdmissionRequest, ExecutionVoidRequest, ReductionDispatchRequest, SafeFaultConsequence,
 };
 use zeroshot_engine::cluster_ledger::record::{
     CanonicalDigest, RecordKind, RecordPayload, StoredRecord, MAX_APPEND_RECORDS,
@@ -176,8 +176,10 @@ async fn reducer_execution_context_attempts_and_voids_replay_exactly() {
         .void_execution(
             key("reduce-void-2"),
             [35; 32],
-            second.execution,
-            ExecutionVoidReason::ParallelJoin,
+            ExecutionVoidRequest {
+                execution: second.execution,
+                reason: ExecutionVoidReason::ParallelJoin,
+            },
         )
         .await
         .unwrap();
@@ -236,8 +238,10 @@ async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
         .void_execution(
             key("unmapped"),
             [44; 32],
-            ordinary.execution,
-            ExecutionVoidReason::ParallelJoin,
+            ExecutionVoidRequest {
+                execution: ordinary.execution,
+                reason: ExecutionVoidReason::ParallelJoin,
+            },
         )
         .await
         .unwrap_err();

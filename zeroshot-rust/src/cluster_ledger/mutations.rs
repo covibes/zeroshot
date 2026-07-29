@@ -69,6 +69,12 @@ pub struct ReductionDispatchRequest {
     pub canonical_input: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutionVoidRequest {
+    pub execution: ExecutionId,
+    pub reason: ExecutionVoidReason,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ExecutionVoidResult {
     pub execution: ExecutionId,
@@ -478,9 +484,9 @@ impl ClusterLedger {
         &self,
         key: IdempotencyId,
         fingerprint: [u8; 32],
-        execution: ExecutionId,
-        reason: ExecutionVoidReason,
+        request: ExecutionVoidRequest,
     ) -> Result<CommitResult<ExecutionVoidResult>, LedgerError> {
+        let ExecutionVoidRequest { execution, reason } = request;
         let state = self.validated_state(FaultContext::Execution).await?;
         if let Some(receipt) = self.existing_receipt(
             &state,
@@ -492,7 +498,7 @@ impl ClusterLedger {
         let run = state
             .active_dispatches
             .get(&execution)
-            .filter(|dispatch| state.execution_contexts.contains_key(&execution))
+            .filter(|_| state.execution_contexts.contains_key(&execution))
             .ok_or_else(|| {
                 self.domain_error(FaultContext::Execution, LedgerErrorKind::InvalidLifecycle)
             })?

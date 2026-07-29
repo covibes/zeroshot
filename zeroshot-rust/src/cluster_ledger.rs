@@ -12,7 +12,7 @@ pub mod replay;
 pub mod store;
 
 pub use mutations::{
-    AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidResult,
+    AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidRequest, ExecutionVoidResult,
     ReductionDispatchRequest, SafeFaultConsequence, SafeFaultResult, SettlementResult,
 };
 pub use error::{LedgerError, LedgerErrorKind};
