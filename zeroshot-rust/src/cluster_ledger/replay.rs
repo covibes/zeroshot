@@ -354,17 +354,25 @@ fn fold_execution_context(
     let previous = state
         .execution_contexts
         .values()
-        .filter(|context| context.occurrence == occurrence)
+        .filter(|context| context.run == run && context.occurrence == occurrence)
         .max_by_key(|context| context.attempt);
     match previous {
         Some(previous)
             if previous.node_instance != node_instance
-                || attempt.get() != previous.attempt.get() + 1 =>
+                || attempt.get() != previous.attempt.get() + 1
+                || !state.settlements.contains_key(&previous.execution) =>
         {
             return Err(ReplayError::InvalidOrder);
         }
         None if attempt.get() != 1 => return Err(ReplayError::InvalidOrder),
         Some(_) | None => {}
+    }
+    if state.execution_contexts.values().any(|context| {
+        context.run == run
+            && context.node_instance == node_instance
+            && context.occurrence != occurrence
+    }) {
+        return Err(ReplayError::InvalidOrder);
     }
     state.execution_contexts.insert(
         execution,

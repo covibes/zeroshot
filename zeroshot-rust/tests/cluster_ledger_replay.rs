@@ -200,8 +200,18 @@ async fn reducer_execution_context_attempts_and_voids_replay_exactly() {
         state.execution_voids[&second.execution].reason,
         ExecutionVoidReason::ParallelJoin
     );
-    let durable = zeroshot_engine::full_v1_reducer::durable_executions_from_replay(&state).unwrap();
+    let durable =
+        zeroshot_engine::full_v1_reducer::durable_executions_from_replay(&state, first.run)
+            .unwrap();
     assert_eq!(durable.len(), 2);
+    assert!(
+        zeroshot_engine::full_v1_reducer::durable_executions_from_replay(
+            &state,
+            zeroshot_engine::cluster_ledger::RunSequence::new(2).unwrap(),
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 #[tokio::test]

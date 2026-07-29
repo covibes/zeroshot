@@ -1,5 +1,10 @@
-use openengine_cluster_protocol::{CompiledGraphIr, PositiveInteger, WorkerOutcome};
-use openengine_cluster_server::admission::VerifiedGraph;
+use async_trait::async_trait;
+use openengine_cluster_protocol::{
+    GraphSpec, PositiveInteger, WorkerDescriptor, WorkerOutcome, WorkerRef,
+};
+use openengine_cluster_server::admission::{GraphVerifier, VerifiedGraph};
+use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
+use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryError};
 use serde_json::{json, Value};
 use zeroshot_engine::cluster_ledger::store::Position;
 use zeroshot_engine::cluster_ledger::{ExecutionId, NodeInstanceId, RunSequence, StructuralOccurrence};
@@ -8,21 +13,54 @@ use zeroshot_engine::full_v1_reducer::{
     TerminalProjection,
 };
 
-fn verified(root: Value, attempts: Value) -> VerifiedGraph {
-    VerifiedGraph {
-        compiled_ir: serde_json::from_value::<CompiledGraphIr>(json!({
-            "profile":"openengine.graph.full/v1",
-            "initialInput":{"kind":"record","fields":{}},
-            "policy":{"policy":"policy.test@1","default":"deny"},
-            "root":root,
-            "bounds":{
-                "maxNodeExecutions":65536,"peakConcurrency":1024,"attemptsPerNode":attempts,
-                "termination":{"kind":"acyclic","order":["root"]}
-            }
+struct TestWorkers;
+
+#[async_trait]
+impl WorkerRegistry for TestWorkers {
+    async fn resolve(&self, worker: &WorkerRef) -> Result<WorkerDescriptor, WorkerRegistryError> {
+        let verifier = (worker.as_str() == "worker.verify@1").then(|| {
+            json!({
+                "signals":{"verdict":["accepted","rejected"]},
+                "diagnostic":{"kind":"record","fields":{}}
+            })
+        });
+        serde_json::from_value(json!({
+            "worker":worker.as_str(),
+            "graphProfiles":["openengine.graph.full/v1"],
+            "binding":{"protocol":"acp","version":"1","profile":"openengine.worker.acp/v1"},
+            "contract":{
+                "input":{"kind":"null"},
+                "output":{"kind":"record","fields":{}},
+                "verifier":verifier,
+                "errors":["timeout","crash","malformed","refusal"]
+            },
+            "capabilityPolicy":{"autonomy":"strict","permissionPolicy":"policy.strict@1"},
+            "artifactProfile":{
+                "allowedTypeIds":["openengine.result@1"],
+                "allowedMediaTypes":["application/json"],
+                "minimumRedaction":"internal"
+            },
+            "credentialRequirements":[]
         }))
-        .unwrap(),
-        diagnostics: Vec::new(),
+        .map_err(|_| WorkerRegistryError::NotFound {
+            worker: worker.clone(),
+        })
     }
+}
+
+async fn verified(root: Value, _attempts: Value) -> VerifiedGraph {
+    let initial_input = root.get("state").cloned().unwrap_or_else(boundary_state);
+    let graph: GraphSpec = serde_json::from_value(json!({
+        "profile":"openengine.graph.full/v1",
+        "initialInput":initial_input,
+        "policy":{"policy":"policy.test@1","default":"deny"},
+        "root":root
+    }))
+    .unwrap();
+    ProductionGraphVerifier::new(TestWorkers)
+        .verify(&graph)
+        .await
+        .unwrap()
 }
 
 fn step(name: &str, attempts: u64) -> Value {
@@ -46,15 +84,25 @@ fn succeed(name: &str) -> Value {
     json!({"kind":"succeed","name":name,"output":{"kind":"null"},"bindings":[]})
 }
 
+fn boundary_state() -> Value {
+    json!({
+        "kind":"record",
+        "fields":{
+            "items":{"type":{"kind":"array","items":{"kind":"null"}},"required":true}
+        }
+    })
+}
+
 fn seq(children: Vec<Value>) -> Value {
     json!({
-        "kind":"seq","name":"root","state":{"kind":"record","fields":{}},
+        "kind":"seq","name":"root","state":boundary_state(),
         "children":children,"promotedStatePaths":[]
     })
 }
 
 struct ExecutionSpec<'a> {
     id: u64,
+    run: u64,
     node_instance: u64,
     node: &'a str,
     indices: Vec<u64>,
@@ -66,12 +114,18 @@ impl<'a> ExecutionSpec<'a> {
     fn new(id: u64, node_instance: u64, node: &'a str) -> Self {
         Self {
             id,
+            run: 1,
             node_instance,
             node,
             indices: Vec::new(),
             attempt: 1,
             settled_at: 1,
         }
+    }
+
+    fn run(mut self, run: u64) -> Self {
+        self.run = run;
+        self
     }
 
     fn indices(mut self, indices: Vec<u64>) -> Self {
@@ -92,6 +146,7 @@ impl<'a> ExecutionSpec<'a> {
 
 fn execution(spec: ExecutionSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
     DurableExecution {
+        run: RunSequence::new(spec.run).unwrap(),
         dispatch_position: Position::new(spec.settled_at - 1).unwrap(),
         node_instance: NodeInstanceId::new(spec.node_instance).unwrap(),
         execution: ExecutionId::new(spec.id).unwrap(),
@@ -146,14 +201,14 @@ fn input<'a>(initial: &'a Value, executions: &'a [DurableExecution]) -> Reductio
     }
 }
 
-#[test]
-fn exact_map_limit_dispatches_every_item_but_overflow_prunes_all_identities() {
+#[tokio::test]
+async fn exact_map_limit_dispatches_every_item_but_overflow_prunes_all_identities() {
     let map = json!({
-        "kind":"map","name":"mapped","state":{"kind":"record","fields":{}},
+        "kind":"map","name":"mapped","state":boundary_state(),
         "body":step("item_work",1),"over":{"source":"state","path":["items"]},
         "maxItems":2,"promotedStatePaths":[]
     });
-    let graph = verified(seq(vec![map, succeed("done")]), json!({"item_work":1}));
+    let graph = verified(seq(vec![map, succeed("done")]), json!({"item_work":1})).await;
     let at_limit = FullV1Reducer::new(&graph)
         .reduce(input(&json!({"items":[1,2]}), &[]))
         .unwrap();
@@ -177,15 +232,15 @@ fn exact_map_limit_dispatches_every_item_but_overflow_prunes_all_identities() {
     assert!(overflow.terminal.is_some());
 }
 
-#[test]
-fn attempt_ceiling_terminalizes_authored_reentry_without_automatic_retry() {
+#[tokio::test]
+async fn attempt_ceiling_terminalizes_authored_reentry_without_automatic_retry() {
     let loop_node = json!({
         "kind":"loop","name":"bounded","state":{"kind":"record","fields":{}},
         "body":verifier("check",1),
         "until":{"kind":"in","value":{"name":"check","source":"signal","field":"verdict"},"labels":["accepted"]},
         "maxIterations":2,"promotedStatePaths":[]
     });
-    let graph = verified(seq(vec![loop_node, succeed("done")]), json!({"check":1}));
+    let graph = verified(seq(vec![loop_node, succeed("done")]), json!({"check":1})).await;
     let history = [execution(
         ExecutionSpec::new(1, 1, "check").settled_at(2),
         verdict("rejected"),
@@ -207,8 +262,8 @@ fn attempt_ceiling_terminalizes_authored_reentry_without_automatic_retry() {
     );
 }
 
-#[test]
-fn loop_exhaustion_is_a_routable_group_control_not_an_implicit_retry_or_failure() {
+#[tokio::test]
+async fn loop_exhaustion_is_a_routable_group_control_not_an_implicit_retry_or_failure() {
     let loop_node = json!({
         "kind":"loop","name":"bounded","state":{"kind":"record","fields":{}},
         "body":verifier("check",2),
@@ -224,7 +279,7 @@ fn loop_exhaustion_is_a_routable_group_control_not_an_implicit_retry_or_failure(
         "otherwise":{"kind":"fail","name":"unexpected","reason":"unexpected"},
         "promotedStatePaths":[]
     });
-    let graph = verified(seq(vec![loop_node, route]), json!({"check":2}));
+    let graph = verified(seq(vec![loop_node, route]), json!({"check":2})).await;
     let history = [
         execution(
             ExecutionSpec::new(1, 1, "check").settled_at(2),
@@ -244,13 +299,13 @@ fn loop_exhaustion_is_a_routable_group_control_not_an_implicit_retry_or_failure(
     ));
 }
 
-#[test]
-fn equal_position_parallel_ties_are_broken_by_authored_branch_position() {
+#[tokio::test]
+async fn equal_position_parallel_ties_are_broken_by_authored_branch_position() {
     let par = json!({
         "kind":"par","name":"race","state":{"kind":"record","fields":{}},
         "branches":[step("left",1),step("right",1)],"promotedStatePaths":[],"join":{"kind":"any"}
     });
-    let graph = verified(seq(vec![par, succeed("done")]), json!({"left":1,"right":1}));
+    let graph = verified(seq(vec![par, succeed("done")]), json!({"left":1,"right":1})).await;
     let history = [
         execution(ExecutionSpec::new(2, 2, "right").settled_at(5), success()),
         execution(ExecutionSpec::new(1, 1, "left").settled_at(5), success()),
@@ -270,12 +325,13 @@ fn equal_position_parallel_ties_are_broken_by_authored_branch_position() {
     assert!(!continued.contains(&"right"));
 }
 
-#[test]
-fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
+#[tokio::test]
+async fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
     let graph = verified(
         seq(vec![step("work", 2), succeed("done")]),
         json!({"work":2}),
-    );
+    )
+    .await;
     let duplicate = [
         execution(ExecutionSpec::new(1, 1, "work").settled_at(2), success()),
         execution(
@@ -312,12 +368,63 @@ fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
             .unwrap_err(),
         ReducerError::InconsistentHistory
     );
+    for rejected in [
+        execution(ExecutionSpec::new(1, 1, "ghost").settled_at(2), success()),
+        execution(
+            ExecutionSpec::new(1, 1, "work")
+                .indices(vec![0])
+                .settled_at(2),
+            success(),
+        ),
+        execution(
+            ExecutionSpec::new(1, 1, "work").run(2).settled_at(2),
+            success(),
+        ),
+    ] {
+        assert_eq!(
+            FullV1Reducer::new(&graph)
+                .reduce(input(&json!({}), std::slice::from_ref(&rejected)))
+                .unwrap_err(),
+            ReducerError::InconsistentHistory
+        );
+    }
+    let mut mismatched_input = execution(ExecutionSpec::new(1, 1, "work").settled_at(2), success());
+    mismatched_input.input = json!({"not":"the bound null input"});
+    assert_eq!(
+        FullV1Reducer::new(&graph)
+            .reduce(input(&json!({}), &[mismatched_input]))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
+
+    let alias_graph = verified(
+        seq(vec![
+            json!({
+                "kind":"par","name":"all","state":boundary_state(),
+                "branches":[step("left",1),step("right",1)],
+                "promotedStatePaths":[],"join":{"kind":"all"}
+            }),
+            succeed("alias_done"),
+        ]),
+        json!({"left":1,"right":1}),
+    )
+    .await;
+    let aliases = [
+        execution(ExecutionSpec::new(1, 1, "left").settled_at(2), success()),
+        execution(ExecutionSpec::new(2, 1, "right").settled_at(3), success()),
+    ];
+    assert_eq!(
+        FullV1Reducer::new(&alias_graph)
+            .reduce(input(&json!({}), &aliases))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
 }
 
-#[test]
-fn nested_map_item_attempt_counters_are_independent() {
+#[tokio::test]
+async fn nested_map_item_attempt_counters_are_independent() {
     let map = json!({
-        "kind":"map","name":"outer","state":{"kind":"record","fields":{}},
+        "kind":"map","name":"outer","state":boundary_state(),
         "over":{"source":"state","path":["items"]},"maxItems":2,"promotedStatePaths":[],
         "body":{
             "kind":"loop","name":"per_item_loop","state":{"kind":"record","fields":{}},
@@ -326,7 +433,7 @@ fn nested_map_item_attempt_counters_are_independent() {
             "maxIterations":2,"promotedStatePaths":[]
         }
     });
-    let graph = verified(seq(vec![map, succeed("done")]), json!({"check":2}));
+    let graph = verified(seq(vec![map, succeed("done")]), json!({"check":2})).await;
     let history = [
         execution(
             ExecutionSpec::new(1, 1, "check")
@@ -351,15 +458,31 @@ fn nested_map_item_attempt_counters_are_independent() {
     )));
 }
 
-#[test]
-fn unreachable_quorum_and_first_no_satisfier_expose_failure_controls() {
+#[tokio::test]
+async fn unreachable_quorum_and_first_no_satisfier_expose_failure_controls() {
+    let conditional_failure = json!({
+        "kind":"seq","name":"conditional_failure","state":{"kind":"record","fields":{}},
+        "children":[
+            verifier("branch_check",1),
+            {
+                "kind":"choice","name":"branch_route","state":{"kind":"record","fields":{}},
+                "branches":[{
+                    "when":{"kind":"in","value":{"name":"branch_check","source":"signal","field":"verdict"},"labels":["rejected"]},
+                    "node":{"kind":"fail","name":"left_failed","reason":"left_failed"}
+                }],
+                "otherwise":step("fallback",1),
+                "promotedStatePaths":[]
+            }
+        ],
+        "promotedStatePaths":[]
+    });
     let failed_parallel = json!({
         "kind":"par","name":"join","state":{"kind":"record","fields":{}},
         "branches":[
-            {"kind":"fail","name":"left_failed","reason":"left_failed"},
-            {"kind":"fail","name":"right_failed","reason":"right_failed"}
+            conditional_failure,
+            step("available",1)
         ],
-        "promotedStatePaths":[],"join":{"kind":"quorum","count":1}
+        "promotedStatePaths":[],"join":{"kind":"quorum","count":2}
     });
     let joined_route = json!({
         "kind":"choice","name":"joined_route","state":{"kind":"record","fields":{}},
@@ -370,10 +493,24 @@ fn unreachable_quorum_and_first_no_satisfier_expose_failure_controls() {
         "otherwise":{"kind":"fail","name":"not_recovered","reason":"not_recovered"},
         "promotedStatePaths":[]
     });
-    let graph = verified(seq(vec![failed_parallel, joined_route]), json!({}));
+    let graph = verified(
+        seq(vec![failed_parallel, joined_route]),
+        json!({"branch_check":1,"fallback":1,"available":1}),
+    )
+    .await;
+    let available = [
+        execution(
+            ExecutionSpec::new(1, 1, "branch_check").settled_at(2),
+            verdict("rejected"),
+        ),
+        execution(
+            ExecutionSpec::new(2, 2, "available").settled_at(3),
+            success(),
+        ),
+    ];
     assert!(matches!(
         FullV1Reducer::new(&graph)
-            .reduce(input(&json!({}), &[]))
+            .reduce(input(&json!({}), &available))
             .unwrap()
             .terminal,
         Some(TerminalProjection::Succeeded { .. })
@@ -397,10 +534,9 @@ fn unreachable_quorum_and_first_no_satisfier_expose_failure_controls() {
             "when":{"kind":"in","value":{"name":"first","source":"group","field":"raced"},"labels":["no_satisfier"]},
             "node":succeed("no_winner")
         }],
-        "otherwise":{"kind":"fail","name":"unexpected_winner","reason":"unexpected_winner"},
         "promotedStatePaths":[]
     });
-    let graph = verified(seq(vec![first, raced_route]), json!({"a":1,"b":1}));
+    let graph = verified(seq(vec![first, raced_route]), json!({"a":1,"b":1})).await;
     let history = [
         execution(
             ExecutionSpec::new(1, 1, "a").settled_at(2),

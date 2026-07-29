@@ -210,8 +210,9 @@ Initial resource creation and its owner fence are one store operation. Guarded a
 cancellation inside the store transaction immediately before their first write, after idempotent
 receipt lookup. SQLite removal leaves an explicit empty tombstone until file unlink; missing live
 metadata without that tombstone is corruption and must never authorize replacement.
-Full-v1 reduction accepts only verifier-produced `VerifiedGraph`/`CompiledGraphIr` and durable
-ordered outcomes. It is a pure authored-order fold: ledger position is the only concurrent
+Full-v1 reduction accepts only verifier-produced `VerifiedGraph` values containing authoritative
+`CompiledGraphIr` and durable ordered outcomes. It never accepts compiled IR directly.
+It is a pure authored-order fold: ledger position is the only concurrent
 tie-break, map indices and positive attempts are part of the central ledger execution context, and
 early-join loser voids are central ledger control records. Keep scheduling capacity, clocks, tasks,
 channels, runtime/provider/artifact concerns, public protocol methods, and automatic retry outside

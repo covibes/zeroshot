@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    CompiledGraphIr, GraphSpec, PositiveInteger, WorkerDescriptor, WorkerOutcome, WorkerRef,
+    GraphSpec, PositiveInteger, WorkerDescriptor, WorkerOutcome, WorkerRef,
 };
 use openengine_cluster_server::admission::{GraphVerifier, VerifiedGraph};
 use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
@@ -20,14 +20,30 @@ struct TestWorkers;
 #[async_trait]
 impl WorkerRegistry for TestWorkers {
     async fn resolve(&self, worker: &WorkerRef) -> Result<WorkerDescriptor, WorkerRegistryError> {
+        let verifier = (worker.as_str() == "worker.verify@1").then(|| {
+            json!({
+                "signals":{"verdict":["accepted","rejected"]},
+                "diagnostic":{"kind":"record","fields":{}}
+            })
+        });
+        let output = if verifier.is_some() {
+            json!({"kind":"record","fields":{}})
+        } else if worker.as_str() == "worker.multi@1" {
+            json!({"kind":"record","fields":{
+                "a":{"type":{"kind":"integer"},"required":true},
+                "b":{"type":{"kind":"integer"},"required":true}
+            }})
+        } else {
+            json!({"kind":"record","fields":{"value":{"type":{"kind":"integer"},"required":true}}})
+        };
         serde_json::from_value(json!({
             "worker":worker.as_str(),
             "graphProfiles":["openengine.graph.full/v1"],
             "binding":{"protocol":"acp","version":"1","profile":"openengine.worker.acp/v1"},
             "contract":{
                 "input":{"kind":"null"},
-                "output":{"kind":"record","fields":{"value":{"type":{"kind":"integer"},"required":true}}},
-                "verifier":null,
+                "output":output,
+                "verifier":verifier,
                 "errors":["timeout","crash","malformed","refusal"]
             },
             "capabilityPolicy":{"autonomy":"strict","permissionPolicy":"policy.strict@1"},
@@ -44,24 +60,22 @@ impl WorkerRegistry for TestWorkers {
     }
 }
 
-fn verified(root: Value, attempts: Value) -> VerifiedGraph {
-    let compiled_ir: CompiledGraphIr = serde_json::from_value(json!({
+async fn verified(root: Value, _attempts: Value) -> VerifiedGraph {
+    let initial_input = root
+        .get("state")
+        .cloned()
+        .unwrap_or_else(|| json!({"kind":"record","fields":{}}));
+    let graph: GraphSpec = serde_json::from_value(json!({
         "profile": "openengine.graph.full/v1",
-        "initialInput": {"kind":"record","fields":{}},
+        "initialInput": initial_input,
         "policy": {"policy":"policy.test@1","default":"deny"},
-        "root": root,
-        "bounds": {
-            "maxNodeExecutions": 64,
-            "peakConcurrency": 16,
-            "attemptsPerNode": attempts,
-            "termination": {"kind":"acyclic","order":["root"]}
-        }
+        "root": root
     }))
     .unwrap();
-    VerifiedGraph {
-        compiled_ir,
-        diagnostics: Vec::new(),
-    }
+    ProductionGraphVerifier::new(TestWorkers)
+        .verify(&graph)
+        .await
+        .unwrap()
 }
 
 fn step(name: &str, attempts: u64) -> Value {
@@ -133,6 +147,7 @@ impl<'a> SettledSpec<'a> {
 
 fn settled(spec: SettledSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
     DurableExecution {
+        run: RunSequence::new(1).unwrap(),
         dispatch_position: Position::new(spec.position.saturating_sub(1)).unwrap(),
         node_instance: NodeInstanceId::new(spec.node_instance).unwrap(),
         execution: ExecutionId::new(spec.execution).unwrap(),
@@ -151,6 +166,7 @@ fn settled(spec: SettledSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
 
 fn active(execution: u64, node_instance: u64, node: &str, position: u64) -> DurableExecution {
     DurableExecution {
+        run: RunSequence::new(1).unwrap(),
         dispatch_position: Position::new(position).unwrap(),
         node_instance: NodeInstanceId::new(node_instance).unwrap(),
         execution: ExecutionId::new(execution).unwrap(),
@@ -224,8 +240,8 @@ async fn reducer_accepts_only_the_production_verifiers_verified_graph() {
     )));
 }
 
-#[test]
-fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
+#[tokio::test]
+async fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
     let choice = json!({
         "kind":"choice", "name":"route", "state":{"kind":"record","fields":{}},
         "branches":[{
@@ -238,7 +254,8 @@ fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
     let graph = verified(
         sequence("root", vec![verifier("check", 1), choice]),
         json!({"check":1}),
-    );
+    )
+    .await;
     let accepted = [settled(
         SettledSpec::new(1, 1, "check").position(10),
         verdict("accepted"),
@@ -261,7 +278,8 @@ fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
     let failed_step_graph = verified(
         sequence("root", vec![step("work", 1), succeed("done")]),
         json!({"work":1}),
-    );
+    )
+    .await;
     let failed = [settled(
         SettledSpec::new(1, 1, "work").position(3),
         WorkerOutcome::declared_failure(openengine_cluster_protocol::WorkerErrorCode::Crash),
@@ -279,22 +297,19 @@ fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
     );
 }
 
-#[test]
-fn parallel_any_uses_ledger_position_and_voids_only_active_losers() {
-    let graph = verified(
-        sequence(
-            "root",
-            vec![
-                json!({
-                    "kind":"par", "name":"race", "state":{"kind":"record","fields":{}},
-                    "branches":[sequence("left_branch", vec![step("left",1),step("pruned",1)]),step("right",1)],
-                    "promotedStatePaths":[], "join":{"kind":"any"}
-                }),
-                succeed("done"),
-            ],
-        ),
-        json!({"left":1,"pruned":1,"right":1}),
-    );
+#[tokio::test]
+async fn parallel_any_uses_ledger_position_and_voids_only_active_losers() {
+    let graph = verified(sequence(
+        "root",
+        vec![
+            json!({
+                "kind":"par", "name":"race", "state":{"kind":"record","fields":{}},
+                "branches":[sequence("left_branch", vec![step("left",1),step("pruned",1)]),step("right",1)],
+                "promotedStatePaths":[], "join":{"kind":"any"}
+            }),
+            succeed("done"),
+        ],
+    ), json!({"left":1,"pruned":1,"right":1})).await;
     let history = [
         active(1, 1, "left", 1),
         settled(SettledSpec::new(2, 2, "right").position(4), success(2)),
@@ -315,8 +330,8 @@ fn parallel_any_uses_ledger_position_and_voids_only_active_losers() {
     ));
 }
 
-#[test]
-fn all_any_quorum_and_first_use_exact_authored_join_rules() {
+#[tokio::test]
+async fn all_any_quorum_and_first_use_exact_authored_join_rules() {
     for (join, expected_pending) in [
         (json!({"kind":"all"}), true),
         (json!({"kind":"any"}), false),
@@ -334,7 +349,8 @@ fn all_any_quorum_and_first_use_exact_authored_join_rules() {
                 ],
             ),
             json!({"a":1,"b":1}),
-        );
+        )
+        .await;
         let history = [
             settled(SettledSpec::new(1, 1, "a").position(5), success(1)),
             active(2, 2, "b", 2),
@@ -345,20 +361,17 @@ fn all_any_quorum_and_first_use_exact_authored_join_rules() {
         );
     }
 
-    let graph = verified(
-        sequence(
-            "root",
-            vec![
-                json!({
-                    "kind":"par", "name":"first", "state":{"kind":"record","fields":{}},
-                    "branches":[verifier("early",1),verifier("later",1)], "promotedStatePaths":[],
-                    "join":{"kind":"first","when":{"kind":"in","value":{"name":"later","source":"signal","field":"verdict"},"labels":["accepted"]}}
-                }),
-                succeed("done"),
-            ],
-        ),
-        json!({"early":1,"later":1}),
-    );
+    let graph = verified(sequence(
+        "root",
+        vec![
+            json!({
+                "kind":"par", "name":"first", "state":{"kind":"record","fields":{}},
+                "branches":[verifier("early",1),verifier("later",1)], "promotedStatePaths":[],
+                "join":{"kind":"first","when":{"kind":"in","value":{"name":"later","source":"signal","field":"verdict"},"labels":["accepted"]}}
+            }),
+            succeed("done"),
+        ],
+    ), json!({"early":1,"later":1})).await;
     let history = [
         settled(
             SettledSpec::new(1, 1, "early").position(2),
@@ -372,23 +385,20 @@ fn all_any_quorum_and_first_use_exact_authored_join_rules() {
     assert!(reduce(&graph, &json!({}), &history).terminal.is_some());
 }
 
-#[test]
-fn bounded_do_while_reuses_occurrence_and_advances_positive_attempts() {
-    let graph = verified(
-        sequence(
-            "root",
-            vec![
-                json!({
-                    "kind":"loop", "name":"retry_loop", "state":{"kind":"record","fields":{}},
-                    "body":verifier("check",2),
-                    "until":{"kind":"in","value":{"name":"check","source":"signal","field":"verdict"},"labels":["accepted"]},
-                    "maxIterations":2,"promotedStatePaths":[]
-                }),
-                succeed("done"),
-            ],
-        ),
-        json!({"check":2}),
-    );
+#[tokio::test]
+async fn bounded_do_while_reuses_occurrence_and_advances_positive_attempts() {
+    let graph = verified(sequence(
+        "root",
+        vec![
+            json!({
+                "kind":"loop", "name":"retry_loop", "state":{"kind":"record","fields":{}},
+                "body":verifier("check",2),
+                "until":{"kind":"in","value":{"name":"check","source":"signal","field":"verdict"},"labels":["accepted"]},
+                "maxIterations":2,"promotedStatePaths":[]
+            }),
+            succeed("done"),
+        ],
+    ), json!({"check":2})).await;
     let first = settled(
         SettledSpec::new(1, 1, "check").position(3),
         verdict("rejected"),
@@ -410,24 +420,30 @@ fn bounded_do_while_reuses_occurrence_and_advances_positive_attempts() {
     );
 }
 
-#[test]
-fn map_is_input_ordered_total_and_assigns_stable_nested_indices() {
+#[tokio::test]
+async fn map_is_input_ordered_total_and_assigns_stable_nested_indices() {
+    let state = json!({
+        "kind":"record",
+        "fields":{
+            "outerItems":{"type":{"kind":"array","items":{"kind":"null"}},"required":true},
+            "innerItems":{"type":{"kind":"array","items":{"kind":"null"}},"required":true}
+        }
+    });
     let nested = json!({
-        "kind":"map", "name":"outer_map", "state":{"kind":"record","fields":{}},
-        "over":{"source":"state","path":["items"]}, "maxItems":3,"promotedStatePaths":[],
+        "kind":"map", "name":"outer_map", "state":state.clone(),
+        "over":{"source":"state","path":["outerItems"]}, "maxItems":3,"promotedStatePaths":[],
         "body":{
-            "kind":"map", "name":"inner_map", "state":{"kind":"record","fields":{}},
-            "over":{"source":"item","path":["inner"]}, "maxItems":3,"promotedStatePaths":[],
+            "kind":"map", "name":"inner_map", "state":state.clone(),
+            "over":{"source":"state","path":["innerItems"]}, "maxItems":3,"promotedStatePaths":[],
             "body":step("mapped",1)
         }
     });
-    let graph = verified(
-        sequence("root", vec![nested, succeed("done")]),
-        json!({"mapped":1}),
-    );
+    let mut root = sequence("root", vec![nested, succeed("done")]);
+    root["state"] = state;
+    let graph = verified(root, json!({"mapped":1})).await;
     let reduction = reduce(
         &graph,
-        &json!({"items":[{"inner":[{"v":1},{"v":2}]},{"inner":[{"v":3}]}]}),
+        &json!({"outerItems":[null,null],"innerItems":[null,null]}),
         &[],
     );
     let indices = reduction
@@ -438,27 +454,31 @@ fn map_is_input_ordered_total_and_assigns_stable_nested_indices() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(indices, vec![vec![0, 0], vec![0, 1], vec![1, 0]]);
+    assert_eq!(
+        indices,
+        vec![vec![0, 0], vec![0, 1], vec![1, 0], vec![1, 1]]
+    );
 
-    let empty = reduce(&graph, &json!({"items":[]}), &[]);
+    let empty = reduce(
+        &graph,
+        &json!({"outerItems":[],"innerItems":[null,null]}),
+        &[],
+    );
     assert!(empty.terminal.is_some());
 }
 
-#[test]
-fn authored_frontier_and_bytes_ignore_history_container_order() {
-    let graph = verified(
-        sequence(
-            "root",
-            vec![
-                json!({
-                    "kind":"par", "name":"all", "state":{"kind":"record","fields":{}},
-                    "branches":[step("left",1),step("right",1)],"promotedStatePaths":[],"join":{"kind":"all"}
-                }),
-                succeed("done"),
-            ],
-        ),
-        json!({"left":1,"right":1}),
-    );
+#[tokio::test]
+async fn authored_frontier_and_bytes_ignore_history_container_order() {
+    let graph = verified(sequence(
+        "root",
+        vec![
+            json!({
+                "kind":"par", "name":"all", "state":{"kind":"record","fields":{}},
+                "branches":[step("left",1),step("right",1)],"promotedStatePaths":[],"join":{"kind":"all"}
+            }),
+            succeed("done"),
+        ],
+    ), json!({"left":1,"right":1})).await;
     let left = settled(SettledSpec::new(1, 1, "left").position(10), success(1));
     let right = settled(SettledSpec::new(2, 2, "right").position(10), success(2));
     let first = reduce(&graph, &json!({}), &[left.clone(), right.clone()]);
@@ -473,21 +493,25 @@ fn authored_frontier_and_bytes_ignore_history_container_order() {
     );
 }
 
-#[test]
-fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
-    let promoted_step = |name: &str| {
+#[tokio::test]
+async fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
+    let promoted_step = |name: &str, target: &str| {
         json!({
             "kind":"step","name":name,"worker":"worker.test@1",
             "input":{"kind":"null"},
             "output":{"kind":"record","fields":{"value":{"type":{"kind":"integer"},"required":true}}},
             "inputBindings":[],
-            "writeBindings":[{"value":{"node":name,"channel":"out","path":["value"]},"target":["result"]}],
+            "writeBindings":[{"value":{"node":name,"channel":"out","path":["value"]},"target":[target]}],
             "timeoutMs":1,"attempts":1
         })
     };
+    let parallel_state = json!({
+        "kind":"record",
+        "fields":{"result":{"type":{"kind":"integer"},"required":true}}
+    });
     let par = json!({
-        "kind":"par","name":"winner","state":{"kind":"record","fields":{}},
-        "branches":[promoted_step("left"),promoted_step("right")],
+        "kind":"par","name":"winner","state":parallel_state.clone(),
+        "branches":[promoted_step("left","result"),promoted_step("right","result")],
         "promotedStatePaths":[["result"]],"join":{"kind":"any"}
     });
     let terminal = json!({
@@ -495,10 +519,9 @@ fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
         "output":{"kind":"record","fields":{"result":{"type":{"kind":"integer"},"required":true}}},
         "bindings":[{"target":["result"],"value":{"source":"state","path":["result"]}}]
     });
-    let graph = verified(
-        sequence("root", vec![par, terminal]),
-        json!({"left":1,"right":1}),
-    );
+    let mut parallel_root = sequence("root", vec![par, terminal]);
+    parallel_root["state"] = parallel_state;
+    let graph = verified(parallel_root, json!({"left":1,"right":1})).await;
     let history = [
         settled(SettledSpec::new(1, 1, "left").position(8), success(7)),
         settled(SettledSpec::new(2, 2, "right").position(9), success(9)),
@@ -510,20 +533,26 @@ fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
         })
     );
 
+    let map_state = json!({
+        "kind":"record",
+        "fields":{
+            "items":{"type":{"kind":"array","items":{"kind":"null"}},"required":true},
+            "results":{"type":{"kind":"array","items":{"kind":"integer"}},"required":true}
+        }
+    });
     let mapped = json!({
-        "kind":"map","name":"items_map","state":{"kind":"record","fields":{}},
+        "kind":"map","name":"items_map","state":map_state.clone(),
         "over":{"source":"state","path":["items"]},"maxItems":2,
-        "promotedStatePaths":[["result"]],"body":promoted_step("mapped_value")
+        "promotedStatePaths":[["results"]],"body":promoted_step("mapped_value","results")
     });
     let mapped_terminal = json!({
         "kind":"succeed","name":"mapped_done",
-        "output":{"kind":"record","fields":{"result":{"type":{"kind":"array","items":{"kind":"integer"}},"required":true}}},
-        "bindings":[{"target":["result"],"value":{"source":"state","path":["result"]}}]
+        "output":{"kind":"record","fields":{"results":{"type":{"kind":"array","items":{"kind":"integer"}},"required":true}}},
+        "bindings":[{"target":["results"],"value":{"source":"state","path":["results"]}}]
     });
-    let map_graph = verified(
-        sequence("map_root", vec![mapped, mapped_terminal]),
-        json!({"mapped_value":1}),
-    );
+    let mut map_root = sequence("map_root", vec![mapped, mapped_terminal]);
+    map_root["state"] = map_state;
+    let map_graph = verified(map_root, json!({"mapped_value":1})).await;
     let map_history = [
         settled(
             SettledSpec::new(2, 2, "mapped_value")
@@ -538,10 +567,157 @@ fn parallel_and_map_promotions_project_durable_values_in_logical_order() {
             success(10),
         ),
     ];
+    let map_reduction = reduce(&map_graph, &json!({"items":[1,2]}), &map_history);
     assert_eq!(
-        reduce(&map_graph, &json!({"items":[1,2]}), &map_history).terminal,
+        map_reduction.terminal,
         Some(TerminalProjection::Succeeded {
-            output: json!({"result":[10,20]})
+            output: json!({"results":[10,20]})
         })
+    );
+    let scopes = map_reduction
+        .decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Promote {
+                node, map_indices, ..
+            } if node.as_str() == "mapped_value" => Some(map_indices.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(scopes, vec![vec![0], vec![1]]);
+}
+
+#[tokio::test]
+async fn late_parallel_losers_are_voided_in_canonical_dispatch_order() {
+    let graph = verified(
+        sequence(
+            "root",
+            vec![
+                json!({
+                    "kind":"par","name":"race","state":{"kind":"record","fields":{}},
+                    "branches":[step("left",1),step("middle",1),step("winner",1)],
+                    "promotedStatePaths":[],"join":{"kind":"any"}
+                }),
+                succeed("done"),
+            ],
+        ),
+        json!({"left":1,"middle":1,"winner":1}),
+    )
+    .await;
+    let history = [
+        active(1, 1, "left", 9),
+        settled(SettledSpec::new(2, 2, "winner").position(4), success(7)),
+        active(3, 3, "middle", 6),
+    ];
+    let reduction = reduce(&graph, &json!({}), &history);
+    let voids = reduction
+        .decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::VoidLoser { execution, .. } => Some(execution.get()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(voids, vec![3, 1]);
+}
+
+#[tokio::test]
+async fn map_terminal_is_lazy_and_voids_late_active_items() {
+    let state = json!({
+        "kind":"record",
+        "fields":{"items":{"type":{"kind":"array","items":{"kind":"null"}},"required":true}}
+    });
+    let body = json!({
+        "kind":"seq","name":"item_body","state":state.clone(),
+        "children":[step("mapped_work",1),succeed("item_done")],
+        "promotedStatePaths":[]
+    });
+    let mapped = json!({
+        "kind":"map","name":"mapped","state":state.clone(),
+        "over":{"source":"state","path":["items"]},"maxItems":2,
+        "body":body,"promotedStatePaths":[]
+    });
+    let mut root = sequence("root", vec![mapped, succeed("empty_done")]);
+    root["state"] = state;
+    let graph = verified(root, json!({"mapped_work":1})).await;
+    let winner = settled(
+        SettledSpec::new(1, 1, "mapped_work")
+            .map_indices(vec![0])
+            .position(4),
+        success(1),
+    );
+    let mut loser = active(2, 2, "mapped_work", 10);
+    loser.occurrence.map_indices = vec![1];
+    let reduction = reduce(&graph, &json!({"items":[null,null]}), &[loser, winner]);
+    assert!(reduction.terminal.is_some());
+    assert!(reduction.decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::VoidLoser { execution, reason: ExecutionVoidReason::MapTerminal, .. }
+            if execution.get() == 2
+    )));
+    assert!(!reduction.decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::Dispatch { occurrence, .. } if occurrence.map_indices == [1]
+    )));
+}
+
+#[tokio::test]
+async fn executable_write_promotions_are_one_scoped_authored_batch() {
+    let state = json!({
+        "kind":"record",
+        "fields":{
+            "a":{"type":{"kind":"integer"},"required":true},
+            "b":{"type":{"kind":"integer"},"required":true}
+        }
+    });
+    let work = json!({
+        "kind":"step","name":"work","worker":"worker.multi@1",
+        "input":{"kind":"null"},"output":state.clone(),
+        "inputBindings":[],
+        "writeBindings":[
+            {"value":{"node":"work","channel":"out","path":["a"]},"target":["a"]},
+            {"value":{"node":"work","channel":"out","path":["b"]},"target":["b"]}
+        ],
+        "timeoutMs":1,"attempts":1
+    });
+    let terminal = json!({
+        "kind":"succeed","name":"done","output":state.clone(),
+        "bindings":[
+            {"target":["a"],"value":{"source":"state","path":["a"]}},
+            {"target":["b"],"value":{"source":"state","path":["b"]}}
+        ]
+    });
+    let mut root = sequence("root", vec![work, terminal]);
+    root["state"] = state;
+    let graph = verified(root, json!({"work":1})).await;
+    let history = [settled(
+        SettledSpec::new(1, 1, "work").position(3),
+        WorkerOutcome::Verified {
+            output: json!({"a":1,"b":2}),
+            artifacts: Vec::new(),
+        },
+    )];
+    let reduction = reduce(&graph, &json!({}), &history);
+    let promotions = reduction
+        .decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Promote {
+                node,
+                map_indices,
+                values,
+            } if node.as_str() == "work" => Some((map_indices, values)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(promotions.len(), 1);
+    assert!(promotions[0].0.is_empty());
+    assert_eq!(
+        promotions[0]
+            .1
+            .iter()
+            .map(|value| value.path.segments()[0].as_str())
+            .collect::<Vec<_>>(),
+        vec!["a", "b"]
     );
 }

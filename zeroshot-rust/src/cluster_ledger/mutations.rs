@@ -426,7 +426,7 @@ impl ClusterLedger {
         let previous = state
             .execution_contexts
             .values()
-            .filter(|context| context.occurrence == occurrence)
+            .filter(|context| context.run == run && context.occurrence == occurrence)
             .max_by_key(|context| context.attempt);
         let node_instance = match previous {
             Some(previous)

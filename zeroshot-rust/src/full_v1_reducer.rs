@@ -2,7 +2,7 @@
 //!
 //! This module deliberately accepts [`VerifiedGraph`], the result of
 //! [`ProductionGraphVerifier`](openengine_cluster_server::graph_verifier::ProductionGraphVerifier),
-//! rather than graph syntax or a directly constructed `CompiledGraphIr`. All shape, type,
+//! rather than graph syntax or a directly constructed compiled value. All shape, type,
 //! binding, guard-domain, and bound proofs remain owned by that verifier. Reduction only applies
 //! those already-proven operations to durable values in authored order.
 
@@ -37,6 +37,7 @@ pub enum DurableExecutionState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DurableExecution {
+    pub run: RunSequence,
     pub dispatch_position: Position,
     pub node_instance: NodeInstanceId,
     pub execution: ExecutionId,
@@ -48,9 +49,14 @@ pub struct DurableExecution {
 
 pub fn durable_executions_from_replay(
     state: &ReplayState,
+    run: RunSequence,
 ) -> Result<Vec<DurableExecution>, ReducerError> {
     let mut executions = Vec::with_capacity(state.execution_contexts.len());
-    for context in state.execution_contexts.values() {
+    for context in state
+        .execution_contexts
+        .values()
+        .filter(|context| context.run == run)
+    {
         let input: Value = serde_json::from_slice(&context.canonical_input)
             .map_err(|_| ReducerError::InconsistentHistory)?;
         let execution_state = if let Some(voided) = state.execution_voids.get(&context.execution) {
@@ -74,6 +80,7 @@ pub fn durable_executions_from_replay(
             return Err(ReducerError::InconsistentHistory);
         };
         executions.push(DurableExecution {
+            run: context.run,
             dispatch_position: context.position,
             node_instance: context.node_instance,
             execution: context.execution,
@@ -94,6 +101,12 @@ pub struct ReductionInput<'a> {
     pub executions: &'a [DurableExecution],
     pub next_node_instance: u64,
     pub next_execution: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PromotedValue {
+    pub path: FieldPath,
+    pub value: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -118,8 +131,8 @@ pub enum Decision {
     },
     Promote {
         node: NodeName,
-        path: FieldPath,
-        value: Value,
+        map_indices: Vec<u64>,
+        values: Vec<PromotedValue>,
     },
     Terminal {
         projection: TerminalProjection,
@@ -243,6 +256,8 @@ impl<'a> FullV1Reducer<'a> {
                 cutoff: Position::MAX,
             },
         )?;
+        engine.ensure_history_consumed()?;
+        engine.canonicalize_void_decisions();
         let terminal = match status {
             Status::Terminal { projection, .. } => Some(projection),
             Status::Continue { .. } | Status::Pending => None,
@@ -335,7 +350,6 @@ struct MapVoidScope<'a> {
 
 struct VoidScope<'a> {
     map_indices: &'a [u64],
-    cutoff: Position,
     reason: ExecutionVoidReason,
 }
 
@@ -355,6 +369,7 @@ struct WriteApplication<'a> {
 
 struct PromotionRequest<'a> {
     node: &'a NodeName,
+    map_indices: &'a [u64],
     paths: &'a [FieldPath],
     local: &'a Context,
     parent: &'a mut Context,
@@ -403,6 +418,7 @@ struct Engine<'a> {
     next_execution: u64,
     decisions: Vec<Decision>,
     map_depths: BTreeMap<NodeName, usize>,
+    consumed_executions: BTreeSet<ExecutionId>,
 }
 
 impl<'a> Engine<'a> {
@@ -410,10 +426,13 @@ impl<'a> Engine<'a> {
         validate_history(input.executions)?;
         let mut map_depths = BTreeMap::new();
         collect_map_depths(root, 0, &mut map_depths);
+        let mut executable_depths = BTreeMap::new();
+        collect_executable_depths(root, 0, &mut executable_depths);
         if input.executions.iter().any(|execution| {
-            execution.execution.get() >= input.next_execution
+            execution.run != input.run
+                || execution.execution.get() >= input.next_execution
                 || execution.node_instance.get() >= input.next_node_instance
-                || map_depths
+                || executable_depths
                     .get(&execution.occurrence.node)
                     .is_none_or(|depth| *depth != execution.occurrence.map_indices.len())
         }) {
@@ -426,7 +445,40 @@ impl<'a> Engine<'a> {
             next_execution: input.next_execution,
             decisions: Vec::new(),
             map_depths,
+            consumed_executions: BTreeSet::new(),
         })
+    }
+
+    fn ensure_history_consumed(&self) -> Result<(), ReducerError> {
+        if self
+            .executions
+            .iter()
+            .all(|execution| self.consumed_executions.contains(&execution.execution))
+        {
+            Ok(())
+        } else {
+            Err(ReducerError::InconsistentHistory)
+        }
+    }
+
+    fn canonicalize_void_decisions(&mut self) {
+        let mut slots = Vec::new();
+        let mut voids = Vec::new();
+        for (index, decision) in self.decisions.iter().enumerate() {
+            if let Decision::VoidLoser { execution, .. } = decision {
+                let position = self
+                    .executions
+                    .iter()
+                    .find(|candidate| candidate.execution == *execution)
+                    .map_or(Position::MAX, |candidate| candidate.dispatch_position);
+                slots.push(index);
+                voids.push((position, *execution, decision.clone()));
+            }
+        }
+        voids.sort_by_key(|(position, execution, _)| (*position, *execution));
+        for (index, (_, _, decision)) in slots.into_iter().zip(voids) {
+            self.decisions[index] = decision;
+        }
     }
 
     fn eval(
@@ -475,6 +527,7 @@ impl<'a> Engine<'a> {
                 }
                 promote(PromotionRequest {
                     node: &group.name,
+                    map_indices: traversal.map_indices,
                     paths: &group.promoted_state_paths,
                     local: &local,
                     parent: context,
@@ -510,6 +563,7 @@ impl<'a> Engine<'a> {
                         );
                         promote(PromotionRequest {
                             node: &group.name,
+                            map_indices: traversal.map_indices,
                             paths: &group.promoted_state_paths,
                             local: &local,
                             parent: context,
@@ -531,6 +585,7 @@ impl<'a> Engine<'a> {
                 );
                 promote(PromotionRequest {
                     node: &group.name,
+                    map_indices: traversal.map_indices,
                     paths: &group.promoted_state_paths,
                     local: &local,
                     parent: context,
@@ -584,7 +639,7 @@ impl<'a> Engine<'a> {
         let mut matching = self
             .executions
             .iter()
-            .filter(|execution| execution.occurrence == occurrence)
+            .filter(|execution| execution.run == self.run && execution.occurrence == occurrence)
             .collect::<Vec<_>>();
         matching.sort_by_key(|execution| execution.attempt);
         let visit = next_visit(name, map_indices, &context.controls);
@@ -602,6 +657,9 @@ impl<'a> Engine<'a> {
             .iter()
             .find(|execution| execution.attempt == attempt)
             .copied();
+        if let Some(execution) = existing {
+            self.consumed_executions.insert(execution.execution);
+        }
         mark_visit(name, map_indices, &mut context.controls, visit);
         let Some(execution) = existing else {
             if mode == EvalMode::Probe || cutoff != Position::MAX {
@@ -707,6 +765,22 @@ impl<'a> Engine<'a> {
             }
             _ => return Err(ReducerError::InconsistentHistory),
         }
+        if mode == EvalMode::Decide && !write_bindings.is_empty() {
+            let values = write_bindings
+                .iter()
+                .map(|binding| {
+                    Ok(PromotedValue {
+                        path: binding.target.clone(),
+                        value: select(&context.state, &binding.target)?.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ReducerError>>()?;
+            self.decisions.push(Decision::Promote {
+                node: name.clone(),
+                map_indices: map_indices.to_vec(),
+                values,
+            });
+        }
         self.continue_decision(name, mode);
         Ok(Status::Continue {
             position: *position,
@@ -735,6 +809,7 @@ impl<'a> Engine<'a> {
         if let Status::Continue { position } = status {
             promote(PromotionRequest {
                 node: &group.name,
+                map_indices: traversal.map_indices,
                 paths: &group.promoted_state_paths,
                 local: &local,
                 parent: context,
@@ -857,16 +932,26 @@ impl<'a> Engine<'a> {
             }
             for path in &group.promoted_state_paths {
                 let value = select(&branch_context.state, path)?.clone();
-                set_path(&mut joined.state, path, value.clone())?;
-                if traversal.mode == EvalMode::Decide {
-                    self.decisions.push(Decision::Promote {
-                        node: group.name.clone(),
-                        path: path.clone(),
-                        value,
-                    });
-                }
+                set_path(&mut joined.state, path, value)?;
             }
             merge_runtime_facts(&branch_context, &mut joined);
+        }
+        if traversal.mode == EvalMode::Decide && !group.promoted_state_paths.is_empty() {
+            let values = group
+                .promoted_state_paths
+                .iter()
+                .map(|path| {
+                    Ok(PromotedValue {
+                        path: path.clone(),
+                        value: select(&joined.state, path)?.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ReducerError>>()?;
+            self.decisions.push(Decision::Promote {
+                node: group.name.clone(),
+                map_indices: traversal.map_indices.to_vec(),
+                values,
+            });
         }
         *context = joined;
         let (field, label) = if matches!(group.join, Join::First { .. }) {
@@ -890,7 +975,6 @@ impl<'a> Engine<'a> {
                         branch,
                         VoidScope {
                             map_indices: traversal.map_indices,
-                            cutoff: join_position,
                             reason: ExecutionVoidReason::ParallelJoin,
                         },
                     );
@@ -928,8 +1012,8 @@ impl<'a> Engine<'a> {
                 position: Position::ZERO,
             });
         }
-        let mut local = context.clone();
-        let mut item_results = Vec::with_capacity(items.len());
+
+        let mut probe_results = Vec::with_capacity(items.len());
         for (index, item_value) in items.iter().enumerate() {
             let mut scope = traversal.map_indices.to_vec();
             scope.push(index as u64);
@@ -940,40 +1024,78 @@ impl<'a> Engine<'a> {
                 Traversal {
                     map_indices: &scope,
                     item: Some(item_value),
+                    mode: EvalMode::Probe,
                     ..traversal
                 },
             )?;
-            item_results.push((status, item_context, scope));
+            probe_results.push((status, item_context, scope));
         }
-        if let Some((_, terminal, terminal_scope)) = item_results
+        if let Some((terminal_index, terminal)) = probe_results
             .iter()
-            .filter_map(|(status, _, scope)| match status {
-                Status::Terminal { position, .. } => Some((*position, status.clone(), scope)),
+            .enumerate()
+            .filter_map(|(index, (status, _, _))| match status {
+                Status::Terminal { position, .. } => Some((index, *position, status.clone())),
                 _ => None,
             })
-            .min_by_key(|(position, _, scope)| (*position, (*scope).clone()))
+            .min_by_key(|(index, position, _)| (*position, *index))
+            .map(|(index, _, status)| (index, status))
         {
             if traversal.mode == EvalMode::Decide {
+                let terminal_scope = &probe_results[terminal_index].2;
+                let mut terminal_context = context.clone();
+                let terminal = self.eval(
+                    &group.body,
+                    &mut terminal_context,
+                    Traversal {
+                        map_indices: terminal_scope,
+                        item: Some(&items[terminal_index]),
+                        cutoff: terminal.position(),
+                        ..traversal
+                    },
+                )?;
                 self.void_map_losers(
                     &group.body,
                     MapVoidScope {
                         common: VoidScope {
                             map_indices: traversal.map_indices,
-                            cutoff: terminal.position(),
                             reason: ExecutionVoidReason::MapTerminal,
                         },
                         winner_scope: terminal_scope,
                     },
                 );
+                return Ok(terminal);
             }
             return Ok(terminal);
         }
+
+        let item_results = if traversal.mode == EvalMode::Probe {
+            probe_results
+        } else {
+            let mut decisions = Vec::with_capacity(items.len());
+            for (index, item_value) in items.iter().enumerate() {
+                let mut scope = traversal.map_indices.to_vec();
+                scope.push(index as u64);
+                let mut item_context = context.clone();
+                let status = self.eval(
+                    &group.body,
+                    &mut item_context,
+                    Traversal {
+                        map_indices: &scope,
+                        item: Some(item_value),
+                        ..traversal
+                    },
+                )?;
+                decisions.push((status, item_context, scope));
+            }
+            decisions
+        };
         if item_results
             .iter()
             .any(|(status, _, _)| matches!(status, Status::Pending))
         {
             return Ok(Status::Pending);
         }
+        let mut local = context.clone();
         for path in &group.promoted_state_paths {
             let mut values = Vec::with_capacity(item_results.len());
             for (_, item_context, _) in &item_results {
@@ -993,6 +1115,7 @@ impl<'a> Engine<'a> {
         );
         promote(PromotionRequest {
             node: &group.name,
+            map_indices: traversal.map_indices,
             paths: &group.promoted_state_paths,
             local: &local,
             parent: context,
@@ -1122,15 +1245,22 @@ impl<'a> Engine<'a> {
 
     fn void_active_descendants(&mut self, node: &GraphNode, scope: VoidScope<'_>) {
         let descendants = descendant_names(node);
-        for execution in self.executions {
-            if descendants.contains(&execution.occurrence.node)
-                && execution
-                    .occurrence
-                    .map_indices
-                    .starts_with(scope.map_indices)
-                && execution.dispatch_position <= scope.cutoff
-                && matches!(execution.state, DurableExecutionState::Active)
-            {
+        let mut losers = self
+            .executions
+            .iter()
+            .filter(|execution| {
+                execution.run == self.run
+                    && descendants.contains(&execution.occurrence.node)
+                    && execution
+                        .occurrence
+                        .map_indices
+                        .starts_with(scope.map_indices)
+            })
+            .collect::<Vec<_>>();
+        losers.sort_by_key(|execution| (execution.dispatch_position, execution.execution));
+        for execution in losers {
+            self.consumed_executions.insert(execution.execution);
+            if matches!(execution.state, DurableExecutionState::Active) {
                 self.decisions.push(Decision::VoidLoser {
                     run: self.run,
                     execution: execution.execution,
@@ -1142,16 +1272,23 @@ impl<'a> Engine<'a> {
 
     fn void_map_losers(&mut self, body: &GraphNode, scope: MapVoidScope<'_>) {
         let descendants = descendant_names(body);
-        for execution in self.executions {
-            if descendants.contains(&execution.occurrence.node)
-                && execution
-                    .occurrence
-                    .map_indices
-                    .starts_with(scope.common.map_indices)
-                && execution.occurrence.map_indices != scope.winner_scope
-                && execution.dispatch_position <= scope.common.cutoff
-                && matches!(execution.state, DurableExecutionState::Active)
-            {
+        let mut losers = self
+            .executions
+            .iter()
+            .filter(|execution| {
+                execution.run == self.run
+                    && descendants.contains(&execution.occurrence.node)
+                    && execution
+                        .occurrence
+                        .map_indices
+                        .starts_with(scope.common.map_indices)
+                    && execution.occurrence.map_indices != scope.winner_scope
+            })
+            .collect::<Vec<_>>();
+        losers.sort_by_key(|execution| (execution.dispatch_position, execution.execution));
+        for execution in losers {
+            self.consumed_executions.insert(execution.execution);
+            if matches!(execution.state, DurableExecutionState::Active) {
                 self.decisions.push(Decision::VoidLoser {
                     run: self.run,
                     execution: execution.execution,
@@ -1192,17 +1329,56 @@ fn collect_map_depths(node: &GraphNode, depth: usize, depths: &mut BTreeMap<Node
     }
 }
 
+fn collect_executable_depths(
+    node: &GraphNode,
+    depth: usize,
+    depths: &mut BTreeMap<NodeName, usize>,
+) {
+    match node {
+        GraphNode::Step(_) | GraphNode::Verifier(_) => {
+            depths.insert(node.name().clone(), depth);
+        }
+        GraphNode::Seq(group) => {
+            for child in group.children.as_slice() {
+                collect_executable_depths(child, depth, depths);
+            }
+        }
+        GraphNode::Choice(group) => {
+            for branch in group.branches.as_slice() {
+                collect_executable_depths(&branch.node, depth, depths);
+            }
+            if let Some(otherwise) = &group.otherwise {
+                collect_executable_depths(otherwise, depth, depths);
+            }
+        }
+        GraphNode::Par(group) => {
+            for branch in group.branches.as_slice() {
+                collect_executable_depths(branch, depth, depths);
+            }
+        }
+        GraphNode::Loop(group) => collect_executable_depths(&group.body, depth, depths),
+        GraphNode::Map(group) => collect_executable_depths(&group.body, depth + 1, depths),
+        GraphNode::Succeed(_) | GraphNode::Fail(_) => {}
+    }
+}
+
 fn validate_history(executions: &[DurableExecution]) -> Result<(), ReducerError> {
     let mut ids = BTreeSet::new();
     let mut attempts = BTreeSet::new();
     let mut instances = BTreeMap::new();
+    let mut inverse_instances = BTreeMap::new();
     for execution in executions {
         if !ids.insert(execution.execution)
-            || !attempts.insert((execution.occurrence.clone(), execution.attempt))
+            || !attempts.insert((
+                execution.run,
+                execution.occurrence.clone(),
+                execution.attempt,
+            ))
         {
             return Err(ReducerError::InconsistentHistory);
         }
-        match instances.entry(execution.occurrence.clone()) {
+        let lineage = (execution.run, execution.occurrence.clone());
+        match instances.entry(lineage.clone()) {
             std::collections::btree_map::Entry::Vacant(entry) => {
                 entry.insert(execution.node_instance);
             }
@@ -1213,11 +1389,22 @@ fn validate_history(executions: &[DurableExecution]) -> Result<(), ReducerError>
             }
             std::collections::btree_map::Entry::Occupied(_) => {}
         }
+        match inverse_instances.entry((execution.run, execution.node_instance)) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(execution.occurrence.clone());
+            }
+            std::collections::btree_map::Entry::Occupied(entry)
+                if entry.get() != &execution.occurrence =>
+            {
+                return Err(ReducerError::InconsistentHistory);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
     }
-    for occurrence in instances.keys() {
+    for (run, occurrence) in instances.keys() {
         let mut values = executions
             .iter()
-            .filter(|execution| &execution.occurrence == occurrence)
+            .filter(|execution| execution.run == *run && &execution.occurrence == occurrence)
             .map(|execution| execution.attempt.get())
             .collect::<Vec<_>>();
         values.sort_unstable();
@@ -1384,22 +1571,28 @@ fn apply_writes(
 fn promote(request: PromotionRequest<'_>) -> Result<(), ReducerError> {
     let PromotionRequest {
         node,
+        map_indices,
         paths,
         local,
         parent,
         mode,
         decisions,
     } = request;
+    let mut values = Vec::with_capacity(paths.len());
     for path in paths {
         let value = select(&local.state, path)?.clone();
         set_path(&mut parent.state, path, value.clone())?;
-        if mode == EvalMode::Decide {
-            decisions.push(Decision::Promote {
-                node: node.clone(),
-                path: path.clone(),
-                value,
-            });
-        }
+        values.push(PromotedValue {
+            path: path.clone(),
+            value,
+        });
+    }
+    if mode == EvalMode::Decide && !values.is_empty() {
+        decisions.push(Decision::Promote {
+            node: node.clone(),
+            map_indices: map_indices.to_vec(),
+            values,
+        });
     }
     merge_runtime_facts(local, parent);
     Ok(())

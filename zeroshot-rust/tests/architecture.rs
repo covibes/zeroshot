@@ -667,6 +667,7 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
     assert!(reducer.contains("VerifiedGraph"));
     assert!(reducer.contains("ProductionGraphVerifier"));
     assert!(!reducer.contains("GraphSpec"));
+    assert!(!reducer.contains("CompiledGraphIr"));
     assert!(!reducer.contains("PayloadType"));
     for forbidden in [
         "tokio::",
