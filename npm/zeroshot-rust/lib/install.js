@@ -10,13 +10,14 @@ const zlib = require('zlib');
 const RELEASE_BASE_URL = 'https://github.com/the-open-engine/zeroshot/releases/download';
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
-const HOST_TARGETS = Object.freeze({
-  'linux/x64': { target: 'x86_64-unknown-linux-gnu', executable: 'zeroshot-rust' },
-  'linux/arm64': { target: 'aarch64-unknown-linux-gnu', executable: 'zeroshot-rust' },
-  'darwin/x64': { target: 'x86_64-apple-darwin', executable: 'zeroshot-rust' },
-  'darwin/arm64': { target: 'aarch64-apple-darwin', executable: 'zeroshot-rust' },
-  'win32/x64': { target: 'x86_64-pc-windows-msvc', executable: 'zeroshot-rust.exe' },
-});
+const HOST_TARGETS = Object.freeze(
+  Object.fromEntries(
+    require('../targets.json').map(({ platform, arch, target, executable }) => [
+      `${platform}/${arch}`,
+      Object.freeze({ target, executable }),
+    ])
+  )
+);
 
 function selectTarget(platform = process.platform, arch = process.arch) {
   const host = `${platform}/${arch}`;

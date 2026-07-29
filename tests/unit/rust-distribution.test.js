@@ -19,6 +19,11 @@ function relativeFiles(root, directory = root) {
   });
 }
 
+function mutation(source, before, after = '') {
+  assert(source.includes(before), `mutation precondition missing: ${before}`);
+  return source.replace(before, after);
+}
+
 describe('Rust product distribution', function () {
   it('declares the complete native target and host matrix', function () {
     assert.deepStrictEqual(
@@ -109,29 +114,121 @@ describe('Rust release integration', function () {
     assert.strictEqual(distribution.checkVersionCoupling('v1.2.2', cargoToml), '1.2.2');
   });
 
-  it('guards the workflow matrix and artifact/checksum mechanism', function () {
+  it('causally guards build, matrix, upload, publication, recovery, and shim integrity', function () {
     const workflow = fs.readFileSync(
       path.join(projectRoot, '.github', 'workflows', 'release.yml'),
       'utf8'
     );
     assert.strictEqual(distribution.checkRepository(workflow), true);
-    const missingTarget = workflow.replace(
-      /\n\s+- target: aarch64-apple-darwin\n\s+runner: macos-14\n\s+executable: zeroshot-rust\n\s+c-compiler: cc/,
-      ''
-    );
+
     assert.throws(
-      () => distribution.checkRepository(missingTarget),
-      /workflow matrix differs from declared targets.*aarch64-apple-darwin/
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}',
+            'run: echo cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}'
+          )
+        ),
+      /build step must execute exactly/
     );
     assert.throws(
       () =>
         distribution.checkRepository(
-          workflow.replaceAll('actions/upload-artifact@', 'actions/not-upload@')
+          mutation(
+            workflow,
+            'needs: [dry-run, release-plan, rust-recovery-plan]',
+            'needs: [dry-run, rust-recovery-plan]'
+          )
         ),
-      /release workflow is missing actions\/upload-artifact@/
+      /rust-binaries dependencies/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            `      - name: Upload target archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-\${{ matrix.target }}
+          path: rust-release/*.tar.gz
+          if-no-files-found: error
+`
+          )
+        ),
+      /Upload target archive|per-target archive upload/
+    );
+    for (const [before, after] of [
+      ['runner: macos-14', 'runner: ubuntu-latest'],
+      ['executable: zeroshot-rust.exe', 'executable: zeroshot-rust'],
+      ['c-compiler: cl.exe', 'c-compiler: cc'],
+    ]) {
+      assert.throws(
+        () => distribution.checkRepository(mutation(workflow, before, after)),
+        /matrix rows differs/
+      );
+    }
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(workflow, 'targets: ${{ matrix.target }}', 'targets: x86_64-unknown-linux-gnu')
+        ),
+      /toolchain setup/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(mutation(workflow, 'toolchain: 1.97.0', 'toolchain: stable')),
+      /toolchain setup/
+    );
+
+    const shimTargets = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, 'npm', 'zeroshot-rust', 'targets.json'), 'utf8')
+    );
+    shimTargets[0].target = 'aarch64-unknown-linux-gnu';
+    assert.throws(
+      () => distribution.checkRepository(workflow, shimTargets),
+      /npm shim host mapping/
+    );
+
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'needs: [install-matrix, release-plan, rust-manifest]',
+            'needs: [install-matrix, release-plan]'
+          )
+        ),
+      /release dependencies/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'run: node scripts/release-dry-run.js',
+            'run: |\n          npx semantic-release\n          node scripts/release-dry-run.js'
+          )
+        ),
+      /semantic-release runs before artifacts/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(mutation(workflow, '          - recover-rust-distribution\n')),
+      /no recover-rust-distribution action/
+    );
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(workflow, ' rust-release/* --clobber', ' rust-release/*')
+        ),
+      /asset recovery is not idempotent/
     );
   });
+});
 
+describe('Rust npm shim integration', function () {
   it('installs only a checksum-verified archive selected for the host', async function () {
     const packageRoot = temporaryDirectory();
     const binary = Buffer.from('standalone native fixture');

@@ -16,6 +16,7 @@ on:
           - dry-run
           - recover-npm
           - recover-github-release
+          - recover-rust-distribution
       release_tag:
         description: Recovery tag in vX.Y.Z form.
         required: false
@@ -154,10 +155,10 @@ jobs:
           fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-  release:
+  release-plan:
     outputs:
-      created: ${{ steps.semantic-release.outputs.created }}
-      tag: ${{ steps.semantic-release.outputs.tag }}
+      version: ${{ steps.semantic-plan.outputs.version }}
+      tag: ${{ steps.planned-tag.outputs.tag }}
     needs: [install-matrix]
     if: |
       always() &&
@@ -167,12 +168,8 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       vars.RELEASE_AUTOMATION_ENABLED == 'true'
     runs-on: ubuntu-latest
-    environment: release
     permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      id-token: write
+      contents: read
     steps:
       - name: Checkout exact CI-tested main commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -233,62 +230,88 @@ jobs:
           "$prefix_dir/bin/zeroshot" --help
           "$prefix_dir/bin/zeroshot" list
 
-      - name: Resolve semantic-release version before publication
-        id: release-plan
+      - name: Resolve semantic-release version before native builds
+        id: semantic-plan
         if: steps.candidate.outputs.current == 'true'
         env:
           GITHUB_REF_NAME: main
         run: node scripts/release-dry-run.js
 
-      - name: Enforce Rust release version coupling before publication
-        if: steps.release-plan.outputs.version != ''
+      - name: Resolve planned immutable release tag
+        id: planned-tag
+        if: steps.semantic-plan.outputs.version != ''
         env:
-          RELEASE_VERSION: ${{ steps.release-plan.outputs.version }}
+          RELEASE_VERSION: ${{ steps.semantic-plan.outputs.version }}
+        run: echo "tag=v$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Enforce Rust release version coupling before native builds
+        if: steps.semantic-plan.outputs.version != ''
+        env:
+          RELEASE_VERSION: ${{ steps.semantic-plan.outputs.version }}
         run: node scripts/rust-distribution.js check-version --tag "v$RELEASE_VERSION"
         shell: bash
 
-      - name: Recheck main immediately before publication
-        if: steps.candidate.outputs.current == 'true'
+  rust-recovery-plan:
+    outputs:
+      tag: ${{ steps.immutable.outputs.tag }}
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      inputs.action == 'recover-rust-distribution'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate Rust recovery inputs
         shell: bash
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          current_sha="$(git rev-parse HEAD)"
-          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
-          if [[ "$current_sha" != "$remote_sha" ]]; then
-            echo "::error::main moved from $current_sha to $remote_sha after validation"
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::release_tag must match vX.Y.Z"
             exit 1
-          fi
+          }
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::release_commit must be a full lowercase SHA"
+            exit 1
+          }
 
-      - name: Run semantic-release
-        id: semantic-release
-        if: steps.candidate.outputs.current == 'true'
+      - name: Checkout immutable release commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.release_commit }}
+
+      - name: Fetch protected release refs
+        run: |
+          git fetch origin main
+          git fetch origin "refs/tags/${{ inputs.release_tag }}:refs/tags/${{ inputs.release_tag }}"
+
+      - name: Verify immutable matching release tag
+        id: immutable
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          tags_before="$(git tag --points-at HEAD --list 'v*')"
-          npx semantic-release
-          tags_after="$(git tag --points-at HEAD --list 'v*')"
-          if [[ -n "$tags_after" && "$tags_after" != "$tags_before" ]]; then
-            [[ "$(printf '%s\n' "$tags_after" | wc -l)" -eq 1 ]] || {
-              echo "::error::semantic-release created more than one tag at HEAD"
-              exit 1
-            }
-            echo "created=true" >> "$GITHUB_OUTPUT"
-            echo "tag=$tags_after" >> "$GITHUB_OUTPUT"
-          else
-            echo "created=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Assert release state
-        if: steps.candidate.outputs.current == 'true'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: npm run release:assert-published
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          [[ "$tag_commit" == "$RELEASE_COMMIT" ]] || {
+            echo "::error::release tag $RELEASE_TAG resolves to $tag_commit, not $RELEASE_COMMIT"
+            exit 1
+          }
+          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main || {
+            echo "::error::release commit $RELEASE_COMMIT is not an ancestor of main"
+            exit 1
+          }
+          node scripts/rust-distribution.js check-version --tag "$RELEASE_TAG"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   rust-binaries:
-    needs: [dry-run, release]
+    needs: [dry-run, release-plan, rust-recovery-plan]
     if: |
       always() &&
       (
@@ -298,9 +321,14 @@ jobs:
           needs.dry-run.result == 'success'
         ) ||
         (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.action == 'recover-rust-distribution' &&
+          needs.rust-recovery-plan.result == 'success'
+        ) ||
+        (
           github.event_name == 'workflow_run' &&
-          needs.release.result == 'success' &&
-          needs.release.outputs.created == 'true'
+          needs.release-plan.result == 'success' &&
+          needs.release-plan.outputs.version != ''
         )
       )
     strategy:
@@ -331,14 +359,14 @@ jobs:
     permissions:
       contents: read
     env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && needs.dry-run.outputs.tag || needs.release.outputs.tag }}
+      RELEASE_TAG: ${{ inputs.action == 'dry-run' && needs.dry-run.outputs.tag || inputs.action == 'recover-rust-distribution' && needs.rust-recovery-plan.outputs.tag || needs.release-plan.outputs.tag }}
       BINARY_PATH: target/${{ matrix.target }}/release/${{ matrix.executable }}
     steps:
       - name: Checkout immutable release source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || needs.release.outputs.tag }}
+          ref: ${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -403,19 +431,19 @@ jobs:
           if-no-files-found: error
 
   rust-manifest:
-    needs: [dry-run, release, rust-binaries]
+    needs: [dry-run, release-plan, rust-recovery-plan, rust-binaries]
     if: always() && needs.rust-binaries.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
-      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && needs.dry-run.outputs.tag || needs.release.outputs.tag }}
+      RELEASE_TAG: ${{ inputs.action == 'dry-run' && needs.dry-run.outputs.tag || inputs.action == 'recover-rust-distribution' && needs.rust-recovery-plan.outputs.tag || needs.release-plan.outputs.tag }}
     steps:
       - name: Checkout release tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || needs.release.outputs.tag }}
+          ref: ${{ inputs.action == 'dry-run' && github.sha || inputs.action == 'recover-rust-distribution' && inputs.release_commit || github.event.workflow_run.head_sha }}
 
       - name: Download every target archive
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -437,23 +465,123 @@ jobs:
             rust-release/SHA256SUMS
           if-no-files-found: error
 
-  rust-publish:
-    needs: [release, rust-manifest]
+  release:
+    outputs:
+      created: ${{ steps.semantic-release.outputs.created }}
+      tag: ${{ steps.semantic-release.outputs.tag }}
+    needs: [install-matrix, release-plan, rust-manifest]
     if: |
-      needs.release.result == 'success' &&
-      needs.release.outputs.created == 'true' &&
-      needs.rust-manifest.result == 'success'
+      always() &&
+      needs.install-matrix.result == 'success' &&
+      needs.release-plan.result == 'success' &&
+      needs.release-plan.outputs.version != '' &&
+      needs.rust-manifest.result == 'success' &&
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      vars.RELEASE_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout exact artifact-tested main commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install pinned dependencies
+        run: npm ci
+
+      - name: Fetch immutable release history
+        run: git fetch --tags --force
+
+      - name: Recheck main immediately before publication and confirm planned version
+        id: final-plan
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.release-plan.outputs.version }}
+          GITHUB_REF_NAME: main
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          current_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [[ "$current_sha" != "$TESTED_SHA" || "$remote_sha" != "$TESTED_SHA" ]]; then
+            echo "::error::main moved after native artifacts were validated: tested=$TESTED_SHA checkout=$current_sha main=$remote_sha"
+            exit 1
+          fi
+          actual_version="$(node scripts/release-dry-run.js | sed -n 's/^RELEASE_DRY_RUN_RESULT=//p' | tail -1)"
+          if [[ "$actual_version" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::semantic-release version changed after native artifacts: expected=$EXPECTED_VERSION actual=$actual_version"
+            exit 1
+          fi
+          node scripts/rust-distribution.js check-version --tag "v$EXPECTED_VERSION"
+
+      - name: Run semantic-release
+        id: semantic-release
+        shell: bash
+        env:
+          EXPECTED_TAG: ${{ needs.release-plan.outputs.tag }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tags_before="$(git tag --points-at HEAD --list 'v*')"
+          npx semantic-release
+          tags_after="$(git tag --points-at HEAD --list 'v*')"
+          if [[ "$tags_after" != "$EXPECTED_TAG" || "$tags_after" == "$tags_before" ]]; then
+            echo "::error::semantic-release did not create expected tag $EXPECTED_TAG (before=$tags_before after=$tags_after)"
+            exit 1
+          fi
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$tags_after" >> "$GITHUB_OUTPUT"
+
+      - name: Assert release state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npm run release:assert-published
+
+  rust-publish:
+    needs: [release, rust-manifest, rust-recovery-plan]
+    if: |
+      always() &&
+      needs.rust-manifest.result == 'success' &&
+      (
+        (
+          needs.release.result == 'success' &&
+          needs.release.outputs.created == 'true'
+        ) ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.action == 'recover-rust-distribution' &&
+          needs.rust-recovery-plan.result == 'success'
+        )
+      )
     runs-on: ubuntu-latest
     environment: release
     permissions:
       contents: write
       id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.action == 'recover-rust-distribution' && needs.rust-recovery-plan.outputs.tag || needs.release.outputs.tag }}
     steps:
       - name: Checkout immutable release tag
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          ref: ${{ needs.release.outputs.tag }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node.js
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
@@ -464,25 +592,35 @@ jobs:
       - name: Download complete Rust distribution
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: zeroshot-rust-${{ needs.release.outputs.tag }}
+          name: zeroshot-rust-${{ env.RELEASE_TAG }}
           path: rust-release
 
-      - name: Attach verified binaries to semantic-release GitHub Release
+      - name: Idempotently attach verified binaries to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
-        run: gh release upload "$RELEASE_TAG" rust-release/*
+        run: gh release upload "$RELEASE_TAG" rust-release/* --clobber
 
       - name: Stage coupled shim package version
         working-directory: npm/zeroshot-rust
-        env:
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: npm version "${RELEASE_TAG#v}" --no-git-tag-version
         shell: bash
 
-      - name: Publish standalone Rust shim package
+      - name: Idempotently publish standalone Rust shim package
         working-directory: npm/zeroshot-rust
-        run: npm publish --provenance --access public
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          package="@the-open-engine/zeroshot-rust@$version"
+          if published="$(npm view "$package" version 2>/dev/null)"; then
+            [[ "$published" == "$version" ]] || {
+              echo "::error::$package resolved to unexpected version $published"
+              exit 1
+            }
+            echo "$package is already published; recovery is complete"
+          else
+            npm publish --provenance --access public
+          fi
 
   recover:
     if: |
