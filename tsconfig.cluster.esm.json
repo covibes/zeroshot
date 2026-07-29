@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.cluster.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "rootDir": "src/cluster",
+    "outDir": ".cluster-build/esm",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/cluster/**/*.ts"]
+}

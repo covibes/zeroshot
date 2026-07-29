@@ -1,0 +1,199 @@
+'use strict';
+
+const assert = require('node:assert').strict;
+const fileSystem = require('node:fs');
+const operatingSystem = require('node:os');
+const paths = require('node:path');
+const { execFileSync } = require('node:child_process');
+const { test } = require('node:test');
+
+const root = paths.resolve(__dirname, '../..');
+
+function execute(command, args, cwd = root) {
+  return execFileSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+let cachedConsumer;
+let cachedRuntimeConsumer;
+
+function packedConsumer(installOptional = false) {
+  const cached = installOptional ? cachedRuntimeConsumer : cachedConsumer;
+  if (cached) return cached;
+  const directory = fileSystem.mkdtempSync(
+    paths.join(operatingSystem.tmpdir(), 'zeroshot-cluster-package-')
+  );
+  const output = execute('npm', [
+    'pack',
+    '--json',
+    '--ignore-scripts',
+    '--pack-destination',
+    directory,
+  ]);
+  const [{ filename, files }] = JSON.parse(output);
+  const tarball = paths.join(directory, filename);
+  fileSystem.writeFileSync(
+    paths.join(directory, 'package.json'),
+    JSON.stringify({ private: true })
+  );
+  const installArgs = [
+    'install',
+    '--ignore-scripts',
+    ...(installOptional ? [] : ['--omit=optional']),
+    '--no-package-lock',
+    '--no-audit',
+    '--no-fund',
+    tarball,
+  ];
+  execute('npm', installArgs, directory);
+  const consumer = { directory, files };
+  if (installOptional) cachedRuntimeConsumer = consumer;
+  else cachedConsumer = consumer;
+  return consumer;
+}
+
+test('packed tarball resolves CJS, ESM, root, package metadata, and preserved deep imports', () => {
+  const { directory, files } = packedConsumer();
+  const names = new Set(files.map(({ path: file }) => file));
+  for (const required of [
+    'lib/cluster/index.cjs',
+    'lib/cluster/index.mjs',
+    'lib/cluster/index.d.ts',
+    'lib/cluster/generated/protocol.d.ts',
+  ])
+    assert.ok(names.has(required), required);
+  execute(
+    process.execPath,
+    [
+      '-e',
+      "const c=require('@the-open-engine/zeroshot/cluster'); if(typeof c.connect!=='function'||typeof c.ClusterClient!=='function')process.exit(1)",
+    ],
+    directory
+  );
+  execute(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      "import {connect,ClusterClient} from '@the-open-engine/zeroshot/cluster'; if(typeof connect!=='function'||typeof ClusterClient!=='function')process.exit(1)",
+    ],
+    directory
+  );
+  execute(
+    process.execPath,
+    [
+      '-e',
+      "require('@the-open-engine/zeroshot');require('@the-open-engine/zeroshot/src/orchestrator.js');require('@the-open-engine/zeroshot/lib/settings.js');require('@the-open-engine/zeroshot/package.json')",
+    ],
+    directory
+  );
+});
+
+test('packed declarations resolve under node16 and bundler modes', () => {
+  const { directory } = packedConsumer();
+  fileSystem.writeFileSync(
+    paths.join(directory, 'consumer.ts'),
+    [
+      "import type { ClusterClient, Connection, WatchParams } from '@the-open-engine/zeroshot/cluster';",
+      'declare const client: ClusterClient;',
+      'declare const connection: Connection;',
+      'const params: WatchParams = {};',
+      'void client.watch(params);',
+      "void connection.call('get', {});",
+      "void connection.openSubscription('watch', {});",
+      '// @ts-expect-error subscriptions cannot bypass openSubscription',
+      "void connection.call('watch', {});",
+      '// @ts-expect-error unary calls cannot use openSubscription',
+      "void connection.openSubscription('get', {});",
+      '// @ts-expect-error raw cancellation notifications are ownership-private',
+      "void connection.sendNotification('subscription/cancel', { subscriptionId: 'guessed' });",
+    ].join('\n')
+  );
+  const tsc = paths.join(root, 'node_modules/.bin/tsc');
+
+  for (const [moduleResolution, module] of [
+    ['node16', 'Node16'],
+    ['bundler', 'ES2022'],
+  ]) {
+    fileSystem.writeFileSync(
+      paths.join(directory, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          moduleResolution,
+          module,
+          skipLibCheck: false,
+        },
+        files: ['consumer.ts'],
+      })
+    );
+    execute(tsc, ['--project', 'tsconfig.json'], directory);
+  }
+});
+
+test('packed CJS and ESM consumers use the installed default ws runtime', () => {
+  const { directory } = packedConsumer(true);
+  const script = String.raw`
+    const { once } = require('node:events');
+    const { WebSocketServer } = require('ws');
+    (async()=>{
+      delete globalThis.WebSocket;
+      const server = new WebSocketServer({ port: 0 });
+      server.on('connection', socket => socket.on('message', data => {
+        const frame = JSON.parse(data.toString());
+        if (frame.method === 'initialize') socket.send(JSON.stringify({
+          jsonrpc: '2.0',
+          id: frame.id,
+          result: {
+            protocolVersion: 'openengine.cluster/v1',
+            capabilities: {},
+            status: { phase: 'empty' },
+          },
+        }));
+      }));
+      await once(server, 'listening');
+      const address = server.address();
+      const url = 'ws://127.0.0.1:' + address.port;
+      const commonjs = require('@the-open-engine/zeroshot/cluster');
+      const first = await commonjs.connect(url);
+      await first.close();
+      const modules = await import('@the-open-engine/zeroshot/cluster');
+      const second = await modules.connect(url);
+      await second.close();
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    })().catch(error=>{console.error(error);process.exit(1)});
+  `;
+  execute(process.execPath, ['-e', script], directory);
+});
+
+test('injected WebSocket factory works with optional runtime omitted', () => {
+  const { directory } = packedConsumer();
+  const script = String.raw`
+    delete globalThis.WebSocket;
+    const { connect } = require('@the-open-engine/zeroshot/cluster');
+    class Socket {
+      constructor(){this.readyState=1;this.listeners=new Map()}
+      addEventListener(t,f){const a=this.listeners.get(t)||[];a.push(f);this.listeners.set(t,a)}
+      removeEventListener(t,f){this.listeners.set(t,(this.listeners.get(t)||[]).filter(x=>x!==f))}
+      send(text){const frame=JSON.parse(text);if(frame.method==='initialize')queueMicrotask(()=>this.emit('message',{data:JSON.stringify({jsonrpc:'2.0',id:frame.id,result:{protocolVersion:'openengine.cluster/v1',capabilities:{},status:{phase:'empty'}}})}))}
+      emit(t,e){for(const f of this.listeners.get(t)||[])f(e)}
+      close(){this.readyState=3;this.emit('close',{})}
+    }
+    (async()=>{
+      try {
+        await connect('ws://example');
+        throw new Error('default connection unexpectedly found a WebSocket runtime');
+      } catch (error) {
+        if (error.code !== 'WEBSOCKET_UNAVAILABLE' || !error.message.includes("install 'ws' or pass webSocketFactory")) throw error;
+      }
+      const connection = await connect('ws://example',{webSocketFactory:()=>new Socket()});
+      await connection.close();
+    })().catch(e=>{console.error(e);process.exit(1)});
+  `;
+  execute(process.execPath, ['-e', script], directory);
+});

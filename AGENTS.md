@@ -111,6 +111,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Connection core/admission    | `crates/openengine-cluster-server/src/connection.rs`, `connection/`     |
 | NDJSON response pump         | `crates/openengine-cluster-client/src/ndjson_pump.rs`                   |
 | Cluster typed transports     | `crates/openengine-cluster-client/`                                     |
+| TypeScript cluster client    | `src/cluster/`                                                          |
+| TypeScript protocol emitter  | `scripts/generate-cluster-types.js`                                     |
 | Cluster fixtures/artifacts   | `crates/openengine-cluster-testkit/`                                    |
 | Portable backend conformance | `crates/openengine-cluster-testkit/src/conformance.rs`                  |
 | Scripted admission fixtures  | `crates/openengine-cluster-testkit/src/admission.rs`                    |
@@ -137,6 +139,11 @@ are excluded from Prettier; never format them independently.
 Native release metadata and npm installer code stay outside the Rust-only `zeroshot-rust/`
 package. `distribution/zeroshot-rust-targets.json` is the authoritative release target list;
 the workflow matrix and checksum coverage must match it exactly.
+The published Node binding is the standalone `@the-open-engine/zeroshot/cluster` subpath.
+`Connection` exclusively owns request IDs and transport teardown; watch reconnect consumes an old
+stream exactly once on an application-supplied fresh connection. Keep `src/cluster/` isolated from
+product internals, and regenerate its wire types from the authoritative protocol artifacts with
+`npm run protocol:generate`.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
 Portable external conformance is the immutable public catalog in the testkit and covers only
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
