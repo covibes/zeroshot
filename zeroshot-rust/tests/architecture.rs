@@ -548,6 +548,18 @@ fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary()
             "missing native daemon boundary: {required}"
         );
     }
+    for required in [
+        "#[cfg(unix)]\nmod platform",
+        "#[cfg(windows)]\nmod platform",
+        "FILE_FLAG_OPEN_REPARSE_POINT",
+        "PROTECTED_DACL_SECURITY_INFORMATION",
+        "MoveFileExW",
+    ] {
+        assert!(
+            daemon.contains(required),
+            "daemon discovery lost a supported-platform security boundary: {required}"
+        );
+    }
     for forbidden in [
         "ClusterLedger",
         "ExecutionRuntime",

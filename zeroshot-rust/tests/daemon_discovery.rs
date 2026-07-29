@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};

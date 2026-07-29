@@ -4,9 +4,8 @@
 //! initialize exchange in [`crate::daemon_listener`]; neither this module nor a locator treats a
 //! PID or an open port as proof of a daemon.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +14,14 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use platform::{
+    atomic_replace, create_owner_file, ensure_profile_directory, open_owner_file, sync_directory,
+    validate_open_locator_file, validate_owner_file,
+};
+
+#[cfg(not(any(unix, windows)))]
+compile_error!("native daemon discovery requires an owner-security platform implementation");
 
 pub const CLUSTER_PROTOCOL: &str = "openengine.cluster/v1";
 pub const DAEMON_PROTOCOL: &str = "zeroshot.daemon/v1";
@@ -121,7 +128,7 @@ pub fn acquire_start_guard(
 ) -> Result<ProfileStartGuard, DiscoveryError> {
     ensure_profile_directory(profile.root())?;
     let file = open_owner_file(&profile.lock_path(), true)?;
-    validate_owner_file(&file.metadata()?)?;
+    validate_owner_file(&file)?;
     let deadline = Instant::now() + timeout;
     loop {
         match file.try_lock_exclusive() {
@@ -177,16 +184,12 @@ pub(crate) fn replace_locator_locked(
     let suffix = random_hex()?;
     let temporary = profile.root().join(format!(".{LOCATOR_FILE}.{suffix}.tmp"));
     let write_result = (|| -> Result<(), DiscoveryError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)?;
+        let mut file = create_owner_file(&temporary)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
-        fs::rename(&temporary, profile.locator_path())?;
-        File::open(profile.root())?.sync_all()?;
+        drop(file);
+        atomic_replace(&temporary, &profile.locator_path())?;
+        sync_directory(profile.root())?;
         Ok(())
     })();
     if write_result.is_err() {
@@ -204,7 +207,7 @@ pub(crate) fn remove_locator_if_matches_locked(
     }
     match fs::remove_file(profile.locator_path()) {
         Ok(()) => {
-            File::open(profile.root())?.sync_all()?;
+            sync_directory(profile.root())?;
             Ok(true)
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -234,7 +237,7 @@ fn decode_open_locator(
     file: File,
 ) -> Result<DaemonLocator, DiscoveryError> {
     let opened_metadata = file.metadata()?;
-    validate_open_locator_file(&opened_metadata)?;
+    validate_open_locator_file(&file)?;
     if opened_metadata.len() > MAX_LOCATOR_BYTES {
         return Err(DiscoveryError::LocatorTooLarge);
     }
@@ -249,65 +252,474 @@ fn decode_open_locator(
     Ok(locator)
 }
 
-fn ensure_profile_directory(path: &Path) -> Result<(), DiscoveryError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => validate_owner_directory(&metadata),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir_all(path)?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-            validate_owner_directory(&fs::symlink_metadata(path)?)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
+#[cfg(unix)]
+mod platform {
+    use std::fs::{self, File, OpenOptions};
+    use std::io;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::path::Path;
 
-fn validate_owner_directory(metadata: &fs::Metadata) -> Result<(), DiscoveryError> {
-    if !metadata.file_type().is_dir()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-    {
-        return Err(DiscoveryError::InsecureProfileDirectory);
-    }
-    Ok(())
-}
+    use super::DiscoveryError;
 
-fn validate_owner_file(metadata: &fs::Metadata) -> Result<(), DiscoveryError> {
-    if !metadata.file_type().is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-        || metadata.nlink() != 1
-    {
-        return Err(DiscoveryError::InsecureFile);
-    }
-    Ok(())
-}
-
-fn validate_open_locator_file(metadata: &fs::Metadata) -> Result<(), DiscoveryError> {
-    if !metadata.file_type().is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.mode() & 0o077 != 0
-        || metadata.nlink() > 1
-    {
-        return Err(DiscoveryError::InsecureFile);
-    }
-    Ok(())
-}
-
-fn open_owner_file(path: &Path, create: bool) -> Result<File, DiscoveryError> {
-    OpenOptions::new()
-        .read(true)
-        .write(create)
-        .create(create)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .map_err(|error| {
-            if error.raw_os_error() == Some(libc::ELOOP) {
-                DiscoveryError::InsecureFile
-            } else {
-                error.into()
+    pub(super) fn ensure_profile_directory(path: &Path) -> Result<(), DiscoveryError> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir()
+                    || metadata.uid() != unsafe { libc::geteuid() }
+                    || metadata.mode() & 0o077 != 0
+                {
+                    return Err(DiscoveryError::InsecureProfileDirectory);
+                }
+                Ok(())
             }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir_all(path)?;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+                ensure_profile_directory(path)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn validate_owner_file(file: &File) -> Result<(), DiscoveryError> {
+        let metadata = file.metadata()?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+            || metadata.nlink() != 1
+        {
+            return Err(DiscoveryError::InsecureFile);
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_open_locator_file(file: &File) -> Result<(), DiscoveryError> {
+        let metadata = file.metadata()?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.mode() & 0o077 != 0
+            || metadata.nlink() > 1
+        {
+            return Err(DiscoveryError::InsecureFile);
+        }
+        Ok(())
+    }
+
+    pub(super) fn open_owner_file(path: &Path, create: bool) -> Result<File, DiscoveryError> {
+        OpenOptions::new()
+            .read(true)
+            .write(create)
+            .create(create)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| {
+                if error.raw_os_error() == Some(libc::ELOOP) {
+                    DiscoveryError::InsecureFile
+                } else {
+                    error.into()
+                }
+            })
+    }
+
+    pub(super) fn create_owner_file(path: &Path) -> Result<File, DiscoveryError> {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(Into::into)
+    }
+
+    pub(super) fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
+        fs::rename(source, destination)
+    }
+
+    pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
+        File::open(path)?.sync_all()
+    }
+}
+
+#[cfg(windows)]
+mod platform {
+    use std::ffi::c_void;
+    use std::fs::{self, File, OpenOptions};
+    use std::io;
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo,
+    };
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AddAccessAllowedAce,
+        AclSizeInformation, DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation,
+        GetLengthSid, GetSecurityDescriptorControl, GetTokenInformation, InitializeAcl,
+        OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED,
+        TOKEN_QUERY, TOKEN_USER, TokenUser,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, WRITE_DAC,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    use super::DiscoveryError;
+
+    struct OwnedHandle(HANDLE);
+
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    struct LocalSecurityDescriptor(*mut c_void);
+
+    impl Drop for LocalSecurityDescriptor {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.0);
+            }
+        }
+    }
+
+    struct UserSid {
+        storage: Vec<usize>,
+        offset: usize,
+        length: usize,
+    }
+
+    impl UserSid {
+        fn as_ptr(&self) -> PSID {
+            unsafe {
+                self.storage
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(self.offset)
+                    .cast_mut()
+                    .cast()
+            }
+        }
+    }
+
+    pub(super) fn ensure_profile_directory(path: &Path) -> Result<(), DiscoveryError> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                    || !metadata.file_type().is_dir()
+                {
+                    return Err(DiscoveryError::InsecureProfileDirectory);
+                }
+                let directory = open_directory(path, false)?;
+                validate_owner_acl(&directory, true)
+                    .map_err(|_| DiscoveryError::InsecureProfileDirectory)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir_all(path)?;
+                let directory = open_directory(path, true)?;
+                set_owner_only_acl(&directory)?;
+                validate_owner_acl(&directory, true)
+                    .map_err(|_| DiscoveryError::InsecureProfileDirectory)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn validate_owner_file(file: &File) -> Result<(), DiscoveryError> {
+        validate_file_shape(file, false)?;
+        validate_owner_acl(file, false)
+    }
+
+    pub(super) fn validate_open_locator_file(file: &File) -> Result<(), DiscoveryError> {
+        validate_file_shape(file, true)?;
+        validate_owner_acl(file, false)
+    }
+
+    pub(super) fn open_owner_file(path: &Path, create: bool) -> Result<File, DiscoveryError> {
+        reject_reparse_path(path)?;
+        if create {
+            match create_new_owner_file(path, true) {
+                Ok(file) => return Ok(file),
+                Err(DiscoveryError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let mut options = OpenOptions::new();
+        options
+            .access_mode(if create {
+                GENERIC_READ | GENERIC_WRITE
+            } else {
+                GENERIC_READ
+            })
+            .share_mode(if create {
+                FILE_SHARE_READ | FILE_SHARE_WRITE
+            } else {
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            })
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        options
+            .open(path)
+            .map_err(|error| map_open_error(path, error))
+    }
+
+    pub(super) fn create_owner_file(path: &Path) -> Result<File, DiscoveryError> {
+        create_new_owner_file(path, false)
+    }
+
+    pub(super) fn atomic_replace(source: &Path, destination: &Path) -> Result<(), DiscoveryError> {
+        let source = wide_path(source);
+        let destination = wide_path(destination);
+        let succeeded = unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if succeeded == 0 {
+            Err(io::Error::last_os_error().into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn sync_directory(_path: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn create_new_owner_file(path: &Path, lock_file: bool) -> Result<File, DiscoveryError> {
+        reject_reparse_path(path)?;
+        let mut options = OpenOptions::new();
+        options
+            .access_mode(GENERIC_READ | GENERIC_WRITE | WRITE_DAC)
+            .share_mode(if lock_file {
+                FILE_SHARE_READ | FILE_SHARE_WRITE
+            } else {
+                FILE_SHARE_READ
+            })
+            .create_new(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        let file = options
+            .open(path)
+            .map_err(|error| map_open_error(path, error))?;
+        set_owner_only_acl(&file)?;
+        validate_owner_file(&file)?;
+        Ok(file)
+    }
+
+    fn open_directory(path: &Path, write_acl: bool) -> Result<File, DiscoveryError> {
+        let mut options = OpenOptions::new();
+        options
+            .access_mode(if write_acl {
+                GENERIC_READ | WRITE_DAC
+            } else {
+                GENERIC_READ
+            })
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        options.open(path).map_err(Into::into)
+    }
+
+    fn reject_reparse_path(path: &Path) -> Result<(), DiscoveryError> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+                Err(DiscoveryError::InsecureFile)
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn map_open_error(path: &Path, error: io::Error) -> DiscoveryError {
+        if fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+            .unwrap_or(false)
+        {
+            DiscoveryError::InsecureFile
+        } else {
+            error.into()
+        }
+    }
+
+    fn validate_file_shape(file: &File, allow_unlinked: bool) -> Result<(), DiscoveryError> {
+        let information = file_information(file)?;
+        if information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+            != 0
+            || if allow_unlinked {
+                information.nNumberOfLinks > 1
+            } else {
+                information.nNumberOfLinks != 1
+            }
+        {
+            return Err(DiscoveryError::InsecureFile);
+        }
+        Ok(())
+    }
+
+    fn file_information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION, DiscoveryError> {
+        let mut information = unsafe { zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+        let succeeded =
+            unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut information) };
+        if succeeded == 0 {
+            Err(io::Error::last_os_error().into())
+        } else {
+            Ok(information)
+        }
+    }
+
+    fn set_owner_only_acl(file: &File) -> Result<(), DiscoveryError> {
+        let sid = current_user_sid()?;
+        let acl_bytes =
+            size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + sid.length;
+        let mut storage = vec![0_usize; acl_bytes.div_ceil(size_of::<usize>())];
+        let acl = storage.as_mut_ptr().cast::<ACL>();
+        if unsafe { InitializeAcl(acl, acl_bytes as u32, ACL_REVISION) } == 0
+            || unsafe { AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, sid.as_ptr()) } == 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        let status = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle().cast(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                acl,
+                null(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(status as i32).into())
+        }
+    }
+
+    fn validate_owner_acl(file: &File, directory: bool) -> Result<(), DiscoveryError> {
+        let sid = current_user_sid()?;
+        let mut owner: PSID = null_mut();
+        let mut dacl: *mut ACL = null_mut();
+        let mut descriptor = null_mut();
+        let status = unsafe {
+            GetSecurityInfo(
+                file.as_raw_handle().cast(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != 0 {
+            return Err(io::Error::from_raw_os_error(status as i32).into());
+        }
+        let _descriptor = LocalSecurityDescriptor(descriptor);
+        let mut control = 0;
+        let mut revision = 0;
+        let control_ok =
+            unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) } != 0;
+        let owner_ok = !owner.is_null() && unsafe { EqualSid(owner, sid.as_ptr()) } != 0;
+        if !control_ok || control & SE_DACL_PROTECTED == 0 || !owner_ok || dacl.is_null() {
+            return Err(if directory {
+                DiscoveryError::InsecureProfileDirectory
+            } else {
+                DiscoveryError::InsecureFile
+            });
+        }
+        let mut information = ACL_SIZE_INFORMATION::default();
+        if unsafe {
+            GetAclInformation(
+                dacl,
+                (&mut information as *mut ACL_SIZE_INFORMATION).cast(),
+                size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        } == 0
+            || information.AceCount != 1
+        {
+            return Err(if directory {
+                DiscoveryError::InsecureProfileDirectory
+            } else {
+                DiscoveryError::InsecureFile
+            });
+        }
+        let mut raw_ace = null_mut();
+        if unsafe { GetAce(dacl, 0, &mut raw_ace) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let ace = unsafe { &*raw_ace.cast::<ACCESS_ALLOWED_ACE>() };
+        let ace_sid = (&raw const ace.SidStart).cast_mut().cast();
+        let valid = ace.Header.AceType == 0
+            && ace.Mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS
+            && unsafe { EqualSid(ace_sid, sid.as_ptr()) } != 0;
+        if valid {
+            Ok(())
+        } else if directory {
+            Err(DiscoveryError::InsecureProfileDirectory)
+        } else {
+            Err(DiscoveryError::InsecureFile)
+        }
+    }
+
+    fn current_user_sid() -> Result<UserSid, DiscoveryError> {
+        let mut token = null_mut();
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let _token = OwnedHandle(token);
+        let mut needed = 0;
+        unsafe {
+            GetTokenInformation(token, TokenUser, null_mut(), 0, &mut needed);
+        }
+        if needed == 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let mut storage = vec![0_usize; (needed as usize).div_ceil(size_of::<usize>())];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                storage.as_mut_ptr().cast(),
+                needed,
+                &mut needed,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error().into());
+        }
+        let base = storage.as_ptr().cast::<u8>();
+        let user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
+        let sid = user.User.Sid.cast::<u8>();
+        let length = unsafe { GetLengthSid(user.User.Sid) } as usize;
+        let offset = unsafe { sid.offset_from(base) } as usize;
+        if length == 0 || offset.saturating_add(length) > storage.len() * size_of::<usize>() {
+            return Err(DiscoveryError::InsecureFile);
+        }
+        Ok(UserSid {
+            storage,
+            offset,
+            length,
         })
+    }
+
+    fn wide_path(path: &Path) -> Vec<u16> {
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
 }
 
 fn is_lower_hex(value: &str, len: usize) -> bool {
@@ -327,8 +739,10 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
+    use std::os::unix::fs::MetadataExt;
+
     use super::*;
 
     #[test]

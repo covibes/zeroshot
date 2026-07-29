@@ -183,9 +183,11 @@ configuration, credential acquisition, executable codecs, concrete drivers, prot
 and Node registry synchronization outside it.
 Daemon locators are owner-only connection hints, never liveness evidence. Startup holds the
 profile lock only through stale authenticated-initialize probing and atomic bind/publication.
-Locator reads open `O_NOFOLLOW` first: a mode-0600 same-owner file with more than one link is
-insecure, while an opened descriptor concurrently unlinked to zero links may yield its complete
-prior value. Never reclassify that proven unlink-after-open race as corruption.
+Unix locator reads open `O_NOFOLLOW` first and enforce owner UID, mode 0600, and link count.
+Windows uses reparse-point-safe handles, a protected current-user-only DACL, handle link counts,
+and write-through atomic replacement. On either platform, extra links are insecure while an opened
+locator concurrently unlinked to zero links may yield its complete prior value; never reclassify
+that proven unlink-after-open race as corruption.
 Upgrade authorization uses domain-separated client/server challenge proofs: capability and daemon
 nonce are never transmitted, the server proof is verified before initialize, and the exact route,
 profile digest, nonce, and rotating 256-bit capability must be proven before backend construction.

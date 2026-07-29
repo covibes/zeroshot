@@ -111,6 +111,46 @@ impl ClusterBackend for PendingInitializeBackend {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ErrorInitializeFactory;
+
+struct ErrorInitializeBackend;
+
+impl NativeBackendFactory for ErrorInitializeFactory {
+    type Backend = ErrorInitializeBackend;
+
+    fn create(&self, _context: &ConnectionContext) -> Self::Backend {
+        ErrorInitializeBackend
+    }
+}
+
+#[async_trait]
+impl ClusterBackend for ErrorInitializeBackend {
+    async fn initialize(
+        &self,
+        _context: &ConnectionContext,
+        _params: InitializeParams,
+    ) -> Result<InitializeResult, BackendError> {
+        Err(BackendError::application(
+            "TEST_UNAVAILABLE",
+            "controlled initialize failure",
+            None,
+        ))
+    }
+
+    async fn get(
+        &self,
+        _context: &ConnectionContext,
+        _params: GetParams,
+    ) -> Result<GetResult, BackendError> {
+        Ok(GetResult {
+            spec: None,
+            status: ClusterStatus::empty(),
+            at_cursor: None,
+        })
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn zero_capacity_or_deadline_is_rejected_before_profile_or_listener_creation() {
     let mut cases = Vec::new();
@@ -273,6 +313,42 @@ async fn concurrent_profile_start_has_one_owner_and_loser_cannot_remove_it() {
         read_locator(&profile.profile).expect("locator removed"),
         None
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_initialize_error_preserves_incumbent_locator_and_prevents_second_owner() {
+    let profile = TempProfile::new("live-initialize-error");
+    let owner = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        ErrorInitializeFactory,
+        test_config(),
+    )
+    .await
+    .expect("start erroring incumbent");
+    let incumbent = owner.locator().clone();
+    let contender_factory = CountingFactory::default();
+
+    let contender = DaemonListener::start_with_config(
+        profile.profile.clone(),
+        contender_factory.clone(),
+        test_config(),
+    )
+    .await;
+    assert!(matches!(
+        contender,
+        Err(DaemonListenerError::LivenessIndeterminate)
+    ));
+    assert_eq!(
+        read_locator(&profile.profile).expect("preserved erroring incumbent locator"),
+        Some(incumbent.clone())
+    );
+    assert_eq!(contender_factory.created.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        probe_liveness(&incumbent, Duration::from_millis(250)).await,
+        LivenessOutcome::Indeterminate
+    );
+
+    owner.shutdown().await.expect("shutdown incumbent");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1000,7 +1076,7 @@ async fn liveness_response_requires_exact_json_rpc_correlation_and_shape() {
             serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": "daemon-liveness",
-                "error": {"code": -32603, "message": "stale response"}
+                "error": {"code": -32603, "message": "backend unavailable"}
             })
             .to_string(),
             false,
@@ -1038,7 +1114,9 @@ async fn liveness_response_requires_exact_json_rpc_correlation_and_shape() {
     });
 
     for (name, _, expected) in &cases {
-        let expected = if *expected {
+        let expected = if *name == "error only" {
+            LivenessOutcome::Indeterminate
+        } else if *expected {
             LivenessOutcome::Alive
         } else {
             LivenessOutcome::DefinitelyStale
@@ -1199,7 +1277,7 @@ async fn shutdown_absolute_deadline_bounds_matching_cleanup_lock_and_reports_tim
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn connection_task_panic_releases_listener_and_shutdown_cleans_locator_with_task_error() {
+async fn connection_task_panic_releases_listener_and_cleans_locator_before_owner_shutdown() {
     let profile = TempProfile::new("connection-task-panic");
     let listener =
         DaemonListener::start_with_config(profile.profile.clone(), PanicFactory, test_config())
@@ -1250,6 +1328,16 @@ async fn connection_task_panic_releases_listener_and_shutdown_cleans_locator_wit
     })
     .await
     .expect("panicked accept loop released listener");
+    timeout(Duration::from_millis(300), async {
+        while read_locator(&profile.profile)
+            .expect("automatic panic cleanup state")
+            .is_some()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("panicked accept loop removed its published locator");
 
     assert!(matches!(
         listener.shutdown().await,

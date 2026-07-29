@@ -162,7 +162,7 @@ impl DaemonListener {
         let pending_handshake_permits = Arc::new(Semaphore::new(config.max_pending_handshakes));
         let liveness_connection_permits = Arc::new(Semaphore::new(config.max_liveness_connections));
         let active_session_permits = Arc::new(Semaphore::new(config.max_active_connections));
-        let accept_task = tokio::spawn(run_accept_loop(AcceptLoop {
+        let host = AcceptLoop {
             listener: tcp,
             factory: Arc::new(factory),
             credentials,
@@ -171,13 +171,14 @@ impl DaemonListener {
             liveness_connection_permits: Arc::clone(&liveness_connection_permits),
             active_session_permits: Arc::clone(&active_session_permits),
             config,
-        }));
-        if let Err(error) = replace_locator_locked(&profile, &locator) {
-            accept_task.abort();
-            let _ = accept_task.await;
-            return Err(error.into());
-        }
+        };
+        replace_locator_locked(&profile, &locator)?;
         drop(guard);
+        let accept_task = tokio::spawn(run_owned_accept_loop(
+            host,
+            profile.clone(),
+            locator.clone(),
+        ));
 
         Ok(Self {
             profile,
@@ -328,33 +329,37 @@ async fn probe_liveness_inner(locator: &DaemonLocator) -> LivenessOutcome {
             Ok(response) => response,
             Err(_) => return LivenessOutcome::DefinitelyStale,
         };
-        return if valid_liveness_response(&response) {
-            LivenessOutcome::Alive
-        } else {
-            LivenessOutcome::DefinitelyStale
-        };
+        return classify_liveness_response(&response);
     }
     LivenessOutcome::Indeterminate
 }
 
-fn valid_liveness_response(response: &Value) -> bool {
+fn classify_liveness_response(response: &Value) -> LivenessOutcome {
     let Some(object) = response.as_object() else {
-        return false;
+        return LivenessOutcome::DefinitelyStale;
     };
     if object.len() != 3
         || object.get("jsonrpc").and_then(Value::as_str) != Some(JSON_RPC_VERSION)
         || object.get("id").and_then(Value::as_str) != Some("daemon-liveness")
     {
-        return false;
+        return LivenessOutcome::DefinitelyStale;
+    }
+    if object.contains_key("error") && !object.contains_key("result") {
+        return LivenessOutcome::Indeterminate;
     }
     let Some(raw_result) = object.get("result") else {
-        return false;
+        return LivenessOutcome::DefinitelyStale;
     };
     let Ok(result) = serde_json::from_value::<InitializeResult>(raw_result.clone()) else {
-        return false;
+        return LivenessOutcome::DefinitelyStale;
     };
-    result.validate_protocol_version().is_ok()
+    if result.validate_protocol_version().is_ok()
         && serde_json::to_value(result).ok().as_ref() == Some(raw_result)
+    {
+        LivenessOutcome::Alive
+    } else {
+        LivenessOutcome::DefinitelyStale
+    }
 }
 
 fn rotate_away_from(value: &mut String, previous: &str) {
@@ -390,6 +395,23 @@ struct AcceptLoop<F> {
     pending_handshake_permits: Arc<Semaphore>,
     liveness_connection_permits: Arc<Semaphore>,
     active_session_permits: Arc<Semaphore>,
+}
+
+async fn run_owned_accept_loop<F>(
+    host: AcceptLoop<F>,
+    profile: NativeProfile,
+    locator: DaemonLocator,
+) -> Result<(), ()>
+where
+    F: NativeBackendFactory + Send + Sync + 'static,
+{
+    let result = run_accept_loop(host).await;
+    let cleanup =
+        tokio::task::spawn_blocking(move || remove_locator_if_matches(&profile, &locator)).await;
+    match cleanup {
+        Ok(Ok(_)) => result,
+        Ok(Err(_)) | Err(_) => Err(()),
+    }
 }
 
 async fn run_accept_loop<F>(host: AcceptLoop<F>) -> Result<(), ()>
