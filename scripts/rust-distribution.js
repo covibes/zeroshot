@@ -270,19 +270,58 @@ function findStep(job, name) {
   return step;
 }
 
-function checkScriptInstall(job, jobName) {
-  const install = findStep(job, 'Install pinned script dependencies');
-  if (install.if !== undefined || install.run?.trim() !== 'npm ci --ignore-scripts') {
-    failIntegrity(`${jobName} must install pinned script dependencies without lifecycle scripts`);
+const RUST_DISTRIBUTION_INVOCATION =
+  /(?:(?:\bnode\s+(?:\.\/)?)|(?:^|[\s"'(])\.\/)scripts\/rust-distribution\.js(?=$|[\s"'`)])/;
+
+const SCRIPT_INSTALL_CONTRACTS = Object.freeze([
+  { jobName: 'dry-run', installName: 'Install pinned dependencies', command: 'npm ci' },
+  { jobName: 'release', installName: 'Install pinned dependencies', command: 'npm ci' },
+  {
+    jobName: 'rust-binaries',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+  },
+  {
+    jobName: 'rust-manifest',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+  },
+  {
+    jobName: 'rust-publish',
+    installName: 'Install pinned script dependencies',
+    command: 'npm ci --ignore-scripts',
+  },
+]);
+
+function invokesRustDistribution(step) {
+  return (
+    typeof step.run === 'string' && RUST_DISTRIBUTION_INVOCATION.test(step.run)
+  );
+}
+
+function checkScriptInstall(job, { jobName, installName, command }) {
+  if (!job) failIntegrity(`release workflow has no ${jobName} job`);
+  const install = findStep(job, installName);
+  if (install.if !== undefined || install.run?.trim() !== command) {
+    failIntegrity(`${jobName} dependency install must execute exactly: ${command}`);
   }
-  if (
-    job.steps.some(
-      (step, index) =>
-        index < job.steps.indexOf(install) &&
-        step.run?.includes('node scripts/rust-distribution.js')
-    )
-  ) {
-    failIntegrity(`${jobName} must install pinned script dependencies before every invocation`);
+  const installIndex = job.steps.indexOf(install);
+  const checkoutIndex = job.steps.findIndex((step) =>
+    step.uses?.startsWith('actions/checkout@')
+  );
+  if (checkoutIndex === -1 || checkoutIndex >= installIndex) {
+    failIntegrity(`${jobName} must checkout source before dependency installation`);
+  }
+  if (job.steps.slice(0, installIndex).some(invokesRustDistribution)) {
+    failIntegrity(
+      `${jobName} must install dependencies before every rust-distribution.js invocation`
+    );
+  }
+}
+
+function checkScriptInstalls(jobs) {
+  for (const contract of SCRIPT_INSTALL_CONTRACTS) {
+    checkScriptInstall(jobs[contract.jobName], contract);
   }
 }
 
@@ -325,8 +364,6 @@ function checkBuildJob(jobs) {
   ) {
     failIntegrity('Windows bundled-SQLite MSVC setup is missing');
   }
-
-  checkScriptInstall(job, 'rust-binaries');
 
   const stage = findStep(job, 'Stage planned Rust package version');
   if (
@@ -389,7 +426,6 @@ function checkManifestJob(jobs) {
     ['dry-run', 'release-plan', 'rust-binaries', 'rust-recovery-plan'],
     [...(job.needs || [])].sort()
   );
-  checkScriptInstall(job, 'rust-manifest');
   const manifest = findStep(job, 'Build and verify complete checksum manifest');
   if (
     manifest.run?.trim() !==
@@ -453,7 +489,6 @@ function checkPublicationJobs(document, jobs) {
     ['release', 'rust-manifest', 'rust-recovery-plan'],
     [...(publish?.needs || [])].sort()
   );
-  checkScriptInstall(publish, 'rust-publish');
   if (!publish.if?.includes("inputs.action == 'recover-rust-distribution'")) {
     failIntegrity('post-tag Rust publication is not recoverable');
   }
@@ -483,9 +518,22 @@ function checkShimTargets(shimTargets) {
   exactJson('npm shim host mapping', projected, actual);
 }
 
-function checkScriptDependencies(packageManifest) {
-  if (!Object.hasOwn(packageManifest.devDependencies || {}, 'js-yaml')) {
+function checkScriptDependencies(packageManifest, packageLock) {
+  const directSpec = packageManifest.devDependencies?.['js-yaml'];
+  if (typeof directSpec !== 'string' || directSpec.length === 0) {
     failIntegrity('rust-distribution.js requires a direct js-yaml devDependency');
+  }
+  const lockSpec = packageLock.packages?.['']?.devDependencies?.['js-yaml'];
+  if (lockSpec !== directSpec) {
+    failIntegrity('package-lock root js-yaml spec must match package.json');
+  }
+  const resolved = packageLock.packages?.['node_modules/js-yaml'];
+  if (
+    typeof resolved?.version !== 'string' ||
+    typeof resolved.resolved !== 'string' ||
+    !/^sha(?:256|384|512)-/.test(resolved.integrity || '')
+  ) {
+    failIntegrity('package-lock must contain an integrity-pinned resolved js-yaml package');
   }
 }
 
@@ -499,6 +547,9 @@ function checkRepository(
   ),
   packageManifest = JSON.parse(
     fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8')
+  ),
+  packageLock = JSON.parse(
+    fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8')
   )
 ) {
   let document;
@@ -508,11 +559,12 @@ function checkRepository(
     failIntegrity(`release workflow is invalid YAML: ${error.message}`);
   }
   if (!document?.jobs) failIntegrity('release workflow has no jobs');
+  checkScriptInstalls(document.jobs);
   checkBuildJob(document.jobs);
   checkManifestJob(document.jobs);
   checkPublicationJobs(document, document.jobs);
   checkShimTargets(shimTargets);
-  checkScriptDependencies(packageManifest);
+  checkScriptDependencies(packageManifest, packageLock);
   return true;
 }
 
