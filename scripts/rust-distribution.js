@@ -165,11 +165,74 @@ function createManifest({ version, directory }) {
   return manifest;
 }
 
+function runGh(args) {
+  return childProcess.execFileSync('gh', args, { encoding: 'utf8' });
+}
+
+function publishAssets({ tag, directory, invokeGh = runGh }) {
+  const names = [...targets.map(({ target }) => archiveName(tag, target)), 'SHA256SUMS'];
+  const localAssets = new Map(
+    names.map((name) => [name, fs.readFileSync(path.join(directory, name))])
+  );
+  const release = JSON.parse(invokeGh(['release', 'view', tag, '--json', 'assets']));
+  const existingNames = release.assets.map(({ name }) => name);
+  if (new Set(existingNames).size !== existingNames.length) {
+    throw new Error('RELEASE_ASSET_CONFLICT: GitHub Release contains duplicate asset names');
+  }
+
+  const existingRequired = names.filter((name) => existingNames.includes(name));
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-rust-assets-'));
+  try {
+    for (const name of existingRequired) {
+      invokeGh(['release', 'download', tag, '--pattern', name, '--dir', temporary]);
+      const published = fs.readFileSync(path.join(temporary, name));
+      if (!published.equals(localAssets.get(name))) {
+        throw new Error(`RELEASE_ASSET_CONFLICT: existing ${name} differs from verified artifact`);
+      }
+    }
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+
+  const missing = names.filter((name) => !existingNames.includes(name));
+  for (const name of missing) {
+    invokeGh(['release', 'upload', tag, path.join(directory, name)]);
+  }
+  return { existing: existingRequired, uploaded: missing };
+}
+
 function cargoVersion(cargoToml) {
   const packageSection = cargoToml.match(/\[package\]([\s\S]*?)(?:\n\[|$)/);
   const version = packageSection && packageSection[1].match(/^version\s*=\s*"([^"]+)"\s*$/m);
   if (!version) throw new Error('zeroshot-rust/Cargo.toml has no package version');
   return version[1];
+}
+
+function stageVersion(
+  tag,
+  cargoManifestPath = path.join(repositoryRoot, 'zeroshot-rust', 'Cargo.toml'),
+  cargoLockPath = path.join(repositoryRoot, 'Cargo.lock')
+) {
+  const version = normalizeVersion(tag);
+  const cargoToml = fs.readFileSync(cargoManifestPath, 'utf8');
+  const currentVersion = cargoVersion(cargoToml);
+  const stagedManifest = cargoToml.replace(
+    /(\[package\][\s\S]*?^version\s*=\s*")[^"]+(")/m,
+    `$1${version}$2`
+  );
+  if (cargoVersion(stagedManifest) !== version) {
+    throw new Error('RUST_VERSION_STAGE_FAILED: Cargo.toml package version was not updated');
+  }
+
+  const cargoLock = fs.readFileSync(cargoLockPath, 'utf8');
+  const lockPattern = /(\[\[package\]\]\r?\nname = "zeroshot-rust"\r?\nversion = ")[^"]+(")/;
+  if (!lockPattern.test(cargoLock)) {
+    throw new Error('RUST_VERSION_STAGE_FAILED: Cargo.lock has no zeroshot-rust package entry');
+  }
+  const stagedLock = cargoLock.replace(lockPattern, `$1${version}$2`);
+  fs.writeFileSync(cargoManifestPath, stagedManifest);
+  fs.writeFileSync(cargoLockPath, stagedLock);
+  return { currentVersion, version };
 }
 
 function checkVersionCoupling(
@@ -247,14 +310,47 @@ function checkBuildJob(jobs) {
     failIntegrity('Windows bundled-SQLite MSVC setup is missing');
   }
 
+  const stage = findStep(job, 'Stage planned Rust package version');
+  if (
+    stage.if !== undefined ||
+    stage.run?.trim() !== 'node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"'
+  ) {
+    failIntegrity('planned Rust version staging is missing before locked target builds');
+  }
+  const coupling = findStep(job, 'Verify Rust and release tag versions are coupled');
+  if (
+    coupling.if !== undefined ||
+    coupling.run?.trim() !== 'node scripts/rust-distribution.js check-version --tag "$RELEASE_TAG"'
+  ) {
+    failIntegrity('staged Rust version coupling verification is missing');
+  }
+
   const build = findStep(job, 'Build standalone Rust release binary');
   const exactBuild =
     'cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}';
-  if (build.if !== undefined || build.run?.trim() !== exactBuild) {
+  if (
+    build.if !== undefined ||
+    build.run?.trim() !== exactBuild ||
+    job.steps.indexOf(stage) > job.steps.indexOf(build) ||
+    job.steps.indexOf(coupling) > job.steps.indexOf(build)
+  ) {
     failIntegrity(`rust-binaries build step must execute exactly: ${exactBuild}`);
   }
+  const nativeSmoke = findStep(job, 'Run standalone Rust release binary');
+  if (
+    nativeSmoke.if !== undefined ||
+    nativeSmoke.run?.trim() !== 'node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"'
+  ) {
+    failIntegrity('native Rust executable smoke step must execute the built binary exactly');
+  }
   findStep(job, 'Package target archive');
-  findStep(job, 'Run executable extracted from target archive');
+  const archiveSmoke = findStep(job, 'Run executable extracted from target archive');
+  const exactArchiveSmoke = `node scripts/rust-distribution.js smoke-archive \\
+  --target "\${{ matrix.target }}" \\
+  --archive "rust-release/zeroshot-rust-\${RELEASE_TAG}-\${{ matrix.target }}.tar.gz"`;
+  if (archiveSmoke.if !== undefined || archiveSmoke.run?.trim() !== exactArchiveSmoke) {
+    failIntegrity('archive smoke step must execute the extracted target binary exactly');
+  }
   const upload = findStep(job, 'Upload target archive');
   if (
     upload.if !== undefined ||
@@ -325,11 +421,12 @@ function checkPublicationJobs(document, jobs) {
   }
   const recovery = jobs['rust-recovery-plan'];
   const immutable = findStep(recovery, 'Verify immutable matching release tag');
+  const recoveryLines = immutable.run?.split(/\r?\n/).map((line) => line.trim()) || [];
   if (
-    !immutable.run?.includes('git rev-parse "${RELEASE_TAG}^{commit}"') ||
-    !immutable.run?.includes('git merge-base --is-ancestor')
+    !recoveryLines.includes('tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"') ||
+    !recoveryLines.includes('if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then')
   ) {
-    failIntegrity('Rust recovery does not verify the immutable matching tag and main ancestry');
+    failIntegrity('Rust recovery does not execute immutable tag and main ancestry verification');
   }
   const publish = jobs['rust-publish'];
   exactJson(
@@ -340,12 +437,13 @@ function checkPublicationJobs(document, jobs) {
   if (!publish.if?.includes("inputs.action == 'recover-rust-distribution'")) {
     failIntegrity('post-tag Rust publication is not recoverable');
   }
+  const assets = findStep(publish, 'Verify existing assets and upload only missing names');
   if (
-    !findStep(publish, 'Idempotently attach verified binaries to GitHub Release').run?.includes(
-      '--clobber'
-    )
+    assets.if !== undefined ||
+    assets.run?.trim() !==
+      'node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release'
   ) {
-    failIntegrity('GitHub Release asset recovery is not idempotent');
+    failIntegrity('GitHub Release assets are not verified and uploaded without overwrite');
   }
   const npmPublish = findStep(publish, 'Idempotently publish standalone Rust shim package').run;
   if (!npmPublish?.includes('npm view "$package" version') || !npmPublish.includes('npm publish')) {
@@ -421,6 +519,13 @@ function run() {
     process.stdout.write(`dry-run produced and verified ${targets.length} archives\n`);
     return;
   }
+  if (command === 'stage-version') {
+    const staged = stageVersion(argument('tag'));
+    process.stdout.write(
+      `staged Rust package version ${staged.currentVersion} -> ${staged.version}\n`
+    );
+    return;
+  }
   if (command === 'check-version') {
     const version = checkVersionCoupling(argument('tag'));
     process.stdout.write(`Rust package version matches release tag: ${version}\n`);
@@ -469,6 +574,13 @@ function run() {
     process.stdout.write(`Rust release archive executable exited 0: ${target}\n`);
     return;
   }
+  if (command === 'publish-assets') {
+    const result = publishAssets({ tag: argument('tag'), directory: argument('dir') });
+    process.stdout.write(
+      `verified ${result.existing.length} existing assets and uploaded ${result.uploaded.length} missing assets\n`
+    );
+    return;
+  }
   if (command === 'check-repository') {
     checkRepository();
     process.stdout.write(
@@ -477,7 +589,7 @@ function run() {
     return;
   }
   throw new Error(
-    'usage: rust-distribution.js <package|manifest|dry-run|check-version|check-repository|print-version|smoke|smoke-archive>'
+    'usage: rust-distribution.js <package|manifest|dry-run|stage-version|check-version|check-repository|print-version|smoke|smoke-archive|publish-assets>'
   );
 }
 
@@ -499,11 +611,13 @@ module.exports = {
   createManifest,
   extractExecutable,
   cargoVersion,
+  publishAssets,
   normalizeVersion,
   packageTarget,
   parseChecksumManifest,
   sha256,
   targetForHost,
+  stageVersion,
   targets,
   verifyChecksum,
 };

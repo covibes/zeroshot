@@ -245,12 +245,6 @@ jobs:
         run: echo "tag=v$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      - name: Enforce Rust release version coupling before native builds
-        if: steps.semantic-plan.outputs.version != ''
-        env:
-          RELEASE_VERSION: ${{ steps.semantic-plan.outputs.version }}
-        run: node scripts/rust-distribution.js check-version --tag "v$RELEASE_VERSION"
-        shell: bash
 
   rust-recovery-plan:
     outputs:
@@ -303,11 +297,10 @@ jobs:
             echo "::error::release tag $RELEASE_TAG resolves to $tag_commit, not $RELEASE_COMMIT"
             exit 1
           }
-          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main || {
+          if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then
             echo "::error::release commit $RELEASE_COMMIT is not an ancestor of main"
             exit 1
-          }
-          node scripts/rust-distribution.js check-version --tag "$RELEASE_TAG"
+          fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   rust-binaries:
@@ -395,6 +388,10 @@ jobs:
           if (-not $installation) {
             throw 'MSVC C toolchain required by bundled SQLite is unavailable'
           }
+
+      - name: Stage planned Rust package version
+        run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"
+        shell: bash
 
       - name: Verify Rust and release tag versions are coupled
         run: node scripts/rust-distribution.js check-version --tag "$RELEASE_TAG"
@@ -528,6 +525,7 @@ jobs:
             echo "::error::semantic-release version changed after native artifacts: expected=$EXPECTED_VERSION actual=$actual_version"
             exit 1
           fi
+          node scripts/rust-distribution.js stage-version --tag "v$EXPECTED_VERSION"
           node scripts/rust-distribution.js check-version --tag "v$EXPECTED_VERSION"
 
       - name: Run semantic-release
@@ -595,10 +593,10 @@ jobs:
           name: zeroshot-rust-${{ env.RELEASE_TAG }}
           path: rust-release
 
-      - name: Idempotently attach verified binaries to GitHub Release
+      - name: Verify existing assets and upload only missing names
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" rust-release/* --clobber
+        run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release
 
       - name: Stage coupled shim package version
         working-directory: npm/zeroshot-rust

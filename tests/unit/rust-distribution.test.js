@@ -114,6 +114,34 @@ describe('Rust release integration', function () {
     assert.strictEqual(distribution.checkVersionCoupling('v1.2.2', cargoToml), '1.2.2');
   });
 
+  it('stages the planned version in Cargo.toml and Cargo.lock before coupling', function () {
+    const directory = temporaryDirectory();
+    const manifestPath = path.join(directory, 'Cargo.toml');
+    const lockPath = path.join(directory, 'Cargo.lock');
+    fs.writeFileSync(
+      manifestPath,
+      '[package]\nname = "zeroshot-rust"\nversion = "0.1.0"\nedition = "2024"\n'
+    );
+    fs.writeFileSync(
+      lockPath,
+      'version = 4\n\n[[package]]\nname = "zeroshot-rust"\nversion = "0.1.0"\n'
+    );
+    try {
+      assert.deepStrictEqual(distribution.stageVersion('v6.10.3', manifestPath, lockPath), {
+        currentVersion: '0.1.0',
+        version: '6.10.3',
+      });
+      const stagedManifest = fs.readFileSync(manifestPath, 'utf8');
+      assert.strictEqual(distribution.checkVersionCoupling('v6.10.3', stagedManifest), '6.10.3');
+      assert.match(
+        fs.readFileSync(lockPath, 'utf8'),
+        /name = "zeroshot-rust"\nversion = "6\.10\.3"/
+      );
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('causally guards build, matrix, upload, publication, recovery, and shim integrity', function () {
     const workflow = fs.readFileSync(
       path.join(projectRoot, '.github', 'workflows', 'release.yml'),
@@ -132,6 +160,30 @@ describe('Rust release integration', function () {
         ),
       /build step must execute exactly/
     );
+    for (const [before, after, error] of [
+      [
+        'run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
+        'run: echo node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
+        /version staging/,
+      ],
+      [
+        'run: node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
+        'run: echo node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
+        /native Rust executable smoke/,
+      ],
+      [
+        'node scripts/rust-distribution.js smoke-archive \\',
+        'echo node scripts/rust-distribution.js smoke-archive \\',
+        /archive smoke step/,
+      ],
+      [
+        'if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
+        'if ! echo git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
+        /main ancestry verification/,
+      ],
+    ]) {
+      assert.throws(() => distribution.checkRepository(mutation(workflow, before, after)), error);
+    }
     assert.throws(
       () =>
         distribution.checkRepository(
@@ -221,10 +273,85 @@ describe('Rust release integration', function () {
     assert.throws(
       () =>
         distribution.checkRepository(
-          mutation(workflow, ' rust-release/* --clobber', ' rust-release/*')
+          mutation(
+            workflow,
+            'run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release',
+            'run: gh release upload "$RELEASE_TAG" rust-release/* --clobber'
+          )
         ),
-      /asset recovery is not idempotent/
+      /assets are not verified and uploaded without overwrite/
     );
+  });
+});
+
+describe('Rust release asset recovery', function () {
+  it('verifies existing assets before uploading only missing names', function () {
+    const directory = temporaryDirectory();
+    const binaryPath = path.join(directory, 'fixture-binary');
+    fs.writeFileSync(binaryPath, 'binary');
+    for (const { target } of distribution.targets) {
+      distribution.packageTarget({
+        target,
+        version: '6.10.3',
+        binaryPath,
+        outputDirectory: directory,
+      });
+    }
+    distribution.createManifest({ version: '6.10.3', directory });
+    const existingName = distribution.archiveName('6.10.3', distribution.targets[0].target);
+    const uploads = [];
+    const invokeGh = (args) => {
+      if (args[1] === 'view') return JSON.stringify({ assets: [{ name: existingName }] });
+      if (args[1] === 'download') {
+        const output = args[args.indexOf('--dir') + 1];
+        fs.writeFileSync(
+          path.join(output, existingName),
+          fs.readFileSync(path.join(directory, existingName))
+        );
+        return '';
+      }
+      if (args[1] === 'upload') {
+        uploads.push(path.basename(args[3]));
+        assert(!args.includes('--clobber'));
+        return '';
+      }
+      throw new Error(`unexpected gh invocation: ${args.join(' ')}`);
+    };
+    try {
+      const result = distribution.publishAssets({
+        tag: 'v6.10.3',
+        directory,
+        invokeGh,
+      });
+      assert.deepStrictEqual(result.existing, [existingName]);
+      assert.strictEqual(result.uploaded.length, distribution.targets.length);
+      assert.deepStrictEqual(uploads, result.uploaded);
+
+      const conflictUploads = [];
+      assert.throws(
+        () =>
+          distribution.publishAssets({
+            tag: 'v6.10.3',
+            directory,
+            invokeGh: (args) => {
+              if (args[1] === 'view') {
+                return JSON.stringify({ assets: [{ name: existingName }] });
+              }
+              if (args[1] === 'download') {
+                const output = args[args.indexOf('--dir') + 1];
+                fs.writeFileSync(path.join(output, existingName), 'different');
+                return '';
+              }
+              conflictUploads.push(args);
+              return '';
+            },
+          }),
+        /RELEASE_ASSET_CONFLICT.*differs/
+      );
+      assert.deepStrictEqual(conflictUploads, []);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

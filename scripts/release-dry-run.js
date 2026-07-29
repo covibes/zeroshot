@@ -5,6 +5,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
 const projectRoot = path.resolve(__dirname, '..');
 
@@ -55,7 +56,7 @@ async function main() {
       {
         ...releaseConfig,
         branches: [branch],
-        repositoryUrl: mirrorPath,
+        repositoryUrl: pathToFileURL(mirrorPath).href,
         plugins: validationPlugins(releaseConfig),
         dryRun: true,
         ci: false,
