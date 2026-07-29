@@ -350,6 +350,7 @@ struct MapVoidScope<'a> {
 
 struct VoidScope<'a> {
     map_indices: &'a [u64],
+    authorization: Position,
     reason: ExecutionVoidReason,
 }
 
@@ -1001,6 +1002,7 @@ impl<'a> Engine<'a> {
                         branch,
                         VoidScope {
                             map_indices: traversal.map_indices,
+                            authorization: join_position,
                             reason: ExecutionVoidReason::ParallelJoin,
                         },
                     );
@@ -1084,6 +1086,7 @@ impl<'a> Engine<'a> {
                     MapVoidScope {
                         common: VoidScope {
                             map_indices: traversal.map_indices,
+                            authorization: terminal.position(),
                             reason: ExecutionVoidReason::MapTerminal,
                         },
                         winner_scope: terminal_scope,
@@ -1282,10 +1285,13 @@ impl<'a> Engine<'a> {
                         .occurrence
                         .map_indices
                         .starts_with(scope.map_indices)
-                    && matches!(
-                        execution.state,
-                        DurableExecutionState::Active | DurableExecutionState::Voided { .. }
-                    )
+                    && match &execution.state {
+                        DurableExecutionState::Active => true,
+                        DurableExecutionState::Voided { position } => {
+                            *position > scope.authorization
+                        }
+                        DurableExecutionState::Settled { .. } => false,
+                    }
             })
             .map(|execution| {
                 (
@@ -1321,10 +1327,13 @@ impl<'a> Engine<'a> {
                         .occurrence
                         .map_indices
                         .starts_with(scope.winner_scope)
-                    && matches!(
-                        execution.state,
-                        DurableExecutionState::Active | DurableExecutionState::Voided { .. }
-                    )
+                    && match &execution.state {
+                        DurableExecutionState::Active => true,
+                        DurableExecutionState::Voided { position } => {
+                            *position > scope.common.authorization
+                        }
+                        DurableExecutionState::Settled { .. } => false,
+                    }
             })
             .map(|execution| {
                 (

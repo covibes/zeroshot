@@ -406,6 +406,67 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
         json!({"owned_loser":1,"owned_winner":1}),
     )
     .await;
+    let mut premature_parallel = execution(
+        ExecutionSpec::new(1, 1, "owned_loser").settled_at(2),
+        success(),
+    );
+    premature_parallel.state = DurableExecutionState::Voided {
+        position: Position::new(2).unwrap(),
+    };
+    let later_parallel_winner = execution(
+        ExecutionSpec::new(2, 2, "owned_winner").settled_at(5),
+        success(),
+    );
+    assert_eq!(
+        FullV1Reducer::new(&parallel)
+            .reduce(input(
+                &json!({}),
+                &[premature_parallel, later_parallel_winner],
+            ))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
+
+    let map_body = json!({
+        "kind":"seq","name":"causal_map_body","state":boundary_state(),
+        "children":[step("causal_map_work",1),succeed("causal_map_item_done")],
+        "promotedStatePaths":[]
+    });
+    let causal_map = json!({
+        "kind":"map","name":"causal_map","state":boundary_state(),
+        "over":{"source":"state","path":["items"]},"maxItems":2,
+        "body":map_body,"promotedStatePaths":[]
+    });
+    let map_graph = verified(
+        seq(vec![causal_map, succeed("causal_map_empty_done")]),
+        json!({"causal_map_work":1}),
+    )
+    .await;
+    let map_winner = execution(
+        ExecutionSpec::new(1, 1, "causal_map_work")
+            .indices(vec![0])
+            .settled_at(5),
+        success(),
+    );
+    let mut premature_map_void = execution(
+        ExecutionSpec::new(2, 2, "causal_map_work")
+            .indices(vec![1])
+            .settled_at(2),
+        success(),
+    );
+    premature_map_void.state = DurableExecutionState::Voided {
+        position: Position::new(2).unwrap(),
+    };
+    assert_eq!(
+        FullV1Reducer::new(&map_graph)
+            .reduce(input(
+                &json!({"items":[null,null]}),
+                &[premature_map_void, map_winner],
+            ))
+            .unwrap_err(),
+        ReducerError::InconsistentHistory
+    );
+
     let mut owned = execution(
         ExecutionSpec::new(1, 1, "owned_loser").settled_at(2),
         success(),
