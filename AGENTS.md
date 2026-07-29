@@ -182,13 +182,17 @@ It owns bounded provider policy and deterministic identity only; keep role contr
 configuration, credential acquisition, executable codecs, concrete drivers, protocol descriptors,
 and Node registry synchronization outside it.
 Daemon locators are owner-only connection hints, never liveness evidence. Startup holds the
-profile lock only through stale authenticated-initialize probing and atomic bind/publication;
-upgrade authorization must validate the exact route, profile digest, daemon nonce, and rotating
-256-bit capability before backend construction. Graceful shutdown stops acceptance, bounds active
-connection drain, releases the loopback socket, and removes only its matching locator. The daemon
-host reuses the server crate's WebSocket binding and dispatcher; keep protocol definitions,
-compatibility, credential resolution, ledger/catalog/recovery, runtime/scheduler/pools, exporter,
-CLI, hosted/cloud control-plane, Node-daemon, and workspace behavior outside these modules.
+profile lock only through stale authenticated-initialize probing and atomic bind/publication.
+Upgrade authorization uses domain-separated client/server challenge proofs: capability and daemon
+nonce are never transmitted, the server proof is verified before initialize, and the exact route,
+profile digest, nonce, and rotating 256-bit capability must be proven before backend construction.
+Ordinary active-session capacity applies only after an authenticated upgrade; pending handshakes
+and full ordinary capacity must never starve authenticated liveness. Graceful shutdown stops
+acceptance, bounds active connection drain, releases the loopback socket, and removes only its
+matching locator. The daemon host reuses the server crate's WebSocket binding and dispatcher; keep
+protocol definitions, compatibility, credential resolution, ledger/catalog/recovery,
+runtime/scheduler/pools, exporter, CLI, hosted/cloud control-plane, Node-daemon, and workspace
+behavior outside these modules.
 `ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair
 scheduler are engine-private seams. They own local dispatch placement, fencing, deadlines,
 workspace conflict arbitration, cancellation, and local-process containment only. They do not own

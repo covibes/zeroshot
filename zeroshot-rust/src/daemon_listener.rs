@@ -19,7 +19,7 @@ use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
-use crate::daemon_auth::{AuthorizationCallback, DAEMON_ROUTE, DaemonCredentials};
+use crate::daemon_auth::{AuthorizationCallback, ConnectionPurpose, DAEMON_ROUTE, DaemonCredentials};
 use crate::daemon_discovery::{
     CLUSTER_PROTOCOL, DAEMON_PROTOCOL, DaemonLocator, DiscoveryError, NativeProfile,
     acquire_start_guard, read_locator_locked, remove_locator_if_matches,
@@ -70,10 +70,7 @@ pub struct DaemonListener {
 }
 
 impl DaemonListener {
-    pub async fn start<F>(
-        profile: NativeProfile,
-        factory: F,
-    ) -> Result<Self, DaemonListenerError>
+    pub async fn start<F>(profile: NativeProfile, factory: F) -> Result<Self, DaemonListenerError>
     where
         F: NativeBackendFactory + Send + Sync + 'static,
     {
@@ -93,11 +90,10 @@ impl DaemonListener {
         }
         let lock_profile = profile.clone();
         let lock_timeout = config.startup_lock_timeout;
-        let guard = tokio::task::spawn_blocking(move || {
-            acquire_start_guard(&lock_profile, lock_timeout)
-        })
-        .await
-        .map_err(|_| DaemonListenerError::Task)??;
+        let guard =
+            tokio::task::spawn_blocking(move || acquire_start_guard(&lock_profile, lock_timeout))
+                .await
+                .map_err(|_| DaemonListenerError::Task)??;
 
         let previous_secrets = if let Some(existing) = read_locator_locked(&profile)? {
             if probe_liveness(&existing, config.liveness_timeout).await {
@@ -126,13 +122,13 @@ impl DaemonListener {
         };
 
         let shutdown = Arc::new(Notify::new());
-        let accept_task = tokio::spawn(run_accept_loop(
-            tcp,
-            Arc::new(factory),
+        let accept_task = tokio::spawn(run_accept_loop(AcceptLoop {
+            listener: tcp,
+            factory: Arc::new(factory),
             credentials,
-            Arc::clone(&shutdown),
+            shutdown: Arc::clone(&shutdown),
             config,
-        ));
+        }));
         if let Err(error) = replace_locator_locked(&profile, &locator) {
             accept_task.abort();
             let _ = accept_task.await;
@@ -160,11 +156,10 @@ impl DaemonListener {
         }
         let profile = self.profile.clone();
         let locator = self.locator.clone();
-        let removed = tokio::task::spawn_blocking(move || {
-            remove_locator_if_matches(&profile, &locator)
-        })
-        .await
-        .map_err(|_| DaemonListenerError::Task)??;
+        let removed =
+            tokio::task::spawn_blocking(move || remove_locator_if_matches(&profile, &locator))
+                .await
+                .map_err(|_| DaemonListenerError::Task)??;
         let _ = removed;
         Ok(())
     }
@@ -196,13 +191,16 @@ async fn probe_liveness_inner(locator: &DaemonLocator) -> Result<bool, ()> {
         .into_client_request()
         .map_err(|_| ())?;
     let address = loopback_address(&request).ok_or(())?;
-    DaemonCredentials::from_locator(locator)
-        .apply_to_request(&mut request)
+    let expectation = DaemonCredentials::from_locator(locator)
+        .prepare_request(&mut request, ConnectionPurpose::Liveness)
         .map_err(|_| ())?;
     let stream = TcpStream::connect(address).await.map_err(|_| ())?;
-    let (mut websocket, _) = tokio_tungstenite::client_async(request, stream)
+    let (mut websocket, response) = tokio_tungstenite::client_async(request, stream)
         .await
         .map_err(|_| ())?;
+    if !expectation.verify(&response) {
+        return Ok(false);
+    }
     let initialize = serde_json::json!({
         "jsonrpc": JSON_RPC_VERSION,
         "id": "daemon-liveness",
@@ -222,11 +220,13 @@ async fn probe_liveness_inner(locator: &DaemonLocator) -> Result<bool, ()> {
             continue;
         };
         let response: Value = serde_json::from_str(text.as_ref()).map_err(|_| ())?;
-        return Ok(response.get("id") == Some(&Value::String("daemon-liveness".to_owned()))
-            && response
-                .pointer("/result/protocolVersion")
-                .and_then(Value::as_str)
-                == Some(PROTOCOL_VERSION));
+        return Ok(
+            response.get("id") == Some(&Value::String("daemon-liveness".to_owned()))
+                && response
+                    .pointer("/result/protocolVersion")
+                    .and_then(Value::as_str)
+                    == Some(PROTOCOL_VERSION),
+        );
     }
     Ok(false)
 }
@@ -255,15 +255,25 @@ fn loopback_address(
     ))
 }
 
-async fn run_accept_loop<F>(
+struct AcceptLoop<F> {
     listener: TcpListener,
     factory: Arc<F>,
     credentials: DaemonCredentials,
     shutdown: Arc<Notify>,
     config: ListenerConfig,
-) where
+}
+
+async fn run_accept_loop<F>(host: AcceptLoop<F>)
+where
     F: NativeBackendFactory + Send + Sync + 'static,
 {
+    let AcceptLoop {
+        listener,
+        factory,
+        credentials,
+        shutdown,
+        config,
+    } = host;
     let permits = Arc::new(Semaphore::new(config.max_active_connections));
     let mut connections = JoinSet::new();
     loop {
@@ -275,15 +285,19 @@ async fn run_accept_loop<F>(
             }
             accepted = listener.accept() => {
                 let Ok((stream, peer)) = accepted else { break };
-                let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else {
-                    drop(stream);
-                    continue;
-                };
                 let factory = Arc::clone(&factory);
                 let credentials = credentials.clone();
+                let permits = Arc::clone(&permits);
                 connections.spawn(async move {
-                    let _permit = permit;
-                    serve_connection(stream, peer, factory, credentials, config.handshake_timeout).await;
+                    serve_connection(ConnectionTask {
+                        stream,
+                        peer,
+                        factory,
+                        credentials,
+                        permits,
+                        handshake_timeout: config.handshake_timeout,
+                        liveness_timeout: config.liveness_timeout,
+                    }).await;
                 });
             }
         }
@@ -304,21 +318,60 @@ async fn run_accept_loop<F>(
     }
 }
 
-async fn serve_connection<F>(
+struct ConnectionTask<F> {
     stream: TcpStream,
     peer: SocketAddr,
     factory: Arc<F>,
     credentials: DaemonCredentials,
+    permits: Arc<Semaphore>,
     handshake_timeout: Duration,
-) where
+    liveness_timeout: Duration,
+}
+
+async fn serve_connection<F>(connection: ConnectionTask<F>)
+where
     F: NativeBackendFactory + Send + Sync + 'static,
 {
-    let handshake = accept_hdr_async_with_config(
+    let ConnectionTask {
         stream,
-        AuthorizationCallback(credentials),
-        Some(websocket_config()),
-    );
-    let Ok(Ok(websocket)) = timeout(handshake_timeout, handshake).await else {
+        peer,
+        factory,
+        credentials,
+        permits,
+        handshake_timeout,
+        liveness_timeout,
+    } = connection;
+    let (callback, receipt) = AuthorizationCallback::new(credentials);
+    let handshake = accept_hdr_async_with_config(stream, callback, Some(websocket_config()));
+    let Ok(Ok(mut websocket)) = timeout(handshake_timeout, handshake).await else {
+        return;
+    };
+    let Some(purpose) = receipt.take() else {
+        return;
+    };
+    if purpose == ConnectionPurpose::Liveness {
+        let Ok(Some(Ok(Message::Text(request)))) =
+            timeout(liveness_timeout, websocket.next()).await
+        else {
+            return;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(request.as_ref()) else {
+            return;
+        };
+        if value.get("method").and_then(Value::as_str) != Some("initialize") {
+            return;
+        }
+        let context = ConnectionContext {
+            peer_label: Some(peer.to_string()),
+            ..ConnectionContext::default()
+        };
+        let dispatcher = dispatcher_for_route(factory.as_ref(), context);
+        let response = dispatcher.dispatch(request.as_ref()).await;
+        let _ = websocket.send(Message::Text(response.into())).await;
+        let _ = websocket.close(None).await;
+        return;
+    }
+    let Ok(_permit) = permits.try_acquire_owned() else {
         return;
     };
 

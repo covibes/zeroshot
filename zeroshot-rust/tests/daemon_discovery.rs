@@ -1,5 +1,7 @@
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::sync::mpsc;
 use std::time::Duration;
 
 #[path = "support/temp_profile.rs"]
@@ -31,15 +33,41 @@ fn atomic_rotation_is_owner_only_and_old_owner_cannot_remove_winner() {
     let winner = locator(&profile, 30102);
 
     replace_locator(&profile.profile, &first).expect("publish first locator");
+    let path = profile.profile.locator_path();
+    let (opened_tx, opened_rx) = mpsc::sync_channel(0);
+    let (rotated_tx, rotated_rx) = mpsc::sync_channel(0);
+    let reader = std::thread::spawn(move || {
+        let mut opened_before_rotation = fs::File::open(path).expect("open old locator");
+        opened_tx.send(()).expect("signal opened locator");
+        rotated_rx.recv().expect("wait for rotation");
+        let mut bytes = Vec::new();
+        opened_before_rotation
+            .read_to_end(&mut bytes)
+            .expect("read opened locator");
+        serde_json::from_slice::<DaemonLocator>(&bytes).expect("complete old locator")
+    });
+    opened_rx.recv().expect("reader opened old locator");
     replace_locator(&profile.profile, &winner).expect("rotate locator");
+    rotated_tx.send(()).expect("release reader");
+    assert_eq!(
+        reader.join().expect("reader thread"),
+        first,
+        "an open reader must retain the complete pre-rotation inode"
+    );
 
     let metadata = fs::metadata(profile.profile.locator_path()).expect("locator metadata");
     assert_eq!(metadata.mode() & 0o777, 0o600);
     assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
     assert!(!remove_locator_if_matches(&profile.profile, &first).expect("old owner removal"));
-    assert_eq!(read_locator(&profile.profile).expect("read locator"), Some(winner.clone()));
+    assert_eq!(
+        read_locator(&profile.profile).expect("read locator"),
+        Some(winner.clone())
+    );
     assert!(remove_locator_if_matches(&profile.profile, &winner).expect("winner removal"));
-    assert_eq!(read_locator(&profile.profile).expect("locator absent"), None);
+    assert_eq!(
+        read_locator(&profile.profile).expect("locator absent"),
+        None
+    );
 }
 
 #[test]
@@ -69,7 +97,8 @@ fn locator_permissions_and_profile_permissions_fail_closed() {
 #[test]
 fn oversized_locator_is_rejected_without_partial_parsing() {
     let profile = TempProfile::new("oversize");
-    let _guard = acquire_start_guard(&profile.profile, Duration::from_secs(1)).expect("profile dir");
+    let _guard =
+        acquire_start_guard(&profile.profile, Duration::from_secs(1)).expect("profile dir");
     fs::write(
         profile.profile.locator_path(),
         vec![b'x'; MAX_LOCATOR_BYTES as usize + 1],

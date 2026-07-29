@@ -19,7 +19,6 @@ use zeroshot_engine::NativeBackendFactory;
 mod temp_profile;
 pub use temp_profile::TempProfile;
 
-
 #[derive(Clone, Default)]
 pub struct CountingFactory {
     pub created: Arc<AtomicUsize>,
@@ -75,7 +74,7 @@ pub async fn authenticated_initialize(locator: &DaemonLocator) -> serde_json::Va
         .as_str()
         .into_client_request()
         .expect("valid daemon endpoint");
-    credentials
+    let expectation = credentials
         .apply_to_request(&mut request)
         .expect("valid daemon credentials");
     let address = request
@@ -86,9 +85,13 @@ pub async fn authenticated_initialize(locator: &DaemonLocator) -> serde_json::Va
     let stream = TcpStream::connect(address)
         .await
         .expect("daemon loopback connection");
-    let (mut websocket, _) = tokio_tungstenite::client_async(request, stream)
+    let (mut websocket, response) = tokio_tungstenite::client_async(request, stream)
         .await
         .expect("authorized WebSocket handshake");
+    assert!(
+        expectation.verify(&response),
+        "daemon server possession proof"
+    );
     websocket
         .send(Message::Text(
             serde_json::json!({

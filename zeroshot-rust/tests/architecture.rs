@@ -538,6 +538,10 @@ fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary()
         "remove_locator_if_matches",
         "openengine.cluster/v1",
         "zeroshot.daemon/v1",
+        "zeroshot.daemon/v1/client-auth",
+        "zeroshot.daemon/v1/server-auth",
+        "ConnectionPurpose::Liveness",
+        "expectation.verify",
     ] {
         assert!(
             daemon.contains(required),
