@@ -157,6 +157,8 @@ function resolveRuntimeCliFeatures(
   const detected = detectRuntimeProviderCliFeatures(provider);
   return {
     ...overrides,
+    supportsResume:
+      detected.supportsResume === true && overrides.supportsResume !== false,
     supportsWebSearch:
       detected.supportsWebSearch === true && overrides.supportsWebSearch !== false,
   };

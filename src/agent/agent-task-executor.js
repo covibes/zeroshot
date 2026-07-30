@@ -2169,7 +2169,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
     isolatedPendingLaunch = {
       pendingLaunch: true,
       cancelled: false,
-      async kill(reason = 'Task killed') {
+      async kill(reason = 'Task killed', sourceError = null) {
         isolatedPendingLaunch.cancelled = true;
         if (cancellation) return cancellation;
         cancellation = (async () => {
@@ -2213,6 +2213,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
         if (termination?.forced === false) cancellation = null;
         if (!resolved) {
           const error =
+            sourceError ||
             timeoutError ||
             new Error(
               termination?.forced === false
@@ -2279,7 +2280,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
         resolved = true;
         resolve(spawnedTaskId);
       } catch (error) {
-        const termination = await isolatedPendingLaunch.kill(error.message);
+        const termination = await isolatedPendingLaunch.kill(error.message, error);
         if (!resolved) {
           rejectLaunch(error, { retainHandle: termination?.forced === false });
         }
@@ -2289,7 +2290,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
     proc.on('error', async (error) => {
       clearTimeout(spawnTimeout);
       if (resolved || isolatedPendingLaunch.cancelled) return;
-      const termination = await isolatedPendingLaunch.kill(error.message);
+      const termination = await isolatedPendingLaunch.kill(error.message, error);
       if (termination?.forced === false && !resolved) {
         rejectLaunch(error, { retainHandle: true });
       }

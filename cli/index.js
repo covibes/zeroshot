@@ -2843,9 +2843,14 @@ taskCmd
   .option('--provider <provider>', `Provider to use (${PROVIDER_CHOICES})`)
   .option('--model <model>', 'Model id override for the provider')
   .option('--model-level <level>', 'Model level override (level1, level2, level3)')
-  .option('--reasoning-effort <effort>', 'Reasoning effort (low, medium, high, xhigh, max)')
-  .option('-r, --resume <sessionId>', 'Resume a specific provider session (Claude or Codex)')
-  .option('-c, --continue', 'Continue the most recent Claude session (claude only)')
+  .option(
+    '-r, --resume <sessionId>',
+    'Resume a specific provider session (Claude, Codex, or OpenCode)'
+  )
+  .option(
+    '-c, --continue',
+    'Continue the most recent provider session (Claude or OpenCode)'
+  )
   .option(
     '-o, --output-format <format>',
     'Output format: stream-json (default), text, json',

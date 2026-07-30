@@ -807,6 +807,63 @@ process.exit(17);
   }
 });
 
+test('enabled search retains fail-closed resume proof with partial feature overrides', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-search-resume-proof-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+
+  try {
+    for (const provider of ['codex', 'opencode']) {
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify({ providerSettings: { [provider]: { webSearch: true } } })
+      );
+      const script =
+        provider === 'codex'
+          ? fakeCodexScript(`
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: codex exec --config --json\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('codex-cli 0.146.0\\n');
+  process.exit(0);
+}
+process.exit(17);
+`)
+          : `#!/usr/bin/env node
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: opencode run --format\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('1.0.137\\n');
+  process.exit(0);
+}
+process.exit(17);
+`;
+
+      withFakeProviderCli(provider, script, () =>
+        withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () => {
+          const response = runExecutable({
+            schemaVersion: 1,
+            command: 'build-command',
+            provider,
+            context: 'resume',
+            options: {
+              resumeSessionId: 'session-1',
+              cliFeatures: { supportsJson: true },
+            },
+          });
+          assert.equal(response.envelope.ok, false);
+          assert.match(response.envelope.error.message, /cannot safely run continuation context/);
+        })
+      );
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('build-command returns structured unsupported-capability for old Codex', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-web-search-old-'));
   const settingsFile = path.join(tempDir, 'settings.json');

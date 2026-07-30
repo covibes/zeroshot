@@ -66,9 +66,11 @@ Codex does **not** use `codex exec --search`: current `ExecCli` rejects that
 argument, while the top-level TUI flag does not configure noninteractive exec.
 The config override above matches the
 [Codex TypeScript SDK](https://github.com/openai/codex/blob/main/sdk/typescript/src/exec.ts)
-for fresh and resumed commands. OpenCode's environment control is documented by
-its [runtime flag](https://github.com/anomalyco/opencode/blob/main/packages/opencode/src/effect/runtime-flags.ts)
-and [web-search registration](https://github.com/anomalyco/opencode/blob/main/packages/opencode/src/tool/registry.ts).
+for fresh and resumed commands. OpenCode documents the environment control in
+its [web-search tool guide](https://opencode.ai/docs/tools/#websearch); the
+[versioned runtime flag](https://github.com/anomalyco/opencode/blob/v1.18.10/packages/opencode/src/effect/runtime-flags.ts)
+and [tool registration](https://github.com/anomalyco/opencode/blob/v1.18.10/packages/opencode/src/tool/registry.ts)
+show the corresponding bundled control.
 
 Claude, Gemini, Kiro, Copilot, Pi, and Gateway do not declare `webSearch`;
 setting it for those providers is rejected. No equally safe, explicit,

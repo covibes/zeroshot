@@ -53,9 +53,9 @@ function createAgent(startupError) {
     _publish(message) {
       published.push(message);
     },
-    async _spawnClaudeTask() {
+    _spawnClaudeTask() {
       spawnCalls += 1;
-      throw startupError;
+      return Promise.reject(startupError);
     },
   };
   return { agent, lifecycleEvents, published, getSpawnCalls: () => spawnCalls };
@@ -144,10 +144,36 @@ describe('Task startup capability errors', function () {
       lifecycleEvents.filter(({ event }) => event === 'RETRY_SCHEDULED').length,
       0
     );
-    assert.strictEqual(
-      lifecycleEvents.filter(({ event }) => event === 'TASK_FAILED').length,
-      1
-    );
-    assert(published.some(({ topic }) => topic === 'CLUSTER_FAILED'));
+    const taskFailed = lifecycleEvents.find(({ event }) => event === 'TASK_FAILED');
+    assert.deepStrictEqual(taskFailed.data, {
+      iteration: 0,
+      taskId: null,
+      error: original.message,
+      code: 'unsupported-capability',
+      permanent: true,
+      provider: 'codex',
+      capability: 'webSearch',
+      attempt: 1,
+    });
+    const clusterFailed = published.find(({ topic }) => topic === 'CLUSTER_FAILED');
+    assert(clusterFailed);
+    assert.deepStrictEqual(clusterFailed.content.data, {
+      reason: 'unsupported_capability',
+      agentId: agent.id,
+      role: agent.role,
+      code: 'unsupported-capability',
+      permanent: true,
+      provider: 'codex',
+      capability: 'webSearch',
+      error: original.message,
+    });
+    const agentError = published.find(({ topic }) => topic === 'AGENT_ERROR');
+    assert.strictEqual(agentError.content.data.code, 'unsupported-capability');
+    assert.strictEqual(agentError.content.data.permanent, true);
+    assert.strictEqual(agent.cluster.failureInfo.code, 'unsupported-capability');
+    assert.strictEqual(agent.cluster.failureInfo.permanent, true);
+    assert.strictEqual(agent.cluster.failureInfo.provider, 'codex');
+    assert.strictEqual(agent.cluster.failureInfo.capability, 'webSearch');
+    assert.strictEqual(agent.state, 'error');
   });
 });
