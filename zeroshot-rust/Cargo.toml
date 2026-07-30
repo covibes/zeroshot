@@ -17,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 async-trait.workspace = true
 fs2.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
 libc.workspace = true
 openengine-cluster-protocol.workspace = true
 openengine-cluster-server.workspace = true
@@ -27,11 +29,14 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Threading",

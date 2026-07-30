@@ -44,6 +44,9 @@ fn product_contains_the_required_native_files() {
         "src/artifact_store/local_cas.rs",
         "src/artifact_store/local_cas/filesystem.rs",
         "src/artifact_store/local_cas/operations.rs",
+        "src/daemon_auth.rs",
+        "src/daemon_discovery.rs",
+        "src/daemon_listener.rs",
         "src/execution.rs",
         "src/execution/driver.rs",
         "src/execution/local.rs",
@@ -67,6 +70,9 @@ fn product_contains_the_required_native_files() {
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
         "tests/execution_runtime_contract.rs",
+        "tests/daemon_auth.rs",
+        "tests/daemon_discovery.rs",
+        "tests/daemon_listener.rs",
         "tests/fault_contract.rs",
         "tests/local_cas.rs",
         "tests/local_execution_runtime.rs",
@@ -261,7 +267,6 @@ fn runtime_has_no_future_product_concerns() {
         "benchmark",
         "selector",
         "transport",
-        "daemon",
         "persistence",
         "verifier",
     ] {
@@ -516,4 +521,85 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
     let replay = read(&product_root().join("src/cluster_ledger/replay.rs"));
     assert!(replay.contains("fold_execution_context"));
     assert!(replay.contains("fold_execution_void"));
+}
+
+#[test]
+fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary() {
+    let daemon = rust_sources(&[
+        "src/daemon_auth.rs",
+        "src/daemon_discovery.rs",
+        "src/daemon_listener.rs",
+    ]);
+    for required in [
+        "authorize_request",
+        "accept_hdr_async_with_config",
+        "serve_websocket",
+        "binding_for_route",
+        "into_dispatcher",
+        "probe_liveness",
+        "remove_locator_if_matches",
+        "openengine.cluster/v1",
+        "zeroshot.daemon/v1",
+        "zeroshot.daemon/v1/client-auth",
+        "zeroshot.daemon/v1/server-auth",
+        "ConnectionPurpose::Liveness",
+        "expectation.verify",
+    ] {
+        assert!(
+            daemon.contains(required),
+            "missing native daemon boundary: {required}"
+        );
+    }
+    assert!(
+        !daemon.contains("ConnectionContext::new"),
+        "daemon host bypassed binding-injected connection identity"
+    );
+    for required in [
+        "#[cfg(unix)]\nmod platform",
+        "#[cfg(windows)]\nmod platform",
+        "FILE_FLAG_OPEN_REPARSE_POINT",
+        "PROTECTED_DACL_SECURITY_INFORMATION",
+        "MoveFileExW",
+        "validate_directory_shape(&directory)?",
+    ] {
+        assert!(
+            daemon.contains(required),
+            "daemon discovery lost a supported-platform security boundary: {required}"
+        );
+    }
+    for forbidden in [
+        "ClusterLedger",
+        "ExecutionRuntime",
+        "FairScheduler",
+        "ProviderPool",
+        "ClusterCatalog",
+        "RecoveryCoordinator",
+        "Exporter",
+        "Command::new",
+        "clap",
+        "hosted",
+        "cloud_control_plane",
+        "node_daemon",
+    ] {
+        assert!(
+            !daemon.contains(forbidden),
+            "native daemon crossed a non-goal boundary: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn manifest_has_no_client_testkit_or_node_dependencies() {
+    let manifest = read(&product_root().join("Cargo.toml"));
+    for forbidden_dependency in [
+        "openengine-cluster-client",
+        "openengine-cluster-testkit",
+        "node",
+        "npm",
+    ] {
+        assert!(
+            !manifest.contains(forbidden_dependency),
+            "forbidden product dependency: {forbidden_dependency}"
+        );
+    }
 }

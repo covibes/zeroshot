@@ -7,11 +7,14 @@ use architecture_support::{product_package, product_root, read, relative_files, 
 
 const _: fn() -> String = architecture_support::runtime_source;
 const _: fn(&[&str]) -> String = architecture_support::rust_sources;
-const EXPECTED_TOP_LEVEL_SOURCE_ENTRIES: [&str; 21] = [
+const EXPECTED_TOP_LEVEL_SOURCE_ENTRIES: [&str; 24] = [
     "artifact_store",
     "artifact_store.rs",
     "cluster_ledger",
     "cluster_ledger.rs",
+    "daemon_auth.rs",
+    "daemon_discovery.rs",
+    "daemon_listener.rs",
     "execution",
     "execution.rs",
     "fault",

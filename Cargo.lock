@@ -2093,6 +2093,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "fs2",
+ "futures-util",
+ "getrandom 0.3.4",
  "libc",
  "openengine-cluster-protocol",
  "openengine-cluster-server",
@@ -2103,7 +2105,8 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
- "windows-sys",
+ "tokio-tungstenite",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

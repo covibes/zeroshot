@@ -81,7 +81,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | SQLite ledger store          | `zeroshot-rust/src/cluster_ledger/store/sqlite.rs`, `store/sqlite/`     |
 | SQLite append/query helpers  | `zeroshot-rust/src/cluster_ledger/store/sqlite/{operations,queries}.rs` |
 | Ledger records/replay        | `zeroshot-rust/src/cluster_ledger/record.rs`, `replay.rs`               |
-| Full-v1 pure graph reducer    | `zeroshot-rust/src/full_v1_reducer.rs`                              |
+| Full-v1 pure graph reducer   | `zeroshot-rust/src/full_v1_reducer.rs`                                  |
 | Protocol ledger adapters     | `zeroshot-rust/src/cluster_ledger/adapters.rs`                          |
 | Artifact store port/fake     | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`         |
 | Product-local artifact CAS   | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`           |
@@ -98,6 +98,9 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native fault taxonomy        | `zeroshot-rust/src/fault/taxonomy.rs`                                   |
 | Native diagnostic redaction  | `zeroshot-rust/src/fault/redaction.rs`                                  |
 | Native observability         | `zeroshot-rust/src/observability.rs`                                    |
+| Native daemon discovery      | `zeroshot-rust/src/daemon_discovery.rs`                                 |
+| Native daemon authorization  | `zeroshot-rust/src/daemon_auth.rs`                                      |
+| Native loopback listener     | `zeroshot-rust/src/daemon_listener.rs`                                  |
 | Admission coordinator        | `crates/openengine-cluster-server/src/admission.rs`                     |
 | Admission durable ports      | `crates/openengine-cluster-server/src/admission/ports.rs`               |
 | Admission snapshot folding   | `crates/openengine-cluster-server/src/admission/snapshot.rs`            |
@@ -154,8 +157,9 @@ backend-neutral behavior observable through public dispatcher and typed subscrip
 The existing integration binaries remain the richer reference regression suite; their
 implementation-specific vectors are not represented as portable external certification.
 `zeroshot-rust/` owns the concrete `NativeBackend`, product-local `NativeBackendFactory`
-construction root, product-private artifact byte-store port/local CAS, and product-private,
-secret-free issue/source provider contracts. Artifact stages, bytes, roots, filesystem paths,
+construction root, product-private artifact byte-store port/local CAS, product-private,
+secret-free issue/source provider contracts, and native-profile daemon discovery,
+authorization, and loopback-listener lifecycle. Artifact stages, bytes, roots, filesystem paths,
 locks, and manifests remain product-private; only verified protocol `ArtifactRef` receipts cross
 the engine boundary. `LocalCasArtifactStore` takes an explicit root, is a single-writer local
 filesystem store, and must preserve ref-first release plus synchronized blob-then-ref publication.
@@ -177,6 +181,33 @@ workspace behavior outside it.
 It owns bounded provider policy and deterministic identity only; keep role contracts, registries,
 configuration, credential acquisition, executable codecs, concrete drivers, protocol descriptors,
 and Node registry synchronization outside it.
+Daemon locators are owner-only connection hints, never liveness evidence. Startup holds the
+profile lock only through stale authenticated-initialize probing and atomic bind/publication.
+Unix locator reads open `O_NOFOLLOW` first and enforce owner UID, mode 0600, and link count.
+Windows uses reparse-point-safe handles, a protected current-user-only DACL, handle link counts,
+and write-through atomic replacement. On either platform, extra links are insecure while an opened
+locator concurrently unlinked to zero links may yield its complete prior value; never reclassify
+that proven unlink-after-open race as corruption.
+Upgrade authorization uses domain-separated client/server challenge proofs: capability and daemon
+nonce are never transmitted, the server proof is verified before initialize, and the exact route,
+profile digest, nonce, and rotating 256-bit capability must be proven before backend construction.
+Probe results are closed: authenticated initialize is `Alive`, connection refusal or conclusive
+invalid-owner/protocol proof is `DefinitelyStale`, and capacity/reset/timeout ambiguity is
+`Indeterminate`; only `DefinitelyStale` authorizes locator removal and handoff. The response
+envelope is exactly correlated and its result is decoded and canonicalized through the
+authoritative protocol `InitializeResult`; partial or unknown result fields are not liveness.
+Pre-auth handshake task/FD ownership, authenticated liveness, and ordinary active sessions each
+have independent finite capacity. Full ordinary capacity cannot consume reserved liveness.
+These are resource bounds, not an availability claim against unbounded sustained unauthenticated
+arrivals on the single endpoint, which cannot be classified before reading the upgrade. Graceful
+shutdown uses one absolute deadline across acceptance stop, abort/reap, and matching locator
+cleanup; timeout paths still attempt cleanup and report the defined failure. Every accepted daemon
+session and liveness handshake enters through the server crate's `ConnectionBinding`, with an
+immutable profile-digest principal and tenant identity resolved before backend access; the daemon
+host never constructs `ConnectionContext` directly and reuses the server WebSocket dispatcher.
+Keep protocol definitions, compatibility,
+credential resolution, ledger/catalog/recovery, runtime/scheduler/pools, exporter, CLI,
+hosted/cloud control-plane, Node-daemon, and workspace behavior outside these modules.
 `ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair
 scheduler are engine-private seams. They own local dispatch placement, fencing, deadlines,
 workspace conflict arbitration, cancellation, and local-process containment only. They do not own
