@@ -100,6 +100,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native safe faults           | `zeroshot-rust/src/fault.rs`                                            |
 | Native fault taxonomy        | `zeroshot-rust/src/fault/taxonomy.rs`                                   |
 | Native diagnostic redaction  | `zeroshot-rust/src/fault/redaction.rs`                                  |
+| Native product error projection | `zeroshot-rust/src/product_errors.rs`                               |
 | Native observability         | `zeroshot-rust/src/observability.rs`                                    |
 | Native daemon discovery      | `zeroshot-rust/src/daemon_discovery.rs`                                 |
 | Native daemon authorization  | `zeroshot-rust/src/daemon_auth.rs`                                      |
@@ -267,6 +268,13 @@ them in `EngineFault`, observations, protocol responses, persistence, or exports
 injected through `ObservationSink` and uses only the fixed metrics and closed dimensions in
 `observability.rs`; retry disposition is descriptive data, not retry authorization. Do not install
 global telemetry state or caller-defined labels.
+`product_errors.rs` is the sole product-command/daemon-control error projection. It maps
+`EngineFault` only from its canonical safe code, summary, and action and maps authoritative
+protocol/backend errors directly through an allowlist; never reclassify protocol failures as
+engine faults. Its closed code, exit status, daemon-control status, messages, actions, and strict
+text/JSON renderers contain no source frames, diagnostics, provider/process data, paths, URLs,
+commands, stderr, session identities, or credentials. Keep routing, CLI parsing, export,
+telemetry, and retry authorization outside this module.
 A lost node-instance session terminates the affected execution; its descriptive fault disposition
 must never authorize retry or replacement-session recovery.
 `ClusterLedger` is the only native durable domain authority. Its closed/versioned record algebra,

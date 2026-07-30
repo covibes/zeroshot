@@ -10,6 +10,7 @@ pub mod full_v1_reducer;
 pub mod issue_provider;
 mod provider_value;
 pub mod required_proof;
+pub mod product_errors;
 pub mod scheduler;
 pub mod source_code_provider;
 pub mod worker_catalog;
