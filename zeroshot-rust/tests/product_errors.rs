@@ -6,7 +6,7 @@ use openengine_cluster_protocol::{
     INVALID_PHASE, INVALID_REQUEST, METHOD_NOT_FOUND, NOT_FOUND, NO_RETRYABLE_FRONTIER,
     PARSE_ERROR, RUN_CONFLICT, SCHEMA_VIOLATION, SLOW_CONSUMER, UNSUPPORTED_PROTOCOL_VERSION,
 };
-use openengine_cluster_server::{BackendError, BackendErrorKind};
+use openengine_cluster_server::{BackendError, BackendErrorKind, SERVER_BUSY};
 use serde_json::{json, Value};
 use zeroshot_engine::fault::{
     EvidenceClass, FaultContext, FaultFactory, FaultModule, ModuleEvidence, RawDiagnostic,
@@ -82,7 +82,7 @@ const ENGINE_CASES: [(EvidenceClass, ProductErrorCode, u8, DaemonControlStatus);
     ),
 ];
 
-const PROTOCOL_CASES: [(&str, ProductErrorCode, u8, DaemonControlStatus); 13] = [
+const PROTOCOL_CASES: [(&str, ProductErrorCode, u8, DaemonControlStatus); 14] = [
     (
         GRAPH_INVALID,
         ProductErrorCode::InvalidInput,
@@ -150,6 +150,12 @@ const PROTOCOL_CASES: [(&str, ProductErrorCode, u8, DaemonControlStatus); 13] = 
         DaemonControlStatus::ResourceExhausted,
     ),
     (
+        SERVER_BUSY,
+        ProductErrorCode::ResourceExhausted,
+        6,
+        DaemonControlStatus::ResourceExhausted,
+    ),
+    (
         UNSUPPORTED_PROTOCOL_VERSION,
         ProductErrorCode::UnsupportedCapability,
         7,
@@ -160,6 +166,114 @@ const PROTOCOL_CASES: [(&str, ProductErrorCode, u8, DaemonControlStatus); 13] = 
         ProductErrorCode::Internal,
         1,
         DaemonControlStatus::Internal,
+    ),
+];
+
+const EXPECTED_SEMANTICS: [(ProductErrorCode, &str, ProductErrorAction); 21] = [
+    (
+        ProductErrorCode::Unavailable,
+        "A required engine resource is unavailable.",
+        ProductErrorAction::RetryLater,
+    ),
+    (
+        ProductErrorCode::ResourceExhausted,
+        "A required engine resource is exhausted.",
+        ProductErrorAction::FreeResources,
+    ),
+    (
+        ProductErrorCode::Timeout,
+        "A native engine operation timed out.",
+        ProductErrorAction::RetryLater,
+    ),
+    (
+        ProductErrorCode::PermissionDenied,
+        "A required engine permission was denied.",
+        ProductErrorAction::GrantPermission,
+    ),
+    (
+        ProductErrorCode::AuthenticationRequired,
+        "Authentication is required for a native engine operation.",
+        ProductErrorAction::Authenticate,
+    ),
+    (
+        ProductErrorCode::MalformedExternalData,
+        "External data did not satisfy the native engine contract.",
+        ProductErrorAction::RepairInput,
+    ),
+    (
+        ProductErrorCode::IntegrityFailure,
+        "Native engine integrity verification failed.",
+        ProductErrorAction::ContactSupport,
+    ),
+    (
+        ProductErrorCode::ProcessExited,
+        "A required native process exited unexpectedly.",
+        ProductErrorAction::RestartOperation,
+    ),
+    (
+        ProductErrorCode::SessionLost,
+        "A lost native engine session terminated the affected execution.",
+        ProductErrorAction::ContactSupport,
+    ),
+    (
+        ProductErrorCode::InvariantViolation,
+        "A native engine invariant was violated.",
+        ProductErrorAction::ContactSupport,
+    ),
+    (
+        ProductErrorCode::InvalidInput,
+        "The request did not satisfy the product contract.",
+        ProductErrorAction::RepairInput,
+    ),
+    (
+        ProductErrorCode::UnsupportedCapability,
+        "The requested capability is not supported.",
+        ProductErrorAction::UseSupportedCapability,
+    ),
+    (
+        ProductErrorCode::GenerationConflict,
+        "The cluster generation changed before the request was applied.",
+        ProductErrorAction::RefreshState,
+    ),
+    (
+        ProductErrorCode::RunConflict,
+        "The active run changed before the request was applied.",
+        ProductErrorAction::RefreshState,
+    ),
+    (
+        ProductErrorCode::IdempotencyConflict,
+        "The idempotency key was already used for another request.",
+        ProductErrorAction::UseNewIdempotencyKey,
+    ),
+    (
+        ProductErrorCode::InvalidState,
+        "The requested operation is not valid in the current state.",
+        ProductErrorAction::RefreshState,
+    ),
+    (
+        ProductErrorCode::Cancelled,
+        "The requested operation was cancelled.",
+        ProductErrorAction::RetryLater,
+    ),
+    (
+        ProductErrorCode::NotFound,
+        "The requested product resource was not found.",
+        ProductErrorAction::VerifyReference,
+    ),
+    (
+        ProductErrorCode::Gone,
+        "The requested product resource is no longer available.",
+        ProductErrorAction::StartNewOperation,
+    ),
+    (
+        ProductErrorCode::SlowConsumer,
+        "The control consumer exceeded its bounded delivery capacity.",
+        ProductErrorAction::RetryLater,
+    ),
+    (
+        ProductErrorCode::Internal,
+        "The native product could not complete the operation.",
+        ProductErrorAction::ContactSupport,
     ),
 ];
 
@@ -322,6 +436,25 @@ fn backend_protocol_errors_remain_protocol_errors_and_ignore_private_fields() {
         ProductError::from_backend_error(&unknown),
         Err(ProductErrorProjectionError::UnknownProtocolError)
     );
+}
+
+#[test]
+fn every_product_code_has_independent_canonical_message_and_action() {
+    let expected_codes = EXPECTED_SEMANTICS
+        .iter()
+        .map(|(code, _, _)| *code)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(expected_codes, ProductErrorCode::ALL.into_iter().collect());
+
+    let products = all_products();
+    for (code, expected_message, expected_action) in EXPECTED_SEMANTICS {
+        let product = products
+            .iter()
+            .find(|product| product.code() == code)
+            .unwrap_or_else(|| panic!("missing product error fixture for {code:?}"));
+        assert_eq!(product.message(), expected_message, "{code:?}");
+        assert_eq!(product.action(), expected_action, "{code:?}");
+    }
 }
 
 #[test]

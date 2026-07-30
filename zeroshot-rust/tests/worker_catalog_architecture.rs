@@ -8,7 +8,6 @@ use architecture_support::{product_package, product_root, read, relative_files, 
 const _: fn() -> String = architecture_support::runtime_source;
 const _: fn(&[&str]) -> String = architecture_support::rust_sources;
 
-
 fn is_architecture_guard(relative: &str) -> bool {
     matches!(
         relative,

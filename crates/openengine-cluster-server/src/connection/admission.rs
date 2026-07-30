@@ -8,12 +8,12 @@ use parking_lot::Mutex;
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use super::serialize_error;
+use crate::SERVER_BUSY;
 
 /// Maximum concurrent backend dispatch/subscription tasks per connection. Shared verbatim with
 /// the sibling `websocket` transport module.
 pub(crate) const MAX_CONNECTION_TASKS: usize = 256;
 const DUPLICATE_REQUEST_ID: &str = "DUPLICATE_REQUEST_ID";
-const SERVER_BUSY: &str = "SERVER_BUSY";
 
 pub(crate) type InFlightIds = Arc<Mutex<HashSet<RequestId>>>;
 

@@ -6,7 +6,7 @@ use openengine_cluster_protocol::{
     INVALID_REQUEST, METHOD_NOT_FOUND, NOT_FOUND, NO_RETRYABLE_FRONTIER, PARSE_ERROR, RUN_CONFLICT,
     SCHEMA_VIOLATION, SLOW_CONSUMER, UNSUPPORTED_PROTOCOL_VERSION,
 };
-use openengine_cluster_server::{BackendError, BackendErrorKind};
+use openengine_cluster_server::{BackendError, BackendErrorKind, SERVER_BUSY};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -459,6 +459,7 @@ fn protocol_domain_code(code: &str) -> Result<ProductErrorCode, ProductErrorProj
         NOT_FOUND => Ok(ProductErrorCode::NotFound),
         GONE => Ok(ProductErrorCode::Gone),
         SLOW_CONSUMER => Ok(ProductErrorCode::SlowConsumer),
+        SERVER_BUSY => Ok(ProductErrorCode::ResourceExhausted),
         UNSUPPORTED_PROTOCOL_VERSION => Ok(ProductErrorCode::UnsupportedCapability),
         INTERNAL_ERROR_CODE => Ok(ProductErrorCode::Internal),
         _ => Err(ProductErrorProjectionError::UnknownProtocolError),
