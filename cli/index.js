@@ -2880,7 +2880,7 @@ taskCmd
     } catch (error) {
       console.error('Error:', error.message);
       const startupEnvelope = serializeTaskStartupError(error);
-      if (startupEnvelope) process.stderr.write(`${startupEnvelope}\n`);
+      if (startupEnvelope) fs.writeSync(process.stderr.fd, `${startupEnvelope}\n`);
       process.exit(1);
     }
   });

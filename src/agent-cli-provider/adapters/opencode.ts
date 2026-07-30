@@ -130,7 +130,7 @@ function webSearchEnv(options: BuildProviderCommandOptions): Readonly<Record<str
     throw new UnsupportedProviderCapabilityError(
       'opencode',
       'webSearch',
-      'Opencode web search requires a parseable Opencode CLI version >= 1.0.137. Update Opencode or set providerSettings.opencode.webSearch to false.'
+      'OpenCode web search requires a parseable OpenCode CLI version >= 1.0.137. Update OpenCode or set providerSettings.opencode.webSearch to false.'
     );
   }
   return { OPENCODE_ENABLE_EXA: '1' };

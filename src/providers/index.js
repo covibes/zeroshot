@@ -159,10 +159,11 @@ class RuntimeProvider extends BaseProvider {
   validateSettings(settings) {
     const baseError = super.validateSettings(settings);
     if (baseError) return baseError;
-    const declaredFields = new Set(this.getSettingsFields());
-    const unknownField = Object.keys(settings).find((field) => !declaredFields.has(field));
-    if (unknownField) {
-      return `Unknown provider setting: providerSettings.${this.name}.${unknownField}`;
+    if (
+      Object.prototype.hasOwnProperty.call(settings, 'webSearch') &&
+      !this._metadata.settingsFields.includes('webSearch')
+    ) {
+      return `Unknown provider setting: providerSettings.${this.name}.webSearch`;
     }
     if (this._metadata.settingsValidator) {
       const providerError = this._metadata.settingsValidator(settings);

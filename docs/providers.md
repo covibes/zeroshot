@@ -30,7 +30,7 @@ Zeroshot supports two provider shapes:
 ## Opt-in native web search
 
 Native or bundled search is off by default. It can be enabled only for Codex or
-Opencode with strict boolean provider settings:
+OpenCode with strict boolean provider settings:
 
 ```json
 {
@@ -44,17 +44,17 @@ Opencode with strict boolean provider settings:
 | Provider | Setting                                  | Canonical child control                          | Minimum CLI |
 | -------- | ---------------------------------------- | ------------------------------------------------ | ----------- |
 | Codex    | `providerSettings.codex.webSearch`       | `codex exec --config 'web_search="live"' ...`    | `0.146.0`   |
-| Opencode | `providerSettings.opencode.webSearch`    | command environment `OPENCODE_ENABLE_EXA=1`      | `1.0.137`   |
+| OpenCode | `providerSettings.opencode.webSearch`    | command environment `OPENCODE_ENABLE_EXA=1`      | `1.0.137`   |
 
 Both settings default to `false`; absent and explicit `false` settings leave
 the child command and environment unchanged. Codex applies the config override
-before the prompt and, for a resumed session, before `resume`. Opencode applies
+before the prompt and, for a resumed session, before `resume`. OpenCode applies
 the environment control to fresh `run` commands and to `run --session` or
 `run --continue`.
 
 Enabled mode fails closed before starting the provider when local support
 cannot be proved. Codex requires nonempty `codex exec --help` output advertising
-`--config` and a parseable version at or above `0.146.0`. Opencode requires a
+`--config` and a parseable version at or above `0.146.0`. OpenCode requires a
 parseable version at or above `1.0.137`. Missing, malformed, or older versions
 are unsupported. These checks attest only the installed CLI control: they do
 not claim provider-account access, backend availability, or network reachability.
@@ -66,7 +66,7 @@ Codex does **not** use `codex exec --search`: current `ExecCli` rejects that
 argument, while the top-level TUI flag does not configure noninteractive exec.
 The config override above matches the
 [Codex TypeScript SDK](https://github.com/openai/codex/blob/main/sdk/typescript/src/exec.ts)
-for fresh and resumed commands. Opencode's environment control is documented by
+for fresh and resumed commands. OpenCode's environment control is documented by
 its [runtime flag](https://github.com/anomalyco/opencode/blob/main/packages/opencode/src/effect/runtime-flags.ts)
 and [web-search registration](https://github.com/anomalyco/opencode/blob/main/packages/opencode/src/tool/registry.ts).
 
