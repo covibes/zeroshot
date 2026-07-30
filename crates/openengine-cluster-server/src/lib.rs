@@ -35,6 +35,9 @@ use crate::logs::{LogEventStream, LogsHandle};
 use crate::watch::{WatchEventStream, WatchHandle};
 use crate::identity::ConnectionIdentity;
 
+/// Stable domain code emitted when bounded connection admission has no task slot available.
+pub const SERVER_BUSY: &str = "SERVER_BUSY";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionContext {
     identity: ConnectionIdentity,

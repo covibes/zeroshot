@@ -55,6 +55,7 @@ fn product_contains_the_required_native_files() {
         "src/fault.rs",
         "src/fault/redaction.rs",
         "src/fault/taxonomy.rs",
+        "src/product_errors.rs",
         "src/lib.rs",
         "src/main.rs",
         "src/observability.rs",
@@ -89,6 +90,7 @@ fn product_contains_the_required_native_files() {
         "tests/local_process_runner.rs",
         "tests/observability_contract.rs",
         "tests/provider_contracts.rs",
+        "tests/product_errors.rs",
         "tests/required_proof_contract.rs",
         "tests/provider_bounds.rs",
         "tests/source_authority_contract.rs",
@@ -289,6 +291,45 @@ fn runtime_has_no_future_product_concerns() {
         assert!(
             !words.contains(forbidden_word),
             "forbidden future product concern: {forbidden_word}"
+        );
+    }
+}
+
+#[test]
+fn product_errors_are_one_private_projection_without_command_or_daemon_host_behavior() {
+    let projection = read(&product_root().join("src/product_errors.rs"));
+    for required in [
+        "ProductErrorCode",
+        "from_engine_fault",
+        "from_protocol_error",
+        "from_backend_error",
+        "deny_unknown_fields",
+        "exit_status",
+        "daemon_control",
+        "render_text",
+        "render_json",
+    ] {
+        assert!(
+            projection.contains(required),
+            "missing product error projection boundary: {required}"
+        );
+    }
+    for forbidden in [
+        "fault.sources()",
+        "error.message",
+        "error.details",
+        "RawDiagnostic",
+        "Command::new",
+        "TcpListener",
+        "WebSocket",
+        "clap",
+        "Exporter",
+        "telemetry",
+        "retry(",
+    ] {
+        assert!(
+            !projection.contains(forbidden),
+            "product error projection crossed a non-goal boundary: {forbidden}"
         );
     }
 }
@@ -673,6 +714,7 @@ fn product_modules_require_issue_authorization() {
             "lib.rs",
             "main.rs",
             "observability.rs",
+            "product_errors.rs",
             "provider_value",
             "provider_value.rs",
             "required_proof.rs",

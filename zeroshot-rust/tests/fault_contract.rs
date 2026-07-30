@@ -14,6 +14,7 @@ use zeroshot_engine::fault::{
     MAX_EPHEMERAL_DIAGNOSTIC_BYTES, MAX_FAULT_SOURCES, MAX_FAULT_SUMMARY_BYTES,
 };
 use zeroshot_engine::observability::NoopObservationSink;
+use zeroshot_engine::product_errors::ProductError;
 
 const MODULES: [FaultModule; 7] = [
     FaultModule::Engine,
@@ -117,6 +118,11 @@ fn every_closed_evidence_triple_is_deterministic() {
                 assert_eq!(first.sources()[0].evidence_class(), class);
                 assert!(first.summary().len() <= MAX_FAULT_SUMMARY_BYTES);
                 assert!(first.encode_json().unwrap().len() <= MAX_ENGINE_FAULT_BYTES);
+                let projected = ProductError::from_engine_fault(&first).unwrap();
+                let command = projected.render_text().unwrap();
+                let control = serde_json::to_string(&projected.daemon_control()).unwrap();
+                assert!(!command.contains("\nsources:"));
+                assert!(!control.contains("\"sources\""));
             }
         }
     }
