@@ -91,7 +91,6 @@ const {
   waitForResumeOwnership,
 } = require('../lib/detached-startup');
 const { isProcessRunning: isClusterProcessAlive } = require('../lib/process-liveness');
-// Setup wizard removed - use: zeroshot settings set <key> <value>
 const {
   checkForUpdates,
   isAutomaticUpdateEligible,
@@ -2508,7 +2507,7 @@ program
   .name('zeroshot')
   .description('Multi-agent orchestration and task management for Claude, Codex, and Gemini')
   .version(require('../package.json').version)
-  .option('-q, --quiet', 'Suppress prompts (first-run wizard, update checks)')
+  .option('-q, --quiet', 'Skip automatic update checks')
   .addHelpText(
     'after',
     `

@@ -32,7 +32,7 @@ function runNpmPackDryRun() {
 describe('npm package smoke', function () {
   this.timeout(30000);
 
-  it('publishes the CLI bin and first-run/auth/runtime support files', function () {
+  it('publishes the CLI bin and auth/runtime support files', function () {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
     const pack = runNpmPackDryRun();
     const files = new Set(pack.files.map((file) => file.path));

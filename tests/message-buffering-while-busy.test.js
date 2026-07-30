@@ -39,7 +39,6 @@ describe('Agent message buffering while busy', function () {
       settingsPath,
       JSON.stringify(
         {
-          firstRunComplete: true,
           defaultProvider: 'claude',
           autoCheckUpdates: false,
         },
