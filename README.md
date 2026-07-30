@@ -26,6 +26,15 @@
 
 Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop**: an agent writes the change, then an _independent_ verifier that never saw how it was made approves it, or hands back a reproducible failure. The loop runs until the change is verified.
 
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/zeroshot-architecture-dark.webp">
+    <img alt="One Zeroshot run drawn as a graph: an issue enters, a junior conductor escalates to a senior one, the config router sizes the cluster, a planner and worker execute, two stages of validators judge the result, the run is rejected once and approved on the second pass, and every event is appended to the ledger" src="docs/assets/zeroshot-architecture-light.webp" width="100%">
+  </picture>
+  <br>
+  <em>One run, drawn as it happens. The conductor escalates to a senior model, the router sizes the cluster, and the change is rejected once before it is approved.</em>
+</div>
+
 ## Install
 
 <!-- install-placeholder -->
@@ -39,7 +48,7 @@ Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemi
 <div align="center">
   <img src="docs/assets/zeroshot-demo.gif" alt="Zeroshot resolving an issue through the executor-verifier loop" width="760">
   <br>
-  <em>One run, unattended. 100× speed · 90-minute run · 5 iterations to approval.</em>
+  <em>And here it is actually running. Unattended, 100× speed · 90-minute run · 5 iterations to approval.</em>
 </div>
 
 ## How it works
@@ -47,12 +56,6 @@ Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemi
 Zeroshot separates the agent that **writes** the code from the agent that **judges** it.
 
 A conductor sizes the workflow to the task. An executor (an AI coding agent) implements the change in an isolated workspace (git worktree or Docker). Then an **independent verifier** inspects the result without ever seeing the executor's context or history, so it cannot approve its own reasoning. The verifier returns `APPROVED`, or `REJECTED` with an actionable, reproducible failure, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and resumes where it stopped.
-
-```text
-task --> plan --> implement --> verify --> APPROVED --> done
-                      ^            |
-                      +- REJECTED -+   (reproducible failure)
-```
 
 Bring your own provider and your own backend. Zeroshot orchestrates the agents that write your code; it doesn't store your keys or replace your models.
 
