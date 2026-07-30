@@ -46,6 +46,58 @@ test('build-command returns command spec without executing provider CLI', () => 
   assert.ok(Array.isArray(response.envelope.redactions));
 });
 
+test('partial CLI feature overrides do not probe or drift when web search is off', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-no-search-probe-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  fs.writeFileSync(settingsFile, '{}');
+
+  try {
+    for (const provider of ['codex', 'opencode']) {
+      const marker = path.join(tempDir, `${provider}-probed`);
+      const script = `#!/usr/bin/env node
+require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'probed');
+process.exit(0);
+`;
+      withFakeProviderCli(provider, script, () =>
+        withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () => {
+          const cliFeatures =
+            provider === 'codex'
+              ? { supportsJson: true, supportsSkipGitRepoCheck: true }
+              : { supportsJson: true };
+          const baseRequest = {
+            schemaVersion: 1,
+            command: 'build-command',
+            provider,
+            context: 'ctx',
+          };
+          const absent = runExecutable({
+            ...baseRequest,
+            options: { outputFormat: 'json', cliFeatures },
+          });
+          const disabled = runExecutable({
+            ...baseRequest,
+            options: { outputFormat: 'json', webSearch: false, cliFeatures },
+          });
+
+          assert.equal(absent.exitCode, 0);
+          assert.equal(disabled.exitCode, 0);
+          assert.deepEqual(
+            disabled.envelope.result.commandSpec.args,
+            absent.envelope.result.commandSpec.args
+          );
+          assert.deepEqual(
+            disabled.envelope.result.commandSpec.env,
+            absent.envelope.result.commandSpec.env
+          );
+          assert.equal(fs.existsSync(marker), false);
+        })
+      );
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('build-command preserves Claude resume and continue options through JSON contract', () => {
   const resumed = runExecutable({
     schemaVersion: 1,

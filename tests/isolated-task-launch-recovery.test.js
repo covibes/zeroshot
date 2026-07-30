@@ -8,6 +8,7 @@ const {
   spawnClaudeTaskIsolated,
 } = require('../src/agent/agent-task-executor');
 
+const { serializeTaskStartupError } = require('../src/task-startup-error');
 const OWNERSHIP_ENV = 'ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN';
 
 function createProcess() {
@@ -117,6 +118,33 @@ describe('Isolated detached launch ownership', function () {
     assert.strictEqual(termination.taskId, null);
     assert.strictEqual(harness.commands.some((command) => command[1] === 'kill'), false);
     assert.ok(harness.capturedEnv[OWNERSHIP_ENV]);
+  });
+
+  it('restores permanent capability faults from the isolated task-start wrapper', async function () {
+    const harness = createLaunchHarness();
+    const launch = spawnClaudeTaskIsolated(harness.agent, 'test context');
+    await waitFor(() => harness.agent.currentTask?.pendingLaunch);
+    const capabilityError = Object.assign(new Error('OpenCode web search is unsupported.'), {
+      code: 'unsupported-capability',
+      permanent: true,
+      provider: 'opencode',
+      capability: 'webSearch',
+    });
+    harness.proc.stderr.write(`${serializeTaskStartupError(capabilityError)}\n`);
+    harness.proc.closed = true;
+    harness.proc.emit('close', 1, null);
+    const rejection = await launch.then(
+      () => null,
+      (error) => error
+    );
+
+    assert.strictEqual(rejection.code, 'unsupported-capability');
+    assert.strictEqual(rejection.permanent, true);
+    assert.strictEqual(rejection.provider, capabilityError.provider);
+    assert.strictEqual(rejection.capability, capabilityError.capability);
+    assert.strictEqual(rejection.message, capabilityError.message);
+    assert.strictEqual(harness.agent.currentTask, null);
+    assert.strictEqual(harness.commands.some((command) => command[1] === 'kill'), false);
   });
 
   it('resolves the durable token and kills a post-row task before wrapper close', async function () {

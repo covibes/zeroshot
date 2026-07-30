@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const { parseTaskStartupError } = require('./task-startup-error');
 
 const TASK_SPAWN_OWNERSHIP_TOKEN_ENV = 'ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN';
 
@@ -38,6 +39,8 @@ function requireTaskIdFromWrapperResult({
   persistedTaskId = null,
 }) {
   if (code !== 0) {
+    const startupError = parseTaskStartupError(stderr);
+    if (startupError) throw startupError;
     throw new Error(`zeroshot task run failed with code ${code}: ${stderr}`);
   }
   if (!persistedTaskId) {

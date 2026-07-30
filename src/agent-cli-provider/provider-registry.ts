@@ -208,7 +208,7 @@ export const providerRegistry = [
     credentialEnvKeys: codexAdapter.credentialEnvKeys,
     settingsFields: ['webSearch'],
     settingsDefaults: { webSearch: false },
-    settingsValidator: (settings) => validateWebSearchSettings('codex', settings),
+    settingsValidator: (settings): string | null => validateWebSearchSettings('codex', settings),
     capabilities: {
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
@@ -334,7 +334,7 @@ export const providerRegistry = [
     credentialEnvKeys: opencodeAdapter.credentialEnvKeys,
     settingsFields: ['webSearch'],
     settingsDefaults: { webSearch: false },
-    settingsValidator: (settings) => validateWebSearchSettings('opencode', settings),
+    settingsValidator: (settings): string | null => validateWebSearchSettings('opencode', settings),
     capabilities: {
       ...STANDARD_CAPABILITIES,
       jsonSchema: 'experimental',

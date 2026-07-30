@@ -106,7 +106,13 @@ export function prepareSingleAgentProviderCommand(
     adapter.id,
     baseOptions.cwd ?? process.cwd()
   );
-  const cliFeatures = resolveRuntimeCliFeatures(adapter.id, baseOptions.cliFeatures);
+  const requestedWebSearch = baseOptions.webSearch ?? providerSettings.webSearch;
+  assertWebSearchDeclared(adapter.id, requestedWebSearch);
+  const cliFeatures = resolveRuntimeCliFeatures(
+    adapter.id,
+    baseOptions.cliFeatures,
+    requestedWebSearch === true
+  );
   const authEnv = baseOptions.authEnv ?? resolveRuntimeAuthEnv(adapter.id, settings);
   const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
     cliFeatures,
@@ -129,10 +135,11 @@ export function detectRuntimeProviderCliFeatures(provider: string): ProviderCliF
 
 function resolveRuntimeCliFeatures(
   provider: ProviderId,
-  overrides: CliFeatureOverrides | undefined
+  overrides: CliFeatureOverrides | undefined,
+  webSearchRequested: boolean
 ): CliFeatureOverrides {
-  const detected = detectRuntimeProviderCliFeatures(provider);
   if (provider === 'gateway') {
+    const detected = detectRuntimeProviderCliFeatures(provider);
     return {
       ...detected,
       ...overrides,
@@ -141,14 +148,15 @@ function resolveRuntimeCliFeatures(
     };
   }
   if (getProviderRegistryEntry(provider).invoke.lane === 'acp-stdio') {
+    const detected = detectRuntimeProviderCliFeatures(provider);
     if (overrides === undefined) return detected;
     return mergeAcpFailClosedCliFeatures(detected, overrides);
   }
-  if (overrides === undefined) return detected;
-  const merged = { ...detected, ...overrides };
-  if (!('supportsWebSearch' in detected)) return merged;
+  if (overrides === undefined) return detectRuntimeProviderCliFeatures(provider);
+  if (!webSearchRequested) return overrides;
+  const detected = detectRuntimeProviderCliFeatures(provider);
   return {
-    ...merged,
+    ...overrides,
     supportsWebSearch:
       detected.supportsWebSearch === true && overrides.supportsWebSearch !== false,
   };

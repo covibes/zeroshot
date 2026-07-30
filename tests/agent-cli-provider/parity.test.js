@@ -740,6 +740,7 @@ test('feature probing is deterministic from injected help text', () => {
     helper.getProviderAdapter('opencode').detectCliFeatures('opencode run --format').supportsCwd,
     false
   );
+  assert.equal(helper.getProviderAdapter('opencode').detectCliFeatures('').supportsResume, false);
   assert.equal(
     helper
       .getProviderAdapter('pi')

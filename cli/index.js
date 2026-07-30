@@ -69,6 +69,7 @@ const {
   startClusterFromText,
 } = require('../lib/start-cluster');
 const { requirePreflight } = require('../src/preflight');
+const { serializeTaskStartupError } = require('../src/task-startup-error');
 const { providersCommand, setDefaultCommand, setupCommand } = require('./commands/providers');
 const { runInspectCommand } = require('./commands/inspect');
 const { runCmdproof } = require('./commands/cmdproof');
@@ -2878,6 +2879,8 @@ taskCmd
       await runTask(prompt, options);
     } catch (error) {
       console.error('Error:', error.message);
+      const startupEnvelope = serializeTaskStartupError(error);
+      if (startupEnvelope) process.stderr.write(`${startupEnvelope}\n`);
       process.exit(1);
     }
   });

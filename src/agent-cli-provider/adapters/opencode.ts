@@ -48,7 +48,7 @@ function detectCliFeatures(
     supportsDir: unknown ? false : /--dir\b/.test(help),
     supportsCwd: unknown ? false : /--cwd\b/.test(help),
     supportsAutoApprove: false,
-    supportsResume: unknown ? true : /--session\b/.test(help) && /--continue\b/.test(help),
+    supportsResume: !unknown && /--session\b/.test(help) && /--continue\b/.test(help),
     supportsWebSearch: isCliVersionAtLeast(versionText, '1.0.137'),
     unknown,
   };
