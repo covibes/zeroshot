@@ -2170,11 +2170,6 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
       pendingLaunch: true,
       cancelled: false,
       async kill(reason = 'Task killed', sourceError = null) {
-        if (isolatedPendingLaunch.cancelled) {
-          return Promise.reject(
-            sourceError instanceof Error ? sourceError : new Error(reason || 'Task launch cancelled')
-          );
-        }
         isolatedPendingLaunch.cancelled = true;
         if (cancellation) return cancellation;
         cancellation = (async () => {
