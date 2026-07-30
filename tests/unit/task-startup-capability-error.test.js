@@ -162,6 +162,7 @@ describe('Task startup capability errors', function () {
     proc.kill = () => {};
     const runnerPath = require.resolve('../../src/claude-task-runner');
     delete require.cache[runnerPath];
+    const ClaudeTaskRunner = require(runnerPath);
     const runner = new ClaudeTaskRunner({ quiet: true, timeout: 1 });
     const original = capabilityError();
     const pending = runner._runIsolated('task context', {
