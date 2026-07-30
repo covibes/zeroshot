@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 use openengine_cluster_protocol::{
     JsonRpcError, APPLICATION_ERROR, CANCELLED, GENERATION_CONFLICT, GONE, GRAPH_INVALID,
     IDEMPOTENCY_REUSE, INTERNAL_ERROR, INTERNAL_ERROR_CODE, INVALID_PARAMS, INVALID_PHASE,
-    INVALID_REQUEST, METHOD_NOT_FOUND, NOT_FOUND, NO_RETRYABLE_FRONTIER, PARSE_ERROR,
-    RUN_CONFLICT, SCHEMA_VIOLATION, SLOW_CONSUMER, UNSUPPORTED_PROTOCOL_VERSION,
+    INVALID_REQUEST, METHOD_NOT_FOUND, NOT_FOUND, NO_RETRYABLE_FRONTIER, PARSE_ERROR, RUN_CONFLICT,
+    SCHEMA_VIOLATION, SLOW_CONSUMER, UNSUPPORTED_PROTOCOL_VERSION,
 };
 use openengine_cluster_server::{BackendError, BackendErrorKind};
 use serde::{Deserialize, Serialize};
@@ -251,9 +251,7 @@ impl ProductError {
         Ok(projected)
     }
 
-    pub fn from_protocol_error(
-        error: &JsonRpcError,
-    ) -> Result<Self, ProductErrorProjectionError> {
+    pub fn from_protocol_error(error: &JsonRpcError) -> Result<Self, ProductErrorProjectionError> {
         let code = match error.code {
             PARSE_ERROR | INVALID_REQUEST | INVALID_PARAMS => ProductErrorCode::InvalidInput,
             METHOD_NOT_FOUND => ProductErrorCode::UnsupportedCapability,
@@ -270,9 +268,7 @@ impl ProductError {
         Ok(Self::from_code(code))
     }
 
-    pub fn from_backend_error(
-        error: &BackendError,
-    ) -> Result<Self, ProductErrorProjectionError> {
+    pub fn from_backend_error(error: &BackendError) -> Result<Self, ProductErrorProjectionError> {
         let code = match error.kind {
             BackendErrorKind::Internal => ProductErrorCode::Internal,
             BackendErrorKind::InvalidParams => ProductErrorCode::InvalidInput,
@@ -362,8 +358,8 @@ impl ProductError {
 
     pub fn render_json(self) -> Result<Vec<u8>, ProductErrorProjectionError> {
         validate_fields(self.message, self.action)?;
-        let encoded = serde_json::to_vec(&self)
-            .map_err(|_| ProductErrorProjectionError::EncodingFailed)?;
+        let encoded =
+            serde_json::to_vec(&self).map_err(|_| ProductErrorProjectionError::EncodingFailed)?;
         if encoded.len() > MAX_PRODUCT_ERROR_JSON_BYTES {
             return Err(ProductErrorProjectionError::JsonTooLong);
         }
@@ -434,8 +430,8 @@ impl ProductError {
         if action.len() > MAX_PRODUCT_ERROR_ACTION_BYTES {
             return Err(ProductErrorProjectionError::ActionTooLong);
         }
-        let code = ProductErrorCode::from_str(code)
-            .ok_or(ProductErrorProjectionError::InvalidEncoding)?;
+        let code =
+            ProductErrorCode::from_str(code).ok_or(ProductErrorProjectionError::InvalidEncoding)?;
         let canonical = Self::from_code(code);
         if message != canonical.message || action != canonical.action.as_str() {
             return Err(ProductErrorProjectionError::InvalidSemantics);

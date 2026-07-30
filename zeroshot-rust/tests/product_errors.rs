@@ -4,8 +4,7 @@ use openengine_cluster_protocol::{
     DomainErrorData, JsonRpcError, APPLICATION_ERROR, CANCELLED, GENERATION_CONFLICT, GONE,
     GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR, INTERNAL_ERROR_CODE, INVALID_PARAMS,
     INVALID_PHASE, INVALID_REQUEST, METHOD_NOT_FOUND, NOT_FOUND, NO_RETRYABLE_FRONTIER,
-    PARSE_ERROR, RUN_CONFLICT, SCHEMA_VIOLATION, SLOW_CONSUMER,
-    UNSUPPORTED_PROTOCOL_VERSION,
+    PARSE_ERROR, RUN_CONFLICT, SCHEMA_VIOLATION, SLOW_CONSUMER, UNSUPPORTED_PROTOCOL_VERSION,
 };
 use openengine_cluster_server::{BackendError, BackendErrorKind};
 use serde_json::{json, Value};
@@ -21,32 +20,147 @@ use zeroshot_engine::product_errors::{
 };
 
 const ENGINE_CASES: [(EvidenceClass, ProductErrorCode, u8, DaemonControlStatus); 10] = [
-    (EvidenceClass::Unavailable, ProductErrorCode::Unavailable, 6, DaemonControlStatus::Unavailable),
-    (EvidenceClass::ResourceExhausted, ProductErrorCode::ResourceExhausted, 6, DaemonControlStatus::ResourceExhausted),
-    (EvidenceClass::Timeout, ProductErrorCode::Timeout, 6, DaemonControlStatus::DeadlineExceeded),
-    (EvidenceClass::PermissionDenied, ProductErrorCode::PermissionDenied, 5, DaemonControlStatus::PermissionDenied),
-    (EvidenceClass::AuthenticationRequired, ProductErrorCode::AuthenticationRequired, 5, DaemonControlStatus::Unauthenticated),
-    (EvidenceClass::MalformedExternalData, ProductErrorCode::MalformedExternalData, 1, DaemonControlStatus::InvalidArgument),
-    (EvidenceClass::IntegrityFailure, ProductErrorCode::IntegrityFailure, 1, DaemonControlStatus::Internal),
-    (EvidenceClass::ProcessExited, ProductErrorCode::ProcessExited, 1, DaemonControlStatus::Unavailable),
-    (EvidenceClass::SessionLost, ProductErrorCode::SessionLost, 1, DaemonControlStatus::Internal),
-    (EvidenceClass::InvariantViolation, ProductErrorCode::InvariantViolation, 1, DaemonControlStatus::Internal),
+    (
+        EvidenceClass::Unavailable,
+        ProductErrorCode::Unavailable,
+        6,
+        DaemonControlStatus::Unavailable,
+    ),
+    (
+        EvidenceClass::ResourceExhausted,
+        ProductErrorCode::ResourceExhausted,
+        6,
+        DaemonControlStatus::ResourceExhausted,
+    ),
+    (
+        EvidenceClass::Timeout,
+        ProductErrorCode::Timeout,
+        6,
+        DaemonControlStatus::DeadlineExceeded,
+    ),
+    (
+        EvidenceClass::PermissionDenied,
+        ProductErrorCode::PermissionDenied,
+        5,
+        DaemonControlStatus::PermissionDenied,
+    ),
+    (
+        EvidenceClass::AuthenticationRequired,
+        ProductErrorCode::AuthenticationRequired,
+        5,
+        DaemonControlStatus::Unauthenticated,
+    ),
+    (
+        EvidenceClass::MalformedExternalData,
+        ProductErrorCode::MalformedExternalData,
+        1,
+        DaemonControlStatus::InvalidArgument,
+    ),
+    (
+        EvidenceClass::IntegrityFailure,
+        ProductErrorCode::IntegrityFailure,
+        1,
+        DaemonControlStatus::Internal,
+    ),
+    (
+        EvidenceClass::ProcessExited,
+        ProductErrorCode::ProcessExited,
+        1,
+        DaemonControlStatus::Unavailable,
+    ),
+    (
+        EvidenceClass::SessionLost,
+        ProductErrorCode::SessionLost,
+        1,
+        DaemonControlStatus::Internal,
+    ),
+    (
+        EvidenceClass::InvariantViolation,
+        ProductErrorCode::InvariantViolation,
+        1,
+        DaemonControlStatus::Internal,
+    ),
 ];
 
 const PROTOCOL_CASES: [(&str, ProductErrorCode, u8, DaemonControlStatus); 13] = [
-    (GRAPH_INVALID, ProductErrorCode::InvalidInput, 2, DaemonControlStatus::InvalidArgument),
-    (SCHEMA_VIOLATION, ProductErrorCode::InvalidInput, 2, DaemonControlStatus::InvalidArgument),
-    (GENERATION_CONFLICT, ProductErrorCode::GenerationConflict, 4, DaemonControlStatus::Conflict),
-    (RUN_CONFLICT, ProductErrorCode::RunConflict, 4, DaemonControlStatus::Conflict),
-    (IDEMPOTENCY_REUSE, ProductErrorCode::IdempotencyConflict, 4, DaemonControlStatus::Conflict),
-    (INVALID_PHASE, ProductErrorCode::InvalidState, 4, DaemonControlStatus::Conflict),
-    (NO_RETRYABLE_FRONTIER, ProductErrorCode::InvalidState, 4, DaemonControlStatus::Conflict),
-    (CANCELLED, ProductErrorCode::Cancelled, 6, DaemonControlStatus::Cancelled),
-    (NOT_FOUND, ProductErrorCode::NotFound, 3, DaemonControlStatus::NotFound),
-    (GONE, ProductErrorCode::Gone, 3, DaemonControlStatus::NotFound),
-    (SLOW_CONSUMER, ProductErrorCode::SlowConsumer, 6, DaemonControlStatus::ResourceExhausted),
-    (UNSUPPORTED_PROTOCOL_VERSION, ProductErrorCode::UnsupportedCapability, 7, DaemonControlStatus::Unsupported),
-    (INTERNAL_ERROR_CODE, ProductErrorCode::Internal, 1, DaemonControlStatus::Internal),
+    (
+        GRAPH_INVALID,
+        ProductErrorCode::InvalidInput,
+        2,
+        DaemonControlStatus::InvalidArgument,
+    ),
+    (
+        SCHEMA_VIOLATION,
+        ProductErrorCode::InvalidInput,
+        2,
+        DaemonControlStatus::InvalidArgument,
+    ),
+    (
+        GENERATION_CONFLICT,
+        ProductErrorCode::GenerationConflict,
+        4,
+        DaemonControlStatus::Conflict,
+    ),
+    (
+        RUN_CONFLICT,
+        ProductErrorCode::RunConflict,
+        4,
+        DaemonControlStatus::Conflict,
+    ),
+    (
+        IDEMPOTENCY_REUSE,
+        ProductErrorCode::IdempotencyConflict,
+        4,
+        DaemonControlStatus::Conflict,
+    ),
+    (
+        INVALID_PHASE,
+        ProductErrorCode::InvalidState,
+        4,
+        DaemonControlStatus::Conflict,
+    ),
+    (
+        NO_RETRYABLE_FRONTIER,
+        ProductErrorCode::InvalidState,
+        4,
+        DaemonControlStatus::Conflict,
+    ),
+    (
+        CANCELLED,
+        ProductErrorCode::Cancelled,
+        6,
+        DaemonControlStatus::Cancelled,
+    ),
+    (
+        NOT_FOUND,
+        ProductErrorCode::NotFound,
+        3,
+        DaemonControlStatus::NotFound,
+    ),
+    (
+        GONE,
+        ProductErrorCode::Gone,
+        3,
+        DaemonControlStatus::NotFound,
+    ),
+    (
+        SLOW_CONSUMER,
+        ProductErrorCode::SlowConsumer,
+        6,
+        DaemonControlStatus::ResourceExhausted,
+    ),
+    (
+        UNSUPPORTED_PROTOCOL_VERSION,
+        ProductErrorCode::UnsupportedCapability,
+        7,
+        DaemonControlStatus::Unsupported,
+    ),
+    (
+        INTERNAL_ERROR_CODE,
+        ProductErrorCode::Internal,
+        1,
+        DaemonControlStatus::Internal,
+    ),
 ];
 
 fn factory() -> FaultFactory<'static> {
@@ -110,7 +224,8 @@ fn every_engine_category_has_a_causal_product_mapping() {
 #[test]
 fn every_authoritative_protocol_domain_category_has_a_causal_mapping() {
     for (domain, code, exit, daemon_status) in PROTOCOL_CASES {
-        let projected = ProductError::from_protocol_error(&protocol_error(domain, "private")).unwrap();
+        let projected =
+            ProductError::from_protocol_error(&protocol_error(domain, "private")).unwrap();
         assert_eq!(projected.code(), code, "{domain}");
         assert_eq!(projected.exit_status(), exit, "{domain}");
         assert_eq!(projected.daemon_status(), daemon_status, "{domain}");
@@ -121,20 +236,52 @@ fn every_authoritative_protocol_domain_category_has_a_causal_mapping() {
 #[test]
 fn json_rpc_validation_and_capability_categories_are_closed() {
     for numeric_code in [PARSE_ERROR, INVALID_REQUEST, INVALID_PARAMS] {
-        let error = JsonRpcError { code: numeric_code, message: "discard me".to_owned(), data: None };
-        assert_eq!(ProductError::from_protocol_error(&error).unwrap().code(), ProductErrorCode::InvalidInput);
+        let error = JsonRpcError {
+            code: numeric_code,
+            message: "discard me".to_owned(),
+            data: None,
+        };
+        assert_eq!(
+            ProductError::from_protocol_error(&error).unwrap().code(),
+            ProductErrorCode::InvalidInput
+        );
     }
-    let method = JsonRpcError { code: METHOD_NOT_FOUND, message: "private method name".to_owned(), data: None };
-    assert_eq!(ProductError::from_protocol_error(&method).unwrap().code(), ProductErrorCode::UnsupportedCapability);
-    let internal = JsonRpcError { code: INTERNAL_ERROR, message: "private provider failure".to_owned(), data: None };
-    assert_eq!(ProductError::from_protocol_error(&internal).unwrap().code(), ProductErrorCode::Internal);
+    let method = JsonRpcError {
+        code: METHOD_NOT_FOUND,
+        message: "private method name".to_owned(),
+        data: None,
+    };
+    assert_eq!(
+        ProductError::from_protocol_error(&method).unwrap().code(),
+        ProductErrorCode::UnsupportedCapability
+    );
+    let internal = JsonRpcError {
+        code: INTERNAL_ERROR,
+        message: "private provider failure".to_owned(),
+        data: None,
+    };
+    assert_eq!(
+        ProductError::from_protocol_error(&internal).unwrap().code(),
+        ProductErrorCode::Internal
+    );
 
     for error in [
-        JsonRpcError { code: APPLICATION_ERROR, message: "missing category".to_owned(), data: None },
+        JsonRpcError {
+            code: APPLICATION_ERROR,
+            message: "missing category".to_owned(),
+            data: None,
+        },
         protocol_error("FUTURE_PRIVATE_CATEGORY", "private"),
-        JsonRpcError { code: -31_234, message: "unknown numeric".to_owned(), data: None },
+        JsonRpcError {
+            code: -31_234,
+            message: "unknown numeric".to_owned(),
+            data: None,
+        },
     ] {
-        assert_eq!(ProductError::from_protocol_error(&error), Err(ProductErrorProjectionError::UnknownProtocolError));
+        assert_eq!(
+            ProductError::from_protocol_error(&error),
+            Err(ProductErrorProjectionError::UnknownProtocolError)
+        );
     }
 }
 
@@ -151,10 +298,17 @@ fn backend_protocol_errors_remain_protocol_errors_and_ignore_private_fields() {
             ProductErrorCode::InvalidInput,
         ),
         (
-            BackendError::application(GENERATION_CONFLICT, "private current state", Some(json!({"currentRunId": "secret-session"}))),
+            BackendError::application(
+                GENERATION_CONFLICT,
+                "private current state",
+                Some(json!({"currentRunId": "secret-session"})),
+            ),
             ProductErrorCode::GenerationConflict,
         ),
-        (BackendError::new("PRIVATE_INTERNAL_CODE", "provider stderr and command"), ProductErrorCode::Internal),
+        (
+            BackendError::new("PRIVATE_INTERNAL_CODE", "provider stderr and command"),
+            ProductErrorCode::Internal,
+        ),
     ];
     for (error, expected) in cases {
         let projected = ProductError::from_backend_error(&error).unwrap();
@@ -164,13 +318,19 @@ fn backend_protocol_errors_remain_protocol_errors_and_ignore_private_fields() {
         assert!(!output.contains(&error.message));
     }
     let unknown = BackendError::application("PRIVATE", "secret", Some(Value::Null));
-    assert_eq!(ProductError::from_backend_error(&unknown), Err(ProductErrorProjectionError::UnknownProtocolError));
+    assert_eq!(
+        ProductError::from_backend_error(&unknown),
+        Err(ProductErrorProjectionError::UnknownProtocolError)
+    );
 }
 
 #[test]
 fn renderers_are_deterministic_strict_and_round_trip_every_code() {
     let products = all_products();
-    let codes = products.iter().map(|product| product.code()).collect::<BTreeSet<_>>();
+    let codes = products
+        .iter()
+        .map(|product| product.code())
+        .collect::<BTreeSet<_>>();
     assert_eq!(codes, ProductErrorCode::ALL.into_iter().collect());
 
     for product in products {
@@ -214,42 +374,85 @@ fn command_and_daemon_renderings_have_stable_golden_bytes() {
 
 #[test]
 fn strict_decoders_reject_unknown_fields_and_semantic_mutations() {
-    let product = ProductError::from_protocol_error(&protocol_error(IDEMPOTENCY_REUSE, "discarded diagnostic")).unwrap();
+    let product = ProductError::from_protocol_error(&protocol_error(
+        IDEMPOTENCY_REUSE,
+        "discarded diagnostic",
+    ))
+    .unwrap();
     let encoded = product.render_json().unwrap();
     let mut value: Value = serde_json::from_slice(&encoded).unwrap();
     value["unknown"] = json!("secret");
-    assert_eq!(ProductError::decode_json(&serde_json::to_vec(&value).unwrap()), Err(ProductErrorProjectionError::InvalidEncoding));
+    assert_eq!(
+        ProductError::decode_json(&serde_json::to_vec(&value).unwrap()),
+        Err(ProductErrorProjectionError::InvalidEncoding)
+    );
 
     let mut value: Value = serde_json::from_slice(&encoded).unwrap();
     value["message"] = json!("A different but plausible safe message.");
-    assert_eq!(ProductError::decode_json(&serde_json::to_vec(&value).unwrap()), Err(ProductErrorProjectionError::InvalidSemantics));
+    assert_eq!(
+        ProductError::decode_json(&serde_json::to_vec(&value).unwrap()),
+        Err(ProductErrorProjectionError::InvalidSemantics)
+    );
 
     let mut value: Value = serde_json::from_slice(&encoded).unwrap();
     value["action"] = json!(ProductErrorAction::RefreshState);
-    assert_eq!(ProductError::decode_json(&serde_json::to_vec(&value).unwrap()), Err(ProductErrorProjectionError::InvalidSemantics));
+    assert_eq!(
+        ProductError::decode_json(&serde_json::to_vec(&value).unwrap()),
+        Err(ProductErrorProjectionError::InvalidSemantics)
+    );
 
     let text = product.render_text().unwrap();
-    assert_eq!(ProductError::decode_text(&text.replace("The idempotency key", "The request key")), Err(ProductErrorProjectionError::InvalidSemantics));
-    assert_eq!(ProductError::decode_text(&(text + "extra\n")), Err(ProductErrorProjectionError::InvalidEncoding));
+    assert_eq!(
+        ProductError::decode_text(&text.replace("The idempotency key", "The request key")),
+        Err(ProductErrorProjectionError::InvalidSemantics)
+    );
+    assert_eq!(
+        ProductError::decode_text(&(text + "extra\n")),
+        Err(ProductErrorProjectionError::InvalidEncoding)
+    );
 }
 
 #[test]
 fn exact_bounds_and_limit_plus_one_fail_closed_without_truncation() {
     let exact = json!({"code": "invalid_input", "message": "m".repeat(MAX_PRODUCT_ERROR_MESSAGE_BYTES), "action": "repair_input"});
     let plus_one = json!({"code": "invalid_input", "message": "m".repeat(MAX_PRODUCT_ERROR_MESSAGE_BYTES + 1), "action": "repair_input"});
-    assert_eq!(ProductError::decode_json(&serde_json::to_vec(&exact).unwrap()), Err(ProductErrorProjectionError::InvalidSemantics));
-    assert_eq!(ProductError::decode_json(&serde_json::to_vec(&plus_one).unwrap()), Err(ProductErrorProjectionError::MessageTooLong));
+    assert_eq!(
+        ProductError::decode_json(&serde_json::to_vec(&exact).unwrap()),
+        Err(ProductErrorProjectionError::InvalidSemantics)
+    );
+    assert_eq!(
+        ProductError::decode_json(&serde_json::to_vec(&plus_one).unwrap()),
+        Err(ProductErrorProjectionError::MessageTooLong)
+    );
     let exact_action = json!({"code": "invalid_input", "message": "The request did not satisfy the product contract.", "action": "a".repeat(MAX_PRODUCT_ERROR_ACTION_BYTES)});
     let plus_one_action = json!({"code": "invalid_input", "message": "The request did not satisfy the product contract.", "action": "a".repeat(MAX_PRODUCT_ERROR_ACTION_BYTES + 1)});
-    assert_eq!(ProductError::decode_json(&serde_json::to_vec(&exact_action).unwrap()), Err(ProductErrorProjectionError::InvalidSemantics));
-    assert_eq!(ProductError::decode_json(&serde_json::to_vec(&plus_one_action).unwrap()), Err(ProductErrorProjectionError::ActionTooLong));
+    assert_eq!(
+        ProductError::decode_json(&serde_json::to_vec(&exact_action).unwrap()),
+        Err(ProductErrorProjectionError::InvalidSemantics)
+    );
+    assert_eq!(
+        ProductError::decode_json(&serde_json::to_vec(&plus_one_action).unwrap()),
+        Err(ProductErrorProjectionError::ActionTooLong)
+    );
 
-    assert_eq!(ProductError::decode_json(&vec![b' '; MAX_PRODUCT_ERROR_JSON_BYTES]), Err(ProductErrorProjectionError::InvalidEncoding));
-    assert_eq!(ProductError::decode_json(&vec![b' '; MAX_PRODUCT_ERROR_JSON_BYTES + 1]), Err(ProductErrorProjectionError::JsonTooLong));
+    assert_eq!(
+        ProductError::decode_json(&vec![b' '; MAX_PRODUCT_ERROR_JSON_BYTES]),
+        Err(ProductErrorProjectionError::InvalidEncoding)
+    );
+    assert_eq!(
+        ProductError::decode_json(&vec![b' '; MAX_PRODUCT_ERROR_JSON_BYTES + 1]),
+        Err(ProductErrorProjectionError::JsonTooLong)
+    );
     let exact_text = "x".repeat(MAX_PRODUCT_ERROR_TEXT_BYTES);
     let plus_one_text = "x".repeat(MAX_PRODUCT_ERROR_TEXT_BYTES + 1);
-    assert_eq!(ProductError::decode_text(&exact_text), Err(ProductErrorProjectionError::InvalidEncoding));
-    assert_eq!(ProductError::decode_text(&plus_one_text), Err(ProductErrorProjectionError::TextTooLong));
+    assert_eq!(
+        ProductError::decode_text(&exact_text),
+        Err(ProductErrorProjectionError::InvalidEncoding)
+    );
+    assert_eq!(
+        ProductError::decode_text(&plus_one_text),
+        Err(ProductErrorProjectionError::TextTooLong)
+    );
 }
 
 #[test]
@@ -257,19 +460,30 @@ fn raw_diagnostic_mutation_cannot_change_or_enter_command_or_control_output() {
     let first_raw = "provider=alpha credential=secret-one /private/first stderr";
     let second_raw = "https://user:secret-two@example.invalid session=private command";
     let first_fault = factory().create(
-        ModuleEvidence::new(FaultModule::Provider, FaultContext::Execution, EvidenceClass::ProcessExited)
-            .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, first_raw).unwrap()),
+        ModuleEvidence::new(
+            FaultModule::Provider,
+            FaultContext::Execution,
+            EvidenceClass::ProcessExited,
+        )
+        .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, first_raw).unwrap()),
     );
     let second_fault = factory().create(
-        ModuleEvidence::new(FaultModule::Provider, FaultContext::Execution, EvidenceClass::ProcessExited)
-            .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, second_raw).unwrap()),
+        ModuleEvidence::new(
+            FaultModule::Provider,
+            FaultContext::Execution,
+            EvidenceClass::ProcessExited,
+        )
+        .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, second_raw).unwrap()),
     );
     let first = ProductError::from_engine_fault(&first_fault).unwrap();
     let second = ProductError::from_engine_fault(&second_fault).unwrap();
     assert_eq!(first, second);
 
-    let first_protocol = ProductError::from_protocol_error(&protocol_error(GENERATION_CONFLICT, first_raw)).unwrap();
-    let second_protocol = ProductError::from_protocol_error(&protocol_error(GENERATION_CONFLICT, second_raw)).unwrap();
+    let first_protocol =
+        ProductError::from_protocol_error(&protocol_error(GENERATION_CONFLICT, first_raw)).unwrap();
+    let second_protocol =
+        ProductError::from_protocol_error(&protocol_error(GENERATION_CONFLICT, second_raw))
+            .unwrap();
     assert_eq!(first_protocol, second_protocol);
 
     for output in [
@@ -280,7 +494,17 @@ fn raw_diagnostic_mutation_cannot_change_or_enter_command_or_control_output() {
         String::from_utf8(first_protocol.render_json().unwrap()).unwrap(),
         serde_json::to_string(&first_protocol.daemon_control()).unwrap(),
     ] {
-        for forbidden in [first_raw, second_raw, "secret-one", "secret-two", "/private/first", "example.invalid", "stderr", "session=", "credential="] {
+        for forbidden in [
+            first_raw,
+            second_raw,
+            "secret-one",
+            "secret-two",
+            "/private/first",
+            "example.invalid",
+            "stderr",
+            "session=",
+            "credential=",
+        ] {
             assert!(!output.contains(forbidden), "leaked {forbidden}: {output}");
         }
     }
