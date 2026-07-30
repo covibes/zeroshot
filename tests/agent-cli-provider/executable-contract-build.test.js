@@ -706,6 +706,7 @@ test('probe attests Codex and OpenCode web-search version floors', () => {
   const codexHelp = 'Usage: codex exec --config --json resume';
   for (const [versionText, expected] of [
     ['codex-cli 0.146.0', true],
+    ['codex-cli 0.146.0beta', false],
     ['codex-cli 0.145.9', false],
     ['codex-cli unknown', false],
     ['', false],
@@ -731,6 +732,7 @@ test('probe attests Codex and OpenCode web-search version floors', () => {
 
   for (const [versionText, expected] of [
     ['1.0.137', true],
+    ['opencode 1.0.137garbage', false],
     ['opencode 1.0.136', false],
     ['dev', false],
   ]) {
