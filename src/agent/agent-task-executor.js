@@ -2213,7 +2213,11 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
         if (termination?.forced === false) cancellation = null;
         if (!resolved) {
           const error =
-            (sourceError instanceof Error ? sourceError : null) ||
+            (sourceError instanceof Error &&
+              sourceError.code === 'unsupported-capability' &&
+              sourceError.permanent === true
+              ? sourceError
+              : null) ||
             timeoutError ||
             new Error(
               termination?.forced === false
