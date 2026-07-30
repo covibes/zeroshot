@@ -23,6 +23,10 @@ import type { ProcessRunner } from './process-runner';
 
 function runBuildCommand(request: RequestData): ContractEnvelope {
   const { adapter, commandSpec, options } = buildCommandSpec(request);
+  const webSearch = {
+    requested: options.webSearch === true,
+    effective: options.webSearch === true && options.cliFeatures?.supportsWebSearch === true,
+  };
   return successEnvelope({
     command: request.command ?? 'build-command',
     adapter,
@@ -31,11 +35,13 @@ function runBuildCommand(request: RequestData): ContractEnvelope {
     evidence: {
       outputFormat: options.outputFormat ?? null,
       schemaMode: schemaMode(options),
+      configuration: { webSearch },
     },
     result: {
       commandSpec,
       outputFormat: options.outputFormat ?? null,
       schemaMode: schemaMode(options),
+      configuration: { webSearch },
     },
   });
 }
@@ -43,11 +49,15 @@ function runBuildCommand(request: RequestData): ContractEnvelope {
 function runProbe(request: RequestData): ContractEnvelope {
   const adapter = adapterForProvider(request.provider);
   const helpText = typeof request.raw.helpText === 'string' ? request.raw.helpText : null;
-  const runtimeProbe = helpText === null ? probeRuntimeProviderCli(adapter.id) : null;
-  const capabilities =
-    runtimeProbe === null
-      ? adapter.detectCliFeatures(helpText)
-      : runtimeProbe.capabilities;
+  const versionText = typeof request.raw.versionText === 'string' ? request.raw.versionText : '';
+  const runtimeProbe =
+    helpText === null
+      ? probeRuntimeProviderCli(adapter.id)
+      : probeRuntimeProviderCli(adapter.id, {
+          available: true,
+          helpText,
+          versionText,
+        });
   return successEnvelope({
     command: request.command ?? 'probe',
     adapter,
@@ -60,10 +70,11 @@ function runProbe(request: RequestData): ContractEnvelope {
       },
       contractVersion: providerExecutableSchemaVersion,
       adapterVersion: adapter.adapterVersion,
-      available: runtimeProbe?.available ?? true,
-      helpText: runtimeProbe?.helpText ?? helpText,
-      versionText: runtimeProbe?.versionText ?? null,
-      capabilities,
+      available: runtimeProbe.available,
+      helpText: runtimeProbe.helpText,
+      versionText: runtimeProbe.versionText,
+      capabilities: runtimeProbe.capabilities,
+      configuration: runtimeProbe.configuration,
       credentials: adapter.credentialEnvKeys.map((key) => ({
         key,
         present: Boolean(request.env[key] ?? process.env[key]),

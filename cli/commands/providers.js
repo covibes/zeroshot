@@ -138,6 +138,7 @@ async function setupCommand(args) {
     mutateSettings((settings) => {
       settings.providerSettings = settings.providerSettings || {};
       settings.providerSettings[provider] = {
+        ...(settings.providerSettings[provider] || {}),
         maxLevel: levelKeys[maxIdx - 1],
         minLevel: levelKeys[minIdx - 1],
         defaultLevel: levelKeys[defaultIdxNum - 1],

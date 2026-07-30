@@ -89,6 +89,7 @@ export interface ResolvedGatewayBuildOptions {
 export interface BaseCliFeatures {
   readonly provider?: ProviderId;
   readonly unknown?: boolean;
+  readonly supportsWebSearch?: boolean;
 }
 
 export interface ClaudeCliFeatures extends BaseCliFeatures {
@@ -116,6 +117,7 @@ export interface CodexCliFeatures extends BaseCliFeatures {
   readonly supportsModel: boolean;
   readonly supportsSkipGitRepoCheck: boolean;
   readonly supportsResume: boolean;
+  readonly supportsWebSearch: boolean;
 }
 
 export interface GeminiCliFeatures extends BaseCliFeatures {
@@ -134,6 +136,8 @@ export interface OpencodeCliFeatures extends BaseCliFeatures {
   readonly supportsDir: boolean;
   readonly supportsCwd: boolean;
   readonly supportsAutoApprove: false;
+  readonly supportsResume: boolean;
+  readonly supportsWebSearch: boolean;
 }
 
 export interface PiCliFeatures extends BaseCliFeatures {
@@ -218,6 +222,7 @@ export interface CliFeatureOverrides {
   readonly supportsAddDir?: boolean;
   readonly supportsMcpConfig?: boolean;
   readonly supportsResume?: boolean;
+  readonly supportsWebSearch?: boolean;
   readonly supportsBundledRunner?: boolean;
   readonly supportsAcpStdio?: boolean;
   readonly supportsPromptImages?: boolean;
@@ -252,6 +257,11 @@ export interface RedactionMetadata {
   readonly source?: string;
 }
 
+export interface WebSearchAttestation {
+  readonly requested: boolean;
+  readonly effective: boolean;
+}
+
 export interface CommandSpec {
   readonly binary: string;
   readonly args: readonly string[];
@@ -272,6 +282,7 @@ export interface BuildProviderCommandOptions {
   readonly autoApprove?: boolean;
   readonly resumeSessionId?: string;
   readonly continueSession?: boolean;
+  readonly webSearch?: boolean;
   readonly claudeSettingsFile?: string;
   readonly cliFeatures?: CliFeatureOverrides;
   readonly authEnv?: Readonly<Record<string, string>>;
@@ -373,7 +384,7 @@ export interface ProviderAdapter {
   readonly defaultLevel: ModelLevel;
   readonly defaultMaxLevel: ModelLevel;
   readonly defaultMinLevel: ModelLevel;
-  detectCliFeatures(helpText?: string | null): ProviderCliFeatures;
+  detectCliFeatures(helpText?: string | null, versionText?: string | null): ProviderCliFeatures;
   buildCommand(context: string, options?: BuildProviderCommandOptions): CommandSpec;
   extractSessionId?(line: string): string | null;
   parseEvent(line: string, state: ProviderParserState): ProviderParseResult;

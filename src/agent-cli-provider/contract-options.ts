@@ -44,6 +44,7 @@ const CLI_FEATURE_FIELDS = [
   'supportsAddDir',
   'supportsMcpConfig',
   'supportsResume',
+  'supportsWebSearch',
   'supportsBundledRunner',
   'supportsAcpStdio',
   'supportsPromptImages',
@@ -210,6 +211,7 @@ function normalizeBuildOptions(value: Record<string, unknown>): BuildProviderCom
     'continueSession',
     optionalBooleanValue(value.continueSession, 'options.continueSession')
   );
+  addDefined(result, 'webSearch', optionalBooleanValue(value.webSearch, 'options.webSearch'));
   addDefined(
     result,
     'claudeSettingsFile',

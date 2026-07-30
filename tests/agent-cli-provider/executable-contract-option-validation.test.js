@@ -24,6 +24,7 @@ const invalidNestedOptionCases = [
     options: { continueSession: 'yes' },
     field: 'options.continueSession',
   },
+  { name: 'webSearch type', options: { webSearch: 'yes' }, field: 'options.webSearch' },
   { name: 'strictSchema type', options: { strictSchema: 'yes' }, field: 'options.strictSchema' },
   {
     name: 'cliFeatures boolean',
