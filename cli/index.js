@@ -49,7 +49,13 @@ const {
   DEFAULT_SETTINGS,
   settingsFileExists,
 } = require('../lib/settings');
-const { VALID_PROVIDERS, normalizeProviderName } = require('../lib/provider-names');
+const {
+  VALID_PROVIDERS,
+  getProviderMetadata,
+  normalizeProviderName,
+  resolveProviderCommand,
+} = require('../lib/provider-names');
+const { commandExists } = require('../lib/provider-detection');
 const { getProvider, parseProviderChunk } = require('../src/providers');
 const { readClustersFileSync } = require('../lib/clusters-registry');
 const { MOUNT_PRESETS, resolveEnvs } = require('../lib/docker-config');
@@ -69,6 +75,10 @@ const {
   startClusterFromText,
 } = require('../lib/start-cluster');
 const { requirePreflight } = require('../src/preflight');
+const {
+  createUnsupportedProviderCapabilityError,
+  serializeTaskStartupError,
+} = require('../src/task-startup-error');
 const { providersCommand, setDefaultCommand, setupCommand } = require('./commands/providers');
 const { runInspectCommand } = require('./commands/inspect');
 const { runCmdproof } = require('./commands/cmdproof');
@@ -2835,6 +2845,24 @@ for (const mode of ['prove', 'verify', 'check']) {
     });
 }
 
+function assertRequestedWebSearchCliAvailable(
+  provider,
+  settings,
+  exists = commandExists
+) {
+  const metadata = getProviderMetadata(provider);
+  if (!metadata.settingsFields.includes('webSearch')) return;
+  if (settings.providerSettings?.[provider]?.webSearch !== true) return;
+  const { command } = resolveProviderCommand(provider);
+  if (exists(command)) return;
+  throw createUnsupportedProviderCapabilityError(
+    provider,
+    'webSearch',
+    `${metadata.displayName} web search was requested, but the ${command} CLI is not installed. ` +
+      `${metadata.installInstructions}. Install it or set providerSettings.${provider}.webSearch to false.`
+  );
+}
+
 taskCmd
   .command('run <prompt>')
   .description('Run a single-agent background task')
@@ -2842,9 +2870,18 @@ taskCmd
   .option('--provider <provider>', `Provider to use (${PROVIDER_CHOICES})`)
   .option('--model <model>', 'Model id override for the provider')
   .option('--model-level <level>', 'Model level override (level1, level2, level3)')
-  .option('--reasoning-effort <effort>', 'Reasoning effort (low, medium, high, xhigh, max)')
-  .option('-r, --resume <sessionId>', 'Resume a specific provider session (Claude or Codex)')
-  .option('-c, --continue', 'Continue the most recent Claude session (claude only)')
+  .option(
+    '--reasoning-effort <effort>',
+    'Reasoning effort override (low, medium, high, xhigh, max)'
+  )
+  .option(
+    '-r, --resume <sessionId>',
+    'Resume a specific provider session (Claude, Codex, or OpenCode)'
+  )
+  .option(
+    '-c, --continue',
+    'Continue the most recent provider session (Claude or OpenCode)'
+  )
   .option(
     '-o, --output-format <format>',
     'Output format: stream-json (default), text, json',
@@ -2866,6 +2903,7 @@ taskCmd
       const providerOverride = normalizeProviderName(
         options.provider || process.env.ZEROSHOT_PROVIDER || settings.defaultProvider
       );
+      assertRequestedWebSearchCliAvailable(providerOverride, settings);
       await requirePreflight({
         requireGh: false, // gh not needed for plain tasks
         requireDocker: false, // Docker not needed for plain tasks
@@ -2878,6 +2916,8 @@ taskCmd
       await runTask(prompt, options);
     } catch (error) {
       console.error('Error:', error.message);
+      const startupEnvelope = serializeTaskStartupError(error);
+      if (startupEnvelope) fs.writeSync(process.stderr.fd, `${startupEnvelope}\n`);
       process.exit(1);
     }
   });
@@ -6010,6 +6050,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  assertRequestedWebSearchCliAvailable,
   applyModelOverrideToConfig,
   inspectAgentAttachment,
   printAttachableAgentList,

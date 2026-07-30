@@ -142,6 +142,10 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Generated graph fixtures     | `protocol/openengine-cluster/v1/fixtures/graph/`                        |
 | Generated watch fixtures     | `protocol/openengine-cluster/v1/fixtures/watch/`                        |
 
+Provider-specific settings, defaults, validation, and static capabilities derive from the provider
+registry; do not add parallel provider lists. Opt-in native CLI capabilities must keep requested
+and effective state distinct and fail closed unless local help/version evidence proves the control.
+
 Cluster Protocol Rust types are the source of truth. Files under
 `protocol/openengine-cluster/v1/` are generated projections; update them with
 `cargo run -p openengine-cluster-testkit --bin generate-cluster-protocol -- --write` and

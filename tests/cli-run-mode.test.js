@@ -1,4 +1,6 @@
 const assert = require('assert');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 const { isStartupUpdateEligible, resolveRunMode } = require('../cli/index.js');
 
 describe('resolveRunMode', () => {
@@ -90,5 +92,24 @@ describe('startup update option integration', function () {
       isStartupUpdateEligible(['export', 'nonexistent', '--', '-qfjson'], options),
       true
     );
+  });
+
+  it('accepts reasoning effort on task run', function () {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.resolve(__dirname, '../cli/index.js'),
+        'task',
+        'run',
+        'prompt',
+        '--reasoning-effort',
+        'max',
+        '--help',
+      ],
+      { encoding: 'utf8' }
+    );
+
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.match(result.stdout, /--reasoning-effort <effort>/);
   });
 });

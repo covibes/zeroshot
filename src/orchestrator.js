@@ -2716,12 +2716,17 @@ class Orchestrator {
     });
 
     for (const error of errors) {
+      const errorData = error.content?.data || {};
       const failureInfo = {
         agentId: error.sender,
-        taskId: error.content?.data?.taskId || null,
-        iteration: error.content?.data?.iteration || 0,
-        error: error.content?.data?.error || error.content?.text,
+        taskId: errorData.taskId || null,
+        iteration: errorData.iteration || 0,
+        error: errorData.error || error.content?.text,
         timestamp: error.timestamp,
+        ...(errorData.code !== undefined ? { code: errorData.code } : {}),
+        ...(errorData.permanent !== undefined ? { permanent: errorData.permanent } : {}),
+        ...(errorData.provider !== undefined ? { provider: errorData.provider } : {}),
+        ...(errorData.capability !== undefined ? { capability: errorData.capability } : {}),
       };
       if (this._hasDurableProgressAfterFailure(cluster, clusterId, failureInfo)) {
         this._log(

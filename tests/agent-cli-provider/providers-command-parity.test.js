@@ -110,7 +110,7 @@ test('provider setup prints install and auth instructions from registry metadata
 
   const settings = {
     defaultProvider: 'claude',
-    providerSettings: {},
+    providerSettings: { opencode: { webSearch: true } },
   };
   const saved = [];
   const { setupCommand } = loadCommands({
@@ -146,4 +146,5 @@ test('provider setup prints install and auth instructions from registry metadata
   assert.ok(logs.includes(metadata.authInstructions));
   assert.equal(saved.length, 1);
   assert.equal(saved[0].providerSettings[provider].defaultLevel, 'level3');
+  assert.equal(saved[0].providerSettings[provider].webSearch, true);
 });

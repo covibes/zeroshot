@@ -34,6 +34,7 @@ const {
   appendTaskRunModelArgs,
   wrapTaskRunWithIsolatedSettings,
 } = require('./task-run-model-args');
+const { parseTaskStartupError } = require('./task-startup-error');
 
 function rejectCallerSuppliedModelProvenance(options) {
   if (Object.prototype.hasOwnProperty.call(options, 'modelSpecSource')) {
@@ -98,6 +99,7 @@ function runCommand(command, args, options = {}, callback = null) {
 }
 
 const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale', 'cancelled']);
+const TASK_STARTUP_STDERR_MAX_CHARS = 500;
 
 async function cleanupPersistedTaskAfterLaunchFailure(ctPath, taskId) {
   let lastError = null;
@@ -808,6 +810,7 @@ class ClaudeTaskRunner extends TaskRunner {
     return new Promise((resolve, reject) => {
       let output = '';
       let resolved = false;
+      let stderr = '';
 
       const proc = manager.spawnInContainer(clusterId, command, {
         env: {
@@ -828,6 +831,7 @@ class ClaudeTaskRunner extends TaskRunner {
 
       proc.stderr.on('data', (/** @type {Buffer} */ data) => {
         const chunk = data.toString();
+        stderr = `${stderr}${chunk}`.slice(-TASK_STARTUP_STDERR_MAX_CHARS);
         if (!this.quiet) {
           console.error(`[${agentId}] stderr:`, chunk);
         }
@@ -836,6 +840,13 @@ class ClaudeTaskRunner extends TaskRunner {
       proc.on('close', (/** @type {number|null} */ code) => {
         if (resolved) return;
         resolved = true;
+        if (code !== 0) {
+          const startupError = parseTaskStartupError(stderr);
+          if (startupError) {
+            reject(startupError);
+            return;
+          }
+        }
 
         resolve({
           success: code === 0,

@@ -740,6 +740,7 @@ test('feature probing is deterministic from injected help text', () => {
     helper.getProviderAdapter('opencode').detectCliFeatures('opencode run --format').supportsCwd,
     false
   );
+  assert.equal(helper.getProviderAdapter('opencode').detectCliFeatures('').supportsResume, false);
   assert.equal(
     helper
       .getProviderAdapter('pi')
@@ -790,12 +791,24 @@ test('provider registry stays in parity across helper runtime settings and probe
     KNOWN_PROVIDER_NAMES.map((name) => helper.normalizeProviderName(name))
   );
 
+  assert.deepEqual(
+    helper
+      .listProviderRegistryEntries()
+      .filter((entry) => entry.capabilities.webSearch === true)
+      .map((entry) => entry.id),
+    ['codex', 'opencode']
+  );
+
   for (const provider of VALID_PROVIDERS) {
     const metadata = helper.getProviderRegistryEntry(provider);
     const runtime = runtimeProviders.getProvider(provider);
     assert.equal(runtime.displayName, metadata.displayName);
     assert.deepEqual(runtime.getCredentialPaths(), metadata.credentialPaths);
     assert.deepEqual(runtime.getSettingsFields().slice(4), metadata.settingsFields);
+    assert.equal(
+      metadata.settingsFields.includes('webSearch'),
+      metadata.capabilities.webSearch === true
+    );
 
     const response = await helper.runProviderExecutable(
       JSON.stringify({

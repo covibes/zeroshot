@@ -1,5 +1,11 @@
 import { stripTimestampPrefix } from '../log-prefix';
-import { getProviderRegistryEntry, normalizeProviderName, providerIds } from '../provider-registry';
+import { UnsupportedProviderCapabilityError } from '../errors';
+import {
+  getProviderRegistryEntry,
+  normalizeProviderName,
+  providerIds,
+  supportsProviderCapability,
+} from '../provider-registry';
 import type {
   BuildProviderCommandOptions,
   CommandSpec,
@@ -52,7 +58,15 @@ export function buildProviderCommand(
   context: string,
   options?: BuildProviderCommandOptions
 ): CommandSpec {
-  return getProviderAdapter(providerName).buildCommand(context, options);
+  const adapter = getProviderAdapter(providerName);
+  if (options?.webSearch !== undefined && !supportsProviderCapability(adapter.id, 'webSearch')) {
+    throw new UnsupportedProviderCapabilityError(
+      adapter.id,
+      'webSearch',
+      `Provider ${adapter.id} does not expose provider-controlled native web search; remove options.webSearch.`
+    );
+  }
+  return adapter.buildCommand(context, options);
 }
 
 export function parseProviderChunk(

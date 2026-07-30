@@ -2,7 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { loadSettings, validateSetting } = require('../lib/settings');
+const { loadSettings, mutateSettings, validateSetting } = require('../lib/settings');
 const {
   validateProviderFeatures,
   validateProviderSettings,
@@ -100,6 +100,42 @@ describe('Provider settings', function () {
         },
       });
     }, /reasoningEffort overrides are only supported/);
+  });
+
+  it('declares strict default-off web search only for Codex and OpenCode', function () {
+    assert.strictEqual(getProvider('codex').getDefaultSettings().webSearch, false);
+    assert.strictEqual(getProvider('opencode').getDefaultSettings().webSearch, false);
+    assert.strictEqual(
+      validateSetting('providerSettings', {
+        codex: { webSearch: true },
+        opencode: { webSearch: false },
+      }),
+      null
+    );
+    assert.match(
+      validateSetting('providerSettings', { codex: { webSearch: 'yes' } }),
+      /providerSettings\.codex\.webSearch must be a boolean/
+    );
+    assert.match(
+      validateSetting('providerSettings', { claude: { webSearch: true } }),
+      /Unknown provider setting: providerSettings\.claude\.webSearch/
+    );
+  });
+
+  it('round-trips web search through settings mutation and reads', function () {
+    process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
+    fs.writeFileSync(settingsFile, '{}', 'utf8');
+    try {
+      mutateSettings((settings) => {
+        settings.providerSettings.codex.webSearch = true;
+        settings.providerSettings.opencode.webSearch = true;
+      });
+      const settings = loadSettings();
+      assert.strictEqual(settings.providerSettings.codex.webSearch, true);
+      assert.strictEqual(settings.providerSettings.opencode.webSearch, true);
+    } finally {
+      delete process.env.ZEROSHOT_SETTINGS_FILE;
+    }
   });
 
   it('validates gateway settings and accepts arbitrary model ids', function () {

@@ -20,6 +20,7 @@ export interface ProviderCapabilities {
   readonly thinkingMode: ProviderCapabilityState;
   readonly reasoningEffort: ProviderCapabilityState;
   readonly sessionResume: ProviderCapabilityState;
+  readonly webSearch: ProviderCapabilityState;
 }
 
 interface FixedProviderCommandSpec {
@@ -102,6 +103,7 @@ const STANDARD_CAPABILITIES: Readonly<
     | 'streamJson'
     | 'thinkingMode'
     | 'sessionResume'
+    | 'webSearch'
   >
 > = {
   dockerIsolation: true,
@@ -110,6 +112,7 @@ const STANDARD_CAPABILITIES: Readonly<
   streamJson: true,
   thinkingMode: true,
   sessionResume: false,
+  webSearch: false,
 };
 
 const CLAUDE_DOCKER_ENV_PASSTHROUGH = [
@@ -203,12 +206,15 @@ export const providerRegistry = [
     authInstructions: 'codex login',
     credentialPaths: ['~/.config/codex', '~/.codex'],
     credentialEnvKeys: codexAdapter.credentialEnvKeys,
-    settingsFields: [],
+    settingsFields: ['webSearch'],
+    settingsDefaults: { webSearch: false },
+    settingsValidator: (settings): string | null => validateWebSearchSettings('codex', settings),
     capabilities: {
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
       reasoningEffort: true,
       sessionResume: true,
+      webSearch: true,
     },
     docs: {
       label: 'Codex',
@@ -326,11 +332,15 @@ export const providerRegistry = [
     authInstructions: 'opencode auth login',
     credentialPaths: ['~/.local/share/opencode'],
     credentialEnvKeys: opencodeAdapter.credentialEnvKeys,
-    settingsFields: [],
+    settingsFields: ['webSearch'],
+    settingsDefaults: { webSearch: false },
+    settingsValidator: (settings): string | null => validateWebSearchSettings('opencode', settings),
     capabilities: {
       ...STANDARD_CAPABILITIES,
       jsonSchema: 'experimental',
       reasoningEffort: true,
+      sessionResume: true,
+      webSearch: true,
     },
     docs: {
       label: 'Opencode',
@@ -471,6 +481,14 @@ export const providerRegistry = [
     adapter: copilotAdapter,
   },
 ] as const satisfies readonly ProviderRegistryEntry[];
+
+function validateWebSearchSettings(
+  provider: 'codex' | 'opencode',
+  settings: Record<string, unknown>
+): string | null {
+  if (settings.webSearch === undefined || typeof settings.webSearch === 'boolean') return null;
+  return `providerSettings.${provider}.webSearch must be a boolean`;
+}
 
 type RegistryProviderId = (typeof providerRegistry)[number]['id'];
 type RegistryProviderAlias = (typeof providerRegistry)[number]['aliases'][number];

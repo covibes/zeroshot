@@ -1,3 +1,5 @@
+const { providerSupportsCapability } = require('../lib/provider-names');
+
 /**
  * Append a resolved model selection to a nested `zeroshot task run` invocation.
  *
@@ -61,9 +63,9 @@ try {
 
 /**
  * Wrap an isolated task command with a Docker-only, temporary settings-file
- * bootstrap. The snapshot is a closed projection containing only the selected
- * OpenCode level and its model. It never contains arbitrary provider settings,
- * credentials, or caller-owned keys.
+ * bootstrap. The snapshot is a closed projection containing only an enabled
+ * native-search control and, when needed, the selected OpenCode level/model.
+ * It never contains credentials or caller-owned keys.
  *
  * @param {string[]} command
  * @param {{providerName: string, settings: Object, modelSpecSource: 'direct'|'provider-level', modelSpec: Object|null|undefined}} context
@@ -71,57 +73,73 @@ try {
  */
 function wrapTaskRunWithIsolatedSettings(command, context) {
   const { providerName, settings, modelSpecSource, modelSpec } = context;
-  if (providerName !== 'opencode' || modelSpecSource !== 'provider-level') return command;
-  const snapshot = buildIsolatedSettingsSnapshot(settings, modelSpec);
+  if (!providerSupportsCapability(providerName, 'webSearch')) return command;
+  const includesOpencodeModel =
+    providerName === 'opencode' && modelSpecSource === 'provider-level';
+  const snapshot = buildIsolatedSettingsSnapshot(
+    settings,
+    providerName,
+    includesOpencodeModel ? modelSpec : null
+  );
   if (snapshot === null) return command;
   return ['node', '-e', SETTINGS_BOOTSTRAP_SCRIPT, snapshot, ...command];
 }
 
-function buildIsolatedSettingsSnapshot(settings, modelSpec) {
-  const level = modelSpec?.level;
-  if (!['level1', 'level2', 'level3'].includes(level)) {
-    throw permanentError(
-      'Provider-level isolated OpenCode selections require a valid model level.'
-    );
-  }
-
+function buildIsolatedSettingsSnapshot(settings, providerName, opencodeModelSpec) {
   const providerSettings = ownRecordValue(settings, 'providerSettings', 'settings') ?? {};
-  const opencodeSettings = ownRecordValue(
+  const selectedSettings = ownRecordValue(
     providerSettings,
-    'opencode',
+    providerName,
     'settings.providerSettings'
   );
-  const levelOverrides = ownRecordValue(
-    opencodeSettings,
-    'levelOverrides',
-    'settings.providerSettings.opencode'
-  );
-  const levelOverride = ownRecordValue(
-    levelOverrides,
-    level,
-    'settings.providerSettings.opencode.levelOverrides'
-  );
-  const configuredModel =
-    levelOverride && Object.prototype.hasOwnProperty.call(levelOverride, 'model')
-      ? levelOverride.model
-      : null;
-  if (configuredModel !== null && typeof configuredModel !== 'string') {
-    throw permanentError(`Configured isolated OpenCode ${level} model must be a string or null.`);
+  const webSearch = selectedSettings?.webSearch;
+  if (webSearch !== undefined && typeof webSearch !== 'boolean') {
+    throw permanentError(`settings.providerSettings.${providerName}.webSearch must be a boolean.`);
   }
-  if (modelSpec?.model !== configuredModel) {
-    throw permanentError(
-      `Provider-level model "${modelSpec?.model}" does not match the effective isolated ${modelSpec?.level} model "${configuredModel}".`
-    );
-  }
-  if (configuredModel === null) return null;
 
+  const snapshot = {};
+  if (webSearch === true) snapshot.webSearch = true;
+  if (opencodeModelSpec !== null) {
+    const level = opencodeModelSpec?.level;
+    if (!['level1', 'level2', 'level3'].includes(level)) {
+      throw permanentError(
+        'Provider-level isolated OpenCode selections require a valid model level.'
+      );
+    }
+
+    const levelOverrides = ownRecordValue(
+      selectedSettings,
+      'levelOverrides',
+      'settings.providerSettings.opencode'
+    );
+    const levelOverride = ownRecordValue(
+      levelOverrides,
+      level,
+      'settings.providerSettings.opencode.levelOverrides'
+    );
+    const configuredModel =
+      levelOverride && Object.prototype.hasOwnProperty.call(levelOverride, 'model')
+        ? levelOverride.model
+        : null;
+    if (configuredModel !== null && typeof configuredModel !== 'string') {
+      throw permanentError(`Configured isolated OpenCode ${level} model must be a string or null.`);
+    }
+    if (opencodeModelSpec.model !== configuredModel) {
+      throw permanentError(
+        `Provider-level model "${opencodeModelSpec.model}" does not match the effective isolated ${level} model "${configuredModel}".`
+      );
+    }
+    if (configuredModel !== null) {
+      snapshot.levelOverrides = {
+        [level]: { model: configuredModel },
+      };
+    }
+  }
+
+  if (Object.keys(snapshot).length === 0) return null;
   return JSON.stringify({
     providerSettings: {
-      opencode: {
-        levelOverrides: {
-          [level]: { model: configuredModel },
-        },
-      },
+      [providerName]: snapshot,
     },
   });
 }

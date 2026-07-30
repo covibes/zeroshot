@@ -451,14 +451,19 @@ function prepareInterruptedCodeValidator(cluster, clusterId) {
   });
 }
 
-function publishAgentError(cluster, clusterId, agentId, { error, iteration, taskId }) {
+function publishAgentError(
+  cluster,
+  clusterId,
+  agentId,
+  { error, iteration, taskId, ...details }
+) {
   cluster.messageBus.publish({
     cluster_id: clusterId,
     topic: 'AGENT_ERROR',
     sender: agentId,
     content: {
       text: error,
-      data: { agent: agentId, error, iteration, taskId },
+      data: { agent: agentId, error, iteration, taskId, ...details },
     },
   });
 }
@@ -1837,6 +1842,10 @@ function defineLifecycleResumeTests() {
         error: 'unresolved code validator failure',
         iteration: 5,
         taskId: 'unresolved-code-task',
+        code: 'unsupported-capability',
+        permanent: true,
+        provider: 'codex',
+        capability: 'webSearch',
       });
       publishRecoveredWorkerFailureHistory(cluster, result.id);
 
@@ -1855,6 +1864,10 @@ function defineLifecycleResumeTests() {
       const failureInfo = lifecycleOrchestrator._resolveFailureInfo(restored, result.id);
       assert.strictEqual(failureInfo.agentId, 'validator-code');
       assert.strictEqual(failureInfo.taskId, 'unresolved-code-task');
+      assert.strictEqual(failureInfo.code, 'unsupported-capability');
+      assert.strictEqual(failureInfo.permanent, true);
+      assert.strictEqual(failureInfo.provider, 'codex');
+      assert.strictEqual(failureInfo.capability, 'webSearch');
 
       const resumed = await lifecycleOrchestrator.resume(result.id);
       await waitForAgentCalls(resumedRunner, { 'validator-code': 1 });

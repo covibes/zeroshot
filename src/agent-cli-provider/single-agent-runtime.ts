@@ -1,4 +1,5 @@
 import { getProviderAdapter } from './adapters';
+import { UnsupportedProviderCapabilityError } from './errors';
 import { normalizeGatewayBuildOptions, resolveGatewayConfiguration } from './gateway-tools';
 import { isRecord } from './json';
 import {
@@ -19,6 +20,7 @@ import type {
   ProviderId,
   ResolvedGatewayBuildOptions,
   ReasoningEffort,
+  WebSearchAttestation,
 } from './types';
 
 type UnknownFunction = (...args: readonly unknown[]) => unknown;
@@ -32,6 +34,7 @@ interface RuntimeProviderSettings {
   readonly defaultLevel?: ModelLevel;
   readonly levelOverrides: LevelOverrides;
   readonly gateway?: GatewayBuildOptions;
+  readonly webSearch?: boolean;
 }
 
 interface RuntimeCommandContext {
@@ -50,6 +53,9 @@ export interface PreparedSingleAgentProviderCommand {
   readonly commandSpec: CommandSpec;
   readonly options: BuildProviderCommandOptions;
   readonly cliFeatures: CliFeatureOverrides;
+  readonly configuration: {
+    readonly webSearch: WebSearchAttestation;
+  };
 }
 
 export interface RuntimeProviderProbe {
@@ -57,6 +63,15 @@ export interface RuntimeProviderProbe {
   readonly helpText: string;
   readonly versionText: string;
   readonly capabilities: ProviderCliFeatures;
+  readonly configuration: {
+    readonly webSearch: WebSearchAttestation;
+  };
+}
+
+interface RuntimeProbeEvidence {
+  readonly available?: boolean;
+  readonly helpText: string;
+  readonly versionText: string;
 }
 
 type MutableModelSpec = {
@@ -91,7 +106,13 @@ export function prepareSingleAgentProviderCommand(
     adapter.id,
     baseOptions.cwd ?? process.cwd()
   );
-  const cliFeatures = resolveRuntimeCliFeatures(adapter.id, baseOptions.cliFeatures);
+  const requestedWebSearch = baseOptions.webSearch ?? providerSettings.webSearch;
+  assertWebSearchDeclared(adapter.id, requestedWebSearch);
+  const cliFeatures = resolveRuntimeCliFeatures(
+    adapter.id,
+    baseOptions.cliFeatures,
+    requestedWebSearch === true
+  );
   const authEnv = baseOptions.authEnv ?? resolveRuntimeAuthEnv(adapter.id, settings);
   const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
     cliFeatures,
@@ -101,6 +122,9 @@ export function prepareSingleAgentProviderCommand(
     adapter,
     options,
     cliFeatures,
+    configuration: {
+      webSearch: webSearchAttestation(options),
+    },
     commandSpec: adapter.buildCommand(input.context, options),
   };
 }
@@ -111,22 +135,35 @@ export function detectRuntimeProviderCliFeatures(provider: string): ProviderCliF
 
 function resolveRuntimeCliFeatures(
   provider: ProviderId,
-  overrides: CliFeatureOverrides | undefined
+  overrides: CliFeatureOverrides | undefined,
+  webSearchRequested: boolean
 ): CliFeatureOverrides {
   if (provider === 'gateway') {
+    const detected = detectRuntimeProviderCliFeatures(provider);
     return {
-      ...detectRuntimeProviderCliFeatures(provider),
+      ...detected,
       ...overrides,
       supportsBundledRunner: true,
+      supportsWebSearch: false,
     };
   }
-  if (getProviderRegistryEntry(provider).invoke.lane !== 'acp-stdio') {
-    return overrides ?? detectRuntimeProviderCliFeatures(provider);
+  if (getProviderRegistryEntry(provider).invoke.lane === 'acp-stdio') {
+    const detected = detectRuntimeProviderCliFeatures(provider);
+    if (overrides === undefined) return detected;
+    return mergeAcpFailClosedCliFeatures(detected, overrides);
   }
-
+  if (overrides === undefined) return detectRuntimeProviderCliFeatures(provider);
+  if (!webSearchRequested) return overrides;
   const detected = detectRuntimeProviderCliFeatures(provider);
-  if (overrides === undefined) return detected;
-  return mergeAcpFailClosedCliFeatures(detected, overrides);
+  return {
+    ...overrides,
+    supportsResume:
+      'supportsResume' in detected &&
+      detected.supportsResume === true &&
+      overrides.supportsResume !== false,
+    supportsWebSearch:
+      detected.supportsWebSearch === true && overrides.supportsWebSearch !== false,
+  };
 }
 
 function mergeAcpFailClosedCliFeatures(
@@ -154,33 +191,61 @@ function mergeAcpFailClosedCliFeatures(
   };
 }
 
-export function probeRuntimeProviderCli(provider: string): RuntimeProviderProbe {
+export function probeRuntimeProviderCli(
+  provider: string,
+  evidence?: RuntimeProbeEvidence
+): RuntimeProviderProbe {
   const adapter = getProviderAdapter(provider);
   if (adapter.id === 'gateway') {
     return probeGatewayProvider(adapter);
   }
+  const requested = getProviderRegistryEntry(adapter.id).settingsFields.includes('webSearch')
+    ? runtimeProviderSettings(loadRuntimeSettings(), adapter.id, process.cwd()).webSearch === true
+    : false;
   const helpCommand = runtimeHelpCommand(adapter.id);
-  const commandAvailable = booleanResult(commandExistsFn(helpCommand.command));
+  const commandAvailable =
+    evidence === undefined
+      ? booleanResult(commandExistsFn(helpCommand.command))
+      : evidence.available !== false;
   if (!commandAvailable) {
+    const capabilities = attestedCliFeatures(adapter, '', '');
     return {
       available: false,
       helpText: '',
       versionText: '',
-      capabilities: adapter.detectCliFeatures(''),
+      capabilities,
+      configuration: {
+        webSearch: webSearchAttestation({ webSearch: requested, cliFeatures: capabilities }),
+      },
     };
   }
 
-  const helpText = stringResult(getHelpOutputFn(helpCommand.command, helpCommand.args)).trim();
-  const versionText = stringResult(
-    getVersionOutputFn(helpCommand.command, helpCommand.args)
-  ).trim();
+  const helpText =
+    evidence?.helpText ??
+    stringResult(getHelpOutputFn(helpCommand.command, helpCommand.args)).trim();
+  const versionText =
+    evidence?.versionText ??
+    stringResult(
+      getVersionOutputFn(
+        helpCommand.command,
+        getProviderRegistryEntry(adapter.id).capabilities.webSearch === true
+          ? []
+          : helpCommand.args
+      )
+    ).trim();
   const availabilityProbe = getProviderRegistryEntry(adapter.id).availabilityProbe ?? 'command';
+  const capabilities = attestedCliFeatures(adapter, helpText, versionText);
 
   return {
-    available: availabilityProbe === 'help-or-version' ? Boolean(helpText || versionText) : true,
+    available:
+      evidence?.available ??
+      (availabilityProbe === 'help-or-version' ? Boolean(helpText || versionText) : true),
     helpText,
     versionText,
-    capabilities: adapter.detectCliFeatures(helpText),
+    capabilities,
+    configuration: {
+      webSearch: webSearchAttestation({ webSearch: requested, cliFeatures: capabilities }),
+    },
   };
 }
 
@@ -197,10 +262,13 @@ function buildRuntimeOptions(
     providerSettings,
     modelSpec
   );
+  const webSearch = baseOptions.webSearch ?? providerSettings.webSearch;
+  assertWebSearchDeclared(adapter.id, webSearch);
   const resolved = {
     ...baseOptions,
     modelSpec,
     ...(gateway === undefined ? {} : { gateway }),
+    ...(webSearch === undefined ? {} : { webSearch }),
     cliFeatures: runtime.cliFeatures,
   };
   if (baseOptions.jsonSchema && !supportsProviderCapability(adapter.id, 'jsonSchema')) {
@@ -320,16 +388,20 @@ function runtimeProviderSettings(
     providerSettings.levelOverrides,
     `settings.providerSettings.${provider}.levelOverrides`
   );
+  const webSearch = optionalBoolean(
+    providerSettings.webSearch,
+    `settings.providerSettings.${provider}.webSearch`
+  );
   const gateway =
     provider === 'gateway'
       ? normalizeGatewayBuildOptions(providerSettings, 'settings.providerSettings.gateway', cwd)
       : undefined;
-  if (defaultLevel === undefined) {
-    return gateway === undefined ? { levelOverrides } : { levelOverrides, gateway };
-  }
-  return gateway === undefined
-    ? { defaultLevel, levelOverrides }
-    : { defaultLevel, levelOverrides, gateway };
+  const base = {
+    levelOverrides,
+    ...(gateway === undefined ? {} : { gateway }),
+    ...(webSearch === undefined ? {} : { webSearch }),
+  };
+  return defaultLevel === undefined ? base : { ...base, defaultLevel };
 }
 
 function runtimeHelpCommand(provider: ProviderId): CommandParts {
@@ -340,7 +412,7 @@ function runtimeHelpCommand(provider: ProviderId): CommandParts {
 }
 
 function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
-  const capabilities = adapter.detectCliFeatures('');
+  const capabilities = attestedCliFeatures(adapter, '', '');
   try {
     const settings = loadRuntimeSettings();
     const providerSettings = runtimeProviderSettings(settings, 'gateway', process.cwd());
@@ -354,6 +426,9 @@ function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
       helpText: 'Bundled gateway runner',
       versionText: process.version,
       capabilities,
+      configuration: {
+        webSearch: { requested: false, effective: false },
+      },
     };
   } catch {
     return {
@@ -361,8 +436,47 @@ function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
       helpText: 'Bundled gateway runner',
       versionText: process.version,
       capabilities,
+      configuration: {
+        webSearch: { requested: false, effective: false },
+      },
     };
   }
+}
+
+function attestedCliFeatures(
+  adapter: ProviderAdapter,
+  helpText: string,
+  versionText: string
+): ProviderCliFeatures {
+  const detected = adapter.detectCliFeatures(helpText, versionText);
+  return {
+    ...detected,
+    supportsWebSearch:
+      getProviderRegistryEntry(adapter.id).capabilities.webSearch === true &&
+      detected.supportsWebSearch === true,
+  };
+}
+
+function webSearchAttestation(options: {
+  readonly webSearch?: boolean;
+  readonly cliFeatures?: CliFeatureOverrides;
+}): WebSearchAttestation {
+  const requested = options.webSearch === true;
+  return {
+    requested,
+    effective: requested && options.cliFeatures?.supportsWebSearch === true,
+  };
+}
+
+function assertWebSearchDeclared(provider: ProviderId, requested: boolean | undefined): void {
+  if (requested === undefined || getProviderRegistryEntry(provider).capabilities.webSearch === true) {
+    return;
+  }
+  throw new UnsupportedProviderCapabilityError(
+    provider,
+    'webSearch',
+    `Provider ${provider} does not expose provider-controlled native web search; remove options.webSearch.`
+  );
 }
 
 function loadRuntimeSettings(): Record<string, unknown> {
@@ -437,6 +551,12 @@ function addModel(result: MutableModelSpec, value: unknown, field: string): void
 function addReasoningEffort(result: MutableModelSpec, value: unknown, field: string): void {
   const effort = optionalReasoningEffort(value, field);
   if (effort !== undefined) result.reasoningEffort = effort;
+}
+
+function optionalBoolean(value: unknown, field: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'boolean') return value;
+  throw new Error(`${field} must be a boolean.`);
 }
 
 function optionalModelLevel(value: unknown, field: string): ModelLevel | undefined {

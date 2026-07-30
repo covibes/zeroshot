@@ -6,6 +6,7 @@ import {
   type ContractErrorObject,
   type ContractEnvelope,
 } from './contract-envelope';
+import { UnsupportedProviderCapabilityError } from './errors';
 import { getString, isRecord, parseJson, unknownToMessage } from './json';
 import { mergeRedactions, redactString } from './redaction';
 import type { ProviderAdapter } from './types';
@@ -77,6 +78,14 @@ function errorObject(requestError: ContractRequestError): ContractErrorObject {
 
 export function requestErrorFromUnknown(error: unknown): ContractRequestError {
   if (error instanceof ContractRequestError) return error;
+  if (error instanceof UnsupportedProviderCapabilityError) {
+    return contractError({
+      code: error.code,
+      message: error.message,
+      exitCode: 4,
+      field: 'options.webSearch',
+    });
+  }
   return contractError({
     code: 'internal-error',
     message: unknownToMessage(error),
