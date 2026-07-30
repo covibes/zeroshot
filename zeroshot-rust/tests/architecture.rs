@@ -63,6 +63,16 @@ fn product_contains_the_required_native_files() {
         "src/scheduler.rs",
         "src/issue_provider.rs",
         "src/source_code_provider.rs",
+        "src/workspace_lease.rs",
+        "src/workspace_lease/adapters.rs",
+        "src/workspace_lease/borrowed.rs",
+        "src/workspace_lease/manager.rs",
+        "src/workspace_lease/resource.rs",
+        "src/workspace_lease/resource/fake.rs",
+        "src/workspace_lease/store.rs",
+        "src/workspace_lease/store/fake.rs",
+        "src/workspace_lease/store/sqlite.rs",
+        "src/workspace_lease/types.rs",
         "src/worker_catalog.rs",
         "tests/architecture.rs",
         "tests/worker_catalog_architecture.rs",
@@ -84,6 +94,9 @@ fn product_contains_the_required_native_files() {
         "tests/source_authority_contract.rs",
         "tests/scheduler_contract.rs",
         "tests/worker_catalog.rs",
+        "tests/workspace_leases.rs",
+        "tests/workspace_modes.rs",
+        "tests/workspace_recovery.rs",
     ] {
         assert!(files.contains(required), "missing product file: {required}");
     }
@@ -121,6 +134,9 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
         ("required_proof_contract".to_owned(), "test".to_owned()),
         ("required_proof_architecture".to_owned(), "test".to_owned()),
         ("scheduler_contract".to_owned(), "test".to_owned()),
+        ("workspace_leases".to_owned(), "test".to_owned()),
+        ("workspace_modes".to_owned(), "test".to_owned()),
+        ("workspace_recovery".to_owned(), "test".to_owned()),
     ] {
         assert!(
             targets.contains(&required),
@@ -602,4 +618,71 @@ fn manifest_has_no_client_testkit_or_node_dependencies() {
             "forbidden product dependency: {forbidden_dependency}"
         );
     }
+}
+
+#[test]
+fn workspace_leases_cannot_mutate_graph_outcomes() {
+    let leases = rust_sources(&["src/workspace_lease.rs", "src/workspace_lease"]);
+    for forbidden in [
+        "ClusterLedger",
+        "CommitRequest",
+        "MutationIdentity",
+        "RecordPayload",
+        "ExecutionVoid",
+        "TerminalProjection",
+        "full_v1_reducer",
+        "crate::scheduler",
+    ] {
+        assert!(
+            !leases.contains(forbidden),
+            "workspace leases imported graph outcome authority: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn product_modules_require_issue_authorization() {
+    let product = product_root();
+    let mut product_files = BTreeSet::new();
+    relative_files(&product, &product.join("src"), &mut product_files);
+    let top_level_source_entries = product_files
+        .iter()
+        .filter_map(|relative| {
+            relative
+                .strip_prefix("src/")
+                .and_then(|path| path.split('/').next())
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        top_level_source_entries,
+        BTreeSet::from([
+            "artifact_store",
+            "artifact_store.rs",
+            "cluster_ledger",
+            "cluster_ledger.rs",
+            "daemon_auth.rs",
+            "daemon_discovery.rs",
+            "daemon_listener.rs",
+            "execution",
+            "execution.rs",
+            "fault",
+            "fault.rs",
+            "full_v1_reducer.rs",
+            "issue_provider",
+            "issue_provider.rs",
+            "lib.rs",
+            "main.rs",
+            "observability.rs",
+            "provider_value",
+            "provider_value.rs",
+            "required_proof.rs",
+            "scheduler.rs",
+            "source_code_provider",
+            "source_code_provider.rs",
+            "worker_catalog.rs",
+            "workspace_lease",
+            "workspace_lease.rs",
+        ]),
+        "new product modules require an issue-authorized architecture amendment"
+    );
 }

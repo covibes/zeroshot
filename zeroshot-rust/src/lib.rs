@@ -13,6 +13,7 @@ pub mod required_proof;
 pub mod scheduler;
 pub mod source_code_provider;
 pub mod worker_catalog;
+pub mod workspace_lease;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{

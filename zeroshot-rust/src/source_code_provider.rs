@@ -54,14 +54,40 @@
 //! IssueProviderRegistry::new().lookup(&source).unwrap();
 //! ```
 //!
-//! A materialization destination is deliberately ephemeral and cannot be serialized:
+//! A materialization destination cannot be minted, cloned, serialized, or retained beyond its
+//! invocation by safe downstream code:
 //!
 //! ```compile_fail
 //! use zeroshot_engine::source_code_provider::SourceMaterializationDestination;
 //!
-//! let mut destination = ();
-//! let destination = SourceMaterializationDestination::new(&mut destination);
-//! serde_json::to_string(&destination).unwrap();
+//! let target = ();
+//! let destination = SourceMaterializationDestination::new(&target);
+//! ```
+//!
+//! ```compile_fail
+//! use zeroshot_engine::source_code_provider::SourceMaterializationDestination;
+//!
+//! fn clone_capability(destination: SourceMaterializationDestination<'_>) {
+//!     let _escaped = destination.clone();
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use zeroshot_engine::source_code_provider::SourceMaterializationDestination;
+//!
+//! fn serialize_capability(destination: SourceMaterializationDestination<'_>) {
+//!     serde_json::to_string(&destination).unwrap();
+//! }
+//! ```
+//!
+//! ```compile_fail
+//! use zeroshot_engine::source_code_provider::SourceMaterializationDestination;
+//!
+//! fn retain<'a>(
+//!     destination: SourceMaterializationDestination<'a>,
+//! ) -> SourceMaterializationDestination<'static> {
+//!     destination
+//! }
 //! ```
 //!
 //! A verified workspace capability cannot be minted, serialized, or cloned by safe downstream

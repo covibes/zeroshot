@@ -181,17 +181,91 @@ impl SourceMaterializeRequest {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, thiserror::Error, PartialEq)]
+#[error("source materialization destination operation failed")]
+pub struct SourceMaterializationError;
+
+pub(crate) trait SourceMaterializationTarget: Send + Sync {
+    fn is_available(&self) -> bool;
+    fn remove_file(&self, name: &str) -> Result<(), SourceMaterializationError>;
+    fn write_file(&self, name: &str, contents: &[u8]) -> Result<(), SourceMaterializationError>;
+}
+
+/// Scoped authority for materializing source into an engine-selected destination.
+///
+/// The private target is borrowed for the invocation and exposes only bounded operations. Safe
+/// downstream code cannot construct, clone, serialize, copy, or retain its directory authority.
 pub struct SourceMaterializationDestination<'a> {
-    handle: &'a mut (dyn Any + Send),
+    target: &'a dyn SourceMaterializationTarget,
 }
 
 impl<'a> SourceMaterializationDestination<'a> {
-    pub fn new<T: Any + Send>(handle: &'a mut T) -> Self {
-        Self { handle }
+    pub(crate) fn new(target: &'a dyn SourceMaterializationTarget) -> Self {
+        Self { target }
     }
 
-    pub fn downcast_mut<T: Any + Send>(&mut self) -> Option<&mut T> {
-        self.handle.downcast_mut::<T>()
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        self.target.is_available()
+    }
+
+    pub fn write_file(
+        &self,
+        name: &str,
+        contents: &[u8],
+    ) -> Result<(), SourceMaterializationError> {
+        self.target.write_file(name, contents)
+    }
+}
+
+/// Engine-owned in-memory target for exercising provider contracts without exposing path or file
+/// descriptor authority.
+///
+/// This harness exists only for external contract tests. Production code must receive destinations
+/// from the workspace adapter.
+#[doc(hidden)]
+pub struct SourceMaterializationContractHarness {
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+impl SourceMaterializationContractHarness {
+    /// Constructs the external provider-contract harness.
+    ///
+    /// # Safety
+    ///
+    /// The caller must use this harness only to test a provider contract and must not substitute it
+    /// for workspace preparation in production.
+    #[must_use]
+    pub const unsafe fn new() -> Self {
+        Self {
+            writes: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    #[must_use]
+    pub fn destination(&self) -> SourceMaterializationDestination<'_> {
+        SourceMaterializationDestination::new(self)
+    }
+
+    #[must_use]
+    pub fn write_count(&self) -> usize {
+        self.writes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl SourceMaterializationTarget for SourceMaterializationContractHarness {
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn remove_file(&self, _name: &str) -> Result<(), SourceMaterializationError> {
+        Err(SourceMaterializationError)
+    }
+
+    fn write_file(&self, _name: &str, _contents: &[u8]) -> Result<(), SourceMaterializationError> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 }
 /// Ephemeral proof that a previously verified workspace is the mutation target.
