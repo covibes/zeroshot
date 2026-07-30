@@ -714,6 +714,7 @@ fn product_modules_require_issue_authorization() {
             "lib.rs",
             "main.rs",
             "observability.rs",
+            "product_errors.rs",
             "provider_value",
             "provider_value.rs",
             "required_proof.rs",
