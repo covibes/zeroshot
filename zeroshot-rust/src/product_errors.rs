@@ -221,7 +221,6 @@ pub enum ProductErrorProjectionError {
 }
 
 impl ProductError {
-    #[must_use]
     pub fn from_engine_fault(fault: &EngineFault) -> Result<Self, ProductErrorProjectionError> {
         let code = match fault.code() {
             FaultCode::Unavailable => ProductErrorCode::Unavailable,
