@@ -158,7 +158,9 @@ function resolveRuntimeCliFeatures(
   return {
     ...overrides,
     supportsResume:
-      detected.supportsResume === true && overrides.supportsResume !== false,
+      'supportsResume' in detected &&
+      detected.supportsResume === true &&
+      overrides.supportsResume !== false,
     supportsWebSearch:
       detected.supportsWebSearch === true && overrides.supportsWebSearch !== false,
   };
