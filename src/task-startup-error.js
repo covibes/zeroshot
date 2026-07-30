@@ -1,6 +1,16 @@
 const TASK_STARTUP_ERROR_PREFIX = 'ZEROSHOT_TASK_STARTUP_ERROR:';
 const SUPPORTED_STARTUP_ERROR_CODES = new Set(['unsupported-capability']);
 
+function createUnsupportedProviderCapabilityError(provider, capability, message) {
+  const error = new Error(message);
+  error.name = 'UnsupportedProviderCapabilityError';
+  error.code = 'unsupported-capability';
+  error.permanent = true;
+  error.provider = provider;
+  error.capability = capability;
+  return error;
+}
+
 function serializeTaskStartupError(error) {
   if (
     !SUPPORTED_STARTUP_ERROR_CODES.has(error?.code) ||
@@ -52,6 +62,7 @@ function parseTaskStartupError(stderr) {
 
 module.exports = {
   TASK_STARTUP_ERROR_PREFIX,
+  createUnsupportedProviderCapabilityError,
   parseTaskStartupError,
   serializeTaskStartupError,
 };

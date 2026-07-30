@@ -6,19 +6,22 @@ const os = require('node:os');
 const path = require('node:path');
 const sinon = require('sinon');
 
+const {
+  assertRequestedWebSearchCliAvailable,
+} = require('../../cli/index');
 const { executeTask } = require('../../src/agent/agent-lifecycle');
 const {
+  createUnsupportedProviderCapabilityError,
   parseTaskStartupError,
   serializeTaskStartupError,
 } = require('../../src/task-startup-error');
 
 function capabilityError() {
-  return Object.assign(new Error('Codex web search is unsupported.'), {
-    code: 'unsupported-capability',
-    permanent: true,
-    provider: 'codex',
-    capability: 'webSearch',
-  });
+  return createUnsupportedProviderCapabilityError(
+    'codex',
+    'webSearch',
+    'Codex web search was requested, but the codex CLI is not installed.'
+  );
 }
 
 function createAgent(startupError) {
@@ -84,6 +87,36 @@ describe('Task startup capability errors', function () {
     fs.rmSync(settingsDir, { recursive: true, force: true });
   });
 
+  it('classifies a missing CLI only when declared web search is enabled', function () {
+    assert.throws(
+      () =>
+        assertRequestedWebSearchCliAvailable(
+          'codex',
+          { providerSettings: { codex: { webSearch: true } } },
+          () => false
+        ),
+      (error) =>
+        error.code === 'unsupported-capability' &&
+        error.permanent === true &&
+        error.provider === 'codex' &&
+        error.capability === 'webSearch' &&
+        /codex CLI is not installed/.test(error.message)
+    );
+
+    let availabilityChecks = 0;
+    assert.doesNotThrow(() =>
+      assertRequestedWebSearchCliAvailable(
+        'codex',
+        { providerSettings: { codex: { webSearch: false } } },
+        () => {
+          availabilityChecks += 1;
+          return false;
+        }
+      )
+    );
+    assert.strictEqual(availabilityChecks, 0);
+  });
+
   it('restores permanent capability faults from the host task-start wrapper', async function () {
     const fakeChild = new EventEmitter();
     fakeChild.stdout = new EventEmitter();
@@ -122,6 +155,41 @@ describe('Task startup capability errors', function () {
     }
   });
 
+  it('restores permanent capability faults from the isolated TaskRunner', async function () {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = () => {};
+    const runnerPath = require.resolve('../../src/claude-task-runner');
+    delete require.cache[runnerPath];
+    const runner = new ClaudeTaskRunner({ quiet: true, timeout: 1 });
+    const original = capabilityError();
+    const pending = runner._runIsolated('task context', {
+      provider: 'codex',
+      isolation: {
+        clusterId: 'cluster-1',
+        manager: {
+          spawnInContainer() {
+            return proc;
+          },
+        },
+      },
+    });
+    proc.stderr.emit('data', Buffer.from(`${'noise'.repeat(120)}\n`));
+    proc.stderr.emit('data', Buffer.from(`${serializeTaskStartupError(original)}\n`));
+    proc.emit('close', 1);
+    const rejection = await pending.then(
+      () => null,
+      (error) => error
+    );
+
+    assert.strictEqual(rejection.code, 'unsupported-capability');
+    assert.strictEqual(rejection.permanent, true);
+    assert.strictEqual(rejection.provider, original.provider);
+    assert.strictEqual(rejection.capability, original.capability);
+    assert.strictEqual(rejection.message, original.message);
+  });
+
   it('does not retry a restored permanent capability fault', async function () {
     const original = capabilityError();
     const restored = parseTaskStartupError(`${serializeTaskStartupError(original)}\n`);
@@ -146,7 +214,7 @@ describe('Task startup capability errors', function () {
     );
     const taskFailed = lifecycleEvents.find(({ event }) => event === 'TASK_FAILED');
     assert.deepStrictEqual(taskFailed.data, {
-      iteration: 0,
+      iteration: 1,
       taskId: null,
       error: original.message,
       code: 'unsupported-capability',
