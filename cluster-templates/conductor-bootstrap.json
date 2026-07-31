@@ -1,6 +1,6 @@
 {
   "name": "Two-Tier Conductor (Complexity × TaskType)",
-  "description": "Cost-optimized conductor: level1 junior for 2D classification (complexity + taskType), level2 senior for UNCERTAIN tasks. Routes to appropriate cluster config via helpers.getConfig().",
+  "description": "Cost-optimized conductor: level2 junior for 2D classification (complexity + taskType), level3 senior for UNCERTAIN tasks. Routes to appropriate cluster config via helpers.getConfig().",
   "agents": [
     {
       "id": "junior-conductor",

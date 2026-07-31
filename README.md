@@ -55,9 +55,11 @@ Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemi
 
 Zeroshot separates the agent that **writes** the code from the agent that **judges** it.
 
-A conductor sizes the workflow to the task. An executor (an AI coding agent) implements the change in an isolated workspace (git worktree or Docker). Then an **independent verifier** inspects the result without ever seeing the executor's context or history, so it cannot approve its own reasoning. The verifier returns `APPROVED`, or `REJECTED` with an actionable, reproducible failure, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and resumes where it stopped.
+A conductor classifies the task and sizes the workflow to it. An executor (an AI coding agent) makes the change, editing your files in place by default, or inside a git worktree or a container if you pass `--worktree` or `--docker`. Then **independent validators** inspect the result. A validator never receives the executor's progress log and never shares its session; it gets the original issue, the plan, and the executor's completion message, so it cannot approve its own reasoning. Each returns `APPROVED`, or `REJECTED` with an actionable, reproducible failure, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and `zeroshot resume <id>` picks it up where it stopped.
 
-Bring your own provider and your own backend. Zeroshot orchestrates the agents that write your code; it doesn't store your keys or replace your models.
+How many validators run, and in what arrangement, depends on how the conductor classified the task. A one-file mechanical change doesn't get the same treatment as a payment-processing change, and debugging has a shape of its own; the [routing table](#classification-and-routing) has the specifics. That whole arrangement is a JSON graph config, and you can write your own.
+
+Bring your own provider and your own backend. Zeroshot orchestrates the agents that write your code; it doesn't hold your provider credentials or replace your models.
 
 ## How is this different from a single coding agent?
 
@@ -68,6 +70,8 @@ Bring your own provider and your own backend. Zeroshot orchestrates the agents t
 | When it fails, you get      | an assertion it is fine      | a reproducible failure                                                                      |
 | When does it stop?          | when it decides it is done   | when the change is verified, or provably is not                                             |
 | Which coding agent runs it? | one, fixed                   | any you already run: Zeroshot is the harness around Claude Code, Codex, Gemini, or OpenCode |
+
+One exception, stated plainly: a task the conductor classifies as TRIVIAL runs a single worker with no validator, unless you're in a `--pr` or `--ship` flow, which always adds one. See [classification and routing](#classification-and-routing).
 
 ## Quick start
 
@@ -97,6 +101,7 @@ zeroshot run 123 --pr           # worktree + open a pull request
 zeroshot run 123 --ship         # worktree + PR + auto-merge on approval
 zeroshot run 123 -d             # background (daemon)
 zeroshot run 123 --provider gemini   # override the provider for this run
+zeroshot run 123 --config ./mine.json  # run your own workflow graph
 
 # Monitor & manage
 zeroshot list                   # all clusters (--json)
@@ -110,6 +115,7 @@ zeroshot export <id>            # export the conversation
 # Library & config
 zeroshot providers              # list providers / set-default / setup
 zeroshot agents list            # available agents (agents show <name>)
+zeroshot config list            # workflow graphs (config show / validate)
 zeroshot settings               # view / get / set settings
 zeroshot cmdproof check <id>    # reuse a verified command result
 ```
@@ -118,7 +124,7 @@ zeroshot cmdproof check <id>    # reuse a verified command result
 
 ## Providers and backends
 
-Zeroshot shells out to provider CLIs; it stores no API keys and manages no auth. Pick a default and override per run.
+Zeroshot shells out to provider CLIs, so provider auth stays wherever you already set it up and Zeroshot never handles those credentials. Pick a default and override per run.
 
 | Provider     | CLI                                    |
 | ------------ | -------------------------------------- |
@@ -133,16 +139,25 @@ zeroshot providers set-default codex
 zeroshot run 123 --provider gemini
 ```
 
-Issue backends are **auto-detected from your git remote**: **GitHub, GitLab, Jira, and Azure DevOps**. Paste a number, key, or URL:
+Five issue backends are detected for you: **GitHub, GitLab, Azure DevOps, Jira, and Linear**. Paste a number, key, or URL:
 
 ```bash
 zeroshot run 123                                              # GitHub
 zeroshot run https://gitlab.com/org/repo/-/issues/456        # GitLab
-zeroshot run PROJ-789                                         # Jira
 zeroshot run https://dev.azure.com/org/project/_workitems/edit/999  # Azure DevOps
+zeroshot run PROJ-789                                         # Jira
+zeroshot run ENG-42 --linear                                  # Linear
 ```
 
-Each backend needs its own CLI installed (`gh`, `glab`, `jira`, or `az`). See [`docs/providers.md`](docs/providers.md) for model levels and setup.
+The first three come from your git remote. Jira and Linear are recognised by their `KEY-NUMBER` shape, which is ambiguous between them: Linear takes it when Linear is configured and Jira isn't, and `--jira` or `--linear` settles it either way.
+
+`gh`, `glab`, `jira` and `az` each need installing for their backend. Linear needs no CLI because it calls the Linear GraphQL API directly, which makes it the one backend that wants a key of its own:
+
+```bash
+zeroshot settings set linearApiKey lin_api_...   # or export LINEAR_API_KEY
+```
+
+See [`docs/providers.md`](docs/providers.md) for model levels and setup.
 
 ## Isolation
 
@@ -168,6 +183,40 @@ zeroshot run 123 --docker --no-mounts
 See [`docs/providers.md`](docs/providers.md) for mount details.
 
 </details>
+
+## Classification and routing
+
+Before any code gets written, a conductor scores the task on two axes and routes it to a workflow. It reads complexity as one of TRIVIAL, SIMPLE, STANDARD or CRITICAL, plus a task type of INQUIRY, TASK or DEBUG. A junior model does this pass cheaply; when it can't call it, it answers UNCERTAIN and a senior model makes the decision instead.
+
+What you get depends on that score:
+
+| Classification      | Workflow           | Agents                                                        |
+| ------------------- | ------------------ | ------------------------------------------------------------- |
+| TRIVIAL             | `single-worker`    | worker only, **no validator**                                 |
+| TRIVIAL + `--pr`    | `worker-validator` | worker, 1 validator                                           |
+| SIMPLE              | `worker-validator` | worker, 1 validator                                           |
+| STANDARD            | `full-workflow`    | planner, worker, 2 validators                                 |
+| CRITICAL            | `full-workflow`    | planner, worker, meta-coordinator, 4 validators in two stages |
+| DEBUG (non-TRIVIAL) | `debug-workflow`   | investigator, fixer, tester, completion-detector              |
+
+Two things worth knowing before you rely on it. TRIVIAL skips validation entirely on the default path, which is the point of calling it trivial, but it does mean the executor-verifier split doesn't apply there; `--pr` and `--ship` always add a validator back. And debugging isn't the same shape as building at all, since an investigator finds the fault before a fixer touches anything.
+
+CRITICAL is deliberately rare. The conductor is told to bias toward STANDARD when it's torn, because a CRITICAL run costs a senior model and four validators.
+
+## Bring your own graph
+
+Every workflow above is a JSON file in [`cluster-templates/base-templates/`](cluster-templates/base-templates/), and nothing about them is privileged. The engine underneath is a message bus: agents subscribe to topics, publish to topics, and the graph is whatever that wiring says it is.
+
+```bash
+zeroshot config list                  # workflows available
+zeroshot config show full-workflow    # read one
+zeroshot config validate ./mine.json  # check yours
+zeroshot run 123 --config ./mine.json # run it
+```
+
+Agent ids and roles are free strings, so are topic names, and a trigger can carry an arbitrary JavaScript predicate deciding whether a message wakes its agent. Cycles are allowed and ordinary: the reject-and-retry loop is one. The validator asks for a 3+ agent cycle to include escape logic somewhere in the ring, otherwise it fails your config rather than letting it spin. Sub-clusters nest five deep.
+
+The executor-verifier loop is the graph Zeroshot ships with, not a constraint of the runtime.
 
 ## Scope and status
 

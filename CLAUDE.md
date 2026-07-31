@@ -181,12 +181,22 @@ helpers.hasConsensus(topic, since);
 
 Classifies tasks on **Complexity × TaskType**, routes to parameterized templates.
 
-| Complexity | Description            | Validators |
-| ---------- | ---------------------- | ---------- |
-| TRIVIAL    | 1 file, mechanical     | 0          |
-| SIMPLE     | 1 concern              | 1          |
-| STANDARD   | Multi-file             | 3          |
-| CRITICAL   | Auth/payments/security | 5          |
+Counts below come from `getValidatorCount()` in `src/config-router.js`, which is the
+single source of truth; the conductor prompts in `cluster-templates/conductor-bootstrap.json`
+quote the same numbers.
+
+| Complexity | Description            | Validators                                   |
+| ---------- | ---------------------- | -------------------------------------------- |
+| TRIVIAL    | 1 file, mechanical     | 0                                            |
+| SIMPLE     | 1 concern              | 1                                            |
+| STANDARD   | Multi-file             | 2 (inline)                                   |
+| CRITICAL   | Auth/payments/security | 4, loaded in two stages via meta-coordinator |
+
+`validator_count` is 0 for CRITICAL: that signals the inline validators be skipped in
+favour of the `quick-validation` then `heavy-validation` sub-clusters, 2 validators each.
+
+A fifth complexity value, `UNCERTAIN`, exists only in the junior conductor's output schema.
+It means "escalate" rather than a workload, and the senior conductor may not return it.
 
 | TaskType | Action                |
 | -------- | --------------------- |
@@ -194,7 +204,8 @@ Classifies tasks on **Complexity × TaskType**, routes to parameterized template
 | TASK     | Implement new feature |
 | DEBUG    | Fix broken code       |
 
-**Base templates:** `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`
+**Base templates:** `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`,
+plus `quick-validation` and `heavy-validation` for the CRITICAL two-stage pipeline.
 
 ## Isolation Modes
 
