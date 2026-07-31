@@ -192,3 +192,39 @@ test('invoke preserves false for every required OMP feature and fails before exe
     assert.equal(runnerCalled, false, feature);
   }
 });
+
+test('invoke rejects empty OMP resumeSessionId values before provider execution', async () => {
+  for (const resumeSessionId of ['', ' \t\n ']) {
+    let runnerCalled = false;
+    const response = await runProviderExecutable(
+      {
+        schemaVersion: 1,
+        command: 'invoke',
+        provider: 'omp',
+        context: 'ctx',
+        options: {
+          resumeSessionId,
+          cliFeatures: {
+            supportsModeJson: true,
+            supportsPrint: true,
+            supportsCwd: true,
+            supportsAutoApprove: true,
+            supportsResume: true,
+          },
+        },
+      },
+      {
+        runner: () => {
+          runnerCalled = true;
+          return runnerResult();
+        },
+      }
+    );
+
+    assert.equal(response.exitCode, 2);
+    assert.equal(response.envelope.ok, false);
+    assert.equal(response.envelope.error.code, 'invalid-field');
+    assert.equal(response.envelope.error.field, 'options.resumeSessionId');
+    assert.equal(runnerCalled, false);
+  }
+});

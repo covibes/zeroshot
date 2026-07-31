@@ -123,6 +123,25 @@ test('omp buildCommand fails closed on resumeSessionId when supportsResume is no
   }
 });
 
+test('omp buildCommand rejects empty resumeSessionId values before capability checks', () => {
+  for (const resumeSessionId of ['', ' \t\n ']) {
+    assert.throws(
+      () =>
+        buildCommand('prompt', {
+          resumeSessionId,
+          cliFeatures: { ...FULL_FEATURES, supportsResume: true },
+        }),
+      (error) => {
+        assert.equal(error.name, 'ContractRequestError');
+        assert.equal(error.code, 'invalid-field');
+        assert.equal(error.field, 'options.resumeSessionId');
+        assert.equal(error.exitCode, 2);
+        return true;
+      }
+    );
+  }
+});
+
 test('omp buildCommand passes --resume <id> immediately before the prompt when supported', () => {
   const spec = buildCommand('prompt', {
     resumeSessionId: 'session-123',
@@ -135,6 +154,10 @@ test('omp buildCommand passes --resume <id> immediately before the prompt when s
 for (const [description, helpText, expected] of [
   ['empty help text', '', false],
   ['help text without --resume', '--mode json\n-p, --print', false],
+  ['help text with --resume-latest only', '--resume-latest  Resume the newest session', false],
+  ['help text with bare picker --resume only', '--resume  Pick a session interactively', false],
+  ['help text with --continue only', '--continue  Continue the latest session', false],
+  ['help text with --resume=<value>', '--resume=<value>  Resume an exact session', true],
   ['help text with --resume', '--resume <id>  Resume a session', true],
 ]) {
   test(`omp detectCliFeatures supportsResume: ${description}`, () => {
@@ -151,6 +174,7 @@ for (const [description, line, expected] of [
   ['a valid session header', '{"type":"session","version":3,"id":"omp-1"}', 'omp-1'],
   ['a session frame missing id', '{"type":"session","version":3}', null],
   ['a session frame with an empty id', '{"type":"session","id":""}', null],
+  ['a session frame with surrounding ID whitespace', '{"type":"session","id":" omp-1 "}', null],
   ['a non-session frame carrying an id-like field', '{"type":"turn_start","id":"omp-1"}', null],
   ['malformed JSON', '{not-json', null],
   ['the real OMP text fixture header line', fixtureHeaderLine, 'omp-text'],
@@ -160,6 +184,21 @@ for (const [description, line, expected] of [
     assert.equal(adapter.extractSessionId(line), expected);
   });
 }
+
+test('omp session capture policy owns strict malformed and exact identity semantics', () => {
+  const policy = helper.getProviderSessionCapturePolicy('omp');
+  assert.equal(policy.requireSessionIdOnSuccess, true);
+  assert.equal(policy.exactIdentityMatch, true);
+  assert.deepEqual(policy.inspectLine('{broken'), { sessionId: null, malformed: true });
+  assert.deepEqual(policy.inspectLine('{"type":"session","id":" omp-1 "}'), {
+    sessionId: null,
+    malformed: true,
+  });
+  assert.deepEqual(policy.inspectLine('{"type":"session","id":"omp-1"}'), {
+    sessionId: 'omp-1',
+    malformed: false,
+  });
+});
 
 test('omp parseEvent returns null for a malformed JSONL line without throwing', () => {
   const adapter = helper.getProviderAdapter('omp');

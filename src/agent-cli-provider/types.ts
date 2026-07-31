@@ -394,6 +394,17 @@ export interface ErrorClassification {
   readonly matchedPattern?: string;
 }
 
+export interface ProviderSessionLineInspection {
+  readonly sessionId: string | null;
+  readonly malformed: boolean;
+}
+
+export interface ProviderSessionCapturePolicy {
+  readonly requireSessionIdOnSuccess: boolean;
+  readonly exactIdentityMatch: boolean;
+  inspectLine(line: string): ProviderSessionLineInspection;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly displayName: string;
@@ -408,6 +419,7 @@ export interface ProviderAdapter {
   detectCliFeatures(helpText?: string | null, versionText?: string | null): ProviderCliFeatures;
   buildCommand(context: string, options?: BuildProviderCommandOptions): CommandSpec;
   extractSessionId?(line: string): string | null;
+  readonly sessionCapture?: ProviderSessionCapturePolicy;
   parseEvent(line: string, state: ProviderParserState): ProviderParseResult;
   createParserState(): ProviderParserState;
   resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec;

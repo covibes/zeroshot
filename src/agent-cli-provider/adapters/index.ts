@@ -16,6 +16,7 @@ import type {
   OutputEvent,
   ProviderAdapter,
   ProviderId,
+  ProviderSessionCapturePolicy,
   ResolvedModelSpec,
 } from '../types';
 export {
@@ -91,6 +92,12 @@ export function parseProviderChunk(
   }
 
   return events;
+}
+
+export function getProviderSessionCapturePolicy(
+  providerName: KnownProviderName | string
+): ProviderSessionCapturePolicy | null {
+  return getProviderAdapter(providerName || 'claude').sessionCapture ?? null;
 }
 
 export function extractProviderSessionId(

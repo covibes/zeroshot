@@ -111,7 +111,8 @@ export function prepareSingleAgentProviderCommand(
   const cliFeatures = resolveRuntimeCliFeatures(
     adapter.id,
     baseOptions.cliFeatures,
-    requestedWebSearch === true
+    requestedWebSearch === true,
+    baseOptions.resumeSessionId !== undefined
   );
   const authEnv = baseOptions.authEnv ?? resolveRuntimeAuthEnv(adapter.id, settings);
   const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
@@ -136,7 +137,8 @@ export function detectRuntimeProviderCliFeatures(provider: string): ProviderCliF
 function resolveRuntimeCliFeatures(
   provider: ProviderId,
   overrides: CliFeatureOverrides | undefined,
-  webSearchRequested: boolean
+  webSearchRequested: boolean,
+  resumeRequested: boolean
 ): CliFeatureOverrides {
   if (provider === 'gateway') {
     const detected = detectRuntimeProviderCliFeatures(provider);
@@ -151,6 +153,16 @@ function resolveRuntimeCliFeatures(
     const detected = detectRuntimeProviderCliFeatures(provider);
     if (overrides === undefined) return detected;
     return mergeAcpFailClosedCliFeatures(detected, overrides);
+  }
+  if (provider === 'omp' && resumeRequested && overrides !== undefined) {
+    const detected = detectRuntimeProviderCliFeatures(provider);
+    return {
+      ...overrides,
+      supportsResume:
+        'supportsResume' in detected &&
+        detected.supportsResume === true &&
+        overrides.supportsResume !== false,
+    };
   }
   if (overrides === undefined) return detectRuntimeProviderCliFeatures(provider);
   if (!webSearchRequested) return overrides;

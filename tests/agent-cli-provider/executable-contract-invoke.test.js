@@ -329,6 +329,96 @@ process.stdin.resume();
   );
 });
 
+test('invoke requires local OMP --resume attestation despite caller feature overrides', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-resume-attestation-'));
+  const executionMarker = path.join(tempDir, 'provider-executed.json');
+  const request = {
+    schemaVersion: 1,
+    command: 'invoke',
+    provider: 'omp',
+    context: 'resume prompt',
+    options: {
+      resumeSessionId: 'session-123',
+      cliFeatures: {
+        supportsModeJson: true,
+        supportsPrint: true,
+        supportsCwd: true,
+        supportsAutoApprove: true,
+        supportsModel: false,
+        supportsThinking: false,
+        supportsNoExtensions: false,
+        supportsNoSkills: false,
+        supportsNoRules: false,
+        supportsNoTitle: false,
+        supportsResume: true,
+      },
+    },
+    timeoutMs: 300,
+  };
+
+  try {
+    withFakeProviderCli(
+      'omp',
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: omp --mode json -p --cwd --auto-approve --resume-latest\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('omp 1.0.0\\n');
+  process.exit(0);
+}
+fs.writeFileSync(${JSON.stringify(executionMarker)}, JSON.stringify(process.argv.slice(2)));
+`,
+      () => {
+        const rejected = runExecutable(request);
+        assert.equal(rejected.exitCode, 2);
+        assert.equal(rejected.envelope.ok, false);
+        assert.equal(rejected.envelope.error.code, 'unsupported-provider-cli');
+        assert.equal(rejected.envelope.error.field, 'options.resumeSessionId');
+        assert.equal(fs.existsSync(executionMarker), false);
+      }
+    );
+
+    withFakeProviderCli(
+      'omp',
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: omp --mode json -p --cwd --auto-approve --resume <id>\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('omp 1.0.0\\n');
+  process.exit(0);
+}
+fs.writeFileSync(${JSON.stringify(executionMarker)}, JSON.stringify(process.argv.slice(2)));
+process.stdout.write(JSON.stringify({
+  type: 'message_update',
+  assistantMessageEvent: { type: 'text_delta', delta: 'ok' },
+}) + '\\n');
+`,
+      () => {
+        const allowed = runExecutable(request);
+        assert.equal(allowed.exitCode, 0);
+        assert.equal(allowed.envelope.ok, true);
+        assert.deepEqual(JSON.parse(fs.readFileSync(executionMarker, 'utf8')), [
+          '--mode',
+          'json',
+          '-p',
+          '--auto-approve',
+          '--resume',
+          'session-123',
+          'resume prompt',
+        ]);
+      }
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('invoke runs ACP stdio providers through the shared headless lane', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-kiro-worktree-'));
 

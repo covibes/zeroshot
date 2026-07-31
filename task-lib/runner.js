@@ -6,7 +6,10 @@ import { addTask, generateId, ensureDirs } from './store.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const { prepareSingleAgentProviderCommand } = require('./provider-helper-runtime.js');
+const {
+  getProviderSessionCapturePolicy,
+  prepareSingleAgentProviderCommand,
+} = require('./provider-helper-runtime.js');
 const {
   ISOLATED_SETTINGS_FILE_ENV,
   ISOLATED_SETTINGS_FILE_MARKER,
@@ -124,7 +127,7 @@ function buildProviderOptions(options, runtime, modelSelection) {
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...mcpConfigOption(options),
     ...claudeSettingsFileOption(),
-    ...(options.resume ? { resumeSessionId: options.resume } : {}),
+    ...(options.resume === undefined ? {} : { resumeSessionId: options.resume }),
     ...(process.env.ZEROSHOT_OPENCODE_AGENT?.trim()
       ? { agentName: process.env.ZEROSHOT_OPENCODE_AGENT.trim() }
       : {}),
@@ -206,6 +209,11 @@ export function buildTaskRecord({
   modelSpec,
   commandSpec = {},
 }) {
+  const requestedResumeSessionId = options.resume ?? null;
+  const requiresVerifiedSessionIdentity =
+    requestedResumeSessionId !== null ||
+    getProviderSessionCapturePolicy(providerName)?.requireSessionIdOnSuccess === true;
+
   return {
     id,
     prompt: prompt.slice(0, 200) + (prompt.length > 200 ? '...' : ''),
@@ -218,10 +226,10 @@ export function buildTaskRecord({
     // accepted that session identity.
     sessionId: null,
     sessionIdConflict: false,
-    requestedResumeSessionId: options.resume || null,
-    // Resumed tasks start fail-closed. Only the watcher terminal transaction
-    // may prove that the requested identity completed without conflict.
-    resumeIdentityVerified: !options.resume,
+    requestedResumeSessionId,
+    // Requested resumes and providers that require a fresh identity start
+    // fail-closed. Only the watcher terminal transaction may prove identity.
+    resumeIdentityVerified: !requiresVerifiedSessionIdentity,
     logFile,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

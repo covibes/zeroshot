@@ -21,6 +21,7 @@ export const {
   detectProviderStreamingModeError,
   extractProviderSessionId,
   findProviderRegistryEntry,
+  getProviderSessionCapturePolicy,
   getProviderAdapter,
   getProviderRegistryEntry,
   knownProviderNames,

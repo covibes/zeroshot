@@ -72,7 +72,9 @@ function detectCliFeatures(helpText?: string | null): OmpCliFeatures {
     supportsNoTitle: unknown ? true : /--no-title\b/.test(help),
     // Unlike OMP's other flags, resume must be proven before it is advertised:
     // an unprobed CLI must fail closed rather than optimistically resume.
-    supportsResume: !unknown && /--resume\b/.test(help),
+    supportsResume:
+      !unknown &&
+      /--resume(?:=(?:<[^>\s]+>|[^\s,]+)|[ \t]+(?:<[^>\s]+>|\[[^\]\s]+\]))/.test(help),
     unknown,
   };
 }
@@ -107,6 +109,14 @@ function failClosedUnsupportedSessionControl(options: BuildProviderCommandOption
       exitCode: 2,
       message:
         'OMP CLI does not support cwd-wide continue session control; fail closed and start a fresh run instead.',
+    });
+  }
+  if (options.resumeSessionId !== undefined && options.resumeSessionId.trim().length === 0) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.resumeSessionId',
+      exitCode: 2,
+      message: 'options.resumeSessionId must be a non-empty OMP session ID.',
     });
   }
   if (options.resumeSessionId !== undefined && optionFeatures(options).supportsResume !== true) {
@@ -198,11 +208,24 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   });
 }
 
-function extractSessionId(line: string): string | null {
-  const event = tryParseJson(line.trim());
-  if (!isRecord(event) || getString(event, 'type') !== 'session') return null;
+function inspectSessionLine(line: string): { sessionId: string | null; malformed: boolean } {
+  const content = line.trim();
+  if (!content) return { sessionId: null, malformed: false };
+  const event = tryParseJson(content);
+  if (!isRecord(event)) return { sessionId: null, malformed: true };
+  if (getString(event, 'type') !== 'session') {
+    return { sessionId: null, malformed: false };
+  }
+
   const sessionId = getString(event, 'id');
-  return sessionId?.trim() || null;
+  if (!sessionId || sessionId.trim() !== sessionId) {
+    return { sessionId: null, malformed: true };
+  }
+  return { sessionId, malformed: false };
+}
+
+function extractSessionId(line: string): string | null {
+  return inspectSessionLine(line).sessionId;
 }
 
 function createOmpState(): ProviderParserState {
@@ -464,6 +487,11 @@ export const ompAdapter: ProviderAdapter = {
   detectCliFeatures,
   buildCommand,
   extractSessionId,
+  sessionCapture: {
+    requireSessionIdOnSuccess: true,
+    exactIdentityMatch: true,
+    inspectLine: inspectSessionLine,
+  },
   parseEvent,
   createParserState: createOmpState,
   resolveModelSpec,
