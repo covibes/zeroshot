@@ -26,6 +26,8 @@
 
 Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop sized to the task**: an agent writes the change, then verifiers that didn't write it approve the result, or reject it and say exactly what's wrong. The loop runs until the change is verified.
 
+Underneath, it's a general graph engine: you define the agents and how they hand off, and the runtime executes that wiring the same way every time, with no model deciding what runs next. The executor-verifier loop is the graph it ships with, not the only one it can run.
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/zeroshot-architecture-dark.webp">
@@ -55,7 +57,7 @@ Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemi
 
 Zeroshot separates the agent that **writes** the code from the agent that **judges** it.
 
-A conductor classifies the task and sizes the workflow to it. An executor (an AI coding agent) makes the change, editing your files in place by default, or inside a git worktree or a container if you pass `--worktree` or `--docker`. Then **independent validators** inspect the result. A validator never receives the executor's progress log and never shares its session; it gets the original issue, the plan, and the executor's completion message, so it cannot approve its own reasoning. Each returns `APPROVED`, or `REJECTED` with the objections that blocked it. Validators are told to verify by running commands and capturing the output rather than reading code and forming an opinion. Any single rejection sends the work back, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and `zeroshot resume <id>` picks it up where it stopped.
+A conductor classifies the task and sizes the workflow to it. An executor (an AI coding agent) makes the change, editing your files in place by default, or inside a git worktree or a container if you pass `--worktree` or `--docker`. Then **independent validators** inspect the result. Each agent declares what it is allowed to see, so a validator's isolation is structural rather than a rule someone has to remember: it never receives the executor's progress log and never shares its session, and what reaches it is the original issue, the plan, and the executor's completion message. Each returns `APPROVED`, or `REJECTED` with the objections that blocked it. Validators are told to verify by running commands and capturing the output rather than reading code and forming an opinion. Any single rejection sends the work back, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and `zeroshot resume <id>` picks it up where it stopped.
 
 How many validators run, and in what arrangement, depends on how the conductor classified the task. A one-file mechanical change doesn't get the same treatment as a payment-processing change, and debugging has a shape of its own; the [routing table](#classification-and-routing) has the specifics. That whole arrangement is a JSON graph config, and you can write your own.
 
