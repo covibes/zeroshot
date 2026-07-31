@@ -27,6 +27,57 @@ Zeroshot supports two provider shapes:
 - Override per run: `zeroshot run ... --provider <provider>`
 - Env override: `ZEROSHOT_PROVIDER=codex`
 
+## Opt-in native web search
+
+Native or bundled search is off by default. It can be enabled only for Codex or
+OpenCode with strict boolean provider settings:
+
+```json
+{
+  "providerSettings": {
+    "codex": { "webSearch": true },
+    "opencode": { "webSearch": true }
+  }
+}
+```
+
+| Provider | Setting                                  | Canonical child control                          | Minimum CLI |
+| -------- | ---------------------------------------- | ------------------------------------------------ | ----------- |
+| Codex    | `providerSettings.codex.webSearch`       | `codex exec --config 'web_search="live"' ...`    | `0.146.0`   |
+| OpenCode | `providerSettings.opencode.webSearch`    | command environment `OPENCODE_ENABLE_EXA=1`      | `1.0.137`   |
+
+Both settings default to `false`; absent and explicit `false` settings leave
+the child command and environment unchanged. Codex applies the config override
+before the prompt and, for a resumed session, before `resume`. OpenCode applies
+the environment control to fresh `run` commands and to `run --session` or
+`run --continue`.
+
+Enabled mode fails closed before starting the provider when local support
+cannot be proved. Codex requires nonempty `codex exec --help` output advertising
+`--config` and a parseable version at or above `0.146.0`. OpenCode requires a
+parseable version at or above `1.0.137`. Missing, malformed, or older versions
+are unsupported. These checks attest only the installed CLI control: they do
+not claim provider-account access, backend availability, or network reachability.
+Executable probe and build-command output report `supportsWebSearch` separately
+from `configuration.webSearch.requested` and `.effective`; effective is true
+only after local support proof.
+
+Codex does **not** use `codex exec --search`: current `ExecCli` rejects that
+argument, while the top-level TUI flag does not configure noninteractive exec.
+The config override above matches the
+[Codex TypeScript SDK](https://github.com/openai/codex/blob/main/sdk/typescript/src/exec.ts)
+for fresh and resumed commands. OpenCode documents the environment control in
+its [web-search tool guide](https://opencode.ai/docs/tools/#websearch); the
+[versioned runtime flag](https://github.com/anomalyco/opencode/blob/v1.18.10/packages/opencode/src/effect/runtime-flags.ts)
+and [tool registration](https://github.com/anomalyco/opencode/blob/v1.18.10/packages/opencode/src/tool/registry.ts)
+show the corresponding bundled control.
+
+Claude, Gemini, Kiro, Copilot, Pi, and Gateway do not declare `webSearch`;
+setting it for those providers is rejected. No equally safe, explicit,
+support-detectable additive native-search control is established for them.
+Permission or tool allowlists authorize already-present tools; they must not be
+presented as controls that enable search.
+
 ## Gateway Provider
 
 Use `gateway` for OpenAI-compatible or Anthropic-compatible model endpoints.
@@ -144,9 +195,9 @@ Configured IDs must use Opencode's `provider/model` shape. Nested model paths
 such as `openrouter/anthropic/claude-sonnet-4` are accepted; whitespace and
 empty path segments are rejected before Opencode is started. Direct agent
 `model` fields remain limited to the built-in catalog. Nested Docker tasks
-receive only a temporary settings-file projection for the requested level and
-model; arbitrary provider settings and environment overlays are not trusted or
-forwarded to the provider process.
+receive only a temporary settings-file projection for the requested level/model
+and an explicitly enabled declared `webSearch`; arbitrary provider settings and
+environment overlays are not trusted or forwarded to the provider process.
 
 ### Current explicit model IDs
 

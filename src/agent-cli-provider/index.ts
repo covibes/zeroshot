@@ -102,6 +102,7 @@ export type {
   ToolCallEvent,
   ToolResultEvent,
   WarningMetadata,
+  WebSearchAttestation,
 } from './types';
 
 import type { AgentCliProviderHelperMetadata } from './types';

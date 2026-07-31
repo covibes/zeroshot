@@ -662,6 +662,8 @@ async function handleLockContention() {
 
 async function handleFinalFailure(agent, triggeringMessage, error, maxRetries) {
   const failureAttempts = error?.terminationAttempts ?? maxRetries;
+  const unsupportedCapability =
+    error?.code === 'unsupported-capability' && error?.permanent === true;
   console.error(`
 ${'='.repeat(80)}`);
   console.error(`🔴🔴🔴 MAX RETRIES EXHAUSTED - AGENT: ${agent.id} 🔴🔴🔴`);
@@ -737,6 +739,26 @@ ${'='.repeat(80)}`);
     });
   }
 
+  if (unsupportedCapability) {
+    agent._publish({
+      topic: 'CLUSTER_FAILED',
+      receiver: 'broadcast',
+      content: {
+        text: `Cluster failed: unsupported provider capability for ${agent.id} - ${error.message}`,
+        data: {
+          reason: 'unsupported_capability',
+          agentId: agent.id,
+          role: agent.role,
+          code: error.code,
+          permanent: true,
+          provider: error.provider,
+          capability: error.capability,
+          error: error.message,
+        },
+      },
+    });
+  }
+
   if (error?.vertexModelError) {
     agent._publish({
       topic: 'CLUSTER_FAILED',
@@ -779,6 +801,14 @@ ${'='.repeat(80)}`);
     iteration: agent.iteration,
     error: error.message,
     attempts: failureAttempts,
+    ...(unsupportedCapability
+      ? {
+          code: error.code,
+          permanent: true,
+          provider: error.provider,
+          capability: error.capability,
+        }
+      : {}),
     timestamp: Date.now(),
   };
 
@@ -801,6 +831,14 @@ ${'='.repeat(80)}`);
         iteration: agent.iteration,
         taskId: error?.taskId || agent.currentTaskId,
         attempts: failureAttempts,
+        ...(unsupportedCapability
+          ? {
+              code: error.code,
+              permanent: true,
+              provider: error.provider,
+              capability: error.capability,
+            }
+          : {}),
         hookFailureContext: error.message.includes('Hook uses result')
           ? {
               taskId: agent.currentTaskId || 'UNKNOWN',
@@ -827,7 +865,7 @@ ${'='.repeat(80)}`);
     orchestrator: agent.orchestrator,
   });
 
-  if (!error?.terminationExhausted) {
+  if (!error?.terminationExhausted && !unsupportedCapability) {
     agent.state = 'idle';
   }
 }
@@ -1041,6 +1079,19 @@ async function executeTask(agent, triggeringMessage) {
         return;
       }
       if (error?.permanent) {
+        if (error.code === 'unsupported-capability') {
+          agent._publishLifecycle('TASK_FAILED', {
+            iteration: agent.iteration,
+            taskId: error.taskId || agent.currentTaskId,
+            error: error.message,
+            code: error.code,
+            permanent: true,
+            provider: error.provider,
+            capability: error.capability,
+            attempt,
+          });
+          clearTransientTaskState(agent, error);
+        }
         await handleFinalFailure(agent, triggeringMessage, error, attempt);
         return;
       }

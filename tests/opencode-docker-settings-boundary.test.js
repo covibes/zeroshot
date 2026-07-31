@@ -107,6 +107,54 @@ describe('Docker provider settings trust boundary', function () {
     assert.strictEqual(wrapped.join(' ').includes('unknown'), false);
   });
 
+  it('projects only explicitly enabled native search into isolated children', function () {
+    const command = ['zeroshot', 'task', 'run'];
+    for (const providerName of ['codex', 'opencode']) {
+      assert.strictEqual(
+        wrapTaskRunWithIsolatedSettings(command, {
+          providerName,
+          settings: { providerSettings: { [providerName]: { webSearch: false } } },
+          modelSpecSource: 'direct',
+          modelSpec: null,
+        }),
+        command
+      );
+
+      const wrapped = wrapTaskRunWithIsolatedSettings(command, {
+        providerName,
+        settings: { providerSettings: { [providerName]: { webSearch: true } } },
+        modelSpecSource: 'direct',
+        modelSpec: null,
+      });
+      assert.deepStrictEqual(JSON.parse(wrapped[3]), {
+        providerSettings: {
+          [providerName]: { webSearch: true },
+        },
+      });
+    }
+  });
+
+  it('keeps enabled OpenCode search alongside the trusted model projection', function () {
+    const settings = configuredSettings();
+    settings.providerSettings.opencode.webSearch = true;
+    const wrapped = wrapTaskRunWithIsolatedSettings(['zeroshot', 'task', 'run'], {
+      providerName: 'opencode',
+      settings,
+      modelSpecSource: 'provider-level',
+      modelSpec: { level: 'level2', model: EXTERNAL_MODEL },
+    });
+    assert.deepStrictEqual(JSON.parse(wrapped[3]), {
+      providerSettings: {
+        opencode: {
+          webSearch: true,
+          levelOverrides: {
+            level2: { model: EXTERNAL_MODEL },
+          },
+        },
+      },
+    });
+  });
+
   it('stages a legitimate minimal snapshot through the temporary settings file', function () {
     const readSettingsScript = String.raw`
 const fs = require('node:fs');

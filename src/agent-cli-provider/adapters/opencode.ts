@@ -1,3 +1,5 @@
+import { contractError } from '../contract-errors';
+import { UnsupportedProviderCapabilityError } from '../errors';
 import { appendJsonSchemaPrompt } from '../schema';
 import {
   getNumber,
@@ -20,8 +22,8 @@ import {
   classifyBaseProviderError,
   commandSpec,
   createParserState,
+  isCliVersionAtLeast,
   optionFeatures,
-  unsupportedSessionControlWarnings,
   warning,
 } from './common';
 import {
@@ -32,7 +34,10 @@ import {
   validateModelId,
 } from './opencode-models';
 
-function detectCliFeatures(helpText?: string | null): OpencodeCliFeatures {
+function detectCliFeatures(
+  helpText?: string | null,
+  versionText?: string | null
+): OpencodeCliFeatures {
   const help = helpText ?? '';
   const unknown = !help;
   return {
@@ -43,6 +48,8 @@ function detectCliFeatures(helpText?: string | null): OpencodeCliFeatures {
     supportsDir: unknown ? false : /--dir\b/.test(help),
     supportsCwd: unknown ? false : /--cwd\b/.test(help),
     supportsAutoApprove: false,
+    supportsResume: !unknown && /--session\b/.test(help) && /--continue\b/.test(help),
+    supportsWebSearch: isCliVersionAtLeast(versionText, '1.0.137'),
     unknown,
   };
 }
@@ -76,7 +83,7 @@ function addOpencodeOptionalArgs(args: string[], options: BuildProviderCommandOp
 
 function collectOpencodeWarnings(options: BuildProviderCommandOptions): WarningMetadata[] {
   const features = optionFeatures(options);
-  const warnings: WarningMetadata[] = unsupportedSessionControlWarnings('opencode', options);
+  const warnings: WarningMetadata[] = [];
   if (options.modelSpec?.reasoningEffort && features.supportsVariant === false) {
     warnings.push(
       warning(
@@ -89,19 +96,67 @@ function collectOpencodeWarnings(options: BuildProviderCommandOptions): WarningM
   return warnings;
 }
 
+function addSessionArgs(args: string[], options: BuildProviderCommandOptions): void {
+  const hasResumeSessionId = options.resumeSessionId !== undefined;
+  if (!hasResumeSessionId && !options.continueSession) return;
+  const field = hasResumeSessionId ? 'options.resumeSessionId' : 'options.continueSession';
+  if (hasResumeSessionId && options.resumeSessionId?.trim().length === 0) {
+    throw contractError({
+      code: 'invalid-field',
+      field,
+      exitCode: 2,
+      message: 'options.resumeSessionId must be a non-empty OpenCode session ID.',
+    });
+  }
+  if (optionFeatures(options).supportsResume === false) {
+    throw contractError({
+      code: 'invalid-field',
+      field,
+      exitCode: 2,
+      message:
+        'OpenCode CLI cannot safely run continuation context because this installation lacks run --session/--continue.',
+    });
+  }
+  if (options.resumeSessionId) {
+    args.push('--session', options.resumeSessionId);
+  } else {
+    args.push('--continue');
+  }
+}
+
+function webSearchEnv(options: BuildProviderCommandOptions): Readonly<Record<string, string>> {
+  if (options.webSearch !== true) return {};
+  if (optionFeatures(options).supportsWebSearch !== true) {
+    throw new UnsupportedProviderCapabilityError(
+      'opencode',
+      'webSearch',
+      'OpenCode web search requires a parseable OpenCode CLI version >= 1.0.137. Update OpenCode or set providerSettings.opencode.webSearch to false.'
+    );
+  }
+  return { OPENCODE_ENABLE_EXA: '1' };
+}
+
+function extractSessionId(line: string): string | null {
+  const event = tryParseJson(line.trim());
+  if (!isRecord(event)) return null;
+  const sessionId = getString(event, 'sessionID') ?? getString(event, 'sessionId');
+  return sessionId?.trim() || null;
+}
+
 function buildCommand(context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
   const finalContext = options.jsonSchema
     ? appendJsonSchemaPrompt(context, options.jsonSchema)
     : context;
   const args: string[] = ['run'];
   addOpencodeOptionalArgs(args, options);
+  addSessionArgs(args, options);
 
   args.push(finalContext);
 
   return commandSpec({
     binary: 'opencode',
     args,
-    env: {},
+    env: webSearchEnv(options),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     warnings: collectOpencodeWarnings(options),
   });
@@ -226,6 +281,7 @@ export const opencodeAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  extractSessionId,
   parseEvent,
   createParserState: () => createParserState('opencode'),
   resolveModelSpec,

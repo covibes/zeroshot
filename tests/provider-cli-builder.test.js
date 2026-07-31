@@ -53,6 +53,60 @@ describe('Codex provider helper builder', function () {
     );
   });
 
+  it('keeps absent and disabled web search byte-compatible', function () {
+    const absent = buildCommand('codex', 'test context', {
+      outputFormat: 'json',
+      cliFeatures: { supportsJson: true },
+    });
+    const disabled = buildCommand('codex', 'test context', {
+      outputFormat: 'json',
+      webSearch: false,
+      cliFeatures: { supportsJson: true },
+    });
+
+    assert.deepStrictEqual(disabled.args, absent.args);
+    assert.deepStrictEqual(disabled.env, absent.env);
+  });
+
+  it('adds the canonical web-search config before fresh and resumed prompts', function () {
+    const fresh = buildCommand('codex', 'fresh context', {
+      webSearch: true,
+      cliFeatures: { supportsWebSearch: true },
+    });
+    assert.deepStrictEqual(fresh.args.slice(0, 3), [
+      'exec',
+      '--config',
+      'web_search="live"',
+    ]);
+    assert.strictEqual(fresh.args.includes('--search'), false);
+
+    const resumed = buildCommand('codex', 'resume context', {
+      resumeSessionId: 'session-123',
+      webSearch: true,
+      cliFeatures: { supportsResume: true, supportsWebSearch: true },
+    });
+    assert.deepStrictEqual(resumed.args.slice(0, 4), [
+      'exec',
+      '--config',
+      'web_search="live"',
+      'resume',
+    ]);
+    assert.deepStrictEqual(resumed.args.slice(-2), ['session-123', 'resume context']);
+  });
+
+  it('fails closed when web-search support is not attested', function () {
+    assert.throws(
+      () =>
+        buildCommand('codex', 'test context', {
+          webSearch: true,
+          cliFeatures: { supportsWebSearch: false },
+        }),
+      (error) =>
+        error.code === 'unsupported-capability' &&
+        /version >= 0\.146\.0/.test(error.message)
+    );
+  });
+
   it('passes --output-schema when CLI supports it', function () {
     const result = buildCommand('codex', 'test context', {
       jsonSchema: { type: 'object', properties: { foo: { type: 'string' } } },
@@ -188,25 +242,85 @@ describe('Gemini provider helper builder', function () {
 });
 
 describe('Opencode provider helper builder', function () {
-  it('warns when unsupported session control options are ignored', function () {
+  it('uses explicit-session precedence for native resume controls', function () {
     const resumed = buildCommand('opencode', 'test context', {
       resumeSessionId: 'session-123',
+      continueSession: true,
+      cliFeatures: { supportsResume: true },
     });
-    assert.ok(!resumed.args.includes('--resume'));
-    assert.ok(
-      resumed.warnings.some(
-        (warning) =>
-          warning.code === 'unsupported-session-control' &&
-          warning.message ===
-            'Provider opencode does not support resume/continue session control; ignoring.'
-      )
-    );
+    assert.deepStrictEqual(resumed.args.slice(-3), [
+      '--session',
+      'session-123',
+      'test context',
+    ]);
+    assert.strictEqual(resumed.args.includes('--continue'), false);
 
     const continued = buildCommand('opencode', 'test context', {
       continueSession: true,
+      cliFeatures: { supportsResume: true },
     });
-    assert.ok(!continued.args.includes('--continue'));
-    assert.ok(continued.warnings.some((warning) => warning.code === 'unsupported-session-control'));
+    assert.deepStrictEqual(continued.args.slice(-2), ['--continue', 'test context']);
+
+    assert.throws(
+      () =>
+        buildCommand('opencode', 'test context', {
+          resumeSessionId: 'session-123',
+          cliFeatures: { supportsResume: false },
+        }),
+      /cannot safely run continuation context/
+    );
+  });
+
+  it('extracts the OpenCode session ID used by resume commands', function () {
+    assert.strictEqual(
+      helper.extractProviderSessionId(
+        'opencode',
+        '{"type":"step_start","sessionID":"session-123","part":{}}'
+      ),
+      'session-123'
+    );
+  });
+
+  it('keeps disabled search unchanged and enables EXA for fresh and resumed commands', function () {
+    const absent = buildCommand('opencode', 'test context');
+    const disabled = buildCommand('opencode', 'test context', { webSearch: false });
+    assert.deepStrictEqual(disabled.args, absent.args);
+    assert.deepStrictEqual(disabled.env, absent.env);
+
+    const fresh = buildCommand('opencode', 'test context', {
+      webSearch: true,
+      cliFeatures: { supportsWebSearch: true },
+    });
+    assert.deepStrictEqual(fresh.env, { OPENCODE_ENABLE_EXA: '1' });
+
+    const resumed = buildCommand('opencode', 'test context', {
+      resumeSessionId: 'session-123',
+      webSearch: true,
+      cliFeatures: { supportsResume: true, supportsWebSearch: true },
+    });
+    assert.deepStrictEqual(resumed.args.slice(-3), ['--session', 'session-123', 'test context']);
+    assert.deepStrictEqual(resumed.env, { OPENCODE_ENABLE_EXA: '1' });
+
+    const continued = buildCommand('opencode', 'test context', {
+      continueSession: true,
+      webSearch: true,
+      cliFeatures: { supportsResume: true, supportsWebSearch: true },
+    });
+    assert.deepStrictEqual(continued.args.slice(-2), ['--continue', 'test context']);
+    assert.deepStrictEqual(continued.env, { OPENCODE_ENABLE_EXA: '1' });
+  });
+
+  it('fails closed when the OpenCode version is not attested', function () {
+    assert.throws(
+      () =>
+        buildCommand('opencode', 'test context', {
+          webSearch: true,
+          cliFeatures: { supportsWebSearch: false },
+        }),
+      (error) =>
+        error.code === 'unsupported-capability' &&
+        /version >= 1\.0\.137/.test(error.message)
+    );
   });
 
   it('injects schema into context when jsonSchema is provided', function () {

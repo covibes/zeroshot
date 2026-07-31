@@ -123,3 +123,17 @@ export function optionFeatures(
 ): CliFeatureOverrides {
   return options?.cliFeatures ?? {};
 }
+
+export function isCliVersionAtLeast(versionText: string | null | undefined, floor: string): boolean {
+  const actualMatch = /(?:^|[^\w.])v?(\d+)\.(\d+)\.(\d+)(?![\w.-])/.exec(
+    versionText ?? ''
+  );
+  const floorMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(floor);
+  if (!actualMatch || !floorMatch) return false;
+  for (let index = 1; index <= 3; index += 1) {
+    const actual = Number(actualMatch[index]);
+    const minimum = Number(floorMatch[index]);
+    if (actual !== minimum) return actual > minimum;
+  }
+  return true;
+}

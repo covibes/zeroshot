@@ -1,3 +1,4 @@
+import { UnsupportedProviderCapabilityError } from '../errors';
 import { getString, isRecord, tryParseJson } from '../json';
 import { appendJsonSchemaPrompt, writeStrictOutputSchemaFile } from '../schema';
 import {
@@ -17,6 +18,7 @@ import {
   classifyBaseProviderError,
   commandSpec,
   createParserState,
+  isCliVersionAtLeast,
   optionFeatures,
   resolveModelSpecWithConfig,
   validateModelIdFromCatalog,
@@ -46,19 +48,25 @@ function supports(help: string, pattern: RegExp): boolean {
   return help ? pattern.test(help) : true;
 }
 
-function detectCliFeatures(helpText?: string | null): CodexCliFeatures {
+function detectCliFeatures(
+  helpText?: string | null,
+  versionText?: string | null
+): CodexCliFeatures {
   const help = helpText ?? '';
   const unknown = !help;
+  const supportsConfigOverride = supports(help, /--config\b/);
   return {
     provider: 'codex',
     supportsJson: supports(help, /--json\b/),
     supportsOutputSchema: supports(help, /--output-schema\b/),
     supportsAutoApprove: supports(help, /--dangerously-bypass-approvals-and-sandbox\b/),
     supportsCwd: supports(help, /\s-C\b/) || supports(help, /--cwd\b/),
-    supportsConfigOverride: supports(help, /--config\b/),
+    supportsConfigOverride,
     supportsModel: supports(help, /\s-m\b/) || supports(help, /--model\b/),
     supportsSkipGitRepoCheck: supports(help, /--skip-git-repo-check\b/),
     supportsResume: supports(help, /\bresume\b/),
+    supportsWebSearch:
+      !unknown && supportsConfigOverride && isCliVersionAtLeast(versionText, '0.146.0'),
     unknown,
   };
 }
@@ -178,6 +186,18 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
   return warnings;
 }
 
+function addWebSearchArgs(args: string[], options: BuildProviderCommandOptions): void {
+  if (options.webSearch !== true) return;
+  if (optionFeatures(options).supportsWebSearch !== true) {
+    throw new UnsupportedProviderCapabilityError(
+      'codex',
+      'webSearch',
+      'Codex web search requires nonempty `codex exec --help` support for `--config` and a parseable Codex CLI version >= 0.146.0. Update @openai/codex or set providerSettings.codex.webSearch to false.'
+    );
+  }
+  args.push('--config', 'web_search="live"');
+}
+
 function buildCommand(context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
   if (options.resumeSessionId && optionFeatures(options).supportsResume === false) {
     throw new Error(
@@ -190,6 +210,7 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
     options.resumeSessionId && optionFeatures(options).supportsResume !== false
       ? options.resumeSessionId
       : null;
+  addWebSearchArgs(args, options);
   if (resumeSessionId) {
     args.push('resume');
   }

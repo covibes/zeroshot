@@ -46,6 +46,58 @@ test('build-command returns command spec without executing provider CLI', () => 
   assert.ok(Array.isArray(response.envelope.redactions));
 });
 
+test('partial CLI feature overrides do not probe or drift when web search is off', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-no-search-probe-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  fs.writeFileSync(settingsFile, '{}');
+
+  try {
+    for (const provider of ['codex', 'opencode']) {
+      const marker = path.join(tempDir, `${provider}-probed`);
+      const script = `#!/usr/bin/env node
+require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'probed');
+process.exit(0);
+`;
+      withFakeProviderCli(provider, script, () =>
+        withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () => {
+          const cliFeatures =
+            provider === 'codex'
+              ? { supportsJson: true, supportsSkipGitRepoCheck: true }
+              : { supportsJson: true };
+          const baseRequest = {
+            schemaVersion: 1,
+            command: 'build-command',
+            provider,
+            context: 'ctx',
+          };
+          const absent = runExecutable({
+            ...baseRequest,
+            options: { outputFormat: 'json', cliFeatures },
+          });
+          const disabled = runExecutable({
+            ...baseRequest,
+            options: { outputFormat: 'json', webSearch: false, cliFeatures },
+          });
+
+          assert.equal(absent.exitCode, 0);
+          assert.equal(disabled.exitCode, 0);
+          assert.deepEqual(
+            disabled.envelope.result.commandSpec.args,
+            absent.envelope.result.commandSpec.args
+          );
+          assert.deepEqual(
+            disabled.envelope.result.commandSpec.env,
+            absent.envelope.result.commandSpec.env
+          );
+          assert.equal(fs.existsSync(marker), false);
+        })
+      );
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test('build-command preserves Claude resume and continue options through JSON contract', () => {
   const resumed = runExecutable({
     schemaVersion: 1,
@@ -644,6 +696,276 @@ process.exit(17);
             'model_reasoning_effort="xhigh"',
           ]);
         })
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('probe attests Codex and OpenCode web-search version floors', () => {
+  const codexHelp = 'Usage: codex exec --config --json resume';
+  for (const [versionText, expected] of [
+    ['codex-cli 0.146.0', true],
+    ['codex-cli 0.146.0beta', false],
+    ['codex-cli 0.145.9', false],
+    ['codex-cli unknown', false],
+    ['', false],
+  ]) {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'probe',
+      provider: 'codex',
+      helpText: codexHelp,
+      versionText,
+    });
+    assert.equal(response.envelope.result.capabilities.supportsWebSearch, expected);
+  }
+
+  const missingConfig = runExecutable({
+    schemaVersion: 1,
+    command: 'probe',
+    provider: 'codex',
+    helpText: 'Usage: codex exec --json resume',
+    versionText: 'codex-cli 0.146.0',
+  });
+  assert.equal(missingConfig.envelope.result.capabilities.supportsWebSearch, false);
+
+  for (const [versionText, expected] of [
+    ['1.0.137', true],
+    ['opencode 1.0.137garbage', false],
+    ['opencode 1.0.136', false],
+    ['dev', false],
+  ]) {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'probe',
+      provider: 'opencode',
+      helpText: 'Usage: opencode run --session --continue',
+      versionText,
+    });
+    assert.equal(response.envelope.result.capabilities.supportsWebSearch, expected);
+  }
+});
+
+test('probe and build-command distinguish requested and effective Codex search', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-web-search-settings-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({ providerSettings: { codex: { webSearch: true } } })
+  );
+
+  try {
+    withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () => {
+      const probe = runExecutable({
+        schemaVersion: 1,
+        command: 'probe',
+        provider: 'codex',
+        helpText: 'Usage: codex exec --config resume',
+        versionText: 'codex-cli 0.146.0',
+      });
+      assert.deepEqual(probe.envelope.result.configuration.webSearch, {
+        requested: true,
+        effective: true,
+      });
+
+      withFakeProviderCli(
+        'codex',
+        fakeCodexScript(`
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: codex exec --config --json resume\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('codex-cli 0.146.0\\n');
+  process.exit(0);
+}
+process.exit(17);
+`),
+        () => {
+          const built = runExecutable({
+            schemaVersion: 1,
+            command: 'build-command',
+            provider: 'codex',
+            context: 'ctx',
+            options: { resumeSessionId: 'thread-1' },
+          });
+          assert.equal(built.exitCode, 0);
+          assert.deepEqual(built.envelope.result.configuration.webSearch, {
+            requested: true,
+            effective: true,
+          });
+          assert.deepEqual(built.envelope.result.commandSpec.args.slice(0, 4), [
+            'exec',
+            '--config',
+            'web_search="live"',
+            'resume',
+          ]);
+        }
+      );
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('enabled search retains fail-closed resume proof with partial feature overrides', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-search-resume-proof-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+
+  try {
+    for (const provider of ['codex', 'opencode']) {
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify({ providerSettings: { [provider]: { webSearch: true } } })
+      );
+      const script =
+        provider === 'codex'
+          ? fakeCodexScript(`
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: codex exec --config --json\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('codex-cli 0.146.0\\n');
+  process.exit(0);
+}
+process.exit(17);
+`)
+          : `#!/usr/bin/env node
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: opencode run --format\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('1.0.137\\n');
+  process.exit(0);
+}
+process.exit(17);
+`;
+
+      withFakeProviderCli(provider, script, () =>
+        withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () => {
+          const response = runExecutable({
+            schemaVersion: 1,
+            command: 'build-command',
+            provider,
+            context: 'resume',
+            options: {
+              resumeSessionId: 'session-1',
+              cliFeatures: { supportsJson: true },
+            },
+          });
+          assert.equal(response.envelope.ok, false);
+          assert.match(response.envelope.error.message, /cannot safely run continuation context/);
+        })
+      );
+    }
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('build-command returns structured unsupported-capability for old Codex', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-web-search-old-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({ providerSettings: { codex: { webSearch: true } } })
+  );
+
+  try {
+    withFakeProviderCli(
+      'codex',
+      fakeCodexScript(`
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: codex exec --config resume\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('codex-cli 0.145.0\\n');
+  process.exit(0);
+}
+process.exit(17);
+`),
+      () =>
+        withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () => {
+          const response = runExecutable({
+            schemaVersion: 1,
+            command: 'build-command',
+            provider: 'codex',
+            context: 'ctx',
+            options: {
+              webSearch: true,
+              cliFeatures: { supportsWebSearch: true },
+            },
+          });
+          assert.equal(response.envelope.ok, false);
+          assert.equal(response.envelope.error.code, 'unsupported-capability');
+          assert.equal(response.envelope.error.field, 'options.webSearch');
+          assert.match(response.envelope.error.message, /version >= 0\.146\.0/);
+        })
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('build-command applies OpenCode search env to fresh and resumed commands', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opencode-search-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({ providerSettings: { opencode: { webSearch: true } } })
+  );
+  const script = `#!/usr/bin/env node
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: opencode run --session --continue --format --model --variant\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('1.0.137\\n');
+  process.exit(0);
+}
+process.exit(17);
+`;
+
+  try {
+    withFakeProviderCli('opencode', script, () =>
+      withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () => {
+        const fresh = runExecutable({
+          schemaVersion: 1,
+          command: 'build-command',
+          provider: 'opencode',
+          context: 'fresh',
+          env: { KEEP_ME: 'yes' },
+        });
+        assert.deepEqual(fresh.envelope.result.commandSpec.env, {
+          KEEP_ME: '[REDACTED:KEEP_ME]',
+          OPENCODE_ENABLE_EXA: '[REDACTED:OPENCODE_ENABLE_EXA]',
+        });
+        assert.deepEqual(fresh.envelope.result.configuration.webSearch, {
+          requested: true,
+          effective: true,
+        });
+
+        const resumed = runExecutable({
+          schemaVersion: 1,
+          command: 'build-command',
+          provider: 'opencode',
+          context: 'resume',
+          options: { resumeSessionId: 'session-1' },
+        });
+        assert.deepEqual(resumed.envelope.result.commandSpec.args.slice(-3), [
+          '--session',
+          'session-1',
+          'resume',
+        ]);
+        assert.equal(
+          resumed.envelope.result.commandSpec.env.OPENCODE_ENABLE_EXA,
+          '[REDACTED:OPENCODE_ENABLE_EXA]'
+        );
+      })
     );
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

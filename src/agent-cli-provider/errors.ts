@@ -1,6 +1,20 @@
 import { getNumber, getRecord, getString, isRecord, unknownToMessage } from './json';
 import type { ErrorClassification } from './types';
 
+export class UnsupportedProviderCapabilityError extends Error {
+  readonly code = 'unsupported-capability';
+  readonly permanent = true;
+  readonly provider: string;
+  readonly capability: string;
+
+  constructor(provider: string, capability: string, message: string) {
+    super(message);
+    this.name = 'UnsupportedProviderCapabilityError';
+    this.provider = provider;
+    this.capability = capability;
+  }
+}
+
 const BASE_RETRYABLE_PATTERNS: readonly RegExp[] = [
   /rate.?limit/i,
   /\b429\b/i,
