@@ -24,7 +24,7 @@
 
 **The agent that wrote the code shouldn't be the one that says it works.**
 
-Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop sized to the task**: an agent writes the change, then verifiers that didn't write it approve the result, or reject it and say exactly what's wrong. The loop runs until the change is verified.
+Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, Codex, Copilot, Gemini, and others) through an **executor-verifier loop sized to the task**: an agent writes the change, then verifiers that didn't write it approve the result, or reject it and say exactly what's wrong. The loop runs until the change is verified.
 
 Underneath, it's a general graph engine: you define the agents and how they hand off, and the runtime executes that wiring the same way every time, with no model deciding what runs next. The executor-verifier loop is the graph it ships with, not the only one it can run.
 
@@ -45,7 +45,7 @@ Underneath, it's a general graph engine: you define the agents and how they hand
 npm install -g @the-open-engine/zeroshot
 ```
 
-Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemini, or OpenCode). Linux and macOS today; Windows is deferred.
+Requires **Node ≥ 18** and a coding agent for it to drive: one of the [seven supported CLIs](#providers-and-backends), or any OpenAI- or Anthropic-compatible endpoint. Linux and macOS today; Windows is deferred.
 
 <div align="center">
   <img src="docs/assets/zeroshot-demo.gif" alt="Zeroshot resolving an issue through the executor-verifier loop" width="760">
@@ -69,13 +69,13 @@ Bring your own provider and your own backend. Zeroshot orchestrates the agents t
 
 ## How is this different from a single coding agent?
 
-|                             | A single coding agent        | Zeroshot                                                                                    |
-| --------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
-| Who says it is correct?     | the same agent that wrote it | a separate agent that never saw how it was written                                          |
-| Is the code actually run?   | usually just claimed         | executed against your real tests                                                            |
-| When it fails, you get      | an assertion it is fine      | exactly what's wrong                                                                        |
-| When does it stop?          | when it decides it is done   | when the change is verified, or provably is not                                             |
-| Which coding agent runs it? | one, fixed                   | any you already run: Zeroshot is the harness around Claude Code, Codex, Gemini, or OpenCode |
+|                             | A single coding agent        | Zeroshot                                                                               |
+| --------------------------- | ---------------------------- | -------------------------------------------------------------------------------------- |
+| Who says it is correct?     | the same agent that wrote it | agents that didn't write it and never saw it working                                   |
+| Is the code actually run?   | usually just claimed         | executed against your real tests                                                       |
+| When it fails, you get      | an assertion it is fine      | exactly what's wrong                                                                   |
+| When does it stop?          | when it decides it is done   | when the change is verified, or provably is not                                        |
+| Which coding agent runs it? | one, fixed                   | any you already run: seven agent CLIs, or any OpenAI- or Anthropic-compatible endpoint |
 
 One exception, stated plainly: a task the conductor classifies as TRIVIAL runs a single worker with no validator, unless you're in a `--pr` or `--ship` flow, which always adds one. See [classification and routing](#classification-and-routing).
 
@@ -132,12 +132,23 @@ zeroshot cmdproof check <id>    # reuse a verified command result
 
 Zeroshot shells out to provider CLIs, so provider auth stays wherever you already set it up and Zeroshot never handles those credentials. Pick a default and override per run.
 
-| Provider     | CLI                                    |
-| ------------ | -------------------------------------- |
-| Claude Code  | `npm i -g @anthropic-ai/claude-code`   |
-| OpenAI Codex | `npm i -g @openai/codex`               |
-| Gemini CLI   | `npm i -g @google/gemini-cli`          |
-| OpenCode     | see [opencode.ai](https://opencode.ai) |
+| Provider       | CLI                                                                |
+| -------------- | ------------------------------------------------------------------ |
+| Claude Code    | `npm i -g @anthropic-ai/claude-code`                               |
+| OpenAI Codex   | `npm i -g @openai/codex`                                           |
+| Gemini CLI     | `npm i -g @google/gemini-cli`                                      |
+| GitHub Copilot | `npm i -g @github/copilot`                                         |
+| OpenCode       | see [opencode.ai](https://opencode.ai)                             |
+| Kiro           | see [kiro.dev](https://kiro.dev/docs/cli/)                         |
+| Pi             | `npm i -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
+
+An eighth provider, `gateway`, isn't a CLI. It speaks the OpenAI or Anthropic wire protocol against any `baseUrl`, so Zeroshot can drive a self-hosted model, a proxy, or a router without a coding-agent CLI installed at all. It's also the one provider whose key Zeroshot holds, in settings rather than in someone else's config:
+
+```bash
+zeroshot settings set providerSettings.gateway.baseUrl https://your-endpoint/v1
+zeroshot settings set providerSettings.gateway.apiKey sk-...
+zeroshot run 123 --provider gateway
+```
 
 ```bash
 zeroshot providers                    # see what's installed
