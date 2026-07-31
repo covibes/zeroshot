@@ -24,7 +24,7 @@
 
 **The agent that wrote the code shouldn't be the one that says it works.**
 
-Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop**: an agent writes the change, then an _independent_ verifier that never saw how it was made approves it, or hands back a reproducible failure. The loop runs until the change is verified.
+Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop**: an agent writes the change, then verifiers that didn't write it approve the result, or reject it and say exactly what's wrong. The loop runs until the change is verified.
 
 <div align="center">
   <picture>
@@ -55,7 +55,7 @@ Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemi
 
 Zeroshot separates the agent that **writes** the code from the agent that **judges** it.
 
-A conductor classifies the task and sizes the workflow to it. An executor (an AI coding agent) makes the change, editing your files in place by default, or inside a git worktree or a container if you pass `--worktree` or `--docker`. Then **independent validators** inspect the result. A validator never receives the executor's progress log and never shares its session; it gets the original issue, the plan, and the executor's completion message, so it cannot approve its own reasoning. Each returns `APPROVED`, or `REJECTED` with an actionable, reproducible failure, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and `zeroshot resume <id>` picks it up where it stopped.
+A conductor classifies the task and sizes the workflow to it. An executor (an AI coding agent) makes the change, editing your files in place by default, or inside a git worktree or a container if you pass `--worktree` or `--docker`. Then **independent validators** inspect the result. A validator never receives the executor's progress log and never shares its session; it gets the original issue, the plan, and the executor's completion message, so it cannot approve its own reasoning. Each returns `APPROVED`, or `REJECTED` with the objections that blocked it. Validators are told to verify by running commands and capturing the output rather than reading code and forming an opinion. Any single rejection sends the work back, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and `zeroshot resume <id>` picks it up where it stopped.
 
 How many validators run, and in what arrangement, depends on how the conductor classified the task. A one-file mechanical change doesn't get the same treatment as a payment-processing change, and debugging has a shape of its own; the [routing table](#classification-and-routing) has the specifics. That whole arrangement is a JSON graph config, and you can write your own.
 
@@ -67,7 +67,7 @@ Bring your own provider and your own backend. Zeroshot orchestrates the agents t
 | --------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
 | Who says it is correct?     | the same agent that wrote it | a separate agent that never saw how it was written                                          |
 | Is the code actually run?   | usually just claimed         | executed against your real tests                                                            |
-| When it fails, you get      | an assertion it is fine      | a reproducible failure                                                                      |
+| When it fails, you get      | an assertion it is fine      | exactly what's wrong                                                                        |
 | When does it stop?          | when it decides it is done   | when the change is verified, or provably is not                                             |
 | Which coding agent runs it? | one, fixed                   | any you already run: Zeroshot is the harness around Claude Code, Codex, Gemini, or OpenCode |
 
@@ -256,7 +256,7 @@ Zeroshot is **Layer 01 · Verification** of [The Open Engine](https://theopeneng
 | 02     | Constraints: **Opcore**    | Sibling · alpha             |
 | 03-05  | Intent · Context · Runtime | In development              |
 
-Zeroshot runs the loop: an agent writes the change, and an **independent** verifier decides whether it holds: approve, or a reproducible failure. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents (currently private alpha `0.1.0-alpha.0`, built in the open, not yet published). Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
+Zeroshot runs the loop: an agent writes the change, and verifiers that didn't write it decide whether it holds, approving it or saying exactly what's wrong. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents (currently private alpha `0.1.0-alpha.0`, built in the open, not yet published). Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
 
 Each layer ships the same way: extracted from the platform we run, then opened. **Trust nothing. Verify everything.**
 
