@@ -16,6 +16,7 @@ Zeroshot supports two provider shapes:
 | Gemini   | Gemini      | `npm install -g @google/gemini-cli`                                      |
 | Opencode | Opencode    | See https://opencode.ai                                                  |
 | Pi       | Pi          | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
+| OMP      | OMP         | `npm install -g --ignore-scripts @oh-my-pi/pi-coding-agent`              |
 | Kiro     | Kiro        | See https://kiro.dev/docs/cli/                                           |
 | Copilot  | Copilot     | `npm install -g @github/copilot`                                         |
 
@@ -41,10 +42,10 @@ OpenCode with strict boolean provider settings:
 }
 ```
 
-| Provider | Setting                                  | Canonical child control                          | Minimum CLI |
-| -------- | ---------------------------------------- | ------------------------------------------------ | ----------- |
-| Codex    | `providerSettings.codex.webSearch`       | `codex exec --config 'web_search="live"' ...`    | `0.146.0`   |
-| OpenCode | `providerSettings.opencode.webSearch`    | command environment `OPENCODE_ENABLE_EXA=1`      | `1.0.137`   |
+| Provider | Setting                               | Canonical child control                       | Minimum CLI |
+| -------- | ------------------------------------- | --------------------------------------------- | ----------- |
+| Codex    | `providerSettings.codex.webSearch`    | `codex exec --config 'web_search="live"' ...` | `0.146.0`   |
+| OpenCode | `providerSettings.opencode.webSearch` | command environment `OPENCODE_ENABLE_EXA=1`   | `1.0.137`   |
 
 Both settings default to `false`; absent and explicit `false` settings leave
 the child command and environment unchanged. Codex applies the config override
@@ -72,7 +73,7 @@ its [web-search tool guide](https://opencode.ai/docs/tools/#websearch); the
 and [tool registration](https://github.com/anomalyco/opencode/blob/v1.18.10/packages/opencode/src/tool/registry.ts)
 show the corresponding bundled control.
 
-Claude, Gemini, Kiro, Copilot, Pi, and Gateway do not declare `webSearch`;
+Claude, Gemini, Kiro, Copilot, Pi, OMP, and Gateway do not declare `webSearch`;
 setting it for those providers is rejected. No equally safe, explicit,
 support-detectable additive native-search control is established for them.
 Permission or tool allowlists authorize already-present tools; they must not be

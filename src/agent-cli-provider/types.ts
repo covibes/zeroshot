@@ -152,6 +152,20 @@ export interface PiCliFeatures extends BaseCliFeatures {
   readonly supportsNoApprove: boolean;
 }
 
+export interface OmpCliFeatures extends BaseCliFeatures {
+  readonly provider: 'omp';
+  readonly supportsModeJson: boolean;
+  readonly supportsPrint: boolean;
+  readonly supportsCwd: boolean;
+  readonly supportsAutoApprove: boolean;
+  readonly supportsModel: boolean;
+  readonly supportsThinking: boolean;
+  readonly supportsNoExtensions: boolean;
+  readonly supportsNoSkills: boolean;
+  readonly supportsNoRules: boolean;
+  readonly supportsNoTitle: boolean;
+}
+
 export interface CopilotCliFeatures extends BaseCliFeatures {
   readonly provider: 'copilot';
   readonly supportsJsonOutput: boolean;
@@ -188,6 +202,7 @@ export type ProviderCliFeatures =
   | GeminiCliFeatures
   | OpencodeCliFeatures
   | PiCliFeatures
+  | OmpCliFeatures
   | CopilotCliFeatures
   | GatewayCliFeatures
   | AcpCliFeatures;
@@ -216,6 +231,11 @@ export interface CliFeatureOverrides {
   readonly supportsNoPromptTemplates?: boolean;
   readonly supportsNoContextFiles?: boolean;
   readonly supportsNoApprove?: boolean;
+  readonly supportsModeJson?: boolean;
+  readonly supportsPrint?: boolean;
+  readonly supportsThinking?: boolean;
+  readonly supportsNoRules?: boolean;
+  readonly supportsNoTitle?: boolean;
   readonly supportsJsonOutput?: boolean;
   readonly supportsAllowAll?: boolean;
   readonly supportsNoAskUser?: boolean;

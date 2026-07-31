@@ -156,6 +156,44 @@ test('build-command preserves Codex explicit session resume through JSON contrac
   assert.equal(resumed.envelope.result.commandSpec.cwd, '/tmp/project');
 });
 
+test('build-command preserves false for every optional OMP feature override', () => {
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'build-command',
+    provider: 'omp',
+    context: 'ctx',
+    options: {
+      modelSpec: { level: 'level3', model: 'm', reasoningEffort: 'high' },
+      cliFeatures: {
+        supportsModeJson: true,
+        supportsPrint: true,
+        supportsCwd: true,
+        supportsAutoApprove: true,
+        supportsModel: false,
+        supportsThinking: false,
+        supportsNoExtensions: false,
+        supportsNoSkills: false,
+        supportsNoRules: false,
+        supportsNoTitle: false,
+      },
+    },
+  });
+
+  assert.equal(response.exitCode, 0);
+  assert.equal(response.envelope.ok, true);
+  assert.deepEqual(response.envelope.result.commandSpec.args, [
+    '--mode',
+    'json',
+    '-p',
+    '--auto-approve',
+    'ctx',
+  ]);
+  assert.deepEqual(
+    response.envelope.warnings.map(({ code }) => code),
+    ['omp-model-unsupported', 'omp-thinking-unsupported']
+  );
+});
+
 test('build-command redacts adapter auth env values from command spec output', () => {
   const secret = 'plain-secret';
   const response = runExecutable({
