@@ -70,6 +70,9 @@ function detectCliFeatures(helpText?: string | null): OmpCliFeatures {
     supportsNoSkills: unknown ? true : /--no-skills\b/.test(help),
     supportsNoRules: unknown ? true : /--no-rules\b/.test(help),
     supportsNoTitle: unknown ? true : /--no-title\b/.test(help),
+    // Unlike OMP's other flags, resume must be proven before it is advertised:
+    // an unprobed CLI must fail closed rather than optimistically resume.
+    supportsResume: !unknown && /--resume\b/.test(help),
     unknown,
   };
 }
@@ -95,16 +98,26 @@ function assertRequiredOmpFeatures(options: BuildProviderCommandOptions): void {
 }
 
 function failClosedUnsupportedSessionControl(options: BuildProviderCommandOptions): void {
-  const hasResumeSessionId = options.resumeSessionId !== undefined;
-  if (!hasResumeSessionId && !options.continueSession) return;
-  const field = hasResumeSessionId ? 'options.resumeSessionId' : 'options.continueSession';
-  throw contractError({
-    code: 'invalid-field',
-    field,
-    exitCode: 2,
-    message:
-      'OMP CLI does not support resume/continue session control; fail closed and start a fresh run instead.',
-  });
+  // --continue is cwd-wide most-recent/breadcrumb behavior; OMP never gets to use it,
+  // regardless of installed CLI support.
+  if (options.continueSession) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.continueSession',
+      exitCode: 2,
+      message:
+        'OMP CLI does not support cwd-wide continue session control; fail closed and start a fresh run instead.',
+    });
+  }
+  if (options.resumeSessionId !== undefined && optionFeatures(options).supportsResume !== true) {
+    throw contractError({
+      code: 'unsupported-provider-cli',
+      field: 'options.resumeSessionId',
+      exitCode: 2,
+      message:
+        'OMP CLI does not prove --resume support; fail closed and start a fresh run instead.',
+    });
+  }
 }
 
 function addOptionalFlags(args: string[], options: BuildProviderCommandOptions): void {
@@ -171,6 +184,9 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   args.push('--auto-approve');
   addOptionalFlags(args, options);
   addModelArgs(args, options);
+  if (options.resumeSessionId && optionFeatures(options).supportsResume === true) {
+    args.push('--resume', options.resumeSessionId);
+  }
   args.push(finalContext);
 
   return commandSpec({
@@ -180,6 +196,13 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     warnings: collectWarnings(options),
   });
+}
+
+function extractSessionId(line: string): string | null {
+  const event = tryParseJson(line.trim());
+  if (!isRecord(event) || getString(event, 'type') !== 'session') return null;
+  const sessionId = getString(event, 'id');
+  return sessionId?.trim() || null;
 }
 
 function createOmpState(): ProviderParserState {
@@ -440,6 +463,7 @@ export const ompAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  extractSessionId,
   parseEvent,
   createParserState: createOmpState,
   resolveModelSpec,

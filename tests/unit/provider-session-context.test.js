@@ -296,6 +296,44 @@ describe('provider-session continuation context', function () {
     assert.doesNotMatch(continuation, /GUIDANCE-FROM-INVALIDATED-SESSION/);
   });
 
+  it('reconstructs full static context when the installed OMP CLI cannot resume', function () {
+    const cluster = { id: 'old-omp-cli-cluster', createdAt: Date.now(), agents: [] };
+    const agent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: {
+        provider: 'omp',
+        prompt: 'STATIC-OLD-OMP-CLI-INSTRUCTIONS',
+      },
+      runtime: {
+        providerCliFeatures: { omp: { supportsResume: false } },
+      },
+    });
+    agent.iteration = 2;
+    agent.providerSession = {
+      provider: 'omp',
+      sessionId: 'unsupported-omp-resume-session',
+      agentId: 'worker',
+      taskId: 'task-generation-1',
+      generation: 1,
+      cwd: path.resolve(agent.config.cwd || process.cwd()),
+      worktreePath: null,
+      contextSequence: '1',
+      guidanceSequence: null,
+      promptIdentity: promptIdentity('STATIC-OLD-OMP-CLI-INSTRUCTIONS'),
+    };
+
+    const context = agent._buildContext({
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'retry with full context' },
+    });
+
+    assert.match(context, /STATIC-OLD-OMP-CLI-INSTRUCTIONS/);
+    assert.doesNotMatch(context, /Continuation Turn/);
+    assert.strictEqual(agent.providerSession, null);
+  });
+
   it('freezes lazy source rendering at the captured durable high-water sequence', function () {
     const cluster = { id: 'bounded-context-cluster', createdAt: Date.now(), agents: [] };
     const agent = createProviderSessionAgent({

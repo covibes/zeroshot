@@ -71,6 +71,16 @@ describe('agent-owned provider session reuse', function () {
       worktree: { enabled: true, path: '/tmp/new-worktree' },
     });
     assert.ok(!taskArgs(moved, 'claude').includes('--resume'));
+
+    const movedOmp = buildAgent({
+      providerSession: buildSession({
+        provider: 'omp',
+        sessionId: 'omp-session-1',
+        worktreePath: '/tmp/old-worktree',
+      }),
+      worktree: { enabled: true, path: '/tmp/new-worktree' },
+    });
+    assert.ok(!taskArgs(movedOmp, 'omp').includes('--resume'));
   });
 
   it('captures only logically successful completed tasks with full provenance', function () {

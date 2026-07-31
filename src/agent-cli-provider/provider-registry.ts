@@ -419,6 +419,7 @@ export const providerRegistry = [
       mcpServers: false,
       jsonSchema: false,
       reasoningEffort: true,
+      sessionResume: true,
     },
     docs: {
       label: 'OMP',

@@ -1,7 +1,7 @@
 const assert = require('assert');
 
 describe('provider session capture', function () {
-  it('captures Claude and Codex session IDs from provider JSONL', async function () {
+  it('captures Claude, Codex, and OMP session IDs from provider JSONL', async function () {
     const { captureProviderSessionLine } =
       await import('../../task-lib/provider-session-capture.js');
     const captured = [];
@@ -31,7 +31,15 @@ describe('provider session capture', function () {
     });
 
     assert.strictEqual(state.currentSessionId, 'codex-1');
-    assert.deepStrictEqual(captured, ['claude-1', 'codex-1']);
+
+    state = captureProviderSessionLine({
+      providerName: 'omp',
+      line: JSON.stringify({ type: 'session', id: 'omp-1' }),
+      onCapture: (sessionId) => captured.push(sessionId),
+    });
+
+    assert.strictEqual(state.currentSessionId, 'omp-1');
+    assert.deepStrictEqual(captured, ['claude-1', 'codex-1', 'omp-1']);
   });
 
   for (const [providerName, lineFor] of [
@@ -40,6 +48,7 @@ describe('provider session capture', function () {
       (sessionId) => JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId }),
     ],
     ['codex', (sessionId) => JSON.stringify({ type: 'thread.started', thread_id: sessionId })],
+    ['omp', (sessionId) => JSON.stringify({ type: 'session', id: sessionId })],
   ]) {
     it(`makes conflicting ${providerName} JSONL session IDs sticky`, async function () {
       const { captureProviderSessionLine } =
@@ -118,7 +127,11 @@ describe('provider session capture', function () {
     capture.captureLine(JSON.stringify({ type: 'result', session_id: 'forked-b' }));
     capture.captureLine(JSON.stringify({ type: 'result', session_id: 'requested-a' }));
 
-    assert.strictEqual(writes, 2, 'an in-memory conflict must remain sticky after the failed write');
+    assert.strictEqual(
+      writes,
+      2,
+      'an in-memory conflict must remain sticky after the failed write'
+    );
     assert.match(capture.getCompletionError(), /could not be persisted: database is locked/);
     assert.ok(logs.some((message) => message.includes('Failed to persist provider session')));
   });
@@ -142,8 +155,7 @@ describe('provider session capture', function () {
         modelSpec: {},
       });
       const updateTask = (_taskId, update) => {
-        const unsafeWrite =
-          update.sessionIdConflict === true || Object.hasOwn(update, 'status');
+        const unsafeWrite = update.sessionIdConflict === true || Object.hasOwn(update, 'status');
         if (locked && unsafeWrite) {
           const error = new Error('database is locked');
           error.code = 'SQLITE_BUSY';
@@ -203,28 +215,31 @@ describe('provider session capture', function () {
   it('requires an explicit requested identity to be observed exactly', async function () {
     const { createProviderSessionCapture } =
       await import('../../task-lib/provider-session-capture.js');
-    const lineFor = (sessionId) =>
-      JSON.stringify({ type: 'thread.started', thread_id: sessionId });
 
-    for (const [name, observed, expected] of [
-      ['confirmed', ['requested-a'], null],
-      ['ignored', [], /did not confirm/],
-      ['forked', ['forked-b'], /different session identity/],
-      ['ambiguous', ['requested-a', 'forked-b'], /conflicting session identities/],
+    for (const [providerName, lineFor] of [
+      ['codex', (sessionId) => JSON.stringify({ type: 'thread.started', thread_id: sessionId })],
+      ['omp', (sessionId) => JSON.stringify({ type: 'session', id: sessionId })],
     ]) {
-      const capture = createProviderSessionCapture({
-        providerName: 'codex',
-        taskId: `${name}-resume`,
-        requestedSessionId: 'requested-a',
-        updateTask: () => {},
-        log: () => {},
-      });
-      observed.forEach((sessionId) => capture.captureLine(lineFor(sessionId)));
-      const error = capture.getCompletionError();
-      if (expected === null) {
-        assert.strictEqual(error, null);
-      } else {
-        assert.match(error, expected);
+      for (const [name, observed, expected] of [
+        ['confirmed', ['requested-a'], null],
+        ['ignored', [], /did not confirm/],
+        ['forked', ['forked-b'], /different session identity/],
+        ['ambiguous', ['requested-a', 'forked-b'], /conflicting session identities/],
+      ]) {
+        const capture = createProviderSessionCapture({
+          providerName,
+          taskId: `${providerName}-${name}-resume`,
+          requestedSessionId: 'requested-a',
+          updateTask: () => {},
+          log: () => {},
+        });
+        observed.forEach((sessionId) => capture.captureLine(lineFor(sessionId)));
+        const error = capture.getCompletionError();
+        if (expected === null) {
+          assert.strictEqual(error, null);
+        } else {
+          assert.match(error, expected);
+        }
       }
     }
   });
@@ -244,9 +259,21 @@ describe('provider session capture', function () {
       line: JSON.stringify({ type: 'init', session_id: 'gemini-1' }),
       onCapture: (sessionId) => captured.push(sessionId),
     });
+    const ompMissingId = captureProviderSessionLine({
+      providerName: 'omp',
+      line: JSON.stringify({ type: 'session' }),
+      onCapture: (sessionId) => captured.push(sessionId),
+    });
+    const ompEmptyId = captureProviderSessionLine({
+      providerName: 'omp',
+      line: JSON.stringify({ type: 'session', id: '' }),
+      onCapture: (sessionId) => captured.push(sessionId),
+    });
 
     assert.deepStrictEqual(malformed, { currentSessionId: null, sessionIdConflict: false });
     assert.deepStrictEqual(unsupported, { currentSessionId: null, sessionIdConflict: false });
+    assert.deepStrictEqual(ompMissingId, { currentSessionId: null, sessionIdConflict: false });
+    assert.deepStrictEqual(ompEmptyId, { currentSessionId: null, sessionIdConflict: false });
     assert.deepStrictEqual(captured, []);
   });
 });

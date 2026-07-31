@@ -164,6 +164,7 @@ export interface OmpCliFeatures extends BaseCliFeatures {
   readonly supportsNoSkills: boolean;
   readonly supportsNoRules: boolean;
   readonly supportsNoTitle: boolean;
+  readonly supportsResume: boolean;
 }
 
 export interface CopilotCliFeatures extends BaseCliFeatures {
