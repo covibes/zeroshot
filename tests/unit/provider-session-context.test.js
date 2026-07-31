@@ -296,6 +296,44 @@ describe('provider-session continuation context', function () {
     assert.doesNotMatch(continuation, /GUIDANCE-FROM-INVALIDATED-SESSION/);
   });
 
+  it('reconstructs full static context when the installed OMP CLI cannot resume', function () {
+    const cluster = { id: 'old-omp-cli-cluster', createdAt: Date.now(), agents: [] };
+    const agent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: {
+        provider: 'omp',
+        prompt: 'STATIC-OLD-OMP-CLI-INSTRUCTIONS',
+      },
+      runtime: {
+        providerCliFeatures: { omp: { supportsResume: false } },
+      },
+    });
+    agent.iteration = 2;
+    agent.providerSession = {
+      provider: 'omp',
+      sessionId: 'unsupported-omp-resume-session',
+      agentId: 'worker',
+      taskId: 'task-generation-1',
+      generation: 1,
+      cwd: path.resolve(agent.config.cwd || process.cwd()),
+      worktreePath: null,
+      contextSequence: '1',
+      guidanceSequence: null,
+      promptIdentity: promptIdentity('STATIC-OLD-OMP-CLI-INSTRUCTIONS'),
+    };
+
+    const context = agent._buildContext({
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator',
+      content: { text: 'retry with full context' },
+    });
+
+    assert.match(context, /STATIC-OLD-OMP-CLI-INSTRUCTIONS/);
+    assert.doesNotMatch(context, /Continuation Turn/);
+    assert.strictEqual(agent.providerSession, null);
+  });
+
   it('freezes lazy source rendering at the captured durable high-water sequence', function () {
     const cluster = { id: 'bounded-context-cluster', createdAt: Date.now(), agents: [] };
     const agent = createProviderSessionAgent({
@@ -361,5 +399,72 @@ describe('provider-session continuation context', function () {
     });
     assert.strictEqual(second.match(/AFTER-SNAPSHOT/g)?.length, 1);
     assert.doesNotMatch(second, /BEFORE-SNAPSHOT/);
+  });
+
+  it('sends only the post-boundary continuation delta when resuming OMP', function () {
+    const cluster = { id: 'omp-delta-cluster', createdAt: Date.now(), agents: [] };
+    const agent = createProviderSessionAgent({
+      cluster,
+      messageBus,
+      config: {
+        provider: 'omp',
+        prompt: 'OMP-STATIC-INSTRUCTIONS',
+        contextStrategy: {
+          sources: [
+            { topic: 'ISSUE_OPENED', limit: 1 },
+            { topic: 'VALIDATION_RESULT', limit: 5 },
+          ],
+        },
+      },
+      runtime: { providerCliFeatures: { omp: { supportsResume: true } } },
+    });
+    const cwd = path.resolve(agent.config.cwd || process.cwd());
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'ISSUE_OPENED',
+      sender: 'system',
+      content: { text: 'OMP-OLD-ISSUE' },
+    });
+    messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator-old',
+      content: { text: 'OMP-OLD-VALIDATION' },
+    });
+
+    agent.iteration = 1;
+    agent._buildContext({
+      topic: 'ISSUE_OPENED',
+      sender: 'system',
+      content: { text: 'OMP-FIRST-TRIGGER' },
+    });
+    agent.providerSession = {
+      provider: 'omp',
+      sessionId: 'omp-session-1',
+      agentId: 'worker',
+      taskId: 'omp-task-1',
+      generation: 1,
+      cwd,
+      worktreePath: null,
+      contextSequence: agent.currentContextSequence,
+      guidanceSequence: agent.currentGuidanceSequence,
+      promptIdentity: agent.currentPromptIdentity,
+    };
+    const delta = messageBus.publish({
+      cluster_id: cluster.id,
+      topic: 'VALIDATION_RESULT',
+      sender: 'validator-new',
+      content: { text: 'OMP-NEW-DELTA' },
+    });
+    agent.iteration = 2;
+
+    const context = agent._buildContext(delta);
+    assert.match(context, /Continuation Turn/);
+    assert.match(context, /OMP-NEW-DELTA/);
+    assert.doesNotMatch(context, /OMP-STATIC-INSTRUCTIONS/);
+    assert.doesNotMatch(context, /OMP-OLD-ISSUE/);
+    assert.doesNotMatch(context, /OMP-OLD-VALIDATION/);
+    assert.doesNotMatch(context, /OMP-FIRST-TRIGGER/);
+    assert.strictEqual(context.match(/OMP-NEW-DELTA/g)?.length, 1);
   });
 });

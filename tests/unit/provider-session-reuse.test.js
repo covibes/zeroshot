@@ -56,7 +56,7 @@ describe('agent-owned provider session reuse', function () {
     assert.strictEqual(staleGeneration.providerSession, null);
   });
 
-  it('starts fresh for unsupported providers, Docker, provider switches, and worktree drift', function () {
+  it('starts fresh for unsupported providers, Docker, provider switches, and workspace drift', function () {
     const unsupported = buildAgent({ providerSession: buildSession() });
     assert.ok(!taskArgs(unsupported, 'gemini').includes('--resume'));
 
@@ -71,6 +71,26 @@ describe('agent-owned provider session reuse', function () {
       worktree: { enabled: true, path: '/tmp/new-worktree' },
     });
     assert.ok(!taskArgs(moved, 'claude').includes('--resume'));
+
+    const movedOmp = buildAgent({
+      providerSession: buildSession({
+        provider: 'omp',
+        sessionId: 'omp-session-1',
+        worktreePath: '/tmp/old-worktree',
+      }),
+      worktree: { enabled: true, path: '/tmp/new-worktree' },
+    });
+    assert.ok(!taskArgs(movedOmp, 'omp').includes('--resume'));
+
+    const cwdDriftedOmp = buildAgent({
+      config: { cwd: '/tmp/different-omp-cwd' },
+      providerSession: buildSession({
+        provider: 'omp',
+        sessionId: 'omp-session-1',
+      }),
+    });
+    assert.ok(!taskArgs(cwdDriftedOmp, 'omp').includes('--resume'));
+    assert.strictEqual(cwdDriftedOmp.providerSession, null);
   });
 
   it('captures only logically successful completed tasks with full provenance', function () {

@@ -1,7 +1,11 @@
 const crypto = require('crypto');
 const path = require('path');
 
-const { normalizeProviderName, providerSupportsCapability } = require('../../lib/provider-names');
+const {
+  getProviderMetadata,
+  normalizeProviderName,
+  providerSupportsCapability,
+} = require('../../lib/provider-names');
 const { tryCanonicalMessageSequence } = require('../ledger-sequence');
 
 const DURABLE_SESSION_BOUNDARY_EVENTS = new Set([
@@ -15,6 +19,17 @@ const RESTORABLE_AGENT_STATES = new Set(['idle', 'stopped', 'completed']);
 
 function normalizeNonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeProviderSessionId(provider, value) {
+  const normalized = normalizeNonEmptyString(value);
+  if (!normalized) return null;
+  try {
+    const policy = getProviderMetadata(provider)?.adapter?.sessionCapture;
+    return policy?.exactIdentityMatch === true && value !== normalized ? null : normalized;
+  } catch {
+    return normalized;
+  }
 }
 
 function normalizeAbsolutePath(value) {
@@ -58,7 +73,7 @@ function normalizeProviderSession(value) {
   }
 
   const provider = normalizeProviderName(value.provider);
-  const sessionId = normalizeNonEmptyString(value.sessionId);
+  const sessionId = normalizeProviderSessionId(provider, value.sessionId);
   const agentId = normalizeNonEmptyString(value.agentId);
   const taskId = normalizeNonEmptyString(value.taskId);
   const generation = value.generation;
@@ -148,22 +163,43 @@ function resolveAgentResumeSessionId(agent, providerName) {
 }
 
 function validateCompletedResumeIdentity(taskInfo) {
-  const requestedSessionId = normalizeNonEmptyString(taskInfo?.requestedResumeSessionId);
-  if (!requestedSessionId) {
-    return null;
+  const provider = normalizeProviderName(taskInfo?.provider);
+  let capturePolicy = null;
+  try {
+    capturePolicy = getProviderMetadata(provider)?.adapter?.sessionCapture ?? null;
+  } catch {
+    // Unknown providers retain the legacy permissive identity behavior.
   }
+
+  const requestedValue = taskInfo?.requestedResumeSessionId;
+  const requestedSessionId = normalizeProviderSessionId(provider, requestedValue);
+  if (requestedValue !== null && requestedValue !== undefined && !requestedSessionId) {
+    return 'Provider continuation requested an invalid session identity';
+  }
+  const capturedSessionId = normalizeProviderSessionId(provider, taskInfo?.sessionId);
+
+  if (!requestedSessionId) {
+    if (capturePolicy?.requireSessionIdOnSuccess !== true) return null;
+    if (taskInfo?.resumeIdentityVerified !== true) {
+      return 'Provider completion identity was not durably verified';
+    }
+    if (taskInfo?.sessionIdConflict === true) {
+      return 'Provider completion emitted conflicting or malformed session identities';
+    }
+    return capturedSessionId
+      ? null
+      : 'Provider completion did not durably capture a required session identity';
+  }
+
   if (taskInfo?.resumeIdentityVerified !== true) {
     return 'Provider continuation identity was not durably verified';
   }
   if (taskInfo?.sessionIdConflict === true) {
-    return 'Provider continuation emitted conflicting session identities';
+    return capturePolicy?.exactIdentityMatch === true
+      ? 'Provider continuation emitted conflicting or malformed session identities'
+      : 'Provider continuation emitted conflicting session identities';
   }
-
-  const capturedSessionId = normalizeNonEmptyString(taskInfo?.sessionId);
-  if (capturedSessionId === requestedSessionId) {
-    return null;
-  }
-
+  if (capturedSessionId === requestedSessionId) return null;
   return capturedSessionId
     ? 'Provider continuation returned a different session identity'
     : 'Provider continuation did not confirm the requested session identity';
@@ -192,7 +228,7 @@ function providerSessionFromCompletedTask({
     return null;
   }
 
-  const sessionId = normalizeNonEmptyString(taskInfo.sessionId);
+  const sessionId = normalizeProviderSessionId(provider, taskInfo.sessionId);
   const taskId = normalizeNonEmptyString(taskInfo.id);
   const generation = agent?.iteration;
   const agentId = normalizeNonEmptyString(agent?.id);

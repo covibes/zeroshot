@@ -1,4 +1,7 @@
-import { extractProviderSessionId } from './provider-helper-runtime.js';
+import {
+  extractProviderSessionId,
+  getProviderSessionCapturePolicy,
+} from './provider-helper-runtime.js';
 
 /**
  * Capture a provider-owned session ID from one complete output line.
@@ -13,10 +16,18 @@ export function captureProviderSessionLine({
   currentSessionId = null,
   observedSessionIds = new Set(currentSessionId ? [currentSessionId] : []),
   sessionIdConflict = false,
+  sessionCapturePolicy = getProviderSessionCapturePolicy(providerName),
   onCapture = () => {},
   onConflict = () => {},
 }) {
-  const sessionId = extractProviderSessionId(providerName, line);
+  const inspection = sessionCapturePolicy?.inspectLine(line);
+  const sessionId = inspection
+    ? inspection.sessionId
+    : extractProviderSessionId(providerName, line);
+  if (inspection?.malformed) {
+    if (!sessionIdConflict) onConflict([...observedSessionIds]);
+    return { currentSessionId: null, sessionIdConflict: true };
+  }
   if (!sessionId) {
     return { currentSessionId, sessionIdConflict };
   }
@@ -41,26 +52,38 @@ function providerSessionCompletionError({
   currentSessionId,
   sessionIdConflict,
   persistenceError,
+  requireSessionIdOnSuccess,
+  exactIdentityMatch,
 }) {
   if (persistenceError) {
     return `Provider session identity could not be persisted: ${persistenceError.message}`;
   }
 
-  const requested = requestedSessionId?.trim() || null;
-  if (!requested) {
-    return null;
+  const requested = exactIdentityMatch
+    ? typeof requestedSessionId === 'string' && requestedSessionId.length > 0
+      ? requestedSessionId
+      : null
+    : requestedSessionId?.trim() || null;
+  const captured = exactIdentityMatch
+    ? typeof currentSessionId === 'string' && currentSessionId.length > 0
+      ? currentSessionId
+      : null
+    : currentSessionId?.trim() || null;
+  if (sessionIdConflict && (requested || requireSessionIdOnSuccess)) {
+    return exactIdentityMatch
+      ? 'Provider continuation emitted conflicting or malformed session identities'
+      : 'Provider continuation emitted conflicting session identities';
   }
-  if (sessionIdConflict) {
-    return 'Provider continuation emitted conflicting session identities';
+  if (requested) {
+    if (captured === requested) return null;
+    return captured
+      ? 'Provider continuation returned a different session identity'
+      : 'Provider continuation did not confirm the requested session identity';
   }
-
-  const captured = currentSessionId?.trim() || null;
-  if (captured === requested) {
-    return null;
+  if (requireSessionIdOnSuccess && !captured) {
+    return 'Provider completion did not durably capture a required session identity';
   }
-  return captured
-    ? 'Provider continuation returned a different session identity'
-    : 'Provider continuation did not confirm the requested session identity';
+  return null;
 }
 
 export function createProviderSessionCapture({
@@ -76,6 +99,7 @@ export function createProviderSessionCapture({
   let sessionIdConflict = initialSessionIdConflict;
   let persistenceError = null;
   const observedSessionIds = new Set(initialSessionId ? [initialSessionId] : []);
+  const sessionCapturePolicy = getProviderSessionCapturePolicy(providerName);
 
   function persist(update) {
     try {
@@ -94,6 +118,7 @@ export function createProviderSessionCapture({
         currentSessionId,
         observedSessionIds,
         sessionIdConflict,
+        sessionCapturePolicy,
         onCapture: (sessionId) => {
           // Advance memory before persistence so a failed write can never leave
           // this watcher believing the earlier identity is still trustworthy.
@@ -121,6 +146,8 @@ export function createProviderSessionCapture({
       currentSessionId,
       sessionIdConflict,
       persistenceError,
+      requireSessionIdOnSuccess: sessionCapturePolicy?.requireSessionIdOnSuccess === true,
+      exactIdentityMatch: sessionCapturePolicy?.exactIdentityMatch === true,
     });
   }
 

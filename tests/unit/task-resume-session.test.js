@@ -20,6 +20,36 @@ describe('single-task session resume', function () {
     assert.strictEqual(task.resumeIdentityVerified, false);
   });
 
+  it('starts fresh OMP tasks unverified while preserving Claude and Codex behavior', async function () {
+    const { buildTaskRecord } = await import('../../task-lib/runner.js');
+    const buildFresh = (providerName) =>
+      buildTaskRecord({
+        id: `fresh-${providerName}`,
+        prompt: 'start',
+        cwd: '/tmp/project',
+        options: {},
+        logFile: `/tmp/fresh-${providerName}.log`,
+        providerName,
+        modelSpec: {},
+      });
+
+    assert.strictEqual(buildFresh('omp').resumeIdentityVerified, false);
+    assert.strictEqual(buildFresh('claude').resumeIdentityVerified, true);
+    assert.strictEqual(buildFresh('codex').resumeIdentityVerified, true);
+  });
+
+  it('rejects an explicitly empty OMP resume through task command preparation', async function () {
+    const { prepareTaskProviderCommand } = await import('../../task-lib/runner.js');
+    assert.throws(
+      () => prepareTaskProviderCommand('continue', { provider: 'omp', resume: '' }),
+      (error) => {
+        assert.strictEqual(error.code, 'invalid-field');
+        assert.strictEqual(error.field, 'options.resumeSessionId');
+        return true;
+      }
+    );
+  });
+
   it('uses the captured explicit provider session ID', async function () {
     const { buildResumeTaskOptions } = await import('../../task-lib/commands/resume.js');
     assert.deepStrictEqual(

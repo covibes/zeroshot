@@ -55,6 +55,12 @@ const IGNORED_EVENT_TYPES = new Set([
   'auto_retry_end',
 ]);
 
+function helpAdvertisesValuedResume(help: string): boolean {
+  const equalsValue = /--resume=(?:<[^>\s]+>|[^\s,]+)/;
+  const separateValue = /--resume[ \t]+(?:<[^>\s]+>|\[[^\s\]]+\])/;
+  return equalsValue.test(help) || separateValue.test(help);
+}
+
 function detectCliFeatures(helpText?: string | null): OmpCliFeatures {
   const help = helpText ?? '';
   const unknown = !help;
@@ -70,6 +76,9 @@ function detectCliFeatures(helpText?: string | null): OmpCliFeatures {
     supportsNoSkills: unknown ? true : /--no-skills\b/.test(help),
     supportsNoRules: unknown ? true : /--no-rules\b/.test(help),
     supportsNoTitle: unknown ? true : /--no-title\b/.test(help),
+    // Unlike OMP's other flags, resume must be proven before it is advertised:
+    // an unprobed CLI must fail closed rather than optimistically resume.
+    supportsResume: !unknown && helpAdvertisesValuedResume(help),
     unknown,
   };
 }
@@ -95,16 +104,34 @@ function assertRequiredOmpFeatures(options: BuildProviderCommandOptions): void {
 }
 
 function failClosedUnsupportedSessionControl(options: BuildProviderCommandOptions): void {
-  const hasResumeSessionId = options.resumeSessionId !== undefined;
-  if (!hasResumeSessionId && !options.continueSession) return;
-  const field = hasResumeSessionId ? 'options.resumeSessionId' : 'options.continueSession';
-  throw contractError({
-    code: 'invalid-field',
-    field,
-    exitCode: 2,
-    message:
-      'OMP CLI does not support resume/continue session control; fail closed and start a fresh run instead.',
-  });
+  // --continue is cwd-wide most-recent/breadcrumb behavior; OMP never gets to use it,
+  // regardless of installed CLI support.
+  if (options.continueSession) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.continueSession',
+      exitCode: 2,
+      message:
+        'OMP CLI does not support cwd-wide continue session control; fail closed and start a fresh run instead.',
+    });
+  }
+  if (options.resumeSessionId !== undefined && options.resumeSessionId.trim().length === 0) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.resumeSessionId',
+      exitCode: 2,
+      message: 'options.resumeSessionId must be a non-empty OMP session ID.',
+    });
+  }
+  if (options.resumeSessionId !== undefined && optionFeatures(options).supportsResume !== true) {
+    throw contractError({
+      code: 'unsupported-provider-cli',
+      field: 'options.resumeSessionId',
+      exitCode: 2,
+      message:
+        'OMP CLI does not prove --resume support; fail closed and start a fresh run instead.',
+    });
+  }
 }
 
 function addOptionalFlags(args: string[], options: BuildProviderCommandOptions): void {
@@ -171,6 +198,9 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   args.push('--auto-approve');
   addOptionalFlags(args, options);
   addModelArgs(args, options);
+  if (options.resumeSessionId && optionFeatures(options).supportsResume === true) {
+    args.push('--resume', options.resumeSessionId);
+  }
   args.push(finalContext);
 
   return commandSpec({
@@ -180,6 +210,26 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     warnings: collectWarnings(options),
   });
+}
+
+function inspectSessionLine(line: string): { sessionId: string | null; malformed: boolean } {
+  const content = line.trim();
+  if (!content) return { sessionId: null, malformed: false };
+  const event = tryParseJson(content);
+  if (!isRecord(event)) return { sessionId: null, malformed: true };
+  if (getString(event, 'type') !== 'session') {
+    return { sessionId: null, malformed: false };
+  }
+
+  const sessionId = getString(event, 'id');
+  if (!sessionId || sessionId.trim() !== sessionId) {
+    return { sessionId: null, malformed: true };
+  }
+  return { sessionId, malformed: false };
+}
+
+function extractSessionId(line: string): string | null {
+  return inspectSessionLine(line).sessionId;
 }
 
 function createOmpState(): ProviderParserState {
@@ -440,6 +490,12 @@ export const ompAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  extractSessionId,
+  sessionCapture: {
+    requireSessionIdOnSuccess: true,
+    exactIdentityMatch: true,
+    inspectLine: inspectSessionLine,
+  },
   parseEvent,
   createParserState: createOmpState,
   resolveModelSpec,

@@ -154,4 +154,33 @@ describe('provider-session restart proof', function () {
       null
     );
   });
+
+  it('restores an OMP session only from its exact durable completed boundary', function () {
+    const agent = buildAgent();
+    const ompSession = buildSession({ provider: 'omp', sessionId: 'omp-session-1' });
+    const savedState = {
+      state: 'idle',
+      iteration: 1,
+      providerSession: ompSession,
+      lastGuidanceAppliedId: 17,
+    };
+    const ompBoundary = {
+      ...completedBoundary,
+      provider: 'omp',
+    };
+
+    assert.deepStrictEqual(restore(agent, savedState, [ompBoundary]), ompSession);
+    assert.strictEqual(
+      restore(agent, savedState, [{ ...ompBoundary, taskId: 'different-task' }]),
+      null
+    );
+    assert.strictEqual(
+      restore(
+        agent,
+        { ...savedState, providerSession: { ...ompSession, sessionId: ' omp-session-1 ' } },
+        [ompBoundary]
+      ),
+      null
+    );
+  });
 });
