@@ -29,10 +29,10 @@ Zeroshot is an open-source, multi-agent orchestration engine for autonomous soft
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/zeroshot-architecture-dark.webp">
-    <img alt="One Zeroshot run drawn as a graph: an issue enters, a junior conductor escalates to a senior one, the config router sizes the cluster, a planner and worker execute, two stages of validators judge the result, the run is rejected once and approved on the second pass, and every event is appended to the ledger" src="docs/assets/zeroshot-architecture-light.webp" width="100%">
+    <img alt="One Zeroshot run drawn as a graph: an issue enters, a level-2 conductor scores it on a complexity matrix, lands on uncertain and escalates to level 3, which calls it critical; the config router sizes the cluster, a planner and worker execute, two stages of validators judge the result, and the change is rejected once before it is approved" src="docs/assets/zeroshot-architecture-light.webp" width="100%">
   </picture>
   <br>
-  <em>One run, drawn as it happens. The conductor escalates to a senior model, the router sizes the cluster, and the change is rejected once before it is approved.</em>
+  <em>One run, drawn as it happens. A conductor scores the issue, escalates what it can't call, the router sizes the cluster, and the change is rejected once before it is approved.</em>
 </div>
 
 ## Install
