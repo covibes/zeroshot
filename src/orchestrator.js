@@ -4528,7 +4528,7 @@ Continue from where you left off. Review your previous output to understand what
    *
    * @param {object} [options]
    * @param {boolean} [options.dryRun=false] - If true, report but don't delete
-   * @returns {{ orphanedWorktrees: string[], orphanedDbs: string[], errors: string[] }}
+   * @returns {{ orphanedWorktrees: string[], orphanedDbs: string[], orphanedProviderState: string[], errors: string[] }}
    */
   gcWorktrees(options = {}) {
     const { gcOrphanedWorktrees } = require('./lib/gc');

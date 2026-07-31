@@ -126,4 +126,106 @@ describe('docker active-provider credential preset', function () {
       assert.equal(warnings.length, 0);
     });
   });
+
+  describe('omp preset', function () {
+    const { getProviderMetadata } = require('../../lib/provider-names');
+    const declaredEnvUnion = new Set([
+      ...getProviderMetadata('omp').docker.envPassthrough,
+      ...getProviderMetadata('claude').docker.envPassthrough,
+    ]);
+    const CREDENTIAL_KEYS = ['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'];
+    const SENTINEL = 'ZEROSHOT_UNDECLARED_SECRET';
+    let savedEnv;
+
+    beforeEach(function () {
+      savedEnv = {};
+      for (const k of [...CREDENTIAL_KEYS, SENTINEL]) {
+        savedEnv[k] = process.env[k];
+      }
+    });
+
+    afterEach(function () {
+      for (const k of Object.keys(savedEnv)) {
+        if (savedEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedEnv[k];
+      }
+    });
+
+    describe('_withActiveProviderPreset', function () {
+      it('appends omp so its preset activates', function () {
+        assert.deepEqual(manager._withActiveProviderPreset(['gh'], 'omp'), ['gh', 'omp']);
+      });
+
+      it('does not duplicate omp when already listed', function () {
+        assert.deepEqual(manager._withActiveProviderPreset(['gh', 'omp'], 'omp'), ['gh', 'omp']);
+      });
+    });
+
+    describe('_applyCredentialMounts', function () {
+      it('forwards declared credential env vars when set', function () {
+        process.env.OPENROUTER_API_KEY = 'or-sentinel';
+        process.env.ANTHROPIC_API_KEY = 'anthropic-sentinel';
+        const args = [];
+        manager._applyCredentialMounts(args, {}, settings, '/root', 'omp');
+        const specs = envSpecs(args);
+        assert.ok(specs.includes('OPENROUTER_API_KEY=or-sentinel'));
+        assert.ok(specs.includes('ANTHROPIC_API_KEY=anthropic-sentinel'));
+      });
+
+      it('never forwards an undeclared sentinel var', function () {
+        process.env[SENTINEL] = 'nope';
+        process.env.OPENROUTER_API_KEY = 'or-sentinel';
+        const args = [];
+        manager._applyCredentialMounts(args, {}, settings, '/root', 'omp');
+        assert.ok(!envSpecs(args).some((spec) => spec.startsWith(`${SENTINEL}=`)));
+      });
+
+      it('only forwards -e names declared by omp or claude docker.envPassthrough', function () {
+        process.env.OPENROUTER_API_KEY = 'or-sentinel';
+        process.env.ANTHROPIC_API_KEY = 'anthropic-sentinel';
+        const args = [];
+        manager._applyCredentialMounts(args, {}, settings, '/root', 'omp');
+        for (const spec of envSpecs(args)) {
+          const name = spec.slice(0, spec.indexOf('='));
+          assert.ok(
+            declaredEnvUnion.has(name),
+            `forwarded -e ${name} is not declared by omp or claude docker.envPassthrough`
+          );
+        }
+      });
+
+      it('is disabled by noMounts', function () {
+        process.env.OPENROUTER_API_KEY = 'or-sentinel';
+        const args = [];
+        manager._applyCredentialMounts(args, { noMounts: true }, settings, '/root', 'omp');
+        assert.equal(args.length, 0);
+      });
+    });
+
+    describe('_warnMissingProviderCredentials', function () {
+      let warnings;
+      let savedWarn;
+
+      beforeEach(function () {
+        warnings = [];
+        savedWarn = console.warn;
+        console.warn = (msg) => warnings.push(msg);
+      });
+
+      afterEach(function () {
+        console.warn = savedWarn;
+      });
+
+      it('warns when ~/.omp is not mounted and no credential env is set', function () {
+        manager._warnMissingProviderCredentials('omp', [], {}, '/root');
+        assert.equal(warnings.length, 1);
+      });
+
+      it('stays silent once ANTHROPIC_API_KEY is exported', function () {
+        process.env.ANTHROPIC_API_KEY = 'anthropic-sentinel';
+        manager._warnMissingProviderCredentials('omp', [], {}, '/root');
+        assert.equal(warnings.length, 0);
+      });
+    });
+  });
 });

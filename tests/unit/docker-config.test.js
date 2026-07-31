@@ -30,6 +30,7 @@ describe('Docker Configuration', function () {
   registerValidateEnvPassthroughTests();
   registerAwsWorkflowTests();
   registerCustomMountWorkflowTests();
+  registerOmpPresetTests();
 });
 
 function registerMountPresetTests() {
@@ -406,6 +407,38 @@ function registerCustomMountWorkflowTests() {
       assert.strictEqual(mounts[1].host, '~/.myapp');
       assert.strictEqual(mounts[1].container, '/home/node/.myapp');
       assert.strictEqual(mounts[1].readonly, false);
+    });
+  });
+}
+
+function registerOmpPresetTests() {
+  describe('omp preset', function () {
+    it('MOUNT_PRESETS.omp matches the registry-declared mount', function () {
+      assert.deepStrictEqual(MOUNT_PRESETS.omp, {
+        host: '~/.omp',
+        container: '$HOME/.omp',
+        readonly: true,
+      });
+    });
+
+    it('ENV_PRESETS.omp matches the registry-declared envPassthrough', function () {
+      const { getProviderMetadata } = require('../../lib/provider-names');
+      assert.deepStrictEqual(ENV_PRESETS.omp, getProviderMetadata('omp').docker.envPassthrough);
+    });
+
+    it('resolveEnvs deduplicates env vars shared across presets', function () {
+      const result = resolveEnvs(['omp', 'copilot']);
+      const count = result.filter((e) => e === 'COPILOT_GITHUB_TOKEN').length;
+      assert.strictEqual(count, 1, 'COPILOT_GITHUB_TOKEN should appear exactly once');
+      assert.ok(result.includes('COPILOT_GITHUB_TOKEN'));
+    });
+
+    it('resolveMounts expands $HOME for omp with a custom containerHome', function () {
+      const result = resolveMounts(['omp'], { containerHome: '/home/node' });
+      assert.strictEqual(result.length, 1);
+      assert.strictEqual(result[0].host, '~/.omp');
+      assert.strictEqual(result[0].container, '/home/node/.omp');
+      assert.strictEqual(result[0].readonly, true);
     });
   });
 }

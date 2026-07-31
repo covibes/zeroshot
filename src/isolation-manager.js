@@ -177,6 +177,24 @@ function providerDockerInstall(providerName) {
   }
 }
 
+/**
+ * Subpaths (relative to the provider's mount container path) that must stay writable at runtime
+ * even though the credential mount itself is read-only. Sourced from the provider registry
+ * (docker.writableState) so nothing here is provider-specific.
+ * @param {string} providerName
+ * @returns {string[]}
+ */
+function providerWritableState(providerName) {
+  if (!providerName) return [];
+  try {
+    const metadata = getProviderMetadata(providerName);
+    const writableState = metadata && metadata.docker && metadata.docker.writableState;
+    return Array.isArray(writableState) ? writableState : [];
+  } catch {
+    return [];
+  }
+}
+
 class IsolationManager {
   constructor(options = {}) {
     this.image = options.image || DEFAULT_IMAGE;
@@ -257,6 +275,7 @@ class IsolationManager {
       containerHome,
       providerName
     );
+    this._applyProviderStateMounts(args, config, clusterId, containerHome, providerName);
     this._warnMissingProviderCredentials(providerName, mountedHosts, config, containerHome);
 
     args.push('-w', '/workspace', image, 'tail', '-f', '/dev/null');
@@ -453,6 +472,52 @@ class IsolationManager {
     }
 
     return envToPass;
+  }
+
+  /**
+   * Mount writable state dirs (sessions, native addon caches, logs, ...) nested inside a
+   * provider's otherwise read-only credential mount. Docker sorts bind mounts by destination
+   * depth, so these apply on top of the read-only `mount` from `_applyCredentialMounts`.
+   * @private
+   * @param {string[]} args - Docker argv being built (mutated in place)
+   * @param {object} config - Container config (respects config.noMounts)
+   * @param {string} clusterId - Cluster ID (host state dir is scoped per cluster+provider)
+   * @param {string} containerHome - Container home directory for $HOME expansion
+   * @param {string} providerName - Active provider name
+   * @returns {string[]} Host directories created for writable state
+   */
+  _applyProviderStateMounts(args, config, clusterId, containerHome, providerName) {
+    if (config.noMounts) return [];
+    const writableState = providerWritableState(providerName);
+    if (writableState.length === 0) return [];
+
+    const preset = MOUNT_PRESETS[providerName];
+    if (!preset) return [];
+    const containerRoot = resolveMounts([providerName], { containerHome })[0].container;
+
+    const hostRoot = path.join(os.tmpdir(), 'zeroshot-provider-state', clusterId, providerName);
+    fs.rmSync(hostRoot, { recursive: true, force: true });
+    // Ancestor path components (the shared `zeroshot-provider-state` root, the per-cluster and
+    // per-provider dirs) get ordinary default permissions — they hold no data themselves, only
+    // need to stay traversable so a different host user's own clusterId subtree isn't blocked.
+    fs.mkdirSync(hostRoot, { recursive: true });
+
+    const hostDirs = [];
+    for (const sub of writableState) {
+      const hostSub = path.join(hostRoot, sub);
+      // os.tmpdir() (e.g. /tmp) is shared by every local user on the host, and these leaf dirs are
+      // bind-mounted writable into the container — so, unlike their ancestors, they must stay
+      // owner-only (0o700), never widened to group/other access. Widening would let any local
+      // user plant a file the container's provider process (e.g. a native addon OMP loads on
+      // startup) then executes, alongside its forwarded credential env vars. Mode is passed
+      // explicitly (not left to the process umask) so it's deterministically owner-only
+      // regardless of host umask configuration.
+      fs.mkdirSync(hostSub, { mode: 0o700 });
+      hostDirs.push(hostSub);
+      args.push('-v', `${hostSub}:${path.posix.join(containerRoot, sub)}`);
+    }
+
+    return hostDirs;
   }
 
   _warnMissingProviderCredentials(providerName, mountedHosts, config, containerHome) {
@@ -856,6 +921,27 @@ class IsolationManager {
 
     // Clean up cluster config dir (always - it's recreated on resume)
     this._cleanupClusterConfigDir(clusterId);
+
+    // Clean up provider writable-state dirs (always - the container that mounted them is gone,
+    // and _applyProviderStateMounts recreates them fresh on the next createContainer call).
+    this._cleanupProviderStateDirs(clusterId);
+  }
+
+  /**
+   * Remove the writable-state host directories a provider's Docker mounts created for this
+   * cluster (see `_applyProviderStateMounts`). Without this, every `--docker` run with a
+   * provider that declares `docker.writableState` (e.g. OMP) leaks a directory under
+   * `os.tmpdir()` per cluster, since each clusterId is unique and nothing else ever removes it.
+   * @private
+   * @param {string} clusterId - Cluster ID
+   */
+  _cleanupProviderStateDirs(clusterId) {
+    const root = path.join(os.tmpdir(), 'zeroshot-provider-state', clusterId);
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      // Ignore
+    }
   }
 
   /**
@@ -1380,10 +1466,14 @@ class IsolationManager {
    * @returns {string}
    */
   static imageForProvider(providerName, baseImage = DEFAULT_IMAGE) {
-    if (!providerDockerInstall(providerName)) {
+    const install = providerDockerInstall(providerName);
+    if (!install) {
       return baseImage;
     }
-    return `${baseImage}-${normalizeProviderName(providerName)}`;
+    // Hash the install command into the tag so a registry change (e.g. bumping a package version)
+    // invalidates the cached image instead of `ensureImage` silently reusing a stale one.
+    const tag = crypto.createHash('sha256').update(install).digest('hex').slice(0, 12);
+    return `${baseImage}-${normalizeProviderName(providerName)}-${tag}`;
   }
 
   /**
@@ -1590,10 +1680,15 @@ class IsolationManager {
               `running auto-GC on ${orphanCount} orphaned worktree(s)...`
           );
           const gcResult = gcOrphanedWorktrees();
-          if (gcResult.orphanedWorktrees.length > 0 || gcResult.orphanedDbs.length > 0) {
+          if (
+            gcResult.orphanedWorktrees.length > 0 ||
+            gcResult.orphanedDbs.length > 0 ||
+            gcResult.orphanedProviderState.length > 0
+          ) {
             console.log(
               `[IsolationManager] Auto-GC: removed ${gcResult.orphanedWorktrees.length} worktree(s), ` +
-                `${gcResult.orphanedDbs.length} db file(s)`
+                `${gcResult.orphanedDbs.length} db file(s), ` +
+                `${gcResult.orphanedProviderState.length} provider-state dir(s)`
             );
           }
         }
