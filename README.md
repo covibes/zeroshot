@@ -82,7 +82,7 @@ One exception, stated plainly: a task the conductor classifies as TRIVIAL runs a
 ## Quick start
 
 ```bash
-zeroshot run 123                 # a GitHub issue number
+zeroshot run 123                 # an issue number, resolved from your git remote
 zeroshot run feature.md          # a markdown spec
 zeroshot run "Add a --json flag" # inline text
 ```
@@ -159,7 +159,7 @@ zeroshot run 123 --provider gateway
 Five issue backends are detected for you: **GitHub, GitLab, Azure DevOps, Jira, and Linear**. Paste a number, key, or URL:
 
 ```bash
-zeroshot run 123                                              # GitHub
+zeroshot run 123                                              # from your git remote
 zeroshot run https://gitlab.com/org/repo/-/issues/456        # GitLab
 zeroshot run https://dev.azure.com/org/project/_workitems/edit/999  # Azure DevOps
 zeroshot run PROJ-789                                         # Jira
