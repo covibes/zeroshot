@@ -55,6 +55,12 @@ const IGNORED_EVENT_TYPES = new Set([
   'auto_retry_end',
 ]);
 
+function helpAdvertisesValuedResume(help: string): boolean {
+  const equalsValue = /--resume=(?:<[^>\s]+>|[^\s,]+)/;
+  const separateValue = /--resume[ \t]+(?:<[^>\s]+>|\[[^\s\]]+\])/;
+  return equalsValue.test(help) || separateValue.test(help);
+}
+
 function detectCliFeatures(helpText?: string | null): OmpCliFeatures {
   const help = helpText ?? '';
   const unknown = !help;
@@ -72,9 +78,7 @@ function detectCliFeatures(helpText?: string | null): OmpCliFeatures {
     supportsNoTitle: unknown ? true : /--no-title\b/.test(help),
     // Unlike OMP's other flags, resume must be proven before it is advertised:
     // an unprobed CLI must fail closed rather than optimistically resume.
-    supportsResume:
-      !unknown &&
-      /--resume(?:=(?:<[^>\s]+>|[^\s,]+)|[ \t]+(?:<[^>\s]+>|\[[^\]\s]+\]))/.test(help),
+    supportsResume: !unknown && helpAdvertisesValuedResume(help),
     unknown,
   };
 }
