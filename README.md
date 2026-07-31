@@ -24,7 +24,7 @@
 
 **The agent that wrote the code shouldn't be the one that says it works.**
 
-Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop**: an agent writes the change, then verifiers that didn't write it approve the result, or reject it and say exactly what's wrong. The loop runs until the change is verified.
+Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop sized to the task**: an agent writes the change, then verifiers that didn't write it approve the result, or reject it and say exactly what's wrong. The loop runs until the change is verified.
 
 <div align="center">
   <picture>
