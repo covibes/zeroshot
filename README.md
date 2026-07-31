@@ -142,18 +142,18 @@ Zeroshot shells out to provider CLIs, so provider auth stays wherever you alread
 | Kiro           | see [kiro.dev](https://kiro.dev/docs/cli/)                         |
 | Pi             | `npm i -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
 
+```bash
+zeroshot providers                    # see what's installed
+zeroshot providers set-default codex
+zeroshot run 123 --provider gemini
+```
+
 An eighth provider, `gateway`, isn't a CLI. It speaks the OpenAI or Anthropic wire protocol against any `baseUrl`, so Zeroshot can drive a self-hosted model, a proxy, or a router without a coding-agent CLI installed at all. It's also the one provider whose key Zeroshot holds, in settings rather than in someone else's config:
 
 ```bash
 zeroshot settings set providerSettings.gateway.baseUrl https://your-endpoint/v1
 zeroshot settings set providerSettings.gateway.apiKey sk-...
 zeroshot run 123 --provider gateway
-```
-
-```bash
-zeroshot providers                    # see what's installed
-zeroshot providers set-default codex
-zeroshot run 123 --provider gemini
 ```
 
 Five issue backends are detected for you: **GitHub, GitLab, Azure DevOps, Jira, and Linear**. Paste a number, key, or URL:
@@ -231,13 +231,11 @@ zeroshot config validate ./mine.json  # check yours
 zeroshot run 123 --config ./mine.json # run it
 ```
 
-Agent ids and roles are free strings, so are topic names, and a trigger can carry an arbitrary JavaScript predicate deciding whether a message wakes its agent. Cycles are allowed and ordinary: the reject-and-retry loop is one. The validator asks for a 3+ agent cycle to include escape logic somewhere in the ring, otherwise it fails your config rather than letting it spin. Sub-clusters nest five deep.
-
-The executor-verifier loop is the graph Zeroshot ships with, not a constraint of the runtime.
+Agent ids and roles are free strings, so are topic names, and a trigger can carry an arbitrary JavaScript predicate deciding whether a message wakes its agent. Cycles are allowed and ordinary: the reject-and-retry loop is one. `zeroshot config validate` asks a cycle of three or more agents to include escape logic somewhere in the ring, and fails the config rather than letting it spin. Sub-clusters nest five deep.
 
 ## Scope and status
 
-Zeroshot performs best when a task has **clear acceptance criteria**. If you can't say what "done" means, an independent verifier can't confirm it.
+Zeroshot performs best when a task has **clear acceptance criteria**. If you can't say what "done" means, the verifiers have nothing to check against.
 
 | Task                                            | Good fit? | Why                     |
 | ----------------------------------------------- | --------- | ----------------------- |
@@ -253,8 +251,6 @@ Zeroshot performs best when a task has **clear acceptance criteria**. If you can
 
 <details>
 <summary><strong>Architecture, quality gates and command proofs</strong></summary>
-
-Zeroshot is a message-driven coordination layer: a conductor classifies each task by complexity and type, a workflow template selects agents and validators, agents publish results to a SQLite ledger, and validators approve or reject with specific findings.
 
 - **Required handoff quality gates**: in `--pr`/`--ship` flows, the git-pusher fails closed until every configured gate has fresh passing evidence.
 - **Cmdproof**: make expensive exact commands reusable across agents with `zeroshot cmdproof check <id>`.
