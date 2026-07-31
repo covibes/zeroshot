@@ -33,10 +33,7 @@ const IMAGE = 'node:20-slim';
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const FAKE_OMP = path.join(REPO_ROOT, 'tests', 'e2e', 'fixtures', 'fake-omp.js');
 const SENTINEL_KEY = 'ZEROSHOT_UNDECLARED_SECRET';
-const DECLARED_ENV_UNION = new Set([
-  ...getProviderMetadata('omp').docker.envPassthrough,
-  ...getProviderMetadata('claude').docker.envPassthrough,
-]);
+const DECLARED_OMP_ENV = new Set(getProviderMetadata('omp').docker.envPassthrough);
 
 function dockerCli(args, opts = {}) {
   return spawnSync('docker', args, { encoding: 'utf8', ...opts });
@@ -84,10 +81,12 @@ describe('omp Docker isolation boundary', function () {
     // code must build docker args that carry the former and never the latter.
     savedEnv = {
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      AWS_BEARER_TOKEN_BEDROCK: process.env.AWS_BEARER_TOKEN_BEDROCK,
       [SENTINEL_KEY]: process.env[SENTINEL_KEY],
     };
     process.env.ANTHROPIC_API_KEY = 'fake-sentinel';
     process.env[SENTINEL_KEY] = 'nope';
+    process.env.AWS_BEARER_TOKEN_BEDROCK = 'must-not-cross';
     const dockerArgs = [];
     manager._applyCredentialMounts(
       dockerArgs,
@@ -188,8 +187,8 @@ describe('omp Docker isolation boundary', function () {
 
     for (const name of received.env) {
       assert.ok(
-        DECLARED_ENV_UNION.has(name),
-        `container-visible credential env ${name} is not in the omp+claude declared union`
+        DECLARED_OMP_ENV.has(name),
+        `container-visible credential env ${name} is not declared by omp`
       );
     }
     assert.ok(!received.env.includes(SENTINEL_KEY), 'undeclared sentinel reached the container');

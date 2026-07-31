@@ -129,11 +129,8 @@ describe('docker active-provider credential preset', function () {
 
   describe('omp preset', function () {
     const { getProviderMetadata } = require('../../lib/provider-names');
-    const declaredEnvUnion = new Set([
-      ...getProviderMetadata('omp').docker.envPassthrough,
-      ...getProviderMetadata('claude').docker.envPassthrough,
-    ]);
-    const CREDENTIAL_KEYS = ['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'];
+    const declaredOmpEnv = new Set(getProviderMetadata('omp').docker.envPassthrough);
+    const CREDENTIAL_KEYS = ['OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'AWS_BEARER_TOKEN_BEDROCK'];
     const SENTINEL = 'ZEROSHOT_UNDECLARED_SECRET';
     let savedEnv;
 
@@ -172,6 +169,13 @@ describe('docker active-provider credential preset', function () {
         assert.ok(specs.includes('ANTHROPIC_API_KEY=anthropic-sentinel'));
       });
 
+      it('does not leak implicit Claude auth into an OMP container', function () {
+        process.env.AWS_BEARER_TOKEN_BEDROCK = 'bedrock-sentinel';
+        const args = [];
+        manager._applyCredentialMounts(args, {}, settings, '/root', 'omp');
+        assert.ok(!envSpecs(args).some((spec) => spec.startsWith('AWS_BEARER_TOKEN_BEDROCK=')));
+      });
+
       it('never forwards an undeclared sentinel var', function () {
         process.env[SENTINEL] = 'nope';
         process.env.OPENROUTER_API_KEY = 'or-sentinel';
@@ -180,7 +184,7 @@ describe('docker active-provider credential preset', function () {
         assert.ok(!envSpecs(args).some((spec) => spec.startsWith(`${SENTINEL}=`)));
       });
 
-      it('only forwards -e names declared by omp or claude docker.envPassthrough', function () {
+      it('only forwards -e names declared by omp docker.envPassthrough', function () {
         process.env.OPENROUTER_API_KEY = 'or-sentinel';
         process.env.ANTHROPIC_API_KEY = 'anthropic-sentinel';
         const args = [];
@@ -188,8 +192,8 @@ describe('docker active-provider credential preset', function () {
         for (const spec of envSpecs(args)) {
           const name = spec.slice(0, spec.indexOf('='));
           assert.ok(
-            declaredEnvUnion.has(name),
-            `forwarded -e ${name} is not declared by omp or claude docker.envPassthrough`
+            declaredOmpEnv.has(name),
+            `forwarded -e ${name} is not declared by omp docker.envPassthrough`
           );
         }
       });

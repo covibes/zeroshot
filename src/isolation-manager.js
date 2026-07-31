@@ -438,7 +438,7 @@ class IsolationManager {
       mountedHosts.push(hostPath);
     }
 
-    const envToPass = this._collectDockerEnvVars(mountConfig, settings);
+    const envToPass = this._collectDockerEnvVars(mountConfig, settings, providerName);
     for (const [key, value] of Object.entries(envToPass)) {
       args.push('-e', `${key}=${value}`);
     }
@@ -446,7 +446,7 @@ class IsolationManager {
     return mountedHosts;
   }
 
-  _collectDockerEnvVars(mountConfig, settings) {
+  _collectDockerEnvVars(mountConfig, settings, providerName) {
     const envToPass = {};
     const envSpecs = expandEnvPatterns(resolveEnvs(mountConfig, settings.dockerEnvPassthrough));
 
@@ -456,6 +456,10 @@ class IsolationManager {
       } else if (process.env[spec.name]) {
         envToPass[spec.name] = process.env[spec.name];
       }
+    }
+
+    if (providerName !== 'claude') {
+      return envToPass;
     }
 
     for (const envVar of CLAUDE_AUTH_ENV_VARS) {
