@@ -57,9 +57,13 @@ Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemi
 
 Zeroshot separates the agent that **writes** the code from the agent that **judges** it.
 
-A conductor classifies the task and sizes the workflow to it. An executor (an AI coding agent) makes the change, editing your files in place by default, or inside a git worktree or a container if you pass `--worktree` or `--docker`. Then **independent validators** inspect the result. Each agent declares what it is allowed to see, so a validator's isolation is structural rather than a rule someone has to remember: it never receives the executor's progress log and never shares its session, and what reaches it is the original issue, the plan, and the executor's completion message. Each returns `APPROVED`, or `REJECTED` with the objections that blocked it. Validators are told to verify by running commands and capturing the output rather than reading code and forming an opinion. Any single rejection sends the work back, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and `zeroshot resume <id>` picks it up where it stopped.
+An executor makes the change. By default it edits your files in place; `--worktree` or `--docker` moves it somewhere isolated first.
 
-How many validators run, and in what arrangement, depends on how the conductor classified the task. A one-file mechanical change doesn't get the same treatment as a payment-processing change, and debugging has a shape of its own; the [routing table](#classification-and-routing) has the specifics. That whole arrangement is a JSON graph config, and you can write your own.
+Validators then inspect what came out. They don't share the executor's session and never receive its progress log, because every agent declares up front which messages reach it, which makes the isolation a property of the wiring rather than a rule that has to hold. A validator sees the issue, the plan, and the executor's own summary of what it did.
+
+Each returns `APPROVED`, or `REJECTED` with the objections that blocked it, and one rejection is enough to send the work back. Every validator is instructed to run something and capture the output rather than read the diff and form a view. Every message lands in a SQLite ledger as it happens, so a run survives a reboot and `zeroshot resume <id>` picks it up where it stopped.
+
+A conductor classifies the task before any of that runs, and its verdict decides how many validators show up and in what arrangement. A one-file mechanical change doesn't get the same treatment as a payment-processing change, and debugging has a shape of its own; the [routing table](#classification-and-routing) has the specifics. That whole arrangement is a JSON graph config, and you can write your own.
 
 Bring your own provider and your own backend. Zeroshot orchestrates the agents that write your code; it doesn't hold your provider credentials or replace your models.
 
