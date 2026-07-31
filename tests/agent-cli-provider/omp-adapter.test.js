@@ -48,6 +48,27 @@ test('omp buildCommand emits exact argv for a fully-featured build', () => {
   assert.equal(spec.cwd, '/tmp/x');
 });
 
+test('omp buildCommand omits every optional flag explicitly reported unsupported', () => {
+  const spec = buildCommand('prompt', {
+    modelSpec: { level: 'level3', model: 'm', reasoningEffort: 'high' },
+    cliFeatures: {
+      ...FULL_FEATURES,
+      supportsModel: false,
+      supportsThinking: false,
+      supportsNoExtensions: false,
+      supportsNoSkills: false,
+      supportsNoRules: false,
+      supportsNoTitle: false,
+    },
+  });
+
+  assert.deepEqual(spec.args, ['--mode', 'json', '-p', '--auto-approve', 'prompt']);
+  assert.deepEqual(
+    spec.warnings.map(({ code }) => code),
+    ['omp-model-unsupported', 'omp-thinking-unsupported']
+  );
+});
+
 for (const [flag, label] of [
   ['supportsModeJson', '--mode json'],
   ['supportsPrint', '-p/--print'],

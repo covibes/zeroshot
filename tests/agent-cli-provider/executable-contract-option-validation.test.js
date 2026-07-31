@@ -152,3 +152,43 @@ test('invoke rejects invalid nested options before runner execution', async () =
     assert.equal(runnerCalled, false, name);
   }
 });
+
+test('invoke preserves false for every required OMP feature and fails before execution', async () => {
+  for (const [feature, label] of [
+    ['supportsModeJson', '--mode json'],
+    ['supportsPrint', '-p/--print'],
+    ['supportsCwd', '--cwd'],
+    ['supportsAutoApprove', '--auto-approve'],
+  ]) {
+    let runnerCalled = false;
+    const response = await runProviderExecutable(
+      {
+        schemaVersion: 1,
+        command: 'invoke',
+        provider: 'omp',
+        context: 'ctx',
+        options: {
+          cliFeatures: {
+            supportsModeJson: true,
+            supportsPrint: true,
+            supportsCwd: true,
+            supportsAutoApprove: true,
+            [feature]: false,
+          },
+        },
+      },
+      {
+        runner: () => {
+          runnerCalled = true;
+          return runnerResult();
+        },
+      }
+    );
+
+    assert.equal(response.exitCode, 2, feature);
+    assert.equal(response.envelope.ok, false, feature);
+    assert.equal(response.envelope.error.code, 'unsupported-provider-cli', feature);
+    assert.ok(response.envelope.error.message.includes(label), feature);
+    assert.equal(runnerCalled, false, feature);
+  }
+});
