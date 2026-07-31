@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"omp-text","timestamp":"2026-07-09T00:00:00.000Z","cwd":"/tmp/omp"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"Hello from OMP"}]},"assistantMessageEvent":{"type":"text_delta","delta":"Hello from OMP"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello from OMP"}],"usage":{"input":7,"output":3,"cacheRead":1,"cacheWrite":0},"stopReason":"stop"}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"Hello from OMP"}],"usage":{"input":7,"output":3,"cacheRead":1,"cacheWrite":0},"stopReason":"stop"},"toolResults":[]}
+{"type":"agent_end","messages":[]}
