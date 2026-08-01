@@ -3,7 +3,7 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-use std::sync::mpsc;
+use std::sync::{Arc, Barrier, mpsc};
 use std::time::Duration;
 
 #[path = "support/temp_profile.rs"]
@@ -235,4 +235,32 @@ fn profile_start_serialization_has_a_bounded_loser() {
         contender.join().expect("contender thread"),
         Err(DiscoveryError::StartupLockTimeout)
     ));
+}
+
+#[test]
+fn concurrent_profile_creation_never_exposes_default_permissions() {
+    const CONTENDERS: usize = 32;
+
+    let profile = TempProfile::new("concurrent-profile-creation");
+    let barrier = Arc::new(Barrier::new(CONTENDERS));
+    let contenders = (0..CONTENDERS)
+        .map(|_| {
+            let contender_profile = profile.profile.clone();
+            let contender_barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                contender_barrier.wait();
+                acquire_start_guard(&contender_profile, Duration::from_secs(5)).map(drop)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for contender in contenders {
+        contender
+            .join()
+            .expect("contender thread")
+            .expect("secure concurrent profile creation");
+    }
+
+    let metadata = fs::metadata(profile.profile.root()).expect("profile metadata");
+    assert_eq!(metadata.mode() & 0o777, 0o700);
 }

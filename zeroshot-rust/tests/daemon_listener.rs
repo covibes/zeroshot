@@ -296,7 +296,17 @@ async fn concurrent_profile_start_has_one_owner_and_loser_cannot_remove_it() {
         (Ok(owner), Err(loser)) | (Err(loser), Ok(owner)) => (owner, loser),
         _ => panic!("expected exactly one owner and one loser"),
     };
-    assert!(matches!(loser, DaemonListenerError::AlreadyRunning));
+    // Publication happens under the startup guard, but the accept loop is scheduled after the
+    // guard is released. A contender on a slow executor can therefore probe the bound owner during
+    // that handoff and time out before authenticated initialize is served. Both outcomes fail
+    // closed; the assertions below prove that neither one removes or replaces the owner's locator.
+    assert!(
+        matches!(
+            loser,
+            DaemonListenerError::AlreadyRunning | DaemonListenerError::LivenessIndeterminate
+        ),
+        "unexpected concurrent-start loser: {loser:?}"
+    );
     assert_eq!(
         read_locator(&profile.profile).expect("read owner locator"),
         Some(owner.locator().clone())
