@@ -101,6 +101,8 @@ const {
 const { checkBinDirOnPath, printPathWarning } = require('../lib/path-check');
 const { StatusFooter, AGENT_STATE, ACTIVE_STATES } = require('../src/status-footer');
 const { EVENT_COPY, formatMergeStatus } = require('./event-copy');
+const { runHosted } = require('./hosted/run');
+const { registerTargetCommands } = require('./hosted/target-command');
 
 // =============================================================================
 // GLOBAL ERROR HANDLERS - Prevent silent process death
@@ -2585,6 +2587,8 @@ program
   .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
   .option('--provider <provider>', `Override all agents to use a provider (${PROVIDER_CHOICES})`)
   .option('--model <model>', 'Override all agent models (provider-specific model id)')
+  .option('--target <name>', 'Run in a capsule on a named Zero Cloud target')
+  .option('--repository <owner/name>', 'GitHub repository for a hosted prompt or numeric issue')
   .option(
     '--sim <mode>',
     'Token-free simulation gate for templates (off|fast|deep). Default: fast',
@@ -2640,6 +2644,10 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
   )
   .action(async (inputArg, options) => {
     try {
+      if (options.target) {
+        await runHosted(inputArg, options);
+        return;
+      }
       // Normalize options (--ship → --pr → --worktree flags)
       normalizeRunOptions(options);
 
@@ -2821,6 +2829,8 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       process.exit(1);
     }
   });
+
+registerTargetCommands(program);
 
 // === TASK COMMANDS ===
 // Task run - single-agent background task

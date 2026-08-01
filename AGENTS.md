@@ -489,6 +489,22 @@ Pub/sub message bus + SQLite ledger. Agents subscribe to topics, execute on trig
 Agent A -> publish() -> SQLite Ledger -> LogicEngine -> trigger match -> Agent B executes
 ```
 
+### Hosted OECP Capsule Boundary
+
+`zeroshot-oecp-server` is the in-capsule OECP process. It owns one reconnectable
+single-worker run and the child `zeroshot-cluster-worker`; it never allocates, bills, stops, or
+terminates the capsule. Zero Cloud owns that lifecycle outside OECP.
+
+The public OECP protocol carries graph/input data only. A separate capsule-access-authorized
+upload installs the exact GitHub/OpenRouter credential bundle once, in memory. The server writes
+only secret-free Codex and Git helper configuration below `/workspace`, and passes credential
+values only in the child process environment. Do not add credential values, arbitrary environment
+maps, refresh tokens, or capsule lifecycle methods to OECP frames.
+
+Named target metadata lives in `~/.zeroshot/targets.json`; refresh tokens belong in the OS
+credential store. `ZEROSHOT_TARGET_REFRESH_TOKEN` is the explicit, process-only automation escape
+hatch and must never be persisted by the CLI.
+
 ### Core Primitives
 
 | Primitive    | Purpose                                                     |

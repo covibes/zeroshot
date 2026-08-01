@@ -29,6 +29,25 @@ const { provisionClaudeCredentials } = require('./claude-credentials');
 
 const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 const FRESH_BASE_REF_PREFIX = 'refs/zeroshot/base-fetch';
+const DEFAULT_MIN_DISK_GB = 10;
+
+function minimumDiskGigabytes(environment = process.env) {
+  const configured = environment.ZEROSHOT_MIN_DISK_GB;
+  if (configured === undefined) {
+    return DEFAULT_MIN_DISK_GB;
+  }
+
+  if (typeof configured !== 'string' || !/^[1-9][0-9]*$/.test(configured)) {
+    throw new Error('ZEROSHOT_MIN_DISK_GB must be an integer between 1 and 1000');
+  }
+
+  const minimum = Number(configured);
+  if (!Number.isSafeInteger(minimum) || minimum > 1000) {
+    throw new Error('ZEROSHOT_MIN_DISK_GB must be an integer between 1 and 1000');
+  }
+
+  return minimum;
+}
 
 function runSync(command, args, options = {}) {
   const timeout = options.timeout ?? 30000;
@@ -1576,7 +1595,7 @@ class IsolationManager {
     // Disk space guard: prevent worktree creation when disk is critically low.
     // Uses standalone gc module (no Orchestrator dependency — avoids circular require).
     const { gcOrphanedWorktrees, getDiskSpace, countOrphanedWorktrees } = require('./lib/gc');
-    const MIN_DISK_GB = 10;
+    const MIN_DISK_GB = minimumDiskGigabytes();
     const AUTO_GC_THRESHOLD_PERCENT = 80;
 
     const diskCheck = getDiskSpace(os.homedir());
@@ -1949,3 +1968,4 @@ class IsolationManager {
 }
 
 module.exports = IsolationManager;
+module.exports.minimumDiskGigabytes = minimumDiskGigabytes;

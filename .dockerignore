@@ -1,0 +1,7 @@
+.git
+.cluster-build
+coverage
+node_modules
+target
+**/target
+*.log

@@ -7,6 +7,7 @@ pub mod daemon_discovery;
 pub mod daemon_listener;
 pub mod execution;
 pub mod full_v1_reducer;
+pub mod hosted_oecp;
 pub mod issue_provider;
 pub mod product_errors;
 mod provider_value;

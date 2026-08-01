@@ -116,6 +116,27 @@ zeroshot cmdproof check <id>    # reuse a verified command result
 
 </details>
 
+## Hosted capsule runs
+
+Named Zero Cloud targets use the same issue, file, stdin, and prompt inputs as local runs. Login
+uses the device flow and stores only the rotating refresh token in the OS credential service. The
+GitHub and OpenRouter credentials are read for each run, uploaded under the short-lived capsule
+access grant, and kept only in the capsule process environment.
+
+```bash
+zeroshot target add production https://cloud.example
+zeroshot target login production
+
+export GH_TOKEN=...                 # optional when `gh auth token` works
+export OPENROUTER_API_KEY=...
+zeroshot run org/repo#123 --target production
+```
+
+For one-shot non-interactive automation, `ZEROSHOT_TARGET_REFRESH_TOKEN` supplies a process-only
+login and is never written to the target metadata file. Because Zero Cloud rotates refresh tokens,
+repeat runs should use the persistent Secret Service login rather than reusing that environment
+value.
+
 ## Providers and backends
 
 Zeroshot shells out to provider CLIs; it stores no API keys and manages no auth. Pick a default and override per run.

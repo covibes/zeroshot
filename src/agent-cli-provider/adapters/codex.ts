@@ -28,6 +28,7 @@ import { parseCodexEvent } from './codex-parser';
 
 const MODEL_CATALOG: Readonly<Record<string, ModelCatalogEntry>> = {
   'gpt-5.4': { rank: 2 },
+  'openai/gpt-5.4': { rank: 2 },
   'gpt-5.5': { rank: 3 },
   'gpt-5.6': { rank: 3 },
   'gpt-5.6-sol': { rank: 3 },
