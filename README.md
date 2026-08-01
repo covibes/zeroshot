@@ -77,7 +77,7 @@ Bring your own provider and your own backend. Zeroshot orchestrates the agents t
 | When does it stop?          | when it decides it is done   | when the change is verified, or provably is not                                        |
 | Which coding agent runs it? | one, fixed                   | any you already run: seven agent CLIs, or any OpenAI- or Anthropic-compatible endpoint |
 
-One exception, stated plainly: a task the conductor classifies as TRIVIAL runs a single worker with no validator, unless you're in a `--pr` or `--ship` flow, which always adds one. See [classification and routing](#classification-and-routing).
+One exception, stated plainly: a task the conductor classifies as TRIVIAL runs a single worker with no validator. For TASK and DEBUG runs, `--pr` or `--ship` adds one; TRIVIAL INQUIRY runs remain single-worker. See [classification and routing](#classification-and-routing).
 
 ## Quick start
 
@@ -207,16 +207,17 @@ Before any code gets written, a conductor scores the task on two axes and routes
 
 What you get depends on that score:
 
-| Classification      | Workflow           | Agents                                                        |
-| ------------------- | ------------------ | ------------------------------------------------------------- |
-| TRIVIAL             | `single-worker`    | worker only, **no validator**                                 |
-| TRIVIAL + `--pr`    | `worker-validator` | worker, 1 validator                                           |
-| SIMPLE              | `worker-validator` | worker, 1 validator                                           |
-| STANDARD            | `full-workflow`    | planner, worker, 2 validators                                 |
-| CRITICAL            | `full-workflow`    | planner, worker, meta-coordinator, 4 validators in two stages |
-| DEBUG (non-TRIVIAL) | `debug-workflow`   | investigator, fixer, tester, completion-detector              |
+| Classification                       | Workflow           | Agents                                                        |
+| ------------------------------------ | ------------------ | ------------------------------------------------------------- |
+| TRIVIAL                              | `single-worker`    | worker only, **no validator**                                 |
+| TRIVIAL INQUIRY + `--pr`/`--ship`    | `single-worker`    | worker only, **no validator**                                 |
+| TRIVIAL TASK/DEBUG + `--pr`/`--ship` | `worker-validator` | worker, 1 validator                                           |
+| SIMPLE                               | `worker-validator` | worker, 1 validator                                           |
+| STANDARD                             | `full-workflow`    | planner, worker, 2 validators                                 |
+| CRITICAL                             | `full-workflow`    | planner, worker, meta-coordinator, 4 validators in two stages |
+| DEBUG (non-TRIVIAL)                  | `debug-workflow`   | investigator, fixer, tester, completion-detector              |
 
-Two things worth knowing before you rely on it. TRIVIAL skips validation entirely on the default path, which is the point of calling it trivial, but it does mean the executor-verifier split doesn't apply there; `--pr` and `--ship` always add a validator back. And debugging isn't the same shape as building at all, since an investigator finds the fault before a fixer touches anything.
+Two things worth knowing before you rely on it. TRIVIAL skips validation entirely on the default path, which is the point of calling it trivial, but it does mean the executor-verifier split doesn't apply there. For TASK and DEBUG runs, `--pr` and `--ship` add a validator back; TRIVIAL INQUIRY stays single-worker in every mode. And debugging isn't the same shape as building at all, since an investigator finds the fault before a fixer touches anything.
 
 CRITICAL is deliberately rare. The conductor is told to bias toward STANDARD when it's torn, because a CRITICAL run costs a senior model and four validators.
 
