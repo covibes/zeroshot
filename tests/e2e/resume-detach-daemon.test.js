@@ -489,6 +489,11 @@ describe('e2e: resume --detach daemon handoff', function () {
       return cluster?.state === 'stopped' || cluster?.state === 'killed' ? cluster : null;
     }, 30000);
 
+    const winnerPidMatch = /Daemon PID: (\d+)/.exec(winners[0].stdout);
+    assert.ok(winnerPidMatch, `winner should report its daemon PID, got:\n${winners[0].stdout}`);
+    const winnerPid = Number(winnerPidMatch[1]);
+    await pollUntil(() => !isPidAlive(winnerPid), 10000, 50);
+
     fs.rmSync(issueDir, { recursive: true, force: true });
   });
 });
