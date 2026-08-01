@@ -45,7 +45,7 @@ Underneath, it's a general graph engine: you define the agents and how they hand
 npm install -g @the-open-engine/zeroshot
 ```
 
-Requires **Node ≥ 18** and a coding agent for it to drive: one of the [seven supported CLIs](#providers-and-backends), or any OpenAI- or Anthropic-compatible endpoint. Linux and macOS today; Windows is deferred.
+Requires **Node ≥ 18** and a coding agent for it to drive: one of the [eight supported CLIs](#providers-and-backends), or any OpenAI- or Anthropic-compatible endpoint. Linux and macOS today; Windows is deferred.
 
 <div align="center">
   <img src="docs/assets/zeroshot-demo.gif" alt="Zeroshot resolving an issue through the executor-verifier loop" width="760">
@@ -75,7 +75,7 @@ Bring your own provider and your own backend. Zeroshot orchestrates the agents t
 | Is the code actually run?   | usually just claimed         | executed against your real tests                                                       |
 | When it fails, you get      | an assertion it is fine      | exactly what's wrong                                                                   |
 | When does it stop?          | when it decides it is done   | when the change is verified, or provably is not                                        |
-| Which coding agent runs it? | one, fixed                   | any you already run: seven agent CLIs, or any OpenAI- or Anthropic-compatible endpoint |
+| Which coding agent runs it? | one, fixed                   | any you already run: eight agent CLIs, or any OpenAI- or Anthropic-compatible endpoint |
 
 One exception, stated plainly: a task the conductor classifies as TRIVIAL runs a single worker with no validator. For TASK and DEBUG runs, `--pr` or `--ship` adds one; TRIVIAL INQUIRY runs remain single-worker. See [classification and routing](#classification-and-routing).
 
@@ -140,6 +140,7 @@ Zeroshot shells out to provider CLIs, so provider auth stays wherever you alread
 | GitHub Copilot | `npm i -g @github/copilot`                                         |
 | OpenCode       | see [opencode.ai](https://opencode.ai)                             |
 | Kiro           | see [kiro.dev](https://kiro.dev/docs/cli/)                         |
+| OMP            | `npm i -g --ignore-scripts @oh-my-pi/pi-coding-agent`              |
 | Pi             | `npm i -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
 
 ```bash
@@ -148,7 +149,7 @@ zeroshot providers set-default codex
 zeroshot run 123 --provider gemini
 ```
 
-An eighth provider, `gateway`, isn't a CLI. It speaks the OpenAI or Anthropic wire protocol against any `baseUrl`, so Zeroshot can drive a self-hosted model, a proxy, or a router without a coding-agent CLI installed at all. It's also the one provider whose key Zeroshot holds, in settings rather than in someone else's config:
+`gateway` isn't a CLI. It speaks the OpenAI or Anthropic wire protocol against any `baseUrl`, so Zeroshot can drive a self-hosted model, a proxy, or a router without a coding-agent CLI installed at all. It's also the one provider whose key Zeroshot holds, in settings rather than in someone else's config:
 
 ```bash
 zeroshot settings set providerSettings.gateway.baseUrl https://your-endpoint/v1
