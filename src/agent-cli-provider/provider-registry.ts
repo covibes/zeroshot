@@ -5,6 +5,7 @@ import { copilotAdapter } from './adapters/copilot';
 import { gatewayAdapter, gatewaySettingsDefaults, validateGatewaySettings } from './adapters/gateway';
 import { geminiAdapter } from './adapters/gemini';
 import { opencodeAdapter } from './adapters/opencode';
+import { ompAdapter } from './adapters/omp';
 import { piAdapter } from './adapters/pi';
 import { resolveClaudeCommand } from './claude-command';
 import type { ModelLevel, ProviderAdapter } from './types';
@@ -399,6 +400,44 @@ export const providerRegistry = [
       max: piAdapter.defaultMaxLevel,
     },
     adapter: piAdapter,
+  },
+  {
+    id: 'omp',
+    aliases: [],
+    displayName: 'OMP',
+    binary: 'omp',
+    command: { kind: 'fixed', command: 'omp', args: [] },
+    invoke: SPAWN_INVOKE,
+    installInstructions: 'npm install -g --ignore-scripts @oh-my-pi/pi-coding-agent',
+    authInstructions: 'omp\n/login',
+    credentialPaths: ['~/.omp'],
+    credentialEnvKeys: ompAdapter.credentialEnvKeys,
+    settingsFields: [],
+    availabilityProbe: 'help-or-version',
+    capabilities: {
+      ...STANDARD_CAPABILITIES,
+      mcpServers: false,
+      jsonSchema: false,
+      reasoningEffort: true,
+    },
+    docs: {
+      label: 'OMP',
+      setupHeading: 'OMP Setup',
+    },
+    docker: {
+      mount: {
+        host: '~/.omp',
+        container: '$HOME/.omp',
+        readonly: true,
+      },
+      envPassthrough: [],
+    },
+    defaultLevels: {
+      min: ompAdapter.defaultMinLevel,
+      default: ompAdapter.defaultLevel,
+      max: ompAdapter.defaultMaxLevel,
+    },
+    adapter: ompAdapter,
   },
   {
     id: 'kiro',

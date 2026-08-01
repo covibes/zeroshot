@@ -39,6 +39,7 @@ test('provider helper public API exposes typed provider adapters', (): void => {
     'gemini',
     'opencode',
     'pi',
+    'omp',
     'kiro',
     'copilot',
   ]);

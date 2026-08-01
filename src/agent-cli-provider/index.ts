@@ -78,6 +78,7 @@ export type {
   ModelCatalogEntry,
   ModelLevel,
   ModelSpec,
+  OmpCliFeatures,
   OpencodeCliFeatures,
   OutputEvent,
   OutputFormat,

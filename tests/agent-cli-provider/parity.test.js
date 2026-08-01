@@ -405,6 +405,27 @@ test('runtime Pi command facade delegates to helper', () => {
   });
 });
 
+test('runtime OMP command facade delegates to helper', () => {
+  assertRuntimeCommandParity('omp', 'omp context', {
+    outputFormat: 'json',
+    jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+    cwd: '/tmp/project',
+    modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
+    cliFeatures: {
+      supportsModeJson: true,
+      supportsPrint: true,
+      supportsCwd: true,
+      supportsAutoApprove: true,
+      supportsModel: true,
+      supportsThinking: true,
+      supportsNoExtensions: true,
+      supportsNoSkills: true,
+      supportsNoRules: true,
+      supportsNoTitle: true,
+    },
+  });
+});
+
 test('runtime Copilot command facade delegates to helper', () => {
   assertRuntimeCommandParity('copilot', 'copilot context', {
     outputFormat: 'json',
@@ -556,7 +577,12 @@ test('model resolution and invalid-model permanence match helper', () => {
       );
     }
 
-    if (provider === 'pi' || provider === 'copilot' || provider === 'gateway') {
+    if (
+      provider === 'pi' ||
+      provider === 'omp' ||
+      provider === 'copilot' ||
+      provider === 'gateway'
+    ) {
       assert.deepEqual(
         helper.resolveModelSpec(provider, 'level2', { level2: { model: 'invalid' } }),
         current.resolveModelSpec('level2', { level2: { model: 'invalid' } })
@@ -616,6 +642,7 @@ test('parser output from runtime facade matches helper fixtures', () => {
       ],
     ],
     ['pi', ['text.jsonl', 'tool.jsonl', 'command-failure.jsonl']],
+    ['omp', ['text.jsonl', 'tool.jsonl', 'command-failure.jsonl']],
     ['copilot', ['text.jsonl', 'tool.jsonl', 'unknown-event.jsonl']],
   ]) {
     for (const file of files) {
@@ -748,6 +775,19 @@ test('feature probing is deterministic from injected help text', () => {
         'pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve --model'
       ).supportsNoApprove,
     true
+  );
+  assert.equal(
+    helper
+      .getProviderAdapter('omp')
+      .detectCliFeatures(
+        'omp --mode json -p --cwd --auto-approve --model --thinking --no-extensions --no-skills --no-rules --no-title'
+      ).supportsAutoApprove,
+    true
+  );
+  assert.equal(
+    helper.getProviderAdapter('omp').detectCliFeatures('omp --mode json -p --cwd')
+      .supportsAutoApprove,
+    false
   );
   assert.equal(
     helper
