@@ -58,44 +58,84 @@ impl CredentialBundle {
             .env("HOME", RUNTIME_ROOT)
             .env("CODEX_HOME", format!("{RUNTIME_ROOT}/codex"))
             .env("TMPDIR", format!("{RUNTIME_ROOT}/tmp"))
-            .env("GIT_TERMINAL_PROMPT", "0");
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ASKPASS", format!("{RUNTIME_ROOT}/git-askpass.sh"));
     }
 
     pub async fn prepare_workspace(&self) -> Result<(), String> {
         write_runtime_files(&self.model).await?;
-        if Path::new(&format!("{REPOSITORY_ROOT}/.git")).exists() {
-            return Ok(());
-        }
-        if Path::new(REPOSITORY_ROOT).exists() {
-            fs::remove_dir_all(REPOSITORY_ROOT)
+        if !Path::new(&format!("{REPOSITORY_ROOT}/.git")).exists() {
+            if Path::new(REPOSITORY_ROOT).exists() {
+                fs::remove_dir_all(REPOSITORY_ROOT)
+                    .await
+                    .map_err(|error| format!("remove incomplete repository clone: {error}"))?;
+            }
+            fs::create_dir_all("/workspace")
                 .await
-                .map_err(|error| format!("remove incomplete repository clone: {error}"))?;
+                .map_err(|error| format!("create workspace: {error}"))?;
+            let mut command = Command::new("git");
+            command.args([
+                "clone",
+                "--filter=blob:none",
+                &format!("https://github.com/{}.git", self.repository),
+                REPOSITORY_ROOT,
+            ]);
+            self.apply_to(&mut command);
+            run(&mut command, "git clone").await?;
         }
-        fs::create_dir_all("/workspace")
-            .await
-            .map_err(|error| format!("create workspace: {error}"))?;
+        configure_git_identity(self).await
+    }
+}
+
+async fn configure_git_identity(credentials: &CredentialBundle) -> Result<(), String> {
+    let mut identity_command = Command::new("gh");
+    identity_command.args(["api", "user", "--jq", "[.login, (.id|tostring)] | @tsv"]);
+    credentials.apply_to(&mut identity_command);
+    let output = run(&mut identity_command, "GitHub identity lookup").await?;
+    let (name, email) = github_identity(&String::from_utf8_lossy(&output))?;
+
+    for (key, value) in [("user.name", name.as_str()), ("user.email", email.as_str())] {
         let mut command = Command::new("git");
-        command.args([
-            "clone",
-            "--filter=blob:none",
-            &format!("https://github.com/{}.git", self.repository),
-            REPOSITORY_ROOT,
-        ]);
-        self.apply_to(&mut command);
-        command.env("GIT_ASKPASS", format!("{RUNTIME_ROOT}/git-askpass.sh"));
-        let output = command
-            .output()
-            .await
-            .map_err(|error| format!("start git clone: {error}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "git clone failed with status {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
-        }
+        command.args(["-C", REPOSITORY_ROOT, "config", "--local", key, value]);
+        credentials.apply_to(&mut command);
+        run(&mut command, "git identity configuration").await?;
+    }
+    Ok(())
+}
+
+fn github_identity(value: &str) -> Result<(String, String), String> {
+    let (login, id) = value
+        .trim()
+        .split_once('\t')
+        .ok_or_else(|| "GitHub identity lookup returned an invalid response".to_owned())?;
+    if login.is_empty()
+        || !login
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || id.is_empty()
+        || !id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("GitHub identity lookup returned an invalid response".to_owned());
+    }
+    Ok((
+        login.to_owned(),
+        format!("{id}+{login}@users.noreply.github.com"),
+    ))
+}
+
+async fn run(command: &mut Command, operation: &str) -> Result<Vec<u8>, String> {
+    let output = command
+        .output()
+        .await
+        .map_err(|error| format!("start {operation}: {error}"))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(format!(
+            "{operation} failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -203,7 +243,9 @@ pub type CredentialSlot = Arc<Mutex<Option<CredentialBundle>>>;
 
 #[cfg(test)]
 mod tests {
-    use super::CredentialBundle;
+    use std::collections::BTreeMap;
+
+    use super::{github_identity, CredentialBundle, RUNTIME_ROOT};
     use crate::hosted_oecp::HostedBackend;
 
     fn bundle() -> CredentialBundle {
@@ -233,6 +275,40 @@ mod tests {
         let mut invalid = bundle();
         invalid.model = "openai/gpt-5.4\napproval_policy = \"never\"".to_owned();
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn worker_environment_keeps_noninteractive_git_auth_for_pushes() {
+        let mut command = tokio::process::Command::new("true");
+        bundle().apply_to(&mut command);
+        let environment = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((key.to_str()?.to_owned(), value?.to_str()?.to_owned()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            environment.get("GIT_ASKPASS").map(String::as_str),
+            Some(&*format!("{RUNTIME_ROOT}/git-askpass.sh"))
+        );
+        assert_eq!(
+            environment.get("GIT_TERMINAL_PROMPT").map(String::as_str),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn github_identity_uses_the_authenticated_accounts_noreply_address() {
+        assert_eq!(
+            github_identity("zeroshot-user\t12345\n"),
+            Ok((
+                "zeroshot-user".to_owned(),
+                "12345+zeroshot-user@users.noreply.github.com".to_owned()
+            ))
+        );
+        assert!(github_identity("bad login\t12345").is_err());
+        assert!(github_identity("zeroshot-user\tnot-an-id").is_err());
     }
 
     #[tokio::test]

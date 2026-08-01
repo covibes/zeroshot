@@ -129,8 +129,12 @@ zeroshot target login production
 
 export GH_TOKEN=...                 # optional when `gh auth token` works
 export OPENROUTER_API_KEY=...
-zeroshot run org/repo#123 --target production
+zeroshot run org/repo#123 --target production --pr
 ```
+
+`--pr` runs in an isolated worktree, pushes the implementation branch, creates a pull request for
+human review, verifies that GitHub reports it, and prints the pull request URL. Without `--pr`, the
+hosted run does not push repository changes.
 
 For one-shot non-interactive automation, `ZEROSHOT_TARGET_REFRESH_TOKEN` supplies a process-only
 login and is never written to the target metadata file. Because Zero Cloud rotates refresh tokens,

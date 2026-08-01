@@ -12,7 +12,13 @@ const {
   loadTargets,
   removeTarget,
 } = require('../../cli/hosted/target-store');
-const { graph, issueInput, validateHostedOptions, websocketUrl } = require('../../cli/hosted/run');
+const {
+  graph,
+  issueInput,
+  resolveInput,
+  validateHostedOptions,
+  websocketUrl,
+} = require('../../cli/hosted/run');
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-hosted-target-'));
@@ -52,12 +58,32 @@ describe('hosted target CLI', function () {
   it('uses the canonical single-worker facade for hosted issues', function () {
     const issue = issueInput('the-open-engine/zeroshot#837');
     assert.equal(issue.repository, 'the-open-engine/zeroshot');
+    assert.equal(issue.request.issue, 'https://github.com/the-open-engine/zeroshot/issues/837');
     assert.ok(!Object.hasOwn(issue.request, 'prompt'));
     const specification = graph();
     assert.equal(specification.profile, 'openengine.graph.single-worker/v1');
     assert.equal(specification.root.worker, 'legacy.zeroshot.ship@1');
     assert.equal(specification.root.input.fields.providerProfile.required, true);
     assert.equal(specification.root.output.fields.summary.type.kind, 'string');
+  });
+
+  it('selects reviewed PR delivery only when the hosted run requests it', async function () {
+    assert.equal(
+      (await resolveInput('the-open-engine/zeroshot#837', {})).request.isolationProfile,
+      'isolation.worktree@1'
+    );
+    const issuePr = await resolveInput('the-open-engine/zeroshot#837', { pr: true });
+    assert.equal(issuePr.request.isolationProfile, 'isolation.pr@1');
+    assert.equal(issuePr.request.providerProfile, 'provider.codex-openrouter-pr@1');
+    assert.equal(
+      (
+        await resolveInput('Implement the issue', {
+          pr: true,
+          repository: 'the-open-engine/zeroshot',
+        })
+      ).request.isolationProfile,
+      'isolation.pr@1'
+    );
   });
 
   it('rejects repository path segments that Git would normalize', function () {
@@ -78,6 +104,7 @@ describe('hosted target CLI', function () {
 
   it('rejects local-only flags instead of silently ignoring them', function () {
     assert.doesNotThrow(() => validateHostedOptions({ target: 'local', model: 'openai/gpt-5.4' }));
+    assert.doesNotThrow(() => validateHostedOptions({ target: 'local', pr: true }));
     assert.doesNotThrow(() => validateHostedOptions({ target: 'local', provider: 'codex' }));
     assert.throws(
       () => validateHostedOptions({ target: 'local', docker: true, provider: 'claude' }),

@@ -264,6 +264,23 @@ function registerDetectGitContextTests() {
       );
     });
 
+    it('should detect a partial-clone remote with its fetch annotation', function () {
+      withGitRemotes(
+        {
+          origin: 'https://github.com/the-open-engine/zero-cloud.git',
+        },
+        (cwd) => {
+          execFileSync('git', ['config', 'remote.origin.promisor', 'true'], { cwd });
+          execFileSync('git', ['config', 'remote.origin.partialclonefilter', 'blob:none'], { cwd });
+
+          const result = detectGitContext(cwd);
+          assert.strictEqual(result.provider, 'github');
+          assert.strictEqual(result.fullRepo, 'the-open-engine/zero-cloud');
+          assert.strictEqual(result.remote, 'origin');
+        }
+      );
+    });
+
     it('should fail closed when multiple supported non-origin remotes are ambiguous', function () {
       withGitRemotes(
         {

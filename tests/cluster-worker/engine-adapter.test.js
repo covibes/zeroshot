@@ -114,6 +114,22 @@ describe('legacy cluster worker engine adapter', () => {
     );
   });
 
+  it('returns verified pull request identity in the bounded completion summary', () => {
+    assert.deepStrictEqual(
+      terminalEventFromMessage(
+        terminalMessage('CLUSTER_COMPLETE', {
+          reason: 'git-pusher-complete-verified',
+          pr_number: 321,
+          pr_url: 'https://github.com/the-open-engine/zeroshot/pull/321',
+        })
+      ),
+      {
+        type: 'complete',
+        summary: 'Pull request #321 created: https://github.com/the-open-engine/zeroshot/pull/321',
+      }
+    );
+  });
+
   it('subscribes before folding durable history and de-duplicates terminal truth', async () => {
     const complete = terminalMessage('CLUSTER_COMPLETE', { reason: 'done' });
     const state = harness([complete]);

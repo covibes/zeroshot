@@ -49,10 +49,19 @@ function repositoryFromRemote(cwd = process.cwd()) {
   return match && validRepository(match[1]) ? match[1] : null;
 }
 
-function issueInput(value) {
+function isolationProfile(options = {}) {
+  return options.pr ? 'isolation.pr@1' : 'isolation.worktree@1';
+}
+
+function providerProfile(options = {}) {
+  return options.pr ? 'provider.codex-openrouter-pr@1' : 'provider.codex-openrouter@1';
+}
+
+function issueInput(value, options = {}) {
   const shorthand = value.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$/);
   if (shorthand && validRepository(shorthand[1])) {
-    return { repository: shorthand[1], request: issueRequest(value) };
+    const canonicalIssue = `https://github.com/${shorthand[1]}/issues/${shorthand[2]}`;
+    return { repository: shorthand[1], request: issueRequest(canonicalIssue, options) };
   }
   let url;
   try {
@@ -63,26 +72,26 @@ function issueInput(value) {
   const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/issues\/([1-9][0-9]*)\/?$/);
   const repository = match ? `${match[1]}/${match[2]}` : '';
   if (url.hostname !== 'github.com' || !match || !validRepository(repository)) return null;
-  return { repository, request: issueRequest(value) };
+  return { repository, request: issueRequest(value, options) };
 }
 
-function issueRequest(issue) {
+function issueRequest(issue, options = {}) {
   return {
     source: 'issue',
     issue,
     artifacts: [],
-    isolationProfile: 'isolation.worktree@1',
-    providerProfile: 'provider.codex-openrouter@1',
+    isolationProfile: isolationProfile(options),
+    providerProfile: providerProfile(options),
   };
 }
 
-function promptRequest(prompt) {
+function promptRequest(prompt, options = {}) {
   return {
     source: 'prompt',
     prompt,
     artifacts: [],
-    isolationProfile: 'isolation.worktree@1',
-    providerProfile: 'provider.codex-openrouter@1',
+    isolationProfile: isolationProfile(options),
+    providerProfile: providerProfile(options),
   };
 }
 
@@ -101,7 +110,7 @@ async function stdinText() {
 }
 
 async function resolveInput(input, options) {
-  const explicitIssue = issueInput(input);
+  const explicitIssue = issueInput(input, options);
   if (explicitIssue) return explicitIssue;
   const repository =
     options.repository || process.env.ZEROSHOT_REPOSITORY || repositoryFromRemote();
@@ -111,16 +120,16 @@ async function resolveInput(input, options) {
         'ZEROSHOT_REPOSITORY, or run inside a GitHub checkout'
     );
   }
-  if (/^[1-9][0-9]*$/.test(input)) return { repository, request: issueRequest(input) };
-  if (input === '-') return { repository, request: promptRequest(await stdinText()) };
+  if (/^[1-9][0-9]*$/.test(input)) return { repository, request: issueRequest(input, options) };
+  if (input === '-') return { repository, request: promptRequest(await stdinText(), options) };
   const filename = path.resolve(input);
   if (fs.existsSync(filename) && fs.statSync(filename).isFile()) {
     const text = fs.readFileSync(filename, 'utf8').trim();
     if (!text) throw new Error(`hosted task file is empty: ${input}`);
-    return { repository, request: promptRequest(text) };
+    return { repository, request: promptRequest(text, options) };
   }
   if (!input.trim()) throw new Error('hosted task input is empty');
-  return { repository, request: promptRequest(input.trim()) };
+  return { repository, request: promptRequest(input.trim(), options) };
 }
 
 function githubToken(environment = process.env) {
@@ -151,7 +160,6 @@ function validateHostedOptions(options) {
     ['worktree', '--worktree'],
     ['dockerImage', '--docker-image'],
     ['strictSchema', '--strict-schema'],
-    ['pr', '--pr'],
     ['ship', '--ship'],
     ['prBase', '--pr-base'],
     ['mergeQueue', '--merge-queue'],
