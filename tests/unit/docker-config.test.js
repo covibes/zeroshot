@@ -423,17 +423,42 @@ function registerValidateEnvPassthroughTests() {
 function registerValidateProviderEnvAuthTests() {
   describe('validateProviderEnvAuth()', function () {
     it('passes when no docker.envAuth is declared (e.g. codex)', function () {
-      assert.deepStrictEqual(validateProviderEnvAuth('codex', {}), { ok: true });
+      const result = validateProviderEnvAuth('codex', {});
+      assert.strictEqual(result.ok, true);
+      assert.deepStrictEqual(result.malformed, []);
     });
 
     it('is satisfied by a single requireOneOf var (e.g. OPENAI_API_KEY)', function () {
       const result = validateProviderEnvAuth('omp', { OPENAI_API_KEY: 'sk-test' });
-      assert.deepStrictEqual(result, { ok: true });
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(result.satisfiedOneOf, true);
+      assert.deepStrictEqual(result.malformed, []);
     });
 
     it('rejects an empty-string value as absent', function () {
       const result = validateProviderEnvAuth('omp', { OPENAI_API_KEY: '' });
       assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.satisfiedOneOf, false);
+    });
+
+    // `dockerEnvPassthrough: ["OPENAI_API_KEY="]` forces an EMPTY value into `docker run -e`. A
+    // presence-flag plan would read that as authenticated; the plan carries actual values so it
+    // cannot.
+    it('rejects a forced-empty passthrough value (VAR=) as absent', function () {
+      const { expandEnvPatterns: expand } = require('../../lib/docker-config');
+      const [spec] = expand(['OPENAI_API_KEY=']);
+      assert.strictEqual(spec.forced, true);
+      assert.strictEqual(spec.value, '');
+
+      const result = validateProviderEnvAuth('omp', { [spec.name]: spec.value });
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.satisfiedOneOf, false);
+    });
+
+    it('rejects a whitespace-only value as absent', function () {
+      const result = validateProviderEnvAuth('omp', { OPENAI_API_KEY: '   \t\n ' });
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.satisfiedOneOf, false);
     });
 
     it('rejects nothing set at all', function () {
@@ -447,7 +472,16 @@ function registerValidateProviderEnvAuthTests() {
         OMP_AUTH_BROKER_URL: 'https://broker.example',
         OMP_AUTH_BROKER_TOKEN: 'tok-secret',
       });
-      assert.deepStrictEqual(result, { ok: true });
+      assert.strictEqual(result.ok, true);
+      assert.deepStrictEqual(result.malformed, []);
+    });
+
+    it('accepts an http broker URL with an explicit port', function () {
+      const result = validateProviderEnvAuth('omp', {
+        OMP_AUTH_BROKER_URL: 'http://broker.tailnet:8765',
+        OMP_AUTH_BROKER_TOKEN: 'tok-secret',
+      });
+      assert.strictEqual(result.ok, true);
     });
 
     it('rejects a broker URL without a token (partial requireTogether group)', function () {
@@ -455,19 +489,80 @@ function registerValidateProviderEnvAuthTests() {
         OMP_AUTH_BROKER_URL: 'https://broker.example',
       });
       assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.malformed.length, 1);
       assert.ok(!result.message.includes('https://broker.example'), 'must name vars, not values');
     });
 
     it('rejects a broker token without a URL (partial requireTogether group)', function () {
       const result = validateProviderEnvAuth('omp', { OMP_AUTH_BROKER_TOKEN: 'tok-secret' });
       assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.malformed.length, 1);
       assert.ok(!result.message.includes('tok-secret'), 'must name vars, not values');
+    });
+
+    // A broker URL that is not a usable http(s) URL is malformed config, not a missing var: no
+    // other credential compensates for it, so `malformed` is non-empty even alongside a key.
+    it('rejects a non-URL broker URL value as malformed, not missing', function () {
+      const result = validateProviderEnvAuth('omp', {
+        OMP_AUTH_BROKER_URL: 'broker.example:8765',
+        OMP_AUTH_BROKER_TOKEN: 'tok-secret',
+      });
+      assert.strictEqual(result.ok, false);
+      assert.match(result.message, /OMP_AUTH_BROKER_URL is set but is not a usable http\(s\) URL/);
+      assert.ok(!result.message.includes('broker.example:8765'), 'must name vars, not values');
+    });
+
+    // A non-http(s) URL is both malformed on its own AND leaves the broker pair incomplete (an
+    // unusable URL is not "set"), so both defects are reported.
+    it('rejects a non-http(s) scheme for the broker URL', function () {
+      const result = validateProviderEnvAuth('omp', {
+        OMP_AUTH_BROKER_URL: 'file:///etc/passwd',
+        OMP_AUTH_BROKER_TOKEN: 'tok-secret',
+      });
+      assert.strictEqual(result.ok, false);
+      assert.match(result.message, /OMP_AUTH_BROKER_URL is set but is not a usable http\(s\) URL/);
+      assert.match(result.message, /must be set together \(missing OMP_AUTH_BROKER_URL\)/);
+      assert.ok(!result.message.includes('/etc/passwd'), 'must name vars, not values');
+    });
+
+    it('keeps a malformed broker URL fatal even when an API key is present', function () {
+      const result = validateProviderEnvAuth('omp', {
+        OPENAI_API_KEY: 'sk-test',
+        OMP_AUTH_BROKER_URL: 'not-a-url',
+        OMP_AUTH_BROKER_TOKEN: 'tok-secret',
+      });
+      assert.strictEqual(result.satisfiedOneOf, true, 'the API key itself is usable');
+      assert.strictEqual(result.ok, false, 'but the malformed URL is not compensated for');
     });
 
     it('never includes credential values in the failure message, only names', function () {
       const result = validateProviderEnvAuth('omp', { GEMINI_API_KEY: '', OPENAI_API_KEY: '' });
       assert.strictEqual(result.ok, false);
       assert.match(result.message, /OPENAI_API_KEY/);
+    });
+  });
+
+  describe('isUsableEnvValue() / isUsableHttpUrl()', function () {
+    const { isUsableEnvValue, isUsableHttpUrl } = require('../../lib/docker-config');
+
+    it('treats absent, empty, and whitespace-only values as unusable', function () {
+      assert.strictEqual(isUsableEnvValue(undefined), false);
+      assert.strictEqual(isUsableEnvValue(''), false);
+      assert.strictEqual(isUsableEnvValue('   '), false);
+      assert.strictEqual(isUsableEnvValue('\t\n'), false);
+      assert.strictEqual(isUsableEnvValue(true), false, 'a presence flag is not a value');
+      assert.strictEqual(isUsableEnvValue('sk-test'), true);
+    });
+
+    it('accepts only absolute http(s) URLs', function () {
+      assert.strictEqual(isUsableHttpUrl('https://broker.example'), true);
+      assert.strictEqual(isUsableHttpUrl('http://broker.tailnet:8765'), true);
+      assert.strictEqual(isUsableHttpUrl(' https://broker.example '), true);
+      assert.strictEqual(isUsableHttpUrl('broker.example'), false);
+      assert.strictEqual(isUsableHttpUrl('broker.example:8765'), false);
+      assert.strictEqual(isUsableHttpUrl('file:///tmp/x'), false);
+      assert.strictEqual(isUsableHttpUrl(''), false);
+      assert.strictEqual(isUsableHttpUrl(undefined), false);
     });
   });
 }

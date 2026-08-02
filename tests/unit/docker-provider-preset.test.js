@@ -122,11 +122,15 @@ describe('docker active-provider credential preset', function () {
       assert.equal(args.length, 0);
     });
 
-    it('returns { mountedHosts, forwardedEnv } describing the effective plan', function () {
+    // The plan holds ACTUAL values, not presence flags: only the value distinguishes a real
+    // credential from a forced-empty `VAR=` passthrough that Docker faithfully delivers as "".
+    it('returns the effective plan with actual values, not presence flags', function () {
       const args = [];
       const result = manager._applyCredentialMounts(args, {}, settings, '/root', 'copilot');
       assert.ok(Array.isArray(result.mountedHosts));
-      assert.strictEqual(result.forwardedEnv.COPILOT_GITHUB_TOKEN, true);
+      assert.strictEqual(result.forwardedEnv.COPILOT_GITHUB_TOKEN, 'tok-sentinel');
+      assert.ok(result.explicitEnvNames instanceof Set);
+      assert.ok(Array.isArray(result.explicitMountContainerPaths));
     });
   });
 
@@ -271,11 +275,21 @@ describe('docker active-provider credential preset', function () {
     it('stays silent once the token is forwarded in the effective plan', function () {
       manager._assertProviderCredentialPlan('copilot', {
         mountedHosts: [os.homedir() + '/.copilot'],
-        forwardedEnv: { COPILOT_GITHUB_TOKEN: true },
+        forwardedEnv: { COPILOT_GITHUB_TOKEN: 'tok-sentinel' },
         config: {},
         containerHome: '/root',
       });
       assert.equal(warnings.length, 0);
+    });
+
+    it('still warns when the forwarded token value is empty or whitespace-only', function () {
+      manager._assertProviderCredentialPlan('copilot', {
+        mountedHosts: [os.homedir() + '/.copilot'],
+        forwardedEnv: { COPILOT_GITHUB_TOKEN: '   ' },
+        config: {},
+        containerHome: '/root',
+      });
+      assert.equal(warnings.length, 1);
     });
   });
 
@@ -295,33 +309,89 @@ describe('docker active-provider credential preset', function () {
       assert.doesNotThrow(() => {
         manager._assertProviderCredentialPlan('omp', {
           mountedHosts: [],
-          forwardedEnv: { OPENAI_API_KEY: true },
+          forwardedEnv: { OPENAI_API_KEY: 'sk-test' },
           config: {},
           containerHome: '/home/node',
         });
       });
     });
 
-    it('throws on a malformed broker pair (URL without token)', function () {
+    // Regression guard for the presence-flag plan this replaced: `true` is not a credential
+    // value, and a plan that cannot tell the two apart accepts a forced-empty `VAR=`.
+    it('throws when a name is merely flagged present with no real value', function () {
       assert.throws(() => {
         manager._assertProviderCredentialPlan('omp', {
           mountedHosts: [],
-          forwardedEnv: { OMP_AUTH_BROKER_URL: true },
+          forwardedEnv: { OPENAI_API_KEY: true },
           config: {},
           containerHome: '/home/node',
         });
       }, /No usable credentials found for OMP/);
     });
 
+    it('throws on a forced-empty API key value', function () {
+      assert.throws(() => {
+        manager._assertProviderCredentialPlan('omp', {
+          mountedHosts: [],
+          forwardedEnv: { OPENAI_API_KEY: '' },
+          config: {},
+          containerHome: '/home/node',
+        });
+      }, /No usable credentials found for OMP/);
+    });
+
+    it('throws on a malformed broker pair (URL without token)', function () {
+      assert.throws(() => {
+        manager._assertProviderCredentialPlan('omp', {
+          mountedHosts: [],
+          forwardedEnv: { OMP_AUTH_BROKER_URL: 'https://broker.example' },
+          config: {},
+          containerHome: '/home/node',
+        });
+      }, /No usable credentials found for OMP/);
+    });
+
+    it('throws on a broker URL that is not a usable http(s) URL', function () {
+      assert.throws(() => {
+        manager._assertProviderCredentialPlan('omp', {
+          mountedHosts: [],
+          forwardedEnv: {
+            OMP_AUTH_BROKER_URL: 'broker.example:8765',
+            OMP_AUTH_BROKER_TOKEN: 'tok-secret',
+          },
+          config: {},
+          containerHome: '/home/node',
+        });
+      }, /OMP_AUTH_BROKER_URL is set but is not a usable http\(s\) URL/);
+    });
+
     it('succeeds silently with a complete broker pair', function () {
       assert.doesNotThrow(() => {
         manager._assertProviderCredentialPlan('omp', {
           mountedHosts: [],
-          forwardedEnv: { OMP_AUTH_BROKER_URL: true, OMP_AUTH_BROKER_TOKEN: true },
+          forwardedEnv: {
+            OMP_AUTH_BROKER_URL: 'https://broker.example',
+            OMP_AUTH_BROKER_TOKEN: 'tok-secret',
+          },
           config: {},
           containerHome: '/home/node',
         });
       });
+    });
+
+    // Never mount/copy the host OMP auth store: an explicit ~/.omp mount is not auth either,
+    // because the registry marks omp's credential as not living in a mount.
+    it('does not accept a mount of the host auth store as credentials', function () {
+      assert.throws(() => {
+        manager._assertProviderCredentialPlan('omp', {
+          mountedHosts: [os.homedir() + '/.omp'],
+          explicitMountContainerPaths: ['/home/node/.omp'],
+          forwardedEnv: {},
+          explicitEnvNames: new Set(),
+          config: {},
+          containerHome: '/home/node',
+        });
+      }, /No usable credentials found for OMP/);
     });
   });
 });

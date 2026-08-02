@@ -2,7 +2,11 @@ import { createAcpAdapter } from './adapters/acp';
 import { claudeAdapter } from './adapters/claude';
 import { codexAdapter } from './adapters/codex';
 import { copilotAdapter } from './adapters/copilot';
-import { gatewayAdapter, gatewaySettingsDefaults, validateGatewaySettings } from './adapters/gateway';
+import {
+  gatewayAdapter,
+  gatewaySettingsDefaults,
+  validateGatewaySettings,
+} from './adapters/gateway';
 import { geminiAdapter } from './adapters/gemini';
 import { opencodeAdapter } from './adapters/opencode';
 import { ompAdapter } from './adapters/omp';
@@ -73,12 +77,18 @@ export interface ProviderDockerMountPreset {
 }
 
 export interface ProviderDockerEnvAuth {
-  // At least one of these env vars must be set (non-empty) for the effective container plan to
-  // be considered authenticated. Providers with no `mount` (env-only) fail closed when unmet.
+  // At least one of these env vars must carry a usable (non-empty, non-whitespace) value for the
+  // effective container plan to be considered automatically authenticated. This is the AUTOMATIC
+  // allowlist only; a registry-known credential outside it is accepted when — and only when — the
+  // user explicitly opted it in (dockerEnvPassthrough / --mount).
+  // Providers with no `mount` (env-only) fail closed when nothing is satisfied.
   readonly requireOneOf: readonly string[];
   // Each inner group must be all-set-or-all-unset (e.g. a broker URL + token pair); a partial
   // group is treated as malformed auth, not "missing".
   readonly requireTogether?: readonly (readonly string[])[];
+  // Env vars whose value must parse as an absolute http(s) URL to count as set. A non-URL value
+  // is malformed auth, not "missing".
+  readonly requireUrl?: readonly string[];
 }
 
 export interface ProviderDockerMetadata {
@@ -428,8 +438,7 @@ export const providerRegistry = [
     binary: 'pi',
     command: { kind: 'fixed', command: 'pi', args: [] },
     invoke: SPAWN_INVOKE,
-    installInstructions:
-      'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3',
+    installInstructions: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3',
     authInstructions: 'pi\n/login',
     credentialPaths: ['~/.pi'],
     credentialEnvKeys: piAdapter.credentialEnvKeys,
@@ -520,8 +529,21 @@ export const providerRegistry = [
         'OPENAI_API_KEY',
       ],
       envAuth: {
-        requireOneOf: ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OMP_AUTH_BROKER_TOKEN', 'OPENAI_API_KEY'],
+        // The four automatic *credential* names (the fifth allowlist entry, OMP_AUTH_BROKER_URL,
+        // is a locator, not a credential — it authenticates nothing on its own). Any other
+        // registry-known OMP credential (ANTHROPIC_OAUTH_TOKEN, OPENROUTER_API_KEY, …) is usable
+        // only via explicit dockerEnvPassthrough/--mount opt-in, never automatic forwarding.
+        requireOneOf: [
+          'ANTHROPIC_API_KEY',
+          'GEMINI_API_KEY',
+          'OMP_AUTH_BROKER_TOKEN',
+          'OPENAI_API_KEY',
+        ],
         requireTogether: [['OMP_AUTH_BROKER_URL', 'OMP_AUTH_BROKER_TOKEN']],
+        // Per OMP v17.2.1 docs/environment-variables.md, OMP_AUTH_BROKER_URL is the broker's base
+        // URL (e.g. https://broker.tailnet:8765); anything that is not an http(s) URL is
+        // malformed broker config, and OMP hard-errors on a broker URL with no resolvable token.
+        requireUrl: ['OMP_AUTH_BROKER_URL'],
       },
     },
     defaultLevels: {
@@ -626,12 +648,16 @@ function validateWebSearchSettings(
 type RegistryProviderId = (typeof providerRegistry)[number]['id'];
 type RegistryProviderAlias = (typeof providerRegistry)[number]['aliases'][number];
 
-export const providerIds = providerRegistry.map((entry) => entry.id) as readonly RegistryProviderId[];
-export const providerAliases = providerRegistry.flatMap((entry) => entry.aliases) as readonly RegistryProviderAlias[];
-export const knownProviderNames = providerRegistry.flatMap((entry) => [entry.id, ...entry.aliases]) as readonly (
-  | RegistryProviderId
-  | RegistryProviderAlias
-)[];
+export const providerIds = providerRegistry.map(
+  (entry) => entry.id
+) as readonly RegistryProviderId[];
+export const providerAliases = providerRegistry.flatMap(
+  (entry) => entry.aliases
+) as readonly RegistryProviderAlias[];
+export const knownProviderNames = providerRegistry.flatMap((entry) => [
+  entry.id,
+  ...entry.aliases,
+]) as readonly (RegistryProviderId | RegistryProviderAlias)[];
 
 export const providerAliasMap: Readonly<Record<string, RegistryProviderId>> = Object.freeze(
   providerRegistry.reduce<Record<string, RegistryProviderId>>((result, entry) => {
@@ -669,7 +695,9 @@ export function listProviderRegistryEntries(): readonly ProviderRegistryEntry[] 
   return providerRegistry;
 }
 
-export function findProviderRegistryEntry(name: string | null | undefined): ProviderRegistryEntry | undefined {
+export function findProviderRegistryEntry(
+  name: string | null | undefined
+): ProviderRegistryEntry | undefined {
   if (!name) return undefined;
   const normalized = normalizeProviderName(name);
   return providerRegistry.find((entry) => entry.id === normalized);

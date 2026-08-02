@@ -77,6 +77,8 @@ test('omp Docker metadata is env/broker-only: no automatic mount, exact 5-name a
 
 test('omp Docker envAuth requires one of 4 keys, or a complete broker URL+token pair', () => {
   const omp = getProviderRegistryEntry('omp');
+  // The 4 automatic *credential* names. The fifth allowlist entry, OMP_AUTH_BROKER_URL, is a
+  // locator, not a credential — it authenticates nothing on its own, hence requireTogether.
   assert.deepEqual(omp.docker.envAuth.requireOneOf, [
     'ANTHROPIC_API_KEY',
     'GEMINI_API_KEY',
@@ -86,6 +88,34 @@ test('omp Docker envAuth requires one of 4 keys, or a complete broker URL+token 
   assert.deepEqual(omp.docker.envAuth.requireTogether, [
     ['OMP_AUTH_BROKER_URL', 'OMP_AUTH_BROKER_TOKEN'],
   ]);
+});
+
+test('omp Docker envAuth requireOneOf names are all real adapter credentials', () => {
+  const omp = getProviderRegistryEntry('omp');
+  // The auth gate accepts a name only if it is a registry-known credential AND usable, so a
+  // requireOneOf entry missing from credentialEnvKeys would be permanently unsatisfiable.
+  for (const name of omp.docker.envAuth.requireOneOf) {
+    assert.ok(
+      omp.credentialEnvKeys.includes(name),
+      `${name} gates auth but is not in the adapter credential inventory`
+    );
+    assert.ok(
+      omp.docker.envPassthrough.includes(name),
+      `${name} gates auth but is never forwarded automatically`
+    );
+  }
+});
+
+test('omp Docker envAuth requires the broker URL to be a usable http(s) URL', () => {
+  const omp = getProviderRegistryEntry('omp');
+  // Per OMP v17.2.1 docs/environment-variables.md, OMP_AUTH_BROKER_URL is the broker's base URL
+  // (e.g. https://broker.tailnet:8765) and OMP hard-errors on a broker URL it cannot resolve a
+  // token for — so a non-URL value is malformed config, not a missing var.
+  assert.deepEqual(omp.docker.envAuth.requireUrl, ['OMP_AUTH_BROKER_URL']);
+  assert.ok(
+    omp.docker.envPassthrough.includes('OMP_AUTH_BROKER_URL'),
+    'the URL-validated var must be one the container actually receives'
+  );
 });
 
 test('omp Docker envPassthrough never automatically forwards non-allowlisted credentials (negative coverage)', () => {

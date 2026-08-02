@@ -188,4 +188,139 @@ describe('OMP Docker platform gating', function () {
       }
     });
   });
+
+  // `docker buildx inspect`'s `Platforms:` line is comma-delimited and marks preferred entries
+  // with a trailing `*`. A substring test wrongly accepts a builder that only advertises a
+  // VARIANT (`linux/amd64/v2`) or a longer token that merely contains the required one, which
+  // would let a foreign-arch install proceed on a host that cannot actually run it.
+  describe('parseBuildxPlatforms: exact comma-delimited tokens', function () {
+    it('parses a plain comma-delimited list', function () {
+      assert.deepStrictEqual(
+        IsolationManager.parseBuildxPlatforms(
+          'Name:  default\nDriver: docker\n\nPlatforms: linux/arm64, linux/amd64, linux/386\n'
+        ),
+        ['linux/arm64', 'linux/amd64', 'linux/386']
+      );
+    });
+
+    it('strips the buildx preferred-platform marker', function () {
+      assert.deepStrictEqual(
+        IsolationManager.parseBuildxPlatforms('Platforms: linux/arm64*, linux/amd64*, linux/386'),
+        ['linux/arm64', 'linux/amd64', 'linux/386']
+      );
+    });
+
+    it("collects every builder node's Platforms line", function () {
+      const output = [
+        'Nodes:',
+        'Name:      builder0',
+        'Platforms: linux/arm64',
+        'Name:      builder1',
+        'Platforms: linux/amd64, linux/riscv64',
+      ].join('\n');
+      assert.deepStrictEqual(IsolationManager.parseBuildxPlatforms(output), [
+        'linux/arm64',
+        'linux/amd64',
+        'linux/riscv64',
+      ]);
+    });
+
+    it('returns [] for empty or Platforms-less output', function () {
+      assert.deepStrictEqual(IsolationManager.parseBuildxPlatforms(''), []);
+      assert.deepStrictEqual(IsolationManager.parseBuildxPlatforms('Name: default\n'), []);
+    });
+
+    it('does NOT treat a variant token as the base platform', function () {
+      const platforms = IsolationManager.parseBuildxPlatforms(
+        'Platforms: linux/arm64, linux/amd64/v2, linux/amd64/v3'
+      );
+      assert.ok(!platforms.includes('linux/amd64'), 'variants are not the base platform');
+      assert.deepStrictEqual(platforms, ['linux/arm64', 'linux/amd64/v2', 'linux/amd64/v3']);
+    });
+  });
+
+  describe('assertPlatformSupported', function () {
+    const probeOf = (info, buildx) => ({
+      info: () => info,
+      buildxInspect: () => {
+        if (buildx === null) throw new Error('no buildx');
+        return buildx;
+      },
+    });
+
+    it('is a no-op when the provider declares no platform', function () {
+      let probed = false;
+      IsolationManager.assertPlatformSupported(null, {
+        info: () => {
+          probed = true;
+          return 'linux|arm64';
+        },
+      });
+      assert.strictEqual(probed, false, 'must not even probe Docker');
+    });
+
+    it('accepts a natively matching Linux server (amd64)', function () {
+      IsolationManager.assertPlatformSupported('linux/amd64', probeOf('linux|amd64', null));
+    });
+
+    it('accepts a Linux server reporting x86_64 for amd64', function () {
+      IsolationManager.assertPlatformSupported('linux/amd64', probeOf('linux|x86_64', null));
+    });
+
+    it('accepts an arm64 server whose buildx advertises exactly linux/amd64', function () {
+      IsolationManager.assertPlatformSupported(
+        'linux/amd64',
+        probeOf('linux|aarch64', 'Platforms: linux/arm64*, linux/amd64, linux/386')
+      );
+    });
+
+    it('rejects an arm64 server whose buildx advertises only linux/amd64 VARIANTS', function () {
+      assert.throws(
+        () =>
+          IsolationManager.assertPlatformSupported(
+            'linux/amd64',
+            probeOf('linux|aarch64', 'Platforms: linux/arm64, linux/amd64/v2, linux/amd64/v3')
+          ),
+        /Docker engine cannot run linux\/amd64/
+      );
+    });
+
+    it('rejects an arm64 server with no buildx at all', function () {
+      assert.throws(
+        () =>
+          IsolationManager.assertPlatformSupported('linux/amd64', probeOf('linux|aarch64', null)),
+        /no buildx builder advertising linux\/amd64/
+      );
+    });
+
+    it('rejects a non-Linux Docker server even when the arch matches', function () {
+      assert.throws(
+        () =>
+          IsolationManager.assertPlatformSupported(
+            'linux/amd64',
+            probeOf('windows|amd64', 'Platforms: linux/amd64')
+          ),
+        /Docker engine cannot run linux\/amd64/
+      );
+    });
+
+    it('surfaces a failing `docker info` as an actionable error', function () {
+      assert.throws(
+        () =>
+          IsolationManager.assertPlatformSupported('linux/amd64', {
+            info: () => {
+              throw new Error('Cannot connect to the Docker daemon');
+            },
+          }),
+        /Cannot determine Docker engine platform: Cannot connect to the Docker daemon/
+      );
+    });
+
+    it('names the binfmt remediation for the required architecture', function () {
+      assert.throws(
+        () => IsolationManager.assertPlatformSupported('linux/amd64', probeOf('linux|aarch64', '')),
+        /tonistiigi\/binfmt --install amd64/
+      );
+    });
+  });
 });
