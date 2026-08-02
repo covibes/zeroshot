@@ -36,7 +36,7 @@ export async function readBoundedSource(
   const chunks: Uint8Array[] = [];
   let total = 0;
   for await (const chunk of source) {
-    const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
+    const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : new Uint8Array(chunk);
     total += bytes.length;
     if (total > MAX_REQUEST_BYTES) {
       throw new ClusterRequestError(

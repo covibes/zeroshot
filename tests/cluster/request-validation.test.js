@@ -256,6 +256,48 @@ test('readBoundedSource enforces the exact/over-limit byte boundary without glob
   }
 });
 
+test('readBoundedSource snapshots a reused Uint8Array so mutating it in place after yield cannot corrupt the earlier chunk', async () => {
+  const encoder = new globalThis.TextEncoder();
+  const first = encoder.encode('{"n":1');
+  const second = encoder.encode('23456}');
+  assert.equal(first.length, second.length);
+  const shared = new Uint8Array(first.length);
+
+  async function* reusedBuffer() {
+    shared.set(first);
+    yield shared;
+    shared.set(second);
+    yield shared;
+  }
+
+  const result = await readBoundedSource(reusedBuffer());
+  assert.equal(Buffer.from(result).toString('utf8'), '{"n":123456}');
+  assert.deepEqual(decodeBoundedJson(result), { n: 123456 });
+});
+
+test('readBoundedSource snapshots subarray views over one shared parent buffer so mutating the shared storage between yields cannot corrupt the earlier view', async () => {
+  const encoder = new globalThis.TextEncoder();
+  const frag1 = encoder.encode('{"n":1');
+  const frag2 = encoder.encode('23456}');
+  const garbage = encoder.encode('XXXXXX');
+  assert.equal(frag1.length, 6);
+  assert.equal(frag2.length, 6);
+  assert.equal(garbage.length, 6);
+
+  async function* subarrayOverSharedParent() {
+    const parent = new Uint8Array(12);
+    parent.set(frag1, 0);
+    yield parent.subarray(0, 6);
+    parent.set(garbage, 0); // mutates the ArrayBuffer region the first view aliases
+    parent.set(frag2, 6);
+    yield parent.subarray(6, 12);
+  }
+
+  const result = await readBoundedSource(subarrayOverSharedParent());
+  assert.equal(Buffer.from(result).toString('utf8'), '{"n":123456}');
+  assert.deepEqual(decodeBoundedJson(result), { n: 123456 });
+});
+
 test('assertDistinctRequestSources requires an explicit input source and forbids double stdin', () => {
   assert.throws(
     () => assertDistinctRequestSources('graph.json', undefined),
