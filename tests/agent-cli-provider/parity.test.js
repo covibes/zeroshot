@@ -6,6 +6,11 @@ const path = require('node:path');
 const { afterEach, test } = require('node:test');
 
 const helper = require('../../lib/agent-cli-provider');
+const {
+  OMP_INSTALL_COMMAND,
+  OMP_PACKAGE_NAME,
+  OMP_SUPPORTED_VERSION,
+} = require('../../lib/agent-cli-provider/omp-release');
 const { ENV_PRESETS, MOUNT_PRESETS } = require('../../lib/docker-config');
 const { validateSetting } = require('../../lib/settings');
 const {
@@ -426,6 +431,16 @@ test('runtime OMP command facade delegates to helper', () => {
       supportsNoTitle: true,
     },
   });
+});
+
+test('OMP registry install guidance is the pinned omp-release command, not a parallel literal', () => {
+  const metadata = helper.getProviderRegistryEntry('omp');
+  assert.equal(metadata.installInstructions, OMP_INSTALL_COMMAND);
+  assert.equal(
+    metadata.installInstructions,
+    `npm install -g --ignore-scripts ${OMP_PACKAGE_NAME}@${OMP_SUPPORTED_VERSION}`
+  );
+  assert.match(metadata.installInstructions, new RegExp(`@${OMP_SUPPORTED_VERSION}$`));
 });
 
 test('runtime Copilot command facade delegates to helper', () => {
