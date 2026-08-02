@@ -58,6 +58,22 @@ pub fn production_env_snapshot() -> BTreeMap<String, String> {
 pub fn resolve_namespace(
     env: &BTreeMap<String, String>,
 ) -> Result<NativeNamespace, NativeSettingsError> {
+    validate_directory_overrides(env)?;
+    let explicit = [
+        non_empty(env, "ZEROSHOT_RUST_CONFIG_DIR").map(PathBuf::from),
+        non_empty(env, "ZEROSHOT_RUST_DATA_DIR").map(PathBuf::from),
+        non_empty(env, "ZEROSHOT_RUST_CACHE_DIR").map(PathBuf::from),
+        non_empty(env, "ZEROSHOT_RUST_RUNTIME_DIR").map(PathBuf::from),
+    ];
+    if let [Some(config), Some(data), Some(cache), Some(runtime)] = explicit {
+        return Ok(NativeNamespace {
+            config,
+            data,
+            cache,
+            runtime,
+        });
+    }
+
     let (config_base, data_base, cache_base, runtime_base) = platform_bases(env)?;
     let namespace = NativeNamespace {
         config: config_base.join(APP_NAMESPACE),
@@ -72,6 +88,20 @@ fn non_empty<'a>(env: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str
     env.get(key)
         .map(String::as_str)
         .filter(|value| !value.is_empty())
+}
+
+fn validate_directory_overrides(env: &BTreeMap<String, String>) -> Result<(), NativeSettingsError> {
+    for key in [
+        "ZEROSHOT_RUST_CONFIG_DIR",
+        "ZEROSHOT_RUST_DATA_DIR",
+        "ZEROSHOT_RUST_CACHE_DIR",
+        "ZEROSHOT_RUST_RUNTIME_DIR",
+    ] {
+        if env.get(key).is_some_and(String::is_empty) {
+            return Err(NativeSettingsError::new(key, "must not be empty"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

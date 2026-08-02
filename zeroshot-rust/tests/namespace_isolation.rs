@@ -28,8 +28,7 @@ fn env_with_home(home: &Path) -> BTreeMap<String, String> {
 
 #[test]
 fn explicit_directory_overrides_win_verbatim() {
-    let home = temp_home("overrides");
-    let mut env = env_with_home(&home);
+    let mut env = BTreeMap::new();
     env.insert(
         "ZEROSHOT_RUST_CONFIG_DIR".to_owned(),
         "/custom/config".to_owned(),

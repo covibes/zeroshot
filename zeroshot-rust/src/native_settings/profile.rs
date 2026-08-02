@@ -1,7 +1,9 @@
 //! Named native-profile inheritance, canonicalization, and secret-free digesting.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::File;
 use std::fmt::Write as _;
+use std::io::Read as _;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,7 @@ use crate::provider_value::validate_collection_len;
 /// Maximum number of `extends` hops walked from any profile before its inheritance chain is
 /// rejected, whether or not it ever cycles back on itself.
 const MAX_PROFILE_INHERITANCE_DEPTH: usize = 8;
+const MAX_PROFILE_FILE_BYTES: u64 = 1024 * 1024;
 
 crate::provider_value::digest_type!(ProfileDigest, NativeSettingsError, "profile digest");
 
@@ -184,8 +187,8 @@ impl ProfileRegistry {
     /// A missing profile file resolves to an empty registry; a present-but-malformed file is a
     /// bounded error naming the path.
     pub fn load_from(path: &Path) -> Result<Self, NativeSettingsError> {
-        let contents = match std::fs::read_to_string(path) {
-            Ok(contents) => contents,
+        let file = match File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Self::new(Vec::new());
             }
@@ -196,7 +199,36 @@ impl ProfileRegistry {
                 ));
             }
         };
-        let file: ProfileFile = serde_json::from_str(&contents).map_err(|error| {
+        let metadata = file.metadata().map_err(|error| {
+            NativeSettingsError::new("profile file", format!("{}: {error}", path.display()))
+        })?;
+        if metadata.len() > MAX_PROFILE_FILE_BYTES {
+            return Err(NativeSettingsError::new(
+                "profile file",
+                format!(
+                    "{}: exceeds {MAX_PROFILE_FILE_BYTES}-byte limit",
+                    path.display()
+                ),
+            ));
+        }
+
+        let mut contents = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_PROFILE_FILE_BYTES + 1)
+            .read_to_end(&mut contents)
+            .map_err(|error| {
+                NativeSettingsError::new("profile file", format!("{}: {error}", path.display()))
+            })?;
+        if contents.len() as u64 > MAX_PROFILE_FILE_BYTES {
+            return Err(NativeSettingsError::new(
+                "profile file",
+                format!(
+                    "{}: exceeds {MAX_PROFILE_FILE_BYTES}-byte limit",
+                    path.display()
+                ),
+            ));
+        }
+
+        let file: ProfileFile = serde_json::from_slice(&contents).map_err(|error| {
             NativeSettingsError::new("profile file", format!("{}: {error}", path.display()))
         })?;
         if file.version != NATIVE_SETTINGS_SCHEMA_VERSION {

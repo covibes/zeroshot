@@ -208,3 +208,19 @@ fn malformed_profile_file_names_the_path_in_its_error() {
     let _ = std::fs::remove_file(&path);
     assert!(error.reason().contains(path.display().to_string().as_str()));
 }
+
+#[test]
+fn oversized_profile_file_is_rejected_before_parsing() {
+    let path = std::env::temp_dir().join(format!(
+        "zeroshot-native-profiles-oversized-{}.json",
+        std::process::id()
+    ));
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(1024 * 1024 + 1)
+        .unwrap();
+    let error = ProfileRegistry::load_from(&path).unwrap_err();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(error.field(), "profile file");
+    assert!(error.reason().contains("exceeds 1048576-byte limit"));
+}
