@@ -44,6 +44,55 @@ function promptIdentity(value) {
   return `sha256:${crypto.createHash('sha256').update(String(value)).digest('hex')}`;
 }
 
+const DECIMAL_STRING = /^(0|[1-9][0-9]*)$/;
+const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
+
+function normalizeIdentity(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (!DECIMAL_STRING.test(String(value.device)) || !DECIMAL_STRING.test(String(value.inode))) {
+    return null;
+  }
+  return { device: String(value.device), inode: String(value.inode) };
+}
+
+/**
+ * The optional providerSession.ompSession field (issue #866): required in addition to the
+ * generic tuple above for provider 'omp', absent for every other provider. Every digest here is
+ * sha256:<64-lower-hex>; every device/inode is a canonical unsigned decimal string. Never carries
+ * storage-root or partition paths — those stay in task.ompSessionOwnership, not the agent
+ * snapshot.
+ */
+function normalizeOmpSession(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const sessionFileIdentity = normalizeIdentity(value.sessionFileIdentity);
+  if (
+    value.schemaVersion !== 1 ||
+    !normalizeNonEmptyString(value.partitionId) ||
+    !normalizeNonEmptyString(value.sessionFileName) ||
+    !sessionFileIdentity ||
+    typeof value.artifactManifestDigest !== 'string' ||
+    !SHA256_DIGEST.test(value.artifactManifestDigest) ||
+    typeof value.executionFingerprint !== 'string' ||
+    !SHA256_DIGEST.test(value.executionFingerprint) ||
+    !normalizeNonEmptyString(value.selectedProvider) ||
+    !normalizeNonEmptyString(value.selectedModel)
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: 1,
+    partitionId: value.partitionId,
+    sessionFileName: value.sessionFileName,
+    sessionFileIdentity,
+    artifactManifestDigest: value.artifactManifestDigest,
+    executionFingerprint: value.executionFingerprint,
+    selectedProvider: value.selectedProvider,
+    selectedModel: value.selectedModel,
+  };
+}
+
 function supportsSessionResume(providerName) {
   try {
     return providerSupportsCapability(providerName, 'sessionResume');
@@ -68,6 +117,8 @@ function normalizeProviderSession(value) {
   const contextSequence = normalizeCursor(value.contextSequence);
   const guidanceSequence = normalizeNullableCursor(value.guidanceSequence);
   const normalizedPromptIdentity = normalizePromptIdentity(value.promptIdentity);
+  const hasOmpSession = Object.hasOwn(value, 'ompSession');
+  const normalizedOmpSession = hasOmpSession ? normalizeOmpSession(value.ompSession) : null;
 
   if (
     !provider ||
@@ -84,7 +135,8 @@ function normalizeProviderSession(value) {
     (value.guidanceSequence !== null && guidanceSequence === null) ||
     !Object.hasOwn(value, 'promptIdentity') ||
     normalizedPromptIdentity === undefined ||
-    !supportsSessionResume(provider)
+    !supportsSessionResume(provider) ||
+    (provider === 'omp' ? normalizedOmpSession === null : hasOmpSession)
   ) {
     return null;
   }
@@ -100,6 +152,7 @@ function normalizeProviderSession(value) {
     contextSequence,
     guidanceSequence,
     promptIdentity: normalizedPromptIdentity,
+    ...(provider === 'omp' ? { ompSession: normalizedOmpSession } : {}),
   };
 }
 
@@ -169,6 +222,27 @@ function validateCompletedResumeIdentity(taskInfo) {
     : 'Provider continuation did not confirm the requested session identity';
 }
 
+/** taskInfo.ompSessionOwnership is the authoritative, watcher-committed continuation evidence for
+ * provider 'omp'; a provisional/cleanup-required/missing record means this task never durably
+ * proved a resumable session, regardless of what the generic sessionId/resumeIdentityVerified
+ * columns say (rpc-watcher.js never populates those — they're the stdout-parsing watchers' path). */
+function ompSessionFromCompletedTask(taskInfo) {
+  const ownership = taskInfo?.ompSessionOwnership;
+  if (!ownership || ownership.state !== 'committed') {
+    return null;
+  }
+  return {
+    schemaVersion: 1,
+    partitionId: ownership.partitionId,
+    sessionFileName: ownership.session.fileName,
+    sessionFileIdentity: ownership.session.fileIdentity,
+    artifactManifestDigest: ownership.session.artifactManifestDigest,
+    executionFingerprint: ownership.session.executionFingerprint,
+    selectedProvider: ownership.session.selectedProvider,
+    selectedModel: ownership.session.selectedModel,
+  };
+}
+
 function providerSessionFromCompletedTask({
   agent,
   providerName,
@@ -192,7 +266,13 @@ function providerSessionFromCompletedTask({
     return null;
   }
 
-  const sessionId = normalizeNonEmptyString(taskInfo.sessionId);
+  const isOmp = provider === 'omp';
+  const ompSession = isOmp ? ompSessionFromCompletedTask(taskInfo) : null;
+  // rpc-watcher.js never populates the generic sessionId column; the OMP-observed session ID
+  // committed alongside ompSession is the one authoritative identity for this provider.
+  const sessionId = isOmp
+    ? normalizeNonEmptyString(taskInfo.ompSessionOwnership?.session?.sessionId)
+    : normalizeNonEmptyString(taskInfo.sessionId);
   const taskId = normalizeNonEmptyString(taskInfo.id);
   const generation = agent?.iteration;
   const agentId = normalizeNonEmptyString(agent?.id);
@@ -207,6 +287,7 @@ function providerSessionFromCompletedTask({
     contextSequence: agent?.currentContextSequence,
     guidanceSequence: agent?.currentGuidanceSequence ?? null,
     promptIdentity: agent?.currentPromptIdentity ?? null,
+    ...(isOmp ? { ompSession } : {}),
   });
 }
 

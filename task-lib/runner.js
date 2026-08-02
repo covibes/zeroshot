@@ -1,16 +1,21 @@
 import { fork } from 'child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { mkdirSync } from 'fs';
 import { LOGS_DIR } from './config.js';
 import { addTask, generateId, ensureDirs } from './store.js';
+import { resolveOmpStorageRoot, resolveOmpOwnerKind } from './omp-storage-root.js';
+import { writeProvisionalOwnership } from './omp-session-ownership.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const {
   buildOmpPrompt,
   getProviderRegistryEntry,
+  normalizeProviderName,
   prepareSingleAgentProviderCommand,
 } = require('./provider-helper-runtime.js');
+const { getDefaultProviderId } = require('../lib/provider-names.js');
 const {
   ISOLATED_SETTINGS_FILE_ENV,
   ISOLATED_SETTINGS_FILE_MARKER,
@@ -23,6 +28,11 @@ const {
 } = require('../src/worktree-claude-config');
 const { TASK_SPAWN_OWNERSHIP_TOKEN_ENV } = require('../src/task-spawn-cleanup-ownership');
 const { sendWatcherPrompt } = require('../src/watcher-prompt-channel');
+const {
+  generateOmpPartitionId,
+  partitionPathFor,
+  createOmpSessionPartitionDirectory,
+} = require('../src/omp-session-partition');
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -31,6 +41,60 @@ export {
 } from './process-termination.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Resolve this task's OMP session plan, or null for every other provider / structured-output
+ * recovery turn. Allocates (but does not yet create on disk) a fresh partition, or resolves the
+ * caller-verified resume descriptor from options.ompResume. The partition directory itself is
+ * created only after the task row is durable (see spawnTask below — row-before-directory), and
+ * structural/selector verification happens in the rpc-stdio watcher, not here.
+ */
+function resolveOmpSessionPlan({ id, cwd, options }) {
+  if (options.structuredOutputRecovery) return null;
+  const providerName = normalizeProviderName(options.provider || getDefaultProviderId());
+  if (providerName !== 'omp') return null;
+
+  const storageRoot = resolveOmpStorageRoot(options);
+  mkdirSync(storageRoot, { recursive: true });
+  const ownerKind = resolveOmpOwnerKind(options);
+  const owner = { ...ownerKind, taskId: id };
+
+  if (options.ompResume) {
+    const { partitionId, sessionFileName } = options.ompResume;
+    const partitionPath = partitionPathFor(storageRoot, partitionId);
+    return {
+      session: {
+        kind: 'resume',
+        partition: { path: partitionPath },
+        file: { path: join(partitionPath, sessionFileName) },
+      },
+      resumeExpectation: options.ompResume,
+      provisionalOwnership: writeProvisionalOwnership({
+        partitionId,
+        storageRoot,
+        partitionPath,
+        canonicalWorkspace: cwd,
+        owner,
+      }),
+      createDirectory: () => {}, // must already exist; the watcher verifies before spawn
+    };
+  }
+
+  const partitionId = generateOmpPartitionId();
+  const partitionPath = partitionPathFor(storageRoot, partitionId);
+  return {
+    session: { kind: 'fresh', partition: { path: partitionPath } },
+    resumeExpectation: null,
+    provisionalOwnership: writeProvisionalOwnership({
+      partitionId,
+      storageRoot,
+      partitionPath,
+      canonicalWorkspace: cwd,
+      owner,
+    }),
+    createDirectory: () => createOmpSessionPartitionDirectory(partitionPath),
+  };
+}
 
 export function spawnTask(prompt, options = {}) {
   ensureDirs();
@@ -41,10 +105,12 @@ export function spawnTask(prompt, options = {}) {
 
   const outputFormat = resolveOutputFormat(options);
   const jsonSchema = resolveJsonSchema(options, outputFormat);
+  const ompPlan = resolveOmpSessionPlan({ id, cwd, options });
   const prepared = prepareTaskProviderCommandFromResolved(prompt, options, {
     outputFormat,
     jsonSchema,
     cwd,
+    ompSession: ompPlan?.session,
   });
   const providerName = prepared.adapter.id;
   const modelSpec = prepared.options.modelSpec;
@@ -59,16 +125,23 @@ export function spawnTask(prompt, options = {}) {
     providerName,
     modelSpec,
     commandSpec,
+    ompSessionOwnership: ompPlan?.provisionalOwnership ?? null,
   });
 
+  // Row-before-directory: the SQL row is durable proof of an attempted allocation before the
+  // partition directory (or anything else OMP-owned) exists on disk. A crash between these two
+  // lines leaves a provisional row pointing at a path with nothing there yet — cleanup safely
+  // no-ops on a nonexistent path, and normal task-lifecycle recovery handles the row itself.
   addTask(task);
+  ompPlan?.createDirectory();
 
   const watcherConfig = buildWatcherConfig(
     outputFormat,
     jsonSchema,
     options,
     providerName,
-    commandSpec
+    commandSpec,
+    ompPlan
   );
   const watcherScript = resolveWatcherScript(
     {
@@ -137,6 +210,7 @@ function buildProviderOptions(options, runtime, modelSelection) {
     ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
     ...claudeSettingsFileOption(),
     ...(!structuredOutputRecovery && options.resume ? { resumeSessionId: options.resume } : {}),
+    ...(runtime.ompSession ? { ompSession: runtime.ompSession } : {}),
     ...(process.env.ZEROSHOT_OPENCODE_AGENT?.trim()
       ? { agentName: process.env.ZEROSHOT_OPENCODE_AGENT.trim() }
       : {}),
@@ -218,6 +292,7 @@ export function buildTaskRecord({
   providerName,
   modelSpec,
   commandSpec = {},
+  ompSessionOwnership = null,
 }) {
   return {
     id,
@@ -251,6 +326,7 @@ export function buildTaskRecord({
     terminationStrategy: null,
     cancelRequested: false,
     spawnOwnershipToken: process.env[TASK_SPAWN_OWNERSHIP_TOKEN_ENV] || null,
+    ompSessionOwnership,
     commandCleanup:
       commandSpec.cleanup?.length > 0
         ? {
@@ -267,8 +343,8 @@ function isRpcStdioLane(providerName) {
 
 // The returned object is JSON-serialized into the detached watcher's argv, so it must never carry
 // prompt or other task content: `ps` and /proc/<pid>/cmdline expose argv to every local user for
-// the whole lifetime of the watcher.
-function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, commandSpec) {
+// the whole lifetime of the watcher. Partition paths, ids, and digests are not secret.
+function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, commandSpec, ompPlan) {
   return {
     outputFormat,
     jsonSchema,
@@ -278,6 +354,12 @@ function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, com
     command: commandSpec.binary,
     env: commandSpec.env || {},
     commandSpec: buildWatcherCommandSpec(commandSpec, isRpcStdioLane(providerName)),
+    ...(ompPlan
+      ? {
+          ompSession: ompPlan.session,
+          ompResumeExpectation: ompPlan.resumeExpectation,
+        }
+      : {}),
   };
 }
 

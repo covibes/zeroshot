@@ -196,6 +196,95 @@ test('omp buildCommand fails closed on resume/continue session control', () => {
       return true;
     }
   );
+
+  // continueSession fails closed even alongside a verified resume partition: OMP RPC never
+  // supports --continue at all.
+  assert.throws(
+    () =>
+      buildCommand('prompt', {
+        modelSpec: { model: 'm' },
+        continueSession: true,
+        ompSession: { kind: 'resume', partition: { path: '/p' }, file: { path: '/p/s.jsonl' } },
+      }),
+    (error) => error.field === 'options.continueSession'
+  );
+});
+
+test('omp buildCommand emits --session-dir <partition> for a verified fresh session', () => {
+  const spec = buildCommand('prompt', {
+    modelSpec: { model: 'm' },
+    ompSession: { kind: 'fresh', partition: { path: '/tmp/omp-sessions/abc' } },
+  });
+  assert.deepEqual(spec.args.slice(0, 4), [
+    '--mode',
+    'rpc',
+    '--session-dir',
+    '/tmp/omp-sessions/abc',
+  ]);
+  assert.ok(!spec.args.includes('--no-session'));
+  assert.ok(!spec.args.includes('--resume'));
+  assertOverlay(spec);
+});
+
+test('omp buildCommand emits --session-dir <partition> --resume <file> for a verified resume session', () => {
+  const spec = buildCommand('prompt', {
+    modelSpec: { model: 'm' },
+    ompSession: {
+      kind: 'resume',
+      partition: { path: '/tmp/omp-sessions/abc' },
+      file: { path: '/tmp/omp-sessions/abc/sess.jsonl' },
+    },
+  });
+  assert.deepEqual(spec.args.slice(0, 6), [
+    '--mode',
+    'rpc',
+    '--session-dir',
+    '/tmp/omp-sessions/abc',
+    '--resume',
+    '/tmp/omp-sessions/abc/sess.jsonl',
+  ]);
+  assert.ok(!spec.args.includes('--no-session'));
+  assertOverlay(spec);
+});
+
+test('omp buildCommand resume with a matching verified ompSession does not throw despite resumeSessionId', () => {
+  const spec = buildCommand('prompt', {
+    modelSpec: { model: 'm' },
+    resumeSessionId: 'session-123',
+    ompSession: {
+      kind: 'resume',
+      partition: { path: '/tmp/omp-sessions/abc' },
+      file: { path: '/tmp/omp-sessions/abc/sess.jsonl' },
+    },
+  });
+  assert.ok(spec.args.includes('--resume'));
+  assertOverlay(spec);
+});
+
+test('omp buildCommand fails closed when fresh/resume session requested but CLI lacks --session-dir/--resume evidence', () => {
+  assert.throws(
+    () =>
+      buildCommand('prompt', {
+        modelSpec: { model: 'm' },
+        cliFeatures: { ...FULL_FEATURES, supportsSessionDir: false },
+        ompSession: { kind: 'fresh', partition: { path: '/p' } },
+      }),
+    (error) => error.code === 'unsupported-provider-cli' && error.message.includes('--session-dir')
+  );
+
+  assert.throws(
+    () =>
+      buildCommand('prompt', {
+        modelSpec: { model: 'm' },
+        cliFeatures: { ...FULL_FEATURES, supportsResume: false },
+        ompSession: {
+          kind: 'resume',
+          partition: { path: '/p' },
+          file: { path: '/p/s.jsonl' },
+        },
+      }),
+    (error) => error.code === 'unsupported-provider-cli' && error.message.includes('--resume')
+  );
 });
 
 test('omp buildCommand fails closed when the version does not match 17.2.1', () => {

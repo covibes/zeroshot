@@ -89,11 +89,54 @@ authenticate afterward with OMP's own interactive `omp` then `/login` flow.
 
 Capabilities: `worktreeIsolation:true`, `streamJson:true`, `thinkingMode:true`,
 `reasoningEffort:true`, `jsonSchema:false`, `mcpServers:false`, `webSearch:false`,
-`sessionResume:false`, `dockerIsolation:false`. `mcpServers` and `webSearch` mean Zeroshot's own
+`sessionResume:true`, `dockerIsolation:false`. `mcpServers` and `webSearch` mean Zeroshot's own
 command-level injection/toggle surfaces, which OMP does not expose — OMP's own discovered
-MCP/web tools remain governed by its native config, not by Zeroshot. `sessionResume` and
-`dockerIsolation` are false in this slice; `--provider omp --docker` fails before any container
-is created, and `--provider omp --worktree` is supported.
+MCP/web tools remain governed by its native config, not by Zeroshot. `dockerIsolation` is false:
+`--provider omp --docker` fails before any container is created, and `--provider omp --worktree`
+is supported. `sessionResume` is true — see "OMP session persistence and resume" below; Docker
+stays fresh-only (sessionless), independent of this capability.
+
+### OMP session persistence and resume
+
+Fresh runs (host, worktree, and standalone) pass `--session-dir <partition>`; a verified resume
+adds `--resume <partition>/<file>` — always the exact absolute path Zeroshot already verified,
+never a bare `--resume`/`--continue` or an ID search. `--no-session` is emitted only for the
+Docker/sessionless lane.
+
+Each session lives in its own random, secret-free UUID partition under
+`<storageRoot>/omp-sessions/<uuid>/` — the owning cluster's `storageDir` for cluster-agent tasks,
+the standalone `TASKS_DIR` otherwise (`task-lib/omp-storage-root.js`). The partition id is
+allocated and its ownership row persisted **before** the directory is created on disk
+(`task-lib/runner.js#spawnTask`); a crash between those two lines leaves a provisional row
+pointing at a path with nothing there yet, which cleanup safely no-ops on.
+
+`src/omp-session-verifier.js` streams every session/artifact/blob file in fixed-size chunks
+(never proportional to file size) against the fixed `OMP_SESSION_LIMITS` bounds
+(`src/omp-session-limits.js`), checking both the declared and the bytes actually observed while
+reading. Existing (resume) partitions are fully verified twice — before spawn and again from the
+`ready` hook right before the prompt — and a fresh partition is descriptor/header/tree-verified
+only after terminal materialization, before its evidence may ever be committed. Only owner-held
+directories and regular, single-link files are accepted; symlinks, sockets, devices, and hard
+links are rejected. A referenced CAS blob (`blob:sha256:<hex>`) that is missing, non-regular, or
+whose bytes don't match its digest fails the same way.
+
+Ownership itself is a small owner-fenced state machine persisted as `task.ompSessionOwnership`
+(`task-lib/store.js` schema v5): `provisional -> committed | cleanup-required`, with every
+transition a SQL compare-and-swap so a duplicate/re-entrant completion call can never clobber a
+state a concurrent writer already advanced past (`task-lib/omp-session-ownership.js`). A
+standalone task's watcher run is its own terminal boundary, so it commits directly once its
+output is validated. A cluster-agent task's watcher only records the owner-fenced verified
+materialization evidence and leaves the row `provisional` — only the spawning agent's post-hook
+success boundary (`src/agent/agent-lifecycle.js`, after `executeOnCompleteHookWithRetry`
+succeeds) may advance it to `committed`; every failed, cancelled, or uncertain boundary on either
+path marks the row `cleanup-required` instead. `task-lib/commands/resume.js` requires
+`state === 'committed'` and reuses the exact persisted partition; an incomplete or non-committed
+record fails resume closed rather than guessing.
+
+`clean`/`purge` delete a task's own partition directory once its ownership is `committed` or
+`cleanup-required`, resolved safely under its recorded `storageRoot`; an unsafe/unresolvable path
+keeps the owner record and prints a warning instead of deleting. The shared `.blobs` CAS root
+under `<storageRoot>/omp-sessions/` is never deleted by per-task cleanup.
 
 `providerSettings.omp` stays empty; OMP's own settings/model roles/profiles remain under its
 documented config. Zeroshot controls only its existing agent `modelLevel`, explicit `model`, and

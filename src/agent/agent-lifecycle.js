@@ -23,6 +23,10 @@ const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
 const { updateAgentProviderSession } = require('./provider-session');
+const {
+  commitRecordedOwnership,
+  markCleanupRequired,
+} = require('../../task-lib/omp-session-ownership.js');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
 
@@ -582,6 +586,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
     result = await agent._spawnClaudeTask(context);
   } catch (error) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(error.taskId || agent.currentTaskId);
     throw error;
   }
   attachResultMetadata(agent, result);
@@ -589,6 +594,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
   // Check if task execution failed
   if (!result.success) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(result.taskId);
     const error = new Error(result.error || 'Task execution failed');
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
@@ -599,20 +605,31 @@ async function runTaskAttempt(agent, triggeringMessage) {
   const fallbackReason = await maybeRetryValidatorInDocker(agent, result);
   if (fallbackReason) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(result.taskId);
     throw new Error(
       `Validator platform mismatch detected (${fallbackReason}). Retrying in Docker isolation.`
     );
   }
 
   // The hook publishes the logical output of the turn. Until it succeeds, neither
-  // TASK_COMPLETED nor its provider continuation boundary is durable.
+  // TASK_COMPLETED nor its provider continuation boundary is durable — an OMP cluster-agent
+  // owner's ownership record must stay unresumable until this succeeds too (see
+  // task-lib/rpc-watcher.js finalizeOmpOwnership, which only records evidence and defers the
+  // commit decision to this exact boundary).
   try {
     await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
   } catch (error) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(result.taskId);
     throw error;
   }
 
+  // Commit-before-agent-snapshot: ownership advances to 'committed' here, before the in-memory
+  // provider session snapshot below. A crash in between leaves a committed-but-unreferenced
+  // partition — harmless and recoverable, since resume always requires BOTH the agent's own
+  // providerSession snapshot (absent here) AND a committed ownership row; losing only the
+  // snapshot just means the next turn allocates a fresh partition instead of resuming this one.
+  commitRecordedOwnership(result.taskId);
   updateAgentProviderSession(agent, result.providerSession);
   agent.lastGuidanceAppliedId = agent.currentGuidanceSequence;
 

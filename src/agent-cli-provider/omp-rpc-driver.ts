@@ -464,6 +464,20 @@ export function runOmpRpcTask(
       // (agent_end / a delayed prompt_result), not by this function returning.
     }
 
+    // Present on both the get_state response's `data` and a `session_info_update` event frame per
+    // docs/rpc.md; either may carry only a subset, so callers merge this onto prior evidence
+    // rather than replacing it wholesale.
+    function sessionFieldsFromRecord(
+      record: Record<string, unknown>
+    ): Partial<Pick<OmpRpcSessionEvidence, 'sessionId' | 'sessionFile'>> {
+      const sessionId = getString(record, 'sessionId');
+      const sessionFile = getString(record, 'sessionFile');
+      return {
+        ...(sessionId !== null ? { sessionId } : {}),
+        ...(sessionFile !== null ? { sessionFile } : {}),
+      };
+    }
+
     function sessionEvidenceFromState(
       stateResponse: Record<string, unknown> | null
     ): Omit<OmpRpcSessionEvidence, 'phase'> {
@@ -471,15 +485,27 @@ export function runOmpRpcTask(
       const data = getRecord(stateResponse, 'data');
       const model = data ? getRecord(data, 'model') : null;
       return {
-        sessionId: null,
-        sessionFile: null,
+        ...UNKNOWN_SESSION_EVIDENCE,
+        ...(data ? sessionFieldsFromRecord(data) : {}),
         selectedProvider: (model ? getString(model, 'provider') : null) ?? '',
         selectedModel: (model ? getString(model, 'id') : null) ?? '',
         thinkingLevel: (data ? getString(data, 'thinkingLevel') : null) ?? '',
       };
     }
 
-    function dispatchFrame(frame: OmpRpcInboundFrame): void {
+    // session_info_update is a builtin slash-command side channel (docs/rpc.md) that can carry a
+    // later-observed sessionId/sessionFile than the initial get_state snapshot. Returning the
+    // hooks.onSession() promise (rather than fire-and-forget) lets a persistence failure surface
+    // through the same enqueue()/state.chain .catch() -> failPermanently() path as every other
+    // dispatch failure, instead of being silently swallowed.
+    function handleSessionInfoUpdate(frame: OmpRpcInboundFrame): Promise<void> | void {
+      const updates = sessionFieldsFromRecord(frame);
+      if (Object.keys(updates).length === 0) return;
+      state.sessionEvidence = { ...state.sessionEvidence, ...updates };
+      return hooks.onSession({ ...state.sessionEvidence, phase: 'ready' });
+    }
+
+    function dispatchFrame(frame: OmpRpcInboundFrame): void | Promise<void> {
       if (state.terminal) return; // Frames after the terminal frame are dropped.
       if (!state.readyReceived) {
         dispatchReadyFrame(frame);
@@ -513,6 +539,8 @@ export function runOmpRpcTask(
         case 'agent_end':
           handleAgentEnd();
           return;
+        case 'session_info_update':
+          return handleSessionInfoUpdate(frame);
         default:
           if (state.promptSent) emitNormalized(frame);
       }

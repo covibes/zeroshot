@@ -46,6 +46,7 @@ const {
 } = require('../task-spawn-cleanup-ownership');
 const {
   providerSessionFromCompletedTask,
+  resolveAgentProviderSession,
   resolveAgentResumeSessionId,
   validateCompletedResumeIdentity,
 } = require('./provider-session');
@@ -722,12 +723,36 @@ function buildTaskRunArgs({
     args.push(mcpArg);
   }
 
-  const resumeSessionId = resolveAgentResumeSessionId(agent, providerName);
-  if (resumeSessionId) {
-    args.push('--resume', resumeSessionId);
+  if (providerName === 'omp') {
+    const ompResumeArg = buildOmpResumeArg(agent, providerName);
+    if (ompResumeArg) args.push('--omp-resume', ompResumeArg);
+  } else {
+    const resumeSessionId = resolveAgentResumeSessionId(agent, providerName);
+    if (resumeSessionId) {
+      args.push('--resume', resumeSessionId);
+    }
   }
 
   return args;
+}
+
+/**
+ * OMP never accepts a bare `--resume <sessionId>` (see failClosedUnsupportedSessionControl in
+ * adapters/omp.ts): the child `zeroshot task run` process needs the full verified descriptor so
+ * it can re-verify identity/manifest/selector drift before ever spawning OMP. Not secret — same
+ * non-secret shape as task.ompSessionOwnership.session.
+ */
+function buildOmpResumeArg(agent, providerName) {
+  const ompSession = resolveAgentProviderSession(agent, providerName)?.ompSession;
+  if (!ompSession) return null;
+  return JSON.stringify({
+    partitionId: ompSession.partitionId,
+    sessionFileName: ompSession.sessionFileName,
+    expectedSessionFileIdentity: ompSession.sessionFileIdentity,
+    expectedArtifactManifestDigest: ompSession.artifactManifestDigest,
+    expectedSelectedProvider: ompSession.selectedProvider,
+    expectedSelectedModel: ompSession.selectedModel,
+  });
 }
 
 /**
@@ -805,12 +830,20 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
 
   if (clusterId) {
     spawnEnv.ZEROSHOT_CLUSTER_ID = clusterId;
+    spawnEnv.ZEROSHOT_AGENT_ID = agent.id;
     const cmdproofRoot = path.join(os.homedir(), '.zeroshot', 'cmdproof', clusterId);
     if (!spawnEnv.CMDPROOF_CACHE_DIR) {
       spawnEnv.CMDPROOF_CACHE_DIR = path.join(cmdproofRoot, 'cache');
     }
     if (!spawnEnv.CMDPROOF_KEY_DIR) {
       spawnEnv.CMDPROOF_KEY_DIR = path.join(cmdproofRoot, 'keys');
+    }
+    // OMP session partitions live under the owning cluster's storageDir (never TASKS_DIR — see
+    // task-lib/omp-storage-root.js), forwarded to the spawned `zeroshot task run` child since it
+    // has no other way to learn which orchestrator instance owns this cluster.
+    if (providerName === 'omp') {
+      spawnEnv.ZEROSHOT_OMP_STORAGE_ROOT =
+        agent.cluster?.storageDir || path.join(os.homedir(), '.zeroshot');
     }
   }
 

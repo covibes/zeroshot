@@ -2876,6 +2876,12 @@ taskCmd
     'Resume a specific provider session (Claude, Codex, or OpenCode)'
   )
   .option('-c, --continue', 'Continue the most recent provider session (Claude or OpenCode)')
+  .addOption(
+    new Option(
+      '--omp-resume <descriptor>',
+      'Internal: verified OMP resume descriptor JSON (see task-lib/omp-session-ownership.js)'
+    ).hideHelp()
+  )
   .option(
     '-o, --output-format <format>',
     'Output format: stream-json (default), text, json',

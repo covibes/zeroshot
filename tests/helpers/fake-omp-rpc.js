@@ -80,6 +80,7 @@ const KNOWN_SCENARIOS = new Set([
   'lifetime-id-flood',
   'output-cap',
   'stderr-flood',
+  'session-info-update',
 ]);
 
 function emitReady(scenario) {
@@ -192,6 +193,8 @@ function main() {
     }
 
     if (command.type === 'get_state') {
+      const sessionId = process.env.OMP_FAKE_RPC_SESSION_ID;
+      const sessionFile = process.env.OMP_FAKE_RPC_SESSION_FILE;
       emit({
         id: command.id,
         type: 'response',
@@ -200,6 +203,8 @@ function main() {
         data: {
           model: { provider: 'anthropic', id: '@default' },
           thinkingLevel: 'medium',
+          ...(sessionId ? { sessionId } : {}),
+          ...(sessionFile ? { sessionFile } : {}),
         },
       });
       return;
@@ -342,6 +347,14 @@ function main() {
         // Deliberately never reaches a terminal frame and ignores `abort`, so the driver must
         // fall back to its SIGTERM/SIGKILL escalation to end the task.
         return;
+      }
+      if (scenario === 'session-info-update') {
+        emit({
+          type: 'session_info_update',
+          sessionId: process.env.OMP_FAKE_RPC_UPDATED_SESSION_ID || 'updated-session',
+          sessionFile:
+            process.env.OMP_FAKE_RPC_UPDATED_SESSION_FILE || '/tmp/updated-session.jsonl',
+        });
       }
       emitAgentTurn();
       return;

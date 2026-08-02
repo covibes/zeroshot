@@ -453,6 +453,10 @@ export const providerRegistry = [
     availabilityProbe: 'help-or-version',
     // Written out explicitly rather than spread from STANDARD_CAPABILITIES, which defaults
     // dockerIsolation to true; OMP stays worktree-only until Subissue 6 flips dockerIsolation.
+    // sessionResume is true as of issue #866: verified UUID partitions, two-phase file
+    // verification, and the owner-fenced ownership FSM (task-lib/omp-session-ownership.js) are
+    // live end to end for host, worktree, detached cluster-agent, and standalone manual resume.
+    // Docker stays fresh-only (dockerIsolation is false above, independent of this flip).
     capabilities: {
       dockerIsolation: false,
       worktreeIsolation: true,
@@ -461,7 +465,7 @@ export const providerRegistry = [
       streamJson: true,
       thinkingMode: true,
       reasoningEffort: true,
-      sessionResume: false,
+      sessionResume: true,
       webSearch: false,
     },
     docs: {

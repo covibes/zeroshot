@@ -492,6 +492,41 @@ OMP's supported version, package identity, and release asset digests are pinned 
 
 OMP's `rpc-stdio` invoke lane uses one shared lifecycle driver, `runOmpRpcTask` (`omp-rpc-driver.ts`), for both foreground (`contract-invoke.ts`) and detached (`task-lib/rpc-watcher.js`) execution, so the two paths produce identical result semantics. Spawn evidence is persisted (via the caller's `onSpawn` hook) before the first stdin write, and is reported only once the child process is confirmed spawned (the Node `'spawn'` event) — never synthesized from a pre-spawn/undefined pid, which would let ownership-based termination signal an unrelated process. Output is normalized-events-only: raw RPC frames, prompt text, and control payloads are never logged, only `OutputEvent`s (`omp-rpc-events.ts`). The detached watcher's prompt never enters its argv (`ps` and `/proc/<pid>/cmdline` expose argv to every local user for the watcher's whole lifetime); `task-lib/runner.js` hands it over the private, length-prefixed stdin pipe in `src/watcher-prompt-channel.js`, and the watcher fails closed — no OMP spawn, ownership-aware cleanup still runs — when that channel is absent, truncated, over the pinned 1 MiB frame contract, or closed before a complete payload. The per-task OMP config overlay (`omp-config-overlay.js`) and its cleanup are ownership-checked by the shared `src/command-cleanup-ownership.js` owner used by both cleanup call sites; a failed or unsafe cleanup leaves the task's cleanup receipt intact (durably retryable) instead of silently discarding it. Provider `dockerIsolation`/`worktreeIsolation` capabilities are gated in `orchestrator.js` and `preflight.js` before any container/worktree is created, not after.
 
+OMP session persistence (issue #866): fresh runs pass `--session-dir <partition>`; verified resume
+adds `--resume <partition>/<file>` as the exact absolute path Zeroshot already verified, never a
+bare `--resume`/`--continue` or an ID search; `--no-session` is reserved for the sessionless
+Docker lane. Each session lives in its own random, secret-free UUID partition under
+`<storageRoot>/omp-sessions/<uuid>/` (`task-lib/omp-storage-root.js` resolves `storageRoot` to the
+owning cluster's `storageDir` or the standalone `TASKS_DIR`, never derived from prompt text or
+cwd). Partition allocation is row-before-directory: `task-lib/runner.js#spawnTask` persists the
+task's provisional `ompSessionOwnership` row before the partition directory is ever created on
+disk, so a crash between the two leaves a provisional row pointing at a path with nothing there
+yet, which cleanup safely no-ops on. `src/omp-session-verifier.js` implements the two-phase
+lazy-file contract against the fixed `OMP_SESSION_LIMITS` (`src/omp-session-limits.js`): existing
+(resume) partitions are fully verified before spawn and again from the `ready` hook right before
+the prompt; fresh partitions are only path-checked at `ready` and are descriptor/header/tree-
+verified after terminal materialization. Every session/artifact/blob file is streamed in
+fixed-size chunks — never loaded proportional to file size — checking both the declared and the
+bytes actually observed while reading; only owner-held directories and regular, single-link files
+are accepted, and a referenced CAS blob (`blob:sha256:<hex>`) that is missing, non-regular, or
+digest-mismatched fails the same way as a structural violation. Ownership is an owner-fenced state
+machine persisted as `task.ompSessionOwnership` (`task-lib/store.js` schema v5,
+`task-lib/omp-session-ownership.js`): `provisional -> committed | cleanup-required`, every
+transition a SQL compare-and-swap so a duplicate/re-entrant completion call can never clobber a
+state a concurrent writer already advanced past. A standalone task's detached watcher run is its
+own terminal boundary and commits directly once output is validated; a cluster-agent task's
+watcher only records the owner-fenced verified materialization evidence and leaves the row
+`provisional` — only the spawning agent's post-hook success boundary
+(`src/agent/agent-lifecycle.js`, after `executeOnCompleteHookWithRetry` succeeds) may advance it
+to `committed`, mirroring the existing provider-continuation success boundary below. Every failed,
+cancelled, or uncertain boundary on either path marks the row `cleanup-required` instead; manual
+resume (`task-lib/commands/resume.js`) requires `state === 'committed'` and reuses the exact
+persisted partition, failing closed rather than guessing on anything less. `clean`/`purge` delete
+a task's own partition directory once its ownership is `committed`/`cleanup-required` and the path
+resolves safely under its recorded `storageRoot`, leave the owner record with a warning instead of
+deleting on an unsafe/unresolvable path, and never delete the shared `.blobs` CAS root under
+`<storageRoot>/omp-sessions/`.
+
 Model gateways stay behind the single bundled `gateway` engine. Do not add `openrouter`, `ollama`, `vllm`, `hermes`, or similar model-only targets as standalone provider ids.
 
 Exactly one registry entry must set `default: true`; `getDefaultProviderId()` (`src/agent-cli-provider/provider-registry.ts`, re-exported from `lib/provider-names.js`) is the sole default-provider authority — settings, agent resolution, CLI, and setup code fall back to it, never a hardcoded provider literal. Historical-output parsers and legacy provider-less persisted watcher/task records keep their existing Claude-literal compatibility path and are never reinterpreted via the marker.

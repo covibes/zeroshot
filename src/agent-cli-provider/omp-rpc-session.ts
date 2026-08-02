@@ -1,6 +1,6 @@
-// Session-launch types for the OMP RPC v2 driver. This slice launches sessionless
-// (`--no-session`) only; `fresh`/`resume` are typed for Subissue 4's session-flag activation but
-// are unreachable from any caller in this slice.
+// Session-launch types for the OMP RPC v2 driver. `none` keeps the Docker-only sessionless launch
+// (`--no-session`); `fresh`/`resume` carry a verified partition (and, for resume, a verified
+// session file) allocated and checked by the JS task-lib layer — never a raw, unverified path.
 
 export interface VerifiedOmpPartition {
   readonly path: string;

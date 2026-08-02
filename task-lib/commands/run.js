@@ -1,6 +1,24 @@
 import chalk from 'chalk';
 import { shouldUseAttachableWatcher, spawnTask } from '../runner.js';
 
+function parseOmpResumeDescriptor(raw) {
+  if (!raw) return undefined;
+  let descriptor;
+  try {
+    descriptor = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`--omp-resume must be a JSON descriptor: ${error.message}`);
+  }
+  if (
+    !descriptor ||
+    typeof descriptor.partitionId !== 'string' ||
+    typeof descriptor.sessionFileName !== 'string'
+  ) {
+    throw new Error('--omp-resume descriptor must include partitionId and sessionFileName.');
+  }
+  return descriptor;
+}
+
 export async function runTask(prompt, options = {}) {
   if (!prompt || prompt.trim().length === 0) {
     console.log(chalk.red('Error: Prompt is required'));
@@ -36,6 +54,7 @@ export async function runTask(prompt, options = {}) {
     provider: options.provider,
     resume: options.resume,
     continue: options.continue,
+    ompResume: parseOmpResumeDescriptor(options.ompResume),
     outputFormat,
     jsonSchema,
     mcpConfig: options.mcpConfig,
