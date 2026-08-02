@@ -3,7 +3,8 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use zeroshot_engine::native_credentials::fake::{
     FakeCancellation, FakeCredentialClock, FakeCredentialSource,
@@ -111,6 +112,68 @@ impl CancellationSignal for CancelFromSecondCheck {
         self.calls.fetch_add(1, Ordering::SeqCst) >= 1
     }
 }
+struct CountingClock {
+    calls: AtomicU64,
+    now_ms: AtomicU64,
+}
+
+impl CountingClock {
+    fn new(now_ms: u64) -> Self {
+        Self {
+            calls: AtomicU64::new(0),
+            now_ms: AtomicU64::new(now_ms),
+        }
+    }
+
+    fn advance(&self, delta_ms: u64) {
+        self.now_ms.fetch_add(delta_ms, Ordering::SeqCst);
+    }
+
+    fn calls(&self) -> u64 {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl CredentialClock for CountingClock {
+    fn now_ms(&self) -> u64 {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.now_ms.load(Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn deadline_elapsing_during_a_single_source_load_fails_and_releases_material() {
+    let (source, registry, policy) = single_source_fixture("claude-auth", b"secret");
+    let clock = TickingClock::new(0, 200);
+    let cancel = FakeCancellation::default();
+    let observations = NoopObservationSink;
+    let resolver = NativeCredentialResolver::new(policy, registry, &clock, &observations);
+    let budget = AcquisitionBudget::new(150, 1_000, &cancel);
+
+    let error = resolver
+        .acquire(&claude_requirements(), &budget)
+        .expect_err("a source result arriving after the deadline must fail");
+
+    assert_eq!(error.kind(), CredentialFaultKind::DeadlineExceeded);
+    assert_eq!(source.release_count(), 1);
+}
+
+#[test]
+fn cancellation_during_a_single_source_load_fails_and_releases_material() {
+    let (source, registry, policy) = single_source_fixture("claude-auth", b"secret");
+    let clock = FakeCredentialClock::new(0);
+    let cancel = CancelFromSecondCheck::new();
+    let observations = NoopObservationSink;
+    let resolver = NativeCredentialResolver::new(policy, registry, &clock, &observations);
+    let budget = AcquisitionBudget::new(10_000, 1_000, &cancel);
+
+    let error = resolver
+        .acquire(&claude_requirements(), &budget)
+        .expect_err("cancellation observed after source loading must fail");
+
+    assert_eq!(error.kind(), CredentialFaultKind::Cancelled);
+    assert_eq!(source.release_count(), 1);
+}
 
 #[test]
 fn material_access_fails_expired_after_the_ttl_elapses() {
@@ -136,6 +199,60 @@ fn material_access_fails_expired_after_the_ttl_elapses() {
         .expect_err("material access must fail once the ttl elapses");
     assert_eq!(error.kind(), CredentialFaultKind::Expired);
     let _ = source;
+}
+#[test]
+fn contended_material_access_rechecks_expiry_after_taking_the_lock() {
+    let (_source, registry, policy) = single_source_fixture("claude-auth", b"secret");
+    let clock = CountingClock::new(0);
+    let cancel = FakeCancellation::default();
+    let observations = NoopObservationSink;
+    let resolver = NativeCredentialResolver::new(policy, registry, &clock, &observations);
+    let budget = AcquisitionBudget::new(10_000, 1_000, &cancel);
+    let leases = resolver
+        .acquire(&claude_requirements(), &budget)
+        .expect("acquire must succeed");
+    let capability = leases
+        .capability(&requirement("claude-auth"))
+        .expect("capability must exist");
+    let baseline_calls = clock.calls();
+    let (holding_tx, holding_rx) = mpsc::sync_channel(0);
+    let (release_tx, release_rx) = mpsc::sync_channel(0);
+    let (second_started_tx, second_started_rx) = mpsc::sync_channel(0);
+
+    std::thread::scope(|scope| {
+        let capability_ref = &capability;
+        let first = scope.spawn(move || {
+            capability_ref.with_material(|_| {
+                holding_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        holding_rx.recv().unwrap();
+
+        let capability_ref = &capability;
+        let second = scope.spawn(move || {
+            second_started_tx.send(()).unwrap();
+            capability_ref.with_material(|_| ())
+        });
+        second_started_rx.recv().unwrap();
+
+        let wait_until = Instant::now() + Duration::from_millis(250);
+        while clock.calls() < baseline_calls + 2 && Instant::now() < wait_until {
+            std::thread::yield_now();
+        }
+        clock.advance(1_001);
+        release_tx.send(()).unwrap();
+
+        first
+            .join()
+            .unwrap()
+            .expect("the lock holder accessed material before expiry");
+        let error = second
+            .join()
+            .unwrap()
+            .expect_err("the waiter must observe expiry after taking the lock");
+        assert_eq!(error.kind(), CredentialFaultKind::Expired);
+    });
 }
 
 #[test]

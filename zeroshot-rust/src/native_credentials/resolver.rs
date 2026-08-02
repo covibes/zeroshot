@@ -112,13 +112,9 @@ impl<'a> NativeCredentialResolver<'a> {
             self.observations,
         );
         for requirement in requirements.requirements() {
-            if budget.cancel.is_cancelled() {
+            if let Err(fault) = self.validate_budget(requirement, budget) {
                 set.release_all();
-                return Err(self.fault(CredentialFaultKind::Cancelled, requirement));
-            }
-            if self.clock.now_ms() >= budget.deadline_ms {
-                set.release_all();
-                return Err(self.fault(CredentialFaultKind::DeadlineExceeded, requirement));
+                return Err(fault);
             }
             match self.resolve_one(requirement, budget) {
                 Ok(lease) => set.insert(requirement.clone(), lease),
@@ -143,6 +139,20 @@ impl<'a> NativeCredentialResolver<'a> {
             self.observations,
         )
     }
+    fn validate_budget(
+        &self,
+        requirement: &CredentialRequirementName,
+        budget: &AcquisitionBudget<'_>,
+    ) -> Result<u64, CredentialFault> {
+        if budget.cancel.is_cancelled() {
+            return Err(self.fault(CredentialFaultKind::Cancelled, requirement));
+        }
+        let now_ms = self.clock.now_ms();
+        if now_ms >= budget.deadline_ms {
+            return Err(self.fault(CredentialFaultKind::DeadlineExceeded, requirement));
+        }
+        Ok(now_ms)
+    }
 
     fn resolve_one(
         &self,
@@ -157,10 +167,11 @@ impl<'a> NativeCredentialResolver<'a> {
             let Some(port) = self.registry.port(source.kind()) else {
                 return Err(self.fault(CredentialFaultKind::Missing, requirement));
             };
-            match port.load(source) {
+            let loaded = port.load(source);
+            let now_ms = self.validate_budget(requirement, budget)?;
+            match loaded {
                 Ok(Some(material)) => {
                     let digest = material.digest(requirement);
-                    let now_ms = self.clock.now_ms();
                     let expires_at_ms =
                         now_ms.saturating_add(budget.ttl_ms).min(budget.deadline_ms);
                     return Ok(CredentialLease::new(

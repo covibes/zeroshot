@@ -74,16 +74,16 @@ impl CredentialLease {
 
     fn with_material<R>(
         &self,
-        now_ms: u64,
+        clock: &dyn CredentialClock,
         f: impl FnOnce(&[u8]) -> R,
     ) -> Result<R, CredentialFaultKind> {
-        if now_ms >= self.expires_at_ms {
-            return Err(CredentialFaultKind::Expired);
-        }
         let guard = self
             .material
             .lock()
             .expect("credential lease mutex must not be poisoned");
+        if clock.now_ms() >= self.expires_at_ms {
+            return Err(CredentialFaultKind::Expired);
+        }
         match guard.as_ref() {
             Some(material) => Ok(f(material.expose())),
             None => Err(CredentialFaultKind::Released),
@@ -153,8 +153,7 @@ impl<'a> CredentialCapability<'a> {
     /// The only path to the raw secret bytes. Fails `Expired` past the lease deadline and
     /// `Released` once the lease has been released.
     pub fn with_material<R>(&self, f: impl FnOnce(&[u8]) -> R) -> Result<R, CredentialFault> {
-        let now_ms = self.clock.now_ms();
-        self.lease.with_material(now_ms, f).map_err(|kind| {
+        self.lease.with_material(self.clock, f).map_err(|kind| {
             CredentialFault::new(
                 kind,
                 self.lease.requirement.clone(),
