@@ -45,20 +45,23 @@ function trackCleanup(command) {
   for (const file of command.cleanup || []) createdTempFiles.add(file);
 }
 
+const VOLATILE_TEMP_PATH_PATTERN =
+  /zeroshot-schema-.*\.json$|zeroshot-omp-config-[A-Za-z0-9_-]+(\/[^/]+\.yml)?$/;
+
 function normalizeCommand(command) {
   trackCleanup(command);
   return {
     binary: command.binary,
     args: command.args.map((arg) =>
-      typeof arg === 'string' && /zeroshot-schema-.*\.json$/.test(arg) ? '<schema-file>' : arg
+      typeof arg === 'string' && VOLATILE_TEMP_PATH_PATTERN.test(arg) ? '<temp-path>' : arg
     ),
     env: command.env,
     cleanup: (command.cleanup || []).map((file) =>
-      /zeroshot-schema-.*\.json$/.test(file) ? '<schema-file>' : file
+      VOLATILE_TEMP_PATH_PATTERN.test(file) ? '<temp-path>' : file
     ),
     cleanupMetadata: (command.cleanupMetadata || []).map((item) => ({
       ...item,
-      path: /zeroshot-schema-.*\.json$/.test(item.path) ? '<schema-file>' : item.path,
+      path: VOLATILE_TEMP_PATH_PATTERN.test(item.path) ? '<temp-path>' : item.path,
     })),
   };
 }
@@ -414,21 +417,19 @@ test('runtime Pi command facade delegates to helper', () => {
 
 test('runtime OMP command facade delegates to helper', () => {
   assertRuntimeCommandParity('omp', 'omp context', {
-    outputFormat: 'json',
-    jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
     cwd: '/tmp/project',
     modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
     cliFeatures: {
-      supportsModeJson: true,
-      supportsPrint: true,
-      supportsCwd: true,
-      supportsAutoApprove: true,
+      versionMatches: true,
+      supportsRpcMode: true,
+      supportsConfig: true,
       supportsModel: true,
       supportsThinking: true,
-      supportsNoExtensions: true,
-      supportsNoSkills: true,
-      supportsNoRules: true,
+      supportsApprovalMode: true,
       supportsNoTitle: true,
+      supportsNoSession: true,
+      supportsSessionDir: true,
+      supportsResume: true,
     },
   });
 });
@@ -438,7 +439,7 @@ test('OMP registry install guidance is the pinned omp-release command, not a par
   assert.equal(metadata.installInstructions, OMP_INSTALL_COMMAND);
   assert.equal(
     metadata.installInstructions,
-    `npm install -g --ignore-scripts ${OMP_PACKAGE_NAME}@${OMP_SUPPORTED_VERSION}`
+    `bun install -g ${OMP_PACKAGE_NAME}@${OMP_SUPPORTED_VERSION}`
   );
   assert.match(metadata.installInstructions, new RegExp(`@${OMP_SUPPORTED_VERSION}$`));
 });
@@ -800,13 +801,13 @@ test('feature probing is deterministic from injected help text', () => {
     helper
       .getProviderAdapter('omp')
       .detectCliFeatures(
-        'omp --mode json -p --cwd --auto-approve --model --thinking --no-extensions --no-skills --no-rules --no-title'
-      ).supportsAutoApprove,
+        'omp --mode rpc --config --model --thinking --approval-mode --no-title --no-session --session-dir --resume',
+        '17.2.1'
+      ).supportsApprovalMode,
     true
   );
   assert.equal(
-    helper.getProviderAdapter('omp').detectCliFeatures('omp --mode json -p --cwd')
-      .supportsAutoApprove,
+    helper.getProviderAdapter('omp').detectCliFeatures('omp --mode rpc').supportsApprovalMode,
     false
   );
   assert.equal(

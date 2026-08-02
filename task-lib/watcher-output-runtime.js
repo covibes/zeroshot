@@ -140,6 +140,38 @@ export function completeWatcherFailure({ error, source, ...completionOptions }) 
   });
 }
 
+/**
+ * Output runtime for the rpc-stdio lane (see task-lib/rpc-watcher.js). Unlike
+ * createWatcherOutputRuntime, there is no raw stdout/stderr byte stream to parse: the
+ * OMP RPC driver (omp-rpc-driver.ts) already normalizes every frame into an OutputEvent before
+ * calling onEvent, so this runtime only ever logs already-normalized events — never raw RPC
+ * frames, prompt text, or control payloads.
+ */
+export function createRpcWatcherOutputRuntime({ log }) {
+  function logEvent(event) {
+    log(`[${Date.now()}]${JSON.stringify(event)}\n`);
+  }
+
+  function complete(result) {
+    const lastResult = [...result.events].reverse().find((event) => event.type === 'result');
+    const turnFailed = lastResult !== undefined && lastResult.success === false;
+    const success = result.stopReason === 'completed' && !turnFailed;
+    const resolvedCode = success ? 0 : 1;
+    log(`\n${'='.repeat(50)}\n`);
+    log(`Finished: ${new Date().toISOString()}\n`);
+    log(
+      `Stop reason: ${result.stopReason}, Exit code: ${result.exitCode}, Signal: ${result.signal}\n`
+    );
+    return {
+      resolvedCode,
+      status: success ? 'completed' : 'failed',
+      error: success ? null : (lastResult && lastResult.error) || result.stopReason,
+    };
+  }
+
+  return { logEvent, complete };
+}
+
 export function createWatcherOutputRuntime({
   config,
   providerName,

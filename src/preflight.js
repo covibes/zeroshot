@@ -24,6 +24,7 @@ const {
   getDefaultProviderId,
   getProviderMetadata,
   normalizeProviderName,
+  providerSupportsCapability,
   resolveProviderCommand,
 } = require('../lib/provider-names');
 const { detectGitContext } = require('../lib/git-remote-utils');
@@ -441,6 +442,32 @@ function validateGatewayProvider() {
   };
 }
 
+function validateProviderIsolationCapabilities(providerName, options) {
+  const errors = [];
+  if (options.requireDocker && !providerSupportsCapability(providerName, 'dockerIsolation')) {
+    errors.push(
+      formatError(
+        'Provider does not support Docker isolation',
+        `Provider "${providerName}" does not advertise dockerIsolation`,
+        [
+          'Run without --docker (worktree isolation may be supported)',
+          'Or select a different provider',
+        ]
+      )
+    );
+  }
+  if (options.requireGit && !providerSupportsCapability(providerName, 'worktreeIsolation')) {
+    errors.push(
+      formatError(
+        'Provider does not support worktree isolation',
+        `Provider "${providerName}" does not advertise worktreeIsolation`,
+        ['Run without --worktree/--pr/--ship', 'Or select a different provider']
+      )
+    );
+  }
+  return errors;
+}
+
 function validateProvider(providerName, options) {
   let metadata;
   try {
@@ -456,14 +483,19 @@ function validateProvider(providerName, options) {
     };
   }
 
+  const isolationErrors = validateProviderIsolationCapabilities(providerName, options);
+
   if (metadata.command.kind === 'configured-claude') {
-    return validateClaudeProvider(options);
+    const result = validateClaudeProvider(options);
+    return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
   }
   if (providerName === 'gateway') {
-    return validateGatewayProvider();
+    const result = validateGatewayProvider();
+    return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
   }
 
-  return validateRegistryCliProvider(providerName);
+  const result = validateRegistryCliProvider(providerName);
+  return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
 }
 
 function validateRegistryCliProvider(providerName) {

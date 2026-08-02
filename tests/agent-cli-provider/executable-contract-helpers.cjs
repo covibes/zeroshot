@@ -115,6 +115,10 @@ function fakeCopilotScript(body) {
   return `#!/usr/bin/env node\n${body}\n`;
 }
 
+function fakeOmpScript(body) {
+  return `#!/usr/bin/env node\n${body}\n`;
+}
+
 function invokeCodexSchemaRequest(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -133,6 +137,7 @@ module.exports = {
   fakeCodexScript,
   fakeCopilotScript,
   fakeKiroScript,
+  fakeOmpScript,
   fakePiScript,
   repoRoot,
   runExecutable,
