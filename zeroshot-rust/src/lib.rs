@@ -11,6 +11,7 @@ pub mod issue_provider;
 pub mod product_errors;
 mod provider_value;
 pub mod required_proof;
+pub mod role_contract;
 pub mod scheduler;
 pub mod source_code_provider;
 pub mod worker_catalog;
