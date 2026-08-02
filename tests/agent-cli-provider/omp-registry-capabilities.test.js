@@ -43,7 +43,7 @@ test('omp registry entry has exactly the nine specified capability values', () =
     jsonSchema: false,
     mcpServers: false,
     webSearch: false,
-    sessionResume: false,
+    sessionResume: true,
     dockerIsolation: true,
   });
 });

@@ -125,6 +125,41 @@ test('happy path: negotiate -> get_state -> prompt(agentInvoked:true) -> agent_e
   });
 });
 
+test('get_state response sessionId/sessionFile populate ready-phase session evidence', async () => {
+  await withScenario('happy', async () => {
+    const previousId = process.env.OMP_FAKE_RPC_SESSION_ID;
+    const previousFile = process.env.OMP_FAKE_RPC_SESSION_FILE;
+    process.env.OMP_FAKE_RPC_SESSION_ID = 'sess-abc';
+    process.env.OMP_FAKE_RPC_SESSION_FILE = '/tmp/partition/sess-abc.jsonl';
+    try {
+      const { sessions } = await runTask();
+      assert.equal(sessions[0].phase, 'ready');
+      assert.equal(sessions[0].sessionId, 'sess-abc');
+      assert.equal(sessions[0].sessionFile, '/tmp/partition/sess-abc.jsonl');
+    } finally {
+      if (previousId === undefined) delete process.env.OMP_FAKE_RPC_SESSION_ID;
+      else process.env.OMP_FAKE_RPC_SESSION_ID = previousId;
+      if (previousFile === undefined) delete process.env.OMP_FAKE_RPC_SESSION_FILE;
+      else process.env.OMP_FAKE_RPC_SESSION_FILE = previousFile;
+    }
+  });
+});
+
+test('session_info_update after prompt refreshes session evidence via onSession, never leaks as an OutputEvent', async () => {
+  await withScenario('session-info-update', async () => {
+    const { result, sessions, events } = await runTask();
+    assert.equal(result.stopReason, 'completed');
+    assert.ok(sessions.length >= 2, 'expected a ready-phase call plus a session_info_update call');
+    const updated = sessions.find((s) => s.sessionId === 'updated-session');
+    assert.ok(updated, 'session_info_update evidence never reached onSession');
+    assert.equal(updated.sessionFile, '/tmp/updated-session.jsonl');
+    assert.equal(result.session.sessionId, 'updated-session');
+    for (const event of events) {
+      assert.notEqual(event.type, 'session_info_update');
+    }
+  });
+});
+
 test('agentInvoked:false is a permanent local-only failure', async () => {
   await withScenario('local-only', async () => {
     const { result, events } = await runTask();

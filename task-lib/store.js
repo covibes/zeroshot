@@ -10,9 +10,13 @@ import { join } from 'path';
 import Database from 'better-sqlite3';
 import { TASKS_DIR, LOGS_DIR } from './config.js';
 import { generateName } from './name-generator.js';
+import {
+  parseOmpSessionOwnership,
+  serializeOmpSessionOwnership,
+} from './omp-session-ownership-schema.js';
 
 const DB_FILE = join(TASKS_DIR, 'store.db');
-export const TASK_STORE_SCHEMA_VERSION = 4;
+export const TASK_STORE_SCHEMA_VERSION = 5;
 
 /** @type {Database.Database | null} */
 let db = null;
@@ -59,7 +63,8 @@ function getDb() {
       termination_strategy TEXT,
       command_cleanup TEXT,
       cancel_requested INTEGER DEFAULT 0,
-      spawn_ownership_token TEXT
+      spawn_ownership_token TEXT,
+      omp_session_ownership TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -110,6 +115,15 @@ function serializeCommandCleanup(value) {
   return value ? JSON.stringify(value) : null;
 }
 
+/**
+ * Internal accessor for modules that need direct prepared-statement access (SQL compare-and-swap
+ * transitions) beyond what the generic load/save/update helpers below offer. See
+ * task-lib/omp-session-ownership.js.
+ */
+export function getTaskStoreDatabase() {
+  return getDb();
+}
+
 export function migrateTaskStore(database) {
   ensureTaskColumn(database, 'process_group_id', 'INTEGER');
   ensureTaskColumn(database, 'termination_strategy', 'TEXT');
@@ -119,6 +133,9 @@ export function migrateTaskStore(database) {
   ensureTaskColumn(database, 'requested_resume_session_id', 'TEXT');
   ensureTaskColumn(database, 'session_id_conflict', 'INTEGER NOT NULL DEFAULT 0');
   ensureTaskColumn(database, 'resume_identity_verified', 'INTEGER NOT NULL DEFAULT 0');
+  // No backfill: every pre-v5 row has no OMP session concept, so NULL is exact truth, never a
+  // fabricated value. A non-OMP task's resume path is untouched by this column.
+  ensureTaskColumn(database, 'omp_session_ownership', 'TEXT');
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_spawn_ownership_token
       ON tasks(spawn_ownership_token)
@@ -143,6 +160,9 @@ export function migrateTaskStore(database) {
     }
     if (version < 4) {
       database.prepare('UPDATE tasks SET resume_identity_verified = 0').run();
+    }
+    if (version < 5) {
+      // omp_session_ownership already defaults to NULL via ensureTaskColumn above; no backfill.
     }
     database.pragma(`user_version = ${TASK_STORE_SCHEMA_VERSION}`);
   })();
@@ -192,6 +212,7 @@ function rowToTask(row) {
     commandCleanup: parseCommandCleanup(row.command_cleanup),
     cancelRequested: Boolean(row.cancel_requested),
     spawnOwnershipToken: row.spawn_ownership_token,
+    ompSessionOwnership: parseOmpSessionOwnership(row.omp_session_ownership),
   };
 }
 
@@ -220,12 +241,12 @@ export function saveTasks(tasks) {
       id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup, cancel_requested, spawn_ownership_token
+      command_cleanup, cancel_requested, spawn_ownership_token, omp_session_ownership
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup, @cancelRequested, @spawnOwnershipToken
+      @commandCleanup, @cancelRequested, @spawnOwnershipToken, @ompSessionOwnership
     )
   `);
 
@@ -260,6 +281,7 @@ export function saveTasks(tasks) {
         commandCleanup: serializeCommandCleanup(task.commandCleanup),
         cancelRequested: task.cancelRequested ? 1 : 0,
         spawnOwnershipToken: task.spawnOwnershipToken || null,
+        ompSessionOwnership: serializeOmpSessionOwnership(task.ompSessionOwnership || null),
       });
     }
   });
@@ -350,7 +372,15 @@ export function updateTask(id, updates) {
       termination_strategy = @terminationStrategy,
       command_cleanup = @commandCleanup,
       cancel_requested =
-        CASE WHEN @hasCancelRequested = 1 THEN @cancelRequested ELSE cancel_requested END
+        CASE WHEN @hasCancelRequested = 1 THEN @cancelRequested ELSE cancel_requested END,
+      -- Only ever written when the caller explicitly supplies it. This is a read-modify-write
+      -- update, so unconditionally rewriting the ownership column would let an unrelated
+      -- updateTask (the watcher persisting spawn evidence, say) clobber an owner-fenced
+      -- compare-and-swap another process performed in between — see
+      -- task-lib/omp-session-ownership.js, whose transitions bypass this statement for exactly
+      -- that reason.
+      omp_session_ownership =
+        CASE WHEN @hasOmpSessionOwnership = 1 THEN @ompSessionOwnership ELSE omp_session_ownership END
     WHERE id = @id
   `
     )
@@ -379,6 +409,10 @@ export function updateTask(id, updates) {
       commandCleanup: serializeCommandCleanup(updated.commandCleanup),
       hasCancelRequested: Object.prototype.hasOwnProperty.call(updates, 'cancelRequested') ? 1 : 0,
       cancelRequested: updated.cancelRequested ? 1 : 0,
+      hasOmpSessionOwnership: Object.prototype.hasOwnProperty.call(updates, 'ompSessionOwnership')
+        ? 1
+        : 0,
+      ompSessionOwnership: serializeOmpSessionOwnership(updated.ompSessionOwnership || null),
     });
 
   return updated;
@@ -404,12 +438,12 @@ export function addTask(task) {
       id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup, cancel_requested, spawn_ownership_token
+      command_cleanup, cancel_requested, spawn_ownership_token, omp_session_ownership
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup, @cancelRequested, @spawnOwnershipToken
+      @commandCleanup, @cancelRequested, @spawnOwnershipToken, @ompSessionOwnership
     )
   `
     )
@@ -439,6 +473,7 @@ export function addTask(task) {
       commandCleanup: serializeCommandCleanup(fullTask.commandCleanup),
       cancelRequested: fullTask.cancelRequested ? 1 : 0,
       spawnOwnershipToken: fullTask.spawnOwnershipToken || null,
+      ompSessionOwnership: serializeOmpSessionOwnership(fullTask.ompSessionOwnership || null),
     });
 
   return fullTask;

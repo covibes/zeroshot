@@ -4,6 +4,7 @@ import { appendJsonSchemaPrompt } from '../schema';
 import { isRecord, unknownToMessage } from '../json';
 import { OMP_REMEDIATION, OMP_SUPPORTED_VERSION } from '../omp-release';
 import { parseNormalizedOmpRpcEventLine } from '../omp-rpc-events';
+import type { OmpSessionLaunch } from '../omp-rpc-session';
 import {
   InvalidProviderModelError,
   type BuildProviderCommandOptions,
@@ -180,8 +181,13 @@ function detectCliFeatures(helpText?: string | null, versionText?: string | null
   };
 }
 
+function resolveOmpSessionLaunch(options: BuildProviderCommandOptions): OmpSessionLaunch {
+  return options.ompSession ?? { kind: 'none' };
+}
+
 function assertRequiredOmpFeatures(options: BuildProviderCommandOptions): void {
   const features = optionFeatures(options);
+  const session = resolveOmpSessionLaunch(options);
   const required: ReadonlyArray<readonly [boolean | undefined, string]> = [
     [features.versionMatches, `exact OMP version ${OMP_SUPPORTED_VERSION}`],
     [features.supportsRpcMode, '"rpc" mode'],
@@ -190,6 +196,10 @@ function assertRequiredOmpFeatures(options: BuildProviderCommandOptions): void {
     [features.supportsApprovalMode, '--approval-mode'],
     [features.supportsNoTitle, '--no-title'],
     [features.supportsNoSession, '--no-session'],
+    ...(session.kind === 'none'
+      ? []
+      : ([[features.supportsSessionDir, '--session-dir']] as const)),
+    ...(session.kind === 'resume' ? ([[features.supportsResume, '--resume']] as const) : []),
   ];
   const missing = required.filter(([supported]) => supported === false).map(([, label]) => label);
   if (missing.length === 0) return;
@@ -203,16 +213,35 @@ function assertRequiredOmpFeatures(options: BuildProviderCommandOptions): void {
 }
 
 function failClosedUnsupportedSessionControl(options: BuildProviderCommandOptions): void {
-  const hasResumeSessionId = options.resumeSessionId !== undefined;
-  if (!hasResumeSessionId && !options.continueSession) return;
-  const field = hasResumeSessionId ? 'options.resumeSessionId' : 'options.continueSession';
-  throw contractError({
-    code: 'invalid-field',
-    field,
-    exitCode: 2,
-    message:
-      'OMP RPC lane runs sessionless (--no-session) in this slice; resume/continue session control is capability-gated off (sessionResume: false).',
-  });
+  if (options.continueSession) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.continueSession',
+      exitCode: 2,
+      message: 'OMP RPC lane never supports --continue; continuation is always an explicit verified --resume partition.',
+    });
+  }
+  const hasVerifiedResume = resolveOmpSessionLaunch(options).kind === 'resume';
+  if (options.resumeSessionId !== undefined && !hasVerifiedResume) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.resumeSessionId',
+      exitCode: 2,
+      message:
+        'OMP RPC lane requires a verified session partition (options.ompSession.kind === "resume") to resume; a bare session ID cannot be trusted.',
+    });
+  }
+}
+
+function sessionArgs(session: OmpSessionLaunch): readonly string[] {
+  switch (session.kind) {
+    case 'none':
+      return ['--no-session'];
+    case 'fresh':
+      return ['--session-dir', session.partition.path];
+    case 'resume':
+      return ['--session-dir', session.partition.path, '--resume', session.file.path];
+  }
 }
 
 function rejectMcpConfig(options: BuildProviderCommandOptions): void {
@@ -257,8 +286,9 @@ function buildCommand(_context: string, options: BuildProviderCommandOptions = {
   const modelSelector = resolveModelSelector(options);
   const warnings = collectWarnings(options);
   const overlay = createOmpConfigOverlay();
+  const session = resolveOmpSessionLaunch(options);
 
-  const args: string[] = ['--mode', 'rpc', '--no-session', '--model', modelSelector];
+  const args: string[] = ['--mode', 'rpc', ...sessionArgs(session), '--model', modelSelector];
   if (options.modelSpec?.reasoningEffort) {
     args.push('--thinking', options.modelSpec.reasoningEffort);
   }

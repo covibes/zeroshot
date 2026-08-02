@@ -17,6 +17,7 @@ const { getNestedExecutionRegistry, TaskExecutionHandle } = require('./task-exec
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
+const { OMP_SESSIONLESS_ENV } = require('../../task-lib/omp-storage-root.js');
 const { loadSettings } = require('../../lib/settings.js');
 const { getDefaultProviderId } = require('../../lib/provider-names');
 const { resolveClaudeAuth } = require('../../lib/settings/claude-auth.js');
@@ -46,6 +47,7 @@ const {
 } = require('../task-spawn-cleanup-ownership');
 const {
   providerSessionFromCompletedTask,
+  resolveAgentProviderSession,
   resolveAgentResumeSessionId,
   validateCompletedResumeIdentity,
 } = require('./provider-session');
@@ -722,12 +724,46 @@ function buildTaskRunArgs({
     args.push(mcpArg);
   }
 
-  const resumeSessionId = resolveAgentResumeSessionId(agent, providerName);
-  if (resumeSessionId) {
-    args.push('--resume', resumeSessionId);
+  if (providerName === 'omp') {
+    const ompResumeArg = buildOmpResumeArg(agent, providerName);
+    if (ompResumeArg) args.push('--omp-resume', ompResumeArg);
+  } else {
+    const resumeSessionId = resolveAgentResumeSessionId(agent, providerName);
+    if (resumeSessionId) {
+      args.push('--resume', resumeSessionId);
+    }
   }
 
   return args;
+}
+
+/**
+ * OMP never accepts a bare `--resume <sessionId>` (see failClosedUnsupportedSessionControl in
+ * adapters/omp.ts): the child `zeroshot task run` process needs the *complete* committed tuple so
+ * it can re-check it against the prior owner's persisted row and re-verify identity/manifest/
+ * fingerprint drift before ever spawning OMP.
+ *
+ * `priorOwnerTaskId` is what turns this from an assertion into a cross-check: the child resolves
+ * that row and requires every field below to match it exactly, so a stale or tampered argv
+ * descriptor is a conflict that fails closed instead of a claim that is taken at face value.
+ * Nothing here is secret — it is the same non-secret shape as task.ompSessionOwnership.session,
+ * and it deliberately carries no storage-root or partition path.
+ */
+function buildOmpResumeArg(agent, providerName) {
+  const session = resolveAgentProviderSession(agent, providerName);
+  const ompSession = session?.ompSession;
+  if (!session || !ompSession) return null;
+  return JSON.stringify({
+    priorOwnerTaskId: session.taskId,
+    partitionId: ompSession.partitionId,
+    sessionFileName: ompSession.sessionFileName,
+    expectedSessionId: session.sessionId,
+    expectedSessionFileIdentity: ompSession.sessionFileIdentity,
+    expectedArtifactManifestDigest: ompSession.artifactManifestDigest,
+    expectedExecutionFingerprint: ompSession.executionFingerprint,
+    expectedSelectedProvider: ompSession.selectedProvider,
+    expectedSelectedModel: ompSession.selectedModel,
+  });
 }
 
 /**
@@ -805,12 +841,20 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
 
   if (clusterId) {
     spawnEnv.ZEROSHOT_CLUSTER_ID = clusterId;
+    spawnEnv.ZEROSHOT_AGENT_ID = agent.id;
     const cmdproofRoot = path.join(os.homedir(), '.zeroshot', 'cmdproof', clusterId);
     if (!spawnEnv.CMDPROOF_CACHE_DIR) {
       spawnEnv.CMDPROOF_CACHE_DIR = path.join(cmdproofRoot, 'cache');
     }
     if (!spawnEnv.CMDPROOF_KEY_DIR) {
       spawnEnv.CMDPROOF_KEY_DIR = path.join(cmdproofRoot, 'keys');
+    }
+    // OMP session partitions live under the owning cluster's storageDir (never TASKS_DIR — see
+    // task-lib/omp-storage-root.js), forwarded to the spawned `zeroshot task run` child since it
+    // has no other way to learn which orchestrator instance owns this cluster.
+    if (providerName === 'omp') {
+      spawnEnv.ZEROSHOT_OMP_STORAGE_ROOT =
+        agent.cluster?.storageDir || path.join(os.homedir(), '.zeroshot');
     }
   }
 
@@ -1456,6 +1500,25 @@ async function buildCompletionResult({
   };
 }
 
+/**
+ * Rebuild the provider-session snapshot from a *freshly re-read* task row.
+ *
+ * The snapshot inside a completion result is necessarily built while the OMP ownership row is
+ * still `provisional` — the detached watcher records verified materialization evidence but defers
+ * the commit decision to the agent's post-hook success boundary — so for provider `omp` it is
+ * stale by construction and always null. agent-lifecycle.js calls this *after* a checked commit
+ * and before publishing TASK_COMPLETED, which is the only point at which a durable, resumable
+ * `ompSession` exists to snapshot.
+ */
+function rebuildProviderSessionAfterCommit({ agent, providerName, taskId, logicalSuccess = true }) {
+  return providerSessionFromCompletedTask({
+    agent,
+    providerName,
+    taskInfo: getTask(taskId),
+    logicalSuccess,
+  });
+}
+
 function finalizeLogFollow(agent, state) {
   if (state.pollInterval) {
     clearInterval(state.pollInterval);
@@ -1886,6 +1949,11 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   // only authoritative bridge back to the detached task row in the container.
   const isolatedEnv = {
     ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
+    // Docker is fresh-only for OMP (issue #866): the container filesystem is ephemeral, so a
+    // session partition allocated inside it could never be resumed and its ownership row would be
+    // unreclaimable once the container is removed. This marker makes the in-container
+    // `zeroshot task run` skip partition allocation entirely and launch `--no-session`.
+    ...(providerName === 'omp' ? { [OMP_SESSIONLESS_ENV]: '1' } : {}),
     [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
   };
 
@@ -3003,5 +3071,6 @@ module.exports = {
   parseResultOutput,
   buildCompletionResult,
   buildTaskRunArgs,
+  rebuildProviderSessionAfterCommit,
   killTask,
 };

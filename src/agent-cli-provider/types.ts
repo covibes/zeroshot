@@ -12,6 +12,7 @@ import type {
   StructuredOutputProviderRegistryEntry,
   UnstructuredOutputProviderRegistryEntry,
 } from './provider-registry';
+import type { OmpSessionLaunch } from './omp-rpc-session';
 
 export type ProviderId = (typeof providerIds)[number];
 export type ProviderAlias = (typeof providerAliases)[number];
@@ -329,6 +330,9 @@ export interface BuildProviderCommandOptions {
   readonly autoApprove?: boolean;
   readonly resumeSessionId?: string;
   readonly continueSession?: boolean;
+  // OMP-only: a verified session launch (none/fresh/resume) built from a checked partition —
+  // never a raw session id string. See src/agent-cli-provider/omp-rpc-session.ts.
+  readonly ompSession?: OmpSessionLaunch;
   readonly webSearch?: boolean;
   readonly claudeSettingsFile?: string;
   readonly cliFeatures?: CliFeatureOverrides;

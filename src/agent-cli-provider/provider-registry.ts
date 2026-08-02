@@ -486,6 +486,12 @@ export const providerRegistry = [
     // Written out explicitly rather than spread from STANDARD_CAPABILITIES, which defaults
     // dockerIsolation to true; OMP's Docker path is env/broker-only and sessionless (see
     // AGENTS.md OMP Docker section) rather than the standard credential-mount + resume shape.
+    // sessionResume is true as of issue #866: verified UUID partitions, two-phase file
+    // verification, and the owner-fenced ownership FSM (task-lib/omp-session-ownership.js) are
+    // live end to end for host, worktree, detached cluster-agent, and standalone manual resume.
+    // The two are independent: an isolated (Docker) OMP task allocates no session partition at all
+    // and launches `--no-session`, so `sessionResume: true` never implies a resumable container
+    // turn (task-lib/runner.js#resolveOmpSessionPlan, OMP_SESSIONLESS_ENV).
     capabilities: {
       dockerIsolation: true,
       worktreeIsolation: true,
@@ -494,7 +500,7 @@ export const providerRegistry = [
       streamJson: true,
       thinkingMode: true,
       reasoningEffort: true,
-      sessionResume: false,
+      sessionResume: true,
       webSearch: false,
     },
     docs: {
