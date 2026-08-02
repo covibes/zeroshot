@@ -1414,7 +1414,8 @@ fn rename_product_child(parent: &File, from: &str, to: &str) -> Result<(), Works
     let to = CString::new(to)
         .map_err(|_| WorkspaceLeaseError::invalid("workspace handle contains a NUL byte"))?;
     if unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             parent.as_raw_fd(),
             from.as_ptr(),
             parent.as_raw_fd(),
