@@ -26,9 +26,9 @@ import { getTask, updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
 import {
   commitOwnership,
-  markCleanupRequired,
   readOwnership,
   recordVerifiedMaterialization,
+  retireOmpOwnershipAtTerminalBoundary,
   transferOmpSessionOwnership,
 } from './omp-session-ownership.js';
 import {
@@ -98,14 +98,16 @@ function terminateOwnedProviderBoundary(exitObserved = false) {
   );
 }
 
+/** Every failed/cancelled/uncertain terminal boundary in this watcher routes through the shared
+ * durable-boundary retirement, so a post-transfer failure leaves the resumed row cleanup-required
+ * rather than provisional forever. Idempotent and never throwing, so it cannot itself prevent the
+ * task from reaching a terminal status. */
 function markOmpCleanupRequiredSafely() {
-  try {
-    markCleanupRequired(taskId);
-  } catch (error) {
+  retireOmpOwnershipAtTerminalBoundary(taskId, (error) =>
     emergencyLog(
       `[${Date.now()}][OMP-OWNERSHIP] Failed to mark cleanup-required: ${error.message}\n`
-    );
-  }
+    )
+  );
 }
 
 async function crashWithError(error, source) {
@@ -135,13 +137,14 @@ function identityText(identity) {
  * a re-minted session ID, a substituted inode, or an execution-contract change all fail here.
  *
  * `evidence` is null on the pre-spawn pass, where OMP has reported nothing yet; the structural and
- * identity halves still apply.
+ * identity halves still apply. When evidence *is* present this is the pre-prompt checkpoint, so
+ * the echoed session identity must be complete (see assertEchoedSessionMatches).
  */
 function assertNoResumeDrift(verified, evidence) {
   const expected = ompResumeExpectation;
   const drift = [];
 
-  assertEchoedSessionMatches(evidence, drift);
+  assertEchoedSessionMatches(evidence, drift, { requireComplete: evidence !== null });
 
   if (verified.sessionFileName !== expected.sessionFileName) {
     drift.push(`sessionFileName ${verified.sessionFileName} != ${expected.sessionFileName}`);
@@ -149,13 +152,16 @@ function assertNoResumeDrift(verified, evidence) {
   if (verified.sessionFilePath !== expected.sessionFilePath) {
     drift.push(`sessionFilePath ${verified.sessionFilePath} != ${expected.sessionFilePath}`);
   }
-  if (identityText(verified.partitionIdentity) !== identityText(expected.expectedPartitionIdentity)) {
+  if (
+    identityText(verified.partitionIdentity) !== identityText(expected.expectedPartitionIdentity)
+  ) {
     drift.push(
       `partitionIdentity ${identityText(verified.partitionIdentity)} != ${identityText(expected.expectedPartitionIdentity)}`
     );
   }
   if (
-    identityText(verified.sessionFileIdentity) !== identityText(expected.expectedSessionFileIdentity)
+    identityText(verified.sessionFileIdentity) !==
+    identityText(expected.expectedSessionFileIdentity)
   ) {
     drift.push(
       `sessionFileIdentity ${identityText(verified.sessionFileIdentity)} != ${identityText(expected.expectedSessionFileIdentity)}`
@@ -192,10 +198,34 @@ function assertNoResumeDrift(verified, evidence) {
  * transcript has legitimately grown — re-running the manifest/inode comparison there would reject
  * a perfectly healthy turn. The identity and fingerprint comparisons below have no such staleness,
  * so a mid-turn switch to a different session or a changed model/thinking level is still caught.
+ *
+ * `requireComplete` is the difference between the two callers, and it is the difference between
+ * "OMP agreed it opened exactly this session" and "OMP declined to say".
+ *
+ * At the pre-prompt checkpoint of a resume it is set, and both echoed values must be present and
+ * exactly equal: the full session ID and the full absolute session file. Without it, a `get_state`
+ * that simply omits `sessionId` (or `sessionFile`) would transfer a committed lineage and receive
+ * the prompt on the strength of the *disk* alone — and disk state cannot answer the only question
+ * that matters here, which is which session the running OMP process actually attached to. A prefix
+ * is never enough either: OMP resolves `--resume` IDs by prefix (session-manager.ts), so a shorter
+ * echoed ID is precisely the ambiguity this check exists to reject.
+ *
+ * `session_info_update` passes leave it unset: those frames legitimately carry only a subset
+ * (docs/rpc.md), and the driver merges them onto evidence whose complete form this checkpoint has
+ * already proven, so a partial later frame is checked against that proof rather than replacing it.
  */
-function assertEchoedSessionMatches(evidence, drift) {
+function assertEchoedSessionMatches(evidence, drift, { requireComplete = false } = {}) {
   if (!evidence) return;
   const expected = ompResumeExpectation;
+
+  if (requireComplete) {
+    if (!evidence.sessionId) {
+      drift.push('OMP reported no sessionId at the pre-prompt checkpoint');
+    }
+    if (!evidence.sessionFile) {
+      drift.push('OMP reported no sessionFile at the pre-prompt checkpoint');
+    }
+  }
 
   if (evidence.selectedProvider !== expected.expectedSelectedProvider) {
     drift.push(
@@ -263,10 +293,16 @@ function verifyOmpSessionBeforeSpawn() {
 /**
  * Owner-fenced ownership transfer, run from the `ready` hook after re-verification and strictly
  * before the prompt command is written. One transaction moves the prior committed owner's lineage
- * onto this task's provisional row and clears the prior row, so the partition is never owned by
- * two rows and never owned by none. A transfer that does not apply (the prior owner moved, this
- * row already advanced) throws, which fails the turn closed through the same cleanup-required path
- * as any other drift — the resumed session is never steered on an unresolved ownership claim.
+ * onto this task's provisional row and clears the prior row, so the partition never has two
+ * committed owners.
+ *
+ * From here to this turn's own success boundary the partition has *no* committed owner at all —
+ * the authoritative live claimant is this still-`provisional` row, by design, and every partition
+ * fence is written for that (see findAuthoritativeOwnersForPartition). A transfer that does not
+ * apply (the prior owner moved, this row already advanced) throws, which fails the turn closed
+ * through the same cleanup-required path as any other drift: the resumed session is never steered
+ * on an unresolved ownership claim, and a turn that dies after the transfer retires the row it now
+ * holds rather than stranding the lineage.
  */
 function transferResumedOwnershipBeforePrompt() {
   if (ownershipTransferred) return;

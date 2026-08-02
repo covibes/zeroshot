@@ -39,11 +39,20 @@ const cleanCommandUrl = pathToFileURL(
   path.resolve(__dirname, '../../task-lib/commands/clean.js')
 ).href;
 
-async function runStoreScript(script, env = {}) {
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    env: { ...process.env, ZEROSHOT_HOME: zeroshotHome, ...env },
-  });
-  return stdout;
+async function runStoreScript(script, env = {}, { allowFailure = false } = {}) {
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ['--input-type=module', '-e', script],
+      { env: { ...process.env, ZEROSHOT_HOME: zeroshotHome, ...env } }
+    );
+    return stdout;
+  } catch (error) {
+    // `cleanTasks` sets a non-zero exit code whenever it retains a row, which is a legitimate
+    // outcome for several of these tests. The durable state is what the assertions judge.
+    if (allowFailure && typeof error.stdout === 'string') return error.stdout;
+    throw error;
+  }
 }
 
 let idCounter = 0;
@@ -173,9 +182,62 @@ async function runCleanAll(tasksHome) {
     cleanTasks({ all: true });
     process.stdout.write('\\n@@' + JSON.stringify(Object.keys(loadTasks())));
   `,
-    { ZEROSHOT_HOME: tasksHome }
+    { ZEROSHOT_HOME: tasksHome },
+    { allowFailure: true }
   );
   return JSON.parse(stdout.split('@@').pop());
+}
+
+/** Every column of a row plus its rowid, straight out of SQLite. The rowid is what proves whether
+ * the table was rewritten: `saveTasks` DELETEs and reinserts, which mints new rowids. */
+async function rawRow(id, tasksHome) {
+  const stdout = await runStoreScript(
+    `
+    const { getTaskStoreDatabase } = await import(${JSON.stringify(storeUrl)});
+    const row = getTaskStoreDatabase()
+      .prepare('SELECT rowid AS rowid, * FROM tasks WHERE id = ?')
+      .get(${JSON.stringify(id)});
+    process.stdout.write(JSON.stringify(row ?? null));
+  `,
+    tasksHome ? { ZEROSHOT_HOME: tasksHome } : {}
+  );
+  return JSON.parse(stdout);
+}
+
+/** Write arbitrary bytes straight into the ownership column, the way on-disk corruption, a partial
+ * write, or a foreign writer would. Nothing in the codebase can produce these values. */
+async function corruptOwnershipColumn(id, raw, tasksHome) {
+  await runStoreScript(
+    `
+    const { getTaskStoreDatabase } = await import(${JSON.stringify(storeUrl)});
+    getTaskStoreDatabase()
+      .prepare('UPDATE tasks SET omp_session_ownership = ? WHERE id = ?')
+      .run(${JSON.stringify(raw)}, ${JSON.stringify(id)});
+  `,
+    tasksHome ? { ZEROSHOT_HOME: tasksHome } : {}
+  );
+}
+
+/** A stable digest of a partition subtree, for "not one byte changed" assertions. */
+function snapshotTree(root) {
+  const entries = [];
+  const walk = (dir, rel) => {
+    for (const name of fs.readdirSync(dir).sort()) {
+      const abs = path.join(dir, name);
+      const relPath = rel ? `${rel}/${name}` : name;
+      const stat = fs.lstatSync(abs);
+      if (stat.isDirectory()) {
+        entries.push(`d ${relPath}`);
+        walk(abs, relPath);
+      } else {
+        entries.push(`f ${relPath} ${stat.ino} ${fs.readFileSync(abs).toString('hex')}`);
+      }
+    }
+  };
+  if (!fs.existsSync(root)) return null;
+  entries.push(`root ${fs.statSync(root).ino}`);
+  walk(root, '');
+  return entries.join('\n');
 }
 
 const clusterOwner = (id, clusterId = 'cluster-1') => ({
@@ -400,7 +462,10 @@ describe('OMP session partition cleanup (task clean / cluster clear / purge)', f
 
       const result = await cleanupTaskSnapshot(id, snapshot);
       assert.strictEqual(result.safe, false);
-      assert.match(result.warnings.join('\n'), /ownership record changed while cleanup was running/);
+      assert.match(
+        result.warnings.join('\n'),
+        /ownership record changed while cleanup was running/
+      );
       assert.ok(fs.existsSync(partition.partitionPath));
     });
 
@@ -427,12 +492,320 @@ describe('OMP session partition cleanup (task clean / cluster clear / purge)', f
       assert.ok(!fs.existsSync(partition.partitionPath), 'the first retired row reclaims it');
 
       const second = await cleanupTask(secondId);
-      assert.strictEqual(second.safe, true, 'the second retired row must not deadlock on the first');
+      assert.strictEqual(
+        second.safe,
+        true,
+        'the second retired row must not deadlock on the first'
+      );
       assert.deepStrictEqual(second.warnings, []);
 
       const replay = await cleanupTask(firstId);
       assert.strictEqual(replay.safe, true, 'cleanup is idempotent on replay');
       assert.deepStrictEqual(replay.warnings, []);
+    });
+  });
+
+  describe('an unreadable ownership record is evidence, not an absence', function () {
+    // Its own task store per case: a corrupted row is deliberately never removed, so it would
+    // otherwise accumulate into every later assertion that enumerates the shared store.
+    let corruptHome;
+    beforeEach(function () {
+      corruptHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-corrupt-home-'));
+    });
+
+    // `parseOmpSessionOwnership` collapses SQL NULL and unreadable bytes to the same `null`, and
+    // those mean opposite things: NULL is exact truth that nothing was ever allocated, while
+    // unreadable bytes may be the last remaining pointer to a real partition. Deleting the row on
+    // that basis orphans the partition permanently — nothing else in the system knows it exists,
+    // because cleanup is driven by task rows and never by scanning the partition tree.
+    const CORRUPTIONS = [
+      { label: 'truncated JSON', raw: '{"schemaVersion":1,"state":"comm' },
+      { label: 'not JSON at all', raw: 'NUL bytes' },
+      { label: 'empty string', raw: '' },
+      { label: 'JSON of the wrong type', raw: '"just a string"' },
+      { label: 'valid JSON, invalid record', raw: '{"schemaVersion":1,"state":"nonsense"}' },
+    ];
+
+    for (const { label, raw } of CORRUPTIONS) {
+      it(`standalone clean retains the row and warns (${label})`, async function () {
+        const partition = makeSessionPartition({ storageRoot });
+        const id = nextTaskId('corrupt-clean');
+        await seedOwnedTask(id, {
+          owner: standaloneOwner(id),
+          storageRoot,
+          partition,
+          tasksHome: corruptHome,
+        });
+        await corruptOwnershipColumn(id, raw, corruptHome);
+
+        const result = await cleanupTask(id, { tasksHome: corruptHome });
+        assert.strictEqual(result.safe, false, 'the row must not be reported safe to remove');
+        assert.match(result.warnings.join('\n'), /present but unreadable/);
+        assert.match(result.warnings.join('\n'), /reclaimed manually/);
+        assert.ok(
+          fs.existsSync(partition.partitionPath),
+          'nothing may be deleted on the strength of an unreadable record'
+        );
+
+        const row = await rawRow(id, corruptHome);
+        assert.strictEqual(row.omp_session_ownership, raw, 'the evidence is preserved verbatim');
+      });
+    }
+
+    it('`clean --all` keeps the whole row, so the evidence survives the surface that deletes rows', async function () {
+      const tasksHome = corruptHome;
+      const home = fs.mkdtempSync(path.join(tasksHome, 'storage-'));
+      const corrupt = makeSessionPartition({ storageRoot: home });
+      const healthy = makeSessionPartition({ storageRoot: home });
+      const corruptId = nextTaskId('corrupt-clean-all');
+      const healthyId = nextTaskId('healthy-clean-all');
+
+      await seedOwnedTask(corruptId, {
+        owner: standaloneOwner(corruptId),
+        storageRoot: home,
+        partition: corrupt,
+        tasksHome,
+      });
+      await seedOwnedTask(healthyId, {
+        owner: standaloneOwner(healthyId),
+        storageRoot: home,
+        partition: healthy,
+        tasksHome,
+      });
+      await corruptOwnershipColumn(corruptId, '{"schemaVersion":1,"state":"comm', tasksHome);
+
+      const remaining = await runCleanAll(tasksHome);
+      assert.deepStrictEqual(remaining, [corruptId], 'only the unreadable row is retained');
+      assert.ok(fs.existsSync(corrupt.partitionPath), 'its partition is retained too');
+      assert.ok(!fs.existsSync(healthy.partitionPath), 'a healthy neighbour is still reclaimed');
+    });
+
+    it('cluster clear reports it separately, because an unreadable record names no cluster', async function () {
+      const clusterStorage = fs.mkdtempSync(path.join(zeroshotHome, 'corrupt-cluster-storage-'));
+      const mine = makeSessionPartition({ storageRoot: clusterStorage });
+      const broken = makeSessionPartition({ storageRoot: clusterStorage });
+      const mineId = nextTaskId('corrupt-cluster-mine');
+      const brokenId = nextTaskId('corrupt-cluster-broken');
+
+      await seedOwnedTask(mineId, {
+        owner: clusterOwner(mineId, 'cluster-C'),
+        storageRoot: clusterStorage,
+        partition: mine,
+        tasksHome: corruptHome,
+      });
+      await seedOwnedTask(brokenId, {
+        owner: clusterOwner(brokenId, 'cluster-C'),
+        storageRoot: clusterStorage,
+        partition: broken,
+        tasksHome: corruptHome,
+      });
+      await corruptOwnershipColumn(brokenId, '{oh no', corruptHome);
+
+      const result = await cleanupCluster('cluster-C', { tasksHome: corruptHome });
+      assert.deepStrictEqual(result.deleted, [mine.partitionId]);
+      assert.deepStrictEqual(result.unreadable, [brokenId]);
+      assert.match(result.warnings.join('\n'), /cannot be attributed to a cluster/);
+      assert.ok(!fs.existsSync(mine.partitionPath));
+      assert.ok(fs.existsSync(broken.partitionPath), 'the unattributable partition is retained');
+      assert.strictEqual((await rawRow(brokenId, corruptHome)).omp_session_ownership, '{oh no');
+    });
+
+    it('does not disarm the owner fence protecting an unrelated live partition', async function () {
+      // The owner query used to run `json_extract()` over this column. SQLite raises "malformed
+      // JSON" for a value that is not JSON, so ONE corrupt row anywhere in the table made the
+      // fence throw for every partition — and the fence is the only thing standing between a
+      // retired row and a live turn's session.
+      const partition = makeSessionPartition({ storageRoot });
+      const priorId = nextTaskId('fence-prior');
+      const resumedId = nextTaskId('fence-resumed');
+      const corruptId = nextTaskId('fence-corrupt');
+
+      await seedOwnedTask(priorId, {
+        owner: standaloneOwner(priorId),
+        storageRoot,
+        partition,
+        tasksHome: corruptHome,
+      });
+      await seedOwnedTask(resumedId, {
+        owner: standaloneOwner(resumedId),
+        storageRoot,
+        partition,
+        state: 'provisional',
+        tasksHome: corruptHome,
+      });
+      const decoy = makeSessionPartition({ storageRoot });
+      await seedOwnedTask(corruptId, {
+        owner: standaloneOwner(corruptId),
+        storageRoot,
+        partition: decoy,
+        tasksHome: corruptHome,
+      });
+      await corruptOwnershipColumn(corruptId, 'definitely not json', corruptHome);
+
+      const result = await cleanupTask(resumedId, { tasksHome: corruptHome });
+      assert.strictEqual(result.safe, false, 'the fence must still refuse');
+      assert.match(result.warnings.join('\n'), /still claimed by .*\(committed\)/);
+      assert.ok(fs.existsSync(partition.partitionPath), 'the live session survives');
+    });
+  });
+
+  describe('concurrency: `clean` must not act on a stale snapshot', function () {
+    it('never touches a running task, row or partition, even under --all', async function () {
+      // A running task owns everything the row points at: the partition is a live provider
+      // process's working directory. The live-task check used to sit *inside* the commandCleanup
+      // branch, i.e. after the OMP partition had already been staged and recursively deleted, so a
+      // running task without a cleanup receipt lost its session to `clean --all`.
+      const tasksHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-live-home-'));
+      const home = fs.mkdtempSync(path.join(tasksHome, 'storage-'));
+      const live = makeSessionPartition({ storageRoot: home, artifacts: ['a.txt', 'deep/b.txt'] });
+      const liveId = nextTaskId('live-running');
+
+      await seedOwnedTask(liveId, {
+        owner: standaloneOwner(liveId),
+        storageRoot: home,
+        partition: live,
+        state: 'provisional',
+        tasksHome,
+      });
+      await runStoreScript(
+        `
+        const { getTaskStoreDatabase } = await import(${JSON.stringify(storeUrl)});
+        getTaskStoreDatabase()
+          .prepare("UPDATE tasks SET status = 'running', pid = 4242 WHERE id = ?")
+          .run(${JSON.stringify(liveId)});
+      `,
+        { ZEROSHOT_HOME: tasksHome }
+      );
+
+      const rowBefore = await rawRow(liveId, tasksHome);
+      const treeBefore = snapshotTree(live.partitionPath);
+
+      const remaining = await runCleanAll(tasksHome);
+      assert.deepStrictEqual(remaining, [liveId], 'the running row is retained');
+      assert.deepStrictEqual(
+        await rawRow(liveId, tasksHome),
+        rowBefore,
+        'not one column of a live row may change, and the rowid proves the table was not rewritten'
+      );
+      assert.strictEqual(
+        snapshotTree(live.partitionPath),
+        treeBefore,
+        "a live session's partition must be byte-identical after clean --all"
+      );
+    });
+
+    it('leaves a retained row at its original rowid, proving no whole-table rewrite', async function () {
+      // `saveTasks` DELETEs every row and reinserts the caller's snapshot, which mints fresh
+      // rowids and reverts anything a concurrent writer changed during the run. This is the
+      // observable fingerprint of that rewrite.
+      const tasksHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-rowid-home-'));
+      const home = fs.mkdtempSync(path.join(tasksHome, 'storage-'));
+      const keptPartition = makeSessionPartition({ storageRoot: home });
+      const goneParition = makeSessionPartition({ storageRoot: home });
+      const keptId = nextTaskId('rowid-kept');
+      const goneId = nextTaskId('rowid-gone');
+
+      await seedOwnedTask(keptId, {
+        owner: standaloneOwner(keptId),
+        storageRoot: home,
+        partition: keptPartition,
+        tasksHome,
+      });
+      await seedOwnedTask(goneId, {
+        owner: standaloneOwner(goneId),
+        storageRoot: home,
+        partition: goneParition,
+        tasksHome,
+      });
+      await corruptOwnershipColumn(keptId, '{retained because unreadable', tasksHome);
+      const before = await rawRow(keptId, tasksHome);
+
+      await runCleanAll(tasksHome);
+
+      const after = await rawRow(keptId, tasksHome);
+      assert.strictEqual(after.rowid, before.rowid, 'a retained row keeps its identity');
+      assert.deepStrictEqual(after, before, 'and every one of its columns');
+      assert.ok(!fs.existsSync(goneParition.partitionPath));
+    });
+
+    it('refuses to remove a row whose ownership was transferred away after the snapshot was taken', async function () {
+      // The exact interleave: `clean` decides what to remove from one loadTasks() snapshot, then
+      // does real work before it gets to the delete. A resume that wins its ownership transfer in
+      // that window leaves the snapshot describing a record the row no longer holds — and the
+      // partition is now a live turn's working session. The removal is fenced on the snapshot, so
+      // it refuses; crucially, it must also not write the snapshot back.
+      const tasksHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-interleave-home-'));
+      const home = fs.mkdtempSync(path.join(tasksHome, 'storage-'));
+      const partition = makeSessionPartition({ storageRoot: home });
+      const priorId = nextTaskId('interleave-prior');
+      const resumedId = nextTaskId('interleave-resumed');
+
+      await seedOwnedTask(priorId, {
+        owner: standaloneOwner(priorId),
+        storageRoot: home,
+        partition,
+        tasksHome,
+      });
+      await seedOwnedTask(resumedId, {
+        owner: standaloneOwner(resumedId),
+        storageRoot: home,
+        partition,
+        state: 'provisional',
+        tasksHome,
+      });
+
+      const outcome = JSON.parse(
+        (
+          await runStoreScript(
+            `
+        const { getTask, loadTasks } = await import(${JSON.stringify(storeUrl)});
+        const { transferOmpSessionOwnership } = await import(${JSON.stringify(ownershipUrl)});
+        const { removeCleanedTask } = await import(${JSON.stringify(cleanCommandUrl)});
+
+        // 1. clean loads its snapshot.
+        const snapshot = loadTasks()[${JSON.stringify(priorId)}];
+
+        // 2. a resume wins the partition in the window before the removal.
+        const transferred = !!transferOmpSessionOwnership({
+          fromTaskId: ${JSON.stringify(priorId)},
+          toTaskId: ${JSON.stringify(resumedId)},
+        });
+
+        // 3. clean reaches the removal, still holding the stale snapshot.
+        const warnings = [];
+        const removal = removeCleanedTask(snapshot, { warn: (m) => warnings.push(m) });
+
+        process.stdout.write('\\n@@' + JSON.stringify({
+          transferred,
+          removal,
+          warnings,
+          priorStillExists: getTask(${JSON.stringify(priorId)}) !== null,
+          priorOwnership: getTask(${JSON.stringify(priorId)})?.ompSessionOwnership ?? null,
+          winner: getTask(${JSON.stringify(resumedId)}).ompSessionOwnership,
+        }));
+      `,
+            { ZEROSHOT_HOME: tasksHome }
+          )
+        )
+          .split('@@')
+          .pop()
+      );
+
+      assert.strictEqual(outcome.transferred, true, 'the resume must win the partition');
+      assert.strictEqual(outcome.removal.removed, false, 'the stale removal must be refused');
+      assert.match(
+        outcome.warnings.join('\n') + outcome.removal.reason,
+        /ownership record changed while cleanup was running|changed while it was being cleaned/
+      );
+      assert.strictEqual(outcome.priorStillExists, true, 'the row survives the refused removal');
+      assert.strictEqual(
+        outcome.priorOwnership,
+        null,
+        'the concurrent release must NOT be reverted by cleanup writing its snapshot back'
+      );
+      assert.strictEqual(outcome.winner.state, 'provisional');
+      assert.ok(outcome.winner.session, 'the winner keeps the lineage it inherited');
+      assert.ok(fs.existsSync(partition.partitionPath), "the live turn's session survives");
     });
   });
 

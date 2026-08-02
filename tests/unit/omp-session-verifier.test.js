@@ -58,6 +58,16 @@ describe('src/omp-session-verifier.js (two-phase lazy-file verification)', funct
     );
   }
 
+  /** Verify against the pinned limits with a subset overridden. `limits` is a test seam for
+   * proving enforcement, never configuration: no production caller passes it. */
+  function verifyWithLimits(partition, limits = {}) {
+    return withEnv(blobs.env, () =>
+      verifyPartitionContents(partition.partitionPath, partition.sessionFileName, {
+        limits: { ...OMP_SESSION_LIMITS, ...limits },
+      })
+    );
+  }
+
   describe('session transcript and header', function () {
     it('parses the session header and reports the on-disk session identity and workspace', function () {
       const partition = makeSessionPartition({
@@ -411,14 +421,6 @@ describe('src/omp-session-verifier.js (two-phase lazy-file verification)', funct
   });
 
   describe('bounds', function () {
-    function verifyWithLimits(partition, limits) {
-      return withEnv(blobs.env, () =>
-        verifyPartitionContents(partition.partitionPath, partition.sessionFileName, {
-          limits: { ...OMP_SESSION_LIMITS, ...limits },
-        })
-      );
-    }
-
     it('pins OMP_SESSION_LIMITS to the exact values issue #866 specifies', function () {
       assert.deepStrictEqual(
         { ...OMP_SESSION_LIMITS },
@@ -491,6 +493,287 @@ describe('src/omp-session-verifier.js (two-phase lazy-file verification)', funct
         () => verifyWithLimits(partition, { maxRelativePathBytes: 2 }),
         'relative-path-bytes-exceeded',
         'relative path bytes'
+      );
+    });
+  });
+
+  describe('raw platform path bytes in the manifest', function () {
+    // A POSIX filename is an opaque byte string. Node decodes it into a JS string with U+FFFD for
+    // every invalid byte, so two *different* files can arrive as the *same* string — and hashing
+    // that string would give two different artifact trees one manifest digest, which an attacker
+    // picks the filenames for. Windows has no such thing (the OS gives UTF-16 and fs rejects
+    // Buffer paths), so this is gated to a platform where raw bytes exist.
+    const rawNames = process.platform === 'win32' ? describe.skip : describe;
+
+    rawNames('on a platform with byte-oriented filenames', function () {
+      /** Write `content` to a raw-byte-named file directly under `dir`. */
+      function writeRawNamed(dir, nameBytes, content) {
+        const target = Buffer.concat([Buffer.from(`${dir}/`, 'utf8'), nameBytes]);
+        fs.writeFileSync(target, content);
+        return target;
+      }
+
+      it('gives two distinct non-UTF-8 artifact names two distinct, deterministic manifests', function () {
+        // 0xFF and 0xFE are both invalid as standalone UTF-8. `Buffer.from(name).toString('utf8')`
+        // maps each to the single replacement character U+FFFD, so the decoded names are equal.
+        const first = Buffer.from([0xff]);
+        const second = Buffer.from([0xfe]);
+        assert.strictEqual(
+          first.toString('utf8'),
+          second.toString('utf8'),
+          'the premise: these names are indistinguishable once decoded'
+        );
+
+        const partitionA = makeSessionPartition({ storageRoot, sessionId: 'raw-a' });
+        fs.mkdirSync(partitionA.artifactsDir, { recursive: true });
+        writeRawNamed(partitionA.artifactsDir, first, 'same content');
+
+        const partitionB = makeSessionPartition({ storageRoot, sessionId: 'raw-a' });
+        fs.mkdirSync(partitionB.artifactsDir, { recursive: true });
+        writeRawNamed(partitionB.artifactsDir, second, 'same content');
+
+        const digestA = verify(partitionA).artifactManifestDigest;
+        const digestB = verify(partitionB).artifactManifestDigest;
+        assert.notStrictEqual(
+          digestA,
+          digestB,
+          'distinct raw names must produce distinct manifests, not a replacement-character collision'
+        );
+
+        // Deterministic: the same tree verified again yields the same digest.
+        assert.strictEqual(verify(partitionA).artifactManifestDigest, digestA);
+        assert.strictEqual(verify(partitionB).artifactManifestDigest, digestB);
+      });
+
+      it('orders and hashes raw names by their bytes, so sibling order is a property of the disk', function () {
+        // Two non-UTF-8 names in ONE tree: with lossy decoding they would compare equal, making
+        // the traversal order — and therefore the digest — depend on readdir's arbitrary order.
+        const build = (names) => {
+          const partition = makeSessionPartition({ storageRoot, sessionId: 'raw-order' });
+          fs.mkdirSync(partition.artifactsDir, { recursive: true });
+          for (const [nameBytes, content] of names) {
+            writeRawNamed(partition.artifactsDir, nameBytes, content);
+          }
+          return verify(partition).artifactManifestDigest;
+        };
+
+        const forward = build([
+          [Buffer.from([0xfe]), 'first'],
+          [Buffer.from([0xff]), 'second'],
+        ]);
+        const reverse = build([
+          [Buffer.from([0xff]), 'second'],
+          [Buffer.from([0xfe]), 'first'],
+        ]);
+        assert.strictEqual(forward, reverse, 'creation order must not affect the manifest');
+
+        // Swapping which name holds which content is a real difference and must be visible.
+        const swapped = build([
+          [Buffer.from([0xfe]), 'second'],
+          [Buffer.from([0xff]), 'first'],
+        ]);
+        assert.notStrictEqual(forward, swapped);
+      });
+
+      it('measures maxRelativePathBytes against the raw bytes, not their lossy re-encoding', function () {
+        // Three invalid bytes are three bytes on disk. Decoded, they become three U+FFFD, which
+        // re-encode to NINE UTF-8 bytes — so a length check on the decoded form measures a path
+        // three times the size of the one that actually exists.
+        const nameBytes = Buffer.from([0xff, 0xfe, 0xfd]);
+        assert.strictEqual(Buffer.byteLength(nameBytes.toString('utf8'), 'utf8'), 9);
+
+        const partition = makeSessionPartition({ storageRoot, sessionId: 'raw-bound' });
+        fs.mkdirSync(partition.artifactsDir, { recursive: true });
+        writeRawNamed(partition.artifactsDir, nameBytes, 'x');
+
+        const artifactsRelBytes = Buffer.byteLength(path.basename(partition.artifactsDir), 'utf8');
+        const exactRelBytes = artifactsRelBytes + 1 + nameBytes.length;
+
+        const verifyAt = (maxRelativePathBytes) =>
+          verifyWithLimits(partition, { maxRelativePathBytes });
+
+        // Exactly at the bound: accepted. One byte under: rejected. Both would be wrong by six
+        // bytes if the check ran on the decoded string.
+        assert.ok(verifyAt(exactRelBytes).artifactManifestDigest);
+        expectCode(
+          () => verifyAt(exactRelBytes - 1),
+          'relative-path-bytes-exceeded',
+          'one byte under the exact raw length'
+        );
+        // And the lossy length is genuinely larger, so a decoded-form check would have refused a
+        // path that fits.
+        assert.ok(exactRelBytes < artifactsRelBytes + 1 + 9);
+      });
+
+      it('opens artifact children from their raw bytes rather than a decoded round trip', function () {
+        // The proof that no string round trip happens on the way to `open`: a file whose name is
+        // not valid UTF-8 cannot be opened via its decoded form (that path names a *different*,
+        // nonexistent file), so a manifest entry for it can only exist if the bytes were used.
+        const nameBytes = Buffer.from([0xc3, 0x28, 0xa9]); // invalid UTF-8 sequence
+        const partition = makeSessionPartition({ storageRoot, sessionId: 'raw-open' });
+        fs.mkdirSync(partition.artifactsDir, { recursive: true });
+        writeRawNamed(partition.artifactsDir, nameBytes, 'openable only by bytes');
+
+        const decodedPath = path.join(partition.artifactsDir, nameBytes.toString('utf8'));
+        assert.ok(
+          !fs.existsSync(decodedPath),
+          'the premise: the decoded name does not name any real file'
+        );
+
+        const verified = verify(partition);
+        assert.match(verified.artifactManifestDigest, /^sha256:[a-f0-9]{64}$/);
+      });
+    });
+  });
+
+  describe('adversarial input stays bounded', function () {
+    const verifyRaw = verifyWithLimits;
+
+    /** Overwrite a partition's transcript with exactly these raw bytes. */
+    function writeTranscript(partition, bytes) {
+      fs.writeFileSync(partition.sessionFilePath, bytes);
+    }
+
+    it('caps a single record at MAX_SESSION_RECORD_BYTES, so an unterminated file cannot be buffered whole', function () {
+      // The pathological shape `maxSessionBytes` alone does not catch: a large file with no
+      // newline in it is ONE record, and buffering it would cost the raw bytes, a UTF-16 string,
+      // and a parsed value — a multi-hundred-megabyte spike the attacker chooses by leaving out a
+      // newline. The bound is fixed and derived, so this exercises the real value rather than a
+      // scaled-down stand-in.
+      this.timeout(60000);
+      const { MAX_SESSION_RECORD_BYTES } = require('../../src/omp-session-limits');
+      assert.strictEqual(
+        MAX_SESSION_RECORD_BYTES,
+        OMP_SESSION_LIMITS.maxReferencedBlobBytes,
+        'the per-record bound is derived from the issue constants, not invented'
+      );
+
+      const partition = makeSessionPartition({ storageRoot, sessionId: 'unterminated' });
+      const header = `${JSON.stringify({ type: 'session', version: 3, id: 'unterminated' })}\n`;
+      // One newline-free record just past the bound, and still far under maxSessionBytes, so this
+      // can only be caught by the per-record bound.
+      const oversized = Buffer.alloc(MAX_SESSION_RECORD_BYTES + 1, 0x41);
+      assert.ok(header.length + oversized.length < OMP_SESSION_LIMITS.maxSessionBytes);
+      writeTranscript(partition, Buffer.concat([Buffer.from(header, 'utf8'), oversized]));
+
+      expectCode(() => verifyRaw(partition), 'session-record-bytes-exceeded', 'per-record bound');
+    });
+
+    it('survives a deeply nested record without exhausting the call stack', function () {
+      // V8's JSON.parse accepts nesting this deep — it is not recursive in the way a naive walk
+      // is — so the parsed value really does reach the blob-reference walk. A recursive walk over
+      // it raises `RangeError: Maximum call stack size exceeded`, thrown from inside a streaming
+      // read callback and outside every typed handler; the iterative walk completes normally.
+      const depth = 200000;
+      const partition = makeSessionPartition({ storageRoot, sessionId: 'deep' });
+      const header = `${JSON.stringify({ type: 'session', version: 3, id: 'deep' })}\n`;
+      const nested = `${'['.repeat(depth)}"x"${']'.repeat(depth)}\n`;
+      writeTranscript(partition, Buffer.from(header + nested, 'utf8'));
+
+      const verified = verifyRaw(partition);
+      assert.strictEqual(verified.sessionRecords, 2);
+      assert.deepStrictEqual(verified.blobReferences, [], 'no references, and no stack overflow');
+      assert.match(verified.artifactManifestDigest, /^sha256:[a-f0-9]{64}$/);
+    });
+
+    it('walks a deeply nested record that JSON.parse DOES accept, without recursing', function () {
+      // Below V8's parser limit but far beyond a comfortable recursion depth for the walk itself.
+      const depth = 4000;
+      const partition = makeSessionPartition({ storageRoot, sessionId: 'deep-ok' });
+      const header = `${JSON.stringify({ type: 'session', version: 3, id: 'deep-ok' })}\n`;
+      const ref = blobs.put('nested-deeply');
+      const nested = `${'['.repeat(depth)}${JSON.stringify(ref)}${']'.repeat(depth)}\n`;
+      writeTranscript(partition, Buffer.from(header + nested, 'utf8'));
+
+      const verified = verifyRaw(partition);
+      assert.deepStrictEqual(
+        verified.blobReferences,
+        [ref],
+        'the iterative walk must still find a reference buried this deep'
+      );
+    });
+
+    it('enforces the record count before parsing the record that breaks it', function () {
+      const partition = makeSessionPartition({
+        storageRoot,
+        sessionId: 'many',
+        records: Array.from({ length: 50 }, (_, n) => ({ n })),
+      });
+      expectCode(() => verifyRaw(partition, { maxSessionRecords: 10 }), 'session-records-exceeded');
+    });
+
+    it('bounds a single record that carries more blob references than maxBlobReferences', function () {
+      // Cardinality is enforced while collecting, inside one record, rather than after building an
+      // unbounded set.
+      const partition = makeSessionPartition({ storageRoot, sessionId: 'many-refs' });
+      const header = `${JSON.stringify({ type: 'session', version: 3, id: 'many-refs' })}\n`;
+      const refs = Array.from(
+        { length: 40 },
+        (_, n) => `blob:sha256:${crypto.createHash('sha256').update(`ref-${n}`).digest('hex')}`
+      );
+      writeTranscript(partition, Buffer.from(header + `${JSON.stringify({ refs })}\n`, 'utf8'));
+
+      expectCode(
+        () => verifyRaw(partition, { maxBlobReferences: 10 }),
+        'blob-references-exceeded',
+        'reference cardinality'
+      );
+    });
+
+    it('never accumulates blob bytes: an oversized referenced blob is refused from its declared size', function () {
+      const ref = blobs.put('x'.repeat(4096));
+      const partition = makeSessionPartition({
+        storageRoot,
+        sessionId: 'big-blob',
+        records: [{ type: 'message', content: [{ data: ref }] }],
+      });
+      expectCode(
+        () => verifyRaw(partition, { maxReferencedBlobBytes: 16 }),
+        'blob-bytes-exceeded',
+        'referenced blob bytes'
+      );
+    });
+
+    it('stops enumerating a directory once it has read more names than the entry budget allows', function () {
+      // `readdir` materializes every name before any bound can be applied; `opendir` streams, so a
+      // directory far over budget costs the budget rather than the directory. 200 entries against
+      // a budget of 4 must fail as an entry-count violation, not as anything else.
+      const partition = makeSessionPartition({ storageRoot, sessionId: 'wide' });
+      fs.mkdirSync(partition.artifactsDir, { recursive: true });
+      for (let n = 0; n < 200; n += 1) {
+        fs.writeFileSync(path.join(partition.artifactsDir, `entry-${n}.txt`), 'x');
+      }
+      expectCode(
+        () => verifyRaw(partition, { maxArtifactEntries: 4 }),
+        'artifact-entries-exceeded',
+        'wide directory'
+      );
+    });
+
+    it('accepts a tree that sits exactly on maxArtifactEntries', function () {
+      // The session file is skipped rather than counted, so the depth-0 budget must allow for it —
+      // an off-by-one in the streaming cutoff would reject a legal tree.
+      const partition = makeSessionPartition({ storageRoot, sessionId: 'exact-entries' });
+      fs.mkdirSync(partition.artifactsDir, { recursive: true });
+      fs.writeFileSync(path.join(partition.artifactsDir, 'a.txt'), 'x');
+      fs.writeFileSync(path.join(partition.artifactsDir, 'b.txt'), 'y');
+      // artifacts dir + two files = 3 entries.
+      assert.ok(verifyRaw(partition, { maxArtifactEntries: 3 }).artifactManifestDigest);
+      expectCode(
+        () => verifyRaw(partition, { maxArtifactEntries: 2 }),
+        'artifact-entries-exceeded'
+      );
+    });
+
+    it('refuses an aggregate artifact payload over budget without reading it all first', function () {
+      const partition = makeSessionPartition({ storageRoot, sessionId: 'aggregate' });
+      fs.mkdirSync(partition.artifactsDir, { recursive: true });
+      for (const name of ['a.bin', 'b.bin', 'c.bin']) {
+        fs.writeFileSync(path.join(partition.artifactsDir, name), Buffer.alloc(1024, 0x61));
+      }
+      expectCode(
+        () => verifyRaw(partition, { maxArtifactAggregateBytes: 1500 }),
+        'artifact-aggregate-bytes-exceeded'
       );
     });
   });

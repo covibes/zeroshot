@@ -2147,6 +2147,24 @@ async function killRunningClusters(orchestrator, runningClusters) {
   }
 }
 
+/**
+ * Retire a task's OMP session ownership at a confirmed terminal boundary (killed/stale), before
+ * the terminal status write. See task-lib/omp-session-ownership.js: a provisional claim left
+ * behind by a killed task makes its partition unreclaimable, because cleanup refuses any partition
+ * another row still claims. Never throws — the kill must complete regardless.
+ */
+async function retireOmpOwnershipForTerminatedTask(taskId) {
+  const { retireOmpOwnershipAtTerminalBoundary } =
+    await import('../task-lib/omp-session-ownership.js');
+  retireOmpOwnershipAtTerminalBoundary(taskId, (error) =>
+    console.log(
+      chalk.yellow(
+        `Warning: failed to retire the OMP session ownership of task ${taskId}: ${error.message}`
+      )
+    )
+  );
+}
+
 async function killRunningTasks(runningTasks, isProcessRunning) {
   if (runningTasks.length === 0) {
     return;
@@ -2157,6 +2175,7 @@ async function killRunningTasks(runningTasks, isProcessRunning) {
 
   for (const task of runningTasks) {
     if (!isProcessRunning(task.pid)) {
+      await retireOmpOwnershipForTerminatedTask(task.id);
       updateTask(task.id, {
         status: 'stale',
         error: 'Process died unexpectedly',
@@ -2167,6 +2186,7 @@ async function killRunningTasks(runningTasks, isProcessRunning) {
 
     const killed = killTask(task.pid);
     if (killed) {
+      await retireOmpOwnershipForTerminatedTask(task.id);
       updateTask(task.id, { status: 'killed', error: 'Killed by clear' });
       console.log(chalk.green(`✓ Killed task: ${task.id}`));
     } else {
@@ -2183,23 +2203,31 @@ async function killRunningTasks(runningTasks, isProcessRunning) {
  * cannot be safely resolved keeps its owner record plus a warning instead of being deleted.
  */
 async function deleteClusterOmpSessions(clusters) {
-  const { cleanupOmpSessionPartitionsForCluster } = await import(
-    '../task-lib/omp-session-cleanup.js'
-  );
+  const { cleanupOmpSessionPartitionsForCluster } =
+    await import('../task-lib/omp-session-cleanup.js');
   let deleted = 0;
   let retained = 0;
+  const unreadable = new Set();
   for (const cluster of clusters) {
     const result = cleanupOmpSessionPartitionsForCluster(cluster.id, (message) =>
       console.log(chalk.yellow(`Warning: ${message}`))
     );
     deleted += result.deleted.length;
     retained += result.retained.length;
+    for (const taskId of result.unreadable) unreadable.add(taskId);
   }
   if (deleted > 0) {
     console.log(chalk.green(`✓ Deleted ${deleted} OMP session partition(s)`));
   }
   if (retained > 0) {
     console.log(chalk.yellow(`○ Retained ${retained} OMP session partition(s) for inspection`));
+  }
+  if (unreadable.size > 0) {
+    console.log(
+      chalk.yellow(
+        `○ ${unreadable.size} task row(s) hold an unreadable OMP session ownership record and were left intact`
+      )
+    );
   }
 }
 
@@ -3271,6 +3299,7 @@ program
 
         for (const task of runningTasks) {
           if (!checkPid(task.pid)) {
+            await retireOmpOwnershipForTerminatedTask(task.id);
             updateTask(task.id, {
               status: 'stale',
               error: 'Process died unexpectedly',
@@ -3281,6 +3310,7 @@ program
 
           const killed = killTask(task.pid);
           if (killed) {
+            await retireOmpOwnershipForTerminatedTask(task.id);
             updateTask(task.id, {
               status: 'killed',
               error: 'Killed by kill-all',

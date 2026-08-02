@@ -23,13 +23,28 @@ const OMP_RESUME_ALLOWED_FIELDS = new Set([
   ...OMP_RESUME_OPTIONAL_IDENTITY_FIELDS,
 ]);
 
+// Issue #866 fixes device/inode as *canonical unsigned decimal strings*. This descriptor arrives
+// over argv from another process, so the type is checked, never coerced: `String(value.device)`
+// would have accepted the JSON number 42, `new String('42')`, `['42']`, and anything else with a
+// matching toString, then silently canonicalized it into a string the persisted record never
+// contained. A descriptor that does not already carry the canonical form is a descriptor built by
+// something other than this codebase's writer, and it fails closed rather than being repaired.
+const CANONICAL_DECIMAL = /^(0|[1-9][0-9]*)$/;
+const IDENTITY_KEYS = new Set(['device', 'inode']);
+
+function isCanonicalDecimalString(value) {
+  return typeof value === 'string' && CANONICAL_DECIMAL.test(value);
+}
+
 function isIdentityShape(value) {
   return (
     value !== null &&
     typeof value === 'object' &&
     !Array.isArray(value) &&
-    /^(0|[1-9][0-9]*)$/.test(String(value.device)) &&
-    /^(0|[1-9][0-9]*)$/.test(String(value.inode))
+    Object.keys(value).length === IDENTITY_KEYS.size &&
+    Object.keys(value).every((key) => IDENTITY_KEYS.has(key)) &&
+    isCanonicalDecimalString(value.device) &&
+    isCanonicalDecimalString(value.inode)
   );
 }
 
