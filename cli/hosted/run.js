@@ -110,6 +110,22 @@ async function stdinText() {
   return value;
 }
 
+function readTaskFile(filename) {
+  let descriptor;
+  try {
+    descriptor = fs.openSync(filename, 'r');
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes(error.code)) return null;
+    throw error;
+  }
+  try {
+    if (!fs.fstatSync(descriptor).isFile()) return null;
+    return fs.readFileSync(descriptor, 'utf8');
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 async function resolveInput(input, options) {
   const explicitIssue = issueInput(input, options);
   if (explicitIssue) return explicitIssue;
@@ -124,8 +140,9 @@ async function resolveInput(input, options) {
   if (/^[1-9][0-9]*$/.test(input)) return { repository, request: issueRequest(input, options) };
   if (input === '-') return { repository, request: promptRequest(await stdinText(), options) };
   const filename = path.resolve(input);
-  if (fs.existsSync(filename) && fs.statSync(filename).isFile()) {
-    const text = fs.readFileSync(filename, 'utf8').trim();
+  const fileInput = readTaskFile(filename);
+  if (fileInput !== null) {
+    const text = fileInput.trim();
     if (!text) throw new Error(`hosted task file is empty: ${input}`);
     return { repository, request: promptRequest(text, options) };
   }

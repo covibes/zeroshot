@@ -44,14 +44,36 @@ function emptyStore() {
 
 function loadTargets(environment = process.env) {
   const filename = targetsFile(environment);
-  if (!fs.existsSync(filename)) return emptyStore();
-  const stat = fs.lstatSync(filename);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`target store is not a regular file: ${filename}`);
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(filename, flags);
+  } catch (error) {
+    if (error.code === 'ENOENT') return emptyStore();
+    if (error.code === 'ELOOP') {
+      throw new Error(`target store is not a regular file: ${filename}`);
+    }
+    throw error;
+  }
+  let contents;
+  try {
+    const descriptorStat = fs.fstatSync(descriptor);
+    const pathStat = fs.lstatSync(filename);
+    if (
+      !descriptorStat.isFile() ||
+      pathStat.isSymbolicLink() ||
+      descriptorStat.dev !== pathStat.dev ||
+      descriptorStat.ino !== pathStat.ino
+    ) {
+      throw new Error(`target store is not a regular file: ${filename}`);
+    }
+    contents = fs.readFileSync(descriptor, 'utf8');
+  } finally {
+    fs.closeSync(descriptor);
   }
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    parsed = JSON.parse(contents);
   } catch {
     throw new Error(`target store is not valid JSON: ${filename}`);
   }

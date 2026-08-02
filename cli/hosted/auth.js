@@ -1,7 +1,6 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
 
 const { loadRefreshToken, storeRefreshToken } = require('./credential-store');
 const { HostedHttpError, request } = require('./http');
@@ -10,20 +9,6 @@ const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function tryOpenBrowser(url) {
-  let command = 'xdg-open';
-  if (process.platform === 'darwin') command = 'open';
-  if (process.platform === 'win32') command = 'cmd';
-  const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
-  try {
-    const child = spawn(command, args, { detached: true, stdio: 'ignore' });
-    child.on('error', () => undefined);
-    child.unref();
-  } catch {
-    // The printed URL is the portable fallback.
-  }
 }
 
 function tokenEnvelope(value) {
@@ -102,7 +87,6 @@ async function login(targetName, target) {
     ).body
   );
   console.log(`Authorize this CLI in your browser:\n${grant.verification_uri_complete}`);
-  tryOpenBrowser(grant.verification_uri_complete);
   const deviceToken = crypto.randomBytes(32).toString('hex');
   const tokens = await pollDeviceAuthorization(target, grant, deviceToken);
   storeRefreshToken(targetName, tokens.refresh_token);

@@ -55,6 +55,18 @@ describe('hosted target CLI', function () {
     }
   });
 
+  it('rejects a symbolic-link target store', function () {
+    const { directory, environment } = fixture();
+    const regular = path.join(directory, 'regular.json');
+    try {
+      fs.writeFileSync(regular, '{"version":1,"targets":{}}');
+      fs.symlinkSync(regular, environment.ZEROSHOT_TARGETS_FILE);
+      assert.throws(() => loadTargets(environment), /not a regular file/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('uses the canonical single-worker facade for hosted issues', function () {
     const issue = issueInput('the-open-engine/zeroshot#837');
     assert.equal(issue.repository, 'the-open-engine/zeroshot');
@@ -84,6 +96,18 @@ describe('hosted target CLI', function () {
       ).request.isolationProfile,
       'isolation.pr@1'
     );
+  });
+
+  it('reads a hosted prompt from one opened regular file', async function () {
+    const { directory } = fixture();
+    const prompt = path.join(directory, 'prompt.md');
+    try {
+      fs.writeFileSync(prompt, 'Implement the focused task.\n');
+      const resolved = await resolveInput(prompt, { repository: 'the-open-engine/zeroshot' });
+      assert.equal(resolved.request.prompt, 'Implement the focused task.');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('rejects repository path segments that Git would normalize', function () {
