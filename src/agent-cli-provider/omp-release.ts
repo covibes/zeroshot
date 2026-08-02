@@ -84,3 +84,29 @@ export function findOmpReleaseAsset(platform: string): OmpReleaseAsset | undefin
 export function ompReleaseAssetDownloadUrl(asset: OmpReleaseAsset): string {
   return `${OMP_RELEASE_DOWNLOAD_BASE_URL}/${asset.name}`;
 }
+
+// Docker isolation runs the cluster image as linux/amd64 only (see AGENTS.md OMP Docker
+// section); the base image's AWS/Terraform/kubectl/Helm/Infracost/TFLint/tfsec layers are
+// hard-coded x86-64 assets, so this cannot yet claim native arm64.
+export const OMP_DOCKER_PLATFORM = 'linux/amd64' as const;
+export const OMP_DOCKER_RELEASE_PLATFORM = 'linux-x64' as const satisfies OmpReleasePlatform;
+
+const OMP_DOCKER_RELEASE_ASSET = findOmpReleaseAsset(OMP_DOCKER_RELEASE_PLATFORM);
+if (!OMP_DOCKER_RELEASE_ASSET) {
+  throw new Error(
+    `No OMP release asset found for Docker platform "${OMP_DOCKER_RELEASE_PLATFORM}"`
+  );
+}
+
+const OMP_DOCKER_RELEASE_URL = ompReleaseAssetDownloadUrl(OMP_DOCKER_RELEASE_ASSET);
+const OMP_DOCKER_RELEASE_SHA256 = OMP_DOCKER_RELEASE_ASSET.sha256;
+
+// Digest-verified install for the Docker image variant only. Downloads the pinned release asset,
+// verifies its SHA-256 before install, and asserts `omp --version` matches exactly — never
+// `latest`, never trusting the tag URL alone.
+export const OMP_DOCKER_INSTALL_COMMAND: string =
+  `set -eu; curl -fsSL --retry 3 -o /tmp/omp "${OMP_DOCKER_RELEASE_URL}"; ` +
+  `printf '%s  /tmp/omp\\n' '${OMP_DOCKER_RELEASE_SHA256}' | sha256sum -c -; ` +
+  `install -m 0755 /tmp/omp /usr/local/bin/omp; rm -f /tmp/omp; ` +
+  `v="$(omp --version 2>&1 | head -n1 | tr -dc '0-9.')"; ` +
+  `[ "$v" = "${OMP_SUPPORTED_VERSION}" ] || { echo "omp --version mismatch: $v" >&2; exit 1; }`;

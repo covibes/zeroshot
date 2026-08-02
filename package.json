@@ -47,7 +47,7 @@
     "build:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.build.json",
     "build:cluster": "npm run protocol:generate && tsc --project tsconfig.cluster.cjs.json && tsc --project tsconfig.cluster.esm.json && node scripts/build-cluster.js",
     "test:agent-cli-provider": "node --test tests/agent-cli-provider/*.test.js",
-    "test:omp": "npm run build:agent-cli-provider && node --test tests/agent-cli-provider/omp-*.test.js && node tests/run-tests.js tests/omp-rpc-watcher.test.js tests/omp-isolation-capability.test.js",
+    "test:omp": "npm run build:agent-cli-provider && node --test tests/agent-cli-provider/omp-*.test.js && node tests/run-tests.js tests/omp-rpc-watcher.test.js tests/omp-isolation-capability.test.js tests/omp-docker-auth.test.js tests/omp-docker-fresh-only.test.js",
     "test:providers:live": "npm run build:agent-cli-provider && node scripts/live-provider-smoke.js",
     "check:agent-cli-provider": "npm run check:agent-cli-provider:ci",
     "check:agent-cli-provider:ci": "npm run typecheck:agent-cli-provider && npm run lint:agent-cli-provider && npm run build:agent-cli-provider && npm run test:agent-cli-provider",

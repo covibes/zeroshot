@@ -264,6 +264,7 @@ function restoreAgentProviderSession({ agent, savedState, messageBus, clusterId 
 }
 
 module.exports = {
+  agentCanReuseSession,
   agentWorkspaceProvenance,
   normalizeProviderSession,
   promptIdentity,

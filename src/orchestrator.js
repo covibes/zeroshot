@@ -1836,12 +1836,18 @@ class Orchestrator {
         throw new Error('Docker is not available. Install Docker to use --docker mode.');
       }
 
+      // Pre-effect platform probe: fail before any workspace/container side effect when the
+      // Docker engine cannot run the provider's registry-owned platform (e.g. OMP's linux/amd64).
+      const platform = IsolationManager.providerDockerPlatform(providerName);
+      IsolationManager.assertPlatformSupported(platform);
+
       const baseImage = options.isolationImage || 'zeroshot-cluster-base';
       const image = IsolationManager.imageForProvider(providerName, baseImage);
       await IsolationManager.ensureImage(
         image,
         true,
-        IsolationManager.providerBuildArgs(providerName)
+        IsolationManager.providerBuildArgs(providerName, options.containerHome || '/home/node'),
+        platform
       );
       isolationImage = image;
 
@@ -1856,6 +1862,7 @@ class Orchestrator {
         mounts: options.mounts,
         containerHome: options.containerHome,
         provider: providerName,
+        platform,
       });
       this._log(`[Orchestrator] Container created: ${containerId} (workDir: ${workDir})`);
     } else if (options.worktree) {
@@ -2848,11 +2855,14 @@ class Orchestrator {
     }
 
     const providerName = this._resolveClusterProvider(cluster.config);
+    const platform = IsolationManager.providerDockerPlatform(providerName);
+    IsolationManager.assertPlatformSupported(platform);
     const newContainerId = await cluster.isolation.manager.createContainer(clusterId, {
       workDir,
       image: cluster.isolation.image,
       reuseExistingWorkspace: true,
       provider: providerName,
+      platform,
     });
 
     this._log(`[Orchestrator] New container created: ${newContainerId}`);
