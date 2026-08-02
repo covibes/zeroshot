@@ -8,6 +8,7 @@ import { opencodeAdapter } from './adapters/opencode';
 import { ompAdapter } from './adapters/omp';
 import { piAdapter } from './adapters/pi';
 import { resolveClaudeCommand } from './claude-command';
+import { OMP_INSTALL_COMMAND } from './omp-release';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';
@@ -424,7 +425,7 @@ export const providerRegistry = [
     binary: 'omp',
     command: { kind: 'fixed', command: 'omp', args: [] },
     invoke: SPAWN_INVOKE,
-    installInstructions: 'npm install -g --ignore-scripts @oh-my-pi/pi-coding-agent',
+    installInstructions: OMP_INSTALL_COMMAND,
     authInstructions: 'omp\n/login',
     credentialPaths: ['~/.omp'],
     credentialEnvKeys: ompAdapter.credentialEnvKeys,

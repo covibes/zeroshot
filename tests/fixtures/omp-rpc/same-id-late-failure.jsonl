@@ -1,0 +1,2 @@
+{"id":"req_2","type":"response","command":"prompt","success":true,"data":{"agentInvoked":true}}
+{"id":"req_2","type":"response","command":"prompt","success":false,"error":"async prompt scheduling failed"}

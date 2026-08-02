@@ -1,0 +1,2 @@
+{"type":"agent_start"}
+{"id":"req_1","type":"response","command":"prompt","success":true,"data":{"agentInvoked":true}}
