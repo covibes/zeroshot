@@ -13,6 +13,7 @@ export class ClusterInternalError extends ClusterError {}
 export class ClusterProtocolError extends ClusterError {}
 export class ClusterTransportError extends ClusterError {}
 export class ClusterTimeoutError extends ClusterError {}
+export class ClusterRequestError extends ClusterError {}
 
 export function requestAbortError(method: string): DOMException {
   return new DOMException(

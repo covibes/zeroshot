@@ -5,11 +5,15 @@ export {
   ClusterError,
   ClusterInternalError,
   ClusterProtocolError,
+  ClusterRequestError,
   ClusterRpcError,
   ClusterStateError,
   ClusterTimeoutError,
   ClusterTransportError,
 } from './errors.js';
+export { assertGraphProfile, assertGraphProfileSupported, assertGraphSpec } from './validators.js';
+export * from './payload-value.js';
+export * from './json-source.js';
 export { CONNECTION_TRANSITIONS, PROTOCOL_DIAGNOSTIC_CAPACITY, Connection } from './connection.js';
 export type {
   CallOptions,
