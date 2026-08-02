@@ -235,8 +235,17 @@ export function runOmpRpcTask(
       void hooks.onEvent(event).catch(() => {});
     }
 
+    // A child that exits *on a signal* leaves child.exitCode null and reports the signal name in
+    // child.signalCode instead, so exitCode alone is not a terminal check. Both must be consulted
+    // before any kill(): once the child has been reaped its pid — and therefore the negative pid
+    // captured here as a process-group id — can be reused by an unrelated process group, and
+    // signalling that group would terminate a process this driver never owned.
+    function hasExited(): boolean {
+      return child.exitCode !== null || child.signalCode !== null;
+    }
+
     function terminateOwnedBoundary(): void {
-      if (state.terminationStarted || child.pid === undefined || child.exitCode !== null) return;
+      if (state.terminationStarted || child.pid === undefined || hasExited()) return;
       state.terminationStarted = true;
       const pid = child.pid;
       try {
@@ -246,7 +255,7 @@ export function runOmpRpcTask(
         // Process may already be gone.
       }
       setTimeout(() => {
-        if (child.exitCode !== null) return;
+        if (hasExited()) return;
         try {
           if (process.platform === 'win32') child.kill('SIGKILL');
           else process.kill(-pid, 'SIGKILL');

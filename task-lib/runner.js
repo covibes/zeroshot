@@ -22,6 +22,7 @@ const {
   isClaudeSettingsOverlayPath,
 } = require('../src/worktree-claude-config');
 const { TASK_SPAWN_OWNERSHIP_TOKEN_ENV } = require('../src/task-spawn-cleanup-ownership');
+const { sendWatcherPrompt } = require('../src/watcher-prompt-channel');
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -67,9 +68,7 @@ export function spawnTask(prompt, options = {}) {
     jsonSchema,
     options,
     providerName,
-    commandSpec,
-    prompt,
-    prepared.options
+    commandSpec
   );
   const watcherScript = resolveWatcherScript(
     {
@@ -85,6 +84,12 @@ export function spawnTask(prompt, options = {}) {
     logFile,
     finalArgs: commandSpec.args,
     watcherConfig,
+    // Prompt bytes never enter argv: the rpc-stdio watcher receives them over a private pipe
+    // (src/watcher-prompt-channel.js). Every other lane passes the prompt to the provider through
+    // commandSpec.args, which the provider process — not a long-lived watcher — then owns.
+    ...(isRpcStdioLane(providerName)
+      ? { rpcPrompt: buildOmpPrompt(prompt, prepared.options || {}) }
+      : {}),
   });
 
   return task;
@@ -260,16 +265,10 @@ function isRpcStdioLane(providerName) {
   return getProviderRegistryEntry(providerName).invoke.lane === 'rpc-stdio';
 }
 
-function buildWatcherConfig(
-  outputFormat,
-  jsonSchema,
-  options,
-  providerName,
-  commandSpec,
-  prompt,
-  resolvedOptions
-) {
-  const rpcLane = isRpcStdioLane(providerName);
+// The returned object is JSON-serialized into the detached watcher's argv, so it must never carry
+// prompt or other task content: `ps` and /proc/<pid>/cmdline expose argv to every local user for
+// the whole lifetime of the watcher.
+function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, commandSpec) {
   return {
     outputFormat,
     jsonSchema,
@@ -278,8 +277,7 @@ function buildWatcherConfig(
     provider: providerName,
     command: commandSpec.binary,
     env: commandSpec.env || {},
-    commandSpec: buildWatcherCommandSpec(commandSpec, rpcLane),
-    ...(rpcLane ? { prompt: buildOmpPrompt(prompt, resolvedOptions || {}) } : {}),
+    commandSpec: buildWatcherCommandSpec(commandSpec, isRpcStdioLane(providerName)),
   };
 }
 
@@ -315,18 +313,25 @@ function resolveWatcherScript(options, providerName) {
   return useAttachable ? join(__dirname, 'attachable-watcher.js') : join(__dirname, 'watcher.js');
 }
 
-function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfig }) {
+function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfig, rpcPrompt }) {
+  const sendsPrompt = typeof rpcPrompt === 'string';
   const watcherEnv = buildWatcherEnv();
   const watcher = fork(
     watcherScript,
     [id, cwd, logFile, JSON.stringify(finalArgs), JSON.stringify(watcherConfig)],
     {
       detached: true,
-      stdio: 'ignore',
+      // A prompt-carrying lane needs a real pipe on fd 0 to receive it; every other lane keeps
+      // stdio fully ignored. fork() requires an explicit 'ipc' slot once stdio is an array.
+      stdio: sendsPrompt ? ['pipe', 'ignore', 'ignore', 'ipc'] : 'ignore',
       windowsHide: true,
       env: watcherEnv,
     }
   );
+
+  // Only the pipe write holds the event loop (until it drains), never the watcher itself: the
+  // parent still exits without waiting for the detached task to finish.
+  if (sendsPrompt) sendWatcherPrompt(watcher.stdin, rpcPrompt);
 
   watcher.unref();
   watcher.disconnect(); // Close IPC channel so parent can exit

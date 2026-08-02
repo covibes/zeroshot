@@ -37,6 +37,9 @@
  *   - '<name>': any other value streams tests/fixtures/omp-rpc/<name>.jsonl verbatim after the
  *     negotiate_protocol response (legacy decoder-fixture replay mode).
  *
+ * OMP_FAKE_RPC_PROMPT_SINK=<path> writes {"message":<the prompt command's message>} to <path> the
+ * moment a `prompt` command arrives, so tests can assert what actually reached OMP over RPC.
+ *
  * OMP_FAKE_RPC_INJECT_SENTINELS=1 additionally injects tests/helpers/omp-rpc-sentinels.js's
  * SENTINEL_SYSTEM/SENTINEL_CONTROL/SENTINEL_MESSAGE into raw protocol fields the normalizer never
  * reads (the ready frame, the negotiate_protocol response, and message_start/message_end's
@@ -203,6 +206,8 @@ function main() {
     }
 
     if (command.type === 'prompt') {
+      const promptSink = process.env.OMP_FAKE_RPC_PROMPT_SINK;
+      if (promptSink) fs.writeFileSync(promptSink, JSON.stringify({ message: command.message }));
       if (scenario === 'local-only') {
         emit({
           id: command.id,

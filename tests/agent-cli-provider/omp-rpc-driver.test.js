@@ -197,6 +197,60 @@ test('cancellation via AbortSignal terminates the process and reports cancelled'
   });
 });
 
+// Regression for the stale-process-group finding on PR #907: a child that dies *on* SIGTERM leaves
+// child.exitCode null and reports 'SIGTERM' in child.signalCode instead. The delayed escalation
+// guarded only on exitCode, so it still fired process.kill(-pid, 'SIGKILL') against a pid the OS
+// had already reaped and could have re-issued to an unrelated process group.
+test(
+  'no SIGKILL escalation after the child exits on a signal',
+  { skip: process.platform === 'win32' ? 'POSIX process groups only' : false },
+  async () => {
+    await withScenario('ignore-abort', async () => {
+      const EXIT_GRACE_MS = 500;
+      const signalled = [];
+      const realKill = process.kill.bind(process);
+      process.kill = (pid, signal) => {
+        signalled.push({ pid, signal });
+        return realKill(pid, signal);
+      };
+
+      let result;
+      let childPid;
+      try {
+        const controller = new AbortController();
+        const runPromise = runTask({
+          signal: controller.signal,
+          abortGraceMs: 50,
+          exitGraceMs: EXIT_GRACE_MS,
+        });
+        setTimeout(() => controller.abort(), 50);
+        const completed = await runPromise;
+        result = completed.result;
+        childPid = completed.spawns[0].pid;
+
+        // The escalation timer is armed when SIGTERM is sent and is never cleared, so it fires
+        // after the task has already resolved. Outlive it before asserting.
+        await new Promise((resolve) => setTimeout(resolve, EXIT_GRACE_MS * 2));
+      } finally {
+        process.kill = realKill;
+      }
+
+      // The child really did exit on the signal, not with an exit code...
+      assert.equal(result.stopReason, 'cancelled');
+      assert.equal(result.exitCode, null);
+      assert.equal(result.signal, 'SIGTERM');
+
+      // ...the owned boundary was SIGTERMed once...
+      const ownGroup = signalled.filter((call) => call.pid === -childPid);
+      assert.deepEqual(
+        ownGroup.map((call) => call.signal),
+        ['SIGTERM'],
+        `expected exactly one SIGTERM and no SIGKILL escalation, got ${JSON.stringify(ownGroup)}`
+      );
+    });
+  }
+);
+
 test('timeout elapsing terminates the process and reports timeout', async () => {
   await withScenario('ignore-abort', async () => {
     const { result } = await runTask({ timeoutMs: 100, abortGraceMs: 100, exitGraceMs: 100 });

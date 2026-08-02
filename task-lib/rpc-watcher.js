@@ -7,6 +7,10 @@
  * and updates task status on completion. Foreground (contract-invoke.ts) and this detached watcher
  * both call runOmpRpcTask and therefore produce identical result semantics; the only difference is
  * that this watcher persists OmpRpcSpawnEvidence via updateTask before the prompt is written.
+ *
+ * The prompt itself never appears in argv (`ps` and /proc/<pid>/cmdline would expose it for as long
+ * as this watcher lives). task-lib/runner.js sends it over the private stdin pipe described in
+ * src/watcher-prompt-channel.js, and OMP is not spawned until a complete payload has arrived.
  */
 
 import { appendFileSync } from 'fs';
@@ -24,10 +28,12 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const {
   ABORT_GRACE_MS,
+  DEFAULT_OMP_RPC_DECODER_LIMITS,
   EXIT_GRACE_MS,
   OMP_SUPPORTED_VERSION,
   runOmpRpcTask,
 } = require('./provider-helper-runtime.js');
+const { receiveWatcherPrompt } = require('../src/watcher-prompt-channel.js');
 
 // No overall task timeout: detached tasks run until the provider produces a terminal frame,
 // matching watcher.js's unbounded child.on('close') wait for every other lane.
@@ -104,12 +110,26 @@ async function run() {
     return;
   }
 
+  // Fail closed before any provider process exists: an absent, truncated, over-contract, or
+  // early-closed prompt channel must end the task through the same ownership-aware cleanup path as
+  // any other crash, never spawn OMP with a partial instruction. The 1 MiB ceiling is the pinned
+  // physical RPC frame limit — a larger prompt could never be written as a `prompt` command anyway.
+  let prompt;
+  try {
+    prompt = await receiveWatcherPrompt(process.stdin, {
+      maxBytes: DEFAULT_OMP_RPC_DECODER_LIMITS.maxPhysicalFrameBytes,
+    });
+  } catch (error) {
+    await crashWithError(error, 'prompt-channel');
+    return;
+  }
+
   const controller = new AbortController();
 
   const result = await runOmpRpcTask(
     {
       commandSpec: { ...commandSpec, cwd: commandSpec.cwd || cwd },
-      prompt: config.prompt || '',
+      prompt,
       expectedVersion: OMP_SUPPORTED_VERSION,
       session: { kind: 'none' },
       signal: controller.signal,

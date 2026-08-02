@@ -42,6 +42,7 @@ export {
   type OmpRpcTaskResult,
 } from './omp-rpc-driver';
 export { buildOmpPrompt } from './adapters/omp';
+export { DEFAULT_OMP_RPC_DECODER_LIMITS } from './omp-rpc-protocol';
 export { ABORT_GRACE_MS, EXIT_GRACE_MS } from './omp-rpc-bounds';
 export { OMP_SUPPORTED_VERSION } from './omp-release';
 export type { OmpSessionLaunch, VerifiedOmpPartition, VerifiedOmpSessionFile } from './omp-rpc-session';
