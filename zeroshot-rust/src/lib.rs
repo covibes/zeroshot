@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+pub mod admission_manifest;
 pub mod artifact_store;
 pub mod cluster_ledger;
 pub mod daemon_auth;
@@ -15,6 +16,7 @@ pub mod required_proof;
 pub mod role_contract;
 pub mod scheduler;
 pub mod source_code_provider;
+pub mod worker_bindings;
 pub mod worker_catalog;
 pub mod workspace_lease;
 
