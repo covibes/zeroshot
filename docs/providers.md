@@ -246,6 +246,32 @@ Mount presets in `dockerMounts` include: `codex`, `gemini`, `gcloud`, `claude`, 
 Use `--no-mounts` to disable all credential mounts (you will get a warning if
 credentials are missing).
 
+### OMP under `--docker`
+
+`--docker --provider omp` mounts `~/.omp` read-only to `$HOME/.omp` in the
+container (the `omp` preset), then nests writable bind mounts for the runtime
+state subpaths OMP writes on startup — `agent`, `natives`, `logs`, `run`,
+`cache` — inside that read-only mount, since the CLI extracts native addons
+and writes session/log state under `~/.omp` even in a fresh container. These
+writable overlays are backed by a per-cluster host directory under
+`$TMPDIR/zeroshot-provider-state/<clusterId>/omp` and are skipped entirely
+under `--no-mounts`. IsolationManager removes this directory whenever a
+cluster's isolation is torn down (`cleanup()`), and `zeroshot gc` sweeps any
+that are orphaned by a crash or force-kill before cleanup runs.
+
+Only the credential env vars OMP's supported model families declare (see
+`docker.envPassthrough` on the `omp` provider-registry entry, e.g.
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`, ...) are forwarded into the container — never the full
+host environment. AWS/Google Vertex-backed model families still require the
+existing `aws`/`gcloud` mount presets; they are not part of OMP's own
+passthrough list.
+
+The OMP CLI is installed into its own per-provider image variant (via Bun, the
+runtime the published package requires) rather than baked into the shared
+base image; the image tag changes automatically whenever the registry install
+command changes, so a version bump never silently reuses a stale image.
+
 ## Provider CLI Helper
 
 Provider command construction, feature probing, model resolution, output

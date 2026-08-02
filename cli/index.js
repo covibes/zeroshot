@@ -2845,11 +2845,7 @@ for (const mode of ['prove', 'verify', 'check']) {
     });
 }
 
-function assertRequestedWebSearchCliAvailable(
-  provider,
-  settings,
-  exists = commandExists
-) {
+function assertRequestedWebSearchCliAvailable(provider, settings, exists = commandExists) {
   const metadata = getProviderMetadata(provider);
   if (!metadata.settingsFields.includes('webSearch')) return;
   if (settings.providerSettings?.[provider]?.webSearch !== true) return;
@@ -2878,10 +2874,7 @@ taskCmd
     '-r, --resume <sessionId>',
     'Resume a specific provider session (Claude, Codex, or OpenCode)'
   )
-  .option(
-    '-c, --continue',
-    'Continue the most recent provider session (Claude or OpenCode)'
-  )
+  .option('-c, --continue', 'Continue the most recent provider session (Claude or OpenCode)')
   .option(
     '-o, --output-format <format>',
     'Output format: stream-json (default), text, json',
@@ -3681,8 +3674,13 @@ program
 // Garbage-collect orphaned worktrees and database files
 function printGcResult(result, dryRun) {
   const verb = dryRun ? 'Would remove' : 'Removed';
-  if (result.orphanedWorktrees.length === 0 && result.orphanedDbs.length === 0) {
-    console.log(chalk.dim('No orphaned worktrees or database files found.'));
+  const orphanedProviderState = result.orphanedProviderState || [];
+  if (
+    result.orphanedWorktrees.length === 0 &&
+    result.orphanedDbs.length === 0 &&
+    orphanedProviderState.length === 0
+  ) {
+    console.log(chalk.dim('No orphaned worktrees, database files, or provider-state dirs found.'));
     return;
   }
   if (result.orphanedWorktrees.length > 0) {
@@ -3694,6 +3692,14 @@ function printGcResult(result, dryRun) {
   if (result.orphanedDbs.length > 0) {
     console.log(chalk.bold(`\n${verb} ${result.orphanedDbs.length} orphaned database file(s):`));
     result.orphanedDbs.forEach((n) => console.log(chalk.dim(`  ~/.zeroshot/${n}`)));
+  }
+  if (orphanedProviderState.length > 0) {
+    console.log(
+      chalk.bold(`\n${verb} ${orphanedProviderState.length} orphaned provider-state dir(s):`)
+    );
+    orphanedProviderState.forEach((n) =>
+      console.log(chalk.dim(`  $TMPDIR/zeroshot-provider-state/${n}/`))
+    );
   }
   if (result.errors.length > 0) {
     console.log(chalk.yellow(`\n${result.errors.length} error(s):`));
@@ -3858,9 +3864,8 @@ program
   .description('Output task ID for an internal spawn ownership token (machine-readable)')
   .action(async (token) => {
     try {
-      const { getTaskIdBySpawnToken } = await import(
-        '../task-lib/commands/get-task-id-by-spawn-token.js'
-      );
+      const { getTaskIdBySpawnToken } =
+        await import('../task-lib/commands/get-task-id-by-spawn-token.js');
       getTaskIdBySpawnToken(token);
     } catch (error) {
       console.error('Error resolving task spawn ownership:', error.message);

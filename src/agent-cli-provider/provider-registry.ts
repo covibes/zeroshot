@@ -67,6 +67,10 @@ export interface ProviderDockerMetadata {
   // a docker-cached build layer for the per-provider image variant. Omit for providers already
   // baked into the base image (e.g. Claude) or not installable via a single command.
   readonly install?: string;
+  // Subpaths (relative to `mount.container`) that must stay writable at runtime even though the
+  // credential mount itself is read-only, e.g. session/state/cache dirs the CLI writes to on
+  // startup. Each gets its own writable bind mount nested inside the read-only mount.
+  readonly writableState?: readonly string[];
 }
 
 export interface ProviderRegistryEntry {
@@ -430,7 +434,31 @@ export const providerRegistry = [
         container: '$HOME/.omp',
         readonly: true,
       },
-      envPassthrough: [],
+      envPassthrough: [
+        'ANTHROPIC_API_KEY',
+        'ANTHROPIC_OAUTH_TOKEN',
+        'ANTHROPIC_FOUNDRY_API_KEY',
+        'OPENAI_API_KEY',
+        'GEMINI_API_KEY',
+        'COPILOT_GITHUB_TOKEN',
+        'AZURE_OPENAI_API_KEY',
+        'GROQ_API_KEY',
+        'CEREBRAS_API_KEY',
+        'XAI_API_KEY',
+        'OPENROUTER_API_KEY',
+        'KILO_API_KEY',
+        'MISTRAL_API_KEY',
+        'ZAI_API_KEY',
+        'UMANS_AI_CODING_PLAN_API_KEY',
+        'MINIMAX_API_KEY',
+        'OPENCODE_API_KEY',
+        'CURSOR_ACCESS_TOKEN',
+        'AI_GATEWAY_API_KEY',
+        'WAFER_SERVERLESS_API_KEY',
+      ],
+      install:
+        'npm install -g bun@1.3.14 && BUN_INSTALL=/usr/local bun install -g --ignore-scripts @oh-my-pi/pi-coding-agent',
+      writableState: ['agent', 'natives', 'logs', 'run', 'cache'],
     },
     defaultLevels: {
       min: ompAdapter.defaultMinLevel,

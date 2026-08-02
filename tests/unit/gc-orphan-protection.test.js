@@ -87,4 +87,68 @@ describe('gc orphan protection', function () {
     assert.ok(fs.existsSync(activeDbPath));
     assert.ok(fs.existsSync(orphanDbPath));
   });
+
+  describe('orphaned provider-state dirs (IsolationManager._applyProviderStateMounts backstop)', function () {
+    // PROVIDER_STATE_DIR is always os.tmpdir()/zeroshot-provider-state (not parameterized by
+    // storageDir), matching IsolationManager's own hardcoded root, so these write there directly.
+    const PROVIDER_STATE_DIR = path.join(os.tmpdir(), 'zeroshot-provider-state');
+    let createdDirs;
+
+    beforeEach(function () {
+      createdDirs = [];
+    });
+
+    afterEach(function () {
+      for (const dir of createdDirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    function makeProviderStateDir(name) {
+      const dir = path.join(PROVIDER_STATE_DIR, name);
+      fs.mkdirSync(path.join(dir, 'omp', 'agent'), { recursive: true });
+      createdDirs.push(dir);
+      return dir;
+    }
+
+    it('removes an orphaned provider-state dir for an unknown clusterId', function () {
+      const orphanId = `orphan-provider-state-${Date.now()}`;
+      const orphanDir = makeProviderStateDir(orphanId);
+
+      const result = gcOrphanedWorktrees({ storageDir });
+
+      assert.ok(result.orphanedProviderState.includes(orphanId));
+      assert.ok(!fs.existsSync(orphanDir));
+      assert.deepStrictEqual(result.errors, []);
+    });
+
+    it('protects a known clusterId provider-state dir', function () {
+      const clusterId = `known-provider-state-${Date.now()}`;
+      const keptDir = makeProviderStateDir(clusterId);
+
+      const result = gcOrphanedWorktrees({ storageDir, extraKnownIds: new Set([clusterId]) });
+
+      assert.ok(!result.orphanedProviderState.includes(clusterId));
+      assert.ok(fs.existsSync(keptDir));
+    });
+
+    it('protects the -validators suffixed dir of a known clusterId', function () {
+      const clusterId = `known-validators-base-${Date.now()}`;
+      const validatorsId = `${clusterId}-validators`;
+      const keptDir = makeProviderStateDir(validatorsId);
+
+      const result = gcOrphanedWorktrees({ storageDir, extraKnownIds: new Set([clusterId]) });
+
+      assert.ok(!result.orphanedProviderState.includes(validatorsId));
+      assert.ok(fs.existsSync(keptDir));
+    });
+
+    it('does not delete under dryRun, but reports it', function () {
+      const orphanId = `dry-run-provider-state-${Date.now()}`;
+      const orphanDir = makeProviderStateDir(orphanId);
+
+      const result = gcOrphanedWorktrees({ storageDir, dryRun: true });
+
+      assert.ok(result.orphanedProviderState.includes(orphanId));
+      assert.ok(fs.existsSync(orphanDir));
+    });
+  });
 });
