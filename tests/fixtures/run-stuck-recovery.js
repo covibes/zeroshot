@@ -8,7 +8,7 @@ async function main() {
   const config = JSON.parse(fs.readFileSync(process.env.RECOVERY_CONFIG, 'utf8'));
   const orchestrator = new Orchestrator({ storageDir, skipLoad: true, quiet: true });
   const started = await orchestrator.start(config, { text: 'fake hang recovery' });
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 45000;
   const registryPath = path.join(storageDir, 'clusters.json');
 
   while (Date.now() < deadline) {

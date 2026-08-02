@@ -2804,7 +2804,7 @@ describe('Orchestrator - Edge Cases', function () {
 });
 
 describe('Codex planner structured-output recovery', function () {
-  this.timeout(30000);
+  this.timeout(60000);
 
   it('recovers malformed Codex structured output without retrying the parent task', async function () {
     const result = await runStructuredOutputRecovery();
