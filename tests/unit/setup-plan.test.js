@@ -286,6 +286,36 @@ describe('buildSetupPlan', function () {
     });
   });
 
+  describe('provider default recommendation', function () {
+    it('recommends the registry default even when other CLIs are installed but it is not', function () {
+      const plan = buildSetupPlan({
+        cwd: '/fresh/machine/cwd',
+        settings: { __meta: { fileExists: false } },
+        repoSettings: null,
+        env: {},
+        deps: makeDeps({
+          commandExists: (cmd) => cmd === 'codex' || cmd === 'gemini',
+        }),
+      });
+      assert.strictEqual(plan.recommended.defaultProvider, 'claude');
+      assert.strictEqual(plan.risk.defaultProvider, 'medium');
+    });
+
+    it('reports low risk when the registry default CLI is available', function () {
+      const plan = buildSetupPlan({
+        cwd: '/fresh/machine/cwd',
+        settings: { __meta: { fileExists: false } },
+        repoSettings: null,
+        env: {},
+        deps: makeDeps({
+          commandExists: (cmd) => cmd === 'claude' || cmd === 'codex' || cmd === 'gemini',
+        }),
+      });
+      assert.strictEqual(plan.recommended.defaultProvider, 'claude');
+      assert.strictEqual(plan.risk.defaultProvider, 'low');
+    });
+  });
+
   describe('no writes', function () {
     it('never touches the filesystem', function () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-setup-plan-'));

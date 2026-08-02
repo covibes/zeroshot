@@ -72,6 +72,7 @@ export interface ProviderDockerMetadata {
 
 interface ProviderRegistryEntryBase {
   readonly id: string;
+  readonly default: boolean;
   readonly aliases: readonly string[];
   readonly displayName: string;
   readonly binary: string;
@@ -177,6 +178,7 @@ const kiroAdapter = createAcpAdapter({
 export const providerRegistry = [
   {
     id: 'claude',
+    default: true,
     aliases: ['anthropic'],
     displayName: 'Claude',
     binary: 'claude',
@@ -215,6 +217,7 @@ export const providerRegistry = [
   },
   {
     id: 'codex',
+    default: false,
     aliases: ['openai'],
     displayName: 'Codex',
     binary: 'codex',
@@ -256,6 +259,7 @@ export const providerRegistry = [
   },
   {
     id: 'gateway',
+    default: false,
     aliases: [],
     displayName: 'Gateway',
     binary: 'node',
@@ -304,6 +308,7 @@ export const providerRegistry = [
   },
   {
     id: 'gemini',
+    default: false,
     aliases: ['google'],
     displayName: 'Gemini',
     binary: 'gemini',
@@ -341,6 +346,7 @@ export const providerRegistry = [
   },
   {
     id: 'opencode',
+    default: false,
     aliases: [],
     displayName: 'Opencode',
     binary: 'opencode',
@@ -381,6 +387,7 @@ export const providerRegistry = [
   },
   {
     id: 'pi',
+    default: false,
     aliases: [],
     displayName: 'Pi',
     binary: 'pi',
@@ -420,6 +427,7 @@ export const providerRegistry = [
   },
   {
     id: 'omp',
+    default: false,
     aliases: [],
     displayName: 'OMP',
     binary: 'omp',
@@ -458,6 +466,7 @@ export const providerRegistry = [
   },
   {
     id: 'kiro',
+    default: false,
     aliases: [],
     displayName: 'Kiro',
     binary: 'kiro-cli',
@@ -495,6 +504,7 @@ export const providerRegistry = [
   },
   {
     id: 'copilot',
+    default: false,
     aliases: [],
     displayName: 'Copilot',
     binary: 'copilot',
@@ -565,6 +575,23 @@ export const providerAliasMap: Readonly<Record<string, RegistryProviderId>> = Ob
     return result;
   }, {})
 );
+
+export function assertExactlyOneDefaultProvider<T extends { id: string; default: boolean }>(
+  entries: readonly T[]
+): T['id'] {
+  const defaults = entries.filter((e) => e.default);
+  const [onlyDefault, ...rest] = defaults;
+  if (!onlyDefault || rest.length > 0) {
+    throw new Error(
+      `Provider registry must declare exactly one default provider; found ${defaults.length}${defaults.length ? ' (' + defaults.map((e) => e.id).join(', ') + ')' : ''}`
+    );
+  }
+  return onlyDefault.id;
+}
+const DEFAULT_PROVIDER_ID = assertExactlyOneDefaultProvider(providerRegistry);
+export function getDefaultProviderId(): RegistryProviderId {
+  return DEFAULT_PROVIDER_ID;
+}
 
 export function normalizeProviderName(name: string): RegistryProviderId | string {
   const normalized = name.toLowerCase();

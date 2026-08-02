@@ -18,7 +18,7 @@ const IsolationManager = require('../isolation-manager');
 const crypto = require('crypto');
 const { bufferMessage, scheduleDrain, drainBufferedMessages } = require('../message-buffer');
 const { isPlatformSupported } = require('./agent-stuck-detector');
-const { normalizeProviderName } = require('../../lib/provider-names');
+const { normalizeProviderName, getDefaultProviderId } = require('../../lib/provider-names');
 const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
@@ -64,7 +64,7 @@ async function createValidatorIsolation(agent, isolationConfig) {
       cluster.config?.forceProvider ||
       cluster.config?.defaultProvider ||
       loadSettings().defaultProvider ||
-      'claude'
+      getDefaultProviderId()
   );
   // Run validators on the provider's image variant (installs its CLI as a Docker-cached layer).
   const image = IsolationManager.imageForProvider(providerName, isolationConfig.image);
@@ -427,7 +427,7 @@ function publishTaskStarted(agent, triggeringMessage) {
   agent._publishLifecycle('TASK_STARTED', {
     iteration: agent.iteration,
     model: agent._selectModel(),
-    provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
+    provider: agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId(),
     modelSpec,
     triggeredBy: triggeringMessage.topic,
     triggerFrom: triggeringMessage.sender,
@@ -447,7 +447,7 @@ function publishTaskCompleted(agent, result) {
     iteration: agent.iteration,
     success: true,
     taskId: agent.currentTaskId,
-    provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
+    provider: agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId(),
     tokenUsage: result.tokenUsage || null,
     contextSequence: session?.contextSequence ?? agent.currentContextSequence,
     guidanceSequence: session?.guidanceSequence ?? agent.currentGuidanceSequence ?? null,

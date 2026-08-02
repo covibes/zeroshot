@@ -18,6 +18,7 @@ const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
 const { loadSettings } = require('../../lib/settings.js');
+const { getDefaultProviderId } = require('../../lib/provider-names');
 const { resolveClaudeAuth } = require('../../lib/settings/claude-auth.js');
 const { prependWorktreeToolBinToEnv } = require('../worktree-tooling-env.js');
 const { applyDarwinKeychainBoundaryToEnv } = require('../darwin-keychain-boundary.js');
@@ -399,7 +400,7 @@ function extractErrorContext({ output, statusOutput, taskId, isNotFound = false,
  * @param {string} output - Full NDJSON output from Claude CLI
  * @returns {Object|null} Token usage data or null if not found
  */
-function extractTokenUsage(output, providerName = 'claude') {
+function extractTokenUsage(output, providerName = getDefaultProviderId()) {
   if (!output) return null;
 
   const events = parseProviderChunk(providerName, output);
@@ -521,7 +522,7 @@ async function settleRegisteredNestedHandle(registry, handle) {
 }
 
 async function spawnClaudeTask(agent, context, options = {}) {
-  const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
+  const providerName = agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId();
   const modelSpec = resolveAgentModelSpec(agent);
 
   const ctPath = agent.taskCliPath || getClaudeTasksPath();
@@ -1748,7 +1749,7 @@ function createLogFollower({
 function followClaudeTaskLogs(agent, taskId, options = {}) {
   const fsModule = require('fs');
   const ctPath = agent.taskCliPath || getClaudeTasksPath();
-  const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
+  const providerName = agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId();
 
   return createLogFollower({
     agent,
@@ -1842,7 +1843,7 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
 
 async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const { manager, clusterId } = agent.isolation;
-  const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
+  const providerName = agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId();
   const modelSpec = resolveAgentModelSpec(agent);
   const modelSpecSource = agent._resolveModelSpecSource
     ? agent._resolveModelSpecSource()
@@ -2643,7 +2644,7 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
 
   const manager = isolation.manager;
   const clusterId = isolation.clusterId;
-  const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
+  const providerName = agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId();
 
   return new Promise((resolve, reject) => {
     const state = createIsolatedLogState(
@@ -2773,7 +2774,7 @@ async function parseResultOutput(agent, output, { allowRecovery = true } = {}) {
     throw new Error('Task execution failed - no output');
   }
 
-  const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
+  const providerName = agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId();
   const {
     extractCliError,
     extractJsonFromOutput,

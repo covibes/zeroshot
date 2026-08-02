@@ -16,7 +16,11 @@ const os = require('os');
 const fs = require('fs');
 const { loadSettings } = require('../lib/settings');
 const { CLAUDE_AUTH_ENV_VARS, resolveClaudeAuth } = require('../lib/settings/claude-auth');
-const { normalizeProviderName, getProviderMetadata } = require('../lib/provider-names');
+const {
+  normalizeProviderName,
+  getProviderMetadata,
+  getDefaultProviderId,
+} = require('../lib/provider-names');
 const {
   MOUNT_PRESETS,
   resolveMounts,
@@ -236,7 +240,7 @@ class IsolationManager {
 
     const settings = loadSettings();
     const providerName = normalizeProviderName(
-      config.provider || settings.defaultProvider || 'claude'
+      config.provider || settings.defaultProvider || getDefaultProviderId()
     );
     const containerHome = config.containerHome || settings.dockerContainerHome || '/root';
 

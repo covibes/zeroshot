@@ -51,6 +51,7 @@ const {
 } = require('../lib/settings');
 const {
   VALID_PROVIDERS,
+  getDefaultProviderId,
   getProviderMetadata,
   normalizeProviderName,
   resolveProviderCommand,
@@ -442,7 +443,7 @@ function applyModelOverrideToConfig(config, modelOverride, providerOverride, set
   }
 
   const providerName = normalizeProviderName(
-    providerOverride || config.defaultProvider || settings.defaultProvider || 'claude'
+    providerOverride || config.defaultProvider || settings.defaultProvider || getDefaultProviderId()
   );
   const provider = getProvider(providerName);
   try {

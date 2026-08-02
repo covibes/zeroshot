@@ -2,13 +2,19 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { loadSettings, mutateSettings, validateSetting } = require('../lib/settings');
+const {
+  loadSettings,
+  mutateSettings,
+  validateSetting,
+  DEFAULT_SETTINGS,
+} = require('../lib/settings');
 const {
   validateProviderFeatures,
   validateProviderSettings,
   validateProviderLevel,
 } = require('../src/config-validator');
 const { getProvider } = require('../src/providers');
+const { getDefaultProviderId, normalizeProviderName } = require('../lib/provider-names');
 
 describe('Provider settings', function () {
   const testDir = path.join(os.tmpdir(), `zeroshot-provider-settings-${Date.now()}`);
@@ -297,5 +303,67 @@ describe('Provider settings', function () {
         cliFeatures: { supportsModel: true },
       });
     }, /Invalid model "opus-4.6"/);
+  });
+
+  it('resolves defaultProvider to the registry default on a fresh settings load', function () {
+    const freshSettingsFile = path.join(testDir, 'fresh-settings.json');
+    process.env.ZEROSHOT_SETTINGS_FILE = freshSettingsFile;
+    fs.writeFileSync(freshSettingsFile, '{}', 'utf8');
+    try {
+      const settings = loadSettings();
+      assert.strictEqual(settings.defaultProvider, getDefaultProviderId());
+    } finally {
+      delete process.env.ZEROSHOT_SETTINGS_FILE;
+    }
+  });
+
+  it('restores defaultProvider to the registry default on whole-settings reset', function () {
+    const resetSettingsFile = path.join(testDir, 'reset-settings.json');
+    process.env.ZEROSHOT_SETTINGS_FILE = resetSettingsFile;
+    fs.writeFileSync(
+      resetSettingsFile,
+      JSON.stringify({ defaultProvider: 'codex' }, null, 2),
+      'utf8'
+    );
+    try {
+      mutateSettings((settings) => {
+        for (const key of Object.keys(settings)) delete settings[key];
+        Object.assign(settings, JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS })));
+      });
+      const settings = loadSettings();
+      assert.strictEqual(settings.defaultProvider, getDefaultProviderId());
+    } finally {
+      delete process.env.ZEROSHOT_SETTINGS_FILE;
+    }
+  });
+
+  it('recovers legacy provider-less watcher records as Claude even when the registry marker points elsewhere, while fresh lookups follow the marker', async function () {
+    // resolveWatcherCommand is the exact function watcher.js and attachable-watcher.js
+    // call to resolve a persisted task/watcher record's provider.
+    const { resolveWatcherCommand } = await import('../task-lib/watcher-output-runtime.js');
+    const { supportsProviderStructuredOutputRecovery } = require('../lib/agent-cli-provider');
+    const providerRegistry = require('../lib/agent-cli-provider/provider-registry');
+
+    const originalGetDefaultProviderId = providerRegistry.getDefaultProviderId;
+    providerRegistry.getDefaultProviderId = () => 'codex';
+    try {
+      // Fresh (marker-driven) resolution follows the overridden registry default.
+      assert.strictEqual(getDefaultProviderId(), 'codex');
+
+      // A legacy persisted watcher/task record never stored a `provider` field.
+      const legacyConfig = {};
+      const commandSpec = { binary: 'legacy-binary', args: [], env: {} };
+      const { providerName } = resolveWatcherCommand(
+        legacyConfig,
+        commandSpec,
+        [],
+        normalizeProviderName
+      );
+
+      assert.strictEqual(providerName, 'claude');
+      assert.strictEqual(supportsProviderStructuredOutputRecovery(providerName), true);
+    } finally {
+      providerRegistry.getDefaultProviderId = originalGetDefaultProviderId;
+    }
   });
 });

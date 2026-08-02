@@ -46,7 +46,7 @@ const { generateName } = require('./name-generator');
 const configValidator = require('./config-validator');
 const TemplateResolver = require('./template-resolver');
 const { loadSettings } = require('../lib/settings');
-const { normalizeProviderName } = require('../lib/provider-names');
+const { normalizeProviderName, getDefaultProviderId } = require('../lib/provider-names');
 const { resolveRunPlan } = require('../lib/run-plan');
 const { isProcessRunning } = require('../lib/process-liveness');
 const { getProvider } = require('./providers');
@@ -313,8 +313,8 @@ class Orchestrator {
       clusterConfig.forceProvider ||
       clusterConfig.defaultProvider ||
       settings.defaultProvider ||
-      'claude';
-    return normalizeProviderName(resolved) || 'claude';
+      getDefaultProviderId();
+    return normalizeProviderName(resolved) || getDefaultProviderId();
   }
 
   /**

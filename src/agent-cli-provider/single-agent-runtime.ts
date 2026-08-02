@@ -3,6 +3,7 @@ import { UnsupportedProviderCapabilityError } from './errors';
 import { normalizeGatewayBuildOptions, resolveGatewayConfiguration } from './gateway-tools';
 import { isRecord } from './json';
 import {
+  getDefaultProviderId,
   getProviderRegistryEntry,
   resolveProviderCommand,
   supportsProviderCapability,
@@ -414,7 +415,7 @@ function adapterForRuntimeInput(
 ): ProviderAdapter {
   const configured =
     provider ?? optionalString(settings.defaultProvider, 'settings.defaultProvider');
-  return getProviderAdapter(configured ?? 'claude');
+  return getProviderAdapter(configured ?? getDefaultProviderId());
 }
 
 function runtimeProviderSettings(
