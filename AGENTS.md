@@ -47,6 +47,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Provider engine registry        | `src/agent-cli-provider/provider-registry.ts`                           |
 | Gateway runner                  | `src/agent-cli-provider/gateway-runner.ts`                              |
 | Gateway tools/policy            | `src/agent-cli-provider/gateway-tools.ts`                               |
+| OMP release/version pinning     | `src/agent-cli-provider/omp-release.ts`                                 |
+| OMP RPC codec (JSONL/chunking)  | `src/agent-cli-provider/omp-rpc-protocol.ts`                            |
 | Provider detection              | `lib/provider-detection.js`                                             |
 | Provider capabilities           | `src/providers/capabilities.js`                                         |
 | Claude settings overlay         | `src/worktree-claude-config.js`                                         |
@@ -480,6 +482,8 @@ UX modes:
 Settings: `defaultProvider`, `providerSettings` (claude/codex/gateway/gemini/opencode/pi/copilot), legacy `maxModel`, `defaultConfig`, `logLevel`, robustness (`maxRetries`, `backoffBaseMs`, `backoffMaxMs`, `jitterFactor`, `maxRestartAttempts`, `maxTotalRestarts`, `staleWarningsBeforeKill`).
 
 Provider engines are registry-owned: adding an engine means one entry in `src/agent-cli-provider/provider-registry.ts`, plus the provider-specific adapter and tests. Docker credential mount/env presets, CLI aliases, visible preset lists, and any nontrivial availability probe rules must derive from that registry entry; do not add new provider identity lists or provider preset lists elsewhere.
+
+OMP's supported version, package identity, and release asset digests are pinned once in `omp-release.ts`; the RPC codec and any registry/version-probing/Docker-build code import it. Never recopy the version string, asset names, or digests elsewhere.
 Model gateways stay behind the single bundled `gateway` engine. Do not add `openrouter`, `ollama`, `vllm`, `hermes`, or similar model-only targets as standalone provider ids.
 
 ACP-native engines use one shared stdio adapter lane. New ACP engines must be added with registry metadata plus helper fixtures only; do not add engine-specific ACP parsers or invoke runners.

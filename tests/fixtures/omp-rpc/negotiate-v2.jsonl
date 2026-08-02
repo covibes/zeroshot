@@ -1,0 +1,3 @@
+{"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864}
+{"type":"available_commands_update","commands":[]}
+{"id":"protocol-1","type":"response","command":"negotiate_protocol","success":true}

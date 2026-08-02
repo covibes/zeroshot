@@ -1,0 +1,2 @@
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final answer"}]}}
+{"type":"agent_end","messages":[],"messageCount":1}
