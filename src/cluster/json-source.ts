@@ -32,20 +32,27 @@ export function decodeBoundedJson(bytes: Uint8Array): unknown {
 export async function readBoundedSource(
   source: AsyncIterable<Uint8Array | string>,
 ): Promise<Uint8Array> {
-  const chunks: Buffer[] = [];
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array[] = [];
   let total = 0;
   for await (const chunk of source) {
-    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk);
-    total += buffer.length;
+    const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
+    total += bytes.length;
     if (total > MAX_REQUEST_BYTES) {
       throw new ClusterRequestError(
         `request payload exceeds the ${MAX_REQUEST_BYTES} byte limit`,
         'OVERSIZED_JSON',
       );
     }
-    chunks.push(buffer);
+    chunks.push(bytes);
   }
-  return new Uint8Array(Buffer.concat(chunks, total));
+  const assembled = new Uint8Array(total);
+  let offset = 0;
+  for (const bytes of chunks) {
+    assembled.set(bytes, offset);
+    offset += bytes.length;
+  }
+  return assembled;
 }
 
 export function assertDistinctRequestSources(

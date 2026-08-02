@@ -31,7 +31,10 @@ function isRequestError(code) {
 function isJsonPointerLike(path) {
   if (path === '') return true;
   if (!path.startsWith('/')) return false;
-  return path.split('/').slice(1).every((segment) => segment.length > 0);
+  return path
+    .split('/')
+    .slice(1)
+    .every((segment) => segment.length > 0);
 }
 
 test('assertGraphSpec accepts positive GraphSpec fixtures and rejects every graph-schema negative fixture', () => {
@@ -98,12 +101,18 @@ test('firstInputValidationIssue / assertInputValue mirror admission.rs:70-90', (
   assert.equal(firstInputValidationIssue({ kind: 'number' }, 1.5), null);
 
   assert.doesNotThrow(() => assertInputValue(payload, { count: 2, label: 'ok' }));
-  assert.throws(() => assertInputValue(payload, { label: 'missing' }), isRequestError('INVALID_INPUT'));
+  assert.throws(
+    () => assertInputValue(payload, { label: 'missing' }),
+    isRequestError('INVALID_INPUT')
+  );
 });
 
 test('firstInputValidationIssue covers every PayloadType kind with JSON-pointer-style paths', () => {
   assert.equal(firstInputValidationIssue({ kind: 'null' }, null), null);
-  assert.deepEqual(firstInputValidationIssue({ kind: 'null' }, 0), { path: '', code: 'TYPE_MISMATCH' });
+  assert.deepEqual(firstInputValidationIssue({ kind: 'null' }, 0), {
+    path: '',
+    code: 'TYPE_MISMATCH',
+  });
 
   assert.equal(firstInputValidationIssue({ kind: 'boolean' }, true), null);
   assert.deepEqual(firstInputValidationIssue({ kind: 'boolean' }, 'true'), {
@@ -112,10 +121,16 @@ test('firstInputValidationIssue covers every PayloadType kind with JSON-pointer-
   });
 
   assert.equal(firstInputValidationIssue({ kind: 'number' }, 1.5), null);
-  assert.deepEqual(firstInputValidationIssue({ kind: 'number' }, 'x'), { path: '', code: 'TYPE_MISMATCH' });
+  assert.deepEqual(firstInputValidationIssue({ kind: 'number' }, 'x'), {
+    path: '',
+    code: 'TYPE_MISMATCH',
+  });
 
   assert.equal(firstInputValidationIssue({ kind: 'string' }, 'ok'), null);
-  assert.deepEqual(firstInputValidationIssue({ kind: 'string' }, 1), { path: '', code: 'TYPE_MISMATCH' });
+  assert.deepEqual(firstInputValidationIssue({ kind: 'string' }, 1), {
+    path: '',
+    code: 'TYPE_MISMATCH',
+  });
 
   const enumType = { kind: 'enum', values: ['accepted', 'rejected'] };
   assert.equal(firstInputValidationIssue(enumType, 'accepted'), null);
@@ -141,7 +156,10 @@ test('assertInputValue never leaks the offending value into its error message', 
     () => assertInputValue(enumType, marker),
     (error) => error instanceof ClusterRequestError && !error.message.includes(marker)
   );
-  const nested = { kind: 'record', fields: { secret: { required: true, type: { kind: 'string' } } } };
+  const nested = {
+    kind: 'record',
+    fields: { secret: { required: true, type: { kind: 'string' } } },
+  };
   assert.throws(
     () => assertInputValue(nested, { secret: 12345 }),
     (error) => error instanceof ClusterRequestError && !error.message.includes('12345')
@@ -153,10 +171,7 @@ test('decodeBoundedJson enforces the byte, UTF-8, and JSON syntax bounds', () =>
     () => decodeBoundedJson(new Uint8Array(MAX_REQUEST_BYTES + 1)),
     isRequestError('OVERSIZED_JSON')
   );
-  assert.throws(
-    () => decodeBoundedJson(new Uint8Array([0x80])),
-    isRequestError('INVALID_UTF8')
-  );
+  assert.throws(() => decodeBoundedJson(new Uint8Array([0x80])), isRequestError('INVALID_UTF8'));
   assert.throws(
     () => decodeBoundedJson(Buffer.from('{not json')),
     isRequestError('MALFORMED_JSON')
@@ -196,6 +211,49 @@ test('readBoundedSource reads a stream to completion and enforces the byte bound
     () => readBoundedSource(Readable.from(growingChunks())),
     isRequestError('OVERSIZED_JSON')
   );
+});
+
+test('readBoundedSource and decodeBoundedJson work without globalThis.Buffer, splitting a multibyte UTF-8 codepoint across chunks', async () => {
+  const original = globalThis.Buffer;
+  delete globalThis.Buffer;
+  try {
+    const text = '{"emoji":"' + '😀' + '"}';
+    const bytes = new globalThis.TextEncoder().encode(text);
+    const split = bytes.length - 3;
+    async function* gen() {
+      yield bytes.slice(0, split);
+      yield bytes.slice(split);
+    }
+    const result = await readBoundedSource(gen());
+    assert.equal(result.length, bytes.length);
+    assert.deepEqual(decodeBoundedJson(result), { emoji: '😀' });
+
+    async function* stringGen() {
+      yield 'null';
+    }
+    assert.equal(decodeBoundedJson(await readBoundedSource(stringGen())), null);
+  } finally {
+    globalThis.Buffer = original;
+  }
+});
+
+test('readBoundedSource enforces the exact/over-limit byte boundary without globalThis.Buffer', async () => {
+  const original = globalThis.Buffer;
+  delete globalThis.Buffer;
+  try {
+    async function* exact() {
+      yield new Uint8Array(MAX_REQUEST_BYTES).fill(0x20);
+    }
+    const result = await readBoundedSource(exact());
+    assert.equal(result.length, MAX_REQUEST_BYTES);
+
+    async function* over() {
+      yield new Uint8Array(MAX_REQUEST_BYTES + 1).fill(0x20);
+    }
+    await assert.rejects(() => readBoundedSource(over()), isRequestError('OVERSIZED_JSON'));
+  } finally {
+    globalThis.Buffer = original;
+  }
 });
 
 test('assertDistinctRequestSources requires an explicit input source and forbids double stdin', () => {
