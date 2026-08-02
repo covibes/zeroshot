@@ -3,6 +3,7 @@ const path = require('path');
 
 const { normalizeProviderName, providerSupportsCapability } = require('../../lib/provider-names');
 const { tryCanonicalMessageSequence } = require('../ledger-sequence');
+const { validateOwnedByTask } = require('../../task-lib/omp-session-ownership-schema.js');
 
 const DURABLE_SESSION_BOUNDARY_EVENTS = new Set([
   'TASK_STARTED',
@@ -46,9 +47,27 @@ function promptIdentity(value) {
 
 const DECIMAL_STRING = /^(0|[1-9][0-9]*)$/;
 const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/;
+const SESSION_FILE_NAME = /^[^/\\]+\.jsonl$/;
+const { PARTITION_ID_PATTERN } = require('../omp-session-partition');
+
+// Exactly the field set issue #866 fixes for this snapshot — no more, no less. The record is
+// closed in both directions so a stale snapshot written by a different Zeroshot version, or one
+// carrying smuggled extra state, is rejected rather than partially trusted.
+const OMP_SESSION_KEYS = new Set([
+  'schemaVersion',
+  'partitionId',
+  'sessionFileName',
+  'sessionFileIdentity',
+  'artifactManifestDigest',
+  'executionFingerprint',
+  'selectedProvider',
+  'selectedModel',
+]);
+const IDENTITY_KEYS = new Set(['device', 'inode']);
 
 function normalizeIdentity(value) {
-  if (!value || typeof value !== 'object') return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!Object.keys(value).every((key) => IDENTITY_KEYS.has(key))) return null;
   if (!DECIMAL_STRING.test(String(value.device)) || !DECIMAL_STRING.test(String(value.inode))) {
     return null;
   }
@@ -60,17 +79,21 @@ function normalizeIdentity(value) {
  * generic tuple above for provider 'omp', absent for every other provider. Every digest here is
  * sha256:<64-lower-hex>; every device/inode is a canonical unsigned decimal string. Never carries
  * storage-root or partition paths — those stay in task.ompSessionOwnership, not the agent
- * snapshot.
+ * snapshot; the partition is re-derived from the owner row at resume time.
  */
 function normalizeOmpSession(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
+  if (!Object.keys(value).every((key) => OMP_SESSION_KEYS.has(key))) return null;
   const sessionFileIdentity = normalizeIdentity(value.sessionFileIdentity);
   if (
     value.schemaVersion !== 1 ||
     !normalizeNonEmptyString(value.partitionId) ||
+    !PARTITION_ID_PATTERN.test(value.partitionId) ||
     !normalizeNonEmptyString(value.sessionFileName) ||
+    !SESSION_FILE_NAME.test(value.sessionFileName) ||
+    value.sessionFileName === '.jsonl' ||
     !sessionFileIdentity ||
     typeof value.artifactManifestDigest !== 'string' ||
     !SHA256_DIGEST.test(value.artifactManifestDigest) ||
@@ -225,10 +248,12 @@ function validateCompletedResumeIdentity(taskInfo) {
 /** taskInfo.ompSessionOwnership is the authoritative, watcher-committed continuation evidence for
  * provider 'omp'; a provisional/cleanup-required/missing record means this task never durably
  * proved a resumable session, regardless of what the generic sessionId/resumeIdentityVerified
- * columns say (rpc-watcher.js never populates those — they're the stdout-parsing watchers' path). */
+ * columns say (rpc-watcher.js never populates those — they're the stdout-parsing watchers' path).
+ * The record is re-fenced to this exact task row: an ownership object naming a different owner is
+ * not this task's continuation evidence, however well-formed it is. */
 function ompSessionFromCompletedTask(taskInfo) {
-  const ownership = taskInfo?.ompSessionOwnership;
-  if (!ownership || ownership.state !== 'committed') {
+  const ownership = validateOwnedByTask(taskInfo?.ompSessionOwnership ?? null, taskInfo?.id);
+  if (!ownership || ownership.state !== 'committed' || !ownership.session) {
     return null;
   }
   return {
@@ -267,11 +292,14 @@ function providerSessionFromCompletedTask({
   }
 
   const isOmp = provider === 'omp';
+  const ompOwnership = isOmp
+    ? validateOwnedByTask(taskInfo.ompSessionOwnership ?? null, taskInfo.id)
+    : null;
   const ompSession = isOmp ? ompSessionFromCompletedTask(taskInfo) : null;
   // rpc-watcher.js never populates the generic sessionId column; the OMP-observed session ID
   // committed alongside ompSession is the one authoritative identity for this provider.
   const sessionId = isOmp
-    ? normalizeNonEmptyString(taskInfo.ompSessionOwnership?.session?.sessionId)
+    ? normalizeNonEmptyString(ompOwnership?.state === 'committed' ? ompOwnership.session?.sessionId : null)
     : normalizeNonEmptyString(taskInfo.sessionId);
   const taskId = normalizeNonEmptyString(taskInfo.id);
   const generation = agent?.iteration;

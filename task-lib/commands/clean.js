@@ -2,29 +2,17 @@ import { unlinkSync, existsSync } from 'fs';
 import chalk from 'chalk';
 import { loadTasks, saveTasks } from '../store.js';
 import { createCommandSpecCleanup } from '../command-spec-cleanup.js';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
-const { deleteOmpSessionPartition } = require('../../src/omp-session-partition');
+import { cleanupOmpSessionPartitionForTask } from '../omp-session-cleanup.js';
 
 /**
- * Delete a task's OMP session partition directory (never the shared `.blobs` CAS root) when its
- * ownership is `committed` or `cleanup-required`. Returns true when it is now safe to remove the
- * task row; an unsafe/unresolvable path preserves the owner record (and therefore the whole task
- * row, the same retry-safety contract commandCleanup already uses) with an actionable warning.
+ * Delete a task's OMP session partition directory as part of removing its row. Every ownership
+ * state is cleaned here, including `provisional`: the row is going away, so leaving its partition
+ * behind would orphan a directory nothing can ever reclaim. The shared OMP CAS blob root is never
+ * touched. An unsafe/unresolvable path preserves the owner record — and therefore the whole task
+ * row, the same retry-safety contract commandCleanup already uses — with an actionable warning.
  */
 export function cleanUpOmpSessionPartition(task, warn) {
-  const ownership = task.ompSessionOwnership;
-  if (!ownership) return true;
-  if (ownership.state !== 'committed' && ownership.state !== 'cleanup-required') return true;
-  const { deleted, reason } = deleteOmpSessionPartition(
-    ownership.storageRoot,
-    ownership.partitionId
-  );
-  if (!deleted) {
-    warn(`Task ${task.id}: retained OMP session partition ${ownership.partitionId} (${reason})`);
-  }
-  return deleted;
+  return cleanupOmpSessionPartitionForTask(task, warn);
 }
 
 export function cleanTasks(options = {}) {

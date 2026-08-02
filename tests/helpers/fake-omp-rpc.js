@@ -44,6 +44,17 @@
  * SENTINEL_SYSTEM/SENTINEL_CONTROL/SENTINEL_MESSAGE into raw protocol fields the normalizer never
  * reads (the ready frame, the negotiate_protocol response, and message_start/message_end's
  * message object) so tests can prove those payloads never leak into normalized output.
+ *
+ * Session materialization (see resolveSessionOnDisk): with `--session-dir <dir>` this writes a
+ * real `<fileSafeTimestamp>_<sessionId>.jsonl` whose first record is OMP's session header, and
+ * with `--resume <file>` it reports that file's existing header instead of minting a new session.
+ * Knobs:
+ *   - OMP_FAKE_RPC_MINT_SESSION_ID       session id for a freshly minted session
+ *   - OMP_FAKE_RPC_SESSION_CWD           cwd recorded in the header (default: process cwd)
+ *   - OMP_FAKE_RPC_ARTIFACT_DIR=1        also create the sibling artifacts dir with one entry
+ *   - OMP_FAKE_RPC_APPEND_ON_RESUME=1    append a record to the resumed transcript
+ *   - OMP_FAKE_RPC_SESSION_ID/_FILE      override the *reported* id/path (drift scenarios)
+ *   - OMP_FAKE_RPC_SELECTED_PROVIDER/_MODEL/_THINKING_LEVEL  override reported get_state model
  */
 
 const fs = require('fs');
@@ -82,6 +93,64 @@ const KNOWN_SCENARIOS = new Set([
   'stderr-flood',
   'session-info-update',
 ]);
+
+/** Value of `--flag <value>` in this process's argv, or null. */
+function argValue(flag) {
+  const index = process.argv.indexOf(flag);
+  if (index < 0 || index + 1 >= process.argv.length) return null;
+  return process.argv[index + 1];
+}
+
+/**
+ * Materialize a session the way the real `omp --mode rpc --session-dir <dir>` does:
+ * `<sessionDir>/<fileSafeTimestamp>_<sessionId>.jsonl`, whose first record is the session header
+ * (`{type:"session", version, id, timestamp, cwd}`) — see
+ * packages/coding-agent/src/session/session-manager.ts#resetToNewSession in OMP v17.2.1.
+ *
+ * Returns `{sessionId, sessionFile}` so get_state can report exactly what is on disk. A resume
+ * (`--resume <file>`) reports the existing file/header untouched rather than minting a new one.
+ * OMP_FAKE_RPC_SESSION_ID / OMP_FAKE_RPC_SESSION_FILE still override the *reported* values, which
+ * is how tests drive the "OMP echoed something other than what we asked for" drift cases.
+ */
+function resolveSessionOnDisk() {
+  const sessionDir = argValue('--session-dir');
+  const resumeFile = argValue('--resume');
+  const cwd = process.env.OMP_FAKE_RPC_SESSION_CWD || process.cwd();
+
+  let sessionId = null;
+  let sessionFile = null;
+
+  if (resumeFile) {
+    sessionFile = resumeFile;
+    try {
+      const first = fs.readFileSync(resumeFile, 'utf8').split('\n')[0];
+      sessionId = JSON.parse(first).id ?? null;
+    } catch {
+      sessionId = null;
+    }
+    if (process.env.OMP_FAKE_RPC_APPEND_ON_RESUME === '1') {
+      fs.appendFileSync(resumeFile, `${JSON.stringify({ type: 'message', role: 'user' })}\n`);
+    }
+  } else if (sessionDir) {
+    sessionId = process.env.OMP_FAKE_RPC_MINT_SESSION_ID || `sess-${process.pid}`;
+    const timestamp = '2026-08-02T00:00:00.000Z';
+    sessionFile = path.join(sessionDir, `${timestamp.replace(/[:.]/g, '-')}_${sessionId}.jsonl`);
+    fs.writeFileSync(
+      sessionFile,
+      `${JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp, cwd })}\n`
+    );
+    if (process.env.OMP_FAKE_RPC_ARTIFACT_DIR === '1') {
+      const artifacts = sessionFile.slice(0, -'.jsonl'.length);
+      fs.mkdirSync(artifacts, { recursive: true });
+      fs.writeFileSync(path.join(artifacts, 'subagent.jsonl'), '{"type":"session","id":"sub"}\n');
+    }
+  }
+
+  return {
+    sessionId: process.env.OMP_FAKE_RPC_SESSION_ID || sessionId,
+    sessionFile: process.env.OMP_FAKE_RPC_SESSION_FILE || sessionFile,
+  };
+}
 
 function emitReady(scenario) {
   emit({
@@ -193,16 +262,18 @@ function main() {
     }
 
     if (command.type === 'get_state') {
-      const sessionId = process.env.OMP_FAKE_RPC_SESSION_ID;
-      const sessionFile = process.env.OMP_FAKE_RPC_SESSION_FILE;
+      const { sessionId, sessionFile } = resolveSessionOnDisk();
       emit({
         id: command.id,
         type: 'response',
         command: 'get_state',
         success: true,
         data: {
-          model: { provider: 'anthropic', id: '@default' },
-          thinkingLevel: 'medium',
+          model: {
+            provider: process.env.OMP_FAKE_RPC_SELECTED_PROVIDER || 'anthropic',
+            id: process.env.OMP_FAKE_RPC_SELECTED_MODEL || '@default',
+          },
+          thinkingLevel: process.env.OMP_FAKE_RPC_THINKING_LEVEL || 'medium',
           ...(sessionId ? { sessionId } : {}),
           ...(sessionFile ? { sessionFile } : {}),
         },
@@ -349,6 +420,16 @@ function main() {
         return;
       }
       if (scenario === 'session-info-update') {
+        // OMP_FAKE_RPC_APPEND_ON_UPDATE=1 grows the resumed transcript first, which is what a real
+        // turn does before a builtin slash command emits this frame. It lets tests prove the
+        // watcher does not re-run its structural manifest check on a post-prompt `ready`.
+        const resumeFile = argValue('--resume');
+        if (process.env.OMP_FAKE_RPC_APPEND_ON_UPDATE === '1' && resumeFile) {
+          fs.appendFileSync(
+            resumeFile,
+            `${JSON.stringify({ type: 'message', role: 'assistant' })}\n`
+          );
+        }
         emit({
           type: 'session_info_update',
           sessionId: process.env.OMP_FAKE_RPC_UPDATED_SESSION_ID || 'updated-session',

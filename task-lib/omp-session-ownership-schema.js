@@ -1,16 +1,65 @@
-// Pure (no DB, no partition I/O) validation/build helpers for the closed
+// Pure (no DB, no partition I/O) validation/canonicalization for the closed
 // `task.ompSessionOwnership` JSON shape defined by issue #866. Kept dependency-free of
 // task-lib/store.js so store.js can import this module for parse/serialize without a cycle; the
-// DB-touching transitions (provisional -> committed / cleanup-required) live in
+// DB-touching transitions (provisional -> committed / cleanup-required, owner transfer) live in
 // task-lib/omp-session-ownership.js.
+//
+// The schema is *closed* in both directions: an unknown key anywhere in the object (top level,
+// `owner`, `session`, or either identity) rejects the whole record, and every known key is
+// re-derived into a canonical form on the way out. A record that does not validate is never
+// partially trusted — callers fail closed to a fresh context.
 import { createHash } from 'crypto';
-import { resolve as resolvePath } from 'path';
+import { isAbsolute, resolve as resolvePath } from 'path';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { PARTITION_ID_PATTERN, partitionPathFor } = require('../src/omp-session-partition.js');
 
 export const OMP_OWNERSHIP_SCHEMA_VERSION = 1;
-const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
-const DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/;
-const STATES = new Set(['provisional', 'committed', 'cleanup-required']);
+export const OMP_OWNERSHIP_STATES = Object.freeze([
+  'provisional',
+  'committed',
+  'cleanup-required',
+]);
+
+const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
+const DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/u;
+const SESSION_FILE_NAME_PATTERN = /^[^/\\]+\.jsonl$/u;
+const STATES = new Set(OMP_OWNERSHIP_STATES);
 const OWNER_KINDS = new Set(['cluster-agent', 'standalone']);
+
+const TOP_LEVEL_KEYS = new Set([
+  'schemaVersion',
+  'state',
+  'partitionId',
+  'storageRoot',
+  'partitionPath',
+  'ownerUid',
+  'storageRootIdentity',
+  'partitionIdentity',
+  'canonicalWorkspace',
+  'owner',
+  'session',
+]);
+const OWNER_KEYS = new Set(['kind', 'clusterId', 'agentId', 'taskId']);
+const SESSION_KEYS = new Set([
+  'sessionId',
+  'fileName',
+  'fileIdentity',
+  'artifactManifestDigest',
+  'executionFingerprint',
+  'selectedProvider',
+  'selectedModel',
+]);
+const IDENTITY_KEYS = new Set(['device', 'inode']);
+
+function hasOnlyKeys(value, allowed) {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.length > 0;
@@ -24,13 +73,16 @@ function isDigest(value) {
   return isNonEmptyString(value) && SHA256_PATTERN.test(value);
 }
 
-function isIdentity(value) {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    isDecimalString(value.device) &&
-    isDecimalString(value.inode)
-  );
+/** A canonical absolute path: already fully resolved, so a record can never smuggle in a relative,
+ * `..`-bearing, or trailing-separator path that would resolve differently at cleanup time. */
+function isCanonicalAbsolutePath(value) {
+  return isNonEmptyString(value) && isAbsolute(value) && resolvePath(value) === value;
+}
+
+function normalizeIdentity(value) {
+  if (!isPlainObject(value) || !hasOnlyKeys(value, IDENTITY_KEYS)) return null;
+  if (!isDecimalString(value.device) || !isDecimalString(value.inode)) return null;
+  return { device: value.device, inode: value.inode };
 }
 
 export function canonicalOwnerUid() {
@@ -45,55 +97,94 @@ export function computeExecutionFingerprint(fields) {
   return `sha256:${createHash('sha256').update(JSON.stringify(stable), 'utf8').digest('hex')}`;
 }
 
-function validateOwner(owner) {
-  if (!owner || typeof owner !== 'object') return false;
-  if (!OWNER_KINDS.has(owner.kind)) return false;
-  if (!isNonEmptyString(owner.taskId)) return false;
+function normalizeOwner(owner) {
+  if (!isPlainObject(owner) || !hasOnlyKeys(owner, OWNER_KEYS)) return null;
+  if (!OWNER_KINDS.has(owner.kind)) return null;
+  if (!isNonEmptyString(owner.taskId)) return null;
   if (owner.kind === 'cluster-agent') {
-    return isNonEmptyString(owner.clusterId) && isNonEmptyString(owner.agentId);
+    if (!isNonEmptyString(owner.clusterId) || !isNonEmptyString(owner.agentId)) return null;
+  } else if (owner.clusterId !== null || owner.agentId !== null) {
+    return null;
   }
-  return owner.clusterId === null && owner.agentId === null;
+  return {
+    kind: owner.kind,
+    clusterId: owner.clusterId,
+    agentId: owner.agentId,
+    taskId: owner.taskId,
+  };
 }
 
-function validateSession(session) {
-  if (!session || typeof session !== 'object') return false;
-  return (
-    isNonEmptyString(session.sessionId) &&
-    isNonEmptyString(session.fileName) &&
-    isIdentity(session.fileIdentity) &&
-    isDigest(session.artifactManifestDigest) &&
-    isDigest(session.executionFingerprint) &&
-    isNonEmptyString(session.selectedProvider) &&
-    isNonEmptyString(session.selectedModel)
-  );
+function normalizeSession(session) {
+  if (!isPlainObject(session) || !hasOnlyKeys(session, SESSION_KEYS)) return null;
+  const fileIdentity = normalizeIdentity(session.fileIdentity);
+  if (
+    !isNonEmptyString(session.sessionId) ||
+    !isNonEmptyString(session.fileName) ||
+    !SESSION_FILE_NAME_PATTERN.test(session.fileName) ||
+    session.fileName === '.jsonl' ||
+    !fileIdentity ||
+    !isDigest(session.artifactManifestDigest) ||
+    !isDigest(session.executionFingerprint) ||
+    !isNonEmptyString(session.selectedProvider) ||
+    !isNonEmptyString(session.selectedModel)
+  ) {
+    return null;
+  }
+  return {
+    sessionId: session.sessionId,
+    fileName: session.fileName,
+    fileIdentity,
+    artifactManifestDigest: session.artifactManifestDigest,
+    executionFingerprint: session.executionFingerprint,
+    selectedProvider: session.selectedProvider,
+    selectedModel: session.selectedModel,
+  };
 }
 
 /**
  * Validate and canonicalize an arbitrary value as a closed `task.ompSessionOwnership` object.
- * Returns null on any structural violation — callers must fail closed to a fresh context rather
- * than partially trusting a malformed record.
+ * Returns null on any structural violation.
  */
 export function validateOmpSessionOwnership(value) {
-  if (!value || typeof value !== 'object') return null;
+  if (!isPlainObject(value) || !hasOnlyKeys(value, TOP_LEVEL_KEYS)) return null;
   if (value.schemaVersion !== OMP_OWNERSHIP_SCHEMA_VERSION) return null;
   if (!STATES.has(value.state)) return null;
-  if (!isNonEmptyString(value.partitionId)) return null;
-  if (!isNonEmptyString(value.storageRoot)) return null;
-  if (!isNonEmptyString(value.partitionPath)) return null;
-  if (!isDecimalString(value.ownerUid)) return null;
-  if (!isIdentity(value.storageRootIdentity)) return null;
-  if (!isNonEmptyString(value.canonicalWorkspace)) return null;
-  if (!validateOwner(value.owner)) return null;
-
-  if (value.state === 'committed') {
-    if (!isIdentity(value.partitionIdentity)) return null;
-    if (!validateSession(value.session)) return null;
-  } else if (value.partitionIdentity !== null || value.session !== null) {
-    // provisional / cleanup-required: null unless a *fully* observed prior commit is being
-    // downgraded, in which case both fields are still validated (never partially trusted).
-    if (value.partitionIdentity !== null && !isIdentity(value.partitionIdentity)) return null;
-    if (value.session !== null && !validateSession(value.session)) return null;
+  if (!isNonEmptyString(value.partitionId) || !PARTITION_ID_PATTERN.test(value.partitionId)) {
+    return null;
   }
+  if (!isCanonicalAbsolutePath(value.storageRoot)) return null;
+  if (!isCanonicalAbsolutePath(value.partitionPath)) return null;
+  if (!isCanonicalAbsolutePath(value.canonicalWorkspace)) return null;
+  // The partition path is fully determined by storageRoot + partitionId. Re-deriving it (instead
+  // of trusting the stored string) is what stops a tampered row from pointing cleanup or a resume
+  // at an arbitrary directory that merely *looks* canonical.
+  let derivedPartitionPath;
+  try {
+    derivedPartitionPath = partitionPathFor(value.storageRoot, value.partitionId);
+  } catch {
+    return null;
+  }
+  if (derivedPartitionPath !== value.partitionPath) return null;
+  if (!isDecimalString(value.ownerUid)) return null;
+
+  const storageRootIdentity = normalizeIdentity(value.storageRootIdentity);
+  if (!storageRootIdentity) return null;
+
+  const owner = normalizeOwner(value.owner);
+  if (!owner) return null;
+
+  if (!Object.hasOwn(value, 'partitionIdentity') || !Object.hasOwn(value, 'session')) return null;
+  const hasPartitionIdentity = value.partitionIdentity !== null;
+  const hasSession = value.session !== null;
+  // No partially populated pairs, in any state: an observation of the materialized session is
+  // either complete (both the partition identity and the full session tuple) or absent.
+  if (hasPartitionIdentity !== hasSession) return null;
+  const partitionIdentity = hasPartitionIdentity ? normalizeIdentity(value.partitionIdentity) : null;
+  const session = hasSession ? normalizeSession(value.session) : null;
+  if (hasPartitionIdentity && (!partitionIdentity || !session)) return null;
+  // `committed` is the only state that asserts a resumable session, so it is the only state that
+  // requires the observation to be present.
+  if (value.state === 'committed' && !session) return null;
 
   return {
     schemaVersion: OMP_OWNERSHIP_SCHEMA_VERSION,
@@ -102,52 +193,40 @@ export function validateOmpSessionOwnership(value) {
     storageRoot: value.storageRoot,
     partitionPath: value.partitionPath,
     ownerUid: value.ownerUid,
-    storageRootIdentity: {
-      device: value.storageRootIdentity.device,
-      inode: value.storageRootIdentity.inode,
-    },
-    partitionIdentity: value.partitionIdentity
-      ? { device: value.partitionIdentity.device, inode: value.partitionIdentity.inode }
-      : null,
+    storageRootIdentity,
+    partitionIdentity,
     canonicalWorkspace: value.canonicalWorkspace,
-    owner: {
-      kind: value.owner.kind,
-      clusterId: value.owner.clusterId,
-      agentId: value.owner.agentId,
-      taskId: value.owner.taskId,
-    },
-    session: value.session
-      ? {
-          sessionId: value.session.sessionId,
-          fileName: value.session.fileName,
-          fileIdentity: {
-            device: value.session.fileIdentity.device,
-            inode: value.session.fileIdentity.inode,
-          },
-          artifactManifestDigest: value.session.artifactManifestDigest,
-          executionFingerprint: value.session.executionFingerprint,
-          selectedProvider: value.session.selectedProvider,
-          selectedModel: value.session.selectedModel,
-        }
-      : null,
+    owner,
+    session,
   };
+}
+
+/**
+ * Validate a record *and* fence it to the task row it was read from: an ownership record whose
+ * `owner.taskId` is not this row's id is not this row's ownership, however well-formed it is.
+ */
+export function validateOwnedByTask(value, taskId) {
+  const validated = validateOmpSessionOwnership(value);
+  if (!validated) return null;
+  if (!isNonEmptyString(taskId) || validated.owner.taskId !== taskId) return null;
+  return validated;
 }
 
 /** Build the initial provisional ownership record. Pure — the directory need not exist yet. */
 export function buildProvisionalOwnership({
   partitionId,
   storageRoot,
-  partitionPath,
   storageRootIdentity,
   canonicalWorkspace,
   owner,
 }) {
+  const canonicalStorageRoot = resolvePath(storageRoot);
   const record = {
     schemaVersion: OMP_OWNERSHIP_SCHEMA_VERSION,
     state: 'provisional',
     partitionId,
-    storageRoot: resolvePath(storageRoot),
-    partitionPath: resolvePath(partitionPath),
+    storageRoot: canonicalStorageRoot,
+    partitionPath: partitionPathFor(canonicalStorageRoot, partitionId),
     ownerUid: canonicalOwnerUid(),
     storageRootIdentity,
     partitionIdentity: null,

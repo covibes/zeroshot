@@ -373,7 +373,14 @@ export function updateTask(id, updates) {
       command_cleanup = @commandCleanup,
       cancel_requested =
         CASE WHEN @hasCancelRequested = 1 THEN @cancelRequested ELSE cancel_requested END,
-      omp_session_ownership = @ompSessionOwnership
+      -- Only ever written when the caller explicitly supplies it. This is a read-modify-write
+      -- update, so unconditionally rewriting the ownership column would let an unrelated
+      -- updateTask (the watcher persisting spawn evidence, say) clobber an owner-fenced
+      -- compare-and-swap another process performed in between — see
+      -- task-lib/omp-session-ownership.js, whose transitions bypass this statement for exactly
+      -- that reason.
+      omp_session_ownership =
+        CASE WHEN @hasOmpSessionOwnership = 1 THEN @ompSessionOwnership ELSE omp_session_ownership END
     WHERE id = @id
   `
     )
@@ -402,6 +409,9 @@ export function updateTask(id, updates) {
       commandCleanup: serializeCommandCleanup(updated.commandCleanup),
       hasCancelRequested: Object.prototype.hasOwnProperty.call(updates, 'cancelRequested') ? 1 : 0,
       cancelRequested: updated.cancelRequested ? 1 : 0,
+      hasOmpSessionOwnership: Object.prototype.hasOwnProperty.call(updates, 'ompSessionOwnership')
+        ? 1
+        : 0,
       ompSessionOwnership: serializeOmpSessionOwnership(updated.ompSessionOwnership || null),
     });
 

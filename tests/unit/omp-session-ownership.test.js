@@ -1,11 +1,17 @@
 /**
- * Unit coverage for task-lib/omp-session-ownership.js's owner-fenced CAS transitions, isolated
- * from the detached watcher/subprocess plumbing exercised end-to-end in
- * tests/omp-rpc-watcher.test.js. Focuses on the two-boundary commit contract from issue #866:
- * the detached watcher may only ever record verified evidence for a cluster-agent owner
- * (recordVerifiedMaterialization); only the parent agent process's post-hook success boundary may
- * advance that evidence to 'committed' (commitRecordedOwnership). Standalone owners still commit
- * directly (commitOwnership) since the watcher IS their terminal boundary.
+ * task-lib/omp-session-ownership.js — the owner-fenced ownership state machine of issue #866,
+ * isolated from the detached-watcher plumbing exercised end-to-end in tests/omp-rpc-watcher.test.js.
+ *
+ * What this proves:
+ *   - the two-boundary commit contract: a detached watcher may only *record* verified evidence for
+ *     a cluster-agent owner; only the parent agent's post-hook boundary may commit it. Standalone
+ *     owners commit directly, because the watcher IS their terminal boundary.
+ *   - every transition is a full-value compare-and-swap, so a duplicate/re-entrant call from a
+ *     racing crash-recovery path can never clobber a state another writer already advanced past.
+ *   - the resume ownership transfer is atomic and fenced on both rows, so a partition is never
+ *     owned by two committed rows and never by none.
+ *   - every #866 ownership crash vector resolves to exactly one committed owner or a retryable
+ *     cleanup-required state, and no unowned partition becomes resumable.
  *
  * Every task-lib/store.js read/write below runs in its own short-lived child process, matching
  * tests/omp-rpc-watcher.test.js: task-lib/store.js resolves its DB path from ZEROSHOT_HOME at ESM
@@ -22,6 +28,8 @@ const { pathToFileURL } = require('url');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
+
+const { makeSessionPartition } = require('../helpers/omp-session-fixtures');
 
 const zeroshotHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-ownership-unit-'));
 const storeUrl = pathToFileURL(path.resolve(__dirname, '../../task-lib/store.js')).href;
@@ -42,22 +50,22 @@ function nextTaskId(label) {
   return `omp-ownership-unit-${label}-${idCounter}`;
 }
 
-async function seedProvisionalTask(id, { owner, storageRoot, partitionPath, partitionId }) {
+/** Insert a task row whose ompSessionOwnership is a fresh provisional record for `partition`. */
+async function seedProvisionalTask(id, { owner, storageRoot, partitionId, workspace }) {
   const stdout = await runStoreScript(`
     const { addTask } = await import(${JSON.stringify(storeUrl)});
     const { writeProvisionalOwnership } = await import(${JSON.stringify(ownershipUrl)});
     const record = writeProvisionalOwnership({
       partitionId: ${JSON.stringify(partitionId)},
       storageRoot: ${JSON.stringify(storageRoot)},
-      partitionPath: ${JSON.stringify(partitionPath)},
-      canonicalWorkspace: ${JSON.stringify(storageRoot)},
+      canonicalWorkspace: ${JSON.stringify(workspace ?? storageRoot)},
       owner: ${JSON.stringify(owner)},
     });
     addTask({
       id: ${JSON.stringify(id)},
       status: 'running',
       provider: 'omp',
-      cwd: ${JSON.stringify(storageRoot)},
+      cwd: ${JSON.stringify(workspace ?? storageRoot)},
       ompSessionOwnership: record,
     });
     process.stdout.write(JSON.stringify(record));
@@ -73,223 +81,380 @@ async function getOwnership(id) {
   return JSON.parse(stdout);
 }
 
-function evidenceArgs(sessionFilePath) {
-  return `{
+function evidenceLiteral(sessionFilePath, overrides = {}) {
+  return JSON.stringify({
     sessionId: 'sess-1',
-    sessionFilePath: ${JSON.stringify(sessionFilePath)},
-    artifactManifestDigest: 'sha256:${'a'.repeat(64)}',
-    executionFingerprint: 'sha256:${'b'.repeat(64)}',
+    sessionFilePath,
+    artifactManifestDigest: `sha256:${'a'.repeat(64)}`,
+    executionFingerprint: `sha256:${'b'.repeat(64)}`,
     selectedProvider: 'anthropic',
     selectedModel: '@default',
-  }`;
+    ...overrides,
+  });
 }
 
-async function recordVerifiedMaterializationFor(id, sessionFilePath) {
+async function callOwnership(fnName, argLiteral) {
   const stdout = await runStoreScript(`
-    const { recordVerifiedMaterialization } = await import(${JSON.stringify(ownershipUrl)});
-    const recorded = recordVerifiedMaterialization({ taskId: ${JSON.stringify(id)}, ...${evidenceArgs(
-      sessionFilePath
-    )} });
-    process.stdout.write(JSON.stringify(recorded));
+    const mod = await import(${JSON.stringify(ownershipUrl)});
+    process.stdout.write(JSON.stringify(mod.${fnName}(${argLiteral}) ?? null));
   `);
   return JSON.parse(stdout);
 }
 
-async function commitOwnershipFor(id, sessionFilePath) {
-  const stdout = await runStoreScript(`
-    const { commitOwnership } = await import(${JSON.stringify(ownershipUrl)});
-    const committed = commitOwnership({ taskId: ${JSON.stringify(id)}, ...${evidenceArgs(
-      sessionFilePath
-    )} });
-    process.stdout.write(JSON.stringify(committed));
-  `);
-  return JSON.parse(stdout);
+function recordVerifiedMaterializationFor(id, sessionFilePath, overrides) {
+  return callOwnership(
+    'recordVerifiedMaterialization',
+    `{ taskId: ${JSON.stringify(id)}, ...${evidenceLiteral(sessionFilePath, overrides)} }`
+  );
 }
 
-async function commitRecordedOwnershipFor(id) {
-  const stdout = await runStoreScript(`
-    const { commitRecordedOwnership } = await import(${JSON.stringify(ownershipUrl)});
-    process.stdout.write(JSON.stringify(commitRecordedOwnership(${JSON.stringify(id)})));
-  `);
-  return JSON.parse(stdout);
+function commitOwnershipFor(id, sessionFilePath, overrides) {
+  return callOwnership(
+    'commitOwnership',
+    `{ taskId: ${JSON.stringify(id)}, ...${evidenceLiteral(sessionFilePath, overrides)} }`
+  );
 }
 
-async function markCleanupRequiredFor(id) {
-  const stdout = await runStoreScript(`
-    const { markCleanupRequired } = await import(${JSON.stringify(ownershipUrl)});
-    process.stdout.write(JSON.stringify(markCleanupRequired(${JSON.stringify(id)})));
-  `);
-  return JSON.parse(stdout);
+function commitRecordedOwnershipFor(id) {
+  return callOwnership('commitRecordedOwnership', JSON.stringify(id));
 }
 
-describe('task-lib/omp-session-ownership.js (owner-fenced CAS transitions)', function () {
-  this.timeout(20000);
+function markCleanupRequiredFor(id) {
+  return callOwnership('markCleanupRequired', JSON.stringify(id));
+}
+
+function transferOwnership(fromTaskId, toTaskId) {
+  return callOwnership(
+    'transferOmpSessionOwnership',
+    JSON.stringify({ fromTaskId, toTaskId })
+  );
+}
+
+function committedOwnersFor(partitionId, excludeTaskId = null) {
+  return callOwnership(
+    'findCommittedOwnersForPartition',
+    `${JSON.stringify(partitionId)}, ${JSON.stringify(excludeTaskId)}`
+  );
+}
+
+describe('task-lib/omp-session-ownership.js (owner-fenced ownership state machine)', function () {
+  this.timeout(30000);
 
   let storageRoot;
-  let partitionPath;
-  let sessionFile;
+  let partition;
 
   beforeEach(function () {
     storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'storage-'));
-    partitionPath = fs.mkdtempSync(path.join(storageRoot, 'partition-'));
-    sessionFile = path.join(partitionPath, 'session.jsonl');
-    fs.writeFileSync(sessionFile, '{"turn":1}\n');
+    partition = makeSessionPartition({ storageRoot });
   });
 
-  it('cluster-agent: recordVerifiedMaterialization persists evidence but leaves state provisional', async function () {
-    const id = nextTaskId('cluster-agent-record');
-    const partitionId = '11111111-1111-4111-8111-111111111111';
-    await seedProvisionalTask(id, {
-      owner: { kind: 'cluster-agent', clusterId: 'c1', agentId: 'a1', taskId: id },
-      storageRoot,
-      partitionPath,
-      partitionId,
-    });
-
-    const recorded = await recordVerifiedMaterializationFor(id, sessionFile);
-    assert.strictEqual(recorded, true);
-
-    const ownership = await getOwnership(id);
-    assert.strictEqual(ownership.state, 'provisional', 'evidence recording must not commit');
-    assert.strictEqual(ownership.session.sessionId, 'sess-1');
-    assert.ok(ownership.partitionIdentity, 'partitionIdentity must be populated');
+  const clusterOwner = (id) => ({
+    kind: 'cluster-agent',
+    clusterId: 'c1',
+    agentId: 'a1',
+    taskId: id,
+  });
+  const standaloneOwner = (id) => ({
+    kind: 'standalone',
+    clusterId: null,
+    agentId: null,
+    taskId: id,
   });
 
-  it('cluster-agent: commitRecordedOwnership fails closed with no prior recorded evidence', async function () {
-    const id = nextTaskId('cluster-agent-commit-without-evidence');
-    const partitionId = '22222222-2222-4222-8222-222222222222';
+  async function seedCluster(label) {
+    const id = nextTaskId(label);
     await seedProvisionalTask(id, {
-      owner: { kind: 'cluster-agent', clusterId: 'c1', agentId: 'a1', taskId: id },
+      owner: clusterOwner(id),
       storageRoot,
-      partitionPath,
-      partitionId,
+      partitionId: partition.partitionId,
+    });
+    return id;
+  }
+
+  async function seedStandalone(label, options = {}) {
+    const id = nextTaskId(label);
+    await seedProvisionalTask(id, {
+      owner: standaloneOwner(id),
+      storageRoot,
+      partitionId: options.partitionId ?? partition.partitionId,
+    });
+    return id;
+  }
+
+  describe('two-boundary commit contract', function () {
+    it('cluster-agent: recordVerifiedMaterialization persists evidence but leaves state provisional', async function () {
+      const id = await seedCluster('cluster-record');
+      assert.strictEqual(await recordVerifiedMaterializationFor(id, partition.sessionFilePath), true);
+
+      const ownership = await getOwnership(id);
+      assert.strictEqual(ownership.state, 'provisional', 'evidence recording must not commit');
+      assert.strictEqual(ownership.session.sessionId, 'sess-1');
+      assert.strictEqual(ownership.session.fileName, partition.sessionFileName);
+      assert.deepStrictEqual(ownership.partitionIdentity, partition.identity());
+      assert.deepStrictEqual(ownership.session.fileIdentity, partition.sessionFileIdentity());
     });
 
-    const committed = await commitRecordedOwnershipFor(id);
-    assert.strictEqual(
-      committed,
-      false,
-      'must not commit without verified evidence recorded first'
-    );
+    it('cluster-agent: commitRecordedOwnership fails closed with no prior recorded evidence', async function () {
+      const id = await seedCluster('cluster-commit-no-evidence');
+      assert.strictEqual(await commitRecordedOwnershipFor(id), false);
+      assert.strictEqual((await getOwnership(id)).state, 'provisional');
+    });
 
-    const ownership = await getOwnership(id);
-    assert.strictEqual(ownership.state, 'provisional');
+    it('cluster-agent: commitRecordedOwnership commits exactly the evidence the watcher recorded', async function () {
+      const id = await seedCluster('cluster-commit');
+      await recordVerifiedMaterializationFor(id, partition.sessionFilePath);
+      const recorded = await getOwnership(id);
+
+      assert.strictEqual(await commitRecordedOwnershipFor(id), true);
+      const committed = await getOwnership(id);
+      assert.strictEqual(committed.state, 'committed');
+      assert.deepStrictEqual(committed.session, recorded.session);
+      assert.deepStrictEqual(committed.partitionIdentity, recorded.partitionIdentity);
+    });
+
+    it('standalone: commitOwnership is the direct terminal boundary and rejects a duplicate call', async function () {
+      const id = await seedStandalone('standalone-commit');
+      assert.strictEqual(await commitOwnershipFor(id, partition.sessionFilePath), true);
+      assert.strictEqual((await getOwnership(id)).state, 'committed');
+      assert.strictEqual(
+        await commitOwnershipFor(id, partition.sessionFilePath),
+        false,
+        'the CAS must refuse a second commit rather than reprocessing'
+      );
+    });
+
+    it('fails closed when the recorded partition or session file has vanished', async function () {
+      const id = await seedStandalone('missing-session-file');
+      fs.rmSync(partition.partitionPath, { recursive: true, force: true });
+      assert.strictEqual(await commitOwnershipFor(id, partition.sessionFilePath), false);
+      assert.strictEqual((await getOwnership(id)).state, 'provisional');
+    });
+
+    it('refuses to read or advance a record whose owner.taskId is a different row', async function () {
+      const id = nextTaskId('foreign-owner');
+      await runStoreScript(`
+        const { addTask } = await import(${JSON.stringify(storeUrl)});
+        const { writeProvisionalOwnership } = await import(${JSON.stringify(ownershipUrl)});
+        addTask({
+          id: ${JSON.stringify(id)},
+          status: 'running',
+          provider: 'omp',
+          cwd: ${JSON.stringify(storageRoot)},
+          ompSessionOwnership: writeProvisionalOwnership({
+            partitionId: ${JSON.stringify(partition.partitionId)},
+            storageRoot: ${JSON.stringify(storageRoot)},
+            canonicalWorkspace: ${JSON.stringify(storageRoot)},
+            owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: 'somebody-else' },
+          }),
+        });
+      `);
+      assert.strictEqual(await commitOwnershipFor(id, partition.sessionFilePath), false);
+      assert.strictEqual(await commitRecordedOwnershipFor(id), false);
+      assert.strictEqual(await markCleanupRequiredFor(id), null);
+    });
   });
 
-  it('cluster-agent: commitRecordedOwnership commits exactly the evidence the watcher recorded (post-hook success boundary)', async function () {
-    const id = nextTaskId('cluster-agent-commit-after-record');
-    const partitionId = '33333333-3333-4333-8333-333333333333';
-    await seedProvisionalTask(id, {
-      owner: { kind: 'cluster-agent', clusterId: 'c1', agentId: 'a1', taskId: id },
-      storageRoot,
-      partitionPath,
-      partitionId,
+  describe('ownership crash vectors (#866 acceptance)', function () {
+    it('row-before-directory: a provisional row whose partition was never created stays provisional and cleans up', async function () {
+      const unmadePartitionId = require('crypto').randomUUID();
+      const id = await seedStandalone('row-before-directory', { partitionId: unmadePartitionId });
+      const ownership = await getOwnership(id);
+      assert.strictEqual(ownership.state, 'provisional');
+      assert.ok(!fs.existsSync(ownership.partitionPath), 'the directory must not exist yet');
+      assert.strictEqual(
+        await commitOwnershipFor(id, path.join(ownership.partitionPath, 'x.jsonl')),
+        false,
+        'nothing materialized, so nothing may be committed'
+      );
+      assert.strictEqual((await markCleanupRequiredFor(id)).state, 'cleanup-required');
     });
 
-    assert.strictEqual(await recordVerifiedMaterializationFor(id, sessionFile), true);
-    const committed = await commitRecordedOwnershipFor(id);
-    assert.strictEqual(committed, true);
+    it('fresh materialization-before-capture: a crash before evidence is recorded resolves to cleanup-required', async function () {
+      const id = await seedCluster('materialization-before-capture');
+      // The session file exists on disk, but the watcher died before recording anything.
+      assert.ok(fs.existsSync(partition.sessionFilePath));
+      assert.strictEqual((await markCleanupRequiredFor(id)).state, 'cleanup-required');
+      assert.strictEqual(
+        await commitRecordedOwnershipFor(id),
+        false,
+        'a retired record must never be resurrectable into a committed owner'
+      );
+      assert.strictEqual((await getOwnership(id)).state, 'cleanup-required');
+    });
 
-    const ownership = await getOwnership(id);
-    assert.strictEqual(ownership.state, 'committed');
-    assert.strictEqual(ownership.session.sessionId, 'sess-1');
+    it('provider-complete-before-hook: recorded evidence is not resumable until the hook boundary commits', async function () {
+      const id = await seedCluster('provider-complete-before-hook');
+      await recordVerifiedMaterializationFor(id, partition.sessionFilePath);
+      assert.strictEqual((await getOwnership(id)).state, 'provisional');
+      assert.deepStrictEqual(
+        await committedOwnersFor(partition.partitionId),
+        [],
+        'no committed owner exists before the hook boundary'
+      );
+      assert.strictEqual(await commitRecordedOwnershipFor(id), true);
+      assert.deepStrictEqual(await committedOwnersFor(partition.partitionId), [id]);
+    });
+
+    it('failed schema/hook: markCleanupRequired retires a provisional record even after evidence was recorded', async function () {
+      const id = await seedCluster('failed-hook');
+      await recordVerifiedMaterializationFor(id, partition.sessionFilePath);
+      const retired = await markCleanupRequiredFor(id);
+      assert.strictEqual(retired.state, 'cleanup-required');
+      assert.strictEqual(retired.owner.taskId, id, 'the owner is preserved for cleanup to act on');
+      assert.strictEqual(retired.session.sessionId, 'sess-1');
+      assert.deepStrictEqual(await committedOwnersFor(partition.partitionId), []);
+    });
+
+    it('cancellation: a cancelled turn retires its record and is idempotent under repeated recovery', async function () {
+      const id = await seedStandalone('cancelled');
+      assert.strictEqual((await markCleanupRequiredFor(id)).state, 'cleanup-required');
+      assert.strictEqual((await markCleanupRequiredFor(id)).state, 'cleanup-required');
+      assert.strictEqual(await commitOwnershipFor(id, partition.sessionFilePath), false);
+    });
+
+    it('commit-before-agent-snapshot: a re-entrant commit after crash recovery is a safe no-op', async function () {
+      const id = await seedCluster('commit-before-snapshot');
+      await recordVerifiedMaterializationFor(id, partition.sessionFilePath);
+      assert.strictEqual(await commitRecordedOwnershipFor(id), true);
+      // The agent crashed before writing its in-memory snapshot; recovery retries the commit.
+      assert.strictEqual(await commitRecordedOwnershipFor(id), false);
+      assert.strictEqual((await getOwnership(id)).state, 'committed');
+      assert.deepStrictEqual(
+        await committedOwnersFor(partition.partitionId),
+        [id],
+        'exactly one committed owner'
+      );
+    });
+
+    it('markCleanupRequired never downgrades an already-committed record', async function () {
+      const id = await seedStandalone('no-downgrade');
+      await commitOwnershipFor(id, partition.sessionFilePath);
+      assert.strictEqual((await markCleanupRequiredFor(id)).state, 'committed');
+      assert.strictEqual((await getOwnership(id)).state, 'committed');
+    });
   });
 
-  it('commit-before-agent-snapshot crash vector: a re-entrant commit attempt after crash recovery is a safe no-op', async function () {
-    // Models agent-lifecycle.js committing ownership, then crashing before the in-memory
-    // providerSession snapshot is written, then a later recovery/retry path attempting to commit
-    // again for the same taskId. The CAS must refuse the second attempt rather than silently
-    // reprocessing or throwing — the row is durable proof of exactly one committed transition.
-    const id = nextTaskId('commit-before-agent-snapshot');
-    const partitionId = '44444444-4444-4444-8444-444444444444';
-    await seedProvisionalTask(id, {
-      owner: { kind: 'cluster-agent', clusterId: 'c1', agentId: 'a1', taskId: id },
-      storageRoot,
-      partitionPath,
-      partitionId,
+  describe('resume ownership transfer', function () {
+    async function seedCommittedPrior(label) {
+      const priorId = await seedStandalone(`${label}-prior`);
+      assert.strictEqual(await commitOwnershipFor(priorId, partition.sessionFilePath), true);
+      return priorId;
+    }
+
+    it('atomically moves the committed lineage onto the resumed row and clears the prior owner', async function () {
+      const priorId = await seedCommittedPrior('transfer');
+      const priorRecord = await getOwnership(priorId);
+      const resumedId = await seedStandalone('transfer-resumed');
+
+      const transferred = await transferOwnership(priorId, resumedId);
+      assert.ok(transferred, 'the transfer must apply');
+      assert.strictEqual(transferred.state, 'provisional');
+      assert.deepStrictEqual(transferred.session, priorRecord.session);
+      assert.deepStrictEqual(transferred.partitionIdentity, priorRecord.partitionIdentity);
+      assert.strictEqual(transferred.owner.taskId, resumedId);
+
+      assert.strictEqual(await getOwnership(priorId), null, 'prior owner is released');
+      assert.deepStrictEqual(
+        await committedOwnersFor(partition.partitionId),
+        [],
+        'no committed owner exists mid-turn, so the partition is not resumable until this turn succeeds'
+      );
     });
 
-    assert.strictEqual(await recordVerifiedMaterializationFor(id, sessionFile), true);
-    assert.strictEqual(await commitRecordedOwnershipFor(id), true);
-
-    // Simulated crash/retry: the same commit call fires again for the same taskId.
-    const secondAttempt = await commitRecordedOwnershipFor(id);
-    assert.strictEqual(
-      secondAttempt,
-      false,
-      'a second commit attempt must not re-process or throw'
-    );
-
-    const ownership = await getOwnership(id);
-    assert.strictEqual(
-      ownership.state,
-      'committed',
-      'the original committed record must be intact'
-    );
-    assert.strictEqual(ownership.session.sessionId, 'sess-1');
-  });
-
-  it('failed onComplete hook after evidence was recorded: markCleanupRequired preserves taskId ownership for recovery', async function () {
-    const id = nextTaskId('cluster-agent-hook-failure');
-    const partitionId = '55555555-5555-4555-8555-555555555555';
-    await seedProvisionalTask(id, {
-      owner: { kind: 'cluster-agent', clusterId: 'c1', agentId: 'a1', taskId: id },
-      storageRoot,
-      partitionPath,
-      partitionId,
+    it('is idempotent: a replayed transfer after re-entry does not apply twice', async function () {
+      const priorId = await seedCommittedPrior('replay');
+      const resumedId = await seedStandalone('replay-resumed');
+      assert.ok(await transferOwnership(priorId, resumedId));
+      assert.strictEqual(
+        await transferOwnership(priorId, resumedId),
+        null,
+        'the prior owner has already been released; a second transfer must fail closed'
+      );
     });
 
-    assert.strictEqual(await recordVerifiedMaterializationFor(id, sessionFile), true);
-    const updated = await markCleanupRequiredFor(id);
-    assert.strictEqual(updated.state, 'cleanup-required');
-    assert.strictEqual(
-      updated.partitionId,
-      partitionId,
-      'taskId/partition ownership must survive cleanup marking'
-    );
-    assert.strictEqual(updated.owner.taskId, id);
+    it('refuses to transfer from a non-committed prior owner or onto an advanced row', async function () {
+      const priorId = await seedStandalone('uncommitted-prior');
+      const resumedId = await seedStandalone('uncommitted-resumed');
+      assert.strictEqual(
+        await transferOwnership(priorId, resumedId),
+        null,
+        'a provisional prior owner has no lineage to transfer'
+      );
 
-    // The hook boundary must never be able to commit past this point.
-    assert.strictEqual(await commitRecordedOwnershipFor(id), false);
-  });
-
-  it('markCleanupRequired never downgrades an already-committed record', async function () {
-    const id = nextTaskId('no-downgrade-committed');
-    const partitionId = '66666666-6666-4666-8666-666666666666';
-    await seedProvisionalTask(id, {
-      owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
-      storageRoot,
-      partitionPath,
-      partitionId,
+      const committedPrior = await seedCommittedPrior('advanced');
+      const advancedResumed = await seedStandalone('advanced-resumed');
+      await markCleanupRequiredFor(advancedResumed);
+      assert.strictEqual(
+        await transferOwnership(committedPrior, advancedResumed),
+        null,
+        'a row already retired must not be claimed as a transfer target'
+      );
+      assert.strictEqual(
+        (await getOwnership(committedPrior)).state,
+        'committed',
+        'a failed transfer leaves the prior owner untouched'
+      );
     });
 
-    assert.strictEqual(await commitOwnershipFor(id, sessionFile), true);
-    const afterCleanupAttempt = await markCleanupRequiredFor(id);
-    assert.strictEqual(
-      afterCleanupAttempt.state,
-      'committed',
-      'a committed record must never be downgraded'
-    );
-  });
-
-  it('standalone: commitOwnership is the direct terminal boundary and rejects a duplicate call', async function () {
-    const id = nextTaskId('standalone-direct-commit');
-    const partitionId = '77777777-7777-4777-8777-777777777777';
-    await seedProvisionalTask(id, {
-      owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
-      storageRoot,
-      partitionPath,
-      partitionId,
+    it('refuses to transfer between rows describing different partitions or storage roots', async function () {
+      const priorId = await seedCommittedPrior('cross-partition');
+      const otherStorage = fs.mkdtempSync(path.join(zeroshotHome, 'other-storage-'));
+      const otherPartition = makeSessionPartition({ storageRoot: otherStorage });
+      const strangerId = nextTaskId('cross-partition-stranger');
+      await seedProvisionalTask(strangerId, {
+        owner: standaloneOwner(strangerId),
+        storageRoot: otherStorage,
+        partitionId: otherPartition.partitionId,
+      });
+      assert.strictEqual(await transferOwnership(priorId, strangerId), null);
+      assert.strictEqual((await getOwnership(priorId)).state, 'committed');
     });
 
-    assert.strictEqual(await commitOwnershipFor(id, sessionFile), true);
-    assert.strictEqual(
-      await commitOwnershipFor(id, sessionFile),
-      false,
-      'a duplicate/re-entrant completion call must not re-commit'
-    );
+    it('refuses a self-transfer and an unknown counterparty', async function () {
+      const priorId = await seedCommittedPrior('self');
+      assert.strictEqual(await transferOwnership(priorId, priorId), null);
+      assert.strictEqual(await transferOwnership(priorId, 'does-not-exist'), null);
+      assert.strictEqual(await transferOwnership('does-not-exist', priorId), null);
+    });
 
-    const ownership = await getOwnership(id);
-    assert.strictEqual(ownership.state, 'committed');
+    it('resume-transfer-before-prompt crash: the prior owner stays the single committed owner', async function () {
+      // The resumed row exists (row-before-anything) but the watcher died before the transfer.
+      const priorId = await seedCommittedPrior('crash-before-transfer');
+      const resumedId = await seedStandalone('crash-before-transfer-resumed');
+      assert.deepStrictEqual(
+        await committedOwnersFor(partition.partitionId, resumedId),
+        [priorId],
+        'the prior owner still owns the partition, so cleanup driven by the resumed row must refuse'
+      );
+      assert.strictEqual((await markCleanupRequiredFor(resumedId)).state, 'cleanup-required');
+      assert.strictEqual(
+        (await getOwnership(priorId)).state,
+        'committed',
+        'the still-resumable prior session survives the failed resume attempt'
+      );
+    });
+
+    it('a successful resumed turn commits the new evidence over the inherited lineage', async function () {
+      const priorId = await seedCommittedPrior('resume-success');
+      const resumedId = await seedStandalone('resume-success-resumed');
+      await transferOwnership(priorId, resumedId);
+
+      fs.appendFileSync(partition.sessionFilePath, '{"type":"message","role":"user"}\n');
+      assert.strictEqual(
+        await commitOwnershipFor(resumedId, partition.sessionFilePath, {
+          sessionId: 'sess-1',
+          artifactManifestDigest: `sha256:${'c'.repeat(64)}`,
+        }),
+        true
+      );
+      const committed = await getOwnership(resumedId);
+      assert.strictEqual(committed.state, 'committed');
+      assert.strictEqual(committed.session.artifactManifestDigest, `sha256:${'c'.repeat(64)}`);
+      assert.deepStrictEqual(
+        await committedOwnersFor(partition.partitionId),
+        [resumedId],
+        'exactly one committed owner after the resumed turn'
+      );
+    });
   });
 });

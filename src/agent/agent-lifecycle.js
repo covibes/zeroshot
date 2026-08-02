@@ -23,6 +23,7 @@ const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
 const { updateAgentProviderSession } = require('./provider-session');
+const { rebuildProviderSessionAfterCommit } = require('./agent-task-executor');
 const {
   commitRecordedOwnership,
   markCleanupRequired,
@@ -438,6 +439,51 @@ function publishTaskStarted(agent, triggeringMessage) {
   });
 }
 
+function resolveAgentProviderName(agent) {
+  return normalizeProviderName(
+    agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId()
+  );
+}
+
+/**
+ * Advance the OMP ownership record to `committed` and rebuild the provider-session snapshot from
+ * the row that commit produced.
+ *
+ * Ordering matters and is the whole point of this function. The detached RPC watcher verifies the
+ * materialized session but deliberately leaves a cluster-agent owner `provisional`, because this
+ * post-hook boundary — logical/schema output validated, onComplete hook succeeded — is the first
+ * moment the turn is durable. `result.providerSession` was therefore computed against a
+ * provisional row and is null for OMP by construction; publishing it would make every cluster
+ * session permanently non-reusable. So: commit, check that the commit actually applied, re-read
+ * the row, rebuild, and only then hand the snapshot to the agent and to TASK_COMPLETED.
+ *
+ * A commit that does not apply (no verified evidence recorded — a materialization the watcher
+ * could not verify, or a concurrent writer that already moved the row) means this turn has no
+ * durably resumable session: the partition is retired and the next turn starts fresh.
+ */
+function finalizeProviderSessionAfterCommit(agent, result) {
+  const providerName = resolveAgentProviderName(agent);
+  if (providerName !== 'omp') return result.providerSession;
+
+  if (!commitRecordedOwnership(result.taskId)) {
+    markCleanupRequired(result.taskId);
+    result.providerSession = null;
+    return null;
+  }
+  const rebuilt = rebuildProviderSessionAfterCommit({
+    agent,
+    providerName,
+    taskId: result.taskId,
+    logicalSuccess: true,
+  });
+  // A committed row that cannot be snapshotted (the agent moved workspace, isolation is on, the
+  // row's tuple failed re-validation) is not resumable by this agent, but it is still a valid
+  // session owned by a live task row — so it is left committed and reclaimed with that row rather
+  // than retired here.
+  result.providerSession = rebuilt;
+  return rebuilt;
+}
+
 function attachResultMetadata(agent, result) {
   // Add task ID to result for debugging and hooks
   result.taskId = result.taskId || agent.currentTaskId;
@@ -624,13 +670,10 @@ async function runTaskAttempt(agent, triggeringMessage) {
     throw error;
   }
 
-  // Commit-before-agent-snapshot: ownership advances to 'committed' here, before the in-memory
-  // provider session snapshot below. A crash in between leaves a committed-but-unreferenced
-  // partition — harmless and recoverable, since resume always requires BOTH the agent's own
-  // providerSession snapshot (absent here) AND a committed ownership row; losing only the
-  // snapshot just means the next turn allocates a fresh partition instead of resuming this one.
-  commitRecordedOwnership(result.taskId);
-  updateAgentProviderSession(agent, result.providerSession);
+  // Checked commit, then snapshot. See finalizeProviderSessionAfterCommit: the snapshot inside
+  // `result` was built while the ownership row was still provisional, so it must be rebuilt from
+  // the committed row before it is stored on the agent or published with TASK_COMPLETED.
+  updateAgentProviderSession(agent, finalizeProviderSessionAfterCommit(agent, result));
   agent.lastGuidanceAppliedId = agent.currentGuidanceSequence;
 
   // Set state to idle BEFORE publishing lifecycle event
@@ -1422,6 +1465,10 @@ module.exports = {
   handleMessage,
   executeTriggerAction,
   executeTask,
+  // Exported for tests/unit/omp-provider-session.test.js: the commit-then-snapshot ordering it
+  // enforces is the difference between a reusable OMP cluster session and one that is silently
+  // never resumable, so it is covered directly rather than only through a full task attempt.
+  finalizeProviderSessionAfterCommit,
   startLivenessCheck,
   stopLivenessCheck,
 };

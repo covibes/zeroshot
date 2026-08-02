@@ -1,7 +1,39 @@
 import chalk from 'chalk';
 import { shouldUseAttachableWatcher, spawnTask } from '../runner.js';
 
-function parseOmpResumeDescriptor(raw) {
+// Every field the agent's `providerSession.ompSession` snapshot carries, plus the outer tuple's
+// session ID and the prior owner's task id. All are required: the descriptor is only ever built
+// from a complete committed record, and task-lib/runner.js re-checks every one of them against
+// that record before a task row exists. Missing/extra/mistyped fields fail closed here.
+const OMP_RESUME_STRING_FIELDS = [
+  'priorOwnerTaskId',
+  'partitionId',
+  'sessionFileName',
+  'expectedSessionId',
+  'expectedArtifactManifestDigest',
+  'expectedExecutionFingerprint',
+  'expectedSelectedProvider',
+  'expectedSelectedModel',
+];
+const OMP_RESUME_IDENTITY_FIELDS = ['expectedSessionFileIdentity'];
+const OMP_RESUME_OPTIONAL_IDENTITY_FIELDS = ['expectedPartitionIdentity'];
+const OMP_RESUME_ALLOWED_FIELDS = new Set([
+  ...OMP_RESUME_STRING_FIELDS,
+  ...OMP_RESUME_IDENTITY_FIELDS,
+  ...OMP_RESUME_OPTIONAL_IDENTITY_FIELDS,
+]);
+
+function isIdentityShape(value) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    /^(0|[1-9][0-9]*)$/.test(String(value.device)) &&
+    /^(0|[1-9][0-9]*)$/.test(String(value.inode))
+  );
+}
+
+export function parseOmpResumeDescriptor(raw) {
   if (!raw) return undefined;
   let descriptor;
   try {
@@ -9,12 +41,26 @@ function parseOmpResumeDescriptor(raw) {
   } catch (error) {
     throw new Error(`--omp-resume must be a JSON descriptor: ${error.message}`);
   }
-  if (
-    !descriptor ||
-    typeof descriptor.partitionId !== 'string' ||
-    typeof descriptor.sessionFileName !== 'string'
-  ) {
-    throw new Error('--omp-resume descriptor must include partitionId and sessionFileName.');
+  if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    throw new Error('--omp-resume descriptor must be a JSON object.');
+  }
+  const unknown = Object.keys(descriptor).filter((key) => !OMP_RESUME_ALLOWED_FIELDS.has(key));
+  if (unknown.length > 0) {
+    throw new Error(`--omp-resume descriptor has unknown field(s): ${unknown.join(', ')}.`);
+  }
+  const missing = [
+    ...OMP_RESUME_STRING_FIELDS.filter(
+      (field) => typeof descriptor[field] !== 'string' || descriptor[field].length === 0
+    ),
+    ...OMP_RESUME_IDENTITY_FIELDS.filter((field) => !isIdentityShape(descriptor[field])),
+  ];
+  if (missing.length > 0) {
+    throw new Error(`--omp-resume descriptor is missing/invalid field(s): ${missing.join(', ')}.`);
+  }
+  for (const field of OMP_RESUME_OPTIONAL_IDENTITY_FIELDS) {
+    if (descriptor[field] !== undefined && !isIdentityShape(descriptor[field])) {
+      throw new Error(`--omp-resume descriptor field ${field} is not a device/inode identity.`);
+    }
   }
   return descriptor;
 }

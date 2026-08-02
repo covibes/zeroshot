@@ -738,18 +738,28 @@ function buildTaskRunArgs({
 
 /**
  * OMP never accepts a bare `--resume <sessionId>` (see failClosedUnsupportedSessionControl in
- * adapters/omp.ts): the child `zeroshot task run` process needs the full verified descriptor so
- * it can re-verify identity/manifest/selector drift before ever spawning OMP. Not secret — same
- * non-secret shape as task.ompSessionOwnership.session.
+ * adapters/omp.ts): the child `zeroshot task run` process needs the *complete* committed tuple so
+ * it can re-check it against the prior owner's persisted row and re-verify identity/manifest/
+ * fingerprint drift before ever spawning OMP.
+ *
+ * `priorOwnerTaskId` is what turns this from an assertion into a cross-check: the child resolves
+ * that row and requires every field below to match it exactly, so a stale or tampered argv
+ * descriptor is a conflict that fails closed instead of a claim that is taken at face value.
+ * Nothing here is secret — it is the same non-secret shape as task.ompSessionOwnership.session,
+ * and it deliberately carries no storage-root or partition path.
  */
 function buildOmpResumeArg(agent, providerName) {
-  const ompSession = resolveAgentProviderSession(agent, providerName)?.ompSession;
-  if (!ompSession) return null;
+  const session = resolveAgentProviderSession(agent, providerName);
+  const ompSession = session?.ompSession;
+  if (!session || !ompSession) return null;
   return JSON.stringify({
+    priorOwnerTaskId: session.taskId,
     partitionId: ompSession.partitionId,
     sessionFileName: ompSession.sessionFileName,
+    expectedSessionId: session.sessionId,
     expectedSessionFileIdentity: ompSession.sessionFileIdentity,
     expectedArtifactManifestDigest: ompSession.artifactManifestDigest,
+    expectedExecutionFingerprint: ompSession.executionFingerprint,
     expectedSelectedProvider: ompSession.selectedProvider,
     expectedSelectedModel: ompSession.selectedModel,
   });
@@ -1487,6 +1497,25 @@ async function buildCompletionResult({
     }),
     vertexModelError,
   };
+}
+
+/**
+ * Rebuild the provider-session snapshot from a *freshly re-read* task row.
+ *
+ * The snapshot inside a completion result is necessarily built while the OMP ownership row is
+ * still `provisional` — the detached watcher records verified materialization evidence but defers
+ * the commit decision to the agent's post-hook success boundary — so for provider `omp` it is
+ * stale by construction and always null. agent-lifecycle.js calls this *after* a checked commit
+ * and before publishing TASK_COMPLETED, which is the only point at which a durable, resumable
+ * `ompSession` exists to snapshot.
+ */
+function rebuildProviderSessionAfterCommit({ agent, providerName, taskId, logicalSuccess = true }) {
+  return providerSessionFromCompletedTask({
+    agent,
+    providerName,
+    taskInfo: getTask(taskId),
+    logicalSuccess,
+  });
 }
 
 function finalizeLogFollow(agent, state) {
@@ -3036,5 +3065,6 @@ module.exports = {
   parseResultOutput,
   buildCompletionResult,
   buildTaskRunArgs,
+  rebuildProviderSessionAfterCommit,
   killTask,
 };

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { randomUUID } = require('crypto');
+const { createHash, randomUUID } = require('crypto');
 
 const OVERLAY_PREFIX = 'zeroshot-omp-config-';
 const OMP_CONFIG_OVERLAY_DIR_PATTERN = /^zeroshot-omp-config-[A-Za-z0-9_-]+$/u;
@@ -62,6 +62,13 @@ bash:
     thresholdMs: 60000
 `;
 
+// Identity of the overlay *content*, not of any one temp file. A resumed session was produced
+// under whatever workflow-altering defaults this body pinned; if the body changes (a Zeroshot
+// upgrade retunes task.*/memory/advisor/async behaviour), continuing an old transcript under the
+// new rules is execution drift, so this digest is part of the OMP execution fingerprint recorded
+// with every resumable session (src/omp-execution-fingerprint.js).
+const OMP_CONFIG_OVERLAY_DIGEST = `sha256:${createHash('sha256').update(OVERLAY_BODY, 'utf8').digest('hex')}`;
+
 function createOmpConfigOverlay() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), OVERLAY_PREFIX), { mode: 0o700 });
   try {
@@ -89,6 +96,7 @@ function isCanonicalOmpConfigOverlayDirectory(overlayDir) {
 }
 
 module.exports = {
+  OMP_CONFIG_OVERLAY_DIGEST,
   OMP_CONFIG_OVERLAY_DIR_PATTERN,
   OMP_CONFIG_OVERLAY_FILE_PATTERN,
   createOmpConfigOverlay,

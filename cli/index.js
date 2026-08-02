@@ -2175,11 +2175,40 @@ async function killRunningTasks(runningTasks, isProcessRunning) {
   }
 }
 
-function deleteClusterData(orchestrator, clusters) {
+/**
+ * Delete the OMP session partitions owned by the agents of the clusters being cleared (issue
+ * #866). Cluster partitions live under the owning cluster's `storageDir`, so nothing else in the
+ * cluster-clear path would ever reclaim them; the standalone `clean` surface only sees rows it is
+ * removing. The shared, machine-wide OMP CAS blob root is never touched, and a partition that
+ * cannot be safely resolved keeps its owner record plus a warning instead of being deleted.
+ */
+async function deleteClusterOmpSessions(clusters) {
+  const { cleanupOmpSessionPartitionsForCluster } = await import(
+    '../task-lib/omp-session-cleanup.js'
+  );
+  let deleted = 0;
+  let retained = 0;
+  for (const cluster of clusters) {
+    const result = cleanupOmpSessionPartitionsForCluster(cluster.id, (message) =>
+      console.log(chalk.yellow(`Warning: ${message}`))
+    );
+    deleted += result.deleted.length;
+    retained += result.retained.length;
+  }
+  if (deleted > 0) {
+    console.log(chalk.green(`✓ Deleted ${deleted} OMP session partition(s)`));
+  }
+  if (retained > 0) {
+    console.log(chalk.yellow(`○ Retained ${retained} OMP session partition(s) for inspection`));
+  }
+}
+
+async function deleteClusterData(orchestrator, clusters) {
   if (clusters.length === 0) {
     return;
   }
   console.log(chalk.bold('Deleting cluster data...'));
+  await deleteClusterOmpSessions(clusters);
   const clustersFile = path.join(orchestrator.storageDir, 'clusters.json');
   const clustersDir = path.join(orchestrator.storageDir, 'clusters');
 
@@ -2879,7 +2908,7 @@ taskCmd
   .addOption(
     new Option(
       '--omp-resume <descriptor>',
-      'Internal: verified OMP resume descriptor JSON (see task-lib/omp-session-ownership.js)'
+      'Internal: complete OMP resume descriptor JSON, cross-checked against the prior owner row (see task-lib/commands/run.js)'
     ).hideHelp()
   )
   .option(
@@ -3773,7 +3802,7 @@ program
 
       await killRunningClusters(orchestrator, purgeData.runningClusters);
       await killRunningTasks(purgeData.runningTasks, purgeData.isProcessRunning);
-      deleteClusterData(orchestrator, purgeData.clusters);
+      await deleteClusterData(orchestrator, purgeData.clusters);
       await deleteTaskData(purgeData.tasks);
 
       console.log(chalk.bold.green('\nAll runs purged.'));

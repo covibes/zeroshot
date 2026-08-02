@@ -31,7 +31,6 @@ const storeUrl = pathToFileURL(path.resolve(__dirname, '../task-lib/store.js')).
 const ownershipUrl = pathToFileURL(
   path.resolve(__dirname, '../task-lib/omp-session-ownership.js')
 ).href;
-const { allocateOmpSessionPartition } = require('../src/omp-session-partition');
 
 const FAKE_OMP_RPC_PATH = path.join(__dirname, 'helpers', 'fake-omp-rpc.js');
 const RPC_WATCHER_PATH = path.join(__dirname, '..', 'task-lib', 'rpc-watcher.js');
@@ -91,17 +90,13 @@ async function storeRequestCancellation(id) {
   `);
 }
 
-async function writeProvisionalOwnershipFor(
-  id,
-  { partitionId, storageRoot, partitionPath, cwd, owner }
-) {
+async function writeProvisionalOwnershipFor(id, { partitionId, storageRoot, cwd, owner }) {
   const stdout = await runStoreScript(`
     const { updateTask } = await import(${JSON.stringify(storeUrl)});
     const { writeProvisionalOwnership } = await import(${JSON.stringify(ownershipUrl)});
     const record = writeProvisionalOwnership({
       partitionId: ${JSON.stringify(partitionId)},
       storageRoot: ${JSON.stringify(storageRoot)},
-      partitionPath: ${JSON.stringify(partitionPath)},
       canonicalWorkspace: ${JSON.stringify(cwd)},
       owner: ${JSON.stringify(owner)},
     });
@@ -109,6 +104,30 @@ async function writeProvisionalOwnershipFor(
     process.stdout.write(JSON.stringify(record));
   `);
   return JSON.parse(stdout);
+}
+
+/** Advance a seeded provisional row straight to committed, standing in for a prior successful
+ * turn's terminal boundary so a resume has a real committed lineage to transfer from. */
+async function commitOwnershipFor(id, evidence) {
+  const stdout = await runStoreScript(`
+    const { commitOwnership } = await import(${JSON.stringify(ownershipUrl)});
+    process.stdout.write(JSON.stringify(commitOwnership({
+      taskId: ${JSON.stringify(id)},
+      selectedProvider: 'anthropic',
+      selectedModel: '@default',
+      ...${JSON.stringify(evidence)},
+    })));
+  `);
+  return JSON.parse(stdout);
+}
+
+/** Release a row's ownership out of band, modelling another process having already claimed or
+ * cleared the lineage before this watcher reaches its transfer point. */
+async function clearOwnershipFor(id) {
+  await runStoreScript(`
+    const { updateTask } = await import(${JSON.stringify(storeUrl)});
+    updateTask(${JSON.stringify(id)}, { ompSessionOwnership: null });
+  `);
 }
 
 // Simulates the parent agent process's post-hook success boundary (agent-lifecycle.js), which is
@@ -583,289 +602,1087 @@ watcher.disconnect();
     }
   });
 
+  /**
+   * OMP session ownership end to end through the real detached watcher (issue #866).
+   *
+   * The fake `omp --mode rpc` here is driven with real `--session-dir` / `--resume` argv and
+   * materializes a real session transcript whose first record is OMP's session header, so these
+   * exercise the actual two-phase contract rather than a stub: verify-before-spawn,
+   * re-verify-and-transfer-before-prompt, and descriptor/header/tree verification after terminal
+   * materialization.
+   */
   describe('OMP session ownership (fresh/resume, two-phase verification)', function () {
-    it('commits ownership after a fresh session terminates with a materialized, verifiable session file', async function () {
-      const id = nextTaskId('omp-fresh-commit');
-      const overlay = createOmpConfigOverlay();
-      const commandSpec = buildCommandSpec(overlay);
-      const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
-      const { partitionId, path: partitionPath } = allocateOmpSessionPartition(storageRoot);
-      const sessionFile = path.join(partitionPath, `${id}.jsonl`);
-      fs.writeFileSync(sessionFile, '{"hello":"world"}\n');
+    const {
+      makeBlobStore,
+      makeSessionPartition,
+    } = require('./helpers/omp-session-fixtures');
+    const { verifyExistingOmpPartition } = require('../src/omp-session-verifier');
+    const { computeOmpExecutionFingerprint } = require('../src/omp-execution-fingerprint');
+    const {
+      generateOmpPartitionId,
+      partitionPathFor,
+      createOmpSessionPartitionDirectory,
+    } = require('../src/omp-session-partition');
+    const { OMP_SUPPORTED_VERSION } = require('../lib/agent-cli-provider/omp-release.js');
 
-      await seedTask(id, commandSpec);
-      await writeProvisionalOwnershipFor(id, {
-        partitionId,
-        storageRoot,
-        partitionPath,
-        cwd: commandSpec.cwd,
-        owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
-      });
 
-      const { code } = await runWatcher({
-        id,
-        commandSpec,
-        scenario: 'happy',
-        ompSession: { kind: 'fresh', partition: { path: partitionPath } },
-        env: {
-          OMP_FAKE_RPC_SESSION_ID: 'fresh-sess-1',
-          OMP_FAKE_RPC_SESSION_FILE: sessionFile,
-        },
-      });
-      assert.strictEqual(code, 0);
-
-      const task = await storeGetTask(id);
-      assert.strictEqual(task.status, 'completed');
-      assert.strictEqual(task.ompSessionOwnership.state, 'committed');
-      assert.strictEqual(task.ompSessionOwnership.session.sessionId, 'fresh-sess-1');
-      assert.strictEqual(task.ompSessionOwnership.session.fileName, `${id}.jsonl`);
-      assert.match(
-        task.ompSessionOwnership.session.artifactManifestDigest,
-        /^sha256:[a-f0-9]{64}$/
-      );
-    });
-
-    it('records verified evidence but never commits a cluster-agent owner — commit stays the parent post-hook boundary', async function () {
-      // A cluster-agent owner's turn is not durable until the spawning agent process validates
-      // logical/schema output and its onComplete hook succeeds (agent-lifecycle.js) — a boundary
-      // this detached watcher process cannot observe. The watcher must only persist the owner-fenced
-      // verified evidence and leave 'committed' to that later, separate-process boundary.
-      const id = nextTaskId('omp-fresh-cluster-agent-defers-commit');
-      const overlay = createOmpConfigOverlay();
-      const commandSpec = buildCommandSpec(overlay);
-      const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
-      const { partitionId, path: partitionPath } = allocateOmpSessionPartition(storageRoot);
-      const sessionFile = path.join(partitionPath, `${id}.jsonl`);
-      fs.writeFileSync(sessionFile, '{"hello":"world"}\n');
-
-      await seedTask(id, commandSpec);
-      await writeProvisionalOwnershipFor(id, {
-        partitionId,
-        storageRoot,
-        partitionPath,
-        cwd: commandSpec.cwd,
-        owner: { kind: 'cluster-agent', clusterId: 'cluster-1', agentId: 'worker-1', taskId: id },
-      });
-
-      const { code } = await runWatcher({
-        id,
-        commandSpec,
-        scenario: 'happy',
-        ompSession: { kind: 'fresh', partition: { path: partitionPath } },
-        env: {
-          OMP_FAKE_RPC_SESSION_ID: 'fresh-sess-cluster-agent',
-          OMP_FAKE_RPC_SESSION_FILE: sessionFile,
-        },
-      });
-      assert.strictEqual(code, 0);
-
-      const task = await storeGetTask(id);
-      assert.strictEqual(task.status, 'completed', 'the turn itself still completed');
-      assert.strictEqual(
-        task.ompSessionOwnership.state,
-        'provisional',
-        'a cluster-agent owner must not be committed by the watcher'
-      );
-      assert.strictEqual(task.ompSessionOwnership.session.sessionId, 'fresh-sess-cluster-agent');
-      assert.ok(
-        task.ompSessionOwnership.partitionIdentity,
-        'verified evidence must still be recorded'
-      );
-
-      // Only after this succeeds — mirroring agent-lifecycle.js's post-hook success boundary —
-      // does the record advance to 'committed', reusing the evidence above without re-verifying.
-      const { committed, task: afterCommit } = await commitRecordedOwnershipFor(id);
-      assert.strictEqual(committed, true);
-      assert.strictEqual(afterCommit.ompSessionOwnership.state, 'committed');
-      assert.strictEqual(
-        afterCommit.ompSessionOwnership.session.sessionId,
-        'fresh-sess-cluster-agent'
-      );
-    });
-
-    it('marks cleanup-required instead of committing when the provider crashes mid-turn', async function () {
-      const id = nextTaskId('omp-fresh-crash');
-      const overlay = createOmpConfigOverlay();
-      const commandSpec = buildCommandSpec(overlay);
-      const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
-      const { partitionId, path: partitionPath } = allocateOmpSessionPartition(storageRoot);
-
-      await seedTask(id, commandSpec);
-      await writeProvisionalOwnershipFor(id, {
-        partitionId,
-        storageRoot,
-        partitionPath,
-        cwd: commandSpec.cwd,
-        owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
-      });
-
-      const { code } = await runWatcher({
-        id,
-        commandSpec,
-        scenario: 'crash',
-        ompSession: { kind: 'fresh', partition: { path: partitionPath } },
-      });
-      assert.strictEqual(code, 0);
-
-      const task = await storeGetTask(id);
+    /**
+     * A pre-prompt failure raised from the driver's `ready` hook can terminate the watcher through
+     * either of two legitimate paths depending on scheduling: the driver may convert it into a
+     * failed terminal result (exit 0, task marked failed by completeWatcherTask) or it may reject
+     * out of runOmpRpcTask into the crash handler (exit 1). Both are correct, and which one wins is
+     * a timing race under load — so these assertions pin the durable outcome that actually matters
+     * instead of the exit code that does not.
+     */
+    function assertFailedBeforePrompt({ code, task, promptSink, errorPattern }) {
+      assert.ok(code === 0 || code === 1, `watcher must terminate, got exit ${code}`);
       assert.strictEqual(task.status, 'failed');
+      assert.match(task.error, errorPattern);
       assert.strictEqual(task.ompSessionOwnership.state, 'cleanup-required');
-    });
+      if (promptSink !== undefined) {
+        assert.strictEqual(
+          fs.existsSync(promptSink),
+          false,
+          'OMP must never receive the prompt once the pre-prompt checks have failed'
+        );
+      }
+    }
 
-    it('resumes successfully when the observed session matches the recorded owner exactly', async function () {
-      const id = nextTaskId('omp-resume-match');
-      const overlay = createOmpConfigOverlay();
-      const commandSpec = buildCommandSpec(overlay);
-      const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
-      const { partitionId, path: partitionPath } = allocateOmpSessionPartition(storageRoot);
-      const sessionFileName = 'prior-session.jsonl';
-      const sessionFile = path.join(partitionPath, sessionFileName);
-      fs.writeFileSync(sessionFile, '{"turn":1}\n');
-      const stat = fs.statSync(sessionFile);
+    function freshCommandSpec(overlay, partitionPath, cwd) {
+      return buildCommandSpec(overlay, {
+        args: [
+          FAKE_OMP_RPC_PATH,
+          '--mode',
+          'rpc',
+          '--session-dir',
+          partitionPath,
+          '--model',
+          '@default',
+          '--thinking',
+          'medium',
+          '--approval-mode',
+          'yolo',
+        ],
+        ...(cwd ? { cwd } : {}),
+      });
+    }
 
+    function resumeCommandSpec(overlay, partitionPath, sessionFilePath, cwd) {
+      return buildCommandSpec(overlay, {
+        args: [
+          FAKE_OMP_RPC_PATH,
+          '--mode',
+          'rpc',
+          '--session-dir',
+          partitionPath,
+          '--resume',
+          sessionFilePath,
+          '--model',
+          '@default',
+          '--thinking',
+          'medium',
+          '--approval-mode',
+          'yolo',
+        ],
+        ...(cwd ? { cwd } : {}),
+      });
+    }
+
+    function fingerprintFor(commandSpec, evidence = {}) {
+      return computeOmpExecutionFingerprint({
+        expectedVersion: OMP_SUPPORTED_VERSION,
+        commandSpec,
+        evidence: {
+          selectedProvider: 'anthropic',
+          selectedModel: '@default',
+          thinkingLevel: 'medium',
+          ...evidence,
+        },
+      });
+    }
+
+    /** Seed the row + provisional ownership for a fresh turn and return the allocated partition. */
+    async function seedFreshOwner(id, { storageRoot, cwd, owner, commandSpec }) {
+      const partitionId = generateOmpPartitionId();
+      const partitionPath = partitionPathFor(storageRoot, partitionId);
+      createOmpSessionPartitionDirectory(partitionPath);
       await seedTask(id, commandSpec);
-      await writeProvisionalOwnershipFor(id, {
-        partitionId,
+      await writeProvisionalOwnershipFor(id, { partitionId, storageRoot, cwd, owner });
+      return { partitionId, partitionPath };
+    }
+
+    /**
+     * Seed a *prior* committed owner over a materialized partition, plus the resumed task's own
+     * provisional row, and return the complete resume expectation the watcher receives — exactly
+     * what task-lib/runner.js#resolveOmpResumeExpectation derives from the persisted record.
+     */
+    async function seedResumeLineage({
+      priorId,
+      resumedId,
+      storageRoot,
+      cwd,
+      commandSpec,
+      partition,
+      owner = (taskId) => ({ kind: 'standalone', clusterId: null, agentId: null, taskId }),
+      expectationOverrides = {},
+    }) {
+      const verified = verifyExistingOmpPartition(
+        partition.partitionPath,
+        partition.sessionFileName
+      );
+      const executionFingerprint = fingerprintFor(commandSpec);
+
+      await seedTask(priorId, commandSpec);
+      await writeProvisionalOwnershipFor(priorId, {
+        partitionId: partition.partitionId,
         storageRoot,
-        partitionPath,
-        cwd: commandSpec.cwd,
-        owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+        cwd,
+        owner: owner(priorId),
+      });
+      await commitOwnershipFor(priorId, {
+        sessionId: partition.sessionId,
+        sessionFilePath: partition.sessionFilePath,
+        artifactManifestDigest: verified.artifactManifestDigest,
+        executionFingerprint,
       });
 
-      // The pre-resume manifest digest is whatever the (real) verifier would compute for this
-      // exact file tree — recomputed here via the same module the watcher itself uses.
-      const { verifyExistingOmpPartition } = require('../src/omp-session-verifier');
-      const preVerify = verifyExistingOmpPartition(partitionPath, sessionFileName);
+      await seedTask(resumedId, commandSpec);
+      await writeProvisionalOwnershipFor(resumedId, {
+        partitionId: partition.partitionId,
+        storageRoot,
+        cwd,
+        owner: owner(resumedId),
+      });
 
-      const { code } = await runWatcher({
-        id,
-        commandSpec,
-        scenario: 'happy',
-        ompSession: {
-          kind: 'resume',
-          partition: { path: partitionPath },
-          file: { path: sessionFile },
-        },
-        ompResumeExpectation: {
-          expectedSessionFileIdentity: { device: String(stat.dev), inode: String(stat.ino) },
-          expectedArtifactManifestDigest: preVerify.artifactManifestDigest,
+      return {
+        verified,
+        expectation: {
+          priorOwnerTaskId: priorId,
+          partitionId: partition.partitionId,
+          partitionPath: partition.partitionPath,
+          canonicalWorkspace: cwd,
+          sessionFileName: partition.sessionFileName,
+          sessionFilePath: partition.sessionFilePath,
+          expectedSessionId: partition.sessionId,
+          expectedPartitionIdentity: verified.partitionIdentity,
+          expectedSessionFileIdentity: verified.sessionFileIdentity,
+          expectedArtifactManifestDigest: verified.artifactManifestDigest,
+          expectedExecutionFingerprint: executionFingerprint,
           expectedSelectedProvider: 'anthropic',
           expectedSelectedModel: '@default',
+          ...expectationOverrides,
         },
-        env: {
-          OMP_FAKE_RPC_SESSION_ID: 'resumed-sess',
-          OMP_FAKE_RPC_SESSION_FILE: sessionFile,
-        },
-      });
-      assert.strictEqual(code, 0);
+      };
+    }
 
-      const task = await storeGetTask(id);
-      assert.strictEqual(task.status, 'completed');
-      assert.strictEqual(task.ompSessionOwnership.state, 'committed');
-      assert.strictEqual(task.ompSessionOwnership.session.sessionId, 'resumed-sess');
+    describe('fresh sessions', function () {
+      it('host: commits a standalone owner after descriptor/header/tree verification', async function () {
+        const id = nextTaskId('fresh-standalone');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const partitionId = generateOmpPartitionId();
+        const partitionPath = partitionPathFor(storageRoot, partitionId);
+        createOmpSessionPartitionDirectory(partitionPath);
+        const commandSpec = freshCommandSpec(overlay, partitionPath);
+
+        await seedTask(id, commandSpec);
+        await writeProvisionalOwnershipFor(id, {
+          partitionId,
+          storageRoot,
+          cwd: commandSpec.cwd,
+          owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+        });
+
+        const { code } = await runWatcher({
+          id,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: { kind: 'fresh', partition: { path: partitionPath } },
+          env: {
+            OMP_FAKE_RPC_MINT_SESSION_ID: 'fresh-standalone-session',
+            OMP_FAKE_RPC_SESSION_CWD: commandSpec.cwd,
+            OMP_FAKE_RPC_ARTIFACT_DIR: '1',
+          },
+        });
+        assert.strictEqual(code, 0);
+
+        const task = await storeGetTask(id);
+        assert.strictEqual(task.status, 'completed');
+        const ownership = task.ompSessionOwnership;
+        assert.strictEqual(ownership.state, 'committed');
+        assert.strictEqual(ownership.session.sessionId, 'fresh-standalone-session');
+        assert.match(ownership.session.fileName, /^.*_fresh-standalone-session\.jsonl$/);
+        assert.match(ownership.session.artifactManifestDigest, /^sha256:[a-f0-9]{64}$/);
+        assert.strictEqual(ownership.session.executionFingerprint, fingerprintFor(commandSpec));
+        assert.strictEqual(ownership.session.selectedProvider, 'anthropic');
+        assert.strictEqual(ownership.session.selectedModel, '@default');
+        assert.ok(ownership.partitionIdentity, 'the verified partition identity is recorded');
+
+        // The manifest the watcher committed is exactly what the verifier computes for the tree
+        // OMP actually left behind, including the sibling artifacts directory.
+        const reverified = verifyExistingOmpPartition(partitionPath, ownership.session.fileName);
+        assert.strictEqual(
+          reverified.artifactManifestDigest,
+          ownership.session.artifactManifestDigest
+        );
+        assert.ok(fs.existsSync(path.join(partitionPath, ownership.session.fileName.slice(0, -6))));
+      });
+
+      it('worktree: commits under a cwd that is not the storage root', async function () {
+        const id = nextTaskId('fresh-worktree');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const worktree = fs.mkdtempSync(path.join(zeroshotHome, 'omp-worktree-'));
+        const partitionId = generateOmpPartitionId();
+        const partitionPath = partitionPathFor(storageRoot, partitionId);
+        createOmpSessionPartitionDirectory(partitionPath);
+        const commandSpec = freshCommandSpec(overlay, partitionPath, worktree);
+
+        await seedTask(id, commandSpec);
+        await writeProvisionalOwnershipFor(id, {
+          partitionId,
+          storageRoot,
+          cwd: worktree,
+          owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+        });
+
+        const { code } = await runWatcher({
+          id,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: { kind: 'fresh', partition: { path: partitionPath } },
+          env: {
+            OMP_FAKE_RPC_MINT_SESSION_ID: 'worktree-session',
+            OMP_FAKE_RPC_SESSION_CWD: worktree,
+          },
+        });
+        assert.strictEqual(code, 0);
+        const task = await storeGetTask(id);
+        assert.strictEqual(task.ompSessionOwnership.state, 'committed');
+        assert.strictEqual(task.ompSessionOwnership.canonicalWorkspace, worktree);
+      });
+
+      it('detached cluster-agent: records verified evidence but leaves commit to the parent boundary', async function () {
+        const id = nextTaskId('fresh-cluster-agent');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-cluster-storage-'));
+        const partitionId = generateOmpPartitionId();
+        const partitionPath = partitionPathFor(storageRoot, partitionId);
+        createOmpSessionPartitionDirectory(partitionPath);
+        const commandSpec = freshCommandSpec(overlay, partitionPath);
+
+        await seedTask(id, commandSpec);
+        await writeProvisionalOwnershipFor(id, {
+          partitionId,
+          storageRoot,
+          cwd: commandSpec.cwd,
+          owner: { kind: 'cluster-agent', clusterId: 'cluster-1', agentId: 'worker-1', taskId: id },
+        });
+
+        const { code } = await runWatcher({
+          id,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: { kind: 'fresh', partition: { path: partitionPath } },
+          env: {
+            OMP_FAKE_RPC_MINT_SESSION_ID: 'cluster-agent-session',
+            OMP_FAKE_RPC_SESSION_CWD: commandSpec.cwd,
+          },
+        });
+        assert.strictEqual(code, 0);
+
+        const task = await storeGetTask(id);
+        assert.strictEqual(task.status, 'completed', 'the turn itself still completed');
+        assert.strictEqual(
+          task.ompSessionOwnership.state,
+          'provisional',
+          'a cluster-agent owner must not be committed by the watcher'
+        );
+        assert.strictEqual(task.ompSessionOwnership.session.sessionId, 'cluster-agent-session');
+        assert.ok(task.ompSessionOwnership.partitionIdentity);
+
+        const { committed, task: afterCommit } = await commitRecordedOwnershipFor(id);
+        assert.strictEqual(committed, true);
+        assert.strictEqual(afterCommit.ompSessionOwnership.state, 'committed');
+        assert.strictEqual(
+          afterCommit.ompSessionOwnership.session.sessionId,
+          'cluster-agent-session'
+        );
+      });
+
+      it('marks cleanup-required instead of committing when the provider crashes mid-turn', async function () {
+        const id = nextTaskId('fresh-crash');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const { partitionPath } = await seedFreshOwner(id, {
+          storageRoot,
+          cwd: buildCommandSpec(overlay).cwd,
+          owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+          commandSpec: buildCommandSpec(overlay),
+        });
+
+        const { code } = await runWatcher({
+          id,
+          commandSpec: freshCommandSpec(overlay, partitionPath),
+          scenario: 'crash',
+          ompSession: { kind: 'fresh', partition: { path: partitionPath } },
+        });
+        assert.strictEqual(code, 0);
+
+        const task = await storeGetTask(id);
+        assert.strictEqual(task.status, 'failed');
+        assert.strictEqual(task.ompSessionOwnership.state, 'cleanup-required');
+      });
+
+      it('refuses to claim a session OMP wrote outside this task s partition', async function () {
+        const id = nextTaskId('fresh-outside-partition');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const partitionId = generateOmpPartitionId();
+        const partitionPath = partitionPathFor(storageRoot, partitionId);
+        createOmpSessionPartitionDirectory(partitionPath);
+        const commandSpec = freshCommandSpec(overlay, partitionPath);
+        const elsewhere = path.join(zeroshotHome, `${id}-elsewhere.jsonl`);
+        fs.writeFileSync(elsewhere, '{"type":"session","id":"elsewhere"}\n');
+
+        await seedTask(id, commandSpec);
+        await writeProvisionalOwnershipFor(id, {
+          partitionId,
+          storageRoot,
+          cwd: commandSpec.cwd,
+          owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+        });
+
+        const { code } = await runWatcher({
+          id,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: { kind: 'fresh', partition: { path: partitionPath } },
+          env: {
+            OMP_FAKE_RPC_MINT_SESSION_ID: 'in-partition',
+            OMP_FAKE_RPC_SESSION_FILE: elsewhere,
+            OMP_FAKE_RPC_SESSION_ID: 'elsewhere',
+          },
+        });
+        assert.strictEqual(code, 0);
+        const task = await storeGetTask(id);
+        assert.strictEqual(task.ompSessionOwnership.state, 'cleanup-required');
+      });
+
+      it('refuses a materialized header whose recorded cwd is not this task s workspace', async function () {
+        const id = nextTaskId('fresh-wrong-cwd');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const partitionId = generateOmpPartitionId();
+        const partitionPath = partitionPathFor(storageRoot, partitionId);
+        createOmpSessionPartitionDirectory(partitionPath);
+        const commandSpec = freshCommandSpec(overlay, partitionPath);
+
+        await seedTask(id, commandSpec);
+        await writeProvisionalOwnershipFor(id, {
+          partitionId,
+          storageRoot,
+          cwd: commandSpec.cwd,
+          owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+        });
+
+        const { code } = await runWatcher({
+          id,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: { kind: 'fresh', partition: { path: partitionPath } },
+          env: {
+            OMP_FAKE_RPC_MINT_SESSION_ID: 'wrong-cwd-session',
+            OMP_FAKE_RPC_SESSION_CWD: '/somewhere/else/entirely',
+          },
+        });
+        assert.strictEqual(code, 0);
+        const task = await storeGetTask(id);
+        assert.strictEqual(task.ompSessionOwnership.state, 'cleanup-required');
+      });
     });
 
-    it('fails closed before the prompt when the resumed selector drifts from the recorded owner', async function () {
-      const id = nextTaskId('omp-resume-selector-drift');
-      const overlay = createOmpConfigOverlay();
-      const commandSpec = buildCommandSpec(overlay);
-      const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
-      const { partitionId, path: partitionPath } = allocateOmpSessionPartition(storageRoot);
-      const sessionFileName = 'prior-session.jsonl';
-      const sessionFile = path.join(partitionPath, sessionFileName);
-      fs.writeFileSync(sessionFile, '{"turn":1}\n');
-      const stat = fs.statSync(sessionFile);
+    describe('verified resume', function () {
+      it('transfers ownership before the prompt and commits the new evidence on success', async function () {
+        const priorId = nextTaskId('resume-prior');
+        const resumedId = nextTaskId('resume-new');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+        const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
 
-      await seedTask(id, commandSpec);
-      await writeProvisionalOwnershipFor(id, {
-        partitionId,
-        storageRoot,
-        partitionPath,
-        cwd: commandSpec.cwd,
-        owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: { OMP_FAKE_RPC_PROMPT_SINK: promptSink },
+        });
+        assert.strictEqual(code, 0);
+
+        const resumed = await storeGetTask(resumedId);
+        assert.strictEqual(resumed.status, 'completed');
+        assert.strictEqual(resumed.ompSessionOwnership.state, 'committed');
+        assert.strictEqual(resumed.ompSessionOwnership.session.sessionId, partition.sessionId);
+        assert.strictEqual(resumed.ompSessionOwnership.partitionId, partition.partitionId);
+        assert.strictEqual(resumed.ompSessionOwnership.owner.taskId, resumedId);
+
+        const prior = await storeGetTask(priorId);
+        assert.strictEqual(
+          prior.ompSessionOwnership,
+          null,
+          'the prior owner is released atomically, so exactly one row owns the partition'
+        );
+        assert.ok(fs.existsSync(promptSink), 'the prompt is written only after the transfer');
       });
 
-      const { verifyExistingOmpPartition } = require('../src/omp-session-verifier');
-      const preVerify = verifyExistingOmpPartition(partitionPath, sessionFileName);
-      const promptSink = path.join(zeroshotHome, `${id}-prompt.json`);
+      it('never prompts and never transfers when the echoed session ID differs from the recorded one', async function () {
+        const priorId = nextTaskId('resume-id-drift-prior');
+        const resumedId = nextTaskId('resume-id-drift');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+        const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
 
-      const { code } = await runWatcher({
-        id,
-        commandSpec,
-        scenario: 'happy',
-        ompSession: {
-          kind: 'resume',
-          partition: { path: partitionPath },
-          file: { path: sessionFile },
-        },
-        ompResumeExpectation: {
-          expectedSessionFileIdentity: { device: String(stat.dev), inode: String(stat.ino) },
-          expectedArtifactManifestDigest: preVerify.artifactManifestDigest,
-          // The recorded owner expects a different provider/model than what get_state reports.
-          expectedSelectedProvider: 'openai',
-          expectedSelectedModel: '@other',
-        },
-        env: {
-          OMP_FAKE_RPC_SESSION_ID: 'resumed-sess',
-          OMP_FAKE_RPC_SESSION_FILE: sessionFile,
-          OMP_FAKE_RPC_PROMPT_SINK: promptSink,
-        },
-      });
-      assert.strictEqual(
-        code,
-        0,
-        'the watcher process itself exits cleanly even though the task fails'
-      );
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: {
+            OMP_FAKE_RPC_SESSION_ID: `${partition.sessionId}-and-more`,
+            OMP_FAKE_RPC_PROMPT_SINK: promptSink,
+          },
+        });
+        const resumed = await storeGetTask(resumedId);
+        assertFailedBeforePrompt({
+          code,
+          task: resumed,
+          promptSink,
+          errorPattern: /echoed sessionId/,
+        });
 
-      const task = await storeGetTask(id);
-      assert.strictEqual(task.status, 'failed');
-      assert.match(task.error, /selector/);
-      assert.strictEqual(task.ompSessionOwnership.state, 'cleanup-required');
-      assert.strictEqual(
-        fs.existsSync(promptSink),
-        false,
-        'OMP must never receive the prompt on drift'
-      );
-    });
-
-    it('fails closed before spawn when the resume file has been substituted for a symlink', async function () {
-      const id = nextTaskId('omp-resume-symlink-substitution');
-      const overlay = createOmpConfigOverlay();
-      const commandSpec = buildCommandSpec(overlay);
-      const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
-      const { partitionId, path: partitionPath } = allocateOmpSessionPartition(storageRoot);
-      const sessionFileName = 'prior-session.jsonl';
-      const sessionFile = path.join(partitionPath, sessionFileName);
-      const outsideTarget = path.join(zeroshotHome, `${id}-outside.jsonl`);
-      fs.writeFileSync(outsideTarget, '{"turn":1}\n');
-      fs.symlinkSync(outsideTarget, sessionFile);
-
-      await seedTask(id, commandSpec);
-      await writeProvisionalOwnershipFor(id, {
-        partitionId,
-        storageRoot,
-        partitionPath,
-        cwd: commandSpec.cwd,
-        owner: { kind: 'standalone', clusterId: null, agentId: null, taskId: id },
+        const prior = await storeGetTask(priorId);
+        assert.strictEqual(
+          prior.ompSessionOwnership.state,
+          'committed',
+          'a refused resume leaves the prior owner intact'
+        );
       });
 
-      const { code } = await runWatcher({
-        id,
-        commandSpec,
-        scenario: 'happy',
-        ompSession: {
-          kind: 'resume',
-          partition: { path: partitionPath },
-          file: { path: sessionFile },
-        },
-        sendPrompt: true,
-      });
-      assert.strictEqual(code, 1);
+      it('rejects a returned session file that only shares the requested basename', async function () {
+        const priorId = nextTaskId('resume-basename-prior');
+        const resumedId = nextTaskId('resume-basename');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
 
-      const task = await storeGetTask(id);
-      assert.strictEqual(task.status, 'failed');
-      assert.match(task.error, /symlink/);
-      assert.strictEqual(task.ompSessionOwnership.state, 'cleanup-required');
+        // A different directory holding a file with the *same basename* — the exact case a
+        // basename-only comparison would wave through.
+        const decoyDir = fs.mkdtempSync(path.join(zeroshotHome, 'omp-decoy-'));
+        const decoy = path.join(decoyDir, partition.sessionFileName);
+        fs.copyFileSync(partition.sessionFilePath, decoy);
+        const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: { OMP_FAKE_RPC_SESSION_FILE: decoy, OMP_FAKE_RPC_PROMPT_SINK: promptSink },
+        });
+        assertFailedBeforePrompt({
+          code,
+          task: await storeGetTask(resumedId),
+          promptSink,
+          errorPattern: /echoed sessionFile/,
+        });
+      });
+
+      it('fails closed on selected concrete-model drift', async function () {
+        const priorId = nextTaskId('resume-model-drift-prior');
+        const resumedId = nextTaskId('resume-model-drift');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+        const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: {
+            OMP_FAKE_RPC_SELECTED_MODEL: 'claude-some-other-concrete-model',
+            OMP_FAKE_RPC_PROMPT_SINK: promptSink,
+          },
+        });
+        assertFailedBeforePrompt({
+          code,
+          task: await storeGetTask(resumedId),
+          promptSink,
+          errorPattern: /selectedModel/,
+        });
+      });
+
+      it('fails closed on thinking-level execution drift even when the model is unchanged', async function () {
+        const priorId = nextTaskId('resume-thinking-drift-prior');
+        const resumedId = nextTaskId('resume-thinking-drift');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+        const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: {
+            OMP_FAKE_RPC_THINKING_LEVEL: 'xhigh',
+            OMP_FAKE_RPC_PROMPT_SINK: promptSink,
+          },
+        });
+        assertFailedBeforePrompt({
+          code,
+          task: await storeGetTask(resumedId),
+          promptSink,
+          errorPattern: /executionFingerprint/,
+        });
+      });
+
+      it('fails closed on Zeroshot selector / overlay / version drift recorded in the fingerprint', async function () {
+        const priorId = nextTaskId('resume-selector-drift-prior');
+        const resumedId = nextTaskId('resume-selector-drift');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+          // The owner was recorded under a different Zeroshot execution contract.
+          expectationOverrides: { expectedExecutionFingerprint: `sha256:${'9'.repeat(64)}` },
+        });
+        const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: { OMP_FAKE_RPC_PROMPT_SINK: promptSink },
+        });
+        assertFailedBeforePrompt({
+          code,
+          task: await storeGetTask(resumedId),
+          promptSink,
+          errorPattern: /executionFingerprint/,
+        });
+      });
+
+      it('fails closed before spawn on artifact-tree drift', async function () {
+        const priorId = nextTaskId('resume-manifest-drift-prior');
+        const resumedId = nextTaskId('resume-manifest-drift');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd, artifacts: ['a.txt'] });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+
+        // Someone edited the artifact tree between the recorded turn and this resume.
+        fs.appendFileSync(path.join(partition.artifactsDir, 'a.txt'), 'tampered');
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+        });
+        assert.strictEqual(code, 1, 'the pre-spawn check fails the watcher outright');
+
+        const resumed = await storeGetTask(resumedId);
+        assert.strictEqual(resumed.status, 'failed');
+        assert.match(resumed.error, /artifactManifestDigest/);
+        assert.strictEqual(resumed.ompSessionOwnership.state, 'cleanup-required');
+      });
+
+      it('fails closed before spawn when the session file inode has been substituted', async function () {
+        const priorId = nextTaskId('resume-inode-prior');
+        const resumedId = nextTaskId('resume-inode');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+
+        // Byte-identical replacement: only the inode changes, so nothing but the pinned identity
+        // can catch it.
+        const contents = fs.readFileSync(partition.sessionFilePath);
+        const staging = path.join(storageRoot, 'replacement.jsonl');
+        fs.writeFileSync(staging, contents);
+        fs.renameSync(staging, partition.sessionFilePath);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+        });
+        assert.strictEqual(code, 1);
+
+        const resumed = await storeGetTask(resumedId);
+        assert.strictEqual(resumed.status, 'failed');
+        assert.match(resumed.error, /sessionFileIdentity/);
+        assert.strictEqual(resumed.ompSessionOwnership.state, 'cleanup-required');
+      });
+
+      it('fails closed before spawn when the resume file has been substituted for a symlink', async function () {
+        const priorId = nextTaskId('resume-symlink-prior');
+        const resumedId = nextTaskId('resume-symlink');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+
+        const outsideTarget = path.join(zeroshotHome, `${resumedId}-outside.jsonl`);
+        fs.copyFileSync(partition.sessionFilePath, outsideTarget);
+        fs.rmSync(partition.sessionFilePath);
+        fs.symlinkSync(outsideTarget, partition.sessionFilePath);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+        });
+        assert.strictEqual(code, 1);
+
+        const resumed = await storeGetTask(resumedId);
+        assert.strictEqual(resumed.status, 'failed');
+        assert.match(resumed.error, /symlink/);
+        assert.strictEqual(resumed.ompSessionOwnership.state, 'cleanup-required');
+      });
+
+      it('fails closed before spawn when the partition identity no longer matches', async function () {
+        const priorId = nextTaskId('resume-partition-identity-prior');
+        const resumedId = nextTaskId('resume-partition-identity');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+          expectationOverrides: {
+            expectedPartitionIdentity: { device: '1', inode: '999999999' },
+          },
+        });
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+        });
+        assert.strictEqual(code, 1);
+
+        const resumed = await storeGetTask(resumedId);
+        assert.strictEqual(resumed.status, 'failed');
+        assert.match(resumed.error, /identity .* does not match the recorded owner/);
+        assert.strictEqual(resumed.ompSessionOwnership.state, 'cleanup-required');
+      });
+
+      it('fails closed before spawn when a referenced shared CAS blob is missing', async function () {
+        const priorId = nextTaskId('resume-blob-prior');
+        const resumedId = nextTaskId('resume-blob');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const blobs = makeBlobStore('omp-watcher-blobs-');
+        const ref = blobs.put('externalized-image-bytes');
+        const partition = makeSessionPartition({
+          storageRoot,
+          cwd,
+          records: [{ type: 'message', content: [{ type: 'image', data: ref }] }],
+        });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+
+        // The lineage must be recorded while the blob still resolves, i.e. under the same shared
+        // root the watcher will use.
+        const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+        process.env.PI_CODING_AGENT_DIR = blobs.blobRoot;
+        let expectation;
+        try {
+          ({ expectation } = await seedResumeLineage({
+            priorId,
+            resumedId,
+            storageRoot,
+            cwd,
+            commandSpec,
+            partition,
+          }));
+        } finally {
+          if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+          else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        }
+
+        const blobPath = path.join(blobs.blobsDir, ref.slice('blob:sha256:'.length));
+        fs.rmSync(blobPath);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: { PI_CODING_AGENT_DIR: blobs.blobRoot },
+        });
+        assert.strictEqual(code, 1);
+
+        const resumed = await storeGetTask(resumedId);
+        assert.strictEqual(resumed.status, 'failed');
+        assert.match(resumed.error, /blob/);
+        assert.strictEqual(resumed.ompSessionOwnership.state, 'cleanup-required');
+        assert.ok(fs.existsSync(blobs.blobsDir), 'the shared blob root itself is untouched');
+      });
+
+      it('tolerates a mid-turn session_info_update that grew the transcript, and still catches one that switches session', async function () {
+        // `session_info_update` re-fires the driver's `ready` hook *after* the prompt, by which
+        // point the transcript has legitimately grown. Re-running the structural manifest/inode
+        // comparison there would reject a healthy turn; only what OMP reports about the session it
+        // has open is still meaningful, so that is all the post-prompt pass may check.
+        const healthyPriorId = nextTaskId('resume-info-update-prior');
+        const healthyResumedId = nextTaskId('resume-info-update');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId: healthyPriorId,
+          resumedId: healthyResumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+
+        const before = fs.statSync(partition.sessionFilePath).size;
+        const { code } = await runWatcher({
+          id: healthyResumedId,
+          commandSpec,
+          scenario: 'session-info-update',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: {
+            OMP_FAKE_RPC_APPEND_ON_UPDATE: '1',
+            OMP_FAKE_RPC_UPDATED_SESSION_ID: partition.sessionId,
+            OMP_FAKE_RPC_UPDATED_SESSION_FILE: partition.sessionFilePath,
+          },
+        });
+        assert.strictEqual(code, 0);
+        assert.ok(
+          fs.statSync(partition.sessionFilePath).size > before,
+          'the transcript really did grow mid-turn'
+        );
+        const healthy = await storeGetTask(healthyResumedId);
+        assert.strictEqual(healthy.status, 'completed');
+        assert.strictEqual(healthy.ompSessionOwnership.state, 'committed');
+
+        // Same frame, but now naming a different session: that IS drift and must fail.
+        const driftPriorId = nextTaskId('resume-info-update-switch-prior');
+        const driftResumedId = nextTaskId('resume-info-update-switch');
+        const driftStorage = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const driftCwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const driftPartition = makeSessionPartition({ storageRoot: driftStorage, cwd: driftCwd });
+        const driftCommandSpec = resumeCommandSpec(
+          overlay,
+          driftPartition.partitionPath,
+          driftPartition.sessionFilePath,
+          driftCwd
+        );
+        const { expectation: driftExpectation } = await seedResumeLineage({
+          priorId: driftPriorId,
+          resumedId: driftResumedId,
+          storageRoot: driftStorage,
+          cwd: driftCwd,
+          commandSpec: driftCommandSpec,
+          partition: driftPartition,
+        });
+
+        const drifted = await runWatcher({
+          id: driftResumedId,
+          commandSpec: driftCommandSpec,
+          scenario: 'session-info-update',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: driftPartition.partitionPath },
+            file: { path: driftPartition.sessionFilePath },
+          },
+          ompResumeExpectation: driftExpectation,
+          env: {
+            OMP_FAKE_RPC_UPDATED_SESSION_ID: 'a-completely-different-session',
+            OMP_FAKE_RPC_UPDATED_SESSION_FILE: driftPartition.sessionFilePath,
+          },
+        });
+        const driftTask = await storeGetTask(driftResumedId);
+        assertFailedBeforePrompt({
+          code: drifted.code,
+          task: driftTask,
+          errorPattern: /echoed sessionId/,
+        });
+      });
+
+      it('fails closed when the prior owner is no longer committed (transfer cannot apply)', async function () {
+        const priorId = nextTaskId('resume-transfer-lost-prior');
+        const resumedId = nextTaskId('resume-transfer-lost');
+        const overlay = createOmpConfigOverlay();
+        const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+        const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+        const partition = makeSessionPartition({ storageRoot, cwd });
+        const commandSpec = resumeCommandSpec(
+          overlay,
+          partition.partitionPath,
+          partition.sessionFilePath,
+          cwd
+        );
+        const { expectation } = await seedResumeLineage({
+          priorId,
+          resumedId,
+          storageRoot,
+          cwd,
+          commandSpec,
+          partition,
+        });
+
+        // Another process already claimed the lineage (or the row was cleared) before this
+        // watcher reached its transfer point.
+        await clearOwnershipFor(priorId);
+        const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
+
+        const { code } = await runWatcher({
+          id: resumedId,
+          commandSpec,
+          scenario: 'happy',
+          ompSession: {
+            kind: 'resume',
+            partition: { path: partition.partitionPath },
+            file: { path: partition.sessionFilePath },
+          },
+          ompResumeExpectation: expectation,
+          env: { OMP_FAKE_RPC_PROMPT_SINK: promptSink },
+        });
+        assertFailedBeforePrompt({
+          code,
+          task: await storeGetTask(resumedId),
+          promptSink,
+          errorPattern: /transfer ownership/,
+        });
+      });
     });
   });
 });

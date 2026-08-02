@@ -1,11 +1,11 @@
 import { fork } from 'child_process';
-import { join, dirname } from 'path';
+import { join, dirname, resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 import { LOGS_DIR } from './config.js';
 import { addTask, generateId, ensureDirs } from './store.js';
 import { resolveOmpStorageRoot, resolveOmpOwnerKind } from './omp-storage-root.js';
-import { writeProvisionalOwnership } from './omp-session-ownership.js';
+import { readOwnership, writeProvisionalOwnership } from './omp-session-ownership.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -43,11 +43,109 @@ export {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Cross-check the caller-supplied resume descriptor against the prior owner's *persisted* record
+ * and return the expectation the watcher will re-verify.
+ *
+ * The descriptor arrives over argv (from the agent's own `providerSession.ompSession` snapshot, or
+ * from `zeroshot task resume`), so it is never trusted on its own: the task row named by
+ * `priorOwnerTaskId` is the authority, and every field the descriptor asserts must match it
+ * exactly. A descriptor and a row that disagree are conflicting identities and fail closed here,
+ * before a task row is even created — the "conflicting IDs never reach a resume prompt" case.
+ */
+export function resolveOmpResumeExpectation({ descriptor, storageRoot, canonicalWorkspace }) {
+  const prior = readOwnership(descriptor.priorOwnerTaskId);
+  if (!prior) {
+    throw new Error(
+      `OMP resume: task ${descriptor.priorOwnerTaskId} has no valid OMP session ownership record.`
+    );
+  }
+  if (prior.state !== 'committed' || !prior.session || !prior.partitionIdentity) {
+    throw new Error(
+      `OMP resume: task ${descriptor.priorOwnerTaskId} ownership is '${prior.state}', not a committed resumable session.`
+    );
+  }
+  if (prior.storageRoot !== resolvePath(storageRoot)) {
+    throw new Error(
+      `OMP resume: storage root ${resolvePath(storageRoot)} does not match the recorded ${prior.storageRoot}.`
+    );
+  }
+  // Moved/deleted workspace and "existing-but-wrong recorded cwd": a session belongs to the
+  // workspace it was recorded against and may never be continued from a different one.
+  if (prior.canonicalWorkspace !== resolvePath(canonicalWorkspace)) {
+    throw new Error(
+      `OMP resume: workspace ${resolvePath(canonicalWorkspace)} does not match the recorded ${prior.canonicalWorkspace}.`
+    );
+  }
+
+  const mismatches = [];
+  const requireExact = (label, actual, expected) => {
+    if (actual !== expected) mismatches.push(`${label} (${actual} != ${expected})`);
+  };
+  requireExact('partitionId', descriptor.partitionId, prior.partitionId);
+  requireExact('sessionId', descriptor.expectedSessionId, prior.session.sessionId);
+  requireExact('sessionFileName', descriptor.sessionFileName, prior.session.fileName);
+  requireExact(
+    'sessionFileIdentity',
+    `${descriptor.expectedSessionFileIdentity?.device}:${descriptor.expectedSessionFileIdentity?.inode}`,
+    `${prior.session.fileIdentity.device}:${prior.session.fileIdentity.inode}`
+  );
+  // partitionIdentity is deliberately absent from the agent's `providerSession.ompSession`
+  // snapshot (issue #866 fixes that field list, and the snapshot never carries partition paths or
+  // storage-root state), so it is authoritative from the row only. `zeroshot task resume`, which
+  // reads the row directly, does assert it — check it whenever it is supplied.
+  if (descriptor.expectedPartitionIdentity !== undefined) {
+    requireExact(
+      'partitionIdentity',
+      `${descriptor.expectedPartitionIdentity?.device}:${descriptor.expectedPartitionIdentity?.inode}`,
+      `${prior.partitionIdentity.device}:${prior.partitionIdentity.inode}`
+    );
+  }
+  requireExact(
+    'artifactManifestDigest',
+    descriptor.expectedArtifactManifestDigest,
+    prior.session.artifactManifestDigest
+  );
+  requireExact(
+    'executionFingerprint',
+    descriptor.expectedExecutionFingerprint,
+    prior.session.executionFingerprint
+  );
+  requireExact(
+    'selectedProvider',
+    descriptor.expectedSelectedProvider,
+    prior.session.selectedProvider
+  );
+  requireExact('selectedModel', descriptor.expectedSelectedModel, prior.session.selectedModel);
+  if (mismatches.length > 0) {
+    throw new Error(
+      `OMP resume: descriptor conflicts with the persisted owner record: ${mismatches.join(', ')}.`
+    );
+  }
+
+  return {
+    priorOwnerTaskId: descriptor.priorOwnerTaskId,
+    partitionId: prior.partitionId,
+    partitionPath: prior.partitionPath,
+    canonicalWorkspace: prior.canonicalWorkspace,
+    sessionFileName: prior.session.fileName,
+    sessionFilePath: join(prior.partitionPath, prior.session.fileName),
+    expectedSessionId: prior.session.sessionId,
+    expectedPartitionIdentity: prior.partitionIdentity,
+    expectedSessionFileIdentity: prior.session.fileIdentity,
+    expectedArtifactManifestDigest: prior.session.artifactManifestDigest,
+    expectedExecutionFingerprint: prior.session.executionFingerprint,
+    expectedSelectedProvider: prior.session.selectedProvider,
+    expectedSelectedModel: prior.session.selectedModel,
+  };
+}
+
+/**
  * Resolve this task's OMP session plan, or null for every other provider / structured-output
  * recovery turn. Allocates (but does not yet create on disk) a fresh partition, or resolves the
- * caller-verified resume descriptor from options.ompResume. The partition directory itself is
+ * resume descriptor against the prior owner's persisted record. The partition directory itself is
  * created only after the task row is durable (see spawnTask below — row-before-directory), and
- * structural/selector verification happens in the rpc-stdio watcher, not here.
+ * the structural/identity/fingerprint verification plus the owner transfer happen in the rpc-stdio
+ * watcher, not here.
  */
 function resolveOmpSessionPlan({ id, cwd, options }) {
   if (options.structuredOutputRecovery) return null;
@@ -60,19 +158,21 @@ function resolveOmpSessionPlan({ id, cwd, options }) {
   const owner = { ...ownerKind, taskId: id };
 
   if (options.ompResume) {
-    const { partitionId, sessionFileName } = options.ompResume;
-    const partitionPath = partitionPathFor(storageRoot, partitionId);
+    const expectation = resolveOmpResumeExpectation({
+      descriptor: options.ompResume,
+      storageRoot,
+      canonicalWorkspace: cwd,
+    });
     return {
       session: {
         kind: 'resume',
-        partition: { path: partitionPath },
-        file: { path: join(partitionPath, sessionFileName) },
+        partition: { path: expectation.partitionPath },
+        file: { path: expectation.sessionFilePath },
       },
-      resumeExpectation: options.ompResume,
+      resumeExpectation: expectation,
       provisionalOwnership: writeProvisionalOwnership({
-        partitionId,
+        partitionId: expectation.partitionId,
         storageRoot,
-        partitionPath,
         canonicalWorkspace: cwd,
         owner,
       }),
@@ -88,7 +188,6 @@ function resolveOmpSessionPlan({ id, cwd, options }) {
     provisionalOwnership: writeProvisionalOwnership({
       partitionId,
       storageRoot,
-      partitionPath,
       canonicalWorkspace: cwd,
       owner,
     }),
@@ -358,6 +457,9 @@ function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, com
       ? {
           ompSession: ompPlan.session,
           ompResumeExpectation: ompPlan.resumeExpectation,
+          // The workspace the ownership row was canonicalized against; the watcher compares it to
+          // the session header's own recorded cwd after materialization.
+          ompCanonicalWorkspace: ompPlan.provisionalOwnership.canonicalWorkspace,
         }
       : {}),
   };
