@@ -971,6 +971,7 @@ function spawnTaskProcess({
   spawnTimeoutMs = 30000,
   handle = null,
   nested = false,
+  spawnProcess = spawn,
 }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it.
   const SPAWN_TIMEOUT_MS = spawnTimeoutMs;
@@ -980,7 +981,7 @@ function spawnTaskProcess({
   const findPersistedTaskId = () => getTaskBySpawnOwnershipToken(ownershipToken)?.id || null;
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(ctPath, safeArgs, {
+    const proc = spawnProcess(ctPath, safeArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...spawnEnv, [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken },
