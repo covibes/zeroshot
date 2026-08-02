@@ -12,7 +12,9 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY zeroshot-rust ./zeroshot-rust
 RUN rustup component add --toolchain 1.96.0 rustfmt clippy \
-    && cargo build --locked --release -p zeroshot-rust --bin zeroshot-oecp-server
+    && cargo build --locked --release -p zeroshot-rust --bin zeroshot-oecp-server \
+    && rustup default 1.96.0 \
+    && rustup toolchain uninstall 1.96.1 1.97.0
 
 FROM node@sha256:c2cc26d8f991c2db236ad51a61efee843c482372d6d22570787309d511694110 AS node-builder
 ARG CODEX_VERSION=0.146.0
