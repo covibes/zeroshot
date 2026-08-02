@@ -352,7 +352,7 @@ function defineCliErrorExtractionTests() {
     // Codex errors
     it('should extract Codex turn.failed error', function () {
       const output = '{"type":"turn.failed","error":{"message":"API rate limit exceeded"}}';
-      const result = extractCliError(output);
+      const result = extractCliError(output, 'codex');
       assert.deepStrictEqual(result, {
         error: 'API rate limit exceeded',
         provider: 'codex',
@@ -361,7 +361,7 @@ function defineCliErrorExtractionTests() {
 
     it('should extract Codex turn.failed with string error', function () {
       const output = '{"type":"turn.failed","error":"Something went wrong"}';
-      const result = extractCliError(output);
+      const result = extractCliError(output, 'codex');
       assert.deepStrictEqual(result, {
         error: 'Something went wrong',
         provider: 'codex',
@@ -369,19 +369,34 @@ function defineCliErrorExtractionTests() {
     });
 
     // Gemini errors
-    it('should extract Gemini error with success:false', function () {
-      const output = '{"type":"result","success":false,"error":"Model unavailable"}';
-      const result = extractCliError(output);
+    it('should extract Gemini result errors with nested messages', function () {
+      const output =
+        '{"type":"result","status":"error","error":{"type":"FatalError","message":"Model unavailable"}}';
+      const result = extractCliError(output, 'gemini');
       assert.deepStrictEqual(result, {
         error: 'Model unavailable',
         provider: 'gemini',
       });
     });
 
+    it('should extract terminal Gemini error events but ignore warnings', function () {
+      assert.deepStrictEqual(
+        extractCliError(
+          '{"type":"error","severity":"error","message":"Authentication required"}',
+          'gemini'
+        ),
+        { error: 'Authentication required', provider: 'gemini' }
+      );
+      assert.strictEqual(
+        extractCliError('{"type":"error","severity":"warning","message":"Slow"}', 'gemini'),
+        null
+      );
+    });
+
     // Opencode errors
     it('should extract Opencode session.error', function () {
       const output = '{"type":"session.error","error":{"message":"Connection timeout"}}';
-      const result = extractCliError(output);
+      const result = extractCliError(output, 'opencode');
       assert.deepStrictEqual(result, {
         error: 'Connection timeout',
         provider: 'opencode',
@@ -391,11 +406,16 @@ function defineCliErrorExtractionTests() {
     it('should extract Opencode session.error with nested data', function () {
       const output =
         '{"type":"session.error","error":{"data":{"message":"Auth failed"},"name":"AuthError"}}';
-      const result = extractCliError(output);
+      const result = extractCliError(output, 'opencode');
       assert.deepStrictEqual(result, {
         error: 'Auth failed',
         provider: 'opencode',
       });
+    });
+
+    it('does not classify another provider terminal event', function () {
+      const output = '{"type":"turn.failed","error":{"message":"Codex failed"}}';
+      assert.strictEqual(extractCliError(output, 'gemini'), null);
     });
 
     // No error cases
@@ -407,13 +427,13 @@ function defineCliErrorExtractionTests() {
 
     it('should return null for successful Codex output', function () {
       const output = '{"type":"turn.completed","usage":{"input_tokens":100}}';
-      const result = extractCliError(output);
+      const result = extractCliError(output, 'codex');
       assert.strictEqual(result, null);
     });
 
     it('should return null for successful Gemini output', function () {
-      const output = '{"type":"result","success":true}';
-      const result = extractCliError(output);
+      const output = '{"type":"result","status":"success"}';
+      const result = extractCliError(output, 'gemini');
       assert.strictEqual(result, null);
     });
 

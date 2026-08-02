@@ -9,7 +9,8 @@ if (process.argv.includes('--version')) {
 if (process.argv.includes('--help')) {
   console.log(
     'codex exec --json --output-schema -m -C --config --skip-git-repo-check ' +
-      '--dangerously-bypass-approvals-and-sandbox'
+      '--dangerously-bypass-approvals-and-sandbox --sandbox --ephemeral --ignore-user-config ' +
+      '--ignore-rules --strict-config'
   );
   process.exit(0);
 }
@@ -20,17 +21,24 @@ fs.writeFileSync(stateFile, String(count));
 console.log(JSON.stringify({ type: 'turn.started' }));
 
 const actions = JSON.parse(process.env.FAKE_CODEX_ACTIONS || '["success"]');
-const action = actions[count - 1] || actions.at(-1);
+const isRecovery = process.argv.includes('--ephemeral');
+const action = isRecovery
+  ? process.env.FAKE_CODEX_RECOVERY_ACTION || 'success'
+  : actions[count - 1] || actions.at(-1);
 if (action === 'hang') {
   setInterval(() => {}, 1000);
 } else if (action === 'exit') {
   console.error('simulated provider process death');
   process.exit(17);
 } else {
+  const message = action === 'malformed' ? 'completed without json' : '{"done":true}';
+  if (isRecovery && process.env.FAKE_CODEX_EMIT_SESSION === '1') {
+    console.log(JSON.stringify({ type: 'thread.started', thread_id: `thread-${count}` }));
+  }
   console.log(
     JSON.stringify({
       type: 'item.completed',
-      item: { type: 'agent_message', text: '{"done":true}' },
+      item: { type: 'agent_message', text: message },
     })
   );
   console.log(

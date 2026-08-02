@@ -53,6 +53,7 @@ export {
   providerRegistry,
   resolveProviderCommand,
   supportsProviderCapability,
+  supportsProviderOutputReformatting,
 } from './provider-registry';
 
 export type {
@@ -93,6 +94,9 @@ export type {
   ProviderCliFeatures,
   ProviderId,
   ProviderRegistryEntry,
+  StructuredOutputRecoveryAdapter,
+  StructuredOutputProviderRegistryEntry,
+  UnstructuredOutputProviderRegistryEntry,
   RedactionMetadata,
   ReasoningEffort,
   ResolvedGatewayBuildOptions,

@@ -270,6 +270,7 @@ class Orchestrator {
 
     // Track if orchestrator is closed (prevents _saveClusters race conditions during cleanup)
     this.closed = false;
+    this._conductorWatchdogs = new Set();
 
     // Track if clusters are loaded (for lazy loading pattern)
     this._clustersLoaded = options.skipLoad === true;
@@ -1654,6 +1655,28 @@ class Orchestrator {
     const timeoutMs = 30000;
     let watchdogTimer = null;
     let completedAt = null;
+    const watchdog = {
+      clear: () => {
+        if (!watchdogTimer) {
+          return;
+        }
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+        this._conductorWatchdogs.delete(watchdog);
+        const elapsed = completedAt ? Date.now() - completedAt : 0;
+        this._log(
+          `✅ CLUSTER_OPERATIONS received (${elapsed}ms after conductor completed) - watchdog cleared`
+        );
+      },
+      dispose: () => {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
+        this._conductorWatchdogs.delete(watchdog);
+      },
+    };
+    this._conductorWatchdogs.add(watchdog);
 
     this._subscribeToClusterTopic(messageBus, clusterId, 'AGENT_LIFECYCLE', (message) => {
       const event = message.content?.data?.event;
@@ -1666,6 +1689,11 @@ class Orchestrator {
         );
 
         watchdogTimer = setTimeout(() => {
+          watchdogTimer = null;
+          this._conductorWatchdogs.delete(watchdog);
+          if (this.closed || messageBus._closed) {
+            return;
+          }
           const clusterOps = messageBus.query({
             cluster_id: clusterId,
             topic: 'CLUSTER_OPERATIONS',
@@ -1700,19 +1728,7 @@ class Orchestrator {
       }
     });
 
-    return {
-      clear: () => {
-        if (!watchdogTimer) {
-          return;
-        }
-        clearTimeout(watchdogTimer);
-        watchdogTimer = null;
-        const elapsed = completedAt ? Date.now() - completedAt : 0;
-        this._log(
-          `✅ CLUSTER_OPERATIONS received (${elapsed}ms after conductor completed) - watchdog cleared`
-        );
-      },
-    };
+    return watchdog;
   }
 
   _registerClusterOperationsHandler(
@@ -2414,6 +2430,10 @@ class Orchestrator {
       return;
     }
     this.closed = true;
+    for (const watchdog of this._conductorWatchdogs) {
+      watchdog.dispose();
+    }
+    this._conductorWatchdogs.clear();
 
     for (const cluster of this.clusters.values()) {
       if (typeof cluster.snapshotter?.stop === 'function') {

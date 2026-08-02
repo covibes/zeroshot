@@ -1,4 +1,5 @@
 import { getString, isRecord, stringifyJson, tryParseJson } from '../json';
+import { UnsupportedProviderCapabilityError } from '../errors';
 import { contractError } from '../contract-errors';
 import {
   type BuildProviderCommandOptions,
@@ -9,7 +10,7 @@ import {
   type LevelOverrides,
   type ModelCatalogEntry,
   type ModelLevel,
-  type ProviderAdapter,
+  type StructuredOutputRecoveryAdapter,
   type ResolvedModelSpec,
   type WarningMetadata,
 } from '../types';
@@ -72,6 +73,9 @@ function detectCliFeatures(helpText?: string | null): ClaudeCliFeatures {
     supportsSettings: !unknown && /--settings/.test(help),
     supportsMcpConfig: !unknown && /--mcp-config/.test(help),
     supportsResume: unknown ? true : /--resume/.test(help),
+    supportsTools: !unknown && /--tools\b/.test(help),
+    supportsStrictMcpConfig: !unknown && /--strict-mcp-config\b/.test(help),
+    supportsNoSessionPersistence: !unknown && /--no-session-persistence\b/.test(help),
     unknown,
   };
 }
@@ -252,6 +256,38 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   });
 }
 
+function assertStructuredOutputRecoveryFeatures(options: BuildProviderCommandOptions): void {
+  const features = optionFeatures(options);
+  const missing = [
+    ['--tools', features.supportsTools],
+    ['--strict-mcp-config', features.supportsStrictMcpConfig],
+    ['--no-session-persistence', features.supportsNoSessionPersistence],
+  ].filter(([, supported]) => supported !== true);
+  if (missing.length === 0) return;
+  throw new UnsupportedProviderCapabilityError(
+    'claude',
+    'structuredOutputRecovery',
+    `Claude structured-output recovery requires CLI evidence for ${missing.map(([flag]) => flag).join(', ')}. Upgrade Claude Code before retrying.`
+  );
+}
+
+function buildStructuredOutputRecoveryCommand(
+  context: string,
+  options: BuildProviderCommandOptions = {}
+): CommandSpec {
+  assertStructuredOutputRecoveryFeatures(options);
+  const recoveryOptions = { ...options };
+  delete recoveryOptions.resumeSessionId;
+  delete recoveryOptions.continueSession;
+  delete recoveryOptions.mcpConfig;
+  const spec = buildCommand(context, { ...recoveryOptions, autoApprove: false });
+  const args = [...spec.args];
+  const prompt = args.pop();
+  if (prompt === undefined) throw new Error('Claude recovery command is missing its prompt');
+  args.push('--tools', '', '--strict-mcp-config', '--no-session-persistence', prompt);
+  return { ...spec, args };
+}
+
 function resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec {
   return resolveModelSpecWithConfig({
     mapping: LEVEL_MAPPING,
@@ -274,7 +310,7 @@ function classifyError(error: unknown): ErrorClassification {
   );
 }
 
-export const claudeAdapter: ProviderAdapter = {
+export const claudeAdapter: StructuredOutputRecoveryAdapter = {
   id: 'claude',
   displayName: 'Claude',
   binary: 'claude',
@@ -287,6 +323,7 @@ export const claudeAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  buildStructuredOutputRecoveryCommand,
   extractSessionId,
   parseEvent: parseClaudeEvent,
   createParserState: () => createParserState('claude'),

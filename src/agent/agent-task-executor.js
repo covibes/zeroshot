@@ -11,13 +11,9 @@
  */
 
 const { spawn, spawnSync } = require('child_process');
-const { randomUUID } = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const {
-  getNestedExecutionRegistry,
-  TaskExecutionHandle,
-} = require('./task-execution-handle');
+const { getNestedExecutionRegistry, TaskExecutionHandle } = require('./task-execution-handle');
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
@@ -54,207 +50,6 @@ const {
 } = require('./provider-session');
 const { extractClaudeVertexModelError } = require('./output-extraction');
 const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
-const OPENCODE_CONFIG_CONTENT_ENV = 'OPENCODE_CONFIG_CONTENT';
-const OPENCODE_AGENT_ENV = 'ZEROSHOT_OPENCODE_AGENT';
-const REFORMATTER_AGENT_PREFIX = 'zeroshot-output-reformatter-';
-
-function parseOpenCodeJsonc(content) {
-  let withoutComments = '';
-  let inString = false;
-  let escaped = false;
-  let cursor = 0;
-  while (cursor < content.length) {
-    const char = content[cursor];
-    const next = content[cursor + 1];
-    if (inString) {
-      withoutComments += char;
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      cursor += 1;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      withoutComments += char;
-      cursor += 1;
-      continue;
-    }
-    if (char === '/' && next === '/') {
-      cursor += 2;
-      while (cursor < content.length && content[cursor] !== '\n') cursor += 1;
-      withoutComments += '\n';
-      cursor += 1;
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      cursor += 2;
-      while (
-        cursor < content.length &&
-        !(content[cursor] === '*' && content[cursor + 1] === '/')
-      ) {
-        if (content[cursor] === '\n') withoutComments += '\n';
-        cursor += 1;
-      }
-      if (cursor >= content.length) {
-        throw new SyntaxError('Unterminated block comment in OpenCode inline config');
-      }
-      cursor += 2;
-      continue;
-    }
-    withoutComments += char;
-    cursor += 1;
-  }
-
-  let withoutTrailingCommas = '';
-  inString = false;
-  escaped = false;
-  for (let index = 0; index < withoutComments.length; index++) {
-    const char = withoutComments[index];
-    if (inString) {
-      withoutTrailingCommas += char;
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      withoutTrailingCommas += char;
-      continue;
-    }
-    if (char === ',') {
-      let nextIndex = index + 1;
-      while (/\s/.test(withoutComments[nextIndex] || '')) nextIndex++;
-      if (withoutComments[nextIndex] === '}' || withoutComments[nextIndex] === ']') {
-        continue;
-      }
-    }
-    withoutTrailingCommas += char;
-  }
-  return JSON.parse(withoutTrailingCommas);
-}
-
-function ensureFormatterLaunchOptions(providerName, options) {
-  if (providerName !== 'opencode' || options.disableTools !== true) return options;
-  if (options.formatterAgentName) return options;
-  return {
-    ...options,
-    formatterAgentName: `${REFORMATTER_AGENT_PREFIX}${randomUUID()}`,
-  };
-}
-
-function applyOpenCodeToolBoundary(env, providerName, options = {}) {
-  if (providerName !== 'opencode' || options.disableTools !== true) return env;
-  if (!options.formatterAgentName) {
-    throw new Error('Tool-disabled OpenCode formatter launch is missing its unique agent identity');
-  }
-
-  let config = {};
-  const existingContent = env[OPENCODE_CONFIG_CONTENT_ENV];
-  if (existingContent) {
-    try {
-      config = parseOpenCodeJsonc(existingContent);
-    } catch (error) {
-      throw new Error(
-        `Cannot install tool-disabled OpenCode formatter profile: invalid ${OPENCODE_CONFIG_CONTENT_ENV}: ${error.message}`
-      );
-    }
-  }
-
-  const existingAgents =
-    config.agent && typeof config.agent === 'object' && !Array.isArray(config.agent)
-      ? config.agent
-      : {};
-  const existingModes =
-    config.mode && typeof config.mode === 'object' && !Array.isArray(config.mode)
-      ? config.mode
-      : {};
-  const formatterProfile = {
-    description: 'Convert supplied text to schema-valid JSON without external actions',
-    mode: 'primary',
-    permission: { '*': 'deny' },
-    tools: { '*': false },
-  };
-  env[OPENCODE_AGENT_ENV] = options.formatterAgentName;
-  env[OPENCODE_CONFIG_CONTENT_ENV] = JSON.stringify({
-    ...config,
-    default_agent: options.formatterAgentName,
-    permission: 'deny',
-    tools: { '*': false },
-    agent: {
-      ...existingAgents,
-      [options.formatterAgentName]: formatterProfile,
-    },
-    mode: {
-      ...existingModes,
-      [options.formatterAgentName]: formatterProfile,
-    },
-  });
-  return env;
-}
-
-function resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName) {
-  if (
-    providerName === 'opencode' &&
-    typeof manager.getContainerEnvironmentValue === 'function'
-  ) {
-    return manager.getContainerEnvironmentValue(clusterId, OPENCODE_CONFIG_CONTENT_ENV);
-  }
-  return process.env[OPENCODE_CONFIG_CONTENT_ENV] || null;
-}
-
-async function resolveIsolatedOpenCodeConfigUnderOwnership({
-  manager,
-  clusterId,
-  providerName,
-  executionHandle,
-}) {
-  if (!executionHandle) {
-    return resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName);
-  }
-
-  let setupPending = true;
-  let rejectSetup;
-  const setupFailure = new Promise((_resolve, reject) => {
-    rejectSetup = reject;
-  });
-  executionHandle.setCancelAction((reason, details = {}) => {
-    if (setupPending) {
-      const error = new Error(reason || 'Nested task setup cancelled');
-      error.code = details.code || 'REFORMAT_CANCELLED';
-      error.nestedExecutionCancellation = true;
-      error.nestedExecutionLifecycle = true;
-      rejectSetup(error);
-    }
-    return { forced: true, beforeLaunch: true };
-  });
-  executionHandle.setFailClosedAction((error) => {
-    if (setupPending) rejectSetup(error);
-  });
-
-  try {
-    const config = await Promise.race([
-      Promise.resolve(resolveIsolatedOpenCodeConfigContent(manager, clusterId, providerName)),
-      setupFailure,
-    ]);
-    if (executionHandle.isCancelled) {
-      throw createNestedCancellationError(executionHandle);
-    }
-    return config;
-  } finally {
-    setupPending = false;
-  }
-}
-
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
   if (timeout <= 0) {
@@ -325,9 +120,6 @@ function runCommandSync(command, args, options = {}) {
   }
   return result.stdout?.toString() || '';
 }
-
-// Schema utilities for normalizing LLM output
-const { normalizeEnumValues } = require('./schema-utils');
 
 /**
  * Build Claude-specific environment variables for task spawning
@@ -740,6 +532,7 @@ async function spawnClaudeTask(agent, context, options = {}) {
     providerName,
     modelSpec,
     runOutputFormat,
+    structuredOutputRecovery: options.structuredOutputRecovery === true,
   });
 
   maybeLogStreamJsonNotice(agent, runOutputFormat);
@@ -766,7 +559,6 @@ async function spawnClaudeTask(agent, context, options = {}) {
   if (agent.isolation?.enabled) {
     return spawnClaudeTaskIsolated(agent, context, options);
   }
-  options = ensureFormatterLaunchOptions(providerName, options);
 
   const claudeSettingsPath =
     providerName === 'claude'
@@ -781,11 +573,7 @@ async function spawnClaudeTask(agent, context, options = {}) {
   let pendingLaunch;
   try {
     try {
-      const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, {
-        claudeSettingsPath,
-        disableTools: options.disableTools === true,
-        formatterAgentName: options.formatterAgentName,
-      });
+      const spawnEnv = buildSpawnEnv(agent, providerName, modelSpec, { claudeSettingsPath });
       taskId = await spawnTaskProcess({
         agent,
         ctPath,
@@ -866,11 +654,7 @@ async function spawnClaudeTask(agent, context, options = {}) {
     if (error.terminationExhausted === true && error.retainTaskHandle === true) {
       throw error;
     }
-    if (
-      nested &&
-      handle.isCancelled &&
-      handle.cancelDetails.code !== 'NESTED_SETUP_FAILED'
-    ) {
+    if (nested && handle.isCancelled && handle.cancelDetails.code !== 'NESTED_SETUP_FAILED') {
       const termination = await handle.waitForCancellation();
       const cancellationError = createNestedCancellationError(handle);
       if (!isTerminationConfirmed(termination)) {
@@ -907,28 +691,32 @@ function resolveOutputFormatConfig(agent) {
   return { desiredOutputFormat, strictSchema, runOutputFormat };
 }
 
-function buildTaskRunArgs({ agent, providerName, modelSpec, runOutputFormat }) {
+function buildTaskRunArgs({
+  agent,
+  providerName,
+  modelSpec,
+  runOutputFormat,
+  structuredOutputRecovery = false,
+}) {
   const args = ['task', 'run', '--output-format', runOutputFormat, '--provider', providerName];
   const modelSpecSource = agent._resolveModelSpecSource
     ? agent._resolveModelSpecSource()
     : 'direct';
   appendTaskRunModelArgs(args, modelSpec, modelSpecSource);
 
-  // Add verification mode flag if configured
   if (agent.config.verificationMode) {
     args.push('-v');
   }
 
-  // Add JSON schema if specified in agent config.
-  // If we are running stream-json for live logs (strictSchema=false), do NOT pass schema to CLI.
   if (agent.config.jsonSchema && runOutputFormat === 'json') {
-    const schema = JSON.stringify(agent.config.jsonSchema);
-    args.push('--json-schema', schema);
+    args.push('--json-schema', JSON.stringify(agent.config.jsonSchema));
   }
 
-  // MCP servers: explicitly forward the repo config through the task CLI.
-  // Claude receives the path; providers such as Copilot receive inlined JSON
-  // so it survives container path translation.
+  if (structuredOutputRecovery) {
+    args.push('--structured-output-recovery');
+    return args;
+  }
+
   for (const mcpArg of resolveMcpConfigArgs(agent, providerName)) {
     args.push(mcpArg);
   }
@@ -1056,7 +844,7 @@ function buildSpawnEnv(agent, providerName, modelSpec, options = {}) {
     worktreePath: agent.worktree?.path || null,
   });
 
-  return applyOpenCodeToolBoundary(spawnEnv, providerName, options);
+  return spawnEnv;
 }
 
 function parseTaskIdFromOutput(stdout) {
@@ -1071,6 +859,27 @@ function assignDurableTaskId(agent, taskId) {
     pid: agent.processPid,
     taskId,
   });
+}
+
+async function terminatePendingTaskWrapper(proc, waitForWrapperClose, isWrapperClosed) {
+  if (isWrapperClosed()) return;
+  if (!proc.pid) {
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        proc.off('spawn', finish);
+        proc.off('error', finish);
+        resolve();
+      };
+      proc.once('spawn', finish);
+      proc.once('error', finish);
+      if (proc.pid || isWrapperClosed()) finish();
+    });
+  }
+  if (!isWrapperClosed()) proc.kill('SIGKILL');
+  await waitForWrapperClose;
 }
 
 function createPendingTaskLaunchHandle({
@@ -1112,10 +921,7 @@ function createPendingTaskLaunchHandle({
         };
         if (taskId) await cancelTask(taskId);
 
-        if (!isWrapperClosed()) {
-          proc.kill('SIGKILL');
-          await waitForWrapperClose;
-        }
+        await terminatePendingTaskWrapper(proc, waitForWrapperClose, isWrapperClosed);
 
         taskId = taskId || (await findLateTaskId());
         if (taskId && !commandAttempted) await cancelTask(taskId);
@@ -1165,6 +971,7 @@ function spawnTaskProcess({
   spawnTimeoutMs = 30000,
   handle = null,
   nested = false,
+  spawnProcess = spawn,
 }) {
   // Timeout for spawn phase - if CLI hangs during init (e.g., opencode 429 bug), kill it.
   const SPAWN_TIMEOUT_MS = spawnTimeoutMs;
@@ -1174,7 +981,7 @@ function spawnTaskProcess({
   const findPersistedTaskId = () => getTaskBySpawnOwnershipToken(ownershipToken)?.id || null;
 
   return new Promise((resolve, reject) => {
-    const proc = spawn(ctPath, safeArgs, {
+    const proc = spawnProcess(ctPath, safeArgs, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...spawnEnv, [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken },
@@ -1543,7 +1350,7 @@ function requiresStructuredResult(agent) {
   return outputFormat !== 'text' || !!agent?.config?.jsonSchema;
 }
 
-async function evaluateStructuredSuccess({ agent, taskId, state, success }) {
+async function evaluateStructuredSuccess({ agent, taskId, state, success, allowRecovery }) {
   if (!success || !requiresStructuredResult(agent)) {
     return { success, error: null };
   }
@@ -1556,10 +1363,16 @@ async function evaluateStructuredSuccess({ agent, taskId, state, success }) {
     // Cache the validated parsed object so completion hooks and {{result.*}}
     // substitution consume it directly instead of re-parsing (which could
     // trigger a second recovery model call).
-    state._cachedParsedResult = await agent._parseResultOutput(state.output);
+    state._cachedParsedResult = await agent._parseResultOutput(state.output, { allowRecovery });
     return { success: true, error: null };
   } catch (error) {
-    if (isNestedLifecycleError(error)) throw error;
+    if (
+      isNestedLifecycleError(error) ||
+      error?.permanent === true ||
+      error?.recoveryAbort === true
+    ) {
+      throw error;
+    }
     const errorContext = sanitizeErrorMessage(error.message);
     console.warn(
       `[Agent ${agent.id}] Task ${taskId} reported completed but produced invalid structured output; ` +
@@ -1595,9 +1408,16 @@ async function buildCompletionResult({
   success,
   taskInfo = getTask(taskId),
 }) {
+  const { isCompleted } = parseStatusFlags(stripAnsiCodes(stdout));
   const classified = state.skipStructuredResultCheck
     ? { success, error: null }
-    : await evaluateStructuredSuccess({ agent, taskId, state, success });
+    : await evaluateStructuredSuccess({
+        agent,
+        taskId,
+        state,
+        success,
+        allowRecovery: isCompleted,
+      });
   const resumeIdentityError = classified.success ? validateCompletedResumeIdentity(taskInfo) : null;
   if (resumeIdentityError) {
     classified.success = false;
@@ -1802,18 +1622,7 @@ function handleStatusCompletion({
       success,
     })
       .then(resolve)
-      .catch((error) => {
-        if (isNestedLifecycleError(error)) {
-          reject(error);
-          return;
-        }
-        resolve({
-          success: false,
-          output: state.output,
-          error: sanitizeErrorMessage(error.message),
-          tokenUsage: extractTokenUsage(state.output, providerName),
-        });
-      });
+      .catch(reject);
   }, 500);
 
   return true;
@@ -2034,7 +1843,6 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
 async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const { manager, clusterId } = agent.isolation;
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
-  options = ensureFormatterLaunchOptions(providerName, options);
   const modelSpec = resolveAgentModelSpec(agent);
   const modelSpecSource = agent._resolveModelSpecSource
     ? agent._resolveModelSpecSource()
@@ -2050,6 +1858,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
       providerName,
       modelSpec,
       runOutputFormat,
+      structuredOutputRecovery: options.structuredOutputRecovery === true,
     }),
   ];
   maybeLogStreamJsonNotice(agent, runOutputFormat);
@@ -2074,26 +1883,10 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const ownershipToken = createTaskSpawnOwnershipToken();
   // Auth env vars are injected by IsolationManager; the launch token is the
   // only authoritative bridge back to the detached task row in the container.
-  const effectiveOpenCodeConfig =
-    options.disableTools === true
-      ? await resolveIsolatedOpenCodeConfigUnderOwnership({
-          manager,
-          clusterId,
-          providerName,
-          executionHandle: options.executionHandle,
-        })
-      : null;
-  const isolatedEnv = applyOpenCodeToolBoundary(
-    {
-      ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
-      ...(effectiveOpenCodeConfig
-        ? { [OPENCODE_CONFIG_CONTENT_ENV]: effectiveOpenCodeConfig }
-        : {}),
-      [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
-    },
-    providerName,
-    options
-  );
+  const isolatedEnv = {
+    ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
+    [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
+  };
 
   if (options.executionHandle?.isCancelled) {
     throw createNestedCancellationError(options.executionHandle);
@@ -2156,8 +1949,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
         rejection.terminationExhausted = true;
         rejection.terminationAttempts = 1;
         if (options.nested) options.executionHandle?.retainOwnership();
-        rejection.taskId =
-          isolatedTaskId || (!options.nested ? agent.currentTaskId : null) || null;
+        rejection.taskId = isolatedTaskId || (!options.nested ? agent.currentTaskId : null) || null;
       } else if (!options.nested && agent.currentTask === isolatedPendingLaunch) {
         agent.currentTask = null;
       }
@@ -2184,14 +1976,10 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
             commandError = error;
           }
 
-          if (!wrapperClosed) {
-            proc.kill('SIGKILL');
-            await waitForWrapperClose;
-          }
+          await terminatePendingTaskWrapper(proc, waitForWrapperClose, () => wrapperClosed);
 
           try {
-            const persistedTaskId =
-              isolatedTaskId || (await findLatePersistedTaskId());
+            const persistedTaskId = isolatedTaskId || (await findLatePersistedTaskId());
             if (persistedTaskId && !termination) {
               termination = await terminateIsolatedTask(manager, clusterId, persistedTaskId);
               commandError = null;
@@ -2214,8 +2002,8 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
         if (!resolved) {
           const error =
             (sourceError instanceof Error &&
-              sourceError.code === 'unsupported-capability' &&
-              sourceError.permanent === true
+            sourceError.code === 'unsupported-capability' &&
+            sourceError.permanent === true
               ? sourceError
               : null) ||
             timeoutError ||
@@ -2456,8 +2244,7 @@ async function terminateIsolatedTask(manager, clusterId, taskId) {
     );
   }
   return {
-    alreadyTerminal:
-      Boolean(beforeStatus) || Boolean(afterStatus && afterStatus !== 'killed'),
+    alreadyTerminal: Boolean(beforeStatus) || Boolean(afterStatus && afterStatus !== 'killed'),
     forced: !beforeStatus && afterStatus === 'killed',
     status: beforeStatus || afterStatus,
   };
@@ -2526,29 +2313,49 @@ function settleIsolatedTerminalStatus({
             useVertex: process.env.CLAUDE_CODE_USE_VERTEX === '1',
           })
         : null;
-    const success = status === 'completed' && !vertexModelError;
-    const errorContext = !success
-      ? extractErrorContext({
-          output: state.fullOutput,
-          statusOutput: status ? `Status: ${status}` : '',
-          taskId,
-          isNotFound,
-          debug: {
-            agentId: agent.id,
-            providerName,
-            pid: agent.processPid,
-            cwd: agent.config.cwd || process.cwd(),
-            worktreePath: agent.worktree?.path || null,
-            isolation: true,
-            clusterId,
-            logFilePath,
-          },
-        })
-      : null;
-    const parsedResult =
-      state.skipStructuredResultCheck || vertexModelError
-        ? null
+    const staleCandidate =
+      status === 'stale' &&
+      !vertexModelError &&
+      determineStaleSuccess({ agent, output: state.fullOutput, providerName, taskId });
+    let success = (status === 'completed' || staleCandidate) && !vertexModelError;
+    let structuredError = null;
+    if (staleCandidate && !state.skipStructuredResultCheck) {
+      const evaluated = await evaluateStructuredSuccess({
+        agent,
+        taskId,
+        state,
+        success,
+        allowRecovery: false,
+      });
+      success = evaluated.success;
+      structuredError = evaluated.error;
+    }
+    const errorContext =
+      structuredError ||
+      (!success
+        ? extractErrorContext({
+            output: state.fullOutput,
+            statusOutput: status ? `Status: ${status}` : '',
+            taskId,
+            isNotFound,
+            debug: {
+              agentId: agent.id,
+              providerName,
+              pid: agent.processPid,
+              cwd: agent.config.cwd || process.cwd(),
+              worktreePath: agent.worktree?.path || null,
+              isolation: true,
+              clusterId,
+              logFilePath,
+            },
+          })
+        : null);
+    let parsedResult = null;
+    if (success && !state.skipStructuredResultCheck && !vertexModelError) {
+      parsedResult = staleCandidate
+        ? state._cachedParsedResult
         : await agent._parseResultOutput(state.fullOutput);
+    }
 
     settleIsolatedFollower({
       agent,
@@ -2844,8 +2651,7 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
       options.nested === true
     );
     const cleanup = buildIsolatedCleanup(state);
-    const onLine = (line) =>
-      broadcastIsolatedLine({ agent, providerName, taskId, state, line });
+    const onLine = (line) => broadcastIsolatedLine({ agent, providerName, taskId, state, line });
     state.lifecycleHandle = buildIsolatedLifecycleHandle({
       agent,
       manager,
@@ -2962,65 +2768,72 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
  * @param {String} output - Raw output from agent
  * @returns {Promise<Object>} Parsed result data
  */
-async function parseResultOutput(agent, output) {
-  // Empty outputs = FAIL
+async function parseResultOutput(agent, output, { allowRecovery = true } = {}) {
   if (!output || !output.trim()) {
     throw new Error('Task execution failed - no output');
   }
 
   const providerName = agent._resolveProvider ? agent._resolveProvider() : 'claude';
   const {
-    extractJsonFromOutput,
     extractCliError,
+    extractJsonFromOutput,
+    extractModelTextFromOutput,
     hasFatalStandaloneOutput,
   } = require('./output-extraction');
-
-  // Check for CLI errors FIRST - surface the actual error message
-  const cliError = extractCliError(output);
+  const cliError = extractCliError(output, providerName);
   if (cliError) {
     throw new Error(`CLI error (${cliError.provider}): ${cliError.error}`);
   }
 
-  // Use clean extraction pipeline
-  let parsed = extractJsonFromOutput(output, providerName);
+  const parsed = extractJsonFromOutput(output, providerName);
+  const schema = agent.config.jsonSchema;
+  if (!schema) {
+    if (parsed) return parsed;
+    throw new Error(`Agent ${agent.id} output missing required JSON block`);
+  }
 
-  // If extraction failed but we have a schema, attempt reformatting
-  if (!parsed && agent.config.jsonSchema) {
-    const { reformatOutput } = require('./output-reformatter');
+  const { createStructuredOutputValidator, reformatOutput } = require('./output-reformatter');
+  const validateCandidate = createStructuredOutputValidator(schema);
+  const directValidation = parsed ? validateCandidate(parsed) : null;
+  if (directValidation?.valid) {
+    return directValidation.value;
+  }
 
-    try {
-      parsed = await reformatOutput({
-        rawOutput: output,
-        schema: agent.config.jsonSchema,
-        providerName,
-        isCancelled: () => agent.running === false || agent.state === 'stopped',
-        runReformat: (prompt) =>
-          agent._spawnClaudeTask(prompt, {
-            skipStructuredResultCheck: true,
-            nested: true,
-            disableTools: true,
-          }),
-        onAttempt: (attempt, lastError) => {
-          if (lastError) {
-            console.warn(`[Agent ${agent.id}] Reformat attempt ${attempt}: ${lastError}`);
-          } else {
-            console.warn(
-              `[Agent ${agent.id}] JSON extraction failed, reformatting (attempt ${attempt})...`
-            );
-          }
-        },
-      });
-    } catch (reformatError) {
-      if (
-        reformatError.code === 'REFORMAT_CANCELLED' ||
-        reformatError.code === 'AGENT_TASK_TIMEOUT' ||
-        reformatError.permanent === true ||
-        isNestedLifecycleError(reformatError)
-      ) {
-        throw reformatError;
-      }
-      // Reformatting failed - fall through to error below
-      console.error(`[Agent ${agent.id}] Reformatting failed: ${reformatError.message}`);
+  const schemaIsNonEmpty =
+    typeof schema === 'string'
+      ? schema.trim() !== '' && schema.trim() !== '{}'
+      : typeof schema === 'object' && schema !== null && Object.keys(schema).length > 0;
+  const { providerSupportsOutputReformatting } = require('../../lib/provider-names');
+  let recovery = null;
+  if (
+    schemaIsNonEmpty &&
+    !hasFatalStandaloneOutput(output) &&
+    allowRecovery &&
+    providerSupportsOutputReformatting(providerName)
+  ) {
+    const modelText = extractModelTextFromOutput(output, providerName);
+    recovery = await reformatOutput({
+      rawOutput: modelText || output,
+      schema,
+      providerName,
+      initialError: directValidation?.error || null,
+      validateCandidate,
+      isCancelled: () => agent.running === false || agent.state === 'stopped',
+      runReformat: (prompt) =>
+        agent._spawnClaudeTask(prompt, {
+          skipStructuredResultCheck: true,
+          nested: true,
+          structuredOutputRecovery: true,
+        }),
+      onAttempt: (attempt, lastError) => {
+        const reason = lastError ? `: ${lastError}` : '';
+        console.warn(
+          `[Agent ${agent.id}] Correcting structured output (attempt ${attempt})${reason}`
+        );
+      },
+    });
+    if (recovery.status === 'recovered') {
+      return recovery.value;
     }
   }
 
@@ -3028,69 +2841,40 @@ async function parseResultOutput(agent, output) {
     if (hasFatalStandaloneOutput(output)) {
       throw new Error('Task execution failed - no output');
     }
-    const trimmedOutput = output.trim();
-    console.error(`\n${'='.repeat(80)}`);
-    console.error(`🔴 AGENT OUTPUT MISSING REQUIRED JSON BLOCK`);
-    console.error(`${'='.repeat(80)}`);
-    console.error(`Agent: ${agent.id}, Role: ${agent.role}, Provider: ${providerName}`);
-    console.error(`Output (last 500 chars): ${trimmedOutput.slice(-500)}`);
-    console.error(`${'='.repeat(80)}\n`);
-    throw new Error(`Agent ${agent.id} output missing required JSON block`);
+    const recoveryDetail = recovery?.lastError ? ` Recovery exhausted: ${recovery.lastError}.` : '';
+    throw new Error(`Agent ${agent.id} output missing required JSON block.${recoveryDetail}`);
   }
 
-  // If a JSON schema is configured, validate parsed output locally.
-  // This preserves schema enforcement even when we run stream-json for live logs.
-  // IMPORTANT: For non-validator agents we warn but do not fail the cluster.
-  if (agent.config.jsonSchema) {
-    // Normalize enum values BEFORE validation (handles case mismatches, common variations)
-    // This is provider-agnostic - works for Claude CLI, Gemini, Codex, etc.
-    normalizeEnumValues(parsed, agent.config.jsonSchema);
-
-    const Ajv = require('ajv');
-    const ajv = new Ajv({
-      allErrors: true,
-      strict: false,
-      coerceTypes: false, // STRICT: Reject type mismatches (e.g., null instead of array)
-      useDefaults: true,
-      removeAdditional: true,
-    });
-    const validate = ajv.compile(agent.config.jsonSchema);
-    const valid = validate(parsed);
-    if (!valid) {
-      const errorList = (validate.errors || [])
-        .slice(0, 5)
-        .map((e) => `${e.instancePath || e.schemaPath} ${e.message}`)
-        .join('; ');
-      const msg =
-        `Agent ${agent.id} output failed JSON schema validation: ` +
-        (errorList || 'unknown schema error');
-
-      // Validators stay strict (they already have auto-approval fallback on crash).
-      if (agent.role === 'validator') {
-        throw new Error(msg);
-      }
-
-      // Non-validators: emit warning and continue with best-effort parsed data.
-      console.warn(`⚠️  ${msg}`);
-      agent._publish({
-        topic: 'AGENT_SCHEMA_WARNING',
-        receiver: 'broadcast',
-        content: {
-          text: msg,
-          data: {
-            agent: agent.id,
-            role: agent.role,
-            iteration: agent.iteration,
-            errors: validate.errors || [],
-          },
-        },
-      });
-    }
+  if (!allowRecovery) {
+    const detail = directValidation?.error || 'required structured output is missing';
+    throw new Error(`Agent ${agent.id} output is not valid for non-completed task: ${detail}`);
   }
 
-  // Return whatever the agent produced - no hardcoded field requirements
-  // Template substitution will validate that required fields exist
-  return parsed;
+  const errorDetail = directValidation?.error || 'unknown schema error';
+  const message = `Agent ${agent.id} output failed JSON schema validation: ${errorDetail}`;
+  if (agent.role === 'validator') {
+    throw new Error(
+      recovery?.status === 'exhausted'
+        ? `${message}. Recovery exhausted after ${recovery.attempts} attempts: ${recovery.lastError}`
+        : message
+    );
+  }
+
+  console.warn(`⚠️  ${message}`);
+  agent._publish({
+    topic: 'AGENT_SCHEMA_WARNING',
+    receiver: 'broadcast',
+    content: {
+      text: message,
+      data: {
+        agent: agent.id,
+        role: agent.role,
+        iteration: agent.iteration,
+        errors: directValidation?.errors || [],
+      },
+    },
+  });
+  return directValidation?.value || parsed;
 }
 
 /**

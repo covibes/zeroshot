@@ -36,4 +36,35 @@ describe('Gemini provider parser', () => {
     assert.strictEqual(toolResult.content, 'README contents');
     assert.strictEqual(result.success, true);
   });
+
+  it('parses current terminal and tool error contracts', () => {
+    const events = parseProviderChunk(
+      'gemini',
+      [
+        JSON.stringify({
+          type: 'tool_result',
+          tool_id: 'tool-9',
+          status: 'error',
+          error: { type: 'ToolError', message: 'read failed' },
+        }),
+        JSON.stringify({
+          type: 'result',
+          status: 'error',
+          error: { type: 'FatalError', message: 'model failed' },
+        }),
+        JSON.stringify({ type: 'error', severity: 'error', message: 'terminal failure' }),
+      ].join('\n')
+    );
+
+    assert.deepStrictEqual(events, [
+      {
+        type: 'tool_result',
+        toolId: 'tool-9',
+        content: 'read failed',
+        isError: true,
+      },
+      { type: 'result', success: false, result: '', error: 'model failed' },
+      { type: 'result', success: false, result: '', error: 'terminal failure' },
+    ]);
+  });
 });

@@ -111,6 +111,7 @@ const providerSessionCapture = createProviderSessionCapture({
   requestedSessionId: persistedTask?.requestedResumeSessionId || null,
   initialSessionId: persistedTask?.sessionId || null,
   initialSessionIdConflict: persistedTask?.sessionIdConflict === true,
+  disabled: config.structuredOutputRecovery === true,
 });
 let outputBuffer = '';
 

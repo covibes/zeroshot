@@ -64,6 +64,7 @@ const providerSessionCapture = createProviderSessionCapture({
   requestedSessionId: storedTask?.requestedResumeSessionId || null,
   initialSessionId: storedTask?.sessionId || null,
   initialSessionIdConflict: storedTask?.sessionIdConflict === true,
+  disabled: config.structuredOutputRecovery === true,
 });
 
 let crashStarted = false;

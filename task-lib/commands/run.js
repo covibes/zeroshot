@@ -40,6 +40,7 @@ export async function runTask(prompt, options = {}) {
     jsonSchema,
     mcpConfig: options.mcpConfig,
     silentJsonOutput,
+    structuredOutputRecovery: options.structuredOutputRecovery === true,
   });
 
   console.log(chalk.green(`\n✓ Task spawned: ${chalk.cyan(task.id)}`));

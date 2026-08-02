@@ -14,6 +14,10 @@ const CLEANUP_METADATA_KEYS = ['kind', 'path', 'provider', 'reason'];
 const SCHEMA_DIRECTORY_PATTERN = /^zeroshot-schema-[A-Za-z0-9_-]+$/u;
 const SCHEMA_FILE_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/u;
+const POLICY_DIRECTORY_PATTERN = /^zeroshot-gemini-policy-[A-Za-z0-9_-]+$/u;
+const POLICY_FILE_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.toml$/u;
+const OPENCODE_CONFIG_DIRECTORY_PATTERN = /^zeroshot-opencode-config-[A-Za-z0-9_-]+$/u;
 
 function assertClosedCleanupMetadata(cleanupPath, metadata) {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
@@ -59,6 +63,37 @@ function createCleanupPlan(commandSpec) {
 }
 
 function assertOwnedTempDirectory(cleanupPath, metadata) {
+  const isOpenCodeConfig =
+    metadata.provider === 'opencode' && metadata.reason === 'isolated-config';
+  if (isOpenCodeConfig) {
+    const canonical =
+      isAbsolute(cleanupPath) &&
+      resolve(cleanupPath) === cleanupPath &&
+      dirname(cleanupPath) === resolve(tmpdir()) &&
+      OPENCODE_CONFIG_DIRECTORY_PATTERN.test(basename(cleanupPath));
+    if (!canonical) {
+      throw new Error(`Refusing unowned temporary directory cleanup: ${cleanupPath}`);
+    }
+    let stat;
+    try {
+      stat = lstatSync(cleanupPath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return true;
+      throw error;
+    }
+    const tempRoot = realpathSync(tmpdir());
+    const realDirectory = realpathSync(cleanupPath);
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isDirectory() ||
+      dirname(realDirectory) !== tempRoot ||
+      basename(realDirectory) !== basename(cleanupPath)
+    ) {
+      throw new Error(`Refusing unowned temporary directory cleanup: ${cleanupPath}`);
+    }
+    return false;
+  }
+
   if (
     metadata.provider !== 'claude' ||
     metadata.reason !== 'settings-overlay' ||
@@ -79,22 +114,33 @@ function assertOwnedTempDirectory(cleanupPath, metadata) {
 }
 
 function assertCanonicalSchemaPath(cleanupPath, metadata) {
+  const isCodexSchema =
+    metadata.kind === 'temp-file' &&
+    metadata.provider === 'codex' &&
+    metadata.reason === 'output-schema';
+  const isGeminiPolicy =
+    metadata.kind === 'temp-file' &&
+    metadata.provider === 'gemini' &&
+    metadata.reason === 'admin-policy';
   if (
-    metadata.kind !== 'temp-file' ||
-    metadata.provider !== 'codex' ||
-    metadata.reason !== 'output-schema' ||
+    (!isCodexSchema && !isGeminiPolicy) ||
     !isAbsolute(cleanupPath) ||
     resolve(cleanupPath) !== cleanupPath
   ) {
-    throw new Error(`Refusing unowned output-schema cleanup: ${cleanupPath}`);
+    throw new Error(
+      `Refusing unowned ${isGeminiPolicy ? 'admin-policy' : 'output-schema'} cleanup: ${cleanupPath}`
+    );
   }
-  const schemaDirectory = dirname(cleanupPath);
-  if (
-    dirname(schemaDirectory) !== resolve(tmpdir()) ||
-    !SCHEMA_DIRECTORY_PATTERN.test(basename(schemaDirectory)) ||
-    !SCHEMA_FILE_PATTERN.test(basename(cleanupPath))
-  ) {
-    throw new Error(`Refusing non-canonical output-schema cleanup: ${cleanupPath}`);
+  const ownedDirectory = dirname(cleanupPath);
+  const matchesOwnedName = isCodexSchema
+    ? SCHEMA_DIRECTORY_PATTERN.test(basename(ownedDirectory)) &&
+      SCHEMA_FILE_PATTERN.test(basename(cleanupPath))
+    : POLICY_DIRECTORY_PATTERN.test(basename(ownedDirectory)) &&
+      POLICY_FILE_PATTERN.test(basename(cleanupPath));
+  if (dirname(ownedDirectory) !== resolve(tmpdir()) || !matchesOwnedName) {
+    throw new Error(
+      `Refusing non-canonical ${isGeminiPolicy ? 'admin-policy' : 'output-schema'} cleanup: ${cleanupPath}`
+    );
   }
 }
 

@@ -2,6 +2,8 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const { URL } = require('node:url');
 
 const { startLivenessCheck, stopLivenessCheck, stop } = require('../src/agent/agent-lifecycle');
@@ -84,6 +86,25 @@ function createPendingLaunchAgent() {
     _stopLivenessCheck() {},
     _log() {},
   };
+}
+
+function createDeferredSpawnProcess() {
+  const proc = new EventEmitter();
+  proc.stdout = new PassThrough();
+  proc.stderr = new PassThrough();
+  proc.pid = undefined;
+  proc.closed = false;
+  proc.kill = (signal) => {
+    if (!proc.pid || proc.closed) return false;
+    proc.closed = true;
+    setImmediate(() => proc.emit('close', null, signal));
+    return true;
+  };
+  proc.spawn = () => {
+    proc.pid = 12345;
+    proc.emit('spawn');
+  };
+  return proc;
 }
 
 async function createPendingLaunchFixture() {
@@ -308,14 +329,38 @@ describe('Agent stuck-task recovery', function () {
     }
   });
 
+  it('waits for a local wrapper to spawn before cancelling it', async function () {
+    const proc = createDeferredSpawnProcess();
+    const agent = createPendingLaunchAgent();
+    const launch = spawnTaskProcess({
+      agent,
+      ctPath: 'deferred-wrapper',
+      args: [],
+      cwd: process.cwd(),
+      spawnEnv: process.env,
+      spawnProcess: () => proc,
+    });
+    const rejection = assert.rejects(launch, /killed by signal/i);
+    await waitFor(() => agent.currentTask?.pendingLaunch);
+
+    const cancellation = killTask(agent, 'cancel before spawn');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(proc.closed, false);
+    proc.spawn();
+
+    const termination = await cancellation;
+    assert.notStrictEqual(termination?.forced, false);
+    await rejection;
+    assert.strictEqual(proc.closed, true);
+    assert.strictEqual(agent.currentTask, null);
+  });
 
   it('cancels pending launches before persistence, before wrapper close, and before follower install', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
-    const taskIds = ['launch-prerow-task', 'launch-postrow-task', 'launch-postid-task'];
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
+    const taskIds = ['launch-postrow-task', 'launch-postid-task'];
 
     try {
-      for (const state of ['pre-row', 'post-row', 'post-id']) {
+      for (const state of ['post-row', 'post-id']) {
         const taskId = `launch-${state.replace('-', '')}-task`;
         removeTask(taskId);
         const agent = createPendingLaunchAgent();
@@ -348,8 +393,7 @@ describe('Agent stuck-task recovery', function () {
   });
 
   it('retries an unconfirmed pending-launch cancellation', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
     const taskId = 'launch-retry-task';
     removeTask(taskId);
     const agent = createPendingLaunchAgent();
@@ -381,8 +425,7 @@ describe('Agent stuck-task recovery', function () {
   });
 
   it('retains a nested local launch after unconfirmed wrapper cleanup', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
     const taskId = 'launch-retry-task';
     removeTask(taskId);
     const agent = createPendingLaunchAgent();
@@ -499,13 +542,10 @@ describe('Agent stuck-task recovery', function () {
     try {
       const launch = agent._spawnClaudeTask('nested local handoff', {
         nested: true,
-        disableTools: true,
+        structuredOutputRecovery: true,
         skipStructuredResultCheck: true,
       });
-      await waitFor(
-        () => agent.nestedExecutions?.activeTaskIds.includes(taskId),
-        2000
-      );
+      await waitFor(() => agent.nestedExecutions?.activeTaskIds.includes(taskId), 2000);
       const cancellation = agent.nestedExecutions.cancelAll('Nested task timed out', {
         code: 'AGENT_TASK_TIMEOUT',
       });
@@ -537,8 +577,7 @@ describe('Agent stuck-task recovery', function () {
   });
 
   it('terminates a durable child after a pending-launch timeout', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
     const taskId = 'launch-timeout-task';
     removeTask(taskId);
     const agent = createPendingLaunchAgent();
