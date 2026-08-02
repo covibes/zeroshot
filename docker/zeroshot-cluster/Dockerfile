@@ -159,5 +159,12 @@ RUN if [ -n "$PROVIDER_INSTALL" ]; then sh -c "$PROVIDER_INSTALL"; fi
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node
 
+# Create a provider's config/overlay roots as the non-root container user (owner-only), so a
+# provider whose credential surface is env/broker-only (no host mount) still gets a writable,
+# private state directory. Registry-fed via PROVIDER_CONFIG_ROOTS (docker.configRoots); no
+# provider name appears in this Dockerfile.
+ARG PROVIDER_CONFIG_ROOTS=""
+RUN if [ -n "$PROVIDER_CONFIG_ROOTS" ]; then for d in $PROVIDER_CONFIG_ROOTS; do mkdir -p "$d" && chmod 700 "$d"; done; fi
+
 # Default command (overridden by vibe)
 CMD ["bash"]

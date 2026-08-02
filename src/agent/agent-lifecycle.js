@@ -66,9 +66,19 @@ async function createValidatorIsolation(agent, isolationConfig) {
       loadSettings().defaultProvider ||
       getDefaultProviderId()
   );
+  // Pre-effect platform probe: fail before any workspace/container side effect when the Docker
+  // engine cannot run the provider's registry-owned platform (e.g. OMP's linux/amd64).
+  const platform = IsolationManager.providerDockerPlatform(providerName);
+  IsolationManager.assertPlatformSupported(platform);
+
   // Run validators on the provider's image variant (installs its CLI as a Docker-cached layer).
   const image = IsolationManager.imageForProvider(providerName, isolationConfig.image);
-  await IsolationManager.ensureImage(image, true, IsolationManager.providerBuildArgs(providerName));
+  await IsolationManager.ensureImage(
+    image,
+    true,
+    IsolationManager.providerBuildArgs(providerName, isolationConfig.containerHome || '/home/node'),
+    platform
+  );
 
   const manager = new IsolationManager({ image });
 
@@ -81,6 +91,7 @@ async function createValidatorIsolation(agent, isolationConfig) {
     containerHome: isolationConfig.containerHome,
     provider: providerName,
     reuseExistingWorkspace: true,
+    platform,
   });
 
   const validatorIsolation = {

@@ -8,7 +8,12 @@ import { opencodeAdapter } from './adapters/opencode';
 import { ompAdapter } from './adapters/omp';
 import { piAdapter } from './adapters/pi';
 import { resolveClaudeCommand } from './claude-command';
-import { OMP_AUTH_INSTRUCTIONS, OMP_INSTALL_COMMAND } from './omp-release';
+import {
+  OMP_AUTH_INSTRUCTIONS,
+  OMP_DOCKER_INSTALL_COMMAND,
+  OMP_DOCKER_PLATFORM,
+  OMP_INSTALL_COMMAND,
+} from './omp-release';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';
@@ -67,8 +72,18 @@ export interface ProviderDockerMountPreset {
   readonly readonly: boolean;
 }
 
+export interface ProviderDockerEnvAuth {
+  // At least one of these env vars must be set (non-empty) for the effective container plan to
+  // be considered authenticated. Providers with no `mount` (env-only) fail closed when unmet.
+  readonly requireOneOf: readonly string[];
+  // Each inner group must be all-set-or-all-unset (e.g. a broker URL + token pair); a partial
+  // group is treated as malformed auth, not "missing".
+  readonly requireTogether?: readonly (readonly string[])[];
+}
+
 export interface ProviderDockerMetadata {
-  readonly mount: ProviderDockerMountPreset;
+  // Omitted for env-only providers with zero automatic credential mounts (e.g. omp).
+  readonly mount?: ProviderDockerMountPreset;
   readonly envPassthrough: readonly string[];
   // False when the mounted dir doesn't hold the secret (auth is via an envPassthrough token).
   readonly credentialInMount?: boolean;
@@ -76,6 +91,14 @@ export interface ProviderDockerMetadata {
   // a docker-cached build layer for the per-provider image variant. Omit for providers already
   // baked into the base image (e.g. Claude) or not installable via a single command.
   readonly install?: string;
+  // Docker platform (e.g. 'linux/amd64') passed to both image build and container run. Omitted
+  // providers keep today's unset (host-native) behavior.
+  readonly platform?: string;
+  // $HOME-placeholder directories created owner-only inside the container for this provider's
+  // config/session state (never mounted/copied from the host).
+  readonly configRoots?: readonly string[];
+  // Fail-closed env/broker auth requirement, checked against the effective container env plan.
+  readonly envAuth?: ProviderDockerEnvAuth;
 }
 
 interface ProviderRegistryEntryBase {
@@ -452,9 +475,10 @@ export const providerRegistry = [
     settingsFields: [],
     availabilityProbe: 'help-or-version',
     // Written out explicitly rather than spread from STANDARD_CAPABILITIES, which defaults
-    // dockerIsolation to true; OMP stays worktree-only until Subissue 6 flips dockerIsolation.
+    // dockerIsolation to true; OMP's Docker path is env/broker-only and sessionless (see
+    // AGENTS.md OMP Docker section) rather than the standard credential-mount + resume shape.
     capabilities: {
-      dockerIsolation: false,
+      dockerIsolation: true,
       worktreeIsolation: true,
       mcpServers: false,
       jsonSchema: false,
@@ -469,12 +493,36 @@ export const providerRegistry = [
       setupHeading: 'OMP Setup',
     },
     docker: {
-      mount: {
-        host: '~/.omp',
-        container: '$HOME/.omp',
-        readonly: true,
+      // No `mount`: OMP's Docker credential surface is env/broker-only with zero automatic
+      // mounts. `~/.omp`, agent.db, WAL/SHM files, and host refresh tokens are never mounted or
+      // copied into the container.
+      //
+      // envPassthrough is deliberately narrower than `credentialEnvKeys` above (the full adapter
+      // credential inventory, used for host inspection/redaction). Exact 5-name automatic
+      // allowlist per the maintainer's authoritative clarification (verified verbatim via
+      // `gh api repos/the-open-engine/zeroshot/issues/comments/5160272623`): "the exact automatic
+      // OMP Docker environment allowlist is only ANTHROPIC_API_KEY, OPENAI_API_KEY,
+      // GEMINI_API_KEY, OMP_AUTH_BROKER_URL, and OMP_AUTH_BROKER_TOKEN ... ANTHROPIC_OAUTH_TOKEN,
+      // ANTHROPIC_FOUNDRY_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, and every other
+      // credential/path require explicit dockerEnvPassthrough/mount opt-in; OAuth users should
+      // prefer the auth broker so host refresh/access tokens do not cross automatically." This
+      // supersedes PLAN_READY step 2's nine-name list. Any validator flagging this as missing the
+      // four excluded names is checking stale plan text against a clarification it never read.
+      platform: OMP_DOCKER_PLATFORM,
+      install: OMP_DOCKER_INSTALL_COMMAND,
+      configRoots: ['$HOME/.omp'],
+      credentialInMount: false,
+      envPassthrough: [
+        'ANTHROPIC_API_KEY',
+        'GEMINI_API_KEY',
+        'OMP_AUTH_BROKER_TOKEN',
+        'OMP_AUTH_BROKER_URL',
+        'OPENAI_API_KEY',
+      ],
+      envAuth: {
+        requireOneOf: ['ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OMP_AUTH_BROKER_TOKEN', 'OPENAI_API_KEY'],
+        requireTogether: [['OMP_AUTH_BROKER_URL', 'OMP_AUTH_BROKER_TOKEN']],
       },
-      envPassthrough: [],
     },
     defaultLevels: {
       min: ompAdapter.defaultMinLevel,

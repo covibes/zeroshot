@@ -15,7 +15,7 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { loadSettings } = require('../lib/settings');
-const { CLAUDE_AUTH_ENV_VARS, resolveClaudeAuth } = require('../lib/settings/claude-auth');
+const { resolveClaudeAuth } = require('../lib/settings/claude-auth');
 const {
   normalizeProviderName,
   getProviderMetadata,
@@ -23,9 +23,11 @@ const {
 } = require('../lib/provider-names');
 const {
   MOUNT_PRESETS,
+  ENV_PRESETS,
   resolveMounts,
   resolveEnvs,
   expandEnvPatterns,
+  validateProviderEnvAuth,
 } = require('../lib/docker-config');
 const { getProvider } = require('./providers');
 const { readRepoSettings } = require('../lib/repo-settings');
@@ -181,6 +183,40 @@ function providerDockerInstall(providerName) {
   }
 }
 
+/**
+ * Registry-owned Docker platform (e.g. 'linux/amd64') for a provider, or null when unset.
+ * Providers other than the ones that declare `docker.platform` keep today's host-native
+ * (unset `--platform`) behavior.
+ * @param {string} providerName
+ * @returns {string|null}
+ */
+function providerDockerPlatform(providerName) {
+  if (!providerName) return null;
+  try {
+    const metadata = getProviderMetadata(providerName);
+    const platform = metadata && metadata.docker && metadata.docker.platform;
+    return typeof platform === 'string' && platform.trim() ? platform.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Registry-owned $HOME-placeholder config/overlay roots for a provider, unexpanded.
+ * @param {string} providerName
+ * @returns {readonly string[]}
+ */
+function providerDockerConfigRootsRaw(providerName) {
+  if (!providerName) return [];
+  try {
+    const metadata = getProviderMetadata(providerName);
+    const roots = metadata && metadata.docker && metadata.docker.configRoots;
+    return Array.isArray(roots) ? roots : [];
+  } catch {
+    return [];
+  }
+}
+
 class IsolationManager {
   constructor(options = {}) {
     this.image = options.image || DEFAULT_IMAGE;
@@ -244,24 +280,39 @@ class IsolationManager {
     );
     const containerHome = config.containerHome || settings.dockerContainerHome || '/root';
 
-    const clusterConfigDir = this._createClusterConfigDir(clusterId, containerHome);
-    console.log(`[IsolationManager] Created cluster config dir at ${clusterConfigDir}`);
+    // The cluster config dir carries Claude credentials (via provisionClaudeCredentials) and the
+    // Claude-specific AskUserQuestion-blocking hook (~/.claude/settings.json PreToolUse), which
+    // only the `claude` CLI reads. Creating and mounting it for every provider — regardless of
+    // whether Claude is even running in the container — was an unconditional Claude-auth side
+    // channel into other providers' containers (e.g. omp, whose Docker isolation must be
+    // env/broker-only with zero automatic mounts). Scope it to the claude provider only.
+    const clusterConfigDir =
+      providerName === 'claude' ? this._createClusterConfigDir(clusterId, containerHome) : null;
+    if (clusterConfigDir) {
+      console.log(`[IsolationManager] Created cluster config dir at ${clusterConfigDir}`);
+    }
 
     const args = this._buildBaseDockerArgs({
       containerName,
       workDir,
       containerHome,
       clusterConfigDir,
+      platform: config.platform,
     });
 
-    const mountedHosts = this._applyCredentialMounts(
+    const { mountedHosts, forwardedEnv } = this._applyCredentialMounts(
       args,
       config,
       settings,
       containerHome,
       providerName
     );
-    this._warnMissingProviderCredentials(providerName, mountedHosts, config, containerHome);
+    this._assertProviderCredentialPlan(providerName, {
+      mountedHosts,
+      forwardedEnv,
+      config,
+      containerHome,
+    });
 
     args.push('-w', '/workspace', image, 'tail', '-f', '/dev/null');
 
@@ -340,21 +391,26 @@ class IsolationManager {
     return isolatedDir;
   }
 
-  _buildBaseDockerArgs({ containerName, workDir, containerHome, clusterConfigDir }) {
-    return [
-      'run',
-      '-d',
-      '--name',
-      containerName,
+  _buildBaseDockerArgs({ containerName, workDir, containerHome, clusterConfigDir, platform }) {
+    const args = ['run', '-d', '--name', containerName];
+    if (platform) {
+      args.push('--platform', platform);
+    }
+    args.push(
       '-v',
       `${workDir}:/workspace`,
       '-v',
       '/var/run/docker.sock:/var/run/docker.sock',
       '--group-add',
-      this._getDockerGid(),
-      '-v',
-      `${clusterConfigDir}:${containerHome}/.claude`,
-    ];
+      this._getDockerGid()
+    );
+    // Only mounted when the active provider is claude (see createContainer) — carries Claude
+    // credentials and the Claude-specific AskUserQuestion-blocking hook, neither of which any
+    // other provider's CLI reads.
+    if (clusterConfigDir) {
+      args.push('-v', `${clusterConfigDir}:${containerHome}/.claude`);
+    }
+    return args;
   }
 
   _resolveMountConfig(config, settings) {
@@ -374,19 +430,21 @@ class IsolationManager {
     return settings.dockerMounts;
   }
 
-  // Auto-activate the running provider's own credential preset (mount + env) so `--docker` works
-  // without listing it in dockerMounts. Claude is mounted separately, so skip it.
+  // Auto-activate the running provider's own credential preset (mount and/or env) so `--docker`
+  // works without listing it in dockerMounts. Env-only providers (e.g. omp) have no MOUNT_PRESETS
+  // entry, so both preset maps are checked.
   _withActiveProviderPreset(mountConfig, providerName) {
-    if (!providerName || providerName === 'claude') return mountConfig;
-    if (!MOUNT_PRESETS[providerName]) return mountConfig;
+    if (!providerName) return mountConfig;
+    if (!MOUNT_PRESETS[providerName] && !ENV_PRESETS[providerName]) return mountConfig;
     if (mountConfig.some((item) => item === providerName)) return mountConfig;
     return [...mountConfig, providerName];
   }
 
   _applyCredentialMounts(args, config, settings, containerHome, providerName) {
     const mountedHosts = [];
+    const forwardedEnv = {};
     if (config.noMounts) {
-      return mountedHosts;
+      return { mountedHosts, forwardedEnv };
     }
 
     const mountConfig = this._withActiveProviderPreset(
@@ -426,9 +484,10 @@ class IsolationManager {
     const envToPass = this._collectDockerEnvVars(mountConfig, settings);
     for (const [key, value] of Object.entries(envToPass)) {
       args.push('-e', `${key}=${value}`);
+      forwardedEnv[key] = true;
     }
 
-    return mountedHosts;
+    return { mountedHosts, forwardedEnv };
   }
 
   _collectDockerEnvVars(mountConfig, settings) {
@@ -443,69 +502,93 @@ class IsolationManager {
       }
     }
 
-    for (const envVar of CLAUDE_AUTH_ENV_VARS) {
-      if (process.env[envVar]) {
-        envToPass[envVar] = process.env[envVar];
-      }
-    }
-
-    const authEnv = resolveClaudeAuth(settings);
-    for (const [key, value] of Object.entries(authEnv)) {
-      if (!(key in envToPass)) {
-        envToPass[key] = value;
+    // Claude's own auth resolution only applies when Claude's preset is actually active (either
+    // as the running provider or explicitly configured) — never as an unconditional side channel
+    // into another provider's container (e.g. omp).
+    if (mountConfig.includes('claude')) {
+      const authEnv = resolveClaudeAuth(settings);
+      for (const [key, value] of Object.entries(authEnv)) {
+        if (!(key in envToPass)) {
+          envToPass[key] = value;
+        }
       }
     }
 
     return envToPass;
   }
 
-  _warnMissingProviderCredentials(providerName, mountedHosts, config, containerHome) {
+  /**
+   * Decide whether the running provider has usable credentials in the *effective* container
+   * plan (what was actually mounted/forwarded), not host presence. Providers with no
+   * `docker.mount` (env-only, e.g. omp) fail closed — throw with remediation and never fall back
+   * to another provider. All other providers keep today's non-fatal warning.
+   * @param {string} providerName
+   * @param {{mountedHosts: string[], forwardedEnv: Record<string, true>, config: object, containerHome: string}} plan
+   */
+  _assertProviderCredentialPlan(
+    providerName,
+    { mountedHosts, forwardedEnv, config, containerHome }
+  ) {
     if (providerName === 'claude') {
       return;
     }
 
     const metadata = getProviderMetadata(providerName);
     const provider = getProvider(providerName);
+    const docker = metadata.docker || {};
 
-    // An env token (e.g. COPILOT_GITHUB_TOKEN) is a complete credential on its own.
+    // An env var actually forwarded into the container (e.g. COPILOT_GITHUB_TOKEN) is a complete
+    // credential on its own.
     const credentialEnvKeys = metadata.credentialEnvKeys || [];
-    if (credentialEnvKeys.some((key) => process.env[key])) {
-      return;
-    }
+    const hasCredentialEnv = credentialEnvKeys.some((key) => forwardedEnv[key]);
 
     // A mount only counts if it carries the secret (credentialInMount !== false).
-    const credentialInMount = metadata.docker && metadata.docker.credentialInMount === false;
+    const credentialInMountDisabled = docker.credentialInMount === false;
     const credentialPaths = provider.getCredentialPaths ? provider.getCredentialPaths() : [];
     const expandedCreds = credentialPaths.map((cred) => expandHomePath(cred));
     const hasCredentialMount =
-      !credentialInMount &&
+      !credentialInMountDisabled &&
       mountedHosts.some((hostPath) =>
         expandedCreds.some(
           (credPath) => pathContains(hostPath, credPath) || pathContains(credPath, hostPath)
         )
       );
-    if (hasCredentialMount) {
+
+    const envAuthResult = docker.envAuth
+      ? validateProviderEnvAuth(providerName, forwardedEnv)
+      : { ok: true };
+
+    if (envAuthResult.ok && (hasCredentialEnv || hasCredentialMount)) {
       return;
     }
 
-    if (credentialInMount && credentialEnvKeys.length > 0) {
-      console.warn(
-        `[IsolationManager] ⚠️  ${provider.displayName} could not find credentials for Docker. ` +
-          `Its login token is not stored in a mountable file — export one of ` +
-          `${credentialEnvKeys.join(', ')} before running with --docker.`
-      );
-      return;
+    const allowlist = docker.envPassthrough || [];
+    const reasons = [];
+    if (!envAuthResult.ok) {
+      reasons.push(envAuthResult.message);
+    }
+    if (!hasCredentialEnv && !hasCredentialMount) {
+      reasons.push('no credential env var or mount found in the effective container plan');
     }
 
-    if (expandedCreds.length > 0) {
-      const exampleHost = credentialPaths[0];
-      const exampleContainer = exampleHost.replace(/^~(?=\/|$)/, containerHome);
-      const mountNote = config.noMounts ? 'Credential mounts are disabled. ' : '';
-      console.warn(
-        `[IsolationManager] ⚠️  ${mountNote}No credential mounts found for ${provider.displayName}. ` +
-          `Add one with --mount ${exampleHost}:${exampleContainer}:ro`
-      );
+    const mountNote = config.noMounts ? 'Credential mounts are disabled. ' : '';
+    const exampleHost = credentialPaths[0];
+    const mountHint = exampleHost
+      ? ` or --mount ${exampleHost}:${exampleHost.replace(/^~(?=\/|$)/, containerHome)}:ro for a custom path credential`
+      : '';
+    const message =
+      `${mountNote}No usable credentials found for ${provider.displayName} in the effective ` +
+      `Docker env/mount plan (${reasons.join('; ')}). Automatic env allowlist: ` +
+      `${allowlist.join(', ') || '(none)'}. Export one of the listed vars, or add a custom ` +
+      `credential with zeroshot settings set dockerEnvPassthrough '["MY_KEY"]'${mountHint}.`;
+
+    // Env-only providers (no automatic mount) have no fallback credential surface, so an
+    // unsatisfied/malformed plan must fail closed before the container ever starts.
+    if (!docker.mount) {
+      throw new Error(`[IsolationManager] ${message}`);
     }
+
+    console.warn(`[IsolationManager] ⚠️  ${message}`);
   }
 
   _spawnContainer(clusterId, args, workDir) {
@@ -1375,39 +1458,135 @@ class IsolationManager {
   }
 
   /**
+   * Registry-owned Docker platform for a provider (e.g. 'linux/amd64'), or null when the
+   * provider declares no `docker.platform` (host-native, unset `--platform`).
+   * @param {string} providerName
+   * @returns {string|null}
+   */
+  static providerDockerPlatform(providerName) {
+    return providerDockerPlatform(providerName);
+  }
+
+  /**
+   * Registry-owned config/overlay roots for a provider, with $HOME expanded to containerHome.
+   * @param {string} providerName
+   * @param {string} [containerHome]
+   * @returns {string[]}
+   */
+  static providerConfigRoots(providerName, containerHome = '/root') {
+    return providerDockerConfigRootsRaw(providerName).map((root) =>
+      root.replace(/\$HOME/g, containerHome)
+    );
+  }
+
+  /**
+   * Pre-effect probe: throws before any workspace/container side effect when the Docker engine
+   * cannot run `platform`. No-op when `platform` is null (provider declares no platform
+   * requirement). Native arch match satisfies the platform directly; otherwise a Buildx builder
+   * advertising that platform (emulation) is required.
+   * @param {string|null} platform
+   */
+  static assertPlatformSupported(platform) {
+    if (!platform) {
+      return;
+    }
+
+    let info;
+    try {
+      info = runSync('docker', ['info', '--format', '{{.OSType}}|{{.Architecture}}'], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim();
+    } catch (err) {
+      throw new Error(`Cannot determine Docker engine platform: ${err.message}`);
+    }
+
+    const [osType, arch] = info.split('|').map((part) => (part || '').trim());
+    const requiredArch = platform.split('/')[1] || '';
+    const nativeMatch = arch === requiredArch || (requiredArch === 'amd64' && arch === 'x86_64');
+
+    if (osType === 'linux' && nativeMatch) {
+      return;
+    }
+
+    let buildxOutput = '';
+    if (osType === 'linux') {
+      try {
+        buildxOutput = runSync('docker', ['buildx', 'inspect'], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+        });
+      } catch {
+        buildxOutput = '';
+      }
+    }
+
+    const platformsLine = buildxOutput
+      .split('\n')
+      .find((line) => line.trim().startsWith('Platforms:'));
+
+    if (osType === 'linux' && platformsLine && platformsLine.includes(platform)) {
+      return;
+    }
+
+    throw new Error(
+      `Docker engine cannot run ${platform} (server ${osType || 'unknown'}/${arch || 'unknown'}, ` +
+        'no buildx emulation). Install Buildx and run: docker run --privileged --rm tonistiigi/binfmt --install amd64'
+    );
+  }
+
+  /**
    * Resolve the cluster image tag for a provider. Providers baked into the base image (e.g.
    * Claude) run on the base image directly; providers with a `docker.install` command get a
-   * per-provider image variant `<baseImage>-<providerId>` whose install step is a Docker-cached
-   * layer (built once, reused thereafter).
+   * per-provider image variant `<baseImage>-<providerId>-<hash>`, where `<hash>` is derived from
+   * the install command and platform so a pinned-version/platform change busts the cached tag.
    * @param {string} providerName
    * @param {string} [baseImage]
    * @returns {string}
    */
   static imageForProvider(providerName, baseImage = DEFAULT_IMAGE) {
-    if (!providerDockerInstall(providerName)) {
+    const install = providerDockerInstall(providerName);
+    if (!install) {
       return baseImage;
     }
-    return `${baseImage}-${normalizeProviderName(providerName)}`;
+    const platform = providerDockerPlatform(providerName) || '';
+    const hash = crypto
+      .createHash('sha256')
+      .update(`${platform}\n${install}`)
+      .digest('hex')
+      .slice(0, 12);
+    return `${baseImage}-${normalizeProviderName(providerName)}-${hash}`;
   }
 
   /**
-   * Docker `--build-arg` values that install a provider's CLI into its image variant, or [] when
-   * the provider is baked into the base image or has no installer.
+   * Docker `--build-arg` values that install a provider's CLI (and create its config roots) in
+   * its image variant, or [] when the provider is baked into the base image or has no installer.
    * @param {string} providerName
+   * @param {string} [containerHome]
    * @returns {string[]}
    */
-  static providerBuildArgs(providerName) {
+  static providerBuildArgs(providerName, containerHome = '/home/node') {
     const install = providerDockerInstall(providerName);
-    return install ? [`PROVIDER_INSTALL=${install}`] : [];
+    if (!install) {
+      return [];
+    }
+    const args = [`PROVIDER_INSTALL=${install}`];
+    const configRoots = IsolationManager.providerConfigRoots(providerName, containerHome);
+    if (configRoots.length > 0) {
+      args.push(`PROVIDER_CONFIG_ROOTS=${configRoots.join(' ')}`);
+    }
+    return args;
   }
 
   /**
    * Build the Docker image with retry logic
    * @param {string} [image] - Image name to build
    * @param {number} [maxRetries=3] - Maximum retry attempts
+   * @param {string[]} [buildArgs] - `--build-arg KEY=VALUE` pairs
+   * @param {string|null} [platform] - Registry-owned `--platform` value, or null for host-native
    * @returns {Promise<void>}
    */
-  static async buildImage(image = DEFAULT_IMAGE, maxRetries = 3, buildArgs = []) {
+  static async buildImage(image = DEFAULT_IMAGE, maxRetries = 3, buildArgs = [], platform = null) {
     // Repository root is one level up from src/
     const repoRoot = path.join(__dirname, '..');
     const dockerfilePath = path.join(repoRoot, 'docker', 'zeroshot-cluster', 'Dockerfile');
@@ -1421,6 +1600,7 @@ class IsolationManager {
     for (const arg of buildArgs) {
       buildArgFlags.push('--build-arg', arg);
     }
+    const platformFlags = platform ? ['--platform', platform] : [];
 
     console.log(`[IsolationManager] Building Docker image '${image}'...`);
 
@@ -1432,7 +1612,16 @@ class IsolationManager {
         // Use -f flag to specify Dockerfile location
         runSync(
           'docker',
-          ['build', '-f', 'docker/zeroshot-cluster/Dockerfile', ...buildArgFlags, '-t', image, '.'],
+          [
+            'build',
+            '-f',
+            'docker/zeroshot-cluster/Dockerfile',
+            ...platformFlags,
+            ...buildArgFlags,
+            '-t',
+            image,
+            '.',
+          ],
           {
             cwd: repoRoot,
             encoding: 'utf8',
@@ -1466,9 +1655,16 @@ class IsolationManager {
    * Ensure Docker image exists, building it if necessary
    * @param {string} [image] - Image name to ensure
    * @param {boolean} [autoBuild=true] - Auto-build if missing
+   * @param {string[]} [buildArgs] - `--build-arg KEY=VALUE` pairs
+   * @param {string|null} [platform] - Registry-owned `--platform` value, or null for host-native
    * @returns {Promise<void>}
    */
-  static async ensureImage(image = DEFAULT_IMAGE, autoBuild = true, buildArgs = []) {
+  static async ensureImage(
+    image = DEFAULT_IMAGE,
+    autoBuild = true,
+    buildArgs = [],
+    platform = null
+  ) {
     if (this.imageExists(image)) {
       return;
     }
@@ -1481,7 +1677,7 @@ class IsolationManager {
     }
 
     console.log(`[IsolationManager] Image '${image}' not found, building automatically...`);
-    await this.buildImage(image, 3, buildArgs);
+    await this.buildImage(image, 3, buildArgs, platform);
   }
 
   /**

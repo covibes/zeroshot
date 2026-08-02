@@ -13,21 +13,32 @@ const { listProviderMetadata } = require('../../lib/provider-names');
 const {
   MOUNT_PRESETS,
   ENV_PRESETS,
+  PROVIDER_ENV_ONLY_PRESETS,
   resolveMounts,
   resolveEnvs,
   expandEnvPatterns,
   validateMountConfig,
   validateEnvPassthrough,
+  validateProviderEnvAuth,
 } = require('../../lib/docker-config');
+
+const MOUNT_DECLARING_PROVIDER_IDS = listProviderMetadata()
+  .filter((metadata) => metadata.docker.mount)
+  .map((metadata) => metadata.id);
+const ENV_ONLY_PROVIDER_IDS = listProviderMetadata()
+  .filter((metadata) => !metadata.docker.mount)
+  .map((metadata) => metadata.id);
 
 describe('Docker Configuration', function () {
   registerMountPresetTests();
+  registerEnvOnlyPresetTests();
   registerEnvPresetTests();
   registerResolveMountsTests();
   registerResolveEnvsTests();
   registerExpandEnvPatternsTests();
   registerValidateMountConfigTests();
   registerValidateEnvPassthroughTests();
+  registerValidateProviderEnvAuthTests();
   registerAwsWorkflowTests();
   registerCustomMountWorkflowTests();
 });
@@ -44,16 +55,24 @@ function registerMountPresetTests() {
         'kube',
         'terraform',
         'gcloud',
-        ...listProviderMetadata().map((metadata) => metadata.id),
+        ...MOUNT_DECLARING_PROVIDER_IDS,
       ];
       for (const preset of expected) {
         assert.ok(MOUNT_PRESETS[preset], `Missing preset: ${preset}`);
       }
     });
 
-    it('should build provider mount presets from provider registry metadata', function () {
+    it('should build provider mount presets only from providers that declare docker.mount', function () {
       for (const metadata of listProviderMetadata()) {
-        assert.deepStrictEqual(MOUNT_PRESETS[metadata.id], metadata.docker.mount);
+        if (metadata.docker.mount) {
+          assert.deepStrictEqual(MOUNT_PRESETS[metadata.id], metadata.docker.mount);
+        } else {
+          assert.strictEqual(
+            MOUNT_PRESETS[metadata.id],
+            undefined,
+            `Env-only provider ${metadata.id} must not have a mount preset`
+          );
+        }
       }
     });
 
@@ -81,6 +100,39 @@ function registerMountPresetTests() {
           typeof preset.readonly === 'boolean',
           `Preset ${name} should have boolean readonly property`
         );
+      }
+    });
+  });
+}
+
+function registerEnvOnlyPresetTests() {
+  describe('PROVIDER_ENV_ONLY_PRESETS / env-only mount resolution', function () {
+    it('lists every provider with envPassthrough but no docker.mount (e.g. omp)', function () {
+      assert.ok(ENV_ONLY_PROVIDER_IDS.length > 0, 'expected at least one env-only provider');
+      for (const id of ENV_ONLY_PROVIDER_IDS) {
+        assert.ok(PROVIDER_ENV_ONLY_PRESETS.has(id), `expected ${id} in PROVIDER_ENV_ONLY_PRESETS`);
+      }
+      for (const id of MOUNT_DECLARING_PROVIDER_IDS) {
+        assert.ok(
+          !PROVIDER_ENV_ONLY_PRESETS.has(id),
+          `mount-declaring provider ${id} must not be env-only`
+        );
+      }
+    });
+
+    it('resolveMounts() returns [] for an env-only preset instead of throwing', function () {
+      for (const id of ENV_ONLY_PROVIDER_IDS) {
+        assert.deepStrictEqual(resolveMounts([id]), []);
+      }
+    });
+
+    it('resolveMounts() still throws for a genuinely unknown preset', function () {
+      assert.throws(() => resolveMounts(['not-a-real-preset']), /Unknown mount preset/);
+    });
+
+    it('validateMountConfig() accepts an env-only preset name', function () {
+      for (const id of ENV_ONLY_PROVIDER_IDS) {
+        assert.strictEqual(validateMountConfig([id]), null);
       }
     });
   });
@@ -364,6 +416,58 @@ function registerValidateEnvPassthroughTests() {
     it('should reject non-string items', function () {
       const error = validateEnvPassthrough([123]);
       assert.ok(error && error.includes('Must be a string'));
+    });
+  });
+}
+
+function registerValidateProviderEnvAuthTests() {
+  describe('validateProviderEnvAuth()', function () {
+    it('passes when no docker.envAuth is declared (e.g. codex)', function () {
+      assert.deepStrictEqual(validateProviderEnvAuth('codex', {}), { ok: true });
+    });
+
+    it('is satisfied by a single requireOneOf var (e.g. OPENAI_API_KEY)', function () {
+      const result = validateProviderEnvAuth('omp', { OPENAI_API_KEY: 'sk-test' });
+      assert.deepStrictEqual(result, { ok: true });
+    });
+
+    it('rejects an empty-string value as absent', function () {
+      const result = validateProviderEnvAuth('omp', { OPENAI_API_KEY: '' });
+      assert.strictEqual(result.ok, false);
+    });
+
+    it('rejects nothing set at all', function () {
+      const result = validateProviderEnvAuth('omp', {});
+      assert.strictEqual(result.ok, false);
+      assert.ok(!/sk-|tok-/.test(result.message), 'message must never contain credential values');
+    });
+
+    it('is satisfied by a complete requireTogether broker pair', function () {
+      const result = validateProviderEnvAuth('omp', {
+        OMP_AUTH_BROKER_URL: 'https://broker.example',
+        OMP_AUTH_BROKER_TOKEN: 'tok-secret',
+      });
+      assert.deepStrictEqual(result, { ok: true });
+    });
+
+    it('rejects a broker URL without a token (partial requireTogether group)', function () {
+      const result = validateProviderEnvAuth('omp', {
+        OMP_AUTH_BROKER_URL: 'https://broker.example',
+      });
+      assert.strictEqual(result.ok, false);
+      assert.ok(!result.message.includes('https://broker.example'), 'must name vars, not values');
+    });
+
+    it('rejects a broker token without a URL (partial requireTogether group)', function () {
+      const result = validateProviderEnvAuth('omp', { OMP_AUTH_BROKER_TOKEN: 'tok-secret' });
+      assert.strictEqual(result.ok, false);
+      assert.ok(!result.message.includes('tok-secret'), 'must name vars, not values');
+    });
+
+    it('never includes credential values in the failure message, only names', function () {
+      const result = validateProviderEnvAuth('omp', { GEMINI_API_KEY: '', OPENAI_API_KEY: '' });
+      assert.strictEqual(result.ok, false);
+      assert.match(result.message, /OPENAI_API_KEY/);
     });
   });
 }
