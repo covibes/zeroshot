@@ -39,6 +39,7 @@ fn product_contains_the_required_native_files() {
     relative_files(&product, &product, &mut files);
     for required in [
         "Cargo.toml",
+        "src/admission_manifest.rs",
         "src/artifact_store.rs",
         "src/artifact_store/fake.rs",
         "src/artifact_store/local_cas.rs",
@@ -75,12 +76,17 @@ fn product_contains_the_required_native_files() {
         "src/workspace_lease/store/fake.rs",
         "src/workspace_lease/store/sqlite.rs",
         "src/workspace_lease/types.rs",
+        "src/worker_bindings.rs",
         "src/worker_catalog.rs",
         "tests/architecture.rs",
         "tests/worker_catalog_architecture.rs",
         "tests/role_contracts.rs",
         "tests/role_contracts_architecture.rs",
         "tests/required_proof_architecture.rs",
+        "tests/admission_manifest.rs",
+        "tests/admission_manifest_architecture.rs",
+        "tests/worker_bindings.rs",
+        "tests/worker_bindings_architecture.rs",
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
         "tests/execution_runtime_contract.rs",
@@ -128,6 +134,13 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
     for required in [
         ("zeroshot-rust".to_owned(), "bin".to_owned()),
         ("zeroshot_engine".to_owned(), "lib".to_owned()),
+        ("admission_manifest".to_owned(), "test".to_owned()),
+        (
+            "admission_manifest_architecture".to_owned(),
+            "test".to_owned(),
+        ),
+        ("worker_bindings".to_owned(), "test".to_owned()),
+        ("worker_bindings_architecture".to_owned(), "test".to_owned()),
         ("architecture".to_owned(), "test".to_owned()),
         ("backend_boundary".to_owned(), "test".to_owned()),
         ("execution_runtime_contract".to_owned(), "test".to_owned()),
@@ -702,6 +715,7 @@ fn product_modules_require_issue_authorization() {
     assert_eq!(
         top_level_source_entries,
         BTreeSet::from([
+            "admission_manifest.rs",
             "artifact_store",
             "artifact_store.rs",
             "cluster_ledger",
@@ -727,6 +741,7 @@ fn product_modules_require_issue_authorization() {
             "scheduler.rs",
             "source_code_provider",
             "source_code_provider.rs",
+            "worker_bindings.rs",
             "worker_catalog.rs",
             "workspace_lease",
             "workspace_lease.rs",
