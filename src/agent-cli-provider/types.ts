@@ -168,16 +168,16 @@ export interface PiCliFeatures extends BaseCliFeatures {
 
 export interface OmpCliFeatures extends BaseCliFeatures {
   readonly provider: 'omp';
-  readonly supportsModeJson: boolean;
-  readonly supportsPrint: boolean;
-  readonly supportsCwd: boolean;
-  readonly supportsAutoApprove: boolean;
+  readonly supportsRpcMode: boolean;
+  readonly supportsConfig: boolean;
   readonly supportsModel: boolean;
   readonly supportsThinking: boolean;
-  readonly supportsNoExtensions: boolean;
-  readonly supportsNoSkills: boolean;
-  readonly supportsNoRules: boolean;
+  readonly supportsApprovalMode: boolean;
   readonly supportsNoTitle: boolean;
+  readonly supportsNoSession: boolean;
+  readonly supportsSessionDir: boolean;
+  readonly supportsResume: boolean;
+  readonly versionMatches: boolean;
 }
 
 export interface CopilotCliFeatures extends BaseCliFeatures {
@@ -256,11 +256,13 @@ export interface CliFeatureOverrides {
   readonly supportsRecoveryIsolation?: boolean;
   readonly supportsNoContextFiles?: boolean;
   readonly supportsNoApprove?: boolean;
-  readonly supportsModeJson?: boolean;
-  readonly supportsPrint?: boolean;
+  readonly supportsRpcMode?: boolean;
+  readonly supportsConfig?: boolean;
   readonly supportsThinking?: boolean;
-  readonly supportsNoRules?: boolean;
+  readonly supportsApprovalMode?: boolean;
   readonly supportsNoTitle?: boolean;
+  readonly supportsSessionDir?: boolean;
+  readonly versionMatches?: boolean;
   readonly supportsJsonOutput?: boolean;
   readonly supportsAllowAll?: boolean;
   readonly supportsNoAskUser?: boolean;
@@ -412,7 +414,8 @@ export type ErrorClassificationKind =
   | 'code-retryable'
   | 'permanent-pattern'
   | 'retryable-pattern'
-  | 'unknown-retryable';
+  | 'unknown-retryable'
+  | 'cancelled';
 
 export interface ErrorClassification {
   readonly retryable: boolean;

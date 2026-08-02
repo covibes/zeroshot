@@ -155,10 +155,13 @@ test('invoke rejects invalid nested options before runner execution', async () =
 
 test('invoke preserves false for every required OMP feature and fails before execution', async () => {
   for (const [feature, label] of [
-    ['supportsModeJson', '--mode json'],
-    ['supportsPrint', '-p/--print'],
-    ['supportsCwd', '--cwd'],
-    ['supportsAutoApprove', '--auto-approve'],
+    ['versionMatches', '17.2.1'],
+    ['supportsRpcMode', '"rpc" mode'],
+    ['supportsConfig', '--config'],
+    ['supportsModel', '--model'],
+    ['supportsApprovalMode', '--approval-mode'],
+    ['supportsNoTitle', '--no-title'],
+    ['supportsNoSession', '--no-session'],
   ]) {
     let runnerCalled = false;
     const response = await runProviderExecutable(
@@ -169,10 +172,16 @@ test('invoke preserves false for every required OMP feature and fails before exe
         context: 'ctx',
         options: {
           cliFeatures: {
-            supportsModeJson: true,
-            supportsPrint: true,
-            supportsCwd: true,
-            supportsAutoApprove: true,
+            versionMatches: true,
+            supportsRpcMode: true,
+            supportsConfig: true,
+            supportsModel: true,
+            supportsThinking: true,
+            supportsApprovalMode: true,
+            supportsNoTitle: true,
+            supportsNoSession: true,
+            supportsSessionDir: true,
+            supportsResume: true,
             [feature]: false,
           },
         },

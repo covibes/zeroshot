@@ -156,7 +156,7 @@ test('build-command preserves Codex explicit session resume through JSON contrac
   assert.equal(resumed.envelope.result.commandSpec.cwd, '/tmp/project');
 });
 
-test('build-command preserves false for every optional OMP feature override', () => {
+test('build-command emits the omp-jsonschema warning through the executable envelope', () => {
   const response = runExecutable({
     schemaVersion: 1,
     command: 'build-command',
@@ -164,34 +164,47 @@ test('build-command preserves false for every optional OMP feature override', ()
     context: 'ctx',
     options: {
       modelSpec: { level: 'level3', model: 'm', reasoningEffort: 'high' },
+      jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
       cliFeatures: {
-        supportsModeJson: true,
-        supportsPrint: true,
-        supportsCwd: true,
-        supportsAutoApprove: true,
-        supportsModel: false,
-        supportsThinking: false,
-        supportsNoExtensions: false,
-        supportsNoSkills: false,
-        supportsNoRules: false,
-        supportsNoTitle: false,
+        versionMatches: true,
+        supportsRpcMode: true,
+        supportsConfig: true,
+        supportsModel: true,
+        supportsThinking: true,
+        supportsApprovalMode: true,
+        supportsNoTitle: true,
+        supportsNoSession: true,
+        supportsSessionDir: false,
+        supportsResume: false,
       },
     },
   });
 
   assert.equal(response.exitCode, 0);
   assert.equal(response.envelope.ok, true);
-  assert.deepEqual(response.envelope.result.commandSpec.args, [
+  const { args } = response.envelope.result.commandSpec;
+  assert.deepEqual(args.slice(0, 6), [
     '--mode',
-    'json',
-    '-p',
-    '--auto-approve',
-    'ctx',
+    'rpc',
+    '--no-session',
+    '--model',
+    'm',
+    '--thinking',
+  ]);
+  assert.equal(args[6], 'high');
+  assert.deepEqual(args.slice(7), [
+    '--approval-mode',
+    'yolo',
+    '--no-title',
+    '--config',
+    args.at(-1),
   ]);
   assert.deepEqual(
     response.envelope.warnings.map(({ code }) => code),
-    ['omp-model-unsupported', 'omp-thinking-unsupported']
+    ['omp-jsonschema']
   );
+  const overlayDir = path.dirname(args.at(-1));
+  fs.rmSync(overlayDir, { recursive: true, force: true });
 });
 
 test('build-command redacts adapter auth env values from command spec output', () => {

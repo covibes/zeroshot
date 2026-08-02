@@ -34,6 +34,18 @@ export {
   type ProcessRunnerOptions,
 } from './process-runner';
 export {
+  runOmpRpcTask,
+  type OmpRpcSessionEvidence,
+  type OmpRpcSpawnEvidence,
+  type OmpRpcTaskHooks,
+  type OmpRpcTaskRequest,
+  type OmpRpcTaskResult,
+} from './omp-rpc-driver';
+export { buildOmpPrompt } from './adapters/omp';
+export { ABORT_GRACE_MS, EXIT_GRACE_MS } from './omp-rpc-bounds';
+export { OMP_SUPPORTED_VERSION } from './omp-release';
+export type { OmpSessionLaunch, VerifiedOmpPartition, VerifiedOmpSessionFile } from './omp-rpc-session';
+export {
   detectRuntimeProviderCliFeatures,
   prepareSingleAgentProviderCommand,
   probeRuntimeProviderCli,

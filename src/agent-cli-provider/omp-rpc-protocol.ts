@@ -218,7 +218,11 @@ export class OmpRpcFrameDecoder {
     this.inflightReassemblyBytes = 0;
   }
 
-  push(chunk: Uint8Array): readonly OmpRpcInboundFrame[] {
+  // `negotiatedV2` defaults to true so callers that don't care about pre-negotiation gating
+  // (e.g. the fixture-replay tests below) see unchanged behavior; the RPC driver passes its
+  // live negotiation state so a bare `rpc_chunk` physical frame is rejected before negotiation
+  // succeeds, even though the decoder would otherwise buffer it silently pending reassembly.
+  push(chunk: Uint8Array, negotiatedV2 = true): readonly OmpRpcInboundFrame[] {
     if (this.finished) {
       throw new OmpRpcProtocolError('decoder-finished', 'push() called after finish().');
     }
@@ -247,7 +251,7 @@ export class OmpRpcFrameDecoder {
         );
       }
 
-      const frame = this.consumeLine(lineBytes);
+      const frame = this.consumeLine(lineBytes, negotiatedV2);
       if (frame !== null) frames.push(frame);
     }
 
@@ -270,7 +274,7 @@ export class OmpRpcFrameDecoder {
     }
   }
 
-  private consumeLine(lineBytes: Buffer): OmpRpcInboundFrame | null {
+  private consumeLine(lineBytes: Buffer, negotiatedV2: boolean): OmpRpcInboundFrame | null {
     let value: unknown;
     try {
       value = JSON.parse(lineBytes.toString('utf8'));
@@ -285,6 +289,7 @@ export class OmpRpcFrameDecoder {
     }
 
     const type = getString(value, 'type');
+    assertNoPreNegotiationRpcChunk(type ?? '', negotiatedV2);
     if (type !== 'rpc_chunk') {
       if (this.pendingReassemblies.size > 0) {
         throw new OmpRpcProtocolError(

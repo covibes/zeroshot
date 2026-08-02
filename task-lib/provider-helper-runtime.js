@@ -13,8 +13,12 @@ try {
 }
 
 export const {
+  ABORT_GRACE_MS,
+  EXIT_GRACE_MS,
   NO_MESSAGES_RETURNED,
+  OMP_SUPPORTED_VERSION,
   STREAMING_MODE_ERROR,
+  buildOmpPrompt,
   buildProviderCommand,
   classifyProviderError,
   detectProviderFatalError,
@@ -32,6 +36,7 @@ export const {
   recoverProviderStructuredOutput,
   resolveProviderCommand,
   resolveModelSpec,
+  runOmpRpcTask,
   supportsProviderCapability,
   providerAliasMap,
   providerAliases,

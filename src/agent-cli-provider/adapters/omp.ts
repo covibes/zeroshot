@@ -1,17 +1,11 @@
-import { appendJsonSchemaPrompt } from '../schema';
 import { contractError } from '../contract-errors';
+import { UnsupportedProviderCapabilityError } from '../errors';
+import { appendJsonSchemaPrompt } from '../schema';
+import { isRecord, unknownToMessage } from '../json';
+import { OMP_REMEDIATION, OMP_SUPPORTED_VERSION } from '../omp-release';
+import { parseNormalizedOmpRpcEventLine } from '../omp-rpc-events';
 import {
-  getArray,
-  getBoolean,
-  getNumber,
-  getOptionalString,
-  getRecord,
-  getString,
-  isRecord,
-  tryParseJson,
-  unknownToMessage,
-} from '../json';
-import {
+  InvalidProviderModelError,
   type BuildProviderCommandOptions,
   type CommandSpec,
   type ErrorClassification,
@@ -20,8 +14,8 @@ import {
   type ModelCatalogEntry,
   type ModelLevel,
   type OmpCliFeatures,
-  type OutputEvent,
   type ProviderAdapter,
+  type ProviderParseResult,
   type ProviderParserState,
   type ResolvedModelSpec,
   type WarningMetadata,
@@ -35,62 +29,176 @@ import {
   warning,
 } from './common';
 
+interface OmpConfigOverlay {
+  readonly dir: string;
+  readonly file: string;
+}
+
+type UnknownFunction = (...args: unknown[]) => unknown;
+
+function isUnknownFunction(value: unknown): value is UnknownFunction {
+  return typeof value === 'function';
+}
+
+function createOmpConfigOverlay(): OmpConfigOverlay {
+  const overlayModule: unknown = require('../../../src/omp-config-overlay');
+  if (!isRecord(overlayModule) || !isUnknownFunction(overlayModule.createOmpConfigOverlay)) {
+    throw new Error('src/omp-config-overlay must export createOmpConfigOverlay.');
+  }
+  const overlay = overlayModule.createOmpConfigOverlay();
+  if (
+    !isRecord(overlay) ||
+    typeof overlay.dir !== 'string' ||
+    typeof overlay.file !== 'string'
+  ) {
+    throw new Error('createOmpConfigOverlay() must return { dir, file } strings.');
+  }
+  return { dir: overlay.dir, file: overlay.file };
+}
+
 const MODEL_CATALOG: Readonly<Record<string, ModelCatalogEntry>> = {};
 
 const LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
-  level1: { rank: 1, model: null, reasoningEffort: 'low' },
-  level2: { rank: 2, model: null, reasoningEffort: 'medium' },
-  level3: { rank: 3, model: null, reasoningEffort: 'high' },
+  level1: { rank: 1, model: '@smol' },
+  level2: { rank: 2, model: '@default' },
+  level3: { rank: 3, model: '@slow' },
 };
 
-const IGNORED_EVENT_TYPES = new Set([
-  'session',
-  'agent_start',
-  'agent_end',
-  'turn_start',
-  'queue_update',
-  'compaction_start',
-  'compaction_end',
-  'auto_retry_start',
-  'auto_retry_end',
-]);
+// Verified against tagged v17.2.1 source: docs/environment-variables.md ("Model/provider
+// authentication", "GitHub/Copilot tokens", "Auth broker", web-search credentials, Bedrock,
+// Azure, Vertex sections) plus docs/providers.md's provider/env-var map. This is the full
+// official host credential inventory OMP itself resolves credentials from — distinct from
+// (and broader than) any narrower automatic Docker env-passthrough allowlist — because OMP
+// routes to 70+ downstream model/search providers and every one of their credential env vars
+// must be detected and redacted from Zeroshot logs/output, not just the handful Zeroshot's
+// own cluster config commonly sets.
+const CREDENTIAL_ENV_KEYS: readonly string[] = [
+  'AIMLAPI_API_KEY',
+  'AI_GATEWAY_API_KEY',
+  'ALIBABA_CODING_PLAN_API_KEY',
+  'ALIBABA_TOKEN_PLAN_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_FOUNDRY_API_KEY',
+  'ANTHROPIC_OAUTH_TOKEN',
+  'ANTHROPIC_SEARCH_API_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_BEARER_TOKEN_BEDROCK',
+  'AWS_SECRET_ACCESS_KEY',
+  'AZURE_OPENAI_API_KEY',
+  'BAILIAN_TOKEN_PLAN_API_KEY',
+  'BRAVE_API_KEY',
+  'CEREBRAS_API_KEY',
+  'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY',
+  'CLOUDFLARE_AI_GATEWAY_API_KEY',
+  'COPILOT_GITHUB_TOKEN',
+  'CURSOR_ACCESS_TOKEN',
+  'DEEPSEEK_API_KEY',
+  'EXA_API_KEY',
+  'FIREPASS_API_KEY',
+  'FIREWORKS_API_KEY',
+  'GEMINI_API_KEY',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'GITLAB_TOKEN',
+  'GOOGLE_API_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_CLOUD_API_KEY',
+  'GROQ_API_KEY',
+  'HF_TOKEN',
+  'HUGGINGFACE_HUB_TOKEN',
+  'JINA_API_KEY',
+  'KAGI_API_KEY',
+  'KILO_API_KEY',
+  'KIMI_SEARCH_API_KEY',
+  'LITELLM_API_KEY',
+  'LLAMA_CPP_API_KEY',
+  'LM_STUDIO_API_KEY',
+  'MINIMAX_API_KEY',
+  'MINIMAX_CODE_API_KEY',
+  'MINIMAX_CODE_CN_API_KEY',
+  'MISTRAL_API_KEY',
+  'MOONSHOT_API_KEY',
+  'MOONSHOT_SEARCH_API_KEY',
+  'NANO_GPT_API_KEY',
+  'NOVITA_API_KEY',
+  'NVIDIA_API_KEY',
+  'OLLAMA_API_KEY',
+  'OLLAMA_CLOUD_API_KEY',
+  'OMP_AUTH_BROKER_TOKEN',
+  'OPENAI_API_KEY',
+  'OPENCODE_API_KEY',
+  'OPENROUTER_API_KEY',
+  'PARALLEL_API_KEY',
+  'PERPLEXITY_API_KEY',
+  'PERPLEXITY_COOKIES',
+  'QIANFAN_API_KEY',
+  'QWEN_OAUTH_TOKEN',
+  'QWEN_PORTAL_API_KEY',
+  'SEARXNG_BASIC_PASSWORD',
+  'SEARXNG_TOKEN',
+  'SILICONFLOW_API_KEY',
+  'SILICONFLOW_CN_API_KEY',
+  'SMITHERY_API_KEY',
+  'SYNTHETIC_API_KEY',
+  'TAVILY_API_KEY',
+  'TOGETHER_API_KEY',
+  'UMANS_AI_CODING_PLAN_API_KEY',
+  'VENICE_API_KEY',
+  'VLLM_API_KEY',
+  'WAFER_SERVERLESS_API_KEY',
+  'XAI_API_KEY',
+  'XAI_OAUTH_TOKEN',
+  'XIAOMI_API_KEY',
+  'XIAOMI_TOKEN_PLAN_AMS_API_KEY',
+  'XIAOMI_TOKEN_PLAN_CN_API_KEY',
+  'XIAOMI_TOKEN_PLAN_SGP_API_KEY',
+  'ZAI_API_KEY',
+  'ZENMUX_API_KEY',
+  'ZHIPU_API_KEY',
+];
 
-function detectCliFeatures(helpText?: string | null): OmpCliFeatures {
+const VERSION_TOKEN_PATTERN = /(?<![\w.])17\.2\.1(?![\w.])/;
+const MODEL_ID_PATTERN = /^@?[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
+
+function detectCliFeatures(helpText?: string | null, versionText?: string | null): OmpCliFeatures {
   const help = helpText ?? '';
-  const unknown = !help;
+  const version = (versionText ?? '').trim();
   return {
     provider: 'omp',
-    supportsModeJson: unknown ? true : /--mode\b/.test(help) && /\bjson\b/.test(help),
-    supportsPrint: unknown ? true : /-p\b/.test(help) || /--print\b/.test(help),
-    supportsCwd: unknown ? true : /--cwd\b/.test(help),
-    supportsAutoApprove: unknown ? true : /--auto-approve\b/.test(help),
-    supportsModel: unknown ? true : /--model\b/.test(help),
-    supportsThinking: unknown ? true : /--thinking\b/.test(help),
-    supportsNoExtensions: unknown ? true : /--no-extensions\b/.test(help),
-    supportsNoSkills: unknown ? true : /--no-skills\b/.test(help),
-    supportsNoRules: unknown ? true : /--no-rules\b/.test(help),
-    supportsNoTitle: unknown ? true : /--no-title\b/.test(help),
-    unknown,
+    versionMatches: VERSION_TOKEN_PATTERN.test(version),
+    supportsRpcMode: /(^|\s)rpc(\s|$)/m.test(help),
+    supportsConfig: /--config\b/.test(help),
+    supportsModel: /--model\b/.test(help),
+    supportsThinking: /--thinking\b/.test(help),
+    supportsApprovalMode: /--approval-mode\b/.test(help),
+    supportsNoTitle: /--no-title\b/.test(help),
+    supportsNoSession: /--no-session\b/.test(help),
+    supportsSessionDir: /--session-dir\b/.test(help),
+    supportsResume: /--resume\b/.test(help),
+    unknown: !help,
   };
 }
 
 function assertRequiredOmpFeatures(options: BuildProviderCommandOptions): void {
   const features = optionFeatures(options);
   const required: ReadonlyArray<readonly [boolean | undefined, string]> = [
-    [features.supportsModeJson, '--mode json'],
-    [features.supportsPrint, '-p/--print'],
-    [features.supportsCwd, '--cwd'],
-    [features.supportsAutoApprove, '--auto-approve'],
+    [features.versionMatches, `exact OMP version ${OMP_SUPPORTED_VERSION}`],
+    [features.supportsRpcMode, '"rpc" mode'],
+    [features.supportsConfig, '--config'],
+    [features.supportsModel, '--model'],
+    [features.supportsApprovalMode, '--approval-mode'],
+    [features.supportsNoTitle, '--no-title'],
+    [features.supportsNoSession, '--no-session'],
   ];
-  const missing = required.filter(([supported]) => supported === false).map(([, flag]) => flag);
+  const missing = required.filter(([supported]) => supported === false).map(([, label]) => label);
   if (missing.length === 0) return;
   throw contractError({
     code: 'unsupported-provider-cli',
     exitCode: 2,
     message:
-      'omp CLI is missing required non-interactive flag(s): ' +
-      missing.join(', ') +
-      '. Update/install @oh-my-pi/pi-coding-agent; Zeroshot will not silently fall back to Pi or another provider.',
+      `omp CLI is missing required evidence: ${missing.join(', ')}. ${OMP_REMEDIATION} ` +
+      'Zeroshot will not silently fall back to Pi or another provider.',
   });
 }
 
@@ -103,286 +211,78 @@ function failClosedUnsupportedSessionControl(options: BuildProviderCommandOption
     field,
     exitCode: 2,
     message:
-      'OMP CLI does not support resume/continue session control; fail closed and start a fresh run instead.',
+      'OMP RPC lane runs sessionless (--no-session) in this slice; resume/continue session control is capability-gated off (sessionResume: false).',
   });
 }
 
-function addOptionalFlags(args: string[], options: BuildProviderCommandOptions): void {
-  const features = optionFeatures(options);
-  if (features.supportsNoExtensions !== false) args.push('--no-extensions');
-  if (features.supportsNoSkills !== false) args.push('--no-skills');
-  if (features.supportsNoRules !== false) args.push('--no-rules');
-  if (features.supportsNoTitle !== false) args.push('--no-title');
+function rejectMcpConfig(options: BuildProviderCommandOptions): void {
+  if (!options.mcpConfig || options.mcpConfig.length === 0) return;
+  throw new UnsupportedProviderCapabilityError(
+    'omp',
+    'mcpServers',
+    "OMP does not accept Zeroshot's --mcp-config surface; OMP's own discovered MCP/web tools remain governed by its own harness policy, not translated from Claude/Copilot MCP envelopes."
+  );
 }
 
-function addModelArgs(args: string[], options: BuildProviderCommandOptions): void {
-  const features = optionFeatures(options);
-  if (options.modelSpec?.model && features.supportsModel !== false) {
-    args.push('--model', options.modelSpec.model);
-  }
-  if (options.modelSpec?.reasoningEffort && features.supportsThinking !== false) {
-    args.push('--thinking', options.modelSpec.reasoningEffort);
-  }
+function resolveModelSelector(options: BuildProviderCommandOptions): string {
+  const model = options.modelSpec?.model;
+  if (typeof model === 'string' && model.length > 0) return model;
+  throw contractError({
+    code: 'unsupported-provider-cli',
+    exitCode: 2,
+    message: 'omp requires a resolved --model selector; none was resolved for this run.',
+  });
 }
 
 function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[] {
-  const features = optionFeatures(options);
-  const warnings: WarningMetadata[] = [];
-
-  if (options.jsonSchema) {
-    warnings.push(
-      warning(
-        'omp',
-        'omp-jsonschema',
-        'OMP CLI does not support provider-native JSON schema; appending schema instructions to the prompt.'
-      )
-    );
-  }
-  if (options.modelSpec?.model && features.supportsModel === false) {
-    warnings.push(
-      warning(
-        'omp',
-        'omp-model-unsupported',
-        "OMP CLI does not advertise --model; continuing with OMP's own configured model."
-      )
-    );
-  }
-  if (options.modelSpec?.reasoningEffort && features.supportsThinking === false) {
-    warnings.push(
-      warning(
-        'omp',
-        'omp-thinking-unsupported',
-        'OMP CLI does not advertise --thinking; continuing without a reasoning-effort override.'
-      )
-    );
-  }
-  return warnings;
+  if (!options.jsonSchema) return [];
+  return [
+    warning(
+      'omp',
+      'omp-jsonschema',
+      'OMP CLI does not support provider-native JSON schema; appending schema instructions to the prompt and validating locally.'
+    ),
+  ];
 }
 
-function buildCommand(context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
+/** Prompt text sent over the RPC `prompt` command — never part of argv for the rpc-stdio lane. */
+export function buildOmpPrompt(context: string, options: BuildProviderCommandOptions = {}): string {
+  return options.jsonSchema ? appendJsonSchemaPrompt(context, options.jsonSchema) : context;
+}
+
+function buildCommand(_context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
   assertRequiredOmpFeatures(options);
   failClosedUnsupportedSessionControl(options);
-  const finalContext = options.jsonSchema
-    ? appendJsonSchemaPrompt(context, options.jsonSchema)
-    : context;
-  const args: string[] = ['--mode', 'json', '-p'];
+  rejectMcpConfig(options);
+  const modelSelector = resolveModelSelector(options);
+  const warnings = collectWarnings(options);
+  const overlay = createOmpConfigOverlay();
 
-  if (options.cwd) args.push('--cwd', options.cwd);
-  args.push('--auto-approve');
-  addOptionalFlags(args, options);
-  addModelArgs(args, options);
-  args.push(finalContext);
+  const args: string[] = ['--mode', 'rpc', '--no-session', '--model', modelSelector];
+  if (options.modelSpec?.reasoningEffort) {
+    args.push('--thinking', options.modelSpec.reasoningEffort);
+  }
+  args.push('--approval-mode', 'yolo', '--no-title', '--config', overlay.file);
 
   return commandSpec({
     binary: 'omp',
     args,
     env: {},
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-    warnings: collectWarnings(options),
+    cleanup: [overlay.dir],
+    cleanupMetadata: [
+      { kind: 'temp-directory', provider: 'omp', path: overlay.dir, reason: 'isolated-config' },
+    ],
+    warnings,
   });
 }
 
 function createOmpState(): ProviderParserState {
-  return {
-    ...createParserState('omp'),
-    lastAssistantText: '',
-    lastAssistantThinking: '',
-  };
+  return createParserState('omp');
 }
 
-function assistantSnapshot(message: Record<string, unknown>): { text: string; thinking: string } {
-  if (getString(message, 'role') !== 'assistant') return { text: '', thinking: '' };
-
-  let text = '';
-  let thinking = '';
-  for (const item of getArray(message, 'content')) {
-    if (!isRecord(item)) continue;
-    const type = getString(item, 'type');
-    if (type === 'text') {
-      text += getString(item, 'text') ?? '';
-    } else if (type === 'thinking') {
-      thinking += getString(item, 'thinking') ?? '';
-    }
-  }
-
-  return { text, thinking };
-}
-
-function snapshotDelta(previous: string, current: string): string | null {
-  if (!current) return null;
-  if (previous === current) return null;
-  if (current.startsWith(previous)) return current.slice(previous.length) || null;
-  return current;
-}
-
-function emitAssistantSnapshot(
-  message: Record<string, unknown>,
-  state: ProviderParserState
-): readonly OutputEvent[] {
-  const snapshot = assistantSnapshot(message);
-  const events: OutputEvent[] = [];
-
-  const textDelta = snapshotDelta(state.lastAssistantText ?? '', snapshot.text);
-  if (textDelta) events.push({ type: 'text', text: textDelta });
-  state.lastAssistantText = snapshot.text;
-
-  const thinkingDelta = snapshotDelta(state.lastAssistantThinking ?? '', snapshot.thinking);
-  if (thinkingDelta) events.push({ type: 'thinking', text: thinkingDelta });
-  state.lastAssistantThinking = snapshot.thinking;
-
-  return events;
-}
-
-function parseAssistantEvent(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent | null {
-  const type = getString(event, 'type');
-  if (type === 'text_delta') {
-    const delta = getString(event, 'delta');
-    if (!delta) return null;
-    state.lastAssistantText += delta;
-    return { type: 'text', text: delta };
-  }
-  if (type === 'thinking_delta') {
-    const delta = getString(event, 'delta');
-    if (!delta) return null;
-    state.lastAssistantThinking += delta;
-    return { type: 'thinking', text: delta };
-  }
-  return null;
-}
-
-function parseToolExecutionStart(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent {
-  const toolId = getOptionalString(event, 'toolCallId');
-  state.lastToolId = toolId;
-  return {
-    type: 'tool_call',
-    toolName: getOptionalString(event, 'toolName'),
-    toolId,
-    input: event.args ?? {},
-  };
-}
-
-function parseToolExecutionUpdate(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent | null {
-  const toolId = getOptionalString(event, 'toolCallId') ?? state.lastToolId;
-  if (toolId !== undefined) state.lastToolId = toolId;
-  if (!Object.prototype.hasOwnProperty.call(event, 'partialResult')) return null;
-  return {
-    type: 'tool_result',
-    toolId,
-    content: event.partialResult,
-    isError: false,
-  };
-}
-
-function parseToolExecutionEnd(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent {
-  const toolId = getOptionalString(event, 'toolCallId') ?? state.lastToolId;
-  return {
-    type: 'tool_result',
-    toolId,
-    content: event.result ?? '',
-    isError: getBoolean(event, 'isError') ?? false,
-  };
-}
-
-function parseTurnEnd(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): readonly OutputEvent[] {
-  const message = getRecord(event, 'message');
-  const events: OutputEvent[] = [];
-  if (message !== null) {
-    events.push(...emitAssistantSnapshot(message, state));
-  }
-
-  const usage = message ? getRecord(message, 'usage') ?? {} : {};
-  const stopReason = message ? getString(message, 'stopReason') : null;
-  const errorMessage = message ? getString(message, 'errorMessage') : null;
-  const snapshot = message ? assistantSnapshot(message) : { text: '', thinking: '' };
-  const success = stopReason !== 'error' && stopReason !== 'aborted' && !errorMessage;
-  events.push({
-    type: 'result',
-    success,
-    result: success ? snapshot.text || null : null,
-    error: success ? null : (errorMessage ?? stopReason ?? 'OMP turn failed'),
-    inputTokens: getNumber(usage, 'input') ?? 0,
-    outputTokens: getNumber(usage, 'output') ?? 0,
-    cacheReadInputTokens: getNumber(usage, 'cacheRead') ?? 0,
-    cacheCreationInputTokens: getNumber(usage, 'cacheWrite') ?? 0,
-    cost: getRecord(usage, 'cost') ?? null,
-    modelUsage: usage,
-  });
-  return events;
-}
-
-function parseMessageEvent(
-  type: string,
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): readonly OutputEvent[] | OutputEvent | null | undefined {
-  if (type === 'message_start') {
-    const message = getRecord(event, 'message');
-    if (message !== null && getString(message, 'role') === 'assistant') {
-      state.lastAssistantText = '';
-      state.lastAssistantThinking = '';
-    }
-    return null;
-  }
-
-  if (type === 'message_update') {
-    const assistantMessageEvent = getRecord(event, 'assistantMessageEvent');
-    if (assistantMessageEvent !== null) {
-      const assistantEvent = parseAssistantEvent(assistantMessageEvent, state);
-      if (assistantEvent !== null) return assistantEvent;
-    }
-    const message = getRecord(event, 'message');
-    return message === null ? null : emitAssistantSnapshot(message, state);
-  }
-
-  if (type !== 'message_end') return undefined;
-  const message = getRecord(event, 'message');
-  return message === null ? null : emitAssistantSnapshot(message, state);
-}
-
-function parseToolEvent(
-  type: string,
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent | null | undefined {
-  if (type === 'tool_execution_start') return parseToolExecutionStart(event, state);
-  if (type === 'tool_execution_update') return parseToolExecutionUpdate(event, state);
-  if (type === 'tool_execution_end') return parseToolExecutionEnd(event, state);
-  return undefined;
-}
-
-function parseEvent(
-  line: string,
-  state: ProviderParserState
-): readonly OutputEvent[] | OutputEvent | null {
-  const parsed = tryParseJson(line);
-  if (!isRecord(parsed)) return null;
-
-  const type = getString(parsed, 'type');
-  if (type === null || IGNORED_EVENT_TYPES.has(type)) return null;
-
-  const messageEvent = parseMessageEvent(type, parsed, state);
-  if (messageEvent !== undefined) return messageEvent;
-
-  const toolEvent = parseToolEvent(type, parsed, state);
-  if (toolEvent !== undefined) return toolEvent;
-
-  if (type === 'turn_end') return parseTurnEnd(parsed, state);
-  return null;
+function parseEvent(line: string, state: ProviderParserState): ProviderParseResult {
+  return parseNormalizedOmpRpcEventLine(line, state);
 }
 
 function resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec {
@@ -397,42 +297,89 @@ function resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): Resolv
 
 function validateModelId(modelId: string | null | undefined): string | null | undefined {
   if (modelId === undefined || modelId === null) return modelId;
-  if (typeof modelId !== 'string') {
-    throw new Error(`Invalid model "${unknownToMessage(modelId)}" for provider "omp".`);
+  if (typeof modelId !== 'string' || !MODEL_ID_PATTERN.test(modelId)) {
+    throw new InvalidProviderModelError(
+      `Invalid model "${unknownToMessage(modelId)}" for provider "omp": must match ${MODEL_ID_PATTERN.source}.`
+    );
   }
   return modelId;
 }
 
+const OMP_RETRYABLE_PATTERNS: readonly RegExp[] = [
+  /\brate(?:[_ -]?limit| limited)\b/i,
+  /\bquota\b/i,
+  /\bresource[_ -]?exhausted\b/i,
+  /\btemporar(?:y|ily)\b/i,
+  /\boverloaded\b/i,
+  /\bservice unavailable\b/i,
+];
+
+const OMP_PERMANENT_PATTERNS: readonly RegExp[] = [
+  // Driver stopReason tokens (see omp-rpc-driver.ts) that always indicate a permanent,
+  // non-retryable failure: bad binary/protocol/version/limits/selector/config, malformed or
+  // over-bound frames, and missing auth/model evidence.
+  /\bunsupported-protocol\b/i,
+  /\bunsupported-limits\b/i,
+  /\bunsupported-provider-cli\b/i,
+  /\bunsupported-ui-method\b/i,
+  /\bunsupported-capability\b/i,
+  /\bunsafe-config\b/i,
+  /\bmalformed-response\b/i,
+  /\bmalformed-extension-ui-request\b/i,
+  /\bmalformed-host-tool-call\b/i,
+  /\bmalformed-host-uri-request\b/i,
+  /\bextension-error\b/i,
+  /\blocal-only-prompt\b/i,
+  /\blifetime-request-id-exceeded\b/i,
+  /\bpending-request-exceeded\b/i,
+  /\bspawn-hook-failed\b/i,
+  // Frame decoder codes (omp-rpc-protocol.ts OmpRpcProtocolError.code values) — every one of
+  // these means the wire traffic itself is invalid or out-of-bounds, never a transient condition.
+  /\bphysical-frame-too-large\b/i,
+  /\bmalformed-physical-frame\b/i,
+  /\binvalid-chunk-metadata\b/i,
+  /\binvalid-chunk-data\b/i,
+  /\bchunk-sequence-must-start-at-zero\b/i,
+  /\bchunk-sequence-mismatch\b/i,
+  /\bchunk-sequence-exceeds-declared-length\b/i,
+  /\bchunk-sequence-length-mismatch\b/i,
+  /\bmalformed-json-in-reassembled-frame\b/i,
+  /\bnon-object-reassembled-frame\b/i,
+  /\binvalid-utf8-in-reassembled-frame\b/i,
+  /\binflight-reassembly-bytes-exceeded\b/i,
+  /\binterleaved-chunk-sequence\b/i,
+  /\binterrupted-chunk-sequence\b/i,
+  /\bincomplete-physical-frame\b/i,
+  /\bincomplete-chunk-sequence\b/i,
+  /\boutbound-frame-too-large\b/i,
+  /\bpre-negotiation-rpc-chunk\b/i,
+  /\b[\w-]+-bound-exceeded\b/i,
+  // Auth/model absence and permission/usage errors surfaced verbatim in OMP output.
+  /\bno available authenticated\b/i,
+  /\bno keyless model\b/i,
+  /\bno valid authentication\b/i,
+  /\bmissing api key\b/i,
+  /\brun\s*\/login\b/i,
+  /\bunknown option\b/i,
+  /\bfailed to load\b/i,
+  /\bcannot find module\b/i,
+  /\bno such file or directory\b/i,
+];
+
 function classifyError(error: unknown): ErrorClassification {
-  return classifyBaseProviderError(
-    error,
-    [
-      /\brate(?:[_ -]?limit| limited)\b/i,
-      /\bquota\b/i,
-      /\bresource[_ -]?exhausted\b/i,
-      /\btemporar(?:y|ily)\b/i,
-      /\boverloaded\b/i,
-      /\bservice unavailable\b/i,
-    ],
-    [
-      /\b(cancelled|canceled|aborted|interrupted)\b/i,
-      /\brun\s*\/login\b/i,
-      /\bmissing api key\b/i,
-      /\bno valid authentication\b/i,
-      /\bunknown option\b/i,
-      /\bfailed to load\b/i,
-      /\bcannot find module\b/i,
-      /\bno such file or directory\b/i,
-    ]
-  );
+  const message = unknownToMessage(error);
+  if (/\b(cancelled|canceled)\b/i.test(message)) {
+    return { retryable: false, kind: 'cancelled' };
+  }
+  return classifyBaseProviderError(error, OMP_RETRYABLE_PATTERNS, OMP_PERMANENT_PATTERNS);
 }
 
 export const ompAdapter: ProviderAdapter = {
   id: 'omp',
-  displayName: 'OMP',
+  displayName: 'OMP (Oh My Pi)',
   binary: 'omp',
-  adapterVersion: '1',
-  credentialEnvKeys: [],
+  adapterVersion: '2',
+  credentialEnvKeys: CREDENTIAL_ENV_KEYS,
   modelCatalog: MODEL_CATALOG,
   levelMapping: LEVEL_MAPPING,
   defaultLevel: 'level2',

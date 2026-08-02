@@ -46,7 +46,11 @@ const { generateName } = require('./name-generator');
 const configValidator = require('./config-validator');
 const TemplateResolver = require('./template-resolver');
 const { loadSettings } = require('../lib/settings');
-const { normalizeProviderName, getDefaultProviderId } = require('../lib/provider-names');
+const {
+  normalizeProviderName,
+  getDefaultProviderId,
+  providerSupportsCapability,
+} = require('../lib/provider-names');
 const { resolveRunPlan } = require('../lib/run-plan');
 const { isProcessRunning } = require('../lib/process-liveness');
 const { getProvider } = require('./providers');
@@ -1819,14 +1823,19 @@ class Orchestrator {
     let isolationImage = null;
 
     if (options.isolation) {
+      // Resolve the provider first so the capability gate and the cluster's image variant (which
+      // installs the provider CLI as a Docker-cached layer) both see the same provider. Providers
+      // baked into the base image (e.g. Claude) resolve back to the base image unchanged.
+      const providerName = this._resolveClusterProvider(config);
+      if (!providerSupportsCapability(providerName, 'dockerIsolation')) {
+        throw new Error(
+          `Provider ${providerName} does not support Docker isolation; run without --docker (worktree isolation is supported).`
+        );
+      }
       if (!IsolationManager.isDockerAvailable()) {
         throw new Error('Docker is not available. Install Docker to use --docker mode.');
       }
 
-      // Resolve the provider first so the cluster runs on that provider's image variant, which
-      // installs the provider CLI as a Docker-cached layer. Providers baked into the base image
-      // (e.g. Claude) resolve back to the base image unchanged.
-      const providerName = this._resolveClusterProvider(config);
       const baseImage = options.isolationImage || 'zeroshot-cluster-base';
       const image = IsolationManager.imageForProvider(providerName, baseImage);
       await IsolationManager.ensureImage(
@@ -1850,6 +1859,12 @@ class Orchestrator {
       });
       this._log(`[Orchestrator] Container created: ${containerId} (workDir: ${workDir})`);
     } else if (options.worktree) {
+      const providerName = this._resolveClusterProvider(config);
+      if (!providerSupportsCapability(providerName, 'worktreeIsolation')) {
+        throw new Error(
+          `Provider ${providerName} does not support worktree isolation; run without --worktree.`
+        );
+      }
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});

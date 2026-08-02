@@ -6,7 +6,11 @@ import { addTask, generateId, ensureDirs } from './store.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const { prepareSingleAgentProviderCommand } = require('./provider-helper-runtime.js');
+const {
+  buildOmpPrompt,
+  getProviderRegistryEntry,
+  prepareSingleAgentProviderCommand,
+} = require('./provider-helper-runtime.js');
 const {
   ISOLATED_SETTINGS_FILE_ENV,
   ISOLATED_SETTINGS_FILE_MARKER,
@@ -63,7 +67,9 @@ export function spawnTask(prompt, options = {}) {
     jsonSchema,
     options,
     providerName,
-    commandSpec
+    commandSpec,
+    prompt,
+    prepared.options
   );
   const watcherScript = resolveWatcherScript(
     {
@@ -250,7 +256,20 @@ export function buildTaskRecord({
   };
 }
 
-function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, commandSpec) {
+function isRpcStdioLane(providerName) {
+  return getProviderRegistryEntry(providerName).invoke.lane === 'rpc-stdio';
+}
+
+function buildWatcherConfig(
+  outputFormat,
+  jsonSchema,
+  options,
+  providerName,
+  commandSpec,
+  prompt,
+  resolvedOptions
+) {
+  const rpcLane = isRpcStdioLane(providerName);
   return {
     outputFormat,
     jsonSchema,
@@ -259,18 +278,25 @@ function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, com
     provider: providerName,
     command: commandSpec.binary,
     env: commandSpec.env || {},
-    commandSpec: buildWatcherCommandSpec(commandSpec),
+    commandSpec: buildWatcherCommandSpec(commandSpec, rpcLane),
+    ...(rpcLane ? { prompt: buildOmpPrompt(prompt, resolvedOptions || {}) } : {}),
   };
 }
 
-function buildWatcherCommandSpec(commandSpec) {
+function buildWatcherCommandSpec(commandSpec, keepArgs = false) {
   const watcherCommandSpec = { ...commandSpec };
-  delete watcherCommandSpec.args;
+  if (!keepArgs) delete watcherCommandSpec.args;
   return watcherCommandSpec;
 }
 
 export function shouldUseAttachableWatcher(options, providerName) {
   if (options.attachable === false) {
+    return false;
+  }
+
+  // The rpc-stdio lane owns bidirectional correlated RPC over stdio itself (see
+  // omp-rpc-driver.ts) and always uses rpc-watcher.js instead of the attachable PTY watcher.
+  if (isRpcStdioLane(providerName)) {
     return false;
   }
 
@@ -282,6 +308,9 @@ export function shouldUseAttachableWatcher(options, providerName) {
 }
 
 function resolveWatcherScript(options, providerName) {
+  if (isRpcStdioLane(providerName)) {
+    return join(__dirname, 'rpc-watcher.js');
+  }
   const useAttachable = shouldUseAttachableWatcher(options, providerName);
   return useAttachable ? join(__dirname, 'attachable-watcher.js') : join(__dirname, 'watcher.js');
 }

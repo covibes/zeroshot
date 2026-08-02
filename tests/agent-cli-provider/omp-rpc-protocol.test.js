@@ -5,8 +5,10 @@ const path = require('node:path');
 const { test } = require('node:test');
 
 const {
-  OMP_SUPPORTED_VERSION,
+  OMP_INSTALL_COMMAND,
+  OMP_PACKAGE_NAME,
   OMP_RELEASE_ASSETS,
+  OMP_SUPPORTED_VERSION,
   findOmpReleaseAsset,
   ompReleaseAssetDownloadUrl,
 } = require('../../lib/agent-cli-provider/omp-release');
@@ -74,9 +76,16 @@ const HAPPY_PATH_SCENARIOS = [
   'extension-shutdown',
 ];
 
-// (a) omp-release exports.
+// (a) omp-release exports: version-selected package install (not asset-digest attestation)
+// alongside the preserved release-asset digest table #868/#869/#901 consume for their own
+// download-verification paths.
 test('omp-release exports OMP_SUPPORTED_VERSION 17.2.1', () => {
   assert.equal(OMP_SUPPORTED_VERSION, '17.2.1');
+});
+
+test('omp-release exports the bun install command for the pinned package/version', () => {
+  assert.equal(OMP_PACKAGE_NAME, '@oh-my-pi/pi-coding-agent');
+  assert.equal(OMP_INSTALL_COMMAND, 'bun install -g @oh-my-pi/pi-coding-agent@17.2.1');
 });
 
 test('omp-release exports exactly 6 Unix assets with the verified digests', () => {

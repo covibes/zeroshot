@@ -8,7 +8,7 @@ import { opencodeAdapter } from './adapters/opencode';
 import { ompAdapter } from './adapters/omp';
 import { piAdapter } from './adapters/pi';
 import { resolveClaudeCommand } from './claude-command';
-import { OMP_INSTALL_COMMAND } from './omp-release';
+import { OMP_AUTH_INSTRUCTIONS, OMP_INSTALL_COMMAND } from './omp-release';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';
@@ -44,7 +44,15 @@ export interface AcpStdioProviderInvokeSpec {
   readonly transport: 'stdio';
 }
 
-export type ProviderInvokeSpec = SpawnProviderInvokeSpec | AcpStdioProviderInvokeSpec;
+export interface RpcStdioProviderInvokeSpec {
+  readonly lane: 'rpc-stdio';
+  readonly protocol: 'omp-v2';
+}
+
+export type ProviderInvokeSpec =
+  | SpawnProviderInvokeSpec
+  | AcpStdioProviderInvokeSpec
+  | RpcStdioProviderInvokeSpec;
 
 export type ProviderCommandSpec = FixedProviderCommandSpec | ConfiguredClaudeCommandSpec;
 
@@ -146,6 +154,10 @@ const ACP_STDIO_INVOKE = Object.freeze({
   lane: 'acp-stdio',
   transport: 'stdio',
 }) as AcpStdioProviderInvokeSpec;
+const RPC_STDIO_INVOKE = Object.freeze({
+  lane: 'rpc-stdio',
+  protocol: 'omp-v2',
+}) as RpcStdioProviderInvokeSpec;
 
 const kiroAdapter = createAcpAdapter({
   provider: 'kiro',
@@ -428,22 +440,29 @@ export const providerRegistry = [
   {
     id: 'omp',
     default: false,
-    aliases: [],
-    displayName: 'OMP',
+    aliases: ['oh-my-pi'],
+    displayName: 'OMP (Oh My Pi)',
     binary: 'omp',
     command: { kind: 'fixed', command: 'omp', args: [] },
-    invoke: SPAWN_INVOKE,
+    invoke: RPC_STDIO_INVOKE,
     installInstructions: OMP_INSTALL_COMMAND,
-    authInstructions: 'omp\n/login',
+    authInstructions: OMP_AUTH_INSTRUCTIONS,
     credentialPaths: ['~/.omp'],
     credentialEnvKeys: ompAdapter.credentialEnvKeys,
     settingsFields: [],
     availabilityProbe: 'help-or-version',
+    // Written out explicitly rather than spread from STANDARD_CAPABILITIES, which defaults
+    // dockerIsolation to true; OMP stays worktree-only until Subissue 6 flips dockerIsolation.
     capabilities: {
-      ...STANDARD_CAPABILITIES,
+      dockerIsolation: false,
+      worktreeIsolation: true,
       mcpServers: false,
       jsonSchema: false,
+      streamJson: true,
+      thinkingMode: true,
       reasoningEffort: true,
+      sessionResume: false,
+      webSearch: false,
     },
     docs: {
       label: 'OMP',

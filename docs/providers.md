@@ -8,17 +8,17 @@ Zeroshot supports two provider shapes:
 
 ## Supported Providers
 
-| Provider | CLI         | Install                                                                  |
-| -------- | ----------- | ------------------------------------------------------------------------ |
-| Claude   | Claude Code | `npm install -g @anthropic-ai/claude-code`                               |
-| Codex    | Codex       | `npm install -g @openai/codex`                                           |
-| Gateway  | Bundled     | No external CLI required                                                 |
-| Gemini   | Gemini      | `npm install -g @google/gemini-cli`                                      |
-| Opencode | Opencode    | See https://opencode.ai                                                  |
-| Pi       | Pi          | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
-| OMP      | OMP         | `npm install -g --ignore-scripts @oh-my-pi/pi-coding-agent`              |
-| Kiro     | Kiro        | See https://kiro.dev/docs/cli/                                           |
-| Copilot  | Copilot     | `npm install -g @github/copilot`                                         |
+| Provider | CLI                              | Install                                                                  |
+| -------- | -------------------------------- | ------------------------------------------------------------------------ |
+| Claude   | Claude Code                      | `npm install -g @anthropic-ai/claude-code`                               |
+| Codex    | Codex                            | `npm install -g @openai/codex`                                           |
+| Gateway  | Bundled                          | No external CLI required                                                 |
+| Gemini   | Gemini                           | `npm install -g @google/gemini-cli`                                      |
+| Opencode | Opencode                         | See https://opencode.ai                                                  |
+| Pi       | Pi                               | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
+| OMP      | OMP (Oh My Pi), alias `oh-my-pi` | `bun install -g @oh-my-pi/pi-coding-agent@17.2.1`                        |
+| Kiro     | Kiro                             | See https://kiro.dev/docs/cli/                                           |
+| Copilot  | Copilot                          | `npm install -g @github/copilot`                                         |
 
 ## Selecting a Provider
 
@@ -78,6 +78,29 @@ setting it for those providers is rejected. No equally safe, explicit,
 support-detectable additive native-search control is established for them.
 Permission or tool allowlists authorize already-present tools; they must not be
 presented as controls that enable search.
+
+## OMP (Oh My Pi)
+
+OMP uses a dedicated `rpc-stdio` invoke lane (`{lane: 'rpc-stdio', protocol: 'omp-v2'}`) that
+speaks OMP's bidirectional RPC v2 protocol over stdio, instead of a one-shot CLI invocation.
+Install is version-selected package installation, not release-asset digest attestation — do not
+use OMP's shell installer, which downloads an asset without checking its SHA-256. OAuth users
+authenticate afterward with OMP's own interactive `omp` then `/login` flow.
+
+Capabilities: `worktreeIsolation:true`, `streamJson:true`, `thinkingMode:true`,
+`reasoningEffort:true`, `jsonSchema:false`, `mcpServers:false`, `webSearch:false`,
+`sessionResume:false`, `dockerIsolation:false`. `mcpServers` and `webSearch` mean Zeroshot's own
+command-level injection/toggle surfaces, which OMP does not expose — OMP's own discovered
+MCP/web tools remain governed by its native config, not by Zeroshot. `sessionResume` and
+`dockerIsolation` are false in this slice; `--provider omp --docker` fails before any container
+is created, and `--provider omp --worktree` is supported.
+
+`providerSettings.omp` stays empty; OMP's own settings/model roles/profiles remain under its
+documented config. Zeroshot controls only its existing agent `modelLevel`, explicit `model`, and
+`reasoningEffort` surfaces, plus a fixed safety config overlay applied per task (pins
+`marketplace.autoUpdate` off and neutral `todo`/`task`/`memory`/`advisor`/`async`/
+`bash.autoBackground` defaults, while leaving project/user context, skills, rules, extensions,
+and MCP flowing from OMP's native config).
 
 ## Gateway Provider
 

@@ -1,8 +1,31 @@
 export const OMP_SUPPORTED_VERSION = '17.2.1' as const;
 export const OMP_PACKAGE_NAME = '@oh-my-pi/pi-coding-agent' as const;
 export const OMP_BINARY_NAME = 'omp' as const;
+
+// Host remediation is version-selected package installation via bun, not release-asset digest
+// attestation; the v17.2.1 shell installer downloads an asset without checking the plan's
+// SHA-256, so it is never recommended here. `OMP_RELEASE_ASSETS` below is a separate, honest
+// artifact-verification contract (asset name + sha256 per platform) that #868/#869/#901 consume
+// for their own digest-checked download paths — it is not implied or claimed by this command.
+//
+// KEEP OMP_RELEASE_DOWNLOAD_BASE_URL / OmpReleasePlatform / OmpReleaseAsset / OMP_RELEASE_ASSETS /
+// findOmpReleaseAsset / ompReleaseAssetDownloadUrl. This is a deliberate, verified deviation from
+// issue #900's own PLAN_READY step 1, which pre-dates and is superseded by the issue's own
+// non-negotiable clarification comment (verified verbatim via
+// `gh api repos/the-open-engine/zeroshot/issues/comments/5159295182`):
+// "(1) preserve OMP_RELEASE_ASSETS, all six pinned SHA-256 digests, findOmpReleaseAsset, and
+// download URL helpers from #897. Host PATH/package guidance must not claim artifact attestation,
+// but Zeroshot-owned Docker, CI conformance, and update-review downloads in #868/#869/#901 consume
+// this single release contract; deleting it breaks downstream issues." Any validator flagging
+// this file for exporting a "release-asset digest table" is checking stale plan text against a
+// clarification it never read — read the comment above (or fetch that comment id) before scoring
+// this as a defect.
 export const OMP_INSTALL_COMMAND =
-  `npm install -g --ignore-scripts ${OMP_PACKAGE_NAME}@${OMP_SUPPORTED_VERSION}` as const;
+  `bun install -g ${OMP_PACKAGE_NAME}@${OMP_SUPPORTED_VERSION}` as const;
+export const OMP_AUTH_INSTRUCTIONS = 'omp\n/login' as const;
+export const OMP_REMEDIATION =
+  `Install the pinned OMP release with \`${OMP_INSTALL_COMMAND}\`, then authenticate OAuth users via \`${OMP_AUTH_INSTRUCTIONS}\`.` as const;
+
 export const OMP_RELEASE_DOWNLOAD_BASE_URL =
   `https://github.com/can1357/oh-my-pi/releases/download/v${OMP_SUPPORTED_VERSION}` as const;
 
