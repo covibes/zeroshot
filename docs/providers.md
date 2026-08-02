@@ -147,8 +147,11 @@ A resume is an atomic owner transfer rather than a second claim: one transaction
 committed owner's lineage onto the resumed task's row and clears the prior row, both sides fenced
 on their exact persisted value, and the watcher runs it from the `ready` hook strictly before the
 prompt is written. The resumed row stays `provisional` until its own success boundary, so the
-partition is never owned by two rows, never by none, and a half-finished continuation is never
-published as resumable. The watcher compares the complete committed tuple — full session id, full
+partition never has two committed owners and a half-finished continuation is never published as
+resumable. It does, however, spend the whole resumed turn with *no* committed owner, and it can be
+named by several rows at once — a resumed row exists before its transfer runs, and two competing
+resumes leave three rows on one partition — which is why cleanup fences on every authoritative
+claim rather than on the committed rows. The watcher compares the complete committed tuple — full session id, full
 session file path (never a basename), partition and session-file inode identity, artifact manifest
 digest, and an `executionFingerprint` binding the pinned OMP release, the config overlay's content,
 the requested `--model`/`--thinking`/`--approval-mode` selectors, and the concrete provider, model,
@@ -157,7 +160,11 @@ and thinking level OMP reported.
 Task `clean`, cluster clear, and global `purge` all reclaim partitions through
 `task-lib/omp-session-cleanup.js`, validating the persisted owner uid and the storage-root and
 partition inode identities first, then staging the directory under an unguessable name before
-removing it so a substituted directory is reported rather than deleted. An unsafe or unresolvable
+removing it so a substituted directory is reported rather than deleted. The owner check and the
+staging rename run together in one task-store write transaction, fenced on every other row holding
+an authoritative (`provisional` or `committed`) claim on the partition — after a successful resume
+transfer the live owner is `provisional`, so a committed-only check would let a retired competing
+resume delete a session that is still in use. An unsafe or unresolvable
 path keeps the owner record and prints a warning instead of deleting. **OMP's shared blob store is
 never written to or deleted by any Zeroshot cleanup surface** — it is machine-wide and addressed by
 other sessions' transcripts, so `deleteOmpSessionPartition` refuses outright any path that resolves

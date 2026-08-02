@@ -137,6 +137,13 @@ function committedOwnersFor(partitionId, excludeTaskId = null) {
   );
 }
 
+function authoritativeOwnersFor(partitionId, excludeTaskId = null) {
+  return callOwnership(
+    'findAuthoritativeOwnersForPartition',
+    `${JSON.stringify(partitionId)}, ${JSON.stringify(excludeTaskId)}`
+  );
+}
+
 describe('task-lib/omp-session-ownership.js (owner-fenced ownership state machine)', function () {
   this.timeout(30000);
 
@@ -431,6 +438,44 @@ describe('task-lib/omp-session-ownership.js (owner-fenced ownership state machin
         (await getOwnership(priorId)).state,
         'committed',
         'the still-resumable prior session survives the failed resume attempt'
+      );
+    });
+
+    it('third-owner interleaving: the retired loser is the only row a committed-only fence can see', async function () {
+      // Prior owner P, plus two competing resumes A and B of the same committed session. A wins
+      // the atomic transfer; B's transfer fails and its turn is retired. This is the exact state
+      // in which a committed-only cleanup fence is blind: `findCommittedOwnersForPartition`
+      // returns nothing at all, because the live owner A is *provisional*, and B's own record
+      // carries no partitionIdentity to fail the descriptor-pinned identity check either — so
+      // cleanup driven by B would have renamed and deleted A's live partition.
+      const priorId = await seedCommittedPrior('third-owner');
+      const winnerId = await seedStandalone('third-owner-winner');
+      const loserId = await seedStandalone('third-owner-loser');
+
+      assert.ok(await transferOwnership(priorId, winnerId), 'A wins the transfer');
+      assert.strictEqual(
+        await transferOwnership(priorId, loserId),
+        null,
+        'the prior owner is already released, so B fails closed'
+      );
+      const retired = await markCleanupRequiredFor(loserId);
+      assert.strictEqual(retired.state, 'cleanup-required');
+      assert.strictEqual(retired.partitionIdentity, null, 'B never observed the partition itself');
+
+      assert.deepStrictEqual(
+        await committedOwnersFor(partition.partitionId, loserId),
+        [],
+        'no row is committed mid-turn — this is why the committed-only fence let B through'
+      );
+      assert.deepStrictEqual(
+        await authoritativeOwnersFor(partition.partitionId, loserId),
+        [{ taskId: winnerId, state: 'provisional' }],
+        "the authoritative fence sees A's live provisional claim and refuses on B's behalf"
+      );
+      assert.deepStrictEqual(
+        await authoritativeOwnersFor(partition.partitionId, winnerId),
+        [],
+        'A itself is fenced only by rows other than its own; B is retired and claims nothing'
       );
     });
 

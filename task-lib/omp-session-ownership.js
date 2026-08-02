@@ -17,9 +17,18 @@
 // A resumed turn additionally performs `transferOmpSessionOwnership` before its prompt is written:
 // in one transaction the prior committed owner's record is cleared and its lineage (partition
 // identity + session tuple) is moved onto the resumed task's still-`provisional` row. That keeps
-// exactly one row referencing the partition at all times and keeps "committed" meaning what it
-// means everywhere else — this turn's own success boundary has passed — instead of publishing a
-// half-finished continuation as resumable.
+// exactly one *committed* owner — and keeps "committed" meaning what it means everywhere else,
+// this turn's own success boundary has passed — instead of publishing a half-finished
+// continuation as resumable.
+//
+// It does NOT keep exactly one row *referencing* the partition. A resumed row is inserted (and
+// therefore already names the partition) before its transfer runs, so two competing resumes of the
+// same committed session put three rows on one partition: the prior owner plus both candidates.
+// Only one transfer can win; the loser fails closed and is retired to `cleanup-required` holding a
+// record that still names the partition but carries no lineage of its own. Anything that acts on a
+// partition — cleanup above all — must therefore fence on *every* row that references it
+// (`findAuthoritativeOwnersForPartition`), never on the committed rows alone and never on the
+// assumption that its own row is the only claimant.
 import { basename } from 'path';
 import { statSync } from 'fs';
 import { getTask, getTaskStoreDatabase } from './store.js';
@@ -176,24 +185,82 @@ export function markCleanupRequired(taskId) {
   return casOwnership(taskId, current, updated) ? updated : readOwnership(taskId);
 }
 
-/** Rows other than `excludeTaskId` that still hold a committed record for this partition. Cleanup
- * consults this so a partition whose committed owner is a *different* row (a resume that crashed
- * before its ownership transfer, leaving the prior owner still committed) is never deleted out
- * from under that owner. */
-export function findCommittedOwnersForPartition(partitionId, excludeTaskId = null) {
-  const database = getTaskStoreDatabase();
+/**
+ * The ownership states that constitute a live claim on a partition.
+ *
+ * `provisional` is authoritative because it is the state a turn occupies while it is *using* the
+ * partition — a fresh turn writing into it, and (post-transfer) a resumed turn continuing it right
+ * up to its own success boundary. `committed` is authoritative because the session is resumable.
+ *
+ * `cleanup-required` is deliberately NOT authoritative: it is the state of a turn that has already
+ * been retired and makes no further claim. Treating it as one would deadlock cleanup whenever two
+ * retired rows name the same partition (the third-owner residue below) — each would refuse forever
+ * on account of the other, and the partition could never be reclaimed by anybody.
+ */
+export const AUTHORITATIVE_OWNERSHIP_STATES = Object.freeze(['provisional', 'committed']);
+
+const AUTHORITATIVE_STATES = new Set(AUTHORITATIVE_OWNERSHIP_STATES);
+
+/** Every row other than `excludeTaskId` whose *own* valid record names this partition, as
+ * `{taskId, state}`. Rows whose stored JSON is unparseable, invalid, or owned by a different task
+ * id are not that row's ownership and are skipped. */
+function ownersForPartition(partitionId, excludeTaskId, database) {
   const rows = database
     .prepare(
       `SELECT id, omp_session_ownership FROM tasks
        WHERE omp_session_ownership IS NOT NULL
-         AND json_extract(omp_session_ownership, '$.partitionId') = ?
-         AND json_extract(omp_session_ownership, '$.state') = 'committed'`
+         AND json_extract(omp_session_ownership, '$.partitionId') = ?`
     )
     .all(partitionId);
-  return rows
-    .filter((row) => row.id !== excludeTaskId)
-    .filter((row) => validateOwnedByTask(JSON.parse(row.omp_session_ownership), row.id))
-    .map((row) => row.id);
+  const owners = [];
+  for (const row of rows) {
+    if (row.id === excludeTaskId) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(row.omp_session_ownership);
+    } catch {
+      continue;
+    }
+    const record = validateOwnedByTask(parsed, row.id);
+    if (record) owners.push({ taskId: row.id, state: record.state });
+  }
+  return owners;
+}
+
+/** Rows other than `excludeTaskId` that still hold a committed record for this partition — i.e.
+ * the rows for which this partition is a *resumable* session. */
+export function findCommittedOwnersForPartition(
+  partitionId,
+  excludeTaskId = null,
+  database = getTaskStoreDatabase()
+) {
+  return ownersForPartition(partitionId, excludeTaskId, database)
+    .filter((owner) => owner.state === 'committed')
+    .map((owner) => owner.taskId);
+}
+
+/**
+ * Rows other than `excludeTaskId` holding an authoritative (`provisional` or `committed`) claim on
+ * this partition, as `{taskId, state}`.
+ *
+ * This is the owner fence cleanup runs on, and it is strictly wider than the committed owners:
+ * after a resume's atomic transfer the winning row is `provisional` — it carries the whole
+ * inherited lineage and is actively continuing the session, while *no* row is committed. A losing
+ * competing resume, retired to `cleanup-required`, still names the same partition and holds no
+ * lineage of its own, so a committed-only fence would see nothing and let it delete the winner's
+ * live partition out from under it.
+ *
+ * `database` is injectable so a caller can run this inside its own write transaction (see
+ * task-lib/omp-session-cleanup.js) rather than racing its own check.
+ */
+export function findAuthoritativeOwnersForPartition(
+  partitionId,
+  excludeTaskId = null,
+  database = getTaskStoreDatabase()
+) {
+  return ownersForPartition(partitionId, excludeTaskId, database).filter((owner) =>
+    AUTHORITATIVE_STATES.has(owner.state)
+  );
 }
 
 /**

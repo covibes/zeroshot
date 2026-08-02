@@ -84,30 +84,37 @@ function currentUid() {
 }
 
 /**
- * Delete one owner-validated partition directory. Never the shared OMP CAS blob root, never
- * anything outside `<storageRoot>/omp-sessions/`, and never a directory that is not the one the
- * persisted ownership record describes.
+ * Phase 1 of deletion: validate the owner record against what is actually on disk and move the
+ * partition out of its canonical name.
  *
  * The check/use race (CodeQL js/file-system-race) is closed by *moving before deleting*: the
  * partition is renamed, within its own parent, to an unguessable `.zeroshot-deleting-<uuid>` name
- * and only then re-pinned and removed. `rename(2)` is atomic, so after it succeeds the object
- * under that fresh name can no longer be swapped by racing the original path; the post-rename
- * identity comparison proves it is still the same directory that passed validation, and any
- * mismatch aborts with the directory parked under its clearly-marked name rather than recursively
- * deleting an unknown tree.
+ * and only then re-pinned. `rename(2)` is atomic, so after it succeeds the object under that fresh
+ * name can no longer be swapped by racing the original path; the post-rename identity comparison
+ * proves it is still the same directory that passed validation, and any mismatch aborts with the
+ * directory parked under its clearly-marked name rather than recursively deleting an unknown tree.
  *
- * Never throws. `{deleted:false, reason}` means the caller must preserve the owner record and warn.
+ * Splitting the rename from the recursive removal is what lets a caller hold a *task-store* write
+ * fence across "no other row claims this partition" -> "the partition no longer answers to its
+ * canonical name" without also holding it across an arbitrarily long `rm -r`. See
+ * task-lib/omp-session-cleanup.js.
+ *
+ * Never throws.
+ *   `{staged:true, stagingPath}`          the directory is parked and the caller must remove it
+ *   `{staged:false, deleted:true, ...}`   there was nothing to delete
+ *   `{staged:false, deleted:false, ...}`  refused; preserve the owner record and warn
  *
  * @param {object} ownership canonical, already-validated task.ompSessionOwnership record
  */
-function deleteOmpSessionPartition(ownership) {
+function stageOmpSessionPartitionForDeletion(ownership) {
   if (!ownership || typeof ownership !== 'object') {
-    return { deleted: false, reason: 'no ownership record' };
+    return { staged: false, deleted: false, reason: 'no ownership record' };
   }
   const { partitionId, storageRoot, partitionPath, ownerUid, storageRootIdentity } = ownership;
 
   if (ownerUid !== currentUid()) {
     return {
+      staged: false,
       deleted: false,
       reason: `recorded owner uid ${ownerUid} is not the current uid ${currentUid()}`,
     };
@@ -117,10 +124,11 @@ function deleteOmpSessionPartition(ownership) {
   try {
     expectedPartitionPath = partitionPathFor(storageRoot, partitionId);
   } catch (error) {
-    return { deleted: false, reason: error.message };
+    return { staged: false, deleted: false, reason: error.message };
   }
   if (expectedPartitionPath !== partitionPath) {
     return {
+      staged: false,
       deleted: false,
       reason: `${partitionPath} is not the canonical partition path for ${partitionId}`,
     };
@@ -128,6 +136,7 @@ function deleteOmpSessionPartition(ownership) {
   const root = ompSessionsRoot(storageRoot);
   if (path.dirname(expectedPartitionPath) !== root) {
     return {
+      staged: false,
       deleted: false,
       reason: `${expectedPartitionPath} does not resolve directly under ${root}`,
     };
@@ -136,6 +145,7 @@ function deleteOmpSessionPartition(ownership) {
   // partition path, whatever a tampered or migrated storageRoot claims.
   if (isInsideOmpBlobsDir(expectedPartitionPath) || isInsideOmpBlobsDir(root)) {
     return {
+      staged: false,
       deleted: false,
       reason: `${expectedPartitionPath} resolves inside the shared OMP blob store; refusing to delete`,
     };
@@ -147,50 +157,53 @@ function deleteOmpSessionPartition(ownership) {
   try {
     rootPin = pinDirectoryIdentity(root);
   } catch (error) {
-    if (error.code === 'ENOENT') return { deleted: true, reason: 'already absent' };
-    return { deleted: false, reason: `${root}: ${error.message}` };
+    if (error.code === 'ENOENT') return { staged: false, deleted: true, reason: 'already absent' };
+    return { staged: false, deleted: false, reason: `${root}: ${error.message}` };
   }
   if (String(rootPin.uid) !== currentUid()) {
-    return { deleted: false, reason: `${root} is not owned by the current user` };
+    return { staged: false, deleted: false, reason: `${root} is not owned by the current user` };
   }
 
   let storagePin;
   try {
     storagePin = pinDirectoryIdentity(path.resolve(storageRoot));
   } catch (error) {
-    return { deleted: false, reason: `${storageRoot}: ${error.message}` };
+    return { staged: false, deleted: false, reason: `${storageRoot}: ${error.message}` };
   }
   if (!sameIdentity(storagePin.identity, storageRootIdentity)) {
     return {
+      staged: false,
       deleted: false,
       reason: `${storageRoot} identity ${storagePin.identity.device}:${storagePin.identity.inode} does not match the recorded ${storageRootIdentity?.device}:${storageRootIdentity?.inode}`,
     };
   }
   if (String(storagePin.uid) !== currentUid()) {
-    return { deleted: false, reason: `${storageRoot} is not owned by the current user` };
+    return { staged: false, deleted: false, reason: `${storageRoot} is not owned by the current user` };
   }
 
   let before;
   try {
     before = pinDirectoryIdentity(expectedPartitionPath);
   } catch (error) {
-    if (error.code === 'ENOENT') return { deleted: true, reason: 'already absent' };
+    if (error.code === 'ENOENT') return { staged: false, deleted: true, reason: 'already absent' };
     if (error.code === 'ELOOP' || error.code === 'EMLINK') {
-      return { deleted: false, reason: `${expectedPartitionPath} is a symlink; refusing to delete` };
+      return { staged: false, deleted: false, reason: `${expectedPartitionPath} is a symlink; refusing to delete` };
     }
     if (error.code === 'ENOTDIR') {
       return {
+        staged: false,
         deleted: false,
         reason: `${expectedPartitionPath} is not a real directory; refusing to delete`,
       };
     }
-    return { deleted: false, reason: error.message };
+    return { staged: false, deleted: false, reason: error.message };
   }
   if (String(before.uid) !== currentUid()) {
-    return { deleted: false, reason: `${expectedPartitionPath} is not owned by the current user` };
+    return { staged: false, deleted: false, reason: `${expectedPartitionPath} is not owned by the current user` };
   }
   if (ownership.partitionIdentity && !sameIdentity(before.identity, ownership.partitionIdentity)) {
     return {
+      staged: false,
       deleted: false,
       reason: `${expectedPartitionPath} identity ${before.identity.device}:${before.identity.inode} does not match the recorded ${ownership.partitionIdentity.device}:${ownership.partitionIdentity.inode}`,
     };
@@ -200,8 +213,8 @@ function deleteOmpSessionPartition(ownership) {
   try {
     fs.renameSync(expectedPartitionPath, stagingPath);
   } catch (error) {
-    if (error.code === 'ENOENT') return { deleted: true, reason: 'already absent' };
-    return { deleted: false, reason: `could not stage ${expectedPartitionPath}: ${error.message}` };
+    if (error.code === 'ENOENT') return { staged: false, deleted: true, reason: 'already absent' };
+    return { staged: false, deleted: false, reason: `could not stage ${expectedPartitionPath}: ${error.message}` };
   }
 
   let after;
@@ -209,23 +222,64 @@ function deleteOmpSessionPartition(ownership) {
     after = pinDirectoryIdentity(stagingPath);
   } catch (error) {
     return {
+      staged: false,
       deleted: false,
       reason: `staged ${stagingPath} could not be pinned (${error.message}); left in place for inspection`,
     };
   }
   if (!sameIdentity(after.identity, before.identity)) {
     return {
+      staged: false,
       deleted: false,
       reason: `${expectedPartitionPath} was substituted before deletion; the staged directory ${stagingPath} was left in place for inspection`,
     };
   }
 
+  return { staged: true, stagingPath };
+}
+
+/**
+ * Phase 2: remove a directory that {@link stageOmpSessionPartitionForDeletion} already parked under
+ * its unguessable staging name. Safe to run outside any lock — the tree no longer answers to a name
+ * anything else knows.
+ */
+function removeStagedOmpSessionPartition(stagingPath) {
+  // This is an exported recursive delete, so it re-derives that its argument really is a staging
+  // name this module minted — a direct `.zeroshot-deleting-*` child of an `omp-sessions/` root —
+  // rather than trusting the caller to have got it from stageOmpSessionPartitionForDeletion.
+  if (typeof stagingPath !== 'string' || !path.isAbsolute(stagingPath)) {
+    return { deleted: false, reason: `${stagingPath} is not an absolute staged partition path` };
+  }
+  if (!path.basename(stagingPath).startsWith(DELETING_PREFIX)) {
+    return { deleted: false, reason: `${stagingPath} is not a staged partition directory` };
+  }
+  if (path.basename(path.dirname(stagingPath)) !== OMP_SESSIONS_SUBDIR) {
+    return {
+      deleted: false,
+      reason: `${stagingPath} does not live directly under an ${OMP_SESSIONS_SUBDIR}/ root`,
+    };
+  }
   try {
     fs.rmSync(stagingPath, { recursive: true, force: true });
   } catch (error) {
     return { deleted: false, reason: `${stagingPath}: ${error.message}` };
   }
   return { deleted: true };
+}
+
+/**
+ * Validate, stage, and remove one owner-validated partition directory. Never the shared OMP CAS
+ * blob root, never anything outside `<storageRoot>/omp-sessions/`, and never a directory that is
+ * not the one the persisted ownership record describes.
+ *
+ * Never throws. `{deleted:false, reason}` means the caller must preserve the owner record and warn.
+ *
+ * @param {object} ownership canonical, already-validated task.ompSessionOwnership record
+ */
+function deleteOmpSessionPartition(ownership) {
+  const staged = stageOmpSessionPartitionForDeletion(ownership);
+  if (!staged.staged) return { deleted: staged.deleted === true, reason: staged.reason };
+  return removeStagedOmpSessionPartition(staged.stagingPath);
 }
 
 module.exports = {
@@ -237,5 +291,7 @@ module.exports = {
   generateOmpPartitionId,
   createOmpSessionPartitionDirectory,
   allocateOmpSessionPartition,
+  stageOmpSessionPartitionForDeletion,
+  removeStagedOmpSessionPartition,
   deleteOmpSessionPartition,
 };

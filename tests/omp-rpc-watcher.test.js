@@ -1051,7 +1051,7 @@ watcher.disconnect();
         assert.strictEqual(
           prior.ompSessionOwnership,
           null,
-          'the prior owner is released atomically, so exactly one row owns the partition'
+          'the prior owner is released atomically, so exactly one row holds the lineage'
         );
         assert.ok(fs.existsSync(promptSink), 'the prompt is written only after the transfer');
       });

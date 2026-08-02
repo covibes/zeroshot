@@ -124,6 +124,33 @@ async function cleanupTask(id, { tasksHome, clearRecord = false } = {}) {
   return JSON.parse(stdout);
 }
 
+/**
+ * Run cleanup against an *explicit* task snapshot instead of a freshly read row — exactly what
+ * every real surface does, since `clean` and cluster clear both iterate one `loadTasks()` result.
+ * `ownership` is the record the snapshot carried when it was taken.
+ */
+async function cleanupTaskSnapshot(id, ownership) {
+  const stdout = await runStoreScript(`
+    const { getTask } = await import(${JSON.stringify(storeUrl)});
+    const { cleanupOmpSessionPartitionForTask } = await import(${JSON.stringify(cleanupUrl)});
+    const warnings = [];
+    const safe = cleanupOmpSessionPartitionForTask(
+      { id: ${JSON.stringify(id)}, ompSessionOwnership: ${JSON.stringify(ownership)} },
+      (m) => warnings.push(m)
+    );
+    process.stdout.write(JSON.stringify({ safe, warnings }));
+  `);
+  return JSON.parse(stdout);
+}
+
+async function getOwnership(id) {
+  const stdout = await runStoreScript(`
+    const { getTask } = await import(${JSON.stringify(storeUrl)});
+    process.stdout.write(JSON.stringify(getTask(${JSON.stringify(id)})?.ompSessionOwnership ?? null));
+  `);
+  return JSON.parse(stdout);
+}
+
 async function cleanupCluster(clusterId, { tasksHome } = {}) {
   const stdout = await runStoreScript(
     `
@@ -249,9 +276,56 @@ describe('OMP session partition cleanup (task clean / cluster clear / purge)', f
 
       const result = await cleanupTask(resumedId);
       assert.strictEqual(result.safe, false);
-      assert.match(result.warnings.join('\n'), /still committed to/);
+      assert.match(result.warnings.join('\n'), /still claimed by .*\(committed\)/);
       assert.ok(fs.existsSync(partition.partitionPath), 'the committed owner keeps its session');
       assert.ok(result.ownership, 'the owner record is preserved for a retry');
+    });
+
+    it('preserves the partition of a resume that WON the transfer against a losing competitor', async function () {
+      // Two competing resumes of one committed session put three rows on one partition. Only one
+      // transfer can win; the winner's row is `provisional` and *no* row is committed while its
+      // turn runs. A committed-only fence would see nothing here and let the retired loser delete
+      // the winner's live session out from under it.
+      const partition = makeSessionPartition({ storageRoot });
+      const priorId = nextTaskId('race-prior');
+      const winnerId = nextTaskId('race-winner');
+      const loserId = nextTaskId('race-loser');
+
+      await seedOwnedTask(priorId, { owner: standaloneOwner(priorId), storageRoot, partition });
+      for (const id of [winnerId, loserId]) {
+        await seedOwnedTask(id, {
+          owner: standaloneOwner(id),
+          storageRoot,
+          partition,
+          state: 'provisional',
+        });
+      }
+
+      const transfers = await runStoreScript(`
+        const { transferOmpSessionOwnership, markCleanupRequired } =
+          await import(${JSON.stringify(ownershipUrl)});
+        const won = transferOmpSessionOwnership({
+          fromTaskId: ${JSON.stringify(priorId)},
+          toTaskId: ${JSON.stringify(winnerId)},
+        });
+        const lost = transferOmpSessionOwnership({
+          fromTaskId: ${JSON.stringify(priorId)},
+          toTaskId: ${JSON.stringify(loserId)},
+        });
+        if (!lost) markCleanupRequired(${JSON.stringify(loserId)});
+        process.stdout.write(JSON.stringify({ won: !!won, lost: !!lost }));
+      `);
+      const outcome = JSON.parse(transfers);
+      assert.strictEqual(outcome.won, true);
+      assert.strictEqual(outcome.lost, false, 'only one transfer may apply');
+
+      const result = await cleanupTask(loserId);
+      assert.strictEqual(result.safe, false, 'the retired loser must not reclaim the partition');
+      assert.match(result.warnings.join('\n'), /still claimed by .*\(provisional\)/);
+      assert.ok(
+        fs.existsSync(partition.partitionPath),
+        "the winning resume's live session must survive"
+      );
     });
 
     it('clearRecord NULLs the ownership after a successful delete', async function () {
@@ -261,6 +335,104 @@ describe('OMP session partition cleanup (task clean / cluster clear / purge)', f
       const result = await cleanupTask(id, { clearRecord: true });
       assert.strictEqual(result.safe, true);
       assert.strictEqual(result.ownership, null);
+    });
+  });
+
+  describe('the query-to-staging-rename race', function () {
+    it('refuses a snapshot whose row transferred the partition away after it was loaded', async function () {
+      // The pre-stage concurrent transfer. Every cleanup surface iterates one `loadTasks()`
+      // result, so the record it validates is a snapshot; a resume that wins its owner transfer
+      // between that read and the staging rename leaves the snapshot describing a record the row
+      // no longer holds, while the partition itself is now a *live* turn's working session.
+      const partition = makeSessionPartition({ storageRoot });
+      const priorId = nextTaskId('prestage-prior');
+      const resumedId = nextTaskId('prestage-resumed');
+      await seedOwnedTask(priorId, { owner: standaloneOwner(priorId), storageRoot, partition });
+      await seedOwnedTask(resumedId, {
+        owner: standaloneOwner(resumedId),
+        storageRoot,
+        partition,
+        state: 'provisional',
+      });
+
+      // The snapshot `clean` would be holding, taken while the prior owner was still committed.
+      const snapshot = await getOwnership(priorId);
+      assert.strictEqual(snapshot.state, 'committed');
+
+      const transferred = await runStoreScript(`
+        const { transferOmpSessionOwnership } = await import(${JSON.stringify(ownershipUrl)});
+        process.stdout.write(JSON.stringify(!!transferOmpSessionOwnership({
+          fromTaskId: ${JSON.stringify(priorId)},
+          toTaskId: ${JSON.stringify(resumedId)},
+        })));
+      `);
+      assert.strictEqual(JSON.parse(transferred), true, 'the resume must win the partition');
+
+      const result = await cleanupTaskSnapshot(priorId, snapshot);
+      assert.strictEqual(result.safe, false);
+      assert.match(
+        result.warnings.join('\n'),
+        /ownership record changed while cleanup was running/,
+        'the fenced re-read of the row must be what refuses, before any owner-claim check'
+      );
+      assert.ok(
+        fs.existsSync(partition.partitionPath),
+        "the resumed turn's live session must survive a stale-snapshot cleanup"
+      );
+      const winner = await getOwnership(resumedId);
+      assert.strictEqual(winner.state, 'provisional');
+      assert.ok(winner.session, 'the winner keeps the lineage it inherited');
+    });
+
+    it('refuses a stale snapshot even when no other row claims the partition', async function () {
+      // The owner-claim fence cannot catch this one: the released row is the only row naming the
+      // partition, so only the fenced re-read of the row's own record stands between a stale
+      // snapshot and a deletion the current owner never authorised.
+      const partition = makeSessionPartition({ storageRoot });
+      const id = nextTaskId('prestage-released');
+      await seedOwnedTask(id, { owner: standaloneOwner(id), storageRoot, partition });
+      const snapshot = await getOwnership(id);
+
+      await runStoreScript(`
+        const { updateTask } = await import(${JSON.stringify(storeUrl)});
+        updateTask(${JSON.stringify(id)}, { ompSessionOwnership: null });
+      `);
+
+      const result = await cleanupTaskSnapshot(id, snapshot);
+      assert.strictEqual(result.safe, false);
+      assert.match(result.warnings.join('\n'), /ownership record changed while cleanup was running/);
+      assert.ok(fs.existsSync(partition.partitionPath));
+    });
+
+    it('stays idempotent across several retired rows naming one partition, without deadlocking', async function () {
+      // The third-owner residue: competing resumes that both failed leave more than one
+      // `cleanup-required` row on a single partition. A retired row makes no authoritative claim,
+      // so these must not fence each other out — otherwise the partition is unreclaimable by
+      // anybody and `clean` reports a permanent failure.
+      const partition = makeSessionPartition({ storageRoot });
+      const firstId = nextTaskId('retired-a');
+      const secondId = nextTaskId('retired-b');
+      for (const id of [firstId, secondId]) {
+        await seedOwnedTask(id, {
+          owner: standaloneOwner(id),
+          storageRoot,
+          partition,
+          state: 'cleanup-required',
+        });
+      }
+
+      const first = await cleanupTask(firstId);
+      assert.strictEqual(first.safe, true);
+      assert.deepStrictEqual(first.warnings, []);
+      assert.ok(!fs.existsSync(partition.partitionPath), 'the first retired row reclaims it');
+
+      const second = await cleanupTask(secondId);
+      assert.strictEqual(second.safe, true, 'the second retired row must not deadlock on the first');
+      assert.deepStrictEqual(second.warnings, []);
+
+      const replay = await cleanupTask(firstId);
+      assert.strictEqual(replay.safe, true, 'cleanup is idempotent on replay');
+      assert.deepStrictEqual(replay.warnings, []);
     });
   });
 
