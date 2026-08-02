@@ -65,6 +65,12 @@ fn product_contains_the_required_native_files() {
         "src/role_contract.rs",
         "src/scheduler.rs",
         "src/issue_provider.rs",
+        "src/native_credentials.rs",
+        "src/native_credentials/fake.rs",
+        "src/native_credentials/lease.rs",
+        "src/native_credentials/material.rs",
+        "src/native_credentials/resolver.rs",
+        "src/native_credentials/source.rs",
         "src/native_settings.rs",
         "src/native_settings/paths.rs",
         "src/native_settings/profile.rs",
@@ -93,6 +99,14 @@ fn product_contains_the_required_native_files() {
         "tests/worker_bindings_architecture.rs",
         "tests/artifact_store.rs",
         "tests/backend_boundary.rs",
+        "tests/credential_resolution.rs",
+        "tests/credential_lifecycle.rs",
+        "tests/native_credentials_architecture.rs",
+        "tests/execution_scheduler_architecture.rs",
+        "tests/artifact_storage_architecture.rs",
+        "tests/provider_contracts_architecture.rs",
+        "tests/full_v1_reducer_architecture.rs",
+        "tests/native_daemon_architecture.rs",
         "tests/execution_runtime_contract.rs",
         "tests/daemon_auth.rs",
         "tests/daemon_discovery.rs",
@@ -150,6 +164,26 @@ fn workspace_metadata_preserves_package_lib_and_bin_identity() {
         ("worker_bindings_architecture".to_owned(), "test".to_owned()),
         ("architecture".to_owned(), "test".to_owned()),
         ("backend_boundary".to_owned(), "test".to_owned()),
+        ("credential_resolution".to_owned(), "test".to_owned()),
+        ("credential_lifecycle".to_owned(), "test".to_owned()),
+        (
+            "native_credentials_architecture".to_owned(),
+            "test".to_owned(),
+        ),
+        (
+            "execution_scheduler_architecture".to_owned(),
+            "test".to_owned(),
+        ),
+        (
+            "artifact_storage_architecture".to_owned(),
+            "test".to_owned(),
+        ),
+        (
+            "provider_contracts_architecture".to_owned(),
+            "test".to_owned(),
+        ),
+        ("full_v1_reducer_architecture".to_owned(), "test".to_owned()),
+        ("native_daemon_architecture".to_owned(), "test".to_owned()),
         ("execution_runtime_contract".to_owned(), "test".to_owned()),
         ("fault_contract".to_owned(), "test".to_owned()),
         ("local_execution_runtime".to_owned(), "test".to_owned()),
@@ -360,317 +394,6 @@ fn product_errors_are_one_private_projection_without_command_or_daemon_host_beha
 }
 
 #[test]
-fn execution_runtime_and_scheduler_stay_engine_private() {
-    let execution = rust_sources(&["src/execution.rs", "src/execution", "src/scheduler.rs"]);
-    for required in [
-        "trait ExecutionRuntime",
-        "struct LocalExecutionRuntime",
-        "struct LocalProcessRunner",
-        "struct FairScheduler",
-    ] {
-        assert!(
-            execution.contains(required),
-            "missing execution/scheduler seam: {required}"
-        );
-    }
-    for forbidden in [
-        "RemoteExecutionRuntime",
-        "kubernetes",
-        "pod",
-        "broker",
-        "outbox",
-        "reqwest",
-        "hyper",
-        "NativeBackendFactory",
-        "NativeBackend",
-        "ClusterLedger",
-        "CredentialResolver",
-        "WorkspaceManager",
-        "CliDriver",
-        "AcpDriver",
-        "GatewayDriver",
-    ] {
-        assert!(
-            !execution.contains(forbidden),
-            "execution/scheduler crossed an owned boundary: {forbidden}"
-        );
-    }
-}
-
-#[test]
-fn artifact_storage_stays_product_private_and_receipts_stay_byte_free() {
-    let product = product_root();
-    let repository = repository_root();
-    let artifact_contract =
-        read(&repository.join("crates/openengine-cluster-protocol/src/artifact.rs"));
-    for forbidden in [
-        "Vec<u8>",
-        "AsyncRead",
-        "PathBuf",
-        "StagedArtifact",
-        "ArtifactStore",
-        "signed_url",
-        "download_url",
-        "storage_root",
-        "manifest_path",
-    ] {
-        assert!(
-            !artifact_contract.contains(forbidden),
-            "protocol artifact receipt exposed storage detail: {forbidden}"
-        );
-    }
-
-    for relative in [
-        "protocol/openengine-cluster/v1/schema.json",
-        "protocol/openengine-cluster/v1/worker.schema.json",
-        "protocol/openengine-cluster/v1/fixtures/graph/positive/artifact-ref.json",
-    ] {
-        let projection = read(&repository.join(relative));
-        for forbidden in [
-            "localPath",
-            "signedUrl",
-            "downloadUrl",
-            "storageRoot",
-            "stagePath",
-            "manifestPath",
-        ] {
-            assert!(
-                !projection.contains(forbidden),
-                "generated artifact projection exposed storage detail: {relative}: {forbidden}"
-            );
-        }
-    }
-
-    let lib = read(&product.join("src/lib.rs"));
-    assert!(
-        lib.contains("pub struct NativeBackend;"),
-        "NativeBackend must remain uninjected until composition issue #693"
-    );
-    assert!(!lib.contains("ArtifactStore>"));
-    assert!(!lib.contains("artifact_store:"));
-
-    let lifecycle_and_backend = format!(
-        "{}\n{}\n{}",
-        read(&repository.join("crates/openengine-cluster-protocol/src/lifecycle.rs")),
-        read(&repository.join("crates/openengine-cluster-server/src/lifecycle.rs")),
-        read(&repository.join("crates/openengine-cluster-server/src/lib.rs"))
-    );
-    for forbidden in [
-        "StagedArtifact",
-        "ArtifactByteStream",
-        "LocalCasArtifactStore",
-        "manifest_path",
-        "storage_root",
-        "signed_url",
-        "download_url",
-    ] {
-        assert!(
-            !lifecycle_and_backend.contains(forbidden),
-            "lifecycle/backend parameter exposed artifact storage detail: {forbidden}"
-        );
-    }
-}
-
-#[test]
-fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_behavior() {
-    let product = product_root();
-    let provider_value = rust_sources(&["src/provider_value.rs", "src/provider_value"]);
-    let contracts = rust_sources(&[
-        "src/issue_provider.rs",
-        "src/issue_provider",
-        "src/source_code_provider.rs",
-        "src/source_code_provider",
-    ]);
-    assert!(
-        read(&product.join("src/lib.rs")).contains("mod provider_value;"),
-        "bounded provider helpers must remain product-private"
-    );
-    assert!(
-        contracts.contains("pub struct SourceWorkspaceCapability<'a>")
-            && contracts.contains("pub(crate) fn from_verified")
-            && contracts.contains("pub unsafe fn from_verified_contract_test")
-            && !contracts.contains("pub mod fake"),
-        "safe callers must receive workspace capabilities only from verified product state"
-    );
-    for forbidden in [
-        "pub trait Provider",
-        "PlatformProfile",
-        "ChangeProvider",
-        "CommonProviderId",
-    ] {
-        assert!(
-            !provider_value.contains(forbidden),
-            "provider_value must not expose a common provider abstraction: {forbidden}"
-        );
-    }
-    for forbidden in [
-        "ClusterLedger",
-        "rusqlite",
-        "WorkspaceLease",
-        "WorkerRegistry",
-        "WorkerProvider",
-        "EngineFault",
-        "openengine_cluster_protocol",
-        "openengine_cluster_server",
-        "Adapter",
-        "std::process",
-        "reqwest",
-    ] {
-        assert!(
-            !contracts.contains(forbidden),
-            "provider contracts crossed an owned boundary: {forbidden}"
-        );
-    }
-}
-
-#[test]
-fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
-    let reducer = read(&product_root().join("src/full_v1_reducer.rs"));
-    assert!(reducer.contains("VerifiedGraph"));
-    assert!(reducer.contains("ProductionGraphVerifier"));
-    assert!(!reducer.contains("GraphSpec"));
-    assert!(!reducer.contains("CompiledGraphIr"));
-    assert!(!reducer.contains("PayloadType"));
-    assert!(!reducer.contains("pub prefix_position"));
-    assert!(reducer.contains("pub snapshot: Option<ReductionSnapshot>"));
-    let authorization_fields = reducer
-        .split("pub struct ExecutionVoidAuthorization {")
-        .nth(1)
-        .unwrap()
-        .split('}')
-        .next()
-        .unwrap();
-    assert!(!authorization_fields.contains("pub "));
-    let authorization_impl = reducer
-        .split("impl ExecutionVoidAuthorization {")
-        .nth(1)
-        .unwrap()
-        .split("\n}")
-        .next()
-        .unwrap();
-    assert!(
-        !authorization_impl
-            .lines()
-            .any(|line| line.trim_start().starts_with("pub "))
-    );
-    let ledger = read(&product_root().join("src/cluster_ledger.rs"));
-    let snapshot_fields = ledger
-        .split("pub struct ReductionSnapshot {")
-        .nth(1)
-        .unwrap()
-        .split('}')
-        .next()
-        .unwrap();
-    assert!(!snapshot_fields.contains("pub "));
-    let snapshot_impl = ledger
-        .split("impl ReductionSnapshot {")
-        .nth(1)
-        .unwrap()
-        .split("\n}")
-        .next()
-        .unwrap();
-    assert!(
-        !snapshot_impl
-            .lines()
-            .any(|line| line.trim_start().starts_with("pub "))
-    );
-    assert!(snapshot_impl.contains("self.position == state.position"));
-    assert!(snapshot_impl.contains("self.last_hash == state.last_hash"));
-    assert!(snapshot_impl.contains("Arc::ptr_eq(&self.authority, authority)"));
-    for forbidden in [
-        "tokio::",
-        "async fn",
-        "std::process",
-        "std::time",
-        "std::thread",
-        "crate::execution",
-        "crate::scheduler",
-        "crate::artifact_store",
-        "crate::issue_provider",
-        "crate::source_code_provider",
-        "ClusterBackend",
-        "Dispatcher",
-    ] {
-        assert!(
-            !reducer.contains(forbidden),
-            "pure reducer imported an effectful concern: {forbidden}"
-        );
-    }
-
-    let records = read(&product_root().join("src/cluster_ledger/record.rs"));
-    assert!(records.contains("ExecutionContext"));
-    assert!(records.contains("ExecutionVoid"));
-    let replay = read(&product_root().join("src/cluster_ledger/replay.rs"));
-    assert!(replay.contains("fold_execution_context"));
-    assert!(replay.contains("fold_execution_void"));
-}
-
-#[test]
-fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary() {
-    let daemon = rust_sources(&[
-        "src/daemon_auth.rs",
-        "src/daemon_discovery.rs",
-        "src/daemon_listener.rs",
-    ]);
-    for required in [
-        "authorize_request",
-        "accept_hdr_async_with_config",
-        "serve_websocket",
-        "binding_for_route",
-        "into_dispatcher",
-        "probe_liveness",
-        "remove_locator_if_matches",
-        "openengine.cluster/v1",
-        "zeroshot.daemon/v1",
-        "zeroshot.daemon/v1/client-auth",
-        "zeroshot.daemon/v1/server-auth",
-        "ConnectionPurpose::Liveness",
-        "expectation.verify",
-    ] {
-        assert!(
-            daemon.contains(required),
-            "missing native daemon boundary: {required}"
-        );
-    }
-    assert!(
-        !daemon.contains("ConnectionContext::new"),
-        "daemon host bypassed binding-injected connection identity"
-    );
-    for required in [
-        "#[cfg(unix)]\nmod platform",
-        "#[cfg(windows)]\nmod platform",
-        "FILE_FLAG_OPEN_REPARSE_POINT",
-        "PROTECTED_DACL_SECURITY_INFORMATION",
-        "MoveFileExW",
-        "validate_directory_shape(&directory)?",
-    ] {
-        assert!(
-            daemon.contains(required),
-            "daemon discovery lost a supported-platform security boundary: {required}"
-        );
-    }
-    for forbidden in [
-        "ClusterLedger",
-        "ExecutionRuntime",
-        "FairScheduler",
-        "ProviderPool",
-        "ClusterCatalog",
-        "RecoveryCoordinator",
-        "Exporter",
-        "Command::new",
-        "clap",
-        "hosted",
-        "cloud_control_plane",
-        "node_daemon",
-    ] {
-        assert!(
-            !daemon.contains(forbidden),
-            "native daemon crossed a non-goal boundary: {forbidden}"
-        );
-    }
-}
-
-#[test]
 fn manifest_has_no_client_testkit_or_node_dependencies() {
     let manifest = read(&product_root().join("Cargo.toml"));
     for forbidden_dependency in [
@@ -739,6 +462,8 @@ fn product_modules_require_issue_authorization() {
             "issue_provider.rs",
             "lib.rs",
             "main.rs",
+            "native_credentials",
+            "native_credentials.rs",
             "native_settings",
             "native_settings.rs",
             "observability.rs",

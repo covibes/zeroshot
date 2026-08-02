@@ -4,7 +4,15 @@ mod architecture_boundary_macro;
 mod architecture_support;
 
 use architecture_support::{product_root, read};
-architecture_boundary_macro::suppress_single_test_boundary_unused_exports!(architecture_support);
+architecture_boundary_macro::suppress_unused_architecture_exports!(
+    architecture_support,
+    rust_sources,
+    runtime_source,
+    product_package,
+    workspace_metadata,
+    relative_files,
+    repository_root,
+);
 
 #[test]
 fn admission_manifest_stays_protocol_driver_and_credential_free() {
