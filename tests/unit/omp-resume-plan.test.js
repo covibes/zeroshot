@@ -566,3 +566,62 @@ describe('agent-side descriptor emission (src/agent/agent-task-executor.js)', fu
     }
   });
 });
+
+describe('Docker stays fresh-only (issue #866)', function () {
+  this.timeout(30000);
+
+  const { OMP_SESSIONLESS_ENV } = require('../../task-lib/omp-storage-root.js');
+
+  it('marks an isolated OMP run sessionless so no partition or ownership row is created', function () {
+    // The container filesystem is ephemeral: a partition allocated inside it could never be
+    // resumed, and its ownership row would be unreclaimable once the container is removed.
+    assert.strictEqual(OMP_SESSIONLESS_ENV, 'ZEROSHOT_OMP_SESSIONLESS');
+  });
+
+  it('resolveOmpSessionPlan allocates nothing when the sessionless marker is set', async function () {
+    const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'docker-storage-'));
+    const stdout = await runScript(`
+      const { spawnTask } = await import(${JSON.stringify(runnerUrl)});
+      const { isOmpSessionlessRun } = await import(
+        ${JSON.stringify(pathToFileURL(path.resolve(__dirname, '../../task-lib/omp-storage-root.js')).href)}
+      );
+      process.stdout.write(JSON.stringify({
+        withMarker: isOmpSessionlessRun(),
+        withOption: isOmpSessionlessRun({ sessionless: true }),
+        hasSpawnTask: typeof spawnTask === 'function',
+      }));
+    `);
+    const probe = JSON.parse(stdout);
+    assert.strictEqual(probe.hasSpawnTask, true);
+    assert.strictEqual(probe.withMarker, false, 'unset marker must not disable sessions');
+    assert.strictEqual(probe.withOption, true);
+
+    // With the marker set, the plan resolver returns null, so nothing under storageRoot is
+    // created and no ompSessionOwnership is ever attached to the row.
+    const marked = await execFileAsync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+        const { isOmpSessionlessRun } = await import(
+          ${JSON.stringify(pathToFileURL(path.resolve(__dirname, '../../task-lib/omp-storage-root.js')).href)}
+        );
+        process.stdout.write(JSON.stringify({ sessionless: isOmpSessionlessRun() }));
+      `,
+      ],
+      {
+        env: {
+          ...process.env,
+          ZEROSHOT_HOME: zeroshotHome,
+          [OMP_SESSIONLESS_ENV]: '1',
+        },
+      }
+    );
+    assert.strictEqual(JSON.parse(marked.stdout).sessionless, true);
+    assert.ok(
+      !fs.existsSync(path.join(storageRoot, 'omp-sessions')),
+      'a sessionless run must not create the partitions root'
+    );
+  });
+});

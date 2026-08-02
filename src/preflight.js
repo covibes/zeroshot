@@ -551,7 +551,7 @@ function validateGhRequirement() {
   return errors;
 }
 
-function validateDockerRequirement() {
+function validateDockerRequirement(providerName) {
   const errors = [];
   const docker = checkDocker();
   if (!docker.available) {
@@ -566,6 +566,19 @@ function validateDockerRequirement() {
               'Then start Docker and verify: docker info',
             ]
       )
+    );
+    return errors;
+  }
+
+  try {
+    const IsolationManager = require('./isolation-manager');
+    IsolationManager.assertPlatformSupported(IsolationManager.providerDockerPlatform(providerName));
+  } catch (err) {
+    errors.push(
+      formatError('Docker cannot run required platform', err.message, [
+        'Install Buildx and run: docker run --privileged --rm tonistiigi/binfmt --install amd64',
+        'Or run Zeroshot on a native amd64 Docker host',
+      ])
     );
   }
 
@@ -732,7 +745,7 @@ async function runPreflight(options = {}) {
 
   // 6. Check Docker (if required)
   if (options.requireDocker) {
-    errors.push(...validateDockerRequirement());
+    errors.push(...validateDockerRequirement(providerName));
   }
 
   // 7. Check git repo (if required for worktree isolation)

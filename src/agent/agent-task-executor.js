@@ -17,6 +17,7 @@ const { getNestedExecutionRegistry, TaskExecutionHandle } = require('./task-exec
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
+const { OMP_SESSIONLESS_ENV } = require('../../task-lib/omp-storage-root.js');
 const { loadSettings } = require('../../lib/settings.js');
 const { getDefaultProviderId } = require('../../lib/provider-names');
 const { resolveClaudeAuth } = require('../../lib/settings/claude-auth.js');
@@ -1948,6 +1949,11 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   // only authoritative bridge back to the detached task row in the container.
   const isolatedEnv = {
     ...(providerName === 'claude' ? buildClaudeEnv(modelSpec, { includeAuth: false }) : {}),
+    // Docker is fresh-only for OMP (issue #866): the container filesystem is ephemeral, so a
+    // session partition allocated inside it could never be resumed and its ownership row would be
+    // unreclaimable once the container is removed. This marker makes the in-container
+    // `zeroshot task run` skip partition allocation entirely and launch `--no-session`.
+    ...(providerName === 'omp' ? { [OMP_SESSIONLESS_ENV]: '1' } : {}),
     [TASK_SPAWN_OWNERSHIP_TOKEN_ENV]: ownershipToken,
   };
 

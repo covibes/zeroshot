@@ -6,6 +6,19 @@ import { TASKS_DIR } from './config.js';
 export const OMP_STORAGE_ROOT_ENV = 'ZEROSHOT_OMP_STORAGE_ROOT';
 export const OMP_OWNER_CLUSTER_ID_ENV = 'ZEROSHOT_CLUSTER_ID';
 export const OMP_OWNER_AGENT_ID_ENV = 'ZEROSHOT_AGENT_ID';
+/**
+ * Set by the agent for a Docker-isolated OMP run. Issue #866 keeps Docker fresh-only, and the
+ * container is the reason: its filesystem is ephemeral, so a partition allocated inside it could
+ * never be resumed and an ownership row pointing at it would be unreclaimable the moment the
+ * container is removed. A task carrying this marker allocates no partition and persists no
+ * ownership row — the adapter launches `--no-session`.
+ */
+export const OMP_SESSIONLESS_ENV = 'ZEROSHOT_OMP_SESSIONLESS';
+
+/** True when this task must run without any session partition at all. */
+export function isOmpSessionlessRun(options = {}) {
+  return options.sessionless === true || process.env[OMP_SESSIONLESS_ENV] === '1';
+}
 
 export function resolveOmpStorageRoot(options = {}) {
   return options.storageRoot || process.env[OMP_STORAGE_ROOT_ENV] || TASKS_DIR;

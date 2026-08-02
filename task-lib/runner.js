@@ -4,7 +4,11 @@ import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 import { LOGS_DIR } from './config.js';
 import { addTask, generateId, ensureDirs } from './store.js';
-import { resolveOmpStorageRoot, resolveOmpOwnerKind } from './omp-storage-root.js';
+import {
+  isOmpSessionlessRun,
+  resolveOmpStorageRoot,
+  resolveOmpOwnerKind,
+} from './omp-storage-root.js';
 import { readOwnership, writeProvisionalOwnership } from './omp-session-ownership.js';
 import { createRequire } from 'module';
 
@@ -151,6 +155,9 @@ function resolveOmpSessionPlan({ id, cwd, options }) {
   if (options.structuredOutputRecovery) return null;
   const providerName = normalizeProviderName(options.provider || getDefaultProviderId());
   if (providerName !== 'omp') return null;
+  // Docker stays fresh-only (issue #866). Returning null here means no partition is allocated, no
+  // ownership row is written, and the adapter falls back to `--no-session`.
+  if (isOmpSessionlessRun(options)) return null;
 
   const storageRoot = resolveOmpStorageRoot(options);
   mkdirSync(storageRoot, { recursive: true });
