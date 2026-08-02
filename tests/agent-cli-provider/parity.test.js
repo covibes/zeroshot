@@ -1017,6 +1017,7 @@ test('eligible adapters build restricted provider-owned recovery commands', () =
         assert.equal(command.env.OPENCODE_DISABLE_CLAUDE_CODE, '1');
         assert.equal(command.env.OPENCODE_PERMISSION, '{"*":"deny"}');
         assert.equal(command.env.XDG_CONFIG_HOME, command.env.OPENCODE_CONFIG_DIR);
+        assert.equal(command.env.OPENCODE_DB, ':memory:');
         assert.equal(command.cleanup.at(-1), command.env.XDG_CONFIG_HOME);
         assert.deepEqual(command.cleanupMetadata.at(-1), {
           kind: 'temp-directory',

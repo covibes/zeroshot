@@ -216,6 +216,7 @@ function buildStructuredOutputRecoveryCommand(
         ...spec.env,
         ZEROSHOT_OPENCODE_AGENT: agentName,
         XDG_CONFIG_HOME: isolatedConfigHome,
+        OPENCODE_DB: ':memory:',
         OPENCODE_CONFIG: '',
         OPENCODE_CONFIG_DIR: isolatedConfigHome,
         OPENCODE_CONFIG_CONTENT: JSON.stringify(restrictedConfig),
