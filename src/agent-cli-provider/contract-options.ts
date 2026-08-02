@@ -24,6 +24,9 @@ const CLI_FEATURE_FIELDS = [
   'supportsModel',
   'supportsEffort',
   'supportsSettings',
+  'supportsTools',
+  'supportsStrictMcpConfig',
+  'supportsNoSessionPersistence',
   'supportsJson',
   'supportsOutputSchema',
   'supportsDir',
@@ -31,8 +34,16 @@ const CLI_FEATURE_FIELDS = [
   'supportsConfigOverride',
   'supportsSkipGitRepoCheck',
   'supportsVariant',
+  'supportsSandbox',
+  'supportsEphemeral',
+  'supportsIgnoreUserConfig',
+  'supportsIgnoreRules',
+  'supportsStrictConfig',
   'supportsJsonMode',
+  'supportsAdminPolicy',
   'supportsNoSession',
+  'supportsAgent',
+  'supportsRecoveryIsolation',
   'supportsNoExtensions',
   'supportsNoSkills',
   'supportsNoPromptTemplates',
@@ -228,6 +239,11 @@ function normalizeBuildOptions(value: Record<string, unknown>): BuildProviderCom
     result,
     'strictSchema',
     optionalBooleanValue(value.strictSchema, 'options.strictSchema')
+  );
+  addDefined(
+    result,
+    'structuredOutputRecovery',
+    optionalBooleanValue(value.structuredOutputRecovery, 'options.structuredOutputRecovery')
   );
   addDefined(
     result,

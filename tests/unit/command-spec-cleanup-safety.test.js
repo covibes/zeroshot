@@ -23,11 +23,38 @@ function overlayMetadata(overlayPath) {
   };
 }
 
+function opencodeConfigMetadata(configPath, overrides = {}) {
+  return {
+    kind: 'temp-directory',
+    provider: 'opencode',
+    path: configPath,
+    reason: 'isolated-config',
+    ...overrides,
+  };
+}
+
 function createSchemaFile() {
   const schemaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-schema-'));
   const schemaPath = path.join(schemaRoot, `${randomUUID()}.json`);
   fs.writeFileSync(schemaPath, '{}\n', { mode: 0o600 });
   return { schemaRoot, schemaPath };
+}
+
+function policyMetadata(policyPath, overrides = {}) {
+  return {
+    kind: 'temp-file',
+    provider: 'gemini',
+    path: policyPath,
+    reason: 'admin-policy',
+    ...overrides,
+  };
+}
+
+function createPolicyFile() {
+  const policyRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-gemini-policy-'));
+  const policyPath = path.join(policyRoot, `${randomUUID()}.toml`);
+  fs.writeFileSync(policyPath, '[[rule]]\ndecision = "deny"\n', { mode: 0o600 });
+  return { policyRoot, policyPath };
 }
 
 describe('Command spec cleanup safety', function () {
@@ -55,6 +82,84 @@ describe('Command spec cleanup safety', function () {
     assert.strictEqual(await cleanup.run(), true);
     assert.strictEqual(fs.existsSync(schemaPath), false);
     assert.deepStrictEqual(failures, []);
+  });
+
+  it('removes the exact regular Gemini policy file from its canonical temp directory', async function () {
+    const { createCommandSpecCleanup } = await import('../../task-lib/command-spec-cleanup.js');
+    const { policyRoot, policyPath } = createPolicyFile();
+    cleanupRoots.push(policyRoot);
+    const failures = [];
+    const cleanup = createCommandSpecCleanup(
+      {
+        cleanup: [policyPath],
+        cleanupMetadata: [policyMetadata(policyPath)],
+      },
+      (cleanupPath, error) => failures.push({ cleanupPath, error })
+    );
+
+    assert.strictEqual(await cleanup.run(), true);
+    assert.strictEqual(fs.existsSync(policyPath), false);
+    assert.deepStrictEqual(failures, []);
+  });
+
+  it('removes an exact OpenCode isolated config directory', async function () {
+    const { createCommandSpecCleanup } = await import('../../task-lib/command-spec-cleanup.js');
+    const configRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opencode-config-'));
+    cleanupRoots.push(configRoot);
+    fs.writeFileSync(path.join(configRoot, 'config.json'), '{}\n');
+    const failures = [];
+    const cleanup = createCommandSpecCleanup(
+      {
+        cleanup: [configRoot],
+        cleanupMetadata: [opencodeConfigMetadata(configRoot)],
+      },
+      (cleanupPath, error) => failures.push({ cleanupPath, error })
+    );
+
+    assert.strictEqual(await cleanup.run(), true);
+    assert.strictEqual(fs.existsSync(configRoot), false);
+    assert.deepStrictEqual(failures, []);
+  });
+
+  it('refuses an OpenCode config directory outside its owned namespace', async function () {
+    const { createCommandSpecCleanup } = await import('../../task-lib/command-spec-cleanup.js');
+    const configRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-user-config-'));
+    cleanupRoots.push(configRoot);
+    const failures = [];
+    const cleanup = createCommandSpecCleanup(
+      {
+        cleanup: [configRoot],
+        cleanupMetadata: [opencodeConfigMetadata(configRoot)],
+      },
+      (cleanupPath, error) => failures.push({ cleanupPath, error })
+    );
+
+    assert.strictEqual(await cleanup.run(), false);
+    assert.strictEqual(fs.existsSync(configRoot), true);
+    assert.strictEqual(failures.length, 1);
+  });
+
+  it('refuses a Gemini policy symlink and preserves its target', async function () {
+    const { createCommandSpecCleanup } = await import('../../task-lib/command-spec-cleanup.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-user-file-'));
+    const victim = path.join(root, 'victim.toml');
+    fs.writeFileSync(victim, 'user policy\n');
+    const policy = createPolicyFile();
+    fs.rmSync(policy.policyPath);
+    fs.symlinkSync(victim, policy.policyPath);
+    cleanupRoots.push(root, policy.policyRoot);
+    const failures = [];
+    const cleanup = createCommandSpecCleanup(
+      {
+        cleanup: [policy.policyPath],
+        cleanupMetadata: [policyMetadata(policy.policyPath)],
+      },
+      (cleanupPath, error) => failures.push({ cleanupPath, error })
+    );
+
+    assert.strictEqual(await cleanup.run(), false);
+    assert.strictEqual(fs.existsSync(victim), true);
+    assert.strictEqual(failures.length, 1);
   });
 
   for (const scenario of [

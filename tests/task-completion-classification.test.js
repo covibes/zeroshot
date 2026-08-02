@@ -1,6 +1,6 @@
 const assert = require('assert');
 
-const { buildCompletionResult } = require('../src/agent/agent-task-executor');
+const { buildCompletionResult, parseResultOutput } = require('../src/agent/agent-task-executor');
 
 function createAgent(options = {}) {
   return {
@@ -97,5 +97,82 @@ describe('buildCompletionResult', function () {
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.error, null);
     assert.strictEqual(parseCalls, 0);
+  });
+  it('preserves permanent recovery metadata through local completion', async function () {
+    const failure = Object.assign(new Error('Recovery adapter is unavailable'), {
+      code: 'unsupported-capability',
+      permanent: true,
+      provider: 'codex',
+      capability: 'structuredOutputRecovery',
+    });
+    const agent = createAgent({ parseResultOutput: () => Promise.reject(failure) });
+
+    await assert.rejects(
+      buildCompletionResult({
+        agent,
+        taskId: 'task-permanent',
+        providerName: 'codex',
+        state: createState('malformed'),
+        stdout: 'Status: completed',
+        success: true,
+      }),
+      (error) => error === failure
+    );
+  });
+
+  it('passes recovery-disabled classification for stale output and fails invalid data closed', async function () {
+    let parserOptions;
+    const agent = createAgent({
+      parseResultOutput(_output, options) {
+        parserOptions = options;
+        return Promise.reject(new Error('stale schema-invalid output'));
+      },
+    });
+
+    const result = await buildCompletionResult({
+      agent,
+      taskId: 'task-stale',
+      providerName: 'codex',
+      state: createState('{"wrong":true}'),
+      stdout: 'Status: stale',
+      success: true,
+    });
+
+    assert.deepStrictEqual(parserOptions, { allowRecovery: false });
+    assert.strictEqual(result.success, false);
+    assert.match(result.error, /stale schema-invalid output/);
+  });
+  it('propagates unannotated local authentication recovery failures without outer retry', async function () {
+    const agent = createAgent({ role: 'planner' });
+    agent.running = true;
+    agent.state = 'executing_task';
+    agent.config.jsonSchema = {
+      type: 'object',
+      properties: { approved: { type: 'boolean' } },
+      required: ['approved'],
+    };
+    agent._resolveProvider = () => 'codex';
+    agent._spawnClaudeTask = () => ({
+      success: false,
+      error: 'Authentication failed: invalid API key',
+    });
+    agent._parseResultOutput = (output, options) => parseResultOutput(agent, output, options);
+
+    await assert.rejects(
+      buildCompletionResult({
+        agent,
+        taskId: 'task-auth',
+        providerName: 'codex',
+        state: createState('model response without JSON'),
+        stdout: 'Status: completed',
+        success: true,
+      }),
+      (error) => {
+        assert.match(error.message, /Authentication failed/);
+        assert.strictEqual(error.recoveryAbort, true);
+        assert.strictEqual(error.permanent, true);
+        return true;
+      }
+    );
   });
 });

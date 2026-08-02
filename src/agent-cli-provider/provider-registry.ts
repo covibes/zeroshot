@@ -8,7 +8,7 @@ import { opencodeAdapter } from './adapters/opencode';
 import { ompAdapter } from './adapters/omp';
 import { piAdapter } from './adapters/pi';
 import { resolveClaudeCommand } from './claude-command';
-import type { ModelLevel, ProviderAdapter } from './types';
+import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';
 
@@ -69,7 +69,7 @@ export interface ProviderDockerMetadata {
   readonly install?: string;
 }
 
-export interface ProviderRegistryEntry {
+interface ProviderRegistryEntryBase {
   readonly id: string;
   readonly aliases: readonly string[];
   readonly displayName: string;
@@ -84,7 +84,6 @@ export interface ProviderRegistryEntry {
   readonly settingsDefaults?: Readonly<Record<string, unknown>>;
   readonly settingsValidator?: (settings: Record<string, unknown>) => string | null;
   readonly availabilityProbe?: 'command' | 'help-or-version';
-  readonly capabilities: ProviderCapabilities;
   readonly docs: ProviderDocsMetadata;
   readonly docker: ProviderDockerMetadata;
   readonly defaultLevels: Readonly<{
@@ -92,8 +91,25 @@ export interface ProviderRegistryEntry {
     readonly default: ModelLevel;
     readonly max: ModelLevel;
   }>;
+}
+
+export interface StructuredOutputProviderRegistryEntry extends ProviderRegistryEntryBase {
+  readonly capabilities: Omit<ProviderCapabilities, 'jsonSchema'> & {
+    readonly jsonSchema: true | 'experimental';
+  };
+  readonly adapter: StructuredOutputRecoveryAdapter;
+}
+
+export interface UnstructuredOutputProviderRegistryEntry extends ProviderRegistryEntryBase {
+  readonly capabilities: Omit<ProviderCapabilities, 'jsonSchema'> & {
+    readonly jsonSchema: false;
+  };
   readonly adapter: ProviderAdapter;
 }
+
+export type ProviderRegistryEntry =
+  | StructuredOutputProviderRegistryEntry
+  | UnstructuredOutputProviderRegistryEntry;
 
 const STANDARD_CAPABILITIES: Readonly<
   Pick<
@@ -589,4 +605,8 @@ export function supportsProviderCapability(
   capability: keyof ProviderCapabilities
 ): boolean {
   return getProviderRegistryEntry(name).capabilities[capability] === true;
+}
+
+export function supportsProviderOutputReformatting(name: string): boolean {
+  return getProviderRegistryEntry(name).capabilities.jsonSchema !== false;
 }

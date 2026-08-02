@@ -116,19 +116,21 @@ function resolveJsonSchema(options, outputFormat) {
 }
 
 function buildProviderOptions(options, runtime, modelSelection) {
+  const structuredOutputRecovery = options.structuredOutputRecovery === true;
   return {
     outputFormat: runtime.outputFormat,
     jsonSchema: runtime.jsonSchema,
     cwd: runtime.cwd,
-    autoApprove: true,
+    autoApprove: !structuredOutputRecovery,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
-    ...mcpConfigOption(options),
+    ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
     ...claudeSettingsFileOption(),
-    ...(options.resume ? { resumeSessionId: options.resume } : {}),
+    ...(!structuredOutputRecovery && options.resume ? { resumeSessionId: options.resume } : {}),
     ...(process.env.ZEROSHOT_OPENCODE_AGENT?.trim()
       ? { agentName: process.env.ZEROSHOT_OPENCODE_AGENT.trim() }
       : {}),
-    ...(options.continue ? { continueSession: true } : {}),
+    ...(!structuredOutputRecovery && options.continue ? { continueSession: true } : {}),
+    ...(structuredOutputRecovery ? { structuredOutputRecovery: true } : {}),
   };
 }
 
@@ -218,10 +220,10 @@ export function buildTaskRecord({
     // accepted that session identity.
     sessionId: null,
     sessionIdConflict: false,
-    requestedResumeSessionId: options.resume || null,
+    requestedResumeSessionId: options.structuredOutputRecovery ? null : options.resume || null,
     // Resumed tasks start fail-closed. Only the watcher terminal transaction
     // may prove that the requested identity completed without conflict.
-    resumeIdentityVerified: !options.resume,
+    resumeIdentityVerified: options.structuredOutputRecovery || !options.resume,
     logFile,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -253,6 +255,7 @@ function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, com
     outputFormat,
     jsonSchema,
     silentJsonOutput: options.silentJsonOutput || false,
+    structuredOutputRecovery: options.structuredOutputRecovery === true,
     provider: providerName,
     command: commandSpec.binary,
     env: commandSpec.env || {},

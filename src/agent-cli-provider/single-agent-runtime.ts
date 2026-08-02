@@ -6,6 +6,7 @@ import {
   getProviderRegistryEntry,
   resolveProviderCommand,
   supportsProviderCapability,
+  supportsProviderOutputReformatting,
 } from './provider-registry';
 import type {
   BuildProviderCommandOptions,
@@ -16,6 +17,7 @@ import type {
   ModelLevel,
   ModelSpec,
   ProviderAdapter,
+  StructuredOutputRecoveryAdapter,
   ProviderCliFeatures,
   ProviderId,
   ResolvedGatewayBuildOptions,
@@ -106,7 +108,9 @@ export function prepareSingleAgentProviderCommand(
     adapter.id,
     baseOptions.cwd ?? process.cwd()
   );
-  const requestedWebSearch = baseOptions.webSearch ?? providerSettings.webSearch;
+  const requestedWebSearch = baseOptions.structuredOutputRecovery
+    ? recoveryWebSearchOption(adapter)
+    : (baseOptions.webSearch ?? providerSettings.webSearch);
   assertWebSearchDeclared(adapter.id, requestedWebSearch);
   const cliFeatures = resolveRuntimeCliFeatures(
     adapter.id,
@@ -125,8 +129,35 @@ export function prepareSingleAgentProviderCommand(
     configuration: {
       webSearch: webSearchAttestation(options),
     },
-    commandSpec: adapter.buildCommand(input.context, options),
+    commandSpec: buildRuntimeCommand(adapter, input.context, options),
   };
+}
+
+function buildRuntimeCommand(
+  adapter: ProviderAdapter,
+  context: string,
+  options: BuildProviderCommandOptions
+): CommandSpec {
+  if (options.structuredOutputRecovery !== true) {
+    return adapter.buildCommand(context, options);
+  }
+  if (!supportsProviderOutputReformatting(adapter.id)) {
+    throw new UnsupportedProviderCapabilityError(
+      adapter.id,
+      'structuredOutputRecovery',
+      `Provider ${adapter.id} does not advertise structured-output recovery.`
+    );
+  }
+  const recoveryAdapter = adapter as ProviderAdapter &
+    Partial<StructuredOutputRecoveryAdapter>;
+  if (typeof recoveryAdapter.buildStructuredOutputRecoveryCommand !== 'function') {
+    throw new UnsupportedProviderCapabilityError(
+      adapter.id,
+      'structuredOutputRecovery',
+      `Provider ${adapter.id} advertises structured output without a recovery adapter. Upgrade Zeroshot before retrying.`
+    );
+  }
+  return recoveryAdapter.buildStructuredOutputRecoveryCommand(context, options);
 }
 
 export function detectRuntimeProviderCliFeatures(provider: string): ProviderCliFeatures {
@@ -262,15 +293,26 @@ function buildRuntimeOptions(
     providerSettings,
     modelSpec
   );
-  const webSearch = baseOptions.webSearch ?? providerSettings.webSearch;
+  const webSearch = baseOptions.structuredOutputRecovery
+    ? recoveryWebSearchOption(adapter)
+    : (baseOptions.webSearch ?? providerSettings.webSearch);
   assertWebSearchDeclared(adapter.id, webSearch);
-  const resolved = {
+  const baseResolved = {
     ...baseOptions,
     modelSpec,
     ...(gateway === undefined ? {} : { gateway }),
     ...(webSearch === undefined ? {} : { webSearch }),
     cliFeatures: runtime.cliFeatures,
   };
+  const resolved = { ...baseResolved };
+  if (baseOptions.structuredOutputRecovery) {
+    delete resolved.resumeSessionId;
+    delete resolved.continueSession;
+    delete resolved.mcpConfig;
+    resolved.autoApprove = false;
+    if (recoveryWebSearchOption(adapter) === undefined) delete resolved.webSearch;
+    else resolved.webSearch = false;
+  }
   if (baseOptions.jsonSchema && !supportsProviderCapability(adapter.id, 'jsonSchema')) {
     if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) {
       return { ...resolved, strictSchema: false };
@@ -279,6 +321,10 @@ function buildRuntimeOptions(
   }
   if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) return resolved;
   return { ...resolved, authEnv: runtime.authEnv };
+}
+
+function recoveryWebSearchOption(adapter: ProviderAdapter): false | undefined {
+  return getProviderRegistryEntry(adapter.id).capabilities.webSearch === false ? undefined : false;
 }
 
 function resolveRuntimeGatewayOptions(

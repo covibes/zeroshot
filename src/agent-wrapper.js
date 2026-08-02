@@ -586,8 +586,8 @@ class AgentWrapper {
    * Falls back to reformatting if extraction fails
    * @private
    */
-  _parseResultOutput(output) {
-    return parseResultOutput(this, output);
+  _parseResultOutput(output, options = {}) {
+    return parseResultOutput(this, output, options);
   }
 
   /**

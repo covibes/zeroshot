@@ -9,6 +9,8 @@ import type {
   ProviderDocsMetadata,
   ProviderInvokeSpec,
   ProviderRegistryEntry,
+  StructuredOutputProviderRegistryEntry,
+  UnstructuredOutputProviderRegistryEntry,
 } from './provider-registry';
 
 export type ProviderId = (typeof providerIds)[number];
@@ -27,8 +29,9 @@ export type {
   ProviderDocsMetadata,
   ProviderInvokeSpec,
   ProviderRegistryEntry,
+  StructuredOutputProviderRegistryEntry,
+  UnstructuredOutputProviderRegistryEntry,
 };
-
 export interface AgentCliProviderHelperMetadata {
   readonly packageName: '@the-open-engine/zeroshot';
   readonly buildOutputDir: 'lib/agent-cli-provider';
@@ -105,6 +108,9 @@ export interface ClaudeCliFeatures extends BaseCliFeatures {
   readonly supportsSettings: boolean;
   readonly supportsMcpConfig: boolean;
   readonly supportsResume: boolean;
+  readonly supportsTools: boolean;
+  readonly supportsStrictMcpConfig: boolean;
+  readonly supportsNoSessionPersistence: boolean;
 }
 
 export interface CodexCliFeatures extends BaseCliFeatures {
@@ -118,6 +124,11 @@ export interface CodexCliFeatures extends BaseCliFeatures {
   readonly supportsSkipGitRepoCheck: boolean;
   readonly supportsResume: boolean;
   readonly supportsWebSearch: boolean;
+  readonly supportsSandbox: boolean;
+  readonly supportsEphemeral: boolean;
+  readonly supportsIgnoreUserConfig: boolean;
+  readonly supportsIgnoreRules: boolean;
+  readonly supportsStrictConfig: boolean;
 }
 
 export interface GeminiCliFeatures extends BaseCliFeatures {
@@ -126,6 +137,7 @@ export interface GeminiCliFeatures extends BaseCliFeatures {
   readonly supportsAutoApprove: boolean;
   readonly supportsCwd: boolean;
   readonly supportsModel: boolean;
+  readonly supportsAdminPolicy: boolean;
 }
 
 export interface OpencodeCliFeatures extends BaseCliFeatures {
@@ -138,6 +150,8 @@ export interface OpencodeCliFeatures extends BaseCliFeatures {
   readonly supportsAutoApprove: false;
   readonly supportsResume: boolean;
   readonly supportsWebSearch: boolean;
+  readonly supportsAgent: boolean;
+  readonly supportsRecoveryIsolation: boolean;
 }
 
 export interface PiCliFeatures extends BaseCliFeatures {
@@ -215,6 +229,9 @@ export interface CliFeatureOverrides {
   readonly supportsIncludePartials?: boolean;
   readonly supportsVerbose?: boolean;
   readonly supportsModel?: boolean;
+  readonly supportsTools?: boolean;
+  readonly supportsStrictMcpConfig?: boolean;
+  readonly supportsNoSessionPersistence?: boolean;
   readonly supportsEffort?: boolean;
   readonly supportsSettings?: boolean;
   readonly supportsJson?: boolean;
@@ -223,12 +240,20 @@ export interface CliFeatureOverrides {
   readonly supportsCwd?: boolean;
   readonly supportsConfigOverride?: boolean;
   readonly supportsSkipGitRepoCheck?: boolean;
+  readonly supportsSandbox?: boolean;
+  readonly supportsEphemeral?: boolean;
+  readonly supportsIgnoreUserConfig?: boolean;
+  readonly supportsIgnoreRules?: boolean;
+  readonly supportsStrictConfig?: boolean;
   readonly supportsVariant?: boolean;
+  readonly supportsAdminPolicy?: boolean;
   readonly supportsJsonMode?: boolean;
   readonly supportsNoSession?: boolean;
   readonly supportsNoExtensions?: boolean;
   readonly supportsNoSkills?: boolean;
   readonly supportsNoPromptTemplates?: boolean;
+  readonly supportsAgent?: boolean;
+  readonly supportsRecoveryIsolation?: boolean;
   readonly supportsNoContextFiles?: boolean;
   readonly supportsNoApprove?: boolean;
   readonly supportsModeJson?: boolean;
@@ -262,7 +287,7 @@ export interface CleanupMetadata {
   readonly kind: 'temp-file' | 'temp-directory';
   readonly provider: ProviderId;
   readonly path: string;
-  readonly reason: 'output-schema' | 'settings-overlay';
+  readonly reason: 'output-schema' | 'settings-overlay' | 'admin-policy' | 'isolated-config';
 }
 
 export interface WarningMetadata {
@@ -312,6 +337,8 @@ export interface BuildProviderCommandOptions {
   // one variadic `--mcp-config` followed by file paths; adapters such as Copilot accept repeated
   // flags with inline JSON so configs survive container path translation.
   readonly mcpConfig?: readonly string[];
+  /** Internal profile for provider-neutral structured-output correction turns. */
+  readonly structuredOutputRecovery?: boolean;
 }
 
 export interface TextEvent {
@@ -413,6 +440,13 @@ export interface ProviderAdapter {
   validateModelId(modelId: string | null | undefined): string | null | undefined;
   validateConfiguredModelId?(modelId: string | null | undefined): string | null | undefined;
   classifyError(error: unknown): ErrorClassification;
+}
+
+export interface StructuredOutputRecoveryAdapter extends ProviderAdapter {
+  buildStructuredOutputRecoveryCommand(
+    context: string,
+    options?: BuildProviderCommandOptions
+  ): CommandSpec;
 }
 
 export class InvalidProviderModelError extends Error {

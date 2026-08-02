@@ -1,4 +1,8 @@
 import { contractError } from '../contract-errors';
+import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { UnsupportedProviderCapabilityError } from '../errors';
 import { appendJsonSchemaPrompt } from '../schema';
 import {
@@ -15,7 +19,7 @@ import {
   type ErrorClassification,
   type OpencodeCliFeatures,
   type OutputEvent,
-  type ProviderAdapter,
+  type StructuredOutputRecoveryAdapter,
   type WarningMetadata,
 } from '../types';
 import {
@@ -49,7 +53,9 @@ function detectCliFeatures(
     supportsCwd: unknown ? false : /--cwd\b/.test(help),
     supportsAutoApprove: false,
     supportsResume: !unknown && /--session\b/.test(help) && /--continue\b/.test(help),
+    supportsAgent: !unknown && /--agent\b/.test(help),
     supportsWebSearch: isCliVersionAtLeast(versionText, '1.0.137'),
+    supportsRecoveryIsolation: isCliVersionAtLeast(versionText, '1.17.20'),
     unknown,
   };
 }
@@ -162,6 +168,81 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   });
 }
 
+function buildStructuredOutputRecoveryCommand(
+  context: string,
+  options: BuildProviderCommandOptions = {}
+): CommandSpec {
+  const features = optionFeatures(options);
+  if (features.supportsAgent !== true || features.supportsRecoveryIsolation !== true) {
+    throw new UnsupportedProviderCapabilityError(
+      'opencode',
+      'structuredOutputRecovery',
+      'OpenCode structured-output recovery requires CLI evidence for --agent and isolation controls available in OpenCode >= 1.17.20. Upgrade OpenCode before retrying.'
+    );
+  }
+  const agentName = `zeroshot-output-reformatter-${randomUUID()}`;
+  const profile = {
+    description: 'Convert supplied text to schema-valid JSON without external actions',
+    mode: 'primary',
+    permission: { '*': 'deny' },
+    tools: { '*': false },
+  };
+  const recoveryOptions = { ...options };
+  delete recoveryOptions.resumeSessionId;
+  delete recoveryOptions.continueSession;
+  const isolatedConfigHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opencode-config-'));
+
+  try {
+    const spec = buildCommand(context, {
+      ...recoveryOptions,
+      agentName,
+      autoApprove: false,
+      webSearch: false,
+    });
+    const restrictedConfig = {
+      default_agent: agentName,
+      permission: { '*': 'deny' },
+      tools: { '*': false },
+      agent: { [agentName]: profile },
+      mode: { [agentName]: profile },
+      mcp: {},
+      instructions: [],
+      plugin: [],
+      command: {},
+    };
+    return {
+      ...spec,
+      env: {
+        ...spec.env,
+        ZEROSHOT_OPENCODE_AGENT: agentName,
+        XDG_CONFIG_HOME: isolatedConfigHome,
+        OPENCODE_CONFIG: '',
+        OPENCODE_CONFIG_DIR: isolatedConfigHome,
+        OPENCODE_CONFIG_CONTENT: JSON.stringify(restrictedConfig),
+        OPENCODE_PERMISSION: JSON.stringify({ '*': 'deny' }),
+        OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+        OPENCODE_PURE: '1',
+        OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
+        OPENCODE_DISABLE_EXTERNAL_SKILLS: '1',
+        OPENCODE_DISABLE_CLAUDE_CODE: '1',
+      },
+      cleanup: [...(spec.cleanup || []), isolatedConfigHome],
+      cleanupMetadata: [
+        ...(spec.cleanupMetadata || []),
+        {
+          kind: 'temp-directory',
+          provider: 'opencode',
+          path: isolatedConfigHome,
+          reason: 'isolated-config',
+        },
+      ],
+    };
+  } catch (error) {
+    fs.rmSync(isolatedConfigHome, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function parseToolPart(part: Record<string, unknown>): OutputEvent | null {
   const state = getRecord(part, 'state') ?? {};
   const status = getString(state, 'status');
@@ -262,7 +343,7 @@ function classifyError(error: unknown): ErrorClassification {
   return classifyBaseProviderError(error, [], []);
 }
 
-export const opencodeAdapter: ProviderAdapter = {
+export const opencodeAdapter: StructuredOutputRecoveryAdapter = {
   id: 'opencode',
   displayName: 'Opencode',
   binary: 'opencode',
@@ -281,6 +362,7 @@ export const opencodeAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  buildStructuredOutputRecoveryCommand,
   extractSessionId,
   parseEvent,
   createParserState: () => createParserState('opencode'),

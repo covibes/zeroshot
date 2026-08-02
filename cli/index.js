@@ -14,7 +14,7 @@
  * - export: Export cluster conversation
  */
 
-const { program } = require('commander');
+const { Option, program } = require('commander');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -2845,11 +2845,7 @@ for (const mode of ['prove', 'verify', 'check']) {
     });
 }
 
-function assertRequestedWebSearchCliAvailable(
-  provider,
-  settings,
-  exists = commandExists
-) {
+function assertRequestedWebSearchCliAvailable(provider, settings, exists = commandExists) {
   const metadata = getProviderMetadata(provider);
   if (!metadata.settingsFields.includes('webSearch')) return;
   if (settings.providerSettings?.[provider]?.webSearch !== true) return;
@@ -2878,10 +2874,7 @@ taskCmd
     '-r, --resume <sessionId>',
     'Resume a specific provider session (Claude, Codex, or OpenCode)'
   )
-  .option(
-    '-c, --continue',
-    'Continue the most recent provider session (Claude or OpenCode)'
-  )
+  .option('-c, --continue', 'Continue the most recent provider session (Claude or OpenCode)')
   .option(
     '-o, --output-format <format>',
     'Output format: stream-json (default), text, json',
@@ -2895,6 +2888,7 @@ taskCmd
     (value, previous) => (previous || []).concat([value])
   )
   .option('--silent-json-output', 'Log ONLY final structured output')
+  .addOption(new Option('--structured-output-recovery').hideHelp())
   .action(async (prompt, options) => {
     try {
       // === PREFLIGHT CHECKS ===
@@ -2912,6 +2906,9 @@ taskCmd
       });
 
       // Dynamically import task command (ESM module)
+      if (options.structuredOutputRecovery && (options.resume || options.continue)) {
+        throw new Error('Structured-output recovery must start a fresh provider session.');
+      }
       const { runTask } = await import('../task-lib/commands/run.js');
       await runTask(prompt, options);
     } catch (error) {
@@ -3858,9 +3855,8 @@ program
   .description('Output task ID for an internal spawn ownership token (machine-readable)')
   .action(async (token) => {
     try {
-      const { getTaskIdBySpawnToken } = await import(
-        '../task-lib/commands/get-task-id-by-spawn-token.js'
-      );
+      const { getTaskIdBySpawnToken } =
+        await import('../task-lib/commands/get-task-id-by-spawn-token.js');
       getTaskIdBySpawnToken(token);
     } catch (error) {
       console.error('Error resolving task spawn ownership:', error.message);

@@ -37,16 +37,31 @@ async function main() {
       sender: 'worker',
     })
     .map((message) => message.content.data.event);
+  const completion = cluster.messageBus.findLast({
+    cluster_id: started.id,
+    topic: 'CLUSTER_COMPLETE',
+  });
   console.log(
     'RESULT:' +
       JSON.stringify({
         state: orchestrator.getStatus(started.id).state,
+        configuredRole: config.agents[0].role,
         lifecycle,
+        topics: cluster.messageBus.getAll(started.id).map((message) => message.topic),
+        completionData: completion?.content?.data || null,
         agentState: registry[started.id].agentStates[0],
         tasks: Object.fromEntries(
           Object.entries(loadTasks()).map(([id, task]) => [
             id,
-            { status: task.status, pid: task.pid, error: task.error },
+            {
+              status: task.status,
+              pid: task.pid,
+              error: task.error,
+              sessionId: task.sessionId,
+              sessionIdConflict: task.sessionIdConflict,
+              requestedResumeSessionId: task.requestedResumeSessionId,
+              resumeIdentityVerified: task.resumeIdentityVerified,
+            },
           ])
         ),
         fakeCount: fs.readFileSync(process.env.FAKE_CODEX_COUNT, 'utf8'),

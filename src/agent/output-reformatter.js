@@ -1,49 +1,30 @@
-/**
- * Output Reformatter - Convert non-JSON output to valid JSON
- *
- * When an LLM outputs markdown/text instead of JSON despite schema instructions,
- * this module attempts to extract/reformat the content into valid JSON.
- *
- * Opencode output can be reformatted through its CLI when direct JSON extraction fails.
- * Other providers remain on their own extraction paths and never depend on the opencode binary.
- */
+const Ajv = require('ajv');
+const { getProvider } = require('../providers');
+const { normalizeEnumValues } = require('./schema-utils');
 
 const DEFAULT_MAX_ATTEMPTS = 3;
-
+const MAX_REFORMAT_INPUT_BYTES = 65_536;
+const MAX_CONFIGURED_ATTEMPTS = 10;
 
 function createCancellationError() {
   const error = new Error('Output reformatting cancelled');
   error.code = 'REFORMAT_CANCELLED';
+  error.recoveryAbort = true;
   return error;
 }
 
-
-/**
- * Build the reformatting prompt
- *
- * @param {string} rawOutput - The non-JSON output to reformat
- * @param {Object} schema - Target JSON schema
- * @param {string|null} previousError - Error from previous attempt (for feedback)
- * @returns {string} The prompt for the reformatting model
- */
 function buildReformatPrompt(rawOutput, schema, previousError = null) {
-  const schemaStr = JSON.stringify(schema, null, 2);
-  // Truncate long outputs to avoid context limits
-  const truncatedOutput = rawOutput.length > 4000 ? rawOutput.slice(-4000) : rawOutput;
-
   let prompt = `CRITICAL: Do NOT use any tools. Do NOT read, write, or edit any files. Do NOT explore the codebase. This is a pure text-to-JSON transformation — respond with JSON only.
 
-Convert this text into a JSON object matching the schema.
+Convert the JSON-encoded source text into a JSON object matching the schema.
 
 ## SCHEMA
 \`\`\`json
-${schemaStr}
+${JSON.stringify(schema, null, 2)}
 \`\`\`
 
-## TEXT TO CONVERT
-\`\`\`
-${truncatedOutput}
-\`\`\`
+## JSON-ENCODED SOURCE TEXT
+${JSON.stringify(rawOutput)}
 
 ## RULES
 - Output ONLY the JSON object
@@ -55,134 +36,196 @@ ${truncatedOutput}
   if (previousError) {
     prompt += `
 
-## PREVIOUS ATTEMPT FAILED
-Error: ${previousError}
+## PREVIOUS CANDIDATE FAILED
+${previousError}
 Fix this issue in your response.`;
   }
 
   return prompt;
 }
 
-/**
- * This fallback is intentionally scoped to opencode agents. It participates in agent
- * cancellation so retries cannot outlive cluster shutdown.
- *
- * @param {Object} options
- * @param {string} options.rawOutput - The non-JSON output to reformat
- * @param {Object} options.schema - Target JSON schema
- * @param {string} options.providerName - Active provider name
- * @param {number} [options.maxAttempts=3] - Maximum reformatting attempts
- * @param {Function} [options.onAttempt] - Callback for each attempt (attempt, error)
- * @param {Function} [options.isCancelled] - Returns true after agent cancellation
- * @param {Function} options.runReformat - Runs the prompt in the active agent execution context
- * @returns {Promise<Object>} The reformatted JSON object
- * @throws {Error} If the provider is unsupported, cancellation occurs, or attempts fail
- */
+function formatValidationErrors(errors, limit = 5) {
+  return errors
+    .slice(0, limit)
+    .map((error) => `${error.instancePath || error.schemaPath || '#'} ${error.message}`)
+    .join('; ');
+}
+
+function createStructuredOutputValidator(schema) {
+  const ajv = new Ajv({
+    allErrors: true,
+    strict: false,
+    coerceTypes: false,
+    useDefaults: true,
+    removeAdditional: true,
+  });
+  const validate = ajv.compile(schema);
+
+  return (candidate) => {
+    normalizeEnumValues(candidate, schema);
+    const valid = validate(candidate);
+    const errors = (validate.errors || []).map((error) => ({ ...error }));
+    return {
+      valid,
+      value: candidate,
+      errors,
+      error: valid ? null : formatValidationErrors(errors) || 'Schema validation failed',
+    };
+  };
+}
+
+function validateAgainstSchema(parsed, schema) {
+  return createStructuredOutputValidator(schema)(parsed).error;
+}
+
+function assertReformatRequest(rawOutput, maxAttempts) {
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAX_CONFIGURED_ATTEMPTS) {
+    const error = new RangeError(
+      `Output reformatting maxAttempts must be an integer from 1 through ${MAX_CONFIGURED_ATTEMPTS}`
+    );
+    error.code = 'REFORMAT_INVALID_ATTEMPT_LIMIT';
+    error.permanent = true;
+    throw error;
+  }
+  if (Buffer.byteLength(rawOutput || '', 'utf8') > MAX_REFORMAT_INPUT_BYTES) {
+    const error = new Error(
+      `Output reformatting input exceeds ${MAX_REFORMAT_INPUT_BYTES} UTF-8 bytes`
+    );
+    error.code = 'REFORMAT_INPUT_TOO_LARGE';
+    error.permanent = true;
+    throw error;
+  }
+}
+
+function invocationError(result) {
+  const error =
+    result?.error instanceof Error
+      ? result.error
+      : new Error(result?.error || 'Structured-output recovery task failed');
+  for (const field of [
+    'code',
+    'permanent',
+    'provider',
+    'capability',
+    'nestedExecutionCancellation',
+    'nestedExecutionLifecycle',
+    'retainTaskHandle',
+    'terminationExhausted',
+    'taskId',
+  ]) {
+    if (result?.[field] !== undefined && error[field] === undefined) {
+      error[field] = result[field];
+    }
+  }
+  return error;
+}
+
+function isImmediateRecoveryFailure(error, providerName) {
+  if (
+    error?.code === 'REFORMAT_CANCELLED' ||
+    error?.code === 'AGENT_TASK_TIMEOUT' ||
+    error?.nestedExecutionCancellation === true ||
+    error?.nestedExecutionLifecycle === true ||
+    error?.retainTaskHandle === true ||
+    error?.permanent === true ||
+    error?.terminationExhausted === true
+  ) {
+    return true;
+  }
+  return !getProvider(providerName).isRetryableError(error);
+}
+
+function markImmediateRecoveryFailure(error, providerName) {
+  if (!isImmediateRecoveryFailure(error, providerName)) return false;
+  error.recoveryAbort = true;
+  const operationalControl =
+    error.code === 'REFORMAT_CANCELLED' ||
+    error.code === 'AGENT_TASK_TIMEOUT' ||
+    error.nestedExecutionCancellation === true ||
+    error.nestedExecutionLifecycle === true ||
+    error.retainTaskHandle === true ||
+    error.terminationExhausted === true;
+  if (!operationalControl && error.permanent !== true) error.permanent = true;
+  return true;
+}
+
 async function reformatOutput({
   rawOutput,
   schema,
   providerName,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
+  initialError = null,
+  validateCandidate = createStructuredOutputValidator(schema),
   onAttempt,
   isCancelled = () => false,
   runReformat,
 }) {
-  if (providerName !== 'opencode') {
-    throw new Error(
-      `Output reformatting not available for provider "${providerName}". ` +
-        `Agent output must be valid JSON. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
-    );
-  }
+  assertReformatRequest(rawOutput, maxAttempts);
   if (typeof runReformat !== 'function') {
     throw new Error('Output reformatting requires the active agent execution context');
   }
 
-
-  const { extractJsonFromOutput } = require('./output-extraction');
-  let lastError = null;
+  const { extractCliError, extractJsonFromOutput } = require('./output-extraction');
+  let lastError = initialError;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (isCancelled()) throw createCancellationError();
-    if (onAttempt) {
-      onAttempt(attempt, lastError);
-    }
-
+    onAttempt?.(attempt, lastError);
     const prompt = buildReformatPrompt(rawOutput, schema, lastError);
 
     try {
       const result = await runReformat(prompt);
       if (isCancelled()) throw createCancellationError();
       if (!result?.success) {
-        lastError = result?.error || 'reformat task failed';
+        const error = invocationError(result);
+        if (markImmediateRecoveryFailure(error, providerName)) throw error;
+        lastError = error.message;
         continue;
       }
-      const output = result.output;
-      if (!output) {
-        lastError = 'reformat task returned no output';
+      if (!result.output) {
+        lastError = 'Recovery task returned no output';
+        continue;
+      }
+      const terminalError = extractCliError(result.output, providerName);
+      if (terminalError) {
+        const error = new Error(terminalError.error);
+        error.provider = terminalError.provider;
+        if (markImmediateRecoveryFailure(error, providerName)) throw error;
+        lastError = error.message;
         continue;
       }
 
-      const parsed = extractJsonFromOutput(output, 'opencode');
+      const parsed = extractJsonFromOutput(result.output, providerName);
       if (!parsed) {
-        lastError = 'Could not extract JSON from reformatted output';
+        lastError = 'Could not extract JSON from recovery output';
         continue;
       }
-
-      const validationError = validateAgainstSchema(parsed, schema);
-      if (validationError) {
-        lastError = validationError;
+      const validation = validateCandidate(parsed);
+      if (!validation.valid) {
+        lastError = validation.error;
         continue;
       }
-
-      return parsed;
-    } catch (err) {
-      if (
-        err.code === 'REFORMAT_CANCELLED' ||
-        err.code === 'AGENT_TASK_TIMEOUT' ||
-        err.nestedExecutionLifecycle === true ||
-        err.retainTaskHandle === true ||
-        err.permanent === true ||
-        err.terminationExhausted === true
-      ) {
-        throw err;
-      }
-      lastError = err.message;
+      return { status: 'recovered', value: validation.value, attempts: attempt };
+    } catch (error) {
+      if (isCancelled()) throw createCancellationError();
+      if (markImmediateRecoveryFailure(error, providerName)) throw error;
+      lastError = error.message;
     }
   }
 
-  throw new Error(
-    `Failed to reformat output after ${maxAttempts} attempts (provider "${providerName}"). ` +
-      `Last error: ${lastError}. Raw output (last 200 chars): ${(rawOutput || '').slice(-200)}`
-  );
-}
-
-/**
- * Validate parsed output against JSON schema
- *
- * @param {Object} parsed - Parsed JSON object
- * @param {Object} schema - JSON schema to validate against
- * @returns {string|null} Error message if validation failed, null if valid
- */
-function validateAgainstSchema(parsed, schema) {
-  const Ajv = require('ajv');
-  const ajv = new Ajv({ allErrors: true, strict: false });
-  const validate = ajv.compile(schema);
-  const valid = validate(parsed);
-
-  if (!valid) {
-    const errors = (validate.errors || [])
-      .slice(0, 3)
-      .map((e) => `${e.instancePath || '#'} ${e.message}`)
-      .join('; ');
-    return errors || 'Schema validation failed';
-  }
-
-  return null;
+  return {
+    status: 'exhausted',
+    attempts: maxAttempts,
+    lastError: lastError || 'Recovery attempts produced no schema-valid JSON object',
+  };
 }
 
 module.exports = {
   reformatOutput,
   buildReformatPrompt,
+  createStructuredOutputValidator,
   validateAgainstSchema,
   DEFAULT_MAX_ATTEMPTS,
+  MAX_REFORMAT_INPUT_BYTES,
+  MAX_CONFIGURED_ATTEMPTS,
 };

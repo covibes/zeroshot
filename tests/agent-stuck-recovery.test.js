@@ -308,10 +308,8 @@ describe('Agent stuck-task recovery', function () {
     }
   });
 
-
   it('cancels pending launches before persistence, before wrapper close, and before follower install', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
     const taskIds = ['launch-prerow-task', 'launch-postrow-task', 'launch-postid-task'];
 
     try {
@@ -348,8 +346,7 @@ describe('Agent stuck-task recovery', function () {
   });
 
   it('retries an unconfirmed pending-launch cancellation', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
     const taskId = 'launch-retry-task';
     removeTask(taskId);
     const agent = createPendingLaunchAgent();
@@ -381,8 +378,7 @@ describe('Agent stuck-task recovery', function () {
   });
 
   it('retains a nested local launch after unconfirmed wrapper cleanup', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
     const taskId = 'launch-retry-task';
     removeTask(taskId);
     const agent = createPendingLaunchAgent();
@@ -499,13 +495,10 @@ describe('Agent stuck-task recovery', function () {
     try {
       const launch = agent._spawnClaudeTask('nested local handoff', {
         nested: true,
-        disableTools: true,
+        structuredOutputRecovery: true,
         skipStructuredResultCheck: true,
       });
-      await waitFor(
-        () => agent.nestedExecutions?.activeTaskIds.includes(taskId),
-        2000
-      );
+      await waitFor(() => agent.nestedExecutions?.activeTaskIds.includes(taskId), 2000);
       const cancellation = agent.nestedExecutions.cancelAll('Nested task timed out', {
         code: 'AGENT_TASK_TIMEOUT',
       });
@@ -537,8 +530,7 @@ describe('Agent stuck-task recovery', function () {
   });
 
   it('terminates a durable child after a pending-launch timeout', async function () {
-    const { fakeBin, fakeZeroshot, getTask, removeTask } =
-      await createPendingLaunchFixture();
+    const { fakeBin, fakeZeroshot, getTask, removeTask } = await createPendingLaunchFixture();
     const taskId = 'launch-timeout-task';
     removeTask(taskId);
     const agent = createPendingLaunchAgent();

@@ -783,6 +783,23 @@ test('probe attests Codex and OpenCode web-search version floors', () => {
     });
     assert.equal(response.envelope.result.capabilities.supportsWebSearch, expected);
   }
+
+  for (const [versionText, expected] of [
+    ['1.17.20', true],
+    ['opencode 1.17.20', true],
+    ['opencode 1.17.19', false],
+    ['opencode 1.17.20-beta.1', false],
+    ['dev', false],
+  ]) {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'probe',
+      provider: 'opencode',
+      helpText: 'Usage: opencode run --agent',
+      versionText,
+    });
+    assert.equal(response.envelope.result.capabilities.supportsRecoveryIsolation, expected);
+  }
 });
 
 test('probe and build-command distinguish requested and effective Codex search', () => {

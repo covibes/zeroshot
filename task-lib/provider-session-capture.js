@@ -71,7 +71,15 @@ export function createProviderSessionCapture({
   requestedSessionId = null,
   initialSessionId = null,
   initialSessionIdConflict = false,
+  disabled = false,
 }) {
+  if (disabled) {
+    return {
+      captureLine() {},
+      getCompletionError: () => null,
+      getCompletionUpdate: () => ({ resumeIdentityVerified: false }),
+    };
+  }
   let currentSessionId = initialSessionId;
   let sessionIdConflict = initialSessionIdConflict;
   let persistenceError = null;
