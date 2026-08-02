@@ -8,6 +8,7 @@ pub mod daemon_listener;
 pub mod execution;
 pub mod full_v1_reducer;
 pub mod issue_provider;
+pub mod native_settings;
 pub mod product_errors;
 mod provider_value;
 pub mod required_proof;
