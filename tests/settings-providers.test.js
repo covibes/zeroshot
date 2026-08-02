@@ -14,7 +14,7 @@ const {
   validateProviderLevel,
 } = require('../src/config-validator');
 const { getProvider } = require('../src/providers');
-const { getDefaultProviderId } = require('../lib/provider-names');
+const { getDefaultProviderId, normalizeProviderName } = require('../lib/provider-names');
 
 describe('Provider settings', function () {
   const testDir = path.join(os.tmpdir(), `zeroshot-provider-settings-${Date.now()}`);
@@ -337,24 +337,33 @@ describe('Provider settings', function () {
     }
   });
 
-  it('keeps legacy watcher/task compat paths on their own claude literal, not the marker', function () {
-    const legacyFiles = [
-      'task-lib/watcher.js',
-      'task-lib/attachable-watcher.js',
-      'task-lib/watcher-output-runtime.js',
-    ];
-    for (const relativeFile of legacyFiles) {
-      const source = fs.readFileSync(path.join(__dirname, '..', relativeFile), 'utf8');
-      assert.match(
-        source,
-        /'claude'/,
-        `${relativeFile} must keep its literal 'claude' compatibility fallback`
+  it('recovers legacy provider-less watcher records as Claude even when the registry marker points elsewhere, while fresh lookups follow the marker', async function () {
+    // resolveWatcherCommand is the exact function watcher.js and attachable-watcher.js
+    // call to resolve a persisted task/watcher record's provider.
+    const { resolveWatcherCommand } = await import('../task-lib/watcher-output-runtime.js');
+    const { supportsProviderStructuredOutputRecovery } = require('../lib/agent-cli-provider');
+    const providerRegistry = require('../lib/agent-cli-provider/provider-registry');
+
+    const originalGetDefaultProviderId = providerRegistry.getDefaultProviderId;
+    providerRegistry.getDefaultProviderId = () => 'codex';
+    try {
+      // Fresh (marker-driven) resolution follows the overridden registry default.
+      assert.strictEqual(getDefaultProviderId(), 'codex');
+
+      // A legacy persisted watcher/task record never stored a `provider` field.
+      const legacyConfig = {};
+      const commandSpec = { binary: 'legacy-binary', args: [], env: {} };
+      const { providerName } = resolveWatcherCommand(
+        legacyConfig,
+        commandSpec,
+        [],
+        normalizeProviderName
       );
-      assert.doesNotMatch(
-        source,
-        /getDefaultProviderId/,
-        `${relativeFile} must not be reinterpreted via the default-provider marker`
-      );
+
+      assert.strictEqual(providerName, 'claude');
+      assert.strictEqual(supportsProviderStructuredOutputRecovery(providerName), true);
+    } finally {
+      providerRegistry.getDefaultProviderId = originalGetDefaultProviderId;
     }
   });
 });
