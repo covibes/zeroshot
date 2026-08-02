@@ -11,6 +11,7 @@ const path = require('path');
 const os = require('os');
 const Orchestrator = require('../../src/orchestrator.js');
 const Ledger = require('../../src/ledger.js');
+const { getDefaultProviderId } = require('../../lib/provider-names');
 
 function createTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -96,5 +97,33 @@ describe('Orchestrator provider reload', function () {
       cleanupDir(storageDir);
       cleanupDir(settingsDir);
     }
+  });
+
+  it('_resolveClusterProvider falls back to the registry default when nothing is configured', function () {
+    const orchestrator = Object.create(Orchestrator.prototype);
+    const resolved = orchestrator._resolveClusterProvider({}, { defaultProvider: undefined });
+    assert.strictEqual(resolved, getDefaultProviderId());
+  });
+
+  it('_resolveClusterProvider still prefers forceProvider and defaultProvider over the registry default', function () {
+    const orchestrator = Object.create(Orchestrator.prototype);
+    assert.strictEqual(
+      orchestrator._resolveClusterProvider(
+        { forceProvider: 'codex', defaultProvider: 'gemini' },
+        { defaultProvider: 'opencode' }
+      ),
+      'codex'
+    );
+    assert.strictEqual(
+      orchestrator._resolveClusterProvider(
+        { defaultProvider: 'gemini' },
+        { defaultProvider: 'opencode' }
+      ),
+      'gemini'
+    );
+    assert.strictEqual(
+      orchestrator._resolveClusterProvider({}, { defaultProvider: 'opencode' }),
+      'opencode'
+    );
   });
 });

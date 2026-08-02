@@ -9,7 +9,7 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const TaskRunner = require('./task-runner');
 const { loadSettings } = require('../lib/settings');
-const { normalizeProviderName } = require('../lib/provider-names');
+const { normalizeProviderName, getDefaultProviderId } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const { applyDarwinKeychainBoundaryToEnv } = require('./darwin-keychain-boundary');
@@ -200,7 +200,9 @@ class ClaudeTaskRunner extends TaskRunner {
     } = options;
 
     const settings = loadSettings();
-    const providerName = normalizeProviderName(provider || settings.defaultProvider || 'claude');
+    const providerName = normalizeProviderName(
+      provider || settings.defaultProvider || getDefaultProviderId()
+    );
     const { providerModule, providerSettings, levelOverrides } = this._getProviderContext(
       providerName,
       settings
@@ -736,7 +738,7 @@ class ClaudeTaskRunner extends TaskRunner {
     rejectCallerSuppliedModelProvenance(options);
     const {
       agentId = 'unknown',
-      provider = 'claude',
+      provider = getDefaultProviderId(),
       model = null,
       modelLevel = null,
       modelSpec: explicitModelSpec = null,

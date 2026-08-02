@@ -21,6 +21,7 @@ const {
 const { loadSettings, getClaudeCommand } = require('../lib/settings.js');
 const {
   VALID_PROVIDERS,
+  getDefaultProviderId,
   getProviderMetadata,
   normalizeProviderName,
   resolveProviderCommand,
@@ -597,7 +598,7 @@ async function runPreflight(options = {}) {
     };
   }
   const providerName = normalizeProviderName(
-    options.provider || settings.defaultProvider || 'claude'
+    options.provider || settings.defaultProvider || getDefaultProviderId()
   );
 
   const providerResult = validateProvider(providerName, options);

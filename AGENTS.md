@@ -482,6 +482,8 @@ Settings: `defaultProvider`, `providerSettings` (claude/codex/gateway/gemini/ope
 Provider engines are registry-owned: adding an engine means one entry in `src/agent-cli-provider/provider-registry.ts`, plus the provider-specific adapter and tests. Docker credential mount/env presets, CLI aliases, visible preset lists, and any nontrivial availability probe rules must derive from that registry entry; do not add new provider identity lists or provider preset lists elsewhere.
 Model gateways stay behind the single bundled `gateway` engine. Do not add `openrouter`, `ollama`, `vllm`, `hermes`, or similar model-only targets as standalone provider ids.
 
+Exactly one registry entry must set `default: true`; `getDefaultProviderId()` (`src/agent-cli-provider/provider-registry.ts`, re-exported from `lib/provider-names.js`) is the sole default-provider authority — settings, agent resolution, CLI, and setup code fall back to it, never a hardcoded provider literal. Historical-output parsers and legacy provider-less persisted watcher/task records keep their existing Claude-literal compatibility path and are never reinterpreted via the marker.
+
 ACP-native engines use one shared stdio adapter lane. New ACP engines must be added with registry metadata plus helper fixtures only; do not add engine-specific ACP parsers or invoke runners.
 ACP fixtures must use protocol-shaped chunk payloads: `agent_message_chunk.content` is a single `ContentBlock` object, and thought deltas are covered with `agent_thought_chunk` fixtures so parser tests catch spec drift.
 

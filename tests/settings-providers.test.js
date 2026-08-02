@@ -2,13 +2,19 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { loadSettings, mutateSettings, validateSetting } = require('../lib/settings');
+const {
+  loadSettings,
+  mutateSettings,
+  validateSetting,
+  DEFAULT_SETTINGS,
+} = require('../lib/settings');
 const {
   validateProviderFeatures,
   validateProviderSettings,
   validateProviderLevel,
 } = require('../src/config-validator');
 const { getProvider } = require('../src/providers');
+const { getDefaultProviderId } = require('../lib/provider-names');
 
 describe('Provider settings', function () {
   const testDir = path.join(os.tmpdir(), `zeroshot-provider-settings-${Date.now()}`);
@@ -297,5 +303,58 @@ describe('Provider settings', function () {
         cliFeatures: { supportsModel: true },
       });
     }, /Invalid model "opus-4.6"/);
+  });
+
+  it('resolves defaultProvider to the registry default on a fresh settings load', function () {
+    const freshSettingsFile = path.join(testDir, 'fresh-settings.json');
+    process.env.ZEROSHOT_SETTINGS_FILE = freshSettingsFile;
+    fs.writeFileSync(freshSettingsFile, '{}', 'utf8');
+    try {
+      const settings = loadSettings();
+      assert.strictEqual(settings.defaultProvider, getDefaultProviderId());
+    } finally {
+      delete process.env.ZEROSHOT_SETTINGS_FILE;
+    }
+  });
+
+  it('restores defaultProvider to the registry default on whole-settings reset', function () {
+    const resetSettingsFile = path.join(testDir, 'reset-settings.json');
+    process.env.ZEROSHOT_SETTINGS_FILE = resetSettingsFile;
+    fs.writeFileSync(
+      resetSettingsFile,
+      JSON.stringify({ defaultProvider: 'codex' }, null, 2),
+      'utf8'
+    );
+    try {
+      mutateSettings((settings) => {
+        for (const key of Object.keys(settings)) delete settings[key];
+        Object.assign(settings, JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS })));
+      });
+      const settings = loadSettings();
+      assert.strictEqual(settings.defaultProvider, getDefaultProviderId());
+    } finally {
+      delete process.env.ZEROSHOT_SETTINGS_FILE;
+    }
+  });
+
+  it('keeps legacy watcher/task compat paths on their own claude literal, not the marker', function () {
+    const legacyFiles = [
+      'task-lib/watcher.js',
+      'task-lib/attachable-watcher.js',
+      'task-lib/watcher-output-runtime.js',
+    ];
+    for (const relativeFile of legacyFiles) {
+      const source = fs.readFileSync(path.join(__dirname, '..', relativeFile), 'utf8');
+      assert.match(
+        source,
+        /'claude'/,
+        `${relativeFile} must keep its literal 'claude' compatibility fallback`
+      );
+      assert.doesNotMatch(
+        source,
+        /getDefaultProviderId/,
+        `${relativeFile} must not be reinterpreted via the default-provider marker`
+      );
+    }
   });
 });
