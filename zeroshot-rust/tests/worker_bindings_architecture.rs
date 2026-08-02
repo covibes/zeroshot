@@ -4,7 +4,15 @@ mod architecture_boundary_macro;
 mod architecture_support;
 
 use architecture_support::{product_root, read};
-architecture_boundary_macro::suppress_single_test_boundary_unused_exports!(architecture_support);
+architecture_boundary_macro::suppress_unused_architecture_exports!(
+    architecture_support,
+    product_package,
+    workspace_metadata,
+    runtime_source,
+    rust_sources,
+    repository_root,
+    relative_files,
+);
 
 #[test]
 fn worker_bindings_adds_no_concrete_driver_or_transport_implementation() {
