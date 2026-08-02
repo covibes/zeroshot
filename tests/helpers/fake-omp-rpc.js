@@ -54,6 +54,8 @@
  *   - OMP_FAKE_RPC_ARTIFACT_DIR=1        also create the sibling artifacts dir with one entry
  *   - OMP_FAKE_RPC_APPEND_ON_RESUME=1    append a record to the resumed transcript
  *   - OMP_FAKE_RPC_SESSION_ID/_FILE      override the *reported* id/path (drift scenarios)
+ *   - OMP_FAKE_RPC_OMIT_SESSION_ID=1     omit `sessionId` from the get_state response entirely
+ *   - OMP_FAKE_RPC_OMIT_SESSION_FILE=1   omit `sessionFile` from the get_state response entirely
  *   - OMP_FAKE_RPC_SELECTED_PROVIDER/_MODEL/_THINKING_LEVEL  override reported get_state model
  */
 
@@ -146,9 +148,17 @@ function resolveSessionOnDisk() {
     }
   }
 
+  // Omission is distinct from override: docs/rpc.md lets get_state report only a subset, and a
+  // resume must never proceed on disk state alone when OMP declined to name the session it opened.
   return {
-    sessionId: process.env.OMP_FAKE_RPC_SESSION_ID || sessionId,
-    sessionFile: process.env.OMP_FAKE_RPC_SESSION_FILE || sessionFile,
+    sessionId:
+      process.env.OMP_FAKE_RPC_OMIT_SESSION_ID === '1'
+        ? null
+        : process.env.OMP_FAKE_RPC_SESSION_ID || sessionId,
+    sessionFile:
+      process.env.OMP_FAKE_RPC_OMIT_SESSION_FILE === '1'
+        ? null
+        : process.env.OMP_FAKE_RPC_SESSION_FILE || sessionFile,
   };
 }
 

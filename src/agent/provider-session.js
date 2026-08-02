@@ -65,13 +65,25 @@ const OMP_SESSION_KEYS = new Set([
 ]);
 const IDENTITY_KEYS = new Set(['device', 'inode']);
 
+/**
+ * A `{device, inode}` pair, both already canonical unsigned decimal *strings* (issue #866).
+ *
+ * The type is required, not coerced. `String(value.device)` used to accept a JSON number, a
+ * boxed String, a one-element array, or anything else whose `toString()` happened to look decimal,
+ * and then write the coerced result into the snapshot — so a snapshot that had never contained the
+ * canonical form would compare equal to the persisted ownership record it is supposed to be
+ * checked against. A snapshot that is not already canonical is not this writer's snapshot, and is
+ * rejected rather than repaired. Both keys are required and no others are allowed.
+ */
 function normalizeIdentity(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (!Object.keys(value).every((key) => IDENTITY_KEYS.has(key))) return null;
-  if (!DECIMAL_STRING.test(String(value.device)) || !DECIMAL_STRING.test(String(value.inode))) {
+  const keys = Object.keys(value);
+  if (keys.length !== IDENTITY_KEYS.size || !keys.every((key) => IDENTITY_KEYS.has(key))) {
     return null;
   }
-  return { device: String(value.device), inode: String(value.inode) };
+  if (typeof value.device !== 'string' || typeof value.inode !== 'string') return null;
+  if (!DECIMAL_STRING.test(value.device) || !DECIMAL_STRING.test(value.inode)) return null;
+  return { device: value.device, inode: value.inode };
 }
 
 /**
@@ -299,7 +311,9 @@ function providerSessionFromCompletedTask({
   // rpc-watcher.js never populates the generic sessionId column; the OMP-observed session ID
   // committed alongside ompSession is the one authoritative identity for this provider.
   const sessionId = isOmp
-    ? normalizeNonEmptyString(ompOwnership?.state === 'committed' ? ompOwnership.session?.sessionId : null)
+    ? normalizeNonEmptyString(
+        ompOwnership?.state === 'committed' ? ompOwnership.session?.sessionId : null
+      )
     : normalizeNonEmptyString(taskInfo.sessionId);
   const taskId = normalizeNonEmptyString(taskInfo.id);
   const generation = agent?.iteration;

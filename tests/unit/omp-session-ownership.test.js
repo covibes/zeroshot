@@ -9,7 +9,9 @@
  *   - every transition is a full-value compare-and-swap, so a duplicate/re-entrant call from a
  *     racing crash-recovery path can never clobber a state another writer already advanced past.
  *   - the resume ownership transfer is atomic and fenced on both rows, so a partition is never
- *     owned by two committed rows and never by none.
+ *     owned by two committed rows. It regularly has NO committed owner: the authoritative live
+ *     claimant for the whole span of a resumed turn is that turn's own `provisional` row, by
+ *     design, and a post-transfer failure must retire it rather than strand the lineage.
  *   - every #866 ownership crash vector resolves to exactly one committed owner or a retryable
  *     cleanup-required state, and no unowned partition becomes resumable.
  *
@@ -123,11 +125,13 @@ function markCleanupRequiredFor(id) {
   return callOwnership('markCleanupRequired', JSON.stringify(id));
 }
 
+/** The shared durable-boundary retirement every failed/cancelled/stale/killed transition uses. */
+function retireAtTerminalBoundaryFor(id) {
+  return callOwnership('retireOmpOwnershipAtTerminalBoundary', JSON.stringify(id));
+}
+
 function transferOwnership(fromTaskId, toTaskId) {
-  return callOwnership(
-    'transferOmpSessionOwnership',
-    JSON.stringify({ fromTaskId, toTaskId })
-  );
+  return callOwnership('transferOmpSessionOwnership', JSON.stringify({ fromTaskId, toTaskId }));
 }
 
 function committedOwnersFor(partitionId, excludeTaskId = null) {
@@ -191,7 +195,10 @@ describe('task-lib/omp-session-ownership.js (owner-fenced ownership state machin
   describe('two-boundary commit contract', function () {
     it('cluster-agent: recordVerifiedMaterialization persists evidence but leaves state provisional', async function () {
       const id = await seedCluster('cluster-record');
-      assert.strictEqual(await recordVerifiedMaterializationFor(id, partition.sessionFilePath), true);
+      assert.strictEqual(
+        await recordVerifiedMaterializationFor(id, partition.sessionFilePath),
+        true
+      );
 
       const ownership = await getOwnership(id);
       assert.strictEqual(ownership.state, 'provisional', 'evidence recording must not commit');
@@ -499,6 +506,57 @@ describe('task-lib/omp-session-ownership.js (owner-fenced ownership state machin
         await committedOwnersFor(partition.partitionId),
         [resumedId],
         'exactly one committed owner after the resumed turn'
+      );
+    });
+
+    it('every post-transfer terminal failure retires the resumed row instead of stranding it', async function () {
+      // Terminal verification failure, a failed schema/hook boundary, a cancellation, a kill, a
+      // spawn that never got off the ground: they are different code paths but the same durable
+      // boundary, and the state that matters is the same. After the transfer the resumed row holds
+      // the ONLY copy of the lineage — the prior owner's record was cleared — so a failure that
+      // left it `provisional` would strand the partition forever behind the authoritative fence.
+      const priorId = await seedCommittedPrior('post-transfer-failure');
+      const resumedId = await seedStandalone('post-transfer-failure-resumed');
+      assert.ok(await transferOwnership(priorId, resumedId), 'the transfer must apply first');
+
+      assert.strictEqual(await retireAtTerminalBoundaryFor(resumedId), true);
+      const retired = await getOwnership(resumedId);
+      assert.strictEqual(retired.state, 'cleanup-required');
+      assert.ok(retired.session, 'the inherited lineage is retained as evidence for cleanup');
+      assert.strictEqual(
+        await getOwnership(priorId),
+        null,
+        'the released prior owner must not reappear as a second committed owner'
+      );
+      assert.deepStrictEqual(
+        await committedOwnersFor(partition.partitionId),
+        [],
+        'no committed owner survives a failed continuation'
+      );
+      assert.deepStrictEqual(
+        await authoritativeOwnersFor(partition.partitionId),
+        [],
+        'a retired row claims nothing, so the partition is reclaimable by cleanup'
+      );
+
+      // Re-entry: a retried kill, a crash-recovery replay, or the watcher and its parent both
+      // reacting to the same terminal frame must converge rather than fight.
+      assert.strictEqual(await retireAtTerminalBoundaryFor(resumedId), true);
+      assert.strictEqual((await getOwnership(resumedId)).state, 'cleanup-required');
+    });
+
+    it('the terminal-boundary retirement is total: unknown rows and committed rows are safe no-ops', async function () {
+      // Callers are already committing a terminal task-status write when they call this, so it
+      // must never throw and must never downgrade a session that legitimately succeeded.
+      assert.strictEqual(await retireAtTerminalBoundaryFor('no-such-task'), true);
+      assert.strictEqual(await retireAtTerminalBoundaryFor(''), true);
+
+      const committedId = await seedCommittedPrior('retire-committed');
+      assert.strictEqual(await retireAtTerminalBoundaryFor(committedId), true);
+      assert.strictEqual(
+        (await getOwnership(committedId)).state,
+        'committed',
+        'a committed record is the tail of an already-successful turn and is never downgraded'
       );
     });
   });

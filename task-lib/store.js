@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { TASKS_DIR, LOGS_DIR } from './config.js';
 import { generateName } from './name-generator.js';
 import {
+  inspectStoredOmpSessionOwnership,
   parseOmpSessionOwnership,
   serializeOmpSessionOwnership,
 } from './omp-session-ownership-schema.js';
@@ -213,7 +214,20 @@ function rowToTask(row) {
     cancelRequested: Boolean(row.cancel_requested),
     spawnOwnershipToken: row.spawn_ownership_token,
     ompSessionOwnership: parseOmpSessionOwnership(row.omp_session_ownership),
+    // Raw-presence seam (see inspectStoredOmpSessionOwnership). `ompSessionOwnership: null` alone
+    // cannot distinguish "this task never had an OMP session" from "this task's owner record is
+    // unreadable", and those demand opposite handling: the first is nothing to clean, the second
+    // means a partition may exist that only this row still points at. The malformed bytes
+    // themselves are deliberately not exposed — nothing may act on them.
+    ompSessionOwnershipPresent: inspectStoredOmpSessionOwnership(row.omp_session_ownership).present,
   };
+}
+
+/** True when a task row carries an `omp_session_ownership` value that exists but cannot be read as
+ * the closed schema. Such a row is retained by every cleanup surface with a warning: deleting it
+ * would orphan whatever partition the unreadable record described. */
+export function hasUnreadableOmpSessionOwnership(task) {
+  return Boolean(task?.ompSessionOwnershipPresent) && !task?.ompSessionOwnership;
 }
 
 /**
@@ -232,6 +246,14 @@ export function loadTasks() {
 
 /**
  * Save all tasks (replaces entire store - for migration compatibility)
+ *
+ * DESTRUCTIVE: this DELETEs every row and reinserts the snapshot it was handed, so any row a
+ * concurrent writer changed since that snapshot was taken is silently reverted — including
+ * owner-fenced `omp_session_ownership` compare-and-swaps, and including an unreadable ownership
+ * value, which `rowToTask` cannot round-trip and which would therefore be erased. Prefer the
+ * per-row helpers (updateTask / removeTaskIfUnchanged / clearTaskCommandCleanup); reach for this
+ * only for whole-store migration.
+ *
  * @param {Object.<string, Object>} tasks
  */
 export function saveTasks(tasks) {
@@ -485,6 +507,51 @@ export function addTask(task) {
  */
 export function removeTask(id) {
   getDb().prepare('DELETE FROM tasks WHERE id = ?').run(id);
+}
+
+/**
+ * Remove a task row only while it still matches the snapshot the caller validated.
+ *
+ * `clean`/`purge` decide what to remove from one `loadTasks()` snapshot and then do real work
+ * (partition staging, command cleanup, log deletion) before they get to the delete. A watcher,
+ * a resume's ownership transfer, or a kill can land in that window; deleting on the strength of a
+ * stale snapshot would destroy a row that is no longer the row that was examined. The status and
+ * the exact ownership bytes are the two fields that decide whether removal is still correct, so
+ * both are the fence. `store.js` writes the ownership column only through
+ * `serializeOmpSessionOwnership`, whose output is canonical per record, which is what makes a
+ * byte comparison an exact "same record" test.
+ *
+ * @param {string} id
+ * @param {{status: string, ompSessionOwnership: object|null}} expected snapshot values
+ * @returns {boolean} true when the row was removed
+ */
+export function removeTaskIfUnchanged(id, expected) {
+  const result = getDb()
+    .prepare(
+      `DELETE FROM tasks
+       WHERE id = ? AND status IS ? AND omp_session_ownership IS ?`
+    )
+    .run(
+      id,
+      expected?.status ?? null,
+      serializeOmpSessionOwnership(expected?.ompSessionOwnership || null)
+    );
+  return result.changes === 1;
+}
+
+/**
+ * Clear one row's persisted command-cleanup receipt, and nothing else.
+ *
+ * Deliberately narrower than updateTask(), which is a read-modify-write over every column and
+ * would write back whatever the caller's snapshot held for the rest of the row. This is used on
+ * the retained path of `clean`, where the row is known to be concurrently interesting.
+ *
+ * @param {string} id
+ */
+export function clearTaskCommandCleanup(id) {
+  getDb()
+    .prepare('UPDATE tasks SET command_cleanup = NULL, updated_at = ? WHERE id = ?')
+    .run(new Date().toISOString(), id);
 }
 
 export function generateId() {

@@ -20,12 +20,28 @@
 // byte read comes from `fstat`/`read` on that same descriptor. There is no lstat -> open -> stat
 // pathname sequence and no re-open of a mutable name after validation, so the substituted-file
 // race (CodeQL js/file-system-race) cannot apply: the object we checked is the object we read.
-// Directory listings additionally re-pin and compare identity around `readdir`, which reports a
-// substitution as a verification failure rather than silently traversing the replacement.
+// Directory listings additionally re-pin and compare identity around the enumeration, which reports
+// a substitution as a verification failure rather than silently traversing the replacement.
+//
+// Names are handled as RAW BYTES wherever the platform has raw bytes to give. A POSIX filename is
+// an opaque byte string, not text: two distinct files can carry names that are both invalid UTF-8
+// and that Node's string decoding collapses to the same run of U+FFFD replacement characters.
+// Hashing the re-encoded string would then give two different trees the same manifest digest — a
+// collision an attacker picks the filenames for. So directory entries are enumerated with
+// `encoding: 'buffer'`, every relative path is assembled, bounded, separator-checked, sorted, and
+// length-prefix-hashed as bytes, and child paths are opened from those same bytes rather than from
+// a string round trip. Windows has no such thing: the OS gives UTF-16 names, Node's fs rejects
+// Buffer paths there, and the existing string behavior is already lossless — so that platform keeps
+// it, with the same manifest layout.
+//
+// Memory is bounded by the pinned OMP_SESSION_LIMITS rather than by the input: file bytes are
+// streamed and hashed in fixed chunks, one JSONL record is capped at MAX_SESSION_RECORD_BYTES, the
+// blob-reference walk is iterative (a hostile record cannot exhaust the call stack), and directory
+// enumeration stops as soon as it has read more names than the entry budget could allow.
 const { createHash } = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { OMP_SESSION_LIMITS } = require('./omp-session-limits');
+const { OMP_SESSION_LIMITS, MAX_SESSION_RECORD_BYTES } = require('./omp-session-limits');
 const { resolveOmpBlobsDir } = require('./omp-blob-root');
 
 const BLOB_REF_PREFIX = 'blob:sha256:';
@@ -33,6 +49,48 @@ const CANONICAL_BLOB_REF_PATTERN = /^blob:sha256:[a-f0-9]{64}$/u;
 const SESSION_FILE_NAME_PATTERN = /^[^/\\]+\.jsonl$/u;
 const NEWLINE = 0x0a;
 const STREAM_CHUNK_BYTES = 1 << 16;
+
+// Raw-byte names are a POSIX property. On Windows, fs does not accept Buffer paths at all.
+const RAW_NAME_BYTES_SUPPORTED = process.platform !== 'win32';
+const FORWARD_SLASH = 0x2f;
+const BACKSLASH = 0x5c;
+const NUL = 0x00;
+const DOT = 0x2e;
+// The manifest's relative-path separator is always '/', on every platform, so a manifest computed
+// for the same tree is the same manifest everywhere.
+const MANIFEST_SEPARATOR = Buffer.from('/', 'utf8');
+const PATH_SEPARATOR_BYTES = Buffer.from(path.sep, 'utf8');
+
+/** A filesystem path in the form this platform's fs takes losslessly: raw bytes on POSIX, the
+ * original string on Windows. */
+function toPathRef(pathString) {
+  return RAW_NAME_BYTES_SUPPORTED ? Buffer.from(pathString, 'utf8') : pathString;
+}
+
+/** A directory entry's name as raw bytes (already bytes on POSIX; UTF-8 of the OS's UTF-16 name on
+ * Windows, which is the lossless encoding of that name). */
+function nameToBytes(name) {
+  return Buffer.isBuffer(name) ? name : Buffer.from(name, 'utf8');
+}
+
+/** Extend a pinned directory path with one child name, without a string round trip on POSIX. */
+function joinChildRef(dirRef, nameBytes) {
+  if (!RAW_NAME_BYTES_SUPPORTED) return path.join(dirRef, nameBytes.toString('utf8'));
+  return Buffer.concat([dirRef, PATH_SEPARATOR_BYTES, nameBytes]);
+}
+
+/**
+ * A printable rendering for error messages. Names that are not valid UTF-8 cannot be shown as text
+ * without lying about their bytes, so those carry the exact hex alongside — an operator reading a
+ * refused resume needs to be able to identify the actual file.
+ */
+function describeRef(ref) {
+  if (!Buffer.isBuffer(ref)) return String(ref);
+  const text = ref.toString('utf8');
+  return Buffer.from(text, 'utf8').equals(ref)
+    ? text
+    : `${text} (raw bytes ${ref.toString('hex')})`;
+}
 
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
 const O_DIRECTORY = fs.constants.O_DIRECTORY ?? 0;
@@ -72,7 +130,7 @@ function isSymlink(targetPath) {
 
 function assertOwnerHeld(stat, targetPath) {
   if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
-    fail('not-owner-held', `${targetPath} is not owned by the current user.`);
+    fail('not-owner-held', `${describeRef(targetPath)} is not owned by the current user.`);
   }
 }
 
@@ -94,22 +152,25 @@ function openPinned(targetPath, { directory = false, missingCode, notTypeCode })
     // ENOTDIR on Linux, and "is a symlink" is a far more actionable message than "is not a
     // directory" for the operator reading a refused resume.
     if (error.code === 'ELOOP' || error.code === 'EMLINK' || isSymlink(targetPath)) {
-      fail('symlink-rejected', `${targetPath} is a symlink.`);
+      fail('symlink-rejected', `${describeRef(targetPath)} is a symlink.`);
     }
     if (error.code === 'ENOTDIR') {
-      fail(notTypeCode, `${targetPath} is not a directory.`);
+      fail(notTypeCode, `${describeRef(targetPath)} is not a directory.`);
     }
     if (error.code === 'EISDIR') {
-      fail(notTypeCode, `${targetPath} is a directory, not a regular file.`);
+      fail(notTypeCode, `${describeRef(targetPath)} is a directory, not a regular file.`);
     }
-    fail(missingCode, `${targetPath} could not be opened: ${error.message}`);
+    fail(missingCode, `${describeRef(targetPath)} could not be opened: ${error.message}`);
   }
   let stat;
   try {
     stat = fs.fstatSync(fd);
   } catch (error) {
     fs.closeSync(fd);
-    fail(missingCode, `${targetPath} could not be stat'ed from its descriptor: ${error.message}`);
+    fail(
+      missingCode,
+      `${describeRef(targetPath)} could not be stat'ed from its descriptor: ${error.message}`
+    );
   }
   // O_DIRECTORY/O_NOFOLLOW already excluded the wrong-type and symlink cases on platforms that
   // implement them; re-assert from the descriptor so a platform lacking the flags still fails
@@ -118,7 +179,7 @@ function openPinned(targetPath, { directory = false, missingCode, notTypeCode })
     fs.closeSync(fd);
     fail(
       notTypeCode,
-      `${targetPath} is not a ${directory ? 'real directory' : 'regular file'} (mode ${stat.mode.toString(8)}).`
+      `${describeRef(targetPath)} is not a ${directory ? 'real directory' : 'regular file'} (mode ${stat.mode.toString(8)}).`
     );
   }
   try {
@@ -140,45 +201,86 @@ function withPinned(targetPath, options, body) {
 }
 
 /**
- * List a directory whose identity is already pinned, re-pinning afterwards and comparing identity.
- * `readdir` has no descriptor-taking form in Node, so this is the one unavoidable name lookup —
- * bracketing it with the identity comparison turns a substitution into a hard verification failure
- * instead of a silent traversal of the replacement tree.
+ * Enumerate a directory whose identity is already pinned, re-pinning afterwards and comparing
+ * identity. Directory enumeration has no descriptor-taking form in Node, so this is the one
+ * unavoidable name lookup — bracketing it with the identity comparison turns a substitution into a
+ * hard verification failure instead of a silent traversal of the replacement tree.
+ *
+ * Names come back as raw bytes (`encoding: 'buffer'`) wherever the platform has them, and the sort
+ * is a byte-wise comparison, so the traversal order is a property of the bytes on disk rather than
+ * of how they happen to decode.
+ *
+ * `maxNames` is the largest number of entries this level could legitimately hold given the entry
+ * budget already consumed. Reading is abandoned the moment that is exceeded, so a directory with
+ * ten million entries costs the budget, not the directory: `opendir` streams, unlike `readdir`,
+ * which would materialize every name before any bound could be applied.
  */
-function readdirPinned(dirPath, expectedIdentity) {
-  let children;
+function readdirPinned(dirRef, expectedIdentity, maxNames) {
+  const children = [];
+  let dir;
   try {
-    children = fs.readdirSync(dirPath, { withFileTypes: true });
+    dir = fs.opendirSync(dirRef, RAW_NAME_BYTES_SUPPORTED ? { encoding: 'buffer' } : {});
   } catch (error) {
-    fail('artifact-read-failed', `${dirPath} could not be listed: ${error.message}`);
+    fail('artifact-read-failed', `${describeRef(dirRef)} could not be listed: ${error.message}`);
+  }
+  try {
+    for (;;) {
+      const entry = dir.readSync();
+      if (entry === null || entry === undefined) break;
+      if (children.length >= maxNames) {
+        fail('artifact-entries-exceeded', 'Artifact tree exceeds maxArtifactEntries.');
+      }
+      children.push({
+        name: nameToBytes(entry.name),
+        directory: entry.isDirectory(),
+        file: entry.isFile(),
+        symlink: entry.isSymbolicLink(),
+      });
+    }
+  } finally {
+    try {
+      dir.closeSync();
+    } catch {
+      // The enumeration result is what matters; a close failure cannot invalidate it.
+    }
   }
   withPinned(
-    dirPath,
+    dirRef,
     { directory: true, missingCode: 'partition-missing', notTypeCode: 'not-a-directory' },
     ({ stat }) => {
       if (!sameIdentity(identityOf(stat), expectedIdentity)) {
-        fail('identity-substituted', `${dirPath} was substituted while it was being listed.`);
+        fail(
+          'identity-substituted',
+          `${describeRef(dirRef)} was substituted while it was being listed.`
+        );
       }
     }
   );
-  return children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return children.sort((a, b) => Buffer.compare(a.name, b.name));
 }
 
-function assertDirectChildName(name, code = 'invalid-relative-path') {
-  if (
-    typeof name !== 'string' ||
-    name.length === 0 ||
-    name.includes('/') ||
-    name.includes('\\') ||
-    name === '.' ||
-    name === '..'
-  ) {
-    fail(code, `Invalid direct-child name: ${JSON.stringify(name)}`);
+/**
+ * Validate a direct-child name by *byte*, not by decoded text: a path separator is a byte, and a
+ * name that decodes to something harmless can still carry one. `.`/`..` are compared as bytes for
+ * the same reason.
+ */
+function assertDirectChildNameBytes(nameBytes, code = 'invalid-relative-path') {
+  const invalid =
+    nameBytes.length === 0 ||
+    nameBytes.includes(FORWARD_SLASH) ||
+    nameBytes.includes(BACKSLASH) ||
+    nameBytes.includes(NUL) ||
+    (nameBytes.length <= 2 && nameBytes.every((byte) => byte === DOT));
+  if (invalid) {
+    fail(code, `Invalid direct-child name: ${describeRef(nameBytes)}`);
   }
 }
 
 function assertSessionFileName(name) {
-  assertDirectChildName(name, 'invalid-session-file-name');
+  if (typeof name !== 'string') {
+    fail('invalid-session-file-name', `Session file name must be a string: ${String(name)}`);
+  }
+  assertDirectChildNameBytes(Buffer.from(name, 'utf8'), 'invalid-session-file-name');
   if (!SESSION_FILE_NAME_PATTERN.test(name)) {
     fail(
       'invalid-session-file-name',
@@ -205,36 +307,57 @@ function streamDescriptor(fd, maxBytes, onChunk, overflow) {
   return observed;
 }
 
-function collectCanonicalBlobRefs(value, sink, limits) {
-  if (typeof value === 'string') {
-    if (!value.startsWith(BLOB_REF_PREFIX)) return;
-    if (!CANONICAL_BLOB_REF_PATTERN.test(value)) {
-      // OMP's parseBlobRef only warns and falls back to treating a malformed ref as literal data
-      // (blob-store.ts). Zeroshot cannot: a continuation whose externalized payload is
-      // unaddressable is not a continuation we can prove, so this fails closed.
-      fail('blob-reference-noncanonical', `Non-canonical blob reference ${JSON.stringify(value)}.`);
+/**
+ * Walk one parsed record for nested canonical blob references.
+ *
+ * Iterative on purpose. A JSONL record is attacker-controlled, and a recursive walk over a deeply
+ * nested value would exhaust the call stack — a RangeError thrown from outside any handler rather
+ * than a verification failure. An explicit stack is bounded by the parsed value, which is in turn
+ * bounded by MAX_SESSION_RECORD_BYTES. (`JSON.parse` itself refuses over-deep input with a
+ * SyntaxError/RangeError, which the caller already converts into a record-unparseable failure.)
+ */
+function collectCanonicalBlobRefs(root, sink, limits) {
+  const stack = [root];
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') {
+      if (!value.startsWith(BLOB_REF_PREFIX)) continue;
+      if (!CANONICAL_BLOB_REF_PATTERN.test(value)) {
+        // OMP's parseBlobRef only warns and falls back to treating a malformed ref as literal data
+        // (blob-store.ts). Zeroshot cannot: a continuation whose externalized payload is
+        // unaddressable is not a continuation we can prove, so this fails closed.
+        fail(
+          'blob-reference-noncanonical',
+          `Non-canonical blob reference ${JSON.stringify(value)}.`
+        );
+      }
+      sink.add(value);
+      if (sink.size > limits.maxBlobReferences) {
+        fail('blob-references-exceeded', 'Session exceeds maxBlobReferences.');
+      }
+      continue;
     }
-    sink.add(value);
-    if (sink.size > limits.maxBlobReferences) {
-      fail('blob-references-exceeded', 'Session exceeds maxBlobReferences.');
+    if (Array.isArray(value)) {
+      for (const item of value) stack.push(item);
+      continue;
     }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectCanonicalBlobRefs(item, sink, limits);
-    return;
-  }
-  if (value !== null && typeof value === 'object') {
-    for (const key of Object.keys(value)) collectCanonicalBlobRefs(value[key], sink, limits);
+    if (value !== null && typeof value === 'object') {
+      for (const key of Object.keys(value)) stack.push(value[key]);
+    }
   }
 }
 
 /**
  * Stream the session JSONL from its pinned descriptor: bound bytes/records, hash the raw content,
  * parse each record, verify the session header record, and collect every canonical nested blob
- * reference. A record is buffered only until its terminating newline; the aggregate byte bound
- * already caps how large any single record can get, so this never exceeds the declared session
- * budget.
+ * reference.
+ *
+ * A record is buffered only until its terminating newline, and never past
+ * MAX_SESSION_RECORD_BYTES. That second bound is what makes this safe against a hostile transcript:
+ * `maxSessionBytes` bounds the file, but a 256 MiB file containing no newline is a *single* record,
+ * and buffering it would cost the raw bytes plus a UTF-16 string plus a parsed value. The record
+ * bound is checked before each append, i.e. before the copy it would authorize, so an over-long
+ * record is refused rather than accumulated. See src/omp-session-limits.js for the derivation.
  */
 function streamSessionJsonl(fd, describePath, limits) {
   const hash = createHash('sha256');
@@ -244,14 +367,28 @@ function streamSessionJsonl(fd, describePath, limits) {
   let pending = [];
   let pendingBytes = 0;
 
+  function appendPending(slice) {
+    if (pendingBytes + slice.length > MAX_SESSION_RECORD_BYTES) {
+      fail(
+        'session-record-bytes-exceeded',
+        `${describePath} record ${records + 1} exceeds the ${MAX_SESSION_RECORD_BYTES}-byte per-record bound.`
+      );
+    }
+    pending.push(Buffer.from(slice));
+    pendingBytes += slice.length;
+  }
+
   function consumeRecord() {
     records += 1;
     if (records > limits.maxSessionRecords) {
       fail('session-records-exceeded', `${describePath} exceeds maxSessionRecords.`);
     }
-    const line = Buffer.concat(pending, pendingBytes).toString('utf8');
+    // One buffer is the common case (a record that arrived inside a single read); concatenating
+    // only when it spanned reads keeps the extra copy off the normal path.
+    const raw = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
     pending = [];
     pendingBytes = 0;
+    const line = raw.toString('utf8');
     if (line.trim().length === 0) return;
     let parsed;
     try {
@@ -273,15 +410,11 @@ function streamSessionJsonl(fd, describePath, limits) {
       let start = 0;
       for (let i = 0; i < chunk.length; i += 1) {
         if (chunk[i] !== NEWLINE) continue;
-        pending.push(Buffer.from(chunk.subarray(start, i)));
-        pendingBytes += i - start;
+        appendPending(chunk.subarray(start, i));
         start = i + 1;
         consumeRecord();
       }
-      if (start < chunk.length) {
-        pending.push(Buffer.from(chunk.subarray(start)));
-        pendingBytes += chunk.length - start;
-      }
+      if (start < chunk.length) appendPending(chunk.subarray(start));
       hash.update(chunk);
     },
     () => fail('session-bytes-exceeded', `${describePath} observed bytes exceed maxSessionBytes.`)
@@ -360,32 +493,44 @@ function verifyBlobReferences(blobRefs, limits, blobsDirOptions) {
 }
 
 /** Walk the partition subtree (everything except the session file itself), descriptor-pinning
- * every entry, and return the manifest entries in a deterministic order. */
-function collectArtifactEntries(partitionPath, partitionIdentity, sessionFileName, limits) {
+ * every entry, and return the manifest entries in a deterministic order. Relative paths are raw
+ * bytes throughout — assembled from the bytes the directory reported, bounded by their own byte
+ * length, and never re-encoded from a decoded string. */
+function collectArtifactEntries(partitionRef, partitionIdentity, sessionFileName, limits) {
   const entries = [];
   const aggregate = { count: 0, bytes: 0 };
+  const sessionFileNameBytes = Buffer.from(sessionFileName, 'utf8');
 
-  function visit(absDir, dirIdentity, relDir, depth) {
+  function visit(absDirRef, dirIdentity, relDir, depth) {
     if (depth > limits.maxArtifactDepth) {
-      fail('artifact-depth-exceeded', `Artifact tree exceeds maxArtifactDepth at ${relDir || '.'}.`);
+      fail(
+        'artifact-depth-exceeded',
+        `Artifact tree exceeds maxArtifactDepth at ${relDir ? describeRef(relDir) : '.'}.`
+      );
     }
-    for (const child of readdirPinned(absDir, dirIdentity)) {
-      if (depth === 0 && child.name === sessionFileName) continue;
-      assertDirectChildName(child.name);
-      const absPath = path.join(absDir, child.name);
-      const relPath = relDir ? `${relDir}/${child.name}` : child.name;
-      if (Buffer.byteLength(relPath, 'utf8') > limits.maxRelativePathBytes) {
-        fail('relative-path-bytes-exceeded', `${relPath} exceeds maxRelativePathBytes.`);
+    // The most names this level could hold without the entry budget already being blown. The
+    // session file is skipped rather than counted, so depth 0 may hold exactly one more.
+    const maxNames = limits.maxArtifactEntries - aggregate.count + (depth === 0 ? 1 : 0);
+    for (const child of readdirPinned(absDirRef, dirIdentity, maxNames)) {
+      if (depth === 0 && child.name.equals(sessionFileNameBytes)) continue;
+      assertDirectChildNameBytes(child.name);
+      const absPath = joinChildRef(absDirRef, child.name);
+      const relPath = relDir ? Buffer.concat([relDir, MANIFEST_SEPARATOR, child.name]) : child.name;
+      if (relPath.length > limits.maxRelativePathBytes) {
+        fail(
+          'relative-path-bytes-exceeded',
+          `${describeRef(relPath)} exceeds maxRelativePathBytes.`
+        );
       }
       aggregate.count += 1;
       if (aggregate.count > limits.maxArtifactEntries) {
         fail('artifact-entries-exceeded', 'Artifact tree exceeds maxArtifactEntries.');
       }
 
-      if (child.isSymbolicLink()) {
-        fail('symlink-rejected', `${relPath} is a symlink.`);
+      if (child.symlink) {
+        fail('symlink-rejected', `${describeRef(relPath)} is a symlink.`);
       }
-      if (child.isDirectory()) {
+      if (child.directory) {
         const childIdentity = withPinned(
           absPath,
           { directory: true, missingCode: 'artifact-missing', notTypeCode: 'not-a-directory' },
@@ -395,10 +540,10 @@ function collectArtifactEntries(partitionPath, partitionIdentity, sessionFileNam
         visit(absPath, childIdentity, relPath, depth + 1);
         continue;
       }
-      if (!child.isFile()) {
+      if (!child.file) {
         fail(
           'not-a-regular-single-link-file',
-          `${relPath} is neither a regular file nor a directory.`
+          `${describeRef(relPath)} is neither a regular file nor a directory.`
         );
       }
 
@@ -407,17 +552,27 @@ function collectArtifactEntries(partitionPath, partitionIdentity, sessionFileNam
         { missingCode: 'artifact-missing', notTypeCode: 'not-a-regular-single-link-file' },
         ({ fd, stat }) => {
           if (stat.nlink > 1) {
-            fail('not-a-regular-single-link-file', `${relPath} has more than one hard link.`);
+            fail(
+              'not-a-regular-single-link-file',
+              `${describeRef(relPath)} has more than one hard link.`
+            );
           }
           if (stat.size > limits.maxArtifactFileBytes) {
-            fail('artifact-file-bytes-exceeded', `${relPath} exceeds maxArtifactFileBytes.`);
+            fail(
+              'artifact-file-bytes-exceeded',
+              `${describeRef(relPath)} exceeds maxArtifactFileBytes.`
+            );
           }
           const hash = createHash('sha256');
           const observed = streamDescriptor(
             fd,
             limits.maxArtifactFileBytes,
             (chunk) => hash.update(chunk),
-            () => fail('artifact-file-bytes-exceeded', `${relPath} exceeds maxArtifactFileBytes.`)
+            () =>
+              fail(
+                'artifact-file-bytes-exceeded',
+                `${describeRef(relPath)} exceeds maxArtifactFileBytes.`
+              )
           );
           return {
             relPath,
@@ -430,24 +585,32 @@ function collectArtifactEntries(partitionPath, partitionIdentity, sessionFileNam
 
       aggregate.bytes += entry.size;
       if (aggregate.bytes > limits.maxArtifactAggregateBytes) {
-        fail('artifact-aggregate-bytes-exceeded', 'Artifact tree exceeds maxArtifactAggregateBytes.');
+        fail(
+          'artifact-aggregate-bytes-exceeded',
+          'Artifact tree exceeds maxArtifactAggregateBytes.'
+        );
       }
       entries.push(entry);
     }
   }
 
-  visit(partitionPath, partitionIdentity, '', 0);
+  visit(partitionRef, partitionIdentity, null, 0);
   return entries;
 }
 
+/** `<uint32 big-endian byte length><bytes>`. Length-prefixing is what makes the manifest
+ * unambiguous: without it `a/b` + `c` and `a` + `b/c` would hash identically. */
 function lengthPrefixed(value) {
-  const buf = Buffer.from(String(value), 'utf8');
+  const buf = Buffer.isBuffer(value) ? value : Buffer.from(String(value), 'utf8');
   const len = Buffer.alloc(4);
   len.writeUInt32BE(buf.length, 0);
   return Buffer.concat([len, buf]);
 }
 
 function hashManifestEntry(hash, { relPath, type, size, contentDigest }) {
+  // relPath is hashed as the raw bytes the filesystem reported. Two files whose names are both
+  // invalid UTF-8 decode to the same replacement-character string, so hashing the decoded form
+  // would give distinct trees identical manifests.
   hash.update(lengthPrefixed(relPath));
   hash.update(lengthPrefixed(type));
   hash.update(lengthPrefixed(size));
@@ -472,8 +635,9 @@ function verifyPartitionContents(
 ) {
   assertSessionFileName(sessionFileName);
 
+  const partitionRef = toPathRef(partitionPath);
   const partitionIdentity = withPinned(
-    partitionPath,
+    partitionRef,
     { directory: true, missingCode: 'partition-missing', notTypeCode: 'not-a-directory' },
     ({ stat }) => identityOf(stat)
   );
@@ -486,7 +650,7 @@ function verifyPartitionContents(
 
   const sessionFilePath = path.join(partitionPath, sessionFileName);
   const session = withPinned(
-    sessionFilePath,
+    joinChildRef(partitionRef, Buffer.from(sessionFileName, 'utf8')),
     { missingCode: 'session-file-missing', notTypeCode: 'not-a-regular-file' },
     ({ fd, stat }) => {
       if (stat.nlink > 1) {
@@ -505,7 +669,7 @@ function verifyPartitionContents(
   const header = parseSessionHeader(session.header, sessionFilePath);
   const blobs = verifyBlobReferences(session.blobRefs, limits, blobsDirOptions);
   const artifactEntries = collectArtifactEntries(
-    partitionPath,
+    partitionRef,
     partitionIdentity,
     sessionFileName,
     limits
@@ -541,7 +705,7 @@ function verifyPartitionContents(
  * this point in a fresh session's lifecycle. */
 function checkPartitionPathReady(partitionPath, { expectedPartitionIdentity = null } = {}) {
   const identity = withPinned(
-    partitionPath,
+    toPathRef(partitionPath),
     { directory: true, missingCode: 'partition-missing', notTypeCode: 'not-a-directory' },
     ({ stat }) => identityOf(stat)
   );

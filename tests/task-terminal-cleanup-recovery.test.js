@@ -89,13 +89,16 @@ describe('Terminal task cleanup recovery', function () {
     assert.match(stdout, /Retained: clean-all-unsafe/);
   });
   it('retains a running row and live overlay selected by --all', function () {
+    // The live-task boundary is now evaluated before *any* cleanup side effect rather than inside
+    // the command-cleanup branch, so the retention reason is the task being live — which is also
+    // what protects a running task that carries no cleanup receipt at all (its OMP session
+    // partition used to be staged and recursively deleted before this check was ever reached; see
+    // tests/unit/omp-session-cleanup.test.js).
     const { result, stdout } = runFixture('clean-running');
     assert.strictEqual(result.retained.status, 'running');
     assert.notStrictEqual(result.retained.commandCleanup, null);
     assert.strictEqual(result.cleanupExists, true);
     assert.strictEqual(result.exitCode, 1);
-    assert.match(stdout, /Retained: clean-all-running \[running\] \(live command cleanup ownership\)/);
+    assert.match(stdout, /Retained: clean-all-running \[running\] \(running\)/);
   });
-
-
 });

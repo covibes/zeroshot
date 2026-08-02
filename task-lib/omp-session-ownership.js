@@ -16,12 +16,14 @@
 //
 // A resumed turn additionally performs `transferOmpSessionOwnership` before its prompt is written:
 // in one transaction the prior committed owner's record is cleared and its lineage (partition
-// identity + session tuple) is moved onto the resumed task's still-`provisional` row. That keeps
-// exactly one *committed* owner — and keeps "committed" meaning what it means everywhere else,
-// this turn's own success boundary has passed — instead of publishing a half-finished
-// continuation as resumable.
+// identity + session tuple) is moved onto the resumed task's still-`provisional` row.
 //
-// It does NOT keep exactly one row *referencing* the partition. A resumed row is inserted (and
+// That means a partition has at most one *committed* owner, and for the whole span of a resumed
+// turn it has NONE: the authoritative live claimant is `provisional` by design, because
+// "committed" means this row's own success boundary has already passed. Publishing a half-finished
+// continuation as resumable is exactly what that ordering prevents.
+//
+// It also does NOT keep exactly one row *referencing* the partition. A resumed row is inserted (and
 // therefore already names the partition) before its transfer runs, so two competing resumes of the
 // same committed session put three rows on one partition: the prior owner plus both candidates.
 // Only one transfer can win; the loser fails closed and is retired to `cleanup-required` holding a
@@ -34,13 +36,11 @@ import { statSync } from 'fs';
 import { getTask, getTaskStoreDatabase } from './store.js';
 import {
   buildProvisionalOwnership,
-  computeExecutionFingerprint,
+  parseOmpSessionOwnership,
   serializeOmpSessionOwnership,
   validateOmpSessionOwnership,
   validateOwnedByTask,
 } from './omp-session-ownership-schema.js';
-
-export { computeExecutionFingerprint };
 
 function statIdentity(targetPath) {
   const stat = statSync(targetPath);
@@ -49,12 +49,7 @@ function statIdentity(targetPath) {
 
 /** Pure builder for the initial provisional record; embed the result in the task row passed to
  * addTask() so the SQL row is durable before the partition directory is created on disk. */
-export function writeProvisionalOwnership({
-  partitionId,
-  storageRoot,
-  canonicalWorkspace,
-  owner,
-}) {
+export function writeProvisionalOwnership({ partitionId, storageRoot, canonicalWorkspace, owner }) {
   return buildProvisionalOwnership({
     partitionId,
     storageRoot,
@@ -186,6 +181,35 @@ export function markCleanupRequired(taskId) {
 }
 
 /**
+ * Retire a task's OMP ownership from a *confirmed durable task boundary* — a failed, cancelled,
+ * stale, or killed transition — without ever letting that retirement break the boundary itself.
+ *
+ * Every caller here is already committing a terminal task-status write (task-lib/runner.js's
+ * row-before-directory failure, `zeroshot task kill`, `zeroshot clear`, `zeroshot kill-all`), so
+ * this must not throw: an unreachable or locked task store must not turn "the task is killed" into
+ * an unhandled rejection. It is idempotent and safe to re-enter — `markCleanupRequired` no-ops once
+ * the record has left `provisional`, so a retried kill or a crash-recovery replay converges.
+ *
+ * The decision is derived from the boundary, never from whether the partition directory happens to
+ * exist: a fresh partition can be mid-materialization at exactly this moment, and file presence
+ * would answer the wrong question.
+ *
+ * @param {string} taskId
+ * @param {(error: Error) => void} [onError] receives an unexpected store failure for logging
+ * @returns {boolean} true when the retirement ran without error (including no-op cases)
+ */
+export function retireOmpOwnershipAtTerminalBoundary(taskId, onError) {
+  if (typeof taskId !== 'string' || taskId.length === 0) return true;
+  try {
+    markCleanupRequired(taskId);
+    return true;
+  } catch (error) {
+    onError?.(error instanceof Error ? error : new Error(String(error)));
+    return false;
+  }
+}
+
+/**
  * The ownership states that constitute a live claim on a partition.
  *
  * `provisional` is authoritative because it is the state a turn occupies while it is *using* the
@@ -203,26 +227,27 @@ const AUTHORITATIVE_STATES = new Set(AUTHORITATIVE_OWNERSHIP_STATES);
 
 /** Every row other than `excludeTaskId` whose *own* valid record names this partition, as
  * `{taskId, state}`. Rows whose stored JSON is unparseable, invalid, or owned by a different task
- * id are not that row's ownership and are skipped. */
+ * id are not that row's ownership and are skipped.
+ *
+ * The partition filter is applied in JS after validation rather than in SQL. SQLite's
+ * `json_extract()` raises "malformed JSON" for a column whose bytes are not valid JSON, so a single
+ * corrupted row anywhere in the table would make this query *throw* — and the fence that protects
+ * every live partition from cleanup would fail for reasons that have nothing to do with the
+ * partition being cleaned. Reading the column as an opaque string and letting
+ * `validateOwnedByTask` reject it keeps one damaged row from disarming the fence. */
 function ownersForPartition(partitionId, excludeTaskId, database) {
   const rows = database
     .prepare(
-      `SELECT id, omp_session_ownership FROM tasks
-       WHERE omp_session_ownership IS NOT NULL
-         AND json_extract(omp_session_ownership, '$.partitionId') = ?`
+      `SELECT id, omp_session_ownership AS record FROM tasks
+       WHERE omp_session_ownership IS NOT NULL`
     )
-    .all(partitionId);
+    .all();
   const owners = [];
   for (const row of rows) {
     if (row.id === excludeTaskId) continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(row.omp_session_ownership);
-    } catch {
-      continue;
-    }
-    const record = validateOwnedByTask(parsed, row.id);
-    if (record) owners.push({ taskId: row.id, state: record.state });
+    const record = parseOmpSessionOwnership(row.record);
+    if (!record || record.partitionId !== partitionId) continue;
+    if (validateOwnedByTask(record, row.id)) owners.push({ taskId: row.id, state: record.state });
   }
   return owners;
 }
@@ -270,8 +295,13 @@ export function findAuthoritativeOwnersForPartition(
  * Both sides are fenced on their exact current JSON inside one transaction, so the outcome is all
  * or nothing: either the prior owner's record is cleared *and* the resumed row carries the
  * inherited lineage, or nothing changed and the caller must fail the turn closed. There is never a
- * window in which two rows are committed owners of the same partition, nor one in which the
- * partition has no owner row at all.
+ * window in which two rows are *committed* owners of the same partition.
+ *
+ * There is, however, a long window in which *no* row is committed: from the instant this transfer
+ * applies until the resumed turn reaches its own success boundary, the authoritative claimant is
+ * this `provisional` row. That is the intended steady state of a resumed turn, not a gap — which
+ * is why every partition fence is over the authoritative states (see
+ * findAuthoritativeOwnersForPartition) and not over the committed rows alone.
  *
  * Returns the transferred record, or null when the transfer did not apply (prior owner already
  * moved, resumed row already advanced, lineage mismatch).

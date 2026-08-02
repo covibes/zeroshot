@@ -612,10 +612,7 @@ watcher.disconnect();
    * materialization.
    */
   describe('OMP session ownership (fresh/resume, two-phase verification)', function () {
-    const {
-      makeBlobStore,
-      makeSessionPartition,
-    } = require('./helpers/omp-session-fixtures');
+    const { makeBlobStore, makeSessionPartition } = require('./helpers/omp-session-fixtures');
     const { verifyExistingOmpPartition } = require('../src/omp-session-verifier');
     const { computeOmpExecutionFingerprint } = require('../src/omp-execution-fingerprint');
     const {
@@ -624,7 +621,6 @@ watcher.disconnect();
       createOmpSessionPartitionDirectory,
     } = require('../src/omp-session-partition');
     const { OMP_SUPPORTED_VERSION } = require('../lib/agent-cli-provider/omp-release.js');
-
 
     /**
      * A pre-prompt failure raised from the driver's `ready` hook can terminate the watcher through
@@ -1156,6 +1152,126 @@ watcher.disconnect();
           task: await storeGetTask(resumedId),
           promptSink,
           errorPattern: /echoed sessionFile/,
+        });
+      });
+
+      /**
+       * The echoed session identity must be COMPLETE and EXACT at the pre-prompt checkpoint.
+       *
+       * `get_state` may legitimately report only a subset (docs/rpc.md), and the driver merges
+       * partial `session_info_update` frames onto prior evidence. But at the one checkpoint where
+       * a committed lineage is transferred and a prompt is written, "OMP did not say" is not
+       * agreement: the partition on disk cannot answer which session the *running process*
+       * attached to. And a prefix is not agreement either — OMP resolves `--resume` ids by prefix
+       * (session-manager.ts), so a short echoed id is exactly the ambiguity this rejects.
+       */
+      describe('the echoed session identity must be complete and exact before the prompt', function () {
+        async function runEchoCase({ label, env, errorPattern, decoyPartition = false }) {
+          const priorId = nextTaskId(`resume-echo-${label}-prior`);
+          const resumedId = nextTaskId(`resume-echo-${label}`);
+          const overlay = createOmpConfigOverlay();
+          const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'omp-storage-'));
+          const cwd = fs.mkdtempSync(path.join(zeroshotHome, 'omp-workspace-'));
+          const partition = makeSessionPartition({ storageRoot, cwd });
+          const commandSpec = resumeCommandSpec(
+            overlay,
+            partition.partitionPath,
+            partition.sessionFilePath,
+            cwd
+          );
+          const { expectation } = await seedResumeLineage({
+            priorId,
+            resumedId,
+            storageRoot,
+            cwd,
+            commandSpec,
+            partition,
+          });
+          // A wholly different partition's transcript, for the "OMP opened some other session"
+          // case. It lives outside this partition, so the artifact manifest is untouched and the
+          // only thing that can fail is the echoed identity itself.
+          const other = decoyPartition
+            ? makeSessionPartition({
+                storageRoot: fs.mkdtempSync(path.join(zeroshotHome, 'omp-other-storage-')),
+                cwd,
+              })
+            : null;
+          const promptSink = path.join(zeroshotHome, `${resumedId}-prompt.json`);
+
+          const { code } = await runWatcher({
+            id: resumedId,
+            commandSpec,
+            scenario: 'happy',
+            ompSession: {
+              kind: 'resume',
+              partition: { path: partition.partitionPath },
+              file: { path: partition.sessionFilePath },
+            },
+            ompResumeExpectation: expectation,
+            env: {
+              OMP_FAKE_RPC_PROMPT_SINK: promptSink,
+              ...env({ partition, other }),
+            },
+          });
+
+          const resumed = await storeGetTask(resumedId);
+          assertFailedBeforePrompt({ code, task: resumed, promptSink, errorPattern });
+          const prior = await storeGetTask(priorId);
+          assert.strictEqual(
+            prior.ompSessionOwnership.state,
+            'committed',
+            'the lineage stays with its prior owner: no transfer may happen without agreement'
+          );
+          assert.ok(
+            fs.existsSync(partition.partitionPath),
+            'the still-resumable session survives a refused continuation'
+          );
+        }
+
+        it('refuses when get_state omits the session id entirely', async function () {
+          await runEchoCase({
+            label: 'omit-id',
+            env: () => ({ OMP_FAKE_RPC_OMIT_SESSION_ID: '1' }),
+            errorPattern: /reported no sessionId/,
+          });
+        });
+
+        it('refuses when get_state omits the session file entirely', async function () {
+          await runEchoCase({
+            label: 'omit-file',
+            env: () => ({ OMP_FAKE_RPC_OMIT_SESSION_FILE: '1' }),
+            errorPattern: /reported no sessionFile/,
+          });
+        });
+
+        it('refuses when get_state omits both, rather than trusting the partition on disk', async function () {
+          await runEchoCase({
+            label: 'omit-both',
+            env: () => ({
+              OMP_FAKE_RPC_OMIT_SESSION_ID: '1',
+              OMP_FAKE_RPC_OMIT_SESSION_FILE: '1',
+            }),
+            errorPattern: /reported no session(Id|File)/,
+          });
+        });
+
+        it('refuses a session id that is only a PREFIX of the recorded one', async function () {
+          await runEchoCase({
+            label: 'prefix-id',
+            env: ({ partition }) => ({
+              OMP_FAKE_RPC_SESSION_ID: partition.sessionId.slice(0, -3),
+            }),
+            errorPattern: /echoed sessionId/,
+          });
+        });
+
+        it("refuses a session file that is another partition's transcript", async function () {
+          await runEchoCase({
+            label: 'wrong-file',
+            decoyPartition: true,
+            env: ({ other }) => ({ OMP_FAKE_RPC_SESSION_FILE: other.sessionFilePath }),
+            errorPattern: /echoed sessionFile/,
+          });
         });
       });
 
