@@ -132,6 +132,9 @@ export OPENROUTER_API_KEY=...
 zeroshot run org/repo#123 --target production --pr
 ```
 
+`--size tiny|small|standard|large` selects the capsule tier; it is optional and defaults to
+`standard`.
+
 `--pr` runs in an isolated worktree, pushes the implementation branch, creates a pull request for
 human review, verifies that GitHub reports it, and prints the pull request URL. Without `--pr`, the
 hosted run does not push repository changes.

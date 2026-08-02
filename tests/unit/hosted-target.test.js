@@ -106,6 +106,7 @@ describe('hosted target CLI', function () {
     assert.doesNotThrow(() => validateHostedOptions({ target: 'local', model: 'openai/gpt-5.4' }));
     assert.doesNotThrow(() => validateHostedOptions({ target: 'local', pr: true }));
     assert.doesNotThrow(() => validateHostedOptions({ target: 'local', provider: 'codex' }));
+    assert.doesNotThrow(() => validateHostedOptions({ target: 'local', size: 'standard' }));
     assert.throws(
       () => validateHostedOptions({ target: 'local', docker: true, provider: 'claude' }),
       /--docker, --provider/
@@ -113,6 +114,10 @@ describe('hosted target CLI', function () {
     assert.throws(
       () => validateHostedOptions({ target: 'local', model: 'openai/gpt-5.4\n[model_providers]' }),
       /provider\/model slug/
+    );
+    assert.throws(
+      () => validateHostedOptions({ target: 'local', size: 'xlarge' }),
+      /--size tiny, small, standard, or large/
     );
   });
 });

@@ -2,7 +2,7 @@
 
 # The server and the existing Node worker ship together because OECP is the
 # in-capsule process boundary. Capsule allocation and termination remain owned
-# by Zero Cloud's runner/agent sidecars.
+# by Zero Cloud's control plane and capsule agent.
 FROM lukemathwalker/cargo-chef@sha256:4a51277f4e3e8e4643dd6384f6f6b2b3c8de9f074299cd0c19a80f3c29e8dd15 AS rust-builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./

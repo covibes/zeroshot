@@ -2588,6 +2588,7 @@ program
   .option('--provider <provider>', `Override all agents to use a provider (${PROVIDER_CHOICES})`)
   .option('--model <model>', 'Override all agent models (provider-specific model id)')
   .option('--target <name>', 'Run in a capsule on a named Zero Cloud target')
+  .option('--size <tier>', 'Capsule size: tiny, small, standard, or large (default: standard)')
   .option('--repository <owner/name>', 'GitHub repository for a hosted prompt or numeric issue')
   .option(
     '--sim <mode>',
@@ -2647,6 +2648,9 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       if (options.target) {
         await runHosted(inputArg, options);
         return;
+      }
+      if (options.size !== undefined) {
+        throw new Error('--size requires --target');
       }
       // Normalize options (--ship → --pr → --worktree flags)
       normalizeRunOptions(options);
@@ -2855,11 +2859,7 @@ for (const mode of ['prove', 'verify', 'check']) {
     });
 }
 
-function assertRequestedWebSearchCliAvailable(
-  provider,
-  settings,
-  exists = commandExists
-) {
+function assertRequestedWebSearchCliAvailable(provider, settings, exists = commandExists) {
   const metadata = getProviderMetadata(provider);
   if (!metadata.settingsFields.includes('webSearch')) return;
   if (settings.providerSettings?.[provider]?.webSearch !== true) return;
@@ -2888,10 +2888,7 @@ taskCmd
     '-r, --resume <sessionId>',
     'Resume a specific provider session (Claude, Codex, or OpenCode)'
   )
-  .option(
-    '-c, --continue',
-    'Continue the most recent provider session (Claude or OpenCode)'
-  )
+  .option('-c, --continue', 'Continue the most recent provider session (Claude or OpenCode)')
   .option(
     '-o, --output-format <format>',
     'Output format: stream-json (default), text, json',
@@ -3868,9 +3865,8 @@ program
   .description('Output task ID for an internal spawn ownership token (machine-readable)')
   .action(async (token) => {
     try {
-      const { getTaskIdBySpawnToken } = await import(
-        '../task-lib/commands/get-task-id-by-spawn-token.js'
-      );
+      const { getTaskIdBySpawnToken } =
+        await import('../task-lib/commands/get-task-id-by-spawn-token.js');
       getTaskIdBySpawnToken(token);
     } catch (error) {
       console.error('Error resolving task spawn ownership:', error.message);

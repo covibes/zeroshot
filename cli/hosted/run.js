@@ -14,6 +14,7 @@ const DEFAULT_MODEL = 'openai/gpt-5.4';
 const PROTOCOL = 'openengine.cluster/v1';
 const WORKER = 'legacy.zeroshot.ship@1';
 const READY_TIMEOUT_MS = 10 * 60 * 1_000;
+const CAPSULE_SIZES = new Set(['tiny', 'small', 'standard', 'large']);
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -182,6 +183,9 @@ function validateHostedOptions(options) {
   }
   if (options.model !== undefined && !validModel(options.model)) {
     throw new Error('hosted runs require an exact provider/model slug');
+  }
+  if (!CAPSULE_SIZES.has(options.size || 'standard')) {
+    throw new Error('hosted runs require --size tiny, small, standard, or large');
   }
 }
 
@@ -413,7 +417,7 @@ async function runHosted(input, options) {
         method: 'POST',
         bearer: session.accessToken,
         headers: { 'idempotency-key': crypto.randomUUID() },
-        json: { label: 'zeroshot-cli' },
+        json: { label: 'zeroshot-cli', size: options.size || 'standard' },
         accept: [201],
       })
     ).body;
