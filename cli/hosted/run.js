@@ -113,7 +113,7 @@ async function stdinText() {
 function readTaskFile(filename) {
   let descriptor;
   try {
-    descriptor = fs.openSync(filename, 'r');
+    descriptor = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0));
   } catch (error) {
     if (['ENOENT', 'ENOTDIR', 'EISDIR'].includes(error.code)) return null;
     throw error;

@@ -44,7 +44,8 @@ function emptyStore() {
 
 function loadTargets(environment = process.env) {
   const filename = targetsFile(environment);
-  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  const flags =
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0);
   let descriptor;
   try {
     descriptor = fs.openSync(filename, flags);
