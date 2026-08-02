@@ -57,10 +57,17 @@ const {
  * writes this column only through `serializeOmpSessionOwnership`, whose output is canonical per
  * record, so comparing the stored bytes is an exact "still the same record" test.
  *
- * The recursive removal runs *after* the fence is released, because by then the tree only answers
- * to an unguessable staging name nothing else knows, and holding a write lock across an
- * arbitrarily large `rm -r` would stall every other task-store writer.
+ * The recursive removal runs *after* the fence is released. By then the tree only answers to its
+ * deterministic owner-bound staging name, and every retry revalidates that name and identity.
+ * Holding a write lock across an arbitrarily large `rm -r` would stall every other store writer.
  */
+function describeBlockingOwner(owner) {
+  if (owner.unknown) {
+    return `${owner.taskId} (ownership record is unreadable or invalid; inspect or repair that task row)`;
+  }
+  return `${owner.taskId} (${owner.state})`;
+}
+
 function stageUnderOwnerFence(ownership, taskId) {
   const database = getTaskStoreDatabase();
   const expectedRecord = serializeOmpSessionOwnership(ownership);
@@ -81,7 +88,7 @@ function stageUnderOwnerFence(ownership, taskId) {
       return {
         staged: false,
         deleted: false,
-        reason: `it is still claimed by ${owners.map((o) => `${o.taskId} (${o.state})`).join(', ')}`,
+        reason: `it is still claimed by ${owners.map(describeBlockingOwner).join(', ')}`,
       };
     }
     return stageOmpSessionPartitionForDeletion(ownership);
@@ -135,7 +142,7 @@ export function cleanupOmpSessionPartitionForTask(task, warn, { clearRecord = fa
     return false;
   }
 
-  const { deleted, reason } = removeStagedOmpSessionPartition(staged.stagingPath);
+  const { deleted, reason } = removeStagedOmpSessionPartition(staged.stagingPath, ownership);
   if (!deleted) {
     warn(`Task ${task.id}: retained OMP session partition ${ownership.partitionId} (${reason}).`);
     return false;

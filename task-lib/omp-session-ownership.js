@@ -225,16 +225,15 @@ export const AUTHORITATIVE_OWNERSHIP_STATES = Object.freeze(['provisional', 'com
 
 const AUTHORITATIVE_STATES = new Set(AUTHORITATIVE_OWNERSHIP_STATES);
 
-/** Every row other than `excludeTaskId` whose *own* valid record names this partition, as
- * `{taskId, state}`. Rows whose stored JSON is unparseable, invalid, or owned by a different task
- * id are not that row's ownership and are skipped.
+/** Every row other than `excludeTaskId` whose own valid record names this partition, plus every
+ * unreadable or invalid non-null row as global unknown authoritative evidence. A malformed record
+ * cannot safely prove which partition it names, so cleanup must assume it may name the partition
+ * being considered; skipping it could orphan the only directory that damaged row still points at.
  *
  * The partition filter is applied in JS after validation rather than in SQL. SQLite's
- * `json_extract()` raises "malformed JSON" for a column whose bytes are not valid JSON, so a single
- * corrupted row anywhere in the table would make this query *throw* — and the fence that protects
- * every live partition from cleanup would fail for reasons that have nothing to do with the
- * partition being cleaned. Reading the column as an opaque string and letting
- * `validateOwnedByTask` reject it keeps one damaged row from disarming the fence. */
+ * `json_extract()` raises "malformed JSON" for a column whose bytes are not valid JSON. Reading the
+ * column as opaque text both avoids that failure and lets cleanup represent corruption explicitly
+ * instead of treating unknown evidence as absence. */
 function ownersForPartition(partitionId, excludeTaskId, database) {
   const rows = database
     .prepare(
@@ -246,8 +245,14 @@ function ownersForPartition(partitionId, excludeTaskId, database) {
   for (const row of rows) {
     if (row.id === excludeTaskId) continue;
     const record = parseOmpSessionOwnership(row.record);
-    if (!record || record.partitionId !== partitionId) continue;
-    if (validateOwnedByTask(record, row.id)) owners.push({ taskId: row.id, state: record.state });
+    const owned = record && validateOwnedByTask(record, row.id);
+    if (!owned) {
+      owners.push({ taskId: row.id, state: null, unknown: true });
+      continue;
+    }
+    if (owned.partitionId === partitionId) {
+      owners.push({ taskId: row.id, state: owned.state });
+    }
   }
   return owners;
 }
@@ -283,8 +288,8 @@ export function findAuthoritativeOwnersForPartition(
   excludeTaskId = null,
   database = getTaskStoreDatabase()
 ) {
-  return ownersForPartition(partitionId, excludeTaskId, database).filter((owner) =>
-    AUTHORITATIVE_STATES.has(owner.state)
+  return ownersForPartition(partitionId, excludeTaskId, database).filter(
+    (owner) => owner.unknown || AUTHORITATIVE_STATES.has(owner.state)
   );
 }
 

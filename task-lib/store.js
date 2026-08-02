@@ -245,86 +245,6 @@ export function loadTasks() {
 }
 
 /**
- * Save all tasks (replaces entire store - for migration compatibility)
- *
- * DESTRUCTIVE: this DELETEs every row and reinserts the snapshot it was handed, so any row a
- * concurrent writer changed since that snapshot was taken is silently reverted — including
- * owner-fenced `omp_session_ownership` compare-and-swaps, and including an unreadable ownership
- * value, which `rowToTask` cannot round-trip and which would therefore be erased. Prefer the
- * per-row helpers (updateTask / removeTaskIfUnchanged / clearTaskCommandCleanup); reach for this
- * only for whole-store migration.
- *
- * @param {Object.<string, Object>} tasks
- */
-export function saveTasks(tasks) {
-  const database = getDb();
-  const insert = database.prepare(`
-    INSERT OR REPLACE INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
-      created_at, updated_at, exit_code, error, provider, model,
-      schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup, cancel_requested, spawn_ownership_token, omp_session_ownership
-    ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
-      @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
-      @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup, @cancelRequested, @spawnOwnershipToken, @ompSessionOwnership
-    )
-  `);
-
-  const insertMany = database.transaction((tasksObj) => {
-    // Clear existing
-    database.prepare('DELETE FROM tasks').run();
-    // Insert all
-    for (const task of Object.values(tasksObj)) {
-      insert.run({
-        id: task.id,
-        prompt: task.prompt || null,
-        fullPrompt: task.fullPrompt || null,
-        cwd: task.cwd || null,
-        status: task.status || 'pending',
-        pid: task.pid || null,
-        sessionId: task.sessionId || null,
-        sessionIdConflict: task.sessionIdConflict ? 1 : 0,
-        requestedResumeSessionId: nullable(task.requestedResumeSessionId),
-        resumeIdentityVerified: task.resumeIdentityVerified ? 1 : 0,
-        logFile: task.logFile || null,
-        createdAt: task.createdAt || new Date().toISOString(),
-        updatedAt: task.updatedAt || new Date().toISOString(),
-        exitCode: task.exitCode ?? null,
-        error: task.error || null,
-        provider: task.provider || null,
-        model: task.model || null,
-        scheduleId: task.scheduleId || null,
-        socketPath: task.socketPath || null,
-        attachable: task.attachable ? 1 : 0,
-        processGroupId: task.processGroupId || null,
-        terminationStrategy: task.terminationStrategy || null,
-        commandCleanup: serializeCommandCleanup(task.commandCleanup),
-        cancelRequested: task.cancelRequested ? 1 : 0,
-        spawnOwnershipToken: task.spawnOwnershipToken || null,
-        ompSessionOwnership: serializeOmpSessionOwnership(task.ompSessionOwnership || null),
-      });
-    }
-  });
-
-  insertMany(tasks);
-}
-
-/**
- * For API compatibility - just runs the modifier synchronously
- * SQLite WAL handles concurrency, no lock needed
- * @param {Function} modifier
- * @returns {any}
- */
-export function withTasksLock(modifier) {
-  const tasks = loadTasks();
-  const result = modifier(tasks);
-  saveTasks(tasks);
-  return result;
-}
-
-/**
  * Get a single task by id
  * @param {string} id
  * @returns {Object|null}
@@ -540,18 +460,26 @@ export function removeTaskIfUnchanged(id, expected) {
 }
 
 /**
- * Clear one row's persisted command-cleanup receipt, and nothing else.
+ * Clear one row's persisted command-cleanup receipt, and nothing else, only if it is still the
+ * exact serialized receipt the caller processed.
  *
  * Deliberately narrower than updateTask(), which is a read-modify-write over every column and
  * would write back whatever the caller's snapshot held for the rest of the row. This is used on
- * the retained path of `clean`, where the row is known to be concurrently interesting.
+ * the retained path of `clean`, where a concurrent writer may already have installed a new cleanup
+ * receipt that must survive.
  *
  * @param {string} id
+ * @param {object} expected exact command-cleanup receipt processed by the caller
+ * @returns {boolean} true when that exact receipt was cleared
  */
-export function clearTaskCommandCleanup(id) {
-  getDb()
-    .prepare('UPDATE tasks SET command_cleanup = NULL, updated_at = ? WHERE id = ?')
-    .run(new Date().toISOString(), id);
+export function clearTaskCommandCleanup(id, expected) {
+  const result = getDb()
+    .prepare(
+      `UPDATE tasks SET command_cleanup = NULL, updated_at = ?
+       WHERE id = ? AND command_cleanup IS ?`
+    )
+    .run(new Date().toISOString(), id, serializeCommandCleanup(expected));
+  return result.changes === 1;
 }
 
 export function generateId() {

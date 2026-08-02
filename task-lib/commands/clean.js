@@ -78,7 +78,7 @@ export function removeCleanedTask(task, { warn }) {
     // The row moved on under us. Its side effects are already done, so record the one piece of
     // durable state that would otherwise be retried forever, using a single-column write that
     // cannot clobber whatever the concurrent writer just persisted.
-    if (cleanupCleared) clearTaskCommandCleanup(task.id);
+    if (cleanupCleared) clearTaskCommandCleanup(task.id, task.commandCleanup);
     return { removed: false, reason: 'the row changed while it was being cleaned' };
   }
   return { removed: true, reason: null };

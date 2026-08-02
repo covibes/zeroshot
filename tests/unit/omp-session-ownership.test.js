@@ -265,6 +265,10 @@ describe('task-lib/omp-session-ownership.js (owner-fenced ownership state machin
       assert.strictEqual(await commitOwnershipFor(id, partition.sessionFilePath), false);
       assert.strictEqual(await commitRecordedOwnershipFor(id), false);
       assert.strictEqual(await markCleanupRequiredFor(id), null);
+      await runStoreScript(`
+        const { removeTask } = await import(${JSON.stringify(storeUrl)});
+        removeTask(${JSON.stringify(id)});
+      `);
     });
   });
 
