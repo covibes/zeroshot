@@ -2809,7 +2809,7 @@ describe('Codex planner structured-output recovery', function () {
   it('recovers malformed Codex structured output without retrying the parent task', async function () {
     const result = await runStructuredOutputRecovery();
 
-    assert.strictEqual(result.state, 'stopped');
+    assert.strictEqual(result.state, 'stopped', JSON.stringify(result, null, 2));
     assert.strictEqual(result.configuredRole, 'planner');
     assert.strictEqual(result.fakeCount, '2', JSON.stringify(result, null, 2));
     assert.deepStrictEqual(result.lifecycle, [
