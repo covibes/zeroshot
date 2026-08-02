@@ -15,8 +15,8 @@ use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryE
 use serde::Serialize;
 
 use crate::execution::{
-    BuiltinWorkerId, BuiltinWorkerRef, ProfileDigest, ProviderLaneId, RegistryDigest, SessionScope,
-    WorkerBindingId, WorkerBindingRef, WorkerBindingSpec,
+    BuiltinWorkerId, BuiltinWorkerRef, CatalogDigest, ProfileDigest, ProviderLaneId,
+    RegistryDigest, SessionScope, WorkerBindingId, WorkerBindingRef, WorkerBindingSpec,
 };
 use crate::provider_value::canonicalize;
 use crate::worker_catalog::{DriverFamily, ProviderId, WorkerCatalog};
@@ -46,6 +46,7 @@ impl<'a> WorkerBindingCompiler<'a> {
         let (worker_ref, descriptor) = compile_legacy_descriptor()?;
 
         WorkerBindingRegistry::new(
+            self.catalog.digest().clone(),
             agents,
             BTreeMap::from([(builtin_id, builtin_ref)]),
             BTreeMap::from([(worker_ref, descriptor)]),
@@ -133,6 +134,7 @@ fn compile_legacy_descriptor() -> Result<(WorkerRef, WorkerDescriptor), WorkerBi
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkerBindingRegistry {
+    catalog_digest: CatalogDigest,
     agents: BTreeMap<ProviderId, WorkerBindingRef>,
     builtins: BTreeMap<BuiltinWorkerId, BuiltinWorkerRef>,
     descriptors: BTreeMap<WorkerRef, WorkerDescriptor>,
@@ -143,6 +145,7 @@ pub struct WorkerBindingRegistry {
 
 #[derive(Serialize)]
 struct CanonicalRegistry<'a> {
+    catalog_digest: &'a CatalogDigest,
     agents: &'a BTreeMap<ProviderId, WorkerBindingRef>,
     builtins: &'a BTreeMap<BuiltinWorkerId, BuiltinWorkerRef>,
     descriptors: &'a BTreeMap<WorkerRef, WorkerDescriptor>,
@@ -150,6 +153,7 @@ struct CanonicalRegistry<'a> {
 
 impl WorkerBindingRegistry {
     fn new(
+        catalog_digest: CatalogDigest,
         agents: BTreeMap<ProviderId, WorkerBindingRef>,
         builtins: BTreeMap<BuiltinWorkerId, BuiltinWorkerRef>,
         descriptors: BTreeMap<WorkerRef, WorkerDescriptor>,
@@ -160,6 +164,7 @@ impl WorkerBindingRegistry {
             .map_err(|error| WorkerBindingError::new("worker profile digest", error))?;
 
         let (canonical_bytes, digest_hex) = canonicalize(&CanonicalRegistry {
+            catalog_digest: &catalog_digest,
             agents: &agents,
             builtins: &builtins,
             descriptors: &descriptors,
@@ -169,6 +174,7 @@ impl WorkerBindingRegistry {
             .map_err(|error| WorkerBindingError::new("worker binding registry digest", error))?;
 
         Ok(Self {
+            catalog_digest,
             agents,
             builtins,
             descriptors,
@@ -178,6 +184,10 @@ impl WorkerBindingRegistry {
         })
     }
 
+    #[must_use]
+    pub fn catalog_digest(&self) -> &CatalogDigest {
+        &self.catalog_digest
+    }
     #[must_use]
     pub fn agents(&self) -> &BTreeMap<ProviderId, WorkerBindingRef> {
         &self.agents

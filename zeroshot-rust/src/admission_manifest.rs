@@ -192,6 +192,26 @@ fn validate_role_closure(roles: &RoleContractPack) -> Result<(), AdmissionManife
     Ok(())
 }
 
+fn validate_source_provenance(
+    catalog: &WorkerCatalog,
+    roles: &RoleContractPack,
+    registry: &WorkerBindingRegistry,
+) -> Result<(), AdmissionManifestError> {
+    if roles.catalog_digest() != catalog.digest() {
+        return Err(AdmissionManifestError::new(
+            "role contract pack",
+            "catalog snapshot does not match the admission catalog",
+        ));
+    }
+    if registry.catalog_digest() != catalog.digest() {
+        return Err(AdmissionManifestError::new(
+            "worker binding registry",
+            "catalog snapshot does not match the admission catalog",
+        ));
+    }
+    Ok(())
+}
+
 impl AdmissionManifest {
     pub fn compile(
         version: u32,
@@ -205,6 +225,8 @@ impl AdmissionManifest {
         } = sources;
         let version = parse_version(version)
             .map_err(|error| AdmissionManifestError::new("manifest version", error))?;
+
+        validate_source_provenance(catalog, roles, registry)?;
 
         let provider = resolve_selected_provider(catalog, &selection)?;
         validate_graph_worker_closure(registry, provider.id())?;

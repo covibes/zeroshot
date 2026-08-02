@@ -282,6 +282,19 @@ fn changing_the_catalog_or_registry_changes_the_digest() {
 }
 
 #[test]
+fn role_pack_from_a_different_catalog_snapshot_fails_closed() {
+    let catalog_a = minimal_catalog("Alpha", false);
+    let roles_a = minimal_role_pack(&catalog_a, "classify the task");
+
+    let catalog_b = minimal_catalog("Alpha", true);
+    let registry_b = compiled_registry(&catalog_b);
+
+    let error = compile(&catalog_b, &roles_a, &registry_b, "alpha")
+        .expect_err("role pack from a different catalog snapshot must fail");
+    assert_eq!(error.field(), "role contract pack");
+}
+
+#[test]
 fn changing_role_instructions_changes_the_digest() {
     let catalog = minimal_catalog("Alpha", false);
     let registry = compiled_registry(&catalog);
@@ -435,7 +448,7 @@ fn zero_and_inverted_deadlines_fail_closed() {
 }
 
 #[test]
-fn provider_absent_from_the_compiled_registry_fails_closed() {
+fn worker_registry_from_a_different_catalog_snapshot_fails_closed() {
     let full_catalog = worker_catalog();
     let roles = role_contract_pack();
     let sparse_catalog = minimal_catalog("Alpha", false);
@@ -451,8 +464,8 @@ fn provider_absent_from_the_compiled_registry_fails_closed() {
             registry: &sparse_registry,
         },
     )
-    .expect_err("claude has no binding in a registry compiled from a claude-free catalog");
-    assert_eq!(error.field(), "worker binding");
+    .expect_err("worker registry from a different catalog snapshot must fail");
+    assert_eq!(error.field(), "worker binding registry");
 }
 
 #[test]

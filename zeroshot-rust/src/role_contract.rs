@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 
 use serde::Serialize;
 
+use crate::execution::CatalogDigest;
 use crate::provider_value::{canonicalize, parse_version};
 use crate::worker_catalog::{ModelLevel, ReasoningEffort, WorkerCatalog};
 
@@ -207,6 +208,7 @@ impl RoleContract {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RoleContractPack {
     version: NonZeroU32,
+    catalog_digest: CatalogDigest,
     contracts: BTreeMap<RoleName, RoleContract>,
     canonical_bytes: Vec<u8>,
     digest: RoleContractDigest,
@@ -216,6 +218,7 @@ pub struct RoleContractPack {
 #[serde(rename_all = "camelCase")]
 struct CanonicalPack<'a> {
     version: u32,
+    catalog_digest: &'a CatalogDigest,
     contracts: &'a BTreeMap<RoleName, RoleContract>,
 }
 
@@ -254,6 +257,7 @@ impl RoleContractPack {
 
         let (canonical_bytes, digest_hex) = canonicalize(&CanonicalPack {
             version: version.get(),
+            catalog_digest: catalog.digest(),
             contracts: &contracts,
         })
         .map_err(|error| RoleContractError::new("canonical role contract pack", error))?;
@@ -261,6 +265,7 @@ impl RoleContractPack {
 
         Ok(Self {
             version,
+            catalog_digest: catalog.digest().clone(),
             contracts,
             canonical_bytes,
             digest,
@@ -270,6 +275,11 @@ impl RoleContractPack {
     #[must_use]
     pub fn version(&self) -> u32 {
         self.version.get()
+    }
+
+    #[must_use]
+    pub fn catalog_digest(&self) -> &CatalogDigest {
+        &self.catalog_digest
     }
 
     #[must_use]
