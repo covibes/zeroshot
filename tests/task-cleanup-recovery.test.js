@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { execFile } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -9,6 +9,7 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const { followClaudeTaskLogs } = require('../src/agent/agent-task-executor');
 const ClaudeTaskRunner = require('../src/claude-task-runner');
+const { makeSessionPartition } = require('./helpers/omp-session-fixtures');
 const commandCleanupFixtureSource = `
   import fs from 'fs';
   import os from 'os';
@@ -397,6 +398,144 @@ describe('Task cleanup recovery', function () {
       fs.rmSync(taskHome, { recursive: true, force: true });
     }
   });
+});
+
+describe('Confirmed CLI task termination boundary', function () {
+  this.timeout(40000);
+
+  for (const command of ['kill-all', 'purge']) {
+    it(`${command} waits for process exit before retiring OMP ownership`, async function () {
+      if (process.platform === 'win32') this.skip();
+
+      const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), `zeroshot-${command}-boundary-`));
+      const storageRoot = fs.mkdtempSync(path.join(taskHome, 'storage-'));
+      const partition = makeSessionPartition({ storageRoot });
+      const markerPath = path.join(taskHome, 'provider-after-signal.txt');
+      const providerScript = path.join(taskHome, 'delayed-provider.cjs');
+      const taskId = `${command}-confirmed-boundary`;
+      const cliPath = path.resolve(__dirname, '../cli/index.js');
+      const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+      const ownershipUrl = new URL('../task-lib/omp-session-ownership.js', `file://${__filename}`)
+        .href;
+      const env = {
+        ...process.env,
+        HOME: taskHome,
+        USERPROFILE: taskHome,
+        ZEROSHOT_HOME: taskHome,
+      };
+
+      fs.writeFileSync(
+        providerScript,
+        [
+          "const fs = require('node:fs');",
+          "const path = require('node:path');",
+          'const [partitionPath, markerPath] = process.argv.slice(2);',
+          'let stopping = false;',
+          "process.on('SIGTERM', () => {",
+          '  if (stopping) return;',
+          '  stopping = true;',
+          '  setTimeout(() => {',
+          '    try {',
+          "      fs.writeFileSync(path.join(partitionPath, 'late-provider-write.txt'), 'complete');",
+          "      fs.writeFileSync(markerPath, 'write-ok');",
+          '    } catch (error) {',
+          "      fs.writeFileSync(markerPath, `write-failed:${error.code || 'unknown'}`);",
+          '    }',
+          '    process.exit(0);',
+          '  }, 800);',
+          '});',
+          "process.stdout.write('READY\\n');",
+          'setInterval(() => {}, 1000);',
+        ].join('\n')
+      );
+
+      const child = spawn(process.execPath, [providerScript, partition.partitionPath, markerPath], {
+        detached: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+
+      try {
+        await new Promise((resolve, reject) => {
+          child.once('error', reject);
+          child.stdout.once('data', resolve);
+        });
+        await execFileAsync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `
+              const { addTask } = await import(${JSON.stringify(storeUrl)});
+              const { writeProvisionalOwnership } =
+                await import(${JSON.stringify(ownershipUrl)});
+              addTask({
+                id: ${JSON.stringify(taskId)},
+                status: 'running',
+                provider: 'omp',
+                cwd: ${JSON.stringify(storageRoot)},
+                pid: ${child.pid},
+                processGroupId: ${child.pid},
+                terminationStrategy: 'process-group',
+                ompSessionOwnership: writeProvisionalOwnership({
+                  partitionId: ${JSON.stringify(partition.partitionId)},
+                  storageRoot: ${JSON.stringify(storageRoot)},
+                  canonicalWorkspace: ${JSON.stringify(storageRoot)},
+                  owner: {
+                    kind: 'standalone',
+                    clusterId: null,
+                    agentId: null,
+                    taskId: ${JSON.stringify(taskId)},
+                  },
+                }),
+              });
+            `,
+          ],
+          { env }
+        );
+
+        await execFileAsync(process.execPath, [cliPath, command, '--yes'], { env });
+
+        assert.ok(
+          fs.existsSync(markerPath),
+          `${command} returned before the provider process exited`
+        );
+        assert.strictEqual(
+          fs.readFileSync(markerPath, 'utf8'),
+          'write-ok',
+          `${command} deleted the partition while the provider was still writing`
+        );
+
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `
+              const { getTask } = await import(${JSON.stringify(storeUrl)});
+              process.stdout.write(JSON.stringify(getTask(${JSON.stringify(taskId)}) ?? null));
+            `,
+          ],
+          { env }
+        );
+        const task = JSON.parse(stdout);
+        if (command === 'kill-all') {
+          assert.strictEqual(task.status, 'killed');
+          assert.strictEqual(task.ompSessionOwnership.state, 'cleanup-required');
+          assert.ok(fs.existsSync(partition.partitionPath));
+        } else {
+          assert.strictEqual(task, null);
+          assert.ok(!fs.existsSync(partition.partitionPath));
+        }
+      } finally {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          // The expected path already reaped the confirmed process group.
+        }
+        fs.rmSync(taskHome, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 describe('Task cleanup after deferred termination', function () {

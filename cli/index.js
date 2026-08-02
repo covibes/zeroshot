@@ -2147,51 +2147,19 @@ async function killRunningClusters(orchestrator, runningClusters) {
   }
 }
 
-/**
- * Retire a task's OMP session ownership at a confirmed terminal boundary (killed/stale), before
- * the terminal status write. See task-lib/omp-session-ownership.js: a provisional claim left
- * behind by a killed task makes its partition unreclaimable, because cleanup refuses any partition
- * another row still claims. Never throws — the kill must complete regardless.
- */
-async function retireOmpOwnershipForTerminatedTask(taskId) {
-  const { retireOmpOwnershipAtTerminalBoundary } =
-    await import('../task-lib/omp-session-ownership.js');
-  retireOmpOwnershipAtTerminalBoundary(taskId, (error) =>
-    console.log(
-      chalk.yellow(
-        `Warning: failed to retire the OMP session ownership of task ${taskId}: ${error.message}`
-      )
-    )
-  );
-}
-
-async function killRunningTasks(runningTasks, isProcessRunning) {
+async function killRunningTasks(runningTasks) {
   if (runningTasks.length === 0) {
     return;
   }
   console.log(chalk.bold('Killing running tasks...'));
-  const { killTask } = await import('../task-lib/runner.js');
-  const { updateTask } = await import('../task-lib/store.js');
+  const { killTaskCommand } = await import('../task-lib/commands/kill.js');
 
+  // Reuse the standalone kill boundary instead of treating successful signal delivery as process
+  // termination. It waits for the persisted process tree to exit (including SIGKILL escalation)
+  // and retires OMP ownership only after that confirmation. An unconfirmed termination leaves the
+  // task running and authoritative, so the purge cleanup that follows cannot delete its partition.
   for (const task of runningTasks) {
-    if (!isProcessRunning(task.pid)) {
-      await retireOmpOwnershipForTerminatedTask(task.id);
-      updateTask(task.id, {
-        status: 'stale',
-        error: 'Process died unexpectedly',
-      });
-      console.log(chalk.yellow(`○ Task ${task.id} was already dead, marked stale`));
-      continue;
-    }
-
-    const killed = killTask(task.pid);
-    if (killed) {
-      await retireOmpOwnershipForTerminatedTask(task.id);
-      updateTask(task.id, { status: 'killed', error: 'Killed by clear' });
-      console.log(chalk.green(`✓ Killed task: ${task.id}`));
-    } else {
-      console.log(chalk.red(`✗ Failed to kill task: ${task.id}`));
-    }
+    await killTaskCommand(task.id);
   }
 }
 
@@ -3292,35 +3260,7 @@ program
         }
       }
 
-      // Kill tasks
-      if (runningTasks.length > 0) {
-        const { killTask, isProcessRunning: checkPid } = await import('../task-lib/runner.js');
-        const { updateTask } = await import('../task-lib/store.js');
-
-        for (const task of runningTasks) {
-          if (!checkPid(task.pid)) {
-            await retireOmpOwnershipForTerminatedTask(task.id);
-            updateTask(task.id, {
-              status: 'stale',
-              error: 'Process died unexpectedly',
-            });
-            console.log(chalk.yellow(`○ Task ${task.id} was already dead, marked stale`));
-            continue;
-          }
-
-          const killed = killTask(task.pid);
-          if (killed) {
-            await retireOmpOwnershipForTerminatedTask(task.id);
-            updateTask(task.id, {
-              status: 'killed',
-              error: 'Killed by kill-all',
-            });
-            console.log(chalk.green(`✓ Killed task: ${task.id}`));
-          } else {
-            console.log(chalk.red(`✗ Failed to kill task: ${task.id}`));
-          }
-        }
-      }
+      await killRunningTasks(runningTasks);
 
       console.log(chalk.bold.green(`\nDone.`));
     } catch (error) {
@@ -3831,7 +3771,7 @@ program
       console.log('');
 
       await killRunningClusters(orchestrator, purgeData.runningClusters);
-      await killRunningTasks(purgeData.runningTasks, purgeData.isProcessRunning);
+      await killRunningTasks(purgeData.runningTasks);
       await deleteClusterData(orchestrator, purgeData.clusters);
       await deleteTaskData(purgeData.tasks);
 
