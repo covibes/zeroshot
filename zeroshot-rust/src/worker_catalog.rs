@@ -1,13 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
 use std::num::NonZeroU32;
 use std::sync::LazyLock;
 
 use serde::Serialize;
-use sha2::{Digest as _, Sha256};
 
 use crate::execution::{CatalogDigest, DriverFamilyId, SessionScope};
-use crate::provider_value::{validate_collection_len, validate_serialized};
+use crate::provider_value::{canonicalize, parse_version, validate_collection_len, validate_serialized};
 
 pub const WORKER_CATALOG_VERSION: u32 = 1;
 pub const WORKER_PROVIDER_COUNT: usize = 8;
@@ -579,9 +577,8 @@ struct CanonicalCatalog<'a> {
 
 impl WorkerCatalog {
     pub fn new(mut spec: WorkerCatalogSpec) -> Result<Self, WorkerCatalogError> {
-        let version = NonZeroU32::new(spec.version).ok_or_else(|| {
-            WorkerCatalogError::new("catalog version", "version must be greater than zero")
-        })?;
+        let version = parse_version(spec.version)
+            .map_err(|error| WorkerCatalogError::new("catalog version", error))?;
         if spec.providers.is_empty() {
             return Err(WorkerCatalogError::new(
                 "catalog providers",
@@ -643,22 +640,12 @@ impl WorkerCatalog {
             }
         }
 
-        let canonical_bytes = serde_json::to_vec(&CanonicalCatalog {
+        let (canonical_bytes, digest_hex) = canonicalize(&CanonicalCatalog {
             version: version.get(),
             default_provider: &spec.default_provider,
             providers: &spec.providers,
         })
         .map_err(|error| WorkerCatalogError::new("canonical catalog", error))?;
-        if canonical_bytes.len() > crate::provider_value::MAX_SERIALIZED_BYTES {
-            return Err(WorkerCatalogError::new(
-                "canonical catalog",
-                "canonical catalog exceeds the serialized-value bound",
-            ));
-        }
-        let mut digest_hex = String::with_capacity(64);
-        for byte in Sha256::digest(&canonical_bytes) {
-            write!(&mut digest_hex, "{byte:02x}").expect("writing to a string cannot fail");
-        }
         let digest = CatalogDigest::new(digest_hex)
             .map_err(|error| WorkerCatalogError::new("catalog digest", error))?;
 
