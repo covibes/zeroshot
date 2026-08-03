@@ -51,6 +51,17 @@ function installedCliPath(directory) {
   return path.join(directory, 'node_modules', '@the-open-engine', 'zeroshot', 'cli', 'index.js');
 }
 
+function assertPackageSubpathUnavailable(directory, subpath) {
+  try {
+    execute(process.execPath, ['-e', `require.resolve(${JSON.stringify(subpath)})`], directory);
+    assert.fail(`packed internal hosted subpath resolved: ${subpath}`);
+  } catch (error) {
+    if (error?.code === 'ERR_ASSERTION') throw error;
+    const detail = `${error?.stderr ?? ''}\n${error?.message ?? ''}`;
+    assert.match(detail, /MODULE_NOT_FOUND|ERR_PACKAGE_PATH_NOT_EXPORTED|Cannot find module/);
+  }
+}
+
 function runCli(cliPath, args, settingsFile) {
   return new Promise((resolve) => {
     execFile(
@@ -98,6 +109,17 @@ describe('packed CLI hosted target/capsule gate', function () {
 
   afterEach(function () {
     fs.rmSync(settingsDirectory, { recursive: true, force: true });
+  });
+
+  it('does not publish the internal hosted command constructor', function () {
+    assertPackageSubpathUnavailable(
+      packageDirectory,
+      '@the-open-engine/zeroshot/lib/target/register-hosted-commands.js'
+    );
+    assertPackageSubpathUnavailable(
+      packageDirectory,
+      '@the-open-engine/zeroshot/src/target/register-hosted-commands.ts'
+    );
   });
 
   it('excludes target/capsule/--target/--all-targets from --help', async function () {
