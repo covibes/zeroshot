@@ -124,7 +124,6 @@ export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.examp
     tokenEndpoint: `${baseUrl}/oauth/token`,
     revocationEndpoint: `${baseUrl}/oauth/revoke`,
     clientId: 'cli',
-    capsuleApiBaseUrl: `${baseUrl}/api/v1`,
   };
 }
 
