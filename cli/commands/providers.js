@@ -14,6 +14,7 @@ const {
   getProvider,
   parseExactOmpModelSelector,
   resolveOmpSdkSettings,
+  resolveOmpAuthPolicyModulePath,
 } = providerApi;
 const { resolveOmpSdkRuntime } = require('../../scripts/omp-sdk-runtime');
 
@@ -179,10 +180,6 @@ function writePrivateJson(filePath, value) {
   fs.chmodSync(filePath, 0o600);
 }
 
-function authPolicyModulePath() {
-  return path.join(__dirname, '..', '..', 'src', 'agent-cli-provider', 'omp-auth-policy.ts');
-}
-
 function parseHostResult(stdout) {
   const lines = String(stdout || '').split(/\r?\n/);
   const frames = lines
@@ -229,7 +226,7 @@ function runOmpRegistryOperation(operation, settings, options = {}, injected = {
       modelsPath,
       authDbPath,
       brokerCachePath: path.join(root, 'broker-snapshot.json'),
-      authPolicyPath: authPolicyModulePath(),
+      authPolicyPath: resolveOmpAuthPolicyModulePath(),
       ompEntryPath: runtime.ompEntryPath,
       selectors: levelSelectors,
       selector: options.selector || null,

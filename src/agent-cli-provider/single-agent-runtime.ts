@@ -475,7 +475,9 @@ function ompSdkCredentialNames(
   }
   if (settings.auth.mode === 'broker') {
     return Object.freeze(
-      [OMP_AUTH_BROKER_ENV_NAMES.token, OMP_AUTH_BROKER_ENV_NAMES.url].sort()
+      [OMP_AUTH_BROKER_ENV_NAMES.token, OMP_AUTH_BROKER_ENV_NAMES.url].sort((left, right) =>
+        left.localeCompare(right, 'en')
+      )
     );
   }
   return Object.freeze([]);

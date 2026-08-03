@@ -44,24 +44,43 @@ function sdkSettings(overrides = {}) {
   };
 }
 
-function withSettings(settings, callback) {
+async function withSettings(settings, callback) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-lane-settings-'));
   const settingsPath = path.join(root, 'settings.json');
   fs.writeFileSync(settingsPath, JSON.stringify(settings), { mode: 0o600 });
+  const previousSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
+  const previousCredential = process.env[CREDENTIAL_NAME];
+  process.env.ZEROSHOT_SETTINGS_FILE = settingsPath;
+  process.env[CREDENTIAL_NAME] = SECRET;
   try {
-    return withTempEnv(
-      { ZEROSHOT_SETTINGS_FILE: settingsPath, [CREDENTIAL_NAME]: SECRET },
-      callback
-    );
+    return await callback();
   } finally {
+    restoreEnv('ZEROSHOT_SETTINGS_FILE', previousSettingsFile);
+    restoreEnv(CREDENTIAL_NAME, previousCredential);
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+function restoreEnv(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
 }
 
 function removePreparedRoot(prepared) {
   if (prepared?.privateArtifacts?.root) {
     fs.rmSync(prepared.privateArtifacts.root, { recursive: true, force: true });
   }
+}
+
+function canonicalSdkErrorFrame(code, category, retryable) {
+  return helper.parseOmpSdkProtocolFrame({
+    protocolVersion: helper.OMP_SDK_PROTOCOL_VERSION,
+    type: 'error',
+    runId: 'classification-fixture',
+    backend: { id: 'omp-sdk', version: helper.OMP_SDK_BACKEND_VERSION },
+    runtime: { name: 'bun', version: helper.OMP_SDK_BUN_VERSION },
+    error: { code, category, retryable, redacted: true },
+  });
 }
 
 test('OMP omitted transport selects the SDK sidecar without probing a global omp CLI', () => {
@@ -439,7 +458,7 @@ test('OMP SDK invoke preserves canonical error classification without process te
             durationMs: 7,
             terminal: {
               type: 'error',
-              frame: { error: { code, category, retryable, redacted: true } },
+              frame: canonicalSdkErrorFrame(code, category, retryable),
             },
             progress: [],
             cleanupAttestation: {
@@ -469,6 +488,7 @@ test('OMP SDK invoke preserves canonical error classification without process te
           { runner: () => assert.fail('SDK invoke used the generic runner') }
         );
 
+        assert.equal(response.envelope.ok, true, JSON.stringify(response.envelope));
         assert.deepEqual(response.envelope.result.classification, {
           category,
           retryable,

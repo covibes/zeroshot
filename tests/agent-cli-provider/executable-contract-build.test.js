@@ -12,6 +12,7 @@ const {
   runExecutable,
   withFakeProviderCli,
   withTempEnv,
+  withOmpRpcSettings,
 } = require('./executable-contract-helpers.cjs');
 
 test('build-command returns command spec without executing provider CLI', () => {
@@ -156,40 +157,30 @@ test('build-command preserves Codex explicit session resume through JSON contrac
   assert.equal(resumed.envelope.result.commandSpec.cwd, '/tmp/project');
 });
 
-test('build-command emits the omp-jsonschema warning through the executable envelope', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-rpc-build-contract-'));
-  const settingsFile = path.join(tempDir, 'settings.json');
-  fs.writeFileSync(
-    settingsFile,
-    JSON.stringify({ providerSettings: { omp: { transport: 'rpc' } } }),
-    { mode: 0o600 }
-  );
-
-  try {
-    const response = withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () =>
-      runExecutable({
-        schemaVersion: 1,
-        command: 'build-command',
-        provider: 'omp',
-        context: 'ctx',
-        options: {
-          modelSpec: { level: 'level3', model: 'm', reasoningEffort: 'high' },
-          jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
-          cliFeatures: {
-            versionMatches: true,
-            supportsRpcMode: true,
-            supportsConfig: true,
-            supportsModel: true,
-            supportsThinking: true,
-            supportsApprovalMode: true,
-            supportsNoTitle: true,
-            supportsNoSession: true,
-            supportsSessionDir: false,
-            supportsResume: false,
-          },
+test('build-command emits the omp-jsonschema warning through the executable envelope', () =>
+  withOmpRpcSettings(() => {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'build-command',
+      provider: 'omp',
+      context: 'ctx',
+      options: {
+        modelSpec: { level: 'level3', model: 'm', reasoningEffort: 'high' },
+        jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+        cliFeatures: {
+          versionMatches: true,
+          supportsRpcMode: true,
+          supportsConfig: true,
+          supportsModel: true,
+          supportsThinking: true,
+          supportsApprovalMode: true,
+          supportsNoTitle: true,
+          supportsNoSession: true,
+          supportsSessionDir: false,
+          supportsResume: false,
         },
-      })
-    );
+      },
+    });
 
     assert.equal(response.exitCode, 0);
     assert.equal(response.envelope.ok, true);
@@ -216,10 +207,7 @@ test('build-command emits the omp-jsonschema warning through the executable enve
     );
     const overlayDir = path.dirname(args.at(-1));
     fs.rmSync(overlayDir, { recursive: true, force: true });
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
-});
+  }));
 
 test('build-command refuses to export an OMP invocation when transport defaults to SDK', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-sdk-build-contract-'));

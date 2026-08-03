@@ -15,9 +15,13 @@ import {
 import { providerFailureClassification } from './invoke-evidence';
 import { parseOutputEvents } from './contract-parse';
 import { isRecord, unknownToMessage } from './json';
-import { runOmpSdkProcess, type OmpSdkProcessResult } from './omp-sdk-process-runner';
-import type { OmpSdkErrorCategory } from './omp-sdk-protocol';
-import type { CommandSpec, ErrorClassification } from './types';
+import {
+  invokeEvidence,
+  isContractOmpSdkProcessResult,
+  ompSdkFailureClassification,
+} from './omp-sdk-contract';
+import { runOmpSdkProcess } from './omp-sdk-process-runner';
+import type { CommandSpec } from './types';
 import type { ProcessResult, ProcessRunner, ProcessRunnerOptions } from './process-runner';
 
 type UnknownFunction = (...args: unknown[]) => unknown;
@@ -170,7 +174,7 @@ export async function runInvoke(
     }
     ({ result, cleanup } = await runAndCleanup(commandSpec, invokeRunner, runnerOptions));
   }
-  const sdkResult = ompSdkResult(result);
+  const sdkResult = isContractOmpSdkProcessResult(result) ? result : null;
   const parsed =
     sdkResult === null
       ? parseOutputEvents(adapter, {
@@ -221,49 +225,3 @@ export async function runInvoke(
   });
 }
 
-function ompSdkResult(result: ProcessResult): OmpSdkProcessResult | null {
-  return 'terminal' in result && 'cleanupAttestation' in result
-    ? (result as OmpSdkProcessResult)
-    : null;
-}
-
-type OmpSdkErrorClassification = ErrorClassification & {
-  readonly category: OmpSdkErrorCategory;
-};
-
-function ompSdkFailureClassification(
-  result: OmpSdkProcessResult
-): OmpSdkErrorClassification | null {
-  if (result.terminal.type !== 'error') return null;
-  const { category, retryable } = result.terminal.frame.error;
-  return {
-    category,
-    retryable,
-    kind:
-      category === 'cancelled'
-        ? 'cancelled'
-        : retryable
-          ? 'unknown-retryable'
-          : 'permanent-pattern',
-  };
-}
-
-function invokeEvidence(
-  result: ProcessResult,
-  timeoutMs: number | undefined
-): Record<string, unknown> {
-  const sdkResult = ompSdkResult(result);
-  return {
-    exitCode: result.exitCode,
-    signal: result.signal,
-    durationMs: result.durationMs,
-    timedOut: result.timedOut ?? false,
-    timeoutMs: result.timeoutMs ?? timeoutMs ?? null,
-    ...(sdkResult === null
-      ? {}
-      : {
-          terminal: sdkResult.terminal.frame,
-          cleanupAttestation: sdkResult.cleanupAttestation,
-        }),
-  };
-}

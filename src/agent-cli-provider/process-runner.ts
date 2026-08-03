@@ -56,7 +56,7 @@ function armTermination(
   if (options.signal !== undefined) {
     const abort = (): void => terminate();
     options.signal.addEventListener('abort', abort, { once: true });
-    state.removeAbortListener = () => options.signal?.removeEventListener('abort', abort);
+    state.removeAbortListener = (): void => options.signal?.removeEventListener('abort', abort);
     if (options.signal.aborted) terminate();
   }
   if (options.timeoutMs === undefined) return;

@@ -18,6 +18,10 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const { promisify } = require('util');
+const {
+  createExplicitOmpRpcSettings,
+  FAKE_OMP_WITH_RPC,
+} = require('../helpers/explicit-omp-rpc-settings');
 
 const execFileAsync = promisify(execFile);
 
@@ -25,20 +29,6 @@ const runnerUrl = pathToFileURL(path.resolve(__dirname, '../../task-lib/runner.j
 const promptChannelPath = path.resolve(__dirname, '../../src/watcher-prompt-channel.js');
 
 const SENTINEL_PROMPT = 'ZS_RUNNER_ARGV_SENTINEL_5d0c9a_DO_NOT_PUT_ME_IN_ARGV';
-
-// Advertises exactly the evidence assertRequiredOmpFeatures() demands, so buildCommand() reaches
-// the rpc-stdio lane without a real OMP install.
-const FAKE_OMP = `#!/usr/bin/env node
-if (process.argv.includes('--version')) {
-  process.stdout.write('omp 17.2.1\\n');
-  process.exit(0);
-}
-if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: omp [options]\\n  Modes: rpc\\n  --config --model --thinking --approval-mode --no-title --no-session --session-dir --resume\\n');
-  process.exit(0);
-}
-process.exit(0);
-`;
 
 const HARNESS = `import { createRequire } from 'node:module';
 
@@ -75,9 +65,10 @@ process.stdout.write(JSON.stringify(forks));
 async function runHarness({ provider, model, prompt }) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runner-prompt-channel-'));
   const binDir = path.join(home, 'bin');
+  const { env: rpcSettingsEnv } = createExplicitOmpRpcSettings(home);
   fs.mkdirSync(binDir);
   const fakeOmp = path.join(binDir, 'omp');
-  fs.writeFileSync(fakeOmp, FAKE_OMP);
+  fs.writeFileSync(fakeOmp, FAKE_OMP_WITH_RPC);
   fs.chmodSync(fakeOmp, 0o755);
   const harnessPath = path.join(home, 'harness.mjs');
   fs.writeFileSync(harnessPath, HARNESS);
@@ -89,6 +80,7 @@ async function runHarness({ provider, model, prompt }) {
         HOME: home,
         USERPROFILE: home,
         ZEROSHOT_HOME: home,
+        ...rpcSettingsEnv,
         HARNESS_PROVIDER: provider,
         HARNESS_MODEL: model,
         HARNESS_PROMPT: prompt,

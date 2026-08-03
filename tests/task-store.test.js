@@ -114,7 +114,7 @@ describe('Task store SDK persistence', function () {
     };
 
     const writer = `
-      const { addTask, updateTask, withTasksLock } = await import(${JSON.stringify(storeUrl)});
+      const { addTask, updateTask } = await import(${JSON.stringify(storeUrl)});
       const added = addTask({
         id: 'sdk-task',
         status: 'running',
@@ -145,7 +145,6 @@ describe('Task store SDK persistence', function () {
         sdkEvidence: ${JSON.stringify(sdkEvidence)},
         cleanupAttestation: ${JSON.stringify(cleanupAttestation)}
       });
-      withTasksLock((tasks) => tasks);
       process.stdout.write(JSON.stringify({ added, updated }));
     `;
     const reader = `
@@ -200,7 +199,7 @@ describe('Task store SDK persistence', function () {
   it('round-trips legacy tasks without adding SDK record fields', async function () {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-legacy-task-store-'));
     const writer = `
-      const { addTask, updateTask, withTasksLock } = await import(${JSON.stringify(storeUrl)});
+      const { addTask, updateTask } = await import(${JSON.stringify(storeUrl)});
       addTask({
         id: 'legacy-task',
         prompt: 'legacy prompt',
@@ -213,7 +212,6 @@ describe('Task store SDK persistence', function () {
         commandCleanup: { cleanup: ['/tmp/legacy-cleanup'] }
       });
       updateTask('legacy-task', { status: 'completed', exitCode: 0 });
-      withTasksLock((tasks) => tasks);
     `;
     const reader = `
       const { getTask } = await import(${JSON.stringify(storeUrl)});
@@ -284,7 +282,7 @@ describe('Task store SDK persistence', function () {
 
     try {
       const { before, after, schemaVersion } = await runStoreScript(home, script);
-      assert.strictEqual(schemaVersion, 5);
+      assert.strictEqual(schemaVersion, 6);
       assert.strictEqual(before.prompt, 'pre-SDK prompt');
       assert.strictEqual(before.fullPrompt, 'pre-SDK full prompt');
       assert.strictEqual(before.status, 'running');

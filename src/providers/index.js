@@ -1,3 +1,5 @@
+const path = require('path');
+
 const BaseProvider = require('./base-provider');
 const {
   getProviderMetadata,
@@ -297,6 +299,14 @@ function compilePrivateOmpModelsYaml(settings) {
   return ompSdkSettings().compilePrivateOmpModelsYaml(settings);
 }
 
+function ompSdkProtocol() {
+  return require('../../lib/agent-cli-provider/omp-sdk-protocol.js');
+}
+
+function resolveOmpAuthPolicyModulePath() {
+  return path.join(__dirname, '..', 'agent-cli-provider', 'omp-auth-policy.ts');
+}
+
 module.exports = {
   getProvider,
   detectProviders,
@@ -309,9 +319,18 @@ module.exports = {
   validateOmpSdkSettings,
   parseExactOmpModelSelector,
   compilePrivateOmpModelsYaml,
+  resolveOmpAuthPolicyModulePath,
 };
 
 Object.defineProperties(module.exports, {
+  OMP_SDK_MAX_CREDENTIAL_BYTES: {
+    enumerable: true,
+    get: () => ompSdkProtocol().OMP_SDK_MAX_CREDENTIAL_BYTES,
+  },
+  OMP_SDK_MAX_REQUEST_BYTES: {
+    enumerable: true,
+    get: () => ompSdkProtocol().OMP_SDK_MAX_REQUEST_BYTES,
+  },
   OMP_SDK_SETTINGS_DEFAULTS: {
     enumerable: true,
     get: () => ompSdkSettings().OMP_SDK_SETTINGS_DEFAULTS,

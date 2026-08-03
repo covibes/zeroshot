@@ -22,6 +22,8 @@ export const {
   buildOmpPrompt,
   buildProviderCommand,
   classifyProviderError,
+  createOmpSdkProtocolCollector,
+  decodeOmpSdkSidecarRequest,
   detectProviderFatalError,
   detectProviderStreamingModeError,
   extractProviderSessionId,
@@ -38,6 +40,7 @@ export const {
   resolveProviderCommand,
   resolveModelSpec,
   runOmpRpcTask,
+  spawnOmpSdkProcess,
   supportsProviderCapability,
   providerAliasMap,
   providerAliases,
@@ -45,3 +48,13 @@ export const {
   providerRegistry,
   supportsProviderStructuredOutputRecovery,
 } = helper;
+
+export function buildAcpPrompt(context, options) {
+  const { buildAcpPrompt: buildPrompt } = require('../lib/agent-cli-provider/adapters/acp.js');
+  return buildPrompt(context, options);
+}
+
+export function runAcpStdioPrompt(provider, commandSpec, prompt, options) {
+  const { runAcpStdioPrompt: runPrompt } = require('../lib/agent-cli-provider/acp-stdio-runner.js');
+  return runPrompt(provider, commandSpec, prompt, options);
+}

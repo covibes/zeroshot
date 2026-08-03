@@ -276,18 +276,19 @@ export function parseExactOmpModelSelector(selector: unknown): ExactOmpModelSele
   return { provider, model };
 }
 
-export function normalizeOmpSdkSettings(
-  input: unknown,
-  context: OmpSettingsValidationContext & { readonly requireModelConfiguration: true }
-): Readonly<ConfiguredOmpSdkSettings>;
-export function normalizeOmpSdkSettings(
-  input: unknown,
-  context?: OmpSettingsValidationContext
-): Readonly<OmpSdkSettings>;
-export function normalizeOmpSdkSettings(
-  input: unknown,
-  context: OmpSettingsValidationContext = {}
-): Readonly<OmpSdkSettings> {
+class OmpSdkSettingsFunctions {
+  static normalizeOmpSdkSettings(
+    input: unknown,
+    context: OmpSettingsValidationContext & { readonly requireModelConfiguration: true }
+  ): Readonly<ConfiguredOmpSdkSettings>;
+  static normalizeOmpSdkSettings(
+    input: unknown,
+    context?: OmpSettingsValidationContext
+  ): Readonly<OmpSdkSettings>;
+  static normalizeOmpSdkSettings(
+    input: unknown,
+    context: OmpSettingsValidationContext = {}
+  ): Readonly<OmpSdkSettings> {
   if (!isRecord(input)) {
     invalidField('providerSettings.omp', 'providerSettings.omp must be an object.');
   }
@@ -373,18 +374,18 @@ export function normalizeOmpSdkSettings(
   });
 }
 
-export function resolveOmpSdkSettings(
-  settings: unknown,
-  context: OmpSettingsValidationContext & { readonly requireModelConfiguration: true }
-): Readonly<ConfiguredOmpSdkSettings>;
-export function resolveOmpSdkSettings(
-  settings: unknown,
-  context?: OmpSettingsValidationContext
-): Readonly<OmpSdkSettings>;
-export function resolveOmpSdkSettings(
-  settings: unknown,
-  context: OmpSettingsValidationContext = {}
-): Readonly<OmpSdkSettings> {
+  static resolveOmpSdkSettings(
+    settings: unknown,
+    context: OmpSettingsValidationContext & { readonly requireModelConfiguration: true }
+  ): Readonly<ConfiguredOmpSdkSettings>;
+  static resolveOmpSdkSettings(
+    settings: unknown,
+    context?: OmpSettingsValidationContext
+  ): Readonly<OmpSdkSettings>;
+  static resolveOmpSdkSettings(
+    settings: unknown,
+    context: OmpSettingsValidationContext = {}
+  ): Readonly<OmpSdkSettings> {
   if (!isRecord(settings)) {
     invalidField('settings', 'Zeroshot settings must be an object.');
   }
@@ -393,8 +394,15 @@ export function resolveOmpSdkSettings(
     invalidField('providerSettings', 'providerSettings must be an object.');
   }
   const omp = providerSettings?.omp;
-  return normalizeOmpSdkSettings(omp === undefined ? {} : omp, context);
+    return OmpSdkSettingsFunctions.normalizeOmpSdkSettings(
+      omp === undefined ? {} : omp,
+      context
+    );
 }
+}
+
+export const normalizeOmpSdkSettings = OmpSdkSettingsFunctions.normalizeOmpSdkSettings;
+export const resolveOmpSdkSettings = OmpSdkSettingsFunctions.resolveOmpSdkSettings;
 
 export function validateOmpSdkSettings(
   settings: Record<string, unknown>,
@@ -433,7 +441,7 @@ function normalizeLevelOverrides(
   }
   rejectUnknown(value, new Set(LEVELS), 'providerSettings.omp.levelOverrides');
   if (Object.keys(value).length === 0) return {};
-  const result = {} as Record<OmpModelLevel, OmpLevelOverride>;
+  const result: Partial<Record<OmpModelLevel, OmpLevelOverride>> = {};
   for (const level of LEVELS) {
     const override = value[level];
     const field = `providerSettings.omp.levelOverrides.${level}`;
@@ -444,14 +452,13 @@ function normalizeLevelOverrides(
     if (!Object.prototype.hasOwnProperty.call(override, 'model')) {
       invalidField(`${field}.model`, `${field}.model is required.`);
     }
-    const selector = override.model;
-    parseExactOmpModelSelector(selector);
+    const selector = parseExactOmpModelSelector(override.model);
     const reasoningEffort = enumValue(
       override.reasoningEffort,
       EFFORTS,
       `${field}.reasoningEffort`
     );
-    result[level] = { model: selector as string, reasoningEffort };
+    result[level] = { model: `${selector.provider}/${selector.model}`, reasoningEffort };
   }
   return result;
 }
@@ -599,17 +606,16 @@ function normalizeProviderConfig(
     if (!Array.isArray(value.models) || value.models.length === 0) {
       invalidField(`${field}.models`, 'Custom provider models must be a non-empty array.');
     }
-    result.models = value.models.map((model, index) =>
+    const models = value.models.map((model, index) =>
       normalizeModelDefinition(model, `${field}.models[${index}]`)
     );
+    result.models = models;
     if (result.baseUrl === undefined) {
       invalidField(`${field}.baseUrl`, 'baseUrl is required when defining custom models.');
     }
     const hasProviderApi = result.api !== undefined;
-    const models = result.models as readonly Record<string, unknown>[];
     const seenModelIds = new Set<string>();
-    for (const model of models) {
-      const modelId = model.id as string;
+    for (const { id: modelId } of models) {
       if (seenModelIds.has(modelId)) {
         invalidField(`${field}.models`, `Custom model id ${modelId} is duplicated.`);
       }
@@ -689,9 +695,9 @@ function normalizeModelDefinition(value: unknown, field: string): OmpModelDefini
   if (typeof value.id !== 'string' || value.id.length === 0 || !MODEL_COMPONENT.test(value.id)) {
     invalidField(`${field}.id`, 'Custom model id must be a non-empty string without whitespace.');
   }
-  const result: Record<string, unknown> = { id: value.id };
+  const result: { [field: string]: unknown; id: string } = { id: value.id };
   copyModelFields(value, result, field, true);
-  return result as OmpModelDefinition;
+  return result;
 }
 
 function normalizeModelOverride(value: unknown, field: string): Record<string, unknown> {
@@ -956,7 +962,7 @@ function normalizeTools(value: unknown): OmpSdkToolId[] {
   const result: OmpSdkToolId[] = [];
   const seen = new Set<string>();
   for (const [index, item] of value.entries()) {
-    if (typeof item !== 'string' || !OMP_SDK_TOOL_IDS.includes(item as OmpSdkToolId)) {
+    if (!isOmpSdkToolId(item)) {
       invalidField(
         `providerSettings.omp.tools[${index}]`,
         `OMP tools are restricted to: ${OMP_SDK_TOOL_IDS.join(', ')}.`
@@ -969,9 +975,15 @@ function normalizeTools(value: unknown): OmpSdkToolId[] {
       );
     }
     seen.add(item);
-    result.push(item as OmpSdkToolId);
+    result.push(item);
   }
   return result;
+}
+
+function isOmpSdkToolId(value: unknown): value is OmpSdkToolId {
+  return (
+    typeof value === 'string' && OMP_SDK_TOOL_IDS.some((candidate) => candidate === value)
+  );
 }
 
 function safeUrl(value: unknown, field: string): string {
@@ -1075,13 +1087,17 @@ function stableValue(value: unknown): unknown {
   if (!isRecord(value)) return value;
   return Object.fromEntries(
     Object.keys(value)
-      .sort()
+      .sort((left, right) => left.localeCompare(right))
       .map((key) => [key, stableValue(value[key])])
   );
 }
 
 function deepFreeze<T>(value: T): Readonly<T> {
-  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
-  for (const item of Object.values(value)) deepFreeze(item);
-  return Object.freeze(value);
+  const candidate: unknown = value;
+  if (candidate === null || typeof candidate !== 'object' || Object.isFrozen(candidate)) {
+    return value;
+  }
+  for (const item of Object.values(candidate)) deepFreeze(item);
+  Object.freeze(candidate);
+  return value;
 }

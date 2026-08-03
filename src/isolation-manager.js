@@ -32,13 +32,13 @@ const {
   resolveOmpDockerPolicy,
   assertNoOmpHomeMounts,
 } = require('../lib/docker-config');
-const { getProvider } = require('./providers');
-const { readRepoSettings } = require('../lib/repo-settings');
-const { provisionClaudeCredentials } = require('./claude-credentials');
 const {
+  getProvider,
   OMP_SDK_MAX_CREDENTIAL_BYTES,
   OMP_SDK_MAX_REQUEST_BYTES,
-} = require('../lib/agent-cli-provider/omp-sdk-protocol');
+} = require('./providers');
+const { readRepoSettings } = require('../lib/repo-settings');
+const { provisionClaudeCredentials } = require('./claude-credentials');
 
 const CONTAINER_SDK_SUPERVISOR = [
   'import ctypes',

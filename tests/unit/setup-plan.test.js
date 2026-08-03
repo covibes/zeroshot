@@ -275,8 +275,8 @@ describe('buildSetupPlan', function () {
     });
   });
 
-  describe('provider default recommendation', function () {
-    it('recommends the registry default even when other CLIs are installed but it is not', function () {
+  describe('manual provider configuration', function () {
+    it('reports installed CLIs without recommending a provider when the registry default is unavailable', function () {
       const plan = buildSetupPlan({
         cwd: '/fresh/machine/cwd',
         settings: { __meta: { fileExists: false } },
@@ -286,11 +286,16 @@ describe('buildSetupPlan', function () {
           commandExists: (cmd) => cmd === 'codex' || cmd === 'gemini',
         }),
       });
-      assert.strictEqual(plan.recommended.defaultProvider, 'claude');
-      assert.strictEqual(plan.risk.defaultProvider, 'medium');
+
+      assert.strictEqual(plan.facts.providers.claude.cliAvailable, false);
+      assert.strictEqual(plan.facts.providers.codex.cliAvailable, true);
+      assert.ok(!Object.hasOwn(plan.recommended, 'defaultProvider'));
+      assert.ok(!Object.hasOwn(plan.risk, 'defaultProvider'));
+      assert.ok(!plan.decisions.some((decision) => decision.decisionId === 'defaultProvider'));
+      assert.ok(!plan.proposedWrites.some((write) => write.path === 'defaultProvider'));
     });
 
-    it('reports low risk when the registry default CLI is available', function () {
+    it('does not turn an available Claude CLI into a provider recommendation', function () {
       const plan = buildSetupPlan({
         cwd: '/fresh/machine/cwd',
         settings: { __meta: { fileExists: false } },
@@ -300,8 +305,16 @@ describe('buildSetupPlan', function () {
           commandExists: (cmd) => cmd === 'claude' || cmd === 'codex' || cmd === 'gemini',
         }),
       });
-      assert.strictEqual(plan.recommended.defaultProvider, 'claude');
-      assert.strictEqual(plan.risk.defaultProvider, 'low');
+
+      assert.strictEqual(plan.facts.providers.claude.cliAvailable, true);
+      assert.ok(!Object.hasOwn(plan.recommended, 'defaultProvider'));
+      assert.ok(!Object.hasOwn(plan.risk, 'defaultProvider'));
+      assert.ok(!plan.decisions.some((decision) => decision.decisionId === 'defaultProvider'));
+      assert.ok(
+        !plan.proposedWrites.some(
+          (write) => write.path === 'defaultProvider' || write.path.startsWith('providerSettings.')
+        )
+      );
     });
   });
 

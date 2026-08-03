@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Writable } from 'node:stream';
+import { Writable } from 'node:stream';
 
 import {
   OMP_SDK_BACKEND_VERSION,
@@ -171,7 +171,7 @@ async function removePrivateRoot(runtime: PrivateRuntime): Promise<void> {
       await fs.lstat(runtime.root);
       throw new Error('private root remains');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
     }
   } catch (error) {
     throw new OmpSdkProcessRunnerError('cleanup-error', 'OMP SDK owned private root could not be removed.', { cause: error });
@@ -261,12 +261,13 @@ function childClose(child: ChildProcess): Promise<ChildOutcome> {
 
 function credentialWriter(child: ChildProcess): Writable {
   const channel = child.stdio[3];
-  if (channel === undefined || channel === null || typeof (channel as Writable).end !== 'function') {
+  if (!(channel instanceof Writable)) {
     throw new OmpSdkProcessRunnerError('protocol-error', 'OMP SDK credential channel was not created.');
   }
-  // Keep late peer-reset errors observed after the one-shot write callback from becoming uncaught.
-  (channel as Writable).on('error', () => {});
-  return channel as Writable;
+  channel.on('error', () => {
+    // Keep late peer-reset errors observed after the one-shot write callback from becoming uncaught.
+  });
+  return channel;
 }
 
 async function writeCredentials(channel: Writable, payload: Buffer): Promise<void> {
@@ -304,12 +305,13 @@ export async function spawnOmpSdkProcess(
   assertPrepared(prepared);
   let runtime: PrivateRuntime | undefined;
   try {
-    runtime = await makePrivateRuntime(prepared.privateArtifacts);
+    const privateRuntime = await makePrivateRuntime(prepared.privateArtifacts);
+    runtime = privateRuntime;
     assertHostContainment(prepared.containmentRequirement);
-    const requestBytes = await fs.readFile(runtime.requestPath);
+    const requestBytes = await fs.readFile(privateRuntime.requestPath);
     const request = decodeOmpSdkSidecarRequest(requestBytes);
     requestBytes.fill(0);
-    const environment = childEnvironment(prepared.environmentPolicy, runtime);
+    const environment = childEnvironment(prepared.environmentPolicy, privateRuntime);
     const { payload, secretValues } = credentialPayload(
       prepared.credentialNames,
       process.env
@@ -319,7 +321,7 @@ export async function spawnOmpSdkProcess(
     if (!isAbsolute(prepared.commandSpec.binary) ||
         prepared.commandSpec.args.length !== 2 ||
         !isAbsolute(sidecarPath) ||
-        prepared.commandSpec.args[1] !== runtime.requestPath ||
+        prepared.commandSpec.args[1] !== privateRuntime.requestPath ||
         prepared.commandSpec.cwd !== request.cwd ||
         Object.keys(prepared.commandSpec.env).length !== 0 ||
         prepared.semanticIdentity.requestedModelSelector !== request.modelSelector ||
@@ -364,7 +366,7 @@ export async function spawnOmpSdkProcess(
     const child = spawn(prepared.commandSpec.binary, [
       supervisorPath,
       sidecarPath,
-      runtime.requestPath,
+      privateRuntime.requestPath,
       String(terminationGraceMs),
       String(reapTimeoutMs),
       ...testIdentityCapArgument(),
@@ -549,7 +551,7 @@ export async function spawnOmpSdkProcess(
           }
         }
 
-        await removePrivateRoot(runtime as PrivateRuntime);
+        await removePrivateRoot(privateRuntime);
         rootRemoved = true;
         const cleanupAttestation: OmpSdkCleanupAttestation = {
           mode: 'host-process-tree',
@@ -567,7 +569,7 @@ export async function spawnOmpSdkProcess(
             stderr: diagnosticStderr,
             diagnosticStderr,
             exitCode: supervisorAttestation.semantic.exitCode,
-            signal: supervisorAttestation.semantic.signal as NodeJS.Signals | null,
+            signal: supervisorAttestation.semantic.signal,
             durationMs: Date.now() - startedAt,
             timedOut,
             ...(timedOut && options.timeoutMs !== undefined
@@ -590,7 +592,7 @@ export async function spawnOmpSdkProcess(
           stderr: diagnosticStderr,
           diagnosticStderr,
           exitCode: supervisorAttestation.semantic.exitCode,
-          signal: supervisorAttestation.semantic.signal as NodeJS.Signals | null,
+          signal: supervisorAttestation.semantic.signal,
           durationMs: Date.now() - startedAt,
           timedOut: false,
           terminal,
@@ -600,8 +602,7 @@ export async function spawnOmpSdkProcess(
       } catch (error) {
         if (!rootRemoved) {
           try {
-            await removePrivateRoot(runtime as PrivateRuntime);
-            rootRemoved = true;
+            await removePrivateRoot(privateRuntime);
           } catch (removeError) {
             throw new OmpSdkProcessRunnerError(
               'cleanup-error',
@@ -626,11 +627,7 @@ export async function spawnOmpSdkProcess(
     };
   } catch (error) {
     if (runtime !== undefined) {
-      try {
-        await removePrivateRoot(runtime);
-      } catch (cleanupError) {
-        throw cleanupError;
-      }
+      await removePrivateRoot(runtime);
     }
     throw error;
   }

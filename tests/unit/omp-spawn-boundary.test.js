@@ -24,6 +24,10 @@ const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { promisify } = require('util');
+const {
+  createExplicitOmpRpcSettings,
+  FAKE_OMP_WITH_RPC,
+} = require('../helpers/explicit-omp-rpc-settings');
 
 const execFileAsync = promisify(execFile);
 
@@ -38,21 +42,6 @@ const cleanupUrl = pathToFileURL(
 const killCommandUrl = pathToFileURL(
   path.resolve(__dirname, '../../task-lib/commands/kill.js')
 ).href;
-
-// Advertises exactly the evidence assertRequiredOmpFeatures() demands, so the real spawnTask
-// reaches the rpc-stdio lane without a real OMP install (same shape as
-// tests/unit/task-runner-prompt-channel.test.js).
-const FAKE_OMP = `#!/usr/bin/env node
-if (process.argv.includes('--version')) {
-  process.stdout.write('omp 17.2.1\\n');
-  process.exit(0);
-}
-if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: omp [options]\\n  Modes: rpc\\n  --config --model --thinking --approval-mode --no-title --no-session --session-dir --resume\\n');
-  process.exit(0);
-}
-process.exit(0);
-`;
 
 /**
  * Run the real `spawnTask` for provider omp, with fork() stubbed so no watcher process is actually
@@ -101,19 +90,21 @@ process.stdout.write('\\n@@' + JSON.stringify({
 
 function makeHome(label) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `zeroshot-omp-spawn-${label}-`));
+  const { env: rpcSettingsEnv } = createExplicitOmpRpcSettings(home);
   const binDir = path.join(home, 'bin');
   fs.mkdirSync(binDir);
   const fakeOmp = path.join(binDir, 'omp');
-  fs.writeFileSync(fakeOmp, FAKE_OMP);
+  fs.writeFileSync(fakeOmp, FAKE_OMP_WITH_RPC);
   fs.chmodSync(fakeOmp, 0o755);
-  return { home, binDir };
+  return { home, binDir, rpcSettingsEnv };
 }
 
-function homeEnv({ home, binDir }) {
+function homeEnv({ home, binDir, rpcSettingsEnv }) {
   return {
     HOME: home,
     USERPROFILE: home,
     ZEROSHOT_HOME: home,
+    ...rpcSettingsEnv,
     PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
   };
 }

@@ -1,9 +1,14 @@
 import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import {
+  buildAcpPrompt,
+  createOmpSdkProtocolCollector,
+  decodeOmpSdkSidecarRequest,
   detectProviderFatalError,
   detectProviderStreamingModeError,
   recoverProviderStructuredOutput,
+  runAcpStdioPrompt,
+  spawnOmpSdkProcess,
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
 import { terminateProcess } from './process-termination.js';
@@ -65,8 +70,6 @@ export function runPreparedAcpStdioWatcher(config, commandSpec, finalArgs, provi
   ) {
     throw new Error('ACP stdio prepared invocation is incomplete or inconsistent');
   }
-  const { runAcpStdioPrompt } = require('../lib/agent-cli-provider/acp-stdio-runner.js');
-  const { buildAcpPrompt } = require('../lib/agent-cli-provider/adapters/acp.js');
   return runAcpStdioPrompt(
     providerName,
     { ...commandSpec, args: [...finalArgs] },
@@ -80,7 +83,6 @@ export function spawnPreparedOmpSdkWatcherProcess(
   finalArgs,
   options = {}
 ) {
-  const { spawnOmpSdkProcess } = require('../lib/agent-cli-provider/omp-sdk-process-runner.js');
   return spawnOmpSdkProcess(
     {
       ...preparedInvocation,
@@ -115,10 +117,6 @@ export function spawnPreparedOmpSdkContainerWatcherProcess(
     },
   };
   const { readFileSync } = require('fs');
-  const {
-    createOmpSdkProtocolCollector,
-    decodeOmpSdkSidecarRequest,
-  } = require('../lib/agent-cli-provider/index.js');
   const IsolationManager = require('../src/isolation-manager.js');
   const requestBytes = readFileSync(prepared.privateArtifacts.requestPath);
   let request;

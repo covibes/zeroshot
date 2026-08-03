@@ -57,7 +57,10 @@ function registerSettingsHooks() {
     process.env.ZEROSHOT_SETTINGS_FILE = TEST_SETTINGS_FILE;
     fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
     settingsModule = require('../lib/settings');
-    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
+    assert.strictEqual(
+      path.resolve(settingsModule.SETTINGS_FILE),
+      path.resolve(TEST_SETTINGS_FILE)
+    );
   });
 
   after(function () {
@@ -76,7 +79,10 @@ function registerSettingsHooks() {
 
   beforeEach(function () {
     assert.strictEqual(process.env.ZEROSHOT_SETTINGS_FILE, TEST_SETTINGS_FILE);
-    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
+    assert.strictEqual(
+      path.resolve(settingsModule.SETTINGS_FILE),
+      path.resolve(TEST_SETTINGS_FILE)
+    );
     if (fs.existsSync(TEST_SETTINGS_FILE)) {
       fs.unlinkSync(TEST_SETTINGS_FILE);
     }
@@ -353,7 +359,7 @@ function registerTransactionalRecoveryTests() {
       const result = runSettingsCli(['reset', '--yes']);
 
       assert.strictEqual(result.status, 0, result.stderr);
-      assert.ok(result.stdout.includes('Settings reset to defaults'));
+      assert.strictEqual(result.stdout.trim(), '✓ Non-provider settings reset to defaults');
       const repaired = JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'));
       assert.strictEqual(repaired.autoCheckUpdates, true);
       assert.strictEqual(repaired.lastUpdateCheckAt, null);
@@ -367,7 +373,10 @@ function registerTransactionalRecoveryTests() {
 
       assert.strictEqual(result.status, 0, result.stderr);
       assert.ok(result.stdout.includes('Set logLevel = "verbose"'));
-      assert.strictEqual(JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel, 'verbose');
+      assert.strictEqual(
+        JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel,
+        'verbose'
+      );
     });
 
     it('repairs a null settings document through reset --yes', function () {
@@ -401,7 +410,10 @@ function registerTransactionalRecoveryTests() {
 
     it('surfaces a settings read failure without replacing the existing file', function () {
       writeSettingsFile({ logLevel: 'verbose', unrelated: 'preserved' });
-      assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
+      assert.strictEqual(
+        path.resolve(settingsModule.SETTINGS_FILE),
+        path.resolve(TEST_SETTINGS_FILE)
+      );
       const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
       const originalReadFileSync = fs.readFileSync;
       fs.readFileSync = (filePath, ...args) => {
@@ -468,17 +480,16 @@ function registerTransactionalRecoveryTests() {
       assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);
     });
 
-    it('reports an invalid nested provider level without persistence wording or a write', function () {
+    it('rejects an invalid nested Claude level with the manual-only diagnostic and no write', function () {
       writeSettingsFile({});
       const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
-      const result = runSettingsCli([
-        'set',
-        'providerSettings.claude.defaultLevel',
-        'level9',
-      ]);
+      const result = runSettingsCli(['set', 'providerSettings.claude.defaultLevel', 'level9']);
 
       assert.strictEqual(result.status, 1);
-      assert.ok(result.stderr.includes('Invalid defaultLevel for claude: level9'));
+      assert.strictEqual(
+        result.stderr.trim(),
+        `Provider configuration is manual-only. Edit ${TEST_SETTINGS_FILE} directly (file 0600, parent directory 0700), then start a new run or restart already-running or detached work. Refusing to change providerSettings.claude.defaultLevel.`
+      );
       assert.ok(!result.stderr.includes('Unable to persist global settings'));
       assert.ok(!result.stdout.includes('✓ Set'));
       assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), before);

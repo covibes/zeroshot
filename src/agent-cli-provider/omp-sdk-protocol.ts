@@ -12,6 +12,7 @@ import {
   parseExactOmpModelSelector,
 } from './omp-sdk-settings';
 import type {
+  ConfiguredOmpSdkSettings,
   OmpModelsConfig,
   OmpSdkAuth,
   OmpSdkToolId as SettingsOmpSdkToolId,
@@ -175,7 +176,7 @@ export interface OmpSdkProtocolCollector {
 
 type Fail = (message: string, field?: string) => never;
 function includesLiteral<T extends string>(values: readonly T[], value: unknown): value is T {
-  return typeof value === 'string' && values.includes(value as T);
+  return typeof value === 'string' && values.some((candidate) => candidate === value);
 }
 const CATEGORY: Readonly<Record<OmpSdkErrorCode, OmpSdkErrorCategory>> = {
   'invalid-request': 'request',
@@ -285,7 +286,7 @@ function json(value: unknown, field: string, fail: Fail): void {
     if (Array.isArray(current)) {
       current.forEach((child, index) => stack.push({ value: child, depth: item.depth + 1, field: `${item.field}[${index}]` }));
     } else {
-      const prototype = Object.getPrototypeOf(current);
+      const prototype = Reflect.getPrototypeOf(current);
       if (prototype !== Object.prototype && prototype !== null) {
         fail(`${item.field} must contain plain JSON objects.`, item.field);
       }
@@ -296,13 +297,15 @@ function json(value: unknown, field: string, fail: Fail): void {
   }
 }
 function serializedLimit(value: unknown, max: number, subject: string, fail: Fail): void {
-  let encoded: string | undefined;
+  let encoded: unknown;
   try {
     encoded = JSON.stringify(value);
   } catch {
     fail(`${subject} is not JSON serializable.`);
   }
-  if (encoded === undefined || Buffer.byteLength(encoded) > max) fail(`${subject} exceeds ${max} bytes.`);
+  if (typeof encoded !== 'string' || Buffer.byteLength(encoded) > max) {
+    fail(`${subject} exceeds ${max} bytes.`);
+  }
 }
 function selector(value: unknown, field: string, fail: Fail): string {
   const parsed = string(value, field, MAX_SELECTOR_BYTES, false, fail);
@@ -367,15 +370,27 @@ function validateSchemaSafety(schema: unknown): void {
     }
   }
 }
-function deepFreezeJson<T>(value: T): T {
-  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
-  Object.values(value as Record<string, unknown>).forEach((child) => deepFreezeJson(child));
-  return Object.freeze(value) as T;
+function deepFreezeJson(value: unknown): void {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return;
+  if (Array.isArray(value)) {
+    value.forEach((child) => deepFreezeJson(child));
+  } else if (isRecord(value)) {
+    Object.values(value).forEach((child) => deepFreezeJson(child));
+  }
+  Object.freeze(value);
 }
-function immutableJsonSnapshot<T>(value: T): T {
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) requestFailure('request.outputSchema is not JSON serializable.');
-  return deepFreezeJson(JSON.parse(encoded) as T);
+/** @returns A deeply frozen boolean or object JSON Schema snapshot. */
+function immutableJsonSnapshot(value: unknown): boolean | Readonly<Record<string, unknown>> {
+  const encoded: unknown = JSON.stringify(value);
+  if (typeof encoded !== 'string') {
+    requestFailure('request.outputSchema is not JSON serializable.');
+  }
+  const parsed: unknown = JSON.parse(encoded);
+  if (typeof parsed !== 'boolean' && !isRecord(parsed)) {
+    requestFailure('request.outputSchema must be a JSON Schema object or boolean.');
+  }
+  deepFreezeJson(parsed);
+  return parsed;
 }
 function schemaValidator(schema: boolean | Readonly<Record<string, unknown>>): (value: unknown) => boolean {
   try {
@@ -436,7 +451,7 @@ export function parseOmpSdkSidecarRequest(value: unknown): OmpSdkSidecarRequest 
   json(value.auth, 'request.auth', requestFailure);
   json(value.tools, 'request.tools', requestFailure);
   const context = string(value.context, 'request.context', MAX_CONTEXT_BYTES, true, requestFailure);
-  const normalizedSettings = (() => {
+  const normalizedSettings = ((): Readonly<ConfiguredOmpSdkSettings> => {
     try {
       return normalizeOmpSdkSettings(
         {
@@ -515,10 +530,13 @@ function decode(input: string | Uint8Array, max: number, subject: string, fail: 
 export function decodeOmpSdkSidecarRequest(input: string | Uint8Array): OmpSdkSidecarRequest {
   return parseOmpSdkSidecarRequest(decode(input, OMP_SDK_MAX_REQUEST_BYTES, 'request', requestFailure));
 }
+/** @returns The built-in text schema or the request's validated JSON Schema. */
 export function ompSdkOutputSchemaForRequest(
   request: OmpSdkSidecarRequest
 ): boolean | Readonly<Record<string, unknown>> {
-  return request.outputMode === 'text' ? OMP_SDK_TEXT_OUTPUT_SCHEMA : request.outputSchema;
+  let outputSchema: boolean | Readonly<Record<string, unknown>> = OMP_SDK_TEXT_OUTPUT_SCHEMA;
+  if (request.outputMode === 'json') outputSchema = request.outputSchema;
+  return outputSchema;
 }
 
 function backend(value: unknown): OmpSdkTerminalEvidence['backend'] {
@@ -541,7 +559,7 @@ function requested(value: unknown): OmpSdkRequestedIdentity {
   const modelSelector = selector(value.modelSelector, 'frame.requested.modelSelector', protocolFailure);
   if (!includesLiteral(OMP_SDK_REASONING_EFFORTS, value.reasoningEffort)) protocolFailure('invalid requested effort.');
   if (value.outputMode !== 'json' && value.outputMode !== 'text') protocolFailure('invalid requested mode.');
-  return { modelSelector, reasoningEffort: value.reasoningEffort as ReasoningEffort, outputMode: value.outputMode };
+  return { modelSelector, reasoningEffort: value.reasoningEffort, outputMode: value.outputMode };
 }
 function strictOutput(value: unknown): OmpSdkStrictOutputEvidence {
   if (!isRecord(value)) protocolFailure('frame.strictOutput must be an object.');
@@ -634,7 +652,7 @@ function errorFrame(value: Record<string, unknown>): OmpSdkProtocolErrorFrame {
   if (!isRecord(value.error)) protocolFailure('frame.error must be an object.');
   exact(value.error, ['code', 'category', 'retryable', 'redacted'], [], 'frame.error', protocolFailure);
   if (!includesLiteral(OMP_SDK_ERROR_CODES, value.error.code)) protocolFailure('frame.error.code is unsupported.');
-  const code = value.error.code as OmpSdkErrorCode;
+  const code = value.error.code;
   const category = CATEGORY[code];
   literal(value.error.category, category, 'frame.error.category', protocolFailure);
   if (typeof value.error.retryable !== 'boolean') protocolFailure('frame.error.retryable must be boolean.');
@@ -655,7 +673,7 @@ function progressFrame(value: Record<string, unknown>): OmpSdkProtocolProgressFr
   const runId = parseRunId(value.runId, 'frame.runId', protocolFailure);
   const sequence = number(value.sequence, 'frame.sequence', true);
   if (!includesLiteral(OMP_SDK_PROGRESS_STAGES, value.stage)) protocolFailure('frame.stage is unsupported.');
-  return { protocolVersion: 1, type: 'progress', runId, sequence, stage: value.stage as OmpSdkProgressStage };
+  return { protocolVersion: 1, type: 'progress', runId, sequence, stage: value.stage };
 }
 
 export function parseOmpSdkProtocolFrame(value: unknown): OmpSdkProtocolFrame {
@@ -706,19 +724,22 @@ export function normalizeOmpSdkResultFrame(value: unknown, request: OmpSdkSideca
   if (parsed.type !== 'result') protocolFailure('a result frame is required.');
   const frame = parsed;
   const result = checkedValue(frame, request);
-  const usage = frame.usage;
+  const parsedUsage = frame.usage;
   return {
     type: 'result',
     success: true,
     result,
-    cost: usage.cost.total,
-    duration: usage.durationMs,
-    inputTokens: usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadInputTokens: usage.cacheReadInputTokens,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens,
-    modelUsage: usage,
-    requests: usage.requests,
+    cost: parsedUsage.cost.total,
+    duration: parsedUsage.durationMs,
+    inputTokens:
+      parsedUsage.inputTokens +
+      parsedUsage.cacheReadInputTokens +
+      parsedUsage.cacheCreationInputTokens,
+    outputTokens: parsedUsage.outputTokens,
+    cacheReadInputTokens: parsedUsage.cacheReadInputTokens,
+    cacheCreationInputTokens: parsedUsage.cacheCreationInputTokens,
+    modelUsage: parsedUsage,
+    requests: parsedUsage.requests,
     usageSource: 'omp-aggregate',
     usageCompleteness: 'unknown',
     invocation: { lane: 'spawn', pty: false, protocol: 'omp-sdk-v1' },
@@ -730,7 +751,7 @@ export function normalizeOmpSdkResultFrame(value: unknown, request: OmpSdkSideca
       strictOutput: frame.strictOutput,
       fallback: false,
       execution: frame.execution,
-      usage,
+      usage: parsedUsage,
     },
   };
 }

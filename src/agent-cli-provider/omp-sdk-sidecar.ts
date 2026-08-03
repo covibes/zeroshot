@@ -91,6 +91,13 @@ interface OmpModelRegistry {
   getAvailable(): readonly OmpModel[];
   getError(): unknown;
 }
+interface OmpModelRegistryConstructor {
+  new (
+    authStorage: OmpAuthStorage,
+    modelsPath: string,
+    options?: { ignoreLocalModelConfig?: boolean }
+  ): unknown;
+}
 interface OmpSingleResult {
   readonly aborted?: boolean;
   readonly abortReason?: string;
@@ -126,11 +133,7 @@ interface OmpSingleResult {
 }
 interface OmpSdkBindings {
   readonly AuthStorage: { create(path: string): Promise<OmpAuthStorage> };
-  readonly ModelRegistry: new (
-    authStorage: OmpAuthStorage,
-    modelsPath: string,
-    options?: { ignoreLocalModelConfig?: boolean }
-  ) => OmpModelRegistry;
+  readonly ModelRegistry: OmpModelRegistryConstructor;
   readonly Settings: { isolated(overrides: Readonly<Record<string, unknown>>): unknown };
   readonly discoverBrokerAuthStorage: (
     agentDirectory: string,
@@ -181,11 +184,21 @@ class SidecarFailure extends Error {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
+function isUnknownArray(value: unknown): value is readonly unknown[] {
+  return Array.isArray(value);
+}
 function nonnegative(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 function natural(value: unknown): value is number {
   return nonnegative(value) && Number.isInteger(value);
+}
+function closeCredentialChannel(fd: number): void {
+  try {
+    closeSync(fd);
+  } catch {
+    throw new SidecarFailure('invalid-request', 'request', false);
+  }
 }
 function readCredentialChannel(fd: number): CredentialChannel {
   if (!Number.isInteger(fd) || fd < 3) {
@@ -193,7 +206,6 @@ function readCredentialChannel(fd: number): CredentialChannel {
   }
   const buffer = Buffer.allocUnsafe(OMP_SDK_MAX_CREDENTIAL_BYTES + 1);
   let offset = 0;
-  let closeFailed = false;
   try {
     while (offset <= OMP_SDK_MAX_CREDENTIAL_BYTES) {
       const count = readSync(fd, buffer, offset, buffer.byteLength - offset, null);
@@ -203,13 +215,8 @@ function readCredentialChannel(fd: number): CredentialChannel {
   } catch {
     throw new SidecarFailure('invalid-request', 'request', false);
   } finally {
-    try {
-      closeSync(fd);
-    } catch {
-      closeFailed = true;
-    }
+    closeCredentialChannel(fd);
   }
-  if (closeFailed) throw new SidecarFailure('invalid-request', 'request', false);
   if (offset === 0 || offset > OMP_SDK_MAX_CREDENTIAL_BYTES) {
     throw new SidecarFailure('invalid-request', 'request', false);
   }
@@ -262,8 +269,8 @@ function credentialsForRequest(
   } else {
     expected = [];
   }
-  const actual = Object.keys(channel.values).sort();
-  const sortedExpected = [...expected].sort();
+  const actual = Object.keys(channel.values).sort((left, right) => left.localeCompare(right));
+  const sortedExpected = [...expected].sort((left, right) => left.localeCompare(right));
   if (
     actual.length !== sortedExpected.length ||
     actual.some((name, index) => name !== sortedExpected[index])
@@ -291,6 +298,19 @@ function isRuntimeCallable(value: unknown): value is (...args: unknown[]) => unk
 }
 function runtimeCallable(value: unknown): (...args: unknown[]) => unknown {
   if (!isRuntimeCallable(value)) throw new TypeError('invalid OMP SDK export');
+  return value;
+}
+function isRuntimeConstructor(value: unknown): value is OmpModelRegistryConstructor {
+  if (typeof value !== 'function') return false;
+  try {
+    Reflect.construct(Object, [], value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function runtimeConstructor(value: unknown): OmpModelRegistryConstructor {
+  if (!isRuntimeConstructor(value)) throw new TypeError('invalid OMP SDK constructor');
   return value;
 }
 function isOmpAuthStorage(value: unknown): value is OmpAuthStorage {
@@ -359,8 +379,10 @@ function requireOmpSingleResult(value: unknown): OmpSingleResult {
   if (!isOmpSingleResult(value)) throw new TypeError('invalid OMP runSubprocess result');
   return value;
 }
+// OMP is an optional sidecar-only dependency and must not load in the host process.
 async function importRuntimeModule(specifier: string): Promise<unknown> {
-  return import(specifier);
+  const runtimeModule: unknown = await import(specifier);
+  return runtimeModule;
 }
 
 async function loadOmpSdk(): Promise<OmpSdkBindings> {
@@ -370,41 +392,26 @@ async function loadOmpSdk(): Promise<OmpSdkBindings> {
     importRuntimeModule('@oh-my-pi/pi-coding-agent/config/model-resolver'),
     importRuntimeModule('@oh-my-pi/pi-coding-agent/session/auth-broker-config'),
   ]);
-  const authStorage = runtimeMember(root, 'AuthStorage');
-  const createAuthStorage = runtimeCallable(runtimeMember(authStorage, 'create'));
+  const authStorageExport = runtimeMember(root, 'AuthStorage');
+  const createAuthStorage = runtimeCallable(runtimeMember(authStorageExport, 'create'));
   const settings = runtimeMember(root, 'Settings');
   const isolatedSettings = runtimeCallable(runtimeMember(settings, 'isolated'));
   const discoverBrokerAuthStorage = runtimeCallable(runtimeMember(broker, 'discoverAuthStorage'));
   const getBundledAgent = runtimeCallable(runtimeMember(agents, 'getBundledAgent'));
   const parseModelString = runtimeCallable(runtimeMember(resolver, 'parseModelString'));
-  const modelRegistry = runtimeCallable(runtimeMember(root, 'ModelRegistry'));
+  const modelRegistry = runtimeConstructor(runtimeMember(root, 'ModelRegistry'));
   const runSubprocess = runtimeCallable(runtimeMember(root, 'runSubprocess'));
-
-  const ModelRegistryAdapter = function (
-    authStorageInstance: OmpAuthStorage,
-    modelsPath: string,
-    options?: { ignoreLocalModelConfig?: boolean }
-  ): OmpModelRegistry {
-    const value: unknown = Reflect.construct(modelRegistry, [
-      authStorageInstance,
-      modelsPath,
-      options,
-    ]);
-    return requireOmpModelRegistry(value);
-  };
-  const ModelRegistryBinding =
-    ModelRegistryAdapter as unknown as OmpSdkBindings['ModelRegistry'];
 
   return {
     AuthStorage: {
       async create(path: string): Promise<OmpAuthStorage> {
         const value: unknown = await Promise.resolve(
-          Reflect.apply(createAuthStorage, authStorage, [path])
+          Reflect.apply(createAuthStorage, authStorageExport, [path])
         );
         return requireOmpAuthStorage(value);
       },
     },
-    ModelRegistry: ModelRegistryBinding,
+    ModelRegistry: modelRegistry,
     Settings: {
       isolated(overrides: Readonly<Record<string, unknown>>): unknown {
         const value: unknown = Reflect.apply(isolatedSettings, settings, [overrides]);
@@ -561,7 +568,7 @@ function restoreEnvironment(original: ReadonlyMap<string, string | undefined>): 
     if (name.startsWith('PI_') || name.startsWith('OMP_')) delete process.env[name];
   }
   original.forEach((value, key) => {
-    if (!PRIVATE_BASE_ENV_KEYS.includes(key as (typeof PRIVATE_BASE_ENV_KEYS)[number])) {
+    if (!PRIVATE_BASE_ENV_KEYS.some((name) => name === key)) {
       delete process.env[key];
     } else if (value === undefined) {
       delete process.env[key];
@@ -637,7 +644,7 @@ function exactModel(
     throw new SidecarFailure('provider-auth', 'auth', false);
   }
   const providerConfig = request.modelsConfig.providers[parsed.provider];
-  const models = Array.isArray(providerConfig?.models) ? providerConfig.models : [];
+  const models = isUnknownArray(providerConfig?.models) ? providerConfig.models : [];
   const declaredModel = models.find(
     (candidate) => isRecord(candidate) && candidate.id === parsed.id
   );
@@ -678,7 +685,8 @@ function privateModelsConfig(request: OmpSdkSidecarRequest): {
 } {
   const providers: Record<string, Record<string, unknown>> = {};
   for (const [provider, config] of Object.entries(request.modelsConfig.providers)) {
-    const copy = JSON.parse(JSON.stringify(config)) as Record<string, unknown>;
+    const copy: unknown = JSON.parse(JSON.stringify(config));
+    if (!isRecord(copy)) throw new SidecarFailure('invalid-request', 'request', false);
     delete copy.apiKey;
     providers[provider] = copy;
   }
@@ -745,19 +753,21 @@ function immutableYieldData(value: unknown): unknown {
       current.forEach((child) => pending.push(child));
       continue;
     }
-    const prototype = Object.getPrototypeOf(current);
+    const prototype = Reflect.getPrototypeOf(current);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new SidecarFailure('schema-violation', 'schema', false);
     }
     Object.values(current).forEach((child) => pending.push(child));
   }
-  let encoded: string | undefined;
+  let encoded: unknown;
   try {
     encoded = JSON.stringify(value);
   } catch {
     throw new SidecarFailure('schema-violation', 'schema', false);
   }
-  if (encoded === undefined) throw new SidecarFailure('schema-violation', 'schema', false);
+  if (typeof encoded !== 'string') {
+    throw new SidecarFailure('schema-violation', 'schema', false);
+  }
   const snapshot: unknown = JSON.parse(encoded);
   const stack = [snapshot];
   while (stack.length > 0) {
@@ -770,9 +780,15 @@ function immutableYieldData(value: unknown): unknown {
 }
 function validateSchema(schema: unknown, value: unknown): void {
   try {
-    const validate = new Ajv({ allErrors: true, coerceTypes: false, strict: false, validateFormats: false }).compile(
-      schema as object | boolean
-    );
+    if (typeof schema !== 'boolean' && (schema === null || typeof schema !== 'object')) {
+      throw new SidecarFailure('invalid-request', 'request', false);
+    }
+    const validate = new Ajv({
+      allErrors: true,
+      coerceTypes: false,
+      strict: false,
+      validateFormats: false,
+    }).compile(schema);
     if (!validate(value)) throw new SidecarFailure('schema-violation', 'schema', false);
   } catch (error) {
     if (error instanceof SidecarFailure) throw error;
@@ -850,6 +866,12 @@ function usage(result: OmpSingleResult): Record<string, unknown> {
     cost: item.cost,
   };
 }
+function textResult(value: unknown): string {
+  if (!isRecord(value) || typeof value.result !== 'string') {
+    throw new SidecarFailure('schema-violation', 'schema', false);
+  }
+  return value.result;
+}
 function resultFrame(
   request: OmpSdkSidecarRequest,
   result: OmpSingleResult,
@@ -875,7 +897,7 @@ function resultFrame(
     },
     fallback: false,
     execution: { exitCode: 0, aborted: false },
-    value: request.outputMode === 'text' ? (rawValue as { result: string }).result : rawValue,
+    value: request.outputMode === 'text' ? textResult(rawValue) : rawValue,
     usage: usage(result),
   };
   try {
@@ -917,7 +939,7 @@ async function execute(
     const parsed = sdk.parseModelString(request.modelSelector);
     if (parsed === undefined) throw new SidecarFailure('model-resolution', 'model', false);
     storage = await authStorage(sdk, request, state, parsed.provider, credentials);
-    const registry = new sdk.ModelRegistry(storage, state.modelsPath);
+    const registry = requireOmpModelRegistry(new sdk.ModelRegistry(storage, state.modelsPath));
     if (registry.getError() !== undefined) {
       throw new SidecarFailure('invalid-request', 'request', false);
     }
