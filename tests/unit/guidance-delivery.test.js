@@ -2,8 +2,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-guidance-'));
-process.env.ZEROSHOT_HOME = tempHome;
+const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-guidance-'));
+
+// task-lib/config.js binds ZEROSHOT_HOME when its module is loaded. Mocha reuses parallel workers,
+// so changing that process-global root here would split later tests from their spawned children.
 
 const assert = require('assert');
 
@@ -36,7 +38,7 @@ describe('Guidance delivery', function () {
     orchestrator = new Orchestrator({
       quiet: true,
       skipLoad: true,
-      storageDir: path.join(tempHome, 'clusters'),
+      storageDir: path.join(storageRoot, 'clusters'),
     });
 
     agent = new AgentWrapper(
@@ -63,7 +65,7 @@ describe('Guidance delivery', function () {
   });
 
   after(() => {
-    fs.rmSync(tempHome, { recursive: true, force: true });
+    fs.rmSync(storageRoot, { recursive: true, force: true });
   });
 
   it('publishes unsupported delivery metadata when no live socket is available', async () => {
