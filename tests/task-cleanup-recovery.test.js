@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const { followClaudeTaskLogs } = require('../src/agent/agent-task-executor');
 const ClaudeTaskRunner = require('../src/claude-task-runner');
 const { makeSessionPartition } = require('./helpers/omp-session-fixtures');
+const { killRunningClusters } = require('../cli/index.js');
 const commandCleanupFixtureSource = `
   import fs from 'fs';
   import os from 'os';
@@ -641,6 +642,51 @@ describe('Confirmed CLI task termination boundary', function () {
       }
     });
   }
+
+  it('preserves cluster data when kill-all omits a running cluster result', async function () {
+    const clusterHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-purge-cluster-gate-'));
+    const sessionPath = path.join(clusterHome, 'session-owner.json');
+    const ledgerPath = path.join(clusterHome, 'cluster.db');
+    fs.writeFileSync(sessionPath, 'session');
+    fs.writeFileSync(ledgerPath, 'ledger');
+
+    try {
+      await assert.rejects(async () => {
+        await killRunningClusters(
+          {
+            killAll: () => Promise.resolve({ killed: [], errors: [] }),
+          },
+          [{ id: 'running-cluster' }]
+        );
+        fs.rmSync(clusterHome, { recursive: true, force: true });
+      }, /missing outcomes: running-cluster/);
+      assert.strictEqual(fs.readFileSync(sessionPath, 'utf8'), 'session');
+      assert.strictEqual(fs.readFileSync(ledgerPath, 'utf8'), 'ledger');
+    } finally {
+      fs.rmSync(clusterHome, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed, duplicate, and unknown cluster kill outcomes', async function () {
+    const running = [{ id: 'running-cluster' }];
+    const cases = [
+      [{ killed: null, errors: [] }, /malformed fields: killed/],
+      [{ killed: ['running-cluster', 'running-cluster'], errors: [] }, /duplicate outcomes/],
+      [{ killed: ['other-cluster'], errors: [] }, /unknown outcomes: other-cluster/],
+    ];
+
+    for (const [result, expected] of cases) {
+      await assert.rejects(
+        killRunningClusters(
+          {
+            killAll: () => Promise.resolve(result),
+          },
+          running
+        ),
+        expected
+      );
+    }
+  });
 
   it('purge aborts before cleanup when provider termination is unconfirmed', async function () {
     if (process.platform === 'win32') this.skip();

@@ -2130,21 +2130,65 @@ async function confirmPurge(options) {
   return answer.toLowerCase() === 'y';
 }
 
+function validateClusterKillResults(runningClusters, clusterResults) {
+  if (
+    clusterResults === null ||
+    typeof clusterResults !== 'object' ||
+    !Array.isArray(clusterResults.killed) ||
+    !Array.isArray(clusterResults.errors)
+  ) {
+    throw new Error(
+      'Refusing destructive cluster cleanup: kill-all returned incomplete or invalid results ' +
+        '(malformed fields: killed or errors). Retry after confirming every cluster process ' +
+        'boundary is terminal.'
+    );
+  }
+
+  const expectedIds = runningClusters.map((cluster) => cluster.id);
+  const expected = new Set(expectedIds);
+  const outcomeIds = [...clusterResults.killed, ...clusterResults.errors.map((error) => error?.id)];
+  const counts = outcomeIds.reduce((byId, id) => {
+    byId.set(id, (byId.get(id) || 0) + 1);
+    return byId;
+  }, new Map());
+  const problems = [
+    ['unknown outcomes', outcomeIds.filter((id) => typeof id !== 'string' || !expected.has(id))],
+    ['duplicate outcomes', expectedIds.filter((id) => (counts.get(id) || 0) > 1)],
+    ['missing outcomes', expectedIds.filter((id) => (counts.get(id) || 0) === 0)],
+  ]
+    .filter(([, ids]) => ids.length > 0)
+    .map(([label, ids]) => `${label}: ${ids.join(', ')}`);
+
+  if (problems.length > 0) {
+    throw new Error(
+      `Refusing destructive cluster cleanup: kill-all returned incomplete or invalid results (${problems.join(
+        '; '
+      )}). Retry after confirming every cluster process boundary is terminal.`
+    );
+  }
+
+  return clusterResults;
+}
+
 async function killRunningClusters(orchestrator, runningClusters) {
   if (runningClusters.length === 0) {
     return;
   }
   console.log(chalk.bold('Killing running clusters...'));
-  const clusterResults = await orchestrator.killAll();
-  for (const id of clusterResults.killed) {
+  const { killed, errors } = validateClusterKillResults(
+    runningClusters,
+    await orchestrator.killAll()
+  );
+
+  for (const id of killed) {
     console.log(chalk.green(`✓ Killed cluster: ${id}`));
   }
-  if (clusterResults.errors.length > 0) {
-    for (const err of clusterResults.errors) {
+  if (errors.length > 0) {
+    for (const err of errors) {
       console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
     }
     throw new Error(
-      `Refusing destructive cluster cleanup: termination failed for ${clusterResults.errors
+      `Refusing destructive cluster cleanup: termination failed for ${errors
         .map((error) => error.id)
         .join(', ')}. Retry after confirming every cluster process boundary is terminal.`
     );
@@ -6072,4 +6116,5 @@ module.exports = {
   renderRecentMessagesToTerminal,
   isStartupUpdateEligible,
   resolveRunMode,
+  killRunningClusters,
 };
