@@ -6,15 +6,15 @@ import {
   listTargets,
   removeTarget,
   type SettingsPort,
-} from './target-registry.ts';
-import { targetLogin, revokeAndCleanup } from './target-session.ts';
+} from './target-registry.js';
+import { targetLogin, revokeAndCleanup } from './target-session.js';
 import {
   KeyringCredentialStore,
   targetServiceKey,
   TARGET_ACCOUNT,
-} from './credential-store.ts';
-import { acquireTargetLock } from './credential-lock.ts';
-import { discoverTargetSessionEndpoints } from './discovery.ts';
+} from './credential-store.js';
+import { acquireTargetLock } from './credential-lock.js';
+import { discoverTargetSessionEndpoints } from './discovery.js';
 
 export interface HostedCommandsDependencies {
   loadSettings: SettingsPort['load'];
