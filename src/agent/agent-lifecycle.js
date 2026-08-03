@@ -72,19 +72,22 @@ async function createValidatorIsolation(agent, isolationConfig) {
       loadSettings().defaultProvider ||
       getDefaultProviderId()
   );
-  // Pre-effect platform probe: fail before any workspace/container side effect when the Docker
-  // engine cannot run the provider's registry-owned platform (e.g. OMP's linux/amd64).
-  const platform = IsolationManager.providerDockerPlatform(providerName);
-  IsolationManager.assertPlatformSupported(platform);
-
-  // Run validators on the provider's image variant (installs its CLI as a Docker-cached layer).
-  const image = IsolationManager.imageForProvider(providerName, isolationConfig.image);
+  const settings = loadSettings();
+  const imagePlan = IsolationManager.imagePlanForProvider(providerName, {
+    baseImage: isolationConfig.image,
+    containerHome: isolationConfig.containerHome || '/home/node',
+    providerSettings: settings.providerSettings,
+  });
+  // Probe and build the exact transport-aware plan before any validator workspace/container
+  // effect. SDK reuses the bundled base runtime; explicit RPC keeps the pinned CLI variant.
+  IsolationManager.assertPlatformSupported(imagePlan.platform);
   await IsolationManager.ensureImage(
-    image,
+    imagePlan.image,
     true,
-    IsolationManager.providerBuildArgs(providerName, isolationConfig.containerHome || '/home/node'),
-    platform
+    imagePlan.buildArgs,
+    imagePlan.platform
   );
+  const image = imagePlan.image;
 
   const manager = new IsolationManager({ image });
 
@@ -97,7 +100,8 @@ async function createValidatorIsolation(agent, isolationConfig) {
     containerHome: isolationConfig.containerHome,
     provider: providerName,
     reuseExistingWorkspace: true,
-    platform,
+    platform: imagePlan.platform,
+    ompDockerPolicy: imagePlan.ompDockerPolicy,
   });
 
   const validatorIsolation = {
@@ -488,10 +492,7 @@ function consumeCanonicalOmpSdkResult(agent, result) {
     return true;
   }
 
-  if (
-    task.status !== 'completed' ||
-    !Object.prototype.hasOwnProperty.call(task, 'parsedResult')
-  ) {
+  if (task.status !== 'completed' || !Object.prototype.hasOwnProperty.call(task, 'parsedResult')) {
     result.success = false;
     result.code = 'protocol-error';
     result.error = 'OMP SDK task completed without a canonical persisted result.';

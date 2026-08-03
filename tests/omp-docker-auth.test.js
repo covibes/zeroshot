@@ -85,6 +85,10 @@ describe('OMP Docker auth: fail-closed env/broker gate', function () {
     // Isolate settings from the developer's real ~/.zeroshot/settings.json.
     savedSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
     process.env.ZEROSHOT_SETTINGS_FILE = path.join(settingsDir, 'settings.json');
+    fs.writeFileSync(
+      process.env.ZEROSHOT_SETTINGS_FILE,
+      JSON.stringify({ defaultProvider: 'omp', providerSettings: { omp: { transport: 'rpc' } } })
+    );
 
     // Stub out the actual `docker run` spawn: this suite verifies the fail-closed auth gate,
     // which runs before any container is created, not container lifecycle itself.
@@ -114,7 +118,17 @@ describe('OMP Docker auth: fail-closed env/broker gate', function () {
   });
 
   function writeSettings(settings) {
-    fs.writeFileSync(process.env.ZEROSHOT_SETTINGS_FILE, JSON.stringify(settings));
+    fs.writeFileSync(
+      process.env.ZEROSHOT_SETTINGS_FILE,
+      JSON.stringify({
+        ...settings,
+        defaultProvider: settings.defaultProvider || 'omp',
+        providerSettings: {
+          ...(settings.providerSettings || {}),
+          omp: { ...(settings.providerSettings?.omp || {}), transport: 'rpc' },
+        },
+      })
+    );
   }
 
   function attemptCreateContainer(envOverrides, config = {}) {

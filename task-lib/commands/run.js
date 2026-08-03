@@ -131,6 +131,8 @@ export async function runTask(prompt, options = {}) {
     mcpConfig: options.mcpConfig,
     silentJsonOutput,
     structuredOutputRecovery: options.structuredOutputRecovery === true,
+    executionContext: options.executionContext,
+    containerId: options.containerId,
   });
 
   console.log(chalk.green(`\n✓ Task spawned: ${chalk.cyan(task.id)}`));

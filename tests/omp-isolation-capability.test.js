@@ -41,23 +41,19 @@ describe('OMP Docker platform gating', function () {
       assert.doesNotMatch(messages, /does not advertise worktreeIsolation/);
     });
 
-    it('surfaces the platform error when the Docker engine cannot run the required platform', async function () {
+    it('does not impose the explicit RPC platform on the default SDK transport', async function () {
       const original = IsolationManager.assertPlatformSupported;
-      IsolationManager.assertPlatformSupported = () => {
-        throw new Error(
-          'Docker engine cannot run linux/amd64 (server linux/arm64, no buildx emulation). ' +
-            'Install Buildx and run: docker run --privileged --rm tonistiigi/binfmt --install amd64'
-        );
+      const platforms = [];
+      IsolationManager.assertPlatformSupported = (platform) => {
+        platforms.push(platform);
       };
       try {
         const result = await runPreflight({ provider: 'omp', requireDocker: true });
-        assert.strictEqual(result.valid, false);
-        const messages = result.errors.join('\n');
-        assert.match(messages, /Docker cannot run required platform/);
-        assert.match(messages, /linux\/amd64/);
+        assert.doesNotMatch(result.errors.join('\n'), /Docker cannot run required platform/);
       } finally {
         IsolationManager.assertPlatformSupported = original;
       }
+      assert.deepStrictEqual(platforms, [null]);
     });
   });
 
@@ -75,7 +71,17 @@ describe('OMP Docker platform gating', function () {
       fs.rmSync(storageDir, { recursive: true, force: true });
     });
 
-    it('fails --provider omp --docker before any image/container side effect when the platform is unsupported', async function () {
+    it('keeps the pinned RPC platform probe before every image/container side effect', async function () {
+      const originalSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
+      const settingsFile = path.join(storageDir, 'rpc-settings.json');
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify({
+          defaultProvider: 'omp',
+          providerSettings: { omp: { transport: 'rpc' } },
+        })
+      );
+      process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
       const originalIsDockerAvailable = IsolationManager.isDockerAvailable;
       const originalAssertPlatformSupported = IsolationManager.assertPlatformSupported;
       const originalEnsureImage = IsolationManager.ensureImage;
@@ -88,7 +94,8 @@ describe('OMP Docker platform gating', function () {
         dockerProbed = true;
         return true;
       };
-      IsolationManager.assertPlatformSupported = () => {
+      IsolationManager.assertPlatformSupported = (platform) => {
+        assert.strictEqual(platform, 'linux/amd64');
         throw new Error(
           'Docker engine cannot run linux/amd64 (server linux/arm64, no buildx emulation)'
         );
@@ -112,6 +119,8 @@ describe('OMP Docker platform gating', function () {
           /Docker engine cannot run linux\/amd64/
         );
       } finally {
+        if (originalSettingsFile === undefined) delete process.env.ZEROSHOT_SETTINGS_FILE;
+        else process.env.ZEROSHOT_SETTINGS_FILE = originalSettingsFile;
         IsolationManager.isDockerAvailable = originalIsDockerAvailable;
         IsolationManager.assertPlatformSupported = originalAssertPlatformSupported;
         IsolationManager.ensureImage = originalEnsureImage;
@@ -123,7 +132,7 @@ describe('OMP Docker platform gating', function () {
       assert.strictEqual(containerCreated, false, 'must fail before creating a container');
     });
 
-    it('threads the registry-owned platform into ensureImage/createContainer when the probe passes', async function () {
+    it('uses the bundled base image with no provider installer for default SDK Docker', async function () {
       const originalIsDockerAvailable = IsolationManager.isDockerAvailable;
       const originalAssertPlatformSupported = IsolationManager.assertPlatformSupported;
       const originalEnsureImage = IsolationManager.ensureImage;
@@ -155,10 +164,12 @@ describe('OMP Docker platform gating', function () {
         IsolationManager.prototype.createContainer = originalCreateContainer;
       }
 
-      assert.strictEqual(ensureImageCalls.length, 1);
-      assert.strictEqual(ensureImageCalls[0].platform, 'linux/amd64');
+      assert.deepStrictEqual(ensureImageCalls, [
+        { image: 'zeroshot-cluster-base', buildArgs: [], platform: null },
+      ]);
       assert.ok(createContainerConfig);
-      assert.strictEqual(createContainerConfig.platform, 'linux/amd64');
+      assert.strictEqual(createContainerConfig.platform, null);
+      assert.strictEqual(createContainerConfig.ompDockerPolicy.sdk, true);
     });
 
     it('succeeds --provider omp --worktree, reaching the existing worktree creation path', async function () {

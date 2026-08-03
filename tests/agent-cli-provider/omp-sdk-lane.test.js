@@ -7,6 +7,8 @@ const { test } = require('node:test');
 const { withFakeProviderCli, withTempEnv } = require('./executable-contract-helpers.cjs');
 
 const helper = require('../../lib/agent-cli-provider');
+const sdkRunner = require('../../lib/agent-cli-provider/omp-sdk-process-runner');
+const runtimeProviders = require('../../src/providers');
 const MODEL = 'amazon-bedrock/openai.gpt-5.6-sol';
 const CREDENTIAL_NAME = 'AWS_BEARER_TOKEN_BEDROCK';
 const SECRET = 'sdk-lane-secret-never-persist';
@@ -157,6 +159,14 @@ test('OMP omitted transport selects the SDK sidecar without probing a global omp
   }
 });
 
+test('runtime OMP availability uses the bundled SDK probe without a global omp CLI', () => {
+  withTempEnv({ PATH: '/nonexistent' }, () =>
+    withSettings(sdkSettings(), () => {
+      assert.equal(runtimeProviders.getProvider('omp').isAvailable(), true);
+    })
+  );
+});
+
 test('OMP SDK text preparation carries the host envelope lane and container containment', () => {
   let prepared;
   try {
@@ -183,6 +193,40 @@ test('OMP SDK text preparation carries the host envelope lane and container cont
     assert.equal(prepared.commandSpec.binary, '/opt/zeroshot/node_modules/bun/bin/bun.exe');
     assert.equal(prepared.commandSpec.args[0], '/opt/zeroshot/scripts/omp-sdk-sidecar.ts');
     assert.equal(prepared.options.strictSchema, true);
+  } finally {
+    removePreparedRoot(prepared);
+  }
+});
+
+test('OMP SDK detached preparation uses host runtime assets and process-tree containment', () => {
+  let prepared;
+  try {
+    withSettings(sdkSettings(), () => {
+      prepared = helper.prepareSingleAgentProviderCommand({
+        provider: 'omp',
+        context: PROMPT,
+        options: {
+          cwd: process.cwd(),
+          executionContext: 'detached',
+          outputFormat: 'text',
+          modelSpec: { level: 'level1' },
+        },
+      });
+    });
+    const request = JSON.parse(fs.readFileSync(prepared.privateArtifacts.requestPath, 'utf8'));
+    assert.equal(request.executionContext, 'detached');
+    assert.deepEqual(prepared.containmentRequirement, {
+      mode: 'host-process-tree',
+      required: true,
+    });
+    assert.equal(
+      prepared.commandSpec.binary,
+      path.resolve(__dirname, '..', '..', 'node_modules', 'bun', 'bin', 'bun.exe')
+    );
+    assert.equal(
+      prepared.commandSpec.args[0],
+      path.resolve(__dirname, '..', '..', 'scripts', 'omp-sdk-sidecar.ts')
+    );
   } finally {
     removePreparedRoot(prepared);
   }
@@ -266,7 +310,7 @@ test('prepared direct invocation preserves Claude strict-schema non-PTY selectio
   });
 });
 
-test('OMP omitted transport requires semantic configuration without probing a global omp CLI', () => {
+test('OMP SDK preparation requires semantic configuration while availability probes bundled runtime', () => {
   const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-default-probe-'));
   const marker = path.join(probeRoot, 'global-omp-ran');
   try {
@@ -288,9 +332,9 @@ test('OMP omitted transport requires semantic configuration without probing a gl
             /explicit full provider\/model selectors for every level/i
           );
           const probe = helper.probeRuntimeProviderCli('omp');
-          assert.equal(probe.available, false);
-          assert.equal(probe.helpText, '');
-          assert.equal(probe.versionText, '');
+          assert.equal(probe.available, true);
+          assert.equal(probe.helpText, 'Pinned bundled OMP SDK sidecar');
+          assert.match(probe.versionText, /^omp-sdk 17\.2\.1; bun 1\.3\.14$/);
         })
     );
     assert.equal(fs.existsSync(marker), false);
@@ -299,23 +343,152 @@ test('OMP omitted transport requires semantic configuration without probing a gl
   }
 });
 
-test('explicit OMP RPC transport fails instead of borrowing SDK or legacy CLI semantics', () => {
-  assert.equal(helper.getProviderRegistryEntry('omp').capabilities.jsonSchema, false);
-  withSettings(
-    {
-      defaultProvider: 'omp',
-      providerSettings: { omp: { transport: 'rpc' } },
-    },
-    () => {
-      assert.throws(
-        () =>
-          helper.prepareSingleAgentProviderCommand({
-            provider: 'omp',
-            context: PROMPT,
-            options: { cwd: process.cwd(), outputFormat: 'text' },
-          }),
-        /RPC transport is not implemented.*cannot borrow SDK strict-output semantics.*legacy `omp --mode json`/i
-      );
+test('explicit OMP RPC transport prepares the RPC stdio lane with verified CLI evidence', () => {
+  const sessionDir = path.join(os.tmpdir(), 'verified-omp-rpc-partition');
+  let prepared;
+  try {
+    withFakeProviderCli(
+      'omp',
+      `#!/usr/bin/env node
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  process.stdout.write('Usage: omp rpc --config --model --thinking --approval-mode --no-title --no-session --session-dir --resume\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('omp 17.2.1\\n');
+  process.exit(0);
+}
+process.exit(91);
+`,
+      () =>
+        withSettings(
+          {
+            defaultProvider: 'omp',
+            providerSettings: {
+              omp: {
+                transport: 'rpc',
+                levelOverrides: { level2: { model: '@default' } },
+              },
+            },
+          },
+          () => {
+            prepared = helper.prepareSingleAgentProviderCommand({
+              provider: 'omp',
+              context: PROMPT,
+              options: {
+                cwd: process.cwd(),
+                outputFormat: 'text',
+                modelSpec: { level: 'level2', reasoningEffort: 'max' },
+                ompSession: { kind: 'fresh', partition: { path: sessionDir } },
+              },
+            });
+            assert.equal(runtimeProviders.getProvider('omp').isAvailable(), true);
+          }
+        )
+    );
+
+    assert.deepEqual(prepared.invoke, {
+      lane: 'rpc-stdio',
+      parser: 'provider',
+      ptyEligible: false,
+      strictTerminal: false,
+    });
+    assert.equal(helper.getProviderRegistryEntry('omp').capabilities.jsonSchema, false);
+    assert.equal(prepared.cliFeatures.versionMatches, true);
+    assert.equal(prepared.cliFeatures.supportsRpcMode, true);
+    assert.equal(prepared.cliFeatures.supportsSessionDir, true);
+    assert.equal(prepared.cliFeatures.supportsResume, true);
+    assert.deepEqual(prepared.commandSpec.args.slice(0, 5), [
+      '--mode',
+      'rpc',
+      '--session-dir',
+      sessionDir,
+      '--model',
+    ]);
+    assert.equal(prepared.commandSpec.args[5], '@default');
+    assert.equal(prepared.commandSpec.args.includes('--no-session'), false);
+    assert.equal(prepared.commandSpec.args.includes('--resume'), false);
+    assert.equal(Object.hasOwn(prepared, 'privateArtifacts'), false);
+    assert.equal(Object.hasOwn(prepared, 'executionIdentity'), false);
+  } finally {
+    for (const cleanup of prepared?.commandSpec.cleanup ?? []) {
+      fs.rmSync(cleanup, { recursive: true, force: true });
     }
-  );
+  }
+});
+
+test('OMP SDK invoke preserves canonical error classification without process text', async () => {
+  await withSettings(sdkSettings({ transport: 'sdk' }), async () => {
+    const originalRun = sdkRunner.runOmpSdkProcess;
+    const cases = [
+      ['provider-auth', 'auth', false, 'permanent-pattern'],
+      ['schema-violation', 'schema', false, 'permanent-pattern'],
+      ['provider-error', 'provider', true, 'unknown-retryable'],
+    ];
+
+    try {
+      for (const [code, category, retryable, kind] of cases) {
+        sdkRunner.runOmpSdkProcess = (prepared) => {
+          removePreparedRoot(prepared);
+          return Promise.resolve({
+            stdout: 'untrusted process failure',
+            stderr: 'untrusted process failure',
+            diagnosticStderr: '[REDACTED]',
+            exitCode: 1,
+            signal: null,
+            durationMs: 7,
+            terminal: {
+              type: 'error',
+              frame: { error: { code, category, retryable, redacted: true } },
+            },
+            progress: [],
+            cleanupAttestation: {
+              mode: 'host-process-tree',
+              terminalBuffered: true,
+              descendantsReaped: true,
+              clean: true,
+            },
+          });
+        };
+
+        const response = await helper.runProviderExecutable(
+          JSON.stringify({
+            schemaVersion: 1,
+            command: 'invoke',
+            provider: 'omp',
+            context: 'return the requested structured result',
+            options: {
+              cwd: process.cwd(),
+              executionContext: 'host',
+              outputFormat: 'json',
+              jsonSchema: SCHEMA,
+              strictSchema: true,
+              modelSpec: { level: 'level2', model: MODEL, reasoningEffort: 'max' },
+            },
+          }),
+          { runner: () => assert.fail('SDK invoke used the generic runner') }
+        );
+
+        assert.deepEqual(response.envelope.result.classification, {
+          category,
+          retryable,
+          kind,
+        });
+        assert.deepEqual(response.envelope.result.evidence.terminal.error, {
+          code,
+          category,
+          retryable,
+          redacted: true,
+        });
+        assert.equal(response.envelope.result.events.length, 0);
+        assert.equal(
+          JSON.stringify(response.envelope).includes('untrusted process failure'),
+          false
+        );
+        assert.equal(JSON.stringify(response.envelope).includes(SECRET), false);
+      }
+    } finally {
+      sdkRunner.runOmpSdkProcess = originalRun;
+    }
+  });
 });

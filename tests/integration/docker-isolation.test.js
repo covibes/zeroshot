@@ -98,6 +98,31 @@ describe('OMP SDK Docker isolation contract', function () {
     assert.doesNotMatch(dockerfile, /COPY[^\n]*\.omp/);
   });
 
+  it('selects the bundled base image for SDK and the pinned CLI variant only for RPC', function () {
+    const sdkPlan = IsolationManager.imagePlanForProvider('omp', {
+      baseImage: 'zeroshot-cluster-base:test',
+      providerSettings: { omp: { auth: { mode: 'none' } } },
+    });
+    assert.strictEqual(sdkPlan.image, 'zeroshot-cluster-base:test');
+    assert.deepStrictEqual(sdkPlan.buildArgs, []);
+    assert.strictEqual(sdkPlan.platform, null);
+    assert.strictEqual(sdkPlan.ompDockerPolicy.transport, 'sdk');
+
+    const rpcPlan = IsolationManager.imagePlanForProvider('omp', {
+      baseImage: 'zeroshot-cluster-base:test',
+      providerSettings: { omp: { transport: 'rpc' } },
+    });
+    assert.notStrictEqual(rpcPlan.image, sdkPlan.image);
+    assert.match(rpcPlan.image, /^zeroshot-cluster-base-omp-[a-f0-9]{12}$/);
+    assert.strictEqual(rpcPlan.platform, 'linux/amd64');
+    assert.strictEqual(rpcPlan.ompDockerPolicy.transport, 'rpc');
+    assert.strictEqual(
+      rpcPlan.buildArgs.filter((arg) => arg.startsWith('PROVIDER_INSTALL=')).length,
+      1
+    );
+    assert(!sdkPlan.buildArgs.some((arg) => arg.includes('omp')));
+  });
+
   it('excludes dependency, secret, and OMP state from the image context', function () {
     const entries = fs.readFileSync(path.join(repoRoot, '.dockerignore'), 'utf8').split(/\r?\n/);
     for (const excluded of ['node_modules', '.env', '.omp', '**/.omp', '.claude']) {
@@ -126,7 +151,7 @@ describe('OMP SDK Docker isolation contract', function () {
     );
   });
 
-  it('rejects omp-home and explicit host OMP mounts for SDK containers', function () {
+  it('applies host OMP mount rejection only to SDK containers', function () {
     assert.throws(
       () =>
         resolveOmpDockerPolicy('omp', {
@@ -135,10 +160,12 @@ describe('OMP SDK Docker isolation contract', function () {
         }),
       /local host-only/
     );
-    assert.throws(
-      () => resolveOmpDockerPolicy('omp', { transport: 'rpc' }),
-      /RPC transport is unavailable/
-    );
+    assert.deepStrictEqual(resolveOmpDockerPolicy('omp', { transport: 'rpc' }), {
+      sdk: false,
+      transport: 'rpc',
+      authMode: null,
+      credentialNames: [],
+    });
     assert.throws(() => assertNoOmpHomeMounts(['omp'], '/home/node'), /cannot mount/);
     assert.throws(
       () =>
@@ -150,36 +177,51 @@ describe('OMP SDK Docker isolation contract', function () {
     );
   });
 
-  it('removes host Docker and Claude credential mounts from the SDK boundary', function () {
+  it('keeps SDK hardening separate from the current-main RPC Docker path', function () {
     const manager = new IsolationManager();
+    const sdkPolicy = resolveOmpDockerPolicy('omp', {
+      transport: 'sdk',
+      auth: {
+        mode: 'environment',
+        credentials: { 'amazon-bedrock': { env: 'AWS_BEARER_TOKEN_BEDROCK' } },
+      },
+    });
+    const rpcPolicy = resolveOmpDockerPolicy('omp', { transport: 'rpc' });
     const sdkArgs = manager._buildBaseDockerArgs({
       containerName: 'sdk',
       workDir: '/workspace-host',
       containerHome: '/home/node',
       clusterConfigDir: null,
-      sdkMode: true,
-      credentialNames: ['AWS_BEARER_TOKEN_BEDROCK'],
+      sdkMode: sdkPolicy.sdk,
+      credentialNames: sdkPolicy.credentialNames,
     });
-    const directArgs = manager._buildBaseDockerArgs({
-      containerName: 'direct',
+    const rpcArgs = manager._buildBaseDockerArgs({
+      containerName: 'rpc',
       workDir: '/workspace-host',
       containerHome: '/home/node',
-      clusterConfigDir: '/private/claude',
-      sdkMode: false,
+      clusterConfigDir: null,
+      sdkMode: rpcPolicy.sdk,
+      credentialNames: rpcPolicy.credentialNames,
     });
     for (const boundary of ['--init', '--read-only', '--pids-limit', 'no-new-privileges=true']) {
-      assert(sdkArgs.includes(boundary), `missing ${boundary}`);
+      assert(sdkArgs.includes(boundary), `missing SDK boundary ${boundary}`);
+      assert(!rpcArgs.includes(boundary), `RPC unexpectedly received SDK boundary ${boundary}`);
     }
     for (const capability of ['KILL', 'SETGID', 'SETUID']) {
       assert(sdkArgs.includes(capability), `missing supervisor capability ${capability}`);
-      assert(!directArgs.includes(capability));
+      assert(
+        !rpcArgs.includes(capability),
+        `RPC unexpectedly received SDK capability ${capability}`
+      );
     }
     assert(!sdkArgs.some((arg) => arg.includes('docker.sock')));
     assert(!sdkArgs.some((arg) => arg.includes('.claude')));
-    assert(directArgs.some((arg) => arg.includes('docker.sock')));
+    assert(rpcArgs.some((arg) => arg.includes('docker.sock')));
+    assert(rpcArgs.includes('--group-add'));
+    assert(sdkArgs.includes('io.zeroshot.execution.transport=sdk'));
     assert(sdkArgs.includes('io.zeroshot.credentials.names=AWS_BEARER_TOKEN_BEDROCK'));
     assert(!sdkArgs.some((arg) => arg.includes('AWS_BEARER_TOKEN_BEDROCK=')));
-    assert(directArgs.some((arg) => arg.includes('/private/claude')));
+    assert(!rpcArgs.some((arg) => arg.startsWith('io.zeroshot.')));
   });
 
   it('materializes the request and streams declared values without Docker metadata leakage', async function () {

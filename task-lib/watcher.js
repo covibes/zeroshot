@@ -20,6 +20,7 @@ import {
   isOmpSdkWatcherConfig,
   resolveWatcherCommand,
   runPreparedAcpStdioWatcher,
+  spawnPreparedOmpSdkContainerWatcherProcess,
   spawnPreparedOmpSdkWatcherProcess,
   spawnWatcherProvider,
   terminateWatcherProvider,
@@ -75,10 +76,14 @@ async function runPreparedOmpSdkWatcher() {
   let terminalBuffered = true;
   let watcherCancellationRequested = false;
   try {
-    const running = await spawnPreparedOmpSdkWatcherProcess(
+    const spawnSdkProcess = config.containerExecution
+      ? spawnPreparedOmpSdkContainerWatcherProcess
+      : spawnPreparedOmpSdkWatcherProcess;
+    const running = await spawnSdkProcess(
       config.preparedInvocation,
       commandSpec,
       args,
+      ...(config.containerExecution ? [config.containerExecution] : []),
       {
         onProgress(frame) {
           log(`[${Date.now()}][LIVENESS] OMP SDK ${frame.stage}\n`);
@@ -104,6 +109,7 @@ async function runPreparedOmpSdkWatcher() {
       completion = completeOmpSdkProcessResult(result, {
         cancellationRequested:
           watcherCancellationRequested || getTask(taskId)?.cancelRequested === true,
+        containmentRequirement,
         log,
       });
       if (completion.cleanupUncertain === true) terminalBuffered = false;

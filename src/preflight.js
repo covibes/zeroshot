@@ -500,6 +500,10 @@ function validateProvider(providerName, options) {
 
 function validateRegistryCliProvider(providerName) {
   const metadata = getProviderMetadata(providerName);
+  const { getProvider } = require('./providers');
+  if (getProvider(providerName).isAvailable()) {
+    return { errors: [], warnings: [] };
+  }
   const { command } = resolveProviderCommand(providerName);
   const installSteps = metadata.installInstructions.split('\n').filter(Boolean);
   if (!commandExists(command)) {
@@ -509,11 +513,6 @@ function validateRegistryCliProvider(providerName) {
       `Command "${command}" not installed`,
       [...installSteps, `Then run: ${command} --version`]
     );
-  }
-
-  const { getProvider } = require('./providers');
-  if (getProvider(providerName).isAvailable()) {
-    return { errors: [], warnings: [] };
   }
 
   return {
@@ -572,7 +571,11 @@ function validateDockerRequirement(providerName) {
 
   try {
     const IsolationManager = require('./isolation-manager');
-    IsolationManager.assertPlatformSupported(IsolationManager.providerDockerPlatform(providerName));
+    const settings = loadSettings();
+    const imagePlan = IsolationManager.imagePlanForProvider(providerName, {
+      providerSettings: settings.providerSettings,
+    });
+    IsolationManager.assertPlatformSupported(imagePlan.platform);
   } catch (err) {
     errors.push(
       formatError('Docker cannot run required platform', err.message, [

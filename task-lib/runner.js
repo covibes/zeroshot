@@ -257,6 +257,7 @@ export function spawnTask(prompt, options = {}) {
     outputFormat,
     jsonSchema,
     cwd,
+    executionContext: options.executionContext || 'host',
     ompSession: ompPlan?.session,
   });
   const providerName = prepared.adapter.id;
@@ -264,6 +265,7 @@ export function spawnTask(prompt, options = {}) {
   const commandSpec = attachClaudeOverlayCleanup(prepared.commandSpec, providerName);
 
   const preparedInvocation = buildPreparedInvocation(prepared);
+  const containerExecution = resolvePreparedContainerExecution(prepared, options);
   const task = buildTaskRecord({
     id,
     prompt,
@@ -302,7 +304,8 @@ export function spawnTask(prompt, options = {}) {
     providerName,
     commandSpec,
     ompPlan,
-    preparedInvocation
+    preparedInvocation,
+    containerExecution
   );
   const watcherScript = resolveWatcherScript(
     {
@@ -336,6 +339,7 @@ export function prepareTaskProviderCommand(prompt, options = {}) {
     outputFormat,
     jsonSchema: resolveJsonSchema(options, outputFormat),
     cwd: options.cwd || process.cwd(),
+    executionContext: options.executionContext || 'host',
   });
 }
 
@@ -368,7 +372,7 @@ function buildProviderOptions(options, runtime, modelSelection) {
     jsonSchema:
       typeof runtime.jsonSchema === 'string' ? JSON.parse(runtime.jsonSchema) : runtime.jsonSchema,
     cwd: runtime.cwd,
-    executionContext: 'host',
+    executionContext: runtime.executionContext || 'host',
     autoApprove: !structuredOutputRecovery,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
@@ -584,6 +588,25 @@ function isRpcStdioLane(preparedInvocation, providerName) {
   return getProviderRegistryEntry(providerName).invoke.lane === 'rpc-stdio';
 }
 
+function resolvePreparedContainerExecution(prepared, options) {
+  const contained = prepared.containmentRequirement?.mode === 'container';
+  if (!contained) {
+    if (options.containerId !== undefined) {
+      throw new Error('containerId is valid only for a prepared container invocation');
+    }
+    return null;
+  }
+  if (
+    typeof options.containerId !== 'string' ||
+    options.containerId.length === 0 ||
+    options.containerId.length > 128 ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(options.containerId)
+  ) {
+    throw new Error('Prepared container invocation requires a valid containerId');
+  }
+  return Object.freeze({ containerId: options.containerId });
+}
+
 // The returned object is JSON-serialized into the detached watcher's argv, so it must never carry
 // prompt or other task content: `ps` and /proc/<pid>/cmdline expose argv to every local user for
 // the whole lifetime of the watcher. Partition paths, ids, and digests are not secret.
@@ -594,9 +617,18 @@ export function buildWatcherConfig(
   providerName,
   commandSpec,
   ompPlan = null,
-  preparedInvocation = null
+  preparedInvocation = null,
+  containerExecution = null
 ) {
-  const sdk = isOmpSdkPreparedInvocation(preparedInvocation);
+  // Backward-compatible direct helper calls historically passed preparedInvocation as the sixth
+  // argument; session-aware production calls pass both ompPlan and preparedInvocation.
+  const legacyPreparedArgument =
+    preparedInvocation === null &&
+    ompPlan &&
+    (ompPlan.invoke !== undefined || ompPlan.executionIdentity !== undefined);
+  const resolvedOmpPlan = legacyPreparedArgument ? null : ompPlan;
+  const resolvedPreparedInvocation = legacyPreparedArgument ? ompPlan : preparedInvocation;
+  const sdk = isOmpSdkPreparedInvocation(resolvedPreparedInvocation);
   return {
     outputFormat,
     ...(sdk ? {} : { jsonSchema }),
@@ -605,19 +637,22 @@ export function buildWatcherConfig(
     provider: providerName,
     ...(sdk ? {} : { command: commandSpec.binary, env: commandSpec.env || {} }),
     commandSpec: buildWatcherCommandSpec(commandSpec, {
-      keepArgs: isRpcStdioLane(preparedInvocation, providerName),
+      keepArgs: isRpcStdioLane(resolvedPreparedInvocation, providerName),
       omitEnv: sdk,
     }),
-    ...(ompPlan
+    ...(resolvedOmpPlan
       ? {
-          ompSession: ompPlan.session,
-          ompResumeExpectation: ompPlan.resumeExpectation,
+          ompSession: resolvedOmpPlan.session,
+          ompResumeExpectation: resolvedOmpPlan.resumeExpectation,
           // The workspace the ownership row was canonicalized against; the watcher compares it to
           // the session header's own recorded cwd after materialization.
-          ompCanonicalWorkspace: ompPlan.provisionalOwnership.canonicalWorkspace,
+          ompCanonicalWorkspace: resolvedOmpPlan.provisionalOwnership.canonicalWorkspace,
         }
       : {}),
-    ...(preparedInvocation === null ? {} : { preparedInvocation }),
+    ...(resolvedPreparedInvocation === null
+      ? {}
+      : { preparedInvocation: resolvedPreparedInvocation }),
+    ...(containerExecution === null ? {} : { containerExecution }),
   };
 }
 

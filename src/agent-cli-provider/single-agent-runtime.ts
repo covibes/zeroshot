@@ -143,9 +143,9 @@ export function prepareSingleAgentProviderCommand(
   const baseOptions = input.options ?? {};
   const settings = loadRuntimeSettings();
   const adapter = adapterForRuntimeInput(input.provider, settings);
-  const configuredOmpSettings =
-    adapter.id === 'omp' ? resolveOmpSdkSettings(settings) : undefined;
-  if (configuredOmpSettings?.transport === 'sdk') {
+  const ompTransport = adapter.id === 'omp' ? runtimeOmpTransport(settings) : undefined;
+  if (ompTransport === 'sdk') {
+    const configuredOmpSettings = resolveOmpSdkSettings(settings);
     return prepareOmpProviderCommand(input, adapter, baseOptions, configuredOmpSettings);
   }
   const providerSettings = runtimeProviderSettings(
@@ -319,15 +319,16 @@ function prepareOmpProviderCommand(
     throw new Error(`OMP SDK request exceeds ${OMP_SDK_MAX_REQUEST_BYTES} bytes.`);
   }
 
-  const runtime =
-    executionContext === 'host'
-      ? ompSdkRuntimeAssets()
-      : {
-          bunExecutable: '/opt/zeroshot/node_modules/bun/bin/bun.exe',
-          bunVersion: OMP_SDK_BUN_VERSION,
-          ompVersion: OMP_SDK_BACKEND_VERSION,
-          sidecarPath: '/opt/zeroshot/scripts/omp-sdk-sidecar.ts',
-        };
+  const usesContainerRuntime =
+    executionContext === 'docker' || executionContext === 'benchmark';
+  const runtime = usesContainerRuntime
+    ? {
+        bunExecutable: '/opt/zeroshot/node_modules/bun/bin/bun.exe',
+        bunVersion: OMP_SDK_BUN_VERSION,
+        ompVersion: OMP_SDK_BACKEND_VERSION,
+        sidecarPath: '/opt/zeroshot/scripts/omp-sdk-sidecar.ts',
+      }
+    : ompSdkRuntimeAssets();
   let privateRoot: string | undefined;
   try {
     privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-sdk-request-'));
@@ -376,7 +377,7 @@ function prepareOmpProviderCommand(
         provider: parsedSelector.provider,
       },
       containmentRequirement: {
-        mode: executionContext === 'host' ? 'host-process-tree' : 'container',
+        mode: usesContainerRuntime ? 'container' : 'host-process-tree',
         required: true,
       },
       commandSpec: {
@@ -425,6 +426,13 @@ function ompExecutionContext(
   throw new Error(
     'options.executionContext must be "host", "detached", "docker", or "benchmark".'
   );
+}
+
+function runtimeOmpTransport(settings: Record<string, unknown>): 'sdk' | 'rpc' {
+  const providerSettings = settings.providerSettings;
+  if (!isRecord(providerSettings)) return 'sdk';
+  const omp = providerSettings.omp;
+  return isRecord(omp) && omp.transport === 'rpc' ? 'rpc' : 'sdk';
 }
 
 function ompSdkOutputContract(options: BuildProviderCommandOptions):
@@ -619,15 +627,10 @@ export function probeRuntimeProviderCli(
     return probeGatewayProvider(adapter);
   }
   const registryEntry = getProviderRegistryEntry(adapter.id);
-  const configuredOmpSettings =
-    adapter.id === 'omp' ? resolveOmpSdkSettings(loadRuntimeSettings()) : undefined;
-  if (configuredOmpSettings?.transport === 'sdk') {
+  const settings = loadRuntimeSettings();
+  if (adapter.id === 'omp' && runtimeOmpTransport(settings) === 'sdk') {
     const capabilities = adapter.detectCliFeatures('', '');
     try {
-      normalizeOmpSdkSettings(configuredOmpSettings, {
-        executionContext: 'host',
-        requireModelConfiguration: true,
-      });
       const runtime = ompSdkRuntimeAssets();
       return {
         available: true,

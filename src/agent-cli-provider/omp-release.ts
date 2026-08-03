@@ -22,9 +22,10 @@ export const OMP_BINARY_NAME = 'omp' as const;
 // this as a defect.
 export const OMP_INSTALL_COMMAND =
   `bun install -g ${OMP_PACKAGE_NAME}@${OMP_SUPPORTED_VERSION}` as const;
-export const OMP_AUTH_INSTRUCTIONS = 'omp\n/login' as const;
+export const OMP_AUTH_INSTRUCTIONS =
+  'Manually edit providerSettings.omp in ZEROSHOT_SETTINGS_FILE or $HOME/.zeroshot/settings.json (file 0600, parent directory 0700). Use declared environment or broker variables, an explicit host-only OMP agent directory containing agent.db, or keyless mode; Zeroshot never logs in or stores credential values.' as const;
 export const OMP_REMEDIATION =
-  `Install the pinned OMP release with \`${OMP_INSTALL_COMMAND}\`, then authenticate OAuth users via \`${OMP_AUTH_INSTRUCTIONS}\`.` as const;
+  `Install the pinned OMP release with \`${OMP_INSTALL_COMMAND}\`. ${OMP_AUTH_INSTRUCTIONS}` as const;
 
 export const OMP_RELEASE_DOWNLOAD_BASE_URL =
   `https://github.com/can1357/oh-my-pi/releases/download/v${OMP_SUPPORTED_VERSION}` as const;

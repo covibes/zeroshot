@@ -519,6 +519,7 @@ class IsolationManager {
    * @param {Array<string|object>} [config.mounts] - Override default mounts (preset names or {host, container, readonly})
    * @param {boolean} [config.noMounts=false] - Disable all credential mounts
    * @param {string} [config.provider] - Provider name for credential warnings
+   * @param {{sdk:boolean,transport:string,authMode:string|null,credentialNames:string[]}} [config.ompDockerPolicy]
    * @returns {Promise<string>} Container ID
    */
   async createContainer(clusterId, config) {
@@ -537,10 +538,9 @@ class IsolationManager {
       config.provider || settings.defaultProvider || getDefaultProviderId()
     );
     const containerHome = config.containerHome || settings.dockerContainerHome || '/root';
-    const ompDockerPolicy = resolveOmpDockerPolicy(
-      providerName,
-      settings.providerSettings?.omp
-    );
+    const ompDockerPolicy =
+      config.ompDockerPolicy ||
+      resolveOmpDockerPolicy(providerName, settings.providerSettings?.omp);
 
     // Compute the effective env/mount plan before any stale-container or workspace side effect.
     // Direct/RPC plans validate usable credentials here; SDK plans validate the no-host-mount
@@ -2596,6 +2596,42 @@ class IsolationManager {
       .digest('hex')
       .slice(0, 12);
     return `${name}-${normalizeProviderName(providerName)}-${hash}`;
+  }
+
+  /**
+   * Resolve the complete image/build/run selection before any Docker effect. OMP SDK execution
+   * uses the bundled multi-architecture base runtime and therefore must not inherit the registry's
+   * pinned RPC CLI installer or linux/amd64 constraint. Explicit RPC keeps that legacy image path.
+   *
+   * @param {string} providerName
+   * @param {object} [options]
+   * @param {string} [options.baseImage]
+   * @param {string} [options.containerHome]
+   * @param {object} [options.providerSettings]
+   * @returns {{image:string,buildArgs:string[],platform:string|null,ompDockerPolicy:object}}
+   */
+  static imagePlanForProvider(providerName, options = {}) {
+    const normalizedProvider = normalizeProviderName(providerName);
+    const baseImage = options.baseImage || DEFAULT_IMAGE;
+    const containerHome = options.containerHome || '/home/node';
+    const ompDockerPolicy = resolveOmpDockerPolicy(
+      normalizedProvider,
+      options.providerSettings?.omp
+    );
+    if (ompDockerPolicy.sdk) {
+      return {
+        image: baseImage,
+        buildArgs: [],
+        platform: null,
+        ompDockerPolicy,
+      };
+    }
+    return {
+      image: IsolationManager.imageForProvider(normalizedProvider, baseImage),
+      buildArgs: IsolationManager.providerBuildArgs(normalizedProvider, containerHome),
+      platform: IsolationManager.providerDockerPlatform(normalizedProvider),
+      ompDockerPolicy,
+    };
   }
 
   /**

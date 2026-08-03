@@ -380,7 +380,8 @@ function defineRunPreflightTests() {
 
       try {
         const registryBackedProviders = VALID_PROVIDERS.filter(
-          (provider) => getProviderMetadata(provider).command.kind !== 'configured-claude'
+          (provider) =>
+            provider !== 'omp' && getProviderMetadata(provider).command.kind !== 'configured-claude'
         );
 
         for (const provider of registryBackedProviders) {
@@ -402,6 +403,48 @@ function defineRunPreflightTests() {
         }
       } finally {
         process.env.PATH = originalPath;
+      }
+    });
+
+    it('should use the bundled OMP SDK without PATH while explicit RPC still requires its CLI', async () => {
+      const settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-omp-transport-'));
+      const settingsFile = path.join(settingsDir, 'settings.json');
+      const originalPath = process.env.PATH;
+      const originalSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
+      process.env.PATH = '/nonexistent';
+      process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
+
+      try {
+        fs.writeFileSync(settingsFile, JSON.stringify({ defaultProvider: 'omp' }), { mode: 0o600 });
+        const sdkResult = await runPreflight({
+          requireGh: false,
+          requireDocker: false,
+          quiet: true,
+          provider: 'omp',
+        });
+        expect(sdkResult.valid).to.be.true;
+
+        fs.writeFileSync(
+          settingsFile,
+          JSON.stringify({
+            defaultProvider: 'omp',
+            providerSettings: { omp: { transport: 'rpc' } },
+          }),
+          { mode: 0o600 }
+        );
+        const rpcResult = await runPreflight({
+          requireGh: false,
+          requireDocker: false,
+          quiet: true,
+          provider: 'omp',
+        });
+        expect(rpcResult.valid).to.be.false;
+        expect(rpcResult.errors.join('')).to.include('OMP (Oh My Pi) CLI not available');
+      } finally {
+        process.env.PATH = originalPath;
+        if (originalSettingsFile === undefined) delete process.env.ZEROSHOT_SETTINGS_FILE;
+        else process.env.ZEROSHOT_SETTINGS_FILE = originalSettingsFile;
+        fs.rmSync(settingsDir, { recursive: true, force: true });
       }
     });
 

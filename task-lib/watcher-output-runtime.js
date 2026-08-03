@@ -93,6 +93,104 @@ export function spawnPreparedOmpSdkWatcherProcess(
     options
   );
 }
+export function spawnPreparedOmpSdkContainerWatcherProcess(
+  preparedInvocation,
+  commandSpec,
+  finalArgs,
+  containerExecution,
+  options = {}
+) {
+  if (
+    preparedInvocation?.containmentRequirement?.mode !== 'container' ||
+    typeof containerExecution?.containerId !== 'string'
+  ) {
+    throw new Error('OMP SDK container watcher is missing its prepared containment identity');
+  }
+  const prepared = {
+    ...preparedInvocation,
+    commandSpec: {
+      ...commandSpec,
+      args: [...finalArgs],
+      env: {},
+    },
+  };
+  const { readFileSync } = require('fs');
+  const {
+    createOmpSdkProtocolCollector,
+    decodeOmpSdkSidecarRequest,
+  } = require('../lib/agent-cli-provider/index.js');
+  const IsolationManager = require('../src/isolation-manager.js');
+  const requestBytes = readFileSync(prepared.privateArtifacts.requestPath);
+  let request;
+  try {
+    request = decodeOmpSdkSidecarRequest(requestBytes);
+  } finally {
+    requestBytes.fill(0);
+  }
+  const collector = createOmpSdkProtocolCollector({ request });
+  const manager = new IsolationManager();
+  const managerKey = `prepared-${containerExecution.containerId}`;
+  manager.containers.set(managerKey, containerExecution.containerId);
+  const abortController = new AbortController();
+  const proc = manager.spawnPreparedInContainer(containerExecution.containerId, prepared, {
+    signal: abortController.signal,
+  });
+  const stderrChunks = [];
+  let stderrBytes = 0;
+  let protocolError = null;
+  proc.stdout.on('data', (chunk) => {
+    if (protocolError) return;
+    try {
+      for (const frame of collector.write(chunk)) {
+        if (frame.type === 'progress') options.onProgress?.(frame);
+      }
+    } catch (error) {
+      protocolError = error;
+      abortController.abort();
+    }
+  });
+  proc.stderr.on('data', (chunk) => {
+    if (stderrBytes >= 64 * 1024) return;
+    const bounded = Buffer.from(chunk).subarray(0, 64 * 1024 - stderrBytes);
+    stderrChunks.push(bounded);
+    stderrBytes += bounded.byteLength;
+  });
+
+  const result = new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = async (code, spawnError = null) => {
+      if (settled) return;
+      settled = true;
+      try {
+        await proc.credentialHandoff;
+        const cleanupAttestation = await proc.cleanupAttestation;
+        if (spawnError) throw spawnError;
+        if (protocolError) throw protocolError;
+        if (!Number.isInteger(code)) {
+          throw new Error('OMP SDK container process exit could not be observed');
+        }
+        resolve({
+          terminal: collector.finish(code),
+          progress: [...collector.progress],
+          diagnosticStderr: Buffer.concat(stderrChunks).toString('utf8'),
+          cleanupAttestation,
+        });
+      } catch (error) {
+        reject(error);
+      }
+    };
+    proc.once('error', (error) => finish(null, error));
+    proc.once('close', (code) => finish(code));
+  });
+
+  return {
+    pid: proc.pid,
+    cancel() {
+      abortController.abort();
+    },
+    result,
+  };
+}
 
 export function resolveWatcherCommand(
   config,
@@ -295,14 +393,15 @@ function sdkEvidenceForTerminal(terminal) {
 
 export function completeOmpSdkProcessResult(
   result,
-  { cancellationRequested = false, log = () => {} } = {}
+  { cancellationRequested = false, log = () => {}, containmentRequirement = null } = {}
 ) {
   if (result.diagnosticStderr?.trim()) {
     log(`[${Date.now()}][DIAGNOSTIC] ${result.diagnosticStderr.slice(0, 4096)}\n`);
   }
   const cleanupAttestation = result.cleanupAttestation;
+  const expectedCleanupMode = containmentRequirement?.mode || 'host-process-tree';
   const cleanupAttested =
-    cleanupAttestation?.mode === 'host-process-tree' &&
+    cleanupAttestation?.mode === expectedCleanupMode &&
     cleanupAttestation.terminalBuffered === true &&
     cleanupAttestation.descendantsReaped === true &&
     cleanupAttestation.clean === true;

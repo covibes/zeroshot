@@ -1395,13 +1395,43 @@ function requiresStructuredResult(agent) {
   return outputFormat !== 'text' || !!agent?.config?.jsonSchema;
 }
 
-async function evaluateStructuredSuccess({ agent, taskId, state, success, allowRecovery }) {
+async function evaluateStructuredSuccess({
+  agent,
+  taskId,
+  taskInfo,
+  state,
+  success,
+  allowRecovery,
+}) {
   if (!success || !requiresStructuredResult(agent)) {
     return { success, error: null };
   }
+  const sdkBackend = taskInfo?.executionIdentity?.backend === 'omp-sdk';
+  const sdkParser = taskInfo?.invoke?.parser === 'omp-sdk-ndjson';
+  if (sdkBackend || sdkParser) {
+    const containmentMode = taskInfo?.containmentRequirement?.mode;
+    const cleanupAttestation = taskInfo?.cleanupAttestation;
+    const canonical =
+      sdkBackend &&
+      sdkParser &&
+      taskInfo.status === 'completed' &&
+      Object.prototype.hasOwnProperty.call(taskInfo, 'parsedResult') &&
+      cleanupAttestation?.mode === containmentMode &&
+      cleanupAttestation?.terminalBuffered === true &&
+      cleanupAttestation?.descendantsReaped === true &&
+      cleanupAttestation?.clean === true;
+    if (!canonical) {
+      return {
+        success: false,
+        error: 'OMP SDK task completed without an attested canonical persisted result.',
+      };
+    }
+    state._cachedParsedResult = taskInfo.parsedResult;
+    return { success: true, error: null };
+  }
   // Short-circuit: if a previous pass already validated and cached the parsed
   // result (e.g. recovery model call), reuse it without a second parse.
-  if (state._cachedParsedResult) {
+  if (Object.prototype.hasOwnProperty.call(state, '_cachedParsedResult')) {
     return { success: true, error: null };
   }
   try {
@@ -1459,6 +1489,7 @@ async function buildCompletionResult({
     : await evaluateStructuredSuccess({
         agent,
         taskId,
+        taskInfo,
         state,
         success,
         allowRecovery: isCompleted,
@@ -1485,9 +1516,11 @@ async function buildCompletionResult({
   return {
     success: classified.success,
     output: state.output,
-    // Carry the validated parsed object (from recovery or direct extraction)
-    // so downstream hooks and {{result.*}} substitution never re-parse.
-    parsedResult: state._cachedParsedResult || null,
+    // Carry the validated parsed object (from recovery or the canonical SDK task record) so
+    // completion hooks and {{result.*}} substitution never re-parse.
+    parsedResult: Object.prototype.hasOwnProperty.call(state, '_cachedParsedResult')
+      ? state._cachedParsedResult
+      : null,
     error: errorContext,
     tokenUsage: extractTokenUsage(state.output, providerName),
     providerSession: providerSessionFromCompletedTask({
@@ -1692,8 +1725,9 @@ function handleStatusCompletion({
   return true;
 }
 
-function buildKillHandler({ agent, taskId, state, providerName, resolve }) {
+function buildKillHandler({ agent, taskId, state, providerName, resolve, hostTask = false }) {
   return {
+    hostTask,
     kill: (reason = 'Task killed', details = {}) => {
       if (state.resolved) return;
       state.resolved = true;
@@ -1722,6 +1756,7 @@ function createLogFollower({
   skipStructuredResultCheck = false,
   nested = false,
   executionHandle = null,
+  hostTask = false,
 }) {
   return new Promise((resolve, reject) => {
     const state = createLogFollowState();
@@ -1777,7 +1812,14 @@ function createLogFollower({
       );
     }, 1000);
 
-    const killHandler = buildKillHandler({ agent, taskId, state, providerName, resolve });
+    const killHandler = buildKillHandler({
+      agent,
+      taskId,
+      state,
+      providerName,
+      resolve,
+      hostTask,
+    });
     if (nested && executionHandle) {
       executionHandle.setFailClosedAction((error) => {
         if (state.resolved) return;
@@ -1823,6 +1865,7 @@ function followClaudeTaskLogs(agent, taskId, options = {}) {
     skipStructuredResultCheck: options.skipStructuredResultCheck === true,
     nested: options.nested === true,
     executionHandle: options.executionHandle || null,
+    hostTask: options.hostTask === true,
   });
 }
 
@@ -1904,6 +1947,102 @@ async function spawnClaudeTaskIsolated(agent, context, options = {}) {
   }
 }
 
+function usesOmpSdkTransport(providerName, settings) {
+  return providerName === 'omp' && (settings.providerSettings?.omp?.transport ?? 'sdk') === 'sdk';
+}
+
+async function terminatePreparedContainerTask(taskId) {
+  const { killTaskCommand } = await import('../../task-lib/commands/kill.js');
+  await killTaskCommand(taskId);
+  const task = getTask(taskId);
+  const confirmed = task && TASK_TERMINAL_STATUSES.has(task.status) && task.commandCleanup === null;
+  return confirmed
+    ? { forced: true, taskId }
+    : { forced: false, taskId, reason: 'Task termination or private artifact cleanup is pending' };
+}
+
+async function spawnOmpSdkTaskIsolatedExecution(
+  agent,
+  context,
+  options,
+  modelSpec,
+  modelSpecSource
+) {
+  const { manager, clusterId } = agent.isolation;
+  const containerId = manager.containers.get(clusterId);
+  if (!containerId) {
+    throw new Error(`No container found for cluster ${clusterId}`);
+  }
+  if (options.executionHandle?.isCancelled) {
+    throw createNestedCancellationError(options.executionHandle);
+  }
+  agent._log(
+    `📦 Agent ${agent.id}: Running prepared OMP SDK task in isolated container ${containerId}...`
+  );
+  const { desiredOutputFormat, runOutputFormat } = resolveOutputFormatConfig(agent);
+  maybeLogStreamJsonNotice(agent, runOutputFormat);
+  const finalContext = buildFinalContext({
+    agent,
+    context,
+    desiredOutputFormat,
+    runOutputFormat,
+  });
+  const { spawnTask } = await import('../../task-lib/runner.js');
+  const task = spawnTask(finalContext, {
+    cwd: '/workspace',
+    provider: 'omp',
+    ...(modelSpecSource === 'direct'
+      ? { model: modelSpec?.model }
+      : { modelLevel: modelSpec?.level }),
+    ...(modelSpec?.reasoningEffort ? { reasoningEffort: modelSpec.reasoningEffort } : {}),
+    outputFormat: runOutputFormat,
+    jsonSchema:
+      agent.config.jsonSchema && runOutputFormat === 'json' ? agent.config.jsonSchema : null,
+    silentJsonOutput: false,
+    structuredOutputRecovery: options.structuredOutputRecovery === true,
+    executionContext: 'docker',
+    containerId,
+    attachable: false,
+  });
+  const taskId = task.id;
+  const killPreparedTask = (reason = 'Task killed') => {
+    agent._log?.(`Cancelling prepared container task ${taskId}: ${reason}`);
+    return terminatePreparedContainerTask(taskId);
+  };
+  if (options.nested && options.executionHandle) {
+    options.executionHandle.assignTaskId(taskId);
+    options.executionHandle.setCancelAction(killPreparedTask);
+  } else {
+    assignDurableTaskId(agent, taskId);
+    agent.currentTask = {
+      pendingLaunch: true,
+      hostTask: true,
+      kill: killPreparedTask,
+    };
+  }
+  if (options.executionHandle?.isCancelled) {
+    throw createNestedCancellationError(options.executionHandle);
+  }
+
+  await waitForTaskReady(agent, taskId);
+  const taskInfo = getTask(taskId);
+  if (taskInfo?.pid && !options.nested) {
+    agent.processPid = taskInfo.pid;
+    agent._publishLifecycle('PROCESS_SPAWNED', { pid: taskInfo.pid });
+  }
+  const execution = followClaudeTaskLogs(agent, taskId, {
+    ...options,
+    hostTask: true,
+    executionHandle: options.nested ? options.executionHandle : null,
+  });
+  if (!options.nested && agent.enableLivenessCheck) {
+    agent.taskStartedAt = Date.now();
+    agent.lastOutputTime = agent.taskStartedAt;
+    agent._startLivenessCheck();
+  }
+  return execution;
+}
+
 async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const { manager, clusterId } = agent.isolation;
   const providerName = agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId();
@@ -1911,6 +2050,10 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
   const modelSpecSource = agent._resolveModelSpecSource
     ? agent._resolveModelSpecSource()
     : 'direct';
+  const settings = loadSettings();
+  if (usesOmpSdkTransport(providerName, settings)) {
+    return spawnOmpSdkTaskIsolatedExecution(agent, context, options, modelSpec, modelSpecSource);
+  }
 
   agent._log(`📦 Agent ${agent.id}: Running task in isolated container using zeroshot task run...`);
 
@@ -2990,7 +3133,7 @@ async function killTask(agent, termination = 'Task killed') {
     return pendingTermination;
   }
 
-  if (agent.isolation?.enabled && taskId) {
+  if (agent.isolation?.enabled && taskId && currentTask?.hostTask !== true) {
     return killIsolatedTask(agent, currentTask, taskId, reason, code);
   }
 

@@ -646,19 +646,38 @@ describe('Cached parsed result — one recovery model call', function () {
       },
       approved: true,
     };
+    let parseCallCount = 0;
     const agent = {
       id: 'planner',
       role: 'planner',
       config: { jsonSchema: schema, outputFormat: 'json' },
       _resolveProvider: () => 'omp',
       _parseResultOutput() {
+        parseCallCount++;
         throw new Error('canonical SDK results must not be parsed or wrapped again');
       },
     };
     const state = {
       output: '',
       skipStructuredResultCheck: false,
-      _cachedParsedResult: canonicalSdkResult,
+    };
+    const taskInfo = {
+      status: 'completed',
+      invoke: {
+        lane: 'spawn',
+        parser: 'omp-sdk-ndjson',
+        ptyEligible: false,
+        strictTerminal: true,
+      },
+      executionIdentity: { backend: 'omp-sdk' },
+      containmentRequirement: { mode: 'container', required: true },
+      cleanupAttestation: {
+        mode: 'container',
+        terminalBuffered: true,
+        descendantsReaped: true,
+        clean: true,
+      },
+      parsedResult: canonicalSdkResult,
     };
 
     const result = await buildCompletionResult({
@@ -666,13 +685,14 @@ describe('Cached parsed result — one recovery model call', function () {
       taskId: 'sdk-task-1',
       providerName: 'omp',
       state,
-      stdout: '',
+      stdout: 'Status: completed',
       success: true,
-      taskInfo: null,
+      taskInfo,
     });
 
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.parsedResult, canonicalSdkResult);
+    assert.strictEqual(parseCallCount, 0);
     assert.strictEqual(Object.prototype.hasOwnProperty.call(result.parsedResult, 'result'), false);
   });
 
@@ -995,6 +1015,88 @@ describe('OMP SDK prepared task watcher boundary', function () {
     const metadata = JSON.stringify({ task, watcherConfig });
     assert.strictEqual(metadata.includes(prompt), false);
     assert.strictEqual(metadata.includes(secret), false);
+  });
+
+  it('routes prepared Docker SDK work through the container fd3 runner exactly once', async function () {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { EventEmitter } = require('events');
+    const { PassThrough } = require('stream');
+    const IsolationManager = require('../src/isolation-manager');
+    const request = {
+      ...sdkRequest('private isolated collector prompt'),
+      cwd: '/workspace',
+      executionContext: 'docker',
+    };
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-sdk-request-'));
+    const requestPath = path.join(root, 'request.json');
+    fs.writeFileSync(requestPath, JSON.stringify(request), { mode: 0o600 });
+    const preparedInvocation = {
+      ...sdkPreparedInvocation(requestPath),
+      privateArtifacts: { root, requestPath, owned: true },
+      containmentRequirement: { mode: 'container', required: true },
+    };
+    const commandSpec = {
+      binary: '/opt/zeroshot/node_modules/bun/bin/bun.exe',
+      args: ['/opt/zeroshot/scripts/omp-sdk-sidecar.ts', requestPath],
+      env: {},
+      cleanup: [root],
+      cleanupMetadata: [],
+    };
+    const calls = [];
+    sinon
+      .stub(IsolationManager.prototype, 'spawnPreparedInContainer')
+      .callsFake((containerId, prepared, options) => {
+        calls.push({ containerId, prepared, options });
+        const child = new EventEmitter();
+        child.pid = 31337;
+        child.stdout = new PassThrough();
+        child.stderr = new PassThrough();
+        child.credentialHandoff = Promise.resolve();
+        child.cleanupAttestation = Promise.resolve({
+          mode: 'container',
+          terminalBuffered: true,
+          descendantsReaped: true,
+          clean: true,
+        });
+        setImmediate(() => {
+          child.stdout.write(`${JSON.stringify(sdkResultFrame(request))}\n`);
+          child.stdout.end();
+          child.emit('close', 0);
+        });
+        return child;
+      });
+    try {
+      const { spawnPreparedOmpSdkContainerWatcherProcess, completeOmpSdkProcessResult } =
+        await import('../task-lib/watcher-output-runtime.js');
+      const running = await spawnPreparedOmpSdkContainerWatcherProcess(
+        preparedInvocation,
+        commandSpec,
+        commandSpec.args,
+        { containerId: 'sdk-container' }
+      );
+      const result = await running.result;
+      const completion = completeOmpSdkProcessResult(result, {
+        containmentRequirement: preparedInvocation.containmentRequirement,
+      });
+
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0].containerId, 'sdk-container');
+      assert.deepStrictEqual(calls[0].prepared.commandSpec.args, commandSpec.args);
+      assert.strictEqual(calls[0].prepared.privateArtifacts.requestPath, requestPath);
+      assert.strictEqual(typeof calls[0].options.signal.aborted, 'boolean');
+      assert.deepStrictEqual(result.cleanupAttestation, {
+        mode: 'container',
+        terminalBuffered: true,
+        descendantsReaped: true,
+        clean: true,
+      });
+      assert.strictEqual(completion.status, 'completed');
+      assert.deepStrictEqual(completion.terminalUpdates.parsedResult, { answer: 42 });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('routes prepared ACP stdio invocations away from generic provider spawn', async function () {

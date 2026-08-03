@@ -17,7 +17,11 @@ import {
   OMP_DOCKER_PLATFORM,
   OMP_INSTALL_COMMAND,
 } from './omp-release';
-import { OMP_SDK_SETTINGS_DEFAULTS, validateOmpSdkSettings } from './omp-sdk-settings';
+import {
+  OMP_SDK_SETTINGS_DEFAULTS,
+  validateOmpSdkSettings,
+} from './omp-sdk-settings';
+import type { OmpSettingsValidationContext } from './omp-sdk-settings';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';
@@ -125,7 +129,10 @@ interface ProviderRegistryEntryBase {
   readonly credentialEnvKeys: readonly string[];
   readonly settingsFields: readonly string[];
   readonly settingsDefaults?: Readonly<Record<string, unknown>>;
-  readonly settingsValidator?: (settings: Record<string, unknown>) => string | null;
+  readonly settingsValidator?: (
+    settings: Record<string, unknown>,
+    context?: OmpSettingsValidationContext
+  ) => string | null;
   readonly availabilityProbe?: 'command' | 'help-or-version';
   readonly docs: ProviderDocsMetadata;
   readonly docker: ProviderDockerMetadata;
@@ -495,7 +502,8 @@ export const providerRegistry = [
       'mcp',
     ],
     settingsDefaults: { ...OMP_SDK_SETTINGS_DEFAULTS },
-    settingsValidator: validateOmpSdkSettings,
+    settingsValidator: (settings, context): string | null =>
+      settings.transport === 'rpc' ? null : validateOmpSdkSettings(settings, context),
     availabilityProbe: 'help-or-version',
     // Written out explicitly rather than spread from STANDARD_CAPABILITIES, which defaults
     // dockerIsolation to true; OMP's Docker path is env/broker-only and sessionless (see

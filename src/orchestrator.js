@@ -1823,10 +1823,11 @@ class Orchestrator {
     let isolationImage = null;
 
     if (options.isolation) {
-      // Resolve the provider first so the capability gate and the cluster's image variant (which
-      // installs the provider CLI as a Docker-cached layer) both see the same provider. Providers
-      // baked into the base image (e.g. Claude) resolve back to the base image unchanged.
-      const providerName = this._resolveClusterProvider(config);
+      // Resolve provider settings and the complete image plan once, before any Docker effect. The
+      // plan is passed through container creation so a settings reload cannot switch SDK/RPC
+      // transport after image selection.
+      const settings = loadSettings();
+      const providerName = this._resolveClusterProvider(config, settings);
       if (!providerSupportsCapability(providerName, 'dockerIsolation')) {
         throw new Error(
           `Provider ${providerName} does not support Docker isolation; run without --docker (worktree isolation is supported).`
@@ -1836,19 +1837,24 @@ class Orchestrator {
         throw new Error('Docker is not available. Install Docker to use --docker mode.');
       }
 
-      // Pre-effect platform probe: fail before any workspace/container side effect when the
-      // Docker engine cannot run the provider's registry-owned platform (e.g. OMP's linux/amd64).
-      const platform = IsolationManager.providerDockerPlatform(providerName);
-      IsolationManager.assertPlatformSupported(platform);
-
       const baseImage = options.isolationImage || 'zeroshot-cluster-base';
-      const image = IsolationManager.imageForProvider(providerName, baseImage);
+      const imagePlan = IsolationManager.imagePlanForProvider(providerName, {
+        baseImage,
+        containerHome: options.containerHome || '/home/node',
+        providerSettings: settings.providerSettings,
+      });
+
+      // Pre-effect platform probe: fail before any workspace/container side effect when the
+      // Docker engine cannot run the selected transport's platform. SDK uses the bundled
+      // multi-architecture base image (null); explicit RPC retains OMP's pinned linux/amd64 CLI.
+      IsolationManager.assertPlatformSupported(imagePlan.platform);
       await IsolationManager.ensureImage(
-        image,
+        imagePlan.image,
         true,
-        IsolationManager.providerBuildArgs(providerName, options.containerHome || '/home/node'),
-        platform
+        imagePlan.buildArgs,
+        imagePlan.platform
       );
+      const image = imagePlan.image;
       isolationImage = image;
 
       isolationManager = new IsolationManager({ image });
@@ -1862,7 +1868,8 @@ class Orchestrator {
         mounts: options.mounts,
         containerHome: options.containerHome,
         provider: providerName,
-        platform,
+        platform: imagePlan.platform,
+        ompDockerPolicy: imagePlan.ompDockerPolicy,
       });
       this._log(`[Orchestrator] Container created: ${containerId} (workDir: ${workDir})`);
     } else if (options.worktree) {

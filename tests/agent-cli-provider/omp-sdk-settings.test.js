@@ -99,6 +99,20 @@ test('OMP registry exposes SDK settings but does not claim RPC structured-output
   );
   assert.match(metadata.authInstructions, /Manually edit providerSettings\.omp/);
   assert.doesNotMatch(metadata.authInstructions, /login/i);
+  assert.equal(
+    metadata.settingsValidator({
+      transport: 'rpc',
+      levelOverrides: { level2: { model: '@default' } },
+    }),
+    null
+  );
+  assert.match(
+    metadata.settingsValidator({
+      transport: 'sdk',
+      levelOverrides: { level2: { model: '@default' } },
+    }),
+    /level1.*required|exact full provider\/model selectors/i
+  );
 });
 
 test('built-in Bedrock compiles an empty providers-only models file', () => {

@@ -33,7 +33,7 @@ class RuntimeProvider extends BaseProvider {
   }
 
   isAvailable() {
-    if (this._usesBundledRunner()) {
+    if (this.name === 'omp' || this._usesBundledRunner()) {
       return helper.probeRuntimeProviderCli(this.name).available;
     }
     const { command } = resolveProviderCommand(this.name);
