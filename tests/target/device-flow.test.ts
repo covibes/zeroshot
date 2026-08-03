@@ -5,6 +5,7 @@ import {
   pollForToken,
   DeviceFlowDeniedError,
   DeviceFlowExpiredError,
+  type PollForTokenRequest,
 } from '../../src/target/device-flow.ts';
 import { FakeHttpTransport, FakeClock, respond } from './harness.ts';
 
@@ -102,6 +103,21 @@ describe('requestDeviceCode', () => {
   });
 });
 
+function poll(
+  http: FakeHttpTransport,
+  overrides: Partial<Omit<PollForTokenRequest, 'http'>> = {},
+) {
+  return pollForToken({
+    tokenEndpoint: 'https://auth.example.com/oauth/token',
+    clientId: 'cli',
+    deviceCode: 'dev-code-123',
+    interval: 0,
+    expiresIn: 900,
+    http,
+    ...overrides,
+  });
+}
+
 describe('pollForToken', () => {
   it('returns token on immediate success', async () => {
     const http = new FakeHttpTransport();
@@ -118,15 +134,7 @@ describe('pollForToken', () => {
       })
     );
 
-    const result = await pollForToken(
-      'https://auth.example.com/oauth/token',
-      'cli',
-      'dev-code-123',
-      0,
-      900,
-      http,
-      clock
-    );
+    const result = await poll(http, { clock });
 
     assert.equal(result.access_token, 'access-123');
     assert.equal(result.refresh_token, 'refresh-456');
@@ -144,10 +152,13 @@ describe('pollForToken', () => {
       expires_in: 3600,
     }));
     await assert.rejects(
-      pollForToken('https://auth.example.com/oauth/token', 'cli', 'device', 0, 900, http),
+      poll(http, { deviceCode: 'device' }),
       /Token response is malformed/,
     );
   });
+});
+
+describe('pollForToken retry state', () => {
 
   it('continues polling on authorization_pending', async () => {
     const http = new FakeHttpTransport();
@@ -166,15 +177,7 @@ describe('pollForToken', () => {
       })
     );
 
-    const result = await pollForToken(
-      'https://auth.example.com/oauth/token',
-      'cli',
-      'dev-code-123',
-      0,
-      900,
-      http,
-      clock
-    );
+    const result = await poll(http, { clock });
 
     assert.equal(result.access_token, 'access-123');
     assert.equal(http.requests.length, 3);
@@ -197,18 +200,13 @@ describe('pollForToken', () => {
     );
 
     // interval starts at 0 for speed, after slow_down becomes 5
-    const result = await pollForToken(
-      'https://auth.example.com/oauth/token',
-      'cli',
-      'dev-code-123',
-      0,
-      900,
-      http,
-      clock
-    );
+    const result = await poll(http, { clock });
 
     assert.equal(result.access_token, 'access-123');
   });
+});
+
+describe('pollForToken failures', () => {
 
   it('throws DeviceFlowDeniedError on access_denied', async () => {
     const http = new FakeHttpTransport();
@@ -217,15 +215,7 @@ describe('pollForToken', () => {
     http.enqueue(respond(400, { error: 'access_denied' }));
 
     await assert.rejects(
-      pollForToken(
-        'https://auth.example.com/oauth/token',
-        'cli',
-        'dev-code-123',
-        0,
-        900,
-        http,
-        clock
-      ),
+      poll(http, { clock }),
       DeviceFlowDeniedError
     );
   });
@@ -237,15 +227,7 @@ describe('pollForToken', () => {
     http.enqueue(respond(400, { error: 'expired_token' }));
 
     await assert.rejects(
-      pollForToken(
-        'https://auth.example.com/oauth/token',
-        'cli',
-        'dev-code-123',
-        0,
-        900,
-        http,
-        clock
-      ),
+      poll(http, { clock }),
       DeviceFlowExpiredError
     );
   });
@@ -256,15 +238,7 @@ describe('pollForToken', () => {
     http.enqueue(respond(400, { error: 'CANARY_REFRESH_920' }));
 
     await assert.rejects(
-      pollForToken(
-        'https://auth.example.com/oauth/token',
-        'cli',
-        'dev-code-123',
-        0,
-        900,
-        http,
-        clock
-      ),
+      poll(http, { clock }),
       (error: Error) => {
         assert.equal(error.message, 'Token endpoint returned an unsupported OAuth error');
         assert.equal(error.message.includes('CANARY_REFRESH_920'), false);
@@ -278,15 +252,7 @@ describe('pollForToken', () => {
     const clock = new FakeClock(1_000_000);
 
     await assert.rejects(
-      pollForToken(
-        'https://auth.example.com/oauth/token',
-        'cli',
-        'dev-code-123',
-        0,
-        0,
-        http,
-        clock
-      ),
+      poll(http, { expiresIn: 0, clock }),
       DeviceFlowExpiredError
     );
   });
@@ -298,16 +264,7 @@ describe('pollForToken', () => {
     controller.abort();
 
     await assert.rejects(
-      pollForToken(
-        'https://auth.example.com/oauth/token',
-        'cli',
-        'dev-code-123',
-        1,
-        900,
-        http,
-        clock,
-        controller.signal
-      ),
+      poll(http, { interval: 1, clock, signal: controller.signal }),
       /Aborted|abort/i
     );
   });

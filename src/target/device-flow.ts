@@ -84,6 +84,26 @@ const LOOPBACK_HOSTS: Readonly<Record<string, true>> = Object.freeze({
   '[::1]': true,
 });
 const MAX_URI_BYTES = 4 * 1024;
+export function oauthFormRequest(
+  body: URLSearchParams,
+  signal?: AbortSignal,
+): RequestInit & { redirect: 'error' } {
+  const init: RequestInit & { redirect: 'error' } = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+    redirect: 'error',
+  };
+  if (signal !== undefined) init.signal = signal;
+  return init;
+}
+
+async function requireResponseRoute(response: Response, expectedUrl: string): Promise<void> {
+  if (!response.url || new URL(response.url).href === expectedUrl) return;
+  await response.body?.cancel().catch(() => undefined);
+  throw new Error('OAuth response changed target route or authority');
+}
+
 
 async function readBoundedJson(response: Response): Promise<unknown> {
   return readBoundedResponseJson(response, MAX_OAUTH_RESPONSE_BYTES, (kind) =>
@@ -201,19 +221,11 @@ export async function requestDeviceCode(
 ): Promise<DeviceCodeResponse> {
   const body = new URLSearchParams({ client_id: clientId });
 
-  const init: RequestInit & { redirect: 'error' } = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-    redirect: 'error',
-  };
-  if (signal) init.signal = signal;
-
-  const response = await http.fetch(deviceAuthorizationEndpoint, init);
-  if (response.url && new URL(response.url).href !== deviceAuthorizationEndpoint) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new Error('OAuth response changed target route or authority');
-  }
+  const response = await http.fetch(
+    deviceAuthorizationEndpoint,
+    oauthFormRequest(body, signal),
+  );
+  await requireResponseRoute(response, deviceAuthorizationEndpoint);
 
   if (!response.ok) {
     parseOAuthError(await readBoundedJson(response));
@@ -223,67 +235,58 @@ export async function requestDeviceCode(
   return parseDeviceCodeResponse(await readBoundedJson(response));
 }
 
-export async function pollForToken(
-  tokenEndpoint: string,
-  clientId: string,
-  deviceCode: string,
-  interval: number,
-  expiresIn: number,
-  http: HttpTransport,
-  clock: Clock = DEFAULT_CLOCK,
-  signal?: AbortSignal,
-  exchange?: DeviceExchangeContext | DeviceIdentity
-): Promise<TokenResponse> {
-  const deadline = clock.now() + expiresIn * 1000;
-  let currentInterval = interval;
+export interface PollForTokenRequest {
+  readonly tokenEndpoint: string;
+  readonly clientId: string;
+  readonly deviceCode: string;
+  readonly interval: number;
+  readonly expiresIn: number;
+  readonly http: HttpTransport;
+  readonly clock?: Clock;
+  readonly signal?: AbortSignal;
+  readonly exchange?: DeviceExchangeContext | DeviceIdentity;
+}
+type PollResult = TokenResponse | 'authorization_pending' | 'slow_down';
+
+async function parsePollResponse(response: Response): Promise<PollResult> {
+  if (response.ok) return parseTokenResponse(await readBoundedJson(response));
+  const error = parseOAuthError(await readBoundedJson(response));
+  if (error === 'authorization_pending' || error === 'slow_down') return error;
+  if (error === 'access_denied') throw new DeviceFlowDeniedError();
+  if (error === 'expired_token') throw new DeviceFlowExpiredError();
+  throw new Error('Token endpoint returned an unsupported OAuth error');
+}
+
+function pollBody(request: PollForTokenRequest): URLSearchParams {
+  return new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    device_code: request.deviceCode,
+    client_id: request.clientId,
+    ...exchangeFields(request.exchange),
+  });
+}
+
+export async function pollForToken(request: PollForTokenRequest): Promise<TokenResponse> {
+  const clock = request.clock ?? DEFAULT_CLOCK;
+  const deadline = clock.now() + request.expiresIn * 1000;
+  let currentInterval = request.interval;
 
   while (clock.now() < deadline) {
-    if (signal?.aborted) {
-      throw signal.reason ?? new DOMException('Aborted', 'AbortError');
+    if (request.signal?.aborted) {
+      throw request.signal.reason ?? new DOMException('Aborted', 'AbortError');
     }
-
-    await sleep(currentInterval * 1000, signal);
-
-    const body = new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-      device_code: deviceCode,
-      client_id: clientId,
-      ...exchangeFields(exchange),
-    });
-
-    const init: RequestInit & { redirect: 'error' } = {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-      redirect: 'error',
-    };
-    if (signal) init.signal = signal;
-
-    const response = await http.fetch(tokenEndpoint, init);
-    if (response.url && new URL(response.url).href !== tokenEndpoint) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new Error('OAuth response changed target route or authority');
+    await sleep(currentInterval * 1000, request.signal);
+    const response = await request.http.fetch(
+      request.tokenEndpoint,
+      oauthFormRequest(pollBody(request), request.signal),
+    );
+    const result = await parsePollResponse(response);
+    if (result === 'authorization_pending') continue;
+    if (result === 'slow_down') {
+      currentInterval += 5;
+      continue;
     }
-
-    if (response.ok) {
-      return parseTokenResponse(await readBoundedJson(response));
-    }
-
-    const error = parseOAuthError(await readBoundedJson(response));
-    switch (error) {
-      case 'authorization_pending':
-        continue;
-      case 'slow_down':
-        currentInterval += 5;
-        continue;
-      case 'access_denied':
-        throw new DeviceFlowDeniedError();
-      case 'expired_token':
-        throw new DeviceFlowExpiredError();
-      default:
-        throw new Error('Token endpoint returned an unsupported OAuth error');
-    }
+    return result;
   }
-
   throw new DeviceFlowExpiredError();
 }

@@ -4,15 +4,15 @@ import {
   createTargetAdapter,
   TargetProtocolError,
   TargetServerError,
-} from '../../lib/hosted-target/index.mjs';
-import { MAX_RESPONSE_BYTES } from '../../lib/hosted-target/bounds.mjs';
+} from '../../src/hosted-target/index.ts';
+import { MAX_RESPONSE_BYTES } from '../../src/hosted-target/bounds.ts';
 import {
   FakeHttpTransport,
   FakeTokenProvider,
   NO_RETRY,
   capsule,
   fakeDiscovery,
-} from './harness.mjs';
+} from './harness.ts';
 
 function bodyOf(request: { readonly init: RequestInit }): unknown {
   return JSON.parse(String(request.init.body));

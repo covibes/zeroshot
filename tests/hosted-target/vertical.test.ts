@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import {
   createTargetAdapter,
   type TargetAdapter,
-} from '../../lib/hosted-target/index.mjs';
+} from '../../src/hosted-target/index.ts';
 import {
   discoverTarget,
   TargetSessionManager,
@@ -22,7 +22,7 @@ import {
   makeSettingsPort,
   makeTarget,
   respond,
-} from '../target/harness.mjs';
+} from '../target/harness.ts';
 import { waitForSocketRequest } from '../helpers/wait-for-socket-request.js';
 
 const require = createRequire(resolve('tests/hosted-target/vertical.test.ts'));
@@ -106,6 +106,7 @@ async function authenticate(
         clientId: descriptor.oauth.clientId,
         deviceGrantType: descriptor.oauth.deviceGrantType,
         audience: descriptor.oauth.audience,
+        capsuleApiBaseUrl: descriptor.capsule.baseUrl,
         sessionEndpoint: new URL(
           descriptor.session.routeTemplate.template,
           descriptor.origin,

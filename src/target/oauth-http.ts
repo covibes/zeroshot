@@ -2,19 +2,6 @@ import { readBoundedResponseJson } from './bounded-response.ts';
 
 const MAX_SESSION_RESPONSE_BYTES = 64 * 1024;
 
-export function oauthFormRequest(
-  body: URLSearchParams,
-  signal?: AbortSignal,
-): RequestInit & { redirect: 'error' } {
-  const init: RequestInit & { redirect: 'error' } = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-    redirect: 'error',
-  };
-  if (signal !== undefined) init.signal = signal;
-  return init;
-}
 
 export async function readTargetSessionJson(response: Response): Promise<unknown> {
   return readBoundedResponseJson(response, MAX_SESSION_RESPONSE_BYTES, (kind) =>

@@ -1,17 +1,11 @@
 import type { TargetCredentialStore } from './credential-store.ts';
-import {
-  oauthFormRequest,
-  readOAuthError,
-  readTargetSessionJson,
-} from './oauth-http.ts';
+import { exchangeRefreshToken } from './refresh-exchange.ts';
 import type { TargetRecord, SettingsPort } from './target-registry.ts';
 import {
   requestDeviceCode,
   pollForToken,
-  parseTokenResponse,
-  type HttpTransport,
   type Clock,
-  type TokenResponse,
+  type HttpTransport,
 } from './device-flow.ts';
 import { targetServiceKey, TARGET_ACCOUNT } from './credential-store.ts';
 import {
@@ -87,6 +81,23 @@ export class TargetSessionManager {
     this.#deps = init.deps;
   }
 
+  #cachedAccess(audience: string): { accessToken: string; expiresIn: number } | null {
+    const cached = this.#access.get(audience);
+    if (
+      cached === undefined ||
+      this.#deps.clock.now() >= cached.expiresAt - TOKEN_EXPIRY_SKEW_MS
+    ) {
+      return null;
+    }
+    return {
+      accessToken: cached.token,
+      expiresIn: Math.max(
+        0,
+        Math.floor((cached.expiresAt - this.#deps.clock.now()) / 1_000),
+      ),
+    };
+  }
+
   async login(signal?: AbortSignal): Promise<{ organization: { id: string } }> {
     const endpoints = this.#deps.discoveryEndpoints;
     const code = await requestDeviceCode(
@@ -111,22 +122,22 @@ export class TargetSessionManager {
       const storedPrevious = await this.#store.get(this.#serviceKey(), TARGET_ACCOUNT);
       const previous = storedPrevious === INVALID_REFRESH_FAMILY ? null : storedPrevious;
 
-      const token = await pollForToken(
-        endpoints.tokenEndpoint,
-        endpoints.clientId,
-        code.device_code,
-        code.interval,
-        code.expires_in,
-        this.#deps.http,
-        this.#deps.clock,
-        signal,
-        {
+      const token = await pollForToken({
+        tokenEndpoint: endpoints.tokenEndpoint,
+        clientId: endpoints.clientId,
+        deviceCode: code.device_code,
+        interval: code.interval,
+        expiresIn: code.expires_in,
+        http: this.#deps.http,
+        clock: this.#deps.clock,
+        ...(signal === undefined ? {} : { signal }),
+        exchange: {
           grantType: endpoints.deviceGrantType,
           deviceToken: this.#target.deviceToken,
           deviceLabel: DEVICE_LABEL,
           audience: endpoints.audience,
-        }
-      );
+        },
+      });
       const organization = await readVerifiedOrganization(
         token.access_token,
         signal,
@@ -164,30 +175,14 @@ export class TargetSessionManager {
     signal?: AbortSignal,
   ): Promise<{ accessToken: string; expiresIn: number }> {
     requireAudience(audience);
-    const cached = this.#access.get(audience);
-    if (cached !== undefined && this.#deps.clock.now() < cached.expiresAt - TOKEN_EXPIRY_SKEW_MS) {
-      return {
-        accessToken: cached.token,
-        expiresIn: Math.max(0, Math.floor((cached.expiresAt - this.#deps.clock.now()) / 1_000)),
-      };
-    }
+    const cached = this.#cachedAccess(audience);
+    if (cached !== null) return cached;
     if (signal?.aborted) throw abortReason(signal);
 
     const release = await this.#acquireLock();
     try {
-      const afterLock = this.#access.get(audience);
-      if (
-        afterLock !== undefined &&
-        this.#deps.clock.now() < afterLock.expiresAt - TOKEN_EXPIRY_SKEW_MS
-      ) {
-        return {
-          accessToken: afterLock.token,
-          expiresIn: Math.max(
-            0,
-            Math.floor((afterLock.expiresAt - this.#deps.clock.now()) / 1_000),
-          ),
-        };
-      }
+      const afterLock = this.#cachedAccess(audience);
+      if (afterLock !== null) return afterLock;
       if (targetRefreshIsInvalidated(this.#targetName, this.#settings)) {
         throw new LoginRequiredError(this.#targetName);
       }
@@ -199,33 +194,16 @@ export class TargetSessionManager {
       setTargetRefreshInvalidated(this.#targetName, true, this.#settings);
       await this.#store.set(this.#serviceKey(), TARGET_ACCOUNT, INVALID_REFRESH_FAMILY);
 
-      let dispatched = false;
-      let replacement: TokenResponse | undefined;
+      let replacement: Awaited<ReturnType<typeof exchangeRefreshToken>> | undefined;
       try {
-        const body = new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: this.#deps.discoveryEndpoints.clientId,
-          refresh_token: refreshToken,
+        replacement = await exchangeRefreshToken({
+          tokenEndpoint: this.#deps.discoveryEndpoints.tokenEndpoint,
+          clientId: this.#deps.discoveryEndpoints.clientId,
+          refreshToken,
           audience,
+          http: this.#deps.http,
+          ...(signal === undefined ? {} : { signal }),
         });
-        dispatched = true;
-        const response = await this.#deps.http.fetch(
-          this.#deps.discoveryEndpoints.tokenEndpoint,
-          oauthFormRequest(body, signal)
-        );
-        if (
-          response.url &&
-          new URL(response.url).href !== this.#deps.discoveryEndpoints.tokenEndpoint
-        ) {
-          await response.body?.cancel().catch(() => undefined);
-          throw new Error('Target token response changed route or authority');
-        }
-        if (!response.ok) {
-          const oauthError = await readOAuthError(response);
-          if (oauthError === 'invalid_grant') throw new LoginRequiredError(this.#targetName);
-          throw new Error('Target token exchange failed');
-        }
-        replacement = parseTokenResponse(await readTargetSessionJson(response));
         await this.#store.set(this.#serviceKey(), TARGET_ACCOUNT, replacement.refresh_token);
         setTargetRefreshInvalidated(this.#targetName, false, this.#settings);
         this.#access.clear();
@@ -234,10 +212,8 @@ export class TargetSessionManager {
           expiresAt: this.#deps.clock.now() + replacement.expires_in * 1_000,
         });
         return { accessToken: replacement.access_token, expiresIn: replacement.expires_in };
-      } catch (error) {
-        if (!dispatched && signal?.aborted) throw abortReason(signal);
+      } catch {
         await this.#invalidateFamily(replacement?.refresh_token);
-        if (error instanceof LoginRequiredError) throw error;
         throw new LoginRequiredError(this.#targetName);
       }
     } finally {

@@ -1,33 +1,7 @@
 import type { RouteTemplate, TargetDiscoveryDescriptor } from '../../src/target/discovery.ts';
-import type { Clock, HttpTransport, RetryPolicy, TargetAccessTokenProvider } from '../../src/hosted-target/types.ts';
+import type { RetryPolicy, TargetAccessTokenProvider } from '../../src/hosted-target/types.ts';
+export { FakeHttpTransport } from '../target/harness.ts';
 
-export interface CapturedRequest {
-  readonly url: string;
-  readonly init: RequestInit & { redirect: 'manual' };
-}
-
-export class FakeHttpTransport implements HttpTransport {
-  readonly requests: CapturedRequest[] = [];
-  readonly responses: Response[] = [];
-  enqueue(status: number, body: unknown, headers: Record<string, string> = {}): void {
-    this.responses.push(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } }));
-  }
-  async fetch(url: string, init: RequestInit & { redirect: 'manual' }): Promise<Response> {
-    this.requests.push({ url, init });
-    const response = this.responses.shift();
-    if (!response) throw new Error('No response queued');
-    return response;
-  }
-}
-
-export class FakeClock implements Clock {
-  private value: number;
-  constructor(value = Date.parse('2026-08-03T00:00:00.000Z')) {
-    this.value = value;
-  }
-  now(): number { return this.value; }
-  advance(ms: number): void { this.value += ms; }
-}
 
 export class FakeTokenProvider implements TargetAccessTokenProvider {
   readonly calls: Array<AbortSignal | undefined> = [];

@@ -12,19 +12,30 @@ interface CannedResponse {
   headers?: Record<string, string>;
 }
 
-interface RecordedRequest {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  body: string | null;
+export interface RecordedRequest {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  readonly body: string | null;
+  readonly init: RequestInit & { redirect: 'error' | 'manual' };
 }
 
 export class FakeHttpTransport implements HttpTransport {
   readonly requests: RecordedRequest[] = [];
-  private readonly responses: CannedResponse[] = [];
+  readonly responses: Array<CannedResponse | Response> = [];
 
-  enqueue(response: CannedResponse): void {
-    this.responses.push(response);
+  enqueue(response: CannedResponse | Response): void;
+  enqueue(status: number, body: unknown, headers?: Record<string, string>): void;
+  enqueue(
+    responseOrStatus: CannedResponse | Response | number,
+    body?: unknown,
+    headers?: Record<string, string>,
+  ): void {
+    this.responses.push(
+      typeof responseOrStatus === 'number'
+        ? respond(responseOrStatus, body, headers)
+        : responseOrStatus,
+    );
   }
 
   async fetch(
@@ -47,12 +58,14 @@ export class FakeHttpTransport implements HttpTransport {
       method: init.method ?? 'GET',
       headers,
       body: typeof init.body === 'string' ? init.body : null,
+      init,
     });
 
     const canned = this.responses.shift();
     if (!canned) {
       throw new Error(`FakeHttpTransport: no response queued for ${init.method} ${url}`);
     }
+    if (canned instanceof Response) return canned;
 
     const responseHeaders = new Headers(canned.headers);
     if (!responseHeaders.has('Content-Type')) {
@@ -104,10 +117,12 @@ export class FakeStderr {
 export function respond(
   status: number,
   body: unknown,
-): { status: number; body: string } {
+  headers?: Record<string, string>,
+): CannedResponse {
   return {
     status,
     body: typeof body === 'string' ? body : JSON.stringify(body),
+    ...(headers === undefined ? {} : { headers }),
   };
 }
 
