@@ -1,89 +1,17 @@
 const assert = require('assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const jsYaml = require('js-yaml');
 
-const distribution = require('../../scripts/rust-distribution');
-const shim = require('../../npm/zeroshot-rust/lib/install');
-
-const projectRoot = path.resolve(__dirname, '..', '..');
-
-function temporaryDirectory() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-rust-distribution-'));
-}
-
-function relativeFiles(root, directory = root) {
-  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const absolute = path.join(directory, entry.name);
-    return entry.isDirectory() ? relativeFiles(root, absolute) : [path.relative(root, absolute)];
-  });
-}
-
-function mutation(source, before, after = '') {
-  assert(source.includes(before), `mutation precondition missing: ${before}`);
-  return source.replace(before, after);
-}
-
-function mutateWorkflowJob(source, jobName, mutateJob) {
-  const document = jsYaml.load(source);
-  const job = document.jobs[jobName];
-  assert(job, `workflow job missing: ${jobName}`);
-  mutateJob(job);
-  return JSON.stringify(document);
-}
-
-function withRustStageFixture(
-  { requirement, lockedDependencies, includeRegistryNameCollision = false, trailingTables = [] },
-  assertion
-) {
-  const directory = temporaryDirectory();
-  const packageDirectory = path.join(directory, 'zeroshot-rust');
-  const workspacePath = path.join(directory, 'Cargo.toml');
-  const manifestPath = path.join(packageDirectory, 'Cargo.toml');
-  const lockPath = path.join(directory, 'Cargo.lock');
-  fs.mkdirSync(packageDirectory);
-  fs.writeFileSync(
-    workspacePath,
-    `[workspace]\nmembers = ["zeroshot-rust"]\n\n[workspace.dependencies]\nwindows-sys = "${requirement}"\n`
-  );
-  fs.writeFileSync(
-    manifestPath,
-    '[package]\nname = "zeroshot-rust"\nversion = "0.1.0"\nedition = "2024"\n\n[target.\'cfg(windows)\'.dependencies]\nwindows-sys = { workspace = true }\n'
-  );
-  const lockPackages = lockedDependencies.flatMap(({ version, source }) => [
-    '[[package]]',
-    'name = "windows-sys"',
-    `version = "${version}"`,
-    ...(source ? [`source = "${source}"`] : []),
-    '',
-  ]);
-  if (includeRegistryNameCollision) {
-    lockPackages.push(
-      '[[package]]',
-      'name = "zeroshot-rust"',
-      'version = "99.0.0"',
-      'source = "registry+https://github.com/rust-lang/crates.io-index"',
-      ''
-    );
-  }
-  lockPackages.push(
-    '[[package]]',
-    'name = "zeroshot-rust"',
-    'version = "0.1.0"',
-    'dependencies = [',
-    ' "windows-sys",',
-    ']',
-    ''
-  );
-  lockPackages.push(...trailingTables);
-  fs.writeFileSync(lockPath, ['version = 4', '', ...lockPackages].join('\n'));
-  try {
-    return assertion({ lockPath, manifestPath, workspacePath });
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-}
+const {
+  distribution,
+  mutation,
+  mutateWorkflowJob,
+  projectRoot,
+  relativeFiles,
+  shim,
+  temporaryDirectory,
+  withRustStageFixture,
+} = require('./rust-distribution-support');
 
 describe('Rust product distribution', function () {
   it('declares the complete native target and host matrix', function () {
@@ -165,7 +93,7 @@ describe('Rust product distribution', function () {
   });
 });
 
-describe('Rust release integration', function () {
+function registerVersionCouplingTests() {
   it('fails a release version mismatch with the named error and both versions', function () {
     const cargoToml = '[package]\nname = "zeroshot-rust"\nversion = "1.2.2"\n';
     assert.throws(
@@ -176,86 +104,61 @@ describe('Rust release integration', function () {
   });
 
   it('stages the planned version and target lock resolution before coupling', function () {
-    const directory = temporaryDirectory();
-    const packageDirectory = path.join(directory, 'zeroshot-rust');
-    const workspacePath = path.join(directory, 'Cargo.toml');
-    const manifestPath = path.join(packageDirectory, 'Cargo.toml');
-    const lockPath = path.join(directory, 'Cargo.lock');
-    fs.mkdirSync(packageDirectory);
-    fs.writeFileSync(
-      workspacePath,
-      '[workspace]\nmembers = ["zeroshot-rust"]\n\n[workspace.dependencies]\nwindows-sys = "0.61.2"\n'
-    );
-    fs.writeFileSync(
-      manifestPath,
-      '[package]\nname = "zeroshot-rust"\nversion = "0.1.0"\nedition = "2024"\n\n[target.\'cfg(windows)\'.dependencies]\nwindows-sys = { workspace = true }\n'
-    );
-    fs.writeFileSync(
-      lockPath,
-      [
-        'version = 4',
-        '',
-        '[[package]]',
-        'name = "windows-sys"',
-        'version = "0.52.0"',
-        '',
-        '[[package]]',
-        'name = "windows-sys"',
-        'version = "0.61.2"',
-        '',
-        '[[package]]',
-        'name = "zeroshot-rust"',
-        'version = "0.1.0"',
-        'dependencies = [',
-        ' "windows-sys",',
-        ']',
-        '',
-      ].join('\n')
-    );
-    try {
-      assert.deepStrictEqual(
-        distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
-        {
-          currentVersion: '0.1.0',
-          version: '6.10.3',
-        }
-      );
-      const stagedManifest = fs.readFileSync(manifestPath, 'utf8');
-      const stagedLock = fs.readFileSync(lockPath, 'utf8');
-      const workspaceManifest = fs.readFileSync(workspacePath, 'utf8');
-      assert.strictEqual(
-        distribution.checkVersionCoupling('v6.10.3', stagedManifest, stagedLock, workspaceManifest),
-        '6.10.3'
-      );
-      assert.match(
-        stagedLock,
-        /name = "zeroshot-rust"\nversion = "6\.10\.3"[\s\S]*"windows-sys 0\.61\.2"/
-      );
-      assert.throws(
-        () =>
+    withRustStageFixture(
+      {
+        requirement: '0.61.2',
+        lockedDependencies: [{ version: '0.52.0' }, { version: '0.61.2' }],
+      },
+      ({ lockPath, manifestPath, workspacePath }) => {
+        assert.deepStrictEqual(
+          distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
+          {
+            currentVersion: '0.1.0',
+            version: '6.10.3',
+          }
+        );
+        const stagedManifest = fs.readFileSync(manifestPath, 'utf8');
+        const stagedLock = fs.readFileSync(lockPath, 'utf8');
+        const workspaceManifest = fs.readFileSync(workspacePath, 'utf8');
+        assert.strictEqual(
           distribution.checkVersionCoupling(
             'v6.10.3',
             stagedManifest,
-            stagedLock.replace('"windows-sys 0.61.2"', '"windows-sys"'),
+            stagedLock,
             workspaceManifest
           ),
-        /RUST_VERSION_MISMATCH: Cargo\.lock zeroshot-rust dependency windows-sys/
-      );
-      assert.throws(
-        () =>
-          distribution.checkVersionCoupling(
-            'v6.10.3',
-            stagedManifest,
-            stagedLock.replace('version = "6.10.3"', 'version = "0.1.0"'),
-            workspaceManifest
-          ),
-        /RUST_VERSION_MISMATCH: release tag version 6\.10\.3.*Cargo\.lock.*0\.1\.0/
-      );
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
+          '6.10.3'
+        );
+        assert.match(
+          stagedLock,
+          /name = "zeroshot-rust"\nversion = "6\.10\.3"[\s\S]*"windows-sys 0\.61\.2"/
+        );
+        assert.throws(
+          () =>
+            distribution.checkVersionCoupling(
+              'v6.10.3',
+              stagedManifest,
+              stagedLock.replace('"windows-sys 0.61.2"', '"windows-sys"'),
+              workspaceManifest
+            ),
+          /RUST_VERSION_MISMATCH: Cargo\.lock zeroshot-rust dependency windows-sys/
+        );
+        assert.throws(
+          () =>
+            distribution.checkVersionCoupling(
+              'v6.10.3',
+              stagedManifest,
+              stagedLock.replace('version = "6.10.3"', 'version = "0.1.0"'),
+              workspaceManifest
+            ),
+          /RUST_VERSION_MISMATCH: release tag version 6\.10\.3.*Cargo\.lock.*0\.1\.0/
+        );
+      }
+    );
   });
+}
 
+function registerLockResolutionTests() {
   it('resolves supported Cargo requirements without collapsing lock identities', function () {
     const registry = 'registry+https://github.com/rust-lang/crates.io-index';
     withRustStageFixture(
@@ -334,7 +237,11 @@ describe('Rust release integration', function () {
       }
     );
   });
+}
 
+describe('Rust release integration', function () {
+  registerVersionCouplingTests();
+  registerLockResolutionTests();
   it('causally guards build, matrix, upload, publication, recovery, and shim integrity', function () {
     const workflow = fs.readFileSync(
       path.join(projectRoot, '.github', 'workflows', 'release.yml'),
@@ -847,12 +754,17 @@ describe('Rust npm shim integration', function () {
     }
   });
 
-  it('keeps native metadata outside the Rust-only product and the Node package', function () {
+  it('keeps native release metadata outside the private product and public Node package', function () {
     const rustRoot = path.join(projectRoot, 'zeroshot-rust');
+    const privateHostedNodeFiles = new Set([
+      'hosted-node/engine-adapter.js',
+      'hosted-node/worker.js',
+      'hosted-node/workspace-tools.js',
+    ]);
     for (const file of relativeFiles(rustRoot)) {
       assert(
-        file === 'Cargo.toml' || file.endsWith('.rs'),
-        `unexpected non-Rust product file: ${file}`
+        file === 'Cargo.toml' || file.endsWith('.rs') || privateHostedNodeFiles.has(file),
+        `unexpected product file: ${file}`
       );
     }
     assert.strictEqual(
@@ -870,7 +782,15 @@ describe('Rust npm shim integration', function () {
       'cluster-templates/',
       'cluster-hooks/',
       'docker/',
+      '!docker/zeroshot-oecp/',
       'scripts/',
+      '!scripts/hosted-oecp-image.js',
+      '!scripts/hosted-oecp-image-commands.js',
+      '!scripts/hosted-oecp-image-smoke.js',
+      '!scripts/hosted-oecp-manifest.js',
+      '!scripts/hosted-oecp-smoke-capability.js',
+      '!scripts/hosted-oecp-smoke-client.js',
+      '!scripts/hosted-oecp-smoke-fixture.js',
       'protocol/openengine-cluster/v1/worker.schema.json',
       'docs/openengine-cluster-protocol/v1/legacy-worker.md',
       'README.md',
