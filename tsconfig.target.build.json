@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.target.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "rootDir": "src/target",
+    "outDir": "lib/target",
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": false,
+    "declaration": true,
+    "sourceMap": false,
+    "declarationMap": false
+  },
+  "include": ["src/target/**/*.ts"],
+  "exclude": ["node_modules", "dist", "coverage", "lib"]
+}

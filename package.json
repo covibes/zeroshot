@@ -29,7 +29,7 @@
     ]
   },
   "scripts": {
-    "pretest": "npm run build:agent-cli-provider",
+    "pretest": "npm run build:agent-cli-provider && npm run build:target",
     "test": "node tests/run-tests.js",
     "test:unit": "node tests/run-tests.js",
     "test:e2e": "mocha 'tests/e2e/**/*.test.js' --timeout 120000",
@@ -40,16 +40,17 @@
     "test:coverage:report": "c8 --reporter=html npm run test:unit && echo 'Coverage report generated at coverage/index.html'",
     "postinstall": "node scripts/fix-node-pty-permissions.js && node scripts/check-path.js",
     "start": "node cli/index.js",
-    "typecheck": "tsc --noEmit && npm run typecheck:cluster && npm run typecheck:hosted-target && npm run typecheck:hosted-session",
+    "typecheck": "tsc --noEmit && npm run typecheck:cluster && npm run typecheck:hosted-target && npm run typecheck:hosted-session && npm run typecheck:target",
     "typecheck:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.json",
     "typecheck:hosted-target": "tsc --project tsconfig.hosted-target.json",
     "typecheck:hosted-session": "tsc --project tsconfig.hosted-session.json",
     "test:hosted-target": "node --test tests/hosted-target/*.test.ts",
-    "test:target": "node --test tests/target/*.test.ts",
+    "test:target": "npm run build:agent-cli-provider && npm run build:target && node --test tests/target/*.test.ts",
     "typecheck:target": "tsc --project tsconfig.target.json",
     "typecheck:cluster": "tsc --project tsconfig.cluster.json",
     "lint:agent-cli-provider": "eslint \"src/agent-cli-provider/**/*.ts\" \"tests/agent-cli-provider/**/*.ts\"",
     "build:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.build.json",
+    "build:target": "tsc --project tsconfig.target.build.json",
     "build:cluster": "npm run protocol:generate && tsc --project tsconfig.cluster.cjs.json && tsc --project tsconfig.cluster.esm.json && tsc --project tsconfig.hosted-session.cjs.json && tsc --project tsconfig.hosted-session.esm.json && node scripts/build-cluster.js",
     "test:agent-cli-provider": "node --test tests/agent-cli-provider/*.test.js",
     "test:omp": "npm run build:agent-cli-provider && node --test tests/agent-cli-provider/omp-*.test.js && node tests/run-tests.js tests/omp-rpc-watcher.test.js tests/omp-isolation-capability.test.js tests/omp-docker-auth.test.js tests/omp-docker-fresh-only.test.js",
@@ -57,7 +58,7 @@
     "check:agent-cli-provider": "npm run check:agent-cli-provider:ci",
     "check:agent-cli-provider:ci": "npm run typecheck:agent-cli-provider && npm run lint:agent-cli-provider && npm run build:agent-cli-provider && npm run test:agent-cli-provider",
     "test:cluster-client": "npm run build:cluster && node --test tests/cluster/client.test.js tests/cluster/parity.test.js tests/cluster/architecture.test.js tests/cluster/verifier-regressions.test.js tests/cluster/request-validation.test.js tests/hosted-session/coordinator.test.js",
-    "test:cluster-package": "npm run build:agent-cli-provider && npm run build:cluster && node --test tests/cluster/package.test.js",
+    "test:cluster-package": "npm run build:agent-cli-provider && npm run build:cluster && npm run build:target && node --test tests/cluster/package.test.js",
     "dev:link": "npm link",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -79,9 +80,9 @@
     "release:preflight": "node scripts/release-preflight.js",
     "release:recover": "node scripts/release-recovery.js",
     "release:assert-published": "node scripts/assert-release-published.js",
-    "prepack": "npm run build:cluster",
+    "prepack": "npm run build:cluster && npm run build:target",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run check:agent-cli-provider:ci",
-    "prepare": "npm run build:agent-cli-provider && husky"
+    "prepare": "npm run build:agent-cli-provider && npm run build:target && husky"
   },
   "c8": {
     "reporter": [

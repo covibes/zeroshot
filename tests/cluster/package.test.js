@@ -66,6 +66,7 @@ test('packed tarball resolves CJS, ESM, root, package metadata, and preserved de
     'lib/hosted-session/index.cjs',
     'lib/hosted-session/index.mjs',
     'lib/hosted-session/index.d.ts',
+    'lib/target/target-registry.js',
   ])
     assert.ok(names.has(required), required);
   execute(
@@ -89,7 +90,7 @@ test('packed tarball resolves CJS, ESM, root, package metadata, and preserved de
     process.execPath,
     [
       '-e',
-      "require('@the-open-engine/zeroshot');require('@the-open-engine/zeroshot/src/orchestrator.js');require('@the-open-engine/zeroshot/lib/settings.js');require('@the-open-engine/zeroshot/package.json')",
+      "require('@the-open-engine/zeroshot');require('@the-open-engine/zeroshot/src/orchestrator.js');require('@the-open-engine/zeroshot/lib/settings.js');require('@the-open-engine/zeroshot/lib/target/target-registry.js');require('@the-open-engine/zeroshot/package.json')",
     ],
     directory
   );

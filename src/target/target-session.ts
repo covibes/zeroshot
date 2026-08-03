@@ -43,7 +43,7 @@ export async function targetLogin(
   credentialStore: TargetCredentialStore,
   acquireLock: () => Promise<() => Promise<void>>,
   settings: SettingsPort,
-  deps: TargetSessionDeps,
+  deps: TargetSessionDeps
 ): Promise<{ organization: { id: string; name: string } }> {
   const { http, clock, browserOpener, stderr, discoveryEndpoints } = deps;
   const { deviceAuthorizationEndpoint, tokenEndpoint, clientId } = discoveryEndpoints;
@@ -51,7 +51,7 @@ export async function targetLogin(
   const codeResponse = await requestDeviceCode(deviceAuthorizationEndpoint, clientId, http);
 
   stderr.write(
-    `\nOpen this URL to authorize:\n  ${codeResponse.verification_uri}\n\nEnter code: ${codeResponse.user_code}\n\n`,
+    `\nOpen this URL to authorize:\n  ${codeResponse.verification_uri}\n\nEnter code: ${codeResponse.user_code}\n\n`
   );
 
   if (codeResponse.verification_uri_complete) {
@@ -69,7 +69,7 @@ export async function targetLogin(
     codeResponse.interval,
     codeResponse.expires_in,
     http,
-    clock,
+    clock
   );
 
   if (!tokenResponse.organization) {
@@ -94,7 +94,7 @@ export async function refreshAccessToken(
   target: TargetRecord,
   credentialStore: TargetCredentialStore,
   acquireLock: () => Promise<() => Promise<void>>,
-  deps: Pick<TargetSessionDeps, 'http' | 'discoveryEndpoints'>,
+  deps: Pick<TargetSessionDeps, 'http' | 'discoveryEndpoints'>
 ): Promise<{ accessToken: string; expiresIn: number }> {
   const { http, discoveryEndpoints } = deps;
   const { tokenEndpoint, revocationEndpoint, clientId } = discoveryEndpoints;
@@ -152,7 +152,7 @@ async function bestEffortRevoke(
   token: string,
   revocationEndpoint: string | undefined,
   clientId: string,
-  http: HttpTransport,
+  http: HttpTransport
 ): Promise<void> {
   if (!revocationEndpoint) return;
   try {
@@ -182,7 +182,7 @@ export function getAccessTokenProvider(
   credentialStore: TargetCredentialStore,
   acquireLock: () => Promise<() => Promise<void>>,
   deps: Pick<TargetSessionDeps, 'http' | 'discoveryEndpoints'>,
-  clock: Clock = { now: () => Date.now() },
+  clock: Clock = { now: () => Date.now() }
 ): TargetAccessTokenProvider {
   let cachedToken: string | null = null;
   let expiresAt = 0;
@@ -192,7 +192,13 @@ export function getAccessTokenProvider(
       if (cachedToken && clock.now() < expiresAt - 30_000) {
         return cachedToken;
       }
-      const result = await refreshAccessToken(targetName, target, credentialStore, acquireLock, deps);
+      const result = await refreshAccessToken(
+        targetName,
+        target,
+        credentialStore,
+        acquireLock,
+        deps
+      );
       cachedToken = result.accessToken;
       expiresAt = clock.now() + result.expiresIn * 1000;
       return result.accessToken;
@@ -205,7 +211,7 @@ export async function revokeAndCleanup(
   credentialStore: TargetCredentialStore,
   acquireLock: () => Promise<() => Promise<void>>,
   deps: Pick<TargetSessionDeps, 'http' | 'discoveryEndpoints'>,
-  force: boolean,
+  force: boolean
 ): Promise<void> {
   const { http, discoveryEndpoints } = deps;
   const { revocationEndpoint, clientId } = discoveryEndpoints;
@@ -229,7 +235,7 @@ export async function revokeAndCleanup(
         });
         if (!response.ok && !force) {
           throw new Error(
-            `Remote revocation failed (${response.status}). Use --force to remove anyway.`,
+            `Remote revocation failed (${response.status}). Use --force to remove anyway.`
           );
         }
       } catch (err) {

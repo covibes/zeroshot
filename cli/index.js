@@ -4491,8 +4491,8 @@ settingsCmd.action(() => {
 });
 
 // Target management commands
-// Dynamic import helper — prevents tsc from following .ts imports in this JS file
-const importTarget = (mod) => import(`../src/target/${mod}.ts`);
+// Target modules are compiled during install/package preparation for the Node 18+ CLI.
+const importTarget = (mod) => import(`../lib/target/${mod}.js`);
 const targetCmd = program.command('target').description('Manage named remote targets');
 
 targetCmd
@@ -4523,6 +4523,7 @@ targetCmd
       const { targetLogin } = await importTarget('target-session');
       const { KeyringCredentialStore } = await importTarget('credential-store');
       const { acquireTargetLock } = await importTarget('credential-lock');
+      const { discoverTargetSessionEndpoints } = await importTarget('discovery');
 
       const settingsPort = {
         load: () => loadSettings(),
@@ -4535,6 +4536,9 @@ targetCmd
         process.exit(1);
       }
 
+      const http = { fetch: (url, init) => fetch(url, init) };
+      const discoveryEndpoints = await discoverTargetSessionEndpoints(target.url, http);
+
       const credentialStore = await KeyringCredentialStore.create();
       const openPkg = await import('open');
       const browserOpen = openPkg.default || openPkg;
@@ -4546,7 +4550,7 @@ targetCmd
         () => acquireTargetLock(target.id),
         settingsPort,
         {
-          http: { fetch: (url, init) => fetch(url, init) },
+          http,
           clock: { now: () => Date.now() },
           browserOpener: {
             open: async (url) => {
@@ -4554,12 +4558,7 @@ targetCmd
             },
           },
           stderr: process.stderr,
-          discoveryEndpoints: {
-            deviceAuthorizationEndpoint: `${target.url}/.well-known/openid-configuration`,
-            tokenEndpoint: `${target.url}/oauth/token`,
-            revocationEndpoint: `${target.url}/oauth/revoke`,
-            clientId: 'cli',
-          },
+          discoveryEndpoints,
         }
       );
 
@@ -4647,6 +4646,7 @@ targetCmd
       const { getTarget, removeTarget } = await importTarget('target-registry');
       const { revokeAndCleanup } = await importTarget('target-session');
       const { acquireTargetLock } = await importTarget('credential-lock');
+      const { discoverTargetSessionEndpoints } = await importTarget('discovery');
 
       const settingsPort = {
         load: () => loadSettings(),
@@ -4663,18 +4663,15 @@ targetCmd
       try {
         const { KeyringCredentialStore } = await importTarget('credential-store');
         const credentialStore = await KeyringCredentialStore.create();
+        const http = { fetch: (url, init) => fetch(url, init) };
+        const discoveryEndpoints = await discoverTargetSessionEndpoints(target.url, http);
         await revokeAndCleanup(
           target,
           credentialStore,
           () => acquireTargetLock(target.id),
           {
-            http: { fetch: (url, init) => fetch(url, init) },
-            discoveryEndpoints: {
-              deviceAuthorizationEndpoint: `${target.url}/.well-known/openid-configuration`,
-              tokenEndpoint: `${target.url}/oauth/token`,
-              revocationEndpoint: `${target.url}/oauth/revoke`,
-              clientId: 'cli',
-            },
+            http,
+            discoveryEndpoints,
           },
           !!options.force
         );

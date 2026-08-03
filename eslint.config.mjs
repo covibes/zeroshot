@@ -331,6 +331,7 @@ export default [
       'lib/agent-cli-provider/**',
       'lib/cluster/**',
       'lib/hosted-session/**',
+      'lib/target/**',
     ],
   },
   prettierConfig,

@@ -47,3 +47,9 @@ export {
   type TargetSessionDeps,
   type TargetAccessTokenProvider,
 } from './target-session.ts';
+
+export {
+  discoverTargetSessionEndpoints,
+  TargetDiscoveryError,
+  type TargetSessionEndpoints,
+} from './discovery.ts';

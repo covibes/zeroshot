@@ -61,3 +61,4 @@ test-isolated-fix.js
 lib/agent-cli-provider/
 lib/cluster/
 lib/hosted-session/
+lib/target/
