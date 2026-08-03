@@ -1115,7 +1115,10 @@ never contain a workstation-specific package path. Provider output is evidence, 
 keep existing lint, type, test, CI, and review guardrails.
 Rust function-metric enforcement requires `rust-code-analysis-cli 0.0.25`; CI installs the pinned
 tool with `npm run opcore:install:rust-metrics`, and a missing local tool makes Rust metric gates
-fail closed rather than silently skipping the configured limits.
+fail closed rather than silently skipping the configured limits. Blocking introduced-change gates
+exclude `rust.unused-deps` because its nightly `cargo-udeps` provider is not installed in CI.
+The introduced-change wrapper declares each non-emitting TypeScript project config as a scope
+authority so Opcore validates specialized source trees with the same compiler options as CI.
 
 Production dependency auditing runs through `npm run audit:production`. Opcore `0.2.1` bundles
 three upstream denial-of-service advisories; the audit gate permits only their exact advisory IDs,
