@@ -1104,6 +1104,16 @@ and their exact implementations, each carrying a rationale. Opcore remains at
 six because it has no per-symbol override; new and internal APIs must use request
 structs rather than raising or bypassing the Clippy ceiling.
 
+Opcore `0.2.1` is an exact runtime dependency and Node 22 is the minimum supported Node release.
+All blocking Opcore entrypoints are introduced-change gates: agent writes use
+`scripts/opcore-agent-gate.js`, commits use `npm run opcore:check:staged`, and CI/validators use
+`npm run opcore:check`. Never put `opcore check all` in a blocking hook or handoff gate; it is an
+audit surface for existing debt. Before graph-backed inspection, run `npm run opcore:status` and
+refresh stale persistent evidence with `npm run opcore:graph:build`. The portable hook resolves the
+agent-gate implementation beside Opcore's pinned public entrypoint so checked-in harness settings
+never contain a workstation-specific package path. Provider output is evidence, not host authority;
+keep existing lint, type, test, CI, and review guardrails.
+
 Run validation for:
 
 - Significant changes (>50 lines)

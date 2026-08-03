@@ -15,7 +15,7 @@
 [![npm](https://img.shields.io/npm/v/@the-open-engine/zeroshot?style=flat&labelColor=171411&color=171411)](https://www.npmjs.com/package/@the-open-engine/zeroshot)
 [![CI](https://img.shields.io/github/actions/workflow/status/the-open-engine/zeroshot/ci.yml?style=flat&labelColor=171411&label=CI)](https://github.com/the-open-engine/zeroshot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-171411?style=flat)](LICENSE)
-[![node](https://img.shields.io/badge/node-%E2%89%A5%2018-171411?style=flat)](#install)
+[![node](https://img.shields.io/badge/node-%E2%89%A5%2022-171411?style=flat)](#install)
 [![platforms](https://img.shields.io/badge/platforms-linux%20%C2%B7%20macos-171411?style=flat)](#install)
 [![stars](https://img.shields.io/github/stars/the-open-engine/zeroshot?style=flat&labelColor=171411&color=171411)](https://github.com/the-open-engine/zeroshot)
 [![Layer 01 · The Open Engine](https://img.shields.io/badge/Layer_01-The_Open_Engine-C2240C?style=flat&labelColor=171411)](#the-open-engine)
@@ -43,7 +43,7 @@ Zeroshot is an open-source, multi-agent orchestration engine for autonomous soft
 npm install -g @the-open-engine/zeroshot
 ```
 
-Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemini, or OpenCode). Linux and macOS today; Windows is deferred.
+Requires **Node ≥ 22** and at least one provider CLI (Claude Code, Codex, Gemini, or OpenCode). The package includes the pinned Opcore constraints CLI; repository hook activation remains explicit. Linux and macOS today; Windows is deferred.
 
 <div align="center">
   <img src="docs/assets/zeroshot-demo.gif" alt="Zeroshot resolving an issue through the executor-verifier loop" width="760">
@@ -207,7 +207,7 @@ Zeroshot is **Layer 01 · Verification** of [The Open Engine](https://theopeneng
 | 02     | Constraints: **Opcore**    | Sibling · alpha             |
 | 03-05  | Intent · Context · Runtime | In development              |
 
-Zeroshot runs the loop: an agent writes the change, and an **independent** verifier decides whether it holds: approve, or a reproducible failure. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents (currently private alpha `0.1.0-alpha.0`, built in the open, not yet published). Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
+Zeroshot runs the loop: an agent writes the change, and an **independent** verifier decides whether it holds: approve, or a reproducible failure. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents. Zeroshot packages Opcore `0.2.1` and uses introduced-change validation so existing repository debt never blocks an otherwise clean change. Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
 
 Each layer ships the same way: extracted from the platform we run, then opened. **Trust nothing. Verify everything.**
 

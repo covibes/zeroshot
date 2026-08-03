@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/scripts/opcore-agent-gate.js\" --harness claude --repo \"$(git rev-parse --show-toplevel)\"",
+            "timeout": 120,
+            "statusMessage": "Running Opcore introduced-change gate"
+          }
+        ]
+      }
+    ]
+  }
+}
