@@ -3,13 +3,17 @@ import { join, dirname, resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 import { LOGS_DIR } from './config.js';
-import { addTask, generateId, ensureDirs } from './store.js';
+import { addTask, generateId, ensureDirs, updateTask } from './store.js';
 import {
   isOmpSessionlessRun,
   resolveOmpStorageRoot,
   resolveOmpOwnerKind,
 } from './omp-storage-root.js';
-import { readOwnership, writeProvisionalOwnership } from './omp-session-ownership.js';
+import {
+  readOwnership,
+  retireOmpOwnershipAtTerminalBoundary,
+  writeProvisionalOwnership,
+} from './omp-session-ownership.js';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -202,6 +206,38 @@ function resolveOmpSessionPlan({ id, cwd, options }) {
   };
 }
 
+/**
+ * Close a spawn that failed after its row was written but before anything could own the task.
+ *
+ * Two durable transitions, in this order and both idempotent, so a retry or a crash-recovery
+ * replay converges on the same state:
+ *   1. the OMP ownership record is retired to `cleanup-required`, releasing the partition claim
+ *      that would otherwise block every future reclaim of that directory;
+ *   2. the task row reaches a terminal status, so nothing downstream (status, kill, resume, the
+ *      stuck-task recovery sweep) keeps treating it as a live run.
+ *
+ * The decision comes from this boundary alone. Whether the partition directory exists is not
+ * consulted and must not be: a partial mkdir and a clean failure are indistinguishable on disk,
+ * and the row is the only thing that knows a spawn was attempted at all.
+ */
+function failSpawnAtProvisionalBoundary(id, error) {
+  retireOmpOwnershipAtTerminalBoundary(id, (ownershipError) => {
+    console.warn(
+      `Warning: failed to retire the OMP session ownership of task ${id}: ${ownershipError.message}`
+    );
+  });
+  try {
+    updateTask(id, {
+      status: 'failed',
+      pid: null,
+      exitCode: 1,
+      error: `Task spawn failed before the provider started: ${error.message}`,
+    });
+  } catch (updateError) {
+    console.warn(`Warning: failed to mark task ${id} failed: ${updateError.message}`);
+  }
+}
+
 export function spawnTask(prompt, options = {}) {
   ensureDirs();
 
@@ -235,11 +271,22 @@ export function spawnTask(prompt, options = {}) {
   });
 
   // Row-before-directory: the SQL row is durable proof of an attempted allocation before the
-  // partition directory (or anything else OMP-owned) exists on disk. A crash between these two
+  // partition directory (or anything else OMP-owned) exists on disk. A *crash* between these two
   // lines leaves a provisional row pointing at a path with nothing there yet — cleanup safely
   // no-ops on a nonexistent path, and normal task-lifecycle recovery handles the row itself.
+  //
+  // A *thrown* materialization failure is different, and must not be left to recovery: this
+  // process is still alive and owns the row, so it has to close the boundary itself. Without this,
+  // an EACCES/ENOSPC mkdir left a row that looks forever like a live task holding a live
+  // provisional claim on a partition — permanently unreclaimable, because cleanup refuses to touch
+  // a partition any other row still claims provisionally.
   addTask(task);
-  ompPlan?.createDirectory();
+  try {
+    ompPlan?.createDirectory();
+  } catch (error) {
+    failSpawnAtProvisionalBoundary(id, error);
+    throw error;
+  }
 
   const watcherConfig = buildWatcherConfig(
     outputFormat,

@@ -8,7 +8,6 @@
 // `owner`, `session`, or either identity) rejects the whole record, and every known key is
 // re-derived into a canonical form on the way out. A record that does not validate is never
 // partially trusted — callers fail closed to a fresh context.
-import { createHash } from 'crypto';
 import { isAbsolute, resolve as resolvePath } from 'path';
 import { createRequire } from 'module';
 
@@ -16,11 +15,7 @@ const require = createRequire(import.meta.url);
 const { PARTITION_ID_PATTERN, partitionPathFor } = require('../src/omp-session-partition.js');
 
 export const OMP_OWNERSHIP_SCHEMA_VERSION = 1;
-export const OMP_OWNERSHIP_STATES = Object.freeze([
-  'provisional',
-  'committed',
-  'cleanup-required',
-]);
+export const OMP_OWNERSHIP_STATES = Object.freeze(['provisional', 'committed', 'cleanup-required']);
 
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const DECIMAL_PATTERN = /^(0|[1-9][0-9]*)$/u;
@@ -87,14 +82,6 @@ function normalizeIdentity(value) {
 
 export function canonicalOwnerUid() {
   return typeof process.getuid === 'function' ? String(process.getuid()) : '0';
-}
-
-/** sha256 over the UTF-8 bytes of a stable JSON encoding (sorted keys) of `fields`. */
-export function computeExecutionFingerprint(fields) {
-  const sortedKeys = Object.keys(fields).sort();
-  const stable = {};
-  for (const key of sortedKeys) stable[key] = fields[key];
-  return `sha256:${createHash('sha256').update(JSON.stringify(stable), 'utf8').digest('hex')}`;
 }
 
 function normalizeOwner(owner) {
@@ -179,7 +166,9 @@ export function validateOmpSessionOwnership(value) {
   // No partially populated pairs, in any state: an observation of the materialized session is
   // either complete (both the partition identity and the full session tuple) or absent.
   if (hasPartitionIdentity !== hasSession) return null;
-  const partitionIdentity = hasPartitionIdentity ? normalizeIdentity(value.partitionIdentity) : null;
+  const partitionIdentity = hasPartitionIdentity
+    ? normalizeIdentity(value.partitionIdentity)
+    : null;
   const session = hasSession ? normalizeSession(value.session) : null;
   if (hasPartitionIdentity && (!partitionIdentity || !session)) return null;
   // `committed` is the only state that asserts a resumable session, so it is the only state that
@@ -250,6 +239,23 @@ export function parseOmpSessionOwnership(raw) {
     return null;
   }
   return validateOmpSessionOwnership(parsed);
+}
+
+/**
+ * Closed raw-column inspection seam for a stored `omp_session_ownership` value.
+ *
+ * `parseOmpSessionOwnership` collapses *both* "SQL NULL" and "non-null but unreadable" to `null`,
+ * and those two mean opposite things to cleanup: SQL NULL is exact truth that there is nothing to
+ * clean, while unreadable bytes are evidence that a partition may exist whose owner record we can
+ * no longer interpret. Deleting such a row would orphan that partition permanently, so every
+ * cleanup surface needs to tell them apart.
+ *
+ * The seam is deliberately closed: it reports only `{present, valid}` and never hands the raw text
+ * back, so nothing downstream can be tempted to parse, canonicalize, or act on malformed JSON.
+ */
+export function inspectStoredOmpSessionOwnership(raw) {
+  if (raw === null || raw === undefined) return { present: false, valid: false };
+  return { present: true, valid: parseOmpSessionOwnership(raw) !== null };
 }
 
 export function serializeOmpSessionOwnership(value) {

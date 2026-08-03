@@ -114,7 +114,13 @@ describe('task-lib/omp-session-ownership-schema.js (closed ownership schema)', f
   });
 
   it('requires a real UUID partition id', function () {
-    for (const partitionId of ['', 'not-a-uuid', '../escape', '11111111-1111-1111-1111-11111111', 42]) {
+    for (const partitionId of [
+      '',
+      'not-a-uuid',
+      '../escape',
+      '11111111-1111-1111-1111-11111111',
+      42,
+    ]) {
       const record = baseRecord();
       record.partitionId = partitionId;
       assert.strictEqual(
@@ -204,7 +210,9 @@ describe('task-lib/omp-session-ownership-schema.js (closed ownership schema)', f
   it('enforces the owner kind invariants', function () {
     assert.strictEqual(
       schema.validateOmpSessionOwnership(
-        baseRecord({ owner: { kind: 'cluster-agent', clusterId: null, agentId: null, taskId: 't' } })
+        baseRecord({
+          owner: { kind: 'cluster-agent', clusterId: null, agentId: null, taskId: 't' },
+        })
       ),
       null,
       'cluster-agent requires both ids'
@@ -233,13 +241,22 @@ describe('task-lib/omp-session-ownership-schema.js (closed ownership schema)', f
     for (const ownerUid of ['-1', '01', '1.0', 1000, '']) {
       assert.strictEqual(schema.validateOmpSessionOwnership(baseRecord({ ownerUid })), null);
     }
-    for (const identity of [{ device: '01', inode: '1' }, { device: 1, inode: 2 }, { device: '1' }]) {
+    for (const identity of [
+      { device: '01', inode: '1' },
+      { device: 1, inode: 2 },
+      { device: '1' },
+    ]) {
       assert.strictEqual(
         schema.validateOmpSessionOwnership(baseRecord({ storageRootIdentity: identity })),
         null
       );
     }
-    for (const digest of ['sha256:' + 'A'.repeat(64), 'sha1:' + 'a'.repeat(40), 'a'.repeat(64), '']) {
+    for (const digest of [
+      'sha256:' + 'A'.repeat(64),
+      'sha1:' + 'a'.repeat(40),
+      'a'.repeat(64),
+      '',
+    ]) {
       assert.strictEqual(
         schema.validateOmpSessionOwnership(
           committedRecord({ session: session({ artifactManifestDigest: digest }) })
@@ -327,11 +344,12 @@ describe('task-lib/omp-session-ownership-schema.js (closed ownership schema)', f
     );
   });
 
-  it('computeExecutionFingerprint is stable under key order and sensitive to any value', function () {
-    const a = schema.computeExecutionFingerprint({ x: '1', y: '2' });
-    const b = schema.computeExecutionFingerprint({ y: '2', x: '1' });
-    assert.strictEqual(a, b);
-    assert.match(a, /^sha256:[a-f0-9]{64}$/);
-    assert.notStrictEqual(a, schema.computeExecutionFingerprint({ x: '1', y: '3' }));
+  // There is exactly one execution-fingerprint implementation, src/omp-execution-fingerprint.js,
+  // and it is covered by tests/unit/omp-resume-plan.test.js and tests/omp-rpc-watcher.test.js
+  // against the real command spec and OMP-reported evidence. This module used to export a second,
+  // generic digest helper that nothing but its own unit test called; a digest contract that only a
+  // test exercises is a contract that can silently drift from the one production uses.
+  it('exports no second execution-fingerprint implementation', function () {
+    assert.strictEqual(schema.computeExecutionFingerprint, undefined);
   });
 });

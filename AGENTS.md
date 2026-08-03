@@ -503,13 +503,27 @@ persists the task's provisional `ompSessionOwnership` row before the partition d
 created on disk, so a crash between the two leaves a provisional row pointing at a path with
 nothing there yet.
 
+A _thrown_ materialization failure in that window is not left to recovery. `spawnTask` catches it,
+retires the record to `cleanup-required`, and drives the task row to a terminal status before
+re-raising — a live-looking `running` row holding a live provisional claim would be permanently
+unreclaimable, since cleanup refuses any partition another row still claims provisionally. The same
+applies to every other durable boundary that ends a task with no watcher left to reach
+`finalizeOmpOwnership`: `zeroshot task kill` (killed/stale), `zeroshot clear`, and
+`zeroshot kill-all` all call `retireOmpOwnershipAtTerminalBoundary` _before_ their terminal status
+write. That helper is idempotent and never throws, so a retried kill or a crash-recovery replay
+converges and a store failure cannot turn "the task is killed" into an unhandled rejection.
+Retirement is decided by the boundary alone — never by whether the partition directory happens to
+exist, which cannot distinguish a partial mkdir from a clean failure. An _unconfirmed_ termination
+is deliberately not a boundary: a failed kill leaves the claim in place, because the provider may
+still be writing.
+
 CAS blobs are **not** Zeroshot's and are not inside the partition. OMP externalizes large payloads
-to a shared, machine-wide content-addressed store and leaves a *nested* `blob:sha256:<64-lower-hex>`
+to a shared, machine-wide content-addressed store and leaves a _nested_ `blob:sha256:<64-lower-hex>`
 reference string inside the session JSONL records (v17.2.1
 `packages/coding-agent/src/session/blob-store.ts`, `session-loader.ts`). That store's root is
 `@oh-my-pi/pi-utils::getBlobsDir()` — `~/.omp/agent/blobs` modulo OMP's `PI_CONFIG_DIR` /
 `PI_CODING_AGENT_DIR` / profile / XDG semantics — mirrored in `src/omp-blob-root.js`. Verification
-parses the JSONL, collects canonical nested refs, and checks the referenced blobs *there*; a
+parses the JSONL, collects canonical nested refs, and checks the referenced blobs _there_; a
 missing, non-canonical, or digest-mismatched reference is an invalid continuation. A blob may
 legitimately carry more than one hard link (`blob-store.ts` hardlinks a typed `<hash>.<ext>`
 sidecar), so blobs are content-verified rather than link-count-verified. **No cleanup surface ever
@@ -527,10 +541,35 @@ directories) and every type/owner/link/size/identity check and every byte read c
 `fstat`/`read` on that same descriptor — there is no lstat→open→stat pathname sequence and no
 re-open of a mutable name after validation, so a substituted file cannot be the one that gets read.
 `O_NONBLOCK` is load-bearing: without it a FIFO planted in a partition would block the open forever
-instead of failing verification. Directory listings re-pin and compare identity around `readdir`,
-turning a substituted directory into a hard failure rather than a silent traversal. Files are
-streamed in fixed-size chunks — never loaded proportional to file size — bounding both the declared
-size and the bytes actually observed while reading.
+instead of failing verification. Directory listings re-pin and compare identity around the
+enumeration, turning a substituted directory into a hard failure rather than a silent traversal.
+Files are streamed in fixed-size chunks — never loaded proportional to file size — bounding both
+the declared size and the bytes actually observed while reading.
+
+Names are handled as **raw bytes** wherever the platform has raw bytes to give. A POSIX filename is
+an opaque byte string, not text: two distinct files can carry names that are both invalid UTF-8 and
+that Node's string decoding collapses to the same run of U+FFFD, so hashing the re-encoded string
+would give two different artifact trees one manifest digest — a collision whose filenames an
+attacker chooses. Entries are therefore enumerated with `encoding: 'buffer'`, and every relative
+path is assembled, bounded (`maxRelativePathBytes` is measured on the raw bytes), separator-checked
+by byte, sorted with `Buffer.compare`, and length-prefix-hashed as bytes; child paths are opened
+from those same bytes with no string round trip. Windows has no such thing — the OS gives UTF-16,
+Node's fs rejects Buffer paths there — so it keeps the string path with the identical manifest
+layout.
+
+Verification stays bounded against hostile input, not merely against well-formed input.
+`maxSessionBytes` bounds the _file_, so a 256 MiB transcript with no newline in it is one record; a
+fixed `MAX_SESSION_RECORD_BYTES` (derived, not configurable: it is `maxReferencedBlobBytes`, the
+issue's own answer to how large one addressable unit of session content may be) caps what a single
+record may buffer, checked before the append it would authorize. The remaining per-record
+allocation is exactly that bound plus what `JSON.parse` necessarily materializes from it (one
+UTF-16 string and the parsed value) — O(record bound), independent of file size, record count, and
+newline placement. The blob-reference walk is **iterative**: V8's `JSON.parse` accepts nesting far
+deeper than any call stack, so a recursive walk over the parsed value raises
+`RangeError: Maximum call stack size exceeded` from inside a streaming read callback rather than
+failing verification. Directory enumeration uses `opendir` and stops as soon as it has read more
+names than the artifact-entry budget could allow, instead of `readdir` materializing every name in
+a hostile directory before any bound can apply.
 
 Ownership is an owner-fenced state machine persisted as `task.ompSessionOwnership`
 (`task-lib/store.js` schema v5, `task-lib/omp-session-ownership.js`):
@@ -543,7 +582,25 @@ non-UUID partition id, a non-canonical or relative path, a `partitionPath` that 
 a **full-value** SQL compare-and-swap (the canonical serialization is byte-stable, which is what
 makes that possible), so a duplicate or re-entrant completion call can never clobber a state a
 concurrent writer already advanced past; `updateTask` only writes the column when the caller
-explicitly supplies it, so an unrelated row update cannot clobber a CAS either.
+explicitly supplies it, so an unrelated row update cannot clobber a CAS either. Every device/inode
+in this schema, in the `--omp-resume` descriptor (`task-lib/commands/run.js`), and in the agent's
+`providerSession.ompSession` snapshot (`src/agent/provider-session.js`) must _already be_ a
+canonical unsigned decimal string. None of those three ever coerces: `String(value.device)` accepted
+a JSON number, a boxed String, or a one-element array and then wrote the coerced result, so a
+value that had never contained the canonical form would compare equal to a persisted record that
+did — the exact-identity check would have been asserting against a value the normalizer invented.
+
+`parseOmpSessionOwnership` collapses SQL NULL and unreadable bytes to the same `null`, and those
+mean opposite things: NULL is exact truth that nothing was allocated, while unreadable bytes may be
+the last remaining pointer to a real partition. `inspectStoredOmpSessionOwnership` is the closed
+raw-presence seam that separates them (it reports `{present, valid}` and never hands the raw text
+back — nothing may parse or act on malformed JSON), surfaced on the task record as
+`ompSessionOwnershipPresent`. Every cleanup surface retains such a row, its record, and its
+partition with an actionable warning; cluster clear reports it separately, since the owner tuple is
+exactly what is unreadable and it cannot be attributed to a cluster at all. Owner queries read the
+column as an opaque string and validate in JS rather than using SQLite `json_extract()`, which
+raises "malformed JSON" for a non-JSON value — one corrupted row anywhere in the table would
+otherwise make the partition fence _throw_ for every partition.
 
 A standalone task's detached watcher run is its own terminal boundary and commits directly once
 output is validated; a cluster-agent task's watcher only records the verified materialization
@@ -552,18 +609,32 @@ evidence and leaves the row `provisional` — only the spawning agent's post-hoo
 `executeOnCompleteHookWithRetry` succeeds) may advance it to `committed`. That function is also
 where **commit-then-snapshot** ordering lives: the snapshot inside a completion result was computed
 against a still-provisional row and is null for OMP by construction, so the record is committed,
-the commit is *checked*, and the snapshot is rebuilt from the re-read row before it reaches the
+the commit is _checked_, and the snapshot is rebuilt from the re-read row before it reaches the
 agent or `TASK_COMPLETED`. Publishing the completion-time snapshot instead would make every cluster
 OMP session silently non-reusable.
 
 Resume is an **atomic owner transfer**, not a second claim. `transferOmpSessionOwnership` moves the
 prior committed owner's lineage onto the resumed task's provisional row and clears the prior row in
 one transaction, both sides fenced on their exact current JSON, and the watcher runs it from the
-`ready` hook strictly *before* the prompt is written. A partition therefore never has two committed
+`ready` hook strictly _before_ the prompt is written. A partition therefore never has two committed
 owners; the resumed row stays `provisional` until its own success boundary, so a half-finished
-continuation is never published as resumable. Note what that does *not* say: a partition regularly
-has **no** committed owner (the whole span of a resumed turn) and is regularly named by **several
-rows at once** (a resumed row exists before its transfer runs; two competing resumes leave three).
+continuation is never published as resumable. Note what that does _not_ say: the authoritative live
+claimant during a resumed turn is `provisional` **by design** — the partition has **no** committed
+owner for that whole span — and it is regularly named by **several rows at once** (a resumed row
+exists before its transfer runs; two competing resumes leave three). Any comment, test message, or
+doc claiming a committed owner exists during an active resumed turn is wrong. After the transfer the
+resumed row holds the _only_ copy of the lineage, so every post-transfer failed/cancelled/uncertain
+boundary must retire it to `cleanup-required`: leaving it `provisional` would strand the partition
+behind the authoritative fence forever, and there is never a second committed owner to fall back to.
+
+Before the prompt, the resume checkpoint additionally requires the **echoed** session identity to
+be complete and exact. `get_state` may legitimately report only a subset (docs/rpc.md) and later
+`session_info_update` frames are merged onto prior evidence, but at the one checkpoint that
+transfers a lineage and writes a prompt, "OMP did not say" is not agreement: disk state cannot
+answer which session the running process attached to. Both `sessionId` and `sessionFile` must be
+present and exactly equal to the full recorded id and the full absolute recorded path. A prefix is
+not agreement either — OMP resolves `--resume` ids by prefix (`session-manager.ts`), which is
+precisely the ambiguity this rejects.
 Cleanup consults `findAuthoritativeOwnersForPartition` — every `provisional` or `committed` claim,
 not the committed ones alone — so neither a resume that crashed before its transfer nor a
 competitor that lost the transfer can delete a session another row is still using. Before any of
@@ -575,33 +646,58 @@ before a task row exists. The watcher then compares the **complete** committed t
 id, full session file path (never a basename), partition and session-file inode identity, artifact
 manifest digest, and an `executionFingerprint` (`src/omp-execution-fingerprint.js`) binding the
 pinned OMP release, the config-overlay content digest, the requested `--model`/`--thinking`/
-`--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. Every
-failed, cancelled, or uncertain boundary marks the row `cleanup-required`; manual resume
-(`task-lib/commands/resume.js`) requires `state === 'committed'`.
+`--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. That
+fingerprint has exactly one implementation, `src/omp-execution-fingerprint.js`; do not add a second
+digest helper beside the ownership schema, where only its own unit test would exercise it and it
+could silently drift from the contract production uses. Every failed, cancelled, or uncertain
+boundary marks the row `cleanup-required`.
+
+Manual resume (`task-lib/commands/resume.js`) requires `state === 'committed'` **and is
+standalone-only**: a `cluster-agent` owner is refused before a task row or a partition claim
+exists. A cluster-agent lineage can only be committed by the agent process that owns it (the
+post-hook boundary above), so a detached `zeroshot task resume` that accepted one would move the
+whole lineage onto a row no parent agent knows about — the prior owner's record cleared by the
+transfer, the resumed row uncommittable by anyone, the partition unreclaimable, and the real owner
+silently falling back to fresh context.
 
 All three cleanup surfaces go through `task-lib/omp-session-cleanup.js`: standalone task `clean`,
 cluster clear (`cli/index.js#deleteClusterData`, which reclaims partitions owned by that cluster's
 agents under its own `storageDir`), and global `purge` (cluster clear then `clean --all`). Deletion
 is validated against the persisted owner — uid, storage-root identity, partition identity — and
 closes the check/use race by **staging before deleting**: the partition is renamed, inside its own
-parent, to an unguessable `.zeroshot-deleting-<uuid>` name and only then re-pinned and removed, so
-after the atomic rename the object cannot be swapped by racing the original path. An unsafe or
-unresolvable path preserves the owner record with an actionable warning instead of deleting.
+parent, to a deterministic `.zeroshot-deleting-<partition-id>-<owner-identity-digest>` name and
+only then re-pinned and removed. A crash after rename or failed `rm -r` retries that exact staged
+directory when the canonical name is absent. Canonical/staged conflicts, owner or partition
+identity mismatches, and unsafe paths fail closed while preserving the row and tree for inspection.
 
 Two non-obvious constraints govern that path. First, **more than one row can name one partition**:
 a resumed row is inserted before its transfer runs, so a crash in between leaves two, and two
 competing resumes of one committed session leave three (the prior owner plus both candidates, only
-one of which can win the transfer). Cleanup therefore fences on every *authoritative*
+one of which can win the transfer). Cleanup therefore fences on every _authoritative_
 (`provisional` or `committed`) claim other than its own row — `findAuthoritativeOwnersForPartition`,
 not the committed rows alone. A committed-only fence is wrong in the exact case that matters: right
-after a successful transfer the winner is `provisional` and *no* row is committed, so a retired
+after a successful transfer the winner is `provisional` and _no_ row is committed, so a retired
 losing competitor would see nothing and delete the winner's live session. `cleanup-required` is
 deliberately not authoritative — treating it as one would deadlock two retired rows against each
-other and strand the partition forever. Second, the fence is a task-store **write transaction**
+other and strand the partition forever. Every unreadable or invalid non-null ownership row is
+global unknown authoritative evidence because its partition cannot be proven; it blocks all
+partition deletion across clean, cluster clear, and purge until an operator repairs that row.
+Second, the fence is a task-store **write transaction**
 (`BEGIN IMMEDIATE`) spanning exactly "no other authoritative claim" → "the partition no longer
 answers to its canonical name". `stageOmpSessionPartitionForDeletion` (rename) runs inside it and
 `removeStagedOmpSessionPartition` (`rm -r`) runs after it, so no resume can slip into the gap and
 no unbounded recursive delete is held under a write lock.
+
+Standalone `clean` (`task-lib/commands/clean.js`) has two further ordering rules. The **live-task
+retention boundary comes before every cleanup side effect**, independent of `commandCleanup`: a
+running task's partition is a live provider process's working directory, and the check used to sit
+inside the command-cleanup branch — i.e. after the partition had already been staged and
+recursively deleted — so `clean --all` could destroy a live session belonging to any task that
+happened to carry no cleanup receipt. And `clean` performs **no whole-table rewrite**: rows are
+removed individually through `removeTaskIfUnchanged`, fenced on the status and exact ownership
+bytes of the snapshot they were validated against. On the retained path,
+`clearTaskCommandCleanup` compares-and-swaps the exact serialized receipt cleanup processed, so a
+concurrent replacement receipt survives rather than being erased by an unconditional column clear.
 
 OMP's Docker isolation is env/broker-only, zero-automatic-mount, and sessionless — never same-shaped as the mount-based providers. Its registry `docker` entry has no `mount`: `~/.omp`, `agent.db`, WAL/SHM files, and host refresh tokens are never mounted or copied into the container. The **automatic** env allowlist is exactly 5 names (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OMP_AUTH_BROKER_TOKEN`, `OMP_AUTH_BROKER_URL`, `OPENAI_API_KEY`) per the maintainer's authoritative clarification (verified via `gh api repos/the-open-engine/zeroshot/issues/comments/5160272623`, which supersedes PLAN*READY's original nine-name draft) — deliberately narrower than OMP's full adapter `credentialEnvKeys` inventory (used for host inspection/redaction only). `ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_FOUNDRY_API_KEY`, `GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, and every other credential or path are never forwarded automatically — but they are **usable**: a registry-known credential outside the allowlist authenticates the container once (and only once) it is in the *explicit* plan (`dockerEnvPassthrough` / an explicitly listed preset / `--mount`). "Requires explicit opt-in" is the rule; "permanently unusable" would be a bug. A **path** credential (its forwarded value is an absolute container path, e.g. `GOOGLE_APPLICATION_CREDENTIALS`) additionally requires an explicit mount that actually provides that container path — a host path that merely exists proves nothing about what the container can read. OAuth users should prefer the auth broker so host refresh/access tokens never cross automatically. Auth is checked against the \_effective* container env/mount plan (`IsolationManager#_buildCredentialPlan` -> `#_assertProviderCredentialPlan` + `lib/docker-config.js#validateProviderEnvAuth`), never host presence, and the plan carries **actual values**, not presence flags — so a forced-empty passthrough (`dockerEnvPassthrough: ["OPENAI_API_KEY="]`, which really does reach `docker run -e OPENAI_API_KEY=`) and a whitespace-only value both fail closed instead of reading as authenticated. `OMP_AUTH_BROKER_URL` must parse as an absolute http(s) URL (registry `docker.envAuth.requireUrl`; per OMP v17.2.1 `docs/environment-variables.md` it is the broker's base URL and OMP hard-errors on a broker URL with no resolvable token), and a malformed URL or a half-set broker pair is a hard defect no other credential compensates for. Values are internal: every error/warning names variables and configuration paths only. Because OMP declares no `docker.mount`, unsatisfied or malformed auth throws — fail closed, no fallback to another provider — while every mount-based provider keeps today's non-fatal warning; and the check runs **before** `_removeContainerByName()` and `_prepareIsolatedWorkspace()`, so failed auth leaves no container or workspace side effect (same pre-effect ordering as the platform probe). Remediation for an env-only provider must never recommend mounting its host auth store (`credentialPaths[0]`, i.e. `~/.omp`) — that would contradict the whole contract; it prefers the broker pair and uses a generic custom-path example instead (`IsolationManager#_credentialRemediation`). `IsolationManager#createContainer` only creates and mounts the Claude credential/hook config dir (`_createClusterConfigDir`, `~/.claude`) when the _running_ provider is `claude` — that mount used to be unconditional for every provider, which was an unintended Claude-credential side channel into every other provider's container (OMP included); scoping it to `claude` closes that leak for OMP and every other non-Claude provider, since no other CLI reads `~/.claude/settings.json` or its credentials anyway. The Dockerfile's registry-fed `PROVIDER_CONFIG_ROOTS` build layer (after `USER node`) separately creates OMP's own `configRoots` (`~/.omp`) owner-only as the existing non-root `node` user; OMP is never run as root, and this is unrelated to the Claude config dir. The registry also owns `docker.platform` (`linux/amd64` for OMP only — the base image's AWS/Terraform/kubectl/Helm/Infracost/TFLint/tfsec layers are hard-coded x86-64, so this is not a native-arm64 claim); `IsolationManager.assertPlatformSupported` runs as a pre-effect probe (before any worktree/container/image side effect) in `orchestrator.js#_initializeIsolation`/`_ensureIsolationForResume`, `agent-lifecycle.js#createValidatorIsolation`, and `preflight.js#validateDockerRequirement`, and requires either a native-matching Docker server architecture or a Buildx builder advertising that platform — never a silent install of a foreign-arch binary into the shared base image. Buildx's `Platforms:` line is parsed into **exact** comma-delimited tokens (`IsolationManager.parseBuildxPlatforms`, trailing preferred-marker `*` stripped, every builder node's line collected): a substring test would accept a builder advertising only the variant `linux/amd64/v2` as if it could run `linux/amd64`. `IsolationManager.imageForProvider` derives the per-provider variant from the base reference's **name** component only — `IsolationManager.parseImageReference` strips a `@sha256:…` digest and a `:tag` while keeping a `registry:port/` (a colon before the last `/` is a port, not a tag), because appending `-<provider>-<hash>` after a digest or tag produces an invalid reference and the isolated run can never start. The tag hash covers the **full** base reference alongside the install command and platform, so two different pins of one base name never share a cached tag and a pinned-version or platform change busts the cache. Docker stays sessionless even though `sessionResume` is now `true` for OMP (issue #866 made host, worktree, detached cluster-agent, and standalone manual resume real — see the OMP session persistence section above). The capability flag and the container lane are independent: `buildSpawnEnv`/`spawnClaudeTaskIsolated` set `ZEROSHOT_OMP_SESSIONLESS=1` for an isolated run, `task-lib/runner.js#resolveOmpSessionPlan` therefore allocates no session partition and persists no ownership row, and the adapter launches `--no-session` with no `--session-dir`/`--resume`. `agentCanReuseSession` (`src/agent/provider-session.js`) independently rejects reuse for any isolated agent before a resume descriptor is even constructed. Same-container next task and container recreation both rebuild full context from scratch, never referencing a prior OMP session ID.
 

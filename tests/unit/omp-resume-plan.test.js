@@ -32,9 +32,7 @@ const ownershipUrl = pathToFileURL(
   path.resolve(__dirname, '../../task-lib/omp-session-ownership.js')
 ).href;
 const runnerUrl = pathToFileURL(path.resolve(__dirname, '../../task-lib/runner.js')).href;
-const runCommandUrl = pathToFileURL(
-  path.resolve(__dirname, '../../task-lib/commands/run.js')
-).href;
+const runCommandUrl = pathToFileURL(path.resolve(__dirname, '../../task-lib/commands/run.js')).href;
 const resumeCommandUrl = pathToFileURL(
   path.resolve(__dirname, '../../task-lib/commands/resume.js')
 ).href;
@@ -399,6 +397,62 @@ describe('--omp-resume descriptor parsing (task-lib/commands/run.js)', function 
     assert.strictEqual(badOptional.ok, false);
     assert.match(badOptional.error, /expectedPartitionIdentity/);
   });
+
+  it('rejects JSON numbers for device/inode instead of stringifying them', async function () {
+    // The descriptor arrives over argv from another process. Issue #866 fixes device/inode as
+    // canonical unsigned decimal *strings*, and the parser must check the type rather than coerce
+    // it: `String(value.device)` accepted the number 2049, the array ['2049'], and anything else
+    // with a convenient toString, then silently canonicalized it into a value the persisted record
+    // had never contained.
+    const rejected = [
+      { device: 1, inode: 2 },
+      { device: '1', inode: 2 },
+      { device: 1, inode: '2' },
+      { device: 0, inode: 0 },
+      { device: 1.0, inode: 2 },
+      { device: ['1'], inode: '2' },
+      { device: true, inode: '2' },
+      { device: '+1', inode: '2' },
+      { device: '-1', inode: '2' },
+      { device: '01', inode: '2' },
+      { device: ' 1', inode: '2' },
+      { device: '1 ', inode: '2' },
+      { device: '1e3', inode: '2' },
+      { device: '0x1', inode: '2' },
+      { device: '1', inode: '' },
+      { device: '1' },
+      { inode: '2' },
+      {},
+      { device: '1', inode: '2', extra: '3' },
+    ];
+    for (const identity of rejected) {
+      const required = await parseDescriptor(
+        JSON.stringify({ ...valid, expectedSessionFileIdentity: identity })
+      );
+      assert.strictEqual(
+        required.ok,
+        false,
+        `expectedSessionFileIdentity ${JSON.stringify(identity)} must be rejected, not canonicalized`
+      );
+      const optional = await parseDescriptor(
+        JSON.stringify({ ...valid, expectedPartitionIdentity: identity })
+      );
+      assert.strictEqual(
+        optional.ok,
+        false,
+        `expectedPartitionIdentity ${JSON.stringify(identity)} must be rejected, not canonicalized`
+      );
+    }
+
+    // A canonical decimal string beyond Number.MAX_SAFE_INTEGER stays exactly as written: these
+    // are opaque identifiers compared byte for byte, never parsed as numbers.
+    const huge = { device: '18446744073709551615', inode: '9007199254740993' };
+    const accepted = await parseDescriptor(
+      JSON.stringify({ ...valid, expectedSessionFileIdentity: huge })
+    );
+    assert.ok(accepted.ok, accepted.error);
+    assert.deepStrictEqual(accepted.value.expectedSessionFileIdentity, huge);
+  });
 });
 
 describe('manual standalone resume (task-lib/commands/resume.js)', function () {
@@ -467,6 +521,56 @@ describe('manual standalone resume (task-lib/commands/resume.js)', function () {
     const result = await buildResumeOptions(id);
     assert.strictEqual(result.ok, false);
     assert.match(result.error, /no valid OMP session ownership record/);
+  });
+
+  it('refuses a cluster-agent owner outright, and spawns nothing', async function () {
+    // A cluster-agent lineage can only be committed by the agent process that owns it
+    // (agent-lifecycle.js's post-hook boundary). A detached `zeroshot task resume` that accepted
+    // one would move the whole committed lineage onto a row no parent agent knows about: the prior
+    // owner's record is cleared by the transfer, the resumed row can never be committed by anyone,
+    // and the partition becomes unreclaimable while the real owner silently falls back to fresh
+    // context. So it must be refused *before* a task row or a partition claim exists.
+    const storageRoot = fs.mkdtempSync(path.join(zeroshotHome, 'manual-cluster-storage-'));
+    const workspace = fs.mkdtempSync(path.join(zeroshotHome, 'manual-cluster-workspace-'));
+    const partition = makeSessionPartition({ storageRoot, cwd: workspace });
+    const id = nextTaskId('manual-cluster');
+    await seedCommittedOwner(id, {
+      storageRoot,
+      workspace,
+      partition,
+      owner: { kind: 'cluster-agent', clusterId: 'cluster-A', agentId: 'worker-1', taskId: id },
+    });
+
+    const result = await buildResumeOptions(id);
+    assert.strictEqual(result.ok, false);
+    assert.match(result.error, /owned by cluster agent cluster-A\/worker-1/);
+    assert.match(result.error, /standalone-only/);
+
+    // And the whole command surface, not just the options builder: no second task row is created,
+    // and the committed lineage is left exactly where it was for its real owner to continue.
+    // resumeTask prints progress to stdout, so the machine-readable result is sentinel-delimited.
+    const stdout = await runScript(`
+      const { loadTasks, getTask } = await import(${JSON.stringify(storeUrl)});
+      const { resumeTask } = await import(${JSON.stringify(resumeCommandUrl)});
+      const before = Object.keys(loadTasks()).length;
+      let threw = null;
+      try {
+        await resumeTask(${JSON.stringify(id)}, 'continue');
+      } catch (error) {
+        threw = error.message;
+      }
+      process.stdout.write('\\n@@' + JSON.stringify({
+        threw,
+        spawned: Object.keys(loadTasks()).length - before,
+        ownership: getTask(${JSON.stringify(id)}).ompSessionOwnership,
+      }));
+    `);
+    const outcome = JSON.parse(stdout.split('@@').pop());
+    assert.match(outcome.threw ?? '', /standalone-only/, 'resumeTask must reject, not spawn');
+    assert.strictEqual(outcome.spawned, 0, 'no task may be spawned for a rejected resume');
+    assert.strictEqual(outcome.ownership.state, 'committed');
+    assert.strictEqual(outcome.ownership.owner.clusterId, 'cluster-A');
+    assert.ok(fs.existsSync(partition.partitionPath), 'the partition is untouched');
   });
 });
 

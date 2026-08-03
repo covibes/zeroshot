@@ -108,7 +108,12 @@ Each session lives in its own random, secret-free UUID partition under
 the standalone `TASKS_DIR` otherwise (`task-lib/omp-storage-root.js`). The partition id is
 allocated and its ownership row persisted **before** the directory is created on disk
 (`task-lib/runner.js#spawnTask`); a crash between those two lines leaves a provisional row
-pointing at a path with nothing there yet, which cleanup safely no-ops on.
+pointing at a path with nothing there yet, which cleanup safely no-ops on. If creating the
+directory _fails_, that same spawn retires the record and marks the task failed before the error
+surfaces, so you never end up with a task that reads as running behind a partition claim nothing
+can reclaim. `zeroshot task kill`, `zeroshot clear`, and `zeroshot kill-all` retire the record the
+same way when they confirm a task is killed or dead; a kill that could _not_ be confirmed
+deliberately leaves the claim in place, because the provider may still be writing.
 
 `src/omp-session-verifier.js` streams every session and artifact file in fixed-size chunks
 (never proportional to file size) against the fixed `OMP_SESSION_LIMITS` bounds
@@ -119,10 +124,16 @@ only after terminal materialization, before its evidence may ever be committed. 
 descriptor-pinned: a path is opened once with `O_NOFOLLOW`/`O_NONBLOCK` and every type, owner,
 link-count, size, identity, and content check reads from that same descriptor, so the object that
 was checked is the object that is read. Only owner-held directories and regular, single-link files
-are accepted; symlinks, sockets, devices, and hard links are rejected.
+are accepted; symlinks, sockets, devices, and hard links are rejected. On POSIX, filenames are
+read, bounded, sorted, and hashed as raw bytes rather than decoded text, so two artifacts whose
+names are both invalid UTF-8 stay distinguishable instead of collapsing to the same manifest;
+Windows keeps its native UTF-16 names with the same manifest layout. Verification is also bounded
+against deliberately hostile transcripts — a huge newline-free record, a deeply nested record, or a
+directory holding millions of entries all fail closed within fixed limits rather than exhausting
+memory or the call stack.
 
 CAS blobs live outside the partition, in OMP's shared machine-wide store. OMP externalizes large
-payloads there and leaves a nested `blob:sha256:<64-lower-hex>` reference *inside* the session
+payloads there and leaves a nested `blob:sha256:<64-lower-hex>` reference _inside_ the session
 JSONL records (v17.2.1 `session/blob-store.ts`, `session/session-loader.ts`). Verification parses
 the transcript, collects those references, and resolves them at the real root reported by
 `@oh-my-pi/pi-utils::getBlobsDir()` — `~/.omp/agent/blobs`, honouring `PI_CONFIG_DIR`,
@@ -139,23 +150,28 @@ output is validated. A cluster-agent task's watcher only records the owner-fence
 materialization evidence and leaves the row `provisional` — only the spawning agent's post-hook
 success boundary (`src/agent/agent-lifecycle.js`, after `executeOnCompleteHookWithRetry`
 succeeds) may advance it to `committed`; every failed, cancelled, or uncertain boundary on either
-path marks the row `cleanup-required` instead. `task-lib/commands/resume.js` requires
+path marks the row `cleanup-required` instead. `zeroshot task resume` requires
 `state === 'committed'` and reuses the exact persisted partition; an incomplete or non-committed
-record fails resume closed rather than guessing.
+record fails resume closed rather than guessing. It is also **standalone-only**: a session owned by
+a cluster agent is refused with an actionable error and nothing is spawned, because only that
+agent's own next turn can continue and commit its lineage — resuming it by hand would strand the
+session and quietly cost the agent its context.
 
 A resume is an atomic owner transfer rather than a second claim: one transaction moves the prior
 committed owner's lineage onto the resumed task's row and clears the prior row, both sides fenced
 on their exact persisted value, and the watcher runs it from the `ready` hook strictly before the
 prompt is written. The resumed row stays `provisional` until its own success boundary, so the
 partition never has two committed owners and a half-finished continuation is never published as
-resumable. It does, however, spend the whole resumed turn with *no* committed owner, and it can be
+resumable. It does, however, spend the whole resumed turn with _no_ committed owner, and it can be
 named by several rows at once — a resumed row exists before its transfer runs, and two competing
 resumes leave three rows on one partition — which is why cleanup fences on every authoritative
 claim rather than on the committed rows. The watcher compares the complete committed tuple — full session id, full
 session file path (never a basename), partition and session-file inode identity, artifact manifest
 digest, and an `executionFingerprint` binding the pinned OMP release, the config overlay's content,
 the requested `--model`/`--thinking`/`--approval-mode` selectors, and the concrete provider, model,
-and thinking level OMP reported.
+and thinking level OMP reported. OMP must also _say_ which session it opened before the prompt is
+sent: if `get_state` omits the session id or file, or reports a mere prefix of the recorded id, the
+turn fails closed and starts fresh instead of continuing on the strength of what is on disk.
 
 Task `clean`, cluster clear, and global `purge` all reclaim partitions through
 `task-lib/omp-session-cleanup.js`, validating the persisted owner uid and the storage-root and
@@ -165,7 +181,12 @@ staging rename run together in one task-store write transaction, fenced on every
 an authoritative (`provisional` or `committed`) claim on the partition — after a successful resume
 transfer the live owner is `provisional`, so a committed-only check would let a retired competing
 resume delete a session that is still in use. An unsafe or unresolvable
-path keeps the owner record and prints a warning instead of deleting. **OMP's shared blob store is
+path keeps the owner record and prints a warning instead of deleting, and so does an ownership
+record that is present but unreadable — the row, its record, and its partition are all kept for you
+to inspect, since deleting them would orphan a directory nothing else knows about. `clean` also
+never removes a **running** task's row, log, or partition, whatever selector you pass, and never
+rewrites the task table wholesale, so a watcher or resume writing concurrently is not reverted by
+cleanup finishing after it. **OMP's shared blob store is
 never written to or deleted by any Zeroshot cleanup surface** — it is machine-wide and addressed by
 other sessions' transcripts, so `deleteOmpSessionPartition` refuses outright any path that resolves
 inside it.

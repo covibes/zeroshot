@@ -97,10 +97,7 @@ describe('providerSession.ompSession (exact optional field)', function () {
     const missing = providerSessionValue();
     delete missing.ompSession;
     assert.strictEqual(normalizeProviderSession(missing), null, 'omp requires ompSession');
-    assert.strictEqual(
-      normalizeProviderSession(providerSessionValue({ ompSession: null })),
-      null
-    );
+    assert.strictEqual(normalizeProviderSession(providerSessionValue({ ompSession: null })), null);
 
     const claude = normalizeProviderSession(
       providerSessionValue({ provider: 'claude', ompSession: undefined })
@@ -137,7 +134,9 @@ describe('providerSession.ompSession (exact optional field)', function () {
   it('rejects a non-UUID partition id and a non-direct-child/non-.jsonl file name', function () {
     for (const partitionId of ['nope', '../escape', '']) {
       assert.strictEqual(
-        normalizeProviderSession(providerSessionValue({ ompSession: ompSessionValue({ partitionId }) })),
+        normalizeProviderSession(
+          providerSessionValue({ ompSession: ompSessionValue({ partitionId }) })
+        ),
         null,
         `partitionId ${JSON.stringify(partitionId)}`
       );
@@ -170,6 +169,81 @@ describe('providerSession.ompSession (exact optional field)', function () {
         JSON.stringify(overrides)
       );
     }
+  });
+
+  it('requires device/inode to already BE canonical decimal strings, and never coerces them', function () {
+    // Issue #866 fixes these as canonical unsigned decimal strings. The snapshot is compared field
+    // by field against the persisted ownership record, so accepting a JSON number here (and
+    // stringifying it) would let a snapshot that never contained the canonical form compare equal
+    // to a record that did — the exact-identity check would be asserting against a value this
+    // normalizer invented.
+    const notStrings = [
+      { device: 2049, inode: '17' },
+      { device: '2049', inode: 17 },
+      { device: 2049, inode: 17 },
+      { device: 0, inode: 0 },
+      { device: ['2049'], inode: '17' },
+      { device: { toString: () => '2049' }, inode: '17' },
+      { device: true, inode: '17' },
+      { device: null, inode: '17' },
+    ];
+    for (const sessionFileIdentity of notStrings) {
+      assert.strictEqual(
+        normalizeProviderSession(
+          providerSessionValue({ ompSession: ompSessionValue({ sessionFileIdentity }) })
+        ),
+        null,
+        `identity ${JSON.stringify(sessionFileIdentity)} must not be coerced into a string`
+      );
+    }
+
+    const noncanonicalStrings = [
+      { device: '+2049', inode: '17' },
+      { device: '-1', inode: '17' },
+      { device: '02049', inode: '17' },
+      { device: ' 2049', inode: '17' },
+      { device: '2049 ', inode: '17' },
+      { device: '2049\n', inode: '17' },
+      { device: '2_049', inode: '17' },
+      { device: '2.0', inode: '17' },
+      { device: '2e3', inode: '17' },
+      { device: '0x801', inode: '17' },
+      { device: '', inode: '17' },
+      { device: '2049', inode: '18446744073709551616e0' },
+    ];
+    for (const sessionFileIdentity of noncanonicalStrings) {
+      assert.strictEqual(
+        normalizeProviderSession(
+          providerSessionValue({ ompSession: ompSessionValue({ sessionFileIdentity }) })
+        ),
+        null,
+        `identity ${JSON.stringify(sessionFileIdentity)} is not canonical and must be rejected`
+      );
+    }
+
+    // Missing and extra keys are equally fatal: the pair is closed.
+    for (const sessionFileIdentity of [
+      { device: '2049' },
+      { inode: '17' },
+      {},
+      { device: '2049', inode: '17', dev: '2049' },
+    ]) {
+      assert.strictEqual(
+        normalizeProviderSession(
+          providerSessionValue({ ompSession: ompSessionValue({ sessionFileIdentity }) })
+        ),
+        null,
+        `identity ${JSON.stringify(sessionFileIdentity)} is not a closed device/inode pair`
+      );
+    }
+
+    // A very large but canonical decimal string is accepted as-is; it is an opaque identifier, not
+    // a number, and must survive byte-for-byte.
+    const huge = { device: '18446744073709551615', inode: '9007199254740993' };
+    const accepted = normalizeProviderSession(
+      providerSessionValue({ ompSession: ompSessionValue({ sessionFileIdentity: huge }) })
+    );
+    assert.deepStrictEqual(accepted.ompSession.sessionFileIdentity, huge);
   });
 
   it('never carries storage-root or partition paths', function () {

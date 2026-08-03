@@ -2,6 +2,25 @@ import chalk from 'chalk';
 import { getTask, requestTaskCancellation, updateTask } from '../store.js';
 import { createCommandSpecCleanup } from '../command-spec-cleanup.js';
 import { terminateProcess } from '../process-termination.js';
+import { retireOmpOwnershipAtTerminalBoundary } from '../omp-session-ownership.js';
+
+/**
+ * Retire the task's OMP session ownership at a confirmed terminal boundary (killed / stale).
+ *
+ * A killed task's provisional partition claim would otherwise outlive the process that made it: no
+ * watcher is left to reach `finalizeOmpOwnership`, and cleanup refuses to reclaim a partition any
+ * row still claims provisionally, so the directory would be unreclaimable forever. Runs *before*
+ * the terminal status write so no window exists where the row is terminal but still claiming.
+ */
+function retireOmpOwnershipForKilledTask(taskId) {
+  retireOmpOwnershipAtTerminalBoundary(taskId, (error) => {
+    console.log(
+      chalk.yellow(
+        `Warning: failed to retire the OMP session ownership of task ${taskId}: ${error.message}`
+      )
+    );
+  });
+}
 
 async function cleanupTerminatedTask(task) {
   if (!task.commandCleanup) return {};
@@ -125,6 +144,7 @@ export async function killTaskCommand(taskId, options = {}) {
     }
     console.log(chalk.yellow('Process already dead, updating status...'));
     const cleanupUpdate = await cleanupTerminatedTask(task);
+    retireOmpOwnershipForKilledTask(taskId);
     updateTask(taskId, {
       status: 'stale',
       pid: null,
@@ -147,6 +167,7 @@ export async function killTaskCommand(taskId, options = {}) {
     if (result.degraded) {
       console.log(chalk.yellow(`Warning: ${result.degradedReason}`));
     }
+    retireOmpOwnershipForKilledTask(taskId);
     updateTask(taskId, {
       status: 'killed',
       pid: null,

@@ -2086,12 +2086,9 @@ async function getPurgeData(orchestrator) {
       cluster.state === 'running' || cluster.state === 'initializing' || cluster.state === 'setup'
   );
   const { loadTasks } = await import('../task-lib/store.js');
-  const { isProcessRunning } = await import('../task-lib/runner.js');
   const tasks = Object.values(loadTasks());
-  const runningTasks = tasks.filter(
-    (task) => task.status === 'running' && isProcessRunning(task.pid)
-  );
-  return { clusters, runningClusters, tasks, runningTasks, isProcessRunning };
+  const runningTasks = tasks.filter((task) => task.status === 'running');
+  return { clusters, runningClusters, tasks, runningTasks };
 }
 
 function printPurgeSummary({ clusters, runningClusters, tasks, runningTasks }) {
@@ -2133,45 +2130,105 @@ async function confirmPurge(options) {
   return answer.toLowerCase() === 'y';
 }
 
+function validateClusterKillResults(runningClusters, clusterResults) {
+  if (
+    clusterResults === null ||
+    typeof clusterResults !== 'object' ||
+    !Array.isArray(clusterResults.killed) ||
+    !Array.isArray(clusterResults.errors)
+  ) {
+    throw new Error(
+      'Refusing destructive cluster cleanup: kill-all returned incomplete or invalid results ' +
+        '(malformed fields: killed or errors). Retry after confirming every cluster process ' +
+        'boundary is terminal.'
+    );
+  }
+
+  const expectedIds = runningClusters.map((cluster) => cluster.id);
+  const expected = new Set(expectedIds);
+  const outcomeIds = [...clusterResults.killed, ...clusterResults.errors.map((error) => error?.id)];
+  const counts = outcomeIds.reduce((byId, id) => {
+    byId.set(id, (byId.get(id) || 0) + 1);
+    return byId;
+  }, new Map());
+  const problems = [
+    ['unknown outcomes', outcomeIds.filter((id) => typeof id !== 'string' || !expected.has(id))],
+    ['duplicate outcomes', expectedIds.filter((id) => (counts.get(id) || 0) > 1)],
+    ['missing outcomes', expectedIds.filter((id) => (counts.get(id) || 0) === 0)],
+  ]
+    .filter(([, ids]) => ids.length > 0)
+    .map(([label, ids]) => `${label}: ${ids.join(', ')}`);
+
+  if (problems.length > 0) {
+    throw new Error(
+      `Refusing destructive cluster cleanup: kill-all returned incomplete or invalid results (${problems.join(
+        '; '
+      )}). Retry after confirming every cluster process boundary is terminal.`
+    );
+  }
+
+  return clusterResults;
+}
+
 async function killRunningClusters(orchestrator, runningClusters) {
   if (runningClusters.length === 0) {
     return;
   }
   console.log(chalk.bold('Killing running clusters...'));
-  const clusterResults = await orchestrator.killAll();
-  for (const id of clusterResults.killed) {
+  const { killed, errors } = validateClusterKillResults(
+    runningClusters,
+    await orchestrator.killAll()
+  );
+
+  for (const id of killed) {
     console.log(chalk.green(`✓ Killed cluster: ${id}`));
   }
-  for (const err of clusterResults.errors) {
-    console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
+  if (errors.length > 0) {
+    for (const err of errors) {
+      console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
+    }
+    throw new Error(
+      `Refusing destructive cluster cleanup: termination failed for ${errors
+        .map((error) => error.id)
+        .join(', ')}. Retry after confirming every cluster process boundary is terminal.`
+    );
   }
 }
 
-async function killRunningTasks(runningTasks, isProcessRunning) {
+async function killRunningTasks(runningTasks) {
   if (runningTasks.length === 0) {
     return;
   }
   console.log(chalk.bold('Killing running tasks...'));
-  const { killTask } = await import('../task-lib/runner.js');
-  const { updateTask } = await import('../task-lib/store.js');
+  const [{ killTaskCommand }, { getTask }] = await Promise.all([
+    import('../task-lib/commands/kill.js'),
+    import('../task-lib/store.js'),
+  ]);
+  const unconfirmed = [];
 
+  // Reuse the standalone kill boundary instead of treating successful signal delivery as process
+  // termination. Then verify its durable terminal write: killTaskCommand also serves the interactive
+  // CLI and reports an unconfirmed boundary through process.exitCode rather than throwing. Purge
+  // must turn that report into a hard gate before it reaches any destructive cleanup.
   for (const task of runningTasks) {
-    if (!isProcessRunning(task.pid)) {
-      updateTask(task.id, {
-        status: 'stale',
-        error: 'Process died unexpectedly',
-      });
-      console.log(chalk.yellow(`○ Task ${task.id} was already dead, marked stale`));
-      continue;
+    await killTaskCommand(task.id);
+    const current = getTask(task.id);
+    if (
+      !current ||
+      current.status === 'running' ||
+      Number.isInteger(current.pid) ||
+      Number.isInteger(current.processGroupId)
+    ) {
+      unconfirmed.push(task.id);
     }
+  }
 
-    const killed = killTask(task.pid);
-    if (killed) {
-      updateTask(task.id, { status: 'killed', error: 'Killed by clear' });
-      console.log(chalk.green(`✓ Killed task: ${task.id}`));
-    } else {
-      console.log(chalk.red(`✗ Failed to kill task: ${task.id}`));
-    }
+  if (unconfirmed.length > 0) {
+    throw new Error(
+      `Refusing destructive task cleanup: provider termination is unconfirmed for ${unconfirmed.join(
+        ', '
+      )}. Retry after confirming the persisted provider process boundary is terminal.`
+    );
   }
 }
 
@@ -2183,23 +2240,31 @@ async function killRunningTasks(runningTasks, isProcessRunning) {
  * cannot be safely resolved keeps its owner record plus a warning instead of being deleted.
  */
 async function deleteClusterOmpSessions(clusters) {
-  const { cleanupOmpSessionPartitionsForCluster } = await import(
-    '../task-lib/omp-session-cleanup.js'
-  );
+  const { cleanupOmpSessionPartitionsForCluster } =
+    await import('../task-lib/omp-session-cleanup.js');
   let deleted = 0;
   let retained = 0;
+  const unreadable = new Set();
   for (const cluster of clusters) {
     const result = cleanupOmpSessionPartitionsForCluster(cluster.id, (message) =>
       console.log(chalk.yellow(`Warning: ${message}`))
     );
     deleted += result.deleted.length;
     retained += result.retained.length;
+    for (const taskId of result.unreadable) unreadable.add(taskId);
   }
   if (deleted > 0) {
     console.log(chalk.green(`✓ Deleted ${deleted} OMP session partition(s)`));
   }
   if (retained > 0) {
     console.log(chalk.yellow(`○ Retained ${retained} OMP session partition(s) for inspection`));
+  }
+  if (unreadable.size > 0) {
+    console.log(
+      chalk.yellow(
+        `○ ${unreadable.size} task row(s) hold an unreadable OMP session ownership record and were left intact`
+      )
+    );
   }
 }
 
@@ -3204,11 +3269,8 @@ program
       );
 
       const { loadTasks } = await import('../task-lib/store.js');
-      const { isProcessRunning } = await import('../task-lib/runner.js');
       const tasks = loadTasks();
-      const runningTasks = Object.values(tasks).filter(
-        (t) => t.status === 'running' && isProcessRunning(t.pid)
-      );
+      const runningTasks = Object.values(tasks).filter((task) => task.status === 'running');
 
       const totalCount = runningClusters.length + runningTasks.length;
 
@@ -3253,44 +3315,9 @@ program
 
       console.log('');
 
-      // Kill clusters
-      if (runningClusters.length > 0) {
-        const clusterResults = await orchestrator.killAll();
-        for (const id of clusterResults.killed) {
-          console.log(chalk.green(`✓ Killed cluster: ${id}`));
-        }
-        for (const err of clusterResults.errors) {
-          console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
-        }
-      }
+      await killRunningClusters(orchestrator, runningClusters);
 
-      // Kill tasks
-      if (runningTasks.length > 0) {
-        const { killTask, isProcessRunning: checkPid } = await import('../task-lib/runner.js');
-        const { updateTask } = await import('../task-lib/store.js');
-
-        for (const task of runningTasks) {
-          if (!checkPid(task.pid)) {
-            updateTask(task.id, {
-              status: 'stale',
-              error: 'Process died unexpectedly',
-            });
-            console.log(chalk.yellow(`○ Task ${task.id} was already dead, marked stale`));
-            continue;
-          }
-
-          const killed = killTask(task.pid);
-          if (killed) {
-            updateTask(task.id, {
-              status: 'killed',
-              error: 'Killed by kill-all',
-            });
-            console.log(chalk.green(`✓ Killed task: ${task.id}`));
-          } else {
-            console.log(chalk.red(`✗ Failed to kill task: ${task.id}`));
-          }
-        }
-      }
+      await killRunningTasks(runningTasks);
 
       console.log(chalk.bold.green(`\nDone.`));
     } catch (error) {
@@ -3801,7 +3828,7 @@ program
       console.log('');
 
       await killRunningClusters(orchestrator, purgeData.runningClusters);
-      await killRunningTasks(purgeData.runningTasks, purgeData.isProcessRunning);
+      await killRunningTasks(purgeData.runningTasks);
       await deleteClusterData(orchestrator, purgeData.clusters);
       await deleteTaskData(purgeData.tasks);
 
@@ -6089,4 +6116,5 @@ module.exports = {
   renderRecentMessagesToTerminal,
   isStartupUpdateEligible,
   resolveRunMode,
+  killRunningClusters,
 };
