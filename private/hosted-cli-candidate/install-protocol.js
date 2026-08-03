@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { TextDecoder } = require('node:util');
+const { URL } = require('node:url');
 
 const ALGORITHM = 'RSA-OAEP-3072-SHA256';
 const MAX_GRANT_RESPONSE_BYTES = 64 * 1024;
@@ -152,6 +153,7 @@ function parseGrant(value, expected, capability, clock) {
   requireDigest(binding.agent_image_digest, 'binding.agent_image_digest');
   requireDigest(binding.oecp_image_digest, 'binding.oecp_image_digest');
   const comparisons = [
+    ['actor_handle', expected.actorHandle],
     ['organization_id', expected.organizationId],
     ['capsule_id', expected.capsuleId],
     ['client_run_id', expected.clientRunId],
@@ -226,22 +228,47 @@ function parseGrant(value, expected, capability, clock) {
   });
 }
 
-function encryptSecret(publicKey, grant, expected, kind, secret) {
+function encodeCredentialPlaintext(grant, expected, kind, secret) {
   if (!Buffer.isBuffer(secret) || secret.length === 0) {
     throw new InstallProtocolError('credential plaintext is missing');
   }
-  const plaintext = Buffer.from(
-    JSON.stringify({
-      version: 1,
-      grant_id: grant.grantId,
-      capsule_id: expected.capsuleId,
-      client_run_id: expected.clientRunId,
-      runtime_epoch: grant.binding.runtime_epoch,
-      kind,
-      value: secret.toString('utf8'),
-    }),
-    'utf8'
-  );
+  if (kind !== 'github_token' && kind !== 'openrouter_api_key') {
+    throw new InstallProtocolError('credential plaintext kind is unsupported');
+  }
+  let escapedBytes = 0;
+  for (const byte of secret) {
+    if (byte < 0x20 || byte > 0x7e) {
+      throw new InstallProtocolError('credential plaintext must be printable ASCII');
+    }
+    escapedBytes += byte === 0x22 || byte === 0x5c ? 2 : 1;
+  }
+  const skeleton = JSON.stringify({
+    version: 1,
+    grant_id: grant.grantId,
+    capsule_id: expected.capsuleId,
+    client_run_id: expected.clientRunId,
+    runtime_epoch: grant.binding.runtime_epoch,
+    kind,
+    value: '',
+  });
+  if (!skeleton.endsWith('"}')) {
+    throw new InstallProtocolError('credential plaintext encoding failed');
+  }
+  const prefix = Buffer.from(skeleton.slice(0, -2), 'utf8');
+  const plaintext = Buffer.allocUnsafe(prefix.length + escapedBytes + 2);
+  let offset = prefix.copy(plaintext);
+  for (const byte of secret) {
+    if (byte === 0x22 || byte === 0x5c) plaintext[offset++] = 0x5c;
+    plaintext[offset++] = byte;
+  }
+  plaintext[offset++] = 0x22;
+  plaintext[offset] = 0x7d;
+  prefix.fill(0);
+  return plaintext;
+}
+
+function encryptSecret(publicKey, grant, expected, kind, secret) {
+  const plaintext = encodeCredentialPlaintext(grant, expected, kind, secret);
   try {
     return crypto.publicEncrypt(
       { key: publicKey, padding: crypto.constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha256' },
@@ -261,6 +288,7 @@ module.exports = {
   InstallProtocolError,
   MAX_GRANT_RESPONSE_BYTES,
   encryptSecret,
+  encodeCredentialPlaintext,
   exactKeys,
   parseGrant,
   readBoundedJson,

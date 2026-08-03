@@ -1,6 +1,7 @@
 'use strict';
 
 const { MAX_SECRET_BYTES, PromptInput, spawnBounded, trimmedSecret } = require('./secret-input');
+const { defaultGithub } = require('./github-credential');
 
 const PROVIDER = 'codex-openrouter';
 const PROFILE = 'provider.codex-openrouter-pr@1';
@@ -26,50 +27,6 @@ function openRouterService(targetId) {
 function openRouterAccount() {
   return `openrouter:${PROFILE}`;
 }
-
-const defaultGithub = Object.freeze({
-  async inspect() {
-    const result = await spawnBounded('gh', [
-      'auth',
-      'status',
-      '--hostname',
-      'github.com',
-      '--json',
-      'active,host,login',
-    ]);
-    try {
-      if (result.code !== 0) throw new Error('GitHub CLI is not authenticated for github.com');
-      const value = JSON.parse(result.stdout.toString('utf8'));
-      const entry = Array.isArray(value) ? value.find((item) => item?.active === true) : value;
-      if (
-        !entry ||
-        entry.active !== true ||
-        entry.host !== 'github.com' ||
-        typeof entry.login !== 'string'
-      ) {
-        throw new Error('GitHub CLI has no active github.com account');
-      }
-      return Object.freeze({ source: 'gh-cli', host: 'github.com', account: entry.login });
-    } catch (error) {
-      if (error instanceof SyntaxError)
-        throw new Error('GitHub CLI returned invalid account metadata');
-      throw error;
-    } finally {
-      result.stdout.fill(0);
-      result.stderr.fill(0);
-    }
-  },
-  async readToken() {
-    const result = await spawnBounded('gh', ['auth', 'token', '--hostname', 'github.com']);
-    try {
-      if (result.code !== 0) throw new Error('GitHub CLI could not provide its github.com token');
-      return trimmedSecret(result.stdout, 'GitHub token');
-    } finally {
-      result.stdout.fill(0);
-      result.stderr.fill(0);
-    }
-  },
-});
 
 function getSetup(target) {
   const setup = target?.hostedSetup;
@@ -107,27 +64,23 @@ async function configureTargetSetup(options) {
     `Use GitHub CLI account ${githubMetadata.account} for ${boundRepository}? [yes/no] `,
     { maxBytes: 8 }
   );
-  let githubToken;
   let openRouterSecret;
   try {
     const answer = consent.toString('utf8').trim().toLowerCase();
     if (answer !== 'yes') throw new Error('GitHub CLI token use requires explicit consent');
-    githubToken = await github.readToken();
-    if (
-      !Buffer.isBuffer(githubToken) ||
-      githubToken.length === 0 ||
-      githubToken.length > MAX_SECRET_BYTES
-    ) {
-      throw new Error('GitHub CLI token is outside the safety bound');
+    if (typeof github.acquire !== 'function') {
+      throw new Error('GitHub credential source does not support atomic acquisition');
     }
-
     const service = openRouterService(target.id);
     const account = openRouterAccount();
     const existing = await credentialStore.get(service, account);
     if (existing === null) {
       const entered = await prompt.line('OpenRouter API key: ', { secret: true });
-      openRouterSecret = trimmedSecret(entered, 'OpenRouter key');
-      entered.fill(0);
+      try {
+        openRouterSecret = trimmedSecret(entered, 'OpenRouter key');
+      } finally {
+        entered.fill(0);
+      }
       await credentialStore.set(service, account, openRouterSecret.toString('utf8'));
     } else {
       openRouterSecret = Buffer.from(existing, 'utf8');
@@ -155,7 +108,6 @@ async function configureTargetSetup(options) {
     return metadata;
   } finally {
     consent.fill(0);
-    githubToken?.fill(0);
     openRouterSecret?.fill(0);
     prompt.clear?.();
   }
@@ -183,9 +135,23 @@ async function checkCredentialSources(target, credentialStore, github = defaultG
 
 async function readInstallCredentials(target, credentialStore, github = defaultGithub) {
   const setup = getSetup(target);
-  const githubToken = await github.readToken();
+  const acquired = await github.acquire();
+  const githubToken = acquired?.token;
   let openrouter;
   try {
+    if (
+      acquired?.metadata?.host !== setup.github.host ||
+      acquired?.metadata?.account !== setup.github.account
+    ) {
+      throw new Error('The acquired GitHub credential does not match target setup');
+    }
+    if (
+      !Buffer.isBuffer(githubToken) ||
+      githubToken.length === 0 ||
+      githubToken.length > MAX_SECRET_BYTES
+    ) {
+      throw new Error('GitHub CLI token is outside the safety bound');
+    }
     const stored = await credentialStore.get(setup.openrouter.service, setup.openrouter.account);
     if (stored === null)
       throw new Error('The target/profile OpenRouter key is missing from the OS keyring');
@@ -195,7 +161,7 @@ async function readInstallCredentials(target, credentialStore, github = defaultG
     }
     return { githubToken, openrouterKey: openrouter };
   } catch (error) {
-    githubToken.fill(0);
+    githubToken?.fill(0);
     openrouter?.fill(0);
     throw error;
   }

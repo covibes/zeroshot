@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { afterEach, describe, it } = require('node:test');
 const {
   HostedRunOrchestrator,
+  RemoteAllocationUncertainError,
   RemoteDetachedError,
 } = require('../../private/hosted-cli-candidate/orchestrator');
 
@@ -18,33 +19,33 @@ function base(overrides = {}) {
   let ids = 0;
   const adapter = {
     credentialInstall: { supported: true, descriptor: {} },
-    async allocate() {
+    allocate() {
       sequence.push('allocate');
       return { id: 'cap1', state: 'ready' };
     },
-    async inspect() {
+    inspect() {
       sequence.push('inspect');
       return { id: 'cap1', state: 'ready' };
     },
-    async terminate() {
+    terminate() {
       sequence.push('terminate');
       return { id: 'cap1', state: 'terminating' };
     },
     ...overrides.adapter,
   };
   const initialClient = {
-    async plan() {
+    plan() {
       sequence.push('plan');
       return { ok: true, diagnostics: [] };
     },
-    async apply() {
+    apply() {
       sequence.push('apply');
       return { generation: 1, runId: 'server-run-1', phase: 'running', deduped: false };
     },
     ...overrides.initialClient,
   };
   const finalClient = {
-    async get() {
+    get() {
       sequence.push('get');
       return {
         status: {
@@ -59,7 +60,7 @@ function base(overrides = {}) {
   };
   let opens = 0;
   const coordinator = {
-    async open() {
+    open() {
       sequence.push('initialize');
       opens += 1;
       return {
@@ -69,14 +70,14 @@ function base(overrides = {}) {
         client: opens === 1 ? initialClient : finalClient,
       };
     },
-    async watch() {
+    watch() {
       sequence.push('watch');
       let delivered = false;
       return {
         [Symbol.asyncIterator]() {
           return this;
         },
-        async next() {
+        next() {
           if (delivered) return { done: true };
           delivered = true;
           return {
@@ -97,12 +98,12 @@ function base(overrides = {}) {
             },
           };
         },
-        async cancel() {
+        cancel() {
           sequence.push('watch-cancel');
         },
       };
     },
-    async close() {
+    close() {
       sequence.push('close');
     },
     ...overrides.coordinator,
@@ -112,35 +113,41 @@ function base(overrides = {}) {
   const output = { stdout: [], stderr: [] };
   const orchestrator = new HostedRunOrchestrator({
     assertGraphSpec: () => undefined,
-    readInputs: async () => {
+    readInputs: () => {
       sequence.push('read-inputs');
       return { graph: GRAPH, input: null };
     },
-    checkCredentialSources: async () => {
+    checkCredentialSources: () => {
       sequence.push('check-credentials');
       return {
         repository: 'github.com/owner/repo',
         profile: 'provider.codex-openrouter-pr@1',
         model: 'openai/gpt-5.2-codex',
+        github: { account: 'octocat' },
       };
     },
-    readCredentials: async () => {
+    readCredentials: () => {
       sequence.push('read-credentials');
       return { githubToken, openrouterKey };
     },
     installClient: {
+      preflight() {
+        sequence.push('install-preflight');
+        return { expected: {}, capability: {} };
+      },
       async install(options) {
+        const credentials = await options.credentialProvider();
         sequence.push('install');
         options.onUploadStart();
-        options.credentials.githubToken.fill(0);
-        options.credentials.openrouterKey.fill(0);
+        credentials.githubToken.fill(0);
+        credentials.openrouterKey.fill(0);
       },
       ...overrides.installClient,
     },
     createCoordinator: () => coordinator,
     randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-0000-0000-000000000000`,
     runtimeImageDigest: RUNTIME_DIGEST,
-    sleep: async () => undefined,
+    sleep: () => undefined,
     output: {
       stdout: (line) => output.stdout.push(line),
       stderr: (line) => output.stderr.push(line),
@@ -166,6 +173,36 @@ function base(overrides = {}) {
     },
   };
 }
+it('refuses install capability preflight before allocation or secret acquisition', async () => {
+  const h = base({
+    installClient: {
+      preflight() {
+        h.sequence.push('install-preflight');
+        throw new Error('sealed install unsupported');
+      },
+    },
+  });
+  await assert.rejects(h.orchestrator.run(h.options), /sealed install unsupported/);
+  assert.deepEqual(h.sequence, ['read-inputs', 'check-credentials', 'install-preflight']);
+});
+
+it('emits one stable ownership key before an ambiguous allocation and never retries', async () => {
+  let allocations = 0;
+  const h = base({
+    adapter: {
+      allocate() {
+        allocations += 1;
+        h.sequence.push('allocate');
+        throw new Error('response lost after send');
+      },
+    },
+  });
+  await assert.rejects(h.orchestrator.run(h.options), RemoteAllocationUncertainError);
+  assert.equal(allocations, 1);
+  assert.match(h.output.stdout[0], /^Allocation key: allocate_/);
+  assert.match(h.output.stderr[0], /Do not allocate a replacement/);
+  assert.equal(h.sequence.includes('read-credentials'), false);
+});
 
 afterEach(() => {
   process.exitCode = 0;
@@ -179,6 +216,7 @@ describe('hosted lifecycle orchestration', () => {
     assert.deepEqual(h.sequence, [
       'read-inputs',
       'check-credentials',
+      'install-preflight',
       'allocate',
       'read-credentials',
       'install',
@@ -209,7 +247,7 @@ describe('hosted lifecycle orchestration', () => {
   it('preserves the capsule and identities when apply response is ambiguous', async () => {
     const h = base({
       initialClient: {
-        async apply() {
+        apply() {
           h.sequence.push('apply');
           throw new Error('connection reset after send');
         },
@@ -228,7 +266,7 @@ describe('hosted lifecycle orchestration', () => {
   it('terminates only a definitely owned provisional capsule after deterministic plan refusal', async () => {
     const h = base({
       initialClient: {
-        async plan() {
+        plan() {
           h.sequence.push('plan');
           return { ok: false, diagnostics: [{ severity: 'error' }] };
         },
@@ -243,12 +281,12 @@ describe('hosted lifecycle orchestration', () => {
     let allocations = 0;
     const h = base({
       adapter: {
-        async allocate() {
+        allocate() {
           allocations += 1;
           h.sequence.push('allocate');
           return { id: 'cap1', state: 'provisioning' };
         },
-        async inspect() {
+        inspect() {
           h.sequence.push('inspect');
           throw new Error('unknown transport');
         },

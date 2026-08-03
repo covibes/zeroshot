@@ -1,23 +1,19 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const path = require('node:path');
 const { checkCredentialSources, readInstallCredentials } = require('./credentials');
 const { SealedInstallClient } = require('./install-client');
 const { HostedRunOrchestrator } = require('./orchestrator');
+const { RemoteAllocationUncertainError } = require('./orchestrator-support');
 const { readHostedInputs } = require('./readers');
 const { createTargetServices, targetSessionManager } = require('./target-services');
 
-function runtimeModule(relative) {
-  return require(path.join(__dirname, '..', relative));
-}
-
 function loadRuntime() {
   return Object.freeze({
-    target: runtimeModule('target'),
-    hostedTarget: runtimeModule('hosted-target/index.cjs'),
-    hostedSession: runtimeModule('hosted-session/index.cjs'),
-    cluster: runtimeModule('cluster/index.cjs'),
+    target: require('../target'),
+    hostedTarget: require('../hosted-target/index.cjs'),
+    hostedSession: require('../hosted-session/index.cjs'),
+    cluster: require('../cluster/index.cjs'),
   });
 }
 
@@ -87,6 +83,14 @@ function buildManifest() {
   }
 }
 
+async function sanitizeRemoteOperation(label, operation) {
+  try {
+    return await operation();
+  } catch {
+    throw new Error(`Remote ${label} failed; peer-controlled detail was suppressed.`);
+  }
+}
+
 function createDefaultServices(dependencies) {
   const runtime = loadRuntime();
   const settings = targetSettings(dependencies);
@@ -95,11 +99,18 @@ function createDefaultServices(dependencies) {
 
     async capsuleCreate(options) {
       const context = await createSessionContext(options.target, runtime, settings);
-      const capsule = await context.adapter.allocate({
-        idempotencyKey: `capsule_${crypto.randomUUID().replaceAll('-', '')}`,
-        ...(options.label === undefined ? {} : { label: options.label }),
-        ...(options.size === undefined ? {} : { size: options.size }),
-      });
+      const allocationIdempotencyKey = `capsule_${crypto.randomUUID().replaceAll('-', '')}`;
+      console.log(`Allocation key: ${allocationIdempotencyKey}`);
+      let capsule;
+      try {
+        capsule = await context.adapter.allocate({
+          idempotencyKey: allocationIdempotencyKey,
+          ...(options.label === undefined ? {} : { label: options.label }),
+          ...(options.size === undefined ? {} : { size: options.size }),
+        });
+      } catch (error) {
+        throw new RemoteAllocationUncertainError(allocationIdempotencyKey, error);
+      }
       console.log(`Capsule: ${capsule.id}`);
       outputCapsule(capsule, false);
     },
@@ -120,12 +131,12 @@ function createDefaultServices(dependencies) {
       const manifest = buildManifest();
       const abort = new AbortController();
       const onSigint = () =>
-        abort.abort(new DOMException('remote observation interrupted', 'AbortError'));
+        abort.abort(new globalThis.DOMException('remote observation interrupted', 'AbortError'));
       process.once('SIGINT', onSigint);
       try {
         const orchestrator = new HostedRunOrchestrator({
           assertGraphSpec: runtime.cluster.assertGraphSpec,
-          readInputs: async () => inputs,
+          readInputs: () => inputs,
           checkCredentialSources,
           readCredentials: readInstallCredentials,
           installClient: new SealedInstallClient(),
@@ -157,11 +168,38 @@ function createDefaultServices(dependencies) {
       }
     },
 
-    async remoteStatus(capsuleId, options) {
-      const context = await createSessionContext(options.target, runtime, settings);
-      const host = await context.adapter.inspect(capsuleId);
-      let oecp = null;
-      if (host.state === 'ready') {
+    remoteStatus(capsuleId, options) {
+      return sanitizeRemoteOperation('status', async () => {
+        const context = await createSessionContext(options.target, runtime, settings);
+        const host = await context.adapter.inspect(capsuleId);
+        let oecp = null;
+        if (host.state === 'ready') {
+          const coordinator = new runtime.hostedSession.HostedSessionCoordinator({
+            adapter: context.adapter,
+            capsuleId,
+            targetAuthority: context.target.url,
+          });
+          try {
+            const session = await coordinator.open();
+            oecp = await session.client.get({});
+          } finally {
+            await coordinator.close();
+          }
+        }
+        const result = { host, oecp };
+        if (options.json) console.log(JSON.stringify(result, null, 2));
+        else {
+          console.log(`Host: ${host.state}`);
+          console.log(`OECP: ${oecp === null ? 'unavailable' : oecp.status.phase}`);
+        }
+      });
+    },
+
+    remoteStop(capsuleId, options) {
+      return sanitizeRemoteOperation('stop', async () => {
+        const context = await createSessionContext(options.target, runtime, settings);
+        const host = await context.adapter.inspect(capsuleId);
+        if (host.state !== 'ready') throw new Error('OECP stop is unavailable');
         const coordinator = new runtime.hostedSession.HostedSessionCoordinator({
           adapter: context.adapter,
           capsuleId,
@@ -169,50 +207,32 @@ function createDefaultServices(dependencies) {
         });
         try {
           const session = await coordinator.open();
-          oecp = await session.client.get({});
+          const current = await session.client.get({});
+          const generation = current.status.observedGeneration;
+          if (!Number.isSafeInteger(generation) || generation < 1) {
+            throw new Error('capsule has no current OECP generation to stop');
+          }
+          const stopped = await session.client.stop({
+            idempotencyKey: `stop_${crypto.randomUUID().replaceAll('-', '')}`,
+            ifGeneration: generation,
+            mode: options.force ? 'force' : 'drain',
+          });
+          console.log(
+            `OECP ${stopped.effectiveMode} stop accepted for run ${stopped.runId}; ` +
+              'host capsule was not terminated'
+          );
         } finally {
           await coordinator.close();
         }
-      }
-      const result = { host, oecp };
-      if (options.json) console.log(JSON.stringify(result, null, 2));
-      else {
-        console.log(`Host: ${host.state}`);
-        console.log(`OECP: ${oecp === null ? 'unavailable' : oecp.status.phase}`);
-      }
-    },
-
-    async remoteStop(capsuleId, options) {
-      const context = await createSessionContext(options.target, runtime, settings);
-      const host = await context.adapter.inspect(capsuleId);
-      if (host.state !== 'ready')
-        throw new Error(`capsule host is ${host.state}; OECP stop is unavailable`);
-      const coordinator = new runtime.hostedSession.HostedSessionCoordinator({
-        adapter: context.adapter,
-        capsuleId,
-        targetAuthority: context.target.url,
       });
-      try {
-        const session = await coordinator.open();
-        const current = await session.client.get({});
-        const generation = current.status.observedGeneration;
-        if (!Number.isSafeInteger(generation) || generation < 1) {
-          throw new Error('capsule has no current OECP generation to stop');
-        }
-        const stopped = await session.client.stop({
-          idempotencyKey: `stop_${crypto.randomUUID().replaceAll('-', '')}`,
-          ifGeneration: generation,
-          mode: options.force ? 'force' : 'drain',
-        });
-        console.log(
-          `OECP ${stopped.effectiveMode} stop accepted for run ${stopped.runId}; host capsule was not terminated`
-        );
-      } finally {
-        await coordinator.close();
-      }
     },
   };
   return Object.freeze(services);
 }
 
-module.exports = { createDefaultServices, createSessionContext, loadRuntime };
+module.exports = {
+  createDefaultServices,
+  createSessionContext,
+  loadRuntime,
+  sanitizeRemoteOperation,
+};

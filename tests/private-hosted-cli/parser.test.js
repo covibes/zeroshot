@@ -19,6 +19,7 @@ function harness() {
     });
   program
     .command('list')
+    .alias('ls')
     .option('-s, --status <status>')
     .option('-n, --limit <n>', '', Number)
     .option('--json')
@@ -45,7 +46,7 @@ function harness() {
     'remoteStop',
   ];
   const services = Object.fromEntries(
-    serviceNames.map((name) => [name, async (...args) => calls.push([name, ...args])])
+    serviceNames.map((name) => [name, (...args) => calls.push([name, ...args])])
   );
   let settingsReads = 0;
   registerPrivateHostedCandidate(program, {
@@ -118,6 +119,23 @@ describe('private candidate closed parser', () => {
     ]);
     assert.deepEqual(calls, []);
     assert.equal(process.exitCode, 1);
+  });
+
+  it('rejects explicit empty targets and the ls hosted alias without local fallback', async () => {
+    for (const argv of [
+      ['run', 'local-task', '--target', ''],
+      ['list', '--target', ''],
+      ['status', 'cap-1', '--target', ''],
+      ['stop', 'cap-1', '--target', ''],
+      ['ls', '--target', 'prod'],
+    ]) {
+      const { program, calls, settingsReads } = harness();
+      await parse(program, argv);
+      assert.deepEqual(calls, []);
+      assert.equal(settingsReads(), 0);
+      assert.equal(process.exitCode, 1);
+      process.exitCode = 0;
+    }
   });
 
   it('dispatches each remote lifecycle route without conflating stop and terminate', async () => {

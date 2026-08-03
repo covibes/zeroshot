@@ -10,6 +10,7 @@ const {
   openRouterAccount,
   openRouterService,
   PromptInput,
+  readInstallCredentials,
 } = require('../../private/hosted-cli-candidate/credentials');
 const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers');
 const GRAPH_FIXTURE = path.join(
@@ -73,7 +74,7 @@ describe('explicit hosted readers', () => {
 });
 
 it('requires explicit consent, stores only OpenRouter in target/profile keyring, and zeroes buffers', async () => {
-  const githubCanary = Buffer.from('github-canary-884');
+  let acquisitionReads = 0;
   const openrouterCanary = Buffer.from('openrouter-canary-884');
   const consent = Buffer.from('yes');
   const state = {
@@ -83,19 +84,19 @@ it('requires explicit consent, stores only OpenRouter in target/profile keyring,
   };
   const keyring = new Map();
   const credentialStore = {
-    async get(service, account) {
+    get(service, account) {
       return keyring.get(`${service}:${account}`) ?? null;
     },
-    async set(service, account, value) {
+    set(service, account, value) {
       keyring.set(`${service}:${account}`, value);
     },
-    async delete(service, account) {
+    delete(service, account) {
       keyring.delete(`${service}:${account}`);
     },
   };
   let promptCount = 0;
   const prompt = {
-    async line(_text, options) {
+    line(_text, options) {
       promptCount += 1;
       return options?.secret ? openrouterCanary : consent;
     },
@@ -112,11 +113,12 @@ it('requires explicit consent, stores only OpenRouter in target/profile keyring,
     },
     credentialStore,
     github: {
-      async inspect() {
+      inspect() {
         return { source: 'gh-cli', host: 'github.com', account: 'octocat' };
       },
-      async readToken() {
-        return githubCanary;
+      acquire() {
+        acquisitionReads += 1;
+        throw new Error('setup must not acquire a token');
       },
     },
     prompt,
@@ -127,7 +129,7 @@ it('requires explicit consent, stores only OpenRouter in target/profile keyring,
     keyring.get(`${openRouterService('target-1')}:${openRouterAccount()}`),
     'openrouter-canary-884'
   );
-  assert.ok(githubCanary.every((byte) => byte === 0));
+  assert.equal(acquisitionReads, 0);
   assert.ok(openrouterCanary.every((byte) => byte === 0));
   assert.ok(consent.every((byte) => byte === 0));
   const settingsJson = JSON.stringify(state);
@@ -151,7 +153,7 @@ it('does not read either secret when GitHub CLI use is declined', async () => {
       provider: 'codex-openrouter',
       settings: { load: () => state, mutate: (mutator) => mutator(state) },
       credentialStore: {
-        async get() {
+        get() {
           keyringReads += 1;
           return null;
         },
@@ -159,16 +161,16 @@ it('does not read either secret when GitHub CLI use is declined', async () => {
         async delete() {},
       },
       github: {
-        async inspect() {
+        inspect() {
           return { source: 'gh-cli', host: 'github.com', account: 'octocat' };
         },
-        async readToken() {
+        acquire() {
           tokenReads += 1;
-          return Buffer.from('forbidden');
+          return { metadata: {}, token: Buffer.from('forbidden') };
         },
       },
       prompt: {
-        async line() {
+        line() {
           return no;
         },
         clear() {},
@@ -193,4 +195,42 @@ it('supports explicit noninteractive consent and secret on bounded stdin lines',
   consent.fill(0);
   secret.fill(0);
   prompt.clear();
+});
+
+it('rejects an atomically acquired token for a switched GitHub account', async () => {
+  const token = Buffer.from('github-canary-884');
+  let keyringReads = 0;
+  const target = {
+    hostedSetup: {
+      kind: 'zeroshot.private-hosted-setup/v1',
+      repository: 'github.com/owner/repo',
+      provider: 'codex-openrouter',
+      profile: 'provider.codex-openrouter-pr@1',
+      model: 'openai/gpt-5.2-codex',
+      github: { source: 'gh-cli', host: 'github.com', account: 'octocat' },
+      openrouter: { source: 'os-keyring', service: 'service', account: 'account' },
+    },
+  };
+  await assert.rejects(
+    readInstallCredentials(
+      target,
+      {
+        get() {
+          keyringReads += 1;
+          return 'openrouter-canary';
+        },
+      },
+      {
+        acquire() {
+          return {
+            metadata: { host: 'github.com', account: 'switched-user' },
+            token,
+          };
+        },
+      }
+    ),
+    /does not match target setup/
+  );
+  assert.equal(keyringReads, 0);
+  assert.ok(token.every((byte) => byte === 0));
 });

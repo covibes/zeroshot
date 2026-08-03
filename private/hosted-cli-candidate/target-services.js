@@ -1,6 +1,7 @@
 'use strict';
 
 const { configureTargetSetup } = require('./credentials');
+const { URL } = require('node:url');
 
 function discoveryEndpoints(descriptor) {
   return {
@@ -42,6 +43,27 @@ function targetSessionManager({
   });
 }
 
+async function deleteTargetCredentials(runtime, target, credentialStore) {
+  const failures = [];
+  const remove = async (service, account) => {
+    try {
+      await credentialStore.delete(service, account);
+    } catch {
+      failures.push(`${service}:${account}`);
+    }
+  };
+  await remove(runtime.target.targetServiceKey(target.id), runtime.target.TARGET_ACCOUNT);
+  const setup = target.hostedSetup;
+  if (setup?.openrouter?.service && setup?.openrouter?.account) {
+    await remove(setup.openrouter.service, setup.openrouter.account);
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      'Local keyring cleanup failed; target settings were preserved for an exact retry.'
+    );
+  }
+}
+
 function createTargetServices({ runtime, settings, httpTransport, requireTarget }) {
   const managerFor = (values, open) => targetSessionManager({ runtime, settings, ...values, open });
   return {
@@ -64,7 +86,7 @@ function createTargetServices({ runtime, settings, httpTransport, requireTarget 
       console.log(`Logged in to "${name}" (organization: ${result.organization.id})`);
     },
 
-    async targetList(options) {
+    targetList(options) {
       const targets = runtime.target.listTargets(settings);
       if (options.json) {
         const rows = targets.map(({ name, record }) => ({
@@ -89,20 +111,19 @@ function createTargetServices({ runtime, settings, httpTransport, requireTarget 
 
     async targetRemove(name, options) {
       const target = requireTarget(name, runtime, settings);
+      const credentialStore = await runtime.target.KeyringCredentialStore.create();
+      let remoteError;
       try {
         const descriptor = await runtime.target.discoverTarget(target.url, httpTransport());
-        const credentialStore = await runtime.target.KeyringCredentialStore.create();
         const manager = managerFor({ name, target, descriptor, credentialStore }, () =>
           Promise.resolve()
         );
         await manager.revoke(Boolean(options.force));
-        const setup = target.hostedSetup;
-        if (setup?.openrouter?.service && setup?.openrouter?.account) {
-          await credentialStore.delete(setup.openrouter.service, setup.openrouter.account);
-        }
       } catch (error) {
-        if (!options.force) throw error;
+        remoteError = error;
       }
+      if (remoteError && !options.force) throw remoteError;
+      await deleteTargetCredentials(runtime, target, credentialStore);
       runtime.target.removeTarget(name, settings);
       console.log(`Target "${name}" removed`);
     },

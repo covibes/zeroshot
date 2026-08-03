@@ -85,7 +85,7 @@ function registerTarget(program, service) {
     .requiredOption('--repository <owner/name>', 'Exact GitHub owner/name')
     .requiredOption('--provider <provider>', 'Must be codex-openrouter')
     .action((name, options) =>
-      failClosed(async () => {
+      failClosed(() => {
         if (options.provider !== 'codex-openrouter') {
           throw new Error('provider must be exactly codex-openrouter');
         }
@@ -104,7 +104,7 @@ function registerCapsule(program, service) {
     .option('--label <label>', 'Capsule label')
     .option('--size <size>', 'Advertised capsule size')
     .action((options) =>
-      failClosed(async () => {
+      failClosed(() => {
         if (
           options.label !== undefined &&
           (options.label.length < 1 || options.label.length > 100)
@@ -140,14 +140,17 @@ function registerHostedRun(program, service) {
     .option('--target <name>', 'Named private hosted target');
   wrapExisting(run, ({ args, options, command, invokeLocal }) => {
     const inputArg = args[0];
-    if (!options.target) {
+    if (options.target === undefined) {
       if (options.graph !== undefined || options.input !== undefined) {
         return failClosed(() => Promise.reject(new Error('--graph and --input require --target')));
       }
       if (inputArg === undefined) command.error("error: missing required argument 'input'");
       return invokeLocal();
     }
-    return failClosed(async () => {
+    return failClosed(() => {
+      if (typeof options.target !== 'string' || options.target.length === 0) {
+        throw new Error('--target must name a registered target');
+      }
       assertOnlyOptions(command, new Set(['graph', 'input', 'target', 'detach']));
       if (inputArg !== undefined)
         throw new Error('general text/issue run is not available with --target');
@@ -162,8 +165,14 @@ function registerHostedList(program, service) {
   const list = commandNamed(program, 'list');
   list.option('--target <name>', 'Named private hosted target');
   wrapExisting(list, ({ options, command, invokeLocal }) => {
-    if (!options.target) return invokeLocal();
-    return failClosed(async () => {
+    if (options.target === undefined) return invokeLocal();
+    return failClosed(() => {
+      if (typeof options.target !== 'string' || options.target.length === 0) {
+        throw new Error('--target must name a registered target');
+      }
+      if (command.parent?.rawArgs?.[2] === 'ls') {
+        throw new Error('hosted list is available only as `list --target`');
+      }
       assertOnlyOptions(command, new Set(['target', 'limit', 'json']));
       if (
         options.limit !== undefined &&
@@ -180,8 +189,11 @@ function registerHostedStatus(program, service) {
   const status = commandNamed(program, 'status');
   status.option('--target <name>', 'Named private hosted target');
   wrapExisting(status, ({ args, options, command, invokeLocal }) => {
-    if (!options.target) return invokeLocal();
-    return failClosed(async () => {
+    if (options.target === undefined) return invokeLocal();
+    return failClosed(() => {
+      if (typeof options.target !== 'string' || options.target.length === 0) {
+        throw new Error('--target must name a registered target');
+      }
       assertOnlyOptions(command, new Set(['target', 'json']));
       return service().remoteStatus(args[0], options);
     });
@@ -194,12 +206,15 @@ function registerHostedStop(program, service) {
     .option('--target <name>', 'Named private hosted target')
     .option('--force', 'Force OECP stop instead of drain');
   wrapExisting(stop, ({ args, options, command, invokeLocal }) => {
-    if (!options.target) {
+    if (options.target === undefined) {
       if (options.force)
         return failClosed(() => Promise.reject(new Error('--force requires --target')));
       return invokeLocal();
     }
-    return failClosed(async () => {
+    return failClosed(() => {
+      if (typeof options.target !== 'string' || options.target.length === 0) {
+        throw new Error('--target must name a registered target');
+      }
       assertOnlyOptions(command, new Set(['target', 'force']));
       return service().remoteStop(args[0], options);
     });

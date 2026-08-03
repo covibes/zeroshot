@@ -104,6 +104,10 @@ class PromptInput {
         if (this.pending.length === 0) throw new Error('stdin ended before the required value');
         const line = this.pending;
         this.pending = Buffer.alloc(0);
+        if (line.length > maxBytes) {
+          line.fill(0);
+          throw new Error('stdin value exceeded the safety bound');
+        }
         return line;
       }
       const chunk = Buffer.from(next.value);
@@ -131,7 +135,7 @@ class PromptInput {
         const chunk = Buffer.from(source);
         try {
           for (const byte of chunk) {
-            if (byte === 0x03) throw new DOMException('setup interrupted', 'AbortError');
+            if (byte === 0x03) throw new globalThis.DOMException('setup interrupted', 'AbortError');
             if (byte === 0x0a || byte === 0x0d) {
               this.output.write('\n');
               return Buffer.from(value.subarray(0, length));

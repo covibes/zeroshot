@@ -13,6 +13,7 @@ const CANDIDATE_FILES = Object.freeze([
   'manifest.js',
   'readers.js',
   'credentials.js',
+  'github-credential.js',
   'secret-input.js',
   'install-client.js',
   'install-protocol.js',
@@ -27,6 +28,13 @@ const PROTOCOL_FILES = Object.freeze([
   'src/cluster/generated/protocol-schema.ts',
   'protocol/openengine-cluster/v1/schema.json',
   'protocol/openengine-cluster/v1/graph.schema.json',
+]);
+const GENERATED_OUTPUT_DIRS = Object.freeze([
+  'lib/agent-cli-provider',
+  'lib/cluster',
+  'lib/hosted-session',
+  'lib/hosted-target',
+  'lib/target',
 ]);
 
 function run(command, args, cwd = ROOT) {
@@ -56,12 +64,19 @@ function fileDigest(file) {
 function parseArgs(argv) {
   let runtimeImageDigest;
   let output;
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (arg === '--runtime-image-digest') runtimeImageDigest = argv[++index];
-    else if (arg === '--out') output = argv[++index];
+  let valueFor;
+  for (const arg of argv) {
+    if (valueFor === 'runtime') {
+      runtimeImageDigest = arg;
+      valueFor = undefined;
+    } else if (valueFor === 'output') {
+      output = arg;
+      valueFor = undefined;
+    } else if (arg === '--runtime-image-digest') valueFor = 'runtime';
+    else if (arg === '--out') valueFor = 'output';
     else throw new Error(`unknown build argument ${arg}`);
   }
+  if (valueFor !== undefined) throw new Error('build argument value is missing');
   if (!/^sha256:[a-f0-9]{64}$/.test(runtimeImageDigest || '')) {
     throw new Error('--runtime-image-digest sha256:<64 lowercase hex> is required');
   }
@@ -172,14 +187,10 @@ function writeCandidateFiles(stage, immutable) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const generatedHostedTarget = path.join(ROOT, 'lib/hosted-target');
-  const removeGeneratedHostedTarget = !fs.existsSync(generatedHostedTarget);
-  process.once('exit', () => {
-    if (removeGeneratedHostedTarget) {
-      fs.rmSync(generatedHostedTarget, { recursive: true, force: true });
-    }
-  });
   assertCleanSource();
+  for (const directory of GENERATED_OUTPUT_DIRS) {
+    fs.rmSync(path.join(ROOT, directory), { recursive: true, force: true });
+  }
   run('npm', ['run', 'build:agent-cli-provider']);
   run('npm', ['run', 'build:cluster']);
   run('npm', ['run', 'build:target']);

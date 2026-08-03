@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { InstallProtocolError, InstallTransportUncertainError } = require('./install-client');
 const {
+  RemoteAllocationUncertainError,
   RemoteDetachedError,
   safeWatchProjection,
   sleep,
@@ -38,43 +39,51 @@ class HostedRunOrchestrator {
     );
     const setup = await this.checkCredentialSources(options.target, options.credentialStore);
     const identities = stableIdentities(this.randomUUID, this.runtimeImageDigest);
+    const preparation = this.installClient.preflight({
+      adapter: options.adapter,
+      descriptor: options.descriptor,
+      identities,
+      setup,
+      organizationId: options.target.organization.id,
+    });
     let capsule;
     let coordinator;
     let uncertain = false;
     let canTerminate = false;
     try {
-      capsule = await options.adapter.allocate(
-        {
-          idempotencyKey: identities.allocationIdempotencyKey,
-          label: `zeroshot-${identities.clientRunId.slice(-12)}`,
-        },
-        options.signal
-      );
+      this.output.stdout(`Allocation key: ${identities.allocationIdempotencyKey}`);
+      try {
+        capsule = await options.adapter.allocate(
+          {
+            idempotencyKey: identities.allocationIdempotencyKey,
+            label: `zeroshot-${identities.clientRunId.slice(-12)}`,
+          },
+          options.signal
+        );
+      } catch (error) {
+        const allocationError = new RemoteAllocationUncertainError(
+          identities.allocationIdempotencyKey,
+          error
+        );
+        this.output.stderr(allocationError.message);
+        throw allocationError;
+      }
       this.output.stdout(`Capsule: ${capsule.id}`);
       canTerminate = true;
       capsule = await this.#waitReady(options.adapter, capsule, options.signal);
 
-      const credentials = await this.readCredentials(options.target, options.credentialStore);
-      try {
-        await this.installClient.install({
-          adapter: options.adapter,
-          descriptor: options.descriptor,
-          sessionManager: options.sessionManager,
-          credentials,
-          identities,
-          setup,
-          capsuleId: capsule.id,
-          organizationId: options.target.organization.id,
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-          onUploadStart: () => {
-            uncertain = true;
-            canTerminate = false;
-          },
-        });
-      } finally {
-        credentials.githubToken.fill(0);
-        credentials.openrouterKey.fill(0);
-      }
+      await this.installClient.install({
+        preparation,
+        sessionManager: options.sessionManager,
+        credentialProvider: () => this.readCredentials(options.target, options.credentialStore),
+        identities,
+        capsuleId: capsule.id,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        onUploadStart: () => {
+          uncertain = true;
+          canTerminate = false;
+        },
+      });
       uncertain = false;
       canTerminate = true;
 
@@ -144,7 +153,7 @@ class HostedRunOrchestrator {
             }
           }
         } finally {
-          await watch.cancel().catch(() => undefined);
+          await Promise.resolve(watch.cancel()).catch(() => undefined);
         }
 
         const finalSession = await coordinator.open(options.signal);
@@ -200,7 +209,7 @@ class HostedRunOrchestrator {
       }
       throw error;
     } finally {
-      await coordinator?.close().catch(() => undefined);
+      await Promise.resolve(coordinator?.close()).catch(() => undefined);
     }
   }
 
@@ -228,6 +237,7 @@ class HostedRunOrchestrator {
 }
 
 module.exports = {
+  RemoteAllocationUncertainError,
   HostedRunOrchestrator,
   READY_POLL_MS,
   READY_TIMEOUT_MS,

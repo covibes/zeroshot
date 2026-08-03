@@ -2,6 +2,18 @@
 
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
+class RemoteAllocationUncertainError extends Error {
+  constructor(allocationIdempotencyKey, cause) {
+    super(
+      `remote allocation outcome is uncertain; allocation key ${allocationIdempotencyKey} was preserved. ` +
+        'Do not allocate a replacement. Reconcile this exact key with the target operator.',
+      { cause }
+    );
+    this.name = 'RemoteAllocationUncertainError';
+    this.allocationIdempotencyKey = allocationIdempotencyKey;
+  }
+}
+
 class RemoteDetachedError extends Error {
   constructor(capsuleId, identities, cause) {
     super(
@@ -31,7 +43,7 @@ function stableIdentities(randomUUID, runtimeImageDigest) {
 }
 
 function abortReason(signal) {
-  return signal?.reason ?? new DOMException('operation aborted', 'AbortError');
+  return signal?.reason ?? new globalThis.DOMException('operation aborted', 'AbortError');
 }
 
 function sleep(ms, signal) {
@@ -70,4 +82,10 @@ function safeWatchProjection(capsuleId, item) {
   };
 }
 
-module.exports = { RemoteDetachedError, safeWatchProjection, sleep, stableIdentities };
+module.exports = {
+  RemoteAllocationUncertainError,
+  RemoteDetachedError,
+  safeWatchProjection,
+  sleep,
+  stableIdentities,
+};
