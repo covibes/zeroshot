@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CreateCapsuleRequest",
+  "type": "object",
+  "properties": {
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "size": {
+      "$ref": "#/$defs/CapsuleSize",
+      "default": "standard"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "CapsuleSize": {
+      "description": "Public size names resolve to provider resources only on the server.",
+      "type": "string",
+      "enum": ["tiny", "small", "standard", "large"]
+    }
+  }
+}

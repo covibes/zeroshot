@@ -179,6 +179,17 @@ Named target commands load compiled modules from `lib/target/`; package and deve
 must run `build:target`, never import raw TypeScript from the Node CLI. OAuth routes and client
 identity come from the versioned, same-origin hosted-target discovery document and its advertised
 OAuth metadata; never reconstruct provider routes in `cli/` or `src/cluster/`.
+The hosted-client vertical is descriptor-driven: `discoverTarget` validates the complete
+`openengine.hosted-target/v1` document before target settings mutate, `TargetSessionManager` is the
+sole owner of each target's locked rotating refresh family and audience access cache, and
+`createTargetAdapter` is the sole capsule-adapter constructor. Hosted-session accepts that adapter
+and a capsule ID, so every initial/replacement OECP connection obtains fresh access. The immutable
+Zero Cloud #44 corpus lives at `tests/fixtures/zero-cloud-44`, pinned to commit
+`e0a94fa418fd347f9db7fb4346c2146359444017` and digest
+`sha256:20e24ef4231cfffef26dc18fbca70ce7f96ca232bc8b6a62ceb28fbc8c8fdb33`; never hand-author a
+parallel hosted wire contract. `build:cluster` emits hosted-target and hosted-session CJS, ESM, and
+declarations; packed runtime modules must not import source `.ts` files. Stable CLI registration
+remains absent; private candidates explicitly call `registerHostedCommands`.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
 Portable external conformance is the immutable public catalog in the testkit and covers only
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.

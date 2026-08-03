@@ -1,0 +1,13 @@
+{
+  "description": "A stable, closed-vocabulary invalid_request problem response.",
+  "schema": "api-problem-v1",
+  "expect_schema_valid": true,
+  "status": 400,
+  "headers": {
+    "cache-control": "no-store"
+  },
+  "body": {
+    "code": "invalid_request",
+    "message": "the request is invalid"
+  }
+}

@@ -1,203 +1,165 @@
 import assert from 'node:assert/strict';
-import { describe, it, beforeEach } from 'node:test';
-import { ZeroCloudV1TargetAdapter } from '../../src/hosted-target/zero-cloud-v1-adapter.ts';
+import { beforeEach, describe, it } from 'node:test';
+import { createTargetAdapter } from '../../src/hosted-target/target-adapter.ts';
+import { TargetProtocolError, TargetServerError } from '../../src/hosted-target/errors.ts';
 import {
   FakeHttpTransport,
-  FakeClock,
   FakeTokenProvider,
-  fakeDiscovery,
-  respond,
-  respondEmpty,
-  makeCapsule,
-  makeCapsuleAccess,
-  makeLimits,
-  makeListPage,
   NO_RETRY,
+  capsule,
+  fakeDiscovery,
 } from './harness.ts';
-import { TargetProtocolError } from '../../src/hosted-target/errors.ts';
-import type { RetryPolicy } from '../../src/hosted-target/types.ts';
 
-function makeAdapter(transport: FakeHttpTransport, opts?: { clock?: FakeClock; retryPolicy?: RetryPolicy }) {
-  return new ZeroCloudV1TargetAdapter({
-    discovery: fakeDiscovery(),
-    organization: 'org-test',
-    tokenProvider: new FakeTokenProvider(),
-    transport,
-    clock: opts?.clock ?? new FakeClock(),
-    retryPolicy: opts?.retryPolicy ?? NO_RETRY,
-  });
+function bodyOf(request: { readonly init: RequestInit }): unknown {
+  return JSON.parse(String(request.init.body));
 }
 
-describe('TargetAdapter contract tests', () => {
-  let transport: FakeHttpTransport;
-
+describe('descriptor-driven TargetAdapter', () => {
+  let http: FakeHttpTransport;
   beforeEach(() => {
-    transport = new FakeHttpTransport();
+    http = new FakeHttpTransport();
   });
 
-  describe('allocate', () => {
-    it('returns a Capsule on success', async () => {
-      const adapter = makeAdapter(transport);
-      const capsuleData = makeCapsule({ id: 'cap-new', state: 'provisioning' });
-      transport.enqueue(respond(201, capsuleData));
-
-      const result = await adapter.allocate(
-        { idempotencyKey: 'key-1', profile: 'default' },
-      );
-
-      assert.equal(result.id, 'cap-new');
-      assert.equal(result.state, 'provisioning');
-      assert.equal(transport.requests.length, 1);
-      assert.equal(transport.requests[0]!.method, 'POST');
-      assert.ok(transport.requests[0]!.url.includes('/capsules'));
-      assert.equal(transport.requests[0]!.headers['Idempotency-Key'], 'key-1');
+  function adapter() {
+    return createTargetAdapter({
+      descriptor: fakeDiscovery(),
+      organization: { id: 'org/opaque value' },
+      tokenProvider: new FakeTokenProvider(),
+      transport: http,
+      retryPolicy: NO_RETRY,
     });
+  }
 
-    it('sends idempotency key and organization in request', async () => {
-      const adapter = makeAdapter(transport);
-      transport.enqueue(respond(201, makeCapsule()));
-
-      await adapter.allocate({ idempotencyKey: 'idem-abc', profile: 'gpu-large' });
-
-      const req = transport.requests[0]!;
-      assert.equal(req.headers['Idempotency-Key'], 'idem-abc');
-      const body = JSON.parse(req.body!);
-      assert.equal(body.profile, 'gpu-large');
-      assert.equal(body.organization, 'org-test');
+  it('captures every discovered method, route, query, header, and body exactly', async () => {
+    http.enqueue(201, capsule('cap/opaque'));
+    http.enqueue(200, { capsules: [capsule('cap/opaque')], next_cursor: 'cursor/next ?' });
+    http.enqueue(200, capsule('cap/opaque'));
+    http.enqueue(200, { active_capsules: 1, max_active_capsules: null });
+    http.enqueue(200, {
+      protocol: 'openengine.cluster/v1',
+      websocket_url: 'wss://hosted.openengine.example/v1/capsules/cap%2Fopaque/oecp',
+      access_token: 'capsule-grant-canary',
+      token_type: 'Bearer',
+      expires_at: '2026-08-03T01:00:00Z',
     });
+    http.enqueue(202, capsule('cap/opaque', 'terminating'));
+    const target = adapter();
 
-    it('rejects invalid idempotency key format', async () => {
-      const adapter = makeAdapter(transport);
-      await assert.rejects(
-        () => adapter.allocate({ idempotencyKey: '', profile: 'default' }),
-        TargetProtocolError,
-      );
-    });
+    await target.allocate({ idempotencyKey: 'idem-1', label: 'worker', size: 'small' });
+    const page = await target.list({ cursor: 'cursor/raw ?', limit: 37 });
+    await target.inspect('cap/opaque');
+    const limits = await target.limits();
+    const access = await target.access('cap/opaque');
+    const terminating = await target.terminate('cap/opaque');
 
-    it('rejects idempotency key with invalid characters', async () => {
-      const adapter = makeAdapter(transport);
-      await assert.rejects(
-        () => adapter.allocate({ idempotencyKey: 'has spaces!', profile: 'default' }),
-        TargetProtocolError,
-      );
-    });
+    assert.equal(
+      http.requests[0]?.url,
+      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules'
+    );
+    assert.equal(http.requests[0]?.init.method, 'POST');
+    assert.deepEqual(bodyOf(http.requests[0]!), { label: 'worker', size: 'small' });
+    assert.equal(new Headers(http.requests[0]?.init.headers).get('Idempotency-Key'), 'idem-1');
+    assert.equal(
+      new Headers(http.requests[0]?.init.headers).get('Authorization'),
+      'Bearer admin-access-canary'
+    );
+    assert.equal(
+      http.requests[1]?.url,
+      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules?cursor=cursor%2Fraw+%3F&limit=37'
+    );
+    assert.equal(
+      http.requests[2]?.url,
+      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules/cap%2Fopaque'
+    );
+    assert.equal(
+      http.requests[3]?.url,
+      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/limits'
+    );
+    assert.equal(
+      http.requests[4]?.url,
+      'https://hosted.openengine.example/capsules/cap%2Fopaque/access'
+    );
+    assert.deepEqual(bodyOf(http.requests[4]!), { protocol: 'openengine.cluster/v1' });
+    assert.equal(http.requests[5]?.init.method, 'DELETE');
+    assert.equal(page.nextCursor, 'cursor/next ?');
+    assert.equal(limits.maxActiveCapsules, null);
+    assert.equal(access.accessToken, 'capsule-grant-canary');
+    assert.equal(terminating.state, 'terminating');
   });
 
-  describe('list', () => {
-    it('returns a page with items and cursor', async () => {
-      const adapter = makeAdapter(transport);
-      const items = [makeCapsule({ id: 'cap-1' }), makeCapsule({ id: 'cap-2' })];
-      transport.enqueue(respond(200, makeListPage(items, 'next-page-token')));
-
-      const result = await adapter.list();
-
-      assert.equal(result.items.length, 2);
-      assert.equal(result.items[0]!.id, 'cap-1');
-      assert.equal(result.items[1]!.id, 'cap-2');
-      assert.equal(result.cursor, 'next-page-token');
-    });
-
-    it('passes cursor parameter when provided', async () => {
-      const adapter = makeAdapter(transport);
-      transport.enqueue(respond(200, makeListPage([makeCapsule()])));
-
-      await adapter.list('abc-cursor');
-
-      const url = transport.requests[0]!.url;
-      assert.ok(url.includes('cursor=abc-cursor'));
-    });
-
-    it('returns page without cursor when none in response', async () => {
-      const adapter = makeAdapter(transport);
-      transport.enqueue(respond(200, makeListPage([makeCapsule()])));
-
-      const result = await adapter.list();
-      assert.equal(result.cursor, undefined);
-    });
+  it('rejects body and pagination bounds before transport side effects', async () => {
+    const target = adapter();
+    await assert.rejects(
+      target.allocate({ idempotencyKey: 'idem', label: 'x'.repeat(101) }),
+      TargetProtocolError
+    );
+    await assert.rejects(target.list({ limit: 101 }), TargetProtocolError);
+    assert.equal(http.requests.length, 0);
   });
 
-  describe('inspect', () => {
-    it('returns a capsule by ID', async () => {
-      const adapter = makeAdapter(transport);
-      transport.enqueue(respond(200, makeCapsule({ id: 'cap-42', state: 'running' })));
+  it('preserves the closed 409 code and valid Retry-After instead of collapsing conflicts', async () => {
+    http.enqueue(
+      409,
+      {
+        code: 'run_conflict',
+        message: 'server message and token canary must not escape',
+        capsule_id: 'cap-1',
+        retryable: true,
+      },
+      { 'Retry-After': '1' }
+    );
+    const target = adapter();
 
-      const result = await adapter.inspect('cap-42');
-
-      assert.equal(result.id, 'cap-42');
-      assert.equal(result.state, 'running');
-      assert.ok(transport.requests[0]!.url.includes('/capsules/cap-42'));
-    });
-  });
-
-  describe('terminate', () => {
-    it('succeeds on 204 response', async () => {
-      const adapter = makeAdapter(transport);
-      transport.enqueue(respondEmpty(204));
-
-      await adapter.terminate('cap-42');
-
-      assert.equal(transport.requests[0]!.method, 'DELETE');
-      assert.ok(transport.requests[0]!.url.includes('/capsules/cap-42'));
+    await assert.rejects(target.inspect('cap-1'), (error: unknown) => {
+      assert.ok(error instanceof TargetServerError);
+      assert.equal(error.serverCode, 'run_conflict');
+      assert.equal(error.retryAfterMs, 1000);
+      assert.equal(error.message, 'Capsule request failed (run_conflict)');
+      assert.equal(error.message.includes('token canary'), false);
+      return true;
     });
   });
 
-  describe('limits', () => {
-    it('returns capacity limits', async () => {
-      const adapter = makeAdapter(transport);
-      transport.enqueue(respond(200, makeLimits({ maxConcurrent: 10, maxPerHour: 50 })));
+  it('rejects unknown fields, lifecycle values, and permanent Retry-After', async () => {
+    http.enqueue(200, { ...capsule(), provider_id: 'leak' });
+    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
 
-      const result = await adapter.limits();
+    http.enqueue(
+      409,
+      {
+        code: 'idempotency_conflict',
+        message: 'conflict',
+        capsule_id: null,
+        retryable: false,
+      },
+      { 'Retry-After': '1' }
+    );
+    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
+  });
 
-      assert.equal(result.maxConcurrent, 10);
-      assert.equal(result.maxPerHour, 50);
+  it('requires the exact Bearer challenge on closed unauthorized responses', async () => {
+    const unauthorized = {
+      code: 'unauthorized',
+      message: 'CANARY_REFRESH_920',
+      capsule_id: null,
+      retryable: false,
+    };
+    http.enqueue(401, unauthorized);
+    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
+
+    http.enqueue(401, unauthorized, {
+      'WWW-Authenticate': 'Bearer error="invalid_token"',
+    });
+    await assert.rejects(adapter().inspect('cap-1'), (error: unknown) => {
+      assert.ok(error instanceof TargetServerError);
+      assert.equal(error.serverCode, 'unauthorized');
+      assert.equal(error.message.includes('CANARY_REFRESH_920'), false);
+      return true;
     });
   });
 
-  describe('access', () => {
-    it('returns CapsuleAccess with endpoint and token', async () => {
-      const adapter = makeAdapter(transport);
-      transport.enqueue(respond(200, makeCapsuleAccess()));
-
-      const result = await adapter.access('cap-42');
-
-      assert.equal(result.endpoint, 'wss://capsule.test.example/oecp');
-      assert.equal(result.token, 'access-token-secret');
-      assert.ok(result.expiresAt);
-      assert.equal(transport.requests[0]!.method, 'POST');
-      assert.ok(transport.requests[0]!.url.includes('/capsules/cap-42/access'));
-    });
-  });
-
-  describe('pagination cursor handling', () => {
-    it('preserves opaque cursor bytes exactly', async () => {
-      const adapter = makeAdapter(transport);
-      const opaqueToken = 'eyJhbGciOiJub25lIn0=.dGVzdA==';
-      transport.enqueue(respond(200, makeListPage([makeCapsule()])));
-
-      await adapter.list(opaqueToken);
-
-      const url = transport.requests[0]!.url;
-      assert.ok(url.includes(`cursor=${encodeURIComponent(opaqueToken)}`));
-    });
-  });
-
-  describe('authorization', () => {
-    it('sets Bearer token header on every request', async () => {
-      const tokenProvider = new FakeTokenProvider('my-secret-token');
-      const adapter = new ZeroCloudV1TargetAdapter({
-        discovery: fakeDiscovery(),
-        organization: 'org-test',
-        tokenProvider,
-        transport,
-        clock: new FakeClock(),
-        retryPolicy: NO_RETRY,
-      });
-      transport.enqueue(respond(200, makeCapsule()));
-
-      await adapter.inspect('cap-1');
-
-      assert.equal(transport.requests[0]!.headers['Authorization'], 'Bearer my-secret-token');
-      assert.equal(tokenProvider.callCount, 1);
-    });
+  it('exposes absence of credential install as capability metadata without guessing a route', () => {
+    assert.deepEqual(adapter().credentialInstall, { supported: false });
+    assert.equal(http.requests.length, 0);
   });
 });

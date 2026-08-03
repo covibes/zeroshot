@@ -1,0 +1,14 @@
+{
+  "description": "Allocate round-trips the optional label and one closed advertised size.",
+  "schema": "create-capsule-request",
+  "expect_schema_valid": true,
+  "request": {
+    "operation": "allocate",
+    "method": "POST",
+    "required_headers": ["Content-Type", "Idempotency-Key"]
+  },
+  "body": {
+    "label": "opaque fixture capsule",
+    "size": "large"
+  }
+}

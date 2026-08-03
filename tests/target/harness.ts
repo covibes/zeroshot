@@ -2,6 +2,7 @@ import { FakeCredentialStore } from '../../src/target/credential-store.ts';
 import type { HttpTransport, Clock } from '../../src/target/device-flow.ts';
 import type { BrowserOpener, TargetSessionDeps } from '../../src/target/target-session.ts';
 import type { SettingsPort, TargetRecord } from '../../src/target/target-registry.ts';
+import type { RouteTemplate, TargetDiscoveryDescriptor, TargetSessionEndpoints } from '../../src/target/discovery.ts';
 
 export { FakeCredentialStore };
 
@@ -122,12 +123,75 @@ export function makeSettingsPort(initial: Record<string, unknown> = {}): Setting
   };
 }
 
-export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.example') {
+function route(template: string, variables: readonly string[]): RouteTemplate {
   return {
-    deviceAuthorizationEndpoint: `${baseUrl}/oauth/device`,
-    tokenEndpoint: `${baseUrl}/oauth/token`,
-    revocationEndpoint: `${baseUrl}/oauth/revoke`,
-    clientId: 'cli',
+    template,
+    variables,
+    expand(values) {
+      let result = template.replace(/\{\?([^}]+)\}/g, (_match, names: string) => {
+        const query = new URLSearchParams();
+        for (const name of names.split(',')) {
+          const value = values[name];
+          if (value !== undefined) query.set(name, String(value));
+        }
+        const serialized = query.toString();
+        return serialized ? `?${serialized}` : '';
+      });
+      result = result.replace(/\{([^}]+)\}/g, (_match, name: string) =>
+        encodeURIComponent(String(values[name])),
+      );
+      return result;
+    },
+  };
+}
+
+export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.example'): TargetSessionEndpoints {
+  const descriptor: TargetDiscoveryDescriptor = {
+    origin: baseUrl,
+    adapter: { name: 'fargate', majorVersion: 1 },
+    endpoint: `${baseUrl}/targets/primary`,
+    endpointCapabilities: ['exec', 'log_stream'],
+    pagination: { defaultPageSize: 20, maxPageSize: 100 },
+    sizes: { catalog: ['tiny', 'small', 'standard', 'large'], default: 'standard' },
+    oauth: {
+      metadataUrl: `${baseUrl}/.well-known/oauth`,
+      deviceAuthorizationEndpoint: `${baseUrl}/oauth/device`,
+      tokenEndpoint: `${baseUrl}/oauth/token`,
+      revocationEndpoint: `${baseUrl}/oauth/revoke`,
+      clientId: 'cli',
+      deviceGrantType: 'urn:ietf:params:oauth:grant-type:device_code',
+      audience: 'capsule',
+    },
+    session: { routeTemplate: route('/target-session', []), method: 'GET' },
+    capsule: {
+      baseUrl: `${baseUrl}/api/v1`,
+      routes: {
+        allocate: route('/orgs/{org_id}/capsules', ['org_id']),
+        list: route('/orgs/{org_id}/capsules{?cursor,limit}', ['org_id', 'cursor', 'limit']),
+        inspect: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
+        terminate: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
+        limits: route('/orgs/{org_id}/limits', ['org_id']),
+        access: route('/capsules/{capsule_id}/access', ['capsule_id']),
+      },
+    },
+    transport: {
+      websocketRouteTemplate: route('/v1/capsules/{capsule_id}/oecp', ['capsule_id']),
+      unauthorizedStatus: 401,
+      closeCodes: { expired: 4401, revoked: 4403 },
+    },
+    capabilityFlags: ['capsule_allocate', 'capsule_read', 'capsule_terminate', 'capsule_access', 'connections_onboarding'],
+    credentialInstall: null,
+    additional: {},
+  };
+  return {
+    deviceAuthorizationEndpoint: descriptor.oauth.deviceAuthorizationEndpoint,
+    tokenEndpoint: descriptor.oauth.tokenEndpoint,
+    revocationEndpoint: descriptor.oauth.revocationEndpoint,
+    clientId: descriptor.oauth.clientId,
+    deviceGrantType: descriptor.oauth.deviceGrantType,
+    audience: descriptor.oauth.audience,
+    sessionEndpoint: `${baseUrl}/target-session`,
+    descriptor,
   };
 }
 

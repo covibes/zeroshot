@@ -1,0 +1,9 @@
+{
+  "description": "Allocate rejects caller-invented fields rather than silently dropping them.",
+  "schema": "create-capsule-request",
+  "expect_schema_valid": false,
+  "body": {
+    "size": "standard",
+    "provider": "caller-invented"
+  }
+}

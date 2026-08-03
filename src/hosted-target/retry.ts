@@ -1,13 +1,13 @@
 import { MAX_RETRY_ATTEMPTS, MAX_RETRY_ELAPSED_MS } from './bounds.ts';
 import type { TargetAdapterError } from './errors.ts';
-import { TargetAuthError, TargetRateLimitError } from './errors.ts';
+import { TargetAuthError, TargetRateLimitError, TargetServerError } from './errors.ts';
 import type { Clock, RetryPolicy } from './types.ts';
 
 export class DefaultRetryPolicy implements RetryPolicy {
   shouldRetry(
     attempt: number,
     elapsed: number,
-    error: TargetAdapterError,
+    error: TargetAdapterError
   ): { retry: boolean; delayMs: number } {
     if (error instanceof TargetAuthError) return { retry: false, delayMs: 0 };
     if (!error.retryable) return { retry: false, delayMs: 0 };
@@ -15,7 +15,8 @@ export class DefaultRetryPolicy implements RetryPolicy {
     if (elapsed >= MAX_RETRY_ELAPSED_MS) return { retry: false, delayMs: 0 };
 
     const requestedDelay =
-      error instanceof TargetRateLimitError && error.retryAfterMs !== undefined
+      (error instanceof TargetRateLimitError || error instanceof TargetServerError) &&
+      error.retryAfterMs !== undefined
         ? Math.max(0, error.retryAfterMs)
         : Math.min(1000 * Math.pow(2, attempt), 10_000);
     const remaining = MAX_RETRY_ELAPSED_MS - elapsed;

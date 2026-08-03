@@ -1,159 +1,88 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
+import { describe, it } from 'node:test';
+import { Command } from 'commander';
 
-const execFileAsync = promisify(execFile);
-const CLI_PATH = path.resolve(process.cwd(), 'cli/index.js');
+const require = createRequire(resolve('tests/target/target-commands.test.ts'));
+const { registerHostedCommands } = require('../../cli/register-hosted-commands.js') as {
+  registerHostedCommands(program: Command, dependencies: Record<string, unknown>): Command;
+};
 
-let tmpDir: string;
-let settingsFile: string;
-
-function cli(...args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync(process.execPath, [CLI_PATH, ...args], {
-    env: {
-      ...process.env,
-      ZEROSHOT_SETTINGS_FILE: settingsFile,
-      NODE_NO_WARNINGS: '1',
-    },
-    timeout: 10_000,
+describe('private hosted command registration boundary', () => {
+  it('exports one explicit registration function without mutating a parser on import', () => {
+    assert.equal(typeof registerHostedCommands, 'function');
+    const untouched = new Command();
+    assert.equal(untouched.commands.length, 0);
   });
-}
 
-function cliSafe(...args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolve) => {
-    execFile(
-      process.execPath,
-      [CLI_PATH, ...args],
-      {
-        env: {
-          ...process.env,
-          ZEROSHOT_SETTINGS_FILE: settingsFile,
-          NODE_NO_WARNINGS: '1',
-        },
-        timeout: 10_000,
+  it('registers hosted syntax only when the private candidate calls the boundary', () => {
+    const program = new Command();
+    const target = registerHostedCommands(program, {
+      chalk: {
+        red: String,
+        green: String,
+        dim: String,
+        bold: String,
       },
-      (error, stdout, stderr) => {
-        resolve({
-          stdout: stdout ?? '',
-          stderr: stderr ?? '',
-          exitCode: error ? (error as NodeJS.ErrnoException & { code?: number }).code ? 1 : 1 : 0,
-        });
+      loadSettings: () => ({}),
+      mutateSettings: () => undefined,
+      console: { log: () => undefined, error: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: () => {
+        throw new Error('network must not run during registration');
       },
+      setExitCode: () => undefined,
+    });
+    assert.equal(program.commands.map((command) => command.name()).includes('target'), true);
+    assert.deepEqual(
+      target.commands.map((command) => command.name()),
+      ['add', 'login', 'list', 'remove']
     );
   });
-}
 
-beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-target-test-'));
-  settingsFile = path.join(tmpDir, 'settings.json');
-});
+  it('rejects an invalid descriptor before settings mutation', async () => {
+    let mutations = 0;
+    let networkCalls = 0;
+    const errors: string[] = [];
+    const program = new Command();
+    registerHostedCommands(program, {
+      chalk: {
+        red: String,
+        green: String,
+        dim: String,
+        bold: String,
+      },
+      loadSettings: () => ({}),
+      mutateSettings: () => {
+        mutations += 1;
+      },
+      console: {
+        log: () => undefined,
+        error: (message: string) => {
+          errors.push(message);
+        },
+      },
+      stderr: { write: () => undefined },
+      fetch: async () => {
+        networkCalls += 1;
+        return new Response('{}', { status: 200 });
+      },
+      setExitCode: () => undefined,
+    });
 
-afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-});
+    await program.parseAsync([
+      'node',
+      'test',
+      'target',
+      'add',
+      'unsafe',
+      '--url',
+      'https://hosted.example',
+    ]);
 
-describe('target add', () => {
-  it('creates a target in settings', async () => {
-    const { stdout } = await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
-    assert.ok(stdout.includes('staging'));
-    assert.ok(stdout.includes('api.example.com'));
-
-    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    assert.ok(settings._targets?.staging);
-    assert.equal(settings._targets.staging.url, 'https://api.example.com');
-  });
-
-  it('rejects invalid target name', async () => {
-    const result = await cliSafe('target', 'add', 'bad name!', '--url', 'https://api.example.com');
-    assert.ok(result.stderr.includes('Invalid target name'));
-  });
-
-  it('rejects invalid URL', async () => {
-    const result = await cliSafe('target', 'add', 'staging', '--url', 'http://remote.example.com');
-    assert.ok(result.stderr.includes('HTTPS required'));
-  });
-
-  it('rejects duplicate name', async () => {
-    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
-    const result = await cliSafe('target', 'add', 'staging', '--url', 'https://other.example.com');
-    assert.ok(result.stderr.includes('already exists'));
-  });
-});
-
-describe('target list', () => {
-  it('shows empty message when no targets', async () => {
-    const { stdout } = await cli('target', 'list');
-    assert.ok(stdout.includes('No targets'));
-  });
-
-  it('lists targets after adding', async () => {
-    await cli('target', 'add', 'staging', '--url', 'https://staging.example.com');
-    await cli('target', 'add', 'prod', '--url', 'https://prod.example.com');
-    const { stdout } = await cli('target', 'list');
-    assert.ok(stdout.includes('staging'));
-    assert.ok(stdout.includes('prod'));
-  });
-
-  it('outputs JSON with --json flag', async () => {
-    await cli('target', 'add', 'staging', '--url', 'https://staging.example.com');
-    const { stdout } = await cli('target', 'list', '--json');
-    const parsed = JSON.parse(stdout);
-    assert.ok(Array.isArray(parsed));
-    assert.equal(parsed.length, 1);
-    assert.equal(parsed[0].name, 'staging');
-    assert.equal(parsed[0].url, 'https://staging.example.com');
-    assert.ok('loggedIn' in parsed[0]);
-    // Never includes secrets
-    assert.equal(parsed[0].refresh_token, undefined);
-    assert.equal(parsed[0].access_token, undefined);
-    assert.equal(parsed[0].deviceToken, undefined);
-  });
-});
-
-describe('target remove', () => {
-  it('removes an existing target', async () => {
-    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
-    const { stdout } = await cli('target', 'remove', 'staging', '--force');
-    assert.ok(stdout.includes('removed'));
-
-    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    assert.equal(settings._targets?.staging, undefined);
-  });
-
-  it('fails for nonexistent target', async () => {
-    const result = await cliSafe('target', 'remove', 'nope', '--force');
-    assert.ok(result.stderr.includes('not found'));
-  });
-});
-
-describe('settings isolation', () => {
-  it('settings list does not expose _targets', async () => {
-    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
-    const { stdout } = await cli('settings');
-    assert.ok(!stdout.includes('_targets'));
-    assert.ok(!stdout.includes('staging'));
-  });
-
-  it('settings get _targets is rejected', async () => {
-    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
-    const result = await cliSafe('settings', 'get', '_targets');
-    assert.ok(result.stderr.includes('not found') || result.stderr.includes('Unknown'));
-  });
-
-  it('settings set _targets is rejected', async () => {
-    const result = await cliSafe('settings', 'set', '_targets', '{}');
-    assert.ok(result.stderr.includes('Unknown'));
-  });
-
-  it('settings reset preserves _targets', async () => {
-    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
-    await cli('settings', 'reset', '--yes');
-    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
-    assert.ok(settings._targets?.staging, '_targets should survive reset');
-    assert.equal(settings._targets.staging.url, 'https://api.example.com');
+    assert.equal(networkCalls, 1);
+    assert.equal(mutations, 0);
+    assert.equal(errors.length, 1);
   });
 });

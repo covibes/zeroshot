@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AccessRequest",
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "$ref": "#/$defs/AccessProtocol"
+    }
+  },
+  "additionalProperties": false,
+  "required": ["protocol"],
+  "$defs": {
+    "AccessProtocol": {
+      "type": "string",
+      "enum": ["openengine.cluster/v1"]
+    }
+  }
+}

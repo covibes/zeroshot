@@ -1,0 +1,15 @@
+{
+  "description": "capsule_id is an opaque string with no UUID or other format constraint; a non-UUID token is equally valid.",
+  "schema": "capsule-v1-error",
+  "expect_schema_valid": true,
+  "status": 403,
+  "headers": {
+    "cache-control": "no-store"
+  },
+  "body": {
+    "code": "forbidden",
+    "message": "the caller lacks resource authority",
+    "capsule_id": "K7f2x9mQ-shard04::cursor-b91",
+    "retryable": false
+  }
+}

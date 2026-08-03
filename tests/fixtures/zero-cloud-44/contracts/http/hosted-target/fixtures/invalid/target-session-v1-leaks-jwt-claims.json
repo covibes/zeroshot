@@ -1,0 +1,12 @@
+{
+  "description": "A target session carrying JWT claims must fail both the closed schema and the dedicated claim scan.",
+  "schema": "target-session-v1",
+  "expect_schema_valid": false,
+  "expect_no_jwt_claims": false,
+  "body": {
+    "kind": "openengine.target-session/v1",
+    "organization_id": "018fd6f5-11a0-7a00-8000-000000000001",
+    "sub": "user-018fd6f5-11a0-7a00-8000-000000000009",
+    "jti": "018fd6f5-11a0-7a00-8000-00000000000a"
+  }
+}

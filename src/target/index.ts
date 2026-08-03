@@ -12,10 +12,12 @@ export { acquireTargetLock } from './credential-lock.ts';
 export {
   requestDeviceCode,
   pollForToken,
+  parseTokenResponse,
   DeviceFlowDeniedError,
   DeviceFlowExpiredError,
   UnboundSessionError,
   type DeviceCodeResponse,
+  type DeviceExchangeContext,
   type TokenResponse,
   type HttpTransport,
   type Clock,
@@ -38,18 +40,20 @@ export {
 } from './target-registry.ts';
 
 export {
-  targetLogin,
-  refreshAccessToken,
-  getAccessTokenProvider,
-  revokeAndCleanup,
+  TargetSessionManager,
   LoginRequiredError,
   type BrowserOpener,
   type TargetSessionDeps,
-  type TargetAccessTokenProvider,
+  type TargetSessionManagerInit,
 } from './target-session.ts';
 
 export {
+  discoverTarget,
   discoverTargetSessionEndpoints,
+  expandRoute,
   TargetDiscoveryError,
+  type CredentialInstallDescriptor,
+  type RouteTemplate,
+  type TargetDiscoveryDescriptor,
   type TargetSessionEndpoints,
 } from './discovery.ts';

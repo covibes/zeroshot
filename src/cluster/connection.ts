@@ -42,6 +42,10 @@ function boundedCloseReason(reason: string): string {
   return retained.join('');
 }
 export interface CallOptions { readonly signal?: AbortSignal; readonly requestTimeoutMs?: number; }
+export interface ConnectionCloseSnapshot {
+  readonly code: number | null;
+  readonly reason: string | null;
+}
 
 type Deferred<T> = {
   readonly promise: Promise<T>;
@@ -86,6 +90,9 @@ export class Connection {
   #closePromise?: Promise<void>;
   #closeCode: number | undefined;
   #closeReason: string | undefined;
+  readonly #closedCompletion = deferred<ConnectionCloseSnapshot>();
+  readonly closed: Promise<ConnectionCloseSnapshot> = this.#closedCompletion.promise;
+  #closeSnapshot: ConnectionCloseSnapshot | undefined;
   readonly closeDiagnostics: unknown[] = [];
   readonly protocolDiagnostics: ClusterProtocolError[] = [];
 
@@ -104,6 +111,7 @@ export class Connection {
   get subscriptionCount(): number { return this.#subscriptions.size; }
   get closeCode(): number | undefined { return this.#closeCode; }
   get closeReason(): string | undefined { return this.#closeReason; }
+  get closeSnapshot(): ConnectionCloseSnapshot | undefined { return this.#closeSnapshot; }
   call<M extends UnaryClusterMethod>(method: M, params: ClusterMethodParams[M], options: CallOptions = {}): Promise<ClusterMethodResults[M]> {
     if (!(UNARY_METHODS as readonly string[]).includes(method)) {
       throw new ClusterConfigError(`${method} is a subscription method`, 'INVALID_METHOD');
@@ -319,6 +327,11 @@ export class Connection {
       try { remove(); } catch (error) { this.recordDiagnostic(error); }
     }
     this.#transition('CLOSED');
+    this.#closeSnapshot = Object.freeze({
+      code: this.#closeCode ?? null,
+      reason: this.#closeReason ?? null,
+    });
+    this.#closedCompletion.resolve(this.#closeSnapshot);
   }
   #transition(to: ConnectionState): void {
     if (!CONNECTION_TRANSITIONS[this.#state].includes(to)) throw new ClusterInternalError(`illegal connection transition ${this.#state} -> ${to}`, 'ILLEGAL_STATE_TRANSITION');

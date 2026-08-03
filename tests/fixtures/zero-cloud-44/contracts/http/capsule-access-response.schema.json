@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AccessResponse",
+  "type": "object",
+  "properties": {
+    "protocol": {
+      "$ref": "#/$defs/AccessProtocol"
+    },
+    "websocket_url": {
+      "type": "string"
+    },
+    "access_token": {
+      "type": "string"
+    },
+    "token_type": {
+      "$ref": "#/$defs/AccessTokenType"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false,
+  "required": ["protocol", "websocket_url", "access_token", "token_type", "expires_at"],
+  "$defs": {
+    "AccessProtocol": {
+      "type": "string",
+      "enum": ["openengine.cluster/v1"]
+    },
+    "AccessTokenType": {
+      "type": "string",
+      "enum": ["Bearer"]
+    }
+  }
+}

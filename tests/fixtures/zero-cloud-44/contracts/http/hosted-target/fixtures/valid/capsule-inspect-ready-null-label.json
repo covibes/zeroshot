@@ -1,0 +1,16 @@
+{
+  "description": "Inspect preserves an explicit null label and the ready lifecycle atom.",
+  "schema": "capsule",
+  "expect_schema_valid": true,
+  "response": {
+    "operation": "inspect",
+    "status": 200,
+    "headers": { "cache-control": "no-store" }
+  },
+  "body": {
+    "capsule_id": "cap_opaque-ready-02",
+    "state": "ready",
+    "label": null,
+    "created_at": "2026-08-03T12:01:00Z"
+  }
+}

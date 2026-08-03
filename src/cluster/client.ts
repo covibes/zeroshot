@@ -9,7 +9,7 @@ import { Connection } from './connection.js';
 import type { CallOptions } from './connection.js';
 import { addSocketListener } from './socket.js';
 import type { WebSocketLike } from './socket.js';
-import { ClusterConfigError, ClusterProtocolError, ClusterTransportError } from './errors.js';
+import { ClusterConfigError, ClusterProtocolError, ClusterTransportError, ClusterUpgradeError } from './errors.js';
 import {
   AgentAttachSubscriptionStream,
   LogsSubscriptionStream,
@@ -186,10 +186,20 @@ async function waitForOpen(socket: WebSocketLike, signal?: AbortSignal): Promise
       'connect aborted locally; the server may still have committed this request',
       'AbortError',
     )));
+    const onUnexpectedResponse = (...args: unknown[]) => {
+      const response = args.find((value) => value !== null && typeof value === 'object' && 'statusCode' in value) as { statusCode?: unknown } | undefined;
+      const status = response?.statusCode;
+      settle(() => reject(
+        typeof status === 'number'
+          ? new ClusterUpgradeError(status)
+          : new ClusterTransportError('WebSocket upgrade rejected', 'UPGRADE_REJECTED'),
+      ));
+    };
     removers.push(
       addSocketListener(socket, 'open', () => settle(resolve)),
       addSocketListener(socket, 'error', (error) => settle(() => reject(new ClusterTransportError('WebSocket failed to open', 'OPEN_FAILED', { cause: error })))),
       addSocketListener(socket, 'close', () => settle(() => reject(new ClusterTransportError('WebSocket closed before opening', 'OPEN_FAILED')))),
+      addSocketListener(socket, 'unexpected-response', onUnexpectedResponse),
     );
     signal?.addEventListener('abort', onAbort, { once: true });
   });

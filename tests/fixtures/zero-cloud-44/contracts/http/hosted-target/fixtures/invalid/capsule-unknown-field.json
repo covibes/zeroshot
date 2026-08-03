@@ -1,0 +1,12 @@
+{
+  "description": "Capsule success bodies are closed and reject provider/runtime detail.",
+  "schema": "capsule",
+  "expect_schema_valid": false,
+  "body": {
+    "capsule_id": "cap_unknown-field",
+    "state": "ready",
+    "label": null,
+    "created_at": "2026-08-03T12:00:00Z",
+    "task_arn": "must-not-cross-the-wire"
+  }
+}

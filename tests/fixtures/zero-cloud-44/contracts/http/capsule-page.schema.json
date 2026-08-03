@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapsulePage",
+  "description": "Bounded newest-first capsule page.",
+  "type": "object",
+  "properties": {
+    "capsules": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Capsule"
+      }
+    },
+    "next_cursor": {
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": false,
+  "required": ["capsules", "next_cursor"],
+  "$defs": {
+    "Capsule": {
+      "description": "Provider-neutral public capsule projection.",
+      "type": "object",
+      "properties": {
+        "capsule_id": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/CapsuleState"
+        },
+        "label": {
+          "type": ["string", "null"]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["capsule_id", "state", "label", "created_at"]
+    },
+    "CapsuleState": {
+      "description": "Exact public lifecycle of one hosted capsule.",
+      "type": "string",
+      "enum": ["provisioning", "ready", "terminating", "terminated", "failed"]
+    }
+  }
+}

@@ -1,13 +1,11 @@
-import { MAX_ERROR_BODY_BYTES, MAX_RESPONSE_BYTES, MAX_RETRY_ELAPSED_MS, IDEMPOTENCY_KEY_PATTERN } from './bounds.ts';
+import { IDEMPOTENCY_KEY_PATTERN, MAX_RESPONSE_BYTES, MAX_RETRY_ELAPSED_MS } from './bounds.ts';
 import {
+  TargetAdapterError,
   TargetAuthError,
-  TargetConflictError,
-  TargetNotFoundError,
   TargetProtocolError,
-  TargetRateLimitError,
+  TargetServerError,
   TargetTransportError,
 } from './errors.ts';
-import { TargetAdapterError } from './errors.ts';
 import { DefaultRetryPolicy, parseRetryAfter } from './retry.ts';
 import {
   assertCapsule,
@@ -15,7 +13,7 @@ import {
   assertCapsuleLimits,
   assertCapsuleListPage,
 } from './response-validation.ts';
-import type { TargetAdapter } from './target-adapter.ts';
+import type { TargetAdapter, CreateTargetAdapterOptions } from './target-adapter.ts';
 import type {
   AllocateRequest,
   Capsule,
@@ -24,363 +22,385 @@ import type {
   CapsuleListPage,
   Clock,
   HttpTransport,
+  ListRequest,
   RetryPolicy,
   TargetAccessTokenProvider,
-  TargetDiscovery,
 } from './types.ts';
-
-interface ZeroCloudV1Options {
-  readonly discovery: TargetDiscovery;
-  readonly organization: string;
-  readonly tokenProvider: TargetAccessTokenProvider;
-  readonly transport?: HttpTransport;
-  readonly clock?: Clock;
-  readonly retryPolicy?: RetryPolicy;
-}
+import type { RouteTemplate, TargetDiscoveryDescriptor } from '../target/discovery.ts';
 
 const DEFAULT_TRANSPORT: HttpTransport = {
-  fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response> {
+  fetch(url, init) {
     return globalThis.fetch(url, init);
   },
 };
-
 const DEFAULT_CLOCK: Clock = { now: () => Date.now() };
+const ERROR_CODES = Object.freeze({
+  unauthorized: { status: 401, retryable: false },
+  invalid_request: { status: 400, retryable: false },
+  not_found: { status: 404, retryable: false },
+  forbidden: { status: 403, retryable: false },
+  idempotency_conflict: { status: 409, retryable: false },
+  run_conflict: { status: 409, retryable: true },
+  rate_limited: { status: 429, retryable: true },
+  temporarily_unavailable: { status: 503, retryable: true },
+  internal_error: { status: 500, retryable: false },
+});
+
+type ErrorCode = keyof typeof ERROR_CODES;
+type Operation = 'allocate' | 'list' | 'inspect' | 'terminate' | 'limits' | 'access';
 
 function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) {
-    throw signal.reason === undefined
-      ? new DOMException('The operation was aborted', 'AbortError')
-      : signal.reason;
-  }
+  if (signal?.aborted)
+    throw signal.reason ?? new globalThis.DOMException('The operation was aborted', 'AbortError');
 }
 
-async function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+function validOpaque(value: string, field: string): void {
+  if (value.length === 0 || value.length > 1024)
+    throw new TargetProtocolError(`${field} is invalid`);
+}
+
+async function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
   throwIfAborted(signal);
   if (delayMs <= 0) return;
-
   await new Promise<void>((resolve, reject) => {
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(
-        signal!.reason === undefined
-          ? new DOMException('The operation was aborted', 'AbortError')
-          : signal!.reason,
-      );
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, delayMs);
-    signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(resolve, delayMs);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(
+          signal.reason ?? new globalThis.DOMException('The operation was aborted', 'AbortError')
+        );
+      },
+      { once: true }
+    );
   });
 }
 
-function originOf(url: string): string {
-  try {
-    const u = new URL(url);
-    return u.origin;
-  } catch {
-    throw new TargetProtocolError(`Invalid URL: ${url}`);
-  }
+function jsonRequest(body: unknown): string {
+  return JSON.stringify(body);
 }
 
 export class ZeroCloudV1TargetAdapter implements TargetAdapter {
-  private readonly discovery: TargetDiscovery;
-  private readonly organization: string;
-  private readonly tokenProvider: TargetAccessTokenProvider;
-  private readonly transport: HttpTransport;
-  private readonly clock: Clock;
-  private readonly retryPolicy: RetryPolicy;
-  private readonly expectedOrigin: string;
+  readonly #descriptor: TargetDiscoveryDescriptor;
+  readonly #organizationId: string;
+  readonly #tokenProvider: TargetAccessTokenProvider;
+  readonly #transport: HttpTransport;
+  readonly #clock: Clock;
+  readonly #retryPolicy: RetryPolicy;
 
-  constructor(opts: ZeroCloudV1Options) {
-    this.discovery = opts.discovery;
-    this.organization = opts.organization;
-    this.tokenProvider = opts.tokenProvider;
-    this.transport = opts.transport ?? DEFAULT_TRANSPORT;
-    this.clock = opts.clock ?? DEFAULT_CLOCK;
-    this.retryPolicy = opts.retryPolicy ?? new DefaultRetryPolicy();
-    this.expectedOrigin = originOf(opts.discovery.capsuleV1);
+  constructor(options: CreateTargetAdapterOptions) {
+    this.#descriptor = options.descriptor;
+    this.#organizationId = options.organization.id;
+    validOpaque(this.#organizationId, 'organization id');
+    this.#tokenProvider = options.tokenProvider;
+    this.#transport = options.transport ?? DEFAULT_TRANSPORT;
+    this.#clock = options.clock ?? DEFAULT_CLOCK;
+    this.#retryPolicy = options.retryPolicy ?? new DefaultRetryPolicy();
   }
 
-  async allocate(req: AllocateRequest, signal?: AbortSignal): Promise<Capsule> {
-    if (!IDEMPOTENCY_KEY_PATTERN.test(req.idempotencyKey)) {
-      throw new TargetProtocolError(
-        `Invalid idempotency key: must match ${IDEMPOTENCY_KEY_PATTERN}`,
+  get credentialInstall(): TargetAdapter['credentialInstall'] {
+    const descriptor = this.#descriptor.credentialInstall;
+    return descriptor === null
+      ? Object.freeze({ supported: false as const })
+      : Object.freeze({ supported: true as const, descriptor });
+  }
+
+  allocate(request: AllocateRequest, signal?: AbortSignal): Promise<Capsule> {
+    try {
+      if (!IDEMPOTENCY_KEY_PATTERN.test(request.idempotencyKey))
+        throw new TargetProtocolError('Idempotency key is invalid');
+      if (request.label !== undefined && (request.label.length < 1 || request.label.length > 100)) {
+        throw new TargetProtocolError('Capsule label is outside the supported bounds');
+      }
+      if (request.size !== undefined && !this.#descriptor.sizes.catalog.includes(request.size)) {
+        throw new TargetProtocolError('Capsule size is not advertised by the target');
+      }
+      const body = {
+        ...(request.label === undefined ? {} : { label: request.label }),
+        ...(request.size === undefined ? {} : { size: request.size }),
+      };
+      return this.#execute(
+        'allocate',
+        'POST',
+        this.#descriptor.capsule.routes.allocate,
+        { org_id: this.#organizationId },
+        201,
+        assertCapsule,
+        signal,
+        {
+          body: jsonRequest(body),
+          headers: { 'Idempotency-Key': request.idempotencyKey },
+        }
       );
+    } catch (error) {
+      return Promise.reject(error);
     }
-
-    const body = JSON.stringify({ profile: req.profile, organization: this.organization });
-
-    return this._withRetry(async () => {
-      const resp = await this._request('POST', '/capsules', {
-        signal,
-        body,
-        headers: { 'Idempotency-Key': req.idempotencyKey },
-      });
-      const json = await this._readJson(resp);
-      return assertCapsule(json);
-    }, signal);
   }
 
-  async list(cursor?: string, signal?: AbortSignal): Promise<CapsuleListPage> {
-    return this._withRetry(async () => {
-      const params = new URLSearchParams({ organization: this.organization });
-      if (cursor) params.set('cursor', cursor);
-      const resp = await this._request('GET', `/capsules?${params.toString()}`, { signal });
-      const json = await this._readJson(resp);
-      const page = assertCapsuleListPage(json);
-      if (page.cursor !== undefined && page.cursor === cursor) {
-        throw new TargetProtocolError(
-          `Pagination loop detected: server returned the same cursor "${cursor}"`,
-        );
-      }
-      return page;
-    }, signal);
+  async list(request: ListRequest = {}, signal?: AbortSignal): Promise<CapsuleListPage> {
+    if (request.cursor !== undefined) validOpaque(request.cursor, 'cursor');
+    if (
+      request.limit !== undefined &&
+      (!Number.isSafeInteger(request.limit) ||
+        request.limit < 1 ||
+        request.limit > this.#descriptor.pagination.maxPageSize)
+    ) {
+      throw new TargetProtocolError('Pagination limit is outside the advertised bounds');
+    }
+    const page = await this.#execute(
+      'list',
+      'GET',
+      this.#descriptor.capsule.routes.list,
+      {
+        org_id: this.#organizationId,
+        cursor: request.cursor,
+        limit: request.limit,
+      },
+      200,
+      assertCapsuleListPage,
+      signal
+    );
+    if (request.cursor !== undefined && page.nextCursor === request.cursor)
+      throw new TargetProtocolError('Target returned a pagination loop');
+    return page;
   }
 
-  async inspect(capsuleId: string, signal?: AbortSignal): Promise<Capsule> {
-    return this._withRetry(async () => {
-      const resp = await this._request('GET', `/capsules/${encodeURIComponent(capsuleId)}`, {
-        signal,
-      });
-      const json = await this._readJson(resp);
-      return assertCapsule(json);
-    }, signal);
+  inspect(capsuleId: string, signal?: AbortSignal): Promise<Capsule> {
+    validOpaque(capsuleId, 'capsule id');
+    return this.#execute(
+      'inspect',
+      'GET',
+      this.#descriptor.capsule.routes.inspect,
+      { org_id: this.#organizationId, capsule_id: capsuleId },
+      200,
+      assertCapsule,
+      signal
+    );
   }
 
-  async terminate(capsuleId: string, signal?: AbortSignal): Promise<void> {
-    await this._withRetry(async () => {
-      const resp = await this._request(
-        'DELETE',
-        `/capsules/${encodeURIComponent(capsuleId)}`,
-        { signal },
-      );
-      if (resp.status !== 204) {
-        const json = await this._readJson(resp);
-        throw new TargetProtocolError(`Unexpected terminate response: ${JSON.stringify(json)}`);
-      }
-    }, signal);
+  terminate(capsuleId: string, signal?: AbortSignal): Promise<Capsule> {
+    validOpaque(capsuleId, 'capsule id');
+    return this.#execute(
+      'terminate',
+      'DELETE',
+      this.#descriptor.capsule.routes.terminate,
+      { org_id: this.#organizationId, capsule_id: capsuleId },
+      202,
+      assertCapsule,
+      signal
+    );
   }
 
-  async limits(signal?: AbortSignal): Promise<CapsuleLimits> {
-    return this._withRetry(async () => {
-      const params = new URLSearchParams({ organization: this.organization });
-      const resp = await this._request('GET', `/limits?${params.toString()}`, { signal });
-      const json = await this._readJson(resp);
-      return assertCapsuleLimits(json);
-    }, signal);
+  limits(signal?: AbortSignal): Promise<CapsuleLimits> {
+    return this.#execute(
+      'limits',
+      'GET',
+      this.#descriptor.capsule.routes.limits,
+      { org_id: this.#organizationId },
+      200,
+      assertCapsuleLimits,
+      signal
+    );
   }
 
   async access(capsuleId: string, signal?: AbortSignal): Promise<CapsuleAccess> {
-    return this._withRetry(async () => {
-      const resp = await this._request(
-        'POST',
-        `/capsules/${encodeURIComponent(capsuleId)}/access`,
-        { signal },
-      );
-      const json = await this._readJson(resp);
-      return assertCapsuleAccess(json);
-    }, signal);
+    validOpaque(capsuleId, 'capsule id');
+    const result = await this.#execute(
+      'access',
+      'POST',
+      this.#descriptor.capsule.routes.access,
+      { capsule_id: capsuleId },
+      200,
+      assertCapsuleAccess,
+      signal,
+      {
+        body: jsonRequest({ protocol: 'openengine.cluster/v1' }),
+      }
+    );
+    this.#validateAccessUrl(result.websocketUrl, capsuleId);
+    return result;
   }
 
-  private async _request(
+  #execute<T>(
+    operation: Operation,
+    method: string,
+    template: RouteTemplate,
+    values: Readonly<Record<string, string | number | undefined>>,
+    expectedStatus: number,
+    validate: (body: unknown) => T,
+    signal?: AbortSignal,
+    request: { readonly body?: string; readonly headers?: Readonly<Record<string, string>> } = {}
+  ): Promise<T> {
+    const path = template.expand(values);
+    return this.#withRetry(
+      operation,
+      async () => {
+        const response = await this.#request(method, path, signal, request);
+        if (response.status !== expectedStatus) {
+          if (response.status >= 200 && response.status < 300)
+            throw new TargetProtocolError('Target returned an unexpected success status');
+          await this.#throwServerError(response);
+        }
+        return validate(await this.#readJson(response));
+      },
+      signal
+    );
+  }
+
+  async #request(
     method: string,
     path: string,
-    opts: { signal?: AbortSignal | undefined; body?: string | undefined; headers?: Record<string, string> | undefined },
+    signal: AbortSignal | undefined,
+    request: { readonly body?: string; readonly headers?: Readonly<Record<string, string>> }
   ): Promise<Response> {
-    const url = `${this.discovery.capsuleV1}${path}`;
-
-    const responseOrigin = originOf(url);
-    if (responseOrigin !== this.expectedOrigin) {
-      throw new TargetProtocolError(
-        `Origin mismatch: expected ${this.expectedOrigin}, got ${responseOrigin}`,
-      );
-    }
-
+    throwIfAborted(signal);
+    const url = new globalThis.URL(path, this.#descriptor.capsule.baseUrl);
+    if (url.origin !== this.#descriptor.origin)
+      throw new TargetProtocolError('Capsule route changed target authority');
     let token: string;
     try {
-      token = await this.tokenProvider.getAccessToken(opts.signal);
-    } catch (err) {
-      throw new TargetTransportError('Failed to acquire access token', err);
+      token = await this.#tokenProvider.getAccessToken(signal);
+    } catch {
+      throw new TargetAuthError('Target access authorization failed');
     }
-
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      ...opts.headers,
-    };
-
-    let response: Response;
-    const fetchInit: RequestInit & { redirect: 'error' } = {
+    const init: RequestInit & { redirect: 'error' } = {
       method,
-      headers,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+        ...(request.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...request.headers,
+      },
       redirect: 'error',
     };
-    if (opts.body !== undefined) fetchInit.body = opts.body;
-    if (opts.signal !== undefined) fetchInit.signal = opts.signal;
-
+    if (request.body !== undefined) init.body = request.body;
+    if (signal !== undefined) init.signal = signal;
     try {
-      response = await this.transport.fetch(url, fetchInit);
-    } catch (err) {
-      if (err instanceof TargetAdapterError) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('redirect')) {
-        throw new TargetProtocolError(`Redirect rejected for ${method} ${path}`, err);
-      }
-      throw new TargetTransportError(`Network error during ${method} ${path}`, err);
-    }
-
-    if (response.status < 200 || response.status >= 300) {
-      await this._mapStatusError(response, method, path, opts.headers);
-    }
-
-    return response;
-  }
-
-  private async _mapStatusError(
-    response: Response,
-    method: string,
-    path: string,
-    headers?: Record<string, string>,
-  ): Promise<never> {
-    const status = response.status;
-    const errorBody = await this._readErrorBody(response);
-    const context = `${status} ${method} ${path}: ${errorBody}`;
-
-    if (status === 401 || status === 403) throw new TargetAuthError(context);
-    if (status === 404) throw new TargetNotFoundError(context);
-    if (status === 409) {
-      const idempotencyKey = headers?.['Idempotency-Key'] ?? 'unknown';
-      throw new TargetConflictError(idempotencyKey, context);
-    }
-    if (status === 429) {
-      const retryAfterMs = parseRetryAfter(response.headers.get('Retry-After'), this.clock);
-      throw new TargetRateLimitError(context, retryAfterMs ?? undefined);
-    }
-    if (status >= 500) throw new TargetTransportError(context);
-    throw new TargetProtocolError(`Unexpected status ${context}`);
-  }
-
-  private async _readJson(response: Response): Promise<unknown> {
-    const contentLength = response.headers.get('Content-Length');
-    if (contentLength !== null) {
-      const len = parseInt(contentLength, 10);
-      if (Number.isFinite(len) && len > MAX_RESPONSE_BYTES) {
-        throw new TargetProtocolError(
-          `Response too large: ${len} bytes exceeds limit of ${MAX_RESPONSE_BYTES}`,
-        );
-      }
-    }
-
-    let text: string;
-    try {
-      const reader = response.body?.getReader();
-      if (!reader) {
-        text = await response.text();
-      } else {
-        const chunks: Uint8Array[] = [];
-        let totalBytes = 0;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          totalBytes += value.byteLength;
-          if (totalBytes > MAX_RESPONSE_BYTES) {
-            reader.cancel();
-            throw new TargetProtocolError(
-              `Response body exceeds limit of ${MAX_RESPONSE_BYTES} bytes`,
-            );
-          }
-          chunks.push(value);
-        }
-        const combined = new Uint8Array(totalBytes);
-        let offset = 0;
-        for (const chunk of chunks) {
-          combined.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
-        text = new TextDecoder().decode(combined);
-      }
-    } catch (err) {
-      if (err instanceof TargetProtocolError) throw err;
-      throw new TargetProtocolError('Failed to read response body', err);
-    }
-
-    try {
-      return JSON.parse(text);
-    } catch (err) {
-      throw new TargetProtocolError('Invalid JSON in response body', err);
+      const response = await this.#transport.fetch(url.href, init);
+      if (response.url && new globalThis.URL(response.url).origin !== this.#descriptor.origin)
+        throw new TargetProtocolError('Capsule response changed target authority');
+      return response;
+    } catch (error) {
+      if (error instanceof TargetAdapterError) throw error;
+      throwIfAborted(signal);
+      throw new TargetTransportError('Capsule transport failed');
     }
   }
 
-  private async _readErrorBody(response: Response): Promise<string> {
-    const reader = response.body?.getReader();
-    if (!reader) return '';
+  async #throwServerError(response: Response): Promise<never> {
+    const body = await this.#readJson(response);
+    if (body === null || typeof body !== 'object' || Array.isArray(body))
+      throw new TargetProtocolError('Capsule error response is malformed');
+    const value = body as Record<string, unknown>;
+    if (
+      Object.keys(value).length !== 4 ||
+      !('code' in value) ||
+      !('message' in value) ||
+      !('capsule_id' in value) ||
+      !('retryable' in value) ||
+      typeof value.code !== 'string' ||
+      !(value.code in ERROR_CODES) ||
+      typeof value.message !== 'string' ||
+      (value.capsule_id !== null && typeof value.capsule_id !== 'string') ||
+      typeof value.retryable !== 'boolean'
+    ) {
+      throw new TargetProtocolError('Capsule error response is malformed');
+    }
+    const code = value.code as ErrorCode;
+    const contract = ERROR_CODES[code];
+    if (contract.status !== response.status || contract.retryable !== value.retryable) {
+      throw new TargetProtocolError('Capsule error response contradicts its status contract');
+    }
+    if (
+      response.status === 401 &&
+      response.headers.get('WWW-Authenticate') !== 'Bearer error="invalid_token"'
+    ) {
+      throw new TargetProtocolError('Capsule authentication challenge is malformed');
+    }
+    const retryAfterHeader = response.headers.get('Retry-After');
+    const retryAfter = parseRetryAfter(retryAfterHeader, this.#clock) ?? undefined;
+    if (retryAfterHeader !== null && retryAfter === undefined) {
+      throw new TargetProtocolError('Capsule Retry-After header is malformed');
+    }
+    if (!contract.retryable && retryAfter !== undefined)
+      throw new TargetProtocolError('Permanent capsule error advertised Retry-After');
+    throw new TargetServerError(
+      response.status,
+      code,
+      contract.retryable,
+      value.capsule_id as string | null,
+      retryAfter
+    );
+  }
 
-    const chunks: Uint8Array[] = [];
-    let totalBytes = 0;
+  async #readJson(response: Response): Promise<unknown> {
+    const declared = response.headers.get('content-length');
+    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_RESPONSE_BYTES)) {
+      throw new TargetProtocolError('Capsule response exceeds the size limit');
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > MAX_RESPONSE_BYTES)
+      throw new TargetProtocolError('Capsule response exceeds the size limit');
     try {
-      while (totalBytes < MAX_ERROR_BODY_BYTES) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const remaining = MAX_ERROR_BODY_BYTES - totalBytes;
-        const retained = value.byteLength > remaining ? value.slice(0, remaining) : value;
-        chunks.push(retained);
-        totalBytes += retained.byteLength;
-        if (retained.byteLength !== value.byteLength || totalBytes === MAX_ERROR_BODY_BYTES) {
-          void reader.cancel().catch(() => undefined);
-          break;
-        }
-      }
+      return JSON.parse(new globalThis.TextDecoder('utf-8', { fatal: true }).decode(bytes));
     } catch {
-      void reader.cancel().catch(() => undefined);
-      return '<unreadable>';
+      throw new TargetProtocolError('Capsule response is not valid UTF-8 JSON');
     }
-
-    const combined = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return new TextDecoder().decode(combined);
   }
 
-  private async _withRetry<T>(
-    fn: () => Promise<T>,
-    signal?: AbortSignal,
+  async #withRetry<T>(
+    operation: Operation,
+    effect: () => Promise<T>,
+    signal?: AbortSignal
   ): Promise<T> {
-    const startTime = this.clock.now();
+    const retrySafe = operation !== 'access';
+    const started = this.#clock.now();
     let attempt = 0;
-
     while (true) {
       throwIfAborted(signal);
       try {
-        return await fn();
-      } catch (err) {
+        return await effect();
+      } catch (error) {
         throwIfAborted(signal);
-        if (!(err instanceof TargetAdapterError)) throw err;
-        if (err instanceof TargetAuthError) throw err;
-
-        attempt++;
-        const elapsed = this.clock.now() - startTime;
-        const decision = this.retryPolicy.shouldRetry(attempt, elapsed, err);
+        if (!retrySafe || !(error instanceof TargetAdapterError) || !error.retryable) throw error;
+        attempt += 1;
+        const elapsed = this.#clock.now() - started;
+        const decision = this.#retryPolicy.shouldRetry(attempt, elapsed, error);
         const remaining = MAX_RETRY_ELAPSED_MS - elapsed;
-
         if (
           !decision.retry ||
           !Number.isFinite(decision.delayMs) ||
           decision.delayMs < 0 ||
           decision.delayMs >= remaining
-        ) {
-          throw err;
-        }
-
-        await waitForRetryDelay(decision.delayMs, signal);
-        if (this.clock.now() - startTime >= MAX_RETRY_ELAPSED_MS) throw err;
+        )
+          throw error;
+        await wait(decision.delayMs, signal);
       }
+    }
+  }
+
+  #validateAccessUrl(value: string, capsuleId: string): void {
+    let url: URL;
+    try {
+      url = new globalThis.URL(value);
+    } catch {
+      throw new TargetProtocolError('Capsule access WebSocket URL is invalid');
+    }
+    const expectedPath = this.#descriptor.transport.websocketRouteTemplate.expand({
+      capsule_id: capsuleId,
+    });
+    const target = new globalThis.URL(this.#descriptor.origin);
+    if (
+      url.protocol !== 'wss:' ||
+      url.host !== target.host ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname !== expectedPath
+    ) {
+      throw new TargetProtocolError('Capsule access WebSocket URL does not match discovery');
     }
   }
 }

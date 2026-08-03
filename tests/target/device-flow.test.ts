@@ -11,14 +11,16 @@ import { FakeHttpTransport, FakeClock, respond } from './harness.ts';
 describe('requestDeviceCode', () => {
   it('sends POST with client_id and returns device code response', async () => {
     const http = new FakeHttpTransport();
-    http.enqueue(respond(200, {
-      device_code: 'dev-code-123',
-      user_code: 'ABCD-1234',
-      verification_uri: 'https://auth.example.com/device',
-      verification_uri_complete: 'https://auth.example.com/device?code=ABCD-1234',
-      expires_in: 900,
-      interval: 5,
-    }));
+    http.enqueue(
+      respond(200, {
+        device_code: 'dev-code-123',
+        user_code: 'ABCD-1234',
+        verification_uri: 'https://auth.example.com/device',
+        verification_uri_complete: 'https://auth.example.com/device?code=ABCD-1234',
+        expires_in: 900,
+        interval: 5,
+      })
+    );
 
     const result = await requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http);
 
@@ -29,6 +31,7 @@ describe('requestDeviceCode', () => {
     assert.equal(result.interval, 5);
     assert.equal(http.requests.length, 1);
     assert.equal(http.requests[0]!.method, 'POST');
+    assert.equal(http.requests[0]!.body, 'client_id=cli');
   });
 
   it('throws on non-ok response', async () => {
@@ -37,7 +40,26 @@ describe('requestDeviceCode', () => {
 
     await assert.rejects(
       requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http),
-      /Device code request failed \(400\)/,
+      /Device code request failed \(400\)/
+    );
+  });
+
+  it('rejects additive and unsafe device responses before returning them', async () => {
+    const http = new FakeHttpTransport();
+    http.enqueue(
+      respond(200, {
+        device_code: 'dev-code-123',
+        user_code: 'ABCD-1234',
+        verification_uri: 'javascript:alert(1)',
+        expires_in: 900,
+        interval: 5,
+        organization: 'jwt-derived',
+      })
+    );
+
+    await assert.rejects(
+      requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http),
+      /Device code response is malformed/
     );
   });
 });
@@ -47,13 +69,14 @@ describe('pollForToken', () => {
     const http = new FakeHttpTransport();
     const clock = new FakeClock(0);
 
-    http.enqueue(respond(200, {
-      access_token: 'access-123',
-      refresh_token: 'refresh-456',
-      token_type: 'Bearer',
-      expires_in: 3600,
-      organization: { id: 'org-1', name: 'TestOrg' },
-    }));
+    http.enqueue(
+      respond(200, {
+        access_token: 'access-123',
+        refresh_token: 'refresh-456',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
 
     const result = await pollForToken(
       'https://auth.example.com/oauth/token',
@@ -62,12 +85,12 @@ describe('pollForToken', () => {
       0,
       900,
       http,
-      clock,
+      clock
     );
 
     assert.equal(result.access_token, 'access-123');
     assert.equal(result.refresh_token, 'refresh-456');
-    assert.equal(result.organization?.name, 'TestOrg');
+    assert.equal(result.token_type, 'Bearer');
   });
 
   it('continues polling on authorization_pending', async () => {
@@ -76,12 +99,14 @@ describe('pollForToken', () => {
 
     http.enqueue(respond(400, { error: 'authorization_pending' }));
     http.enqueue(respond(400, { error: 'authorization_pending' }));
-    http.enqueue(respond(200, {
-      access_token: 'access-123',
-      refresh_token: 'refresh-456',
-      token_type: 'Bearer',
-      expires_in: 3600,
-    }));
+    http.enqueue(
+      respond(200, {
+        access_token: 'access-123',
+        refresh_token: 'refresh-456',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
 
     const result = await pollForToken(
       'https://auth.example.com/oauth/token',
@@ -90,7 +115,7 @@ describe('pollForToken', () => {
       0,
       900,
       http,
-      clock,
+      clock
     );
 
     assert.equal(result.access_token, 'access-123');
@@ -102,12 +127,14 @@ describe('pollForToken', () => {
     const clock = new FakeClock(0);
 
     http.enqueue(respond(400, { error: 'slow_down' }));
-    http.enqueue(respond(200, {
-      access_token: 'access-123',
-      refresh_token: 'refresh-456',
-      token_type: 'Bearer',
-      expires_in: 3600,
-    }));
+    http.enqueue(
+      respond(200, {
+        access_token: 'access-123',
+        refresh_token: 'refresh-456',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
 
     // interval starts at 0 for speed, after slow_down becomes 5
     const result = await pollForToken(
@@ -117,7 +144,7 @@ describe('pollForToken', () => {
       0,
       900,
       http,
-      clock,
+      clock
     );
 
     assert.equal(result.access_token, 'access-123');
@@ -130,8 +157,16 @@ describe('pollForToken', () => {
     http.enqueue(respond(400, { error: 'access_denied' }));
 
     await assert.rejects(
-      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 0, 900, http, clock),
-      DeviceFlowDeniedError,
+      pollForToken(
+        'https://auth.example.com/oauth/token',
+        'cli',
+        'dev-code-123',
+        0,
+        900,
+        http,
+        clock
+      ),
+      DeviceFlowDeniedError
     );
   });
 
@@ -142,8 +177,39 @@ describe('pollForToken', () => {
     http.enqueue(respond(400, { error: 'expired_token' }));
 
     await assert.rejects(
-      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 0, 900, http, clock),
-      DeviceFlowExpiredError,
+      pollForToken(
+        'https://auth.example.com/oauth/token',
+        'cli',
+        'dev-code-123',
+        0,
+        900,
+        http,
+        clock
+      ),
+      DeviceFlowExpiredError
+    );
+  });
+
+  it('reports unknown OAuth failures without copying token canaries', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(0);
+    http.enqueue(respond(400, { error: 'CANARY_REFRESH_920' }));
+
+    await assert.rejects(
+      pollForToken(
+        'https://auth.example.com/oauth/token',
+        'cli',
+        'dev-code-123',
+        0,
+        900,
+        http,
+        clock
+      ),
+      (error: Error) => {
+        assert.equal(error.message, 'Token endpoint returned an unsupported OAuth error');
+        assert.equal(error.message.includes('CANARY_REFRESH_920'), false);
+        return true;
+      }
     );
   });
 
@@ -152,8 +218,16 @@ describe('pollForToken', () => {
     const clock = new FakeClock(1_000_000);
 
     await assert.rejects(
-      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 0, 0, http, clock),
-      DeviceFlowExpiredError,
+      pollForToken(
+        'https://auth.example.com/oauth/token',
+        'cli',
+        'dev-code-123',
+        0,
+        0,
+        http,
+        clock
+      ),
+      DeviceFlowExpiredError
     );
   });
 
@@ -164,8 +238,17 @@ describe('pollForToken', () => {
     controller.abort();
 
     await assert.rejects(
-      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 1, 900, http, clock, controller.signal),
-      /Aborted|abort/i,
+      pollForToken(
+        'https://auth.example.com/oauth/token',
+        'cli',
+        'dev-code-123',
+        1,
+        900,
+        http,
+        clock,
+        controller.signal
+      ),
+      /Aborted|abort/i
     );
   });
 });

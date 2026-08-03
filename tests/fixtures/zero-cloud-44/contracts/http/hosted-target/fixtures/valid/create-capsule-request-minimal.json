@@ -1,0 +1,11 @@
+{
+  "description": "Allocate may omit both optional label and size; the server applies its advertised default size.",
+  "schema": "create-capsule-request",
+  "expect_schema_valid": true,
+  "request": {
+    "operation": "allocate",
+    "method": "POST",
+    "required_headers": ["Content-Type", "Idempotency-Key"]
+  },
+  "body": {}
+}

@@ -1,0 +1,11 @@
+{
+  "description": "The authenticated projection is closed; even a harmless unknown field must fail before a client binds an organization.",
+  "schema": "target-session-v1",
+  "expect_schema_valid": false,
+  "expect_no_jwt_claims": true,
+  "body": {
+    "kind": "openengine.target-session/v1",
+    "organization_id": "018fd6f5-11a0-7a00-8000-000000000001",
+    "extra_field": "unexpected"
+  }
+}

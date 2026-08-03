@@ -1,317 +1,286 @@
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { targetLogin, refreshAccessToken, getAccessTokenProvider, LoginRequiredError } from '../../src/target/target-session.ts';
-import { UnboundSessionError } from '../../src/target/device-flow.ts';
-import { targetServiceKey, TARGET_ACCOUNT } from '../../src/target/credential-store.ts';
+import { describe, it } from 'node:test';
+import { TargetSessionManager, LoginRequiredError } from '../../src/target/target-session.ts';
 import {
+  TARGET_ACCOUNT,
+  targetServiceKey,
+  type TargetCredentialStore,
+} from '../../src/target/credential-store.ts';
+import {
+  FakeClock,
   FakeCredentialStore,
   FakeHttpTransport,
-  FakeClock,
-  FakeBrowserOpener,
-  FakeStderr,
-  respond,
-  makeSettingsPort,
-  makeDiscoveryEndpoints,
-  makeTarget,
   fakeLock,
+  makeSessionDeps,
+  makeSettingsPort,
+  makeTarget,
+  respond,
 } from './harness.ts';
 
-describe('targetLogin', () => {
-  it('stores refresh token and updates organization on success', async () => {
+function manager(
+  http: FakeHttpTransport,
+  store: TargetCredentialStore = new FakeCredentialStore(),
+  acquireLock: () => Promise<() => Promise<void>> = fakeLock()
+) {
+  const target = makeTarget();
+  const settings = makeSettingsPort({ _targets: { primary: target } });
+  return {
+    target,
+    settings,
+    store,
+    value: new TargetSessionManager({
+      targetName: 'primary',
+      target,
+      credentialStore: store,
+      acquireLock,
+      settings,
+      deps: makeSessionDeps({ http, clock: new FakeClock(1_000_000) }),
+    }),
+  };
+}
+
+describe('TargetSessionManager', () => {
+  it('binds login only through the authenticated target-session projection', async () => {
     const http = new FakeHttpTransport();
-    const clock = new FakeClock();
-    const browser = new FakeBrowserOpener();
-    const stderr = new FakeStderr();
-    const credStore = new FakeCredentialStore();
-    const settings = makeSettingsPort({ _targets: { staging: makeTarget() } });
-    const target = makeTarget();
-
-    // device code response
-    http.enqueue(respond(200, {
-      device_code: 'dev-123',
-      user_code: 'ABCD',
-      verification_uri: 'https://auth.example.com/device',
-      verification_uri_complete: 'https://auth.example.com/device?code=ABCD',
-      expires_in: 900,
-      interval: 0,
-    }));
-
-    // token exchange response
-    http.enqueue(respond(200, {
-      access_token: 'access-tok',
-      refresh_token: 'refresh-tok',
-      token_type: 'Bearer',
-      expires_in: 3600,
-      organization: { id: 'org-1', name: 'TestOrg' },
-    }));
-
-    const result = await targetLogin('staging', target, credStore, fakeLock(), settings, {
-      http,
-      clock,
-      browserOpener: browser,
-      stderr,
-      discoveryEndpoints: makeDiscoveryEndpoints(),
-    });
-
-    assert.equal(result.organization.name, 'TestOrg');
-    assert.equal(result.organization.id, 'org-1');
-
-    // Refresh token stored in keyring
-    const stored = await credStore.get(targetServiceKey(target.id), TARGET_ACCOUNT);
-    assert.equal(stored, 'refresh-tok');
-
-    // Browser was opened
-    assert.equal(browser.openedUrls.length, 1);
-
-    // Stderr got user code message
-    assert.ok(stderr.output.some((s) => s.includes('ABCD')));
-
-    // Organization updated in settings
-    const loaded = settings.load();
-    assert.equal(loaded._targets?.['staging']?.organization?.name, 'TestOrg');
-  });
-
-  it('throws UnboundSessionError when no organization in response', async () => {
-    const http = new FakeHttpTransport();
-    const clock = new FakeClock();
-    const credStore = new FakeCredentialStore();
-    const settings = makeSettingsPort({ _targets: { staging: makeTarget() } });
-    const target = makeTarget();
-
-    http.enqueue(respond(200, {
-      device_code: 'dev-123',
-      user_code: 'ABCD',
-      verification_uri: 'https://auth.example.com/device',
-      expires_in: 900,
-      interval: 0,
-    }));
-
-    http.enqueue(respond(200, {
-      access_token: 'access-tok',
-      refresh_token: 'refresh-tok',
-      token_type: 'Bearer',
-      expires_in: 3600,
-    }));
-
-    await assert.rejects(
-      targetLogin('staging', target, credStore, fakeLock(), settings, {
-        http,
-        clock,
-        browserOpener: new FakeBrowserOpener(),
-        stderr: new FakeStderr(),
-        discoveryEndpoints: makeDiscoveryEndpoints(),
-      }),
-      UnboundSessionError,
+    http.enqueue(
+      respond(200, {
+        device_code: 'device-code',
+        user_code: 'USER-CODE',
+        verification_uri: 'https://api.test.example/activate',
+        expires_in: 900,
+        interval: 0,
+      })
     );
-  });
-});
-
-describe('refreshAccessToken', () => {
-  it('exchanges refresh token and stores new one', async () => {
-    const http = new FakeHttpTransport();
-    const credStore = new FakeCredentialStore();
-    const target = makeTarget();
-    const serviceKey = targetServiceKey(target.id);
-
-    await credStore.set(serviceKey, TARGET_ACCOUNT, 'old-refresh');
-
-    http.enqueue(respond(200, {
-      access_token: 'new-access',
-      refresh_token: 'new-refresh',
-      token_type: 'Bearer',
-      expires_in: 3600,
-    }));
-
-    const result = await refreshAccessToken('staging', target, credStore, fakeLock(), {
-      http,
-      discoveryEndpoints: makeDiscoveryEndpoints(),
-    });
-
-    assert.equal(result.accessToken, 'new-access');
-    assert.equal(result.expiresIn, 3600);
-
-    const stored = await credStore.get(serviceKey, TARGET_ACCOUNT);
-    assert.equal(stored, 'new-refresh');
-  });
-
-  it('throws LoginRequiredError when no refresh token exists', async () => {
-    const http = new FakeHttpTransport();
-    const credStore = new FakeCredentialStore();
-    const target = makeTarget();
-
-    await assert.rejects(
-      refreshAccessToken('staging', target, credStore, fakeLock(), {
-        http,
-        discoveryEndpoints: makeDiscoveryEndpoints(),
-      }),
-      LoginRequiredError,
+    http.enqueue(
+      respond(200, {
+        access_token: 'capsule-access-canary',
+        refresh_token: 'refresh-family-canary',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
     );
+    http.enqueue(
+      respond(200, {
+        kind: 'openengine.target-session/v1',
+        organization_id: 'org-from-server',
+      })
+    );
+    const fixture = manager(http);
+
+    const result = await fixture.value.login();
+
+    assert.deepEqual(result, { organization: { id: 'org-from-server' } });
+    assert.deepEqual(fixture.settings.load()._targets?.primary?.organization, {
+      id: 'org-from-server',
+    });
+    assert.equal(
+      await fixture.store.get(targetServiceKey(fixture.target.id), TARGET_ACCOUNT),
+      'refresh-family-canary'
+    );
+    assert.equal(http.requests[0]?.body, 'client_id=cli');
+    const exchange = new URLSearchParams(http.requests[1]?.body ?? '');
+    assert.deepEqual(Object.fromEntries(exchange), {
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: 'device-code',
+      client_id: 'cli',
+      device_token: 'device-token-001',
+      device_label: 'zeroshot-cli',
+      audience: 'capsule',
+    });
+    assert.equal(exchange.has('scope'), false);
+    assert.equal(http.requests[2]?.headers.Authorization, 'Bearer capsule-access-canary');
   });
 
-  it('throws LoginRequiredError with target name on invalid_grant', async () => {
-    const http = new FakeHttpTransport();
-    const credStore = new FakeCredentialStore();
-    const target = makeTarget();
-    const serviceKey = targetServiceKey(target.id);
-
-    await credStore.set(serviceKey, TARGET_ACCOUNT, 'old-refresh');
-
-    http.enqueue(respond(400, { error: 'invalid_grant' }));
-
-    try {
-      await refreshAccessToken('staging', target, credStore, fakeLock(), {
-        http,
-        discoveryEndpoints: makeDiscoveryEndpoints(),
-      });
-      assert.fail('Should have thrown');
-    } catch (err) {
-      assert.ok(err instanceof LoginRequiredError);
-      assert.ok(err.message.includes('zeroshot target login staging'));
-    }
-
-    // Token should be deleted from keyring
-    const stored = await credStore.get(serviceKey, TARGET_ACCOUNT);
-    assert.equal(stored, null);
-  });
-
-  it('revokes and deletes on keyring write failure', async () => {
-    const http = new FakeHttpTransport();
-    const target = makeTarget();
-    const serviceKey = targetServiceKey(target.id);
-
-    // Build a credential store that fails on set but works otherwise
-    const store = new FakeCredentialStore();
-    await store.set(serviceKey, TARGET_ACCOUNT, 'old-refresh');
-
-    const failingStore: FakeCredentialStore = Object.create(store);
-    let setCalls = 0;
-    failingStore.set = async (_s: string, _a: string, _t: string): Promise<void> => {
-      setCalls++;
-      throw new Error('Keyring write failed');
+  it('holds the target lock across initial exchange, verification, and publication', async () => {
+    let locked = false;
+    const http = new (class extends FakeHttpTransport {
+      override async fetch(
+        url: string,
+        init: RequestInit & { redirect: 'error' }
+      ): Promise<Response> {
+        if (url.endsWith('/oauth/token') || url.endsWith('/target-session'))
+          assert.equal(locked, true);
+        return super.fetch(url, init);
+      }
+    })();
+    http.enqueue(
+      respond(200, {
+        device_code: 'device-code',
+        user_code: 'USER-CODE',
+        verification_uri: 'https://api.test.example/activate',
+        expires_in: 900,
+        interval: 0,
+      })
+    );
+    http.enqueue(
+      respond(200, {
+        access_token: 'access',
+        refresh_token: 'refresh',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
+    http.enqueue(
+      respond(200, {
+        kind: 'openengine.target-session/v1',
+        organization_id: 'org',
+      })
+    );
+    const acquireLock = async () => {
+      assert.equal(locked, false);
+      locked = true;
+      return async () => {
+        locked = false;
+      };
     };
-    failingStore.get = store.get.bind(store);
-    failingStore.delete = store.delete.bind(store);
+    const fixture = manager(http, new FakeCredentialStore(), acquireLock);
 
-    // Refresh success response
-    http.enqueue(respond(200, {
-      access_token: 'new-access',
-      refresh_token: 'new-refresh',
-      token_type: 'Bearer',
-      expires_in: 3600,
-    }));
+    await fixture.value.login();
 
-    // Revocation response (best-effort)
+    assert.equal(locked, false);
+  });
+
+  it('rejects JWT-derived or additive organization claims and invalidates the family', async () => {
+    const http = new FakeHttpTransport();
+    http.enqueue(
+      respond(200, {
+        device_code: 'device-code',
+        user_code: 'USER-CODE',
+        verification_uri: 'https://api.test.example/activate',
+        expires_in: 900,
+        interval: 0,
+      })
+    );
+    http.enqueue(
+      respond(200, {
+        access_token: 'access',
+        refresh_token: 'replacement',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
+    http.enqueue(
+      respond(200, {
+        kind: 'openengine.target-session/v1',
+        organization_id: 'org',
+        jwt_sub: 'must-not-bind',
+      })
+    );
+    http.enqueue(respond(200, {}));
+    const fixture = manager(http);
+
+    await assert.rejects(fixture.value.login(), LoginRequiredError);
+    assert.equal(
+      await fixture.store.get(targetServiceKey(fixture.target.id), TARGET_ACCOUNT),
+      null
+    );
+  });
+
+  it('rotates one refresh family under the requested audience and caches only that audience', async () => {
+    const http = new FakeHttpTransport();
+    const fixture = manager(http);
+    await fixture.store.set(targetServiceKey(fixture.target.id), TARGET_ACCOUNT, 'old-refresh');
+    http.enqueue(
+      respond(200, {
+        access_token: 'admin-access',
+        refresh_token: 'new-refresh',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
+
+    assert.equal(await fixture.value.getAccessToken('admin'), 'admin-access');
+    assert.equal(await fixture.value.getAccessToken('admin'), 'admin-access');
+    assert.equal(http.requests.length, 1);
+    assert.deepEqual(Object.fromEntries(new URLSearchParams(http.requests[0]?.body ?? '')), {
+      grant_type: 'refresh_token',
+      client_id: 'cli',
+      refresh_token: 'old-refresh',
+      audience: 'admin',
+    });
+    assert.equal(
+      await fixture.store.get(targetServiceKey(fixture.target.id), TARGET_ACCOUNT),
+      'new-refresh'
+    );
+  });
+
+  it('clears durable refresh state after a dispatched malformed exchange', async () => {
+    const http = new FakeHttpTransport();
+    const fixture = manager(http);
+    await fixture.store.set(targetServiceKey(fixture.target.id), TARGET_ACCOUNT, 'old-refresh');
+    http.enqueue(
+      respond(200, {
+        access_token: 'access',
+        refresh_token: 'replacement',
+        token_type: 'bearer',
+        expires_in: 3600,
+      })
+    );
+
+    await assert.rejects(fixture.value.getAccessToken('capsule'), LoginRequiredError);
+    assert.equal(
+      await fixture.store.get(targetServiceKey(fixture.target.id), TARGET_ACCOUNT),
+      null
+    );
+  });
+
+  it('deletes the old family after a post-dispatch ambiguous refresh', async () => {
+    const http = new (class extends FakeHttpTransport {
+      override async fetch(
+        url: string,
+        init: RequestInit & { redirect: 'error' }
+      ): Promise<Response> {
+        await super.fetch(url, init);
+        throw new Error('connection reset after request dispatch');
+      }
+    })();
+    http.enqueue(
+      respond(200, {
+        access_token: 'unobservable',
+        refresh_token: 'possibly-spent',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
+    const fixture = manager(http);
+    await fixture.store.set(
+      targetServiceKey(fixture.target.id),
+      TARGET_ACCOUNT,
+      'old-refresh-canary'
+    );
+
+    await assert.rejects(fixture.value.getAccessToken('capsule'), LoginRequiredError);
+    assert.equal(
+      await fixture.store.get(targetServiceKey(fixture.target.id), TARGET_ACCOUNT),
+      null
+    );
+  });
+
+  it('invalidates replacement state when secure-store replacement fails', async () => {
+    let stored: string | null = 'old-refresh';
+    const store: TargetCredentialStore = {
+      get: async () => stored,
+      set: async () => {
+        throw new Error('keyring failed');
+      },
+      delete: async () => {
+        stored = null;
+      },
+    };
+    const http = new FakeHttpTransport();
+    const fixture = manager(http, store);
+    http.enqueue(
+      respond(200, {
+        access_token: 'access',
+        refresh_token: 'replacement',
+        token_type: 'Bearer',
+        expires_in: 3600,
+      })
+    );
     http.enqueue(respond(200, {}));
 
-    await assert.rejects(
-      refreshAccessToken('staging', target, failingStore, fakeLock(), {
-        http,
-        discoveryEndpoints: makeDiscoveryEndpoints(),
-      }),
-      LoginRequiredError,
-    );
-
-    assert.equal(setCalls, 1);
-
-    // Verify revoke was called with the NEW token (not the consumed one)
-    const revokeReq = http.requests.find((r) => r.url.includes('/revoke'));
-    assert.ok(revokeReq, 'Should have called revocation endpoint');
-    assert.ok(revokeReq.body);
-    const revokedParams = new URLSearchParams(revokeReq.body);
-    assert.equal(revokedParams.get('token'), 'new-refresh',
-      'Must revoke the new (unpersisted) token, not the already-consumed old token');
-  });
-
-  it('never retries a consumed refresh token', async () => {
-    const http = new FakeHttpTransport();
-    const credStore = new FakeCredentialStore();
-    const target = makeTarget();
-    const serviceKey = targetServiceKey(target.id);
-
-    await credStore.set(serviceKey, TARGET_ACCOUNT, 'consumed-refresh');
-
-    http.enqueue(respond(400, { error: 'invalid_grant' }));
-
-    await assert.rejects(
-      refreshAccessToken('staging', target, credStore, fakeLock(), {
-        http,
-        discoveryEndpoints: makeDiscoveryEndpoints(),
-      }),
-      LoginRequiredError,
-    );
-
-    // Only one request made — no retry
-    assert.equal(http.requests.length, 1);
-  });
-});
-
-describe('getAccessTokenProvider', () => {
-  it('returns cached token within expiry window', async () => {
-    const http = new FakeHttpTransport();
-    const clock = new FakeClock(0);
-    const credStore = new FakeCredentialStore();
-    const target = makeTarget();
-    const serviceKey = targetServiceKey(target.id);
-
-    await credStore.set(serviceKey, TARGET_ACCOUNT, 'refresh-1');
-
-    http.enqueue(respond(200, {
-      access_token: 'access-cached',
-      refresh_token: 'refresh-2',
-      token_type: 'Bearer',
-      expires_in: 3600,
-    }));
-
-    const provider = getAccessTokenProvider('staging', target, credStore, fakeLock(), {
-      http,
-      discoveryEndpoints: makeDiscoveryEndpoints(),
-    }, clock);
-
-    const token1 = await provider.getAccessToken();
-    assert.equal(token1, 'access-cached');
-
-    // Second call should use cache (no new HTTP request)
-    const token2 = await provider.getAccessToken();
-    assert.equal(token2, 'access-cached');
-    assert.equal(http.requests.length, 1);
-  });
-
-  it('refreshes when cache expired', async () => {
-    const http = new FakeHttpTransport();
-    const clock = new FakeClock(0);
-    const credStore = new FakeCredentialStore();
-    const target = makeTarget();
-    const serviceKey = targetServiceKey(target.id);
-
-    await credStore.set(serviceKey, TARGET_ACCOUNT, 'refresh-1');
-
-    http.enqueue(respond(200, {
-      access_token: 'access-1',
-      refresh_token: 'refresh-2',
-      token_type: 'Bearer',
-      expires_in: 60,
-    }));
-
-    http.enqueue(respond(200, {
-      access_token: 'access-2',
-      refresh_token: 'refresh-3',
-      token_type: 'Bearer',
-      expires_in: 3600,
-    }));
-
-    const provider = getAccessTokenProvider('staging', target, credStore, fakeLock(), {
-      http,
-      discoveryEndpoints: makeDiscoveryEndpoints(),
-    }, clock);
-
-    const token1 = await provider.getAccessToken();
-    assert.equal(token1, 'access-1');
-
-    // Advance clock past expiry (60s - 30s buffer = 30s)
-    clock.advance(31_000);
-
-    const token2 = await provider.getAccessToken();
-    assert.equal(token2, 'access-2');
-    assert.equal(http.requests.length, 2);
+    await assert.rejects(fixture.value.getAccessToken('capsule'), LoginRequiredError);
+    assert.equal(stored, null);
+    assert.equal(http.requests[1]?.url, 'https://api.test.example/oauth/revoke');
   });
 });

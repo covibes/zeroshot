@@ -1,0 +1,14 @@
+{
+  "description": "Limits preserves an explicit null maximum rather than omitting the field.",
+  "schema": "capsule-limits",
+  "expect_schema_valid": true,
+  "response": {
+    "operation": "limits",
+    "status": 200,
+    "headers": { "cache-control": "no-store" }
+  },
+  "body": {
+    "active_capsules": 2,
+    "max_active_capsules": null
+  }
+}

@@ -1,184 +1,111 @@
-import type { HttpTransport, Clock, RetryPolicy, TargetAccessTokenProvider, TargetDiscovery } from '../../src/hosted-target/types.ts';
+import type { RouteTemplate, TargetDiscoveryDescriptor } from '../../src/target/discovery.ts';
+import type { Clock, HttpTransport, RetryPolicy, TargetAccessTokenProvider } from '../../src/hosted-target/types.ts';
 
-export const NO_RETRY: RetryPolicy = {
-  shouldRetry() {
-    return { retry: false, delayMs: 0 };
-  },
-};
-
-interface CannedResponse {
-  status: number;
-  body: string;
-  headers?: Record<string, string>;
-}
-
-interface RecordedRequest {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  body: string | null;
+export interface CapturedRequest {
+  readonly url: string;
+  readonly init: RequestInit & { redirect: 'error' };
 }
 
 export class FakeHttpTransport implements HttpTransport {
-  readonly requests: RecordedRequest[] = [];
-  private readonly responses: CannedResponse[] = [];
-  private faultFn: (() => never) | null = null;
-
-  enqueue(response: CannedResponse): void {
-    this.responses.push(response);
+  readonly requests: CapturedRequest[] = [];
+  readonly responses: Response[] = [];
+  enqueue(status: number, body: unknown, headers: Record<string, string> = {}): void {
+    this.responses.push(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } }));
   }
-
-  setFault(fn: (() => never) | null): void {
-    this.faultFn = fn;
-  }
-
-  async fetch(
-    url: string,
-    init: RequestInit & { redirect: 'error' },
-  ): Promise<Response> {
-    if (init.redirect !== 'error') {
-      throw new Error('FakeHttpTransport: redirect must be "error"');
-    }
-
-    const headers: Record<string, string> = {};
-    if (init.headers) {
-      if (init.headers instanceof Headers) {
-        init.headers.forEach((v, k) => { headers[k] = v; });
-      } else if (Array.isArray(init.headers)) {
-        for (const [k, v] of init.headers) headers[k] = v;
-      } else {
-        Object.assign(headers, init.headers);
-      }
-    }
-
-    this.requests.push({
-      url,
-      method: init.method ?? 'GET',
-      headers,
-      body: typeof init.body === 'string' ? init.body : null,
-    });
-
-    if (this.faultFn) {
-      this.faultFn();
-    }
-
-    const canned = this.responses.shift();
-    if (!canned) {
-      throw new Error(`FakeHttpTransport: no response queued for ${init.method} ${url}`);
-    }
-
-    const responseHeaders = new Headers(canned.headers);
-    if (!responseHeaders.has('Content-Type')) {
-      responseHeaders.set('Content-Type', 'application/json');
-    }
-
-    const nullBodyStatuses = [101, 204, 205, 304];
-    const responseBody = nullBodyStatuses.includes(canned.status) ? null : canned.body;
-    return new Response(responseBody, {
-      status: canned.status,
-      headers: responseHeaders,
-    });
+  async fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response> {
+    this.requests.push({ url, init });
+    const response = this.responses.shift();
+    if (!response) throw new Error('No response queued');
+    return response;
   }
 }
 
 export class FakeClock implements Clock {
-  private _now: number;
-
-  constructor(startMs: number = 1000000) {
-    this._now = startMs;
+  private value: number;
+  constructor(value = Date.parse('2026-08-03T00:00:00.000Z')) {
+    this.value = value;
   }
-
-  now(): number {
-    return this._now;
-  }
-
-  advance(ms: number): void {
-    this._now += ms;
-  }
-
-  set(ms: number): void {
-    this._now = ms;
-  }
+  now(): number { return this.value; }
+  advance(ms: number): void { this.value += ms; }
 }
 
 export class FakeTokenProvider implements TargetAccessTokenProvider {
-  private _token: string;
-  callCount = 0;
-
-  constructor(token: string = 'test-token-abc123') {
-    this._token = token;
+  readonly calls: Array<AbortSignal | undefined> = [];
+  readonly token: string;
+  constructor(token = 'admin-access-canary') {
+    this.token = token;
   }
-
-  setToken(token: string): void {
-    this._token = token;
-  }
-
-  async getAccessToken(_signal?: AbortSignal): Promise<string> {
-    this.callCount++;
-    return this._token;
+  async getAccessToken(signal?: AbortSignal): Promise<string> {
+    this.calls.push(signal);
+    return this.token;
   }
 }
 
-export function fakeDiscovery(): TargetDiscovery {
-  return { capsuleV1: 'https://api.test.example/v1' };
-}
-
-export function respond(
-  status: number,
-  body: unknown,
-  headers?: Record<string, string>,
-): { status: number; body: string; headers?: Record<string, string> } {
-  const result: { status: number; body: string; headers?: Record<string, string> } = {
-    status,
-    body: typeof body === 'string' ? body : JSON.stringify(body),
-  };
-  if (headers !== undefined) result.headers = headers;
-  return result;
-}
-
-export function respondEmpty(
-  status: number,
-  headers?: Record<string, string>,
-): { status: number; body: string; headers?: Record<string, string> } {
-  const result: { status: number; body: string; headers?: Record<string, string> } = {
-    status,
-    body: '',
-  };
-  if (headers !== undefined) result.headers = headers;
-  return result;
-}
-
-export function makeCapsule(overrides?: Record<string, unknown>): Record<string, unknown> {
+function route(template: string, variables: readonly string[]): RouteTemplate {
   return {
-    id: 'cap-001',
-    state: 'running',
-    createdAt: '2026-08-01T00:00:00Z',
-    ...overrides,
+    template,
+    variables,
+    expand(values) {
+      let expanded = template.replace(/\{\?([^}]+)\}/g, (_match, names: string) => {
+        const query = new URLSearchParams();
+        for (const name of names.split(',')) {
+          const value = values[name];
+          if (value !== undefined) query.set(name, String(value));
+        }
+        const serialized = query.toString();
+        return serialized ? `?${serialized}` : '';
+      });
+      expanded = expanded.replace(/\{([^}]+)\}/g, (_match, name: string) => encodeURIComponent(String(values[name])));
+      return expanded;
+    },
   };
 }
 
-export function makeCapsuleAccess(overrides?: Record<string, unknown>): Record<string, unknown> {
+export function fakeDiscovery(): TargetDiscoveryDescriptor {
+  const origin = 'https://hosted.openengine.example';
   return {
-    endpoint: 'wss://capsule.test.example/oecp',
-    token: 'access-token-secret',
-    expiresAt: '2026-08-01T01:00:00Z',
-    ...overrides,
+    origin,
+    adapter: { name: 'fargate', majorVersion: 1 },
+    endpoint: `${origin}/targets/primary`,
+    endpointCapabilities: ['exec', 'log_stream'],
+    pagination: { defaultPageSize: 20, maxPageSize: 100 },
+    sizes: { catalog: ['tiny', 'small', 'standard', 'large'], default: 'standard' },
+    oauth: {
+      metadataUrl: `${origin}/.well-known/oauth`,
+      deviceAuthorizationEndpoint: `${origin}/auth/device`,
+      tokenEndpoint: `${origin}/auth/token`,
+      revocationEndpoint: `${origin}/auth/revoke`,
+      clientId: 'cli',
+      deviceGrantType: 'urn:ietf:params:oauth:grant-type:device_code',
+      audience: 'capsule',
+    },
+    session: { routeTemplate: route('/target-session', []), method: 'GET' },
+    capsule: {
+      baseUrl: `${origin}/api/v1`,
+      routes: {
+        allocate: route('/orgs/{org_id}/capsules', ['org_id']),
+        list: route('/orgs/{org_id}/capsules{?cursor,limit}', ['org_id', 'cursor', 'limit']),
+        inspect: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
+        terminate: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
+        limits: route('/orgs/{org_id}/limits', ['org_id']),
+        access: route('/capsules/{capsule_id}/access', ['capsule_id']),
+      },
+    },
+    transport: {
+      websocketRouteTemplate: route('/v1/capsules/{capsule_id}/oecp', ['capsule_id']),
+      unauthorizedStatus: 401,
+      closeCodes: { expired: 4401, revoked: 4403 },
+    },
+    capabilityFlags: ['capsule_allocate', 'capsule_read', 'capsule_terminate', 'capsule_access', 'connections_onboarding'],
+    credentialInstall: null,
+    additional: {},
   };
 }
 
-export function makeLimits(overrides?: Record<string, unknown>): Record<string, unknown> {
-  return {
-    maxConcurrent: 5,
-    maxPerHour: 20,
-    ...overrides,
-  };
+export function capsule(id = 'cap-1', state = 'ready') {
+  return { capsule_id: id, state, label: null, created_at: '2026-08-03T00:00:00Z' };
 }
 
-export function makeListPage(
-  items: Record<string, unknown>[],
-  cursor?: string,
-): Record<string, unknown> {
-  const page: Record<string, unknown> = { items };
-  if (cursor !== undefined) page['cursor'] = cursor;
-  return page;
-}
+export const NO_RETRY: RetryPolicy = {
+  shouldRetry: () => ({ retry: false, delayMs: 0 }),
+};

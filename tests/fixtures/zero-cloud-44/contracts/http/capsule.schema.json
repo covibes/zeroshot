@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Capsule",
+  "description": "Provider-neutral public capsule projection.",
+  "type": "object",
+  "properties": {
+    "capsule_id": {
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/CapsuleState"
+    },
+    "label": {
+      "type": ["string", "null"]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false,
+  "required": ["capsule_id", "state", "label", "created_at"],
+  "$defs": {
+    "CapsuleState": {
+      "description": "Exact public lifecycle of one hosted capsule.",
+      "type": "string",
+      "enum": ["provisioning", "ready", "terminating", "terminated", "failed"]
+    }
+  }
+}

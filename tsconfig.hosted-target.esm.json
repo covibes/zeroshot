@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.hosted-target.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "rootDir": "src",
+    "outDir": ".hosted-target-build/esm",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["src/hosted-target/**/*.ts", "src/target/discovery.ts", "src/target/device-flow.ts"]
+}

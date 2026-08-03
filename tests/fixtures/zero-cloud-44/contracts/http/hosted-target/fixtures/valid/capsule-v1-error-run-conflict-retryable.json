@@ -1,0 +1,16 @@
+{
+  "description": "A capsule not ready for access is a retryable run conflict with an explicit retry window.",
+  "schema": "capsule-v1-error",
+  "expect_schema_valid": true,
+  "status": 409,
+  "headers": {
+    "cache-control": "no-store",
+    "retry-after": "1"
+  },
+  "body": {
+    "code": "run_conflict",
+    "message": "the capsule is not ready to grant access yet",
+    "capsule_id": "cap_opaque-not-ready-05",
+    "retryable": true
+  }
+}

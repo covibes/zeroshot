@@ -1,0 +1,21 @@
+{
+  "description": "List preserves opaque capsule identifiers and an opaque nullable cursor without decoding either.",
+  "schema": "capsule-page",
+  "expect_schema_valid": true,
+  "response": {
+    "operation": "list",
+    "status": 200,
+    "headers": { "cache-control": "no-store" }
+  },
+  "body": {
+    "capsules": [
+      {
+        "capsule_id": "K7f2x9mQ-shard04::capsule-b91",
+        "state": "ready",
+        "label": null,
+        "created_at": "2026-08-03T12:03:00Z"
+      }
+    ],
+    "next_cursor": "b3BhcXVlLWN1cnNvcjo6Lys9"
+  }
+}

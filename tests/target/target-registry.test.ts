@@ -12,7 +12,16 @@ import {
   TargetNotFoundError,
   TargetUrlInvalidError,
 } from '../../src/target/target-registry.ts';
-import { makeSettingsPort } from './harness.ts';
+import { makeDiscoveryEndpoints, makeSettingsPort } from './harness.ts';
+
+function addValidatedTarget(
+  name: string,
+  url: string,
+  settings: ReturnType<typeof makeSettingsPort>
+) {
+  const origin = normalizeAndValidateUrl(url);
+  return addTarget(name, origin, settings, makeDiscoveryEndpoints(origin).descriptor);
+}
 
 describe('validateTargetName', () => {
   it('accepts valid names', () => {
@@ -46,25 +55,40 @@ describe('normalizeAndValidateUrl', () => {
   it('accepts valid HTTPS URLs', () => {
     assert.equal(normalizeAndValidateUrl('https://api.example.com'), 'https://api.example.com');
     assert.equal(normalizeAndValidateUrl('https://api.example.com/'), 'https://api.example.com');
-    assert.equal(normalizeAndValidateUrl('https://api.example.com/v1'), 'https://api.example.com/v1');
+    assert.throws(
+      () => normalizeAndValidateUrl('https://api.example.com/v1'),
+      TargetUrlInvalidError
+    );
   });
 
   it('rejects URLs with userinfo', () => {
-    assert.throws(() => normalizeAndValidateUrl('https://user:pass@api.example.com'), TargetUrlInvalidError);
-    assert.throws(() => normalizeAndValidateUrl('https://user@api.example.com'), TargetUrlInvalidError);
+    assert.throws(
+      () => normalizeAndValidateUrl('https://user:pass@api.example.com'),
+      TargetUrlInvalidError
+    );
+    assert.throws(
+      () => normalizeAndValidateUrl('https://user@api.example.com'),
+      TargetUrlInvalidError
+    );
   });
 
   it('rejects URLs with query or fragment', () => {
-    assert.throws(() => normalizeAndValidateUrl('https://api.example.com?key=val'), TargetUrlInvalidError);
-    assert.throws(() => normalizeAndValidateUrl('https://api.example.com#section'), TargetUrlInvalidError);
+    assert.throws(
+      () => normalizeAndValidateUrl('https://api.example.com?key=val'),
+      TargetUrlInvalidError
+    );
+    assert.throws(
+      () => normalizeAndValidateUrl('https://api.example.com#section'),
+      TargetUrlInvalidError
+    );
   });
 
   it('rejects non-HTTPS for non-loopback', () => {
     assert.throws(() => normalizeAndValidateUrl('http://api.example.com'), TargetUrlInvalidError);
   });
 
-  it('allows HTTP for localhost', () => {
-    assert.equal(normalizeAndValidateUrl('http://localhost:8080'), 'http://localhost:8080');
+  it('rejects hostname aliases for loopback HTTP', () => {
+    assert.throws(() => normalizeAndValidateUrl('http://localhost:8080'), TargetUrlInvalidError);
   });
 
   it('allows HTTP for 127.0.0.1', () => {
@@ -73,6 +97,7 @@ describe('normalizeAndValidateUrl', () => {
 
   it('allows HTTP for ::1', () => {
     assert.equal(normalizeAndValidateUrl('http://[::1]:3000'), 'http://[::1]:3000');
+    assert.throws(() => normalizeAndValidateUrl('ftp://localhost/'), TargetUrlInvalidError);
   });
 
   it('rejects invalid URLs', () => {
@@ -83,7 +108,7 @@ describe('normalizeAndValidateUrl', () => {
 describe('addTarget', () => {
   it('creates a target with valid name and URL', () => {
     const settings = makeSettingsPort();
-    const record = addTarget('staging', 'https://api.example.com/', settings);
+    const record = addValidatedTarget('staging', 'https://api.example.com/', settings);
     assert.equal(record.url, 'https://api.example.com');
     assert.equal(typeof record.id, 'string');
     assert.equal(record.adapterVersion, 'v1');
@@ -93,25 +118,40 @@ describe('addTarget', () => {
 
   it('persists the target in settings', () => {
     const settings = makeSettingsPort();
-    addTarget('staging', 'https://api.example.com', settings);
+    addValidatedTarget('staging', 'https://api.example.com', settings);
     const loaded = settings.load();
     assert.ok(loaded._targets?.['staging']);
     assert.equal(loaded._targets?.['staging']?.url, 'https://api.example.com');
   });
 
+  it('rejects a descriptor from another authority before settings mutation', () => {
+    const settings = makeSettingsPort();
+    assert.throws(
+      () =>
+        addTarget(
+          'staging',
+          'https://api.example.com',
+          settings,
+          makeDiscoveryEndpoints('https://other.example.com').descriptor
+        ),
+      TargetUrlInvalidError
+    );
+    assert.deepEqual(listTargets(settings), []);
+  });
+
   it('rejects duplicate name', () => {
     const settings = makeSettingsPort();
-    addTarget('staging', 'https://api.example.com', settings);
+    addValidatedTarget('staging', 'https://api.example.com', settings);
     assert.throws(
-      () => addTarget('staging', 'https://other.example.com', settings),
-      TargetNameExistsError,
+      () => addValidatedTarget('staging', 'https://other.example.com', settings),
+      TargetNameExistsError
     );
   });
 
   it('allows same URL under different names', () => {
     const settings = makeSettingsPort();
-    const r1 = addTarget('staging', 'https://api.example.com', settings);
-    const r2 = addTarget('staging2', 'https://api.example.com', settings);
+    const r1 = addValidatedTarget('staging', 'https://api.example.com', settings);
+    const r2 = addValidatedTarget('staging2', 'https://api.example.com', settings);
     assert.notEqual(r1.id, r2.id);
     assert.notEqual(r1.deviceToken, r2.deviceToken);
   });
@@ -120,7 +160,7 @@ describe('addTarget', () => {
 describe('removeTarget', () => {
   it('removes an existing target', () => {
     const settings = makeSettingsPort();
-    addTarget('staging', 'https://api.example.com', settings);
+    addValidatedTarget('staging', 'https://api.example.com', settings);
     const removed = removeTarget('staging', settings);
     assert.equal(removed.url, 'https://api.example.com');
     assert.equal(getTarget('staging', settings), null);
@@ -140,7 +180,7 @@ describe('getTarget', () => {
 
   it('returns existing target', () => {
     const settings = makeSettingsPort();
-    addTarget('staging', 'https://api.example.com', settings);
+    addValidatedTarget('staging', 'https://api.example.com', settings);
     const target = getTarget('staging', settings);
     assert.ok(target);
     assert.equal(target.url, 'https://api.example.com');
@@ -155,8 +195,8 @@ describe('listTargets', () => {
 
   it('returns all targets', () => {
     const settings = makeSettingsPort();
-    addTarget('staging', 'https://staging.example.com', settings);
-    addTarget('prod', 'https://prod.example.com', settings);
+    addValidatedTarget('staging', 'https://staging.example.com', settings);
+    addValidatedTarget('prod', 'https://prod.example.com', settings);
     const list = listTargets(settings);
     assert.equal(list.length, 2);
     const names = list.map((t) => t.name).sort();
@@ -171,7 +211,7 @@ describe('INTERNAL_SETTINGS_KEYS protection', () => {
     // This is tested via the CLI command tests. Here we verify the registry itself
     // does not leak secret material.
     const settings = makeSettingsPort();
-    addTarget('staging', 'https://api.example.com', settings);
+    addValidatedTarget('staging', 'https://api.example.com', settings);
     const list = listTargets(settings);
     for (const { record } of list) {
       assert.ok(!('refresh_token' in record));
