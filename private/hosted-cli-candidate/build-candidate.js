@@ -13,9 +13,13 @@ const CANDIDATE_FILES = Object.freeze([
   'manifest.js',
   'readers.js',
   'credentials.js',
+  'secret-input.js',
   'install-client.js',
+  'install-protocol.js',
   'orchestrator.js',
+  'orchestrator-support.js',
   'default-services.js',
+  'target-services.js',
   'register.js',
 ]);
 const PROTOCOL_FILES = Object.freeze([
