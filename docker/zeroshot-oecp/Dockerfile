@@ -13,7 +13,7 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
 FROM docker.io/instructure/tini:v0.19.0@sha256:0f9ccf2e54d010735ad691ebe670e256a3820fe8b92c28101194c68ee1216092 AS tini
 
-FROM docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46
+FROM docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
 ARG BUILD_MANIFEST_DIGEST
 LABEL org.opencontainers.image.title="zeroshot-oecp-private" \
       org.opencontainers.image.description="Unpublished legacy single-worker capsule runtime" \
@@ -40,9 +40,10 @@ COPY zeroshot-rust/hosted-node /opt/zeroshot/zeroshot-rust/hosted-node
 RUN groupadd --gid 10002 zeroshot-worker \
     && useradd --uid 10002 --gid 10002 --home-dir /tmp/zeroshot-oecp --no-create-home --shell /usr/sbin/nologin zeroshot-worker \
     && mkdir -p /workspace /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
-    && chown 10002:10002 /workspace /tmp/zeroshot-oecp \
-    && chown 0:0 /run/zeroshot-capsule-agent \
-    && chmod 0700 /workspace /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
+    && chown 1000:10002 /workspace /run/zeroshot-capsule-agent \
+    && chown 10002:10002 /tmp/zeroshot-oecp \
+    && chmod 0770 /workspace \
+    && chmod 0700 /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chmod 0755 /usr/bin/tini \
     && test ! -e /usr/bin/git \
     && test ! -e /usr/bin/gh

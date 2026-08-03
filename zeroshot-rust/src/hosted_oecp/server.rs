@@ -15,7 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinSet;
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 
 use super::server_auth::{
     authenticate_first_request, authentication_error, load_transport_capability,
@@ -40,6 +40,8 @@ const TRUSTED_SERVICE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_TRUSTED_FRAME_BYTES: u64 = 4096;
 const PROXY_CONTROL_SOCKET: &str = "/run/zeroshot-capsule-agent/proxy.sock";
 const DELIVERY_SOCKET: &str = "/run/zeroshot-capsule-agent/delivery.sock";
+const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
+const STARTUP_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 pub fn production_backend() -> Arc<HostedBackend> {
     Arc::new(HostedBackend::new(
@@ -57,14 +59,8 @@ pub async fn serve<F>(
 where
     F: Future<Output = ()>,
 {
-    let capability = Arc::new(
-        load_transport_capability()
-            .map_err(|_| io::Error::other("hosted OECP capability unavailable"))?,
-    );
-    backend
-        .verify_startup_readiness()
-        .await
-        .map_err(|_| io::Error::other("hosted startup readiness failed"))?;
+    let capability = Arc::new(load_startup_capability().await?);
+    verify_startup_readiness(&backend).await?;
     let capacity = Arc::new(Semaphore::new(ACTIVE_CONNECTION_CAPACITY));
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
@@ -104,6 +100,30 @@ where
         )
     })??;
     Ok(())
+}
+
+async fn load_startup_capability() -> io::Result<TransportCapability> {
+    let deadline = Instant::now() + STARTUP_DEADLINE;
+    loop {
+        match load_transport_capability() {
+            Ok(capability) => return Ok(capability),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline => {
+                sleep(STARTUP_RETRY_INTERVAL).await;
+            }
+            Err(_) => return Err(io::Error::other("hosted OECP capability unavailable")),
+        }
+    }
+}
+
+async fn verify_startup_readiness(backend: &HostedBackend) -> io::Result<()> {
+    let deadline = Instant::now() + STARTUP_DEADLINE;
+    loop {
+        match backend.verify_startup_readiness().await {
+            Ok(()) => return Ok(()),
+            Err(_) if Instant::now() < deadline => sleep(STARTUP_RETRY_INTERVAL).await,
+            Err(_) => return Err(io::Error::other("hosted startup readiness failed")),
+        }
+    }
 }
 
 async fn serve_connection(

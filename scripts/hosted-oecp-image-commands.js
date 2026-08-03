@@ -147,12 +147,14 @@ function validateRuntimeIdentity(runtime) {
 
 function validateRuntimePermissions(runtime) {
   if (
-    JSON.stringify(runtime.workspace) !== JSON.stringify({ uid: 10002, gid: 10002, mode: '700' })
+    JSON.stringify(runtime.workspace) !== JSON.stringify({ uid: 1000, gid: 10002, mode: '770' })
   ) {
     throw new Error('Hosted image workspace ownership is invalid');
   }
-  if (JSON.stringify(runtime.controlRoot) !== JSON.stringify({ uid: 0, gid: 0, mode: '700' })) {
-    throw new Error('Hosted image control directory is not supervisor-only');
+  if (
+    JSON.stringify(runtime.controlRoot) !== JSON.stringify({ uid: 1000, gid: 10002, mode: '700' })
+  ) {
+    throw new Error('Hosted image control directory is not capsule-agent-only');
   }
 }
 

@@ -12,6 +12,7 @@ const MAX_OECP_FRAME_BYTES: usize = 1_048_576;
 const MIN_CAPABILITY_BYTES: usize = 32;
 const MAX_CAPABILITY_BYTES: usize = 256;
 const MAX_CAPABILITY_FILE_BYTES: u64 = (MAX_CAPABILITY_BYTES + 2) as u64;
+const CAPSULE_AGENT_UID: u32 = 1000;
 
 pub(super) struct TransportCapability {
     bytes: [u8; MAX_CAPABILITY_BYTES],
@@ -192,7 +193,7 @@ fn verify_capability_metadata(metadata: &std::fs::Metadata) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
 
     if metadata.is_file()
-        && metadata.uid() == 0
+        && matches!(metadata.uid(), 0 | CAPSULE_AGENT_UID)
         && metadata.mode() & 0o7777 == 0o400
         && metadata.nlink() == 1
     {

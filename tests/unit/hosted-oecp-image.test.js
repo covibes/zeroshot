@@ -26,8 +26,8 @@ function runtimeInspection() {
   return {
     uid: 0,
     worker: { uid: 10002, gid: 10002 },
-    workspace: { uid: 10002, gid: 10002, mode: '700' },
-    controlRoot: { uid: 0, gid: 0, mode: '700' },
+    workspace: { uid: 1000, gid: 10002, mode: '770' },
+    controlRoot: { uid: 1000, gid: 10002, mode: '700' },
     forbiddenPresent: [],
     runtimeModules: { engineStart: true, runtimeDependencies: true },
     serverExecutable: true,
