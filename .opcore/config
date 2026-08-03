@@ -6,7 +6,9 @@
         "deadCode": {
           "entrypoints": [
             "scripts/opcore-agent-gate.js",
-            "scripts/opcore-introduced-check.js"
+            "scripts/opcore-introduced-check.js",
+            "tests/package-hosted-gate-smoke.test.js",
+            "tests/unit/cli-hosted-target-gate.test.js"
           ]
         }
       },

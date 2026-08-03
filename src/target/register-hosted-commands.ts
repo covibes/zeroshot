@@ -21,24 +21,7 @@ export interface HostedCommandsDependencies {
   mutateSettings: SettingsPort['mutate'];
 }
 
-/**
- * Construct the hosted command tree for isolated development and contract tests.
- *
- * The stable CLI must not import or call this boundary until a separately authorized
- * hosted MVP cutover. Keeping construction in one module prevents tests and future
- * hosted commands from growing a second command registry in cli/index.js.
- */
-export function registerHostedCommands(
-  program: Command,
-  dependencies: HostedCommandsDependencies,
-): void {
-  const settingsPort: SettingsPort = {
-    load: () => dependencies.loadSettings(),
-    mutate: (fn) => dependencies.mutateSettings(fn),
-  };
-
-  const targetCmd = program.command('target').description('Manage named remote targets');
-
+function registerTargetAddCommand(targetCmd: Command, settingsPort: SettingsPort): void {
   targetCmd
     .command('add <name>')
     .description('Register a named remote target')
@@ -52,7 +35,9 @@ export function registerHostedCommands(
         process.exit(1);
       }
     });
+}
 
+function registerTargetLoginCommand(targetCmd: Command, settingsPort: SettingsPort): void {
   targetCmd
     .command('login <name>')
     .description('Authenticate with a remote target via device login')
@@ -98,7 +83,52 @@ export function registerHostedCommands(
         process.exit(1);
       }
     });
+}
 
+async function printTargetListJson(
+  targets: ReturnType<typeof listTargets>,
+): Promise<void> {
+  const output = targets.map(({ name, record }) => ({
+    name,
+    id: record.id,
+    url: record.url,
+    organization: record.organization ?? null,
+    loggedIn: false,
+    createdAt: record.createdAt,
+  }));
+
+  // Try to check keyring presence for each target
+  try {
+    const store = await KeyringCredentialStore.create();
+    for (const item of output) {
+      const matchingTarget = targets.find((t) => t.name === item.name);
+      if (matchingTarget) {
+        const cred = await store.get(targetServiceKey(matchingTarget.record.id), TARGET_ACCOUNT);
+        item.loggedIn = cred !== null;
+      }
+    }
+  } catch {
+    // Keyring unavailable, all show as not logged in
+  }
+
+  console.log(JSON.stringify(output, null, 2));
+}
+
+function printTargetListHuman(targets: ReturnType<typeof listTargets>): void {
+  if (targets.length === 0) {
+    console.log(
+      chalk.dim('No targets registered. Use `zeroshot target add <name> --url <url>` to add one.'),
+    );
+    return;
+  }
+
+  for (const { name, record } of targets) {
+    const org = record.organization ? ` (org: ${record.organization.name})` : '';
+    console.log(`  ${chalk.bold(name)}  ${record.url}${org}`);
+  }
+}
+
+function registerTargetListCommand(targetCmd: Command, settingsPort: SettingsPort): void {
   targetCmd
     .command('list')
     .description('List registered remote targets')
@@ -108,55 +138,46 @@ export function registerHostedCommands(
         const targets = listTargets(settingsPort);
 
         if (options.json) {
-          const output = targets.map(({ name, record }) => ({
-            name,
-            id: record.id,
-            url: record.url,
-            organization: record.organization ?? null,
-            loggedIn: false,
-            createdAt: record.createdAt,
-          }));
-
-          // Try to check keyring presence for each target
-          try {
-            const store = await KeyringCredentialStore.create();
-            for (const item of output) {
-              const matchingTarget = targets.find((t) => t.name === item.name);
-              if (matchingTarget) {
-                const cred = await store.get(
-                  targetServiceKey(matchingTarget.record.id),
-                  TARGET_ACCOUNT,
-                );
-                item.loggedIn = cred !== null;
-              }
-            }
-          } catch {
-            // Keyring unavailable, all show as not logged in
-          }
-
-          console.log(JSON.stringify(output, null, 2));
+          await printTargetListJson(targets);
           return;
         }
 
-        if (targets.length === 0) {
-          console.log(
-            chalk.dim(
-              'No targets registered. Use `zeroshot target add <name> --url <url>` to add one.',
-            ),
-          );
-          return;
-        }
-
-        for (const { name, record } of targets) {
-          const org = record.organization ? ` (org: ${record.organization.name})` : '';
-          console.log(`  ${chalk.bold(name)}  ${record.url}${org}`);
-        }
+        printTargetListHuman(targets);
       } catch (error) {
         console.error(chalk.red((error as Error).message));
         process.exit(1);
       }
     });
+}
 
+async function revokeTargetRemotely(
+  target: NonNullable<ReturnType<typeof getTarget>>,
+  force: boolean,
+): Promise<void> {
+  try {
+    const credentialStore = await KeyringCredentialStore.create();
+    const http = { fetch: (url: string, init: RequestInit) => fetch(url, init) };
+    const discoveryEndpoints = await discoverTargetSessionEndpoints(target.url, http);
+    await revokeAndCleanup(
+      target,
+      credentialStore,
+      () => acquireTargetLock(target.id),
+      {
+        http,
+        discoveryEndpoints,
+      },
+      force,
+    );
+  } catch (error) {
+    if (!force) {
+      console.error(chalk.red((error as Error).message));
+      process.exit(1);
+    }
+    // Force mode: continue with removal
+  }
+}
+
+function registerTargetRemoveCommand(targetCmd: Command, settingsPort: SettingsPort): void {
   targetCmd
     .command('remove <name>')
     .description('Remove a named remote target')
@@ -169,28 +190,7 @@ export function registerHostedCommands(
           process.exit(1);
         }
 
-        // Try to revoke and cleanup keyring
-        try {
-          const credentialStore = await KeyringCredentialStore.create();
-          const http = { fetch: (url: string, init: RequestInit) => fetch(url, init) };
-          const discoveryEndpoints = await discoverTargetSessionEndpoints(target.url, http);
-          await revokeAndCleanup(
-            target,
-            credentialStore,
-            () => acquireTargetLock(target.id),
-            {
-              http,
-              discoveryEndpoints,
-            },
-            !!options.force,
-          );
-        } catch (error) {
-          if (!options.force) {
-            console.error(chalk.red((error as Error).message));
-            process.exit(1);
-          }
-          // Force mode: continue with removal
-        }
+        await revokeTargetRemotely(target, !!options.force);
 
         removeTarget(name, settingsPort);
         console.log(chalk.green(`✓ Target "${name}" removed`));
@@ -199,6 +199,30 @@ export function registerHostedCommands(
         process.exit(1);
       }
     });
+}
+
+/**
+ * Construct the hosted command tree for isolated development and contract tests.
+ *
+ * The stable CLI must not import or call this boundary until a separately authorized
+ * hosted MVP cutover. Keeping construction in one module prevents tests and future
+ * hosted commands from growing a second command registry in cli/index.js.
+ */
+export function registerHostedCommands(
+  program: Command,
+  dependencies: HostedCommandsDependencies,
+): void {
+  const settingsPort: SettingsPort = {
+    load: () => dependencies.loadSettings(),
+    mutate: (fn) => dependencies.mutateSettings(fn),
+  };
+
+  const targetCmd = program.command('target').description('Manage named remote targets');
+
+  registerTargetAddCommand(targetCmd, settingsPort);
+  registerTargetLoginCommand(targetCmd, settingsPort);
+  registerTargetListCommand(targetCmd, settingsPort);
+  registerTargetRemoveCommand(targetCmd, settingsPort);
 
   targetCmd.action(() => {
     targetCmd.help();

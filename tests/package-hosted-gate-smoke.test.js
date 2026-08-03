@@ -82,6 +82,29 @@ function runCli(cliPath, args, settingsFile) {
   });
 }
 
+const HOSTED_GATE_REJECTED_INVOCATIONS = [
+  { args: ['target'], error: /unknown command/i },
+  {
+    args: ['target', 'add', 'staging', '--url', 'https://api.example.com'],
+    error: /unknown command/i,
+  },
+  { args: ['capsule'], error: /unknown command/i },
+  { args: ['capsule', 'list', '--json'], error: /unknown command/i },
+  { args: ['run', '123', '--target', 'staging'], error: /unknown option/i },
+  { args: ['--all-targets'], error: /unknown option/i },
+];
+
+async function assertHostedInvocationRejected(cliPath, settingsFile, args, error) {
+  const result = await runCli(cliPath, args, settingsFile);
+  assert.notStrictEqual(result.exitCode, 0, `zeroshot ${args.join(' ')} unexpectedly passed`);
+  assert.match(result.stderr, error);
+  assert.strictEqual(
+    fs.existsSync(settingsFile),
+    false,
+    `zeroshot ${args.join(' ')} mutated settings`
+  );
+}
+
 describe('packed CLI hosted target/capsule gate', function () {
   this.timeout(180_000);
 
@@ -143,27 +166,8 @@ describe('packed CLI hosted target/capsule gate', function () {
   });
 
   it('rejects packed hosted commands and remote-only flags before settings mutation', async function () {
-    const invocations = [
-      { args: ['target'], error: /unknown command/i },
-      {
-        args: ['target', 'add', 'staging', '--url', 'https://api.example.com'],
-        error: /unknown command/i,
-      },
-      { args: ['capsule'], error: /unknown command/i },
-      { args: ['capsule', 'list', '--json'], error: /unknown command/i },
-      { args: ['run', '123', '--target', 'staging'], error: /unknown option/i },
-      { args: ['--all-targets'], error: /unknown option/i },
-    ];
-
-    for (const { args, error } of invocations) {
-      const result = await runCli(cliPath, args, settingsFile);
-      assert.notStrictEqual(result.exitCode, 0, `zeroshot ${args.join(' ')} unexpectedly passed`);
-      assert.match(result.stderr, error);
-      assert.strictEqual(
-        fs.existsSync(settingsFile),
-        false,
-        `zeroshot ${args.join(' ')} mutated settings`
-      );
+    for (const { args, error } of HOSTED_GATE_REJECTED_INVOCATIONS) {
+      await assertHostedInvocationRejected(cliPath, settingsFile, args, error);
     }
   });
 });

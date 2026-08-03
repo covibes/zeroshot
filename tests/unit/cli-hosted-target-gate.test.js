@@ -70,9 +70,7 @@ function assertNoHostedSurface(stdout) {
   assert.ok(!stdout.includes('--all-targets'), `--all-targets flag leaked:\n${stdout}`);
 }
 
-describe('CLI hosted target/capsule gate', function () {
-  this.timeout(20_000);
-
+describe('CLI hosted target/capsule gate: parser and help surface', function () {
   describe('production parser construction', function () {
     it('does not load the internal hosted command registry', function () {
       assert.strictEqual(require.cache[HOSTED_REGISTRATION_PATH], undefined);
@@ -105,6 +103,10 @@ describe('CLI hosted target/capsule gate', function () {
       });
     }
   });
+});
+
+describe('CLI hosted target/capsule gate: side-effect rejection', function () {
+  this.timeout(20_000);
 
   describe('unknown hosted commands are rejected before any side effect', function () {
     it('rejects bare "target" as an unknown command', async function () {

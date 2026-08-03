@@ -85,6 +85,18 @@ function withRustStageFixture(
   }
 }
 
+function readReleaseWorkflow() {
+  return fs.readFileSync(path.join(projectRoot, '.github', 'workflows', 'release.yml'), 'utf8');
+}
+
+const RELEASE_INSTALL_JOBS = [
+  ['dry-run', 'Install pinned dependencies', 'npm ci'],
+  ['release', 'Install pinned dependencies', 'npm ci'],
+  ['rust-binaries', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
+  ['rust-manifest', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
+  ['rust-publish', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
+];
+
 describe('Rust product distribution', function () {
   it('declares the complete native target and host matrix', function () {
     assert.deepStrictEqual(
@@ -165,7 +177,7 @@ describe('Rust product distribution', function () {
   });
 });
 
-describe('Rust release integration', function () {
+describe('Rust release version coupling', function () {
   it('fails a release version mismatch with the named error and both versions', function () {
     const cargoToml = '[package]\nname = "zeroshot-rust"\nversion = "1.2.2"\n';
     assert.throws(
@@ -176,87 +188,62 @@ describe('Rust release integration', function () {
   });
 
   it('stages the planned version and target lock resolution before coupling', function () {
-    const directory = temporaryDirectory();
-    const packageDirectory = path.join(directory, 'zeroshot-rust');
-    const workspacePath = path.join(directory, 'Cargo.toml');
-    const manifestPath = path.join(packageDirectory, 'Cargo.toml');
-    const lockPath = path.join(directory, 'Cargo.lock');
-    fs.mkdirSync(packageDirectory);
-    fs.writeFileSync(
-      workspacePath,
-      '[workspace]\nmembers = ["zeroshot-rust"]\n\n[workspace.dependencies]\nwindows-sys = "0.61.2"\n'
-    );
-    fs.writeFileSync(
-      manifestPath,
-      '[package]\nname = "zeroshot-rust"\nversion = "0.1.0"\nedition = "2024"\n\n[target.\'cfg(windows)\'.dependencies]\nwindows-sys = { workspace = true }\n'
-    );
-    fs.writeFileSync(
-      lockPath,
-      [
-        'version = 4',
-        '',
-        '[[package]]',
-        'name = "windows-sys"',
-        'version = "0.52.0"',
-        '',
-        '[[package]]',
-        'name = "windows-sys"',
-        'version = "0.61.2"',
-        '',
-        '[[package]]',
-        'name = "zeroshot-rust"',
-        'version = "0.1.0"',
-        'dependencies = [',
-        ' "windows-sys",',
-        ']',
-        '',
-      ].join('\n')
-    );
-    try {
-      assert.deepStrictEqual(
-        distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
-        {
-          currentVersion: '0.1.0',
-          version: '6.10.3',
-        }
-      );
-      const stagedManifest = fs.readFileSync(manifestPath, 'utf8');
-      const stagedLock = fs.readFileSync(lockPath, 'utf8');
-      const workspaceManifest = fs.readFileSync(workspacePath, 'utf8');
-      assert.strictEqual(
-        distribution.checkVersionCoupling('v6.10.3', stagedManifest, stagedLock, workspaceManifest),
-        '6.10.3'
-      );
-      assert.match(
-        stagedLock,
-        /name = "zeroshot-rust"\nversion = "6\.10\.3"[\s\S]*"windows-sys 0\.61\.2"/
-      );
-      assert.throws(
-        () =>
+    withRustStageFixture(
+      {
+        requirement: '0.61.2',
+        lockedDependencies: [{ version: '0.52.0' }, { version: '0.61.2' }],
+      },
+      ({ lockPath, manifestPath, workspacePath }) => {
+        assert.deepStrictEqual(
+          distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
+          {
+            currentVersion: '0.1.0',
+            version: '6.10.3',
+          }
+        );
+        const stagedManifest = fs.readFileSync(manifestPath, 'utf8');
+        const stagedLock = fs.readFileSync(lockPath, 'utf8');
+        const workspaceManifest = fs.readFileSync(workspacePath, 'utf8');
+        assert.strictEqual(
           distribution.checkVersionCoupling(
             'v6.10.3',
             stagedManifest,
-            stagedLock.replace('"windows-sys 0.61.2"', '"windows-sys"'),
+            stagedLock,
             workspaceManifest
           ),
-        /RUST_VERSION_MISMATCH: Cargo\.lock zeroshot-rust dependency windows-sys/
-      );
-      assert.throws(
-        () =>
-          distribution.checkVersionCoupling(
-            'v6.10.3',
-            stagedManifest,
-            stagedLock.replace('version = "6.10.3"', 'version = "0.1.0"'),
-            workspaceManifest
-          ),
-        /RUST_VERSION_MISMATCH: release tag version 6\.10\.3.*Cargo\.lock.*0\.1\.0/
-      );
-    } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
-    }
+          '6.10.3'
+        );
+        assert.match(
+          stagedLock,
+          /name = "zeroshot-rust"\nversion = "6\.10\.3"[\s\S]*"windows-sys 0\.61\.2"/
+        );
+        assert.throws(
+          () =>
+            distribution.checkVersionCoupling(
+              'v6.10.3',
+              stagedManifest,
+              stagedLock.replace('"windows-sys 0.61.2"', '"windows-sys"'),
+              workspaceManifest
+            ),
+          /RUST_VERSION_MISMATCH: Cargo\.lock zeroshot-rust dependency windows-sys/
+        );
+        assert.throws(
+          () =>
+            distribution.checkVersionCoupling(
+              'v6.10.3',
+              stagedManifest,
+              stagedLock.replace('version = "6.10.3"', 'version = "0.1.0"'),
+              workspaceManifest
+            ),
+          /RUST_VERSION_MISMATCH: release tag version 6\.10\.3.*Cargo\.lock.*0\.1\.0/
+        );
+      }
+    );
   });
+});
 
-  it('resolves supported Cargo requirements without collapsing lock identities', function () {
+describe('Rust release cargo requirement resolution: registry handling', function () {
+  it('keeps a registry name collision and unrelated trailing tables distinct from a pinned upgrade', function () {
     const registry = 'registry+https://github.com/rust-lang/crates.io-index';
     withRustStageFixture(
       {
@@ -285,6 +272,10 @@ describe('Rust release integration', function () {
         assert.match(lock, /\[\[patch\.unused\]\][\s\S]*source = "git\+https:/);
       }
     );
+  });
+
+  it('preserves unrelated trailing tables when resolving an exact pinned requirement', function () {
+    const registry = 'registry+https://github.com/rust-lang/crates.io-index';
     withRustStageFixture(
       {
         requirement: '=0.61.2',
@@ -300,6 +291,12 @@ describe('Rust release integration', function () {
         assert.match(fs.readFileSync(lockPath, 'utf8'), /\[metadata\]\nfixture = "preserved"/);
       }
     );
+  });
+});
+
+describe('Rust release cargo requirement resolution: ambiguous pinning', function () {
+  it('rejects a caret requirement matching more than one candidate version', function () {
+    const registry = 'registry+https://github.com/rust-lang/crates.io-index';
     withRustStageFixture(
       {
         requirement: '0.61.2',
@@ -315,6 +312,10 @@ describe('Rust release integration', function () {
         );
       }
     );
+  });
+
+  it('rejects an exact requirement satisfied by more than one source', function () {
+    const registry = 'registry+https://github.com/rust-lang/crates.io-index';
     withRustStageFixture(
       {
         requirement: '=0.61.2',
@@ -334,21 +335,18 @@ describe('Rust release integration', function () {
       }
     );
   });
+});
 
-  it('causally guards build, matrix, upload, publication, recovery, and shim integrity', function () {
-    const workflow = fs.readFileSync(
-      path.join(projectRoot, '.github', 'workflows', 'release.yml'),
-      'utf8'
-    );
-    assert.strictEqual(distribution.checkRepository(workflow), true);
+describe('Rust release workflow structural baseline', function () {
+  it('accepts the current release workflow as structurally compliant', function () {
+    assert.strictEqual(distribution.checkRepository(readReleaseWorkflow()), true);
+  });
+});
 
-    for (const [jobName, installName, installCommand] of [
-      ['dry-run', 'Install pinned dependencies', 'npm ci'],
-      ['release', 'Install pinned dependencies', 'npm ci'],
-      ['rust-binaries', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
-      ['rust-manifest', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
-      ['rust-publish', 'Install pinned script dependencies', 'npm ci --ignore-scripts'],
-    ]) {
+describe('Rust release workflow job invariants: install location', function () {
+  it('rejects a dependency install that runs outside the workspace root', function () {
+    const workflow = readReleaseWorkflow();
+    for (const [jobName, installName, installCommand] of RELEASE_INSTALL_JOBS) {
       const mutateInstall = (mutateJob) => mutateWorkflowJob(workflow, jobName, mutateJob);
       assert.throws(
         () =>
@@ -360,6 +358,24 @@ describe('Rust release integration', function () {
           ),
         new RegExp(`${jobName} dependency install must execute at workspace root`)
       );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              job.steps.find((step) => step.name === installName)['working-directory'] = 'nested';
+            })
+          ),
+        new RegExp(`${jobName} dependency install must execute at workspace root`)
+      );
+    }
+  });
+});
+
+describe('Rust release workflow job invariants: install ordering', function () {
+  it('rejects a missing or misordered install step', function () {
+    const workflow = readReleaseWorkflow();
+    for (const [jobName, installName] of RELEASE_INSTALL_JOBS) {
+      const mutateInstall = (mutateJob) => mutateWorkflowJob(workflow, jobName, mutateJob);
       assert.throws(
         () =>
           distribution.checkRepository(
@@ -383,6 +399,29 @@ describe('Rust release integration', function () {
           ),
         new RegExp(`${jobName} must install dependencies before every`)
       );
+      assert.throws(
+        () =>
+          distribution.checkRepository(
+            mutateInstall((job) => {
+              const installIndex = job.steps.findIndex((step) => step.name === installName);
+              const [install] = job.steps.splice(installIndex, 1);
+              const checkoutIndex = job.steps.findIndex((step) =>
+                step.uses?.startsWith('actions/checkout@')
+              );
+              job.steps.splice(checkoutIndex, 0, install);
+            })
+          ),
+        new RegExp(`${jobName} must checkout source before dependency installation`)
+      );
+    }
+  });
+});
+
+describe('Rust release workflow job invariants: invocation timing', function () {
+  it('rejects an invocation command that runs before dependency installation', function () {
+    const workflow = readReleaseWorkflow();
+    for (const [jobName] of RELEASE_INSTALL_JOBS) {
+      const mutateInstall = (mutateJob) => mutateWorkflowJob(workflow, jobName, mutateJob);
       for (const command of [
         'node ./scripts/rust-distribution.js print-version',
         './scripts/rust-distribution.js print-version',
@@ -408,6 +447,15 @@ describe('Rust release integration', function () {
           new RegExp(`${jobName} must install dependencies before every`)
         );
       }
+    }
+  });
+});
+
+describe('Rust release workflow job invariants: checkout integrity', function () {
+  it('rejects a workflow job with an altered checkout step', function () {
+    const workflow = readReleaseWorkflow();
+    for (const [jobName] of RELEASE_INSTALL_JOBS) {
+      const mutateInstall = (mutateJob) => mutateWorkflowJob(workflow, jobName, mutateJob);
       for (const mutateCheckout of [
         (checkout) => {
           checkout.if = false;
@@ -435,6 +483,15 @@ describe('Rust release integration', function () {
           new RegExp(`${jobName} must checkout expected current repository source`)
         );
       }
+    }
+  });
+});
+
+describe('Rust release workflow job invariants: node setup integrity', function () {
+  it('rejects a workflow job with an altered Node setup step', function () {
+    const workflow = readReleaseWorkflow();
+    for (const [jobName, installName] of RELEASE_INSTALL_JOBS) {
+      const mutateInstall = (mutateJob) => mutateWorkflowJob(workflow, jobName, mutateJob);
       for (const mutateNodeSetup of [
         (job, setup) => {
           job.steps = job.steps.filter((step) => step !== setup);
@@ -468,49 +525,224 @@ describe('Rust release integration', function () {
           new RegExp(`${jobName} must enable pinned Node 24 npm cache`)
         );
       }
+    }
+  });
+});
+
+describe('Rust release workflow build and smoke commands', function () {
+  it('requires the literal cargo build command', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}',
+            'run: echo cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}'
+          )
+        ),
+      /build step must execute exactly/
+    );
+  });
+
+  it('requires literal staging, smoke, and ancestry verification commands', function () {
+    const workflow = readReleaseWorkflow();
+    for (const [before, after, error] of [
+      [
+        'run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
+        'run: echo node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
+        /version staging/,
+      ],
+      [
+        'run: node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
+        'run: echo node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
+        /native Rust executable smoke/,
+      ],
+      [
+        'node scripts/rust-distribution.js smoke-archive \\',
+        'echo node scripts/rust-distribution.js smoke-archive \\',
+        /archive smoke step/,
+      ],
+      [
+        'if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
+        'if ! echo git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
+        /main ancestry verification/,
+      ],
+    ]) {
+      assert.throws(() => distribution.checkRepository(mutation(workflow, before, after)), error);
+    }
+  });
+});
+
+describe('Rust release workflow job dependencies and artifact upload', function () {
+  it('requires rust-binaries to depend on release planning and recovery planning', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'needs: [dry-run, release-plan, rust-recovery-plan]',
+            'needs: [dry-run, rust-recovery-plan]'
+          )
+        ),
+      /rust-binaries dependencies/
+    );
+  });
+
+  it('requires the per-target archive upload step', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            `      - name: Upload target archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: zeroshot-rust-\${{ matrix.target }}
+          path: rust-release/*.tar.gz
+          if-no-files-found: error
+`
+          )
+        ),
+      /Upload target archive|per-target archive upload/
+    );
+  });
+});
+
+describe('Rust release workflow matrix and toolchain', function () {
+  it('requires consistent matrix rows across runner, executable, and compiler columns', function () {
+    const workflow = readReleaseWorkflow();
+    for (const [before, after] of [
+      ['runner: macos-14', 'runner: ubuntu-latest'],
+      ['executable: zeroshot-rust.exe', 'executable: zeroshot-rust'],
+      ['c-compiler: cl.exe', 'c-compiler: cc'],
+    ]) {
       assert.throws(
-        () =>
-          distribution.checkRepository(
-            mutateInstall((job) => {
-              job.steps.find((step) => step.name === installName)['working-directory'] = 'nested';
-            })
-          ),
-        new RegExp(`${jobName} dependency install must execute at workspace root`)
-      );
-      assert.throws(
-        () =>
-          distribution.checkRepository(
-            mutateInstall((job) => {
-              const installIndex = job.steps.findIndex((step) => step.name === installName);
-              const [install] = job.steps.splice(installIndex, 1);
-              const checkoutIndex = job.steps.findIndex((step) =>
-                step.uses?.startsWith('actions/checkout@')
-              );
-              job.steps.splice(checkoutIndex, 0, install);
-            })
-          ),
-        new RegExp(`${jobName} must checkout source before dependency installation`)
+        () => distribution.checkRepository(mutation(workflow, before, after)),
+        /matrix rows differs/
       );
     }
+  });
 
-    const packageManifest = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')
+  it('requires a pinned toolchain matched to the build matrix target', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(workflow, 'targets: ${{ matrix.target }}', 'targets: x86_64-unknown-linux-gnu')
+        ),
+      /toolchain setup/
     );
+    assert.throws(
+      () =>
+        distribution.checkRepository(mutation(workflow, 'toolchain: 1.97.0', 'toolchain: stable')),
+      /toolchain setup/
+    );
+  });
+
+  it('requires the npm shim host mapping to match the release matrix', function () {
+    const workflow = readReleaseWorkflow();
+    const shimTargets = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, 'npm', 'zeroshot-rust', 'targets.json'), 'utf8')
+    );
+    shimTargets[0].target = 'aarch64-unknown-linux-gnu';
+    assert.throws(
+      () => distribution.checkRepository(workflow, shimTargets),
+      /npm shim host mapping/
+    );
+  });
+});
+
+describe('Rust release workflow publish safeguards', function () {
+  it('requires release to depend on install-matrix, release-plan, and rust-manifest', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'needs: [install-matrix, release-plan, rust-manifest]',
+            'needs: [install-matrix, release-plan]'
+          )
+        ),
+      /release dependencies/
+    );
+  });
+
+  it('requires semantic-release to run before artifact publication', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'run: node scripts/release-dry-run.js',
+            'run: |\n          npx semantic-release\n          node scripts/release-dry-run.js'
+          )
+        ),
+      /semantic-release runs before artifacts/
+    );
+  });
+
+  it('requires no recover-rust-distribution action in the release path', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(mutation(workflow, '          - recover-rust-distribution\n')),
+      /no recover-rust-distribution action/
+    );
+  });
+
+  it('requires assets to be verified and uploaded without overwrite', function () {
+    const workflow = readReleaseWorkflow();
+    assert.throws(
+      () =>
+        distribution.checkRepository(
+          mutation(
+            workflow,
+            'run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release',
+            'run: gh release upload "$RELEASE_TAG" rust-release/* --clobber'
+          )
+        ),
+      /assets are not verified and uploaded without overwrite/
+    );
+  });
+});
+
+function loadPackageLockFixture() {
+  const packageManifest = JSON.parse(
+    fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')
+  );
+  const packageLock = JSON.parse(
+    fs.readFileSync(path.join(projectRoot, 'package-lock.json'), 'utf8')
+  );
+  const mutatePackageLock = (mutateLock) => {
+    const candidate = JSON.parse(JSON.stringify(packageLock));
+    mutateLock(candidate);
+    return candidate;
+  };
+  return { packageManifest, mutatePackageLock };
+}
+
+describe('Rust release workflow package-lock integrity: direct dependency spec', function () {
+  let workflow;
+  let packageManifest;
+  let mutatePackageLock;
+
+  before(function () {
+    workflow = readReleaseWorkflow();
+    ({ packageManifest, mutatePackageLock } = loadPackageLockFixture());
+  });
+
+  it('requires a direct js-yaml devDependency matching the package-lock root spec', function () {
     const packageWithoutYaml = JSON.parse(JSON.stringify(packageManifest));
     delete packageWithoutYaml.devDependencies['js-yaml'];
     assert.throws(
       () => distribution.checkRepository(workflow, undefined, packageWithoutYaml),
       /direct js-yaml devDependency/
     );
-
-    const packageLock = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, 'package-lock.json'), 'utf8')
-    );
-    const mutatePackageLock = (mutateLock) => {
-      const candidate = JSON.parse(JSON.stringify(packageLock));
-      mutateLock(candidate);
-      return candidate;
-    };
     assert.throws(
       () =>
         distribution.checkRepository(
@@ -535,6 +767,20 @@ describe('Rust release integration', function () {
         ),
       /package-lock root js-yaml spec must match/
     );
+  });
+});
+
+describe('Rust release workflow package-lock integrity: resolved metadata', function () {
+  let workflow;
+  let packageManifest;
+  let mutatePackageLock;
+
+  before(function () {
+    workflow = readReleaseWorkflow();
+    ({ packageManifest, mutatePackageLock } = loadPackageLockFixture());
+  });
+
+  it('requires integrity-pinned resolved js-yaml metadata', function () {
     assert.throws(
       () =>
         distribution.checkRepository(
@@ -584,139 +830,6 @@ describe('Rust release integration', function () {
         /integrity-pinned resolved js-yaml/
       );
     }
-
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}',
-            'run: echo cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}'
-          )
-        ),
-      /build step must execute exactly/
-    );
-    for (const [before, after, error] of [
-      [
-        'run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
-        'run: echo node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
-        /version staging/,
-      ],
-      [
-        'run: node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
-        'run: echo node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
-        /native Rust executable smoke/,
-      ],
-      [
-        'node scripts/rust-distribution.js smoke-archive \\',
-        'echo node scripts/rust-distribution.js smoke-archive \\',
-        /archive smoke step/,
-      ],
-      [
-        'if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
-        'if ! echo git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
-        /main ancestry verification/,
-      ],
-    ]) {
-      assert.throws(() => distribution.checkRepository(mutation(workflow, before, after)), error);
-    }
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'needs: [dry-run, release-plan, rust-recovery-plan]',
-            'needs: [dry-run, rust-recovery-plan]'
-          )
-        ),
-      /rust-binaries dependencies/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            `      - name: Upload target archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: zeroshot-rust-\${{ matrix.target }}
-          path: rust-release/*.tar.gz
-          if-no-files-found: error
-`
-          )
-        ),
-      /Upload target archive|per-target archive upload/
-    );
-    for (const [before, after] of [
-      ['runner: macos-14', 'runner: ubuntu-latest'],
-      ['executable: zeroshot-rust.exe', 'executable: zeroshot-rust'],
-      ['c-compiler: cl.exe', 'c-compiler: cc'],
-    ]) {
-      assert.throws(
-        () => distribution.checkRepository(mutation(workflow, before, after)),
-        /matrix rows differs/
-      );
-    }
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(workflow, 'targets: ${{ matrix.target }}', 'targets: x86_64-unknown-linux-gnu')
-        ),
-      /toolchain setup/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(mutation(workflow, 'toolchain: 1.97.0', 'toolchain: stable')),
-      /toolchain setup/
-    );
-
-    const shimTargets = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, 'npm', 'zeroshot-rust', 'targets.json'), 'utf8')
-    );
-    shimTargets[0].target = 'aarch64-unknown-linux-gnu';
-    assert.throws(
-      () => distribution.checkRepository(workflow, shimTargets),
-      /npm shim host mapping/
-    );
-
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'needs: [install-matrix, release-plan, rust-manifest]',
-            'needs: [install-matrix, release-plan]'
-          )
-        ),
-      /release dependencies/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'run: node scripts/release-dry-run.js',
-            'run: |\n          npx semantic-release\n          node scripts/release-dry-run.js'
-          )
-        ),
-      /semantic-release runs before artifacts/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(mutation(workflow, '          - recover-rust-distribution\n')),
-      /no recover-rust-distribution action/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release',
-            'run: gh release upload "$RELEASE_TAG" rust-release/* --clobber'
-          )
-        ),
-      /assets are not verified and uploaded without overwrite/
-    );
   });
 });
 
@@ -791,7 +904,7 @@ describe('Rust release asset recovery', function () {
   });
 });
 
-describe('Rust npm shim integration', function () {
+describe('Rust npm shim integration: installer', function () {
   it('installs only a checksum-verified archive selected for the host', async function () {
     const packageRoot = temporaryDirectory();
     const binary = Buffer.from('standalone native fixture');
@@ -846,7 +959,9 @@ describe('Rust npm shim integration', function () {
       fs.rmSync(packageRoot, { recursive: true, force: true });
     }
   });
+});
 
+describe('Rust npm shim integration: packaging metadata', function () {
   it('keeps native metadata outside the Rust-only product and the Node package', function () {
     const rustRoot = path.join(projectRoot, 'zeroshot-rust');
     for (const file of relativeFiles(rustRoot)) {
