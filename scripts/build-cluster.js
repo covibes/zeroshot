@@ -10,6 +10,7 @@ const hostedTargetBuildRoot = path.join(root, '.hosted-target-build');
 const clusterOutputRoot = path.join(root, 'lib/cluster');
 const hostedSessionOutputRoot = path.join(root, 'lib/hosted-session');
 const hostedTargetOutputRoot = path.join(root, 'lib/hosted-target');
+const targetOutputRoot = path.join(root, 'lib/target');
 
 function filesBelow(directory) {
   const entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -69,6 +70,8 @@ copyBuild(
 );
 copyBuild(path.join(hostedTargetBuildRoot, 'cjs', 'hosted-target'), hostedTargetOutputRoot, 'cjs');
 copyBuild(path.join(hostedTargetBuildRoot, 'esm', 'hosted-target'), hostedTargetOutputRoot, 'esm');
+copyBuild(path.join(hostedTargetBuildRoot, 'cjs', 'target'), targetOutputRoot, 'cjs');
+copyBuild(path.join(hostedTargetBuildRoot, 'esm', 'target'), targetOutputRoot, 'esm');
 fs.rmSync(clusterBuildRoot, { recursive: true, force: true });
 fs.rmSync(hostedSessionBuildRoot, { recursive: true, force: true });
 fs.rmSync(hostedTargetBuildRoot, { recursive: true, force: true });

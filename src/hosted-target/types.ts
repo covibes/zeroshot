@@ -1,4 +1,4 @@
-import type { TargetAdapterError } from './errors.ts';
+import type { TargetAdapterError } from './errors.js';
 
 export interface TargetAccessTokenProvider {
   getAccessToken(signal?: AbortSignal): Promise<string>;
@@ -43,7 +43,7 @@ export interface ListRequest {
 }
 
 export interface HttpTransport {
-  fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response>;
+  fetch(url: string, init: RequestInit & { redirect: 'manual' }): Promise<Response>;
 }
 
 export interface Clock {

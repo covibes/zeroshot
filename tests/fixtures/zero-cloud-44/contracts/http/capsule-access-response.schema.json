@@ -21,15 +21,25 @@
     }
   },
   "additionalProperties": false,
-  "required": ["protocol", "websocket_url", "access_token", "token_type", "expires_at"],
+  "required": [
+    "protocol",
+    "websocket_url",
+    "access_token",
+    "token_type",
+    "expires_at"
+  ],
   "$defs": {
     "AccessProtocol": {
       "type": "string",
-      "enum": ["openengine.cluster/v1"]
+      "enum": [
+        "openengine.cluster/v1"
+      ]
     },
     "AccessTokenType": {
       "type": "string",
-      "enum": ["Bearer"]
+      "enum": [
+        "Bearer"
+      ]
     }
   }
 }

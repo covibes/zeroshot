@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 const ROOT = resolve('tests/fixtures/zero-cloud-44');
 const HTTP = join(ROOT, 'contracts/http');
 const META = join(HTTP, 'hosted-target/META.json');
-const PINNED = 'sha256:20e24ef4231cfffef26dc18fbca70ce7f96ca232bc8b6a62ceb28fbc8c8fdb33';
+const PINNED = 'sha256:6636d50cd60067241a50d1ee027d86fc1738aa933f086d8bb2c496c5be31b85e';
 
 interface ContractMeta {
   readonly digest: string;
@@ -39,12 +39,12 @@ function digest(paths: readonly string[]): string {
   return `sha256:${hash.digest('hex')}`;
 }
 
-describe('immutable Zero Cloud #44 contract corpus', () => {
-  it('contains the exact promoted schemas and 53 fixtures at the pinned digest', () => {
+describe('immutable Zero Cloud #55 e8e746d contract corpus', () => {
+  it('contains the exact promoted schemas and 54 fixtures at the pinned digest', () => {
     const meta = JSON.parse(readFileSync(META, 'utf8')) as ContractMeta;
     const paths = artifactPaths(meta);
     assert.equal(meta.promoted_schemas.length, 10);
-    assert.equal(paths.length, 63);
+    assert.equal(paths.length, 64);
     assert.equal(meta.digest, PINNED);
     assert.equal(digest(paths), PINNED);
   });
@@ -73,7 +73,7 @@ describe('immutable Zero Cloud #44 contract corpus', () => {
         }));
     });
 
-    assert.equal(fixtures.length, 53);
+    assert.equal(fixtures.length, 54);
     for (const fixture of fixtures) {
       const validate = validators.get(fixture.value.schema);
       assert.ok(validate, `${fixture.name}: unknown schema ${fixture.value.schema}`);

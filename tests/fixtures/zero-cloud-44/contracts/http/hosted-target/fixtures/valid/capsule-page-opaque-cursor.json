@@ -5,7 +5,7 @@
   "response": {
     "operation": "list",
     "status": 200,
-    "headers": { "cache-control": "no-store" }
+    "headers": {"cache-control": "no-store"}
   },
   "body": {
     "capsules": [

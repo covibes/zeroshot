@@ -1,4 +1,9 @@
 import type { TargetCredentialStore } from './credential-store.ts';
+import {
+  oauthFormRequest,
+  readOAuthError,
+  readTargetSessionJson,
+} from './oauth-http.ts';
 import type { TargetRecord, SettingsPort } from './target-registry.ts';
 import {
   requestDeviceCode,
@@ -9,22 +14,22 @@ import {
   type TokenResponse,
 } from './device-flow.ts';
 import { targetServiceKey, TARGET_ACCOUNT } from './credential-store.ts';
-import { updateTargetOrganization } from './target-registry.ts';
+import {
+  setTargetRefreshInvalidated,
+  targetRefreshIsInvalidated,
+  updateTargetOrganization,
+} from './target-registry.ts';
 import type { TargetSessionEndpoints } from './discovery.ts';
+import { LoginRequiredError } from './session-errors.ts';
+export { LoginRequiredError } from './session-errors.ts';
+import { readVerifiedOrganization } from './session-verification.ts';
+import { revokeRefreshToken } from './refresh-revocation.ts';
 
 const DEVICE_LABEL = 'zeroshot-cli';
 const TOKEN_EXPIRY_SKEW_MS = 30_000;
 const AUDIENCE_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-const MAX_SESSION_RESPONSE_BYTES = 64 * 1024;
+const INVALID_REFRESH_FAMILY = 'zeroshot.invalidated-refresh-family/v1';
 
-export class LoginRequiredError extends Error {
-  readonly targetName: string;
-  constructor(targetName: string) {
-    super(`Login required. Run: zeroshot target login ${targetName}`);
-    this.name = 'LoginRequiredError';
-    this.targetName = targetName;
-  }
-}
 
 export interface BrowserOpener {
   open(url: string): Promise<void>;
@@ -58,54 +63,6 @@ function abortReason(signal?: AbortSignal): unknown {
 
 function requireAudience(audience: string): void {
   if (!AUDIENCE_PATTERN.test(audience)) throw new Error('Requested target audience is invalid');
-}
-
-function formRequest(
-  body: URLSearchParams,
-  signal?: AbortSignal
-): RequestInit & { redirect: 'error' } {
-  const init: RequestInit & { redirect: 'error' } = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-    redirect: 'error',
-  };
-  if (signal !== undefined) init.signal = signal;
-  return init;
-}
-
-function safeObject(value: unknown): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Target session response is malformed');
-  }
-  return value as Record<string, unknown>;
-}
-
-async function readOAuthError(response: Response): Promise<string | null> {
-  try {
-    const value = safeObject(await readBoundedJson(response));
-    return Object.keys(value).length === 1 && typeof value.error === 'string' ? value.error : null;
-  } catch {
-    return null;
-  }
-}
-
-async function readBoundedJson(response: Response): Promise<unknown> {
-  const declared = response.headers.get('content-length');
-  if (
-    declared !== null &&
-    (!/^\d+$/.test(declared) || Number(declared) > MAX_SESSION_RESPONSE_BYTES)
-  ) {
-    throw new Error('Target session response exceeds the size limit');
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_SESSION_RESPONSE_BYTES)
-    throw new Error('Target session response exceeds the size limit');
-  try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch {
-    throw new Error('Target session response is malformed');
-  }
 }
 
 /**
@@ -151,12 +108,8 @@ export class TargetSessionManager {
 
     const release = await this.#acquireLock();
     try {
-      let previous: string | null;
-      try {
-        previous = await this.#store.get(this.#serviceKey(), TARGET_ACCOUNT);
-      } catch {
-        throw new LoginRequiredError(this.#targetName);
-      }
+      const storedPrevious = await this.#store.get(this.#serviceKey(), TARGET_ACCOUNT);
+      const previous = storedPrevious === INVALID_REFRESH_FAMILY ? null : storedPrevious;
 
       const token = await pollForToken(
         endpoints.tokenEndpoint,
@@ -174,7 +127,11 @@ export class TargetSessionManager {
           audience: endpoints.audience,
         }
       );
-      const organization = await this.#readVerifiedOrganization(token.access_token, signal).catch(
+      const organization = await readVerifiedOrganization(
+        token.access_token,
+        signal,
+        this.#deps,
+      ).catch(
         async () => {
           await this.#bestEffortRevoke(token.refresh_token);
           throw new LoginRequiredError(this.#targetName);
@@ -182,13 +139,14 @@ export class TargetSessionManager {
       );
       try {
         await this.#store.set(this.#serviceKey(), TARGET_ACCOUNT, token.refresh_token);
+        setTargetRefreshInvalidated(this.#targetName, false, this.#settings);
         this.#access.set(endpoints.audience, {
           token: token.access_token,
           expiresAt: this.#deps.clock.now() + token.expires_in * 1_000,
         });
         updateTargetOrganization(this.#targetName, organization, this.#settings);
         if (previous && previous !== token.refresh_token) {
-          const revoked = await this.#revoke(previous);
+          const revoked = await revokeRefreshToken(previous, this.#deps);
           if (!revoked.ok) throw new Error('Prior refresh family revocation failed');
         }
       } catch {
@@ -218,9 +176,16 @@ export class TargetSessionManager {
       ) {
         return afterLock.token;
       }
+      if (targetRefreshIsInvalidated(this.#targetName, this.#settings)) {
+        throw new LoginRequiredError(this.#targetName);
+      }
       const refreshToken = await this.#store.get(this.#serviceKey(), TARGET_ACCOUNT);
-      if (!refreshToken) throw new LoginRequiredError(this.#targetName);
+      if (!refreshToken || refreshToken === INVALID_REFRESH_FAMILY) {
+        throw new LoginRequiredError(this.#targetName);
+      }
       if (signal?.aborted) throw abortReason(signal);
+      setTargetRefreshInvalidated(this.#targetName, true, this.#settings);
+      await this.#store.set(this.#serviceKey(), TARGET_ACCOUNT, INVALID_REFRESH_FAMILY);
 
       let dispatched = false;
       let replacement: TokenResponse | undefined;
@@ -234,15 +199,23 @@ export class TargetSessionManager {
         dispatched = true;
         const response = await this.#deps.http.fetch(
           this.#deps.discoveryEndpoints.tokenEndpoint,
-          formRequest(body, signal)
+          oauthFormRequest(body, signal)
         );
+        if (
+          response.url &&
+          new URL(response.url).href !== this.#deps.discoveryEndpoints.tokenEndpoint
+        ) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new Error('Target token response changed route or authority');
+        }
         if (!response.ok) {
           const oauthError = await readOAuthError(response);
           if (oauthError === 'invalid_grant') throw new LoginRequiredError(this.#targetName);
           throw new Error('Target token exchange failed');
         }
-        replacement = parseTokenResponse(await response.json());
+        replacement = parseTokenResponse(await readTargetSessionJson(response));
         await this.#store.set(this.#serviceKey(), TARGET_ACCOUNT, replacement.refresh_token);
+        setTargetRefreshInvalidated(this.#targetName, false, this.#settings);
         this.#access.clear();
         this.#access.set(audience, {
           token: replacement.access_token,
@@ -271,9 +244,9 @@ export class TargetSessionManager {
     const release = await this.#acquireLock();
     try {
       const token = await this.#store.get(this.#serviceKey(), TARGET_ACCOUNT);
-      if (token) {
+      if (token && token !== INVALID_REFRESH_FAMILY) {
         try {
-          const response = await this.#revoke(token);
+          const response = await revokeRefreshToken(token, this.#deps);
           if (!response.ok && !force)
             throw new Error('Remote revocation failed. Use --force to remove anyway.');
         } catch (error) {
@@ -282,6 +255,7 @@ export class TargetSessionManager {
       }
       this.#access.clear();
       await this.#store.delete(this.#serviceKey(), TARGET_ACCOUNT);
+      setTargetRefreshInvalidated(this.#targetName, false, this.#settings);
     } finally {
       await release();
     }
@@ -291,76 +265,27 @@ export class TargetSessionManager {
     this.#access.clear();
   }
 
-  async #readVerifiedOrganization(
-    accessToken: string,
-    signal?: AbortSignal
-  ): Promise<{ id: string }> {
-    const init: RequestInit & { redirect: 'error' } = {
-      method: this.#deps.discoveryEndpoints.descriptor.session.method,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-        'Cache-Control': 'no-store',
-      },
-      redirect: 'error',
-    };
-    if (signal !== undefined) init.signal = signal;
-    const response = await this.#deps.http.fetch(
-      this.#deps.discoveryEndpoints.sessionEndpoint,
-      init
-    );
-    if (
-      response.url &&
-      new URL(response.url).origin !== this.#deps.discoveryEndpoints.descriptor.origin
-    ) {
-      throw new Error('Target session response changed authority');
-    }
-    if (!response.ok) throw new Error('Target session verification failed');
-    const body = safeObject(await readBoundedJson(response));
-    const fields = Object.keys(body);
-    if (
-      fields.length !== 2 ||
-      !fields.includes('kind') ||
-      !fields.includes('organization_id') ||
-      body.kind !== 'openengine.target-session/v1' ||
-      typeof body.organization_id !== 'string' ||
-      body.organization_id.length === 0 ||
-      body.organization_id.length > 256
-    ) {
-      throw new Error('Target session response is malformed');
-    }
-    return Object.freeze({ id: body.organization_id });
-  }
 
   async #invalidateFamily(replacement?: string): Promise<void> {
     this.#access.clear();
-    if (replacement) await this.#bestEffortRevoke(replacement);
+    setTargetRefreshInvalidated(this.#targetName, true, this.#settings);
     try {
-      await this.#store.delete(this.#serviceKey(), TARGET_ACCOUNT);
+      await this.#store.set(this.#serviceKey(), TARGET_ACCOUNT, INVALID_REFRESH_FAMILY);
     } catch {
-      throw new LoginRequiredError(this.#targetName);
+      // A direct delete remains safe if overwriting the stale family was unavailable.
     }
+    if (replacement) await this.#bestEffortRevoke(replacement);
+    await this.#store.delete(this.#serviceKey(), TARGET_ACCOUNT);
   }
 
   async #bestEffortRevoke(token: string): Promise<void> {
     try {
-      await this.#revoke(token);
+      await revokeRefreshToken(token, this.#deps);
     } catch {
       // Revocation is compensating cleanup; callers still receive login-required.
     }
   }
 
-  #revoke(token: string): Promise<Response> {
-    const body = new URLSearchParams({
-      token,
-      client_id: this.#deps.discoveryEndpoints.clientId,
-      token_type_hint: 'refresh_token',
-    });
-    return this.#deps.http.fetch(
-      this.#deps.discoveryEndpoints.revocationEndpoint,
-      formRequest(body)
-    );
-  }
 
   #serviceKey(): string {
     return targetServiceKey(this.#target.id);

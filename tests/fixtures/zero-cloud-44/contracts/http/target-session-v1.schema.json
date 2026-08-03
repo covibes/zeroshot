@@ -11,11 +11,16 @@
     }
   },
   "additionalProperties": false,
-  "required": ["kind", "organization_id"],
+  "required": [
+    "kind",
+    "organization_id"
+  ],
   "$defs": {
     "TargetSessionKind": {
       "type": "string",
-      "enum": ["openengine.target-session/v1"]
+      "enum": [
+        "openengine.target-session/v1"
+      ]
     }
   }
 }

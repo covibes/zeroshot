@@ -6,7 +6,7 @@
   "response": {
     "operation": "access",
     "status": 200,
-    "headers": { "cache-control": "no-store" }
+    "headers": {"cache-control": "no-store"}
   },
   "body": {
     "protocol": "openengine.cluster/v1",

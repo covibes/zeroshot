@@ -20,10 +20,15 @@ describe('stable public parser hosted-command gate', () => {
       assert.doesNotMatch(helpText, /--target(?:\s|,|$)/);
       assert.doesNotMatch(helpText, /--all-targets(?:\s|,|$)/);
 
-      const unknown = spawnSync(process.execPath, [CLI, 'target'], { encoding: 'utf8', env });
-      assert.notEqual(unknown.status, 0);
+      const defaultRun = spawnSync(process.execPath, [CLI, 'target', '--help'], {
+        encoding: 'utf8',
+        env,
+      });
+      assert.equal(defaultRun.status, 0, defaultRun.stderr);
+      const defaultRunText = `${defaultRun.stdout}\n${defaultRun.stderr}`;
+      assert.match(defaultRunText, /^Usage: zeroshot run /m);
       assert.doesNotMatch(
-        `${unknown.stdout}\n${unknown.stderr}`,
+        defaultRunText,
         /Manage named remote targets|target add <name>|target login <name>/i,
       );
     } finally {

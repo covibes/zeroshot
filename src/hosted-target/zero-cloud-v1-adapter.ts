@@ -1,19 +1,18 @@
-import { IDEMPOTENCY_KEY_PATTERN, MAX_RESPONSE_BYTES, MAX_RETRY_ELAPSED_MS } from './bounds.ts';
+import { IDEMPOTENCY_KEY_PATTERN, MAX_RESPONSE_BYTES } from './bounds.js';
 import {
   TargetAdapterError,
   TargetAuthError,
   TargetProtocolError,
-  TargetServerError,
   TargetTransportError,
-} from './errors.ts';
-import { DefaultRetryPolicy, parseRetryAfter } from './retry.ts';
+} from './errors.js';
+import { DefaultRetryPolicy } from './retry.js';
 import {
   assertCapsule,
   assertCapsuleAccess,
   assertCapsuleLimits,
   assertCapsuleListPage,
-} from './response-validation.ts';
-import type { TargetAdapter, CreateTargetAdapterOptions } from './target-adapter.ts';
+} from './response-validation.js';
+import type { TargetAdapter, CreateTargetAdapterOptions } from './adapter-types.js';
 import type {
   AllocateRequest,
   Capsule,
@@ -25,8 +24,17 @@ import type {
   ListRequest,
   RetryPolicy,
   TargetAccessTokenProvider,
-} from './types.ts';
-import type { RouteTemplate, TargetDiscoveryDescriptor } from '../target/discovery.ts';
+} from './types.js';
+import type { TargetDiscoveryDescriptor } from '../target/discovery.js';
+import { readBoundedResponseJson } from '../target/bounded-response.js';
+import { throwCapsuleServerError } from './capsule-error-response.js';
+import { validateAccessUrl } from './access-url.js';
+import { withTargetRetry } from './retry-executor.js';
+import {
+  requestUrl,
+  type AdapterRequest,
+  type ExecuteArguments,
+} from './adapter-request.js';
 
 const DEFAULT_TRANSPORT: HttpTransport = {
   fetch(url, init) {
@@ -34,20 +42,6 @@ const DEFAULT_TRANSPORT: HttpTransport = {
   },
 };
 const DEFAULT_CLOCK: Clock = { now: () => Date.now() };
-const ERROR_CODES = Object.freeze({
-  unauthorized: { status: 401, retryable: false },
-  invalid_request: { status: 400, retryable: false },
-  not_found: { status: 404, retryable: false },
-  forbidden: { status: 403, retryable: false },
-  idempotency_conflict: { status: 409, retryable: false },
-  run_conflict: { status: 409, retryable: true },
-  rate_limited: { status: 429, retryable: true },
-  temporarily_unavailable: { status: 503, retryable: true },
-  internal_error: { status: 500, retryable: false },
-});
-
-type ErrorCode = keyof typeof ERROR_CODES;
-type Operation = 'allocate' | 'list' | 'inspect' | 'terminate' | 'limits' | 'access';
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted)
@@ -59,27 +53,10 @@ function validOpaque(value: string, field: string): void {
     throw new TargetProtocolError(`${field} is invalid`);
 }
 
-async function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
-  throwIfAborted(signal);
-  if (delayMs <= 0) return;
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, delayMs);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(
-          signal.reason ?? new globalThis.DOMException('The operation was aborted', 'AbortError')
-        );
-      },
-      { once: true }
-    );
-  });
-}
-
 function jsonRequest(body: unknown): string {
   return JSON.stringify(body);
 }
+
 
 export class ZeroCloudV1TargetAdapter implements TargetAdapter {
   readonly #descriptor: TargetDiscoveryDescriptor;
@@ -218,33 +195,54 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
         body: jsonRequest({ protocol: 'openengine.cluster/v1' }),
       }
     );
-    this.#validateAccessUrl(result.websocketUrl, capsuleId);
+    validateAccessUrl(result.websocketUrl, capsuleId, this.#descriptor);
     return result;
   }
 
-  #execute<T>(
-    operation: Operation,
-    method: string,
-    template: RouteTemplate,
-    values: Readonly<Record<string, string | number | undefined>>,
-    expectedStatus: number,
-    validate: (body: unknown) => T,
-    signal?: AbortSignal,
-    request: { readonly body?: string; readonly headers?: Readonly<Record<string, string>> } = {}
-  ): Promise<T> {
-    const path = template.expand(values);
-    return this.#withRetry(
+  #execute<T>(...args: ExecuteArguments<T>): Promise<T> {
+    return Promise.resolve().then(() => this.#executeExpanded(args));
+  }
+
+  #executeExpanded<T>(args: ExecuteArguments<T>): Promise<T> {
+    const [
+      operation,
+      method,
+      template,
+      values,
+      expectedStatus,
+      validate,
+      signal,
+      request = {},
+    ] = args;
+    let path: string;
+    try {
+      path = template.expand(values);
+    } catch {
+      throw new TargetProtocolError('Capsule route expansion is unsafe');
+    }
+    return withTargetRetry(
       operation,
       async () => {
         const response = await this.#request(method, path, signal, request);
+        if (response.status >= 300 && response.status < 400) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new TargetProtocolError('Capsule redirects are forbidden');
+        }
         if (response.status !== expectedStatus) {
-          if (response.status >= 200 && response.status < 300)
+          if (response.status >= 200 && response.status < 300) {
+            await response.body?.cancel().catch(() => undefined);
             throw new TargetProtocolError('Target returned an unexpected success status');
-          await this.#throwServerError(response);
+          }
+          await throwCapsuleServerError(
+            response,
+            (errorResponse) => this.#readJson(errorResponse),
+            this.#clock,
+          );
         }
         return validate(await this.#readJson(response));
       },
-      signal
+      signal,
+      { clock: this.#clock, policy: this.#retryPolicy },
     );
   }
 
@@ -252,19 +250,17 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     method: string,
     path: string,
     signal: AbortSignal | undefined,
-    request: { readonly body?: string; readonly headers?: Readonly<Record<string, string>> }
+    request: AdapterRequest,
   ): Promise<Response> {
     throwIfAborted(signal);
-    const url = new globalThis.URL(path, this.#descriptor.capsule.baseUrl);
-    if (url.origin !== this.#descriptor.origin)
-      throw new TargetProtocolError('Capsule route changed target authority');
+    const url = requestUrl(path, this.#descriptor);
     let token: string;
     try {
       token = await this.#tokenProvider.getAccessToken(signal);
     } catch {
       throw new TargetAuthError('Target access authorization failed');
     }
-    const init: RequestInit & { redirect: 'error' } = {
+    const init: RequestInit & { redirect: 'manual' } = {
       method,
       headers: {
         Accept: 'application/json',
@@ -272,14 +268,16 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
         ...(request.body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...request.headers,
       },
-      redirect: 'error',
+      redirect: 'manual',
     };
     if (request.body !== undefined) init.body = request.body;
     if (signal !== undefined) init.signal = signal;
     try {
       const response = await this.#transport.fetch(url.href, init);
-      if (response.url && new globalThis.URL(response.url).origin !== this.#descriptor.origin)
-        throw new TargetProtocolError('Capsule response changed target authority');
+      if (response.url && new globalThis.URL(response.url).href !== url.href) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new TargetProtocolError('Capsule response changed target route');
+      }
       return response;
     } catch (error) {
       if (error instanceof TargetAdapterError) throw error;
@@ -288,119 +286,14 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     }
   }
 
-  async #throwServerError(response: Response): Promise<never> {
-    const body = await this.#readJson(response);
-    if (body === null || typeof body !== 'object' || Array.isArray(body))
-      throw new TargetProtocolError('Capsule error response is malformed');
-    const value = body as Record<string, unknown>;
-    if (
-      Object.keys(value).length !== 4 ||
-      !('code' in value) ||
-      !('message' in value) ||
-      !('capsule_id' in value) ||
-      !('retryable' in value) ||
-      typeof value.code !== 'string' ||
-      !(value.code in ERROR_CODES) ||
-      typeof value.message !== 'string' ||
-      (value.capsule_id !== null && typeof value.capsule_id !== 'string') ||
-      typeof value.retryable !== 'boolean'
-    ) {
-      throw new TargetProtocolError('Capsule error response is malformed');
-    }
-    const code = value.code as ErrorCode;
-    const contract = ERROR_CODES[code];
-    if (contract.status !== response.status || contract.retryable !== value.retryable) {
-      throw new TargetProtocolError('Capsule error response contradicts its status contract');
-    }
-    if (
-      response.status === 401 &&
-      response.headers.get('WWW-Authenticate') !== 'Bearer error="invalid_token"'
-    ) {
-      throw new TargetProtocolError('Capsule authentication challenge is malformed');
-    }
-    const retryAfterHeader = response.headers.get('Retry-After');
-    const retryAfter = parseRetryAfter(retryAfterHeader, this.#clock) ?? undefined;
-    if (retryAfterHeader !== null && retryAfter === undefined) {
-      throw new TargetProtocolError('Capsule Retry-After header is malformed');
-    }
-    if (!contract.retryable && retryAfter !== undefined)
-      throw new TargetProtocolError('Permanent capsule error advertised Retry-After');
-    throw new TargetServerError(
-      response.status,
-      code,
-      contract.retryable,
-      value.capsule_id as string | null,
-      retryAfter
+
+  #readJson(response: Response): Promise<unknown> {
+    return readBoundedResponseJson(response, MAX_RESPONSE_BYTES, (kind) =>
+      new TargetProtocolError(
+        kind === 'size'
+          ? 'Capsule response exceeds the size limit'
+          : 'Capsule response is not valid UTF-8 JSON',
+      ),
     );
-  }
-
-  async #readJson(response: Response): Promise<unknown> {
-    const declared = response.headers.get('content-length');
-    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_RESPONSE_BYTES)) {
-      throw new TargetProtocolError('Capsule response exceeds the size limit');
-    }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > MAX_RESPONSE_BYTES)
-      throw new TargetProtocolError('Capsule response exceeds the size limit');
-    try {
-      return JSON.parse(new globalThis.TextDecoder('utf-8', { fatal: true }).decode(bytes));
-    } catch {
-      throw new TargetProtocolError('Capsule response is not valid UTF-8 JSON');
-    }
-  }
-
-  async #withRetry<T>(
-    operation: Operation,
-    effect: () => Promise<T>,
-    signal?: AbortSignal
-  ): Promise<T> {
-    const retrySafe = operation !== 'access';
-    const started = this.#clock.now();
-    let attempt = 0;
-    while (true) {
-      throwIfAborted(signal);
-      try {
-        return await effect();
-      } catch (error) {
-        throwIfAborted(signal);
-        if (!retrySafe || !(error instanceof TargetAdapterError) || !error.retryable) throw error;
-        attempt += 1;
-        const elapsed = this.#clock.now() - started;
-        const decision = this.#retryPolicy.shouldRetry(attempt, elapsed, error);
-        const remaining = MAX_RETRY_ELAPSED_MS - elapsed;
-        if (
-          !decision.retry ||
-          !Number.isFinite(decision.delayMs) ||
-          decision.delayMs < 0 ||
-          decision.delayMs >= remaining
-        )
-          throw error;
-        await wait(decision.delayMs, signal);
-      }
-    }
-  }
-
-  #validateAccessUrl(value: string, capsuleId: string): void {
-    let url: URL;
-    try {
-      url = new globalThis.URL(value);
-    } catch {
-      throw new TargetProtocolError('Capsule access WebSocket URL is invalid');
-    }
-    const expectedPath = this.#descriptor.transport.websocketRouteTemplate.expand({
-      capsule_id: capsuleId,
-    });
-    const target = new globalThis.URL(this.#descriptor.origin);
-    if (
-      url.protocol !== 'wss:' ||
-      url.host !== target.host ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      url.pathname !== expectedPath
-    ) {
-      throw new TargetProtocolError('Capsule access WebSocket URL does not match discovery');
-    }
   }
 }

@@ -1,6 +1,6 @@
-import { TargetProtocolError } from './errors.ts';
-import { KNOWN_CAPSULE_STATES } from './types.ts';
-import type { Capsule, CapsuleAccess, CapsuleLimits, CapsuleListPage } from './types.ts';
+import { TargetProtocolError } from './errors.js';
+import { KNOWN_CAPSULE_STATES } from './types.js';
+import type { Capsule, CapsuleAccess, CapsuleLimits, CapsuleListPage } from './types.js';
 
 function closedObject(body: unknown, fields: readonly string[], context: string): Record<string, unknown> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -17,12 +17,111 @@ function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+type TimestampParts = {
+  readonly year: number;
+  readonly month: number;
+  readonly day: number;
+  readonly hour: number;
+  readonly minute: number;
+  readonly second: number;
+  readonly offsetHour: number;
+  readonly offsetMinute: number;
+};
+
+function decimal(value: string, length: number): number | null {
+  if (value.length !== length) return null;
+  for (const character of value) {
+    if (character < '0' || character > '9') return null;
+  }
+  return Number(value);
+}
+
+function parseDate(value: string): Pick<TimestampParts, 'year' | 'month' | 'day'> | null {
+  const fields = value.split('-');
+  if (fields.length !== 3) return null;
+  const year = decimal(fields[0] ?? '', 4);
+  const month = decimal(fields[1] ?? '', 2);
+  const day = decimal(fields[2] ?? '', 2);
+  if (year === null || month === null || day === null) return null;
+  return { year, month, day };
+}
+
+function parseZone(value: string): {
+  readonly clock: string;
+  readonly offsetHour: number;
+  readonly offsetMinute: number;
+} | null {
+  if (value.endsWith('Z')) {
+    return { clock: value.slice(0, -1), offsetHour: 0, offsetMinute: 0 };
+  }
+  const marker = value.at(-6);
+  if ((marker !== '+' && marker !== '-') || value.at(-3) !== ':') return null;
+  const offsetHour = decimal(value.slice(-5, -3), 2);
+  const offsetMinute = decimal(value.slice(-2), 2);
+  if (offsetHour === null || offsetMinute === null) return null;
+  return { clock: value.slice(0, -6), offsetHour, offsetMinute };
+}
+
+function parseFractionalClock(value: string): string | null {
+  const fields = value.split('.');
+  if (fields.length > 2) return null;
+  const fraction = fields[1];
+  if (fraction !== undefined &&
+      (fraction.length === 0 || decimal(fraction, fraction.length) === null)) {
+    return null;
+  }
+  return fields[0] ?? null;
+}
+
+function parseHms(value: string): {
+  readonly hour: number;
+  readonly minute: number;
+  readonly second: number;
+} | null {
+  const fields = value.split(':');
+  if (fields.length !== 3) return null;
+  const hour = decimal(fields[0] ?? '', 2);
+  const minute = decimal(fields[1] ?? '', 2);
+  const second = decimal(fields[2] ?? '', 2);
+  return hour === null || minute === null || second === null ? null : { hour, minute, second };
+}
+
+function parseClock(value: string): Omit<TimestampParts, 'year' | 'month' | 'day'> | null {
+  const zone = parseZone(value);
+  if (zone === null) return null;
+  const clock = parseFractionalClock(zone.clock);
+  if (clock === null) return null;
+  const parts = parseHms(clock);
+  if (parts === null) return null;
+  return { ...parts, offsetHour: zone.offsetHour, offsetMinute: zone.offsetMinute };
+}
+
+function parseTimestamp(value: string): TimestampParts | null {
+  if (value.at(10) !== 'T') return null;
+  const date = parseDate(value.slice(0, 10));
+  const clock = parseClock(value.slice(11));
+  return date === null || clock === null ? null : { ...date, ...clock };
+}
+
+function validClock(parts: TimestampParts): boolean {
+  return parts.hour <= 23 && parts.minute <= 59 && parts.second <= 59 &&
+    parts.offsetHour <= 23 && parts.offsetMinute <= 59;
+}
+
+function validCalendar(parts: TimestampParts): boolean {
+  if (parts.month < 1 || parts.month > 12) return false;
+  const leap = parts.year % 4 === 0 && (parts.year % 100 !== 0 || parts.year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return parts.day >= 1 && parts.day <= (days[parts.month - 1] ?? 0);
+}
+
 function timestamp(value: unknown): value is string {
-  return (
-    nonempty(value) &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) &&
-    Number.isFinite(Date.parse(value))
-  );
+  if (!nonempty(value)) return false;
+  const parts = parseTimestamp(value);
+  return parts !== null &&
+    validClock(parts) &&
+    validCalendar(parts) &&
+    Number.isFinite(Date.parse(value));
 }
 
 function uint(value: unknown): value is number {

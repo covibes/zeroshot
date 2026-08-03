@@ -1,43 +1,10 @@
-import type { TargetDiscoveryDescriptor } from '../target/discovery.ts';
-import { ZeroCloudV1TargetAdapter } from './zero-cloud-v1-adapter.ts';
-import type {
-  AllocateRequest,
-  Capsule,
-  CapsuleAccess,
-  CapsuleLimits,
-  CapsuleListPage,
-  Clock,
-  HttpTransport,
-  ListRequest,
-  RetryPolicy,
-  TargetAccessTokenProvider,
-} from './types.ts';
-
-export type CredentialInstallCapability =
-  | { readonly supported: false }
-  | {
-      readonly supported: true;
-      readonly descriptor: NonNullable<TargetDiscoveryDescriptor['credentialInstall']>;
-    };
-
-export interface TargetAdapter {
-  allocate(req: AllocateRequest, signal?: AbortSignal): Promise<Capsule>;
-  list(req?: ListRequest, signal?: AbortSignal): Promise<CapsuleListPage>;
-  inspect(capsuleId: string, signal?: AbortSignal): Promise<Capsule>;
-  terminate(capsuleId: string, signal?: AbortSignal): Promise<Capsule>;
-  limits(signal?: AbortSignal): Promise<CapsuleLimits>;
-  access(capsuleId: string, signal?: AbortSignal): Promise<CapsuleAccess>;
-  readonly credentialInstall: CredentialInstallCapability;
-}
-
-export interface CreateTargetAdapterOptions {
-  readonly descriptor: TargetDiscoveryDescriptor;
-  readonly organization: { readonly id: string };
-  readonly tokenProvider: TargetAccessTokenProvider;
-  readonly transport?: HttpTransport;
-  readonly clock?: Clock;
-  readonly retryPolicy?: RetryPolicy;
-}
+import { ZeroCloudV1TargetAdapter } from './zero-cloud-v1-adapter.js';
+import type { CreateTargetAdapterOptions, TargetAdapter } from './adapter-types.js';
+export type {
+  CreateTargetAdapterOptions,
+  CredentialInstallCapability,
+  TargetAdapter,
+} from './adapter-types.js';
 
 export function createTargetAdapter(options: CreateTargetAdapterOptions): TargetAdapter {
   if (options.descriptor.adapter.majorVersion !== 1) {

@@ -1,3 +1,6 @@
+import { readBoundedResponseJson } from './bounded-response.ts';
+import { parseTokenResponse, type TokenResponse } from './token-response.ts';
+export { parseTokenResponse, type TokenResponse } from './token-response.ts';
 export interface DeviceCodeResponse {
   readonly device_code: string;
   readonly user_code: string;
@@ -7,12 +10,6 @@ export interface DeviceCodeResponse {
   readonly interval: number;
 }
 
-export interface TokenResponse {
-  readonly access_token: string;
-  readonly refresh_token: string;
-  readonly token_type: 'Bearer';
-  readonly expires_in: number;
-}
 
 export interface DeviceExchangeContext {
   readonly grantType: string;
@@ -56,25 +53,18 @@ export class UnboundSessionError extends Error {
 
 const DEFAULT_CLOCK: Clock = { now: () => Date.now() };
 const MAX_OAUTH_RESPONSE_BYTES = 64 * 1024;
-const MAX_TOKEN_BYTES = 16 * 1024;
+const MAX_DEVICE_CODE_BYTES = 16 * 1024;
+const LOOPBACK_HOSTS: Readonly<Record<string, true>> = Object.freeze({
+  '127.0.0.1': true,
+  '::1': true,
+  '[::1]': true,
+});
 const MAX_URI_BYTES = 4 * 1024;
 
 async function readBoundedJson(response: Response): Promise<unknown> {
-  const declared = response.headers.get('content-length');
-  if (
-    declared !== null &&
-    (!/^\d+$/.test(declared) || Number(declared) > MAX_OAUTH_RESPONSE_BYTES)
-  ) {
-    throw new Error('OAuth response exceeds the size limit');
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_OAUTH_RESPONSE_BYTES)
-    throw new Error('OAuth response exceeds the size limit');
-  try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch {
-    throw new Error('OAuth response is malformed');
-  }
+  return readBoundedResponseJson(response, MAX_OAUTH_RESPONSE_BYTES, (kind) =>
+    new Error(kind === 'size' ? 'OAuth response exceeds the size limit' : 'OAuth response is malformed'),
+  );
 }
 
 function boundedString(value: unknown, maxBytes: number): value is string {
@@ -85,42 +75,63 @@ function boundedString(value: unknown, maxBytes: number): value is string {
   );
 }
 
-function verificationUrl(value: unknown): value is string {
-  if (!boundedString(value, MAX_URI_BYTES)) return false;
+function safeVerificationAuthority(url: URL, allowQuery: boolean): boolean {
+  const literalLoopback = LOOPBACK_HOSTS[url.hostname] === true;
+  return !url.username && !url.password && !url.hash &&
+    (allowQuery || !url.search) &&
+    (url.protocol === 'https:' || (url.protocol === 'http:' && literalLoopback));
+}
+
+function verificationUrl(value: unknown, allowQuery: boolean): value is string {
+  if (
+    !boundedString(value, MAX_URI_BYTES) ||
+    /[\u0000-\u0020\u007f]|\s/u.test(value)
+  ) {
+    return false;
+  }
   try {
     const url = new URL(value);
-    const literalLoopback =
-      url.hostname === '127.0.0.1' || url.hostname === '::1' || url.hostname === '[::1]';
-    return (
-      !url.username &&
-      !url.password &&
-      !url.hash &&
-      (url.protocol === 'https:' || (url.protocol === 'http:' && literalLoopback))
-    );
+    return url.href === value && safeVerificationAuthority(url, allowQuery);
   } catch {
     return false;
   }
 }
+function deviceFieldsValid(device: Record<string, unknown>): boolean {
+  const fields = Object.keys(device);
+  const required = ['device_code', 'user_code', 'verification_uri', 'expires_in', 'interval'];
+  return fields.every((field) =>
+    required.includes(field) || field === 'verification_uri_complete',
+  ) && required.every((field) => field in device);
+}
+
+function deviceStringsValid(device: Record<string, unknown>): boolean {
+  return boundedString(device.device_code, MAX_DEVICE_CODE_BYTES) &&
+    boundedString(device.user_code, 256) &&
+    verificationUrl(device.verification_uri, false) &&
+    (device.verification_uri_complete === undefined ||
+      verificationUrl(device.verification_uri_complete, true));
+}
+
+function deviceTimingValid(device: Record<string, unknown>): boolean {
+  return Number.isSafeInteger(device.expires_in) &&
+    (device.expires_in as number) >= 1 &&
+    (device.expires_in as number) <= 86_400 &&
+    Number.isSafeInteger(device.interval) &&
+    (device.interval as number) >= 0 &&
+    (device.interval as number) <= 300;
+}
+
+function browserAuthorityMatches(device: Record<string, unknown>): boolean {
+  return device.verification_uri_complete === undefined ||
+    new URL(device.verification_uri_complete as string).origin ===
+      new URL(device.verification_uri as string).origin;
+}
+
 
 function parseDeviceCodeResponse(value: unknown): DeviceCodeResponse {
   const device = object(value, 'Device code');
-  const fields = Object.keys(device);
-  const required = ['device_code', 'user_code', 'verification_uri', 'expires_in', 'interval'];
-  if (
-    fields.some((field) => !required.includes(field) && field !== 'verification_uri_complete') ||
-    required.some((field) => !(field in device)) ||
-    !boundedString(device.device_code, MAX_TOKEN_BYTES) ||
-    !boundedString(device.user_code, 256) ||
-    !verificationUrl(device.verification_uri) ||
-    (device.verification_uri_complete !== undefined &&
-      !verificationUrl(device.verification_uri_complete)) ||
-    !Number.isSafeInteger(device.expires_in) ||
-    (device.expires_in as number) < 1 ||
-    (device.expires_in as number) > 86_400 ||
-    !Number.isSafeInteger(device.interval) ||
-    (device.interval as number) < 0 ||
-    (device.interval as number) > 300
-  ) {
+  if (!deviceFieldsValid(device) || !deviceStringsValid(device) ||
+      !deviceTimingValid(device) || !browserAuthorityMatches(device)) {
     throw new Error('Device code response is malformed');
   }
   return Object.freeze(device) as unknown as DeviceCodeResponse;
@@ -138,24 +149,6 @@ function object(value: unknown, field: string): Record<string, unknown> {
     throw new Error(`${field} response is malformed`);
   }
   return value as Record<string, unknown>;
-}
-
-export function parseTokenResponse(value: unknown): TokenResponse {
-  const token = object(value, 'Token');
-  const allowed = new Set(['access_token', 'refresh_token', 'token_type', 'expires_in']);
-  if (Object.keys(token).some((key) => !allowed.has(key)))
-    throw new Error('Token response is malformed');
-  if (
-    !boundedString(token.access_token, MAX_TOKEN_BYTES) ||
-    !boundedString(token.refresh_token, MAX_TOKEN_BYTES) ||
-    token.token_type !== 'Bearer' ||
-    !Number.isSafeInteger(token.expires_in) ||
-    (token.expires_in as number) <= 0 ||
-    (token.expires_in as number) > 86_400
-  ) {
-    throw new Error('Token response is malformed');
-  }
-  return token as unknown as TokenResponse;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -193,6 +186,10 @@ export async function requestDeviceCode(
   if (signal) init.signal = signal;
 
   const response = await http.fetch(deviceAuthorizationEndpoint, init);
+  if (response.url && new URL(response.url).href !== deviceAuthorizationEndpoint) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error('OAuth response changed target route or authority');
+  }
 
   if (!response.ok) {
     parseOAuthError(await readBoundedJson(response));
@@ -245,6 +242,10 @@ export async function pollForToken(
     if (signal) init.signal = signal;
 
     const response = await http.fetch(tokenEndpoint, init);
+    if (response.url && new URL(response.url).href !== tokenEndpoint) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error('OAuth response changed target route or authority');
+    }
 
     if (response.ok) {
       return parseTokenResponse(await readBoundedJson(response));

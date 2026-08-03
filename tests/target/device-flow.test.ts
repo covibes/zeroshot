@@ -62,6 +62,44 @@ describe('requestDeviceCode', () => {
       /Device code response is malformed/
     );
   });
+
+  it('rejects a browser completion URL on a different authority', async () => {
+    const http = new FakeHttpTransport();
+    http.enqueue(respond(200, {
+      device_code: 'dev-code-123',
+      user_code: 'ABCD-1234',
+      verification_uri: 'https://auth.example.com/device',
+      verification_uri_complete: 'https://attacker.example/device?code=ABCD-1234',
+      expires_in: 900,
+      interval: 5,
+    }));
+    await assert.rejects(
+      requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http),
+      /Device code response is malformed/,
+    );
+  });
+
+  it('cancels a chunked device response at the OAuth byte bound', async () => {
+    let cancelled = false;
+    const http = {
+      async fetch() {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(64 * 1024));
+            controller.enqueue(new Uint8Array([1]));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }), { status: 200 });
+      },
+    };
+    await assert.rejects(
+      requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http),
+      /size limit/,
+    );
+    assert.equal(cancelled, true);
+  });
 });
 
 describe('pollForToken', () => {
@@ -75,6 +113,8 @@ describe('pollForToken', () => {
         refresh_token: 'refresh-456',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
 
@@ -91,6 +131,22 @@ describe('pollForToken', () => {
     assert.equal(result.access_token, 'access-123');
     assert.equal(result.refresh_token, 'refresh-456');
     assert.equal(result.token_type, 'Bearer');
+    assert.equal('refresh_expires_in' in result, false);
+    assert.equal('scope' in result, false);
+  });
+
+  it('requires the authority refresh lifetime and scope fields', async () => {
+    const http = new FakeHttpTransport();
+    http.enqueue(respond(200, {
+      access_token: 'access-123',
+      refresh_token: 'refresh-456',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
+    await assert.rejects(
+      pollForToken('https://auth.example.com/oauth/token', 'cli', 'device', 0, 900, http),
+      /Token response is malformed/,
+    );
   });
 
   it('continues polling on authorization_pending', async () => {
@@ -105,6 +161,8 @@ describe('pollForToken', () => {
         refresh_token: 'refresh-456',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
 
@@ -133,6 +191,8 @@ describe('pollForToken', () => {
         refresh_token: 'refresh-456',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
 

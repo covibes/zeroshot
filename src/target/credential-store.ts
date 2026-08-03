@@ -22,16 +22,16 @@ export const TARGET_ACCOUNT = 'refresh-token';
 
 export class KeyringCredentialStore implements TargetCredentialStore {
   private readonly Entry: new (service: string, account: string) => {
-    getPassword(): string;
+    getPassword(): string | null;
     setPassword(password: string): void;
-    deletePassword(): void;
+    deletePassword(): boolean;
   };
 
   private constructor(
     Entry: new (service: string, account: string) => {
-      getPassword(): string;
+      getPassword(): string | null;
       setPassword(password: string): void;
-      deletePassword(): void;
+      deletePassword(): boolean;
     },
   ) {
     this.Entry = Entry;
@@ -39,9 +39,9 @@ export class KeyringCredentialStore implements TargetCredentialStore {
 
   static async create(): Promise<KeyringCredentialStore> {
     let keyringModule: { Entry: new (service: string, account: string) => {
-      getPassword(): string;
+      getPassword(): string | null;
       setPassword(password: string): void;
-      deletePassword(): void;
+      deletePassword(): boolean;
     } };
     try {
       keyringModule = await import('@napi-rs/keyring') as typeof keyringModule;
@@ -59,13 +59,17 @@ export class KeyringCredentialStore implements TargetCredentialStore {
       const entry = new this.Entry(service, account);
       return entry.getPassword();
     } catch {
-      return null;
+      throw new CredentialStoreUnavailableError('The secure credential store could not be read.');
     }
   }
 
   async set(service: string, account: string, token: string): Promise<void> {
-    const entry = new this.Entry(service, account);
-    entry.setPassword(token);
+    try {
+      const entry = new this.Entry(service, account);
+      entry.setPassword(token);
+    } catch {
+      throw new CredentialStoreUnavailableError('The secure credential store could not be updated.');
+    }
   }
 
   async delete(service: string, account: string): Promise<void> {
@@ -73,7 +77,7 @@ export class KeyringCredentialStore implements TargetCredentialStore {
       const entry = new this.Entry(service, account);
       entry.deletePassword();
     } catch {
-      // Already deleted or not present
+      throw new CredentialStoreUnavailableError('The secure credential store could not be cleared.');
     }
   }
 }

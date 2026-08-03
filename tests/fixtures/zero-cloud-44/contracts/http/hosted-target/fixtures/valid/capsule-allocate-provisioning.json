@@ -5,7 +5,7 @@
   "response": {
     "operation": "allocate",
     "status": 201,
-    "headers": { "cache-control": "no-store" }
+    "headers": {"cache-control": "no-store"}
   },
   "body": {
     "capsule_id": "cap_opaque-allocate-01",

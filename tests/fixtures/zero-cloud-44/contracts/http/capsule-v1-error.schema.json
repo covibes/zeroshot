@@ -10,14 +10,22 @@
       "type": "string"
     },
     "capsule_id": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "retryable": {
       "type": "boolean"
     }
   },
   "additionalProperties": false,
-  "required": ["code", "message", "capsule_id", "retryable"],
+  "required": [
+    "code",
+    "message",
+    "capsule_id",
+    "retryable"
+  ],
   "$defs": {
     "ProblemCodeV1": {
       "type": "string",

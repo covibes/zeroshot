@@ -11,7 +11,10 @@
       "$ref": "#/$defs/CapsuleState"
     },
     "label": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "created_at": {
       "type": "string",
@@ -19,12 +22,23 @@
     }
   },
   "additionalProperties": false,
-  "required": ["capsule_id", "state", "label", "created_at"],
+  "required": [
+    "capsule_id",
+    "state",
+    "label",
+    "created_at"
+  ],
   "$defs": {
     "CapsuleState": {
       "description": "Exact public lifecycle of one hosted capsule.",
       "type": "string",
-      "enum": ["provisioning", "ready", "terminating", "terminated", "failed"]
+      "enum": [
+        "provisioning",
+        "ready",
+        "terminating",
+        "terminated",
+        "failed"
+      ]
     }
   }
 }

@@ -53,6 +53,8 @@ const manager = new TargetSessionManager({
             refresh_token: `${prior}->${audience}`,
             token_type: 'Bearer',
             expires_in: 3600,
+            refresh_expires_in: 5_184_000,
+            scope: 'session capsule',
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );

@@ -20,7 +20,9 @@
     },
     "endpoint": {
       "url": "https://attacker.example.com/?host=hosted.openengine.example",
-      "capabilities": ["exec"]
+      "capabilities": [
+        "exec"
+      ]
     },
     "pagination": {
       "default_page_size": 20,
@@ -54,7 +56,10 @@
       "client_id": "cli",
       "revocation_endpoint": "https://hosted.openengine.example/auth/revoke",
       "device_grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-      "device_exchange_fields": ["device_token", "device_label"],
+      "device_exchange_fields": [
+        "device_token",
+        "device_label"
+      ],
       "audience": "capsule"
     },
     "organization_binding": "device_approval",
@@ -66,7 +71,12 @@
       "connections_onboarding"
     ],
     "sizes": {
-      "catalog": ["tiny", "small", "standard", "large"],
+      "catalog": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ],
       "default": "standard"
     },
     "session": {

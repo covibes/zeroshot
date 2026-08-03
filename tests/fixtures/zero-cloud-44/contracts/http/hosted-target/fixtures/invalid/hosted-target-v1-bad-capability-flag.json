@@ -18,7 +18,10 @@
     },
     "endpoint": {
       "url": "https://hosted.openengine.example/targets/primary",
-      "capabilities": ["exec", "teleport"]
+      "capabilities": [
+        "exec",
+        "teleport"
+      ]
     },
     "pagination": {
       "default_page_size": 20,

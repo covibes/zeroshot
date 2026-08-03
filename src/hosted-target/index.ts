@@ -3,7 +3,7 @@ export {
   type TargetAdapter,
   type CreateTargetAdapterOptions,
   type CredentialInstallCapability,
-} from './target-adapter.ts';
+} from './target-adapter.js';
 export {
   TargetAdapterError,
   TargetAuthError,
@@ -15,7 +15,7 @@ export {
   TargetNotFoundError,
   TargetServerError,
   isRetryable,
-} from './errors.ts';
+} from './errors.js';
 export type {
   TargetAccessTokenProvider,
   CapsuleState,
@@ -28,4 +28,4 @@ export type {
   HttpTransport,
   Clock,
   RetryPolicy,
-} from './types.ts';
+} from './types.js';

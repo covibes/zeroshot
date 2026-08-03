@@ -7,6 +7,7 @@ export interface TargetRecord {
   readonly adapterVersion: string;
   readonly deviceToken: string;
   readonly organization?: { readonly id: string; readonly name?: string };
+  readonly refreshInvalidated?: true;
   readonly createdAt: string;
 }
 
@@ -39,7 +40,11 @@ export class TargetUrlInvalidError extends Error {
 }
 
 const TARGET_NAME_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?$/;
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', '[::1]']);
+const LOOPBACK_HOSTS: Readonly<Record<string, true>> = Object.freeze({
+  '127.0.0.1': true,
+  '::1': true,
+  '[::1]': true,
+});
 
 export function validateTargetName(name: string): void {
   if (!TARGET_NAME_PATTERN.test(name) || name.length > 64) {
@@ -48,6 +53,9 @@ export function validateTargetName(name: string): void {
 }
 
 export function normalizeAndValidateUrl(rawUrl: string): string {
+  if (/[\u0000-\u0020\u007f]|\s/u.test(rawUrl)) {
+    throw new TargetUrlInvalidError(rawUrl, 'URL contains forbidden whitespace or controls');
+  }
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -63,7 +71,7 @@ export function normalizeAndValidateUrl(rawUrl: string): string {
     throw new TargetUrlInvalidError(rawUrl, 'URL must not contain query or fragment');
   }
 
-  const isLoopback = LOOPBACK_HOSTS.has(parsed.hostname);
+  const isLoopback = LOOPBACK_HOSTS[parsed.hostname] === true;
   const protocolAllowed =
     parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopback);
   if (!protocolAllowed) {
@@ -168,6 +176,32 @@ export function updateTargetOrganization(
         ...target,
         organization,
       };
+    }
+  });
+}
+
+export function targetRefreshIsInvalidated(
+  name: string,
+  settings: SettingsPort,
+): boolean {
+  return settings.load()._targets?.[name]?.refreshInvalidated === true;
+}
+
+export function setTargetRefreshInvalidated(
+  name: string,
+  invalidated: boolean,
+  settings: SettingsPort,
+): void {
+  settings.mutate((state) => {
+    const targets = state._targets;
+    const target = targets?.[name];
+    if (targets === undefined || target === undefined) throw new TargetNotFoundError(name);
+    if (invalidated) {
+      targets[name] = { ...target, refreshInvalidated: true };
+    } else {
+      const active = { ...target };
+      Reflect.deleteProperty(active, 'refreshInvalidated');
+      targets[name] = active;
     }
   });
 }

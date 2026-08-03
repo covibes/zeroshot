@@ -8,11 +8,15 @@
     }
   },
   "additionalProperties": false,
-  "required": ["protocol"],
+  "required": [
+    "protocol"
+  ],
   "$defs": {
     "AccessProtocol": {
       "type": "string",
-      "enum": ["openengine.cluster/v1"]
+      "enum": [
+        "openengine.cluster/v1"
+      ]
     }
   }
 }

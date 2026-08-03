@@ -10,11 +10,17 @@
       "minimum": 0
     },
     "max_active_capsules": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "format": "uint64",
       "minimum": 0
     }
   },
   "additionalProperties": false,
-  "required": ["active_capsules", "max_active_capsules"]
+  "required": [
+    "active_capsules",
+    "max_active_capsules"
+  ]
 }

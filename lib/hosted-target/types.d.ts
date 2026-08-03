@@ -36,7 +36,7 @@ export interface ListRequest {
 }
 export interface HttpTransport {
     fetch(url: string, init: RequestInit & {
-        redirect: 'error';
+        redirect: 'manual';
     }): Promise<Response>;
 }
 export interface Clock {

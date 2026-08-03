@@ -1,34 +1,40 @@
 import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
-import { createTargetAdapter } from '../../src/hosted-target/target-adapter.ts';
-import { TargetProtocolError, TargetServerError } from '../../src/hosted-target/errors.ts';
+import {
+  createTargetAdapter,
+  TargetProtocolError,
+  TargetServerError,
+} from '../../lib/hosted-target/index.mjs';
+import { MAX_RESPONSE_BYTES } from '../../lib/hosted-target/bounds.mjs';
 import {
   FakeHttpTransport,
   FakeTokenProvider,
   NO_RETRY,
   capsule,
   fakeDiscovery,
-} from './harness.ts';
+} from './harness.mjs';
 
 function bodyOf(request: { readonly init: RequestInit }): unknown {
   return JSON.parse(String(request.init.body));
 }
 
-describe('descriptor-driven TargetAdapter', () => {
-  let http: FakeHttpTransport;
-  beforeEach(() => {
-    http = new FakeHttpTransport();
-  });
+let http: FakeHttpTransport;
 
-  function adapter() {
-    return createTargetAdapter({
-      descriptor: fakeDiscovery(),
-      organization: { id: 'org/opaque value' },
-      tokenProvider: new FakeTokenProvider(),
-      transport: http,
-      retryPolicy: NO_RETRY,
-    });
-  }
+beforeEach(() => {
+  http = new FakeHttpTransport();
+});
+
+function adapter() {
+  return createTargetAdapter({
+    descriptor: fakeDiscovery(),
+    organization: { id: 'org/opaque value' },
+    tokenProvider: new FakeTokenProvider(),
+    transport: http,
+    retryPolicy: NO_RETRY,
+  });
+}
+
+describe('descriptor-driven TargetAdapter', () => {
 
   it('captures every discovered method, route, query, header, and body exactly', async () => {
     http.enqueue(201, capsule('cap/opaque'));
@@ -65,8 +71,9 @@ describe('descriptor-driven TargetAdapter', () => {
     );
     assert.equal(
       http.requests[1]?.url,
-      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules?cursor=cursor%2Fraw+%3F&limit=37'
+      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules?cursor=cursor%2Fraw%20%3F&limit=37'
     );
+    assert.equal(http.requests[1]?.init.redirect, 'manual');
     assert.equal(
       http.requests[2]?.url,
       'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules/cap%2Fopaque'
@@ -87,6 +94,9 @@ describe('descriptor-driven TargetAdapter', () => {
     assert.equal(terminating.state, 'terminating');
   });
 
+});
+
+describe('descriptor-driven TargetAdapter validation', () => {
   it('rejects body and pagination bounds before transport side effects', async () => {
     const target = adapter();
     await assert.rejects(
@@ -156,6 +166,119 @@ describe('descriptor-driven TargetAdapter', () => {
       assert.equal(error.message.includes('CANARY_REFRESH_920'), false);
       return true;
     });
+  });
+
+});
+
+describe('descriptor-driven TargetAdapter wire errors', () => {
+  it('accepts the production 402 forbidden contract pair', async () => {
+    http.enqueue(402, {
+      code: 'forbidden',
+      message: 'quota exhausted',
+      capsule_id: null,
+      retryable: false,
+    });
+    await assert.rejects(adapter().allocate({ idempotencyKey: 'idem-402' }), (error: unknown) => {
+      assert.ok(error instanceof TargetServerError);
+      assert.equal(error.status, 402);
+      assert.equal(error.serverCode, 'forbidden');
+      return true;
+    });
+  });
+
+  it('rejects retryable errors without Retry-After', async () => {
+    http.enqueue(503, {
+      code: 'temporarily_unavailable',
+      message: 'try later',
+      capsule_id: null,
+      retryable: true,
+    });
+    await assert.rejects(adapter().limits(), /omitted Retry-After/);
+    http.enqueue(503, {
+      code: 'temporarily_unavailable',
+      message: 'try later',
+      capsule_id: null,
+      retryable: true,
+    }, { 'Retry-After': '1.5' });
+    await assert.rejects(adapter().limits(), /Retry-After header is malformed/);
+  });
+
+  it('rejects impossible calendar dates', async () => {
+    http.enqueue(200, {
+      ...capsule(),
+      created_at: '2026-02-31T00:00:00Z',
+    });
+    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
+  });
+
+  it('classifies redirects as one non-retryable protocol failure', async () => {
+    http.responses.push(new Response('{}', {
+      status: 302,
+      headers: { Location: 'https://attacker.example/capsules' },
+    }));
+    await assert.rejects(adapter().inspect('cap-1'), /redirects are forbidden/);
+    assert.equal(http.requests.length, 1);
+  });
+
+  it('rejects structural dot segments before token acquisition or transport', async () => {
+    const tokenProvider = new FakeTokenProvider();
+    const target = createTargetAdapter({
+      descriptor: fakeDiscovery(),
+      organization: { id: 'org' },
+      tokenProvider,
+      transport: http,
+      retryPolicy: NO_RETRY,
+    });
+    await assert.rejects(target.terminate('..'), TargetProtocolError);
+    assert.equal(tokenProvider.calls.length, 0);
+    assert.equal(http.requests.length, 0);
+  });
+
+});
+
+describe('descriptor-driven TargetAdapter bounds and transport', () => {
+  it('cancels a chunked capsule response at the cumulative byte bound', async () => {
+    let cancelled = false;
+    http.responses.push(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(MAX_RESPONSE_BYTES));
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), { status: 200 }));
+    await assert.rejects(adapter().inspect('cap-1'), /size limit/);
+    assert.equal(cancelled, true);
+  });
+
+  it('accepts the discovered literal-loopback WS transport exception', async () => {
+    const descriptor = fakeDiscovery();
+    const loopbackDescriptor = {
+      ...descriptor,
+      origin: 'http://127.0.0.1:8080',
+      capsule: {
+        ...descriptor.capsule,
+        baseUrl: 'http://127.0.0.1:8080/api/v1',
+      },
+    };
+    http.enqueue(200, {
+      protocol: 'openengine.cluster/v1',
+      websocket_url: 'ws://127.0.0.1:8080/v1/capsules/cap-1/oecp',
+      access_token: 'capsule-grant-canary',
+      token_type: 'Bearer',
+      expires_at: '2026-08-03T01:00:00Z',
+    });
+    const target = createTargetAdapter({
+      descriptor: loopbackDescriptor,
+      organization: { id: 'org' },
+      tokenProvider: new FakeTokenProvider(),
+      transport: http,
+      retryPolicy: NO_RETRY,
+    });
+    const access = await target.access('cap-1');
+    assert.equal(access.websocketUrl, 'ws://127.0.0.1:8080/v1/capsules/cap-1/oecp');
+    assert.equal(http.requests[0]?.url, 'http://127.0.0.1:8080/capsules/cap-1/access');
   });
 
   it('exposes absence of credential install as capability metadata without guessing a route', () => {

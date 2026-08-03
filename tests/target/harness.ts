@@ -29,7 +29,7 @@ export class FakeHttpTransport implements HttpTransport {
 
   async fetch(
     url: string,
-    init: RequestInit & { redirect: 'error' },
+    init: RequestInit & { redirect: 'error' | 'manual' },
   ): Promise<Response> {
     const headers: Record<string, string> = {};
     if (init.headers) {

@@ -18,7 +18,12 @@
     "CapsuleSize": {
       "description": "Public size names resolve to provider resources only on the server.",
       "type": "string",
-      "enum": ["tiny", "small", "standard", "large"]
+      "enum": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ]
     }
   }
 }

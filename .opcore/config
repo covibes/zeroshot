@@ -1,6 +1,9 @@
 {
   "validation": {
     "checks": {
+      "clone": {
+        "exclude": ["lib/**"]
+      },
       "rust": {
         "functionMetrics": {
           "maxFunctionLines": 80,

@@ -18,7 +18,9 @@
     },
     "endpoint": {
       "url": "https://hosted.openengine.example/targets/primary",
-      "capabilities": ["exec"]
+      "capabilities": [
+        "exec"
+      ]
     },
     "pagination": {
       "default_page_size": 20,

@@ -83,6 +83,16 @@ describe('normalizeAndValidateUrl', () => {
     );
   });
 
+  it('rejects whitespace and C0/DEL URL normalization', () => {
+    for (const value of [
+      ' https://api.example.com',
+      'https://api.example.com\n',
+      'https://api.example.com/\u007f',
+    ]) {
+      assert.throws(() => normalizeAndValidateUrl(value), TargetUrlInvalidError);
+    }
+  });
+
   it('rejects non-HTTPS for non-loopback', () => {
     assert.throws(() => normalizeAndValidateUrl('http://api.example.com'), TargetUrlInvalidError);
   });

@@ -13,7 +13,7 @@
     "contracts/http/capsule-access-request.schema.json",
     "contracts/http/capsule-access-response.schema.json"
   ],
-  "digest": "sha256:20e24ef4231cfffef26dc18fbca70ce7f96ca232bc8b6a62ceb28fbc8c8fdb33",
+  "digest": "sha256:6636d50cd60067241a50d1ee027d86fc1738aa933f086d8bb2c496c5be31b85e",
   "fixtures_dir": "contracts/http/hosted-target/fixtures",
   "invocation": {
     "generate": "npm run contracts:generate",
@@ -37,5 +37,9 @@
       "websocket_401_4401_4403"
     ]
   },
-  "consumed_by": ["zeroshot#881", "zeroshot#889", "zeroshot#920"]
+  "consumed_by": [
+    "zeroshot#881",
+    "zeroshot#889",
+    "zeroshot#920"
+  ]
 }

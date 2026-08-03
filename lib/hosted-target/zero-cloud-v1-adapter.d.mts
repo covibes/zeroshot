@@ -1,5 +1,5 @@
-import type { TargetAdapter, CreateTargetAdapterOptions } from './target-adapter.mjs';
-import type { AllocateRequest, Capsule, CapsuleAccess, CapsuleLimits, CapsuleListPage, ListRequest } from './types.mjs';
+import type { TargetAdapter, CreateTargetAdapterOptions } from './adapter-types.js';
+import type { AllocateRequest, Capsule, CapsuleAccess, CapsuleLimits, CapsuleListPage, ListRequest } from './types.js';
 export declare class ZeroCloudV1TargetAdapter implements TargetAdapter {
     #private;
     constructor(options: CreateTargetAdapterOptions);

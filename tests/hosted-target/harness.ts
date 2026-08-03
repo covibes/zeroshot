@@ -3,7 +3,7 @@ import type { Clock, HttpTransport, RetryPolicy, TargetAccessTokenProvider } fro
 
 export interface CapturedRequest {
   readonly url: string;
-  readonly init: RequestInit & { redirect: 'error' };
+  readonly init: RequestInit & { redirect: 'manual' };
 }
 
 export class FakeHttpTransport implements HttpTransport {
@@ -12,7 +12,7 @@ export class FakeHttpTransport implements HttpTransport {
   enqueue(status: number, body: unknown, headers: Record<string, string> = {}): void {
     this.responses.push(new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } }));
   }
-  async fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response> {
+  async fetch(url: string, init: RequestInit & { redirect: 'manual' }): Promise<Response> {
     this.requests.push({ url, init });
     const response = this.responses.shift();
     if (!response) throw new Error('No response queued');
@@ -47,15 +47,17 @@ function route(template: string, variables: readonly string[]): RouteTemplate {
     variables,
     expand(values) {
       let expanded = template.replace(/\{\?([^}]+)\}/g, (_match, names: string) => {
-        const query = new URLSearchParams();
-        for (const name of names.split(',')) {
+        const query = names.split(',').flatMap((name) => {
           const value = values[name];
-          if (value !== undefined) query.set(name, String(value));
-        }
-        const serialized = query.toString();
-        return serialized ? `?${serialized}` : '';
+          return value === undefined ? [] : [`${encodeURIComponent(name)}=${encodeURIComponent(String(value))}`];
+        });
+        return query.length === 0 ? '' : `?${query.join('&')}`;
       });
-      expanded = expanded.replace(/\{([^}]+)\}/g, (_match, name: string) => encodeURIComponent(String(values[name])));
+      expanded = expanded.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+        const value = String(values[name]);
+        if (value === '.' || value === '..') throw new Error('structural dot segment');
+        return encodeURIComponent(value);
+      });
       return expanded;
     },
   };

@@ -127,6 +127,24 @@ function registerList(target, deps) {
     });
 }
 
+async function forceDeleteCredential(deps, credentialStore, targetId, credentialDependencies) {
+  const { acquireTargetLock, targetServiceKey, targetAccount } = credentialDependencies;
+  if (!credentialStore) {
+    deps.stderr.write('Warning: secure credential storage was unavailable during removal.\n');
+    return;
+  }
+  try {
+    const release = await (deps.acquireTargetLock ?? acquireTargetLock)(targetId);
+    try {
+      await credentialStore.delete(targetServiceKey(targetId), targetAccount);
+    } finally {
+      await release();
+    }
+  } catch {
+    deps.stderr.write('Warning: local target credential cleanup could not be confirmed.\n');
+  }
+}
+
 function registerRemove(target, deps) {
   target
     .command('remove <name>')
@@ -137,7 +155,7 @@ function registerRemove(target, deps) {
         const [
           { getTarget, removeTarget },
           { TargetSessionManager },
-          { KeyringCredentialStore },
+          { KeyringCredentialStore, targetServiceKey, TARGET_ACCOUNT },
           { acquireTargetLock },
           { discoverTargetSessionEndpoints },
         ] = await Promise.all([
@@ -151,21 +169,34 @@ function registerRemove(target, deps) {
         const record = getTarget(name, settings);
         if (!record) throw new Error(`Target "${name}" not found.`);
         const http = { fetch: (url, init) => deps.fetch(url, init) };
-        const manager = new TargetSessionManager({
-          targetName: name,
-          target: record,
-          credentialStore: await KeyringCredentialStore.create(),
-          acquireLock: () => acquireTargetLock(record.id),
-          settings,
-          deps: {
-            http,
-            clock: { now: () => Date.now() },
-            browserOpener: { open: () => Promise.resolve() },
-            stderr: deps.stderr,
-            discoveryEndpoints: await discoverTargetSessionEndpoints(record.url, http),
-          },
-        });
-        await manager.revoke(Boolean(options.force));
+        let credentialStore;
+        try {
+          credentialStore = deps.createCredentialStore
+            ? await deps.createCredentialStore()
+            : await KeyringCredentialStore.create();
+          const manager = new TargetSessionManager({
+            targetName: name,
+            target: record,
+            credentialStore,
+            acquireLock: () => (deps.acquireTargetLock ?? acquireTargetLock)(record.id),
+            settings,
+            deps: {
+              http,
+              clock: { now: () => Date.now() },
+              browserOpener: { open: () => Promise.resolve() },
+              stderr: deps.stderr,
+              discoveryEndpoints: await discoverTargetSessionEndpoints(record.url, http),
+            },
+          });
+          await manager.revoke(Boolean(options.force));
+        } catch (error) {
+          if (!options.force) throw error;
+          await forceDeleteCredential(deps, credentialStore, record.id, {
+            acquireTargetLock,
+            targetServiceKey,
+            targetAccount: TARGET_ACCOUNT,
+          });
+        }
         removeTarget(name, settings);
         deps.console.log(deps.chalk.green(`Target "${name}" removed`));
       } catch (error) {

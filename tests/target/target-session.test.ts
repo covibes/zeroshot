@@ -6,6 +6,7 @@ import {
   targetServiceKey,
   type TargetCredentialStore,
 } from '../../src/target/credential-store.ts';
+import type { HttpTransport } from '../../src/target/device-flow.ts';
 import {
   FakeClock,
   FakeCredentialStore,
@@ -18,7 +19,7 @@ import {
 } from './harness.ts';
 
 function manager(
-  http: FakeHttpTransport,
+  http: HttpTransport,
   store: TargetCredentialStore = new FakeCredentialStore(),
   acquireLock: () => Promise<() => Promise<void>> = fakeLock()
 ) {
@@ -57,6 +58,8 @@ describe('TargetSessionManager', () => {
         refresh_token: 'refresh-family-canary',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
     http.enqueue(
@@ -96,7 +99,7 @@ describe('TargetSessionManager', () => {
     const http = new (class extends FakeHttpTransport {
       override async fetch(
         url: string,
-        init: RequestInit & { redirect: 'error' }
+        init: RequestInit & { redirect: 'error' | 'manual' }
       ): Promise<Response> {
         if (url.endsWith('/oauth/token') || url.endsWith('/target-session'))
           assert.equal(locked, true);
@@ -118,6 +121,8 @@ describe('TargetSessionManager', () => {
         refresh_token: 'refresh',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
     http.enqueue(
@@ -157,6 +162,8 @@ describe('TargetSessionManager', () => {
         refresh_token: 'replacement',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
     http.enqueue(
@@ -186,6 +193,8 @@ describe('TargetSessionManager', () => {
         refresh_token: 'new-refresh',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
 
@@ -214,6 +223,8 @@ describe('TargetSessionManager', () => {
         refresh_token: 'replacement',
         token_type: 'bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
 
@@ -228,7 +239,7 @@ describe('TargetSessionManager', () => {
     const http = new (class extends FakeHttpTransport {
       override async fetch(
         url: string,
-        init: RequestInit & { redirect: 'error' }
+        init: RequestInit & { redirect: 'error' | 'manual' }
       ): Promise<Response> {
         await super.fetch(url, init);
         throw new Error('connection reset after request dispatch');
@@ -240,6 +251,8 @@ describe('TargetSessionManager', () => {
         refresh_token: 'possibly-spent',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
     const fixture = manager(http);
@@ -260,8 +273,11 @@ describe('TargetSessionManager', () => {
     let stored: string | null = 'old-refresh';
     const store: TargetCredentialStore = {
       get: async () => stored,
-      set: async () => {
-        throw new Error('keyring failed');
+      set: async (_service, _account, token) => {
+        if (token !== 'zeroshot.invalidated-refresh-family/v1') {
+          throw new Error('keyring failed');
+        }
+        stored = token;
       },
       delete: async () => {
         stored = null;
@@ -275,6 +291,8 @@ describe('TargetSessionManager', () => {
         refresh_token: 'replacement',
         token_type: 'Bearer',
         expires_in: 3600,
+        refresh_expires_in: 5_184_000,
+        scope: 'session capsule',
       })
     );
     http.enqueue(respond(200, {}));
@@ -282,5 +300,95 @@ describe('TargetSessionManager', () => {
     await assert.rejects(fixture.value.getAccessToken('capsule'), LoginRequiredError);
     assert.equal(stored, null);
     assert.equal(http.requests[1]?.url, 'https://api.test.example/oauth/revoke');
+  });
+
+  it('leaves a durable non-secret tombstone when secure deletion fails', async () => {
+    let stored: string | null = 'old-refresh-canary';
+    let requests = 0;
+    const store: TargetCredentialStore = {
+      get: async () => stored,
+      set: async (_service, _account, token) => {
+        stored = token;
+      },
+      delete: async () => {
+        throw new Error('secure delete failed');
+      },
+    };
+    const http: HttpTransport = {
+      async fetch() {
+        requests += 1;
+        assert.equal(stored, 'zeroshot.invalidated-refresh-family/v1');
+        throw new Error('ambiguous refresh failure');
+      },
+    };
+    const first = manager(http, store);
+    await assert.rejects(first.value.getAccessToken('capsule'), /secure delete failed/);
+    assert.equal(stored, 'zeroshot.invalidated-refresh-family/v1');
+
+    const second = manager(http, store);
+    await assert.rejects(second.value.getAccessToken('capsule'), LoginRequiredError);
+    assert.equal(requests, 1);
+  });
+
+  it('persists a non-secret settings tombstone when the secure store cannot be changed', async () => {
+    const target = makeTarget();
+    const settings = makeSettingsPort({ _targets: { primary: target } });
+    let reads = 0;
+    const store: TargetCredentialStore = {
+      get: async () => {
+        reads += 1;
+        return 'stale-refresh-canary';
+      },
+      set: async () => {
+        throw new Error('secure store update failed');
+      },
+      delete: async () => {
+        throw new Error('secure store delete failed');
+      },
+    };
+    const http = new FakeHttpTransport();
+    const create = () => new TargetSessionManager({
+      targetName: 'primary',
+      target,
+      credentialStore: store,
+      acquireLock: fakeLock(),
+      settings,
+      deps: makeSessionDeps({ http, clock: new FakeClock(1_000_000) }),
+    });
+
+    await assert.rejects(create().getAccessToken('capsule'), /secure store update failed/);
+    await assert.rejects(create().getAccessToken('capsule'), LoginRequiredError);
+    assert.equal(reads, 1);
+    assert.equal(http.requests.length, 0);
+    assert.equal(settings.load()._targets?.primary?.refreshInvalidated, true);
+  });
+
+  it('cancels an oversized chunked refresh response and invalidates the family', async () => {
+    let cancelled = false;
+    const http: HttpTransport = {
+      async fetch() {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(64 * 1024));
+            controller.enqueue(new Uint8Array([1]));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }), { status: 200 });
+      },
+    };
+    const fixture = manager(http);
+    await fixture.store.set(
+      targetServiceKey(fixture.target.id),
+      TARGET_ACCOUNT,
+      'old-refresh-canary',
+    );
+    await assert.rejects(fixture.value.getAccessToken('capsule'), LoginRequiredError);
+    assert.equal(cancelled, true);
+    assert.equal(
+      await fixture.store.get(targetServiceKey(fixture.target.id), TARGET_ACCOUNT),
+      null,
+    );
   });
 });

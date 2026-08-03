@@ -85,4 +85,61 @@ describe('private hosted command registration boundary', () => {
     assert.equal(mutations, 0);
     assert.equal(errors.length, 1);
   });
+
+  it('force-removes an offline target and still clears local credentials', async () => {
+    const state = {
+      _targets: {
+        primary: {
+          id: 'target-1',
+          url: 'https://hosted.example',
+          adapterVersion: 'v1',
+          deviceToken: 'device-token',
+          createdAt: '2026-08-03T00:00:00Z',
+        },
+      },
+    };
+    let deletes = 0;
+    const logs: string[] = [];
+    const program = new Command();
+    registerHostedCommands(program, {
+      chalk: {
+        red: String,
+        green: String,
+        dim: String,
+        bold: String,
+      },
+      loadSettings: () => state,
+      mutateSettings: (mutation: (settings: typeof state) => void) => mutation(state),
+      console: {
+        log: (message: string) => logs.push(message),
+        error: assert.fail,
+      },
+      stderr: { write: () => undefined },
+      fetch: async () => {
+        throw new Error('target offline');
+      },
+      createCredentialStore: async () => ({
+        get: async () => null,
+        set: async () => undefined,
+        delete: async () => {
+          deletes += 1;
+        },
+      }),
+      acquireTargetLock: async () => async () => undefined,
+      setExitCode: assert.fail,
+    });
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'target',
+      'remove',
+      'primary',
+      '--force',
+    ]);
+
+    assert.equal(state._targets.primary, undefined);
+    assert.equal(deletes, 1);
+    assert.deepEqual(logs, ['Target \"primary\" removed']);
+  });
 });

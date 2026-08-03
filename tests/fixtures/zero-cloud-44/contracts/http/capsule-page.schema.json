@@ -11,11 +11,17 @@
       }
     },
     "next_cursor": {
-      "type": ["string", "null"]
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "additionalProperties": false,
-  "required": ["capsules", "next_cursor"],
+  "required": [
+    "capsules",
+    "next_cursor"
+  ],
   "$defs": {
     "Capsule": {
       "description": "Provider-neutral public capsule projection.",
@@ -28,7 +34,10 @@
           "$ref": "#/$defs/CapsuleState"
         },
         "label": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "created_at": {
           "type": "string",
@@ -36,12 +45,23 @@
         }
       },
       "additionalProperties": false,
-      "required": ["capsule_id", "state", "label", "created_at"]
+      "required": [
+        "capsule_id",
+        "state",
+        "label",
+        "created_at"
+      ]
     },
     "CapsuleState": {
       "description": "Exact public lifecycle of one hosted capsule.",
       "type": "string",
-      "enum": ["provisioning", "ready", "terminating", "terminated", "failed"]
+      "enum": [
+        "provisioning",
+        "ready",
+        "terminating",
+        "terminated",
+        "failed"
+      ]
     }
   }
 }

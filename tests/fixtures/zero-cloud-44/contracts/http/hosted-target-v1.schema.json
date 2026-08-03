@@ -84,7 +84,9 @@
   "$defs": {
     "HostedTargetKind": {
       "type": "string",
-      "enum": ["openengine.hosted-target/v1"]
+      "enum": [
+        "openengine.hosted-target/v1"
+      ]
     },
     "Adapter": {
       "type": "object",
@@ -99,11 +101,18 @@
         }
       },
       "additionalProperties": false,
-      "required": ["name", "major_version"]
+      "required": [
+        "name",
+        "major_version"
+      ]
     },
     "AdapterName": {
       "type": "string",
-      "enum": ["fargate", "docker", "local"]
+      "enum": [
+        "fargate",
+        "docker",
+        "local"
+      ]
     },
     "Protocol": {
       "type": "object",
@@ -118,11 +127,16 @@
         }
       },
       "additionalProperties": false,
-      "required": ["name", "major_version"]
+      "required": [
+        "name",
+        "major_version"
+      ]
     },
     "ProtocolName": {
       "type": "string",
-      "enum": ["openengine.cluster/v1"]
+      "enum": [
+        "openengine.cluster/v1"
+      ]
     },
     "Binding": {
       "type": "object",
@@ -135,15 +149,22 @@
         }
       },
       "additionalProperties": false,
-      "required": ["scope", "auth_location"]
+      "required": [
+        "scope",
+        "auth_location"
+      ]
     },
     "BindingScope": {
       "type": "string",
-      "enum": ["organization"]
+      "enum": [
+        "organization"
+      ]
     },
     "AuthLocation": {
       "type": "string",
-      "enum": ["authorization_header"]
+      "enum": [
+        "authorization_header"
+      ]
     },
     "Endpoint": {
       "type": "object",
@@ -159,7 +180,10 @@
         }
       },
       "additionalProperties": false,
-      "required": ["url", "capabilities"]
+      "required": [
+        "url",
+        "capabilities"
+      ]
     },
     "UriString": {
       "type": "string",
@@ -167,7 +191,10 @@
     },
     "CapabilityFlag": {
       "type": "string",
-      "enum": ["exec", "log_stream"]
+      "enum": [
+        "exec",
+        "log_stream"
+      ]
     },
     "Pagination": {
       "type": "object",
@@ -184,7 +211,10 @@
         }
       },
       "additionalProperties": false,
-      "required": ["default_page_size", "max_page_size"]
+      "required": [
+        "default_page_size",
+        "max_page_size"
+      ]
     },
     "CachePolicy": {
       "type": "object",
@@ -193,15 +223,22 @@
           "$ref": "#/$defs/ControlCachePolicy"
         },
         "discovery": {
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
-      "required": ["control"]
+      "required": [
+        "control"
+      ]
     },
     "ControlCachePolicy": {
       "type": "string",
-      "enum": ["no-store"]
+      "enum": [
+        "no-store"
+      ]
     },
     "SchemaLinks": {
       "type": "object",
@@ -217,7 +254,11 @@
         }
       },
       "additionalProperties": false,
-      "required": ["self", "problem", "errors"]
+      "required": [
+        "self",
+        "problem",
+        "errors"
+      ]
     },
     "CapsuleProtocol": {
       "type": "object",
@@ -238,11 +279,18 @@
         }
       },
       "additionalProperties": false,
-      "required": ["name", "major_version", "base_url", "route_templates"]
+      "required": [
+        "name",
+        "major_version",
+        "base_url",
+        "route_templates"
+      ]
     },
     "CapsuleProtocolName": {
       "type": "string",
-      "enum": ["openengine.capsules/v1"]
+      "enum": [
+        "openengine.capsules/v1"
+      ]
     },
     "CapsuleRouteTemplates": {
       "type": "object",
@@ -267,7 +315,14 @@
         }
       },
       "additionalProperties": false,
-      "required": ["allocate", "list", "inspect", "terminate", "limits", "access"]
+      "required": [
+        "allocate",
+        "list",
+        "inspect",
+        "terminate",
+        "limits",
+        "access"
+      ]
     },
     "OAuthDiscovery": {
       "type": "object",
@@ -314,19 +369,28 @@
     },
     "DeviceGrantType": {
       "type": "string",
-      "enum": ["urn:ietf:params:oauth:grant-type:device_code"]
+      "enum": [
+        "urn:ietf:params:oauth:grant-type:device_code"
+      ]
     },
     "DeviceExchangeField": {
       "type": "string",
-      "enum": ["device_token", "device_label"]
+      "enum": [
+        "device_token",
+        "device_label"
+      ]
     },
     "TargetAudience": {
       "type": "string",
-      "enum": ["capsule"]
+      "enum": [
+        "capsule"
+      ]
     },
     "OrganizationBinding": {
       "type": "string",
-      "enum": ["device_approval"]
+      "enum": [
+        "device_approval"
+      ]
     },
     "HostedTargetCapability": {
       "type": "string",
@@ -352,12 +416,20 @@
         }
       },
       "additionalProperties": false,
-      "required": ["catalog", "default"]
+      "required": [
+        "catalog",
+        "default"
+      ]
     },
     "CapsuleSize": {
       "description": "Public size names resolve to provider resources only on the server.",
       "type": "string",
-      "enum": ["tiny", "small", "standard", "large"]
+      "enum": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ]
     },
     "SessionProjection": {
       "type": "object",
@@ -373,11 +445,20 @@
         }
       },
       "additionalProperties": false,
-      "required": ["route_template", "method", "cache_policy"]
+      "required": [
+        "route_template",
+        "method",
+        "cache_policy"
+      ]
     },
     "HttpMethod": {
       "type": "string",
-      "enum": ["GET", "POST", "PUT", "DELETE"]
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ]
     },
     "Transport": {
       "type": "object",
@@ -396,7 +477,11 @@
         }
       },
       "additionalProperties": false,
-      "required": ["websocket_route_template", "unauthorized_status", "close_codes"]
+      "required": [
+        "websocket_route_template",
+        "unauthorized_status",
+        "close_codes"
+      ]
     },
     "CloseCodes": {
       "type": "object",
@@ -415,7 +500,10 @@
         }
       },
       "additionalProperties": false,
-      "required": ["expired", "revoked"]
+      "required": [
+        "expired",
+        "revoked"
+      ]
     },
     "Extensions": {
       "type": "object",
@@ -435,7 +523,9 @@
         }
       },
       "additionalProperties": false,
-      "required": ["connections"]
+      "required": [
+        "connections"
+      ]
     },
     "ConnectionsExtension": {
       "type": "object",
@@ -451,7 +541,11 @@
         }
       },
       "additionalProperties": false,
-      "required": ["kind", "base_url", "route_templates"]
+      "required": [
+        "kind",
+        "base_url",
+        "route_templates"
+      ]
     },
     "ConnectionRouteTemplates": {
       "type": "object",
@@ -467,7 +561,11 @@
         }
       },
       "additionalProperties": false,
-      "required": ["list", "create", "update"]
+      "required": [
+        "list",
+        "create",
+        "update"
+      ]
     },
     "CredentialInstallExtension": {
       "description": "Safe public metadata only: no credential value, provider secret, task token, or\nprivate key ever crosses this discovery document.",
@@ -507,7 +605,9 @@
     },
     "CredentialInstallKind": {
       "type": "string",
-      "enum": ["openengine.capsule-credential-install/v1"]
+      "enum": [
+        "openengine.capsule-credential-install/v1"
+      ]
     },
     "RouteRef": {
       "type": "object",
@@ -520,15 +620,22 @@
         }
       },
       "additionalProperties": false,
-      "required": ["route_template", "method"]
+      "required": [
+        "route_template",
+        "method"
+      ]
     },
     "UploadUrlOrigin": {
       "type": "string",
-      "enum": ["same_origin"]
+      "enum": [
+        "same_origin"
+      ]
     },
     "SealedEnvelopeAlgorithm": {
       "type": "string",
-      "enum": ["RSA-OAEP-3072-SHA256"]
+      "enum": [
+        "RSA-OAEP-3072-SHA256"
+      ]
     },
     "CredentialInstallBounds": {
       "type": "object",

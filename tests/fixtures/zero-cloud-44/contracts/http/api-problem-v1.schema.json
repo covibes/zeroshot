@@ -10,7 +10,10 @@
       "type": "string"
     }
   },
-  "required": ["code", "message"],
+  "required": [
+    "code",
+    "message"
+  ],
   "$defs": {
     "ProblemCodeV1": {
       "type": "string",

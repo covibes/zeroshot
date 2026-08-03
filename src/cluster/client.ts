@@ -1,13 +1,14 @@
+/// <reference path="./ws.d.ts" />
 import { PROTOCOL_VERSION } from './generated/protocol.js';
 import type {
   AgentAttachParams, AgentAttachResult, ApplyParams, ApplyResult, DeleteParams, DeleteResult,
   GetParams, GetResult, InitializeParams, InitializeResult, LogsParams, LogsResult,
   PlanParams, PlanResult, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
-  StopParams, StopResult, UpdateParams, UpdateResult, WatchParams, WatchResult,
+  StopParams, StopResult, UpdateParams, UpdateResult, WatchParams,
 } from './generated/protocol.js';
 import { Connection } from './connection.js';
 import type { CallOptions } from './connection.js';
-import { addSocketListener } from './socket.js';
+import { addSocketEmitterListener, addSocketListener } from './socket.js';
 import type { WebSocketLike } from './socket.js';
 import { ClusterConfigError, ClusterProtocolError, ClusterTransportError, ClusterUpgradeError } from './errors.js';
 import {
@@ -15,6 +16,8 @@ import {
   LogsSubscriptionStream,
   WatchSubscriptionStream,
 } from './subscriptions.js';
+import type { WatchSubscription } from './subscriptions.js';
+export type { WatchSubscription } from './subscriptions.js';
 
 export interface WebSocketFactoryOptions {
   readonly headers?: Readonly<Record<string, string>>;
@@ -26,7 +29,6 @@ export interface ConnectOptions {
   readonly initialize?: InitializeParams;
   readonly headers?: Readonly<Record<string, string>>;
 }
-export interface WatchSubscription { readonly result: WatchResult; readonly stream: WatchSubscriptionStream; }
 export interface LogsSubscription { readonly result: LogsResult; readonly stream: LogsSubscriptionStream; }
 export interface AgentAttachSubscription { readonly result: AgentAttachResult; readonly stream: AgentAttachSubscriptionStream; }
 export interface CoherentWatchSubscription extends WatchSubscription { readonly snapshot: GetResult; }
@@ -131,13 +133,7 @@ async function defaultWebSocketFactory(
       protocols?: string | readonly string[],
     ) => WebSocketLike;
   }).WebSocket;
-  if (globalWebSocket) {
-    if (options?.headers && Object.keys(options.headers).length > 0) {
-      throw new ClusterConfigError(
-        'WebSocket upgrade headers require the ws library; the browser WebSocket API cannot carry request headers',
-        'HEADERS_UNSUPPORTED',
-      );
-    }
+  if (globalWebSocket && (!options?.headers || Object.keys(options.headers).length === 0)) {
     return new globalWebSocket(url, protocols);
   }
   try {
@@ -175,6 +171,7 @@ async function waitForOpen(socket: WebSocketLike, signal?: AbortSignal): Promise
   await new Promise<void>((resolve, reject) => {
     let settled = false;
     const removers: Array<() => void> = [];
+    let upgradeFailure: ClusterUpgradeError | ClusterTransportError | undefined;
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
@@ -187,22 +184,42 @@ async function waitForOpen(socket: WebSocketLike, signal?: AbortSignal): Promise
       'AbortError',
     )));
     const onUnexpectedResponse = (...args: unknown[]) => {
-      const response = args.find((value) => value !== null && typeof value === 'object' && 'statusCode' in value) as { statusCode?: unknown } | undefined;
+      const response = args.find(
+        (value) => value !== null && typeof value === 'object' && 'statusCode' in value,
+      ) as { statusCode?: unknown; resume?: () => void } | undefined;
       const status = response?.statusCode;
-      settle(() => reject(
-        typeof status === 'number'
-          ? new ClusterUpgradeError(status)
-          : new ClusterTransportError('WebSocket upgrade rejected', 'UPGRADE_REJECTED'),
-      ));
+      upgradeFailure = typeof status === 'number'
+        ? new ClusterUpgradeError(status)
+        : new ClusterTransportError('WebSocket upgrade rejected', 'UPGRADE_REJECTED');
+      response?.resume?.();
+      if (socket.terminate) {
+        socket.terminate();
+      } else {
+        settle(() => reject(upgradeFailure));
+      }
     };
     removers.push(
       addSocketListener(socket, 'open', () => settle(resolve)),
-      addSocketListener(socket, 'error', (error) => settle(() => reject(new ClusterTransportError('WebSocket failed to open', 'OPEN_FAILED', { cause: error })))),
-      addSocketListener(socket, 'close', () => settle(() => reject(new ClusterTransportError('WebSocket closed before opening', 'OPEN_FAILED')))),
-      addSocketListener(socket, 'unexpected-response', onUnexpectedResponse),
+      addSocketListener(socket, 'error', (error) => settle(() => reject(
+        upgradeFailure ??
+          new ClusterTransportError('WebSocket failed to open', 'OPEN_FAILED', { cause: error }),
+      ))),
+      addSocketListener(socket, 'close', () => settle(() => reject(
+        upgradeFailure ??
+          new ClusterTransportError('WebSocket closed before opening', 'OPEN_FAILED'),
+      ))),
+      addSocketEmitterListener(socket, 'unexpected-response', onUnexpectedResponse),
     );
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+async function disposeFailedSocket(socket: WebSocketLike): Promise<void> {
+  if (socket.readyState === 0 && socket.terminate) {
+    socket.terminate();
+  } else {
+    await socket.close();
+  }
 }
 
 export async function connect(url: string, options: ConnectOptions = {}): Promise<Connection> {
@@ -219,7 +236,7 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
     return connection;
   } catch (error) {
     if (socket) {
-      try { await socket.close(); }
+      try { await disposeFailedSocket(socket); }
       catch { /* preserve the construction error */ }
     }
     throw error;
@@ -241,7 +258,7 @@ export async function connectInitialized(url: string, options: ConnectOptions = 
     return { connection, client, initializeResult };
   } catch (error) {
     if (socket) {
-      try { await socket.close(); }
+      try { await disposeFailedSocket(socket); }
       catch { /* preserve the construction error */ }
     }
     throw error;
