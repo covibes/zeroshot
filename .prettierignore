@@ -7,3 +7,5 @@ lib/agent-cli-provider
 lib/cluster
 src/cluster/generated
 protocol/openengine-cluster/v1
+
+tests/fixtures/zero-cloud-44/contracts/http

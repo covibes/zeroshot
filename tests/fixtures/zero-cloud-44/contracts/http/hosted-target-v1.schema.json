@@ -1,0 +1,678 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HostedTargetDiscovery",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "$ref": "#/$defs/HostedTargetKind"
+    },
+    "adapter": {
+      "description": "Supported execution adapter.",
+      "$ref": "#/$defs/Adapter"
+    },
+    "protocol": {
+      "description": "Pinned live-session protocol.",
+      "$ref": "#/$defs/Protocol"
+    },
+    "binding": {
+      "$ref": "#/$defs/Binding"
+    },
+    "endpoint": {
+      "$ref": "#/$defs/Endpoint"
+    },
+    "pagination": {
+      "$ref": "#/$defs/Pagination"
+    },
+    "cache_policy": {
+      "$ref": "#/$defs/CachePolicy"
+    },
+    "schema_links": {
+      "$ref": "#/$defs/SchemaLinks"
+    },
+    "capsule_protocol": {
+      "$ref": "#/$defs/CapsuleProtocol"
+    },
+    "oauth": {
+      "$ref": "#/$defs/OAuthDiscovery"
+    },
+    "organization_binding": {
+      "$ref": "#/$defs/OrganizationBinding"
+    },
+    "capability_flags": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HostedTargetCapability"
+      }
+    },
+    "sizes": {
+      "$ref": "#/$defs/Sizes"
+    },
+    "session": {
+      "$ref": "#/$defs/SessionProjection"
+    },
+    "transport": {
+      "$ref": "#/$defs/Transport"
+    },
+    "extensions": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Extensions"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "adapter",
+    "protocol",
+    "binding",
+    "endpoint",
+    "pagination",
+    "cache_policy",
+    "schema_links",
+    "capsule_protocol",
+    "oauth",
+    "organization_binding",
+    "capability_flags",
+    "sizes",
+    "session",
+    "transport"
+  ],
+  "$defs": {
+    "HostedTargetKind": {
+      "type": "string",
+      "enum": [
+        "openengine.hosted-target/v1"
+      ]
+    },
+    "Adapter": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/AdapterName"
+        },
+        "major_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "major_version"
+      ]
+    },
+    "AdapterName": {
+      "type": "string",
+      "enum": [
+        "fargate",
+        "docker",
+        "local"
+      ]
+    },
+    "Protocol": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ProtocolName"
+        },
+        "major_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "major_version"
+      ]
+    },
+    "ProtocolName": {
+      "type": "string",
+      "enum": [
+        "openengine.cluster/v1"
+      ]
+    },
+    "Binding": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/BindingScope"
+        },
+        "auth_location": {
+          "$ref": "#/$defs/AuthLocation"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "auth_location"
+      ]
+    },
+    "BindingScope": {
+      "type": "string",
+      "enum": [
+        "organization"
+      ]
+    },
+    "AuthLocation": {
+      "type": "string",
+      "enum": [
+        "authorization_header"
+      ]
+    },
+    "Endpoint": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/UriString"
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapabilityFlag"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "capabilities"
+      ]
+    },
+    "UriString": {
+      "type": "string",
+      "format": "uri"
+    },
+    "CapabilityFlag": {
+      "type": "string",
+      "enum": [
+        "exec",
+        "log_stream"
+      ]
+    },
+    "Pagination": {
+      "type": "object",
+      "properties": {
+        "default_page_size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        },
+        "max_page_size": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "default_page_size",
+        "max_page_size"
+      ]
+    },
+    "CachePolicy": {
+      "type": "object",
+      "properties": {
+        "control": {
+          "$ref": "#/$defs/ControlCachePolicy"
+        },
+        "discovery": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "control"
+      ]
+    },
+    "ControlCachePolicy": {
+      "type": "string",
+      "enum": [
+        "no-store"
+      ]
+    },
+    "SchemaLinks": {
+      "type": "object",
+      "properties": {
+        "self": {
+          "$ref": "#/$defs/UriString"
+        },
+        "problem": {
+          "$ref": "#/$defs/UriString"
+        },
+        "errors": {
+          "$ref": "#/$defs/UriString"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "self",
+        "problem",
+        "errors"
+      ]
+    },
+    "CapsuleProtocol": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/CapsuleProtocolName"
+        },
+        "major_version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "base_url": {
+          "$ref": "#/$defs/UriString"
+        },
+        "route_templates": {
+          "$ref": "#/$defs/CapsuleRouteTemplates"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "major_version",
+        "base_url",
+        "route_templates"
+      ]
+    },
+    "CapsuleProtocolName": {
+      "type": "string",
+      "enum": [
+        "openengine.capsules/v1"
+      ]
+    },
+    "CapsuleRouteTemplates": {
+      "type": "object",
+      "properties": {
+        "allocate": {
+          "type": "string"
+        },
+        "list": {
+          "type": "string"
+        },
+        "inspect": {
+          "type": "string"
+        },
+        "terminate": {
+          "type": "string"
+        },
+        "limits": {
+          "type": "string"
+        },
+        "access": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "allocate",
+        "list",
+        "inspect",
+        "terminate",
+        "limits",
+        "access"
+      ]
+    },
+    "OAuthDiscovery": {
+      "type": "object",
+      "properties": {
+        "metadata_url": {
+          "$ref": "#/$defs/UriString"
+        },
+        "device_authorization_endpoint": {
+          "$ref": "#/$defs/UriString"
+        },
+        "token_endpoint": {
+          "$ref": "#/$defs/UriString"
+        },
+        "revocation_endpoint": {
+          "$ref": "#/$defs/UriString"
+        },
+        "client_id": {
+          "type": "string"
+        },
+        "device_grant_type": {
+          "$ref": "#/$defs/DeviceGrantType"
+        },
+        "device_exchange_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeviceExchangeField"
+          }
+        },
+        "audience": {
+          "$ref": "#/$defs/TargetAudience"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "metadata_url",
+        "device_authorization_endpoint",
+        "token_endpoint",
+        "revocation_endpoint",
+        "client_id",
+        "device_grant_type",
+        "device_exchange_fields",
+        "audience"
+      ]
+    },
+    "DeviceGrantType": {
+      "type": "string",
+      "enum": [
+        "urn:ietf:params:oauth:grant-type:device_code"
+      ]
+    },
+    "DeviceExchangeField": {
+      "type": "string",
+      "enum": [
+        "device_token",
+        "device_label"
+      ]
+    },
+    "TargetAudience": {
+      "type": "string",
+      "enum": [
+        "capsule"
+      ]
+    },
+    "OrganizationBinding": {
+      "type": "string",
+      "enum": [
+        "device_approval"
+      ]
+    },
+    "HostedTargetCapability": {
+      "type": "string",
+      "enum": [
+        "capsule_allocate",
+        "capsule_read",
+        "capsule_terminate",
+        "capsule_access",
+        "connections_onboarding"
+      ]
+    },
+    "Sizes": {
+      "type": "object",
+      "properties": {
+        "catalog": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CapsuleSize"
+          }
+        },
+        "default": {
+          "$ref": "#/$defs/CapsuleSize"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "catalog",
+        "default"
+      ]
+    },
+    "CapsuleSize": {
+      "description": "Public size names resolve to provider resources only on the server.",
+      "type": "string",
+      "enum": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ]
+    },
+    "SessionProjection": {
+      "type": "object",
+      "properties": {
+        "route_template": {
+          "type": "string"
+        },
+        "method": {
+          "$ref": "#/$defs/HttpMethod"
+        },
+        "cache_policy": {
+          "$ref": "#/$defs/ControlCachePolicy"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "route_template",
+        "method",
+        "cache_policy"
+      ]
+    },
+    "HttpMethod": {
+      "type": "string",
+      "enum": [
+        "GET",
+        "POST",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    "Transport": {
+      "type": "object",
+      "properties": {
+        "websocket_route_template": {
+          "type": "string"
+        },
+        "unauthorized_status": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "close_codes": {
+          "$ref": "#/$defs/CloseCodes"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "websocket_route_template",
+        "unauthorized_status",
+        "close_codes"
+      ]
+    },
+    "CloseCodes": {
+      "type": "object",
+      "properties": {
+        "expired": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "revoked": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "expired",
+        "revoked"
+      ]
+    },
+    "Extensions": {
+      "type": "object",
+      "properties": {
+        "connections": {
+          "$ref": "#/$defs/ConnectionsExtension"
+        },
+        "credential_install": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CredentialInstallExtension"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connections"
+      ]
+    },
+    "ConnectionsExtension": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "base_url": {
+          "$ref": "#/$defs/UriString"
+        },
+        "route_templates": {
+          "$ref": "#/$defs/ConnectionRouteTemplates"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "base_url",
+        "route_templates"
+      ]
+    },
+    "ConnectionRouteTemplates": {
+      "type": "object",
+      "properties": {
+        "list": {
+          "type": "string"
+        },
+        "create": {
+          "type": "string"
+        },
+        "update": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "list",
+        "create",
+        "update"
+      ]
+    },
+    "CredentialInstallExtension": {
+      "description": "Safe public metadata only: no credential value, provider secret, task token, or\nprivate key ever crosses this discovery document.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/CredentialInstallKind"
+        },
+        "grant": {
+          "$ref": "#/$defs/RouteRef"
+        },
+        "install": {
+          "$ref": "#/$defs/RouteRef"
+        },
+        "upload_url_origin": {
+          "$ref": "#/$defs/UploadUrlOrigin"
+        },
+        "sealed_envelope_algorithms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SealedEnvelopeAlgorithm"
+          }
+        },
+        "bounds": {
+          "$ref": "#/$defs/CredentialInstallBounds"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "grant",
+        "install",
+        "upload_url_origin",
+        "sealed_envelope_algorithms",
+        "bounds"
+      ]
+    },
+    "CredentialInstallKind": {
+      "type": "string",
+      "enum": [
+        "openengine.capsule-credential-install/v1"
+      ]
+    },
+    "RouteRef": {
+      "type": "object",
+      "properties": {
+        "route_template": {
+          "type": "string"
+        },
+        "method": {
+          "$ref": "#/$defs/HttpMethod"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "route_template",
+        "method"
+      ]
+    },
+    "UploadUrlOrigin": {
+      "type": "string",
+      "enum": [
+        "same_origin"
+      ]
+    },
+    "SealedEnvelopeAlgorithm": {
+      "type": "string",
+      "enum": [
+        "RSA-OAEP-3072-SHA256"
+      ]
+    },
+    "CredentialInstallBounds": {
+      "type": "object",
+      "properties": {
+        "max_envelope_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "max_body_bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "grant_ttl_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "max_clock_skew_seconds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 300
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "max_envelope_bytes",
+        "max_body_bytes",
+        "grant_ttl_seconds",
+        "max_clock_skew_seconds"
+      ]
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,10 +1,14 @@
-import type { AllocateRequest, Capsule, CapsuleAccess, CapsuleLimits, CapsuleListPage } from './types.ts';
+import { ZeroCloudV1TargetAdapter } from './zero-cloud-v1-adapter.js';
+import type { CreateTargetAdapterOptions, TargetAdapter } from './adapter-types.js';
+export type {
+  CreateTargetAdapterOptions,
+  CredentialInstallCapability,
+  TargetAdapter,
+} from './adapter-types.js';
 
-export interface TargetAdapter {
-  allocate(req: AllocateRequest, signal?: AbortSignal): Promise<Capsule>;
-  list(cursor?: string, signal?: AbortSignal): Promise<CapsuleListPage>;
-  inspect(capsuleId: string, signal?: AbortSignal): Promise<Capsule>;
-  terminate(capsuleId: string, signal?: AbortSignal): Promise<void>;
-  limits(signal?: AbortSignal): Promise<CapsuleLimits>;
-  access(capsuleId: string, signal?: AbortSignal): Promise<CapsuleAccess>;
+export function createTargetAdapter(options: CreateTargetAdapterOptions): TargetAdapter {
+  if (options.descriptor.adapter.majorVersion !== 1) {
+    throw new Error('Unsupported hosted target adapter version');
+  }
+  return new ZeroCloudV1TargetAdapter(options);
 }

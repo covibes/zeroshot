@@ -1,44 +1,49 @@
-import type { TargetAdapterError } from './errors.ts';
+import type { TargetAdapterError } from './errors.js';
 
 export interface TargetAccessTokenProvider {
   getAccessToken(signal?: AbortSignal): Promise<string>;
 }
 
-export type CapsuleState = 'provisioning' | 'running' | 'stopping' | 'terminated' | 'failed' | (string & {});
-
-export const KNOWN_CAPSULE_STATES = ['provisioning', 'running', 'stopping', 'terminated', 'failed'] as const;
+export type CapsuleState = 'provisioning' | 'ready' | 'terminating' | 'terminated' | 'failed';
+export const KNOWN_CAPSULE_STATES = ['provisioning', 'ready', 'terminating', 'terminated', 'failed'] as const;
 
 export interface Capsule {
   readonly id: string;
   readonly state: CapsuleState;
+  readonly label: string | null;
   readonly createdAt: string;
-  readonly [key: string]: unknown;
 }
 
 export interface CapsuleAccess {
-  readonly endpoint: string;
-  readonly token: string;
+  readonly protocol: 'openengine.cluster/v1';
+  readonly websocketUrl: string;
+  readonly accessToken: string;
+  readonly tokenType: 'Bearer';
   readonly expiresAt: string;
 }
 
 export interface CapsuleListPage {
-  readonly items: readonly Capsule[];
-  readonly cursor?: string;
+  readonly capsules: readonly Capsule[];
+  readonly nextCursor: string | null;
 }
 
 export interface CapsuleLimits {
-  readonly maxConcurrent: number;
-  readonly maxPerHour: number;
-  readonly [key: string]: unknown;
+  readonly activeCapsules: number;
+  readonly maxActiveCapsules: number | null;
 }
 
 export interface AllocateRequest {
   readonly idempotencyKey: string;
-  readonly profile: string;
+  readonly label?: string;
+  readonly size?: 'tiny' | 'small' | 'standard' | 'large';
+}
+export interface ListRequest {
+  readonly cursor?: string;
+  readonly limit?: number;
 }
 
 export interface HttpTransport {
-  fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response>;
+  fetch(url: string, init: RequestInit & { redirect: 'manual' }): Promise<Response>;
 }
 
 export interface Clock {
@@ -51,8 +56,4 @@ export interface RetryPolicy {
     elapsed: number,
     error: TargetAdapterError,
   ): { retry: boolean; delayMs: number };
-}
-
-export interface TargetDiscovery {
-  readonly capsuleV1: string;
 }

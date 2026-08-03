@@ -1,0 +1,10 @@
+{
+  "description": "capsule_id is required (present-and-null when not capsule-scoped); omitting the field entirely must fail closed.",
+  "schema": "capsule-v1-error",
+  "expect_schema_valid": false,
+  "body": {
+    "code": "not_found",
+    "message": "the requested capsule was not found",
+    "retryable": false
+  }
+}

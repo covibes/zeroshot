@@ -1,6 +1,5 @@
 {
   "validation": {
-    "adapters": ["typescript", "rust", "docs", "clone"],
     "checks": {
       "typescript": {
         "deadCode": {

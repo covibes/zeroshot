@@ -10,14 +10,16 @@ export {
   ClusterStateError,
   ClusterTimeoutError,
   ClusterTransportError,
+  ClusterUpgradeError,
 } from './errors.js';
 export { assertGraphProfile, assertGraphProfileSupported, assertGraphSpec } from './validators.js';
 export * from './payload-value.js';
 export * from './json-source.js';
-export { CLOSE_REASON_MAX_BYTES, CONNECTION_TRANSITIONS, PROTOCOL_DIAGNOSTIC_CAPACITY, Connection } from './connection.js';
+export { CONNECTION_TRANSITIONS, PROTOCOL_DIAGNOSTIC_CAPACITY, Connection } from './connection.js';
 export type {
   CallOptions,
   ConnectionState,
+  ConnectionCloseSnapshot,
 } from './connection.js';
 export type { WebSocketLike } from './socket.js';
 export {

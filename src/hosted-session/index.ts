@@ -1,2 +1,14 @@
-export { HostedSessionCoordinator } from './coordinator.js';
-export type { AccessResponse, HostedSessionInit, InitializedSession } from './types.js';
+export {
+  HostedSessionCoordinator,
+  HostedAuthenticationError,
+  HostedAuthorizationError,
+  HostedTransportUncertainError,
+} from './coordinator.js';
+export type {
+  HostedAccess,
+  HostedAccessAdapter,
+  HostedSessionInit,
+  HostedWatch,
+  HostedWatchOptions,
+  InitializedSession,
+} from './types.js';

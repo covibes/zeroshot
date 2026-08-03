@@ -1,0 +1,9 @@
+{
+  "description": "The complete openengine.target-session/v1 projection: only the bearer-bound organization.",
+  "schema": "target-session-v1",
+  "expect_schema_valid": true,
+  "body": {
+    "kind": "openengine.target-session/v1",
+    "organization_id": "018fd6f5-11a0-7a00-8000-000000000001"
+  }
+}

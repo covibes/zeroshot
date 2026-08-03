@@ -1,0 +1,8 @@
+{
+  "description": "message is required.",
+  "schema": "api-problem-v1",
+  "expect_schema_valid": false,
+  "body": {
+    "code": "invalid_request"
+  }
+}

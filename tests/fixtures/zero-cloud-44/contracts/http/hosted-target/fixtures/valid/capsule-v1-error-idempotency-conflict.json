@@ -1,0 +1,15 @@
+{
+  "description": "An idempotency key reused with different input is a permanent conflict and must not advertise Retry-After.",
+  "schema": "capsule-v1-error",
+  "expect_schema_valid": true,
+  "status": 409,
+  "headers": {
+    "cache-control": "no-store"
+  },
+  "body": {
+    "code": "idempotency_conflict",
+    "message": "idempotency key conflicts with prior input",
+    "capsule_id": null,
+    "retryable": false
+  }
+}

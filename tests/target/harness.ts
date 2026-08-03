@@ -1,7 +1,15 @@
-import { FakeCredentialStore } from '../../src/target/credential-store.ts';
-import type { HttpTransport, Clock } from '../../src/target/device-flow.ts';
-import type { BrowserOpener, TargetSessionDeps } from '../../src/target/target-session.ts';
-import type { SettingsPort, TargetRecord } from '../../src/target/target-registry.ts';
+import {
+  FakeCredentialStore,
+  type BrowserOpener,
+  type Clock,
+  type HttpTransport,
+  type RouteTemplate,
+  type SettingsPort,
+  type TargetDiscoveryDescriptor,
+  type TargetRecord,
+  type TargetSessionDeps,
+  type TargetSessionEndpoints,
+} from '../helpers/target-runtime.mjs';
 
 export { FakeCredentialStore };
 
@@ -11,28 +19,40 @@ interface CannedResponse {
   headers?: Record<string, string>;
 }
 
-interface RecordedRequest {
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  body: string | null;
+export interface RecordedRequest {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  readonly body: string | null;
+  readonly init: RequestInit & { redirect: 'error' | 'manual' };
 }
 
 export class FakeHttpTransport implements HttpTransport {
   readonly requests: RecordedRequest[] = [];
-  private readonly responses: CannedResponse[] = [];
+  readonly responses: Array<CannedResponse | Response> = [];
 
-  enqueue(response: CannedResponse): void {
-    this.responses.push(response);
+  enqueue(response: CannedResponse | Response): void;
+  enqueue(status: number, body: unknown, headers?: Record<string, string>): void;
+  enqueue(
+    responseOrStatus: CannedResponse | Response | number,
+    body?: unknown,
+    headers?: Record<string, string>,
+  ): void {
+    this.responses.push(
+      typeof responseOrStatus === 'number'
+        ? respond(responseOrStatus, body, headers)
+        : responseOrStatus,
+    );
   }
 
-  async fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response> {
+  async fetch(
+    url: string,
+    init: RequestInit & { redirect: 'error' | 'manual' },
+  ): Promise<Response> {
     const headers: Record<string, string> = {};
     if (init.headers) {
       if (init.headers instanceof Headers) {
-        init.headers.forEach((v, k) => {
-          headers[k] = v;
-        });
+        init.headers.forEach((v, k) => { headers[k] = v; });
       } else if (Array.isArray(init.headers)) {
         for (const [k, v] of init.headers) headers[k] = v;
       } else {
@@ -45,12 +65,14 @@ export class FakeHttpTransport implements HttpTransport {
       method: init.method ?? 'GET',
       headers,
       body: typeof init.body === 'string' ? init.body : null,
+      init,
     });
 
     const canned = this.responses.shift();
     if (!canned) {
       throw new Error(`FakeHttpTransport: no response queued for ${init.method} ${url}`);
     }
+    if (canned instanceof Response) return canned;
 
     const responseHeaders = new Headers(canned.headers);
     if (!responseHeaders.has('Content-Type')) {
@@ -99,10 +121,15 @@ export class FakeStderr {
   }
 }
 
-export function respond(status: number, body: unknown): { status: number; body: string } {
+export function respond(
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): CannedResponse {
   return {
     status,
     body: typeof body === 'string' ? body : JSON.stringify(body),
+    ...(headers === undefined ? {} : { headers }),
   };
 }
 
@@ -112,18 +139,93 @@ export function makeSettingsPort(initial: Record<string, unknown> = {}): Setting
     load() {
       return { ...data } as Record<string, unknown> & { _targets?: Record<string, TargetRecord> };
     },
+
     mutate(fn) {
       fn(data as Record<string, unknown> & { _targets?: Record<string, TargetRecord> });
     },
   };
 }
 
-export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.example') {
+function route(template: string, variables: readonly string[]): RouteTemplate {
   return {
-    deviceAuthorizationEndpoint: `${baseUrl}/oauth/device`,
-    tokenEndpoint: `${baseUrl}/oauth/token`,
-    revocationEndpoint: `${baseUrl}/oauth/revoke`,
-    clientId: 'cli',
+    template,
+    variables,
+    expand(values) {
+      let result = template.replace(/\{\?([^}]+)\}/g, (_match, names: string) => {
+        const query = names.split(',').flatMap((name) => {
+          const value = values[name];
+          return value === undefined
+            ? []
+            : [`${encodeURIComponent(name)}=${encodeURIComponent(String(value))}`];
+        });
+        return query.length === 0 ? '' : `?${query.join('&')}`;
+      });
+      result = result.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+        const value = String(values[name]);
+        if (value === '.' || value === '..') throw new Error('structural dot segment');
+        return encodeURIComponent(value);
+      });
+      return result;
+    },
+  };
+}
+
+export function makeDiscovery(
+  baseUrl: string = 'https://api.test.example',
+): TargetDiscoveryDescriptor {
+  return {
+    origin: baseUrl,
+    adapter: { name: 'fargate', majorVersion: 1 },
+    endpoint: `${baseUrl}/targets/primary`,
+    endpointCapabilities: ['exec', 'log_stream'],
+    pagination: { defaultPageSize: 20, maxPageSize: 100 },
+    sizes: { catalog: ['tiny', 'small', 'standard', 'large'], default: 'standard' },
+    oauth: {
+      metadataUrl: `${baseUrl}/.well-known/oauth`,
+      deviceAuthorizationEndpoint: `${baseUrl}/oauth/device`,
+      tokenEndpoint: `${baseUrl}/oauth/token`,
+      revocationEndpoint: `${baseUrl}/oauth/revoke`,
+      clientId: 'cli',
+      deviceGrantType: 'urn:ietf:params:oauth:grant-type:device_code',
+      audience: 'capsule',
+    },
+    session: { routeTemplate: route('/target-session', []), method: 'GET' },
+    capsule: {
+      baseUrl: `${baseUrl}/api/v1`,
+      routes: {
+        allocate: route('/orgs/{org_id}/capsules', ['org_id']),
+        list: route('/orgs/{org_id}/capsules{?cursor,limit}', ['org_id', 'cursor', 'limit']),
+        inspect: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
+        terminate: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
+        limits: route('/orgs/{org_id}/limits', ['org_id']),
+        access: route('/capsules/{capsule_id}/access', ['capsule_id']),
+      },
+    },
+    transport: {
+      websocketRouteTemplate: route('/v1/capsules/{capsule_id}/oecp', ['capsule_id']),
+      unauthorizedStatus: 401,
+      closeCodes: { expired: 4401, revoked: 4403 },
+    },
+    capabilityFlags: ['capsule_allocate', 'capsule_read', 'capsule_terminate', 'capsule_access', 'connections_onboarding'],
+    credentialInstall: null,
+    additional: {},
+  };
+}
+
+export function makeDiscoveryEndpoints(
+  baseUrl: string = 'https://api.test.example',
+): TargetSessionEndpoints {
+  const descriptor = makeDiscovery(baseUrl);
+  return {
+    deviceAuthorizationEndpoint: descriptor.oauth.deviceAuthorizationEndpoint,
+    tokenEndpoint: descriptor.oauth.tokenEndpoint,
+    revocationEndpoint: descriptor.oauth.revocationEndpoint,
+    clientId: descriptor.oauth.clientId,
+    capsuleApiBaseUrl: descriptor.capsule.baseUrl,
+    deviceGrantType: descriptor.oauth.deviceGrantType,
+    audience: descriptor.oauth.audience,
+    sessionEndpoint: `${baseUrl}/target-session`,
+    descriptor,
   };
 }
 
@@ -153,3 +255,4 @@ export function fakeLock(): () => Promise<() => Promise<void>> {
     return async () => {};
   };
 }
+

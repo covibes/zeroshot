@@ -1,113 +1,105 @@
-import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { describe, it } from 'node:test';
 import {
   discoverTargetSessionEndpoints,
   TargetDiscoveryError,
-} from '../../src/target/discovery.ts';
-import { FakeHttpTransport, respond } from './harness.ts';
+  type HttpTransport,
+} from '../helpers/target-runtime.mjs';
+import { oversizedJsonResponse } from './response-fixtures.mjs';
 
-function hostedDiscovery(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+const fixture = JSON.parse(readFileSync(resolve(
+  'tests/fixtures/zero-cloud-44/contracts/http/hosted-target/fixtures/valid/hosted-target-v1-minimal.json',
+), 'utf8')) as { body: Record<string, unknown> };
+const networkPathFixture = JSON.parse(readFileSync(resolve(
+  'tests/fixtures/zero-cloud-44/contracts/http/hosted-target/fixtures/invalid/hosted-target-v1-network-path-routes.json',
+), 'utf8')) as { body: Record<string, unknown> };
+
+function successfulTransport(): HttpTransport {
+  const oauth = fixture.body.oauth as Record<string, unknown>;
+  const responses = [fixture.body, {
+    device_authorization_endpoint: oauth.device_authorization_endpoint,
+    token_endpoint: oauth.token_endpoint,
+    revocation_endpoint: oauth.revocation_endpoint,
+  }];
   return {
-    kind: 'openengine.hosted-target/v1',
-    organization_binding: 'device_approval',
-    oauth: {
-      metadata_url: 'https://api.test.example/.well-known/openid-configuration',
-      device_authorization_endpoint: 'https://api.test.example/oauth/device',
-      token_endpoint: 'https://api.test.example/oauth/token',
-      client_id: 'cli',
+    async fetch() {
+      return new Response(JSON.stringify(responses.shift()), { status: 200 });
     },
-    ...overrides,
   };
 }
 
-function oauthMetadata(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    device_authorization_endpoint: 'https://api.test.example/oauth/device',
-    token_endpoint: 'https://api.test.example/oauth/token',
-    revocation_endpoint: 'https://api.test.example/oauth/revoke',
-    ...overrides,
-  };
-}
-
-describe('target session discovery', () => {
-  it('resolves advertised OAuth endpoints without posting to either discovery document', async () => {
-    const http = new FakeHttpTransport();
-    http.enqueue(respond(200, hostedDiscovery()));
-    http.enqueue(respond(200, oauthMetadata()));
-
-    const endpoints = await discoverTargetSessionEndpoints('https://api.test.example', http);
-
-    assert.deepEqual(endpoints, {
-      deviceAuthorizationEndpoint: 'https://api.test.example/oauth/device',
-      tokenEndpoint: 'https://api.test.example/oauth/token',
-      revocationEndpoint: 'https://api.test.example/oauth/revoke',
-      clientId: 'cli',
-    });
-    assert.deepEqual(
-      http.requests.map(({ url, method }) => ({ url, method })),
-      [
-        {
-          url: 'https://api.test.example/.well-known/openengine-hosted-target',
-          method: 'GET',
-        },
-        {
-          url: 'https://api.test.example/.well-known/openid-configuration',
-          method: 'GET',
-        },
-      ]
+describe('target discovery bootstrap', () => {
+  it('returns the complete server-validated session and capsule descriptor', async () => {
+    const result = await discoverTargetSessionEndpoints(
+      'https://hosted.openengine.example',
+      successfulTransport(),
+    );
+    assert.equal(result.audience, 'capsule');
+    assert.equal(result.sessionEndpoint, 'https://hosted.openengine.example/target-session');
+    assert.equal(result.descriptor.capsule.routes.access.expand({ capsule_id: 'cap/raw' }), '/capsules/cap%2Fraw/access');
+    assert.equal(
+      result.descriptor.capsule.routes.list.expand({
+        org_id: 'org',
+        cursor: 'opaque cursor~',
+        limit: 10,
+      }),
+      '/orgs/org/capsules?cursor=opaque%20cursor~&limit=10',
+    );
+    assert.throws(
+      () => result.descriptor.capsule.routes.terminate.expand({ org_id: 'org', capsule_id: '..' }),
+      /structural dot segment/,
     );
   });
 
-  it('rejects endpoints that leave the configured target origin', async () => {
-    const http = new FakeHttpTransport();
-    http.enqueue(
-      respond(
-        200,
-        hostedDiscovery({
-          oauth: {
-            metadata_url: 'https://api.test.example/.well-known/openid-configuration',
-            device_authorization_endpoint: 'https://attacker.example/oauth/device',
-            token_endpoint: 'https://api.test.example/oauth/token',
-            client_id: 'cli',
-          },
-        })
-      )
-    );
-
+  it('bounds the discovery response before parsing', async () => {
+    const http: HttpTransport = {
+      async fetch() {
+        return new Response('{}', {
+          status: 200,
+          headers: { 'content-length': String(64 * 1024 + 1) },
+        });
+      },
+    };
     await assert.rejects(
-      discoverTargetSessionEndpoints('https://api.test.example', http),
-      (error: unknown) =>
-        error instanceof TargetDiscoveryError &&
-        error.message.includes('must remain on the target origin')
+      discoverTargetSessionEndpoints('https://hosted.openengine.example', http),
+      TargetDiscoveryError,
     );
-    assert.equal(http.requests.length, 1);
   });
 
-  it('rejects OAuth metadata that disagrees with hosted-target discovery', async () => {
-    const http = new FakeHttpTransport();
-    http.enqueue(respond(200, hostedDiscovery()));
-    http.enqueue(
-      respond(200, oauthMetadata({ token_endpoint: 'https://api.test.example/oauth/other-token' }))
-    );
-
+  it('cancels a chunked discovery body as soon as its cumulative bound is exceeded', async () => {
+    const oversized = oversizedJsonResponse(64 * 1024);
+    const http: HttpTransport = { fetch: async () => oversized.response };
     await assert.rejects(
-      discoverTargetSessionEndpoints('https://api.test.example', http),
-      (error: unknown) =>
-        error instanceof TargetDiscoveryError && error.message.includes('does not match')
+      discoverTargetSessionEndpoints('https://hosted.openengine.example', http),
+      /size limit/,
     );
+    assert.equal(oversized.wasCancelled(), true);
   });
 
-  it('bounds discovery responses before parsing them', async () => {
-    const http = new FakeHttpTransport();
-    http.enqueue({
-      status: 200,
-      body: '{}',
-      headers: { 'Content-Length': String(64 * 1024 + 1) },
-    });
+  it('rejects the frozen network-path route fixture before OAuth metadata dispatch', async () => {
+    let requests = 0;
+    const http: HttpTransport = {
+      async fetch() {
+        requests += 1;
+        return new Response(JSON.stringify(networkPathFixture.body), { status: 200 });
+      },
+    };
+    await assert.rejects(
+      discoverTargetSessionEndpoints('https://hosted.openengine.example', http),
+      /safe relative route template/,
+    );
+    assert.equal(requests, 1);
+  });
 
-    await assert.rejects(discoverTargetSessionEndpoints('https://api.test.example', http), {
-      name: 'TargetDiscoveryError',
-      message: 'Target discovery failed: response exceeds the size limit',
-    });
+  it('rejects a changed response authority', async () => {
+    const response = new Response(JSON.stringify(fixture.body), { status: 200 });
+    Object.defineProperty(response, 'url', { value: 'https://attacker.example/discovery' });
+    const http: HttpTransport = { fetch: async () => response };
+    await assert.rejects(
+      discoverTargetSessionEndpoints('https://hosted.openengine.example', http),
+      /changed target route or authority/,
+    );
   });
 });

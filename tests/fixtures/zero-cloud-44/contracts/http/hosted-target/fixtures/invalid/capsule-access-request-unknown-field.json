@@ -1,0 +1,9 @@
+{
+  "description": "Access rejects extra fields even when the required protocol is correct.",
+  "schema": "capsule-access-request",
+  "expect_schema_valid": false,
+  "body": {
+    "protocol": "openengine.cluster/v1",
+    "token": "must-not-be-accepted"
+  }
+}

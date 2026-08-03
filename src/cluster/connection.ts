@@ -13,68 +13,32 @@ import { BoundedQueue } from './queue.js';
 import { addSocketListener } from './socket.js';
 import type { WebSocketLike } from './socket.js';
 import { assertDefinition, assertMethodResult } from './validators.js';
-if (!Object.prototype.hasOwnProperty.call(Symbol, 'asyncDispose')) {
-  Object.defineProperty(Symbol, 'asyncDispose', {
-    configurable: false, enumerable: false,
-    value: Symbol.for('Symbol.asyncDispose'), writable: false,
-  });
-}
-
-export type ConnectionState = 'OPEN' | 'CLOSING' | 'CLOSED';
-export const CONNECTION_TRANSITIONS: Readonly<Record<ConnectionState, readonly ConnectionState[]>> = Object.freeze({
-  OPEN: Object.freeze(['CLOSING'] as const),
-  CLOSING: Object.freeze(['CLOSED'] as const),
-  CLOSED: Object.freeze([] as const),
-});
-export const PROTOCOL_DIAGNOSTIC_CAPACITY = 128;
-export const CLOSE_REASON_MAX_BYTES = 123;
-const CLOSE_REASON_ENCODER = new TextEncoder();
-function boundedCloseReason(reason: string): string {
-  const retained: string[] = [];
-  const scratch = new Uint8Array(4);
-  let bytes = 0;
-  for (const codePoint of reason) {
-    const { written } = CLOSE_REASON_ENCODER.encodeInto(codePoint, scratch);
-    if (bytes + written > CLOSE_REASON_MAX_BYTES) break;
-    retained.push(codePoint);
-    bytes += written;
-  }
-  return retained.join('');
-}
-export interface CallOptions { readonly signal?: AbortSignal; readonly requestTimeoutMs?: number; }
-
-type Deferred<T> = {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-};
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void; let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((onResolve, onReject) => {
-    resolve = onResolve; reject = onReject;
-  });
-  return { promise, resolve, reject };
-}
-export type SubscriptionKind = 'watch' | 'logs' | 'agent/attach';
-export type SubscriptionRegistration = {
-  readonly id: string;
-  readonly kind: SubscriptionKind;
-  readonly queue: BoundedQueue<FrameRecord>;
-  overflowed: boolean;
-  cancelSent: boolean;
-  abortHandler?: () => void;
-  abortSignal?: AbortSignal;
-};
-export type EstablishedSubscription<R> = {
-  readonly result: R;
-  readonly registration: SubscriptionRegistration;
-};
-type PendingEntry = {
-  readonly id: string; readonly method: ClusterMethod; readonly expectedId: string;
-  readonly resolve: (value: unknown) => void; readonly reject: (reason: unknown) => void;
-  readonly subscriptionKind?: SubscriptionKind; settled: boolean;
-  abortHandler?: () => void; signal?: AbortSignal; timeout?: ReturnType<typeof setTimeout>;
-};
+import {
+  CONNECTION_TRANSITIONS,
+  PROTOCOL_DIAGNOSTIC_CAPACITY,
+  deferred,
+  type ConnectionCloseSnapshot,
+  type ConnectionState,
+} from './connection-state.js';
+export {
+  CONNECTION_TRANSITIONS,
+  PROTOCOL_DIAGNOSTIC_CAPACITY,
+  type ConnectionCloseSnapshot,
+  type ConnectionState,
+} from './connection-state.js';
+import type {
+  CallOptions,
+  EstablishedSubscription,
+  PendingEntry,
+  SubscriptionKind,
+  SubscriptionRegistration,
+} from './connection-types.js';
+export type {
+  CallOptions,
+  EstablishedSubscription,
+  SubscriptionKind,
+  SubscriptionRegistration,
+} from './connection-types.js';
 
 export class Connection {
   #state: ConnectionState = 'OPEN'; #sequence = 1;
@@ -85,7 +49,9 @@ export class Connection {
   readonly #ownedSubscriptions = new WeakSet<SubscriptionRegistration>();
   #closePromise?: Promise<void>;
   #closeCode: number | undefined;
-  #closeReason: string | undefined;
+  readonly #closedCompletion = deferred<ConnectionCloseSnapshot>();
+  readonly closed: Promise<ConnectionCloseSnapshot> = this.#closedCompletion.promise;
+  #closeSnapshot: ConnectionCloseSnapshot | undefined;
   readonly closeDiagnostics: unknown[] = [];
   readonly protocolDiagnostics: ClusterProtocolError[] = [];
 
@@ -103,7 +69,8 @@ export class Connection {
   get pendingSize(): number { return this.#pending.size; }
   get subscriptionCount(): number { return this.#subscriptions.size; }
   get closeCode(): number | undefined { return this.#closeCode; }
-  get closeReason(): string | undefined { return this.#closeReason; }
+  get closeReason(): undefined { return undefined; }
+  get closeSnapshot(): ConnectionCloseSnapshot | undefined { return this.#closeSnapshot; }
   call<M extends UnaryClusterMethod>(method: M, params: ClusterMethodParams[M], options: CallOptions = {}): Promise<ClusterMethodResults[M]> {
     if (!(UNARY_METHODS as readonly string[]).includes(method)) {
       throw new ClusterConfigError(`${method} is a subscription method`, 'INVALID_METHOD');
@@ -289,12 +256,9 @@ export class Connection {
     const first = args[0];
     if (typeof first === 'number') {
       this.#closeCode = first;
-      const raw = args.length > 1 ? String(args[1]) : undefined;
-      this.#closeReason = raw === undefined ? undefined : boundedCloseReason(raw);
     } else if (first !== null && typeof first === 'object') {
-      const event = first as { code?: unknown; reason?: unknown };
+      const event = first as { code?: unknown };
       if (typeof event.code === 'number') this.#closeCode = event.code;
-      if (typeof event.reason === 'string') this.#closeReason = boundedCloseReason(event.reason);
     }
   }
   #startClose(sendCancels: boolean): Promise<void> {
@@ -319,6 +283,11 @@ export class Connection {
       try { remove(); } catch (error) { this.recordDiagnostic(error); }
     }
     this.#transition('CLOSED');
+    this.#closeSnapshot = Object.freeze({
+      code: this.#closeCode ?? null,
+      reason: null,
+    });
+    this.#closedCompletion.resolve(this.#closeSnapshot);
   }
   #transition(to: ConnectionState): void {
     if (!CONNECTION_TRANSITIONS[this.#state].includes(to)) throw new ClusterInternalError(`illegal connection transition ${this.#state} -> ${to}`, 'ILLEGAL_STATE_TRANSITION');

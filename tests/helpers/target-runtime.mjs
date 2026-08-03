@@ -1,0 +1,28 @@
+import target from '../../lib/target/index.js';
+
+export const {
+  CredentialStoreUnavailableError,
+  DeviceFlowDeniedError,
+  DeviceFlowExpiredError,
+  FakeCredentialStore,
+  KeyringCredentialStore,
+  LoginRequiredError,
+  TargetDiscoveryError,
+  TargetNameExistsError,
+  TargetNameInvalidError,
+  TargetNotFoundError,
+  TargetSessionManager,
+  TargetUrlInvalidError,
+  addTarget,
+  discoverTarget,
+  discoverTargetSessionEndpoints,
+  getTarget,
+  listTargets,
+  normalizeAndValidateUrl,
+  pollForToken,
+  removeTarget,
+  requestDeviceCode,
+  targetServiceKey,
+  validateTargetName,
+  TARGET_ACCOUNT,
+} = target;

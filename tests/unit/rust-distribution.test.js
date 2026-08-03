@@ -864,9 +864,6 @@ describe('Rust npm shim integration', function () {
     assert.deepStrictEqual(rootPackage.files, [
       'src/',
       'lib/',
-      '!src/target/register-hosted-commands.ts',
-      '!lib/target/register-hosted-commands.js',
-      '!lib/target/register-hosted-commands.d.ts',
       'bin/',
       'cli/',
       'task-lib/',

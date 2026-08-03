@@ -1,0 +1,97 @@
+{
+  "description": "Discovery must never carry an organization value. additionalProperties is additive at the top level (so this is still schema-valid), but the dedicated privacy scan must catch the leaked key.",
+  "schema": "hosted-target-v1",
+  "expect_schema_valid": true,
+  "expect_privacy_safe": false,
+  "expect_endpoint_safe": true,
+  "body": {
+    "kind": "openengine.hosted-target/v1",
+    "adapter": {
+      "name": "fargate",
+      "major_version": 1
+    },
+    "protocol": {
+      "name": "openengine.cluster/v1",
+      "major_version": 1
+    },
+    "binding": {
+      "scope": "organization",
+      "auth_location": "authorization_header"
+    },
+    "endpoint": {
+      "url": "https://hosted.openengine.example/targets/primary",
+      "capabilities": [
+        "exec"
+      ]
+    },
+    "pagination": {
+      "default_page_size": 20,
+      "max_page_size": 100
+    },
+    "cache_policy": {
+      "control": "no-store"
+    },
+    "schema_links": {
+      "self": "https://hosted.openengine.example/contracts/hosted-target-v1.schema.json",
+      "problem": "https://hosted.openengine.example/contracts/api-problem-v1.schema.json",
+      "errors": "https://hosted.openengine.example/contracts/capsule-v1-error.schema.json"
+    },
+    "capsule_protocol": {
+      "name": "openengine.capsules/v1",
+      "major_version": 1,
+      "base_url": "https://hosted.openengine.example/api/v1",
+      "route_templates": {
+        "allocate": "/orgs/{org_id}/capsules",
+        "list": "/orgs/{org_id}/capsules{?cursor,limit}",
+        "inspect": "/orgs/{org_id}/capsules/{capsule_id}",
+        "terminate": "/orgs/{org_id}/capsules/{capsule_id}",
+        "limits": "/orgs/{org_id}/limits",
+        "access": "/capsules/{capsule_id}/access"
+      }
+    },
+    "oauth": {
+      "metadata_url": "https://hosted.openengine.example/.well-known/oauth-authorization-server/auth",
+      "device_authorization_endpoint": "https://hosted.openengine.example/auth/device/code",
+      "token_endpoint": "https://hosted.openengine.example/auth/token",
+      "client_id": "cli",
+      "revocation_endpoint": "https://hosted.openengine.example/auth/revoke",
+      "device_grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+      "device_exchange_fields": [
+        "device_token",
+        "device_label"
+      ],
+      "audience": "capsule"
+    },
+    "organization_binding": "device_approval",
+    "capability_flags": [
+      "capsule_allocate",
+      "capsule_read",
+      "capsule_terminate",
+      "capsule_access",
+      "connections_onboarding"
+    ],
+    "sizes": {
+      "catalog": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ],
+      "default": "standard"
+    },
+    "session": {
+      "route_template": "/target-session",
+      "method": "GET",
+      "cache_policy": "no-store"
+    },
+    "transport": {
+      "websocket_route_template": "/v1/capsules/{capsule_id}/oecp",
+      "unauthorized_status": 401,
+      "close_codes": {
+        "expired": 4401,
+        "revoked": 4403
+      }
+    },
+    "organization_id": "org_12345"
+  }
+}

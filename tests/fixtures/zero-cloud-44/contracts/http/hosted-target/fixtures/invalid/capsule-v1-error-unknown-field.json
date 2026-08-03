@@ -1,0 +1,12 @@
+{
+  "description": "The one capsule error envelope is closed; unknown fields fail closed.",
+  "schema": "capsule-v1-error",
+  "expect_schema_valid": false,
+  "body": {
+    "code": "not_found",
+    "message": "the requested capsule was not found",
+    "capsule_id": null,
+    "retryable": false,
+    "provider_error": "must-not-cross-the-wire"
+  }
+}

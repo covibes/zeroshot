@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.hosted-target.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "rootDir": "src",
+    "outDir": ".hosted-target-build/cjs",
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": false,
+    "declarationMap": false,
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": false
+  },
+  "include": ["src/hosted-target/**/*.ts", "src/target/discovery.ts", "src/target/device-flow.ts"]
+}

@@ -65,6 +65,7 @@ function evaluate(type: PayloadType, value: unknown, path: string): InternalIssu
   }
 }
 
+/** Return the first deterministic schema issue without retaining the input value. */
 export function firstInputValidationIssue(
   type: PayloadType,
   value: unknown,

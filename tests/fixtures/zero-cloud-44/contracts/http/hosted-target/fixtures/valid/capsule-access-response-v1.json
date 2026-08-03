@@ -1,0 +1,18 @@
+{
+  "description": "Access returns one fresh, memory-only bearer and the pinned protocol; the token is a non-secret canary.",
+  "schema": "capsule-access-response",
+  "expect_schema_valid": true,
+  "expect_token_canary": "fixture-access-token-canary-not-a-credential",
+  "response": {
+    "operation": "access",
+    "status": 200,
+    "headers": {"cache-control": "no-store"}
+  },
+  "body": {
+    "protocol": "openengine.cluster/v1",
+    "websocket_url": "wss://hosted.openengine.example/v1/capsules/cap_opaque-access-04/oecp",
+    "access_token": "fixture-access-token-canary-not-a-credential",
+    "token_type": "Bearer",
+    "expires_at": "2026-08-03T12:10:00Z"
+  }
+}

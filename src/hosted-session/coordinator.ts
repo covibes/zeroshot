@@ -1,26 +1,48 @@
-import { ClusterConfigError, connectInitialized } from '../cluster/index.js';
-import type { ServerCapabilities, GraphProfile } from '../cluster/index.js';
-import type { ConnectOptions } from '../cluster/index.js';
-import type { AccessResponse, HostedSessionInit, InitializedSession } from './types.js';
+import {
+  ClusterConfigError,
+  ClusterUpgradeError,
+  connectInitialized,
+  type ServerCapabilities,
+  type GraphProfile,
+} from '../cluster/index.js';
+import type {
+  HostedAccess,
+  HostedSessionInit,
+  HostedWatch,
+  HostedWatchOptions,
+  InitializedSession,
+} from './types.js';
+import { normalizedAuthority, validateHostedAccess } from './authority.js';
+import { HostedAuthenticationError } from './errors.js';
+import { ReconnectingHostedWatch } from './reconnecting-watch.js';
+export {
+  HostedAuthenticationError,
+  HostedAuthorizationError,
+  HostedTransportUncertainError,
+} from './errors.js';
+
 
 function combineSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
-  const defined = signals.filter((s): s is AbortSignal => s !== undefined);
+  const defined = signals.filter((signal): signal is AbortSignal => signal !== undefined);
   if (defined.length === 0) return undefined;
   if (defined.length === 1) return defined[0];
   return AbortSignal.any(defined);
 }
 
 export class HostedSessionCoordinator {
-  readonly #getAccess: (signal?: AbortSignal) => Promise<AccessResponse>;
-  readonly #connectOptions: Omit<ConnectOptions, 'headers' | 'signal'> | undefined;
+  readonly #init: HostedSessionInit;
+  readonly #targetAuthority: string;
   readonly #clock: { now(): number };
   readonly #closeController = new AbortController();
+  readonly #sessions = new Set<InitializedSession>();
   #referenceCapabilities: ServerCapabilities | undefined;
   #closed = false;
 
   constructor(init: HostedSessionInit) {
-    this.#getAccess = init.getAccess;
-    this.#connectOptions = init.connectOptions;
+    if (init.capsuleId.length === 0)
+      throw new ClusterConfigError('capsuleId must not be empty', 'INVALID_CAPSULE_ID');
+    this.#init = init;
+    this.#targetAuthority = normalizedAuthority(init.targetAuthority);
     this.#clock = init.clock ?? Date;
   }
 
@@ -34,72 +56,107 @@ export class HostedSessionCoordinator {
   async replace(signal?: AbortSignal): Promise<InitializedSession> {
     this.#requireNotClosed();
     const session = await this.#createSession(signal);
-    this.#verifyCapabilities(session.initializeResult.capabilities, session);
-    return session;
+    try {
+      if (this.#referenceCapabilities !== undefined) {
+        this.#verifyCapabilities(
+          this.#referenceCapabilities,
+          session.initializeResult.capabilities
+        );
+      }
+      return session;
+    } catch (error) {
+      await session.connection.close();
+      throw error;
+    }
   }
 
-  renewalDeadline(access: AccessResponse, receivedAt: number): number {
+  async watch(options: HostedWatchOptions): Promise<HostedWatch> {
+    const session = await this.open(options.signal);
+    try {
+      const subscription = await session.client.watch(
+        options.params,
+        options.signal === undefined ? {} : { signal: options.signal }
+      );
+      const hosted = new ReconnectingHostedWatch(
+        (replacementSignal) => this.replace(replacementSignal),
+        session,
+        subscription,
+        options.signal,
+      );
+      options.signal?.addEventListener(
+        'abort',
+        () => {
+          void hosted.cancel().catch(() => undefined);
+        },
+        { once: true }
+      );
+      if (options.signal?.aborted) {
+        await hosted.cancel();
+        throw options.signal.reason ?? new DOMException('hosted watch aborted', 'AbortError');
+      }
+      return hosted;
+    } catch (error) {
+      await session.connection.close();
+      throw error;
+    }
+  }
+
+  renewalDeadline(access: HostedAccess, receivedAt: number): number {
     const expiresAt = Date.parse(access.expiresAt);
-    if (Number.isNaN(expiresAt)) {
-      throw new ClusterConfigError(`invalid expiresAt: ${access.expiresAt}`, 'INVALID_EXPIRY');
+    if (!Number.isFinite(expiresAt) || expiresAt <= receivedAt) {
+      throw new ClusterConfigError(
+        'access expiry must be a future RFC 3339 timestamp',
+        'INVALID_ACCESS_EXPIRY'
+      );
     }
     const lifetime = expiresAt - receivedAt;
-    return Math.min(expiresAt - 30_000, receivedAt + 0.8 * lifetime);
+    const lead = Math.max(5_000, Math.min(60_000, Math.floor(lifetime * 0.1)));
+    return Math.max(receivedAt, expiresAt - lead);
   }
 
   async close(): Promise<void> {
+    if (this.#closed) return;
     this.#closed = true;
-    this.#closeController.abort();
+    this.#closeController.abort(new DOMException('coordinator closed', 'AbortError'));
+    const sessions = [...this.#sessions];
+    await Promise.all(sessions.map((session) => session.connection.close()));
+    this.#sessions.clear();
   }
 
   async #createSession(signal?: AbortSignal): Promise<InitializedSession> {
     const combined = combineSignals([signal, this.#closeController.signal]);
-    const access = await this.#getAccess(combined);
-    const expiresAt = Date.parse(access.expiresAt);
-    if (Number.isNaN(expiresAt)) {
-      throw new ClusterConfigError(`invalid expiresAt: ${access.expiresAt}`, 'INVALID_EXPIRY');
-    }
-    if (expiresAt <= this.#clock.now()) {
-      throw new ClusterConfigError('access token is already expired', 'ACCESS_EXPIRED');
-    }
-
-    let endpoint: URL;
+    const access = await this.#init.adapter.access(this.#init.capsuleId, combined);
+    validateHostedAccess(access, this.#targetAuthority);
+    const receivedAt = this.#clock.now();
+    this.renewalDeadline(access, receivedAt);
     try {
-      endpoint = new URL(access.endpoint);
-    } catch {
-      throw new ClusterConfigError('hosted access endpoint is invalid', 'INVALID_ENDPOINT');
+      const session = await connectInitialized(access.websocketUrl, {
+        ...this.#init.connectOptions,
+        headers: { Authorization: `Bearer ${access.accessToken}` },
+        ...(combined === undefined ? {} : { signal: combined }),
+      });
+      this.#sessions.add(session);
+      void session.connection.closed.then(() => this.#sessions.delete(session));
+      return session;
+    } catch (error) {
+      if (error instanceof ClusterUpgradeError && error.status === 401)
+        throw new HostedAuthenticationError();
+      throw error;
     }
-    if (endpoint.protocol !== 'wss:') {
-      throw new ClusterConfigError('hosted access endpoint must use wss', 'INSECURE_ENDPOINT');
-    }
-
-    return connectInitialized(endpoint.href, {
-      ...this.#connectOptions,
-      headers: { Authorization: `Bearer ${access.token}` },
-      ...(combined !== undefined ? { signal: combined } : {}),
-    });
   }
 
-  #verifyCapabilities(incoming: ServerCapabilities, session: InitializedSession): void {
-    if (!this.#referenceCapabilities) return;
-    const ref = this.#referenceCapabilities;
-    const mismatches: string[] = [];
 
-    if (ref.graphProfiles) {
-      const incomingProfiles = new Set<GraphProfile>(incoming.graphProfiles ?? []);
-      for (const profile of ref.graphProfiles) {
-        if (!incomingProfiles.has(profile)) mismatches.push(`missing graphProfile: ${profile}`);
-      }
-    }
-    if (ref.logs && !incoming.logs) mismatches.push('missing capability: logs');
-    if (ref.agentAttach && !incoming.agentAttach)
-      mismatches.push('missing capability: agentAttach');
-
-    if (mismatches.length > 0) {
-      void session.connection.close();
+  #verifyCapabilities(reference: ServerCapabilities, incoming: ServerCapabilities): void {
+    const referenceProfiles = new Set<GraphProfile>(reference.graphProfiles ?? []);
+    const incomingProfiles = new Set<GraphProfile>(incoming.graphProfiles ?? []);
+    if (
+      (reference.logs && !incoming.logs) ||
+      (reference.agentAttach && !incoming.agentAttach) ||
+      [...referenceProfiles].some((profile) => !incomingProfiles.has(profile))
+    ) {
       throw new ClusterConfigError(
-        `replacement capabilities incompatible: ${mismatches.join(', ')}`,
-        'INCOMPATIBLE_CAPABILITIES'
+        'replacement connection removed required server capabilities',
+        'CAPABILITY_REGRESSION'
       );
     }
   }

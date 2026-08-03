@@ -3,6 +3,7 @@ import { MAX_FRAME_BYTES } from './generated/protocol.js';
 
 export const MAX_REQUEST_BYTES = MAX_FRAME_BYTES;
 
+/** Decode one already-bounded request body with strict UTF-8 and JSON handling. */
 export function decodeBoundedJson(bytes: Uint8Array): unknown {
   if (bytes.length > MAX_REQUEST_BYTES) {
     throw new ClusterRequestError(

@@ -29,7 +29,5 @@ export async function acquireTargetLock(targetId: string): Promise<() => Promise
     },
   });
 
-  return async () => {
-    await release();
-  };
+  return release;
 }

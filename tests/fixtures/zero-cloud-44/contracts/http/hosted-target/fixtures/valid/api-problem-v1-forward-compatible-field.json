@@ -1,0 +1,14 @@
+{
+  "description": "An unknown top-level field on the problem envelope must not break older clients.",
+  "schema": "api-problem-v1",
+  "expect_schema_valid": true,
+  "status": 500,
+  "headers": {
+    "cache-control": "no-store"
+  },
+  "body": {
+    "code": "internal_error",
+    "message": "an internal error occurred",
+    "trace_id": "trace-8f2b1c"
+  }
+}

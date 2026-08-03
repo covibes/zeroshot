@@ -1,19 +1,19 @@
 import crypto from 'node:crypto';
+import type { TargetDiscoveryDescriptor } from './discovery.js';
 
 export interface TargetRecord {
   readonly id: string;
   readonly url: string;
   readonly adapterVersion: string;
   readonly deviceToken: string;
-  readonly organization?: { readonly id: string; readonly name: string };
+  readonly organization?: { readonly id: string; readonly name?: string };
+  readonly refreshInvalidated?: true;
   readonly createdAt: string;
 }
 
 export class TargetNameInvalidError extends Error {
   constructor(name: string) {
-    super(
-      `Invalid target name "${name}". Must be 1-64 characters, alphanumeric and hyphens only.`,
-    );
+    super(`Invalid target name "${name}". Must be 1-64 characters, alphanumeric and hyphens only.`);
     this.name = 'TargetNameInvalidError';
   }
 }
@@ -40,7 +40,11 @@ export class TargetUrlInvalidError extends Error {
 }
 
 const TARGET_NAME_PATTERN = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?$/;
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+const LOOPBACK_HOSTS: Readonly<Record<string, true>> = Object.freeze({
+  '127.0.0.1': true,
+  '::1': true,
+  '[::1]': true,
+});
 
 export function validateTargetName(name: string): void {
   if (!TARGET_NAME_PATTERN.test(name) || name.length > 64) {
@@ -49,6 +53,9 @@ export function validateTargetName(name: string): void {
 }
 
 export function normalizeAndValidateUrl(rawUrl: string): string {
+  if (/[\u0000-\u0020\u007f]|\s/u.test(rawUrl)) {
+    throw new TargetUrlInvalidError(rawUrl, 'URL contains forbidden whitespace or controls');
+  }
   let parsed: URL;
   try {
     parsed = new URL(rawUrl);
@@ -64,16 +71,20 @@ export function normalizeAndValidateUrl(rawUrl: string): string {
     throw new TargetUrlInvalidError(rawUrl, 'URL must not contain query or fragment');
   }
 
-  const isLoopback = LOOPBACK_HOSTS.has(parsed.hostname);
-  if (parsed.protocol !== 'https:' && !isLoopback) {
-    throw new TargetUrlInvalidError(rawUrl, 'HTTPS required for non-loopback targets');
+  const isLoopback = LOOPBACK_HOSTS[parsed.hostname] === true;
+  const protocolAllowed =
+    parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopback);
+  if (!protocolAllowed) {
+    throw new TargetUrlInvalidError(
+      rawUrl,
+      'HTTPS required except for literal loopback HTTP targets'
+    );
+  }
+  if (parsed.pathname !== '/') {
+    throw new TargetUrlInvalidError(rawUrl, 'URL must contain only an origin');
   }
 
-  let normalized = `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
-  if (normalized.endsWith('/') && normalized.length > 1) {
-    normalized = normalized.slice(0, -1);
-  }
-  return normalized;
+  return parsed.origin;
 }
 
 interface SettingsWithTargets {
@@ -90,6 +101,7 @@ export function addTarget(
   name: string,
   rawUrl: string,
   settings: SettingsPort,
+  descriptor: TargetDiscoveryDescriptor
 ): TargetRecord {
   validateTargetName(name);
   const url = normalizeAndValidateUrl(rawUrl);
@@ -98,11 +110,14 @@ export function addTarget(
   if (existing._targets?.[name]) {
     throw new TargetNameExistsError(name);
   }
+  if (!descriptor || descriptor.origin !== url || descriptor.adapter.majorVersion !== 1) {
+    throw new TargetUrlInvalidError(rawUrl, 'validated discovery does not match the target origin');
+  }
 
   const record: TargetRecord = {
     id: crypto.randomUUID(),
     url,
-    adapterVersion: 'v1',
+    adapterVersion: `v${descriptor.adapter.majorVersion}`,
     deviceToken: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
   };
@@ -117,10 +132,7 @@ export function addTarget(
   return record;
 }
 
-export function removeTarget(
-  name: string,
-  settings: SettingsPort,
-): TargetRecord {
+export function removeTarget(name: string, settings: SettingsPort): TargetRecord {
   const existing = settings.load();
   const record = existing._targets?.[name];
   if (!record) {
@@ -136,17 +148,12 @@ export function removeTarget(
   return record;
 }
 
-export function getTarget(
-  name: string,
-  settings: SettingsPort,
-): TargetRecord | null {
+export function getTarget(name: string, settings: SettingsPort): TargetRecord | null {
   const existing = settings.load();
   return existing._targets?.[name] ?? null;
 }
 
-export function listTargets(
-  settings: SettingsPort,
-): Array<{ name: string; record: TargetRecord }> {
+export function listTargets(settings: SettingsPort): Array<{ name: string; record: TargetRecord }> {
   const existing = settings.load();
   const targets = existing._targets ?? {};
   return Object.entries(targets).map(([name, record]) => ({ name, record }));
@@ -154,8 +161,8 @@ export function listTargets(
 
 export function updateTargetOrganization(
   name: string,
-  organization: { id: string; name: string },
-  settings: SettingsPort,
+  organization: { id: string; name?: string },
+  settings: SettingsPort
 ): void {
   const existing = settings.load();
   if (!existing._targets?.[name]) {
@@ -169,6 +176,32 @@ export function updateTargetOrganization(
         ...target,
         organization,
       };
+    }
+  });
+}
+
+export function targetRefreshIsInvalidated(
+  name: string,
+  settings: SettingsPort,
+): boolean {
+  return settings.load()._targets?.[name]?.refreshInvalidated === true;
+}
+
+export function setTargetRefreshInvalidated(
+  name: string,
+  invalidated: boolean,
+  settings: SettingsPort,
+): void {
+  settings.mutate((state) => {
+    const targets = state._targets;
+    const target = targets?.[name];
+    if (targets === undefined || target === undefined) throw new TargetNotFoundError(name);
+    if (invalidated) {
+      targets[name] = { ...target, refreshInvalidated: true };
+    } else {
+      const active = { ...target };
+      Reflect.deleteProperty(active, 'refreshInvalidated');
+      targets[name] = active;
     }
   });
 }
