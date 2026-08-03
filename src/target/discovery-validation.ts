@@ -1,5 +1,5 @@
-import { TargetDiscoveryError } from './discovery-errors.ts';
-import { routeTemplate, type RouteTemplate } from './route-template.ts';
+import { TargetDiscoveryError } from './discovery-errors.js';
+import { routeTemplate, type RouteTemplate } from './route-template.js';
 
 export interface CredentialInstallDescriptor {
   readonly kind: 'openengine.capsule-credential-install/v1';
@@ -76,6 +76,19 @@ export function exactStringSet(
   return Object.freeze([...value]) as readonly string[];
 }
 
+function hasForbiddenUrlComponent(
+  url: URL,
+  value: string,
+  protocols: readonly string[],
+): boolean {
+  return !protocols.includes(url.protocol) ||
+    url.username !== '' ||
+    url.password !== '' ||
+    url.search !== '' ||
+    url.hash !== '' ||
+    url.href !== value;
+}
+
 export function sameOriginUrl(
   value: unknown,
   field: string,
@@ -91,8 +104,7 @@ export function sameOriginUrl(
   } catch {
     throw new TargetDiscoveryError(`${field} must be an absolute URL`);
   }
-  if (!protocols.includes(url.protocol) || url.username || url.password ||
-      url.search || url.hash || url.href !== value) {
+  if (hasForbiddenUrlComponent(url, value, protocols)) {
     throw new TargetDiscoveryError(`${field} contains forbidden URL components`);
   }
   if (url.origin !== origin) {

@@ -1,4 +1,4 @@
-import { TargetDiscoveryError } from './discovery-errors.ts';
+import { TargetDiscoveryError } from './discovery-errors.js';
 import {
   closedRecord,
   exact,
@@ -8,8 +8,8 @@ import {
   sameOriginUrl,
   stringField,
   type CredentialInstallDescriptor,
-} from './discovery-validation.ts';
-import { routeTemplate } from './route-template.ts';
+} from './discovery-validation.js';
+import { routeTemplate } from './route-template.js';
 
 export function parseAdapter(discovery: Record<string, unknown>): {
   readonly name: 'fargate' | 'docker' | 'local';

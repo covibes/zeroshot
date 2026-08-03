@@ -1,3 +1,4 @@
+/** Shared wire limits for every hosted-target response and retry path. */
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const MAX_PAGINATION_PAGES = 100;
 export const MAX_RETRY_ATTEMPTS = 3;

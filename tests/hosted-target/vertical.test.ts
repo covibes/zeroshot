@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import {
   createTargetAdapter,
   type TargetAdapter,
-} from '../../src/hosted-target/index.ts';
+} from '../helpers/hosted-target-runtime.mjs';
 import {
   discoverTarget,
   TargetSessionManager,
@@ -22,7 +22,7 @@ import {
   makeSettingsPort,
   makeTarget,
   respond,
-} from '../target/harness.ts';
+} from '../target/harness.mjs';
 import { waitForSocketRequest } from '../helpers/wait-for-socket-request.js';
 
 const require = createRequire(resolve('tests/hosted-target/vertical.test.ts'));

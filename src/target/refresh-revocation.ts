@@ -1,5 +1,5 @@
-import { oauthFormRequest, type HttpTransport } from './device-flow.ts';
-import type { TargetSessionEndpoints } from './discovery.ts';
+import { oauthFormRequest, type HttpTransport } from './device-flow.js';
+import type { TargetSessionEndpoints } from './discovery.js';
 
 interface RevocationDeps {
   readonly http: HttpTransport;

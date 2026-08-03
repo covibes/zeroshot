@@ -1,6 +1,6 @@
-import type { HttpTransport } from './device-flow.ts';
-import type { TargetSessionEndpoints } from './discovery.ts';
-import { readTargetSessionJson } from './oauth-http.ts';
+import type { HttpTransport } from './device-flow.js';
+import type { TargetSessionEndpoints } from './discovery.js';
+import { readTargetSessionJson } from './oauth-http.js';
 
 interface SessionVerificationDeps {
   readonly http: HttpTransport;

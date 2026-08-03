@@ -2,17 +2,17 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
 import {
   createTargetAdapter,
+  MAX_RESPONSE_BYTES,
   TargetProtocolError,
   TargetServerError,
-} from '../../src/hosted-target/index.ts';
-import { MAX_RESPONSE_BYTES } from '../../src/hosted-target/bounds.ts';
+} from '../helpers/hosted-target-runtime.mjs';
 import {
   FakeHttpTransport,
   FakeTokenProvider,
   NO_RETRY,
   capsule,
   fakeDiscovery,
-} from './harness.ts';
+} from './harness.mjs';
 
 function bodyOf(request: { readonly init: RequestInit }): unknown {
   return JSON.parse(String(request.init.body));

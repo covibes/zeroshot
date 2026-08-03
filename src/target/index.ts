@@ -5,9 +5,9 @@ export {
   targetServiceKey,
   TARGET_ACCOUNT,
   type TargetCredentialStore,
-} from './credential-store.ts';
+} from './credential-store.js';
 
-export { acquireTargetLock } from './credential-lock.ts';
+export { acquireTargetLock } from './credential-lock.js';
 
 export {
   requestDeviceCode,
@@ -21,7 +21,7 @@ export {
   type TokenResponse,
   type HttpTransport,
   type Clock,
-} from './device-flow.ts';
+} from './device-flow.js';
 
 export {
   addTarget,
@@ -37,7 +37,7 @@ export {
   TargetUrlInvalidError,
   type TargetRecord,
   type SettingsPort,
-} from './target-registry.ts';
+} from './target-registry.js';
 
 export {
   TargetSessionManager,
@@ -45,7 +45,7 @@ export {
   type BrowserOpener,
   type TargetSessionDeps,
   type TargetSessionManagerInit,
-} from './target-session.ts';
+} from './target-session.js';
 
 export {
   discoverTarget,
@@ -56,4 +56,4 @@ export {
   type RouteTemplate,
   type TargetDiscoveryDescriptor,
   type TargetSessionEndpoints,
-} from './discovery.ts';
+} from './discovery.js';

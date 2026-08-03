@@ -1,4 +1,4 @@
-import { readBoundedResponseJson } from './bounded-response.ts';
+import { readBoundedResponseJson } from './bounded-response.js';
 
 const MAX_SESSION_RESPONSE_BYTES = 64 * 1024;
 

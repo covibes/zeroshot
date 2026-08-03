@@ -64,6 +64,7 @@ function assertRequestDefinition(definition: string, value: unknown, code: strin
   throw new ClusterRequestError(`${definition} validation failed: ${details}`, code);
 }
 
+/** Validate an execution graph against the frozen cluster protocol schema. */
 export function assertGraphSpec(value: unknown): asserts value is GraphSpec {
   assertRequestDefinition('GraphSpec', value, 'INVALID_GRAPH');
 }

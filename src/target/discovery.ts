@@ -1,13 +1,13 @@
-import type { HttpTransport } from './device-flow.ts';
-import { readBoundedResponseJson } from './bounded-response.ts';
-import { TargetDiscoveryError } from './discovery-errors.ts';
-import type { RouteTemplate } from './route-template.ts';
+import type { HttpTransport } from './device-flow.js';
+import { readBoundedResponseJson } from './bounded-response.js';
+import { TargetDiscoveryError } from './discovery-errors.js';
+import type { RouteTemplate } from './route-template.js';
 import {
   exact,
   exactStringSet,
   record,
   type CredentialInstallDescriptor,
-} from './discovery-validation.ts';
+} from './discovery-validation.js';
 import {
   parseAdapter,
   parseCapsule,
@@ -18,10 +18,10 @@ import {
   parseSizes,
   parseTransport,
   validateOAuthMetadata,
-} from './discovery-sections.ts';
-export type { CredentialInstallDescriptor } from './discovery-validation.ts';
-export { TargetDiscoveryError } from './discovery-errors.ts';
-export { expandRoute, type RouteTemplate } from './route-template.ts';
+} from './discovery-sections.js';
+export type { CredentialInstallDescriptor } from './discovery-validation.js';
+export { TargetDiscoveryError } from './discovery-errors.js';
+export { expandRoute, type RouteTemplate } from './route-template.js';
 
 const DISCOVERY_PATH = '/.well-known/openengine-hosted-target';
 const MAX_DISCOVERY_BYTES = 64 * 1024;

@@ -1,11 +1,11 @@
-import { acquireTargetLock } from '../credential-lock.ts';
-import { KeyringCredentialStore } from '../credential-store.ts';
-import { discoverTargetSessionEndpoints } from '../discovery.ts';
-import { getTarget } from '../target-registry.ts';
-import { getAccessTokenProvider, type TargetAccessTokenProvider } from '../target-session.ts';
-import { readBoundedJson } from '../bounded-json.ts';
+import { acquireTargetLock } from '../credential-lock.js';
+import { KeyringCredentialStore } from '../credential-store.js';
+import { discoverTargetSessionEndpoints } from '../discovery.js';
+import { getTarget } from '../target-registry.js';
+import { getAccessTokenProvider, type TargetAccessTokenProvider } from '../target-session.js';
+import { readBoundedResponseJson } from '../bounded-response.js';
 
-import type { HostedRunDependencies, HostedRunIntent } from './contracts.ts';
+import type { HostedRunDependencies, HostedRunIntent } from './contracts.js';
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -129,10 +129,15 @@ export class RunIntentClient {
         `Zero Cloud request failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
-    const body = await readBoundedJson(response, MAX_RESPONSE_BYTES, {
-      tooLarge: () => new Error('Zero Cloud response exceeded 1 MiB'),
-      invalid: () => new Error('Zero Cloud returned invalid JSON'),
-    });
+    const body = await readBoundedResponseJson(
+      response,
+      MAX_RESPONSE_BYTES,
+      (kind) => new Error(
+        kind === 'size'
+          ? 'Zero Cloud response exceeded 1 MiB'
+          : 'Zero Cloud returned invalid JSON',
+      ),
+    );
     if (!response.ok) {
       const problem = body as Record<string, unknown>;
       const code = typeof problem['code'] === 'string' ? problem['code'] : null;

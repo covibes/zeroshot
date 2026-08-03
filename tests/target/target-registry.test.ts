@@ -11,8 +11,8 @@ import {
   TargetNameExistsError,
   TargetNotFoundError,
   TargetUrlInvalidError,
-} from '../../src/target/target-registry.ts';
-import { makeDiscoveryEndpoints, makeSettingsPort } from './harness.ts';
+} from '../helpers/target-runtime.mjs';
+import { makeDiscoveryEndpoints, makeSettingsPort } from './harness.mjs';
 
 function addValidatedTarget(
   name: string,

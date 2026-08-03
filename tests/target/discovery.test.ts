@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { discoverTargetSessionEndpoints, TargetDiscoveryError } from '../../src/target/discovery.ts';
-import type { HttpTransport } from '../../src/target/device-flow.ts';
+import {
+  discoverTargetSessionEndpoints,
+  TargetDiscoveryError,
+  type HttpTransport,
+} from '../helpers/target-runtime.mjs';
+import { oversizedJsonResponse } from './response-fixtures.mjs';
 
 const fixture = JSON.parse(readFileSync(resolve(
   'tests/fixtures/zero-cloud-44/contracts/http/hosted-target/fixtures/valid/hosted-target-v1-minimal.json',
@@ -65,25 +69,13 @@ describe('target discovery bootstrap', () => {
   });
 
   it('cancels a chunked discovery body as soon as its cumulative bound is exceeded', async () => {
-    let cancelled = false;
-    const http: HttpTransport = {
-      async fetch() {
-        return new Response(new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new Uint8Array(64 * 1024));
-            controller.enqueue(new Uint8Array([1]));
-          },
-          cancel() {
-            cancelled = true;
-          },
-        }), { status: 200 });
-      },
-    };
+    const oversized = oversizedJsonResponse(64 * 1024);
+    const http: HttpTransport = { fetch: async () => oversized.response };
     await assert.rejects(
       discoverTargetSessionEndpoints('https://hosted.openengine.example', http),
       /size limit/,
     );
-    assert.equal(cancelled, true);
+    assert.equal(oversized.wasCancelled(), true);
   });
 
   it('rejects the frozen network-path route fixture before OAuth metadata dispatch', async () => {

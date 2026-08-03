@@ -1,19 +1,19 @@
 import crypto from 'node:crypto';
 
-import type { HostedOptions, HostedRunDependencies, HostedRunIntent } from './contracts.ts';
+import type { HostedOptions, HostedRunDependencies, HostedRunIntent } from './contracts.js';
 import {
   context,
   HostedRunHttpError,
   TERMINAL_STATES,
   UUID,
   type HostedContext,
-} from './client.ts';
+} from './client.js';
 import {
   githubToken,
   providerKey,
   resolveHostedInput,
   validateHostedOptions,
-} from './input.ts';
+} from './input.js';
 
 const DEFAULT_MODEL = 'openai/gpt-5.4';
 const RUN_INTENT_VERSION = 'zeroshot.run-intent/v1';

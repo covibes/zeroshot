@@ -1,8 +1,15 @@
-import { FakeCredentialStore } from '../../src/target/credential-store.ts';
-import type { HttpTransport, Clock } from '../../src/target/device-flow.ts';
-import type { BrowserOpener, TargetSessionDeps } from '../../src/target/target-session.ts';
-import type { SettingsPort, TargetRecord } from '../../src/target/target-registry.ts';
-import type { RouteTemplate, TargetDiscoveryDescriptor, TargetSessionEndpoints } from '../../src/target/discovery.ts';
+import {
+  FakeCredentialStore,
+  type BrowserOpener,
+  type Clock,
+  type HttpTransport,
+  type RouteTemplate,
+  type SettingsPort,
+  type TargetDiscoveryDescriptor,
+  type TargetRecord,
+  type TargetSessionDeps,
+  type TargetSessionEndpoints,
+} from '../helpers/target-runtime.mjs';
 
 export { FakeCredentialStore };
 
@@ -132,6 +139,7 @@ export function makeSettingsPort(initial: Record<string, unknown> = {}): Setting
     load() {
       return { ...data } as Record<string, unknown> & { _targets?: Record<string, TargetRecord> };
     },
+
     mutate(fn) {
       fn(data as Record<string, unknown> & { _targets?: Record<string, TargetRecord> });
     },
@@ -144,24 +152,28 @@ function route(template: string, variables: readonly string[]): RouteTemplate {
     variables,
     expand(values) {
       let result = template.replace(/\{\?([^}]+)\}/g, (_match, names: string) => {
-        const query = new URLSearchParams();
-        for (const name of names.split(',')) {
+        const query = names.split(',').flatMap((name) => {
           const value = values[name];
-          if (value !== undefined) query.set(name, String(value));
-        }
-        const serialized = query.toString();
-        return serialized ? `?${serialized}` : '';
+          return value === undefined
+            ? []
+            : [`${encodeURIComponent(name)}=${encodeURIComponent(String(value))}`];
+        });
+        return query.length === 0 ? '' : `?${query.join('&')}`;
       });
-      result = result.replace(/\{([^}]+)\}/g, (_match, name: string) =>
-        encodeURIComponent(String(values[name])),
-      );
+      result = result.replace(/\{([^}]+)\}/g, (_match, name: string) => {
+        const value = String(values[name]);
+        if (value === '.' || value === '..') throw new Error('structural dot segment');
+        return encodeURIComponent(value);
+      });
       return result;
     },
   };
 }
 
-export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.example'): TargetSessionEndpoints {
-  const descriptor: TargetDiscoveryDescriptor = {
+export function makeDiscovery(
+  baseUrl: string = 'https://api.test.example',
+): TargetDiscoveryDescriptor {
+  return {
     origin: baseUrl,
     adapter: { name: 'fargate', majorVersion: 1 },
     endpoint: `${baseUrl}/targets/primary`,
@@ -198,6 +210,12 @@ export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.examp
     credentialInstall: null,
     additional: {},
   };
+}
+
+export function makeDiscoveryEndpoints(
+  baseUrl: string = 'https://api.test.example',
+): TargetSessionEndpoints {
+  const descriptor = makeDiscovery(baseUrl);
   return {
     deviceAuthorizationEndpoint: descriptor.oauth.deviceAuthorizationEndpoint,
     tokenEndpoint: descriptor.oauth.tokenEndpoint,
@@ -237,3 +255,4 @@ export function fakeLock(): () => Promise<() => Promise<void>> {
     return async () => {};
   };
 }
+

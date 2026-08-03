@@ -1,4 +1,4 @@
-import { TargetDiscoveryError } from './discovery-errors.ts';
+import { TargetDiscoveryError } from './discovery-errors.js';
 
 export interface RouteTemplate {
   readonly template: string;

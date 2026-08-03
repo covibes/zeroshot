@@ -1,6 +1,9 @@
-import type { RouteTemplate, TargetDiscoveryDescriptor } from '../../src/target/discovery.ts';
-import type { RetryPolicy, TargetAccessTokenProvider } from '../../src/hosted-target/types.ts';
-export { FakeHttpTransport } from '../target/harness.ts';
+import type {
+  RetryPolicy,
+  TargetAccessTokenProvider,
+} from '../helpers/hosted-target-runtime.mjs';
+import { makeDiscovery } from '../target/harness.mjs';
+export { FakeHttpTransport } from '../target/harness.mjs';
 
 
 export class FakeTokenProvider implements TargetAccessTokenProvider {
@@ -15,67 +18,8 @@ export class FakeTokenProvider implements TargetAccessTokenProvider {
   }
 }
 
-function route(template: string, variables: readonly string[]): RouteTemplate {
-  return {
-    template,
-    variables,
-    expand(values) {
-      let expanded = template.replace(/\{\?([^}]+)\}/g, (_match, names: string) => {
-        const query = names.split(',').flatMap((name) => {
-          const value = values[name];
-          return value === undefined ? [] : [`${encodeURIComponent(name)}=${encodeURIComponent(String(value))}`];
-        });
-        return query.length === 0 ? '' : `?${query.join('&')}`;
-      });
-      expanded = expanded.replace(/\{([^}]+)\}/g, (_match, name: string) => {
-        const value = String(values[name]);
-        if (value === '.' || value === '..') throw new Error('structural dot segment');
-        return encodeURIComponent(value);
-      });
-      return expanded;
-    },
-  };
-}
-
-export function fakeDiscovery(): TargetDiscoveryDescriptor {
-  const origin = 'https://hosted.openengine.example';
-  return {
-    origin,
-    adapter: { name: 'fargate', majorVersion: 1 },
-    endpoint: `${origin}/targets/primary`,
-    endpointCapabilities: ['exec', 'log_stream'],
-    pagination: { defaultPageSize: 20, maxPageSize: 100 },
-    sizes: { catalog: ['tiny', 'small', 'standard', 'large'], default: 'standard' },
-    oauth: {
-      metadataUrl: `${origin}/.well-known/oauth`,
-      deviceAuthorizationEndpoint: `${origin}/auth/device`,
-      tokenEndpoint: `${origin}/auth/token`,
-      revocationEndpoint: `${origin}/auth/revoke`,
-      clientId: 'cli',
-      deviceGrantType: 'urn:ietf:params:oauth:grant-type:device_code',
-      audience: 'capsule',
-    },
-    session: { routeTemplate: route('/target-session', []), method: 'GET' },
-    capsule: {
-      baseUrl: `${origin}/api/v1`,
-      routes: {
-        allocate: route('/orgs/{org_id}/capsules', ['org_id']),
-        list: route('/orgs/{org_id}/capsules{?cursor,limit}', ['org_id', 'cursor', 'limit']),
-        inspect: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
-        terminate: route('/orgs/{org_id}/capsules/{capsule_id}', ['org_id', 'capsule_id']),
-        limits: route('/orgs/{org_id}/limits', ['org_id']),
-        access: route('/capsules/{capsule_id}/access', ['capsule_id']),
-      },
-    },
-    transport: {
-      websocketRouteTemplate: route('/v1/capsules/{capsule_id}/oecp', ['capsule_id']),
-      unauthorizedStatus: 401,
-      closeCodes: { expired: 4401, revoked: 4403 },
-    },
-    capabilityFlags: ['capsule_allocate', 'capsule_read', 'capsule_terminate', 'capsule_access', 'connections_onboarding'],
-    credentialInstall: null,
-    additional: {},
-  };
+export function fakeDiscovery() {
+  return makeDiscovery('https://hosted.openengine.example');
 }
 
 export function capsule(id = 'cap-1', state = 'ready') {

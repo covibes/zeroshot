@@ -1,10 +1,10 @@
-import type { TargetCredentialStore } from './credential-store.ts';
-import type { Clock } from './device-flow.ts';
+import type { TargetCredentialStore } from './credential-store.js';
+import type { Clock } from './device-flow.js';
 import {
   TargetSessionManager,
   type TargetSessionDeps,
-} from './target-session-manager.ts';
-import type { SettingsPort, TargetRecord } from './target-registry.ts';
+} from './target-session-manager.js';
+import type { SettingsPort, TargetRecord } from './target-registry.js';
 
 export {
   LoginRequiredError,
@@ -12,7 +12,7 @@ export {
   type BrowserOpener,
   type TargetSessionDeps,
   type TargetSessionManagerInit,
-} from './target-session-manager.ts';
+} from './target-session-manager.js';
 
 export interface TargetAccessTokenProvider {
   getAccessToken(signal?: AbortSignal): Promise<string>;

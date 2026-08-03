@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
-import { discoverTarget, TargetDiscoveryError } from '../../src/target/discovery.ts';
-import type { HttpTransport } from '../../src/target/device-flow.ts';
+import {
+  discoverTarget,
+  TargetDiscoveryError,
+  type HttpTransport,
+} from '../helpers/target-runtime.mjs';
 
 const FIXTURES = resolve('tests/fixtures/zero-cloud-44/contracts/http/hosted-target/fixtures');
 

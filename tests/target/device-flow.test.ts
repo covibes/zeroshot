@@ -6,8 +6,9 @@ import {
   DeviceFlowDeniedError,
   DeviceFlowExpiredError,
   type PollForTokenRequest,
-} from '../../src/target/device-flow.ts';
-import { FakeHttpTransport, FakeClock, respond } from './harness.ts';
+} from '../helpers/target-runtime.mjs';
+import { FakeClock, FakeHttpTransport, respond } from './harness.mjs';
+import { enqueueToken, oversizedJsonResponse } from './response-fixtures.mjs';
 
 describe('requestDeviceCode', () => {
   it('sends POST with client_id and returns device code response', async () => {
@@ -44,6 +45,9 @@ describe('requestDeviceCode', () => {
       /Device code request failed \(400\)/
     );
   });
+});
+
+describe('requestDeviceCode validation', () => {
 
   it('rejects additive and unsafe device responses before returning them', async () => {
     const http = new FakeHttpTransport();
@@ -81,25 +85,13 @@ describe('requestDeviceCode', () => {
   });
 
   it('cancels a chunked device response at the OAuth byte bound', async () => {
-    let cancelled = false;
-    const http = {
-      async fetch() {
-        return new Response(new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new Uint8Array(64 * 1024));
-            controller.enqueue(new Uint8Array([1]));
-          },
-          cancel() {
-            cancelled = true;
-          },
-        }), { status: 200 });
-      },
-    };
+    const oversized = oversizedJsonResponse(64 * 1024);
+    const http = { fetch: async () => oversized.response };
     await assert.rejects(
       requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http),
       /size limit/,
     );
-    assert.equal(cancelled, true);
+    assert.equal(oversized.wasCancelled(), true);
   });
 });
 
@@ -123,16 +115,10 @@ describe('pollForToken', () => {
     const http = new FakeHttpTransport();
     const clock = new FakeClock(0);
 
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-123',
-        refresh_token: 'refresh-456',
-        token_type: 'Bearer',
-        expires_in: 3600,
-        refresh_expires_in: 5_184_000,
-        scope: 'session capsule',
-      })
-    );
+    enqueueToken(http, {
+      access_token: 'access-123',
+      refresh_token: 'refresh-456',
+    });
 
     const result = await poll(http, { clock });
 
@@ -166,16 +152,10 @@ describe('pollForToken retry state', () => {
 
     http.enqueue(respond(400, { error: 'authorization_pending' }));
     http.enqueue(respond(400, { error: 'authorization_pending' }));
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-123',
-        refresh_token: 'refresh-456',
-        token_type: 'Bearer',
-        expires_in: 3600,
-        refresh_expires_in: 5_184_000,
-        scope: 'session capsule',
-      })
-    );
+    enqueueToken(http, {
+      access_token: 'access-123',
+      refresh_token: 'refresh-456',
+    });
 
     const result = await poll(http, { clock });
 
@@ -188,16 +168,10 @@ describe('pollForToken retry state', () => {
     const clock = new FakeClock(0);
 
     http.enqueue(respond(400, { error: 'slow_down' }));
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-123',
-        refresh_token: 'refresh-456',
-        token_type: 'Bearer',
-        expires_in: 3600,
-        refresh_expires_in: 5_184_000,
-        scope: 'session capsule',
-      })
-    );
+    enqueueToken(http, {
+      access_token: 'access-123',
+      refresh_token: 'refresh-456',
+    });
 
     // interval starts at 0 for speed, after slow_down becomes 5
     const result = await poll(http, { clock });

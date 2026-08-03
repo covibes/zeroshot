@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-import type { HostedOptions, ResolvedInput } from './contracts.ts';
+import type { HostedOptions, ResolvedInput } from './contracts.js';
 
 const SUBMISSION_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{12}$/i;
 const CAPSULE_SIZES = new Set(['tiny', 'small', 'standard', 'large']);

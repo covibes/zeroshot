@@ -1,23 +1,23 @@
-import type { TargetCredentialStore } from './credential-store.ts';
-import { exchangeRefreshToken } from './refresh-exchange.ts';
-import type { TargetRecord, SettingsPort } from './target-registry.ts';
+import type { TargetCredentialStore } from './credential-store.js';
+import { exchangeRefreshToken } from './refresh-exchange.js';
+import type { TargetRecord, SettingsPort } from './target-registry.js';
 import {
   requestDeviceCode,
   pollForToken,
   type Clock,
   type HttpTransport,
-} from './device-flow.ts';
-import { targetServiceKey, TARGET_ACCOUNT } from './credential-store.ts';
+} from './device-flow.js';
+import { targetServiceKey, TARGET_ACCOUNT } from './credential-store.js';
 import {
   setTargetRefreshInvalidated,
   targetRefreshIsInvalidated,
   updateTargetOrganization,
-} from './target-registry.ts';
-import type { TargetSessionEndpoints } from './discovery.ts';
-import { LoginRequiredError } from './session-errors.ts';
-export { LoginRequiredError } from './session-errors.ts';
-import { readVerifiedOrganization } from './session-verification.ts';
-import { revokeRefreshToken } from './refresh-revocation.ts';
+} from './target-registry.js';
+import type { TargetSessionEndpoints } from './discovery.js';
+import { LoginRequiredError } from './session-errors.js';
+export { LoginRequiredError } from './session-errors.js';
+import { readVerifiedOrganization } from './session-verification.js';
+import { revokeRefreshToken } from './refresh-revocation.js';
 
 const DEVICE_LABEL = 'zeroshot-cli';
 const TOKEN_EXPIRY_SKEW_MS = 30_000;

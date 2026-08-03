@@ -8,8 +8,8 @@ import {
   runHosted,
   statusHostedRun,
   validateHostedOptions,
-} from '../../src/target/hosted-run.ts';
-import { FakeHttpTransport, makeSettingsPort, makeTarget, respond } from './harness.ts';
+} from '../helpers/target-runtime.mjs';
+import { FakeHttpTransport, makeSettingsPort, makeTarget, respond } from './harness.mjs';
 
 const TARGET = 'https://api.test.example';
 const ORG = '019fc767-b3cc-7780-b62a-4b6989a21291';

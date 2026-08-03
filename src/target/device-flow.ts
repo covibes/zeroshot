@@ -1,6 +1,6 @@
-import { readBoundedResponseJson } from './bounded-response.ts';
-import { parseTokenResponse, type TokenResponse } from './token-response.ts';
-export { parseTokenResponse, type TokenResponse } from './token-response.ts';
+import { readBoundedResponseJson } from './bounded-response.js';
+import { parseTokenResponse, type TokenResponse } from './token-response.js';
+export { parseTokenResponse, type TokenResponse } from './token-response.js';
 export interface DeviceCodeResponse {
   readonly device_code: string;
   readonly user_code: string;

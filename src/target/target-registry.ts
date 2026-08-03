@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { TargetDiscoveryDescriptor } from './discovery.ts';
+import type { TargetDiscoveryDescriptor } from './discovery.js';
 
 export interface TargetRecord {
   readonly id: string;

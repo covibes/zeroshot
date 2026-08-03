@@ -1,6 +1,6 @@
-import { oauthFormRequest, type HttpTransport } from './device-flow.ts';
-import { readOAuthError, readTargetSessionJson } from './oauth-http.ts';
-import { parseTokenResponse, type TokenResponse } from './token-response.ts';
+import { oauthFormRequest, type HttpTransport } from './device-flow.js';
+import { readOAuthError, readTargetSessionJson } from './oauth-http.js';
+import { parseTokenResponse, type TokenResponse } from './token-response.js';
 
 export interface RefreshExchangeRequest {
   readonly tokenEndpoint: string;

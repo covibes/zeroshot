@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import {
   CredentialStoreUnavailableError,
   KeyringCredentialStore,
-} from '../../src/target/credential-store.ts';
+} from '../helpers/target-runtime.mjs';
 
 type EntryConstructor = new (service: string, account: string) => {
   getPassword(): string | null;

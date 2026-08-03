@@ -1,6 +1,6 @@
 // Shared hosted-run command contracts.
 
-import type { SettingsPort } from '../target-registry.ts';
+import type { SettingsPort } from '../target-registry.js';
 
 export interface HostedOptions {
   readonly target?: string;
