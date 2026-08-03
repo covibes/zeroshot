@@ -68,7 +68,7 @@ jobs:
         run: cargo test --workspace
 
       - name: Security audit
-        run: npm audit --audit-level=moderate --omit=dev
+        run: npm run audit:production
         continue-on-error: false
 
       - name: Lint

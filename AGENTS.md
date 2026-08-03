@@ -1114,6 +1114,12 @@ agent-gate implementation beside Opcore's pinned public entrypoint so checked-in
 never contain a workstation-specific package path. Provider output is evidence, not host authority;
 keep existing lint, type, test, CI, and review guardrails.
 
+Production dependency auditing runs through `npm run audit:production`. Opcore `0.2.1` bundles
+three upstream denial-of-service advisories; the audit gate permits only their exact advisory IDs,
+nested package paths, and pinned package versions, plus npm's transitive vulnerability closure.
+Every unrelated or newly reported moderate-or-higher advisory still fails. Remove the exception
+when a fixed Opcore release is pinned; never widen it or replace it with `--omit=optional`.
+
 Run validation for:
 
 - Significant changes (>50 lines)

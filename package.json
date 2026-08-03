@@ -67,6 +67,7 @@
     "opcore:graph:build": "opcore graph build --repo . --json",
     "opcore:graph:update": "opcore graph update --repo . --json",
     "opcore:measure": "opcore measure --repo . --json",
+    "audit:production": "node scripts/audit-production-dependencies.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "validate:templates": "node scripts/validate-templates.js",
