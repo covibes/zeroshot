@@ -6057,6 +6057,16 @@ function isStartupUpdateEligible(argv, options = {}) {
   });
 }
 
+function applyDefaultCommand(args) {
+  const firstArg = args[0];
+  if (!firstArg || firstArg.startsWith('-')) return;
+
+  const commandNames = program.commands.map((command) => command.name());
+  if (commandNames.includes(firstArg) || UNREGISTERED_HOSTED_COMMAND_NAMES.has(firstArg)) return;
+
+  process.argv.splice(2, 0, 'run');
+}
+
 // Main entry point
 async function main() {
   printLegacyDistroNotice();
@@ -6082,31 +6092,16 @@ async function main() {
     checkForUpdates({ argv: startupArgs, eligibilityChecked: true });
   }
 
-  let args = startupArgs;
+  const args = startupArgs;
 
   if (args.length === 0) {
     program.outputHelp();
     return;
   }
 
-  // Default command handling: if first arg doesn't match a known command, treat it as 'run'
-  // This allows `zeroshot "task"` to work the same as `zeroshot run "task"`
-  args = process.argv.slice(2);
-  if (args.length > 0) {
-    const firstArg = args[0];
-
-    // Skip if it's a flag/option (starts with -)
-    // Skip if it's --help or --version (these are handled by commander)
-    if (!firstArg.startsWith('-')) {
-      // Get all registered command names
-      const commandNames = program.commands.map((cmd) => cmd.name());
-
-      // If first arg is not a known command, prepend 'run'
-      if (!commandNames.includes(firstArg) && !UNREGISTERED_HOSTED_COMMAND_NAMES.has(firstArg)) {
-        process.argv.splice(2, 0, 'run');
-      }
-    }
-  }
+  // Preserve the default local run shorthand without treating hosted-only command
+  // names as task input in the stable parser.
+  applyDefaultCommand(args);
 
   program.parse();
 }
