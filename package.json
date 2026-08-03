@@ -60,6 +60,15 @@
     "test:cluster-client": "npm run build:cluster && node --test tests/cluster/client.test.js tests/cluster/parity.test.js tests/cluster/architecture.test.js tests/cluster/verifier-regressions.test.js tests/cluster/request-validation.test.js tests/hosted-session/coordinator.test.js",
     "test:cluster-package": "npm run build:agent-cli-provider && npm run build:cluster && npm run build:target && node --test tests/cluster/package.test.js",
     "dev:link": "npm link",
+    "opcore:status": "opcore status --repo . --json",
+    "opcore:scan": "opcore --repo . --json",
+    "opcore:check": "node scripts/opcore-introduced-check.js",
+    "opcore:check:staged": "node scripts/opcore-introduced-check.js --staged",
+    "opcore:install:rust-metrics": "cargo install rust-code-analysis-cli --version 0.0.25 --locked",
+    "opcore:graph:build": "opcore graph build --repo . --json",
+    "opcore:graph:update": "opcore graph update --repo . --json",
+    "opcore:measure": "opcore measure --repo . --json",
+    "audit:production": "node scripts/audit-production-dependencies.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "validate:templates": "node scripts/validate-templates.js",
@@ -122,7 +131,7 @@
     "url": "https://github.com/the-open-engine/zeroshot/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "publishConfig": {
     "access": "public",
@@ -172,8 +181,9 @@
     "commander": "^14.0.2",
     "node-pty": "^1.1.0",
     "omelette": "^0.4.17",
-    "pidusage": "^4.0.1",
+    "opcore": "0.2.1",
     "open": "^10.1.0",
+    "pidusage": "^4.0.1",
     "proper-lockfile": "^4.1.2"
   },
   "optionalDependencies": {

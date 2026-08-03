@@ -4,5 +4,14 @@
   },
   "worktree": {
     "baseRef": "origin/main"
-  }
+  },
+  "commandProofs": [
+    {
+      "id": "opcore-introduced",
+      "profile": "introduced-change",
+      "scope": "repo",
+      "description": "Opcore introduced-change constraints gate",
+      "command": "npm run opcore:check"
+    }
+  ]
 }

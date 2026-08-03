@@ -4,12 +4,11 @@
 # Build: docker build -t vibe-cluster-base vibe/cluster/docker/vibe-cluster/
 # Usage: zeroshot run <task> --docker
 
-FROM node:20-slim
+FROM node:22-slim
 
 # Upgrade npm to fix Arborist isDescendantOf bug (npm 10.x crash on complex peer deps)
 # See: https://github.com/npm/cli/issues/7682
-# Pinned to npm@11 (the latest line that still supports the node:20-slim base); npm@latest (12.x)
-# now requires node >=22 and breaks the build with EBADENGINE.
+# Pinned to npm@11 to keep the container toolchain reproducible with the supported Node 22 line.
 RUN npm install -g npm@11
 
 # Version pinning for infrastructure tools
