@@ -131,6 +131,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Cluster typed transports              | `crates/openengine-cluster-client/`                                                                                              |
 | TypeScript cluster client             | `src/cluster/`                                                                                                                   |
 | Hosted session coordinator            | `src/hosted-session/`                                                                                                            |
+| Hosted target capsule adapter         | `src/hosted-target/`                                                                                                             |
+| Named target registry and sessions    | `src/target/`                                                                                                                    |
 | TypeScript protocol emitter           | `scripts/generate-cluster-types.js`                                                                                              |
 | Cluster fixtures/artifacts            | `crates/openengine-cluster-testkit/`                                                                                             |
 | Portable backend conformance          | `crates/openengine-cluster-testkit/src/conformance.rs`                                                                           |
@@ -173,6 +175,10 @@ outside it. `Connection` exclusively owns request IDs and transport teardown; wa
 consumes an old stream exactly once on an application-supplied fresh connection. Keep `src/cluster/`
 isolated from product internals, and regenerate its wire types from the authoritative protocol
 artifacts with `npm run protocol:generate`.
+Named target commands load compiled modules from `lib/target/`; package and development preparation
+must run `build:target`, never import raw TypeScript from the Node CLI. OAuth routes and client
+identity come from the versioned, same-origin hosted-target discovery document and its advertised
+OAuth metadata; never reconstruct provider routes in `cli/` or `src/cluster/`.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
 Portable external conformance is the immutable public catalog in the testkit and covers only
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.

@@ -1,0 +1,171 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  requestDeviceCode,
+  pollForToken,
+  DeviceFlowDeniedError,
+  DeviceFlowExpiredError,
+} from '../../src/target/device-flow.ts';
+import { FakeHttpTransport, FakeClock, respond } from './harness.ts';
+
+describe('requestDeviceCode', () => {
+  it('sends POST with client_id and returns device code response', async () => {
+    const http = new FakeHttpTransport();
+    http.enqueue(respond(200, {
+      device_code: 'dev-code-123',
+      user_code: 'ABCD-1234',
+      verification_uri: 'https://auth.example.com/device',
+      verification_uri_complete: 'https://auth.example.com/device?code=ABCD-1234',
+      expires_in: 900,
+      interval: 5,
+    }));
+
+    const result = await requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http);
+
+    assert.equal(result.device_code, 'dev-code-123');
+    assert.equal(result.user_code, 'ABCD-1234');
+    assert.equal(result.verification_uri, 'https://auth.example.com/device');
+    assert.equal(result.expires_in, 900);
+    assert.equal(result.interval, 5);
+    assert.equal(http.requests.length, 1);
+    assert.equal(http.requests[0]!.method, 'POST');
+  });
+
+  it('throws on non-ok response', async () => {
+    const http = new FakeHttpTransport();
+    http.enqueue(respond(400, { error: 'bad_request' }));
+
+    await assert.rejects(
+      requestDeviceCode('https://auth.example.com/oauth/device', 'cli', http),
+      /Device code request failed \(400\)/,
+    );
+  });
+});
+
+describe('pollForToken', () => {
+  it('returns token on immediate success', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(0);
+
+    http.enqueue(respond(200, {
+      access_token: 'access-123',
+      refresh_token: 'refresh-456',
+      token_type: 'Bearer',
+      expires_in: 3600,
+      organization: { id: 'org-1', name: 'TestOrg' },
+    }));
+
+    const result = await pollForToken(
+      'https://auth.example.com/oauth/token',
+      'cli',
+      'dev-code-123',
+      0,
+      900,
+      http,
+      clock,
+    );
+
+    assert.equal(result.access_token, 'access-123');
+    assert.equal(result.refresh_token, 'refresh-456');
+    assert.equal(result.organization?.name, 'TestOrg');
+  });
+
+  it('continues polling on authorization_pending', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(0);
+
+    http.enqueue(respond(400, { error: 'authorization_pending' }));
+    http.enqueue(respond(400, { error: 'authorization_pending' }));
+    http.enqueue(respond(200, {
+      access_token: 'access-123',
+      refresh_token: 'refresh-456',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
+
+    const result = await pollForToken(
+      'https://auth.example.com/oauth/token',
+      'cli',
+      'dev-code-123',
+      0,
+      900,
+      http,
+      clock,
+    );
+
+    assert.equal(result.access_token, 'access-123');
+    assert.equal(http.requests.length, 3);
+  });
+
+  it('increases interval on slow_down', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(0);
+
+    http.enqueue(respond(400, { error: 'slow_down' }));
+    http.enqueue(respond(200, {
+      access_token: 'access-123',
+      refresh_token: 'refresh-456',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
+
+    // interval starts at 0 for speed, after slow_down becomes 5
+    const result = await pollForToken(
+      'https://auth.example.com/oauth/token',
+      'cli',
+      'dev-code-123',
+      0,
+      900,
+      http,
+      clock,
+    );
+
+    assert.equal(result.access_token, 'access-123');
+  });
+
+  it('throws DeviceFlowDeniedError on access_denied', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(0);
+
+    http.enqueue(respond(400, { error: 'access_denied' }));
+
+    await assert.rejects(
+      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 0, 900, http, clock),
+      DeviceFlowDeniedError,
+    );
+  });
+
+  it('throws DeviceFlowExpiredError on expired_token', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(0);
+
+    http.enqueue(respond(400, { error: 'expired_token' }));
+
+    await assert.rejects(
+      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 0, 900, http, clock),
+      DeviceFlowExpiredError,
+    );
+  });
+
+  it('throws DeviceFlowExpiredError when deadline exceeded', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(1_000_000);
+
+    await assert.rejects(
+      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 0, 0, http, clock),
+      DeviceFlowExpiredError,
+    );
+  });
+
+  it('throws on abort signal', async () => {
+    const http = new FakeHttpTransport();
+    const clock = new FakeClock(0);
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      pollForToken('https://auth.example.com/oauth/token', 'cli', 'dev-code-123', 1, 900, http, clock, controller.signal),
+      /Aborted|abort/i,
+    );
+  });
+});
