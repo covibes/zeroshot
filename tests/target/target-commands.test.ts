@@ -26,7 +26,7 @@ function execCli(
       ZEROSHOT_SETTINGS_FILE: settingsFile,
       NODE_NO_WARNINGS: '1',
     },
-    timeout: 10_000,
+    timeout: 30_000,
   });
 }
 
@@ -44,7 +44,7 @@ function execCliSafe(
           ZEROSHOT_SETTINGS_FILE: settingsFile,
           NODE_NO_WARNINGS: '1',
         },
-        timeout: 10_000,
+        timeout: 30_000,
       },
       (error, stdout, stderr) => {
         resolve({
