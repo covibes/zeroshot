@@ -536,6 +536,99 @@ describe('Confirmed CLI task termination boundary', function () {
       }
     });
   }
+
+  it('purge aborts before cleanup when provider termination is unconfirmed', async function () {
+    if (process.platform === 'win32') this.skip();
+
+    const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-purge-unconfirmed-'));
+    const storageRoot = fs.mkdtempSync(path.join(taskHome, 'storage-'));
+    const partition = makeSessionPartition({ storageRoot });
+    const taskId = 'purge-unconfirmed-boundary';
+    const cliPath = path.resolve(__dirname, '../cli/index.js');
+    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+    const ownershipUrl = new URL('../task-lib/omp-session-ownership.js', `file://${__filename}`)
+      .href;
+    const env = {
+      ...process.env,
+      HOME: taskHome,
+      USERPROFILE: taskHome,
+      ZEROSHOT_HOME: taskHome,
+    };
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+
+    try {
+      await new Promise((resolve, reject) => {
+        child.once('spawn', resolve);
+        child.once('error', reject);
+      });
+      await execFileAsync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            const { addTask } = await import(${JSON.stringify(storeUrl)});
+            const { writeProvisionalOwnership } = await import(${JSON.stringify(ownershipUrl)});
+            addTask({
+              id: ${JSON.stringify(taskId)},
+              status: 'running',
+              provider: 'omp',
+              cwd: ${JSON.stringify(storageRoot)},
+              pid: ${child.pid},
+              processGroupId: ${child.pid},
+              terminationStrategy: 'invalid-unconfirmed-strategy',
+              ompSessionOwnership: writeProvisionalOwnership({
+                partitionId: ${JSON.stringify(partition.partitionId)},
+                storageRoot: ${JSON.stringify(storageRoot)},
+                canonicalWorkspace: ${JSON.stringify(storageRoot)},
+                owner: {
+                  kind: 'standalone',
+                  clusterId: null,
+                  agentId: null,
+                  taskId: ${JSON.stringify(taskId)},
+                },
+              }),
+            });
+          `,
+        ],
+        { env }
+      );
+
+      await assert.rejects(
+        execFileAsync(process.execPath, [cliPath, 'purge', '--yes'], { env }),
+        /provider termination is unconfirmed/
+      );
+
+      assert.ok(fs.existsSync(partition.partitionPath), 'purge preserves the live partition');
+      process.kill(child.pid, 0);
+      const { stdout } = await execFileAsync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            const { getTask } = await import(${JSON.stringify(storeUrl)});
+            process.stdout.write(JSON.stringify(getTask(${JSON.stringify(taskId)})));
+          `,
+        ],
+        { env }
+      );
+      const task = JSON.parse(stdout);
+      assert.strictEqual(task.status, 'running');
+      assert.strictEqual(task.pid, child.pid);
+      assert.strictEqual(task.ompSessionOwnership.state, 'provisional');
+    } finally {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // The assertion path may already have stopped the fixture.
+      }
+      fs.rmSync(taskHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Task cleanup after deferred termination', function () {

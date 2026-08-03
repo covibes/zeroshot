@@ -2152,14 +2152,35 @@ async function killRunningTasks(runningTasks) {
     return;
   }
   console.log(chalk.bold('Killing running tasks...'));
-  const { killTaskCommand } = await import('../task-lib/commands/kill.js');
+  const [{ killTaskCommand }, { getTask }] = await Promise.all([
+    import('../task-lib/commands/kill.js'),
+    import('../task-lib/store.js'),
+  ]);
+  const unconfirmed = [];
 
   // Reuse the standalone kill boundary instead of treating successful signal delivery as process
-  // termination. It waits for the persisted process tree to exit (including SIGKILL escalation)
-  // and retires OMP ownership only after that confirmation. An unconfirmed termination leaves the
-  // task running and authoritative, so the purge cleanup that follows cannot delete its partition.
+  // termination. Then verify its durable terminal write: killTaskCommand also serves the interactive
+  // CLI and reports an unconfirmed boundary through process.exitCode rather than throwing. Purge
+  // must turn that report into a hard gate before it reaches any destructive cleanup.
   for (const task of runningTasks) {
     await killTaskCommand(task.id);
+    const current = getTask(task.id);
+    if (
+      !current ||
+      current.status === 'running' ||
+      Number.isInteger(current.pid) ||
+      Number.isInteger(current.processGroupId)
+    ) {
+      unconfirmed.push(task.id);
+    }
+  }
+
+  if (unconfirmed.length > 0) {
+    throw new Error(
+      `Refusing destructive task cleanup: provider termination is unconfirmed for ${unconfirmed.join(
+        ', '
+      )}. Retry after confirming the persisted provider process boundary is terminal.`
+    );
   }
 }
 
