@@ -45,6 +45,8 @@
     "typecheck:hosted-target": "tsc --project tsconfig.hosted-target.json",
     "typecheck:hosted-session": "tsc --project tsconfig.hosted-session.json",
     "test:hosted-target": "node --test tests/hosted-target/*.test.ts",
+    "test:target": "node --test tests/target/*.test.ts",
+    "typecheck:target": "tsc --project tsconfig.target.json",
     "typecheck:cluster": "tsc --project tsconfig.cluster.json",
     "lint:agent-cli-provider": "eslint \"src/agent-cli-provider/**/*.ts\" \"tests/agent-cli-provider/**/*.ts\"",
     "build:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.build.json",
@@ -167,9 +169,11 @@
     "node-pty": "^1.1.0",
     "omelette": "^0.4.17",
     "pidusage": "^4.0.1",
+    "open": "^10.1.0",
     "proper-lockfile": "^4.1.2"
   },
   "optionalDependencies": {
+    "@napi-rs/keyring": "^1.1.6",
     "ws": "^8.18.3"
   },
   "devDependencies": {
