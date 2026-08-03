@@ -26,14 +26,13 @@ export class FakeHttpTransport implements HttpTransport {
     this.responses.push(response);
   }
 
-  async fetch(
-    url: string,
-    init: RequestInit & { redirect: 'error' },
-  ): Promise<Response> {
+  async fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response> {
     const headers: Record<string, string> = {};
     if (init.headers) {
       if (init.headers instanceof Headers) {
-        init.headers.forEach((v, k) => { headers[k] = v; });
+        init.headers.forEach((v, k) => {
+          headers[k] = v;
+        });
       } else if (Array.isArray(init.headers)) {
         for (const [k, v] of init.headers) headers[k] = v;
       } else {
@@ -100,10 +99,7 @@ export class FakeStderr {
   }
 }
 
-export function respond(
-  status: number,
-  body: unknown,
-): { status: number; body: string } {
+export function respond(status: number, body: unknown): { status: number; body: string } {
   return {
     status,
     body: typeof body === 'string' ? body : JSON.stringify(body),
@@ -128,6 +124,7 @@ export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.examp
     tokenEndpoint: `${baseUrl}/oauth/token`,
     revocationEndpoint: `${baseUrl}/oauth/revoke`,
     clientId: 'cli',
+    capsuleApiBaseUrl: `${baseUrl}/api/v1`,
   };
 }
 

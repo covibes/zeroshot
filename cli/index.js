@@ -2647,6 +2647,9 @@ Shell completion:
   );
 
 // Run command - CLUSTER with auto-detection
+// Target modules are compiled during install/package preparation for the Node 18+ CLI.
+const importTarget = (mod) => import(`../lib/target/${mod}.js`);
+
 program
   .command('run <input>')
   .description(
@@ -2680,6 +2683,10 @@ program
   .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
   .option('--provider <provider>', `Override all agents to use a provider (${PROVIDER_CHOICES})`)
   .option('--model <model>', 'Override all agent models (provider-specific model id)')
+  .option('--target <name>', 'Run through a named hosted target')
+  .option('--submission-key <uuid>', 'Recover or safely retry an ambiguous hosted submission')
+  .option('--size <tier>', 'Hosted capsule size: tiny, small, standard, or large')
+  .option('--repository <owner/name>', 'GitHub repository for a hosted prompt or numeric issue')
   .option(
     '--sim <mode>',
     'Token-free simulation gate for templates (off|fast|deep). Default: fast',
@@ -2735,6 +2742,22 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
   )
   .action(async (inputArg, options) => {
     try {
+      if (options.target) {
+        const { runHosted } = await importTarget('hosted-run');
+        const settingsPort = {
+          load: () => loadSettings(),
+          mutate: (fn) => mutateSettings(fn),
+        };
+        await runHosted(inputArg, options, { settings: settingsPort });
+        return;
+      }
+      for (const [value, flag] of [
+        [options.submissionKey, '--submission-key'],
+        [options.size, '--size'],
+        [options.repository, '--repository'],
+      ]) {
+        if (value !== undefined) throw new Error(`${flag} requires --target`);
+      }
       // Normalize options (--ship → --pr → --worktree flags)
       normalizeRunOptions(options);
 
@@ -4491,8 +4514,6 @@ settingsCmd.action(() => {
 });
 
 // Target management commands
-// Target modules are compiled during install/package preparation for the Node 18+ CLI.
-const importTarget = (mod) => import(`../lib/target/${mod}.js`);
 const targetCmd = program.command('target').description('Manage named remote targets');
 
 targetCmd
@@ -4685,6 +4706,41 @@ targetCmd
 
       removeTarget(name, settingsPort);
       console.log(chalk.green(`✓ Target "${name}" removed`));
+    } catch (error) {
+      console.error(chalk.red(error.message));
+      process.exit(1);
+    }
+  });
+
+targetCmd
+  .command('status <name> <intent-id>')
+  .description('Show or follow a durable hosted run')
+  .option('--follow', 'Follow until the run reaches a terminal state')
+  .action(async (name, intentId, options) => {
+    try {
+      const { statusHostedRun } = await importTarget('hosted-run');
+      const settingsPort = {
+        load: () => loadSettings(),
+        mutate: (fn) => mutateSettings(fn),
+      };
+      await statusHostedRun(name, intentId, !!options.follow, { settings: settingsPort });
+    } catch (error) {
+      console.error(chalk.red(error.message));
+      process.exit(1);
+    }
+  });
+
+targetCmd
+  .command('cancel <name> <intent-id>')
+  .description('Cancel a durable hosted run')
+  .action(async (name, intentId) => {
+    try {
+      const { cancelHostedRun } = await importTarget('hosted-run');
+      const settingsPort = {
+        load: () => loadSettings(),
+        mutate: (fn) => mutateSettings(fn),
+      };
+      await cancelHostedRun(name, intentId, { settings: settingsPort });
     } catch (error) {
       console.error(chalk.red(error.message));
       process.exit(1);

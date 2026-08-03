@@ -34,6 +34,7 @@ export interface TargetSessionDeps {
     readonly tokenEndpoint: string;
     readonly revocationEndpoint?: string;
     readonly clientId: string;
+    readonly capsuleApiBaseUrl: string;
   };
 }
 
@@ -69,7 +70,9 @@ export async function targetLogin(
     codeResponse.interval,
     codeResponse.expires_in,
     http,
-    clock
+    clock,
+    undefined,
+    { token: target.deviceToken, label: 'Zeroshot CLI' }
   );
 
   if (!tokenResponse.organization) {
@@ -111,6 +114,7 @@ export async function refreshAccessToken(
       grant_type: 'refresh_token',
       refresh_token: currentRefreshToken,
       client_id: clientId,
+      audience: 'capsule',
     });
 
     let tokenResponse: TokenResponse;

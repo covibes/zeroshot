@@ -23,6 +23,11 @@ export interface Clock {
   now(): number;
 }
 
+export interface DeviceIdentity {
+  readonly token: string;
+  readonly label: string;
+}
+
 export class DeviceFlowDeniedError extends Error {
   constructor() {
     super('Device authorization denied by user');
@@ -41,7 +46,7 @@ export class UnboundSessionError extends Error {
   readonly verificationUri: string;
   constructor(verificationUri: string) {
     super(
-      `Session not bound to an organization. Re-approve at ${verificationUri} and select an organization.`,
+      `Session not bound to an organization. Re-approve at ${verificationUri} and select an organization.`
     );
     this.name = 'UnboundSessionError';
     this.verificationUri = verificationUri;
@@ -63,7 +68,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
         clearTimeout(timer);
         reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
       },
-      { once: true },
+      { once: true }
     );
   });
 }
@@ -72,7 +77,7 @@ export async function requestDeviceCode(
   deviceAuthorizationEndpoint: string,
   clientId: string,
   http: HttpTransport,
-  signal?: AbortSignal,
+  signal?: AbortSignal
 ): Promise<DeviceCodeResponse> {
   const body = new URLSearchParams({
     client_id: clientId,
@@ -106,6 +111,7 @@ export async function pollForToken(
   http: HttpTransport,
   clock: Clock = DEFAULT_CLOCK,
   signal?: AbortSignal,
+  deviceIdentity?: DeviceIdentity
 ): Promise<TokenResponse> {
   const deadline = clock.now() + expiresIn * 1000;
   let currentInterval = interval;
@@ -122,6 +128,11 @@ export async function pollForToken(
       device_code: deviceCode,
       client_id: clientId,
     });
+    if (deviceIdentity) {
+      body.set('audience', 'admin');
+      body.set('device_token', deviceIdentity.token);
+      body.set('device_label', deviceIdentity.label);
+    }
 
     const init: RequestInit & { redirect: 'error' } = {
       method: 'POST',

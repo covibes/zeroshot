@@ -8,6 +8,7 @@ export interface TargetSessionEndpoints {
   readonly tokenEndpoint: string;
   readonly revocationEndpoint?: string;
   readonly clientId: string;
+  readonly capsuleApiBaseUrl: string;
 }
 
 export class TargetDiscoveryError extends Error {
@@ -111,6 +112,15 @@ export async function discoverTargetSessionEndpoints(
   }
 
   const oauth = record(discovery.oauth, 'oauth');
+  const capsuleProtocol = record(discovery.capsule_protocol, 'capsule_protocol');
+  if (capsuleProtocol.name !== 'openengine.capsules/v1' || capsuleProtocol.major_version !== 1) {
+    throw new TargetDiscoveryError('unsupported capsule protocol');
+  }
+  const capsuleApiBaseUrl = safeEndpoint(
+    capsuleProtocol.base_url,
+    'capsule_protocol.base_url',
+    target.origin
+  ).replace(/\/$/, '');
   const metadataUrl = safeEndpoint(oauth.metadata_url, 'oauth.metadata_url', target.origin);
   const deviceEndpoint = safeEndpoint(
     oauth.device_authorization_endpoint,
@@ -145,5 +155,6 @@ export async function discoverTargetSessionEndpoints(
     tokenEndpoint,
     ...(revocationEndpoint === undefined ? {} : { revocationEndpoint }),
     clientId,
+    capsuleApiBaseUrl,
   };
 }

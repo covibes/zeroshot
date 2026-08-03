@@ -133,6 +133,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Hosted session coordinator            | `src/hosted-session/`                                                                                                            |
 | Hosted target capsule adapter         | `src/hosted-target/`                                                                                                             |
 | Named target registry and sessions    | `src/target/`                                                                                                                    |
+| Hosted opaque run transport           | `src/target/hosted-run.ts`                                                                                                       |
+| Hosted capsule OECP runtime           | `zeroshot-rust/src/hosted_oecp/`, `docker/zeroshot-oecp/`                                                                        |
 | TypeScript protocol emitter           | `scripts/generate-cluster-types.js`                                                                                              |
 | Cluster fixtures/artifacts            | `crates/openengine-cluster-testkit/`                                                                                             |
 | Portable backend conformance          | `crates/openengine-cluster-testkit/src/conformance.rs`                                                                           |
@@ -179,6 +181,13 @@ Named target commands load compiled modules from `lib/target/`; package and deve
 must run `build:target`, never import raw TypeScript from the Node CLI. OAuth routes and client
 identity come from the versioned, same-origin hosted-target discovery document and its advertised
 OAuth metadata; never reconstruct provider routes in `cli/` or `src/cluster/`.
+Hosted runs submit one closed, versioned, opaque RunIntent through the discovered capsule API. The
+CLI owns only construction, durable submission, status, and cancellation: foreground polling and
+later `target status --follow` are interchangeable observation sessions, and disconnect never
+cancels. Zero Cloud owns queueing and entitlement admission; the capsule receives the exact opaque
+intent only after admission. The hosted OECP adapter is a capsule workload whose entrypoint package
+lives with its Docker image, outside the distribution-frozen `zeroshot-rust` executable; it owns
+neither allocation nor termination and may consume credentials only from that admitted intent.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
 Portable external conformance is the immutable public catalog in the testkit and covers only
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
