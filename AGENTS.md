@@ -1104,6 +1104,25 @@ and their exact implementations, each carrying a rationale. Opcore remains at
 six because it has no per-symbol override; new and internal APIs must use request
 structs rather than raising or bypassing the Clippy ceiling.
 
+Opcore `0.2.1` is an exact runtime dependency and Node 22 is the minimum supported Node release.
+All blocking Opcore entrypoints are introduced-change gates: agent writes use
+`scripts/opcore-agent-gate.js`, commits use `npm run opcore:check:staged`, and CI/validators use
+`npm run opcore:check`. Never put `opcore check all` in a blocking hook or handoff gate; it is an
+audit surface for existing debt. Before graph-backed inspection, run `npm run opcore:status` and
+refresh stale persistent evidence with `npm run opcore:graph:build`. The portable hook resolves the
+agent-gate implementation beside Opcore's pinned public entrypoint so checked-in harness settings
+never contain a workstation-specific package path. Provider output is evidence, not host authority;
+keep existing lint, type, test, CI, and review guardrails.
+Rust function-metric enforcement requires `rust-code-analysis-cli 0.0.25`; CI installs the pinned
+tool with `npm run opcore:install:rust-metrics`, and a missing local tool makes Rust metric gates
+fail closed rather than silently skipping the configured limits.
+
+Production dependency auditing runs through `npm run audit:production`. Opcore `0.2.1` bundles
+three upstream denial-of-service advisories; the audit gate permits only their exact advisory IDs,
+nested package paths, and pinned package versions, plus npm's transitive vulnerability closure.
+Every unrelated or newly reported moderate-or-higher advisory still fails. Remove the exception
+when a fixed Opcore release is pinned; never widen it or replace it with `--omit=optional`.
+
 Run validation for:
 
 - Significant changes (>50 lines)

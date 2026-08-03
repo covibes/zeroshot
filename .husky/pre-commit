@@ -16,6 +16,9 @@ if git diff --cached --name-only --diff-filter=ACM -- '*.rs' | grep -q .; then
   git diff --cached --name-only -z --diff-filter=ACM -- '*.rs' | xargs -0 rustfmt --edition 2021 --check
 fi
 
+# Block only policy diagnostics introduced by staged changes; existing repository debt is non-blocking.
+npm run opcore:check:staged
+
 # Lint and format only staged files
 node scripts/run-lint-staged-no-stash.js
 

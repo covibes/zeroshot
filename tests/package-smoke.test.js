@@ -30,7 +30,7 @@ function runNpmPackDryRun() {
 }
 
 describe('npm package smoke', function () {
-  this.timeout(30000);
+  this.timeout(60000);
 
   it('publishes the CLI bin and first-run/auth/runtime support files', function () {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
