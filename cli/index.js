@@ -3962,8 +3962,7 @@ const settingsCmd = program.command('settings').description('Manage zeroshot set
 const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', '_targets']);
 // Fail closed while hosted commands are unpublished. Keeping these names out of the
 // default `run` rewrite makes them unknown commands rather than local task input.
-// Do not add a registration import, environment gate, or preview path here; the only
-// hosted parser constructor lives in src/target/register-hosted-commands.ts.
+// Issue #920 deliberately has no CLI lifecycle or runtime execution surface.
 const UNREGISTERED_HOSTED_COMMAND_NAMES = new Set(['target', 'capsule']);
 
 function visibleSettingKeys() {
@@ -4496,7 +4495,7 @@ settingsCmd.action(() => {
   formatSettingsList(settings, true);
 });
 
-// Hosted target commands intentionally NOT registered here — see src/target/register-hosted-commands.ts
+// Hosted target commands intentionally are not registered on the stable CLI.
 // Providers management
 const providersCmd = program.command('providers').description('Manage AI providers');
 providersCmd.action(async () => {

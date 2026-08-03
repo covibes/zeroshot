@@ -16,7 +16,6 @@ const path = require('path');
 const { execFile } = require('child_process');
 
 const CLI_PATH = path.resolve(__dirname, '..', '..', 'cli', 'index.js');
-const HOSTED_REGISTRATION_PATH = require.resolve('../../lib/target/register-hosted-commands');
 const { program: productionProgram } = require('commander');
 require('../../cli/index.js');
 
@@ -74,10 +73,6 @@ describe('CLI hosted target/capsule gate', function () {
   this.timeout(20_000);
 
   describe('production parser construction', function () {
-    it('does not load the internal hosted command registry', function () {
-      assert.strictEqual(require.cache[HOSTED_REGISTRATION_PATH], undefined);
-    });
-
     it('contains no hosted command, alias, or remote-only option', function () {
       const hostedCommandNames = new Set(['target', 'capsule']);
 

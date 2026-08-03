@@ -188,16 +188,7 @@ Zero Cloud #55 corpus lives at `tests/fixtures/zero-cloud-44`, pinned to commit
 `e8e746d` and digest
 `sha256:6636d50cd60067241a50d1ee027d86fc1738aa933f086d8bb2c496c5be31b85e`; never hand-author a
 parallel hosted wire contract. `build:cluster` emits hosted-target and hosted-session CJS, ESM, and
-declarations; packed runtime modules must not import source `.ts` files. Public target management
-and durable hosted-run commands use compiled `lib/target/` modules; private candidates may call
-`registerHostedCommands` for the descriptor-driven capsule vertical.
-Hosted runs submit one closed, versioned, opaque RunIntent through the discovered capsule API. The
-CLI owns only construction, durable submission, status, and cancellation: foreground polling and
-later `target status --follow` are interchangeable observation sessions, and disconnect never
-cancels. Zero Cloud owns queueing and entitlement admission; the capsule receives the exact opaque
-intent only after admission. The hosted OECP adapter is a capsule workload whose entrypoint package
-lives with its Docker image, outside the distribution-frozen `zeroshot-rust` executable; it owns
-neither allocation nor termination and may consume credentials only from that admitted intent.
+declarations; packed runtime modules must not import source `.ts` files.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
 Portable external conformance is the immutable public catalog in the testkit and covers only
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.

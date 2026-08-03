@@ -197,8 +197,6 @@ function createRequest(repo, baseline, changes, options) {
   for (const change of changes) {
     normalizeBaselineRename(baseline, change);
     if (change.kind === 'D') {
-      overlays.push({ action: 'delete', path: change.path });
-      files.push(change.path);
       continue;
     }
     const content = readAfter(repo, change, options.staged);

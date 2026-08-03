@@ -110,6 +110,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   );
 }
 
+
 async function fetchDocument(http: HttpTransport, url: string): Promise<Record<string, unknown>> {
   const response = await http.fetch(url, {
     method: 'GET',

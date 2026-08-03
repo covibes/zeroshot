@@ -12,19 +12,15 @@ function oversizedFunction(name) {
   return [`pub fn ${name}() -> i32 {`, ...statements, '    0', '}', ''].join('\n');
 }
 
-function runOpcore(repo, args = []) {
-  return spawnSync(
-    process.execPath,
-    [introducedGate, ...args, '--checks', 'rust.function-metrics'],
-    {
-      cwd: repo,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        GIT_INDEX_FILE: path.join(repo, '.git', 'index'),
-      },
-    }
-  );
+function runOpcore(repo, args = [], checks = 'rust.function-metrics') {
+  return spawnSync(process.execPath, [introducedGate, ...args, '--checks', checks], {
+    cwd: repo,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_INDEX_FILE: path.join(repo, '.git', 'index'),
+    },
+  });
 }
 
 function runTypeScriptOpcore(repo) {
@@ -132,6 +128,43 @@ function stagedIndexCase() {
   }
 }
 
+function deletedFileCase() {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opcore-delete-'));
+  const retained = path.join(repo, 'retained.rs');
+  try {
+    initializeRepo(repo, 'pub fn removed() -> i32 {\n    0\n}\n');
+    fs.writeFileSync(retained, 'pub fn retained() -> i32 {\n    0\n}\n');
+    execFileSync('git', ['add', 'retained.rs'], { cwd: repo });
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Zeroshot Test',
+        '-c',
+        'user.email=test@zeroshot.invalid',
+        'commit',
+        '-qm',
+        'add retained source',
+      ],
+      { cwd: repo }
+    );
+    fs.unlinkSync(path.join(repo, 'lib.rs'));
+    fs.appendFileSync(retained, '// retained source remains in validation scope\n');
+
+    const run = runOpcore(repo, [], 'rust.fmt');
+    const result = parseResult(run);
+    assert.strictEqual(run.status, 0, `${run.stderr}\n${run.stdout}`);
+    assert.strictEqual(result.validationResult.status, 'passed');
+    assert.ok(
+      result.validationResult.diagnostics.every(
+        (diagnostic) => !diagnostic.message.includes('lib.rs` does not exist')
+      )
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
+
 function specializedTypeScriptAuthorityCase() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opcore-typescript-'));
   try {
@@ -195,6 +228,7 @@ describe('Opcore introduced-change gate', function () {
 
   it('ignores baseline debt but blocks a newly introduced violation', baselineDebtCase);
   it('validates the staged index rather than an unstaged replacement', stagedIndexCase);
+  it('does not validate a path after it is deleted', deletedFileCase);
   it('uses the specialized TypeScript project authority', specializedTypeScriptAuthorityCase);
   it(
     'allows a clean pre-write and blocks an introduced violation within its deadline',

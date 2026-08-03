@@ -68,7 +68,7 @@ export class UnboundSessionError extends Error {
   readonly verificationUri: string;
   constructor(verificationUri: string) {
     super(
-      `Session not bound to an organization. Re-approve at ${verificationUri} and select an organization.`
+      `Session not bound to an organization. Re-approve at ${verificationUri} and select an organization.`,
     );
     this.name = 'UnboundSessionError';
     this.verificationUri = verificationUri;
@@ -208,7 +208,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
         clearTimeout(timer);
         reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
       },
-      { once: true }
+      { once: true },
     );
   });
 }
@@ -217,7 +217,7 @@ export async function requestDeviceCode(
   deviceAuthorizationEndpoint: string,
   clientId: string,
   http: HttpTransport,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<DeviceCodeResponse> {
   const body = new URLSearchParams({ client_id: clientId });
 
