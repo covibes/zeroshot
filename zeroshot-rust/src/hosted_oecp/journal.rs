@@ -18,7 +18,56 @@ use tokio::sync::{mpsc, Mutex};
 struct JournalState {
     run_id: Option<RunId>,
     history: Vec<PublicEventRecord>,
-    live: Vec<(mpsc::Sender<PublicEventRecord>, Arc<AtomicBool>)>,
+    live: Vec<LiveSubscriber>,
+}
+
+struct LiveSubscriber {
+    sender: mpsc::Sender<PublicEventRecord>,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl LiveSubscriber {
+    fn deliver(self, record: &PublicEventRecord) -> Option<Self> {
+        match self.sender.try_send(record.clone()) {
+            Ok(()) => Some(self),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.overflowed.store(true, Ordering::Release);
+                None
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => None,
+        }
+    }
+}
+
+impl JournalState {
+    fn broadcast(&mut self, record: &PublicEventRecord) {
+        self.live = std::mem::take(&mut self.live)
+            .into_iter()
+            .filter_map(|subscriber| subscriber.deliver(record))
+            .collect();
+    }
+
+    fn subscribe(
+        &mut self,
+        request: SubscribeRequest,
+        queue_capacity: usize,
+    ) -> ResolvedSubscription {
+        let replay_through = self.history.last().map(|record| record.cursor.clone());
+        let (sender, receiver) = mpsc::channel(queue_capacity.max(1));
+        let overflowed = Arc::new(AtomicBool::new(false));
+        self.live.push(LiveSubscriber {
+            sender,
+            overflowed: Arc::clone(&overflowed),
+        });
+        ResolvedSubscription {
+            run_id: self.run_id.clone(),
+            at_cursor: replay_through.clone(),
+            resume_after: request.from_cursor,
+            replay_through,
+            receiver,
+            overflowed,
+        }
+    }
 }
 
 pub struct EventJournal {
@@ -48,16 +97,7 @@ impl EventJournal {
         let mut state = self.state.lock().await;
         state.run_id = Some(run_id);
         state.history.push(record.clone());
-        state.live.retain(
-            |(sender, overflowed)| match sender.try_send(record.clone()) {
-                Ok(()) => true,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    overflowed.store(true, Ordering::Release);
-                    false
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-            },
-        );
+        state.broadcast(&record);
         cursor
     }
 }
@@ -75,18 +115,7 @@ impl ObservationStore for EventJournal {
                 return Err(StoreError::UnknownRun);
             }
         }
-        let replay_through = state.history.last().map(|record| record.cursor.clone());
-        let (sender, receiver) = mpsc::channel(queue_capacity.max(1));
-        let overflowed = Arc::new(AtomicBool::new(false));
-        state.live.push((sender, Arc::clone(&overflowed)));
-        Ok(ResolvedSubscription {
-            run_id: state.run_id.clone(),
-            at_cursor: replay_through.clone(),
-            resume_after: request.from_cursor,
-            replay_through,
-            receiver,
-            overflowed,
-        })
+        Ok(state.subscribe(request, queue_capacity))
     }
 
     async fn replay_page(
@@ -97,22 +126,28 @@ impl ObservationStore for EventJournal {
         if state.run_id.as_ref() != Some(request.run_id) {
             return Err(StoreError::UnknownRun);
         }
-        let start = match request.after {
-            Some(after) => state
-                .history
-                .iter()
-                .position(|record| &record.cursor == after)
-                .map_or(0, |index| index + 1),
-            None => 0,
-        };
-        let mut page = Vec::new();
-        for record in state.history.iter().skip(start) {
-            let reached_tail = &record.cursor == request.through;
-            page.push(record.clone());
-            if page.len() >= request.limit || reached_tail {
-                break;
-            }
-        }
-        Ok(page)
+        Ok(replay_window(
+            &state.history,
+            request.after,
+            request.through,
+            request.limit,
+        ))
     }
+}
+
+fn replay_window(
+    history: &[PublicEventRecord],
+    after: Option<&Cursor>,
+    through: &Cursor,
+    limit: usize,
+) -> Vec<PublicEventRecord> {
+    let start = after
+        .and_then(|cursor| history.iter().position(|record| &record.cursor == cursor))
+        .map_or(0, |index| index + 1);
+    let remaining = &history[start..];
+    let through_end = remaining
+        .iter()
+        .position(|record| &record.cursor == through)
+        .map_or(remaining.len(), |index| index + 1);
+    remaining[..through_end.min(limit.max(1))].to_vec()
 }

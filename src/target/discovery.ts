@@ -1,4 +1,5 @@
 import type { HttpTransport } from './device-flow.ts';
+import { readBoundedJson } from './bounded-json.ts';
 
 const DISCOVERY_PATH = '/.well-known/openengine-hosted-target';
 const MAX_DISCOVERY_BYTES = 64 * 1024;
@@ -52,40 +53,6 @@ function safeEndpoint(value: unknown, field: string, serviceOrigin: string): str
   return endpoint.href;
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
-  const declaredLength = response.headers.get('content-length');
-  if (declaredLength !== null && Number(declaredLength) > MAX_DISCOVERY_BYTES) {
-    throw new TargetDiscoveryError('response exceeds the size limit');
-  }
-  if (!response.body) return response.json();
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_DISCOVERY_BYTES) {
-      await reader.cancel();
-      throw new TargetDiscoveryError('response exceeds the size limit');
-    }
-    chunks.push(value);
-  }
-
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    throw new TargetDiscoveryError('response is not valid JSON');
-  }
-}
-
 async function fetchDocument(http: HttpTransport, url: string): Promise<Record<string, unknown>> {
   const response = await http.fetch(url, {
     method: 'GET',
@@ -95,7 +62,11 @@ async function fetchDocument(http: HttpTransport, url: string): Promise<Record<s
   if (!response.ok) {
     throw new TargetDiscoveryError(`request failed with status ${response.status}`);
   }
-  return record(await readBoundedJson(response), 'response');
+  const body = await readBoundedJson(response, MAX_DISCOVERY_BYTES, {
+    tooLarge: () => new TargetDiscoveryError('response exceeds the size limit'),
+    invalid: () => new TargetDiscoveryError('response is not valid JSON'),
+  });
+  return record(body, 'response');
 }
 
 export async function discoverTargetSessionEndpoints(

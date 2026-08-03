@@ -21,6 +21,7 @@ use super::{
 pub(super) const MAX_RUN_INTENT_BYTES: usize = 1_024 * 1_024 + 64 * 1_024;
 const RUN_INTENT_DIGEST_HEADER: &str = "x-zero-run-intent-digest";
 const RUN_INTENT_VERSION: &str = "zeroshot.run-intent/v1";
+type RunIntentHttpError = (StatusCode, &'static str);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,40 +47,53 @@ async fn put_run_intent(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let Some(intent_id) = canonical_uuid(&intent_id) else {
-        return error_response(StatusCode::BAD_REQUEST, "invalid_intent_id");
+    let identity = match run_intent_identity(&intent_id, &headers) {
+        Ok(identity) => identity,
+        Err((status, code)) => return error_response(status, code),
     };
-    let Some(digest) = intent_digest(&headers) else {
-        return error_response(StatusCode::BAD_REQUEST, "invalid_digest");
-    };
-    let body = match body {
-        Ok(body) => body,
-        Err(error) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "intent_too_large");
-        }
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid_body"),
-    };
-    if digest_bytes(&body) != digest {
-        return error_response(StatusCode::CONFLICT, "digest_mismatch");
-    }
-    let intent: RunIntent = match serde_json::from_slice(&body) {
+    let intent = match decode_run_intent(body, identity.digest()) {
         Ok(intent) => intent,
-        Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid_run_intent"),
+        Err((status, code)) => return error_response(status, code),
     };
-    if intent.version != RUN_INTENT_VERSION || intent.credentials.validate().is_err() {
-        return error_response(StatusCode::BAD_REQUEST, "invalid_run_intent");
-    }
     match backend
-        .submit_run_intent(
-            RunIntentIdentity::new(intent_id, digest),
-            intent.credentials,
-            intent.request,
-        )
+        .submit_run_intent(identity, intent.credentials, intent.request)
         .await
     {
         Ok(status) => status_response(status),
         Err(()) => error_response(StatusCode::CONFLICT, "intent_conflict"),
     }
+}
+
+fn run_intent_identity(
+    intent_id: &str,
+    headers: &HeaderMap,
+) -> Result<RunIntentIdentity, RunIntentHttpError> {
+    let intent_id =
+        canonical_uuid(intent_id).ok_or((StatusCode::BAD_REQUEST, "invalid_intent_id"))?;
+    let digest = intent_digest(headers).ok_or((StatusCode::BAD_REQUEST, "invalid_digest"))?;
+    Ok(RunIntentIdentity::new(intent_id, digest))
+}
+
+fn decode_run_intent(
+    body: Result<Bytes, BytesRejection>,
+    digest: &str,
+) -> Result<RunIntent, RunIntentHttpError> {
+    let body = body.map_err(|error| {
+        if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            (StatusCode::PAYLOAD_TOO_LARGE, "intent_too_large")
+        } else {
+            (StatusCode::BAD_REQUEST, "invalid_body")
+        }
+    })?;
+    if digest_bytes(&body) != digest {
+        return Err((StatusCode::CONFLICT, "digest_mismatch"));
+    }
+    let intent: RunIntent = serde_json::from_slice(&body)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid_run_intent"))?;
+    if intent.version != RUN_INTENT_VERSION || intent.credentials.validate().is_err() {
+        return Err((StatusCode::BAD_REQUEST, "invalid_run_intent"));
+    }
+    Ok(intent)
 }
 
 async fn get_run_intent(
