@@ -48,9 +48,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            node: 20
+            node: 22
           - os: macos-latest
-            node: 20
+            node: 22
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout tested candidate
@@ -244,7 +244,6 @@ jobs:
           RELEASE_VERSION: ${{ steps.semantic-plan.outputs.version }}
         run: echo "tag=v$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
         shell: bash
-
 
   rust-recovery-plan:
     outputs:

@@ -458,6 +458,8 @@ fn product_modules_require_issue_authorization() {
             "fault",
             "fault.rs",
             "full_v1_reducer.rs",
+            "hosted_oecp",
+            "hosted_oecp.rs",
             "issue_provider",
             "issue_provider.rs",
             "lib.rs",

@@ -10,6 +10,11 @@ function hostedDiscovery(overrides: Record<string, unknown> = {}): Record<string
   return {
     kind: 'openengine.hosted-target/v1',
     organization_binding: 'device_approval',
+    capsule_protocol: {
+      name: 'openengine.capsules/v1',
+      major_version: 1,
+      base_url: 'https://api.test.example/api/v1',
+    },
     oauth: {
       metadata_url: 'https://api.test.example/.well-known/openid-configuration',
       device_authorization_endpoint: 'https://api.test.example/oauth/device',
@@ -42,6 +47,7 @@ describe('target session discovery', () => {
       tokenEndpoint: 'https://api.test.example/oauth/token',
       revocationEndpoint: 'https://api.test.example/oauth/revoke',
       clientId: 'cli',
+      capsuleApiBaseUrl: 'https://api.test.example/api/v1',
     });
     assert.deepEqual(
       http.requests.map(({ url, method }) => ({ url, method })),

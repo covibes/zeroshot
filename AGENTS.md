@@ -133,6 +133,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Hosted session coordinator            | `src/hosted-session/`                                                                                                            |
 | Hosted target capsule adapter         | `src/hosted-target/`                                                                                                             |
 | Named target registry and sessions    | `src/target/`                                                                                                                    |
+| Hosted opaque run transport           | `src/target/hosted-run.ts`                                                                                                       |
+| Hosted capsule OECP runtime           | `zeroshot-rust/src/hosted_oecp/`, `docker/zeroshot-oecp/`                                                                        |
 | TypeScript protocol emitter           | `scripts/generate-cluster-types.js`                                                                                              |
 | Cluster fixtures/artifacts            | `crates/openengine-cluster-testkit/`                                                                                             |
 | Portable backend conformance          | `crates/openengine-cluster-testkit/src/conformance.rs`                                                                           |
@@ -179,6 +181,13 @@ Named target commands load compiled modules from `lib/target/`; package and deve
 must run `build:target`, never import raw TypeScript from the Node CLI. OAuth routes and client
 identity come from the versioned, same-origin hosted-target discovery document and its advertised
 OAuth metadata; never reconstruct provider routes in `cli/` or `src/cluster/`.
+Hosted runs submit one closed, versioned, opaque RunIntent through the discovered capsule API. The
+CLI owns only construction, durable submission, status, and cancellation: foreground polling and
+later `target status --follow` are interchangeable observation sessions, and disconnect never
+cancels. Zero Cloud owns queueing and entitlement admission; the capsule receives the exact opaque
+intent only after admission. The hosted OECP adapter is a capsule workload whose entrypoint package
+lives with its Docker image, outside the distribution-frozen `zeroshot-rust` executable; it owns
+neither allocation nor termination and may consume credentials only from that admitted intent.
 The protocol and server crates own wire contracts, backend traits, the dispatcher, and transports.
 Portable external conformance is the immutable public catalog in the testkit and covers only
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
@@ -1103,6 +1112,28 @@ symbol-level exceptions are frozen pre-6.7.2 public compatibility declarations
 and their exact implementations, each carrying a rationale. Opcore remains at
 six because it has no per-symbol override; new and internal APIs must use request
 structs rather than raising or bypassing the Clippy ceiling.
+
+Opcore `0.2.1` is an exact runtime dependency and Node 22 is the minimum supported Node release.
+All blocking Opcore entrypoints are introduced-change gates: agent writes use
+`scripts/opcore-agent-gate.js`, commits use `npm run opcore:check:staged`, and CI/validators use
+`npm run opcore:check`. Never put `opcore check all` in a blocking hook or handoff gate; it is an
+audit surface for existing debt. Before graph-backed inspection, run `npm run opcore:status` and
+refresh stale persistent evidence with `npm run opcore:graph:build`. The portable hook resolves the
+agent-gate implementation beside Opcore's pinned public entrypoint so checked-in harness settings
+never contain a workstation-specific package path. Provider output is evidence, not host authority;
+keep existing lint, type, test, CI, and review guardrails.
+Rust function-metric enforcement requires `rust-code-analysis-cli 0.0.25`; CI installs the pinned
+tool with `npm run opcore:install:rust-metrics`, and a missing local tool makes Rust metric gates
+fail closed rather than silently skipping the configured limits. Blocking introduced-change gates
+exclude `rust.unused-deps` because its nightly `cargo-udeps` provider is not installed in CI.
+The introduced-change wrapper declares each non-emitting TypeScript project config as a scope
+authority so Opcore validates specialized source trees with the same compiler options as CI.
+
+Production dependency auditing runs through `npm run audit:production`. Opcore `0.2.1` bundles
+three upstream denial-of-service advisories; the audit gate permits only their exact advisory IDs,
+nested package paths, and pinned package versions, plus npm's transitive vulnerability closure.
+Every unrelated or newly reported moderate-or-higher advisory still fails. Remove the exception
+when a fixed Opcore release is pinned; never widen it or replace it with `--omit=optional`.
 
 Run validation for:
 
