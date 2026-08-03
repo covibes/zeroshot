@@ -2647,6 +2647,7 @@ Shell completion:
   );
 
 // Run command - CLUSTER with auto-detection
+
 program
   .command('run <input>')
   .description(
@@ -3959,6 +3960,11 @@ for (const providerName of VALID_PROVIDERS) {
 // Settings management
 const settingsCmd = program.command('settings').description('Manage zeroshot settings');
 const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', '_targets']);
+// Fail closed while hosted commands are unpublished. Keeping these names out of the
+// default `run` rewrite makes them unknown commands rather than local task input.
+// Do not add a registration import, environment gate, or preview path here; the only
+// hosted parser constructor lives in src/target/register-hosted-commands.ts.
+const UNREGISTERED_HOSTED_COMMAND_NAMES = new Set(['target', 'capsule']);
 
 function visibleSettingKeys() {
   return Object.keys(DEFAULT_SETTINGS).filter((key) => !INTERNAL_SETTINGS_KEYS.has(key));
@@ -4490,6 +4496,7 @@ settingsCmd.action(() => {
   formatSettingsList(settings, true);
 });
 
+// Hosted target commands intentionally NOT registered here — see src/target/register-hosted-commands.ts
 // Providers management
 const providersCmd = program.command('providers').description('Manage AI providers');
 providersCmd.action(async () => {
@@ -6050,6 +6057,16 @@ function isStartupUpdateEligible(argv, options = {}) {
   });
 }
 
+function applyDefaultCommand(args) {
+  const firstArg = args[0];
+  if (!firstArg || firstArg.startsWith('-')) return;
+
+  const commandNames = program.commands.map((command) => command.name());
+  if (commandNames.includes(firstArg) || UNREGISTERED_HOSTED_COMMAND_NAMES.has(firstArg)) return;
+
+  process.argv.splice(2, 0, 'run');
+}
+
 // Main entry point
 async function main() {
   printLegacyDistroNotice();
@@ -6075,31 +6092,16 @@ async function main() {
     checkForUpdates({ argv: startupArgs, eligibilityChecked: true });
   }
 
-  let args = startupArgs;
+  const args = startupArgs;
 
   if (args.length === 0) {
     program.outputHelp();
     return;
   }
 
-  // Default command handling: if first arg doesn't match a known command, treat it as 'run'
-  // This allows `zeroshot "task"` to work the same as `zeroshot run "task"`
-  args = process.argv.slice(2);
-  if (args.length > 0) {
-    const firstArg = args[0];
-
-    // Skip if it's a flag/option (starts with -)
-    // Skip if it's --help or --version (these are handled by commander)
-    if (!firstArg.startsWith('-')) {
-      // Get all registered command names
-      const commandNames = program.commands.map((cmd) => cmd.name());
-
-      // If first arg is not a known command, prepend 'run'
-      if (!commandNames.includes(firstArg)) {
-        process.argv.splice(2, 0, 'run');
-      }
-    }
-  }
+  // Preserve the default local run shorthand without treating hosted-only command
+  // names as task input in the stable parser.
+  applyDefaultCommand(args);
 
   program.parse();
 }
