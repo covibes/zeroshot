@@ -1,8 +1,13 @@
 {
   "validation": {
     "checks": {
-      "clone": {
-        "exclude": ["lib/**"]
+      "typescript": {
+        "deadCode": {
+          "entrypoints": [
+            "scripts/opcore-agent-gate.js",
+            "scripts/opcore-introduced-check.js"
+          ]
+        }
       },
       "rust": {
         "functionMetrics": {

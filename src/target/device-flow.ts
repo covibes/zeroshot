@@ -18,6 +18,30 @@ export interface DeviceExchangeContext {
   readonly audience: string;
 }
 
+export interface DeviceIdentity {
+  readonly token: string;
+  readonly label: string;
+}
+
+function exchangeFields(
+  exchange: DeviceExchangeContext | DeviceIdentity | undefined,
+): Readonly<Record<string, string>> {
+  if (exchange === undefined) return {};
+  if ('grantType' in exchange) {
+    return {
+      grant_type: exchange.grantType,
+      device_token: exchange.deviceToken,
+      device_label: exchange.deviceLabel,
+      audience: exchange.audience,
+    };
+  }
+  return {
+    device_token: exchange.token,
+    device_label: exchange.label,
+    audience: 'admin',
+  };
+}
+
 export interface HttpTransport {
   fetch(url: string, init: RequestInit & { redirect: 'error' }): Promise<Response>;
 }
@@ -208,7 +232,7 @@ export async function pollForToken(
   http: HttpTransport,
   clock: Clock = DEFAULT_CLOCK,
   signal?: AbortSignal,
-  exchange?: DeviceExchangeContext
+  exchange?: DeviceExchangeContext | DeviceIdentity
 ): Promise<TokenResponse> {
   const deadline = clock.now() + expiresIn * 1000;
   let currentInterval = interval;
@@ -221,16 +245,10 @@ export async function pollForToken(
     await sleep(currentInterval * 1000, signal);
 
     const body = new URLSearchParams({
-      grant_type: exchange?.grantType ?? 'urn:ietf:params:oauth:grant-type:device_code',
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
       device_code: deviceCode,
       client_id: clientId,
-      ...(exchange === undefined
-        ? {}
-        : {
-            device_token: exchange.deviceToken,
-            device_label: exchange.deviceLabel,
-            audience: exchange.audience,
-          }),
+      ...exchangeFields(exchange),
     });
 
     const init: RequestInit & { redirect: 'error' } = {

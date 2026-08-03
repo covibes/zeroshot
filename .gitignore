@@ -51,6 +51,8 @@ zeroshot-cluster-configs/
 *.pdf
 report/
 .eslintcache
+.opcore/*
+!.opcore/config
 
 # Turbo
 .turbo/

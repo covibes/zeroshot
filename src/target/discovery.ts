@@ -95,6 +95,7 @@ export interface TargetSessionEndpoints {
   readonly tokenEndpoint: string;
   readonly revocationEndpoint: string;
   readonly clientId: string;
+  readonly capsuleApiBaseUrl: string;
   readonly deviceGrantType: typeof DEVICE_GRANT;
   readonly audience: typeof CAPSULE_AUDIENCE;
   readonly sessionEndpoint: string;
@@ -247,6 +248,7 @@ export async function discoverTargetSessionEndpoints(targetUrl: string, http: Ht
     tokenEndpoint: descriptor.oauth.tokenEndpoint,
     revocationEndpoint: descriptor.oauth.revocationEndpoint,
     clientId: descriptor.oauth.clientId,
+    capsuleApiBaseUrl: descriptor.capsule.baseUrl.replace(/\/$/, ''),
     deviceGrantType: descriptor.oauth.deviceGrantType,
     audience: descriptor.oauth.audience,
     sessionEndpoint: new URL(descriptor.session.routeTemplate.template, descriptor.origin).href,

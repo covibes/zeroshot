@@ -188,6 +188,7 @@ export function makeDiscoveryEndpoints(baseUrl: string = 'https://api.test.examp
     tokenEndpoint: descriptor.oauth.tokenEndpoint,
     revocationEndpoint: descriptor.oauth.revocationEndpoint,
     clientId: descriptor.oauth.clientId,
+    capsuleApiBaseUrl: descriptor.capsule.baseUrl,
     deviceGrantType: descriptor.oauth.deviceGrantType,
     audience: descriptor.oauth.audience,
     sessionEndpoint: `${baseUrl}/target-session`,
