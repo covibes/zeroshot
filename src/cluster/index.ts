@@ -14,7 +14,7 @@ export {
 export { assertGraphProfile, assertGraphProfileSupported, assertGraphSpec } from './validators.js';
 export * from './payload-value.js';
 export * from './json-source.js';
-export { CONNECTION_TRANSITIONS, PROTOCOL_DIAGNOSTIC_CAPACITY, Connection } from './connection.js';
+export { CLOSE_REASON_MAX_BYTES, CONNECTION_TRANSITIONS, PROTOCOL_DIAGNOSTIC_CAPACITY, Connection } from './connection.js';
 export type {
   CallOptions,
   ConnectionState,
@@ -32,11 +32,13 @@ export type {
   WatchSubscriptionItem,
   WatchSubscriptionClosedItem,
 } from './subscriptions.js';
-export { ClusterClient, connect } from './client.js';
+export { ClusterClient, connect, connectInitialized } from './client.js';
 export type {
   AgentAttachSubscription,
   CoherentWatchSubscription,
+  ConnectInitializedResult,
   ConnectOptions,
   LogsSubscription,
   WatchSubscription,
+  WebSocketFactoryOptions,
 } from './client.js';

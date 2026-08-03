@@ -4,10 +4,12 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   AgentAttachSubscriptionStream,
+  CLOSE_REASON_MAX_BYTES,
   ClusterClient,
   ClusterRpcError,
   Connection,
   connect,
+  connectInitialized,
   LogsSubscriptionStream,
   MAX_FRAME_BYTES,
   SUBSCRIPTION_QUEUE_CAPACITY,
@@ -394,4 +396,96 @@ test('connect destroys a socket when initialization fails', async () => {
   await assert.rejects(pending, { code: 'UNSUPPORTED_PROTOCOL_VERSION' });
   assert.equal(socket.readyState, 3);
   assert.ok(socket.closeCalls >= 1);
+});
+
+test('connectInitialized returns connection, client, and initializeResult', async () => {
+  const socket = new FakeWebSocket();
+  const pending = connectInitialized('ws://test', { webSocketFactory: () => socket });
+  await settle();
+  const request = socket.request('initialize');
+  const initResult = {
+    protocolVersion: 'openengine.cluster/v1',
+    capabilities: { logs: true, agentAttach: true, graphProfiles: ['openengine.graph.full/v1'] },
+    status: { phase: 'running' },
+  };
+  socket.respond(request.id, initResult);
+  const result = await pending;
+  assert.ok(result.connection instanceof Connection);
+  assert.ok(result.client instanceof ClusterClient);
+  assert.equal(result.initializeResult.protocolVersion, 'openengine.cluster/v1');
+  assert.equal(result.initializeResult.capabilities.logs, true);
+  assert.equal(result.initializeResult.status.phase, 'running');
+  await result.connection.close();
+});
+
+test('connect options forward headers to factory', async () => {
+  const socket = new FakeWebSocket();
+  let capturedOptions;
+  const factory = (_url, _protocols, options) => {
+    capturedOptions = options;
+    return socket;
+  };
+  const pending = connect('ws://test', {
+    webSocketFactory: factory,
+    headers: { Authorization: 'Bearer secret' },
+  });
+  await settle();
+  assert.deepEqual(capturedOptions, { headers: { Authorization: 'Bearer secret' } });
+  const request = socket.request('initialize');
+  socket.respond(request.id, {
+    protocolVersion: 'openengine.cluster/v1',
+    capabilities: {},
+    status: { phase: 'empty' },
+  });
+  const connection = await pending;
+  await connection.close();
+});
+
+test('default factory rejects headers when only browser WebSocket is available', async () => {
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = class FakeBrowserWS {
+    constructor() {
+      this.readyState = 0;
+    }
+    addEventListener() {}
+    removeEventListener() {}
+    send() {}
+    close() {}
+  };
+  try {
+    await assert.rejects(
+      connect('ws://test', { headers: { Authorization: 'Bearer x' } }),
+      (error) => error.code === 'HEADERS_UNSUPPORTED'
+    );
+  } finally {
+    if (original === undefined) delete globalThis.WebSocket;
+    else globalThis.WebSocket = original;
+  }
+});
+
+test('close captures bounded code and reason from transport', async () => {
+  const socket = new FakeWebSocket();
+  const connection = new Connection(socket);
+  assert.equal(connection.closeCode, undefined);
+  assert.equal(connection.closeReason, undefined);
+  socket.emit('close', { code: 4001, reason: 'access expired' });
+  await settle();
+  assert.equal(connection.closeCode, 4001);
+  assert.equal(connection.closeReason, 'access expired');
+
+  const socket2 = new FakeWebSocket();
+  const connection2 = new Connection(socket2);
+  const longReason = 'x'.repeat(200);
+  socket2.emit('close', { code: 4002, reason: longReason });
+  await settle();
+  assert.equal(connection2.closeCode, 4002);
+  assert.ok(connection2.closeReason.length <= CLOSE_REASON_MAX_BYTES);
+  assert.equal(connection2.closeReason, longReason.slice(0, CLOSE_REASON_MAX_BYTES));
+
+  const socket3 = new FakeWebSocket();
+  const connection3 = new Connection(socket3);
+  socket3.emit('close', { code: 4003, reason: '€'.repeat(100) });
+  await settle();
+  assert.equal(Buffer.byteLength(connection3.closeReason, 'utf8'), CLOSE_REASON_MAX_BYTES);
+  assert.equal(connection3.closeReason, '€'.repeat(CLOSE_REASON_MAX_BYTES / 3));
 });

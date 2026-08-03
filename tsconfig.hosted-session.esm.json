@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.hosted-session.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "rootDir": "src",
+    "outDir": ".hosted-session-build/esm",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/hosted-session/**/*.ts", "src/cluster/**/*.ts"]
+}

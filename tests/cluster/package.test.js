@@ -63,13 +63,16 @@ test('packed tarball resolves CJS, ESM, root, package metadata, and preserved de
     'lib/cluster/index.mjs',
     'lib/cluster/index.d.ts',
     'lib/cluster/generated/protocol.d.ts',
+    'lib/hosted-session/index.cjs',
+    'lib/hosted-session/index.mjs',
+    'lib/hosted-session/index.d.ts',
   ])
     assert.ok(names.has(required), required);
   execute(
     process.execPath,
     [
       '-e',
-      "const c=require('@the-open-engine/zeroshot/cluster'); if(typeof c.connect!=='function'||typeof c.ClusterClient!=='function')process.exit(1)",
+      "const c=require('@the-open-engine/zeroshot/cluster');const h=require('@the-open-engine/zeroshot/hosted-session');if(typeof c.connect!=='function'||typeof c.ClusterClient!=='function'||typeof h.HostedSessionCoordinator!=='function')process.exit(1)",
     ],
     directory
   );
@@ -78,7 +81,7 @@ test('packed tarball resolves CJS, ESM, root, package metadata, and preserved de
     [
       '--input-type=module',
       '-e',
-      "import {connect,ClusterClient} from '@the-open-engine/zeroshot/cluster'; if(typeof connect!=='function'||typeof ClusterClient!=='function')process.exit(1)",
+      "import {connect,ClusterClient} from '@the-open-engine/zeroshot/cluster';import {HostedSessionCoordinator} from '@the-open-engine/zeroshot/hosted-session';if(typeof connect!=='function'||typeof ClusterClient!=='function'||typeof HostedSessionCoordinator!=='function')process.exit(1)",
     ],
     directory
   );
@@ -98,8 +101,13 @@ test('packed declarations resolve under node16 and bundler modes', () => {
     paths.join(directory, 'consumer.ts'),
     [
       "import type { ClusterClient, Connection, WatchParams } from '@the-open-engine/zeroshot/cluster';",
+      "import type { AccessResponse, HostedSessionCoordinator } from '@the-open-engine/zeroshot/hosted-session';",
       'declare const client: ClusterClient;',
       'declare const connection: Connection;',
+      'declare const hostedSession: HostedSessionCoordinator;',
+      'declare const access: AccessResponse;',
+      'void hostedSession;',
+      'void access;',
       'const params: WatchParams = {};',
       'void client.watch(params);',
       "void connection.call('get', {});",

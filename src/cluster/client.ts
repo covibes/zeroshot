@@ -16,16 +16,25 @@ import {
   WatchSubscriptionStream,
 } from './subscriptions.js';
 
+export interface WebSocketFactoryOptions {
+  readonly headers?: Readonly<Record<string, string>>;
+}
 export interface ConnectOptions {
   readonly protocols?: string | readonly string[];
-  readonly webSocketFactory?: (url: string, protocols?: string | readonly string[]) => WebSocketLike | Promise<WebSocketLike>;
+  readonly webSocketFactory?: (url: string, protocols?: string | readonly string[], options?: WebSocketFactoryOptions) => WebSocketLike | Promise<WebSocketLike>;
   readonly signal?: AbortSignal;
   readonly initialize?: InitializeParams;
+  readonly headers?: Readonly<Record<string, string>>;
 }
 export interface WatchSubscription { readonly result: WatchResult; readonly stream: WatchSubscriptionStream; }
 export interface LogsSubscription { readonly result: LogsResult; readonly stream: LogsSubscriptionStream; }
 export interface AgentAttachSubscription { readonly result: AgentAttachResult; readonly stream: AgentAttachSubscriptionStream; }
 export interface CoherentWatchSubscription extends WatchSubscription { readonly snapshot: GetResult; }
+export interface ConnectInitializedResult {
+  readonly connection: Connection;
+  readonly client: ClusterClient;
+  readonly initializeResult: InitializeResult;
+}
 
 export class ClusterClient {
   constructor(readonly connection: Connection) {}
@@ -114,6 +123,7 @@ export class ClusterClient {
 async function defaultWebSocketFactory(
   url: string,
   protocols?: string | readonly string[],
+  options?: WebSocketFactoryOptions,
 ): Promise<WebSocketLike> {
   const globalWebSocket = (globalThis as {
     readonly WebSocket?: new (
@@ -121,9 +131,16 @@ async function defaultWebSocketFactory(
       protocols?: string | readonly string[],
     ) => WebSocketLike;
   }).WebSocket;
-  if (globalWebSocket) return new globalWebSocket(url, protocols);
+  if (globalWebSocket) {
+    if (options?.headers && Object.keys(options.headers).length > 0) {
+      throw new ClusterConfigError(
+        'WebSocket upgrade headers require the ws library; the browser WebSocket API cannot carry request headers',
+        'HEADERS_UNSUPPORTED',
+      );
+    }
+    return new globalWebSocket(url, protocols);
+  }
   try {
-    // Dynamic loading keeps the optional Node runtime off the browser/global-WebSocket path.
     const imported: unknown = await import('ws');
     const candidate = imported !== null && typeof imported === 'object' && 'default' in imported
       ? imported.default
@@ -134,8 +151,9 @@ async function defaultWebSocketFactory(
     const Constructor = candidate as new (
       url: string,
       protocols?: string | readonly string[],
+      options?: { readonly headers?: Readonly<Record<string, string>> },
     ) => WebSocketLike;
-    return new Constructor(url, protocols);
+    return options?.headers ? new Constructor(url, protocols, { headers: options.headers }) : new Constructor(url, protocols);
   } catch (cause) {
     throw new ClusterConfigError(
       "No WebSocket runtime is available; install 'ws' or pass webSocketFactory",
@@ -181,7 +199,7 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
   const factory = options.webSocketFactory ?? defaultWebSocketFactory;
   let socket: WebSocketLike | undefined;
   try {
-    socket = await factory(url, options.protocols);
+    socket = await factory(url, options.protocols, options.headers ? { headers: options.headers } : undefined);
     await waitForOpen(socket, options.signal);
     const connection = new Connection(socket);
     await new ClusterClient(connection).initialize(
@@ -189,6 +207,28 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
       options.signal === undefined ? {} : { signal: options.signal },
     );
     return connection;
+  } catch (error) {
+    if (socket) {
+      try { await socket.close(); }
+      catch { /* preserve the construction error */ }
+    }
+    throw error;
+  }
+}
+
+export async function connectInitialized(url: string, options: ConnectOptions = {}): Promise<ConnectInitializedResult> {
+  const factory = options.webSocketFactory ?? defaultWebSocketFactory;
+  let socket: WebSocketLike | undefined;
+  try {
+    socket = await factory(url, options.protocols, options.headers ? { headers: options.headers } : undefined);
+    await waitForOpen(socket, options.signal);
+    const connection = new Connection(socket);
+    const client = new ClusterClient(connection);
+    const initializeResult = await client.initialize(
+      options.initialize,
+      options.signal === undefined ? {} : { signal: options.signal },
+    );
+    return { connection, client, initializeResult };
   } catch (error) {
     if (socket) {
       try { await socket.close(); }

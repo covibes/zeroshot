@@ -27,6 +27,20 @@ export const CONNECTION_TRANSITIONS: Readonly<Record<ConnectionState, readonly C
   CLOSED: Object.freeze([] as const),
 });
 export const PROTOCOL_DIAGNOSTIC_CAPACITY = 128;
+export const CLOSE_REASON_MAX_BYTES = 123;
+const CLOSE_REASON_ENCODER = new TextEncoder();
+function boundedCloseReason(reason: string): string {
+  const retained: string[] = [];
+  const scratch = new Uint8Array(4);
+  let bytes = 0;
+  for (const codePoint of reason) {
+    const { written } = CLOSE_REASON_ENCODER.encodeInto(codePoint, scratch);
+    if (bytes + written > CLOSE_REASON_MAX_BYTES) break;
+    retained.push(codePoint);
+    bytes += written;
+  }
+  return retained.join('');
+}
 export interface CallOptions { readonly signal?: AbortSignal; readonly requestTimeoutMs?: number; }
 
 type Deferred<T> = {
@@ -70,6 +84,8 @@ export class Connection {
   readonly #removeSocketListeners: Array<() => void> = [];
   readonly #ownedSubscriptions = new WeakSet<SubscriptionRegistration>();
   #closePromise?: Promise<void>;
+  #closeCode: number | undefined;
+  #closeReason: string | undefined;
   readonly closeDiagnostics: unknown[] = [];
   readonly protocolDiagnostics: ClusterProtocolError[] = [];
 
@@ -80,12 +96,14 @@ export class Connection {
     this.#removeSocketListeners.push(
       addSocketListener(socket, 'message', (event) => this.#onMessage(event)),
       addSocketListener(socket, 'error', () => { void this.#startClose(false); }),
-      addSocketListener(socket, 'close', () => { void this.#startClose(false); }),
+      addSocketListener(socket, 'close', (...args: unknown[]) => { this.#captureCloseState(args); void this.#startClose(false); }),
     );
   }
   get state(): ConnectionState { return this.#state; }
   get pendingSize(): number { return this.#pending.size; }
   get subscriptionCount(): number { return this.#subscriptions.size; }
+  get closeCode(): number | undefined { return this.#closeCode; }
+  get closeReason(): string | undefined { return this.#closeReason; }
   call<M extends UnaryClusterMethod>(method: M, params: ClusterMethodParams[M], options: CallOptions = {}): Promise<ClusterMethodResults[M]> {
     if (!(UNARY_METHODS as readonly string[]).includes(method)) {
       throw new ClusterConfigError(`${method} is a subscription method`, 'INVALID_METHOD');
@@ -265,6 +283,19 @@ export class Connection {
   #recordProtocolError(message: string, cause?: unknown): void {
     if (this.protocolDiagnostics.length === PROTOCOL_DIAGNOSTIC_CAPACITY) this.protocolDiagnostics.shift();
     this.protocolDiagnostics.push(new ClusterProtocolError(message, 'INVALID_PEER_FRAME', cause === undefined ? undefined : { cause }));
+  }
+  #captureCloseState(args: unknown[]): void {
+    if (args.length === 0) return;
+    const first = args[0];
+    if (typeof first === 'number') {
+      this.#closeCode = first;
+      const raw = args.length > 1 ? String(args[1]) : undefined;
+      this.#closeReason = raw === undefined ? undefined : boundedCloseReason(raw);
+    } else if (first !== null && typeof first === 'object') {
+      const event = first as { code?: unknown; reason?: unknown };
+      if (typeof event.code === 'number') this.#closeCode = event.code;
+      if (typeof event.reason === 'string') this.#closeReason = boundedCloseReason(event.reason);
+    }
   }
   #startClose(sendCancels: boolean): Promise<void> {
     if (this.#closePromise) return this.#closePromise; if (this.#state === 'CLOSED') return Promise.resolve();
