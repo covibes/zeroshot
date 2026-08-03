@@ -14,12 +14,16 @@ export class DefaultRetryPolicy implements RetryPolicy {
     if (attempt >= MAX_RETRY_ATTEMPTS) return { retry: false, delayMs: 0 };
     if (elapsed >= MAX_RETRY_ELAPSED_MS) return { retry: false, delayMs: 0 };
 
-    if (error instanceof TargetRateLimitError && error.retryAfterMs !== undefined) {
-      return { retry: true, delayMs: error.retryAfterMs };
+    const requestedDelay =
+      error instanceof TargetRateLimitError && error.retryAfterMs !== undefined
+        ? Math.max(0, error.retryAfterMs)
+        : Math.min(1000 * Math.pow(2, attempt), 10_000);
+    const remaining = MAX_RETRY_ELAPSED_MS - elapsed;
+    if (!Number.isFinite(requestedDelay) || requestedDelay >= remaining) {
+      return { retry: false, delayMs: 0 };
     }
 
-    const baseDelay = 1000 * Math.pow(2, attempt);
-    return { retry: true, delayMs: Math.min(baseDelay, 10_000) };
+    return { retry: true, delayMs: requestedDelay };
   }
 }
 

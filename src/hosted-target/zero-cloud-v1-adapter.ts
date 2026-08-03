@@ -1,4 +1,4 @@
-import { MAX_ERROR_BODY_BYTES, MAX_RESPONSE_BYTES, IDEMPOTENCY_KEY_PATTERN } from './bounds.ts';
+import { MAX_ERROR_BODY_BYTES, MAX_RESPONSE_BYTES, MAX_RETRY_ELAPSED_MS, IDEMPOTENCY_KEY_PATTERN } from './bounds.ts';
 import {
   TargetAuthError,
   TargetConflictError,
@@ -46,6 +46,35 @@ const DEFAULT_TRANSPORT: HttpTransport = {
 
 const DEFAULT_CLOCK: Clock = { now: () => Date.now() };
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason === undefined
+      ? new DOMException('The operation was aborted', 'AbortError')
+      : signal.reason;
+  }
+}
+
+async function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  if (delayMs <= 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(
+        signal!.reason === undefined
+          ? new DOMException('The operation was aborted', 'AbortError')
+          : signal!.reason,
+      );
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function originOf(url: string): string {
   try {
     const u = new URL(url);
@@ -91,7 +120,7 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
       });
       const json = await this._readJson(resp);
       return assertCapsule(json);
-    });
+    }, signal);
   }
 
   async list(cursor?: string, signal?: AbortSignal): Promise<CapsuleListPage> {
@@ -107,7 +136,7 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
         );
       }
       return page;
-    });
+    }, signal);
   }
 
   async inspect(capsuleId: string, signal?: AbortSignal): Promise<Capsule> {
@@ -117,7 +146,7 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
       });
       const json = await this._readJson(resp);
       return assertCapsule(json);
-    });
+    }, signal);
   }
 
   async terminate(capsuleId: string, signal?: AbortSignal): Promise<void> {
@@ -131,7 +160,7 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
         const json = await this._readJson(resp);
         throw new TargetProtocolError(`Unexpected terminate response: ${JSON.stringify(json)}`);
       }
-    });
+    }, signal);
   }
 
   async limits(signal?: AbortSignal): Promise<CapsuleLimits> {
@@ -140,7 +169,7 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
       const resp = await this._request('GET', `/limits?${params.toString()}`, { signal });
       const json = await this._readJson(resp);
       return assertCapsuleLimits(json);
-    });
+    }, signal);
   }
 
   async access(capsuleId: string, signal?: AbortSignal): Promise<CapsuleAccess> {
@@ -152,7 +181,7 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
       );
       const json = await this._readJson(resp);
       return assertCapsuleAccess(json);
-    });
+    }, signal);
   }
 
   private async _request(
@@ -286,34 +315,71 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
   }
 
   private async _readErrorBody(response: Response): Promise<string> {
+    const reader = response.body?.getReader();
+    if (!reader) return '';
+
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
     try {
-      const text = await response.text();
-      return text.slice(0, MAX_ERROR_BODY_BYTES);
+      while (totalBytes < MAX_ERROR_BODY_BYTES) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const remaining = MAX_ERROR_BODY_BYTES - totalBytes;
+        const retained = value.byteLength > remaining ? value.slice(0, remaining) : value;
+        chunks.push(retained);
+        totalBytes += retained.byteLength;
+        if (retained.byteLength !== value.byteLength || totalBytes === MAX_ERROR_BODY_BYTES) {
+          void reader.cancel().catch(() => undefined);
+          break;
+        }
+      }
     } catch {
+      void reader.cancel().catch(() => undefined);
       return '<unreadable>';
     }
+
+    const combined = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(combined);
   }
 
-  private async _withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  private async _withRetry<T>(
+    fn: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const startTime = this.clock.now();
     let attempt = 0;
 
     while (true) {
+      throwIfAborted(signal);
       try {
         return await fn();
       } catch (err) {
+        throwIfAborted(signal);
         if (!(err instanceof TargetAdapterError)) throw err;
         if (err instanceof TargetAuthError) throw err;
 
         attempt++;
         const elapsed = this.clock.now() - startTime;
         const decision = this.retryPolicy.shouldRetry(attempt, elapsed, err);
+        const remaining = MAX_RETRY_ELAPSED_MS - elapsed;
 
-        if (!decision.retry) throw err;
-
-        if (decision.delayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, decision.delayMs));
+        if (
+          !decision.retry ||
+          !Number.isFinite(decision.delayMs) ||
+          decision.delayMs < 0 ||
+          decision.delayMs >= remaining
+        ) {
+          throw err;
         }
+
+        await waitForRetryDelay(decision.delayMs, signal);
+        if (this.clock.now() - startTime >= MAX_RETRY_ELAPSED_MS) throw err;
       }
     }
   }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it, beforeEach } from 'node:test';
 import { ZeroCloudV1TargetAdapter } from '../../src/hosted-target/zero-cloud-v1-adapter.ts';
+import { DefaultRetryPolicy } from '../../src/hosted-target/retry.ts';
 import {
   TargetAuthError,
   TargetConflictError,
@@ -9,7 +10,11 @@ import {
   TargetRateLimitError,
   TargetTransportError,
 } from '../../src/hosted-target/errors.ts';
-import { MAX_RESPONSE_BYTES } from '../../src/hosted-target/bounds.ts';
+import {
+  MAX_ERROR_BODY_BYTES,
+  MAX_RESPONSE_BYTES,
+  MAX_RETRY_ELAPSED_MS,
+} from '../../src/hosted-target/bounds.ts';
 import type { RetryPolicy } from '../../src/hosted-target/types.ts';
 import type { TargetAdapterError } from '../../src/hosted-target/errors.ts';
 import {
@@ -127,6 +132,18 @@ describe('ZeroCloudV1TargetAdapter', () => {
         assert.ok(err.retryAfterMs !== undefined && err.retryAfterMs > 0);
       }
     });
+
+    it('refuses Retry-After delays that reach the elapsed-time ceiling', () => {
+      const policy = new DefaultRetryPolicy();
+      const overLimit = new TargetRateLimitError('rate limited', MAX_RETRY_ELAPSED_MS + 1);
+      const reachesLimit = new TargetRateLimitError('rate limited', 1_000);
+
+      assert.deepEqual(policy.shouldRetry(1, 0, overLimit), { retry: false, delayMs: 0 });
+      assert.deepEqual(
+        policy.shouldRetry(1, MAX_RETRY_ELAPSED_MS - 1_000, reachesLimit),
+        { retry: false, delayMs: 0 },
+      );
+    });
   });
 
   describe('server errors and retries', () => {
@@ -150,6 +167,50 @@ describe('ZeroCloudV1TargetAdapter', () => {
       transport.enqueue(respond(500, { error: 'fail3' }));
 
       await assert.rejects(() => adapter.inspect('cap-1'), TargetTransportError);
+    });
+
+    it('cancels an in-progress retry delay without issuing another request', async () => {
+      let markBackoffStarted!: () => void;
+      const backoffStarted = new Promise<void>((resolve) => {
+        markBackoffStarted = resolve;
+      });
+      const retryPolicy: RetryPolicy = {
+        shouldRetry() {
+          markBackoffStarted();
+          return { retry: true, delayMs: 10_000 };
+        },
+      };
+      const tokenProvider = new FakeTokenProvider();
+      const adapter = makeAdapter(transport, { retryPolicy, tokenProvider });
+      const controller = new AbortController();
+      const reason = new Error('caller cancelled');
+      transport.enqueue(respond(500, { error: 'retry later' }));
+
+      const request = adapter.inspect('cap-1', controller.signal);
+      await backoffStarted;
+      controller.abort(reason);
+
+      await assert.rejects(request, (error: unknown) => error === reason);
+      assert.equal(transport.requests.length, 1);
+      assert.equal(tokenProvider.callCount, 1);
+    });
+
+    it('preserves cancellation instead of wrapping it as a retryable transport error', async () => {
+      const retryPolicy = countingRetry(3);
+      const controller = new AbortController();
+      const reason = new Error('transport cancelled');
+      const adapter = makeAdapter(transport, { retryPolicy });
+      transport.setFault(() => {
+        controller.abort(reason);
+        throw reason;
+      });
+
+      await assert.rejects(
+        () => adapter.inspect('cap-1', controller.signal),
+        (error: unknown) => error === reason,
+      );
+      assert.equal(retryPolicy.attempts.length, 0);
+      assert.equal(transport.requests.length, 1);
     });
   });
 
@@ -175,6 +236,45 @@ describe('ZeroCloudV1TargetAdapter', () => {
       );
 
       await assert.rejects(() => adapter.inspect('cap-1'), TargetProtocolError);
+    });
+
+    it('bounds streamed error bodies before constructing a status error', async () => {
+      let cancelled = false;
+      let pulls = 0;
+      const chunk = new TextEncoder().encode('x'.repeat(1024));
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls++;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const adapter = new ZeroCloudV1TargetAdapter({
+        discovery: fakeDiscovery(),
+        organization: 'org-test',
+        tokenProvider: new FakeTokenProvider(),
+        transport: {
+          async fetch() {
+            return new Response(body, { status: 500 });
+          },
+        },
+        clock: new FakeClock(),
+        retryPolicy: NO_RETRY,
+      });
+
+      await assert.rejects(
+        () => adapter.inspect('cap-1'),
+        (error: unknown) => {
+          assert.ok(error instanceof TargetTransportError);
+          assert.ok(error.message.length <= MAX_ERROR_BODY_BYTES + 64);
+          return true;
+        },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(cancelled, true);
+      assert.ok(pulls <= Math.ceil(MAX_ERROR_BODY_BYTES / chunk.byteLength) + 1);
     });
   });
 
