@@ -16,7 +16,6 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait.workspace = true
-axum.workspace = true
 fs2.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true

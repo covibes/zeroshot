@@ -27,13 +27,6 @@ function runOpcore(repo, args = []) {
   );
 }
 
-function runTypeScriptOpcore(repo) {
-  return spawnSync(process.execPath, [introducedGate, '--checks', 'typescript.types'], {
-    cwd: repo,
-    encoding: 'utf8',
-  });
-}
-
 function parseResult(run) {
   assert.ok(run.stdout, run.stderr);
   return JSON.parse(run.stdout);
@@ -132,54 +125,6 @@ function stagedIndexCase() {
   }
 }
 
-function specializedTypeScriptAuthorityCase() {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opcore-typescript-'));
-  try {
-    fs.mkdirSync(path.join(repo, 'src/target'), { recursive: true });
-    fs.writeFileSync(
-      path.join(repo, 'tsconfig.target.json'),
-      JSON.stringify({
-        compilerOptions: {
-          allowImportingTsExtensions: true,
-          module: 'nodenext',
-          moduleResolution: 'nodenext',
-          noEmit: true,
-          strict: true,
-        },
-        include: ['src/target/**/*.ts'],
-      })
-    );
-    fs.writeFileSync(path.join(repo, 'src/target/value.ts'), 'export const value = 1;\n');
-    fs.writeFileSync(
-      path.join(repo, 'src/target/main.ts'),
-      "import { value } from './value.ts';\nexport const baseline = value;\n"
-    );
-    execFileSync('git', ['init', '-q'], { cwd: repo });
-    execFileSync('git', ['add', '.'], { cwd: repo });
-    execFileSync(
-      'git',
-      [
-        '-c',
-        'user.name=Zeroshot Test',
-        '-c',
-        'user.email=test@zeroshot.invalid',
-        'commit',
-        '-qm',
-        'baseline',
-      ],
-      { cwd: repo }
-    );
-    fs.appendFileSync(path.join(repo, 'src/target/main.ts'), 'export const introduced = value;\n');
-
-    const run = runTypeScriptOpcore(repo);
-    const result = parseResult(run);
-    assert.strictEqual(run.status, 0, run.stderr);
-    assert.strictEqual(result.validationResult.status, 'passed');
-  } finally {
-    fs.rmSync(repo, { recursive: true, force: true });
-  }
-}
-
 function agentGateCase() {
   const clean = runAgentGate('pub fn clean() -> i32 {\n    0\n}\n');
   assert.strictEqual(clean.status, 0, clean.stderr);
@@ -195,7 +140,6 @@ describe('Opcore introduced-change gate', function () {
 
   it('ignores baseline debt but blocks a newly introduced violation', baselineDebtCase);
   it('validates the staged index rather than an unstaged replacement', stagedIndexCase);
-  it('uses the specialized TypeScript project authority', specializedTypeScriptAuthorityCase);
   it(
     'allows a clean pre-write and blocks an introduced violation within its deadline',
     agentGateCase

@@ -55,7 +55,6 @@ jobs:
 
       - name: Opcore introduced-change gate
         env:
-          CARGO_BUILD_JOBS: 1
           OPCORE_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'HEAD^' }}
         run: npm run opcore:check -- --base "$OPCORE_BASE"
 

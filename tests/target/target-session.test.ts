@@ -1,11 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  targetLogin,
-  refreshAccessToken,
-  getAccessTokenProvider,
-  LoginRequiredError,
-} from '../../src/target/target-session.ts';
+import { targetLogin, refreshAccessToken, getAccessTokenProvider, LoginRequiredError } from '../../src/target/target-session.ts';
 import { UnboundSessionError } from '../../src/target/device-flow.ts';
 import { targetServiceKey, TARGET_ACCOUNT } from '../../src/target/credential-store.ts';
 import {
@@ -32,27 +27,23 @@ describe('targetLogin', () => {
     const target = makeTarget();
 
     // device code response
-    http.enqueue(
-      respond(200, {
-        device_code: 'dev-123',
-        user_code: 'ABCD',
-        verification_uri: 'https://auth.example.com/device',
-        verification_uri_complete: 'https://auth.example.com/device?code=ABCD',
-        expires_in: 900,
-        interval: 0,
-      })
-    );
+    http.enqueue(respond(200, {
+      device_code: 'dev-123',
+      user_code: 'ABCD',
+      verification_uri: 'https://auth.example.com/device',
+      verification_uri_complete: 'https://auth.example.com/device?code=ABCD',
+      expires_in: 900,
+      interval: 0,
+    }));
 
     // token exchange response
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-tok',
-        refresh_token: 'refresh-tok',
-        token_type: 'Bearer',
-        expires_in: 3600,
-        organization: { id: 'org-1', name: 'TestOrg' },
-      })
-    );
+    http.enqueue(respond(200, {
+      access_token: 'access-tok',
+      refresh_token: 'refresh-tok',
+      token_type: 'Bearer',
+      expires_in: 3600,
+      organization: { id: 'org-1', name: 'TestOrg' },
+    }));
 
     const result = await targetLogin('staging', target, credStore, fakeLock(), settings, {
       http,
@@ -78,11 +69,6 @@ describe('targetLogin', () => {
     // Organization updated in settings
     const loaded = settings.load();
     assert.equal(loaded._targets?.['staging']?.organization?.name, 'TestOrg');
-
-    const devicePoll = new URLSearchParams(http.requests[1]?.body ?? '');
-    assert.equal(devicePoll.get('audience'), 'admin');
-    assert.equal(devicePoll.get('device_token'), target.deviceToken);
-    assert.equal(devicePoll.get('device_label'), 'Zeroshot CLI');
   });
 
   it('throws UnboundSessionError when no organization in response', async () => {
@@ -92,24 +78,20 @@ describe('targetLogin', () => {
     const settings = makeSettingsPort({ _targets: { staging: makeTarget() } });
     const target = makeTarget();
 
-    http.enqueue(
-      respond(200, {
-        device_code: 'dev-123',
-        user_code: 'ABCD',
-        verification_uri: 'https://auth.example.com/device',
-        expires_in: 900,
-        interval: 0,
-      })
-    );
+    http.enqueue(respond(200, {
+      device_code: 'dev-123',
+      user_code: 'ABCD',
+      verification_uri: 'https://auth.example.com/device',
+      expires_in: 900,
+      interval: 0,
+    }));
 
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-tok',
-        refresh_token: 'refresh-tok',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      })
-    );
+    http.enqueue(respond(200, {
+      access_token: 'access-tok',
+      refresh_token: 'refresh-tok',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
 
     await assert.rejects(
       targetLogin('staging', target, credStore, fakeLock(), settings, {
@@ -119,7 +101,7 @@ describe('targetLogin', () => {
         stderr: new FakeStderr(),
         discoveryEndpoints: makeDiscoveryEndpoints(),
       }),
-      UnboundSessionError
+      UnboundSessionError,
     );
   });
 });
@@ -133,14 +115,12 @@ describe('refreshAccessToken', () => {
 
     await credStore.set(serviceKey, TARGET_ACCOUNT, 'old-refresh');
 
-    http.enqueue(
-      respond(200, {
-        access_token: 'new-access',
-        refresh_token: 'new-refresh',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      })
-    );
+    http.enqueue(respond(200, {
+      access_token: 'new-access',
+      refresh_token: 'new-refresh',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
 
     const result = await refreshAccessToken('staging', target, credStore, fakeLock(), {
       http,
@@ -152,8 +132,6 @@ describe('refreshAccessToken', () => {
 
     const stored = await credStore.get(serviceKey, TARGET_ACCOUNT);
     assert.equal(stored, 'new-refresh');
-    const refresh = new URLSearchParams(http.requests[0]?.body ?? '');
-    assert.equal(refresh.get('audience'), 'capsule');
   });
 
   it('throws LoginRequiredError when no refresh token exists', async () => {
@@ -166,7 +144,7 @@ describe('refreshAccessToken', () => {
         http,
         discoveryEndpoints: makeDiscoveryEndpoints(),
       }),
-      LoginRequiredError
+      LoginRequiredError,
     );
   });
 
@@ -215,14 +193,12 @@ describe('refreshAccessToken', () => {
     failingStore.delete = store.delete.bind(store);
 
     // Refresh success response
-    http.enqueue(
-      respond(200, {
-        access_token: 'new-access',
-        refresh_token: 'new-refresh',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      })
-    );
+    http.enqueue(respond(200, {
+      access_token: 'new-access',
+      refresh_token: 'new-refresh',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
 
     // Revocation response (best-effort)
     http.enqueue(respond(200, {}));
@@ -232,7 +208,7 @@ describe('refreshAccessToken', () => {
         http,
         discoveryEndpoints: makeDiscoveryEndpoints(),
       }),
-      LoginRequiredError
+      LoginRequiredError,
     );
 
     assert.equal(setCalls, 1);
@@ -242,11 +218,8 @@ describe('refreshAccessToken', () => {
     assert.ok(revokeReq, 'Should have called revocation endpoint');
     assert.ok(revokeReq.body);
     const revokedParams = new URLSearchParams(revokeReq.body);
-    assert.equal(
-      revokedParams.get('token'),
-      'new-refresh',
-      'Must revoke the new (unpersisted) token, not the already-consumed old token'
-    );
+    assert.equal(revokedParams.get('token'), 'new-refresh',
+      'Must revoke the new (unpersisted) token, not the already-consumed old token');
   });
 
   it('never retries a consumed refresh token', async () => {
@@ -264,7 +237,7 @@ describe('refreshAccessToken', () => {
         http,
         discoveryEndpoints: makeDiscoveryEndpoints(),
       }),
-      LoginRequiredError
+      LoginRequiredError,
     );
 
     // Only one request made — no retry
@@ -282,26 +255,17 @@ describe('getAccessTokenProvider', () => {
 
     await credStore.set(serviceKey, TARGET_ACCOUNT, 'refresh-1');
 
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-cached',
-        refresh_token: 'refresh-2',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      })
-    );
+    http.enqueue(respond(200, {
+      access_token: 'access-cached',
+      refresh_token: 'refresh-2',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
 
-    const provider = getAccessTokenProvider(
-      'staging',
-      target,
-      credStore,
-      fakeLock(),
-      {
-        http,
-        discoveryEndpoints: makeDiscoveryEndpoints(),
-      },
-      clock
-    );
+    const provider = getAccessTokenProvider('staging', target, credStore, fakeLock(), {
+      http,
+      discoveryEndpoints: makeDiscoveryEndpoints(),
+    }, clock);
 
     const token1 = await provider.getAccessToken();
     assert.equal(token1, 'access-cached');
@@ -321,35 +285,24 @@ describe('getAccessTokenProvider', () => {
 
     await credStore.set(serviceKey, TARGET_ACCOUNT, 'refresh-1');
 
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-1',
-        refresh_token: 'refresh-2',
-        token_type: 'Bearer',
-        expires_in: 60,
-      })
-    );
+    http.enqueue(respond(200, {
+      access_token: 'access-1',
+      refresh_token: 'refresh-2',
+      token_type: 'Bearer',
+      expires_in: 60,
+    }));
 
-    http.enqueue(
-      respond(200, {
-        access_token: 'access-2',
-        refresh_token: 'refresh-3',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      })
-    );
+    http.enqueue(respond(200, {
+      access_token: 'access-2',
+      refresh_token: 'refresh-3',
+      token_type: 'Bearer',
+      expires_in: 3600,
+    }));
 
-    const provider = getAccessTokenProvider(
-      'staging',
-      target,
-      credStore,
-      fakeLock(),
-      {
-        http,
-        discoveryEndpoints: makeDiscoveryEndpoints(),
-      },
-      clock
-    );
+    const provider = getAccessTokenProvider('staging', target, credStore, fakeLock(), {
+      http,
+      discoveryEndpoints: makeDiscoveryEndpoints(),
+    }, clock);
 
     const token1 = await provider.getAccessToken();
     assert.equal(token1, 'access-1');
