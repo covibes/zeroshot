@@ -178,7 +178,6 @@
     "commander": "^14.0.2",
     "node-pty": "^1.1.0",
     "omelette": "^0.4.17",
-    "opcore": "0.2.1",
     "open": "^10.1.0",
     "pidusage": "^4.0.1",
     "proper-lockfile": "^4.1.2"
@@ -206,6 +205,7 @@
     "jscpd": "^3.5.10",
     "lint-staged": "^16.2.7",
     "mocha": "^11.7.5",
+    "opcore": "0.2.1",
     "prettier": "^3.7.4",
     "semantic-release": "^25.0.2",
     "sinon": "^21.0.0",

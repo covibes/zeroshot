@@ -1,0 +1,12 @@
+[package]
+name = "zeroshot-oecp-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+tokio.workspace = true
+zeroshot-engine = { package = "zeroshot-rust", path = "../../zeroshot-rust" }

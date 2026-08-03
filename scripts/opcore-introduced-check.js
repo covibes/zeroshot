@@ -6,6 +6,35 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const TYPESCRIPT_AUTHORITIES = [
+  'tsconfig.agent-cli-provider.json',
+  'tsconfig.cluster.json',
+  'tsconfig.hosted-session.json',
+  'tsconfig.hosted-target.json',
+  'tsconfig.target.json',
+];
+
+const DEFAULT_CHECKS = [
+  'typescript.syntax',
+  'typescript.types',
+  'typescript.import-graph',
+  'typescript.dead-code',
+  'typescript.function-metrics',
+  'typescript.relevant-tests',
+  'typescript.file-length',
+  'rust.source-hygiene',
+  'rust.fmt',
+  'rust.cargo-check',
+  'rust.clippy',
+  'rust.rustdoc',
+  'rust.import-graph',
+  'rust.dead-code',
+  'rust.graph-signals',
+  'rust.file-length',
+  'rust.function-metrics',
+  'clone.duplication',
+].join(',');
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
@@ -51,7 +80,7 @@ function valueOption(argv, index) {
 }
 
 function parseArgs(argv) {
-  const options = { base: 'HEAD', staged: false };
+  const options = { base: 'HEAD', checks: DEFAULT_CHECKS, staged: false };
   let index = 0;
   while (index < argv.length) {
     const arg = argv[index];
@@ -177,11 +206,14 @@ function createRequest(repo, baseline, changes, options) {
     overlays.push({ action: 'write', path: change.path, content });
     files.push(change.path);
   }
+  for (const authority of TYPESCRIPT_AUTHORITIES) {
+    if (fs.existsSync(safePath(baseline, authority))) files.push(authority);
+  }
 
   return {
     requestId: `zeroshot-opcore-introduced-${process.pid}`,
     repo: { repoRoot: baseline },
-    scope: { kind: 'files', files },
+    scope: { kind: 'files', files: [...new Set(files)] },
     graph: { mode: 'optional', provider: 'opcore-graph' },
     overlays,
     ...(options.checks ? { checks: options.checks.split(',').filter(Boolean) } : {}),
