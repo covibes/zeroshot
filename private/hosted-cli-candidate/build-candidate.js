@@ -83,12 +83,16 @@ function parseArgs(argv) {
   return { runtimeImageDigest, output };
 }
 
-function assertCleanSource(allowHostedTargetBuild = false) {
+function assertCleanSource(allowGeneratedOutputs = false) {
   const status = run('git', ['status', '--porcelain=v1', '--untracked-files=all']);
+  const generatedPrefixes = GENERATED_OUTPUT_DIRS.map((directory) => `?? ${directory}/`);
   const unexpected = status
     .split('\n')
     .filter(Boolean)
-    .filter((line) => !(allowHostedTargetBuild && line.startsWith('?? lib/hosted-target/')));
+    .filter(
+      (line) =>
+        !(allowGeneratedOutputs && generatedPrefixes.some((prefix) => line.startsWith(prefix)))
+    );
   if (unexpected.length > 0) {
     throw new Error('candidate source tree must be clean before immutable packing');
   }
@@ -187,7 +191,7 @@ function writeCandidateFiles(stage, immutable) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  assertCleanSource();
+  assertCleanSource(true);
   for (const directory of GENERATED_OUTPUT_DIRS) {
     fs.rmSync(path.join(ROOT, directory), { recursive: true, force: true });
   }
