@@ -1,24 +1,106 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import {
-  addTarget,
-  getTarget,
-  listTargets,
-  removeTarget,
-  type SettingsPort,
-} from './target-registry.js';
-import { targetLogin, revokeAndCleanup } from './target-session.js';
-import {
-  KeyringCredentialStore,
-  targetServiceKey,
-  TARGET_ACCOUNT,
-} from './credential-store.js';
-import { acquireTargetLock } from './credential-lock.js';
-import { discoverTargetSessionEndpoints } from './discovery.js';
+interface TargetRecord {
+  readonly id: string;
+  readonly url: string;
+  readonly organization?: { readonly name: string };
+  readonly createdAt: string;
+}
+
+interface SettingsState {
+  _targets?: Record<string, TargetRecord>;
+  [key: string]: unknown;
+}
+
+interface SettingsPort {
+  load(): SettingsState;
+  mutate(mutator: (settings: SettingsState) => void): void;
+}
+
+interface TargetCredentialStore {
+  get(service: string, account: string): Promise<string | null>;
+  set(service: string, account: string, token: string): Promise<void>;
+  delete(service: string, account: string): Promise<void>;
+}
+
+interface TargetSessionEndpoints {
+  readonly deviceAuthorizationEndpoint: string;
+  readonly tokenEndpoint: string;
+  readonly revocationEndpoint?: string;
+}
+
+interface HttpTransport {
+  fetch(url: string, init: RequestInit): Promise<Response>;
+}
+
+type AcquireTargetLock = (targetId: string) => Promise<() => Promise<void>>;
+type TargetLoginArguments = [
+  targetName: string,
+  target: TargetRecord,
+  credentialStore: TargetCredentialStore,
+  acquireLock: () => Promise<() => Promise<void>>,
+  settings: SettingsPort,
+  options: {
+    http: HttpTransport;
+    clock: { now(): number };
+    browserOpener: { open(url: string): Promise<void> };
+    stderr: NodeJS.WritableStream;
+    discoveryEndpoints: TargetSessionEndpoints;
+  },
+];
+type RevokeArguments = [
+  target: TargetRecord,
+  credentialStore: TargetCredentialStore,
+  acquireLock: () => Promise<() => Promise<void>>,
+  options: {
+    http: HttpTransport;
+    discoveryEndpoints: TargetSessionEndpoints;
+  },
+  force: boolean,
+];
+
+interface HostedCommandServices {
+  addTarget(name: string, url: string, settings: SettingsPort): TargetRecord;
+  getTarget(name: string, settings: SettingsPort): TargetRecord | null;
+  listTargets(settings: SettingsPort): Array<{ name: string; record: TargetRecord }>;
+  removeTarget(name: string, settings: SettingsPort): TargetRecord;
+  targetLogin(...args: TargetLoginArguments): Promise<{ organization: { name: string } }>;
+  revokeAndCleanup(...args: RevokeArguments): Promise<void>;
+  KeyringCredentialStore: { create(): Promise<TargetCredentialStore> };
+  targetServiceKey(targetId: string): string;
+  TARGET_ACCOUNT: string;
+  acquireTargetLock: AcquireTargetLock;
+  discoverTargetSessionEndpoints(
+    targetUrl: string,
+    http: HttpTransport,
+  ): Promise<TargetSessionEndpoints>;
+}
+
+function loadHostedCommandServices(): HostedCommandServices {
+  const registry = require('./target-registry') as Pick<
+    HostedCommandServices,
+    'addTarget' | 'getTarget' | 'listTargets' | 'removeTarget'
+  >;
+  const session = require('./target-session') as Pick<
+    HostedCommandServices,
+    'targetLogin' | 'revokeAndCleanup'
+  >;
+  const credentials = require('./credential-store') as Pick<
+    HostedCommandServices,
+    'KeyringCredentialStore' | 'targetServiceKey' | 'TARGET_ACCOUNT'
+  >;
+  const lock = require('./credential-lock') as Pick<HostedCommandServices, 'acquireTargetLock'>;
+  const discovery = require('./discovery') as Pick<
+    HostedCommandServices,
+    'discoverTargetSessionEndpoints'
+  >;
+  return { ...registry, ...session, ...credentials, ...lock, ...discovery };
+}
 
 export interface HostedCommandsDependencies {
   loadSettings: SettingsPort['load'];
   mutateSettings: SettingsPort['mutate'];
+  services?: HostedCommandServices;
 }
 
 /**
@@ -32,6 +114,19 @@ export function registerHostedCommands(
   program: Command,
   dependencies: HostedCommandsDependencies,
 ): void {
+  const {
+    addTarget,
+    getTarget,
+    listTargets,
+    removeTarget,
+    targetLogin,
+    revokeAndCleanup,
+    KeyringCredentialStore,
+    targetServiceKey,
+    TARGET_ACCOUNT,
+    acquireTargetLock,
+    discoverTargetSessionEndpoints,
+  } = dependencies.services ?? loadHostedCommandServices();
   const settingsPort: SettingsPort = {
     load: () => dependencies.loadSettings(),
     mutate: (fn) => dependencies.mutateSettings(fn),
@@ -117,7 +212,6 @@ export function registerHostedCommands(
             createdAt: record.createdAt,
           }));
 
-          // Try to check keyring presence for each target
           try {
             const store = await KeyringCredentialStore.create();
             for (const item of output) {
@@ -169,7 +263,6 @@ export function registerHostedCommands(
           process.exit(1);
         }
 
-        // Try to revoke and cleanup keyring
         try {
           const credentialStore = await KeyringCredentialStore.create();
           const http = { fetch: (url: string, init: RequestInit) => fetch(url, init) };
@@ -189,7 +282,6 @@ export function registerHostedCommands(
             console.error(chalk.red((error as Error).message));
             process.exit(1);
           }
-          // Force mode: continue with removal
         }
 
         removeTarget(name, settingsPort);
