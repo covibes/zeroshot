@@ -34,12 +34,7 @@ function mutateWorkflowJob(source, jobName, mutateJob) {
 }
 
 function withRustStageFixture(
-  {
-    requirement,
-    lockedDependencies,
-    includeRegistryNameCollision = false,
-    trailingTables = [],
-  },
+  { requirement, lockedDependencies, includeRegistryNameCollision = false, trailingTables = [] },
   assertion
 ) {
   const directory = temporaryDirectory();
@@ -229,12 +224,7 @@ describe('Rust release integration', function () {
       const stagedLock = fs.readFileSync(lockPath, 'utf8');
       const workspaceManifest = fs.readFileSync(workspacePath, 'utf8');
       assert.strictEqual(
-        distribution.checkVersionCoupling(
-          'v6.10.3',
-          stagedManifest,
-          stagedLock,
-          workspaceManifest
-        ),
+        distribution.checkVersionCoupling('v6.10.3', stagedManifest, stagedLock, workspaceManifest),
         '6.10.3'
       );
       assert.match(
@@ -320,8 +310,7 @@ describe('Rust release integration', function () {
       },
       ({ lockPath, manifestPath, workspacePath }) => {
         assert.throws(
-          () =>
-            distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
+          () => distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
           /needs exactly one windows-sys package satisfying 0\.61\.2/
         );
       }
@@ -339,8 +328,7 @@ describe('Rust release integration', function () {
       },
       ({ lockPath, manifestPath, workspacePath }) => {
         assert.throws(
-          () =>
-            distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
+          () => distribution.stageVersion('v6.10.3', manifestPath, lockPath, workspacePath),
           /windows-sys 0\.61\.2 has ambiguous sources/
         );
       }
@@ -484,8 +472,7 @@ describe('Rust release integration', function () {
         () =>
           distribution.checkRepository(
             mutateInstall((job) => {
-              job.steps.find((step) => step.name === installName)['working-directory'] =
-                'nested';
+              job.steps.find((step) => step.name === installName)['working-directory'] = 'nested';
             })
           ),
         new RegExp(`${jobName} dependency install must execute at workspace root`)
@@ -877,6 +864,9 @@ describe('Rust npm shim integration', function () {
     assert.deepStrictEqual(rootPackage.files, [
       'src/',
       'lib/',
+      '!src/target/register-hosted-commands.ts',
+      '!lib/target/register-hosted-commands.js',
+      '!lib/target/register-hosted-commands.d.ts',
       'bin/',
       'cli/',
       'task-lib/',

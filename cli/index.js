@@ -2647,6 +2647,7 @@ Shell completion:
   );
 
 // Run command - CLUSTER with auto-detection
+
 program
   .command('run <input>')
   .description(
@@ -3959,6 +3960,11 @@ for (const providerName of VALID_PROVIDERS) {
 // Settings management
 const settingsCmd = program.command('settings').description('Manage zeroshot settings');
 const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', '_targets']);
+// Fail closed while hosted commands are unpublished. Keeping these names out of the
+// default `run` rewrite makes them unknown commands rather than local task input.
+// Do not add a registration import, environment gate, or preview path here; the only
+// hosted parser constructor lives in src/target/register-hosted-commands.ts.
+const UNREGISTERED_HOSTED_COMMAND_NAMES = new Set(['target', 'capsule']);
 
 function visibleSettingKeys() {
   return Object.keys(DEFAULT_SETTINGS).filter((key) => !INTERNAL_SETTINGS_KEYS.has(key));
@@ -4490,210 +4496,7 @@ settingsCmd.action(() => {
   formatSettingsList(settings, true);
 });
 
-// Target management commands
-// Target modules are compiled during install/package preparation for the Node 18+ CLI.
-const importTarget = (mod) => import(`../lib/target/${mod}.js`);
-const targetCmd = program.command('target').description('Manage named remote targets');
-
-targetCmd
-  .command('add <name>')
-  .description('Register a named remote target')
-  .requiredOption('--url <url>', 'Service URL for the target')
-  .action(async (name, options) => {
-    try {
-      const { addTarget } = await importTarget('target-registry');
-      const settingsPort = {
-        load: () => loadSettings(),
-        mutate: (fn) => mutateSettings(fn),
-      };
-      const record = addTarget(name, options.url, settingsPort);
-      console.log(chalk.green(`✓ Target "${name}" added (${record.url})`));
-    } catch (error) {
-      console.error(chalk.red(error.message));
-      process.exit(1);
-    }
-  });
-
-targetCmd
-  .command('login <name>')
-  .description('Authenticate with a remote target via device login')
-  .action(async (name) => {
-    try {
-      const { getTarget } = await importTarget('target-registry');
-      const { targetLogin } = await importTarget('target-session');
-      const { KeyringCredentialStore } = await importTarget('credential-store');
-      const { acquireTargetLock } = await importTarget('credential-lock');
-      const { discoverTargetSessionEndpoints } = await importTarget('discovery');
-
-      const settingsPort = {
-        load: () => loadSettings(),
-        mutate: (fn) => mutateSettings(fn),
-      };
-
-      const target = getTarget(name, settingsPort);
-      if (!target) {
-        console.error(chalk.red(`Target "${name}" not found.`));
-        process.exit(1);
-      }
-
-      const http = { fetch: (url, init) => fetch(url, init) };
-      const discoveryEndpoints = await discoverTargetSessionEndpoints(target.url, http);
-
-      const credentialStore = await KeyringCredentialStore.create();
-      const openPkg = await import('open');
-      const browserOpen = openPkg.default || openPkg;
-
-      const result = await targetLogin(
-        name,
-        target,
-        credentialStore,
-        () => acquireTargetLock(target.id),
-        settingsPort,
-        {
-          http,
-          clock: { now: () => Date.now() },
-          browserOpener: {
-            open: async (url) => {
-              await browserOpen(url);
-            },
-          },
-          stderr: process.stderr,
-          discoveryEndpoints,
-        }
-      );
-
-      console.log(
-        chalk.green(`✓ Logged in to "${name}" (organization: ${result.organization.name})`)
-      );
-    } catch (error) {
-      console.error(chalk.red(error.message));
-      process.exit(1);
-    }
-  });
-
-targetCmd
-  .command('list')
-  .description('List registered remote targets')
-  .option('--json', 'Output as JSON')
-  .action(async (options) => {
-    try {
-      const { listTargets } = await importTarget('target-registry');
-      const settingsPort = {
-        load: () => loadSettings(),
-        mutate: (fn) => mutateSettings(fn),
-      };
-
-      const targets = listTargets(settingsPort);
-
-      if (options.json) {
-        const output = targets.map(({ name, record }) => ({
-          name,
-          id: record.id,
-          url: record.url,
-          organization: record.organization ?? null,
-          loggedIn: false,
-          createdAt: record.createdAt,
-        }));
-
-        // Try to check keyring presence for each target
-        try {
-          const { KeyringCredentialStore } = await importTarget('credential-store');
-          const { targetServiceKey, TARGET_ACCOUNT } = await importTarget('credential-store');
-          const store = await KeyringCredentialStore.create();
-          for (const item of output) {
-            const matchingTarget = targets.find((t) => t.name === item.name);
-            if (matchingTarget) {
-              const cred = await store.get(
-                targetServiceKey(matchingTarget.record.id),
-                TARGET_ACCOUNT
-              );
-              item.loggedIn = cred !== null;
-            }
-          }
-        } catch {
-          // Keyring unavailable, all show as not logged in
-        }
-
-        console.log(JSON.stringify(output, null, 2));
-        return;
-      }
-
-      if (targets.length === 0) {
-        console.log(
-          chalk.dim(
-            'No targets registered. Use `zeroshot target add <name> --url <url>` to add one.'
-          )
-        );
-        return;
-      }
-
-      for (const { name, record } of targets) {
-        const org = record.organization ? ` (org: ${record.organization.name})` : '';
-        console.log(`  ${chalk.bold(name)}  ${record.url}${org}`);
-      }
-    } catch (error) {
-      console.error(chalk.red(error.message));
-      process.exit(1);
-    }
-  });
-
-targetCmd
-  .command('remove <name>')
-  .description('Remove a named remote target')
-  .option('--force', 'Remove even if remote revocation fails')
-  .action(async (name, options) => {
-    try {
-      const { getTarget, removeTarget } = await importTarget('target-registry');
-      const { revokeAndCleanup } = await importTarget('target-session');
-      const { acquireTargetLock } = await importTarget('credential-lock');
-      const { discoverTargetSessionEndpoints } = await importTarget('discovery');
-
-      const settingsPort = {
-        load: () => loadSettings(),
-        mutate: (fn) => mutateSettings(fn),
-      };
-
-      const target = getTarget(name, settingsPort);
-      if (!target) {
-        console.error(chalk.red(`Target "${name}" not found.`));
-        process.exit(1);
-      }
-
-      // Try to revoke and cleanup keyring
-      try {
-        const { KeyringCredentialStore } = await importTarget('credential-store');
-        const credentialStore = await KeyringCredentialStore.create();
-        const http = { fetch: (url, init) => fetch(url, init) };
-        const discoveryEndpoints = await discoverTargetSessionEndpoints(target.url, http);
-        await revokeAndCleanup(
-          target,
-          credentialStore,
-          () => acquireTargetLock(target.id),
-          {
-            http,
-            discoveryEndpoints,
-          },
-          !!options.force
-        );
-      } catch (error) {
-        if (!options.force) {
-          console.error(chalk.red(error.message));
-          process.exit(1);
-        }
-        // Force mode: continue with removal
-      }
-
-      removeTarget(name, settingsPort);
-      console.log(chalk.green(`✓ Target "${name}" removed`));
-    } catch (error) {
-      console.error(chalk.red(error.message));
-      process.exit(1);
-    }
-  });
-
-targetCmd.action(() => {
-  targetCmd.help();
-});
+// Hosted target commands intentionally NOT registered here — see src/target/register-hosted-commands.ts
 
 // Providers management
 const providersCmd = program.command('providers').description('Manage AI providers');
@@ -6255,6 +6058,16 @@ function isStartupUpdateEligible(argv, options = {}) {
   });
 }
 
+function applyDefaultCommand(args) {
+  const firstArg = args[0];
+  if (!firstArg || firstArg.startsWith('-')) return;
+
+  const commandNames = program.commands.map((command) => command.name());
+  if (commandNames.includes(firstArg) || UNREGISTERED_HOSTED_COMMAND_NAMES.has(firstArg)) return;
+
+  process.argv.splice(2, 0, 'run');
+}
+
 // Main entry point
 async function main() {
   printLegacyDistroNotice();
@@ -6280,31 +6093,16 @@ async function main() {
     checkForUpdates({ argv: startupArgs, eligibilityChecked: true });
   }
 
-  let args = startupArgs;
+  const args = startupArgs;
 
   if (args.length === 0) {
     program.outputHelp();
     return;
   }
 
-  // Default command handling: if first arg doesn't match a known command, treat it as 'run'
-  // This allows `zeroshot "task"` to work the same as `zeroshot run "task"`
-  args = process.argv.slice(2);
-  if (args.length > 0) {
-    const firstArg = args[0];
-
-    // Skip if it's a flag/option (starts with -)
-    // Skip if it's --help or --version (these are handled by commander)
-    if (!firstArg.startsWith('-')) {
-      // Get all registered command names
-      const commandNames = program.commands.map((cmd) => cmd.name());
-
-      // If first arg is not a known command, prepend 'run'
-      if (!commandNames.includes(firstArg)) {
-        process.argv.splice(2, 0, 'run');
-      }
-    }
-  }
+  // Preserve the default local run shorthand without treating hosted-only command
+  // names as task input in the stable parser.
+  applyDefaultCommand(args);
 
   program.parse();
 }
