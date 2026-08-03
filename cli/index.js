@@ -2086,12 +2086,9 @@ async function getPurgeData(orchestrator) {
       cluster.state === 'running' || cluster.state === 'initializing' || cluster.state === 'setup'
   );
   const { loadTasks } = await import('../task-lib/store.js');
-  const { isProcessRunning } = await import('../task-lib/runner.js');
   const tasks = Object.values(loadTasks());
-  const runningTasks = tasks.filter(
-    (task) => task.status === 'running' && isProcessRunning(task.pid)
-  );
-  return { clusters, runningClusters, tasks, runningTasks, isProcessRunning };
+  const runningTasks = tasks.filter((task) => task.status === 'running');
+  return { clusters, runningClusters, tasks, runningTasks };
 }
 
 function printPurgeSummary({ clusters, runningClusters, tasks, runningTasks }) {
@@ -2142,8 +2139,15 @@ async function killRunningClusters(orchestrator, runningClusters) {
   for (const id of clusterResults.killed) {
     console.log(chalk.green(`✓ Killed cluster: ${id}`));
   }
-  for (const err of clusterResults.errors) {
-    console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
+  if (clusterResults.errors.length > 0) {
+    for (const err of clusterResults.errors) {
+      console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
+    }
+    throw new Error(
+      `Refusing destructive cluster cleanup: termination failed for ${clusterResults.errors
+        .map((error) => error.id)
+        .join(', ')}. Retry after confirming every cluster process boundary is terminal.`
+    );
   }
 }
 
@@ -3221,11 +3225,8 @@ program
       );
 
       const { loadTasks } = await import('../task-lib/store.js');
-      const { isProcessRunning } = await import('../task-lib/runner.js');
       const tasks = loadTasks();
-      const runningTasks = Object.values(tasks).filter(
-        (t) => t.status === 'running' && isProcessRunning(t.pid)
-      );
+      const runningTasks = Object.values(tasks).filter((task) => task.status === 'running');
 
       const totalCount = runningClusters.length + runningTasks.length;
 
@@ -3270,16 +3271,7 @@ program
 
       console.log('');
 
-      // Kill clusters
-      if (runningClusters.length > 0) {
-        const clusterResults = await orchestrator.killAll();
-        for (const id of clusterResults.killed) {
-          console.log(chalk.green(`✓ Killed cluster: ${id}`));
-        }
-        for (const err of clusterResults.errors) {
-          console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
-        }
-      }
+      await killRunningClusters(orchestrator, runningClusters);
 
       await killRunningTasks(runningTasks);
 

@@ -537,6 +537,111 @@ describe('Confirmed CLI task termination boundary', function () {
     });
   }
 
+  for (const command of ['kill-all', 'purge']) {
+    it(`${command} durably cancels a running task before PID publication`, async function () {
+      const taskHome = fs.mkdtempSync(path.join(os.tmpdir(), `zeroshot-${command}-startup-`));
+      const taskId = `${command}-startup-boundary`;
+      const markerPath = path.join(taskHome, 'startup-cancelled.txt');
+      const cliPath = path.resolve(__dirname, '../cli/index.js');
+      const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
+      const env = {
+        ...process.env,
+        HOME: taskHome,
+        USERPROFILE: taskHome,
+        ZEROSHOT_HOME: taskHome,
+      };
+
+      await execFileAsync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            const { addTask } = await import(${JSON.stringify(storeUrl)});
+            addTask({
+              id: ${JSON.stringify(taskId)},
+              status: 'running',
+              provider: 'omp',
+              cwd: ${JSON.stringify(taskHome)},
+              pid: null,
+              processGroupId: null,
+              terminationStrategy: 'process',
+            });
+          `,
+        ],
+        { env }
+      );
+
+      const watcher = spawn(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+            import fs from 'node:fs';
+            const { getTask, updateTask } = await import(${JSON.stringify(storeUrl)});
+            const deadline = Date.now() + 5000;
+            while (Date.now() < deadline) {
+              const task = getTask(${JSON.stringify(taskId)});
+              if (task?.cancelRequested) {
+                updateTask(${JSON.stringify(taskId)}, {
+                  status: 'killed',
+                  pid: null,
+                  processGroupId: null,
+                  error: 'Cancelled before provider startup',
+                  cancelRequested: false,
+                });
+                fs.writeFileSync(${JSON.stringify(markerPath)}, 'cancel-observed');
+                process.exit(0);
+              }
+              await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+            process.exit(2);
+          `,
+        ],
+        { env, stdio: 'ignore' }
+      );
+      const watcherExited = new Promise((resolve, reject) => {
+        watcher.once('error', reject);
+        watcher.once('exit', (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`startup watcher fixture exited ${code}`));
+        });
+      });
+
+      try {
+        await execFileAsync(process.execPath, [cliPath, command, '--yes'], { env });
+        await watcherExited;
+        assert.strictEqual(fs.readFileSync(markerPath, 'utf8'), 'cancel-observed');
+
+        const { stdout } = await execFileAsync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `
+              const { getTask } = await import(${JSON.stringify(storeUrl)});
+              process.stdout.write(JSON.stringify(getTask(${JSON.stringify(taskId)}) ?? null));
+            `,
+          ],
+          { env }
+        );
+        const task = JSON.parse(stdout);
+        if (command === 'kill-all') {
+          assert.strictEqual(task.status, 'killed');
+          assert.strictEqual(task.pid, null);
+          assert.strictEqual(task.processGroupId, null);
+        } else {
+          assert.strictEqual(task, null);
+        }
+      } finally {
+        watcher.kill('SIGKILL');
+        await watcherExited.catch(() => {});
+        fs.rmSync(taskHome, { recursive: true, force: true });
+      }
+    });
+  }
+
   it('purge aborts before cleanup when provider termination is unconfirmed', async function () {
     if (process.platform === 'win32') this.skip();
 
