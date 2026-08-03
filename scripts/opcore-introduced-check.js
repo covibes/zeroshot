@@ -18,13 +18,26 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function git(repo, args, encoding = 'buffer') {
-  const result = run('git', args, { cwd: repo, encoding });
+function git(repo, args, options = {}) {
+  const result = run('git', args, {
+    cwd: repo,
+    encoding: options.encoding ?? 'buffer',
+    env: options.env,
+  });
   if (result.status !== 0) {
     const stderr = Buffer.isBuffer(result.stderr) ? result.stderr.toString('utf8') : result.stderr;
     throw new Error(`git ${args[0]} failed: ${stderr.trim() || `exit ${result.status}`}`);
   }
   return result.stdout;
+}
+
+function withoutGitLocalEnv(repo) {
+  const names = git(repo, ['rev-parse', '--local-env-vars'], { encoding: 'utf8' })
+    .split('\n')
+    .filter(Boolean);
+  const env = { ...process.env };
+  for (const name of names) delete env[name];
+  return env;
 }
 
 function valueOption(argv, index) {
@@ -176,14 +189,14 @@ function createRequest(repo, baseline, changes, options) {
   };
 }
 
-function runOpcoreDirect(repo, args) {
+function runOpcoreDirect(repo, args, env = process.env) {
   const entrypoint = require.resolve('opcore');
   return run(process.execPath, [entrypoint, ...args], {
     cwd: repo,
     encoding: 'utf8',
     env: {
-      ...process.env,
-      PATH: `${path.join(repo, 'node_modules', '.bin')}${path.delimiter}${process.env.PATH || ''}`,
+      ...env,
+      PATH: `${path.join(repo, 'node_modules', '.bin')}${path.delimiter}${env.PATH || ''}`,
     },
   });
 }
@@ -196,7 +209,9 @@ function emit(result) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  const repo = git(process.cwd(), ['rev-parse', '--show-toplevel'], 'utf8').trim();
+  const repo = git(process.cwd(), ['rev-parse', '--show-toplevel'], {
+    encoding: 'utf8',
+  }).trim();
   git(repo, ['rev-parse', '--verify', `${options.base}^{commit}`]);
   const changes = parseChanges(repo, options);
   if (changes.length === 0) {
@@ -207,8 +222,13 @@ function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opcore-baseline-'));
   const baseline = path.join(tempRoot, 'repo');
   try {
-    git(repo, ['clone', '--quiet', '--shared', '--no-checkout', repo, baseline]);
-    git(baseline, ['checkout', '--quiet', '--detach', options.base]);
+    const baselineEnv = withoutGitLocalEnv(repo);
+    git(repo, ['clone', '--quiet', '--shared', '--no-checkout', repo, baseline], {
+      env: baselineEnv,
+    });
+    git(baseline, ['checkout', '--quiet', '--detach', options.base], {
+      env: baselineEnv,
+    });
     linkDependencies(repo, baseline);
     copyPolicy(repo, baseline);
     const request = createRequest(repo, baseline, changes, options);
@@ -219,13 +239,11 @@ function main() {
     const requestPath = path.join(tempRoot, 'validation-request.json');
     fs.writeFileSync(requestPath, `${JSON.stringify(request)}\n`);
     emit(
-      runOpcoreDirect(baseline, [
-        'validate',
-        'hypothetical',
-        '--request-file',
-        requestPath,
-        '--json',
-      ])
+      runOpcoreDirect(
+        baseline,
+        ['validate', 'hypothetical', '--request-file', requestPath, '--json'],
+        baselineEnv
+      )
     );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });

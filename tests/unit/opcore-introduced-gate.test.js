@@ -19,6 +19,10 @@ function runOpcore(repo, args = []) {
     {
       cwd: repo,
       encoding: 'utf8',
+      env: {
+        ...process.env,
+        GIT_INDEX_FILE: path.join(repo, '.git', 'index'),
+      },
     }
   );
 }
