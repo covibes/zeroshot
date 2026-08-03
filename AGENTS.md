@@ -1112,6 +1112,8 @@ npm run test
 Mocha config: `.mocharc.cjs` applies defaults; passing explicit `*.test.js` files on the CLI skips the default `tests/**/*.test.js` spec.
 The Mocha bootstrap isolates unit tests from live `ZEROSHOT_*` run options and user settings;
 tests must not depend on ambient cluster state or `~/.zeroshot/settings.json`.
+`ZEROSHOT_HOME` is immutable inside a Mocha worker because `task-lib/config.js` caches the task-store
+root at module load; alternate-home scenarios must run in an isolated child process.
 
 Workers are now explicitly ordered to treat every `VALIDATION_RESULT` line as non-negotiable law before typing again. Failing to read and address each validator complaint before claiming completion will be rejected automatically.
 
