@@ -75,6 +75,13 @@ impl Drop for SpawnRecovery {
     }
 }
 
+pub(super) struct ChildCommandSpec<'a> {
+    pub(super) program: &'a str,
+    pub(super) argv: &'a [String],
+    pub(super) environment: &'a BTreeMap<String, String>,
+    pub(super) workspace: &'a WorkspaceCapability,
+}
+
 struct CollectionLimit {
     label: &'static str,
     max_items: usize,
@@ -92,17 +99,14 @@ impl CollectionLimit {
 }
 
 pub(super) fn build_child_command(
-    program: &str,
-    argv: &[String],
-    environment: &BTreeMap<String, String>,
-    workspace: &WorkspaceCapability,
+    spec: ChildCommandSpec<'_>,
     containment: ProcessContainment,
 ) -> Command {
-    let mut child = Command::new(program);
-    child.args(argv);
-    child.current_dir(PathBuf::from(&workspace.current_dir));
+    let mut child = Command::new(spec.program);
+    child.args(spec.argv);
+    child.current_dir(PathBuf::from(&spec.workspace.current_dir));
     child.env_clear();
-    child.envs(environment.iter());
+    child.envs(spec.environment.iter());
     child.stdin(std::process::Stdio::piped());
     child.stdout(std::process::Stdio::piped());
     child.stderr(std::process::Stdio::piped());

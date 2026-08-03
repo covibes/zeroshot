@@ -11,7 +11,9 @@ use super::session_runtime::{
     SupervisorRequest, TailBuffer, WriterCommand, spawn_stderr_pump, spawn_stdout_pump,
     spawn_writer, supervise_session,
 };
-use super::spawn_recovery::{SpawnRecovery, build_child_command, validate_launch_fields};
+use super::spawn_recovery::{
+    ChildCommandSpec, SpawnRecovery, build_child_command, validate_launch_fields,
+};
 use super::{LocalProcessRunner, ProcessCleanupEvidence, ProcessLaunchEvidence, ProcessRunnerError};
 
 pub const PROCESS_STDOUT_CAPACITY: usize = 64;
@@ -213,10 +215,12 @@ impl LocalProcessRunner {
             })?;
         let mut recovery = SpawnRecovery::registered();
         let mut child_command = build_child_command(
-            &command.program,
-            &command.argv,
-            &command.environment,
-            &command.workspace,
+            ChildCommandSpec {
+                program: &command.program,
+                argv: &command.argv,
+                environment: &command.environment,
+                workspace: &command.workspace,
+            },
             self.containment,
         );
         child_command.kill_on_drop(true);

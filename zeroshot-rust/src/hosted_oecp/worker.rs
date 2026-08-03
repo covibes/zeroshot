@@ -210,7 +210,7 @@ fn decode_response(line: &[u8], expected_id: u64) -> Result<Value, WorkerError> 
     }
     match (response.ok, response.result, response.error) {
         (true, Some(result), None) => Ok(result),
-        (false, None, Some(_)) | _ => Err(WorkerError::Protocol),
+        _ => Err(WorkerError::Protocol),
     }
 }
 

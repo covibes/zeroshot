@@ -23,7 +23,7 @@ use platform::{
     ProcessContainment, capture_process_tree, process_tree_has_live_members,
     register_process_tree_for, terminate_process_tree,
 };
-use spawn_recovery::{build_child_command, validate_launch_fields, validate_stdin};
+use spawn_recovery::{ChildCommandSpec, build_child_command, validate_launch_fields, validate_stdin};
 pub use session::{
     MAX_PROCESS_FRAME_BYTES, MAX_PROCESS_FRAMING_OVERHEAD_BYTES, MAX_PROCESS_MESSAGE_BYTES,
     PROCESS_STDIN_CAPACITY, PROCESS_STDOUT_CAPACITY, ProcessFrame, ProcessOutputChunk,
@@ -171,8 +171,10 @@ impl LocalProcessRunner {
             &process_tree,
             &mut child,
             &mut event_rx,
-            cancellation,
-            command.deadline,
+            RunControls {
+                cancellation,
+                deadline: command.deadline,
+            },
         )
         .await;
         finalize_run(&process_tree, &mut child, &mut event_rx, state).await
@@ -200,21 +202,25 @@ fn spawn_process_io(
     event_rx
 }
 
+struct RunControls {
+    cancellation: DriverCancellation,
+    deadline: Instant,
+}
+
 async fn drive_run(
     process_tree: &platform::ProcessTreeHandle,
     child: &mut tokio::process::Child,
     event_rx: &mut mpsc::UnboundedReceiver<ProcessEvent>,
-    mut cancellation: DriverCancellation,
-    deadline: Instant,
+    mut controls: RunControls,
 ) -> RunState {
     let mut state = RunState::default();
     let mut io_events_open = true;
-    let deadline = sleep_until(deadline);
+    let deadline = sleep_until(controls.deadline);
     tokio::pin!(deadline);
     while state.exit_status.is_none() {
         tokio::select! {
             status = child.wait() => handle_wait(status, &mut state).await,
-            _ = cancellation.cancelled() => cancel_child(process_tree, child, &mut state).await,
+            _ = controls.cancellation.cancelled() => cancel_child(process_tree, child, &mut state).await,
             _ = &mut deadline => timeout_child(process_tree, child, &mut state).await,
             event = event_rx.recv(), if io_events_open => {
                 if let Some(event) = event {
@@ -295,10 +301,12 @@ async fn launch_contained_child(
         ProcessRunnerError::Launch("process containment registration failed".to_owned())
     })?;
     let mut child = build_child_command(
-        &command.program,
-        &command.argv,
-        &command.environment,
-        &command.workspace,
+        ChildCommandSpec {
+            program: &command.program,
+            argv: &command.argv,
+            environment: &command.environment,
+            workspace: &command.workspace,
+        },
         containment,
     )
     .spawn()

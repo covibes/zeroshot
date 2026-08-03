@@ -25,6 +25,11 @@ struct WorkerDrive {
     finalization_observer: watch::Receiver<Option<StopMode>>,
     timeout: Duration,
 }
+struct PreparedRun {
+    params: ApplyParams,
+    request: LegacyShipRequest,
+    metadata: RunMetadata,
+}
 
 pub(super) struct Finalization {
     pub(super) execution: WorkerExecution,
@@ -263,9 +268,15 @@ impl HostedBackend {
         cancellation: CancellationSignal,
     ) -> Result<ApplyResult, BackendError> {
         let (request, metadata) = self.prepare_reserved_run(&params, &cancellation).await?;
-        let started = self.start_worker(&request, &params.graph).await;
-        self.finish_worker_start(params, request, metadata, started)
-            .await
+        let prepared = PreparedRun {
+            params,
+            request,
+            metadata,
+        };
+        let started = self
+            .start_worker(&prepared.request, &prepared.params.graph)
+            .await;
+        self.finish_worker_start(prepared, started).await
     }
 
     async fn prepare_reserved_run(
@@ -297,38 +308,36 @@ impl HostedBackend {
 
     async fn finish_worker_start(
         &self,
-        params: ApplyParams,
-        request: LegacyShipRequest,
-        metadata: RunMetadata,
+        prepared: PreparedRun,
         started: Result<(WorkerDrive, watch::Sender<Option<StopMode>>), WorkerError>,
     ) -> Result<ApplyResult, BackendError> {
         match started {
             Ok((drive, finalization_request)) => {
-                let committed = self
-                    .commit_run(&params, &metadata, &request, Some(finalization_request))
-                    .await;
+                let committed = self.commit_run(&prepared, Some(finalization_request)).await;
                 let node_started = if committed.is_ok() {
-                    self.publish_node_begin(&metadata, &request).await
+                    self.publish_node_begin(&prepared.metadata, &prepared.request)
+                        .await
                 } else {
                     Ok(())
                 };
                 self.spawn_worker_drive(drive);
                 committed?;
                 node_started?;
-                Ok(metadata.result)
+                Ok(prepared.metadata.result)
             }
             Err(WorkerError::Launch) => {
                 self.clear_reservation().await;
                 Err(worker_start_error(WorkerError::Launch))
             }
             Err(error) => {
-                let committed = self.commit_run(&params, &metadata, &request, None).await;
+                let committed = self.commit_run(&prepared, None).await;
                 let node_started = if committed.is_ok() {
-                    self.publish_node_begin(&metadata, &request).await
+                    self.publish_node_begin(&prepared.metadata, &prepared.request)
+                        .await
                 } else {
                     Ok(())
                 };
-                self.finish_failed_start(&metadata, error).await;
+                self.finish_failed_start(&prepared.metadata, error).await;
                 committed?;
                 node_started?;
                 Err(worker_start_error(error))
@@ -367,31 +376,29 @@ impl HostedBackend {
 
     async fn commit_run(
         &self,
-        params: &ApplyParams,
-        metadata: &RunMetadata,
-        request: &LegacyShipRequest,
+        prepared: &PreparedRun,
         finalization_request: Option<watch::Sender<Option<StopMode>>>,
     ) -> Result<(), BackendError> {
         let mut state = self.state.lock().await;
-        state.graph = Some(metadata.graph.clone());
+        state.graph = Some(prepared.metadata.graph.clone());
         state.phase = Phase::Running;
-        state.generation = Some(metadata.generation);
-        state.run_id = Some(metadata.run_id.clone());
-        state.committed = Some(params.clone());
-        state.apply_result = Some(metadata.result.clone());
+        state.generation = Some(prepared.metadata.generation);
+        state.run_id = Some(prepared.metadata.run_id.clone());
+        state.committed = Some(prepared.params.clone());
+        state.apply_result = Some(prepared.metadata.result.clone());
         state.admission = None;
         state.finalization_request = finalization_request;
         let cursor = self
             .journal
-            .publish_with(metadata.run_id.clone(), |cursor| {
+            .publish_with(prepared.metadata.run_id.clone(), |cursor| {
                 let mut status = status_from(&state);
                 status.at_cursor = Some(cursor.clone());
                 WatchEvent::Phase {
                     status,
                     admission: Some(Box::new(openengine_cluster_protocol::AdmissionTransition {
-                        run_id: metadata.run_id.clone(),
-                        spec: metadata.graph.clone(),
-                        seed_input: redact_request(request),
+                        run_id: prepared.metadata.run_id.clone(),
+                        spec: prepared.metadata.graph.clone(),
+                        seed_input: redact_request(&prepared.request),
                     })),
                 }
             })

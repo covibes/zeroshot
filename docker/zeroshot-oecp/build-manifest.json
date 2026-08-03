@@ -8,8 +8,12 @@
   "protocol": {
     "version": "openengine.cluster/v1",
     "route": "/oecp",
-    "graphProfiles": ["openengine.graph.single-worker/v1"],
-    "workerProfiles": ["legacy.zeroshot.ship@1"]
+    "graphProfiles": [
+      "openengine.graph.single-worker/v1"
+    ],
+    "workerProfiles": [
+      "legacy.zeroshot.ship@1"
+    ]
   },
   "runtime": {
     "supervisor": {
@@ -89,12 +93,12 @@
     "rust-toolchain.toml": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
     "zeroshot-rust/Cargo.toml": "2cc514805c12b11210553073a97536ad8a3efe4936773bd43cdf23a9a998fe45",
     "zeroshot-rust/hosted-node": "c06a705258b8d955268931fb22da754b1beaaf474de017ded727aeb7909a3602",
-    "zeroshot-rust/src": "b43689f2ab506cfb26b18751d53e3d0eaabe0ec3380c569033b1559322d8b849"
+    "zeroshot-rust/src": "1ce0c2cf9ebefd9ed01718ac3e14eeb4b2e64545bc36cd8b51ae971287a1aab9"
   },
-  "imageInputsDigest": "d410d439d630ecf32c19eb61ea4aa2fb03f2670f7ecd6907514f5465c59b5db0",
+  "imageInputsDigest": "1c8e9bc2acc54bd10c5818fc07b7252a3ebac0bd2e37af97e027b9eb51da0b68",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "c68dccdef6f9c5396abe62043ffffb7212c7028608e45114f73fb90e3f6c3dbf"
+  "manifestDigest": "e91d8d598d4504a1e689ddd6c91b6baee4933e4162992078feee12d1eec1f3b5"
 }

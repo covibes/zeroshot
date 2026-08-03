@@ -111,7 +111,7 @@ where
 {
     let mut received = Vec::with_capacity(4096);
     loop {
-        if received.iter().any(|byte| *byte == b'\n') {
+        if received.contains(&b'\n') {
             return Ok(received);
         }
         if received.len() > MAX_OECP_FRAME_BYTES {
