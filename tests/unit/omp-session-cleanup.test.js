@@ -1056,7 +1056,9 @@ describe('OMP session partition cleanup (task clean / cluster clear / purge)', f
       const ownership = ownershipFor(partition);
       const staged = stageOmpSessionPartitionForDeletion(ownership);
       assert.strictEqual(staged.staged, true);
-      fs.rmSync(staged.stagingPath, { recursive: true });
+      // Keep the original inode live under another name so filesystems cannot immediately reuse it
+      // for the substitute and make this identity-mismatch regression nondeterministic.
+      fs.renameSync(staged.stagingPath, `${staged.stagingPath}.displaced`);
       fs.mkdirSync(staged.stagingPath, { mode: 0o700 });
 
       const result = deleteOmpSessionPartition(ownership);
