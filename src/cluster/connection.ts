@@ -28,6 +28,19 @@ export const CONNECTION_TRANSITIONS: Readonly<Record<ConnectionState, readonly C
 });
 export const PROTOCOL_DIAGNOSTIC_CAPACITY = 128;
 export const CLOSE_REASON_MAX_BYTES = 123;
+const CLOSE_REASON_ENCODER = new TextEncoder();
+function boundedCloseReason(reason: string): string {
+  const retained: string[] = [];
+  const scratch = new Uint8Array(4);
+  let bytes = 0;
+  for (const codePoint of reason) {
+    const { written } = CLOSE_REASON_ENCODER.encodeInto(codePoint, scratch);
+    if (bytes + written > CLOSE_REASON_MAX_BYTES) break;
+    retained.push(codePoint);
+    bytes += written;
+  }
+  return retained.join('');
+}
 export interface CallOptions { readonly signal?: AbortSignal; readonly requestTimeoutMs?: number; }
 
 type Deferred<T> = {
@@ -277,11 +290,11 @@ export class Connection {
     if (typeof first === 'number') {
       this.#closeCode = first;
       const raw = args.length > 1 ? String(args[1]) : undefined;
-      this.#closeReason = raw === undefined ? undefined : raw.slice(0, CLOSE_REASON_MAX_BYTES);
+      this.#closeReason = raw === undefined ? undefined : boundedCloseReason(raw);
     } else if (first !== null && typeof first === 'object') {
       const event = first as { code?: unknown; reason?: unknown };
       if (typeof event.code === 'number') this.#closeCode = event.code;
-      if (typeof event.reason === 'string') this.#closeReason = event.reason.slice(0, CLOSE_REASON_MAX_BYTES);
+      if (typeof event.reason === 'string') this.#closeReason = boundedCloseReason(event.reason);
     }
   }
   #startClose(sendCancels: boolean): Promise<void> {

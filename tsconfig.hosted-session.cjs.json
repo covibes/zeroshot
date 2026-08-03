@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.hosted-session.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "rootDir": "src",
+    "outDir": ".hosted-session-build/cjs",
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": false,
+    "declarationMap": false
+  },
+  "include": ["src/hosted-session/**/*.ts", "src/cluster/**/*.ts"]
+}

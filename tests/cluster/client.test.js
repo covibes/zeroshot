@@ -481,4 +481,11 @@ test('close captures bounded code and reason from transport', async () => {
   assert.equal(connection2.closeCode, 4002);
   assert.ok(connection2.closeReason.length <= CLOSE_REASON_MAX_BYTES);
   assert.equal(connection2.closeReason, longReason.slice(0, CLOSE_REASON_MAX_BYTES));
+
+  const socket3 = new FakeWebSocket();
+  const connection3 = new Connection(socket3);
+  socket3.emit('close', { code: 4003, reason: '€'.repeat(100) });
+  await settle();
+  assert.equal(Buffer.byteLength(connection3.closeReason, 'utf8'), CLOSE_REASON_MAX_BYTES);
+  assert.equal(connection3.closeReason, '€'.repeat(CLOSE_REASON_MAX_BYTES / 3));
 });

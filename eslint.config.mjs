@@ -330,6 +330,7 @@ export default [
       'lib/tui-backend/**',
       'lib/agent-cli-provider/**',
       'lib/cluster/**',
+      'lib/hosted-session/**',
     ],
   },
   prettierConfig,

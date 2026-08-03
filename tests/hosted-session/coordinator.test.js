@@ -2,12 +2,12 @@
 
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
-const { connectInitialized } = require('../../lib/cluster/index.cjs');
+const { HostedSessionCoordinator } = require('../../lib/hosted-session/index.cjs');
 const { FakeWebSocket, settle } = require('../cluster/harness');
 
 function makeAccess(overrides = {}) {
   return {
-    endpoint: 'ws://test-cluster',
+    endpoint: 'wss://test-cluster',
     token: 'test-bearer-token',
     expiresAt: new Date(Date.now() + 300_000).toISOString(),
     ...overrides,
@@ -20,20 +20,23 @@ const BASE_CAPS = {
   graphProfiles: ['openengine.graph.full/v1'],
 };
 
-function autoRespondFactory(caps = BASE_CAPS) {
+function autoRespondFactory(capabilities = BASE_CAPS) {
   const capturedHeaders = [];
+  const capturedUrls = [];
   const sockets = [];
-  const factory = (_url, _protocols, options) => {
+  const factory = (url, _protocols, options) => {
+    capturedUrls.push(url);
     capturedHeaders.push(options?.headers);
     const socket = new FakeWebSocket();
     sockets.push(socket);
     const respond = async () => {
       await settle();
-      const initReq = socket.sent.find((f) => f.method === 'initialize');
+      const initReq = socket.sent.find((frame) => frame.method === 'initialize');
       if (initReq) {
         socket.respond(initReq.id, {
           protocolVersion: 'openengine.cluster/v1',
-          capabilities: caps,
+          capabilities:
+            typeof capabilities === 'function' ? capabilities(sockets.length - 1) : capabilities,
           status: { phase: 'running' },
         });
       }
@@ -41,144 +44,135 @@ function autoRespondFactory(caps = BASE_CAPS) {
     void respond();
     return socket;
   };
-  return { factory, capturedHeaders, sockets };
+  return { factory, capturedHeaders, capturedUrls, sockets };
 }
 
-// HostedSessionCoordinator is TypeScript-only source. We test the coordinator
-// behavior by importing it via the built cluster APIs and exercising the same
-// logic paths that the coordinator depends on.
+function makeCoordinator(factory, access = makeAccess()) {
+  return new HostedSessionCoordinator({
+    getAccess: () => Promise.resolve(access),
+    connectOptions: { webSocketFactory: factory },
+  });
+}
 
-// The coordinator's renewalDeadline is a pure function. Test it directly.
-describe('renewalDeadline logic', () => {
-  function renewalDeadline(access, receivedAt) {
-    const expiresAt = Date.parse(access.expiresAt);
-    if (Number.isNaN(expiresAt))
-      throw Object.assign(new Error('invalid expiresAt'), { code: 'INVALID_EXPIRY' });
-    return Math.min(expiresAt - 30_000, receivedAt + 0.8 * (expiresAt - receivedAt));
-  }
-
-  it('computes min(expiresAt - 30s, receivedAt + 80% lifetime)', () => {
+describe('HostedSessionCoordinator', () => {
+  it('computes the bounded renewal deadline from real coordinator code', () => {
+    const coordinator = new HostedSessionCoordinator({
+      getAccess: () => Promise.resolve(makeAccess()),
+    });
     const receivedAt = 1_000_000;
     const expiresAtMs = receivedAt + 300_000;
     const access = makeAccess({ expiresAt: new Date(expiresAtMs).toISOString() });
-    const deadline = renewalDeadline(access, receivedAt);
-    assert.equal(deadline, Math.min(expiresAtMs - 30_000, receivedAt + 0.8 * 300_000));
+
+    assert.equal(
+      coordinator.renewalDeadline(access, receivedAt),
+      Math.min(expiresAtMs - 30_000, receivedAt + 0.8 * 300_000)
+    );
   });
 
-  it('throws on invalid expiresAt', () => {
+  it('rejects an invalid expiry in renewal calculations', () => {
+    const coordinator = new HostedSessionCoordinator({
+      getAccess: () => Promise.resolve(makeAccess()),
+    });
     assert.throws(
-      () => renewalDeadline({ endpoint: 'ws://x', token: 't', expiresAt: 'not-a-date' }, 0),
+      () =>
+        coordinator.renewalDeadline(
+          { endpoint: 'wss://test', token: 'token', expiresAt: 'not-a-date' },
+          0
+        ),
       { code: 'INVALID_EXPIRY' }
     );
   });
 
-  it('uses expiresAt - 30s when lifetime is short', () => {
-    const receivedAt = 1_000_000;
-    const expiresAtMs = receivedAt + 20_000;
-    const access = makeAccess({ expiresAt: new Date(expiresAtMs).toISOString() });
-    const deadline = renewalDeadline(access, receivedAt);
-    // min(expiresAt - 30s, receivedAt + 80% * 20s) = min(receivedAt - 10000, receivedAt + 16000)
-    assert.equal(deadline, expiresAtMs - 30_000);
-  });
-});
+  it('opens authenticated initialized sessions without placing tokens in URLs', async () => {
+    const token = 'super-secret-token-123';
+    const { factory, capturedHeaders, capturedUrls } = autoRespondFactory();
+    const coordinator = makeCoordinator(factory, makeAccess({ token }));
 
-describe('connectInitialized with authenticated headers', () => {
-  it('passes bearer header via factory options arg', async () => {
-    const capturedOptions = [];
-    const { factory } = autoRespondFactory();
-    const wrappedFactory = (url, protocols, options) => {
-      capturedOptions.push(options);
-      return factory(url, protocols, options);
+    const session = await coordinator.open();
+
+    assert.equal(capturedUrls[0], 'wss://test-cluster/');
+    assert.ok(!capturedUrls[0].includes(token));
+    assert.deepEqual(capturedHeaders[0], { Authorization: `Bearer ${token}` });
+    await session.connection.close();
+    await coordinator.close();
+  });
+
+  it('rejects plaintext and malformed hosted endpoints before opening a socket', async () => {
+    let factoryCalls = 0;
+    const factory = () => {
+      factoryCalls += 1;
+      return new FakeWebSocket();
     };
-    const result = await connectInitialized('ws://test', {
-      webSocketFactory: wrappedFactory,
-      headers: { Authorization: 'Bearer my-token' },
+    const plaintext = makeCoordinator(factory, makeAccess({ endpoint: 'ws://test-cluster' }));
+    await assert.rejects(plaintext.open(), { code: 'INSECURE_ENDPOINT' });
+    const malformed = makeCoordinator(factory, makeAccess({ endpoint: 'not a URL' }));
+    await assert.rejects(malformed.open(), { code: 'INVALID_ENDPOINT' });
+    assert.equal(factoryCalls, 0);
+  });
+
+  it('rejects already-expired access before opening a socket', async () => {
+    let factoryCalls = 0;
+    const coordinator = makeCoordinator(
+      () => {
+        factoryCalls += 1;
+        return new FakeWebSocket();
+      },
+      makeAccess({ expiresAt: new Date(Date.now() - 60_000).toISOString() })
+    );
+
+    await assert.rejects(coordinator.open(), { code: 'ACCESS_EXPIRED' });
+    assert.equal(factoryCalls, 0);
+  });
+
+  it('accepts a replacement whose capabilities are a superset', async () => {
+    const { factory } = autoRespondFactory((index) =>
+      index === 0
+        ? BASE_CAPS
+        : {
+            ...BASE_CAPS,
+            graphProfiles: ['openengine.graph.full/v1', 'openengine.graph.single-worker/v1'],
+          }
+    );
+    const coordinator = makeCoordinator(factory);
+    const original = await coordinator.open();
+    const replacement = await coordinator.replace();
+
+    await original.connection.close();
+    await replacement.connection.close();
+    await coordinator.close();
+  });
+
+  it('closes and rejects an incompatible replacement connection', async () => {
+    const { factory, sockets } = autoRespondFactory((index) =>
+      index === 0 ? BASE_CAPS : { graphProfiles: ['openengine.graph.full/v1'] }
+    );
+    const coordinator = makeCoordinator(factory);
+    const original = await coordinator.open();
+
+    await assert.rejects(coordinator.replace(), { code: 'INCOMPATIBLE_CAPABILITIES' });
+    await settle();
+    assert.equal(sockets[1].closeCalls, 1);
+    await original.connection.close();
+    await coordinator.close();
+  });
+
+  it('close aborts an in-progress access request and prevents later opens', async () => {
+    const coordinator = new HostedSessionCoordinator({
+      getAccess: (signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            'abort',
+            () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+            { once: true }
+          );
+        }),
     });
-    assert.deepEqual(capturedOptions[0], { headers: { Authorization: 'Bearer my-token' } });
-    await result.connection.close();
-  });
+    const pending = coordinator.open();
+    await settle();
 
-  it('token appears only in factory headers, never in URL or error messages', async () => {
-    let capturedUrl;
-    const { factory, capturedHeaders } = autoRespondFactory();
-    const wrappedFactory = (url, protocols, options) => {
-      capturedUrl = url;
-      return factory(url, protocols, options);
-    };
-    const result = await connectInitialized('ws://test-cluster', {
-      webSocketFactory: wrappedFactory,
-      headers: { Authorization: 'Bearer super-secret-token-123' },
-    });
-    assert.ok(capturedUrl);
-    assert.ok(!capturedUrl.includes('super-secret-token-123'));
-    assert.equal(capturedHeaders[0]?.Authorization, 'Bearer super-secret-token-123');
-    await result.connection.close();
-  });
-});
+    await coordinator.close();
 
-describe('capability verification logic', () => {
-  function verifyCapabilities(reference, incoming) {
-    const mismatches = [];
-    if (reference.graphProfiles) {
-      const incomingProfiles = new Set(incoming.graphProfiles || []);
-      for (const profile of reference.graphProfiles) {
-        if (!incomingProfiles.has(profile)) mismatches.push(`missing graphProfile: ${profile}`);
-      }
-    }
-    if (reference.logs && !incoming.logs) mismatches.push('missing capability: logs');
-    if (reference.agentAttach && !incoming.agentAttach)
-      mismatches.push('missing capability: agentAttach');
-    return mismatches;
-  }
-
-  it('detects incompatible capabilities', () => {
-    const reference = BASE_CAPS;
-    const incoming = { logs: false, agentAttach: false };
-    const mismatches = verifyCapabilities(reference, incoming);
-    assert.ok(mismatches.length > 0);
-    assert.ok(mismatches.some((m) => m.includes('logs')));
-    assert.ok(mismatches.some((m) => m.includes('agentAttach')));
-  });
-
-  it('accepts compatible superset capabilities', () => {
-    const reference = BASE_CAPS;
-    const incoming = {
-      ...BASE_CAPS,
-      graphProfiles: ['openengine.graph.full/v1', 'openengine.graph.single-worker/v1'],
-    };
-    const mismatches = verifyCapabilities(reference, incoming);
-    assert.equal(mismatches.length, 0);
-  });
-
-  it('detects missing graphProfile', () => {
-    const reference = { graphProfiles: ['openengine.graph.full/v1'] };
-    const incoming = { graphProfiles: ['openengine.graph.single-worker/v1'] };
-    const mismatches = verifyCapabilities(reference, incoming);
-    assert.ok(mismatches.some((m) => m.includes('openengine.graph.full/v1')));
-  });
-});
-
-describe('close aborts in-progress operations', () => {
-  it('AbortController.abort cancels pending getAccess', async () => {
-    const controller = new AbortController();
-    const getAccess = (signal) =>
-      new Promise((_resolve, reject) => {
-        signal?.addEventListener(
-          'abort',
-          () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
-          { once: true }
-        );
-      });
-    const pending = getAccess(controller.signal);
-    controller.abort();
     await assert.rejects(pending, { name: 'AbortError' });
-  });
-});
-
-describe('expired access detection', () => {
-  it('rejects already-expired access tokens', () => {
-    const access = makeAccess({ expiresAt: new Date(Date.now() - 60_000).toISOString() });
-    const expiresAt = Date.parse(access.expiresAt);
-    assert.ok(expiresAt <= Date.now());
+    await assert.rejects(coordinator.open(), { code: 'COORDINATOR_CLOSED' });
   });
 });

@@ -41,10 +41,7 @@ export class HostedSessionCoordinator {
   renewalDeadline(access: AccessResponse, receivedAt: number): number {
     const expiresAt = Date.parse(access.expiresAt);
     if (Number.isNaN(expiresAt)) {
-      throw new ClusterConfigError(
-        `invalid expiresAt: ${access.expiresAt}`,
-        'INVALID_EXPIRY',
-      );
+      throw new ClusterConfigError(`invalid expiresAt: ${access.expiresAt}`, 'INVALID_EXPIRY');
     }
     const lifetime = expiresAt - receivedAt;
     return Math.min(expiresAt - 30_000, receivedAt + 0.8 * lifetime);
@@ -65,7 +62,18 @@ export class HostedSessionCoordinator {
     if (expiresAt <= this.#clock.now()) {
       throw new ClusterConfigError('access token is already expired', 'ACCESS_EXPIRED');
     }
-    return connectInitialized(access.endpoint, {
+
+    let endpoint: URL;
+    try {
+      endpoint = new URL(access.endpoint);
+    } catch {
+      throw new ClusterConfigError('hosted access endpoint is invalid', 'INVALID_ENDPOINT');
+    }
+    if (endpoint.protocol !== 'wss:') {
+      throw new ClusterConfigError('hosted access endpoint must use wss', 'INSECURE_ENDPOINT');
+    }
+
+    return connectInitialized(endpoint.href, {
       ...this.#connectOptions,
       headers: { Authorization: `Bearer ${access.token}` },
       ...(combined !== undefined ? { signal: combined } : {}),
@@ -84,13 +92,14 @@ export class HostedSessionCoordinator {
       }
     }
     if (ref.logs && !incoming.logs) mismatches.push('missing capability: logs');
-    if (ref.agentAttach && !incoming.agentAttach) mismatches.push('missing capability: agentAttach');
+    if (ref.agentAttach && !incoming.agentAttach)
+      mismatches.push('missing capability: agentAttach');
 
     if (mismatches.length > 0) {
       void session.connection.close();
       throw new ClusterConfigError(
         `replacement capabilities incompatible: ${mismatches.join(', ')}`,
-        'INCOMPATIBLE_CAPABILITIES',
+        'INCOMPATIBLE_CAPABILITIES'
       );
     }
   }
