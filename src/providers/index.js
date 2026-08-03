@@ -273,6 +273,29 @@ function createProviderClass(name) {
     }
   };
 }
+function ompSdkSettings() {
+  return require('../../lib/agent-cli-provider/omp-sdk-settings.js');
+}
+
+function normalizeOmpSdkSettings(settings, context) {
+  return ompSdkSettings().normalizeOmpSdkSettings(settings, context);
+}
+
+function resolveOmpSdkSettings(settings, context) {
+  return ompSdkSettings().resolveOmpSdkSettings(settings, context);
+}
+
+function validateOmpSdkSettings(settings, context) {
+  return ompSdkSettings().validateOmpSdkSettings(settings, context);
+}
+
+function parseExactOmpModelSelector(selector) {
+  return ompSdkSettings().parseExactOmpModelSelector(selector);
+}
+
+function compilePrivateOmpModelsYaml(settings) {
+  return ompSdkSettings().compilePrivateOmpModelsYaml(settings);
+}
 
 module.exports = {
   getProvider,
@@ -281,4 +304,24 @@ module.exports = {
   parseProviderChunk,
   parseChunkWithProvider,
   createProviderClass,
+  normalizeOmpSdkSettings,
+  resolveOmpSdkSettings,
+  validateOmpSdkSettings,
+  parseExactOmpModelSelector,
+  compilePrivateOmpModelsYaml,
 };
+
+Object.defineProperties(module.exports, {
+  OMP_SDK_SETTINGS_DEFAULTS: {
+    enumerable: true,
+    get: () => ompSdkSettings().OMP_SDK_SETTINGS_DEFAULTS,
+  },
+  OMP_SDK_TOOL_IDS: {
+    enumerable: true,
+    get: () => ompSdkSettings().OMP_SDK_TOOL_IDS,
+  },
+  OMP_AUTH_BROKER_ENV_NAMES: {
+    enumerable: true,
+    get: () => ompSdkSettings().OMP_AUTH_BROKER_ENV_NAMES,
+  },
+});

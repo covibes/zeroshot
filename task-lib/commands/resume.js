@@ -66,7 +66,15 @@ function buildOmpResumeTaskOptions(task) {
 }
 
 export function buildResumeTaskOptions(task) {
-  if (!providerSupportsCapability(task.provider, 'sessionResume')) {
+  if (task.invoke?.parser === 'omp-sdk-ndjson' && task.invoke.strictTerminal === true) {
+    throw new Error(
+      `Task ${task.id} was prepared as a fresh strict OMP SDK invocation and cannot be resumed.`
+    );
+  }
+  if (
+    (task.invoke === null || task.invoke === undefined) &&
+    !providerSupportsCapability(task.provider, 'sessionResume')
+  ) {
     throw new Error(`Provider ${task.provider} does not support safe session resume.`);
   }
   if (task.provider === 'omp') {

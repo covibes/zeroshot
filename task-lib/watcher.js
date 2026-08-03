@@ -10,11 +10,17 @@ import { getTask, updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
 import { createProviderSessionCapture } from './provider-session-capture.js';
 import {
+  completeOmpSdkProcessFailure,
+  completeOmpSdkProcessResult,
   completeWatcherFailure,
   completePendingWatcherCancellation,
   completeWatcherTask,
   createWatcherOutputRuntime,
+  isAcpStdioWatcherConfig,
+  isOmpSdkWatcherConfig,
   resolveWatcherCommand,
+  runPreparedAcpStdioWatcher,
+  spawnPreparedOmpSdkWatcherProcess,
   spawnWatcherProvider,
   terminateWatcherProvider,
 } from './watcher-output-runtime.js';
@@ -49,6 +55,151 @@ const commandCleanup = createCommandSpecCleanup(commandSpec, (cleanupPath, error
   emergencyLog(`[${Date.now()}][CLEANUP] Failed to delete ${cleanupPath}: ${error.message}\n`);
 });
 
+async function runPreparedOmpSdkWatcher() {
+  const containmentRequirement = config.preparedInvocation.containmentRequirement;
+  if (
+    await completePendingWatcherCancellation({
+      taskId,
+      getTask,
+      commandCleanup,
+      terminateProvider: () => true,
+      updateTask,
+      emergencyLog,
+      containmentRequirement,
+    })
+  ) {
+    return;
+  }
+
+  let completion;
+  let terminalBuffered = true;
+  let watcherCancellationRequested = false;
+  try {
+    const running = await spawnPreparedOmpSdkWatcherProcess(
+      config.preparedInvocation,
+      commandSpec,
+      args,
+      {
+        onProgress(frame) {
+          log(`[${Date.now()}][LIVENESS] OMP SDK ${frame.stage}\n`);
+        },
+      }
+    );
+    await updateTask(taskId, {
+      pid: running.pid,
+      attachable: false,
+      socketPath: null,
+      processGroupId: running.pid,
+      terminationStrategy: 'process-group',
+    });
+    const cancelRunning = () => {
+      watcherCancellationRequested = true;
+      running.cancel();
+    };
+    process.once('SIGTERM', cancelRunning);
+    process.once('SIGINT', cancelRunning);
+    try {
+      if (getTask(taskId)?.cancelRequested) cancelRunning();
+      const result = await running.result;
+      completion = completeOmpSdkProcessResult(result, {
+        cancellationRequested:
+          watcherCancellationRequested || getTask(taskId)?.cancelRequested === true,
+        log,
+      });
+      if (completion.cleanupUncertain === true) terminalBuffered = false;
+    } finally {
+      process.removeListener('SIGTERM', cancelRunning);
+      process.removeListener('SIGINT', cancelRunning);
+    }
+  } catch (error) {
+    const cancellationRequested =
+      watcherCancellationRequested || getTask(taskId)?.cancelRequested === true;
+    completion = completeOmpSdkProcessFailure(error, cancellationRequested);
+    terminalBuffered = error?.code !== 'cleanup-error' && error?.code !== 'containment-error';
+  }
+
+  await completeWatcherTask({
+    taskId,
+    completion,
+    commandCleanup,
+    // The canonical SDK runner resolves or rejects only after its owned process
+    // tree has settled. Cleanup/containment errors remain fail-closed below.
+    terminateProvider: () => true,
+    updateTask,
+    emergencyLog,
+    containmentRequirement,
+    terminalBuffered,
+  });
+}
+
+async function runPreparedAcpWatcher() {
+  const providerName = normalizeProviderName(config.provider);
+  if (
+    await completePendingWatcherCancellation({
+      taskId,
+      getTask,
+      commandCleanup,
+      terminateProvider: () => true,
+      updateTask,
+      emergencyLog,
+    })
+  ) {
+    return;
+  }
+
+  let completion;
+  try {
+    await updateTask(taskId, {
+      pid: null,
+      attachable: false,
+      socketPath: null,
+      processGroupId: null,
+      terminationStrategy: null,
+    });
+    const result = await runPreparedAcpStdioWatcher(config, commandSpec, args, providerName);
+    const outputRuntime = createWatcherOutputRuntime({
+      config,
+      providerName,
+      log,
+      stopProvider: () => {},
+      providerSessionCapture: null,
+    });
+    const outputBuffer = outputRuntime.consumeOutput('', Buffer.from(result.stdout));
+    const stderrBuffer = outputRuntime.consumeStderr('', Buffer.from(result.stderr));
+    completion = outputRuntime.complete({
+      code: result.exitCode,
+      signal: result.signal,
+      outputBuffer,
+      stderrBuffer,
+    });
+  } catch (error) {
+    completion = {
+      status: 'failed',
+      resolvedCode: 1,
+      error: `ACP stdio runner failure: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  await completeWatcherTask({
+    taskId,
+    completion,
+    commandCleanup,
+    terminateProvider: () => true,
+    updateTask,
+    emergencyLog,
+  });
+}
+
+if (isOmpSdkWatcherConfig(config)) {
+  await runPreparedOmpSdkWatcher();
+  process.exit(0);
+}
+
+if (isAcpStdioWatcherConfig(config)) {
+  await runPreparedAcpWatcher();
+  process.exit(0);
+}
+
 const { providerName, env, command, finalArgs } = resolveWatcherCommand(
   config,
   commandSpec,
@@ -64,7 +215,9 @@ const providerSessionCapture = createProviderSessionCapture({
   requestedSessionId: storedTask?.requestedResumeSessionId || null,
   initialSessionId: storedTask?.sessionId || null,
   initialSessionIdConflict: storedTask?.sessionIdConflict === true,
-  disabled: config.structuredOutputRecovery === true,
+  disabled:
+    config.structuredOutputRecovery === true ||
+    config.preparedInvocation?.invoke?.parser === 'omp-sdk-ndjson',
 });
 
 let crashStarted = false;
@@ -114,6 +267,7 @@ async function crashWithError(error, source) {
     terminateProvider: terminateOwnedProviderBoundary,
     updateTask,
     emergencyLog,
+    containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
   });
   process.exit(1);
 }
@@ -134,6 +288,7 @@ if (
     terminateProvider: () => true,
     updateTask,
     emergencyLog,
+    containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
   })
 ) {
   process.exit(0);
@@ -161,6 +316,7 @@ child.on('close', async (code, signal) => {
     signal,
     outputBuffer: stdoutBuffer,
     stderrBuffer,
+    cancellationRequested: getTask(taskId)?.cancelRequested === true,
   });
   await completeWatcherTask({
     taskId,
@@ -169,6 +325,7 @@ child.on('close', async (code, signal) => {
     terminateProvider: () => terminateOwnedProviderBoundary(true),
     updateTask,
     emergencyLog,
+    containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
   });
   process.exit(0);
 });
@@ -184,6 +341,7 @@ child.on('error', async (err) => {
     terminateProvider: terminateOwnedProviderBoundary,
     updateTask,
     emergencyLog,
+    containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
   });
   process.exit(1);
 });
@@ -203,6 +361,7 @@ if (getTask(taskId)?.cancelRequested) {
     terminateProvider: terminateOwnedProviderBoundary,
     updateTask,
     emergencyLog,
+    containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
   });
   process.exit(0);
 }

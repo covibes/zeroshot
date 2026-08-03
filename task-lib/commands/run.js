@@ -80,6 +80,16 @@ export function parseOmpResumeDescriptor(raw) {
   return descriptor;
 }
 
+export function shouldAdvertiseTaskAttach(task, { outputFormat, jsonSchema }) {
+  const hasInvokeMetadata = Object.prototype.hasOwnProperty.call(task, 'invoke');
+  return shouldUseAttachableWatcher(
+    {
+      jsonSchema: outputFormat === 'json' ? jsonSchema : null,
+    },
+    hasInvokeMetadata ? { invoke: task.invoke } : null,
+    hasInvokeMetadata ? null : task.provider
+  );
+}
 export async function runTask(prompt, options = {}) {
   if (!prompt || prompt.trim().length === 0) {
     console.log(chalk.red('Error: Prompt is required'));
@@ -127,12 +137,7 @@ export async function runTask(prompt, options = {}) {
   console.log(chalk.dim(`  Log: ${task.logFile}`));
   console.log(chalk.dim(`  CWD: ${task.cwd}`));
 
-  const attachSupported = shouldUseAttachableWatcher(
-    {
-      jsonSchema: outputFormat === 'json' ? jsonSchema : null,
-    },
-    task.provider
-  );
+  const attachSupported = shouldAdvertiseTaskAttach(task, { outputFormat, jsonSchema });
 
   console.log(chalk.dim('\nCommands:'));
   if (attachSupported) {

@@ -1,3 +1,4 @@
+import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import {
   detectProviderFatalError,
@@ -6,6 +7,10 @@ import {
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
 import { terminateProcess } from './process-termination.js';
+
+const require = createRequire(import.meta.url);
+
+const OMP_SDK_PARSER = 'omp-sdk-ndjson';
 
 export const COMMAND_CLEANUP_UNINITIALIZED = Symbol('command-cleanup-uninitialized');
 
@@ -38,10 +43,70 @@ function splitBufferLines(buffer, chunk) {
   return { lines: lines.slice(0, -1), remaining: lines.at(-1) || '' };
 }
 
-export function resolveWatcherCommand(config, commandSpec, fallbackArgs, normalizeProviderName) {
+export function isOmpSdkWatcherConfig(config) {
+  const prepared = config?.preparedInvocation;
+  return (
+    prepared?.invoke?.parser === OMP_SDK_PARSER ||
+    prepared?.executionIdentity?.backend === 'omp-sdk'
+  );
+}
+
+export function isAcpStdioWatcherConfig(config) {
+  return config?.preparedInvocation?.invoke?.lane === 'acp-stdio';
+}
+
+export function runPreparedAcpStdioWatcher(config, commandSpec, finalArgs, providerName) {
+  const prepared = config.preparedInvocation;
+  if (
+    prepared.invoke.parser !== 'acp' ||
+    prepared.invoke.ptyEligible !== false ||
+    prepared.invoke.strictTerminal !== false ||
+    typeof prepared.context !== 'string'
+  ) {
+    throw new Error('ACP stdio prepared invocation is incomplete or inconsistent');
+  }
+  const { runAcpStdioPrompt } = require('../lib/agent-cli-provider/acp-stdio-runner.js');
+  const { buildAcpPrompt } = require('../lib/agent-cli-provider/adapters/acp.js');
+  return runAcpStdioPrompt(
+    providerName,
+    { ...commandSpec, args: [...finalArgs] },
+    buildAcpPrompt(prepared.context, { jsonSchema: config.jsonSchema })
+  );
+}
+
+export function spawnPreparedOmpSdkWatcherProcess(
+  preparedInvocation,
+  commandSpec,
+  finalArgs,
+  options = {}
+) {
+  const { spawnOmpSdkProcess } = require('../lib/agent-cli-provider/omp-sdk-process-runner.js');
+  return spawnOmpSdkProcess(
+    {
+      ...preparedInvocation,
+      commandSpec: {
+        ...commandSpec,
+        args: [...finalArgs],
+        env: {},
+      },
+    },
+    options
+  );
+}
+
+export function resolveWatcherCommand(
+  config,
+  commandSpec,
+  fallbackArgs,
+  normalizeProviderName,
+  sourceEnv = process.env
+) {
+  if (isOmpSdkWatcherConfig(config) || isAcpStdioWatcherConfig(config)) {
+    throw new Error('Prepared non-spawn commands require their declared process runner');
+  }
   return {
     providerName: normalizeProviderName(config.provider || 'claude'),
-    env: { ...process.env, ...(commandSpec.env || {}) },
+    env: { ...sourceEnv, ...(commandSpec.env || {}) },
     command: commandSpec.binary,
     finalArgs: [...(commandSpec.args || fallbackArgs)],
   };
@@ -55,6 +120,8 @@ export async function completeWatcherTask({
   updateTask,
   emergencyLog,
   terminalUpdates = {},
+  containmentRequirement = null,
+  terminalBuffered = true,
 }) {
   let providerTerminal = false;
   try {
@@ -91,16 +158,49 @@ export async function completeWatcherTask({
       emergencyLog(`[${Date.now()}][CLEANUP] Command cleanup failed: ${error.message}\n`);
     }
   }
+
+  const requiresAttestation = containmentRequirement?.required === true;
+  const completionUpdates = {
+    ...terminalUpdates,
+    ...(completion.terminalUpdates || {}),
+  };
+  const suppliedAttestation = completionUpdates.cleanupAttestation;
+  const suppliedAttestationValid =
+    suppliedAttestation === undefined ||
+    (suppliedAttestation?.mode === containmentRequirement?.mode &&
+      suppliedAttestation.terminalBuffered === true &&
+      suppliedAttestation.descendantsReaped === true &&
+      suppliedAttestation.clean === true);
+  const clean =
+    providerTerminal && cleanupSucceeded && terminalBuffered && suppliedAttestationValid;
+  let finalCompletion = completion;
+  if (requiresAttestation && clean) {
+    completionUpdates.cleanupAttestation = {
+      mode: containmentRequirement.mode,
+      terminalBuffered: true,
+      descendantsReaped: true,
+      clean: true,
+    };
+  } else if (requiresAttestation) {
+    finalCompletion = {
+      ...completion,
+      status: 'failed',
+      resolvedCode: 1,
+      error: 'OMP SDK cleanup-error: provider cleanup could not be attested',
+    };
+    completionUpdates.parsedResult = null;
+    completionUpdates.cleanupAttestation = null;
+  }
+
   try {
     await updateTask(taskId, {
-      status: completion.status,
+      status: finalCompletion.status,
       pid: null,
       processGroupId: null,
-      exitCode: completion.resolvedCode,
-      error: completion.error,
+      exitCode: finalCompletion.resolvedCode,
+      error: finalCompletion.error,
       cancelRequested: false,
-      ...terminalUpdates,
-      ...(completion.terminalUpdates || {}),
+      ...completionUpdates,
       ...(cleanupSucceeded ? { commandCleanup: null } : {}),
     });
   } catch (error) {
@@ -172,7 +272,108 @@ export function createRpcWatcherOutputRuntime({ log }) {
   return { logEvent, complete };
 }
 
-export function createWatcherOutputRuntime({
+function sdkEvidenceForTerminal(terminal) {
+  const frame = terminal.frame;
+  if (terminal.type === 'result') {
+    return {
+      protocolVersion: frame.protocolVersion,
+      runId: frame.runId,
+      terminalType: 'result',
+      invocation: terminal.event.invocation,
+      ...terminal.event.ompSdk,
+    };
+  }
+  return {
+    protocolVersion: frame.protocolVersion,
+    runId: frame.runId,
+    terminalType: 'error',
+    backend: frame.backend,
+    runtime: frame.runtime,
+    error: frame.error,
+  };
+}
+
+export function completeOmpSdkProcessResult(
+  result,
+  { cancellationRequested = false, log = () => {} } = {}
+) {
+  if (result.diagnosticStderr?.trim()) {
+    log(`[${Date.now()}][DIAGNOSTIC] ${result.diagnosticStderr.slice(0, 4096)}\n`);
+  }
+  const cleanupAttestation = result.cleanupAttestation;
+  const cleanupAttested =
+    cleanupAttestation?.mode === 'host-process-tree' &&
+    cleanupAttestation.terminalBuffered === true &&
+    cleanupAttestation.descendantsReaped === true &&
+    cleanupAttestation.clean === true;
+  if (!cleanupAttested) {
+    return {
+      status: 'failed',
+      resolvedCode: 1,
+      error: 'OMP SDK cleanup-error: canonical runner omitted cleanup attestation',
+      cleanupUncertain: true,
+      terminalUpdates: { parsedResult: null, cleanupAttestation: null },
+    };
+  }
+  const terminal = result.terminal;
+  const sdkEvidence = sdkEvidenceForTerminal(terminal);
+  const terminalUpdates = {
+    parsedResult: null,
+    sdkEvidence,
+    cleanupAttestation,
+  };
+  if (cancellationRequested) {
+    return {
+      status: 'killed',
+      resolvedCode: 143,
+      error: 'Cancellation requested',
+      terminalUpdates,
+    };
+  }
+  if (terminal.type === 'error') {
+    const cancelled = terminal.frame.error.code === 'cancelled';
+    return {
+      status: cancelled ? 'killed' : 'failed',
+      resolvedCode: cancelled ? 143 : 1,
+      error: `OMP SDK ${terminal.frame.error.code}`,
+      terminalUpdates,
+    };
+  }
+  return {
+    status: 'completed',
+    resolvedCode: 0,
+    error: null,
+    terminalUpdates: {
+      ...terminalUpdates,
+      parsedResult: terminal.event.result,
+    },
+  };
+}
+
+export function completeOmpSdkProcessFailure(error, cancellationRequested = false) {
+  const code =
+    typeof error?.code === 'string' &&
+    ['cleanup-error', 'containment-error', 'credential-error', 'protocol-error'].includes(
+      error.code
+    )
+      ? error.code
+      : 'protocol-error';
+  return {
+    status: cancellationRequested ? 'killed' : 'failed',
+    resolvedCode: cancellationRequested ? 143 : 1,
+    error: cancellationRequested ? 'Cancellation requested' : `OMP SDK ${code}`,
+    terminalUpdates: { parsedResult: null },
+  };
+}
+
+export function createWatcherOutputRuntime(options) {
+  if (isOmpSdkWatcherConfig(options.config)) {
+    throw new Error('OMP SDK output is owned by the canonical SDK process runner');
+  }
+  return createLegacyWatcherOutputRuntime(options);
+}
+
+function createLegacyWatcherOutputRuntime({
   config,
   providerName,
   log,

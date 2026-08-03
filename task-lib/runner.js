@@ -1,4 +1,5 @@
 import { fork } from 'child_process';
+import { createHash } from 'crypto';
 import { join, dirname, resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
@@ -24,6 +25,7 @@ const {
   prepareSingleAgentProviderCommand,
 } = require('./provider-helper-runtime.js');
 const { getDefaultProviderId } = require('../lib/provider-names.js');
+const { loadSettings } = require('../lib/settings.js');
 const {
   ISOLATED_SETTINGS_FILE_ENV,
   ISOLATED_SETTINGS_FILE_MARKER,
@@ -159,6 +161,9 @@ function resolveOmpSessionPlan({ id, cwd, options }) {
   if (options.structuredOutputRecovery) return null;
   const providerName = normalizeProviderName(options.provider || getDefaultProviderId());
   if (providerName !== 'omp') return null;
+  // Session partitions belong exclusively to the explicit legacy RPC transport. Omitted
+  // transport selects the strict SDK lane and must not allocate or persist RPC session state.
+  if (loadSettings()?.providerSettings?.omp?.transport !== 'rpc') return null;
   // Docker stays fresh-only (issue #866). Returning null here means no partition is allocated, no
   // ownership row is written, and the adapter falls back to `--no-session`.
   if (isOmpSessionlessRun(options)) return null;
@@ -258,6 +263,7 @@ export function spawnTask(prompt, options = {}) {
   const modelSpec = prepared.options.modelSpec;
   const commandSpec = attachClaudeOverlayCleanup(prepared.commandSpec, providerName);
 
+  const preparedInvocation = buildPreparedInvocation(prepared);
   const task = buildTaskRecord({
     id,
     prompt,
@@ -268,6 +274,7 @@ export function spawnTask(prompt, options = {}) {
     modelSpec,
     commandSpec,
     ompSessionOwnership: ompPlan?.provisionalOwnership ?? null,
+    preparedInvocation,
   });
 
   // Row-before-directory: the SQL row is durable proof of an attempted allocation before the
@@ -294,13 +301,15 @@ export function spawnTask(prompt, options = {}) {
     options,
     providerName,
     commandSpec,
-    ompPlan
+    ompPlan,
+    preparedInvocation
   );
   const watcherScript = resolveWatcherScript(
     {
       attachable: options.attachable,
       jsonSchema,
     },
+    preparedInvocation,
     providerName
   );
   spawnWatcher({
@@ -313,7 +322,7 @@ export function spawnTask(prompt, options = {}) {
     // Prompt bytes never enter argv: the rpc-stdio watcher receives them over a private pipe
     // (src/watcher-prompt-channel.js). Every other lane passes the prompt to the provider through
     // commandSpec.args, which the provider process — not a long-lived watcher — then owns.
-    ...(isRpcStdioLane(providerName)
+    ...(isRpcStdioLane(preparedInvocation, providerName)
       ? { rpcPrompt: buildOmpPrompt(prompt, prepared.options || {}) }
       : {}),
   });
@@ -356,8 +365,10 @@ function buildProviderOptions(options, runtime, modelSelection) {
   const structuredOutputRecovery = options.structuredOutputRecovery === true;
   return {
     outputFormat: runtime.outputFormat,
-    jsonSchema: runtime.jsonSchema,
+    jsonSchema:
+      typeof runtime.jsonSchema === 'string' ? JSON.parse(runtime.jsonSchema) : runtime.jsonSchema,
     cwd: runtime.cwd,
+    executionContext: 'host',
     autoApprove: !structuredOutputRecovery,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
@@ -436,6 +447,67 @@ export function attachClaudeOverlayCleanup(commandSpec, providerName) {
   };
 }
 
+export function buildPreparedInvocation(prepared) {
+  const invocation = {
+    invoke: prepared.invoke,
+    ...(prepared.invoke?.lane === 'acp-stdio' ? { context: prepared.context } : {}),
+    ...(prepared.environmentPolicy === undefined
+      ? {}
+      : { environmentPolicy: prepared.environmentPolicy }),
+    ...(prepared.credentialNames === undefined
+      ? {}
+      : { credentialNames: [...prepared.credentialNames] }),
+    ...(prepared.privateArtifacts === undefined
+      ? {}
+      : { privateArtifacts: prepared.privateArtifacts }),
+    ...(prepared.executionIdentity === undefined
+      ? {}
+      : { executionIdentity: prepared.executionIdentity }),
+    ...(prepared.semanticIdentity === undefined
+      ? {}
+      : { semanticIdentity: prepared.semanticIdentity }),
+    ...(prepared.containmentRequirement === undefined
+      ? {}
+      : { containmentRequirement: prepared.containmentRequirement }),
+  };
+  const sdkMarked =
+    invocation.invoke?.parser === 'omp-sdk-ndjson' ||
+    invocation.executionIdentity?.backend === 'omp-sdk';
+  if (
+    sdkMarked &&
+    (!isOmpSdkPreparedInvocation(invocation) ||
+      invocation.environmentPolicy?.inherit !== 'minimal' ||
+      !Array.isArray(invocation.credentialNames) ||
+      invocation.privateArtifacts?.owned !== true ||
+      invocation.semanticIdentity === undefined ||
+      invocation.containmentRequirement?.required !== true)
+  ) {
+    throw new Error('OMP SDK prepared invocation is incomplete or inconsistent');
+  }
+  return invocation;
+}
+
+export function isOmpSdkPreparedInvocation(preparedInvocation) {
+  return (
+    preparedInvocation?.invoke?.lane === 'spawn' &&
+    preparedInvocation.invoke.parser === 'omp-sdk-ndjson' &&
+    preparedInvocation.invoke.ptyEligible === false &&
+    preparedInvocation.invoke.strictTerminal === true &&
+    preparedInvocation.executionIdentity?.backend === 'omp-sdk'
+  );
+}
+
+function sdkInputEvidence(prompt) {
+  const input = Buffer.from(prompt, 'utf8');
+  return {
+    inputDigest: {
+      algorithm: 'sha256',
+      value: createHash('sha256').update(input).digest('hex'),
+    },
+    inputSizeBytes: input.byteLength,
+  };
+}
+
 export function buildTaskRecord({
   id,
   prompt,
@@ -446,11 +518,14 @@ export function buildTaskRecord({
   modelSpec,
   commandSpec = {},
   ompSessionOwnership = null,
+  preparedInvocation = null,
 }) {
+  const sdk = isOmpSdkPreparedInvocation(preparedInvocation);
   return {
     id,
-    prompt: prompt.slice(0, 200) + (prompt.length > 200 ? '...' : ''),
-    fullPrompt: prompt,
+    prompt: sdk ? null : prompt.slice(0, 200) + (prompt.length > 200 ? '...' : ''),
+    fullPrompt: sdk ? null : prompt,
+    ...(sdk ? sdkInputEvidence(prompt) : {}),
     cwd,
     status: 'running',
     pid: null,
@@ -459,10 +534,11 @@ export function buildTaskRecord({
     // accepted that session identity.
     sessionId: null,
     sessionIdConflict: false,
-    requestedResumeSessionId: options.structuredOutputRecovery ? null : options.resume || null,
-    // Resumed tasks start fail-closed. Only the watcher terminal transaction
-    // may prove that the requested identity completed without conflict.
-    resumeIdentityVerified: options.structuredOutputRecovery || !options.resume,
+    requestedResumeSessionId:
+      sdk || options.structuredOutputRecovery ? null : options.resume || null,
+    // SDK runs and legacy non-resume runs are fresh. Resumed legacy tasks remain
+    // fail-closed until the watcher proves the requested identity.
+    resumeIdentityVerified: sdk || options.structuredOutputRecovery || !options.resume,
     logFile,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -470,6 +546,17 @@ export function buildTaskRecord({
     error: null,
     provider: providerName,
     model: modelSpec?.model || null,
+    ...(sdk
+      ? {
+          invoke: preparedInvocation.invoke,
+          executionIdentity: preparedInvocation.executionIdentity,
+          semanticIdentity: preparedInvocation.semanticIdentity,
+          containmentRequirement: preparedInvocation.containmentRequirement,
+          parsedResult: null,
+          sdkEvidence: null,
+          cleanupAttestation: null,
+        }
+      : {}),
     // Schedule reference (if spawned by scheduler)
     scheduleId: options.scheduleId || null,
     // Attach support
@@ -490,23 +577,37 @@ export function buildTaskRecord({
   };
 }
 
-function isRpcStdioLane(providerName) {
+function isRpcStdioLane(preparedInvocation, providerName) {
+  if (preparedInvocation?.invoke) {
+    return preparedInvocation.invoke.lane === 'rpc-stdio';
+  }
   return getProviderRegistryEntry(providerName).invoke.lane === 'rpc-stdio';
 }
 
 // The returned object is JSON-serialized into the detached watcher's argv, so it must never carry
 // prompt or other task content: `ps` and /proc/<pid>/cmdline expose argv to every local user for
 // the whole lifetime of the watcher. Partition paths, ids, and digests are not secret.
-function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, commandSpec, ompPlan) {
+export function buildWatcherConfig(
+  outputFormat,
+  jsonSchema,
+  options,
+  providerName,
+  commandSpec,
+  ompPlan = null,
+  preparedInvocation = null
+) {
+  const sdk = isOmpSdkPreparedInvocation(preparedInvocation);
   return {
     outputFormat,
-    jsonSchema,
+    ...(sdk ? {} : { jsonSchema }),
     silentJsonOutput: options.silentJsonOutput || false,
     structuredOutputRecovery: options.structuredOutputRecovery === true,
     provider: providerName,
-    command: commandSpec.binary,
-    env: commandSpec.env || {},
-    commandSpec: buildWatcherCommandSpec(commandSpec, isRpcStdioLane(providerName)),
+    ...(sdk ? {} : { command: commandSpec.binary, env: commandSpec.env || {} }),
+    commandSpec: buildWatcherCommandSpec(commandSpec, {
+      keepArgs: isRpcStdioLane(preparedInvocation, providerName),
+      omitEnv: sdk,
+    }),
     ...(ompPlan
       ? {
           ompSession: ompPlan.session,
@@ -516,23 +617,32 @@ function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, com
           ompCanonicalWorkspace: ompPlan.provisionalOwnership.canonicalWorkspace,
         }
       : {}),
+    ...(preparedInvocation === null ? {} : { preparedInvocation }),
   };
 }
 
-function buildWatcherCommandSpec(commandSpec, keepArgs = false) {
+function buildWatcherCommandSpec(commandSpec, { keepArgs = false, omitEnv = false } = {}) {
   const watcherCommandSpec = { ...commandSpec };
   if (!keepArgs) delete watcherCommandSpec.args;
+  if (omitEnv) delete watcherCommandSpec.env;
   return watcherCommandSpec;
 }
 
-export function shouldUseAttachableWatcher(options, providerName) {
+export function shouldUseAttachableWatcher(options, preparedInvocation, providerName = null) {
   if (options.attachable === false) {
     return false;
+  }
+  if (typeof preparedInvocation === 'string') {
+    providerName = preparedInvocation;
+    preparedInvocation = null;
+  }
+  if (preparedInvocation?.invoke) {
+    return preparedInvocation.invoke.ptyEligible === true;
   }
 
   // The rpc-stdio lane owns bidirectional correlated RPC over stdio itself (see
   // omp-rpc-driver.ts) and always uses rpc-watcher.js instead of the attachable PTY watcher.
-  if (isRpcStdioLane(providerName)) {
+  if (isRpcStdioLane(preparedInvocation, providerName)) {
     return false;
   }
 
@@ -543,11 +653,11 @@ export function shouldUseAttachableWatcher(options, providerName) {
   return !(providerName === 'claude' && options.jsonSchema);
 }
 
-function resolveWatcherScript(options, providerName) {
-  if (isRpcStdioLane(providerName)) {
+function resolveWatcherScript(options, preparedInvocation, providerName) {
+  if (isRpcStdioLane(preparedInvocation, providerName)) {
     return join(__dirname, 'rpc-watcher.js');
   }
-  const useAttachable = shouldUseAttachableWatcher(options, providerName);
+  const useAttachable = shouldUseAttachableWatcher(options, preparedInvocation, providerName);
   return useAttachable ? join(__dirname, 'attachable-watcher.js') : join(__dirname, 'watcher.js');
 }
 

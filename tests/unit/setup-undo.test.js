@@ -71,15 +71,15 @@ describe('setup-undo', function () {
 
   it('restores priorValue for a key unmodified since apply', function () {
     applyModule.applyDecisions({
-      decisionsPath: decisionsFile({ defaultProvider: 'codex' }),
+      decisionsPath: decisionsFile({ defaultDelivery: 'pr' }),
       cwd: repoRoot,
     });
-    assert.strictEqual(readSettings().defaultProvider, 'codex');
+    assert.strictEqual(readSettings().defaultDelivery, 'pr');
 
     const results = undoModule.undo({});
     assert.strictEqual(results.length, 1);
     assert.strictEqual(results[0].status, 'restored');
-    assert.strictEqual(readSettings().defaultProvider, 'claude');
+    assert.strictEqual(readSettings().defaultDelivery, 'none');
   });
 
   it('deletes the key when priorValue is null (key did not exist before apply)', function () {
@@ -121,26 +121,26 @@ describe('setup-undo', function () {
 
   it('skips (never clobbers) a key changed externally since apply, reporting skipped-modified', function () {
     applyModule.applyDecisions({
-      decisionsPath: decisionsFile({ defaultProvider: 'codex' }),
+      decisionsPath: decisionsFile({ defaultDelivery: 'pr' }),
       cwd: repoRoot,
     });
 
     // External tooling changes the same key after apply, before undo runs.
     const settings = readSettings();
-    settings.defaultProvider = 'gemini';
+    settings.defaultDelivery = 'ship';
     fs.writeFileSync(TEST_SETTINGS_FILE, JSON.stringify(settings, null, 2));
 
     const results = undoModule.undo({});
     assert.strictEqual(results[0].status, 'skipped-modified');
-    assert.strictEqual(results[0].current, 'gemini');
-    assert.strictEqual(results[0].wouldRestore, 'claude');
+    assert.strictEqual(results[0].current, 'ship');
+    assert.strictEqual(results[0].wouldRestore, 'none');
     // Must NOT clobber the externally-set value.
-    assert.strictEqual(readSettings().defaultProvider, 'gemini');
+    assert.strictEqual(readSettings().defaultDelivery, 'ship');
   });
 
   it('is idempotent: running undo twice reports already-restored on the second run with no writes', function () {
     applyModule.applyDecisions({
-      decisionsPath: decisionsFile({ defaultProvider: 'codex', defaultDelivery: 'pr' }),
+      decisionsPath: decisionsFile({ defaultDelivery: 'pr', dockerMounts: ['gh'] }),
       cwd: repoRoot,
     });
 
@@ -183,7 +183,7 @@ describe('setup-undo', function () {
     assert.ok(plan.schemaVersion);
 
     applyModule.applyDecisions({
-      decisionsPath: decisionsFile({ defaultProvider: 'codex', defaultDelivery: 'pr' }),
+      decisionsPath: decisionsFile({ defaultDelivery: 'pr', dockerMounts: ['gh'] }),
       cwd: repoRoot,
     });
     assert.notStrictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), preApplyBytes);
@@ -191,5 +191,49 @@ describe('setup-undo', function () {
     undoModule.undo({});
 
     assert.strictEqual(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'), preApplyBytes);
+  });
+
+  it('does not restore provider configuration from a historical journal', function () {
+    const settings = {
+      defaultProvider: 'omp',
+      providerSettings: { omp: { transport: 'sdk' } },
+    };
+    fs.writeFileSync(TEST_SETTINGS_FILE, JSON.stringify(settings, null, 2), { mode: 0o600 });
+    fs.writeFileSync(
+      path.join(TEST_DIR, 'setup-undo-journal.json'),
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            scope: 'global',
+            path: 'defaultProvider',
+            repoRoot: null,
+            priorValue: 'claude',
+            appliedValue: 'omp',
+            appliedAt: new Date(0).toISOString(),
+          },
+          {
+            scope: 'global',
+            path: 'providerSettings.omp',
+            repoRoot: null,
+            priorValue: { auth: { token: 'legacy-prior-provider-secret' } },
+            appliedValue: { auth: { token: 'legacy-applied-provider-secret' } },
+            appliedAt: new Date(0).toISOString(),
+          },
+        ],
+      })
+    );
+
+    const results = undoModule.undo({});
+    assert.ok(results.every((result) => result.status === 'skipped-manual-provider-configuration'));
+    assert.ok(
+      results.every(
+        (result) =>
+          JSON.stringify(Object.keys(result).sort()) === JSON.stringify(['path', 'scope', 'status'])
+      )
+    );
+    assert.ok(!JSON.stringify(results).includes('legacy-prior-provider-secret'));
+    assert.ok(!JSON.stringify(results).includes('legacy-applied-provider-secret'));
+    assert.deepStrictEqual(readSettings(), settings);
   });
 });

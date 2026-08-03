@@ -14,11 +14,8 @@ claude login
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Or persist in settings:
-
-```bash
-zeroshot settings set providerSettings.claude.anthropicApiKey sk-ant-...
-```
+Keep the key in the local process environment. Zeroshot provider/settings
+commands do not persist provider credentials.
 
 ### AWS Bedrock
 
@@ -30,11 +27,5 @@ export AWS_REGION=eu-central-1
 export AWS_BEARER_TOKEN_BEDROCK=ABSK...
 ```
 
-Or persist in settings (recommended):
-
-```bash
-zeroshot settings set providerSettings.claude.bedrockApiKey "ABSK..."
-zeroshot settings set providerSettings.claude.bedrockRegion eu-central-1
-```
-
-When using settings, `CLAUDE_CODE_USE_BEDROCK=1` is set automatically.
+Keep the Bedrock token in the local process environment. Provider configuration
+is manual-only, and credential values must not be written to Zeroshot settings.

@@ -29,10 +29,269 @@ const {
   expandEnvPatterns,
   isUsableEnvValue,
   validateProviderEnvAuth,
+  resolveOmpDockerPolicy,
+  assertNoOmpHomeMounts,
 } = require('../lib/docker-config');
 const { getProvider } = require('./providers');
 const { readRepoSettings } = require('../lib/repo-settings');
 const { provisionClaudeCredentials } = require('./claude-credentials');
+const {
+  OMP_SDK_MAX_CREDENTIAL_BYTES,
+  OMP_SDK_MAX_REQUEST_BYTES,
+} = require('../lib/agent-cli-provider/omp-sdk-protocol');
+
+const CONTAINER_SDK_SUPERVISOR = [
+  'import ctypes',
+  'import os',
+  'import pathlib',
+  'import pwd',
+  'import signal',
+  'import subprocess',
+  'import sys',
+  'import time',
+  '',
+  'PR_SET_CHILD_SUBREAPER = 36',
+  'CLEANUP_ERROR = 125',
+  'control_path = pathlib.Path(sys.argv[1])',
+  'request_path = sys.argv[2]',
+  'command = sys.argv[3:]',
+  'state_path = control_path / "state"',
+  'cancel_path = control_path / "cancel"',
+  'cancelled = False',
+  'cancel_started = None',
+  'tracked = set()',
+  '',
+  'def write_state(value):',
+  '    temporary = control_path / ("state." + str(os.getpid()))',
+  '    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)',
+  '    try:',
+  '        os.write(descriptor, (value + "\\n").encode("ascii"))',
+  '        os.fsync(descriptor)',
+  '    finally:',
+  '        os.close(descriptor)',
+  '    os.replace(temporary, state_path)',
+  '',
+  'def process_identity(pid):',
+  '    try:',
+  '        raw = pathlib.Path("/proc") / str(pid) / "stat"',
+  '        value = raw.read_text(encoding="ascii")',
+  '    except (FileNotFoundError, ProcessLookupError):',
+  '        return None',
+  '    close = value.rfind(")")',
+  '    fields = value[close + 2:].split()',
+  '    if close < 0 or len(fields) < 20:',
+  '        raise RuntimeError("unverifiable process stat")',
+  '    return (pid, int(fields[1]), int(fields[19]))',
+  '',
+  'def owned_descendants():',
+  '    processes = {}',
+  '    try:',
+  '        entries = list(pathlib.Path("/proc").iterdir())',
+  '    except OSError as error:',
+  '        raise RuntimeError("cannot inspect process ownership") from error',
+  '    for entry in entries:',
+  '        if not entry.name.isdigit():',
+  '            continue',
+  '        try:',
+  '            identity = process_identity(int(entry.name))',
+  '        except PermissionError as error:',
+  '            raise RuntimeError("cannot inspect descendant identity") from error',
+  '        if identity is not None:',
+  '            processes[identity[0]] = identity',
+  '    owners = {os.getpid()}',
+  '    changed = True',
+  '    while changed:',
+  '        changed = False',
+  '        for pid, identity in processes.items():',
+  '            if pid not in owners and identity[1] in owners:',
+  '                owners.add(pid)',
+  '                changed = True',
+  '    descendants = {(pid, processes[pid][2]) for pid in owners if pid != os.getpid()}',
+  '    tracked.update(descendants)',
+  '    return descendants',
+  '',
+  'def signal_identities(identities, signum):',
+  '    for pid, started in identities:',
+  '        try:',
+  '            pidfd = os.pidfd_open(pid, 0)',
+  '        except ProcessLookupError:',
+  '            continue',
+  '        try:',
+  '            identity = process_identity(pid)',
+  '            if identity is None or identity[2] != started:',
+  '                continue',
+  '            signal.pidfd_send_signal(pidfd, signum)',
+  '        except ProcessLookupError:',
+  '            pass',
+  '        finally:',
+  '            os.close(pidfd)',
+  '',
+  'def reap_available():',
+  '    while True:',
+  '        try:',
+  '            pid, _status = os.waitpid(-1, os.WNOHANG)',
+  '        except ChildProcessError:',
+  '            return True',
+  '        if pid == 0:',
+  '            return False',
+  '',
+  'def stop_descendants():',
+  '    descendants = owned_descendants()',
+  '    signal_identities(descendants, signal.SIGTERM)',
+  '    deadline = time.monotonic() + 5.0',
+  '    while time.monotonic() < deadline:',
+  '        descendants = owned_descendants()',
+  '        signal_identities(descendants, signal.SIGTERM)',
+  '        reap_available()',
+  '        if not descendants and reap_available():',
+  '            return',
+  '        time.sleep(0.01)',
+  '    descendants = owned_descendants()',
+  '    signal_identities(descendants, signal.SIGKILL)',
+  '    deadline = time.monotonic() + 1.0',
+  '    while time.monotonic() < deadline:',
+  '        descendants = owned_descendants()',
+  '        signal_identities(descendants, signal.SIGKILL)',
+  '        reap_available()',
+  '        if not descendants and reap_available():',
+  '            return',
+  '        time.sleep(0.01)',
+  '    raise RuntimeError("descendant ownership did not become empty")',
+  '',
+  'def request_cancel(_signum, _frame):',
+  '    global cancelled',
+  '    cancelled = True',
+  '',
+  'def demote():',
+  '    os.setgroups([])',
+  '    os.setgid(user.pw_gid)',
+  '    os.setuid(user.pw_uid)',
+  '',
+  'child = None',
+  'exit_code = CLEANUP_ERROR',
+  'try:',
+  '    control_stat = control_path.stat(follow_symlinks=False)',
+  '    if not control_path.is_dir() or control_stat.st_uid != 0 or (control_stat.st_mode & 0o777) != 0o700:',
+  '        raise RuntimeError("control identity is not root-owned")',
+  '    if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:',
+  '        raise OSError(ctypes.get_errno(), "cannot become child subreaper")',
+  '    signal.signal(signal.SIGHUP, request_cancel)',
+  '    signal.signal(signal.SIGINT, request_cancel)',
+  '    signal.signal(signal.SIGTERM, request_cancel)',
+  '    user = pwd.getpwnam("node")',
+  '    credential_fd = os.dup(0)',
+  '    if credential_fd != 3:',
+  '        os.dup2(credential_fd, 3)',
+  '        os.close(credential_fd)',
+  '    credential_fd = 3',
+  '    os.set_inheritable(credential_fd, True)',
+  '    child = subprocess.Popen(',
+  '        command,',
+  '        stdin=subprocess.DEVNULL,',
+  '        close_fds=True,',
+  '        pass_fds=(credential_fd,),',
+  '        start_new_session=True,',
+  '        preexec_fn=demote,',
+  '    )',
+  '    os.close(credential_fd)',
+  '    identity = process_identity(child.pid)',
+  '    supervisor_identity = process_identity(os.getpid())',
+  '    if identity is None or supervisor_identity is None:',
+  '        raise RuntimeError("cannot establish process identities")',
+  '    tracked.add((identity[0], identity[2]))',
+  '    write_state("live %d %d" % (supervisor_identity[0], supervisor_identity[2]))',
+  '    while child.poll() is None:',
+  '        descendants = owned_descendants()',
+  '        if cancelled or cancel_path.exists():',
+  '            if cancel_started is None:',
+  '                cancel_started = time.monotonic()',
+  '            signal_identities(descendants, signal.SIGTERM)',
+  '            if time.monotonic() - cancel_started >= 5.0:',
+  '                signal_identities(descendants, signal.SIGKILL)',
+  '        time.sleep(0.01)',
+  '    if child.returncode < 0:',
+  '        exit_code = 128 - child.returncode',
+  '    else:',
+  '        exit_code = child.returncode',
+  '    stop_descendants()',
+  '    write_state("clean %d %d %d" % (len(tracked), supervisor_identity[0], supervisor_identity[2]))',
+  'except BaseException:',
+  '    try:',
+  '        if child is not None:',
+  '            stop_descendants()',
+  '    except BaseException:',
+  '        pass',
+  '    try:',
+  '        write_state("error")',
+  '    except BaseException:',
+  '        pass',
+  '    exit_code = CLEANUP_ERROR',
+  'sys.exit(exit_code)',
+].join('\n');
+
+const CONTAINER_SDK_ABORT = [
+  'import os, pathlib, sys',
+  'control_path = pathlib.Path(sys.argv[1])',
+  'state_path = control_path / "state"',
+  'cancel_path = control_path / "cancel"',
+  'control_stat = control_path.stat(follow_symlinks=False)',
+  'state_stat = state_path.stat(follow_symlinks=False)',
+  'if not control_path.is_dir() or control_stat.st_uid != 0 or (control_stat.st_mode & 0o777) != 0o700:',
+  '    raise RuntimeError("control identity is not root-owned")',
+  'if state_stat.st_uid != 0 or (state_stat.st_mode & 0o777) != 0o600:',
+  '    raise RuntimeError("control state is not root-owned")',
+  'state = state_path.read_text(encoding="ascii").strip().split()',
+  'if state and state[0] == "clean":',
+  '    sys.exit(0)',
+  'if state and state[0] == "error":',
+  '    raise RuntimeError("supervisor reported cleanup uncertainty")',
+  'try:',
+  '    descriptor = os.open(cancel_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)',
+  'except FileExistsError:',
+  '    cancel_stat = cancel_path.stat(follow_symlinks=False)',
+  '    if cancel_stat.st_uid != 0 or (cancel_stat.st_mode & 0o777) != 0o600:',
+  '        raise RuntimeError("cancellation control is not root-owned")',
+  'else:',
+  '    try:',
+  '        os.write(descriptor, b"cancel\\n")',
+  '        os.fsync(descriptor)',
+  '    finally:',
+  '        os.close(descriptor)',
+].join('\n');
+
+const CONTAINER_SDK_VERIFY_CLEAN = [
+  'import pathlib, shutil, sys, time',
+  'control_path = pathlib.Path(sys.argv[1])',
+  'state_path = control_path / "state"',
+  'def identity(pid):',
+  '    try:',
+  '        value = (pathlib.Path("/proc") / str(pid) / "stat").read_text(encoding="ascii")',
+  '    except (FileNotFoundError, ProcessLookupError):',
+  '        return None',
+  '    close = value.rfind(")")',
+  '    fields = value[close + 2:].split()',
+  '    if close < 0 or len(fields) < 20:',
+  '        raise RuntimeError("unverifiable supervisor identity")',
+  '    return int(fields[19])',
+  'deadline = time.monotonic() + 7.0',
+  'while True:',
+  '    control_stat = control_path.stat(follow_symlinks=False)',
+  '    state_stat = state_path.stat(follow_symlinks=False)',
+  '    if control_stat.st_uid != 0 or state_stat.st_uid != 0:',
+  '        raise RuntimeError("control identity is not root-owned")',
+  '    state = state_path.read_text(encoding="ascii").strip().split()',
+  '    if state and state[0] == "error":',
+  '        raise RuntimeError("descendant ownership inspection was uncertain")',
+  '    if len(state) == 4 and state[0] == "clean" and int(state[1]) >= 1:',
+  '        pid, started = int(state[2]), int(state[3])',
+  '        observed = identity(pid)',
+  '        if observed is None or observed != started:',
+  '            shutil.rmtree(control_path)',
+  '            sys.exit(0)',
+  '    if time.monotonic() >= deadline:',
+  '        raise RuntimeError("empty descendant ownership was not attested")',
+  '    time.sleep(0.02)',
+].join('\n');
 
 const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 const FRESH_BASE_REF_PREFIX = 'refs/zeroshot/base-fetch';
@@ -226,6 +485,8 @@ class IsolationManager {
     this.clusterConfigDirs = new Map(); // clusterId -> configDirPath
     this.worktrees = new Map(); // clusterId -> { path, branch, repoRoot, baseRef, baseSha }
     this._exitWatchers = new Map(); // clusterId -> ChildProcess
+    this._spawnProcess = options.spawn || spawn;
+    this._spawnSyncProcess = options.spawnSync || spawnSync;
   }
 
   /**
@@ -276,17 +537,28 @@ class IsolationManager {
       config.provider || settings.defaultProvider || getDefaultProviderId()
     );
     const containerHome = config.containerHome || settings.dockerContainerHome || '/root';
+    const ompDockerPolicy = resolveOmpDockerPolicy(
+      providerName,
+      settings.providerSettings?.omp
+    );
 
-    // Pre-effect auth gate. The effective env/mount plan is computed (read-only) and validated
-    // BEFORE the stale-container removal and the isolated-workspace copy, so a missing or
-    // malformed credential plan leaves no container or workspace side effect behind — matching
-    // the platform probe's ordering in orchestrator/agent-lifecycle/preflight.
-    const credentialPlan = this._buildCredentialPlan(config, settings, containerHome, providerName);
-    this._assertProviderCredentialPlan(providerName, {
-      ...credentialPlan,
+    // Compute the effective env/mount plan before any stale-container or workspace side effect.
+    // Direct/RPC plans validate usable credentials here; SDK plans validate the no-host-mount
+    // boundary here and defer credential VALUE resolution to the prepared fd 3 handoff.
+    const credentialPlan = this._buildCredentialPlan(
       config,
+      settings,
       containerHome,
-    });
+      providerName,
+      ompDockerPolicy
+    );
+    if (!ompDockerPolicy.sdk) {
+      this._assertProviderCredentialPlan(providerName, {
+        ...credentialPlan,
+        config,
+        containerHome,
+      });
+    }
 
     this._removeContainerByName(containerName);
 
@@ -295,9 +567,9 @@ class IsolationManager {
     // The cluster config dir carries Claude credentials (via provisionClaudeCredentials) and the
     // Claude-specific AskUserQuestion-blocking hook (~/.claude/settings.json PreToolUse), which
     // only the `claude` CLI reads. Creating and mounting it for every provider — regardless of
-    // whether Claude is even running in the container — was an unconditional Claude-auth side
-    // channel into other providers' containers (e.g. omp, whose Docker isolation must be
-    // env/broker-only with zero automatic mounts). Scope it to the claude provider only.
+    // whether Claude is even running in the container — would create a Claude-auth side channel
+    // into other providers' containers. Scope it to the active Claude provider; the OMP SDK lane
+    // additionally accepts no automatic host credential/configuration mounts at all.
     const clusterConfigDir =
       providerName === 'claude' ? this._createClusterConfigDir(clusterId, containerHome) : null;
     if (clusterConfigDir) {
@@ -310,6 +582,8 @@ class IsolationManager {
       containerHome,
       clusterConfigDir,
       platform: config.platform,
+      sdkMode: ompDockerPolicy.sdk,
+      credentialNames: ompDockerPolicy.credentialNames,
     });
 
     args.push(...credentialPlan.args);
@@ -390,19 +664,64 @@ class IsolationManager {
     return isolatedDir;
   }
 
-  _buildBaseDockerArgs({ containerName, workDir, containerHome, clusterConfigDir, platform }) {
+  _buildBaseDockerArgs({
+    containerName,
+    workDir,
+    containerHome,
+    clusterConfigDir,
+    platform,
+    sdkMode,
+    credentialNames = [],
+  }) {
     const args = ['run', '-d', '--name', containerName];
     if (platform) {
       args.push('--platform', platform);
     }
-    args.push(
-      '-v',
-      `${workDir}:/workspace`,
-      '-v',
-      '/var/run/docker.sock:/var/run/docker.sock',
-      '--group-add',
-      this._getDockerGid()
-    );
+    if (sdkMode) {
+      args.push(
+        '--init',
+        '--pid',
+        'private',
+        '--ipc',
+        'private',
+        '--cgroupns',
+        'private',
+        '--pids-limit',
+        '2048',
+        '--read-only',
+        '--security-opt',
+        'no-new-privileges=true',
+        '--cap-drop',
+        'ALL',
+        '--network',
+        'bridge',
+        '--tmpfs',
+        '/tmp:rw,nosuid,nodev,exec,size=2147483648',
+        '--tmpfs',
+        `${containerHome}:rw,nosuid,nodev,exec,mode=0700,uid=1000,gid=1000`,
+        '-v',
+        `${workDir}:/workspace`,
+        '--label',
+        'io.zeroshot.execution.transport=sdk',
+        '--label',
+        `io.zeroshot.credentials.names=${credentialNames.join(',')}`,
+        '--cap-add',
+        'KILL',
+        '--cap-add',
+        'SETGID',
+        '--cap-add',
+        'SETUID'
+      );
+    } else {
+      args.push(
+        '-v',
+        `${workDir}:/workspace`,
+        '-v',
+        '/var/run/docker.sock:/var/run/docker.sock',
+        '--group-add',
+        this._getDockerGid()
+      );
+    }
     // Only mounted when the active provider is claude (see createContainer) — carries Claude
     // credentials and the Claude-specific AskUserQuestion-blocking hook, neither of which any
     // other provider's CLI reads.
@@ -431,8 +750,9 @@ class IsolationManager {
 
   // Auto-activate the running provider's own credential preset (mount and/or env) so `--docker`
   // works without listing it in dockerMounts. Env-only providers (e.g. omp) have no MOUNT_PRESETS
-  // entry, so both preset maps are checked.
-  _withActiveProviderPreset(mountConfig, providerName) {
+  // entry, so both preset maps are checked. SDK execution never activates a host preset.
+  _withActiveProviderPreset(mountConfig, providerName, ompDockerPolicy = { sdk: false }) {
+    if (ompDockerPolicy.sdk) return mountConfig;
     if (!providerName) return mountConfig;
     if (!MOUNT_PRESETS[providerName] && !ENV_PRESETS[providerName]) return mountConfig;
     if (mountConfig.some((item) => item === providerName)) return mountConfig;
@@ -453,10 +773,17 @@ class IsolationManager {
    * @param {object} settings
    * @param {string} containerHome
    * @param {string} providerName
+   * @param {{sdk: boolean, credentialNames?: string[]}} [ompDockerPolicy]
    * @returns {{args: string[], mountedHosts: string[], explicitMountContainerPaths: string[],
    *   forwardedEnv: Record<string, string>, explicitEnvNames: Set<string>}}
    */
-  _buildCredentialPlan(config, settings, containerHome, providerName) {
+  _buildCredentialPlan(
+    config,
+    settings,
+    containerHome,
+    providerName,
+    ompDockerPolicy = { sdk: false, credentialNames: [] }
+  ) {
     const plan = {
       args: [],
       mountedHosts: [],
@@ -464,7 +791,6 @@ class IsolationManager {
       forwardedEnv: {},
       explicitEnvNames: new Set(),
     };
-
     if (config.noMounts) {
       return plan;
     }
@@ -473,8 +799,20 @@ class IsolationManager {
     // sourced from here is an *explicit* opt-in; anything added by `_withActiveProviderPreset` is
     // automatic. Credential accounting depends on that distinction.
     const userMountConfig = this._resolveMountConfig(config, settings);
-    const mountConfig = this._withActiveProviderPreset(userMountConfig, providerName);
-
+    if (ompDockerPolicy.sdk) {
+      assertNoOmpHomeMounts(userMountConfig, containerHome);
+      if (Array.isArray(config.mounts) && config.mounts.length > 0) {
+        throw new Error(
+          'OMP SDK Docker execution does not accept host credential or configuration mounts.'
+        );
+      }
+      return plan;
+    }
+    const mountConfig = this._withActiveProviderPreset(
+      userMountConfig,
+      providerName,
+      ompDockerPolicy
+    );
     const mounts = resolveMounts(mountConfig, { containerHome });
     const explicitContainerPaths = new Set(
       resolveMounts(userMountConfig, { containerHome }).map((mount) => mount.container)
@@ -514,7 +852,8 @@ class IsolationManager {
     const { envToPass, explicitNames } = this._collectDockerEnvVars(
       mountConfig,
       userMountConfig,
-      settings
+      settings,
+      ompDockerPolicy
     );
     for (const [key, value] of Object.entries(envToPass)) {
       plan.args.push('-e', `${key}=${value}`);
@@ -529,8 +868,21 @@ class IsolationManager {
    * Apply the credential plan to an argv array. Thin wrapper around `_buildCredentialPlan` kept
    * for callers that build argv incrementally.
    */
-  _applyCredentialMounts(args, config, settings, containerHome, providerName) {
-    const plan = this._buildCredentialPlan(config, settings, containerHome, providerName);
+  _applyCredentialMounts(
+    args,
+    config,
+    settings,
+    containerHome,
+    providerName,
+    ompDockerPolicy = { sdk: false, credentialNames: [] }
+  ) {
+    const plan = this._buildCredentialPlan(
+      config,
+      settings,
+      containerHome,
+      providerName,
+      ompDockerPolicy
+    );
     args.push(...plan.args);
     return plan;
   }
@@ -539,9 +891,15 @@ class IsolationManager {
    * @param {Array<string|object>} mountConfig - effective config (user's + auto provider preset)
    * @param {Array<string|object>} userMountConfig - the user's config only
    * @param {object} settings
+   * @param {{credentialNames?: string[]}} [ompDockerPolicy]
    * @returns {{envToPass: Record<string, string>, explicitNames: Set<string>}}
    */
-  _collectDockerEnvVars(mountConfig, userMountConfig, settings) {
+  _collectDockerEnvVars(
+    mountConfig,
+    userMountConfig,
+    settings,
+    ompDockerPolicy = { credentialNames: [] }
+  ) {
     const envToPass = {};
     const envSpecs = expandEnvPatterns(resolveEnvs(mountConfig, settings.dockerEnvPassthrough));
     // Names the user opted into by name (dockerEnvPassthrough) or by explicitly listing a preset,
@@ -551,7 +909,9 @@ class IsolationManager {
     );
     const explicitNames = new Set(explicitSpecs.map((spec) => spec.name));
 
+    const privateNames = new Set(ompDockerPolicy.credentialNames);
     for (const spec of envSpecs) {
+      if (privateNames.has(spec.name)) continue;
       if (spec.forced) {
         envToPass[spec.name] = spec.value;
       } else if (process.env[spec.name]) {
@@ -1018,68 +1378,496 @@ class IsolationManager {
     });
   }
 
-  /**
-   * Stop a container
-   * @param {string} clusterId - Cluster ID
-   * @param {number} [timeout=10] - Timeout in seconds before SIGKILL
-   * @returns {Promise<void>}
-   */
-  stopContainer(clusterId, timeout = 10, explicitContainerId = null) {
-    // Use explicit containerId (from restored state) or in-memory Map
-    const containerId = explicitContainerId || this.containers.get(clusterId);
-    if (!containerId) {
-      return; // Already stopped or never started
+  _materializePreparedPrivateRequest(containerId, privateArtifacts) {
+    const expectedPrefix = path.join(os.tmpdir(), 'zeroshot-omp-sdk-');
+    if (!privateArtifacts.root.startsWith(expectedPrefix)) {
+      throw new Error('Prepared OMP SDK private root is outside the owned runtime namespace.');
+    }
+    const rootStat = fs.lstatSync(privateArtifacts.root);
+    const requestStat = fs.lstatSync(privateArtifacts.requestPath);
+    const currentUid = typeof process.getuid === 'function' ? process.getuid() : null;
+    if (
+      !rootStat.isDirectory() ||
+      rootStat.isSymbolicLink() ||
+      (rootStat.mode & 0o777) !== 0o700 ||
+      (currentUid !== null && rootStat.uid !== currentUid) ||
+      !requestStat.isFile() ||
+      requestStat.isSymbolicLink() ||
+      (requestStat.mode & 0o777) !== 0o600 ||
+      (currentUid !== null && requestStat.uid !== currentUid) ||
+      requestStat.size === 0 ||
+      requestStat.size > OMP_SDK_MAX_REQUEST_BYTES
+    ) {
+      throw new Error('Prepared OMP SDK private request ownership or permissions are invalid.');
     }
 
-    return new Promise((resolve) => {
-      const proc = spawn('docker', ['stop', '-t', String(timeout), containerId], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+    const requestDocument = fs.readFileSync(privateArtifacts.requestPath);
+    let result;
+    try {
+      result = this._spawnSyncProcess(
+        'docker',
+        [
+          'exec',
+          '-i',
+          containerId,
+          '/bin/sh',
+          '-c',
+          [
+            'set -eu',
+            'umask 077',
+            '[ ! -e "$1" ]',
+            'mkdir -m 700 "$1"',
+            'cat >"$2"',
+            'chmod 600 "$2"',
+          ].join('\n'),
+          'zeroshot-sdk-request',
+          privateArtifacts.root,
+          privateArtifacts.requestPath,
+        ],
+        {
+          input: requestDocument,
+          encoding: 'utf8',
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }
+      );
+    } finally {
+      requestDocument.fill(0);
+    }
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `Could not materialize private OMP SDK request in container: ${
+          result.error?.message || String(result.stderr || '').trim() || `exit ${result.status}`
+        }`
+      );
+    }
+  }
 
-      proc.on('close', () => {
+  _discardPreparedPrivateRequest(containerId, privateArtifacts) {
+    const result = this._spawnSyncProcess(
+      'docker',
+      [
+        'exec',
+        containerId,
+        '/bin/sh',
+        '-c',
+        'if [ -e "$1" ]; then rm -f "$2" && rmdir "$1"; fi; [ ! -e "$1" ]',
+        'zeroshot-sdk-request-cleanup',
+        privateArtifacts.root,
+        privateArtifacts.requestPath,
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `Could not confirm private OMP SDK request cleanup in container: ${
+          result.error?.message || String(result.stderr || '').trim() || `exit ${result.status}`
+        }`
+      );
+    }
+  }
+
+  _materializePreparedControl(containerId) {
+    const controlId = crypto.randomBytes(24).toString('hex');
+    const controlPath = `/tmp/.zeroshot-sdk-control/${controlId}`;
+    const result = this._spawnSyncProcess(
+      'docker',
+      [
+        'exec',
+        '--user',
+        '0:0',
+        containerId,
+        '/bin/sh',
+        '-c',
+        [
+          'set -eu',
+          'umask 077',
+          'mkdir -m 700 /tmp/.zeroshot-sdk-control 2>/dev/null || { [ -d /tmp/.zeroshot-sdk-control ] && [ ! -L /tmp/.zeroshot-sdk-control ] && [ "$(stat -c %u:%a /tmp/.zeroshot-sdk-control)" = "0:700" ]; }',
+          '[ ! -e "$1" ]',
+          'mkdir -m 700 "$1"',
+          'printf "created\\n" >"$1/state"',
+          'chmod 600 "$1/state"',
+        ].join('\n'),
+        'zeroshot-sdk-control',
+        controlPath,
+      ],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `Could not establish root-owned OMP SDK control identity: ${
+          result.error?.message || String(result.stderr || '').trim() || `exit ${result.status}`
+        }`
+      );
+    }
+    return controlPath;
+  }
+
+  _discardPreparedControl(containerId, controlPath, requireClean) {
+    const controlPrefix = '/tmp/.zeroshot-sdk-control/';
+    if (
+      typeof controlPath !== 'string' ||
+      !controlPath.startsWith(controlPrefix) ||
+      !/^[a-f0-9]{48}$/.test(controlPath.slice(controlPrefix.length))
+    ) {
+      throw new Error('OMP SDK control identity is outside the parent-owned namespace.');
+    }
+    const args = ['exec', '--user', '0:0', containerId];
+    if (requireClean) {
+      args.push('/usr/bin/python3', '-c', CONTAINER_SDK_VERIFY_CLEAN, controlPath);
+    } else {
+      args.push(
+        '/bin/sh',
+        '-c',
+        '[ ! -e "$1" ] || { [ "$(stat -c %u "$1")" = 0 ] && rm -rf -- "$1"; }',
+        'zeroshot-sdk-control-cleanup',
+        controlPath
+      );
+    }
+    const result = this._spawnSyncProcess('docker', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `Could not confirm OMP SDK descendant ownership cleanup: ${
+          result.error?.message || String(result.stderr || '').trim() || `exit ${result.status}`
+        }`
+      );
+    }
+  }
+
+  /**
+   * Spawn an authoritative prepared OMP SDK command in an active container. Credential values are
+   * resolved only here, encoded into the bounded fd 3 document, and never added to Docker argv,
+   * environment, labels, or task metadata.
+   */
+  spawnPreparedInContainer(containerId, preparedCommand, options = {}) {
+    if (![...this.containers.values()].includes(containerId)) {
+      throw new Error(`Container ${containerId} is not active in this isolation manager.`);
+    }
+    if (
+      !preparedCommand ||
+      preparedCommand.invoke?.lane !== 'spawn' ||
+      preparedCommand.invoke?.parser !== 'omp-sdk-ndjson' ||
+      preparedCommand.invoke?.ptyEligible !== false ||
+      preparedCommand.invoke?.strictTerminal !== true ||
+      preparedCommand.executionIdentity?.transport !== 'sdk' ||
+      preparedCommand.containmentRequirement?.mode !== 'container' ||
+      preparedCommand.containmentRequirement?.required !== true
+    ) {
+      throw new Error('Prepared container command does not satisfy the OMP SDK spawn contract.');
+    }
+
+    const { commandSpec, credentialNames, environmentPolicy, privateArtifacts } = preparedCommand;
+    if (
+      !commandSpec ||
+      commandSpec.binary !== '/opt/zeroshot/node_modules/bun/bin/bun.exe' ||
+      !Array.isArray(commandSpec.args) ||
+      commandSpec.args.length !== 2 ||
+      commandSpec.args[0] !== '/opt/zeroshot/scripts/omp-sdk-sidecar.ts' ||
+      commandSpec.args.some((arg) => typeof arg !== 'string' || arg.includes('\0'))
+    ) {
+      throw new Error('Prepared OMP SDK commandSpec does not name the attested container runtime.');
+    }
+    if (
+      !privateArtifacts ||
+      privateArtifacts.owned !== true ||
+      typeof privateArtifacts.root !== 'string' ||
+      !path.posix.isAbsolute(privateArtifacts.root) ||
+      typeof privateArtifacts.requestPath !== 'string' ||
+      !path.posix.isAbsolute(privateArtifacts.requestPath) ||
+      privateArtifacts.root.includes('\0') ||
+      privateArtifacts.requestPath.includes('\0') ||
+      path.posix.relative(privateArtifacts.root, privateArtifacts.requestPath).startsWith('..') ||
+      commandSpec.args[1] !== privateArtifacts.requestPath
+    ) {
+      throw new Error('Prepared OMP SDK private artifacts are not an owned container path.');
+    }
+    if (
+      !Array.isArray(credentialNames) ||
+      credentialNames.length > 32 ||
+      new Set(credentialNames).size !== credentialNames.length ||
+      credentialNames.some(
+        (name) =>
+          typeof name !== 'string' ||
+          !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+          Buffer.byteLength(name) > 128
+      )
+    ) {
+      throw new Error('Prepared OMP SDK credential names are invalid.');
+    }
+    if (
+      environmentPolicy?.inherit !== 'minimal' ||
+      !environmentPolicy.values ||
+      typeof environmentPolicy.values !== 'object' ||
+      Array.isArray(environmentPolicy.values)
+    ) {
+      throw new Error('Prepared OMP SDK environment policy is invalid.');
+    }
+    if (options.signal?.aborted) {
+      throw new Error('Prepared OMP SDK container spawn was aborted.');
+    }
+
+    const args = ['exec', '-i'];
+    const privateNames = new Set(credentialNames);
+    for (const [name, value] of Object.entries(environmentPolicy.values)) {
+      if (
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
+        typeof value !== 'string' ||
+        value.includes('\0') ||
+        privateNames.has(name)
+      ) {
+        throw new Error('Prepared OMP SDK environment policy contains an invalid value.');
+      }
+      args.push('-e', `${name}=${value}`);
+    }
+
+    const values = {};
+    for (const name of credentialNames) {
+      const value = process.env[name];
+      if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value) > 16 * 1024) {
+        throw new Error(`Required OMP SDK credential is unavailable: ${name}`);
+      }
+      values[name] = value;
+    }
+
+    const serialized = JSON.stringify({ protocolVersion: 1, values });
+    const credentialDocument = Buffer.from(serialized, 'utf8');
+    if (credentialDocument.byteLength > OMP_SDK_MAX_CREDENTIAL_BYTES) {
+      credentialDocument.fill(0);
+      throw new Error('OMP SDK credential document exceeds the protocol limit.');
+    }
+    let controlPath;
+    try {
+      this._materializePreparedPrivateRequest(containerId, privateArtifacts);
+      controlPath = this._materializePreparedControl(containerId);
+    } catch (error) {
+      credentialDocument.fill(0);
+      try {
+        this._discardPreparedPrivateRequest(containerId, privateArtifacts);
+      } catch {
+        // The originating materialization error remains authoritative.
+      }
+      throw error;
+    }
+
+    args.push(
+      '--user',
+      '0:0',
+      containerId,
+      '/usr/bin/python3',
+      '-c',
+      CONTAINER_SDK_SUPERVISOR,
+      controlPath,
+      privateArtifacts.requestPath,
+      commandSpec.binary,
+      ...commandSpec.args
+    );
+    let proc;
+    try {
+      proc = this._spawnProcess('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    } catch (error) {
+      credentialDocument.fill(0);
+      this._discardPreparedControl(containerId, controlPath, false);
+      this._discardPreparedPrivateRequest(containerId, privateArtifacts);
+      throw error;
+    }
+
+    let abortCompletion = null;
+    let rejectCleanupAttestation = null;
+    const abort = () => {
+      if (abortCompletion) return;
+      const abortProcess = this._spawnProcess(
+        'docker',
+        [
+          'exec',
+          '--user',
+          '0:0',
+          containerId,
+          '/usr/bin/python3',
+          '-c',
+          CONTAINER_SDK_ABORT,
+          controlPath,
+        ],
+        { stdio: 'ignore' }
+      );
+      abortCompletion = new Promise((resolve) => {
+        abortProcess.once('error', (error) => resolve({ error }));
+        abortProcess.once('close', (code) => resolve({ code }));
+      });
+      abortCompletion.then((result) => {
+        if (result?.error || result?.code !== 0) {
+          rejectCleanupAttestation?.(
+            new Error('OMP SDK container cancellation cleanup could not be established.')
+          );
+        }
+      });
+    };
+    options.signal?.addEventListener('abort', abort, { once: true });
+
+    let credentialHandoffSettled = false;
+    let resolveCredentialHandoff;
+    let rejectCredentialHandoff;
+    proc.credentialHandoff = new Promise((resolve, reject) => {
+      resolveCredentialHandoff = resolve;
+      rejectCredentialHandoff = reject;
+    });
+    proc.credentialHandoff.catch(() => {});
+    const settleCredentialHandoff = (error) => {
+      if (credentialHandoffSettled) return;
+      credentialHandoffSettled = true;
+      credentialDocument.fill(0);
+      if (error) rejectCredentialHandoff(error);
+      else resolveCredentialHandoff();
+    };
+
+    proc.cleanupAttestation = new Promise((resolve, reject) => {
+      rejectCleanupAttestation = reject;
+      proc.once('error', (spawnError) => {
+        settleCredentialHandoff(spawnError);
+        try {
+          this._discardPreparedControl(containerId, controlPath, false);
+          this._discardPreparedPrivateRequest(containerId, privateArtifacts);
+        } catch (cleanupError) {
+          reject(cleanupError);
+          return;
+        }
+        reject(spawnError);
+      });
+      proc.once('close', async (code) => {
+        options.signal?.removeEventListener('abort', abort);
+        if (!Number.isInteger(code) || code === 125) abort();
+        const abortResult = abortCompletion ? await abortCompletion : null;
+        if (abortResult?.error || (abortResult && abortResult.code !== 0)) {
+          reject(new Error('OMP SDK container cancellation cleanup could not be established.'));
+          return;
+        }
+        try {
+          await proc.credentialHandoff;
+          this._discardPreparedControl(containerId, controlPath, true);
+          this._discardPreparedPrivateRequest(containerId, privateArtifacts);
+        } catch (error) {
+          reject(error);
+          return;
+        }
+        if (code === 125) {
+          reject(new Error('OMP SDK container descendant cleanup could not be established.'));
+          return;
+        }
+        if (!Number.isInteger(code)) {
+          reject(new Error('OMP SDK container process exit could not be observed.'));
+          return;
+        }
+        resolve({
+          mode: 'container',
+          terminalBuffered: true,
+          descendantsReaped: true,
+          clean: true,
+        });
+      });
+    });
+
+    const failCredentialHandoff = (error) => {
+      if (credentialHandoffSettled) return;
+      const handoffError =
+        error instanceof Error
+          ? error
+          : new Error('OMP SDK credential handoff to Docker exec failed.');
+      settleCredentialHandoff(handoffError);
+      abort();
+    };
+    proc.stdin.once('error', failCredentialHandoff);
+    try {
+      proc.stdin.end(credentialDocument, () => settleCredentialHandoff());
+    } catch (error) {
+      failCredentialHandoff(error);
+      throw error;
+    }
+    return proc;
+  }
+
+  _runDockerLifecycle(args, operation) {
+    return new Promise((resolve, reject) => {
+      const proc = this._spawnProcess('docker', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      proc.stderr?.on('data', (data) => {
+        stderr += data.toString();
+      });
+      proc.once('error', (error) => {
+        reject(new Error(`Docker ${operation} failed: ${error.message}`));
+      });
+      proc.once('close', (code) => {
+        if (code !== 0) {
+          reject(
+            new Error(
+              `Docker ${operation} failed with exit ${code}: ${stderr.trim() || 'no diagnostic'}`
+            )
+          );
+          return;
+        }
         resolve();
-      });
-
-      proc.on('error', () => {
-        resolve(); // Ignore errors on stop
       });
     });
   }
 
-  /**
-   * Remove a container
-   * @param {string} clusterId - Cluster ID
-   * @param {boolean} [force=false] - Force remove running container
-   * @returns {Promise<void>}
-   */
-  removeContainer(clusterId, force = false, explicitContainerId = null) {
-    // Use explicit containerId (from restored state) or in-memory Map
-    const containerId = explicitContainerId || this.containers.get(clusterId);
-    if (!containerId) {
-      return;
-    }
-
-    const args = ['rm'];
-    if (force) {
-      args.push('-f');
-    }
-    args.push(containerId);
-
-    return new Promise((resolve) => {
-      const proc = spawn('docker', args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      proc.on('close', () => {
-        this.containers.delete(clusterId);
-        resolve();
-      });
-
-      proc.on('error', () => {
-        this.containers.delete(clusterId);
-        resolve();
-      });
+  _inspectContainerState(containerId) {
+    const result = spawnSync('docker', ['inspect', '-f', '{{json .State}}', containerId], {
+      encoding: 'utf8',
+      stdio: 'pipe',
     });
+    if (result.error) {
+      throw new Error(`Docker cleanup inspection failed: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      if (/No such (object|container)/i.test(result.stderr || '')) return null;
+      throw new Error(
+        `Docker cleanup inspection failed with exit ${result.status}: ${
+          (result.stderr || '').trim() || 'no diagnostic'
+        }`
+      );
+    }
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      throw new Error('Docker cleanup inspection returned malformed container state.');
+    }
+  }
+
+  async stopContainer(clusterId, timeout = 10, explicitContainerId = null) {
+    const containerId = explicitContainerId || this.containers.get(clusterId);
+    if (!containerId) return;
+
+    const state = this._inspectContainerState(containerId);
+    if (state === null) return;
+    if (state.Running) {
+      await this._runDockerLifecycle(
+        ['stop', '-t', String(timeout), containerId],
+        `stop for ${containerId}`
+      );
+    }
+    const stoppedState = this._inspectContainerState(containerId);
+    if (stoppedState?.Running) {
+      throw new Error(`Docker cleanup could not confirm that container ${containerId} stopped.`);
+    }
+  }
+
+  async removeContainer(clusterId, force = false, explicitContainerId = null) {
+    const containerId = explicitContainerId || this.containers.get(clusterId);
+    if (!containerId) return;
+
+    const state = this._inspectContainerState(containerId);
+    if (state !== null) {
+      const args = ['rm'];
+      if (force) args.push('-f');
+      args.push(containerId);
+      await this._runDockerLifecycle(args, `remove for ${containerId}`);
+    }
+    if (this._inspectContainerState(containerId) !== null) {
+      throw new Error(`Docker cleanup could not confirm removal of container ${containerId}.`);
+    }
+    this.containers.delete(clusterId);
   }
 
   /**
@@ -1087,7 +1875,7 @@ class IsolationManager {
    * @param {string} clusterId - Cluster ID
    * @param {object} [options] - Cleanup options
    * @param {boolean} [options.preserveWorkspace=false] - If true, keep the isolated workspace (for resume capability)
-   * @returns {Promise<void>}
+   * @returns {Promise<{mode: 'container', terminalBuffered: true, descendantsReaped: true, clean: true}>}
    */
   async cleanup(clusterId, options = {}) {
     const preserveWorkspace = options.preserveWorkspace || false;
@@ -1110,18 +1898,22 @@ class IsolationManager {
         // Preserve Terraform state before deleting isolated directory
         this._preserveTerraformState(clusterId, isolatedInfo.path);
 
-        // Remove the isolated directory
-        try {
-          fs.rmSync(isolatedInfo.path, { recursive: true, force: true });
-        } catch {
-          // Ignore
+        fs.rmSync(isolatedInfo.path, { recursive: true, force: true });
+        if (fs.existsSync(isolatedInfo.path)) {
+          throw new Error(`Could not confirm isolated workspace cleanup: ${isolatedInfo.path}`);
         }
         this.isolatedDirs.delete(clusterId);
       }
     }
 
-    // Clean up cluster config dir (always - it's recreated on resume)
+    // Clean up cluster config dir (always - it is recreated on resume).
     this._cleanupClusterConfigDir(clusterId);
+    return {
+      mode: 'container',
+      terminalBuffered: true,
+      descendantsReaped: true,
+      clean: true,
+    };
   }
 
   /**
@@ -1491,12 +2283,10 @@ class IsolationManager {
    */
   _cleanupClusterConfigDir(clusterId) {
     if (!this.clusterConfigDirs?.has(clusterId)) return;
-
     const configDir = this.clusterConfigDirs.get(clusterId);
-    try {
-      fs.rmSync(configDir, { recursive: true, force: true });
-    } catch {
-      // Ignore
+    fs.rmSync(configDir, { recursive: true, force: true });
+    if (fs.existsSync(configDir)) {
+      throw new Error(`Could not confirm cluster config cleanup: ${configDir}`);
     }
     this.clusterConfigDirs.delete(clusterId);
   }
@@ -1845,9 +2635,19 @@ class IsolationManager {
       throw new Error(`Dockerfile not found at ${dockerfilePath}`);
     }
 
-    // Each buildArg becomes a `--build-arg KEY=VALUE` pair (e.g. the per-provider install command).
+    const targetArchitecture = { x64: 'amd64', arm64: 'arm64' }[process.arch];
+    if (!targetArchitecture) {
+      throw new Error(`Unsupported Docker image architecture: ${process.arch}`);
+    }
+    const effectiveBuildArgs = [...buildArgs];
+    if (!effectiveBuildArgs.some((arg) => arg.startsWith('TARGETARCH='))) {
+      effectiveBuildArgs.push(`TARGETARCH=${targetArchitecture}`);
+    }
+    if (!effectiveBuildArgs.some((arg) => arg.startsWith('TARGETOS='))) {
+      effectiveBuildArgs.push('TARGETOS=linux');
+    }
     const buildArgFlags = [];
-    for (const arg of buildArgs) {
+    for (const arg of effectiveBuildArgs) {
       buildArgFlags.push('--build-arg', arg);
     }
     const platformFlags = platform ? ['--platform', platform] : [];

@@ -638,6 +638,44 @@ describe('Cached parsed result — one recovery model call', function () {
     );
   });
 
+  it('keeps an SDK canonical parsedResult as the sole terminal result shape', async function () {
+    const canonicalSdkResult = {
+      plan: {
+        summary: 'persisted SDK result',
+        steps: ['reload evidence', 'publish completion'],
+      },
+      approved: true,
+    };
+    const agent = {
+      id: 'planner',
+      role: 'planner',
+      config: { jsonSchema: schema, outputFormat: 'json' },
+      _resolveProvider: () => 'omp',
+      _parseResultOutput() {
+        throw new Error('canonical SDK results must not be parsed or wrapped again');
+      },
+    };
+    const state = {
+      output: '',
+      skipStructuredResultCheck: false,
+      _cachedParsedResult: canonicalSdkResult,
+    };
+
+    const result = await buildCompletionResult({
+      agent,
+      taskId: 'sdk-task-1',
+      providerName: 'omp',
+      state,
+      stdout: '',
+      success: true,
+      taskInfo: null,
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(result.parsedResult, canonicalSdkResult);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(result.parsedResult, 'result'), false);
+  });
+
   it('preserves unconfirmed nested cleanup metadata through structured success', async function () {
     const lifecycleError = new Error('nested cleanup was not confirmed');
     lifecycleError.nestedExecutionLifecycle = true;
@@ -796,5 +834,349 @@ describe('Cancellation identity end-to-end', function () {
       }
     );
     assert.strictEqual(attempts, 1);
+  });
+});
+
+describe('OMP SDK prepared task watcher boundary', function () {
+  function sdkPreparedInvocation(requestPath) {
+    return {
+      invoke: {
+        lane: 'spawn',
+        parser: 'omp-sdk-ndjson',
+        ptyEligible: false,
+        strictTerminal: true,
+      },
+      environmentPolicy: { inherit: 'minimal', values: {} },
+      credentialNames: ['FAKE_OMP_SECRET'],
+      privateArtifacts: { root: '/tmp/zeroshot-omp-sdk-test', requestPath, owned: true },
+      executionIdentity: {
+        backend: 'omp-sdk',
+        backendVersion: '17.2.1',
+        runtime: { name: 'bun', version: '1.3.14' },
+        transport: 'sdk',
+      },
+      semanticIdentity: {
+        requestedModelSelector: 'amazon-bedrock/openai.gpt-5.6-sol',
+        reasoningEffort: 'max',
+        provider: 'amazon-bedrock',
+      },
+      containmentRequirement: { mode: 'host-process-tree', required: true },
+    };
+  }
+
+  function sdkRequest(prompt) {
+    return {
+      protocolVersion: 1,
+      runId: 'watcher-run-1',
+      cwd: '/tmp/workspace',
+      executionContext: 'host',
+      prompt,
+      modelSelector: 'amazon-bedrock/openai.gpt-5.6-sol',
+      reasoningEffort: 'max',
+      outputMode: 'json',
+      outputSchema: {
+        type: 'object',
+        properties: { answer: { type: 'number' } },
+        required: ['answer'],
+        additionalProperties: false,
+      },
+      modelsConfig: {},
+      auth: {
+        mode: 'environment',
+        credentials: { 'amazon-bedrock': { env: 'FAKE_OMP_SECRET' } },
+      },
+      tools: ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'lsp', 'ast_edit'],
+      context: '',
+    };
+  }
+
+  function sdkResultFrame(request) {
+    return {
+      protocolVersion: 1,
+      type: 'result',
+      runId: request.runId,
+      backend: { id: 'omp-sdk', version: '17.2.1' },
+      runtime: { name: 'bun', version: '1.3.14' },
+      requested: {
+        modelSelector: request.modelSelector,
+        reasoningEffort: request.reasoningEffort,
+        outputMode: request.outputMode,
+      },
+      resolved: { modelSelector: request.modelSelector },
+      strictOutput: {
+        source: 'caller',
+        mode: 'strict',
+        status: 'valid',
+        yield: { successful: true, incremental: false, count: 1 },
+      },
+      fallback: false,
+      execution: { exitCode: 0, aborted: false },
+      value: { answer: 42 },
+      usage: {
+        source: 'omp-aggregate',
+        completeness: 'unknown',
+        inputTokens: 11,
+        outputTokens: 7,
+        cacheReadInputTokens: 5,
+        cacheCreationInputTokens: 3,
+        totalTokens: 26,
+        requests: 2,
+        durationMs: 123.5,
+        cost: {
+          input: 0.1,
+          output: 0.2,
+          cacheRead: 0.01,
+          cacheWrite: 0.02,
+          total: 0.33,
+        },
+      },
+    };
+  }
+
+  it('selects the non-PTY parser lane without persisting prompt or credential values', async function () {
+    const { buildTaskRecord, buildWatcherConfig, shouldUseAttachableWatcher } =
+      await import('../task-lib/runner.js');
+    const prompt = 'private prompt that must not be stored';
+    const secret = 'private credential that must not be serialized';
+    const preparedInvocation = sdkPreparedInvocation('/tmp/zeroshot-omp-sdk-test/request.json');
+    const commandSpec = {
+      binary: '/opt/zeroshot/node_modules/bun/bin/bun',
+      args: [
+        '/opt/zeroshot/scripts/omp-sdk-sidecar.ts',
+        preparedInvocation.privateArtifacts.requestPath,
+      ],
+      env: { FAKE_OMP_SECRET: secret },
+      cleanup: [],
+      cleanupMetadata: [],
+    };
+    const task = buildTaskRecord({
+      id: 'sdk-task',
+      prompt,
+      cwd: '/tmp/workspace',
+      options: {},
+      logFile: '/tmp/sdk-task.log',
+      providerName: 'omp',
+      modelSpec: { model: preparedInvocation.semanticIdentity.requestedModelSelector },
+      commandSpec,
+      preparedInvocation,
+    });
+    const watcherConfig = buildWatcherConfig(
+      'json',
+      { type: 'object' },
+      {},
+      'omp',
+      commandSpec,
+      preparedInvocation
+    );
+
+    assert.strictEqual(
+      shouldUseAttachableWatcher({ attachable: true }, preparedInvocation, 'omp'),
+      false
+    );
+    assert.strictEqual(task.prompt, null);
+    assert.strictEqual(task.fullPrompt, null);
+    assert.strictEqual(task.inputSizeBytes, Buffer.byteLength(prompt));
+    assert.match(task.inputDigest.value, /^[0-9a-f]{64}$/);
+    assert.strictEqual(task.invoke.lane, 'spawn');
+    assert.strictEqual(task.attachable, false);
+    assert.strictEqual(task.sessionId, null);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(task, 'rpcPartition'), false);
+    assert.strictEqual(watcherConfig.preparedInvocation.invoke.parser, 'omp-sdk-ndjson');
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(watcherConfig, 'env'), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(watcherConfig, 'jsonSchema'), false);
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(watcherConfig.commandSpec, 'args'),
+      false
+    );
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(watcherConfig.commandSpec, 'env'),
+      false
+    );
+    const metadata = JSON.stringify({ task, watcherConfig });
+    assert.strictEqual(metadata.includes(prompt), false);
+    assert.strictEqual(metadata.includes(secret), false);
+  });
+
+  it('routes prepared ACP stdio invocations away from generic provider spawn', async function () {
+    const { buildPreparedInvocation, buildWatcherConfig, shouldUseAttachableWatcher } =
+      await import('../task-lib/runner.js');
+    const { isAcpStdioWatcherConfig, resolveWatcherCommand } =
+      await import('../task-lib/watcher-output-runtime.js');
+    const preparedInvocation = buildPreparedInvocation({
+      invoke: {
+        lane: 'acp-stdio',
+        parser: 'acp',
+        ptyEligible: false,
+        strictTerminal: false,
+      },
+      context: 'ACP prompt sent over JSON-RPC stdin',
+    });
+    const commandSpec = {
+      binary: 'kiro-cli',
+      args: ['acp'],
+      env: {},
+      cleanup: [],
+      cleanupMetadata: [],
+    };
+    const watcherConfig = buildWatcherConfig(
+      'stream-json',
+      null,
+      {},
+      'kiro',
+      commandSpec,
+      preparedInvocation
+    );
+
+    assert.strictEqual(isAcpStdioWatcherConfig(watcherConfig), true);
+    assert.strictEqual(shouldUseAttachableWatcher({}, preparedInvocation, 'kiro'), false);
+    assert.throws(
+      () => resolveWatcherCommand(watcherConfig, commandSpec, commandSpec.args, (name) => name),
+      /declared process runner/
+    );
+  });
+
+  it('uses stored invoke metadata for command attach eligibility and provider fallback only for legacy tasks', async function () {
+    const { shouldAdvertiseTaskAttach } = await import('../task-lib/commands/run.js');
+    const schema = { type: 'object' };
+    const sdkTask = {
+      provider: 'omp',
+      invoke: sdkPreparedInvocation('/tmp/zeroshot-omp-sdk-test/request.json').invoke,
+    };
+
+    assert.strictEqual(
+      shouldAdvertiseTaskAttach(sdkTask, { outputFormat: 'json', jsonSchema: schema }),
+      false
+    );
+    assert.strictEqual(
+      shouldAdvertiseTaskAttach(
+        { provider: 'claude', invoke: { ...sdkTask.invoke, ptyEligible: true } },
+        { outputFormat: 'json', jsonSchema: schema }
+      ),
+      true
+    );
+    assert.strictEqual(
+      shouldAdvertiseTaskAttach(
+        { provider: 'claude' },
+        { outputFormat: 'json', jsonSchema: schema }
+      ),
+      false
+    );
+    assert.strictEqual(
+      shouldAdvertiseTaskAttach(
+        { provider: 'codex' },
+        { outputFormat: 'json', jsonSchema: schema }
+      ),
+      true
+    );
+  });
+
+  it('uses persisted invocation metadata as the resume authority', async function () {
+    const { buildResumeTaskOptions } = await import('../task-lib/commands/resume.js');
+    const sdkInvoke = sdkPreparedInvocation(
+      '/tmp/zeroshot-omp-sdk-test/resume-request.json'
+    ).invoke;
+
+    assert.throws(
+      () =>
+        buildResumeTaskOptions({
+          id: 'sdk-resume-task',
+          provider: 'codex',
+          invoke: sdkInvoke,
+          sessionId: 'provider-session-that-must-not-override-the-sdk-lane',
+          cwd: '/tmp/workspace',
+        }),
+      /prepared as a fresh strict OMP SDK invocation and cannot be resumed/
+    );
+
+    const directTask = {
+      id: 'direct-resume-task',
+      provider: 'codex',
+      invoke: {
+        lane: 'spawn',
+        parser: 'provider',
+        ptyEligible: true,
+        strictTerminal: false,
+      },
+      sessionId: 'direct-provider-session',
+      cwd: '/tmp/workspace',
+    };
+    assert.deepStrictEqual(buildResumeTaskOptions(directTask), {
+      cwd: '/tmp/workspace',
+      resume: 'direct-provider-session',
+      provider: 'codex',
+    });
+
+    assert.throws(
+      () =>
+        buildResumeTaskOptions({
+          id: 'legacy-unsupported-task',
+          provider: 'gemini',
+          sessionId: 'legacy-session',
+          cwd: '/tmp/workspace',
+        }),
+      /does not support safe session resume/
+    );
+  });
+
+  it('publishes only the canonical runner value after cleanup is attested', async function () {
+    const request = sdkRequest('private collector prompt');
+    const frame = sdkResultFrame(request);
+    const { normalizeOmpSdkResultFrame } = require('../lib/agent-cli-provider');
+    const terminal = {
+      type: 'result',
+      frame,
+      event: normalizeOmpSdkResultFrame(frame, request),
+    };
+    const cleanupAttestation = {
+      mode: 'host-process-tree',
+      terminalBuffered: true,
+      descendantsReaped: true,
+      clean: true,
+    };
+    const preparedInvocation = sdkPreparedInvocation('/tmp/zeroshot-omp-sdk-test/request.json');
+    const logs = [];
+    const { completeOmpSdkProcessResult, completeWatcherTask } =
+      await import('../task-lib/watcher-output-runtime.js');
+    const completion = completeOmpSdkProcessResult(
+      {
+        terminal,
+        progress: [],
+        diagnosticStderr: '',
+        cleanupAttestation,
+      },
+      { log: (line) => logs.push(line) }
+    );
+    assert.deepStrictEqual(completion.terminalUpdates.parsedResult, { answer: 42 });
+    assert.strictEqual(completion.terminalUpdates.sdkEvidence.terminalType, 'result');
+    assert.strictEqual(
+      logs.some((line) => line.includes('"answer":42')),
+      false
+    );
+
+    const unattested = completeOmpSdkProcessResult({
+      terminal,
+      progress: [],
+      diagnosticStderr: '',
+      cleanupAttestation: null,
+    });
+    assert.strictEqual(unattested.status, 'failed');
+    assert.strictEqual(unattested.cleanupUncertain, true);
+    assert.strictEqual(unattested.terminalUpdates.parsedResult, null);
+
+    let persistedUpdate = null;
+    await completeWatcherTask({
+      taskId: 'sdk-task',
+      completion,
+      commandCleanup: { run: () => Promise.resolve(true) },
+      terminateProvider: () => Promise.resolve(true),
+      updateTask: (_id, update) => {
+        persistedUpdate = update;
+        return Promise.resolve();
+      },
+      emergencyLog: () => {},
+      containmentRequirement: preparedInvocation.containmentRequirement,
+    });
+    assert.deepStrictEqual(persistedUpdate.parsedResult, { answer: 42 });
+    assert.deepStrictEqual(persistedUpdate.cleanupAttestation, cleanupAttestation);
   });
 });

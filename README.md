@@ -108,9 +108,10 @@ zeroshot kill <id>              # force kill
 zeroshot export <id>            # export the conversation
 
 # Library & config
-zeroshot providers              # list providers / set-default / setup
+zeroshot providers              # read-only provider status
+zeroshot providers validate     # validate manual OMP configuration
 zeroshot agents list            # available agents (agents show <name>)
-zeroshot settings               # view / get / set settings
+zeroshot settings               # view settings
 zeroshot cmdproof check <id>    # reuse a verified command result
 ```
 
@@ -118,20 +119,37 @@ zeroshot cmdproof check <id>    # reuse a verified command result
 
 ## Providers and backends
 
-Zeroshot shells out to provider CLIs; it stores no API keys and manages no auth. Pick a default and override per run.
+Zeroshot supports direct provider CLIs and its bundled, pinned OMP SDK execution
+runtime. Provider commands are read-only: they never prompt, log in, import
+configuration, write settings, or store credentials.
+The general `zeroshot setup plan/apply/undo` flow also omits, rejects, or skips
+provider selection, model, credential, and `providerSettings` decisions;
+`zeroshot settings set` rejects `defaultProvider`, `maxModel`, `minModel`, and
+`providerSettings` keys.
 
-| Provider     | CLI                                    |
+| Provider     | CLI or runtime                         |
 | ------------ | -------------------------------------- |
+| OMP          | Bundled SDK runtime                    |
 | Claude Code  | `npm i -g @anthropic-ai/claude-code`   |
 | OpenAI Codex | `npm i -g @openai/codex`               |
 | Gemini CLI   | `npm i -g @google/gemini-cli`          |
 | OpenCode     | see [opencode.ai](https://opencode.ai) |
 
 ```bash
-zeroshot providers                    # see what's installed
-zeroshot providers set-default codex
+zeroshot providers                    # inspect installed providers
+zeroshot providers list               # inspect the effective OMP model registry
+zeroshot providers validate           # validate settings and local auth presence
+zeroshot providers doctor --model amazon-bedrock/openai.gpt-5.6-sol
 zeroshot run 123 --provider gemini
 ```
+
+Configure OMP manually in `providerSettings.omp` within
+`${ZEROSHOT_SETTINGS_FILE:-$HOME/.zeroshot/settings.json}`. Keep its parent
+directory mode `0700` and the JSON file mode `0600`; declare credential
+environment-variable names, never values. New commands and new runs reload the
+file. Restart already-running or detached work to use a changed configuration.
+See [`docs/providers.md`](docs/providers.md) for the complete non-interactive
+configuration and auth contract.
 
 Issue backends are **auto-detected from your git remote**: **GitHub, GitLab, Jira, and Azure DevOps**. Paste a number, key, or URL:
 
@@ -142,7 +160,7 @@ zeroshot run PROJ-789                                         # Jira
 zeroshot run https://dev.azure.com/org/project/_workitems/edit/999  # Azure DevOps
 ```
 
-Each backend needs its own CLI installed (`gh`, `glab`, `jira`, or `az`). See [`docs/providers.md`](docs/providers.md) for model levels and setup.
+Each backend needs its own CLI installed (`gh`, `glab`, `jira`, or `az`). See [`docs/providers.md`](docs/providers.md) for model levels and manual configuration.
 
 ## Isolation
 

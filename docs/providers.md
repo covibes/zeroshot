@@ -1,32 +1,125 @@
 # Providers
 
-Zeroshot supports two provider shapes:
+Zeroshot supports three provider shapes:
 
 - CLI-backed providers that shell out to a full agent CLI
-- One bundled `gateway` provider that wraps OpenAI-compatible or Anthropic-compatible
-  model APIs with a Zeroshot-owned tool runner
+- the bundled, pinned OMP SDK execution runtime
+- one bundled `gateway` provider that wraps OpenAI-compatible or
+  Anthropic-compatible model APIs with a Zeroshot-owned tool runner
 
 ## Supported Providers
 
-| Provider | CLI                              | Install                                                                  |
-| -------- | -------------------------------- | ------------------------------------------------------------------------ |
-| Claude   | Claude Code                      | `npm install -g @anthropic-ai/claude-code`                               |
-| Codex    | Codex                            | `npm install -g @openai/codex`                                           |
-| Gateway  | Bundled                          | No external CLI required                                                 |
-| Gemini   | Gemini                           | `npm install -g @google/gemini-cli`                                      |
-| Opencode | Opencode                         | See https://opencode.ai                                                  |
-| Pi       | Pi                               | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
-| OMP      | OMP (Oh My Pi), alias `oh-my-pi` | `bun install -g @oh-my-pi/pi-coding-agent@17.2.1`                        |
-| Kiro     | Kiro                             | See https://kiro.dev/docs/cli/                                           |
-| Copilot  | Copilot                          | `npm install -g @github/copilot`                                         |
+| Provider | CLI/runtime | Install                                                                  |
+| -------- | ----------- | ------------------------------------------------------------------------ |
+| Claude   | Claude Code | `npm install -g @anthropic-ai/claude-code`                               |
+| Codex    | Codex       | `npm install -g @openai/codex`                                           |
+| Gateway  | Bundled     | No external CLI required                                                 |
+| Gemini   | Gemini      | `npm install -g @google/gemini-cli`                                      |
+| Opencode | Opencode    | See https://opencode.ai                                                  |
+| Pi       | Pi          | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
+| OMP      | Bundled SDK; OMP CLI for RPC | No external CLI for SDK; install the pinned CLI for explicit RPC (see below) |
+| Kiro     | Kiro        | See https://kiro.dev/docs/cli/                                           |
+| Copilot  | Copilot     | `npm install -g @github/copilot`                                         |
 
-## Selecting a Provider
+## Selecting and inspecting providers
 
-- List providers: `zeroshot providers`
-- Set default: `zeroshot providers set-default <provider>`
-- Configure levels: `zeroshot providers setup <provider>`
+- Show provider status: `zeroshot providers`
+- List the effective OMP registry: `zeroshot providers list`
+- Validate OMP settings and credential presence: `zeroshot providers validate`
+- Check one exact route: `zeroshot providers doctor --model <provider/model>`
+- Make an explicit network probe:
+  `zeroshot providers doctor --model <provider/model> --probe`
 - Override per run: `zeroshot run ... --provider <provider>`
 - Env override: `ZEROSHOT_PROVIDER=codex`
+
+The `providers` command tree is strictly read-only. It does not offer setup,
+import, login, set-default, apply, or any other configuration or credential
+mutation. The general `zeroshot setup plan/apply/undo` contract deliberately
+omits, rejects, or skips provider selection and `providerSettings` decisions as
+appropriate. `zeroshot settings set` also rejects `defaultProvider`,
+`maxModel`, `minModel`, `providerSettings`, and every nested
+`providerSettings.*` key.
+
+## Manual OMP configuration
+
+For the SDK transport, the single canonical model/provider configuration is
+`providerSettings.omp` in the Zeroshot settings JSON. Every Zeroshot CLI and
+runtime process resolves that settings file through the same rule:
+
+1. `ZEROSHOT_SETTINGS_FILE`, when explicitly set
+2. otherwise `$HOME/.zeroshot/settings.json`
+
+The SDK lane does not copy provider configuration into a separate user OMP
+`models.yml` or rely on ambient OMP user state. If a client and a long-running
+server use `ZEROSHOT_SETTINGS_FILE`, give both processes the same explicit value.
+
+Create or edit the file manually:
+
+```bash
+config="${ZEROSHOT_SETTINGS_FILE:-$HOME/.zeroshot/settings.json}"
+install -d -m 700 "$(dirname "$config")"
+"${EDITOR:-vi}" "$config"
+chmod 600 "$config"
+```
+
+An environment-authenticated built-in provider needs no `modelsConfig` entry:
+
+```json
+{
+  "defaultProvider": "omp",
+  "providerSettings": {
+    "omp": {
+      "transport": "sdk",
+      "minLevel": "level1",
+      "defaultLevel": "level2",
+      "maxLevel": "level3",
+      "levelOverrides": {
+        "level1": {
+          "model": "amazon-bedrock/openai.gpt-5.6-sol",
+          "reasoningEffort": "max"
+        },
+        "level2": {
+          "model": "amazon-bedrock/openai.gpt-5.6-sol",
+          "reasoningEffort": "max"
+        },
+        "level3": {
+          "model": "amazon-bedrock/openai.gpt-5.6-sol",
+          "reasoningEffort": "max"
+        }
+      },
+      "modelsConfig": { "providers": {} },
+      "auth": {
+        "mode": "environment",
+        "credentials": {
+          "amazon-bedrock": { "env": "AWS_BEARER_TOKEN_BEDROCK" }
+        }
+      },
+      "tools": ["read", "bash", "edit", "write", "grep", "glob", "lsp", "ast_edit"],
+      "nestedAgents": false,
+      "mcp": false
+    }
+  }
+}
+```
+
+`modelsConfig.providers` uses OMP's provider/model schema for custom providers.
+Keep secret values out of the JSON. The supported local auth sources are:
+
+- `environment`: map each selected provider to an environment-variable name;
+  provide the value only in the Zeroshot process environment.
+- `broker`: provide `OMP_AUTH_BROKER_URL` and `OMP_AUTH_BROKER_TOKEN` only in
+  the process environment.
+- `omp-home`: an explicit absolute, host-only OMP agent directory containing
+  `agent.db`. Zeroshot never creates or logs in to this source. Keep the
+  directory mode `0700` and `agent.db` mode `0600`.
+- `none`: only for an explicitly keyless local provider.
+
+After saving, run `zeroshot providers validate`. Validation materializes only
+private temporary state (directories `0700`, files `0600`), reports credential
+variable names and presence without values, and removes that state on exit.
+`list`, `validate`, `doctor`, and every new run reload the settings file.
+Already-running or detached work retains its prepared configuration; restart it
+to use a changed model/provider or auth source.
 
 ## Opt-in native web search
 
@@ -81,27 +174,37 @@ presented as controls that enable search.
 
 ## OMP (Oh My Pi)
 
-OMP uses a dedicated `rpc-stdio` invoke lane (`{lane: 'rpc-stdio', protocol: 'omp-v2'}`) that
-speaks OMP's bidirectional RPC v2 protocol over stdio, instead of a one-shot CLI invocation.
-Install is version-selected package installation, not release-asset digest attestation — do not
-use OMP's shell installer, which downloads an asset without checking its SHA-256. OAuth users
-authenticate afterward with OMP's own interactive `omp` then `/login` flow.
+OMP has two execution lanes:
 
-Capabilities: `worktreeIsolation:true`, `streamJson:true`, `thinkingMode:true`,
-`reasoningEffort:true`, `jsonSchema:false`, `mcpServers:false`, `webSearch:false`,
-`sessionResume:true`, `dockerIsolation:false`. `mcpServers` and `webSearch` mean Zeroshot's own
-command-level injection/toggle surfaces, which OMP does not expose — OMP's own discovered
-MCP/web tools remain governed by its native config, not by Zeroshot. `dockerIsolation` is false:
-`--provider omp --docker` fails before any container is created, and `--provider omp --worktree`
-is supported. `sessionResume` is true — see "OMP session persistence and resume" below; Docker
-stays fresh-only (sessionless), independent of this capability.
+- `transport: "sdk"` (the default) uses Zeroshot's bundled, pinned Bun/OMP
+  runtime. It runs fresh turns through a private request file and canonical
+  terminal protocol, requires strict terminal output, and does not read ambient
+  OMP user state. No external OMP CLI installation or interactive Zeroshot
+  provider setup is involved. SDK resume/continue is rejected; Docker is
+  supported only with environment, broker, or keyless auth, while `omp-home`
+  remains explicit host-only state.
+- `transport: "rpc"` explicitly selects the installed OMP CLI and its
+  dedicated `{lane: "rpc-stdio", protocol: "omp-v2"}` invoke lane. Install the
+  pinned CLI with
+  `bun install -g @oh-my-pi/pi-coding-agent@17.2.1`; do not use OMP's shell
+  installer, which downloads an asset without checking its SHA-256. Zeroshot
+  neither installs that CLI nor performs login or credential mutation.
 
-### OMP session persistence and resume
+The SDK lane's strict terminal contract is not a capability claim for RPC.
+The explicit RPC lane retains `worktreeIsolation:true`, `streamJson:true`,
+`thinkingMode:true`, `reasoningEffort:true`, `jsonSchema:false`,
+`mcpServers:false`, `webSearch:false`, `sessionResume:true`, and
+`dockerIsolation:false`. `mcpServers` and `webSearch` refer to Zeroshot's own
+command-level injection/toggle surfaces. RPC remains host/worktree only and
+retains the verified session continuation behavior below.
 
-Fresh runs (host, worktree, and standalone) pass `--session-dir <partition>`; a verified resume
-adds `--resume <partition>/<file>` — always the exact absolute path Zeroshot already verified,
-never a bare `--resume`/`--continue` or an ID search. `--no-session` is emitted only for the
-Docker/sessionless lane.
+### RPC session persistence and resume
+
+Fresh RPC runs (host, worktree, and standalone) pass
+`--session-dir <partition>`; a verified resume adds
+`--resume <partition>/<file>` — always the exact absolute path Zeroshot already
+verified, never a bare `--resume`/`--continue` or an ID search. The explicit RPC
+lane does not run in Docker.
 
 Each session lives in its own random, secret-free UUID partition under
 `<storageRoot>/omp-sessions/<uuid>/` — the owning cluster's `storageDir` for cluster-agent tasks,
@@ -191,12 +294,14 @@ never written to or deleted by any Zeroshot cleanup surface** — it is machine-
 other sessions' transcripts, so `deleteOmpSessionPartition` refuses outright any path that resolves
 inside it.
 
-`providerSettings.omp` stays empty; OMP's own settings/model roles/profiles remain under its
-documented config. Zeroshot controls only its existing agent `modelLevel`, explicit `model`, and
-`reasoningEffort` surfaces, plus a fixed safety config overlay applied per task (pins
-`marketplace.autoUpdate` off and neutral `todo`/`task`/`memory`/`advisor`/`async`/
-`bash.autoBackground` defaults, while leaving project/user context, skills, rules, extensions,
-and MCP flowing from OMP's native config).
+In explicit RPC mode, apart from the `transport: "rpc"` selector, OMP's own
+settings, model roles, and profiles remain under its documented config.
+Zeroshot controls only its existing agent `modelLevel`, explicit `model`, and
+`reasoningEffort` surfaces, plus a fixed safety config overlay applied per task
+(pins `marketplace.autoUpdate` off and neutral `todo`/`task`/`memory`/`advisor`/
+`async`/`bash.autoBackground` defaults, while leaving project/user context,
+skills, rules, extensions, and MCP flowing from OMP's native config). The SDK
+lane instead uses only the manual `providerSettings.omp` contract above.
 
 ## Gateway Provider
 
@@ -307,8 +412,18 @@ Notes:
 Opencode models outside Zeroshot's built-in catalog must be configured in the
 Opencode provider's level overrides:
 
-```bash
-zeroshot settings set providerSettings.opencode.levelOverrides.level2.model kimi/kimi-k2-5
+Edit the canonical settings JSON directly and keep it mode `0600`:
+
+```json
+{
+  "providerSettings": {
+    "opencode": {
+      "levelOverrides": {
+        "level2": { "model": "kimi/kimi-k2-5" }
+      }
+    }
+  }
+}
 ```
 
 Configured IDs must use Opencode's `provider/model` shape. Nested model paths

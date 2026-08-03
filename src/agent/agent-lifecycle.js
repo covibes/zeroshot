@@ -19,7 +19,7 @@ const crypto = require('crypto');
 const { bufferMessage, scheduleDrain, drainBufferedMessages } = require('../message-buffer');
 const { isPlatformSupported } = require('./agent-stuck-detector');
 const { normalizeProviderName, getDefaultProviderId } = require('../../lib/provider-names');
-const { loadSettings } = require('../../lib/settings');
+const { getSettingsFile, loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
 const { updateAgentProviderSession } = require('./provider-session');
@@ -28,6 +28,7 @@ const {
   commitRecordedOwnership,
   markCleanupRequired,
 } = require('../../task-lib/omp-session-ownership.js');
+const { getTask } = require('../../task-lib/store.js');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
 
@@ -456,6 +457,53 @@ function resolveAgentProviderName(agent) {
   );
 }
 
+function persistedOmpSdkTask(agent, result) {
+  if (resolveAgentProviderName(agent) !== 'omp' || !result?.taskId) return null;
+  const task = getTask(result.taskId);
+  if (!task) return null;
+
+  const sdkBackend = task.executionIdentity?.backend === 'omp-sdk';
+  const sdkParser = task.invoke?.parser === 'omp-sdk-ndjson';
+  if (!sdkBackend && !sdkParser) return null;
+  if (
+    !sdkBackend ||
+    !sdkParser ||
+    task.invoke?.lane !== 'spawn' ||
+    task.invoke?.ptyEligible !== false ||
+    task.invoke?.strictTerminal !== true
+  ) {
+    throw new Error('Persisted OMP SDK invocation identity is inconsistent.');
+  }
+  return task;
+}
+
+function consumeCanonicalOmpSdkResult(agent, result) {
+  const task = persistedOmpSdkTask(agent, result);
+  if (!task) return false;
+
+  // SDK turns are fresh strict invocations, never resumable RPC sessions.
+  result.providerSession = null;
+  if (!result.success) {
+    result.parsedResult = null;
+    return true;
+  }
+
+  if (
+    task.status !== 'completed' ||
+    !Object.prototype.hasOwnProperty.call(task, 'parsedResult')
+  ) {
+    result.success = false;
+    result.code = 'protocol-error';
+    result.error = 'OMP SDK task completed without a canonical persisted result.';
+    result.parsedResult = null;
+    return true;
+  }
+
+  // The watcher persisted the sidecar's host-schema-validated terminal value. Hooks and result
+  // substitution must consume that exact value rather than parsing normalized log output.
+  result.parsedResult = task.parsedResult;
+  return true;
+}
 /**
  * Advance the OMP ownership record to `committed` and rebuild the provider-session snapshot from
  * the row that commit produced.
@@ -476,6 +524,10 @@ function finalizeProviderSessionAfterCommit(agent, result) {
   const providerName = resolveAgentProviderName(agent);
   if (providerName !== 'omp') return result.providerSession;
 
+  if (persistedOmpSdkTask(agent, result)) {
+    result.providerSession = null;
+    return null;
+  }
   if (!commitRecordedOwnership(result.taskId)) {
     markCleanupRequired(result.taskId);
     result.providerSession = null;
@@ -641,12 +693,13 @@ async function runTaskAttempt(agent, triggeringMessage) {
   let result;
   try {
     result = await agent._spawnClaudeTask(context);
+    attachResultMetadata(agent, result);
+    consumeCanonicalOmpSdkResult(agent, result);
   } catch (error) {
     updateAgentProviderSession(agent, null);
-    markCleanupRequired(error.taskId || agent.currentTaskId);
+    markCleanupRequired(error.taskId || result?.taskId || agent.currentTaskId);
     throw error;
   }
-  attachResultMetadata(agent, result);
 
   // Check if task execution failed
   if (!result.success) {
@@ -712,10 +765,11 @@ ${'='.repeat(80)}`);
     const model = vertexError.model ? `"${vertexError.model}" is` : 'Selected model is';
     console.error(`
 ⚠️  ${model} not available on your Vertex AI deployment.
-    Fix: set explicit model IDs that are enabled on your deployment:
+    Fix: manually edit providerSettings.claude.levelOverrides in:
+    ${getSettingsFile()}
 
-    zeroshot settings set providerSettings.claude.levelOverrides '{"level1": {"model": "claude-sonnet-4-6"}, "level2": {"model": "claude-sonnet-4-6"}, "level3": {"model": "claude-sonnet-4-6"}}'
-
+    Keep the settings file mode 0600 and its parent directory mode 0700. Start a
+    new run or restart already-running/detached work after saving.
     Replace "claude-sonnet-4-6" with whichever Claude model your deployment has enabled.
     You can test a model with: claude --dangerously-skip-permissions -p "hi" --model <model-id>
 `);

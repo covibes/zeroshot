@@ -17,8 +17,6 @@ const { buildSetupPlan, isConsumedPath } = require('../../lib/setup-plan');
 const PROVIDER_NAMES = ['claude', 'codex', 'gemini', 'opencode'];
 
 const EXPECTED_DECISION_IDS = new Set([
-  'defaultProvider',
-  ...PROVIDER_NAMES.map((name) => `providerLevel.${name}`),
   'defaultIsolation',
   'allowLocalNoIsolation',
   'defaultDelivery',
@@ -113,7 +111,7 @@ describe('buildSetupPlan', function () {
   describe('shape', function () {
     it('always returns a typed schemaVersion/facts/decisions/recommended/risk/proposedWrites', function () {
       const plan = freshMachinePlan();
-      assert.strictEqual(plan.schemaVersion, 1);
+      assert.strictEqual(plan.schemaVersion, 2);
       assert.strictEqual(typeof plan.facts, 'object');
       assert.ok(Array.isArray(plan.decisions));
       assert.strictEqual(typeof plan.recommended, 'object');
@@ -138,14 +136,12 @@ describe('buildSetupPlan', function () {
     it('proposedWrites reference only the canonical settings keys', function () {
       const plan = freshMachinePlan();
       const allowedPaths = new Set([
-        'defaultProvider',
         'defaultDocker',
         'defaultDelivery',
         'defaultIssueSource',
         'dockerMounts',
         'dockerEnvPassthrough',
         'updatePolicy',
-        ...PROVIDER_NAMES.map((name) => `providerSettings.${name}`),
       ]);
       assert.ok(plan.proposedWrites.length > 0);
       for (const write of plan.proposedWrites) {
@@ -176,26 +172,19 @@ describe('buildSetupPlan', function () {
       }
     });
 
-    it('proposes a providerSettings.<provider> write for every providerLevel decision', function () {
+    it('never proposes provider selection, model, or credential settings', function () {
       const plan = freshMachinePlan();
-      const providerLevelWrites = plan.proposedWrites.filter((w) =>
-        w.decisionId.startsWith('providerLevel.')
-      );
-      assert.deepStrictEqual(
-        providerLevelWrites.map((w) => w.decisionId).sort(),
-        PROVIDER_NAMES.map((name) => `providerLevel.${name}`).sort()
-      );
-      for (const write of providerLevelWrites) {
-        const providerName = write.decisionId.slice('providerLevel.'.length);
-        assert.strictEqual(write.path, `providerSettings.${providerName}`);
-        assert.strictEqual(write.scope, 'global');
-        assert.strictEqual(write.from, null);
-        assert.deepStrictEqual(write.to, {
-          min: `${providerName}-level1-model`,
-          default: `${providerName}-level2-model`,
-          max: `${providerName}-level3-model`,
-        });
-      }
+      const serialized = JSON.stringify({
+        decisions: plan.decisions,
+        recommended: plan.recommended,
+        risk: plan.risk,
+        proposedWrites: plan.proposedWrites,
+      });
+
+      assert.ok(!serialized.includes('defaultProvider'));
+      assert.ok(!serialized.includes('providerLevel.'));
+      assert.ok(!serialized.includes('providerSettings.'));
+      assert.ok(!/credential|api[_-]?key|token|secret/i.test(serialized));
     });
   });
 

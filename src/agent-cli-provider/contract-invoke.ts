@@ -6,11 +6,16 @@ import { ABORT_GRACE_MS, EXIT_GRACE_MS } from './omp-rpc-bounds';
 import { OMP_SUPPORTED_VERSION } from './omp-release';
 import { commandRedactions } from './contract-env';
 import { successEnvelope, type ContractEnvelope } from './contract-envelope';
-import { buildCommandSpec, optionalNumber, schemaMode, type RequestData } from './contract-support';
+import {
+  buildCommandSpec,
+  optionalNumber,
+  schemaMode,
+  type RequestData,
+} from './contract-support';
 import { providerFailureClassification } from './invoke-evidence';
 import { parseOutputEvents } from './contract-parse';
 import { isRecord, unknownToMessage } from './json';
-import { getProviderRegistryEntry } from './provider-registry';
+import { runOmpSdkProcess, type OmpSdkProcessResult } from './omp-sdk-process-runner';
 import type { CommandSpec } from './types';
 import type { ProcessResult, ProcessRunner, ProcessRunnerOptions } from './process-runner';
 
@@ -122,26 +127,62 @@ export async function runInvoke(
   request: RequestData,
   runner: ProcessRunner
 ): Promise<ContractEnvelope> {
-  const { adapter, commandSpec, context, options } = buildCommandSpec(request);
+  const prepared = buildCommandSpec(request);
+  const { adapter, commandSpec, context, options } = prepared;
   const timeoutMs = optionalNumber(request.raw, 'timeoutMs');
   const runnerOptions = timeoutMs === undefined ? {} : { timeoutMs };
-  const invokeSpec = getProviderRegistryEntry(adapter.id).invoke;
-  const invokeRunner: ProcessRunner =
-    invokeSpec.lane === 'acp-stdio'
-      ? (spec: CommandSpec, invokeOptions?: ProcessRunnerOptions): Promise<ProcessResult> =>
-          runAcpStdioPrompt(adapter.id, spec, buildAcpPrompt(context, options), invokeOptions)
-      : invokeSpec.lane === 'rpc-stdio'
-        ? (spec: CommandSpec, invokeOptions?: ProcessRunnerOptions): Promise<ProcessResult> =>
-            runOmpRpcContractPrompt(spec, buildOmpPrompt(context, options), invokeOptions)
-        : runner;
-  const { result, cleanup } = await runAndCleanup(commandSpec, invokeRunner, runnerOptions);
-  const parsed = parseOutputEvents(adapter, {
-    chunk: [result.stdout, result.stderr].join('\n'),
-    sources: [
-      { name: 'stdout', value: result.stdout },
-      { name: 'stderr', value: result.stderr },
-    ],
-  });
+  let result: ProcessResult;
+  let cleanup: readonly CleanupResult[];
+  if (prepared.invoke.parser === 'omp-sdk-ndjson') {
+    const privateArtifacts = prepared.privateArtifacts;
+    if (privateArtifacts === undefined) {
+      throw new Error('OMP SDK prepared invocation is missing private artifact ownership.');
+    }
+    const sdkResult = await runOmpSdkProcess(prepared, runnerOptions);
+    result = sdkResult;
+    cleanup = [
+      {
+        path: privateArtifacts.root,
+        removed: sdkResult.cleanupAttestation.clean,
+      },
+    ];
+  } else {
+    let invokeRunner: ProcessRunner;
+    switch (prepared.invoke.lane) {
+      case 'spawn':
+        invokeRunner = runner;
+        break;
+      case 'acp-stdio':
+        invokeRunner = (
+          spec: CommandSpec,
+          invokeOptions?: ProcessRunnerOptions
+        ): Promise<ProcessResult> =>
+          runAcpStdioPrompt(adapter.id, spec, buildAcpPrompt(context, options), invokeOptions);
+        break;
+      case 'rpc-stdio':
+        invokeRunner = (
+          spec: CommandSpec,
+          invokeOptions?: ProcessRunnerOptions
+        ): Promise<ProcessResult> =>
+          runOmpRpcContractPrompt(spec, buildOmpPrompt(context, options), invokeOptions);
+        break;
+    }
+    ({ result, cleanup } = await runAndCleanup(commandSpec, invokeRunner, runnerOptions));
+  }
+  const sdkResult = ompSdkResult(result);
+  const parsed =
+    sdkResult === null
+      ? parseOutputEvents(adapter, {
+          chunk: [result.stdout, result.stderr].join('\n'),
+          sources: [
+            { name: 'stdout', value: result.stdout },
+            { name: 'stderr', value: result.stderr },
+          ],
+        })
+      : {
+          events: sdkResult.terminal.type === 'result' ? [sdkResult.terminal.event] : [],
+          diagnostics: [],
+        };
   const classification = providerFailureClassification(adapter, result, parsed.events);
   return successEnvelope({
     command: request.command ?? 'invoke',
@@ -153,10 +194,16 @@ export async function runInvoke(
       commandSpec,
       outputFormat: options.outputFormat ?? null,
       schemaMode: schemaMode(options),
-      evidence: {
-        stdout: result.stdout,
-        stderr: result.stderr,
-      },
+      evidence:
+        sdkResult === null
+          ? { stdout: result.stdout, stderr: result.stderr }
+          : {
+              stdout: '',
+              stderr: sdkResult.diagnosticStderr,
+              terminal: sdkResult.terminal.frame,
+              progress: sdkResult.progress,
+              cleanupAttestation: sdkResult.cleanupAttestation,
+            },
       events: parsed.events,
       diagnostics: parsed.diagnostics,
       exitCode: result.exitCode,
@@ -170,15 +217,28 @@ export async function runInvoke(
   });
 }
 
+function ompSdkResult(result: ProcessResult): OmpSdkProcessResult | null {
+  return 'terminal' in result && 'cleanupAttestation' in result
+    ? (result as OmpSdkProcessResult)
+    : null;
+}
+
 function invokeEvidence(
   result: ProcessResult,
   timeoutMs: number | undefined
 ): Record<string, unknown> {
+  const sdkResult = ompSdkResult(result);
   return {
     exitCode: result.exitCode,
     signal: result.signal,
     durationMs: result.durationMs,
     timedOut: result.timedOut ?? false,
     timeoutMs: result.timeoutMs ?? timeoutMs ?? null,
+    ...(sdkResult === null
+      ? {}
+      : {
+          terminal: sdkResult.terminal.frame,
+          cleanupAttestation: sdkResult.cleanupAttestation,
+        }),
   };
 }

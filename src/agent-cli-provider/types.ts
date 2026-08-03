@@ -290,7 +290,12 @@ export interface CleanupMetadata {
   readonly kind: 'temp-file' | 'temp-directory';
   readonly provider: ProviderId;
   readonly path: string;
-  readonly reason: 'output-schema' | 'settings-overlay' | 'admin-policy' | 'isolated-config';
+  readonly reason:
+    | 'output-schema'
+    | 'settings-overlay'
+    | 'admin-policy'
+    | 'isolated-config'
+    | 'sdk-private-root';
 }
 
 export interface WarningMetadata {
@@ -310,6 +315,122 @@ export interface WebSearchAttestation {
   readonly effective: boolean;
 }
 
+export type InvocationLane = 'spawn' | 'acp-stdio' | 'rpc-stdio';
+
+export interface InvocationLaneMetadata {
+  readonly lane: InvocationLane;
+  readonly pty: boolean;
+  readonly protocol?: 'omp-sdk-v1' | 'omp-rpc-v2' | 'acp';
+}
+
+export type PreparedInvocationParser = 'provider' | 'acp' | 'omp-sdk-ndjson';
+
+export interface PreparedProviderInvoke {
+  readonly lane: InvocationLane;
+  readonly parser: PreparedInvocationParser;
+  readonly ptyEligible: boolean;
+  readonly strictTerminal: boolean;
+}
+
+export interface PreparedEnvironmentPolicy {
+  readonly inherit: 'minimal';
+  readonly values: Readonly<Record<string, string>>;
+}
+
+export interface PreparedPrivateArtifacts {
+  readonly root: string;
+  readonly requestPath: string;
+  readonly owned: true;
+}
+
+export interface OmpSdkExecutionIdentity {
+  readonly backend: 'omp-sdk';
+  readonly backendVersion: '17.2.1';
+  readonly runtime: {
+    readonly name: 'bun';
+    readonly version: '1.3.14';
+  };
+  readonly transport: 'sdk';
+}
+
+export interface OmpSdkSemanticIdentity {
+  readonly requestedModelSelector: string;
+  readonly reasoningEffort: ReasoningEffort;
+  readonly provider: string;
+}
+
+export interface OmpSdkContainmentRequirement {
+  readonly mode: 'host-process-tree' | 'container';
+  readonly required: true;
+}
+
+export interface OmpSdkCleanupAttestation {
+  readonly mode: OmpSdkContainmentRequirement['mode'];
+  readonly terminalBuffered: true;
+  readonly descendantsReaped: true;
+  readonly clean: true;
+}
+
+export interface OmpSdkRequestedIdentity {
+  readonly modelSelector: string;
+  readonly reasoningEffort: ReasoningEffort;
+  readonly outputMode: 'json' | 'text';
+}
+
+export interface OmpSdkResolvedIdentity {
+  readonly modelSelector: string;
+}
+
+export interface OmpSdkStrictOutputEvidence {
+  readonly source: 'caller';
+  readonly mode: 'strict';
+  readonly status: 'valid';
+  readonly yield: {
+    readonly successful: true;
+    readonly incremental: false;
+    readonly count: 1;
+  };
+}
+
+export interface OmpSdkUsageEvidence {
+  readonly source: 'omp-aggregate';
+  readonly completeness: 'unknown';
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadInputTokens: number;
+  readonly cacheCreationInputTokens: number;
+  readonly totalTokens: number;
+  readonly requests: number;
+  readonly durationMs: number;
+  readonly cost: {
+    readonly input: number;
+    readonly output: number;
+    readonly cacheRead: number;
+    readonly cacheWrite: number;
+    readonly total: number;
+  };
+}
+
+export interface OmpSdkTerminalEvidence {
+  readonly backend: {
+    readonly id: 'omp-sdk';
+    readonly version: '17.2.1';
+  };
+  readonly runtime: {
+    readonly name: 'bun';
+    readonly version: '1.3.14';
+  };
+  readonly requested: OmpSdkRequestedIdentity;
+  readonly resolved: OmpSdkResolvedIdentity;
+  readonly strictOutput: OmpSdkStrictOutputEvidence;
+  readonly fallback: false;
+  readonly execution: {
+    readonly exitCode: 0;
+    readonly aborted: false;
+  };
+  readonly usage: OmpSdkUsageEvidence;
+}
+
 export interface CommandSpec {
   readonly binary: string;
   readonly args: readonly string[];
@@ -319,6 +440,7 @@ export interface CommandSpec {
   readonly cleanupMetadata: readonly CleanupMetadata[];
   readonly warnings: readonly WarningMetadata[];
   readonly redactions: readonly RedactionMetadata[];
+  readonly invocation?: InvocationLaneMetadata;
 }
 
 export interface BuildProviderCommandOptions {
@@ -339,6 +461,11 @@ export interface BuildProviderCommandOptions {
   readonly authEnv?: Readonly<Record<string, string>>;
   readonly strictSchema?: boolean;
   readonly gateway?: GatewayBuildOptions;
+  /**
+   * Required for fresh OMP SDK runs so preparation can select the containment and
+   * authentication policy before any private request is materialized.
+   */
+  readonly executionContext?: 'host' | 'detached' | 'docker' | 'benchmark';
   // MCP server configs forwarded to providers that accept an MCP config CLI flag. Claude accepts
   // one variadic `--mcp-config` followed by file paths; adapters such as Copilot accept repeated
   // flags with inline JSON so configs survive container path translation.
@@ -383,6 +510,11 @@ export interface ResultEvent {
   readonly cacheReadInputTokens?: number;
   readonly cacheCreationInputTokens?: number;
   readonly modelUsage?: unknown;
+  readonly requests?: number;
+  readonly usageSource?: 'omp-aggregate';
+  readonly usageCompleteness?: 'unknown';
+  readonly invocation?: InvocationLaneMetadata;
+  readonly ompSdk?: OmpSdkTerminalEvidence;
 }
 
 export type OutputEvent = TextEvent | ThinkingEvent | ToolCallEvent | ToolResultEvent | ResultEvent;

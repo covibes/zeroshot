@@ -17,7 +17,7 @@ import {
 } from './omp-session-ownership-schema.js';
 
 const DB_FILE = join(TASKS_DIR, 'store.db');
-export const TASK_STORE_SCHEMA_VERSION = 5;
+export const TASK_STORE_SCHEMA_VERSION = 6;
 
 /** @type {Database.Database | null} */
 let db = null;
@@ -65,7 +65,16 @@ function getDb() {
       command_cleanup TEXT,
       cancel_requested INTEGER DEFAULT 0,
       spawn_ownership_token TEXT,
-      omp_session_ownership TEXT
+      omp_session_ownership TEXT,
+      input_digest TEXT,
+      input_size_bytes INTEGER,
+      invoke TEXT,
+      execution_identity TEXT,
+      semantic_identity TEXT,
+      containment_requirement TEXT,
+      parsed_result TEXT,
+      sdk_evidence TEXT,
+      cleanup_attestation TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -125,6 +134,65 @@ export function getTaskStoreDatabase() {
   return getDb();
 }
 
+const OMP_SDK_BACKEND = 'omp-sdk';
+const OMP_SDK_PARSER = 'omp-sdk-ndjson';
+
+function parseStoredJson(value, field) {
+  if (value === null || value === undefined) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`Task store contains invalid ${field}`);
+  }
+}
+
+function serializeStoredJson(value) {
+  return value === undefined ? null : JSON.stringify(value);
+}
+
+function isOmpSdkTask(task) {
+  const hasSdkBackend = task?.executionIdentity?.backend === OMP_SDK_BACKEND;
+  const hasSdkParser = task?.invoke?.parser === OMP_SDK_PARSER;
+  if (hasSdkBackend !== hasSdkParser) {
+    throw new Error(
+      `OMP SDK task identity requires both executionIdentity.backend="${OMP_SDK_BACKEND}" and invoke.parser="${OMP_SDK_PARSER}"`
+    );
+  }
+  return hasSdkBackend;
+}
+
+function sdkPersistenceValues(task) {
+  if (!isOmpSdkTask(task)) {
+    return {
+      prompt: task.prompt || null,
+      fullPrompt: task.fullPrompt || null,
+      inputDigest: null,
+      inputSizeBytes: null,
+      invoke: null,
+      executionIdentity: null,
+      semanticIdentity: null,
+      containmentRequirement: null,
+      parsedResult: null,
+      sdkEvidence: null,
+      cleanupAttestation: null,
+    };
+  }
+
+  return {
+    prompt: null,
+    fullPrompt: null,
+    inputDigest: serializeStoredJson(task.inputDigest),
+    inputSizeBytes: task.inputSizeBytes ?? null,
+    invoke: serializeStoredJson(task.invoke),
+    executionIdentity: serializeStoredJson(task.executionIdentity),
+    semanticIdentity: serializeStoredJson(task.semanticIdentity),
+    containmentRequirement: serializeStoredJson(task.containmentRequirement),
+    parsedResult: serializeStoredJson(task.parsedResult),
+    sdkEvidence: serializeStoredJson(task.sdkEvidence),
+    cleanupAttestation: serializeStoredJson(task.cleanupAttestation),
+  };
+}
+
 export function migrateTaskStore(database) {
   ensureTaskColumn(database, 'process_group_id', 'INTEGER');
   ensureTaskColumn(database, 'termination_strategy', 'TEXT');
@@ -137,6 +205,15 @@ export function migrateTaskStore(database) {
   // No backfill: every pre-v5 row has no OMP session concept, so NULL is exact truth, never a
   // fabricated value. A non-OMP task's resume path is untouched by this column.
   ensureTaskColumn(database, 'omp_session_ownership', 'TEXT');
+  ensureTaskColumn(database, 'input_digest', 'TEXT');
+  ensureTaskColumn(database, 'input_size_bytes', 'INTEGER');
+  ensureTaskColumn(database, 'invoke', 'TEXT');
+  ensureTaskColumn(database, 'execution_identity', 'TEXT');
+  ensureTaskColumn(database, 'semantic_identity', 'TEXT');
+  ensureTaskColumn(database, 'containment_requirement', 'TEXT');
+  ensureTaskColumn(database, 'parsed_result', 'TEXT');
+  ensureTaskColumn(database, 'sdk_evidence', 'TEXT');
+  ensureTaskColumn(database, 'cleanup_attestation', 'TEXT');
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_spawn_ownership_token
       ON tasks(spawn_ownership_token)
@@ -165,6 +242,10 @@ export function migrateTaskStore(database) {
     if (version < 5) {
       // omp_session_ownership already defaults to NULL via ensureTaskColumn above; no backfill.
     }
+    if (version < 6) {
+      // SDK evidence columns already default to NULL via ensureTaskColumn above; legacy rows stay
+      // legacy rows rather than receiving a fabricated SDK identity or terminal result.
+    }
     database.pragma(`user_version = ${TASK_STORE_SCHEMA_VERSION}`);
   })();
 }
@@ -187,7 +268,7 @@ export function ensureDirs() {
  */
 function rowToTask(row) {
   if (!row) return null;
-  return {
+  const task = {
     id: row.id,
     prompt: row.prompt,
     fullPrompt: row.full_prompt,
@@ -221,6 +302,35 @@ function rowToTask(row) {
     // themselves are deliberately not exposed — nothing may act on them.
     ompSessionOwnershipPresent: inspectStoredOmpSessionOwnership(row.omp_session_ownership).present,
   };
+  const invoke = parseStoredJson(row.invoke, 'invoke');
+  const executionIdentity = parseStoredJson(row.execution_identity, 'execution_identity');
+  if (!isOmpSdkTask({ invoke, executionIdentity })) return task;
+
+  task.invoke = invoke;
+  task.executionIdentity = executionIdentity;
+  if (row.input_digest !== null) {
+    task.inputDigest = parseStoredJson(row.input_digest, 'input_digest');
+  }
+  if (row.input_size_bytes !== null) task.inputSizeBytes = row.input_size_bytes;
+  if (row.semantic_identity !== null) {
+    task.semanticIdentity = parseStoredJson(row.semantic_identity, 'semantic_identity');
+  }
+  if (row.containment_requirement !== null) {
+    task.containmentRequirement = parseStoredJson(
+      row.containment_requirement,
+      'containment_requirement'
+    );
+  }
+  if (row.parsed_result !== null) {
+    task.parsedResult = parseStoredJson(row.parsed_result, 'parsed_result');
+  }
+  if (row.sdk_evidence !== null) {
+    task.sdkEvidence = parseStoredJson(row.sdk_evidence, 'sdk_evidence');
+  }
+  if (row.cleanup_attestation !== null) {
+    task.cleanupAttestation = parseStoredJson(row.cleanup_attestation, 'cleanup_attestation');
+  }
+  return task;
 }
 
 /** True when a task row carries an `omp_session_ownership` value that exists but cannot be read as
@@ -245,6 +355,7 @@ export function loadTasks() {
 }
 
 /**
+
  * Get a single task by id
  * @param {string} id
  * @returns {Object|null}
@@ -313,6 +424,15 @@ export function updateTask(id, updates) {
       process_group_id = @processGroupId,
       termination_strategy = @terminationStrategy,
       command_cleanup = @commandCleanup,
+      input_digest = @inputDigest,
+      input_size_bytes = @inputSizeBytes,
+      invoke = @invoke,
+      execution_identity = @executionIdentity,
+      semantic_identity = @semanticIdentity,
+      containment_requirement = @containmentRequirement,
+      parsed_result = @parsedResult,
+      sdk_evidence = @sdkEvidence,
+      cleanup_attestation = @cleanupAttestation,
       cancel_requested =
         CASE WHEN @hasCancelRequested = 1 THEN @cancelRequested ELSE cancel_requested END,
       -- Only ever written when the caller explicitly supplies it. This is a read-modify-write
@@ -328,8 +448,7 @@ export function updateTask(id, updates) {
     )
     .run({
       id: updated.id,
-      prompt: updated.prompt || null,
-      fullPrompt: updated.fullPrompt || null,
+      ...sdkPersistenceValues(updated),
       cwd: updated.cwd || null,
       status: updated.status || 'pending',
       pid: updated.pid || null,
@@ -357,7 +476,7 @@ export function updateTask(id, updates) {
       ompSessionOwnership: serializeOmpSessionOwnership(updated.ompSessionOwnership || null),
     });
 
-  return updated;
+  return isOmpSdkTask(updated) ? getTask(id) : updated;
 }
 
 /**
@@ -380,19 +499,22 @@ export function addTask(task) {
       id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup, cancel_requested, spawn_ownership_token, omp_session_ownership
+      command_cleanup, cancel_requested, spawn_ownership_token, omp_session_ownership,
+      input_digest, input_size_bytes, invoke, execution_identity, semantic_identity,
+      containment_requirement, parsed_result, sdk_evidence, cleanup_attestation
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup, @cancelRequested, @spawnOwnershipToken, @ompSessionOwnership
+      @commandCleanup, @cancelRequested, @spawnOwnershipToken, @ompSessionOwnership,
+      @inputDigest, @inputSizeBytes, @invoke, @executionIdentity, @semanticIdentity,
+      @containmentRequirement, @parsedResult, @sdkEvidence, @cleanupAttestation
     )
   `
     )
     .run({
       id: fullTask.id,
-      prompt: fullTask.prompt || null,
-      fullPrompt: fullTask.fullPrompt || null,
+      ...sdkPersistenceValues(fullTask),
       cwd: fullTask.cwd || null,
       status: fullTask.status || 'pending',
       pid: fullTask.pid || null,
@@ -418,7 +540,7 @@ export function addTask(task) {
       ompSessionOwnership: serializeOmpSessionOwnership(fullTask.ompSessionOwnership || null),
     });
 
-  return fullTask;
+  return isOmpSdkTask(fullTask) ? getTask(fullTask.id) : fullTask;
 }
 
 /**

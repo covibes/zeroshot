@@ -1,17 +1,12 @@
 /**
- * First-Run Setup Wizard
+ * First-run preferences.
  *
- * Interactive setup on first use:
- * - Welcome banner
- * - Max model ceiling selection (sonnet/opus/haiku)
- * - Auto-update preference
- * - Marks setup as complete
+ * Provider and model configuration is deliberately excluded: operators edit
+ * the canonical settings file and local auth source manually.
  */
 
 const readline = require('readline');
 const { loadSettings, mutateSettings } = require('../../lib/settings');
-const { listProviderMetadata } = require('../../lib/provider-names');
-const { detectProviders } = require('../../src/providers');
 
 /**
  * Print welcome banner
@@ -23,7 +18,7 @@ function printWelcome() {
 ║   Welcome to Zeroshot!                                        ║
 ║   Multi-agent orchestration engine                            ║
 ║                                                               ║
-║   Let's configure a few settings to get started.              ║
+║   Provider setup remains manual and non-interactive.          ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 `);
@@ -37,73 +32,6 @@ function createReadline() {
   return readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-  });
-}
-
-function printProviderInstallChoices() {
-  for (const provider of listProviderMetadata()) {
-    const [firstLine, ...remainingLines] = provider.installInstructions.split('\n');
-    console.log(`  - ${provider.displayName}: ${firstLine}`);
-    for (const line of remainingLines) {
-      console.log(`    ${line}`);
-    }
-  }
-}
-
-/**
- * Prompt for provider selection
- * @param {readline.Interface} rl
- * @param {object} detected
- * @returns {Promise<string>}
- */
-function promptProvider(rl, detected) {
-  console.log('\nWhich AI provider would you like to use by default?\n');
-
-  const available = Object.entries(detected).filter(([_, status]) => status.available);
-
-  if (available.length === 0) {
-    console.log('No AI CLI tools detected. Please install one of:');
-    printProviderInstallChoices();
-    process.exit(1);
-  }
-
-  available.forEach(([name], i) => {
-    console.log(`  ${i + 1}) ${name} (installed)`);
-  });
-
-  return new Promise((resolve) => {
-    rl.question('\nChoice [1]: ', (answer) => {
-      const idx = parseInt(answer) - 1 || 0;
-      resolve(available[idx]?.[0] || available[0][0]);
-    });
-  });
-}
-
-/**
- * Prompt for model selection
- * @param {readline.Interface} rl
- * @returns {Promise<string>}
- */
-function promptModel(rl) {
-  return new Promise((resolve) => {
-    console.log('What is the maximum Claude model agents can use? (cost ceiling)\n');
-    console.log('  1) sonnet  - Agents can use sonnet or haiku (recommended)');
-    console.log('  2) opus    - Agents can use opus, sonnet, or haiku');
-    console.log('  3) haiku   - Agents can only use haiku (lowest cost)\n');
-
-    rl.question('Enter 1, 2, or 3 [2]: ', (answer) => {
-      const choice = answer.trim() || '2';
-      switch (choice) {
-        case '2':
-          resolve('opus');
-          break;
-        case '3':
-          resolve('haiku');
-          break;
-        default:
-          resolve('sonnet');
-      }
-    });
   });
 }
 
@@ -136,11 +64,10 @@ function printComplete(settings) {
 ╚═══════════════════════════════════════════════════════════════╝
 
 Your settings:
-  • Provider:     ${settings.defaultProvider}
-  • Max model:    ${settings.maxModel} (Claude ceiling)
   • Auto-updates: ${settings.autoCheckUpdates ? 'enabled' : 'disabled'}
 
-Change anytime with: zeroshot settings set <key> <value>
+Provider/model configuration is manual-only. Edit
+${process.env.ZEROSHOT_SETTINGS_FILE || '$HOME/.zeroshot/settings.json'} directly.
 
 Get started:
   zeroshot run "Fix the bug in auth.js"
@@ -181,23 +108,13 @@ async function checkFirstRun(options = {}) {
     return true;
   }
 
-  // Interactive setup
   printWelcome();
-
   const rl = createReadline();
 
   try {
-    const detected = await detectProviders();
-    const provider = await promptProvider(rl, detected);
-    // Model ceiling selection
-    const model = await promptModel(rl);
-
-    // Auto-update preference
     const autoUpdate = await promptAutoUpdate(rl);
 
     const savedSettings = mutateSettings((current) => {
-      current.defaultProvider = provider;
-      current.maxModel = model;
       current.autoCheckUpdates = autoUpdate;
       current.firstRunComplete = true;
       return current;
@@ -218,6 +135,4 @@ module.exports = {
   detectFirstRun,
   printWelcome,
   printComplete,
-  promptProvider,
-  printProviderInstallChoices,
 };

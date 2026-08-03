@@ -47,6 +47,7 @@ const {
   coerceValue,
   SettingsValidationError,
   DEFAULT_SETTINGS,
+  getSettingsFile,
   settingsFileExists,
 } = require('../lib/settings');
 const {
@@ -80,7 +81,12 @@ const {
   createUnsupportedProviderCapabilityError,
   serializeTaskStartupError,
 } = require('../src/task-startup-error');
-const { providersCommand, setDefaultCommand, setupCommand } = require('./commands/providers');
+const {
+  doctorCommand,
+  listCommand: listOmpProvidersCommand,
+  providersCommand,
+  validateCommand: validateOmpProvidersCommand,
+} = require('./commands/providers');
 const { runInspectCommand } = require('./commands/inspect');
 const { runCmdproof } = require('./commands/cmdproof');
 const {
@@ -2626,8 +2632,8 @@ Examples:
   ${chalk.cyan('zeroshot kill <id>')}                  Kill a running task or cluster
   ${chalk.cyan('zeroshot purge')}                      Kill all processes and delete all data (with confirmation)
   ${chalk.cyan('zeroshot purge -y')}                   Purge everything without confirmation
-  ${chalk.cyan('zeroshot settings')}                   Show/manage zeroshot settings (maxModel, config, etc.)
-  ${chalk.cyan('zeroshot settings set <key> <val>')}   Set a setting (e.g., maxModel haiku)
+  ${chalk.cyan('zeroshot settings')}                   Show zeroshot settings
+  ${chalk.cyan('zeroshot settings set <key> <val>')}   Set a non-provider setting (e.g., logLevel verbose)
   ${chalk.cyan('zeroshot providers')}                  Show provider status and defaults
   ${chalk.cyan('zeroshot config list')}                List available cluster configs
   ${chalk.cyan('zeroshot config show <name>')}         Visualize a cluster config (agents, triggers, flow)
@@ -3977,7 +3983,7 @@ function printSettingsUsage() {
   console.log(chalk.dim('  zeroshot settings reset'));
   console.log('');
   console.log(chalk.dim('Examples:'));
-  console.log(chalk.dim('  zeroshot settings set maxModel opus'));
+  console.log(chalk.dim('  zeroshot settings set logLevel verbose'));
   console.log(chalk.dim('  zeroshot settings set dockerMounts \'["gh","git","ssh","aws"]\''));
   console.log(chalk.dim('  zeroshot settings set dockerEnvPassthrough \'["AWS_*","TF_VAR_*"]\''));
   console.log('');
@@ -4342,10 +4348,29 @@ function parseSettingValue(value) {
   }
 }
 
+function providerSettingMutationGuidance(key) {
+  if (
+    key !== 'defaultProvider' &&
+    key !== 'maxModel' &&
+    key !== 'minModel' &&
+    key !== 'providerSettings' &&
+    !key.startsWith('providerSettings.')
+  ) {
+    return null;
+  }
+  return `Provider configuration is manual-only. Edit ${getSettingsFile()} directly (file 0600, parent directory 0700), then start a new run or restart already-running or detached work. Refusing to change ${key}.`;
+}
+
 function resetGlobalSettings() {
   mutateSettings((settings) => {
     const preserved = {};
-    for (const key of INTERNAL_SETTINGS_KEYS) {
+    for (const key of [
+      ...INTERNAL_SETTINGS_KEYS,
+      'defaultProvider',
+      'maxModel',
+      'minModel',
+      'providerSettings',
+    ]) {
       if (key in settings) preserved[key] = settings[key];
     }
     for (const key of Object.keys(settings)) delete settings[key];
@@ -4355,9 +4380,7 @@ function resetGlobalSettings() {
 
 settingsCmd
   .command('get <key>')
-  .description(
-    'Get a setting value (supports dot-notation: providerSettings.claude.anthropicApiKey)'
-  )
+  .description('Get a setting value (supports dot-notation)')
   .action((key) => {
     const settings = loadSettings();
 
@@ -4388,13 +4411,17 @@ settingsCmd
 
 settingsCmd
   .command('set <key> <value>')
-  .description(
-    'Set a setting value (supports dot-notation: providerSettings.claude.anthropicApiKey)'
-  )
+  .description('Set a non-provider setting value (supports dot-notation)')
   .action((key, value) => {
     if (INTERNAL_SETTINGS_KEYS.has(key.split('.')[0])) {
       console.error(chalk.red(`Unknown setting: ${key}`));
       process.exit(1);
+    }
+    const providerMutationError = providerSettingMutationGuidance(key);
+    if (providerMutationError) {
+      console.error(chalk.red(providerMutationError));
+      process.exitCode = 1;
+      return;
     }
     // Support dot-notation for nested values
     if (key.includes('.')) {
@@ -4459,7 +4486,7 @@ settingsCmd
 
 settingsCmd
   .command('reset')
-  .description('Reset all settings to defaults')
+  .description('Reset non-provider settings to defaults')
   .option('-y, --yes', 'Skip confirmation')
   .action((options) => {
     if (!options.yes) {
@@ -4469,7 +4496,7 @@ settingsCmd
         output: process.stdout,
       });
 
-      rl.question(chalk.yellow('Reset all settings to defaults? [y/N] '), (answer) => {
+      rl.question(chalk.yellow('Reset non-provider settings to defaults? [y/N] '), (answer) => {
         rl.close();
         if (answer.toLowerCase() !== 'y') {
           console.log('Aborted.');
@@ -4477,7 +4504,7 @@ settingsCmd
         }
         try {
           resetGlobalSettings();
-          console.log(chalk.green('✓ Settings reset to defaults'));
+          console.log(chalk.green('✓ Non-provider settings reset to defaults'));
         } catch (error) {
           console.error(chalk.red(error.message));
           process.exitCode = 1;
@@ -4485,7 +4512,7 @@ settingsCmd
       });
     } else {
       resetGlobalSettings();
-      console.log(chalk.green('✓ Settings reset to defaults'));
+      console.log(chalk.green('✓ Non-provider settings reset to defaults'));
     }
   });
 
@@ -4497,23 +4524,47 @@ settingsCmd.action(() => {
 
 // Hosted target commands intentionally are not registered on the stable CLI.
 // Providers management
-const providersCmd = program.command('providers').description('Manage AI providers');
+const providersCmd = program.command('providers').description('Inspect AI provider configuration');
 providersCmd.action(async () => {
   await providersCommand();
 });
 
 providersCmd
-  .command('set-default <provider>')
-  .description(`Set default provider (${PROVIDER_CHOICES})`)
-  .action(async (provider) => {
-    await setDefaultCommand([provider]);
+  .command('list')
+  .description('List models from the bundled, isolated OMP SDK registry')
+  .action(() => {
+    try {
+      listOmpProvidersCommand();
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    }
   });
 
 providersCmd
-  .command('setup <provider>')
-  .description('Configure provider model levels and overrides')
-  .action(async (provider) => {
-    await setupCommand([provider]);
+  .command('validate')
+  .description('Validate OMP settings using the bundled SDK and isolated state')
+  .action(() => {
+    try {
+      validateOmpProvidersCommand();
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    }
+  });
+
+providersCmd
+  .command('doctor')
+  .description('Validate an exact OMP model selector, provider route, and credential reference')
+  .requiredOption('--model <selector>', 'Exact OMP provider/model selector')
+  .option('--probe', 'Perform an explicit network routing probe')
+  .action((options) => {
+    try {
+      doctorCommand(options.model, { probe: options.probe === true });
+    } catch (error) {
+      console.error(error.message);
+      process.exitCode = 1;
+    }
   });
 
 // Setup wizard (read-only facts + setup contract; apply/undo/TTY wizard land separately)

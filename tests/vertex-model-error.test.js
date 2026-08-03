@@ -4,10 +4,7 @@ const os = require('os');
 const path = require('path');
 
 const { executeTask } = require('../src/agent/agent-lifecycle');
-const {
-  buildCompletionResult,
-  parseResultOutput,
-} = require('../src/agent/agent-task-executor');
+const { buildCompletionResult, parseResultOutput } = require('../src/agent/agent-task-executor');
 
 function claudeErrorEnvelope(status, result) {
   return `[1234567890123]${JSON.stringify({
@@ -135,11 +132,10 @@ describe('Vertex model failure handling', function () {
     const log = errors.join('\n');
     assert.strictEqual(getSpawnCalls(), 2, 'Vertex failure must stop after the current attempt');
     assert.match(log, /TASK EXECUTION FAILED - AGENT: vertex-worker \(Attempt 2\/3\)/);
-    assert.match(
-      log,
-      /"claude-sonnet-4-5@20250929" is not available on your Vertex AI deployment/
-    );
-    assert.match(log, /zeroshot settings set providerSettings\.claude\.levelOverrides/);
+    assert.match(log, /"claude-sonnet-4-5@20250929" is not available on your Vertex AI deployment/);
+    assert.match(log, /manually edit providerSettings\.claude\.levelOverrides/);
+    assert.match(log, /0600/);
+    assert.doesNotMatch(log, /zeroshot settings set providerSettings/);
 
     const failedEvents = lifecycleEvents.filter(({ event }) => event === 'TASK_FAILED');
     assert.deepStrictEqual(

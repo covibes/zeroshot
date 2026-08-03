@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict');
-const readline = require('node:readline');
 const { afterEach, test } = require('node:test');
 
 const helper = require('../../lib/agent-cli-provider');
@@ -10,18 +9,16 @@ const commandModulePath = require.resolve('../../cli/commands/providers');
 
 const originalProvidersModule = require(providersModulePath);
 const originalSettingsModule = require(settingsModulePath);
-const originalCreateInterface = readline.createInterface;
 const originalConsoleLog = console.log;
 
 afterEach(() => {
   require.cache[providersModulePath].exports = originalProvidersModule;
   require.cache[settingsModulePath].exports = originalSettingsModule;
   delete require.cache[commandModulePath];
-  readline.createInterface = originalCreateInterface;
   console.log = originalConsoleLog;
 });
 
-function loadCommands({ detected, providerFactory, settings, mutateSettings }) {
+function loadCommands({ detected, providerFactory, settings }) {
   require.cache[providersModulePath].exports = {
     ...originalProvidersModule,
     detectProviders: async () => {
@@ -33,7 +30,6 @@ function loadCommands({ detected, providerFactory, settings, mutateSettings }) {
   require.cache[settingsModulePath].exports = {
     ...originalSettingsModule,
     loadSettings: () => settings,
-    mutateSettings: mutateSettings || ((mutator) => mutator(settings)),
   };
   delete require.cache[commandModulePath];
   return require(commandModulePath);
@@ -94,57 +90,4 @@ test('providers command renders rows from registry-backed runtime metadata', asy
   });
 
   assert.deepEqual(logs.slice(2, 2 + expectedRows.length), expectedRows);
-});
-
-test('provider setup prints install and auth instructions from registry metadata', async () => {
-  const provider = 'opencode';
-  const metadata = helper.getProviderRegistryEntry(provider);
-  const logs = [];
-  console.log = (...args) => logs.push(args.join(' '));
-  readline.createInterface = () => ({
-    question(_prompt, callback) {
-      callback('');
-    },
-    close() {},
-  });
-
-  const settings = {
-    defaultProvider: 'claude',
-    providerSettings: { opencode: { webSearch: true } },
-  };
-  const saved = [];
-  const { setupCommand } = loadCommands({
-    detected: {},
-    settings,
-    mutateSettings: (mutator) => {
-      mutator(settings);
-      saved.push(JSON.parse(JSON.stringify(settings)));
-    },
-    providerFactory: () => ({
-      displayName: metadata.displayName,
-      cliCommand: metadata.binary,
-      isAvailable: async () => {
-        await Promise.resolve();
-        return true;
-      },
-      getAuthInstructions: () => metadata.authInstructions,
-      getInstallInstructions: () => metadata.installInstructions,
-      getLevelMapping: () => ({
-        level1: { rank: 1, model: null, reasoningEffort: 'low' },
-        level2: { rank: 2, model: null, reasoningEffort: 'medium' },
-        level3: { rank: 3, model: null, reasoningEffort: 'high' },
-      }),
-      getModelCatalog: () => ({}),
-    }),
-  });
-
-  await setupCommand([provider]);
-
-  assert.ok(logs.includes(`\n${metadata.displayName} Setup\n`));
-  assert.ok(logs.includes(`✓ ${metadata.binary} CLI found`));
-  assert.ok(logs.includes('\nAuth is user-managed; run the CLI login flow if needed:'));
-  assert.ok(logs.includes(metadata.authInstructions));
-  assert.equal(saved.length, 1);
-  assert.equal(saved[0].providerSettings[provider].defaultLevel, 'level3');
-  assert.equal(saved[0].providerSettings[provider].webSearch, true);
 });

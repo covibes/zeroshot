@@ -79,24 +79,24 @@ describe('setup-apply', function () {
     fs.rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  it('applies a valid decisions file and writes settings + journal', function () {
+  it('applies a valid non-provider decisions file and writes settings + journal', function () {
     const results = applyModule.applyDecisions({
-      decisionsPath: decisionsFile({ defaultProvider: 'codex' }),
+      decisionsPath: decisionsFile({ defaultDelivery: 'pr' }),
       cwd: repoRoot,
     });
 
     assert.deepStrictEqual(results, [
-      { decisionId: 'defaultProvider', applied: true, from: 'claude', to: 'codex' },
+      { decisionId: 'defaultDelivery', applied: true, from: 'none', to: 'pr' },
     ]);
-    assert.strictEqual(readSettings().defaultProvider, 'codex');
+    assert.strictEqual(readSettings().defaultDelivery, 'pr');
     const journal = readJournal();
     assert.strictEqual(journal.entries.length, 1);
-    assert.strictEqual(journal.entries[0].priorValue, 'claude');
-    assert.strictEqual(journal.entries[0].appliedValue, 'codex');
+    assert.strictEqual(journal.entries[0].priorValue, 'none');
+    assert.strictEqual(journal.entries[0].appliedValue, 'pr');
   });
 
   it('is idempotent: applying identical decisions twice writes only on the first run', function () {
-    const decisions = decisionsFile({ defaultProvider: 'codex', defaultDelivery: 'pr' });
+    const decisions = decisionsFile({ defaultDelivery: 'pr', dockerMounts: ['gh'] });
 
     applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot });
     const settingsAfterFirst = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
@@ -121,17 +121,17 @@ describe('setup-apply', function () {
   });
 
   it('rejects an out-of-domain value without writing anything', function () {
-    const decisions = decisionsFile({ defaultProvider: 'not-a-real-provider' });
+    const decisions = decisionsFile({ defaultDelivery: 'not-a-real-delivery' });
     assert.throws(
       () => applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot }),
-      /Invalid value for decision "defaultProvider"/
+      /Invalid value for decision "defaultDelivery"/
     );
     assert.ok(!fs.existsSync(TEST_SETTINGS_FILE));
   });
 
   it('rejects a mixed request (one valid, one invalid decision) atomically', function () {
     const decisions = decisionsFile({
-      defaultProvider: 'codex',
+      dockerMounts: ['gh'],
       defaultDelivery: 'not-a-real-delivery',
     });
     assert.throws(() => applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot }));
@@ -215,7 +215,7 @@ describe('setup-apply', function () {
   });
 
   it('confines writes to global settings, repo .zeroshot/settings.json, and the undo journal', function () {
-    const decisions = decisionsFile({ defaultProvider: 'codex', dockerMounts: ['gh'] });
+    const decisions = decisionsFile({ defaultDelivery: 'pr', dockerMounts: ['gh'] });
     const before = new Set(fs.readdirSync(TEST_DIR));
     applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot });
 
@@ -279,26 +279,27 @@ describe('setup-apply', function () {
     assert.ok(!logs.some((line) => line.includes('gh auth login')));
   });
 
-  it('converts providerLevel.<provider> min/default/max into providerSettings levels', function () {
-    // codex's stock defaults are already haiku/sonnet/opus (level1/level2/level3),
-    // so submit a value that actually differs to exercise a real write.
-    const decisions = decisionsFile({
-      'providerLevel.codex': { min: 'sonnet', default: 'sonnet', max: 'opus' },
-    });
-    const results = applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot });
-
-    assert.strictEqual(results[0].applied, true);
-    const settings = readSettings();
-    assert.strictEqual(settings.providerSettings.codex.minLevel, 'level2');
-    assert.strictEqual(settings.providerSettings.codex.defaultLevel, 'level2');
-    assert.strictEqual(settings.providerSettings.codex.maxLevel, 'level3');
-  });
-
-  it('rejects an out-of-domain providerLevel value without writing anything', function () {
-    const decisions = decisionsFile({
-      'providerLevel.codex': { min: 'not-a-model', default: 'sonnet', max: 'opus' },
-    });
-    assert.throws(() => applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot }));
-    assert.ok(!fs.existsSync(TEST_SETTINGS_FILE));
+  it('rejects provider selection and model decisions without writing anything', function () {
+    for (const decisions of [
+      { defaultProvider: 'omp' },
+      {
+        'providerLevel.omp': {
+          min: 'amazon-bedrock/model',
+          default: 'amazon-bedrock/model',
+          max: 'amazon-bedrock/model',
+        },
+      },
+    ]) {
+      assert.throws(
+        () =>
+          applyModule.applyDecisions({
+            decisionsPath: decisionsFile(decisions),
+            cwd: repoRoot,
+          }),
+        /Unknown decision ID/
+      );
+      assert.ok(!fs.existsSync(TEST_SETTINGS_FILE));
+      assert.ok(!fs.existsSync(TEST_JOURNAL_FILE));
+    }
   });
 });

@@ -38,7 +38,7 @@ function stopAttachableProvider(exitObserved = false) {
   return watcherOutputRuntime.terminateWatcherProvider(server, { exitObserved });
 }
 
-async function failWatcher(error, source) {
+async function failWatcher(error, source, containmentRequirement = null) {
   if (crashStarted) return;
   crashStarted = true;
   if (taskIdArg) {
@@ -51,6 +51,7 @@ async function failWatcher(error, source) {
       updateTask,
       emergencyLog,
       terminalUpdates: { socketPath: null },
+      containmentRequirement,
     });
   }
 
@@ -91,6 +92,13 @@ const commandSpec = config.commandSpec || {
   env: config.env || {},
   cleanup: [],
 };
+if (watcherOutputRuntime.isOmpSdkWatcherConfig(config)) {
+  await failWatcher(
+    new Error('OMP SDK prepared invocations cannot run through the attachable PTY watcher'),
+    'invalid watcher lane',
+    config.preparedInvocation.containmentRequirement
+  );
+}
 const socketPath = getTaskSocketPath(taskId);
 
 function log(msg) {
@@ -140,6 +148,7 @@ if (
     updateTask,
     emergencyLog,
     terminalUpdates: { socketPath: null },
+    containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
   })
 ) {
   process.exit(0);
@@ -171,6 +180,7 @@ server.on('exit', async ({ exitCode, signal }) => {
     updateTask,
     emergencyLog,
     terminalUpdates: { socketPath: null },
+    containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
   });
 
   setTimeout(() => {
@@ -211,6 +221,7 @@ try {
       updateTask,
       emergencyLog,
       terminalUpdates: { socketPath: null },
+      containmentRequirement: config.preparedInvocation?.containmentRequirement || null,
     });
     process.exit(0);
   }
