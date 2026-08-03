@@ -12,6 +12,13 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
 COPY zeroshot-rust ./zeroshot-rust
 COPY docker/zeroshot-oecp ./docker/zeroshot-oecp
+# musl does not expose renameat2 through libc, although the Linux syscall is
+# available. Keep the portable source API on glibc and use the syscall binding
+# only for this musl image build.
+RUN sed -i 's/libc::renameat2(/libc::syscall(libc::SYS_renameat2,/' \
+        zeroshot-rust/src/workspace_lease/types.rs \
+    && grep -Fq 'libc::syscall(libc::SYS_renameat2,' \
+        zeroshot-rust/src/workspace_lease/types.rs
 RUN rustup component add --toolchain 1.97.0 rustfmt clippy \
     && cargo +1.97.0 build --locked --release -p zeroshot-oecp-server \
     && rustup default 1.97.0 \
