@@ -116,4 +116,44 @@ describe('target list', () => {
 
 describe('target remove', () => {
   it('removes an existing target', async () => {
-    await cli('target', 'add', 'staging', '
+    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
+    const { stdout } = await cli('target', 'remove', 'staging', '--force');
+    assert.ok(stdout.includes('removed'));
+
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    assert.equal(settings._targets?.staging, undefined);
+  });
+
+  it('fails for nonexistent target', async () => {
+    const result = await cliSafe('target', 'remove', 'nope', '--force');
+    assert.ok(result.stderr.includes('not found'));
+  });
+});
+
+describe('settings isolation', () => {
+  it('settings list does not expose _targets', async () => {
+    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
+    const { stdout } = await cli('settings');
+    assert.ok(!stdout.includes('_targets'));
+    assert.ok(!stdout.includes('staging'));
+  });
+
+  it('settings get _targets is rejected', async () => {
+    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
+    const result = await cliSafe('settings', 'get', '_targets');
+    assert.ok(result.stderr.includes('not found') || result.stderr.includes('Unknown'));
+  });
+
+  it('settings set _targets is rejected', async () => {
+    const result = await cliSafe('settings', 'set', '_targets', '{}');
+    assert.ok(result.stderr.includes('Unknown'));
+  });
+
+  it('settings reset preserves _targets', async () => {
+    await cli('target', 'add', 'staging', '--url', 'https://api.example.com');
+    await cli('settings', 'reset', '--yes');
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8'));
+    assert.ok(settings._targets?.staging, '_targets should survive reset');
+    assert.equal(settings._targets.staging.url, 'https://api.example.com');
+  });
+});
