@@ -44,6 +44,9 @@ jobs:
           toolchain: 1.97.0
           components: clippy,rustfmt
 
+      - name: Install Opcore Rust metrics analyzer
+        run: npm run opcore:install:rust-metrics
+
       - name: Install dependencies
         run: npm ci
 

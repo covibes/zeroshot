@@ -1113,6 +1113,9 @@ refresh stale persistent evidence with `npm run opcore:graph:build`. The portabl
 agent-gate implementation beside Opcore's pinned public entrypoint so checked-in harness settings
 never contain a workstation-specific package path. Provider output is evidence, not host authority;
 keep existing lint, type, test, CI, and review guardrails.
+Rust function-metric enforcement requires `rust-code-analysis-cli 0.0.25`; CI installs the pinned
+tool with `npm run opcore:install:rust-metrics`, and a missing local tool makes Rust metric gates
+fail closed rather than silently skipping the configured limits.
 
 Production dependency auditing runs through `npm run audit:production`. Opcore `0.2.1` bundles
 three upstream denial-of-service advisories; the audit gate permits only their exact advisory IDs,
