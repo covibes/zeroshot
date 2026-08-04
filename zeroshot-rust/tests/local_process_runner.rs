@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "linux")]
+use std::fs::OpenOptions;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 
-use tokio::sync::watch;
 use tokio::time::{Duration, Instant};
-use zeroshot_engine::execution::driver::{DriverCancellation, WorkspaceCapability};
+use zeroshot_engine::execution::driver::WorkspaceCapability;
 use zeroshot_engine::execution::process::{
     LocalProcessRunner, ProcessCleanupEvidence, ProcessCommand, ProcessInput,
     ProcessLaunchEvidence, ProcessRunnerError, MAX_PROCESS_ARGV_BYTES, MAX_PROCESS_ARGV_ITEMS,
@@ -13,6 +15,12 @@ use zeroshot_engine::execution::process::{
     MAX_PROCESS_STDIN_BYTES,
 };
 use zeroshot_engine::execution::WorkspaceAccessMode;
+#[path = "support/process_runner.rs"]
+mod process_runner_support;
+use process_runner_support::{
+    cancellation_pair, process_exists, shell_quote, unique_temp_path, wait_for_child_pid,
+    wait_for_process_exit,
+};
 
 fn command(program: &str, argv: Vec<&str>) -> ProcessCommand {
     ProcessCommand {
@@ -26,11 +34,6 @@ fn command(program: &str, argv: Vec<&str>) -> ProcessCommand {
         stdin: ProcessInput::empty(),
         deadline: Instant::now() + Duration::from_secs(5),
     }
-}
-
-fn cancellation_pair() -> (watch::Sender<bool>, DriverCancellation) {
-    let (sender, receiver) = watch::channel(false);
-    (sender, DriverCancellation::new(receiver))
 }
 
 #[tokio::test]
@@ -199,6 +202,67 @@ async fn closed_stdio_does_not_release_a_live_child_before_deadline() {
     let _ = fs::remove_file(pid_file);
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn hosted_uid_boundary_reaps_setsid_double_fork_and_closes_control_descriptors() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+
+    let pid_file = unique_temp_path("zeroshot-hosted-detached.pid");
+    let control_file_path = unique_temp_path("zeroshot-hosted-control");
+    let control_file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&control_file_path)
+        .expect("open inherited control descriptor fixture");
+    let control_fd = control_file.as_raw_fd();
+    assert_eq!(unsafe { libc::fcntl(control_fd, libc::F_SETFD, 0) }, 0);
+
+    let detached = format!(
+        "/bin/sleep 30 & daemon=$!; /usr/bin/printf %s \"$daemon\" > {}; exit 0",
+        shell_quote(pid_file.to_string_lossy().as_ref())
+    );
+    let script = format!(
+        "/usr/bin/setsid /bin/sh -c {} </dev/null >/dev/null 2>&1 & \
+         while [ ! -s {} ]; do /bin/sleep 0.01; done; \
+         uid=$(/usr/bin/id -u); gid=$(/usr/bin/id -g); \
+         if /bin/kill -0 {} 2>/dev/null; then signal=allowed; else signal=blocked; fi; \
+         if [ -e /proc/self/fd/{control_fd} ]; then control=open; else control=closed; fi; \
+         /usr/bin/printf '%s:%s:%s:%s' \"$uid\" \"$gid\" \"$signal\" \"$control\"",
+        shell_quote(&detached),
+        shell_quote(pid_file.to_string_lossy().as_ref()),
+        std::process::id(),
+    );
+    let (_cancel_tx, cancellation) = cancellation_pair();
+    let output = LocalProcessRunner::hosted_worker()
+        .expect("Linux hosted containment is available")
+        .run(command("/bin/sh", vec!["-c", &script]), cancellation)
+        .await
+        .expect("run isolated daemon fixture");
+
+    let daemon_pid = fs::read_to_string(&pid_file)
+        .expect("detached daemon recorded its pid")
+        .trim()
+        .parse::<i32>()
+        .expect("detached daemon pid is decimal");
+    assert_eq!(output.cleanup, ProcessCleanupEvidence::Reaped);
+    assert!(output.cleanup.proves_tree_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("fixture output is utf-8"),
+        "10002:10002:blocked:closed"
+    );
+    assert!(
+        !process_exists(daemon_pid),
+        "setsid double-fork daemon {daemon_pid} survived successful cleanup"
+    );
+
+    drop(control_file);
+    let _ = fs::remove_file(pid_file);
+    let _ = fs::remove_file(control_file_path);
+}
+
 #[tokio::test]
 async fn diagnostics_are_bounded() {
     let (_cancel_tx, cancellation) = cancellation_pair();
@@ -222,48 +286,4 @@ async fn diagnostics_are_bounded() {
     assert_eq!(output.cleanup, ProcessCleanupEvidence::Reaped);
     let error = output.post_launch_error.unwrap();
     assert!(error.contains(&MAX_PROCESS_DIAGNOSTIC_BYTES.to_string()));
-}
-
-fn unique_temp_path(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!("{name}-{nanos}"))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-async fn wait_for_child_pid(path: &PathBuf) -> i32 {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Ok(contents) = fs::read_to_string(path) {
-            if let Ok(pid) = contents.trim().parse::<i32>() {
-                return pid;
-            }
-        }
-        assert!(Instant::now() < deadline, "child pid file was not written");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-async fn wait_for_process_exit(pid: i32) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_exists(pid) {
-        assert!(Instant::now() < deadline, "process {pid} did not exit");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-#[cfg(unix)]
-fn process_exists(pid: i32) -> bool {
-    unsafe {
-        if libc::kill(pid, 0) == 0 {
-            true
-        } else {
-            std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-        }
-    }
 }

@@ -734,6 +734,10 @@ export function getProviderRegistryEntry(name: string): ProviderRegistryEntry {
   throw new Error(`Unknown provider: ${name}. Valid: ${providerIds.join(', ')}`);
 }
 
+export function credentialEnvKeysForProvider(providerId: string): readonly string[] {
+  return getProviderRegistryEntry(providerId).credentialEnvKeys;
+}
+
 export function resolveProviderCommand(name: string): {
   readonly command: string;
   readonly args: readonly string[];

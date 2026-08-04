@@ -20,6 +20,9 @@ function request(source = 'prompt') {
     artifacts: source === 'artifact' ? [ARTIFACT] : [],
     isolationProfile: 'isolation.worktree@1',
     providerProfile: 'provider.default@1',
+    repository: 'the-open-engine/zeroshot',
+    provider: 'codex',
+    modelLevel: 'level2',
   };
   if (source === 'issue') base.issue = 'https://example.test/issues/1';
   if (source === 'prompt') base.prompt = 'Run the bounded task';

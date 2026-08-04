@@ -51,6 +51,9 @@ function promptRequest(prompt, isolationProfile = 'isolation.worktree@1') {
     artifacts: [],
     isolationProfile,
     providerProfile: 'provider.default@1',
+    repository: 'the-open-engine/zeroshot',
+    provider: 'codex',
+    modelLevel: 'level2',
   };
 }
 
@@ -99,6 +102,9 @@ describe('cluster worker executable e2e', function () {
         artifacts: [artifact],
         isolationProfile: 'isolation.worktree@1',
         providerProfile: 'provider.default@1',
+        repository: 'the-open-engine/zeroshot',
+        provider: 'codex',
+        modelLevel: 'level2',
       };
       assert.strictEqual((await client.send('start', 'start', { request })).ok, true);
       assert.strictEqual((await client.send('result', 'result')).result.state, 'completed');

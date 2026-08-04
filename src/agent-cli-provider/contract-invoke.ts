@@ -125,9 +125,10 @@ async function runOmpRpcContractPrompt(
 
 export async function runInvoke(
   request: RequestData,
-  runner: ProcessRunner
+  runner: ProcessRunner,
+  runtimeSettings?: Record<string, unknown>
 ): Promise<ContractEnvelope> {
-  const prepared = buildCommandSpec(request);
+  const prepared = buildCommandSpec(request, runtimeSettings);
   const { adapter, commandSpec, context, options } = prepared;
   const timeoutMs = optionalNumber(request.raw, 'timeoutMs');
   const runnerOptions = timeoutMs === undefined ? {} : { timeoutMs };

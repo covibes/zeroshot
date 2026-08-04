@@ -63,6 +63,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Start-cluster helper                  | `lib/start-cluster.js`                                                                                                           |
 | Legacy worker facade                  | `lib/cluster-worker/`                                                                                                            |
 | Legacy worker executable              | `bin/zeroshot-cluster-worker.js`                                                                                                 |
+| Private hosted capsule runtime        | `zeroshot-rust/src/hosted_oecp/`, `zeroshot-rust/hosted-node/`                                                                   |
+| Hosted capsule image/manifest         | `docker/zeroshot-oecp/`, `scripts/hosted-oecp-image.js`                                                                          |
 | Docker mounts/env                     | `lib/docker-config.js`                                                                                                           |
 | Container lifecycle                   | `src/isolation-manager.js`                                                                                                       |
 | Settings                              | `lib/settings.js`                                                                                                                |
@@ -151,6 +153,20 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Watch contract prose                  | `docs/openengine-cluster-protocol/v1/watch.md`                                                                                   |
 | Generated graph fixtures              | `protocol/openengine-cluster/v1/fixtures/graph/`                                                                                 |
 | Generated watch fixtures              | `protocol/openengine-cluster/v1/fixtures/watch/`                                                                                 |
+
+The unpublished hosted OECP runtime is a one-run compatibility capsule, not native-v2. It advertises
+only `openengine.graph.single-worker/v1` and runs exactly `legacy.zeroshot.ship@1` with one attempt.
+Its fixed `/workspace` must be prepared without `.git`, credentials, provider configuration,
+symlinks, or host-path authority. Before worker launch, the runtime retains the sole preconnected
+one-shot proxy-cleanup and delivery channels; the child inherits neither those descriptors nor a
+usable listener. The untrusted Node tree receives only the fixed loopback proxy sentinels and a
+bounded list/read/atomic-write tool loop—never shell, subprocess, or arbitrary network tools—and a
+text-only response with no real workspace mutation cannot succeed. The complete tree is reaped
+after proxy admission/credential cleanup and before the trusted `WorkspaceDeliveryPort` runs.
+Delivery is idempotent and secret-free; `Finished` follows cleanup and delivery, and any defect
+replaces successful output with a closed failure. Keep the runtime,
+binary, image, and manifest private: never add npm/public CLI exports, full-v1 claims, raw credential
+routes, target/auth/store APIs, provider selection, or local fallback.
 
 Provider-specific settings, defaults, validation, and static capabilities derive from the provider
 registry; do not add parallel provider lists. Opt-in native CLI capabilities must keep requested

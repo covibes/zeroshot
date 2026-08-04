@@ -246,14 +246,31 @@
             "null"
           ]
         },
+        "modelLevel": {
+          "enum": [
+            "level1",
+            "level2",
+            "level3"
+          ]
+        },
         "prompt": {
           "type": [
             "string",
             "null"
           ]
         },
+        "provider": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
         "providerProfile": {
           "$ref": "#/$defs/CredentialHandle"
+        },
+        "repository": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
         },
         "source": {
           "enum": [
@@ -267,13 +284,89 @@
         "source",
         "artifacts",
         "isolationProfile",
-        "providerProfile"
+        "providerProfile",
+        "repository",
+        "provider",
+        "modelLevel"
       ],
       "title": "LegacyShipRequest",
       "type": "object"
     },
     "LegacyShipResult": {
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "branch": {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "headRevision": {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "pullRequestUrl": {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "repository": {
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "status": {
+              "const": "succeeded"
+            }
+          },
+          "required": [
+            "repository",
+            "branch",
+            "headRevision",
+            "pullRequestUrl"
+          ]
+        },
+        {
+          "properties": {
+            "branch": {
+              "type": "null"
+            },
+            "headRevision": {
+              "type": "null"
+            },
+            "pullRequestUrl": {
+              "type": "null"
+            },
+            "repository": {
+              "type": "null"
+            },
+            "status": {
+              "const": "succeeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "branch": {
+              "type": "null"
+            },
+            "headRevision": {
+              "type": "null"
+            },
+            "pullRequestUrl": {
+              "type": "null"
+            },
+            "repository": {
+              "type": "null"
+            },
+            "status": {
+              "const": "failed"
+            }
+          }
+        }
+      ],
       "properties": {
         "artifacts": {
           "items": {
@@ -281,10 +374,39 @@
           },
           "type": "array"
         },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headRevision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pullRequestUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "status": {
-          "$ref": "#/$defs/LegacyShipStatus"
+          "enum": [
+            "succeeded",
+            "failed"
+          ]
         },
         "summary": {
+          "minLength": 1,
+          "pattern": "\\S",
           "type": "string"
         }
       },
@@ -295,13 +417,6 @@
       ],
       "title": "LegacyShipResult",
       "type": "object"
-    },
-    "LegacyShipStatus": {
-      "enum": [
-        "succeeded",
-        "failed"
-      ],
-      "type": "string"
     },
     "PayloadType": {
       "oneOf": [
@@ -985,13 +1100,36 @@
                           "kind": "string"
                         }
                       },
+                      "modelLevel": {
+                        "required": true,
+                        "type": {
+                          "kind": "enum",
+                          "values": [
+                            "level1",
+                            "level2",
+                            "level3"
+                          ]
+                        }
+                      },
                       "prompt": {
                         "required": false,
                         "type": {
                           "kind": "string"
                         }
                       },
+                      "provider": {
+                        "required": true,
+                        "type": {
+                          "kind": "string"
+                        }
+                      },
                       "providerProfile": {
+                        "required": true,
+                        "type": {
+                          "kind": "string"
+                        }
+                      },
+                      "repository": {
                         "required": true,
                         "type": {
                           "kind": "string"
@@ -1112,6 +1250,30 @@
                             "kind": "record"
                           },
                           "kind": "array"
+                        }
+                      },
+                      "branch": {
+                        "required": false,
+                        "type": {
+                          "kind": "string"
+                        }
+                      },
+                      "headRevision": {
+                        "required": false,
+                        "type": {
+                          "kind": "string"
+                        }
+                      },
+                      "pullRequestUrl": {
+                        "required": false,
+                        "type": {
+                          "kind": "string"
+                        }
+                      },
+                      "repository": {
+                        "required": false,
+                        "type": {
+                          "kind": "string"
                         }
                       },
                       "status": {

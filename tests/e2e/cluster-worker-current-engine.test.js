@@ -34,6 +34,9 @@ describe('cluster worker current-engine fake-provider e2e', function () {
         artifacts: [],
         isolationProfile: 'isolation.worktree@1',
         providerProfile,
+        repository: 'the-open-engine/zeroshot',
+        provider: 'codex',
+        modelLevel: 'level2',
       };
       const started = await client.send('start', 'start', { request });
       assert.strictEqual(started.ok, true, JSON.stringify(started));
@@ -79,6 +82,9 @@ describe('cluster worker current-engine fake-provider e2e', function () {
         artifacts: [],
         isolationProfile: 'isolation.worktree@1',
         providerProfile: 'provider.fake@1',
+        repository: 'the-open-engine/zeroshot',
+        provider: 'codex',
+        modelLevel: 'level2',
       };
       assert.strictEqual((await client.send('start', 'start', { request })).ok, true);
       const stopped = await client.send('stop', 'stop');

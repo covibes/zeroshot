@@ -63,6 +63,7 @@ export {
   type SingleAgentProviderCommandInput,
 } from './single-agent-runtime';
 export {
+  credentialEnvKeysForProvider,
   findProviderRegistryEntry,
   getProviderRegistryEntry,
   knownProviderNames,

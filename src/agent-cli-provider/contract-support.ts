@@ -145,15 +145,21 @@ export interface PreparedCommandSpec extends PreparedSingleAgentProviderCommand 
   readonly context: string;
 }
 
-export function buildCommandSpec(request: RequestData): PreparedCommandSpec {
+export function buildCommandSpec(
+  request: RequestData,
+  runtimeSettings?: Record<string, unknown>
+): PreparedCommandSpec {
   const adapter = adapterForProvider(request.provider);
   const context = requiredString(request.raw, 'context');
   const options = buildOptions(request);
-  const prepared = prepareSingleAgentProviderCommand({
-    provider: adapter.id,
-    context,
-    options,
-  });
+  const prepared = prepareSingleAgentProviderCommand(
+    {
+      provider: adapter.id,
+      context,
+      options,
+    },
+    runtimeSettings
+  );
   if (prepared.invoke.parser === 'omp-sdk-ndjson' && Object.keys(request.env).length > 0) {
     const privateRoot = prepared.privateArtifacts?.root;
     if (privateRoot !== undefined) {
