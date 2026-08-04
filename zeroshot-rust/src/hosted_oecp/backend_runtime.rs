@@ -1,40 +1,41 @@
 use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, Cursor, GraphSpec, LegacyShipRequest, NodeAddress, Phase, PlanResult,
-    PositiveInteger, RunId, StopMode, WatchEvent, WorkerErrorCode, WorkerOutcome,
+    PositiveInteger, RunId, StopMode, WatchEvent, WorkerOutcome,
 };
 use openengine_cluster_server::admission::CancellationSignal;
 use openengine_cluster_server::{BackendError, ConnectionContext};
 use tokio::sync::watch;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::sleep;
 
-use super::backend::HostedBackend;
+use super::backend::{
+    HostedBackend, HostedState, PreparedRun, RunFinalization, WorkerDrive, WorkerStartFailure,
+};
 use super::backend_admission_support::{
     graph_diff, reject_cancelled, replay_apply, run_metadata, RunMetadata,
 };
 use super::backend_support::{
     accepted_plan, graph_invalid, idempotency_reuse, internal_error, precheck_generation,
     redact_request, rejected_plan, safe_application_error, same_apply_identity, second_apply_error,
-    single_worker_diagnostics, status_from, step_timeout, validate_apply, validate_graph_input,
-    validate_request, verify_trusted_service, worker_start_error, TRUSTED_SERVICE_DEADLINE,
+    single_worker_diagnostics, status_from, step_timeout, terminal_failure_error, validate_apply,
+    validate_graph_input, validate_request, verify_trusted_service, worker_error_outcome,
+    worker_start_error,
 };
-use super::worker::{WorkerError, WorkerExecution};
-
-struct WorkerDrive {
-    execution: WorkerExecution,
-    process_cancellation: watch::Sender<bool>,
-    finalization_observer: watch::Receiver<Option<StopMode>>,
-    timeout: Duration,
-}
-struct PreparedRun {
-    params: ApplyParams,
-    request: LegacyShipRequest,
-    metadata: RunMetadata,
-}
+use super::worker::{WorkerError, WorkerExecution, WorkerSpawnError};
 
 pub(super) struct Finalization {
     pub(super) execution: WorkerExecution,
     pub(super) process_cancellation: watch::Sender<bool>,
     pub(super) candidate: Result<WorkerOutcome, WorkerError>,
+}
+
+pub(super) struct PostWorkerFinalization {
+    pub(super) outcome: WorkerOutcome,
+    pub(super) cleanup_ok: bool,
+    pub(super) process_cleanup_ok: bool,
+    pub(super) stop_mode: Option<StopMode>,
+}
+fn shutdown_can_force(state: &HostedState) -> bool {
+    !state.finished && !state.finalizing && state.phase == Phase::Running
 }
 
 impl HostedBackend {
@@ -63,17 +64,26 @@ impl HostedBackend {
     pub async fn shutdown(&self) -> Result<(), BackendError> {
         loop {
             let notified = self.changed.notified();
-            let (finished, cleanup_without_run, request) = {
+            let (finished, terminal_failure, cleanup_without_run, request) = {
                 let mut state = self.state.lock().await;
                 state.shutting_down = true;
+                if shutdown_can_force(&state) {
+                    state.shutdown_forced_run = true;
+                }
                 (
                     state.finished,
+                    state.terminal_failure,
                     state.phase == Phase::Empty && state.admission.is_none(),
                     state.finalization_request.clone(),
                 )
             };
             if finished {
-                return self.require_proxy_cleanup().await;
+                self.require_proxy_cleanup().await?;
+                return if terminal_failure {
+                    Err(terminal_failure_error())
+                } else {
+                    Ok(())
+                };
             }
             if cleanup_without_run {
                 self.cleanup_proxy_once().await;
@@ -86,47 +96,6 @@ impl HostedBackend {
         }
     }
 
-    pub(super) async fn cleanup_proxy_once(&self) -> bool {
-        {
-            let mut state = self.state.lock().await;
-            if let Some(result) = state.proxy_cleanup_result {
-                return result;
-            }
-            state.proxy_cleanup_result = Some(false);
-        }
-        let cleaned = timeout(
-            TRUSTED_SERVICE_DEADLINE,
-            self.proxy.stop_admission_and_cleanup(),
-        )
-        .await
-        .is_ok_and(|result| result.is_ok());
-        self.state.lock().await.proxy_cleanup_result = Some(cleaned);
-        self.changed.notify_waiters();
-        cleaned
-    }
-
-    async fn require_proxy_cleanup(&self) -> Result<(), BackendError> {
-        if self.state.lock().await.proxy_cleanup_result == Some(true) {
-            Ok(())
-        } else {
-            Err(safe_application_error(
-                "PROXY_CLEANUP",
-                "Fixed model proxy cleanup failed",
-            ))
-        }
-    }
-
-    async fn reject_shutdown(&self) -> Result<(), BackendError> {
-        if self.state.lock().await.shutting_down {
-            Err(safe_application_error(
-                "SHUTTING_DOWN",
-                "Hosted runtime is shutting down",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     pub(super) async fn verify(&self, graph: &GraphSpec) -> Result<PlanResult, BackendError> {
         let diagnostics = single_worker_diagnostics(graph);
         if diagnostics.is_empty() {
@@ -136,9 +105,14 @@ impl HostedBackend {
         }
     }
 
-    pub(super) async fn status(&self) -> openengine_cluster_protocol::ClusterStatus {
+    pub(super) async fn status(
+        &self,
+    ) -> Result<openengine_cluster_protocol::ClusterStatus, BackendError> {
         let state = self.state.lock().await;
-        status_from(&state)
+        if state.terminal_failure {
+            return Err(terminal_failure_error());
+        }
+        Ok(status_from(&state))
     }
 
     pub(super) async fn publish(
@@ -219,6 +193,9 @@ impl HostedBackend {
     async fn dry_run_result(&self, params: &ApplyParams) -> Result<ApplyResult, BackendError> {
         let state = self.state.lock().await;
         precheck_generation(params.if_generation, state.generation)?;
+        if state.terminal_failure {
+            return Err(terminal_failure_error());
+        }
         Ok(ApplyResult {
             generation: state.generation,
             run_id: state.run_id.clone(),
@@ -244,6 +221,9 @@ impl HostedBackend {
             }
             if let Some(committed) = &state.committed {
                 return replay_apply(&state, committed, params).map(Some);
+            }
+            if state.terminal_failure {
+                return Err(terminal_failure_error());
             }
             if state.admission.is_some() {
                 continue;
@@ -309,11 +289,13 @@ impl HostedBackend {
     async fn finish_worker_start(
         &self,
         prepared: PreparedRun,
-        started: Result<(WorkerDrive, watch::Sender<Option<StopMode>>), WorkerError>,
+        started: Result<(WorkerDrive, watch::Sender<Option<StopMode>>), WorkerStartFailure>,
     ) -> Result<ApplyResult, BackendError> {
         match started {
             Ok((drive, finalization_request)) => {
-                let committed = self.commit_run(&prepared, Some(finalization_request)).await;
+                let committed = self
+                    .commit_run(&prepared, RunFinalization::Active(finalization_request))
+                    .await;
                 let node_started = if committed.is_ok() {
                     self.publish_node_begin(&prepared.metadata, &prepared.request)
                         .await
@@ -325,19 +307,26 @@ impl HostedBackend {
                 node_started?;
                 Ok(prepared.metadata.result)
             }
-            Err(WorkerError::Launch) => {
+            Err(WorkerStartFailure::PreLaunch(error)) => {
                 self.clear_reservation().await;
-                Err(worker_start_error(WorkerError::Launch))
+                Err(worker_start_error(error))
             }
-            Err(error) => {
-                let committed = self.commit_run(&prepared, None).await;
+            Err(WorkerStartFailure::PostLaunch {
+                error,
+                execution,
+                process_cancellation,
+            }) => {
+                let committed = self
+                    .commit_run(&prepared, RunFinalization::FailedStart)
+                    .await;
                 let node_started = if committed.is_ok() {
                     self.publish_node_begin(&prepared.metadata, &prepared.request)
                         .await
                 } else {
                     Ok(())
                 };
-                self.finish_failed_start(&prepared.metadata, error).await;
+                self.finish_failed_start(error, execution, process_cancellation)
+                    .await;
                 committed?;
                 node_started?;
                 Err(worker_start_error(error))
@@ -357,11 +346,27 @@ impl HostedBackend {
         &self,
         request: &LegacyShipRequest,
         graph: &GraphSpec,
-    ) -> Result<(WorkerDrive, watch::Sender<Option<StopMode>>), WorkerError> {
+    ) -> Result<(WorkerDrive, watch::Sender<Option<StopMode>>), WorkerStartFailure> {
         let (process_cancellation, process_observer) = watch::channel(false);
-        let execution =
-            WorkerExecution::spawn_command(request, process_observer, self.worker_command.clone())
-                .await?;
+        let execution = match WorkerExecution::spawn_command(
+            request,
+            process_observer,
+            self.worker_command.clone(),
+        )
+        .await
+        {
+            Ok(execution) => execution,
+            Err(WorkerSpawnError::PreLaunch(error)) => {
+                return Err(WorkerStartFailure::PreLaunch(error));
+            }
+            Err(WorkerSpawnError::PostLaunch { error, execution }) => {
+                return Err(WorkerStartFailure::PostLaunch {
+                    error,
+                    execution,
+                    process_cancellation,
+                });
+            }
+        };
         let (finalization_request, finalization_observer) = watch::channel(None);
         Ok((
             WorkerDrive {
@@ -377,7 +382,7 @@ impl HostedBackend {
     async fn commit_run(
         &self,
         prepared: &PreparedRun,
-        finalization_request: Option<watch::Sender<Option<StopMode>>>,
+        finalization: RunFinalization,
     ) -> Result<(), BackendError> {
         let mut state = self.state.lock().await;
         state.graph = Some(prepared.metadata.graph.clone());
@@ -387,7 +392,16 @@ impl HostedBackend {
         state.committed = Some(prepared.params.clone());
         state.apply_result = Some(prepared.metadata.result.clone());
         state.admission = None;
-        state.finalization_request = finalization_request;
+        match finalization {
+            RunFinalization::Active(request) => {
+                state.finalization_request = Some(request);
+                state.finalizing = false;
+            }
+            RunFinalization::FailedStart => {
+                state.finalization_request = None;
+                state.finalizing = true;
+            }
+        }
         let cursor = self
             .journal
             .publish_with(prepared.metadata.run_id.clone(), |cursor| {
@@ -429,42 +443,25 @@ impl HostedBackend {
         Ok(())
     }
 
-    async fn finish_failed_start(&self, metadata: &RunMetadata, _error: WorkerError) {
-        let _ = self.cleanup_proxy_once().await;
-        let outcome = WorkerOutcome::declared_failure(WorkerErrorCode::Crash);
-        let _ = self
-            .publish(
-                metadata.run_id.clone(),
-                WatchEvent::NodeEnd {
-                    node: NodeAddress {
-                        node: metadata.graph.root.name().clone(),
-                        attempt: PositiveInteger::new(1).expect("one is positive"),
-                    },
-                    outcome,
-                },
-            )
-            .await;
-        let mut state = self.state.lock().await;
-        state.phase = Phase::Finished;
-        let published = self
-            .journal
-            .publish_with(metadata.run_id.clone(), |cursor| {
-                let mut final_status = status_from(&state);
-                final_status.at_cursor = Some(cursor.clone());
-                WatchEvent::Finished {
-                    final_status,
-                    stop_mode: None,
-                }
-            });
-        if let Ok(cursor) = &published {
-            state.at_cursor = Some(cursor.clone());
-        }
-        state.finished = true;
-        state.finalizing = false;
-        self.journal.close();
-        drop(state);
-        let _ = published;
-        self.changed.notify_waiters();
+    async fn finish_failed_start(
+        &self,
+        error: WorkerError,
+        execution: Option<WorkerExecution>,
+        process_cancellation: watch::Sender<bool>,
+    ) {
+        let cleanup_ok = self.cleanup_proxy_once().await;
+        process_cancellation.send_replace(true);
+        let process_cleanup_ok = match execution {
+            Some(execution) => execution.prove_stopped().await.is_ok(),
+            None => false,
+        };
+        self.complete_post_worker(PostWorkerFinalization {
+            outcome: worker_error_outcome(error),
+            cleanup_ok,
+            process_cleanup_ok,
+            stop_mode: None,
+        })
+        .await;
     }
 
     fn spawn_worker_drive(&self, drive: WorkerDrive) {
@@ -484,7 +481,7 @@ impl HostedBackend {
                     request.execution.wait_terminal().await
                 }
             }
-            () = sleep(request.timeout) => Err(WorkerError::Exited),
+            () = sleep(request.timeout) => Err(WorkerError::Timeout),
         };
         self.finalize(Finalization {
             execution: request.execution,

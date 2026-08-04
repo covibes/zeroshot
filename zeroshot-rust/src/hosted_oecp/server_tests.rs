@@ -1,11 +1,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use super::server_auth::{authenticate_first_request, TransportCapability};
-use super::server_workspace::verify_prepared_workspace_at;
+use super::server_workspace::{verify_delivery_workspace_at, verify_prepared_workspace_at};
+use super::server::{SEQUENTIAL_FINALIZATION_BOUND, SHUTDOWN_DEADLINE};
 
 const CAPABILITY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+#[test]
+fn shutdown_deadline_exceeds_every_sequential_finalization_stage() {
+    assert_eq!(SEQUENTIAL_FINALIZATION_BOUND, Duration::from_secs(31));
+    assert!(SHUTDOWN_DEADLINE > SEQUENTIAL_FINALIZATION_BOUND);
+}
 
 #[tokio::test]
 async fn valid_private_envelope_is_removed_without_changing_the_request() {
@@ -116,6 +124,42 @@ fn verification_after_the_initial_scan_rejects_a_hard_link_swap() {
     fs::rename(&replacement, &destination).expect("swap hard link over scanned path");
 
     assert!(verify_prepared_workspace_at(&workspace).is_err());
+}
+
+#[test]
+fn killed_atomic_write_orphan_is_removed_before_delivery_verification() {
+    let fixture = Fixture::new("killed-write-orphan");
+    let workspace = fixture.directory().join("workspace");
+    fs::create_dir(&workspace).expect("workspace directory");
+    let orphan = workspace.join(".zeroshot-write-4242-01234567-89ab-cdef-0123-456789abcdef");
+    fs::write(&orphan, b"partial content from killed writer").expect("orphaned temp file");
+
+    verify_delivery_workspace_at(&workspace)
+        .expect("post-tree-death verification removes the reserved orphan");
+
+    assert!(!orphan.exists());
+    assert_eq!(
+        fs::read_dir(&workspace)
+            .expect("verified workspace")
+            .count(),
+        0,
+        "reserved write orphan must not reach trusted delivery"
+    );
+}
+
+#[test]
+fn preflight_rejects_and_preserves_a_preexisting_reserved_temp_name() {
+    let fixture = Fixture::new("preexisting-write-name");
+    let workspace = fixture.directory().join("workspace");
+    fs::create_dir(&workspace).expect("workspace directory");
+    let reserved = workspace.join(".zeroshot-write-4242-fedcba98-7654-3210-fedc-ba9876543210");
+    fs::write(&reserved, b"prepared repository content").expect("reserved source file");
+
+    assert!(verify_prepared_workspace_at(&workspace).is_err());
+    assert_eq!(
+        fs::read(&reserved).expect("preflight must preserve source content"),
+        b"prepared repository content"
+    );
 }
 
 struct Fixture {

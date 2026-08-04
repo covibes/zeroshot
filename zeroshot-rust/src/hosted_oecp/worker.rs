@@ -32,7 +32,16 @@ pub enum WorkerError {
     Launch,
     Protocol,
     Exited,
+    Timeout,
     Cleanup,
+}
+
+pub(super) enum WorkerSpawnError {
+    PreLaunch(WorkerError),
+    PostLaunch {
+        error: WorkerError,
+        execution: Option<WorkerExecution>,
+    },
 }
 
 #[derive(Clone)]
@@ -66,7 +75,9 @@ impl WorkerExecution {
         request: &LegacyShipRequest,
         cancellation: watch::Receiver<bool>,
         command: WorkerCommand,
-    ) -> Result<Self, WorkerError> {
+    ) -> Result<Self, WorkerSpawnError> {
+        let start_frame = build_request_frame(1, "start", json!({ "request": request }))
+            .map_err(WorkerSpawnError::PreLaunch)?;
         let isolated = command.isolated;
         let command = ProcessSessionCommand {
             program: command.program,
@@ -79,33 +90,40 @@ impl WorkerExecution {
             deadline: Instant::now() + PROCESS_SAFETY_DEADLINE,
         };
         let runner = if isolated {
-            LocalProcessRunner::hosted_worker().map_err(map_runner_error)?
+            LocalProcessRunner::hosted_worker()
+                .map_err(map_runner_error)
+                .map_err(WorkerSpawnError::PreLaunch)?
         } else {
             LocalProcessRunner::new()
         };
+        let session = runner
+            .open(command, DriverCancellation::new(cancellation))
+            .await
+            .map_err(map_runner_error)
+            .map_err(|error| match error {
+                WorkerError::Launch => WorkerSpawnError::PreLaunch(error),
+                _ => WorkerSpawnError::PostLaunch {
+                    error,
+                    execution: None,
+                },
+            })?;
         let mut execution = Self {
-            session: runner
-                .open(command, DriverCancellation::new(cancellation))
-                .await
-                .map_err(map_runner_error)?,
+            session,
             buffered: Vec::new(),
             cluster_id: String::new(),
             isolated,
         };
-        let started = timeout(
-            WORKER_START_TIMEOUT,
-            execution.call(1, "start", json!({ "request": request })),
-        )
-        .await
-        .unwrap_or(Err(WorkerError::Exited))
-        .and_then(validate_started_receipt);
+        let started = timeout(WORKER_START_TIMEOUT, execution.send_request(1, start_frame))
+            .await
+            .unwrap_or(Err(WorkerError::Exited))
+            .and_then(validate_started_receipt);
         match started {
             Ok(cluster_id) => execution.cluster_id = cluster_id,
             Err(error) => {
-                return match execution.prove_stopped().await {
-                    Ok(_) => Err(error),
-                    Err(cleanup) => Err(cleanup),
-                };
+                return Err(WorkerSpawnError::PostLaunch {
+                    error,
+                    execution: Some(execution),
+                });
             }
         }
         Ok(execution)
@@ -120,22 +138,17 @@ impl WorkerExecution {
     }
 
     async fn call(&mut self, id: u64, method: &str, params: Value) -> Result<Value, WorkerError> {
-        let mut frame = serde_json::to_vec(&json!({
-            "id": id,
-            "method": method,
-            "params": params,
-        }))
-        .map_err(|_| WorkerError::Protocol)?;
-        frame.push(b'\n');
-        if frame.len() > WORKER_FRAME_BYTES {
-            return Err(WorkerError::Protocol);
-        }
-        let message_bytes = frame.len() - 1;
-        self.session
-            .send(ProcessFrame::with_framing(frame, message_bytes).map_err(map_runner_error)?)
-            .await
-            .map_err(map_runner_error)?;
-        self.read_response(id).await
+        let frame = build_request_frame(id, method, params)?;
+        self.send_request(id, frame).await
+    }
+
+    async fn send_request(
+        &mut self,
+        expected_id: u64,
+        frame: ProcessFrame,
+    ) -> Result<Value, WorkerError> {
+        self.session.send(frame).await.map_err(map_runner_error)?;
+        self.read_response(expected_id).await
     }
 
     async fn read_response(&mut self, expected_id: u64) -> Result<Value, WorkerError> {
@@ -157,6 +170,21 @@ impl WorkerExecution {
         let output = self.session.release().await.map_err(map_runner_error)?;
         validate_cleanup(&output, self.isolated)
     }
+}
+
+fn build_request_frame(id: u64, method: &str, params: Value) -> Result<ProcessFrame, WorkerError> {
+    let mut frame = serde_json::to_vec(&json!({
+        "id": id,
+        "method": method,
+        "params": params,
+    }))
+    .map_err(|_| WorkerError::Protocol)?;
+    frame.push(b'\n');
+    if frame.len() > WORKER_FRAME_BYTES {
+        return Err(WorkerError::Protocol);
+    }
+    let message_bytes = frame.len() - 1;
+    ProcessFrame::with_framing(frame, message_bytes).map_err(map_runner_error)
 }
 
 fn fixed_environment() -> BTreeMap<String, String> {
@@ -260,9 +288,8 @@ fn normalize_terminal_receipt(value: Value, expected_cluster_id: Option<&str>) -
         TerminalReceipt::Completed { .. } => {
             WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
         }
-        TerminalReceipt::Failed(_) | TerminalReceipt::TimedOut(_) => {
-            WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
-        }
+        TerminalReceipt::Failed(_) => WorkerOutcome::declared_failure(WorkerErrorCode::Crash),
+        TerminalReceipt::TimedOut(_) => WorkerOutcome::declared_failure(WorkerErrorCode::Timeout),
         TerminalReceipt::Malformed(_) => WorkerOutcome::malformed(),
         TerminalReceipt::Stopped(_) => WorkerOutcome::declared_failure(WorkerErrorCode::Refusal),
     }

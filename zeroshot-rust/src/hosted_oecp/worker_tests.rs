@@ -42,6 +42,24 @@ fn untrusted_failure_payload_is_reduced_to_a_closed_outcome() {
 }
 
 #[test]
+fn timed_out_worker_receipt_preserves_timeout_error_code() {
+    let outcome = normalize_terminal_receipt(
+        json!({
+            "state": "timed_out",
+            "clusterId": "hosted-timeout",
+            "finishedAt": 1,
+            "outcome": {
+                "status": "error",
+                "code": "timeout",
+                "reason": "declared_failure"
+            }
+        }),
+        Some("hosted-timeout"),
+    );
+    assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Timeout));
+}
+
+#[test]
 fn worker_receipts_must_preserve_one_strict_resource_identity() {
     let started = validate_started_receipt(json!({
         "state": "running",

@@ -77,6 +77,163 @@ async fn shutdown_cancels_the_live_worker_before_returning() {
 }
 
 #[tokio::test]
+async fn shutdown_after_finalization_claim_does_not_rewrite_terminal_mode() {
+    let fixture = RuntimeFixture::new(25);
+    fixture.delivery.gate_delivery.store(true, Ordering::SeqCst);
+    let (_watch_receipt, mut stream, _watch_handle) = fixture
+        .backend
+        .watch(&ConnectionContext::default(), WatchParams::default(), 16)
+        .await
+        .expect("late-shutdown watcher");
+    fixture
+        .backend
+        .apply(&ConnectionContext::default(), apply("hosted-late-shutdown"))
+        .await
+        .expect("apply starts real worker");
+    timeout(
+        Duration::from_secs(5),
+        fixture.delivery.delivery_entered.notified(),
+    )
+    .await
+    .expect("delivery gate reached after finalization claim");
+
+    let backend = fixture.backend.clone();
+    let shutdown = tokio::spawn(async move { backend.shutdown().await });
+    for _ in 0..100 {
+        let state = fixture.backend.state.lock().await;
+        if state.shutting_down {
+            assert!(state.finalizing);
+            assert!(!state.shutdown_forced_run);
+            break;
+        }
+        drop(state);
+        sleep(Duration::from_millis(2)).await;
+    }
+    assert!(fixture.backend.state.lock().await.shutting_down);
+    fixture.delivery.delivery_release.notify_one();
+    shutdown
+        .await
+        .expect("late shutdown task")
+        .expect("late shutdown completion");
+
+    let mut node_error = None;
+    let mut stop_mode = None;
+    let mut final_status_mode = None;
+    while let Some(item) = timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("late-shutdown watch deadline")
+    {
+        let WatchStreamItem::Record(record) = item else {
+            panic!("late-shutdown watch must not overflow")
+        };
+        match record.event {
+            WatchEvent::NodeEnd { outcome, .. } => node_error = Some(outcome.error_code()),
+            WatchEvent::Finished {
+                final_status,
+                stop_mode: terminal,
+            } => {
+                final_status_mode = final_status.operational.and_then(|status| status.stop_mode);
+                stop_mode = terminal;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(node_error, Some(None));
+    assert_eq!(stop_mode, None);
+    assert_eq!(final_status_mode, None);
+    let get = fixture
+        .backend
+        .get(&ConnectionContext::default(), GetParams::default())
+        .await
+        .expect("get after late shutdown");
+    assert_eq!(
+        get.status.operational.and_then(|status| status.stop_mode),
+        None
+    );
+}
+
+#[tokio::test]
+async fn shutdown_escalates_pending_drain_to_effective_force() {
+    let fixture = RuntimeFixture::new(10_000);
+    let applied = fixture
+        .backend
+        .apply(
+            &ConnectionContext::default(),
+            apply("hosted-shutdown-drain"),
+        )
+        .await
+        .expect("apply starts real worker");
+    let (_watch_receipt, mut stream, _watch_handle) = fixture
+        .backend
+        .watch(&ConnectionContext::default(), WatchParams::default(), 16)
+        .await
+        .expect("shutdown watcher");
+    let generation = applied.generation.expect("generation");
+    let backend = fixture.backend.clone();
+    let stop = tokio::spawn(async move {
+        backend
+            .stop(
+                &ConnectionContext::default(),
+                stop_params(StopMode::Drain, generation, "drain-stop"),
+            )
+            .await
+    });
+    wait_for_dispatch(&fixture, DispatchState::Draining).await;
+
+    fixture
+        .backend
+        .shutdown()
+        .await
+        .expect("shutdown force finalization");
+    let receipt = stop
+        .await
+        .expect("drain stop task")
+        .expect("drain stop receipt");
+    assert_eq!(receipt.accepted_mode, StopMode::Drain);
+    assert_eq!(receipt.effective_mode, StopMode::Force);
+
+    let mut outcome = None;
+    let mut stop_mode = None;
+    let mut final_status_mode = None;
+    while let Some(item) = timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("shutdown watch deadline")
+    {
+        let WatchStreamItem::Record(record) = item else {
+            panic!("shutdown watch must not overflow")
+        };
+        match record.event {
+            WatchEvent::NodeEnd {
+                outcome: terminal, ..
+            } => outcome = Some(terminal),
+            WatchEvent::Finished {
+                final_status,
+                stop_mode: terminal,
+            } => {
+                final_status_mode = final_status.operational.and_then(|status| status.stop_mode);
+                stop_mode = terminal;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(stop_mode, Some(StopMode::Force));
+    assert_eq!(final_status_mode, Some(StopMode::Force));
+    let get = fixture
+        .backend
+        .get(&ConnectionContext::default(), GetParams::default())
+        .await
+        .expect("get after shutdown force escalation");
+    assert_eq!(
+        get.status.operational.and_then(|status| status.stop_mode),
+        Some(StopMode::Force)
+    );
+    assert_eq!(
+        outcome.and_then(|terminal| terminal.error_code()),
+        Some(WorkerErrorCode::Refusal)
+    );
+}
+
+#[tokio::test]
 async fn force_stop_reaps_before_delivery_and_returns_one_receipt() {
     let fixture = RuntimeFixture::new(10_000);
     let applied = fixture

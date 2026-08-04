@@ -32,7 +32,10 @@ use super::ports::{
 pub const OECP_PORT: u16 = 8080;
 pub use super::server_auth::OECP_CAPABILITY_FILE_ENV;
 const ACTIVE_CONNECTION_CAPACITY: usize = 32;
-const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(20);
+pub(super) const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(45);
+// 10s start + 1s drain + 5s tree reap + three sequential 5s trusted-service stages.
+pub(super) const SEQUENTIAL_FINALIZATION_BOUND: Duration = Duration::from_secs(31);
+const _: () = assert!(SHUTDOWN_DEADLINE.as_secs() > SEQUENTIAL_FINALIZATION_BOUND.as_secs());
 const TRUSTED_SERVICE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_TRUSTED_FRAME_BYTES: u64 = 4096;
 const PROXY_CONTROL_SOCKET: &str = "/run/zeroshot-capsule-agent/proxy.sock";

@@ -60,7 +60,9 @@ const TOOLS = Object.freeze([
 ]);
 
 function forbiddenName(name) {
-  return FORBIDDEN_NAMES.has(name) || name.startsWith('.env');
+  return (
+    FORBIDDEN_NAMES.has(name) || name.startsWith('.env') || name.startsWith('.zeroshot-write-')
+  );
 }
 
 function workspacePath(relative) {

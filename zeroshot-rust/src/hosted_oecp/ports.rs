@@ -137,6 +137,10 @@ fn safe_identifier(value: &str) -> bool {
 #[async_trait]
 pub trait WorktreeReadinessPort: Send + Sync {
     async fn verify_ready(&self) -> Result<WorktreeReadinessReceipt, TrustedServiceError>;
+
+    async fn verify_delivery_ready(&self) -> Result<WorktreeReadinessReceipt, TrustedServiceError> {
+        self.verify_ready().await
+    }
 }
 
 #[async_trait]

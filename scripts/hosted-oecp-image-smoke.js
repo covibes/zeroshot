@@ -187,7 +187,7 @@ async function verifyFinalContracts(client, applied, applyParams, finalCursor) {
   );
   await expectRpcCode(
     client.request(112, 'watch', { runId: applied.runId }),
-    'NOT_FOUND',
+    'GONE',
     'Hosted runtime accepted a post-task reconnect'
   );
 }

@@ -7,7 +7,7 @@ use tokio::sync::watch;
 
 use tokio::time::{sleep, Duration};
 
-use super::worker::{WorkerCommand, WorkerExecution, NODE_PROGRAM};
+use super::worker::{WorkerCommand, WorkerExecution, WorkerSpawnError, NODE_PROGRAM};
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
 
@@ -15,6 +15,7 @@ pub(super) struct NodeWorkerFixture {
     root: PathBuf,
     script: PathBuf,
     pids: PathBuf,
+    mutation: PathBuf,
 }
 
 impl NodeWorkerFixture {
@@ -27,8 +28,14 @@ impl NodeWorkerFixture {
         fs::create_dir(&root).expect("create hosted worker fixture");
         let script = root.join("worker.js");
         let pids = root.join("pids");
+        let mutation = root.join("worker-mutation");
         fs::write(&script, WORKER_SCRIPT).expect("write hosted worker script");
-        Self { root, script, pids }
+        Self {
+            root,
+            script,
+            pids,
+            mutation,
+        }
     }
 
     pub(super) fn command(&self, mode: &str, delay_ms: u64) -> WorkerCommand {
@@ -49,6 +56,10 @@ impl NodeWorkerFixture {
         self.pids.clone()
     }
 
+    pub(super) fn mutation_path(&self) -> PathBuf {
+        self.mutation.clone()
+    }
+
     pub(super) fn recorded_pids(&self) -> Vec<u32> {
         fs::read_to_string(&self.pids)
             .expect("hosted worker recorded process tree")
@@ -63,9 +74,13 @@ impl NodeWorkerFixture {
         observer: watch::Receiver<bool>,
         mode: &str,
     ) -> WorkerExecution {
-        WorkerExecution::spawn_command(request, observer, self.command(mode, 0))
-            .await
-            .expect("spawn adversarial worker")
+        match WorkerExecution::spawn_command(request, observer, self.command(mode, 0)).await {
+            Ok(execution) => execution,
+            Err(WorkerSpawnError::PreLaunch(error))
+            | Err(WorkerSpawnError::PostLaunch { error, .. }) => {
+                panic!("spawn adversarial worker: {error:?}")
+            }
+        }
     }
 
     pub(super) async fn assert_stopped(&self, execution: WorkerExecution) {
@@ -159,6 +174,8 @@ function respondStarted(frame) {
     return;
   }
   if (mode === 'bad-start') {
+    fs.writeFileSync(require('path').join(require('path').dirname(pids), 'worker-mutation'),
+      'mutation before malformed start receipt');
     process.stdout.write(JSON.stringify({
       type: 'response', id: frame.id + 1, ok: true, result: {}
     }) + '\n');

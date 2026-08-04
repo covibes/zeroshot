@@ -208,6 +208,13 @@ pub(super) fn safe_application_error(code: &str, message: &str) -> BackendError 
     BackendError::application(code, message, None)
 }
 
+pub(super) fn terminal_failure_error() -> BackendError {
+    safe_application_error(
+        "FINALIZATION_FAILED",
+        "Hosted run finalization failed before trusted delivery completed",
+    )
+}
+
 pub(super) fn internal_error(message: &str) -> BackendError {
     BackendError::new(INTERNAL_ERROR_CODE, message)
 }
@@ -219,6 +226,7 @@ pub(super) fn worker_start_error(_error: WorkerError) -> BackendError {
 pub(super) fn worker_error_outcome(error: WorkerError) -> WorkerOutcome {
     match error {
         WorkerError::Protocol => WorkerOutcome::malformed(),
+        WorkerError::Timeout => WorkerOutcome::declared_failure(WorkerErrorCode::Timeout),
         WorkerError::Launch | WorkerError::Exited | WorkerError::Cleanup => {
             WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
         }
@@ -234,17 +242,17 @@ pub(super) fn redact_request(request: &LegacyShipRequest) -> Value {
 }
 
 pub(super) fn status_from(state: &HostedState) -> ClusterStatus {
+    let stop_mode = if state.shutdown_forced_run {
+        Some(StopMode::Force)
+    } else {
+        state.stop_request.as_ref().map(|request| request.mode)
+    };
     ClusterStatus {
         phase: state.phase,
         observed_generation: state.generation,
         current_run_id: state.run_id.clone(),
         at_cursor: state.at_cursor.clone(),
-        operational: (state.phase != Phase::Empty).then(|| {
-            operational(
-                state.phase,
-                state.stop_request.as_ref().map(|request| request.mode),
-            )
-        }),
+        operational: (state.phase != Phase::Empty).then(|| operational(state.phase, stop_mode)),
     }
 }
 

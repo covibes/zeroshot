@@ -10,7 +10,7 @@ use openengine_cluster_protocol::{
     WatchParams, WorkerErrorCode, GONE,
 };
 use openengine_cluster_server::admission::CancellationSignal;
-use openengine_cluster_server::watch::WatchStreamItem;
+use openengine_cluster_server::watch::{WatchEventStream, WatchHandle, WatchStreamItem};
 use openengine_cluster_server::{ClusterBackend, ConnectionContext};
 use serde_json::json;
 use tokio::sync::Notify;
@@ -29,11 +29,14 @@ mod lifecycle_semantics;
 mod stop_semantics;
 
 #[derive(Default)]
-struct ReadyWorktree;
+struct ReadyWorktree {
+    calls: AtomicUsize,
+}
 
 #[async_trait]
 impl WorktreeReadinessPort for ReadyWorktree {
     async fn verify_ready(&self) -> Result<WorktreeReadinessReceipt, TrustedServiceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(WorktreeReadinessReceipt::ready())
     }
 }
@@ -94,9 +97,14 @@ impl ProxyReadinessPort for OrderedProxy {
 struct OrderedDelivery {
     proxy: Arc<OrderedProxy>,
     pid_file: PathBuf,
+    mutation_file: PathBuf,
     calls: AtomicUsize,
     ordering_failed: AtomicBool,
+    observed_mutation: AtomicBool,
     fail_delivery: bool,
+    gate_delivery: AtomicBool,
+    delivery_entered: Notify,
+    delivery_release: Notify,
 }
 
 #[async_trait]
@@ -110,6 +118,11 @@ impl WorkspaceDeliveryPort for OrderedDelivery {
         intent: DeliveryIntent,
     ) -> Result<DeliveryReceipt, TrustedServiceError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.observed_mutation.store(
+            fs::read_to_string(&self.mutation_file)
+                .is_ok_and(|value| value == "mutation before malformed start receipt"),
+            Ordering::SeqCst,
+        );
         let pids = fs::read_to_string(&self.pid_file)
             .unwrap_or_default()
             .lines()
@@ -119,6 +132,10 @@ impl WorkspaceDeliveryPort for OrderedDelivery {
         if !self.proxy.cleaned.load(Ordering::SeqCst) || !process_tree_is_dead {
             self.ordering_failed.store(true, Ordering::SeqCst);
             return Err(TrustedServiceError::InvalidReceipt);
+        }
+        if self.gate_delivery.load(Ordering::SeqCst) {
+            self.delivery_entered.notify_one();
+            self.delivery_release.notified().await;
         }
         if self.fail_delivery {
             return Err(TrustedServiceError::Unavailable);
@@ -133,6 +150,7 @@ impl WorkspaceDeliveryPort for OrderedDelivery {
 struct RuntimeFixture {
     _worker: NodeWorkerFixture,
     backend: HostedBackend,
+    worktree: Arc<ReadyWorktree>,
     proxy: Arc<OrderedProxy>,
     delivery: Arc<OrderedDelivery>,
 }
@@ -144,6 +162,8 @@ impl RuntimeFixture {
     fn with_faults(result_delay_ms: u64, fail_cleanup: bool, fail_delivery: bool) -> Self {
         let worker = NodeWorkerFixture::new("backend");
         let pid_file = worker.pids_path();
+        let mutation_file = worker.mutation_path();
+        let worktree = Arc::new(ReadyWorktree::default());
         let proxy = Arc::new(OrderedProxy {
             fail_cleanup,
             ..OrderedProxy::default()
@@ -151,16 +171,21 @@ impl RuntimeFixture {
         let delivery = Arc::new(OrderedDelivery {
             proxy: Arc::clone(&proxy),
             pid_file: pid_file.clone(),
+            mutation_file,
             calls: AtomicUsize::new(0),
             ordering_failed: AtomicBool::new(false),
+            observed_mutation: AtomicBool::new(false),
             fail_delivery,
+            gate_delivery: AtomicBool::new(false),
+            delivery_entered: Notify::new(),
+            delivery_release: Notify::new(),
         });
-        let mut backend =
-            HostedBackend::new(Arc::new(ReadyWorktree), proxy.clone(), delivery.clone());
+        let mut backend = HostedBackend::new(worktree.clone(), proxy.clone(), delivery.clone());
         backend.worker_command = worker.command("main", result_delay_ms);
         Self {
             _worker: worker,
             backend,
+            worktree,
             proxy,
             delivery,
         }
@@ -202,12 +227,37 @@ fn graph(timeout_ms: u64) -> GraphSpec {
     .expect("hosted graph")
 }
 
-async fn apply_and_collect(fixture: &RuntimeFixture, key: &str) -> Vec<WatchEvent> {
-    let (_receipt, mut stream, _handle) = fixture
+async fn watch_fixture(fixture: &RuntimeFixture) -> (WatchEventStream, WatchHandle) {
+    let (_receipt, stream, handle) = fixture
         .backend
         .watch(&ConnectionContext::default(), WatchParams::default(), 16)
         .await
         .expect("parked watch");
+    (stream, handle)
+}
+
+fn assert_crash_without_finished(events: &[WatchEvent]) {
+    assert_eq!(events.len(), 3);
+    let WatchEvent::NodeEnd { outcome, .. } = &events[2] else {
+        panic!("third event is NodeEnd")
+    };
+    assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Crash));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, WatchEvent::Finished { .. }))
+    );
+}
+
+fn assert_ordered_delivery(fixture: &RuntimeFixture) {
+    assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.worktree.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));
+}
+
+async fn apply_and_collect(fixture: &RuntimeFixture, key: &str) -> Vec<WatchEvent> {
+    let (mut stream, _handle) = watch_fixture(fixture).await;
     fixture
         .backend
         .apply(&ConnectionContext::default(), apply(key))
@@ -230,51 +280,55 @@ async fn apply_and_collect(fixture: &RuntimeFixture, key: &str) -> Vec<WatchEven
     }
 }
 
-#[tokio::test]
-async fn canonical_watch_is_ordered_bounded_and_secret_free() {
-    let fixture = RuntimeFixture::new(25);
-    let events = apply_and_collect(&fixture, "hosted-events-1").await;
-    assert_eq!(events.len(), 4);
-    assert!(matches!(events[0], WatchEvent::Phase { .. }));
-    assert!(matches!(events[1], WatchEvent::NodeBegin { .. }));
-    assert!(matches!(events[2], WatchEvent::NodeEnd { .. }));
-    assert!(matches!(events[3], WatchEvent::Finished { .. }));
-    let encoded = serde_json::to_string(&events).expect("events serialize");
-    assert!(!encoded.contains("OPENROUTER_INPUT_CANARY"));
-    assert!(!encoded.contains("OPENROUTER_STDERR_CANARY"));
-    assert!(!encoded.contains("OPENROUTER_RESULT_CANARY"));
-    let reconnect = match fixture
+async fn apply_and_collect_closed(fixture: &RuntimeFixture, key: &str) -> Vec<WatchEvent> {
+    let (mut stream, _handle) = watch_fixture(fixture).await;
+    fixture
         .backend
-        .watch(&ConnectionContext::default(), WatchParams::default(), 16)
+        .apply(&ConnectionContext::default(), apply(key))
         .await
-    {
-        Err(error) => error,
-        Ok(_) => panic!("finished live task accepted reconnect"),
-    };
-    assert_eq!(reconnect.code, GONE);
+        .expect("apply starts real worker");
+    let mut events = Vec::new();
+    loop {
+        let item = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("watch close deadline");
+        let Some(item) = item else {
+            return events;
+        };
+        let WatchStreamItem::Record(record) = item else {
+            panic!("hosted watch must not overflow")
+        };
+        events.push(record.event);
+    }
 }
+
 #[tokio::test]
-async fn cleanup_failure_is_terminal_and_skips_delivery() {
+async fn cleanup_failure_is_terminal_without_fake_finished() {
     let fixture = RuntimeFixture::with_faults(25, true, false);
-    let events = apply_and_collect(&fixture, "hosted-cleanup-fault-1").await;
-    let WatchEvent::NodeEnd { outcome, .. } = &events[2] else {
-        panic!("third event is NodeEnd")
-    };
-    assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Crash));
+    let events = apply_and_collect_closed(&fixture, "hosted-cleanup-fault-1").await;
+    assert_crash_without_finished(&events);
     assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.worktree.calls.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
+    let get_error = fixture
+        .backend
+        .get(&ConnectionContext::default(), GetParams::default())
+        .await
+        .expect_err("cleanup failure is not projected as Finished");
+    assert_eq!(get_error.code, "FINALIZATION_FAILED");
 }
 #[tokio::test]
-async fn delivery_failure_is_terminal_without_duplicate_delivery() {
+async fn delivery_failure_is_terminal_without_duplicate_or_fake_finished() {
     let fixture = RuntimeFixture::with_faults(25, false, true);
-    let events = apply_and_collect(&fixture, "hosted-delivery-fault-1").await;
-    let WatchEvent::NodeEnd { outcome, .. } = &events[2] else {
-        panic!("third event is NodeEnd")
-    };
-    assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Crash));
-    assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
-    assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));
+    let events = apply_and_collect_closed(&fixture, "hosted-delivery-fault-1").await;
+    assert_crash_without_finished(&events);
+    assert_ordered_delivery(&fixture);
+    let get_error = fixture
+        .backend
+        .get(&ConnectionContext::default(), GetParams::default())
+        .await
+        .expect_err("delivery failure is not projected as Finished");
+    assert_eq!(get_error.code, "FINALIZATION_FAILED");
     fixture
         .backend
         .apply(
@@ -314,58 +368,13 @@ fn stop_params(mode: StopMode, generation: Generation, key: &str) -> StopParams 
 }
 
 #[tokio::test]
-async fn process_result_is_delivered_once_after_cleanup_and_tree_death() {
-    let fixture = RuntimeFixture::new(25);
-    let first = fixture
-        .backend
-        .apply(&ConnectionContext::default(), apply("hosted-apply-1"))
-        .await
-        .expect("apply starts real worker");
-    assert_eq!(first.phase, Phase::Running);
-    fixture.wait_finished().await;
-
-    assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
-    assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));
-
-    let replay = fixture
-        .backend
-        .apply(&ConnectionContext::default(), apply("hosted-apply-1"))
-        .await
-        .expect("same apply replays");
-    assert_eq!(replay.run_id, first.run_id);
-    assert!(replay.deduped);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
-    let mut reused = apply("hosted-apply-1");
-    reused.input = Some(json!({
-        "source": "prompt",
-        "prompt": "different request",
-        "artifacts": [],
-        "isolationProfile": "isolation.prepared-worktree@1",
-        "providerProfile": "provider.fixed-proxy@1"
-    }));
-    let reuse_error = fixture
-        .backend
-        .apply(&ConnectionContext::default(), reused)
-        .await
-        .expect_err("same key with different parameters is rejected");
-    assert_eq!(
-        reuse_error.code,
-        openengine_cluster_protocol::IDEMPOTENCY_REUSE
-    );
-
-    let conflict = fixture
-        .backend
-        .apply(&ConnectionContext::default(), apply("hosted-apply-2"))
-        .await
-        .expect_err("distinct second apply is rejected");
-    assert_eq!(conflict.code, openengine_cluster_protocol::RUN_CONFLICT);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
 async fn timeout_reaps_before_failure_delivery() {
     let fixture = RuntimeFixture::new(10_000);
+    let (_receipt, mut stream, _handle) = fixture
+        .backend
+        .watch(&ConnectionContext::default(), WatchParams::default(), 16)
+        .await
+        .expect("timeout watcher");
     fixture
         .backend
         .apply(
@@ -374,7 +383,22 @@ async fn timeout_reaps_before_failure_delivery() {
         )
         .await
         .expect("apply starts real worker");
-    fixture.wait_finished().await;
+    let mut terminal_code = None;
+    loop {
+        let item = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("timeout event deadline")
+            .expect("watch remains live through Finished");
+        let WatchStreamItem::Record(record) = item else {
+            panic!("timeout watch must not overflow")
+        };
+        match record.event {
+            WatchEvent::NodeEnd { outcome, .. } => terminal_code = outcome.error_code(),
+            WatchEvent::Finished { .. } => break,
+            _ => {}
+        }
+    }
+    assert_eq!(terminal_code, Some(WorkerErrorCode::Timeout));
     assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
     assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));

@@ -91,7 +91,82 @@ async fn launch_boundary_only_restores_empty_before_a_possible_process() {
     assert_eq!(consumed.status.phase, Phase::Finished);
     assert!(consumed.status.current_run_id.is_some());
     assert_eq!(possible_launch.proxy.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(possible_launch.delivery.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(possible_launch.worktree.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(possible_launch.delivery.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        !possible_launch
+            .delivery
+            .ordering_failed
+            .load(Ordering::SeqCst)
+    );
+    assert!(
+        possible_launch
+            .delivery
+            .observed_mutation
+            .load(Ordering::SeqCst)
+    );
+}
+
+#[tokio::test]
+async fn oversized_start_frame_is_rejected_before_process_or_run_commit() {
+    let fixture = RuntimeFixture::new(10_000);
+    let mut params = apply("hosted-oversized-prelaunch");
+    params.input.as_mut().expect("seed input")["prompt"] = json!("x".repeat(70 * 1024));
+    fixture
+        .backend
+        .apply(&ConnectionContext::default(), params)
+        .await
+        .expect_err("oversized worker start frame is rejected before launch");
+
+    let get = fixture
+        .backend
+        .get(&ConnectionContext::default(), GetParams::default())
+        .await
+        .expect("get after oversized prelaunch rejection");
+    assert_eq!(get.status.phase, Phase::Empty);
+    assert!(get.status.current_run_id.is_none());
+    assert!(!fixture._worker.pids_path().exists());
+    assert_eq!(fixture.worktree.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn malformed_start_delivery_failure_never_fakes_finished() {
+    let mut fixture = RuntimeFixture::with_faults(10_000, false, true);
+    fixture.backend.worker_command = fixture._worker.command("bad-start", 0);
+    let (mut stream, _handle) = watch_fixture(&fixture).await;
+    fixture
+        .backend
+        .apply(
+            &ConnectionContext::default(),
+            apply("hosted-malformed-delivery-failure"),
+        )
+        .await
+        .expect_err("invalid start receipt fails after trusted delivery attempt");
+
+    let mut events = Vec::new();
+    loop {
+        let item = timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("failed-start watch close deadline");
+        let Some(item) = item else {
+            break;
+        };
+        let WatchStreamItem::Record(record) = item else {
+            panic!("hosted watch must not overflow")
+        };
+        events.push(record.event);
+    }
+    assert_crash_without_finished(&events);
+    assert_ordered_delivery(&fixture);
+    assert!(fixture.delivery.observed_mutation.load(Ordering::SeqCst));
+    let get_error = fixture
+        .backend
+        .get(&ConnectionContext::default(), GetParams::default())
+        .await
+        .expect_err("failed trusted delivery is not projected as Finished");
+    assert_eq!(get_error.code, "FINALIZATION_FAILED");
 }
 
 #[tokio::test]
@@ -238,4 +313,76 @@ async fn phase_statuses_are_stamped_with_their_durable_record_cursor() {
             _ => {}
         }
     }
+}
+#[tokio::test]
+async fn canonical_watch_is_ordered_bounded_and_secret_free() {
+    let fixture = RuntimeFixture::new(25);
+    let events = apply_and_collect(&fixture, "hosted-events-1").await;
+    assert_eq!(events.len(), 4);
+    assert!(matches!(events[0], WatchEvent::Phase { .. }));
+    assert!(matches!(events[1], WatchEvent::NodeBegin { .. }));
+    assert!(matches!(events[2], WatchEvent::NodeEnd { .. }));
+    assert!(matches!(events[3], WatchEvent::Finished { .. }));
+    let encoded = serde_json::to_string(&events).expect("events serialize");
+    assert!(!encoded.contains("OPENROUTER_INPUT_CANARY"));
+    assert!(!encoded.contains("OPENROUTER_STDERR_CANARY"));
+    assert!(!encoded.contains("OPENROUTER_RESULT_CANARY"));
+    let reconnect = match fixture
+        .backend
+        .watch(&ConnectionContext::default(), WatchParams::default(), 16)
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("finished live task accepted reconnect"),
+    };
+    assert_eq!(reconnect.code, GONE);
+}
+#[tokio::test]
+async fn process_result_is_delivered_once_after_cleanup_and_tree_death() {
+    let fixture = RuntimeFixture::new(25);
+    let first = fixture
+        .backend
+        .apply(&ConnectionContext::default(), apply("hosted-apply-1"))
+        .await
+        .expect("apply starts real worker");
+    assert_eq!(first.phase, Phase::Running);
+    fixture.wait_finished().await;
+
+    assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));
+
+    let replay = fixture
+        .backend
+        .apply(&ConnectionContext::default(), apply("hosted-apply-1"))
+        .await
+        .expect("same apply replays");
+    assert_eq!(replay.run_id, first.run_id);
+    assert!(replay.deduped);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    let mut reused = apply("hosted-apply-1");
+    reused.input = Some(json!({
+        "source": "prompt",
+        "prompt": "different request",
+        "artifacts": [],
+        "isolationProfile": "isolation.prepared-worktree@1",
+        "providerProfile": "provider.fixed-proxy@1"
+    }));
+    let reuse_error = fixture
+        .backend
+        .apply(&ConnectionContext::default(), reused)
+        .await
+        .expect_err("same key with different parameters is rejected");
+    assert_eq!(
+        reuse_error.code,
+        openengine_cluster_protocol::IDEMPOTENCY_REUSE
+    );
+
+    let conflict = fixture
+        .backend
+        .apply(&ConnectionContext::default(), apply("hosted-apply-2"))
+        .await
+        .expect_err("distinct second apply is rejected");
+    assert_eq!(conflict.code, openengine_cluster_protocol::RUN_CONFLICT);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
 }

@@ -1,12 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, Cursor, Generation, GetParams, GetResult, GraphProfile,
-    GraphProfileSet, GraphSpec, InitializeParams, InitializeResult, Phase, PlanParams, PlanResult,
-    ServerCapabilities, StopParams, StopResult, SubscriptionId, WatchParams, WatchResult, GONE,
-    INTERNAL_ERROR_CODE, NOT_FOUND,
+    GraphProfileSet, GraphSpec, InitializeParams, InitializeResult, LegacyShipRequest, Phase,
+    PlanParams, PlanResult, ServerCapabilities, StopMode, StopParams, StopResult, SubscriptionId,
+    WatchParams, WatchResult, GONE, INTERNAL_ERROR_CODE, NOT_FOUND,
 };
 use openengine_cluster_server::admission::StoreError;
 use openengine_cluster_server::watch::{
@@ -16,10 +17,13 @@ use openengine_cluster_server::watch::{
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext};
 use tokio::sync::{watch, Mutex, Notify};
 
-use super::backend_support::{internal_error, safe_application_error, status_from};
+use super::backend_admission_support::RunMetadata;
+use super::backend_support::{
+    internal_error, safe_application_error, status_from, terminal_failure_error,
+};
 use super::journal::EventJournal;
 use super::ports::{ProxyReadinessPort, WorktreeReadinessPort, WorkspaceDeliveryPort};
-use super::worker::WorkerCommand;
+use super::worker::{WorkerCommand, WorkerError, WorkerExecution};
 
 pub(super) struct HostedState {
     pub(super) graph: Option<GraphSpec>,
@@ -37,8 +41,33 @@ pub(super) struct HostedState {
         Option<watch::Sender<Option<openengine_cluster_protocol::StopMode>>>,
     pub(super) finalizing: bool,
     pub(super) finished: bool,
+    pub(super) terminal_failure: bool,
+    pub(super) shutdown_forced_run: bool,
     pub(super) shutting_down: bool,
     pub(super) proxy_cleanup_result: Option<bool>,
+}
+pub(super) struct WorkerDrive {
+    pub(super) execution: WorkerExecution,
+    pub(super) process_cancellation: watch::Sender<bool>,
+    pub(super) finalization_observer: watch::Receiver<Option<StopMode>>,
+    pub(super) timeout: Duration,
+}
+pub(super) struct PreparedRun {
+    pub(super) params: ApplyParams,
+    pub(super) request: LegacyShipRequest,
+    pub(super) metadata: RunMetadata,
+}
+pub(super) enum RunFinalization {
+    Active(watch::Sender<Option<StopMode>>),
+    FailedStart,
+}
+pub(super) enum WorkerStartFailure {
+    PreLaunch(WorkerError),
+    PostLaunch {
+        error: WorkerError,
+        execution: Option<WorkerExecution>,
+        process_cancellation: watch::Sender<bool>,
+    },
 }
 
 impl Default for HostedState {
@@ -59,6 +88,8 @@ impl Default for HostedState {
             finalization_request: None,
             finalizing: false,
             finished: false,
+            terminal_failure: false,
+            shutdown_forced_run: false,
             shutting_down: false,
             proxy_cleanup_result: None,
         }
@@ -112,7 +143,7 @@ impl ClusterBackend for HostedBackend {
                 logs: false,
                 agent_attach: false,
             },
-            self.status().await,
+            self.status().await?,
         ))
     }
 
@@ -138,6 +169,9 @@ impl ClusterBackend for HostedBackend {
         params: GetParams,
     ) -> Result<GetResult, BackendError> {
         let state = self.state.lock().await;
+        if state.terminal_failure {
+            return Err(terminal_failure_error());
+        }
         if params
             .at_cursor
             .as_ref()

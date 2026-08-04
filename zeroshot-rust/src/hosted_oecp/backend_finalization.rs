@@ -7,15 +7,55 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 
 use super::backend::{HostedBackend, HostedState};
-use super::backend_runtime::Finalization;
+use super::backend_runtime::{Finalization, PostWorkerFinalization};
 use super::backend_support::{
     generation_error, idempotency_reuse, internal_error, operational, safe_application_error,
-    status_from, worker_error_outcome, TRUSTED_SERVICE_DEADLINE,
+    status_from, terminal_failure_error, worker_error_outcome, TRUSTED_SERVICE_DEADLINE,
 };
 use super::ports::DeliveryIntent;
 use super::worker::WorkerError;
 
 impl HostedBackend {
+    pub(super) async fn cleanup_proxy_once(&self) -> bool {
+        {
+            let mut state = self.state.lock().await;
+            if let Some(result) = state.proxy_cleanup_result {
+                return result;
+            }
+            state.proxy_cleanup_result = Some(false);
+        }
+        let cleaned = timeout(
+            TRUSTED_SERVICE_DEADLINE,
+            self.proxy.stop_admission_and_cleanup(),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok());
+        self.state.lock().await.proxy_cleanup_result = Some(cleaned);
+        self.changed.notify_waiters();
+        cleaned
+    }
+
+    pub(super) async fn require_proxy_cleanup(&self) -> Result<(), BackendError> {
+        if self.state.lock().await.proxy_cleanup_result == Some(true) {
+            Ok(())
+        } else {
+            Err(safe_application_error(
+                "PROXY_CLEANUP",
+                "Fixed model proxy cleanup failed",
+            ))
+        }
+    }
+
+    pub(super) async fn reject_shutdown(&self) -> Result<(), BackendError> {
+        if self.state.lock().await.shutting_down {
+            Err(safe_application_error(
+                "SHUTTING_DOWN",
+                "Hosted runtime is shutting down",
+            ))
+        } else {
+            Ok(())
+        }
+    }
     pub(super) async fn finalize(&self, request: Finalization) {
         let Some(stop_mode) = self.claim_finalization().await else {
             return;
@@ -23,11 +63,28 @@ impl HostedBackend {
         let cleanup_ok = self.cleanup_proxy_once().await;
         request.process_cancellation.send_replace(true);
         let process_cleanup_ok = request.execution.prove_stopped().await.is_ok();
-        let outcome = terminal_candidate(stop_mode, request.candidate);
-        let outcome = self
-            .deliver_after_cleanup(outcome, cleanup_ok, process_cleanup_ok)
+        self.complete_post_worker(PostWorkerFinalization {
+            outcome: terminal_candidate(stop_mode, request.candidate),
+            cleanup_ok,
+            process_cleanup_ok,
+            stop_mode,
+        })
+        .await;
+    }
+
+    pub(super) async fn complete_post_worker(&self, request: PostWorkerFinalization) {
+        let delivered = self
+            .deliver_after_cleanup(
+                request.outcome,
+                request.cleanup_ok,
+                request.process_cleanup_ok,
+            )
             .await;
-        self.publish_terminal(outcome, stop_mode).await;
+        if let Some(outcome) = delivered {
+            self.publish_terminal(outcome, request.stop_mode).await;
+        } else {
+            self.close_failed_terminal().await;
+        }
     }
 
     async fn claim_finalization(&self) -> Option<Option<StopMode>> {
@@ -36,7 +93,11 @@ impl HostedBackend {
             return None;
         }
         state.finalizing = true;
-        Some(state.stop_request.as_ref().map(|params| params.mode))
+        Some(if state.shutdown_forced_run {
+            Some(StopMode::Force)
+        } else {
+            state.stop_request.as_ref().map(|params| params.mode)
+        })
     }
 
     async fn deliver_after_cleanup(
@@ -44,28 +105,23 @@ impl HostedBackend {
         outcome: WorkerOutcome,
         cleanup_ok: bool,
         process_cleanup_ok: bool,
-    ) -> WorkerOutcome {
+    ) -> Option<WorkerOutcome> {
         if !cleanup_ok || !process_cleanup_ok {
-            return crash_outcome();
+            return None;
         }
-        let worktree_ok = timeout(TRUSTED_SERVICE_DEADLINE, self.worktree.verify_ready())
-            .await
-            .is_ok_and(|result| result.is_ok());
+        let worktree_ok = timeout(
+            TRUSTED_SERVICE_DEADLINE,
+            self.worktree.verify_delivery_ready(),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok());
         if !worktree_ok {
-            return crash_outcome();
+            return None;
         }
-        let Some((generation, run_id)) = self.run_identity().await else {
-            return crash_outcome();
-        };
-        let Ok(intent) = DeliveryIntent::new(generation, run_id, outcome.error_code().is_none())
-        else {
-            return crash_outcome();
-        };
-        if self.delivery_succeeded(&intent).await {
-            outcome
-        } else {
-            crash_outcome()
-        }
+        let (generation, run_id) = self.run_identity().await?;
+        let intent =
+            DeliveryIntent::new(generation, run_id, outcome.error_code().is_none()).ok()?;
+        self.delivery_succeeded(&intent).await.then_some(outcome)
     }
 
     async fn delivery_succeeded(&self, intent: &DeliveryIntent) -> bool {
@@ -83,22 +139,10 @@ impl HostedBackend {
     }
 
     async fn publish_terminal(&self, outcome: WorkerOutcome, stop_mode: Option<StopMode>) {
-        let Some((run_id, node)) = self.terminal_event_identity().await else {
-            self.complete_without_terminal_events().await;
+        let Some(run_id) = self.publish_node_end(outcome).await else {
+            self.complete_terminal_failure().await;
             return;
         };
-        let _ = self
-            .publish(
-                run_id.clone(),
-                WatchEvent::NodeEnd {
-                    node: NodeAddress {
-                        node,
-                        attempt: PositiveInteger::new(1).expect("one is positive"),
-                    },
-                    outcome,
-                },
-            )
-            .await;
         let mut state = self.state.lock().await;
         state.phase = Phase::Finished;
         let published = self.journal.publish_with(run_id, |cursor| {
@@ -121,6 +165,28 @@ impl HostedBackend {
         self.changed.notify_waiters();
     }
 
+    async fn publish_node_end(&self, outcome: WorkerOutcome) -> Option<RunId> {
+        let (run_id, node) = self.terminal_event_identity().await?;
+        let _ = self
+            .publish(
+                run_id.clone(),
+                WatchEvent::NodeEnd {
+                    node: NodeAddress {
+                        node,
+                        attempt: PositiveInteger::new(1).expect("one is positive"),
+                    },
+                    outcome,
+                },
+            )
+            .await;
+        Some(run_id)
+    }
+
+    async fn close_failed_terminal(&self) {
+        self.publish_node_end(crash_outcome()).await;
+        self.complete_terminal_failure().await;
+    }
+
     async fn terminal_event_identity(
         &self,
     ) -> Option<(RunId, openengine_cluster_protocol::NodeName)> {
@@ -131,12 +197,12 @@ impl HostedBackend {
         ))
     }
 
-    async fn complete_without_terminal_events(&self) {
+    async fn complete_terminal_failure(&self) {
         let mut state = self.state.lock().await;
-        state.phase = Phase::Finished;
         state.finished = true;
+        state.terminal_failure = true;
         state.finalizing = false;
-        finish_stop_receipts(&mut state);
+        state.finalization_request = None;
         self.journal.close();
         drop(state);
         self.changed.notify_waiters();
@@ -217,6 +283,9 @@ impl HostedBackend {
             let notified = self.changed.notified();
             {
                 let state = self.state.lock().await;
+                if state.terminal_failure {
+                    return Err(terminal_failure_error());
+                }
                 if let Some((committed, result)) = state
                     .stop_receipts
                     .iter()
@@ -317,13 +386,18 @@ fn replay_stop(
 }
 
 fn finish_stop_receipts(state: &mut HostedState) {
-    let (Some(effective), Some(generation), Some(run_id), Some(at_cursor)) = (
+    let (Some(accepted), Some(generation), Some(run_id), Some(at_cursor)) = (
         state.stop_request.as_ref().map(|params| params.mode),
         state.generation,
         state.run_id.clone(),
         state.at_cursor.clone(),
     ) else {
         return;
+    };
+    let effective = if state.shutdown_forced_run {
+        StopMode::Force
+    } else {
+        accepted
     };
     state.stop_receipts = state
         .stop_requests
@@ -346,6 +420,9 @@ fn finish_stop_receipts(state: &mut HostedState) {
 }
 
 fn validate_stoppable(state: &HostedState, params: &StopParams) -> Result<(), BackendError> {
+    if state.terminal_failure {
+        return Err(terminal_failure_error());
+    }
     if state.finalizing {
         return Err(safe_application_error(
             openengine_cluster_protocol::INVALID_PHASE,
