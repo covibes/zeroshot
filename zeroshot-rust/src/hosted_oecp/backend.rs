@@ -22,6 +22,7 @@ use super::backend_support::{
     internal_error, safe_application_error, status_from, terminal_failure_error,
 };
 use super::journal::EventJournal;
+use super::config::HostedAuthority;
 use super::ports::{ProxyReadinessPort, WorktreeReadinessPort, WorkspaceDeliveryPort};
 use super::worker::{WorkerCommand, WorkerError, WorkerExecution};
 
@@ -103,6 +104,7 @@ pub struct HostedBackend {
     pub(super) worktree: Arc<dyn WorktreeReadinessPort>,
     pub(super) proxy: Arc<dyn ProxyReadinessPort>,
     pub(super) delivery: Arc<dyn WorkspaceDeliveryPort>,
+    pub(super) authority: HostedAuthority,
     pub(super) changed: Arc<Notify>,
     pub(super) worker_command: WorkerCommand,
     next_subscription: Arc<AtomicU64>,
@@ -114,16 +116,19 @@ impl HostedBackend {
         worktree: Arc<dyn WorktreeReadinessPort>,
         proxy: Arc<dyn ProxyReadinessPort>,
         delivery: Arc<dyn WorkspaceDeliveryPort>,
+        authority: HostedAuthority,
     ) -> Self {
+        let worker_command = WorkerCommand::production(&authority);
         Self {
             state: Arc::new(Mutex::new(HostedState::default())),
             journal: Arc::new(EventJournal::new()),
             worktree,
             proxy,
             delivery,
+            authority,
             changed: Arc::new(Notify::new()),
             next_subscription: Arc::new(AtomicU64::new(1)),
-            worker_command: WorkerCommand::production(),
+            worker_command,
         }
     }
 }

@@ -67,23 +67,23 @@ impl HostedBackend {
             outcome: terminal_candidate(stop_mode, request.candidate),
             cleanup_ok,
             process_cleanup_ok,
+            worker_cluster_id: Some(request.worker_cluster_id),
             stop_mode,
         })
         .await;
     }
 
     pub(super) async fn complete_post_worker(&self, request: PostWorkerFinalization) {
-        let delivered = self
-            .deliver_after_cleanup(
-                request.outcome,
-                request.cleanup_ok,
-                request.process_cleanup_ok,
-            )
-            .await;
-        if let Some(outcome) = delivered {
-            self.publish_terminal(outcome, request.stop_mode).await;
+        let terminal_ready = match (&request.outcome, request.stop_mode) {
+            (WorkerOutcome::Verified { .. }, _) => self.deliver_after_cleanup(&request).await,
+            (_, Some(StopMode::Force)) => request.cleanup_ok && request.process_cleanup_ok,
+            _ => false,
+        };
+        if terminal_ready {
+            self.publish_terminal(request.outcome, request.stop_mode)
+                .await;
         } else {
-            self.close_failed_terminal().await;
+            self.close_failed_terminal(request.outcome).await;
         }
     }
 
@@ -100,14 +100,9 @@ impl HostedBackend {
         })
     }
 
-    async fn deliver_after_cleanup(
-        &self,
-        outcome: WorkerOutcome,
-        cleanup_ok: bool,
-        process_cleanup_ok: bool,
-    ) -> Option<WorkerOutcome> {
-        if !cleanup_ok || !process_cleanup_ok {
-            return None;
+    async fn deliver_after_cleanup(&self, request: &PostWorkerFinalization) -> bool {
+        if !request.cleanup_ok || !request.process_cleanup_ok {
+            return false;
         }
         let worktree_ok = timeout(
             TRUSTED_SERVICE_DEADLINE,
@@ -116,14 +111,21 @@ impl HostedBackend {
         .await
         .is_ok_and(|result| result.is_ok());
         if !worktree_ok {
-            return None;
+            return false;
         }
-        let (generation, run_id) = self.run_identity().await?;
-        let intent =
-            DeliveryIntent::new(generation, run_id, outcome.error_code().is_none()).ok()?;
-        self.delivery_succeeded(&intent).await.then_some(outcome)
+        let Some((generation, run_id)) = self.run_identity().await else {
+            return false;
+        };
+        let Some(worker_cluster_id) = request.worker_cluster_id.as_deref() else {
+            return false;
+        };
+        let Ok(intent) =
+            DeliveryIntent::new(generation, run_id, worker_cluster_id, &request.outcome)
+        else {
+            return false;
+        };
+        self.delivery_succeeded(&intent).await
     }
-
     async fn delivery_succeeded(&self, intent: &DeliveryIntent) -> bool {
         timeout(
             TRUSTED_SERVICE_DEADLINE,
@@ -182,11 +184,16 @@ impl HostedBackend {
         Some(run_id)
     }
 
-    async fn close_failed_terminal(&self) {
-        self.publish_node_end(crash_outcome()).await;
+    async fn close_failed_terminal(&self, outcome: WorkerOutcome) {
+        let outcome = match outcome {
+            WorkerOutcome::Verified { .. } => {
+                WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
+            }
+            outcome => outcome,
+        };
+        self.publish_node_end(outcome).await;
         self.complete_terminal_failure().await;
     }
-
     async fn terminal_event_identity(
         &self,
     ) -> Option<(RunId, openengine_cluster_protocol::NodeName)> {
@@ -362,14 +369,11 @@ fn terminal_candidate(
     stop_mode: Option<StopMode>,
     candidate: Result<WorkerOutcome, WorkerError>,
 ) -> WorkerOutcome {
-    match stop_mode {
-        Some(StopMode::Force) => WorkerOutcome::declared_failure(WorkerErrorCode::Refusal),
-        Some(StopMode::Drain) | None => candidate.unwrap_or_else(worker_error_outcome),
+    match (stop_mode, candidate) {
+        (_, Ok(outcome @ WorkerOutcome::Verified { .. })) => outcome,
+        (Some(StopMode::Force), _) => WorkerOutcome::declared_failure(WorkerErrorCode::Refusal),
+        (Some(StopMode::Drain) | None, candidate) => candidate.unwrap_or_else(worker_error_outcome),
     }
-}
-
-fn crash_outcome() -> WorkerOutcome {
-    WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
 }
 
 fn replay_stop(

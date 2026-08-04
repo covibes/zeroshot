@@ -26,6 +26,7 @@ pub(super) struct Finalization {
     pub(super) execution: WorkerExecution,
     pub(super) process_cancellation: watch::Sender<bool>,
     pub(super) candidate: Result<WorkerOutcome, WorkerError>,
+    pub(super) worker_cluster_id: String,
 }
 
 pub(super) struct PostWorkerFinalization {
@@ -33,6 +34,7 @@ pub(super) struct PostWorkerFinalization {
     pub(super) cleanup_ok: bool,
     pub(super) process_cleanup_ok: bool,
     pub(super) stop_mode: Option<StopMode>,
+    pub(super) worker_cluster_id: Option<String>,
 }
 fn shutdown_can_force(state: &HostedState) -> bool {
     !state.finished && !state.finalizing && state.phase == Phase::Running
@@ -280,7 +282,7 @@ impl HostedBackend {
         self.verify_startup_readiness().await?;
         reject_cancelled(cancellation)?;
         self.reject_shutdown().await?;
-        let request = validate_request(params)?;
+        let request = validate_request(params, &self.authority)?;
         reject_cancelled(cancellation)?;
         let metadata = run_metadata(params.graph.clone())?;
         Ok((request, metadata))
@@ -460,6 +462,7 @@ impl HostedBackend {
             cleanup_ok,
             process_cleanup_ok,
             stop_mode: None,
+            worker_cluster_id: None,
         })
         .await;
     }
@@ -483,10 +486,12 @@ impl HostedBackend {
             }
             () = sleep(request.timeout) => Err(WorkerError::Timeout),
         };
+        let worker_cluster_id = request.execution.cluster_id().to_owned();
         self.finalize(Finalization {
             execution: request.execution,
             process_cancellation: request.process_cancellation,
             candidate,
+            worker_cluster_id,
         })
         .await;
     }

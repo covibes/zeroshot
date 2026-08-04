@@ -2,10 +2,11 @@
 
 const { runClusterWorkerExecutable } = require('../../lib/cluster-worker/executable');
 const { createLegacyClusterWorker } = require('../../lib/cluster-worker');
-const { createFixedProxyEngineAdapter } = require('./engine-adapter');
+const { createHostedProviderEngineAdapter } = require('./engine-adapter');
+const { loadInstalledHostedWorkerConfiguration } = require('./hosted-config');
 
 const ISOLATION_PROFILE = 'isolation.prepared-worktree@1';
-const PROVIDER_PROFILE = 'provider.fixed-proxy@1';
+const PROVIDER_PROFILE = 'provider.hosted-direct@1';
 const BOUNDS = Object.freeze({
   executionMs: 3_600_000,
   shutdownMs: 10_000,
@@ -24,7 +25,7 @@ function fixedProfile() {
     providerProfile: PROVIDER_PROFILE,
     plan: { isolation: 'worktree', delivery: 'none', autoMerge: false },
     deployment: { prepared: true },
-    provider: { fixedProxy: true },
+    provider: { hostedDirect: true },
     bounds: { ...BOUNDS },
   });
 }
@@ -45,10 +46,12 @@ const artifactResolver = Object.freeze({
   },
 });
 
+const hostedConfig = loadInstalledHostedWorkerConfiguration();
+
 const worker = createLegacyClusterWorker({
   profileRegistry,
   artifactResolver,
-  engineAdapter: createFixedProxyEngineAdapter(),
+  engineAdapter: createHostedProviderEngineAdapter(hostedConfig),
   cleanupFailureReporter() {
     process.stderr.write('hosted worker cleanup failed\n');
   },

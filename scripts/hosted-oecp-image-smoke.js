@@ -1,17 +1,21 @@
 'use strict';
 
-const crypto = require('crypto');
-const { once } = require('events');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { spawnSync } = require('child_process');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { connectClient, nextEvent, smokeGraph } = require('./hosted-oecp-smoke-client');
 const { ROOT, capture, inspect, validTag } = require('./hosted-oecp-image-commands');
 
 const SMOKE_FIXTURE = path.join(ROOT, 'scripts', 'hosted-oecp-smoke-fixture.js');
-
+const CODEX_SMOKE_FIXTURE = path.join(ROOT, 'scripts', 'hosted-oecp-smoke-codex.mjs');
 const CAPABILITY_PATH = '/run/zeroshot-capsule-agent/capability';
+const REPOSITORY = 'the-open-engine/zeroshot-smoke';
+const BASE_REVISION = 'a'.repeat(40);
+const PROMPT_CANARY = 'HOSTED_SMOKE_PROMPT_CANARY';
+const GIT_CANARY = 'HOSTED_SMOKE_GIT_TOKEN_CANARY';
+const PROVIDER_CANARY = 'HOSTED_SMOKE_PROVIDER_TOKEN_CANARY';
 
 function createCapabilityFile() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-oecp-smoke-'));
@@ -22,7 +26,6 @@ function createCapabilityFile() {
     flag: 'wx',
     mode: 0o400,
   });
-  fs.chmodSync(capabilityFile, 0o400);
   return { capabilityFile, directory };
 }
 
@@ -36,16 +39,30 @@ function startSmokeContainer(tag, name, capabilityFile) {
     '--publish',
     '127.0.0.1::8080',
     '--mount',
-    `type=bind,src=${SMOKE_FIXTURE},dst=/smoke-fixture.js,readonly`,
+    `type=bind,src=${SMOKE_FIXTURE},dst=/usr/bin/git,readonly`,
+    '--mount',
+    `type=bind,src=${SMOKE_FIXTURE},dst=/usr/local/bin/codex,readonly`,
+    '--mount',
+    `type=bind,src=${CODEX_SMOKE_FIXTURE},dst=/opt/zeroshot/node_modules/@openai/codex/bin/codex.js,readonly`,
     '--mount',
     `type=bind,src=${capabilityFile},dst=/bootstrap-capability,readonly`,
     '--env',
     `ZEROSHOT_OECP_CAPABILITY_FILE=${CAPABILITY_PATH}`,
+    '--env',
+    `ZEROSHOT_HOSTED_REPOSITORY=${REPOSITORY}`,
+    '--env',
+    `ZEROSHOT_HOSTED_BASE_REVISION=${BASE_REVISION}`,
+    '--env',
+    'ZEROSHOT_HOSTED_PROVIDER=codex',
+    '--env',
+    'ZEROSHOT_HOSTED_MODEL_LEVEL=level1',
+    '--env',
+    `ZEROSHOT_HOSTED_CREDENTIALS_JSON=${JSON.stringify({ GH_TOKEN: GIT_CANARY, OPENAI_API_KEY: PROVIDER_CANARY })}`,
     '--entrypoint',
     '/bin/sh',
     tag,
     '-c',
-    `cp /bootstrap-capability ${CAPABILITY_PATH} && chown 0:0 ${CAPABILITY_PATH} && chmod 0400 ${CAPABILITY_PATH} || exit 1; node /smoke-fixture.js >/tmp/smoke-fixture.log 2>&1 & while ! test -S /run/zeroshot-capsule-agent/proxy.sock || ! test -S /run/zeroshot-capsule-agent/delivery.sock || ! grep -q fixture-ready /tmp/smoke-fixture.log; do sleep 0.05; done; exec /usr/bin/tini -s -- /usr/local/bin/zeroshot-oecp-server`,
+    `cp /bootstrap-capability ${CAPABILITY_PATH} && chown 0:0 ${CAPABILITY_PATH} && chmod 0400 ${CAPABILITY_PATH} || exit 1; exec /usr/bin/tini -s -- /usr/local/bin/node /opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js`,
   ]);
 }
 
@@ -67,98 +84,17 @@ function smokeApplyParams(graph) {
     graph,
     input: {
       source: 'prompt',
-      prompt: 'OPENROUTER_SMOKE_CANARY',
+      prompt: PROMPT_CANARY,
       artifacts: [],
       isolationProfile: 'isolation.prepared-worktree@1',
-      providerProfile: 'provider.fixed-proxy@1',
+      providerProfile: 'provider.hosted-direct@1',
+      repository: REPOSITORY,
+      provider: 'codex',
+      modelLevel: 'level1',
     },
     dryRun: false,
     idempotencyKey: 'hosted-smoke-apply',
   };
-}
-
-async function initializeApplyAndWatch(first) {
-  const initialized = await first.request(1, 'initialize', {
-    protocolVersion: 'openengine.cluster/v1',
-  });
-  const expectedProfiles = ['openengine.graph.single-worker/v1'];
-  if (JSON.stringify(initialized.capabilities.graphProfiles) !== JSON.stringify(expectedProfiles)) {
-    throw new Error('Hosted initialize advertised an unexpected graph profile');
-  }
-  const graph = smokeGraph();
-  const planned = await first.request(2, 'plan', { graph });
-  if (!planned.ok) throw new Error(`Hosted smoke graph was rejected: ${JSON.stringify(planned)}`);
-  const broader = JSON.parse(JSON.stringify(graph));
-  broader.profile = 'openengine.graph.full/v1';
-  if ((await first.request(3, 'plan', { graph: broader })).ok) {
-    throw new Error('Hosted runtime accepted the full graph profile');
-  }
-  const applyParams = smokeApplyParams(graph);
-  const applied = await first.request(4, 'apply', applyParams);
-  if (applied.phase !== 'running' || !applied.runId) {
-    throw new Error(`Hosted apply returned an invalid receipt: ${JSON.stringify(applied)}`);
-  }
-  await first.request(5, 'watch', { runId: applied.runId });
-  const firstEvents = [await nextEvent(first), await nextEvent(first)];
-  if (firstEvents[0].event.type !== 'phase' || firstEvents[1].event.type !== 'node_begin') {
-    throw new Error(`Hosted watch prefix is invalid: ${JSON.stringify(firstEvents)}`);
-  }
-  return { applied, applyParams, firstEvents };
-}
-
-async function resumeWatch(endpoint, applied, firstEvents, capabilityFile) {
-  const closed = once(firstEvents.client.socket, 'close');
-  firstEvents.client.socket.destroy();
-  await closed;
-  const resumed = await connectClient(endpoint, { capabilityFile });
-  await resumed.request(1, 'initialize', { protocolVersion: 'openengine.cluster/v1' });
-  await resumed.request(2, 'watch', {
-    runId: applied.runId,
-    fromCursor: firstEvents.records[1].cursor,
-  });
-  const suffix = [];
-  for (;;) {
-    const event = await nextEvent(resumed);
-    suffix.push(event);
-    if (event.event.type === 'finished') break;
-  }
-  return { resumed, events: [...firstEvents.records, ...suffix] };
-}
-
-function assertWatchEvents(events) {
-  const types = events.map((event) => event.event.type);
-  const expected = ['phase', 'node_begin', 'node_end', 'finished'];
-  if (JSON.stringify(types) !== JSON.stringify(expected)) {
-    throw new Error(`Hosted watch order is invalid: ${JSON.stringify(types)}`);
-  }
-  if (new Set(events.map((event) => event.cursor)).size !== events.length) {
-    throw new Error('Hosted watch replay duplicated a cursor');
-  }
-  const nodeEnd = events[2].event;
-  if (
-    nodeEnd.outcome.status !== 'verified' ||
-    nodeEnd.outcome.output?.summary !== 'Hosted worker completed'
-  ) {
-    throw new Error(`Hosted worker result was not process-derived: ${JSON.stringify(nodeEnd)}`);
-  }
-  if (JSON.stringify(events).includes('OPENROUTER_SMOKE_CANARY')) {
-    throw new Error('Hosted watch leaked its input canary');
-  }
-}
-
-async function waitForFinalGet(client, finalCursor) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const current = await client.request(10 + attempt, 'get', {});
-    if (current.status.phase !== 'finished') {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      continue;
-    }
-    if (current.atCursor !== finalCursor || current.status.atCursor !== finalCursor) {
-      throw new Error(`Hosted final get is incoherent: ${JSON.stringify(current)}`);
-    }
-    return;
-  }
-  throw new Error('Hosted final get did not reach Finished');
 }
 
 async function expectRpcCode(promise, code, successMessage) {
@@ -171,25 +107,64 @@ async function expectRpcCode(promise, code, successMessage) {
   throw new Error(successMessage);
 }
 
-async function verifyFinalContracts(client, applied, applyParams, finalCursor) {
-  await waitForFinalGet(client, finalCursor);
-  const replay = await client.request(110, 'apply', applyParams);
-  if (!replay.deduped || replay.runId !== applied.runId) {
-    throw new Error(`Hosted apply replay changed its receipt: ${JSON.stringify(replay)}`);
+async function exerciseServer(endpoint, capabilityFile) {
+  const client = await connectClient(endpoint, { capabilityFile });
+  try {
+    const initialized = await client.request(1, 'initialize', {
+      protocolVersion: 'openengine.cluster/v1',
+    });
+    if (
+      JSON.stringify(initialized.capabilities.graphProfiles) !==
+      '["openengine.graph.single-worker/v1"]'
+    ) {
+      throw new Error('Hosted initialize advertised an unexpected graph profile');
+    }
+    const graph = smokeGraph();
+    const planned = await client.request(2, 'plan', { graph });
+    if (!planned.ok) throw new Error(`Hosted smoke graph was rejected: ${JSON.stringify(planned)}`);
+    const applyParams = smokeApplyParams(graph);
+    const applied = await client.request(3, 'apply', applyParams);
+    if (applied.phase !== 'running' || !applied.runId) {
+      throw new Error(`Hosted apply returned an invalid receipt: ${JSON.stringify(applied)}`);
+    }
+    await client.request(4, 'watch', { runId: applied.runId });
+    const events = [];
+    try {
+      while (events.length < 3) events.push(await nextEvent(client));
+    } catch {
+      const observed = events.map((record) => record.event?.type ?? 'invalid');
+      throw new Error(`Hosted watch stopped after safe event types: ${JSON.stringify(observed)}`);
+    }
+    const types = events.map((record) => record.event.type);
+    if (JSON.stringify(types) !== '["phase","node_begin","node_end"]') {
+      throw new Error(`Hosted failure watch order is invalid: ${JSON.stringify(types)}`);
+    }
+    if (events[2].event.outcome?.status !== 'error') {
+      throw new Error(
+        `Hosted provider failure was not process-derived: ${JSON.stringify(events[2])}`
+      );
+    }
+    const replay = await client.request(5, 'apply', applyParams);
+    if (!replay.deduped || replay.runId !== applied.runId) {
+      throw new Error(`Hosted apply replay changed its receipt: ${JSON.stringify(replay)}`);
+    }
+    await expectRpcCode(
+      client.request(6, 'get', {}),
+      'FINALIZATION_FAILED',
+      'Hosted failed provider run was projected as successful'
+    );
+    await expectRpcCode(
+      client.request(7, 'apply', { ...applyParams, idempotencyKey: 'hosted-smoke-second-apply' }),
+      'RUN_CONFLICT',
+      'Hosted runtime accepted a distinct second apply'
+    );
+    const serialized = JSON.stringify(events);
+    for (const canary of [PROMPT_CANARY, GIT_CANARY, PROVIDER_CANARY]) {
+      if (serialized.includes(canary)) throw new Error('Hosted watch leaked a smoke canary');
+    }
+  } finally {
+    client.socket.destroy();
   }
-  await expectRpcCode(
-    client.request(111, 'apply', {
-      ...applyParams,
-      idempotencyKey: 'hosted-smoke-second-apply',
-    }),
-    'RUN_CONFLICT',
-    'Hosted runtime accepted a distinct second apply'
-  );
-  await expectRpcCode(
-    client.request(112, 'watch', { runId: applied.runId }),
-    'GONE',
-    'Hosted runtime accepted a post-task reconnect'
-  );
 }
 
 function verifyImageEffects(name) {
@@ -201,34 +176,11 @@ function verifyImageEffects(name) {
     "process.stdout.write(require('fs').readFileSync('/workspace/hosted-smoke-output.txt','utf8'))",
   ]);
   if (output !== 'process-derived hosted smoke output') {
-    throw new Error('Hosted worker did not produce the expected workspace effect');
+    throw new Error('Hosted provider did not produce the expected workspace effect');
   }
-  if (capture('docker', ['logs', name]).includes('OPENROUTER_SMOKE_CANARY')) {
-    throw new Error('Hosted image logs leaked the input canary');
-  }
-}
-
-async function exerciseServer(name, endpoint, capabilityFile) {
-  const first = await connectClient(endpoint, { capabilityFile });
-  let resumed;
-  try {
-    const task = await initializeApplyAndWatch(first);
-    const reconnect = await resumeWatch(
-      endpoint,
-      task.applied,
-      {
-        client: first,
-        records: task.firstEvents,
-      },
-      capabilityFile
-    );
-    resumed = reconnect.resumed;
-    assertWatchEvents(reconnect.events);
-    await verifyFinalContracts(resumed, task.applied, task.applyParams, reconnect.events[3].cursor);
-    verifyImageEffects(name);
-  } finally {
-    first.socket.destroy();
-    resumed?.socket.destroy();
+  const logs = capture('docker', ['logs', name]);
+  for (const canary of [PROMPT_CANARY, GIT_CANARY, PROVIDER_CANARY]) {
+    if (logs.includes(canary)) throw new Error('Hosted image logs leaked a smoke canary');
   }
 }
 
@@ -242,7 +194,8 @@ async function smoke(tag) {
     const mapped = capture('docker', ['port', name, '8080/tcp']);
     const port = Number(mapped.slice(mapped.lastIndexOf(':') + 1));
     await waitForServer(name);
-    await exerciseServer(name, { host: '127.0.0.1', port }, capability.capabilityFile);
+    await exerciseServer({ host: '127.0.0.1', port }, capability.capabilityFile);
+    verifyImageEffects(name);
   } finally {
     spawnSync('docker', ['rm', '--force', name], { cwd: ROOT, stdio: 'ignore' });
     fs.rmSync(capability.directory, { force: true, recursive: true });

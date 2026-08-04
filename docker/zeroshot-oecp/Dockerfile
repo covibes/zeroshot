@@ -14,6 +14,9 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 FROM docker.io/instructure/tini:v0.19.0@sha256:0f9ccf2e54d010735ad691ebe670e256a3820fe8b92c28101194c68ee1216092 AS tini
 
 FROM docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 ARG BUILD_MANIFEST_DIGEST
 LABEL org.opencontainers.image.title="zeroshot-oecp-private" \
       org.opencontainers.image.description="Unpublished legacy single-worker capsule runtime" \
@@ -27,6 +30,8 @@ LABEL org.opencontainers.image.title="zeroshot-oecp-private" \
 COPY --from=rust-build /opt/zeroshot/target/release/zeroshot-oecp-server /usr/local/bin/zeroshot-oecp-server
 COPY --from=node-deps /opt/node-runtime/node_modules /opt/zeroshot/node_modules
 COPY --from=tini /tini /usr/bin/tini
+COPY lib/agent-cli-provider /opt/zeroshot/lib/agent-cli-provider
+COPY lib/provider-detection.js /opt/zeroshot/lib/provider-detection.js
 COPY lib/cluster-worker/contracts.js lib/cluster-worker/engine-adapter-common.js lib/cluster-worker/engine-start.js /opt/zeroshot/lib/cluster-worker/
 COPY lib/cluster-worker/executable.js lib/cluster-worker/index.js /opt/zeroshot/lib/cluster-worker/
 COPY lib/cluster-worker/object-utils.js lib/cluster-worker/profiles.js lib/cluster-worker/runtime-engine.js /opt/zeroshot/lib/cluster-worker/
@@ -40,17 +45,19 @@ COPY zeroshot-rust/hosted-node /opt/zeroshot/zeroshot-rust/hosted-node
 RUN groupadd --gid 10002 zeroshot-worker \
     && useradd --uid 10002 --gid 10002 --home-dir /tmp/zeroshot-oecp --no-create-home --shell /usr/sbin/nologin zeroshot-worker \
     && mkdir -p /workspace /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
-    && chown 1000:10002 /workspace /run/zeroshot-capsule-agent \
+    && chown 10002:10002 /workspace \
+    && chown 1000:10002 /run/zeroshot-capsule-agent \
     && chown 10002:10002 /tmp/zeroshot-oecp \
     && chmod 0770 /workspace \
     && chmod 0700 /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chmod 0755 /usr/bin/tini \
-    && test ! -e /usr/bin/git \
+    && test -x /usr/bin/git \
     && test ! -e /usr/bin/gh
 
 ENV ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability
+ENV PATH=/opt/zeroshot/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER 0:0
 WORKDIR /workspace
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD ["/usr/local/bin/zeroshot-oecp-server", "--healthcheck"]
-ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/zeroshot-oecp-server"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/node", "/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js"]

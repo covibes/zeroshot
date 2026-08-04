@@ -49,7 +49,7 @@ async fn concurrent_apply_replay_spawns_and_delivers_once() {
         .await
         .expect("concurrent apply run stops");
     assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -72,7 +72,7 @@ async fn shutdown_cancels_the_live_worker_before_returning() {
         .await
         .expect("get after shutdown");
     assert_eq!(result.status.phase, Phase::Finished);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
     assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));
 }
 
@@ -290,7 +290,7 @@ async fn force_stop_reaps_before_delivery_and_returns_one_receipt() {
     );
     assert_eq!(finished_stop_mode, Some(StopMode::Force));
     assert!(saw_force_stopping);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
     assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));
     let replayed = fixture
         .backend
@@ -299,7 +299,7 @@ async fn force_stop_reaps_before_delivery_and_returns_one_receipt() {
         .expect("same stop replays");
     assert_eq!(replayed.run_id, stopped.run_id);
     assert!(replayed.deduped);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
 }
 #[tokio::test]
 async fn drain_publishes_dispatch_state_and_preserves_worker_outcome() {

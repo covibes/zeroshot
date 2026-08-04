@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::net::{TcpListener, TcpStream};
 
-use super::server::{production_backend, serve, OECP_PORT};
+use super::server::{prepare_server, production_backend, serve_prepared, OECP_PORT};
 
 pub async fn run_server_process() -> Result<(), Box<dyn Error>> {
     if std::env::args().nth(1).as_deref() == Some("--healthcheck") {
@@ -16,8 +16,10 @@ pub async fn run_server_process() -> Result<(), Box<dyn Error>> {
         println!("zeroshot-oecp-server ready");
         return Ok(());
     }
+    let backend = production_backend().await?;
+    let capability = prepare_server(&backend).await?;
     let listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], OECP_PORT))).await?;
-    serve(listener, production_backend(), shutdown_signal()).await?;
+    serve_prepared(listener, backend, capability, shutdown_signal()).await?;
     Ok(())
 }
 

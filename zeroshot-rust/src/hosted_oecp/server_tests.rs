@@ -2,10 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use openengine_cluster_protocol::{Generation, RunId, WorkerOutcome};
+use serde_json::{json, Value};
 
 use super::server_auth::{authenticate_first_request, TransportCapability};
 use super::server_workspace::{verify_delivery_workspace_at, verify_prepared_workspace_at};
-use super::server::{SEQUENTIAL_FINALIZATION_BOUND, SHUTDOWN_DEADLINE};
+use super::server::{InlineDirtyDelivery, SEQUENTIAL_FINALIZATION_BOUND, SHUTDOWN_DEADLINE};
+use super::ports::DeliveryIntent;
 
 const CAPABILITY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
@@ -126,6 +129,34 @@ fn verification_after_the_initial_scan_rejects_a_hard_link_swap() {
     assert!(verify_prepared_workspace_at(&workspace).is_err());
 }
 
+#[cfg(unix)]
+#[test]
+fn readiness_accepts_repository_metadata_and_contained_relative_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new("repository-metadata");
+    let workspace = fixture.directory().join("workspace");
+    fs::create_dir(&workspace).expect("workspace directory");
+    fs::create_dir(workspace.join(".git")).expect("git metadata directory");
+    fs::write(workspace.join(".git/config"), b"[core]\n").expect("git metadata");
+    symlink(".", workspace.join("hooks")).expect("contained source symlink");
+
+    verify_prepared_workspace_at(&workspace).expect("cloned repository is safe");
+}
+
+#[cfg(unix)]
+#[test]
+fn readiness_rejects_a_relative_symlink_that_escapes_the_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new("escaping-symlink");
+    let workspace = fixture.directory().join("workspace");
+    fs::create_dir(&workspace).expect("workspace directory");
+    symlink("../outside", workspace.join("escape")).expect("escaping source symlink");
+
+    assert!(verify_prepared_workspace_at(&workspace).is_err());
+}
+
 #[test]
 fn killed_atomic_write_orphan_is_removed_before_delivery_verification() {
     let fixture = Fixture::new("killed-write-orphan");
@@ -145,6 +176,75 @@ fn killed_atomic_write_orphan_is_removed_before_delivery_verification() {
         0,
         "reserved write orphan must not reach trusted delivery"
     );
+}
+
+#[test]
+fn inline_delivery_accepts_only_canonical_fixed_repository_receipts() {
+    let base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let delivery = InlineDirtyDelivery::new("the-open-engine/private-repository", base);
+    let valid = ship_intent(json!({
+        "status": "succeeded",
+        "summary": "completed",
+        "artifacts": [],
+        "repository": "the-open-engine/private-repository",
+        "branch": "zeroshot/hosted-79ec8f94d0ce096bb4a8",
+        "headRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "pullRequestUrl": "https://github.com/the-open-engine/private-repository/pull/17"
+    }));
+    assert_eq!(
+        delivery.validate(&valid).expect("canonical receipt"),
+        "https://github.com/the-open-engine/private-repository/pull/17"
+    );
+
+    for output in [
+        json!({
+            "status": "succeeded", "summary": "completed", "artifacts": [],
+            "repository": "attacker/repository",
+            "branch": "zeroshot/hosted-79ec8f94d0ce096bb4a8",
+            "headRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "pullRequestUrl": "https://github.com/attacker/repository/pull/17"
+        }),
+        json!({
+            "status": "succeeded", "summary": "completed", "artifacts": [],
+            "repository": "the-open-engine/private-repository",
+            "branch": "zeroshot/hosted-0123456789abcdefabcd",
+            "headRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "pullRequestUrl": "https://github.com/the-open-engine/private-repository/pull/17"
+        }),
+        json!({
+            "status": "succeeded", "summary": "completed", "artifacts": [],
+            "repository": "the-open-engine/private-repository",
+            "branch": "zeroshot/hosted-79ec8f94d0ce096bb4a8",
+            "headRevision": base,
+            "pullRequestUrl": "https://github.com/the-open-engine/private-repository/pull/17"
+        }),
+        json!({
+            "status": "succeeded", "summary": "completed", "artifacts": [],
+            "repository": "the-open-engine/private-repository",
+            "branch": "zeroshot/hosted-79ec8f94d0ce096bb4a8",
+            "headRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "pullRequestUrl": "https://evil.example/pull/17"
+        }),
+        json!({
+            "status": "failed", "summary": "failed", "artifacts": [],
+            "repository": null, "branch": null, "headRevision": null, "pullRequestUrl": null
+        }),
+    ] {
+        assert!(delivery.validate(&ship_intent(output)).is_err());
+    }
+}
+
+fn ship_intent(output: Value) -> DeliveryIntent {
+    DeliveryIntent::new(
+        Generation::new(1).expect("generation"),
+        RunId::new("hosted-run-receipt"),
+        "hosted-cluster-receipt",
+        &WorkerOutcome::Verified {
+            output,
+            artifacts: Vec::new(),
+        },
+    )
+    .expect("delivery intent")
 }
 
 #[test]

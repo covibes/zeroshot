@@ -95,7 +95,6 @@ process.stdout.write(JSON.stringify({
   workspace: ownership('/workspace'),
   controlRoot: ownership('/run/zeroshot-capsule-agent'),
   forbiddenPresent: [
-    '/usr/bin/git',
     '/usr/bin/gh',
     '/opt/zeroshot/cli',
     '/opt/zeroshot/src/target',
@@ -107,6 +106,7 @@ process.stdout.write(JSON.stringify({
   },
   serverExecutable: executable('/usr/local/bin/zeroshot-oecp-server'),
   tiniExecutable: executable('/usr/bin/tini'),
+  gitExecutable: executable('/usr/bin/git'),
   ajvVersion: require('/opt/zeroshot/node_modules/ajv/package.json').version,
 }));
 `;
@@ -120,7 +120,13 @@ function validateImageMetadata(metadata, manifestDigest) {
   }
   if (
     JSON.stringify(metadata.Entrypoint) !==
-    JSON.stringify(['/usr/bin/tini', '-s', '--', '/usr/local/bin/zeroshot-oecp-server'])
+    JSON.stringify([
+      '/usr/bin/tini',
+      '-s',
+      '--',
+      '/usr/local/bin/node',
+      '/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js',
+    ])
   ) {
     throw new Error('Hosted image does not use the containment subreaper entrypoint');
   }
@@ -147,7 +153,7 @@ function validateRuntimeIdentity(runtime) {
 
 function validateRuntimePermissions(runtime) {
   if (
-    JSON.stringify(runtime.workspace) !== JSON.stringify({ uid: 1000, gid: 10002, mode: '770' })
+    JSON.stringify(runtime.workspace) !== JSON.stringify({ uid: 10002, gid: 10002, mode: '770' })
   ) {
     throw new Error('Hosted image workspace ownership is invalid');
   }
@@ -171,6 +177,7 @@ function validateRuntimeContents(runtime) {
   if (
     runtime.serverExecutable !== true ||
     runtime.tiniExecutable !== true ||
+    runtime.gitExecutable !== true ||
     runtime.ajvVersion !== '8.18.0'
   ) {
     throw new Error('Hosted image runtime contents are invalid');

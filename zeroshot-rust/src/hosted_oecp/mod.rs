@@ -9,6 +9,7 @@ mod backend_admission_support;
 mod backend_finalization;
 mod backend_runtime;
 mod backend_support;
+mod config;
 mod journal;
 #[cfg(test)]
 mod journal_tests;
@@ -24,5 +25,6 @@ mod test_support;
 mod worker;
 
 pub use backend::HostedBackend;
+pub use config::HostedAuthority;
 pub use server::{production_backend, serve, OECP_CAPABILITY_FILE_ENV, OECP_PORT};
 pub use server_process::run_server_process;

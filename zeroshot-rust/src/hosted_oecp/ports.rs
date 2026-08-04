@@ -1,15 +1,16 @@
 use std::fmt;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{Generation, RunId};
+use openengine_cluster_protocol::{Generation, RunId, WorkerOutcome};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub const WORKSPACE_ROOT: &str = "/workspace";
 pub const PROXY_ENDPOINT: &str = "http://127.0.0.1:8081/v1";
 pub const PROXY_SENTINEL_KEY: &str = "zeroshot-capsule-sentinel";
 pub const PROXY_MODEL: &str = "zeroshot-capsule-model";
 pub const ISOLATION_PROFILE: &str = "isolation.prepared-worktree@1";
-pub const PROVIDER_PROFILE: &str = "provider.fixed-proxy@1";
+pub const PROVIDER_PROFILE: &str = "provider.hosted-direct@1";
 pub const CAPSULE_AGENT_SOCKET_ROOT: &str = "/run/zeroshot-capsule-agent";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,24 +88,35 @@ pub struct DeliveryIntent {
     pub delivery_id: String,
     pub generation: Generation,
     pub run_id: RunId,
-    pub worker_succeeded: bool,
+    pub worker_cluster_id: String,
+    pub output: Value,
 }
 
 impl DeliveryIntent {
     pub fn new(
         generation: Generation,
         run_id: RunId,
-        worker_succeeded: bool,
+        worker_cluster_id: &str,
+        outcome: &WorkerOutcome,
     ) -> Result<Self, TrustedServiceError> {
+        let WorkerOutcome::Verified { output, .. } = outcome else {
+            return Err(TrustedServiceError::InvalidReceipt);
+        };
         let delivery_id = format!("delivery:{}:{}", generation.get(), run_id.as_str());
-        if delivery_id.len() > 256 || !safe_identifier(&delivery_id) {
+        if delivery_id.len() > 256
+            || !safe_identifier(&delivery_id)
+            || worker_cluster_id.is_empty()
+            || worker_cluster_id.len() > 256
+            || !safe_identifier(worker_cluster_id)
+        {
             return Err(TrustedServiceError::InvalidReceipt);
         }
         Ok(Self {
             delivery_id,
             generation,
             run_id,
-            worker_succeeded,
+            worker_cluster_id: worker_cluster_id.to_owned(),
+            output: output.clone(),
         })
     }
 }

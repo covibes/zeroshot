@@ -1,137 +1,71 @@
+#!/usr/bin/env node
 'use strict';
 
-const fs = require('fs');
-const http = require('http');
-const net = require('net');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const SOCKET_ROOT = '/run/zeroshot-capsule-agent';
-const PROXY_SOCKET = `${SOCKET_ROOT}/proxy.sock`;
-const DELIVERY_SOCKET = `${SOCKET_ROOT}/delivery.sock`;
+const BASE_REVISION = 'a'.repeat(40);
+const REPOSITORY = 'the-open-engine/zeroshot-smoke';
+const REMOTE = `https://github.com/${REPOSITORY}.git`;
+const WORKSPACE = '/workspace';
 
-function listenSocket(socketPath, respond) {
-  try {
-    fs.unlinkSync(socketPath);
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-  const server = net.createServer({ allowHalfOpen: true }, (stream) => {
-    server.close();
-    let frame = '';
-    stream.setEncoding('utf8');
-    stream.on('data', (chunk) => {
-      frame += chunk;
-      if (Buffer.byteLength(frame) > 4096) stream.destroy();
-    });
-    stream.on('end', () => {
-      try {
-        stream.end(`${JSON.stringify(respond(JSON.parse(frame)))}\n`);
-      } catch {
-        stream.destroy();
-      }
-    });
-  });
-  server.listen(socketPath);
-  return server;
+function gitCommandArguments() {
+  let args = process.argv.slice(2);
+  while (args[0] === '-c') args = args.slice(2);
+  if (args[0] === '-C') args = args.slice(2);
+  while (args[0] === '-c') args = args.slice(2);
+  return args;
 }
 
-function hostedWorkerExists() {
-  for (const name of fs.readdirSync('/proc')) {
-    if (!/^\d+$/.test(name)) continue;
-    try {
-      const command = fs.readFileSync(`/proc/${name}/cmdline`);
-      if (command.includes(Buffer.from('/hosted-node/worker.js'))) return true;
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
+function runGitFixture() {
+  const args = gitCommandArguments();
+  const command = args[0];
+  if (command === 'clone') {
+    fs.mkdirSync(path.join(WORKSPACE, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(WORKSPACE, '.git', 'HEAD'), `${BASE_REVISION}\n`, 'ascii');
+    return;
   }
-  return false;
+  if (command === 'checkout' || command === 'switch' || command === 'add' || command === 'push') {
+    return;
+  }
+  if (command === 'rev-parse') {
+    process.stdout.write(`${BASE_REVISION}\n`);
+    return;
+  }
+  if (command === 'remote' && args[1] === 'get-url') {
+    process.stdout.write(`${REMOTE}\n`);
+    return;
+  }
+  if (command === 'status' || command === 'config') return;
+  throw new Error(`unsupported smoke Git command: ${args.join(' ')}`);
 }
 
-let proxyCleaned = false;
-let deliveryCalls = 0;
-let proxyTurns = 0;
-const proxy = http.createServer((request, response) => {
-  const chunks = [];
-  let bytes = 0;
-  request.on('data', (chunk) => {
-    bytes += chunk.length;
-    if (bytes > 8 * 1024 * 1024) request.destroy();
-    else chunks.push(chunk);
-  });
-  request.on('end', () => {
-    try {
-      const body = JSON.parse(Buffer.concat(chunks, bytes).toString('utf8'));
-      if (
-        request.method !== 'POST' ||
-        request.url !== '/v1/chat/completions' ||
-        request.headers.authorization !== 'Bearer zeroshot-capsule-sentinel' ||
-        body.model !== 'zeroshot-capsule-model'
-      ) {
-        throw new Error('worker crossed the fixed proxy boundary');
-      }
-      proxyTurns += 1;
-      const message =
-        proxyTurns === 1
-          ? {
-              content: null,
-              tool_calls: [
-                {
-                  id: 'hosted-smoke-write',
-                  type: 'function',
-                  function: {
-                    name: 'write_file',
-                    arguments: JSON.stringify({
-                      path: 'hosted-smoke-output.txt',
-                      content: 'process-derived hosted smoke output\n',
-                    }),
-                  },
-                },
-              ],
-            }
-          : { content: 'Workspace change complete.' };
-      setTimeout(
-        () => {
-          response.writeHead(200, { 'content-type': 'application/json' });
-          response.end(JSON.stringify({ choices: [{ message }] }));
-        },
-        proxyTurns === 1 ? 50 : 750
-      );
-    } catch {
-      response.writeHead(400);
-      response.end();
-    }
-  });
-});
+function runCodexFixture() {
+  const args = process.argv.slice(2);
+  if (args.includes('--version')) {
+    process.stdout.write('codex-cli 0.146.0\n');
+    return;
+  }
+  if (args.includes('--help')) {
+    process.stdout.write(
+      'Usage: codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --config --ephemeral --ignore-user-config --ignore-rules --strict-config --sandbox -C -m\n'
+    );
+    return;
+  }
+  fs.writeFileSync(
+    path.join(WORKSPACE, 'hosted-smoke-output.txt'),
+    'process-derived hosted smoke output',
+    'utf8'
+  );
+  process.stdout.write(
+    `${JSON.stringify({ type: 'thread.started', thread_id: 'smoke-thread' })}\n`
+  );
+  process.stdout.write(
+    `${JSON.stringify({ type: 'turn.failed', error: { message: 'bounded smoke refusal' } })}\n`
+  );
+}
 
-fs.mkdirSync(SOCKET_ROOT, { recursive: true, mode: 0o700 });
-listenSocket(PROXY_SOCKET, (request) => {
-  if (request.version !== 1 || request.operation !== 'stop_and_cleanup') {
-    throw new Error('invalid proxy cleanup request');
-  }
-  proxyCleaned = true;
-  return {
-    version: 1,
-    admissionStopped: true,
-    credentialsCleaned: true,
-  };
-});
-listenSocket(DELIVERY_SOCKET, (request) => {
-  deliveryCalls += 1;
-  if (
-    request.version !== 1 ||
-    request.operation !== 'deliver' ||
-    deliveryCalls !== 1 ||
-    !proxyCleaned ||
-    hostedWorkerExists()
-  ) {
-    throw new Error('delivery ordering failed');
-  }
-  return {
-    version: 1,
-    receipt: {
-      deliveryId: request.intent.deliveryId,
-      reviewRef: 'review:hosted-smoke',
-    },
-  };
-});
-proxy.listen(8081, '127.0.0.1', () => process.stdout.write('fixture-ready\n'));
+const executable = path.basename(process.argv[1]);
+if (executable === 'git') runGitFixture();
+else if (executable === 'codex') runCodexFixture();
+else throw new Error(`unsupported smoke fixture executable: ${executable}`);

@@ -16,13 +16,14 @@ use crate::execution::process::{
 };
 use crate::execution::WorkspaceAccessMode;
 
-use super::ports::{
-    ISOLATION_PROFILE, PROVIDER_PROFILE, PROXY_ENDPOINT, PROXY_MODEL, PROXY_SENTINEL_KEY,
-    WORKSPACE_ROOT,
+use super::config::{
+    HostedAuthority, HOSTED_BASE_REVISION_ENV, HOSTED_CREDENTIALS_ENV, HOSTED_MODEL_LEVEL_ENV,
+    HOSTED_PROVIDER_ENV, HOSTED_REPOSITORY_ENV,
 };
+use super::ports::{ISOLATION_PROFILE, PROVIDER_PROFILE, WORKSPACE_ROOT};
 
 pub(super) const NODE_PROGRAM: &str = "/usr/local/bin/node";
-const NODE_WORKER: &str = "/opt/zeroshot/zeroshot-rust/hosted-node/worker.js";
+const NODE_WORKER: &str = "/opt/zeroshot/zeroshot-rust/hosted-node/worker-launcher.js";
 const WORKER_FRAME_BYTES: usize = 64 * 1024;
 const PROCESS_SAFETY_DEADLINE: Duration = Duration::from_secs(24 * 60 * 60);
 const WORKER_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -50,15 +51,17 @@ pub(super) struct WorkerCommand {
     pub(super) argv: Vec<String>,
     pub(super) current_dir: PathBuf,
     pub(super) isolated: bool,
+    pub(super) environment: BTreeMap<String, String>,
 }
 
 impl WorkerCommand {
-    pub(super) fn production() -> Self {
+    pub(super) fn production(authority: &HostedAuthority) -> Self {
         Self {
             program: NODE_PROGRAM.to_owned(),
             argv: vec![NODE_WORKER.to_owned()],
             current_dir: PathBuf::from(WORKSPACE_ROOT),
             isolated: true,
+            environment: fixed_environment(authority),
         }
     }
 }
@@ -82,7 +85,7 @@ impl WorkerExecution {
         let command = ProcessSessionCommand {
             program: command.program,
             argv: command.argv,
-            environment: fixed_environment(),
+            environment: command.environment,
             workspace: WorkspaceCapability {
                 current_dir: command.current_dir,
                 mode: WorkspaceAccessMode::Exclusive,
@@ -137,6 +140,10 @@ impl WorkerExecution {
         ))
     }
 
+    pub(super) fn cluster_id(&self) -> &str {
+        &self.cluster_id
+    }
+
     async fn call(&mut self, id: u64, method: &str, params: Value) -> Result<Value, WorkerError> {
         let frame = build_request_frame(id, method, params)?;
         self.send_request(id, frame).await
@@ -187,23 +194,41 @@ fn build_request_frame(id: u64, method: &str, params: Value) -> Result<ProcessFr
     ProcessFrame::with_framing(frame, message_bytes).map_err(map_runner_error)
 }
 
-fn fixed_environment() -> BTreeMap<String, String> {
-    BTreeMap::from([
+fn fixed_environment(authority: &HostedAuthority) -> BTreeMap<String, String> {
+    let mut environment = BTreeMap::from([
         ("HOME".to_owned(), "/tmp/zeroshot-oecp".to_owned()),
         ("LANG".to_owned(), "C.UTF-8".to_owned()),
         ("NODE_ENV".to_owned(), "production".to_owned()),
-        ("OPENAI_API_KEY".to_owned(), PROXY_SENTINEL_KEY.to_owned()),
-        ("OPENAI_BASE_URL".to_owned(), PROXY_ENDPOINT.to_owned()),
+        ("PATH".to_owned(), "/usr/local/bin:/usr/bin:/bin".to_owned()),
         (
             "ZEROSHOT_ISOLATION_PROFILE".to_owned(),
             ISOLATION_PROFILE.to_owned(),
         ),
-        ("ZEROSHOT_MODEL".to_owned(), PROXY_MODEL.to_owned()),
         (
             "ZEROSHOT_PROVIDER_PROFILE".to_owned(),
             PROVIDER_PROFILE.to_owned(),
         ),
-    ])
+        (
+            HOSTED_REPOSITORY_ENV.to_owned(),
+            authority.repository().to_owned(),
+        ),
+        (
+            HOSTED_BASE_REVISION_ENV.to_owned(),
+            authority.base_revision().to_owned(),
+        ),
+        (
+            HOSTED_PROVIDER_ENV.to_owned(),
+            authority.provider().to_owned(),
+        ),
+        (
+            HOSTED_MODEL_LEVEL_ENV.to_owned(),
+            authority.model_level().to_owned(),
+        ),
+    ]);
+    if let Ok(credentials) = std::env::var(HOSTED_CREDENTIALS_ENV) {
+        environment.insert(HOSTED_CREDENTIALS_ENV.to_owned(), credentials);
+    }
+    environment
 }
 
 fn take_line(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>, WorkerError> {
@@ -276,14 +301,17 @@ fn normalize_terminal_receipt(value: Value, expected_cluster_id: Option<&str>) -
         TerminalReceipt::Completed { result, .. }
             if result.status == LegacyShipStatus::Succeeded =>
         {
-            WorkerOutcome::Verified {
-                output: json!({
-                    "summary": "Hosted worker completed",
-                    "status": "succeeded",
-                    "artifacts": [],
-                }),
-                artifacts: Vec::new(),
-            }
+            let artifacts = result.artifacts.clone();
+            let output = json!({
+                "summary": "Hosted worker completed",
+                "status": result.status,
+                "artifacts": result.artifacts,
+                "repository": result.repository,
+                "branch": result.branch,
+                "headRevision": result.head_revision,
+                "pullRequestUrl": result.pull_request_url,
+            });
+            WorkerOutcome::Verified { output, artifacts }
         }
         TerminalReceipt::Completed { .. } => {
             WorkerOutcome::declared_failure(WorkerErrorCode::Crash)

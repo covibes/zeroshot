@@ -1,4 +1,4 @@
-use openengine_cluster_protocol::{LegacyShipRequest, WorkerErrorCode};
+use openengine_cluster_protocol::{LegacyShipRequest, WorkerErrorCode, WorkerOutcome};
 use serde_json::json;
 use tokio::sync::watch;
 
@@ -12,7 +12,10 @@ fn request() -> LegacyShipRequest {
         "prompt": "perform the prepared task",
         "artifacts": [],
         "isolationProfile": "isolation.prepared-worktree@1",
-        "providerProfile": "provider.fixed-proxy@1"
+        "providerProfile": "provider.hosted-direct@1",
+        "repository": "the-open-engine/zeroshot",
+        "provider": "codex",
+        "modelLevel": "level2"
     }))
     .expect("legacy request")
 }
@@ -77,7 +80,11 @@ fn worker_receipts_must_preserve_one_strict_resource_identity() {
             "result": {
                 "summary": "untrusted",
                 "status": "succeeded",
-                "artifacts": []
+                "artifacts": [],
+                "repository": "the-open-engine/zeroshot",
+                "branch": "zeroshot/hosted-test",
+                "headRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "pullRequestUrl": "https://github.com/the-open-engine/zeroshot/pull/1"
             }
         }),
         Some(&started),
@@ -105,7 +112,16 @@ async fn root_exit_reaps_forked_and_double_forked_descendants() {
         .wait_terminal()
         .await
         .expect("worker terminal response");
-    assert!(outcome.error_code().is_none());
+    let WorkerOutcome::Verified { output, .. } = outcome else {
+        panic!("worker completion must be verified");
+    };
+    assert_eq!(output["repository"], "the-open-engine/zeroshot");
+    assert_eq!(output["branch"], "zeroshot/hosted-test");
+    assert_eq!(output["headRevision"], "b".repeat(40));
+    assert_eq!(
+        output["pullRequestUrl"],
+        "https://github.com/the-open-engine/zeroshot/pull/1"
+    );
     fixture.assert_stopped(execution).await;
 }
 

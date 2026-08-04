@@ -1,22 +1,17 @@
 'use strict';
 
-const fs = require('fs');
+const fs = require('node:fs');
+const { runProviderExecutable } = require('../../lib/agent-cli-provider');
 const {
   createAdapterFacade,
   declaredFailureEvent,
   frozenResourceStatus,
   requestText,
 } = require('../../lib/cluster-worker/engine-adapter-common');
-const { executeTool, TOOLS, WORKSPACE } = require('./workspace-tools');
-const { OPENAI_BASE_URL, OPENAI_API_KEY, ZEROSHOT_MODEL } = Object.freeze({
-  OPENAI_BASE_URL: 'http://127.0.0.1:8081/v1',
-  OPENAI_API_KEY: 'zeroshot-capsule-sentinel',
-  ZEROSHOT_MODEL: 'zeroshot-capsule-model',
-});
-const MAX_PROXY_RESPONSE_BYTES = 64 * 1024;
-const MAX_PROXY_REQUEST_BYTES = 8 * 1024 * 1024;
-const MAX_TOTAL_TOOL_BYTES = 8 * 1024 * 1024;
-const MAX_TOOL_TURNS = 32;
+const { prepareWorkspace, shipWorkspace } = require('./workspace-ship');
+
+const WORKSPACE = '/workspace';
+const PROVIDER_TIMEOUT_MS = 60 * 60 * 1000;
 
 function rejectInheritedSockets() {
   for (const descriptor of fs.readdirSync('/proc/self/fd')) {
@@ -34,185 +29,126 @@ function rejectInheritedSockets() {
   }
 }
 
-function requireFixedEnvironment() {
-  const expected = { OPENAI_BASE_URL, OPENAI_API_KEY, ZEROSHOT_MODEL };
-  for (const [name, value] of Object.entries(expected)) {
-    if (process.env[name] !== value) throw new Error(`Invalid fixed capsule setting: ${name}`);
-  }
-  if (process.env.ZEROSHOT_ISOLATION_PROFILE !== 'isolation.prepared-worktree@1') {
-    throw new Error('Invalid fixed capsule setting: ZEROSHOT_ISOLATION_PROFILE');
-  }
-  if (process.env.ZEROSHOT_PROVIDER_PROFILE !== 'provider.fixed-proxy@1') {
-    throw new Error('Invalid fixed capsule setting: ZEROSHOT_PROVIDER_PROFILE');
-  }
+function requireHostedEnvironment(config) {
   if (process.cwd() !== WORKSPACE) throw new Error('Invalid fixed capsule workspace');
+  if (process.env.ZEROSHOT_ISOLATION_PROFILE !== 'isolation.prepared-worktree@1') {
+    throw new Error('Invalid fixed capsule isolation profile');
+  }
+  if (process.env.ZEROSHOT_PROVIDER_PROFILE !== 'provider.hosted-direct@1') {
+    throw new Error('Invalid fixed capsule provider profile');
+  }
+  for (const [name, value] of Object.entries(config.workerEnvironment)) {
+    if (process.env[name] !== value) throw new Error('Invalid hosted worker credential boundary');
+  }
   rejectInheritedSockets();
 }
 
-function promptFromRequest(request) {
-  return requestText(
-    request,
-    'Complete the task represented by the prepared artifact inputs in this workspace.'
-  );
-}
-
-async function readBoundedJson(response) {
-  if (!response.body) throw new Error('Fixed proxy response body is unavailable');
-  const reader = response.body.getReader();
-  const chunks = [];
-  let bytes = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    bytes += value.byteLength;
-    if (bytes > MAX_PROXY_RESPONSE_BYTES) {
-      await reader.cancel();
-      throw new Error('Fixed proxy response exceeded its bound');
-    }
-    chunks.push(value);
+function validateRequestAuthority(config, request) {
+  if (request.repository !== config.repository) {
+    const error = new Error('Hosted request repository does not match capsule authority');
+    error.code = 'HOSTED_REPOSITORY_MISMATCH';
+    throw error;
   }
-  const body = Buffer.concat(
-    chunks.map((chunk) => Buffer.from(chunk)),
-    bytes
-  ).toString('utf8');
-  return JSON.parse(body);
-}
-
-function messageFromDocument(document) {
-  const message = document?.choices?.[0]?.message;
-  if (!message || typeof message !== 'object' || Array.isArray(message)) {
-    throw new Error('Fixed proxy returned a malformed result');
+  if (request.provider !== config.provider || request.modelLevel !== config.modelLevel) {
+    const error = new Error('Hosted request provider does not match capsule authority');
+    error.code = 'HOSTED_PROVIDER_MISMATCH';
+    throw error;
   }
-  return message;
 }
 
-function toolCallsFromMessage(message) {
-  const toolCalls = message.tool_calls;
-  if (toolCalls !== undefined && (!Array.isArray(toolCalls) || toolCalls.length === 0)) {
-    throw new Error('Fixed proxy returned malformed tool calls');
-  }
-  return toolCalls;
+function providerPrompt(request) {
+  return [
+    'Complete the requested task by modifying the current Git workspace.',
+    'Do not commit, push, create a pull request, or expose environment credentials.',
+    'The hosted runtime performs and verifies Git delivery after your process exits successfully.',
+    requestText(request, 'Complete the task represented by the prepared artifact inputs.'),
+  ].join('\n\n');
 }
 
-function contentFromMessage(message, toolCalls) {
-  const content = message.content;
-  if (toolCalls === undefined && (typeof content !== 'string' || content.trim().length === 0)) {
-    throw new Error('Fixed proxy returned an empty result');
-  }
-  return typeof content === 'string' ? content : null;
+function providerInvocation(config, request) {
+  return Object.freeze({
+    schemaVersion: 1,
+    command: 'invoke',
+    provider: config.provider,
+    context: providerPrompt(request),
+    cwd: WORKSPACE,
+    options: Object.freeze({
+      authEnv: Object.freeze({}),
+      cwd: WORKSPACE,
+      modelSpec: Object.freeze({ level: config.modelLevel }),
+    }),
+    env: config.workerEnvironment,
+    timeoutMs: PROVIDER_TIMEOUT_MS,
+  });
 }
 
-function responseMessage(document) {
-  const message = messageFromDocument(document);
-  const toolCalls = toolCallsFromMessage(message);
-  return { content: contentFromMessage(message, toolCalls), toolCalls };
-}
-
-class FixedProxyEngineAdapter {
-  constructor() {
-    requireFixedEnvironment();
+class HostedProviderEngineAdapter {
+  constructor(config, dependencies = {}) {
+    requireHostedEnvironment(config);
+    this.config = config;
+    this.invokeProvider = dependencies.invokeProvider || runProviderExecutable;
+    this.prepareWorkspace = dependencies.prepareWorkspace || prepareWorkspace;
+    this.shipWorkspace = dependencies.shipWorkspace || shipWorkspace;
     this.resource = null;
     this.execution = null;
-    this.controller = null;
     this.closed = false;
-    this.changed = false;
-    this.toolBytes = 0;
   }
 
   start({ request, clusterId, onEvent }) {
-    if (this.resource) throw new Error('Fixed proxy adapter owns exactly one run');
+    if (this.resource) throw new Error('Hosted provider adapter owns exactly one run');
+    validateRequestAuthority(this.config, request);
     this.resource = { clusterId, onEvent };
-    this.controller = new AbortController();
-    this.execution = this.execute(request);
+    this.execution = this.execute(request, clusterId);
     onEvent({ type: 'running' });
     return Object.freeze({ clusterId, artifactsStaged: true });
   }
 
-  async requestCompletion(messages) {
-    const body = JSON.stringify({
-      model: ZEROSHOT_MODEL,
-      messages,
-      tools: TOOLS,
-      tool_choice: 'auto',
-    });
-    if (Buffer.byteLength(body) > MAX_PROXY_REQUEST_BYTES) {
-      throw new Error('Fixed proxy request exceeded its bound');
-    }
-    const response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${OPENAI_API_KEY}`,
-        'content-type': 'application/json',
-      },
-      body,
-      signal: this.controller.signal,
-    });
-    if (!response.ok) throw new Error('Fixed proxy rejected the worker request');
-    return responseMessage(await readBoundedJson(response));
-  }
-
-  complete() {
-    if (!this.changed) throw new Error('Fixed proxy completed without a workspace change');
-    if (!this.closed) {
-      this.resource.onEvent({
-        type: 'complete',
-        result: { summary: 'Hosted worker completed', status: 'succeeded', artifacts: [] },
-      });
-    }
-  }
-
-  applyToolCalls(messages, completion) {
-    messages.push({
-      role: 'assistant',
-      content: completion.content,
-      tool_calls: completion.toolCalls,
-    });
-    for (const call of completion.toolCalls) {
-      const result = executeTool(call);
-      this.changed ||= result.changed;
-      this.toolBytes += Buffer.byteLength(result.content);
-      if (this.toolBytes > MAX_TOTAL_TOOL_BYTES) {
-        throw new Error('Tool output exceeded its total bound');
-      }
-      messages.push({ role: 'tool', tool_call_id: call.id, content: result.content });
-    }
-  }
-
-  async execute(request) {
-    const messages = [
-      {
-        role: 'system',
-        content:
-          'Modify the prepared workspace to complete the task. Use only the provided file tools. A successful turn requires at least one real file change.',
-      },
-      { role: 'user', content: promptFromRequest(request) },
-    ];
+  async execute(request, clusterId) {
     try {
-      for (let turn = 0; turn < MAX_TOOL_TURNS; turn += 1) {
-        const completion = await this.requestCompletion(messages);
-        if (!completion.toolCalls) {
-          this.complete();
-          return;
+      const branch = await this.prepareWorkspace(this.config, clusterId);
+      const response = await this.invokeProvider(
+        JSON.stringify(providerInvocation(this.config, request)),
+        {
+          runtimeSettings: Object.freeze({}),
         }
-        this.applyToolCalls(messages, completion);
+      );
+      const result = response?.envelope?.ok === true ? response.envelope.result : null;
+      if (
+        response?.exitCode !== 0 ||
+        !result ||
+        result.exitCode !== 0 ||
+        result.signal !== null ||
+        result.timedOut === true ||
+        result.classification !== null
+      ) {
+        throw new Error('Hosted provider execution failed');
       }
-      throw new Error('Fixed proxy exceeded its tool-turn bound');
+      if (this.closed) return;
+      const receipt = await this.shipWorkspace(this.config, branch);
+      if (!this.closed) {
+        this.resource.onEvent({
+          type: 'complete',
+          result: {
+            summary: 'Hosted worker completed and opened a pull request',
+            status: 'succeeded',
+            artifacts: [],
+            ...receipt,
+          },
+        });
+      }
     } catch {
-      if (!this.closed && !this.controller.signal.aborted) {
-        this.resource.onEvent(declaredFailureEvent());
-      }
+      if (!this.closed) this.resource.onEvent(declaredFailureEvent());
     }
   }
 
   status() {
+    if (!this.resource) return null;
     return frozenResourceStatus(this.resource, this.closed ? 'released' : 'running');
   }
 
-  async stop() {
-    if (!this.resource) throw new Error('Fixed proxy adapter has no run');
+  stop() {
+    if (!this.resource) throw new Error('Hosted provider adapter has no run');
     this.closed = true;
-    this.controller.abort();
-    await this.execution;
     return Object.freeze({ effective: true });
   }
 
@@ -222,12 +158,15 @@ class FixedProxyEngineAdapter {
 
   close() {
     this.closed = true;
-    this.controller?.abort();
   }
 }
 
-function createFixedProxyEngineAdapter() {
-  return createAdapterFacade(new FixedProxyEngineAdapter());
+function createHostedProviderEngineAdapter(config, dependencies) {
+  return createAdapterFacade(new HostedProviderEngineAdapter(config, dependencies));
 }
 
-module.exports = { createFixedProxyEngineAdapter };
+module.exports = {
+  providerInvocation,
+  createHostedProviderEngineAdapter,
+  validateRequestAuthority,
+};

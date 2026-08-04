@@ -138,13 +138,36 @@
               "kind": "string"
             }
           },
+          "modelLevel": {
+            "required": true,
+            "type": {
+              "kind": "enum",
+              "values": [
+                "level1",
+                "level2",
+                "level3"
+              ]
+            }
+          },
           "prompt": {
             "required": false,
             "type": {
               "kind": "string"
             }
           },
+          "provider": {
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
           "providerProfile": {
+            "required": true,
+            "type": {
+              "kind": "string"
+            }
+          },
+          "repository": {
             "required": true,
             "type": {
               "kind": "string"
@@ -263,6 +286,30 @@
                 "kind": "record"
               },
               "kind": "array"
+            }
+          },
+          "branch": {
+            "required": false,
+            "type": {
+              "kind": "string"
+            }
+          },
+          "headRevision": {
+            "required": false,
+            "type": {
+              "kind": "string"
+            }
+          },
+          "pullRequestUrl": {
+            "required": false,
+            "type": {
+              "kind": "string"
+            }
+          },
+          "repository": {
+            "required": false,
+            "type": {
+              "kind": "string"
             }
           },
           "status": {

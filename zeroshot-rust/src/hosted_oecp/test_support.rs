@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,6 +50,32 @@ impl NodeWorkerFixture {
             ],
             current_dir: self.root.clone(),
             isolated: false,
+            environment: BTreeMap::from([
+                ("HOME".to_owned(), "/tmp/zeroshot-oecp".to_owned()),
+                ("LANG".to_owned(), "C.UTF-8".to_owned()),
+                ("NODE_ENV".to_owned(), "production".to_owned()),
+                ("PATH".to_owned(), "/usr/local/bin:/usr/bin:/bin".to_owned()),
+                ("GH_TOKEN".to_owned(), "git-canary".to_owned()),
+                ("OPENAI_API_KEY".to_owned(), "provider-canary".to_owned()),
+                (
+                    "ZEROSHOT_HOSTED_REPOSITORY".to_owned(),
+                    "the-open-engine/zeroshot".to_owned(),
+                ),
+                ("ZEROSHOT_HOSTED_BASE_REVISION".to_owned(), "a".repeat(40)),
+                ("ZEROSHOT_HOSTED_PROVIDER".to_owned(), "codex".to_owned()),
+                (
+                    "ZEROSHOT_HOSTED_MODEL_LEVEL".to_owned(),
+                    "level2".to_owned(),
+                ),
+                (
+                    "ZEROSHOT_ISOLATION_PROFILE".to_owned(),
+                    "isolation.prepared-worktree@1".to_owned(),
+                ),
+                (
+                    "ZEROSHOT_PROVIDER_PROFILE".to_owned(),
+                    "provider.hosted-direct@1".to_owned(),
+                ),
+            ]),
         }
     }
 
@@ -144,8 +171,10 @@ if (mode === 'child') {
   return;
 }
 const expectedEnv = [
-  'HOME', 'LANG', 'NODE_ENV', 'OPENAI_API_KEY', 'OPENAI_BASE_URL',
-  'ZEROSHOT_ISOLATION_PROFILE', 'ZEROSHOT_MODEL', 'ZEROSHOT_PROVIDER_PROFILE'
+  'GH_TOKEN', 'HOME', 'LANG', 'NODE_ENV', 'OPENAI_API_KEY', 'PATH',
+  'ZEROSHOT_HOSTED_BASE_REVISION', 'ZEROSHOT_HOSTED_MODEL_LEVEL',
+  'ZEROSHOT_HOSTED_PROVIDER', 'ZEROSHOT_HOSTED_REPOSITORY',
+  'ZEROSHOT_ISOLATION_PROFILE', 'ZEROSHOT_PROVIDER_PROFILE'
 ];
 if (JSON.stringify(Object.keys(process.env).sort()) !== JSON.stringify(expectedEnv.sort())) {
   throw new Error('unexpected inherited environment');
@@ -153,14 +182,12 @@ if (JSON.stringify(Object.keys(process.env).sort()) !== JSON.stringify(expectedE
 if (process.cwd() !== require('path').dirname(pids)) {
   throw new Error('worker cwd escaped prepared workspace');
 }
-if (fs.existsSync('.git')) throw new Error('git metadata reached worker');
 for (const fd of fs.readdirSync('/proc/self/fd')) {
   if (Number(fd) <= 2) continue;
   let target;
   try { target = fs.readlinkSync(`/proc/self/fd/${fd}`); } catch { continue; }
-  if (target.includes('.git') || target.toLowerCase().includes('credential') ||
-      target.includes('/run/zeroshot-capsule-agent')) {
-    throw new Error('authority-bearing descriptor reached worker');
+  if (target.includes('/run/zeroshot-capsule-agent')) {
+    throw new Error('trusted service descriptor reached worker');
   }
 }
 spawn(process.execPath, [__filename, 'child', pids, String(delay)], {
@@ -202,7 +229,10 @@ input.on('line', (line) => {
     setTimeout(() => process.stdout.write(JSON.stringify({
       type: 'response', id: frame.id, ok: true,
       result: { state: 'completed', clusterId: 'hosted-test', finishedAt: 1,
-        result: { summary: 'OPENROUTER_RESULT_CANARY', status: 'succeeded', artifacts: [] } }
+        result: { summary: 'OPENROUTER_RESULT_CANARY', status: 'succeeded', artifacts: [],
+          repository: 'the-open-engine/zeroshot', branch: 'zeroshot/hosted-test',
+          headRevision: 'b'.repeat(40),
+          pullRequestUrl: 'https://github.com/the-open-engine/zeroshot/pull/1' } }
     }) + '\n', () => process.exit(0)), delay);
   }
 });

@@ -11,7 +11,7 @@ use zeroshot_engine::hosted_oecp::ports::{
     ProxyReadinessPort, ProxyReadinessReceipt, TrustedServiceError, WorktreeReadinessPort,
     WorktreeReadinessReceipt, WorkspaceDeliveryPort, ISOLATION_PROFILE, PROVIDER_PROFILE,
 };
-use zeroshot_engine::hosted_oecp::HostedBackend;
+use zeroshot_engine::hosted_oecp::{HostedAuthority, HostedBackend};
 
 #[derive(Default)]
 pub struct ReadyWorktree;
@@ -68,6 +68,13 @@ pub fn backend() -> HostedBackend {
         Arc::new(ReadyWorktree),
         Arc::new(ReadyProxy::default()),
         Arc::new(RecordingDelivery::default()),
+        HostedAuthority::new(
+            "the-open-engine/zeroshot".to_owned(),
+            "a".repeat(40),
+            "codex".to_owned(),
+            "level2".to_owned(),
+        )
+        .unwrap(),
     )
 }
 
@@ -98,5 +105,8 @@ pub fn request(prompt: &str) -> Value {
         "artifacts": [],
         "isolationProfile": ISOLATION_PROFILE,
         "providerProfile": PROVIDER_PROFILE,
+        "repository": "the-open-engine/zeroshot",
+        "provider": "codex",
+        "modelLevel": "level2",
     })
 }

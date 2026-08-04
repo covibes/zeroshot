@@ -17,6 +17,7 @@ use tokio::sync::Notify;
 use tokio::time::{sleep, timeout, Duration};
 
 use super::HostedBackend;
+use crate::hosted_oecp::HostedAuthority;
 use crate::hosted_oecp::test_support::{all_processes_absent, NodeWorkerFixture};
 use crate::hosted_oecp::ports::{
     DeliveryIntent, DeliveryReadinessReceipt, DeliveryReceipt, ProxyCleanupReceipt,
@@ -180,7 +181,15 @@ impl RuntimeFixture {
             delivery_entered: Notify::new(),
             delivery_release: Notify::new(),
         });
-        let mut backend = HostedBackend::new(worktree.clone(), proxy.clone(), delivery.clone());
+        let authority = HostedAuthority::new(
+            "the-open-engine/zeroshot".to_owned(),
+            "a".repeat(40),
+            "codex".to_owned(),
+            "level2".to_owned(),
+        )
+        .unwrap();
+        let mut backend =
+            HostedBackend::new(worktree.clone(), proxy.clone(), delivery.clone(), authority);
         backend.worker_command = worker.command("main", result_delay_ms);
         Self {
             _worker: worker,
@@ -348,7 +357,10 @@ fn apply_with_timeout(key: &str, timeout_ms: u64) -> ApplyParams {
             "prompt": "OPENROUTER_INPUT_CANARY",
             "artifacts": [],
             "isolationProfile": "isolation.prepared-worktree@1",
-            "providerProfile": "provider.fixed-proxy@1"
+            "providerProfile": "provider.hosted-direct@1",
+            "repository": "the-open-engine/zeroshot",
+            "provider": "codex",
+            "modelLevel": "level2"
         })),
         dry_run: false,
         if_generation: None,
@@ -384,23 +396,21 @@ async fn timeout_reaps_before_failure_delivery() {
         .await
         .expect("apply starts real worker");
     let mut terminal_code = None;
-    loop {
-        let item = timeout(Duration::from_secs(5), stream.next())
-            .await
-            .expect("timeout event deadline")
-            .expect("watch remains live through Finished");
+    while let Some(item) = timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("timeout event deadline")
+    {
         let WatchStreamItem::Record(record) = item else {
             panic!("timeout watch must not overflow")
         };
-        match record.event {
-            WatchEvent::NodeEnd { outcome, .. } => terminal_code = outcome.error_code(),
-            WatchEvent::Finished { .. } => break,
-            _ => {}
+        assert!(!matches!(record.event, WatchEvent::Finished { .. }));
+        if let WatchEvent::NodeEnd { outcome, .. } = record.event {
+            terminal_code = outcome.error_code();
         }
     }
     assert_eq!(terminal_code, Some(WorkerErrorCode::Timeout));
     assert_eq!(fixture.proxy.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
     assert!(!fixture.delivery.ordering_failed.load(Ordering::SeqCst));
 }
 

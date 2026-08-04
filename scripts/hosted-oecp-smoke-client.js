@@ -53,11 +53,18 @@ function legacyTypes() {
       ['artifacts', { kind: 'array', items: artifact }, true],
       ['isolationProfile', { kind: 'string' }, true],
       ['providerProfile', { kind: 'string' }, true],
+      ['repository', { kind: 'string' }, true],
+      ['provider', { kind: 'string' }, true],
+      ['modelLevel', enumeration(['level1', 'level2', 'level3']), true],
     ]),
     output: record([
       ['summary', { kind: 'string' }, true],
       ['status', enumeration(['succeeded', 'failed']), true],
       ['artifacts', { kind: 'array', items: artifact }, true],
+      ['repository', { kind: 'string' }, false],
+      ['branch', { kind: 'string' }, false],
+      ['headRevision', { kind: 'string' }, false],
+      ['pullRequestUrl', { kind: 'string' }, false],
     ]),
   };
 }

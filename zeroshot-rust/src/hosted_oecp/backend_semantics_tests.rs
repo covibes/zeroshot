@@ -87,24 +87,11 @@ async fn launch_boundary_only_restores_empty_before_a_possible_process() {
         .backend
         .get(&ConnectionContext::default(), GetParams::default())
         .await
-        .expect("get after possible launch");
-    assert_eq!(consumed.status.phase, Phase::Finished);
-    assert!(consumed.status.current_run_id.is_some());
+        .expect_err("possible launch fails terminally without fake Finished");
+    assert_eq!(consumed.code, "FINALIZATION_FAILED");
     assert_eq!(possible_launch.proxy.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(possible_launch.worktree.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(possible_launch.delivery.calls.load(Ordering::SeqCst), 1);
-    assert!(
-        !possible_launch
-            .delivery
-            .ordering_failed
-            .load(Ordering::SeqCst)
-    );
-    assert!(
-        possible_launch
-            .delivery
-            .observed_mutation
-            .load(Ordering::SeqCst)
-    );
+    assert_eq!(possible_launch.worktree.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(possible_launch.delivery.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -158,9 +145,18 @@ async fn malformed_start_delivery_failure_never_fakes_finished() {
         };
         events.push(record.event);
     }
-    assert_crash_without_finished(&events);
-    assert_ordered_delivery(&fixture);
-    assert!(fixture.delivery.observed_mutation.load(Ordering::SeqCst));
+    assert_eq!(events.len(), 3);
+    let WatchEvent::NodeEnd { outcome, .. } = &events[2] else {
+        panic!("third event is NodeEnd")
+    };
+    assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Malformed));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, WatchEvent::Finished { .. }))
+    );
+    assert_eq!(fixture.delivery.calls.load(Ordering::SeqCst), 0);
+    assert!(!fixture.delivery.observed_mutation.load(Ordering::SeqCst));
     let get_error = fixture
         .backend
         .get(&ConnectionContext::default(), GetParams::default())
@@ -338,6 +334,90 @@ async fn canonical_watch_is_ordered_bounded_and_secret_free() {
     assert_eq!(reconnect.code, GONE);
 }
 #[tokio::test]
+async fn fixed_authority_mismatches_do_not_allocate_or_consume_the_run() {
+    let fixture = RuntimeFixture::new(25);
+    for (field, value, code, key) in [
+        (
+            "repository",
+            json!("other/repository"),
+            "HOSTED_REPOSITORY_MISMATCH",
+            "authority-repository",
+        ),
+        (
+            "provider",
+            json!("claude"),
+            "HOSTED_PROVIDER_MISMATCH",
+            "authority-provider",
+        ),
+        (
+            "modelLevel",
+            json!("level3"),
+            "HOSTED_PROVIDER_MISMATCH",
+            "authority-model",
+        ),
+    ] {
+        let mut params = apply(key);
+        params.input.as_mut().unwrap()[field] = value;
+        let error = fixture
+            .backend
+            .apply(&ConnectionContext::default(), params)
+            .await
+            .expect_err("authority mismatch must fail before allocation");
+        assert_eq!(error.code, code);
+        assert!(!fixture._worker.pids_path().exists());
+        let state = fixture
+            .backend
+            .get(&ConnectionContext::default(), GetParams::default())
+            .await
+            .expect("rejected authority leaves capsule empty");
+        assert_eq!(state.status.phase, Phase::Empty);
+    }
+
+    let accepted = fixture
+        .backend
+        .apply(
+            &ConnectionContext::default(),
+            apply("authority-valid-after-rejections"),
+        )
+        .await
+        .expect("valid authority remains admissible");
+    assert_eq!(accepted.phase, Phase::Running);
+    fixture.wait_finished().await;
+}
+
+#[tokio::test]
+async fn artifact_source_is_rejected_before_worker_allocation() {
+    let fixture = RuntimeFixture::new(25);
+    let mut params = apply("artifact-source-rejected");
+    let input = params.input.as_mut().expect("input");
+    input["source"] = json!("artifact");
+    input.as_object_mut().expect("record").remove("prompt");
+    input["artifacts"] = json!([{
+        "artifactId": "artifact-123",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "byteLength": 42,
+        "mediaType": "application/json",
+        "typeId": "openengine.result@1",
+        "producer": { "node": "work", "worker": "legacy.zeroshot.ship@1" },
+        "lineage": { "generation": 7, "runId": "run-9", "attempt": 1 },
+        "redaction": "internal"
+    }]);
+    let error = fixture
+        .backend
+        .apply(&ConnectionContext::default(), params)
+        .await
+        .expect_err("artifact input must fail before allocation");
+    assert_eq!(error.code, "HOSTED_ARTIFACT_UNSUPPORTED");
+    assert!(!fixture._worker.pids_path().exists());
+    let state = fixture
+        .backend
+        .get(&ConnectionContext::default(), GetParams::default())
+        .await
+        .expect("artifact rejection leaves capsule empty");
+    assert_eq!(state.status.phase, Phase::Empty);
+}
+
+#[tokio::test]
 async fn process_result_is_delivered_once_after_cleanup_and_tree_death() {
     let fixture = RuntimeFixture::new(25);
     let first = fixture
@@ -366,7 +446,10 @@ async fn process_result_is_delivered_once_after_cleanup_and_tree_death() {
         "prompt": "different request",
         "artifacts": [],
         "isolationProfile": "isolation.prepared-worktree@1",
-        "providerProfile": "provider.fixed-proxy@1"
+        "providerProfile": "provider.hosted-direct@1",
+        "repository": "the-open-engine/zeroshot",
+        "provider": "codex",
+        "modelLevel": "level2"
     }));
     let reuse_error = fixture
         .backend

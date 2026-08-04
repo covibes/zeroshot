@@ -83,6 +83,7 @@ fn pinned_workspace_metadata(
 }
 
 struct WorkspaceScan {
+    root: PathBuf,
     pending: Vec<PathBuf>,
     entries: usize,
     cleanup_write_temps: bool,
@@ -91,6 +92,7 @@ struct WorkspaceScan {
 impl WorkspaceScan {
     fn new(root: &Path, cleanup_write_temps: bool) -> Self {
         Self {
+            root: root.to_path_buf(),
             pending: vec![root.to_path_buf()],
             entries: 0,
             cleanup_write_temps,
@@ -121,6 +123,9 @@ impl WorkspaceScan {
         let file_type = child
             .file_type()
             .map_err(|_| TrustedServiceError::UnsafeWorkspace)?;
+        if file_type.is_symlink() {
+            return self.verify_relative_symlink(&child.path());
+        }
         if !supported_file_type(&file_type) {
             return Err(TrustedServiceError::UnsafeWorkspace);
         }
@@ -132,9 +137,25 @@ impl WorkspaceScan {
             .entries
             .checked_add(1)
             .ok_or(TrustedServiceError::UnsafeWorkspace)?;
-        if self.entries > MAX_WORKSPACE_ENTRIES || forbidden_workspace_name(&child.file_name()) {
+        if self.entries > MAX_WORKSPACE_ENTRIES
+            || child
+                .file_name()
+                .to_string_lossy()
+                .starts_with(WORKSPACE_WRITE_TEMP_PREFIX)
+        {
             return Err(TrustedServiceError::UnsafeWorkspace);
         }
+        Ok(())
+    }
+
+    fn verify_relative_symlink(&self, path: &Path) -> Result<(), TrustedServiceError> {
+        let parent = path.parent().ok_or(TrustedServiceError::UnsafeWorkspace)?;
+        let relative_parent = parent
+            .strip_prefix(&self.root)
+            .map_err(|_| TrustedServiceError::UnsafeWorkspace)?;
+        let target = std::fs::read_link(path).map_err(|_| TrustedServiceError::UnsafeWorkspace)?;
+        relative_symlink_depth(relative_parent, &target)
+            .ok_or(TrustedServiceError::UnsafeWorkspace)?;
         Ok(())
     }
 
@@ -154,6 +175,22 @@ impl WorkspaceScan {
         }
         Ok(())
     }
+}
+
+fn relative_symlink_depth(parent: &Path, target: &Path) -> Option<usize> {
+    if target.is_absolute() {
+        return None;
+    }
+    let mut depth = parent.components().count();
+    for component in target.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::ParentDir if depth > 0 => depth -= 1,
+            _ => return None,
+        }
+    }
+    Some(depth)
 }
 
 fn remove_reserved_write_temp(child: std::fs::DirEntry) -> Result<(), TrustedServiceError> {
@@ -226,24 +263,4 @@ fn workspace_file_is_single_link(metadata: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn workspace_file_is_single_link(_metadata: &std::fs::Metadata) -> bool {
     false
-}
-
-fn forbidden_workspace_name(name: &std::ffi::OsStr) -> bool {
-    let name = name.to_string_lossy();
-    name == ".git"
-        || name.starts_with(".env")
-        || name.starts_with(WORKSPACE_WRITE_TEMP_PREFIX)
-        || matches!(
-            name.as_ref(),
-            ".ssh"
-                | ".aws"
-                | ".config"
-                | ".claude"
-                | ".codex"
-                | ".omp"
-                | ".npmrc"
-                | ".netrc"
-                | ".git-credentials"
-                | "credentials.json"
-        )
 }

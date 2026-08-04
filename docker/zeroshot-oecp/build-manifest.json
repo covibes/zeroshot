@@ -8,12 +8,8 @@
   "protocol": {
     "version": "openengine.cluster/v1",
     "route": "/oecp",
-    "graphProfiles": [
-      "openengine.graph.single-worker/v1"
-    ],
-    "workerProfiles": [
-      "legacy.zeroshot.ship@1"
-    ]
+    "graphProfiles": ["openengine.graph.single-worker/v1"],
+    "workerProfiles": ["legacy.zeroshot.ship@1"]
   },
   "runtime": {
     "supervisor": {
@@ -60,12 +56,14 @@
     "Cargo.lock": "0815b2383e774601f3de58ede274de3c4afbe512547fecac3ea7b42caf35ead2",
     "Cargo.toml": "1447ba71479b3a64e29d445634221583349bb87b3c73b1f09184fbcb1773323b",
     "clippy.toml": "3c652ff2949df903bd0b80c8f14a7196ff9ad1e12841ddb614d080c4a03d1aa2",
-    "crates": "6c5b3eca7cdc39cd492852c3b9d447e7e83205eff3e774f41c7210ef31a549b3",
-    "docker/zeroshot-oecp/.dockerignore": "8846195a65c3ac8fe01d1367d7fe91c67d21b2cf396b27aed96ccaceb0562cf4",
-    "docker/zeroshot-oecp/Dockerfile": "60a40da4195fc00e1299abc8c646dc664aa6d3c871d7aa4bbad62e47acf47e85",
-    "docker/zeroshot-oecp/Dockerfile.dockerignore": "8846195a65c3ac8fe01d1367d7fe91c67d21b2cf396b27aed96ccaceb0562cf4",
-    "docker/zeroshot-oecp/package-lock.json": "b43a08aaab4b17342d240dd7357fbb6411fd8fa08bf2c2e849b53d95db19507f",
-    "docker/zeroshot-oecp/package.json": "a4f7283678f7bd973b8ed9a5a6a293bc36264da023949464d0c12f9d6d35c66e",
+    "crates": "c4ba735d1bbda4e6eeec92622d1a48ee2e9b9e4bd1a17ce54d5315e2cc6e463b",
+    "docker/zeroshot-oecp/.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
+    "docker/zeroshot-oecp/Dockerfile": "499a58c84e503fa8a2652e78f00c2ebbba015c7abc5add1f9772589cde15d06e",
+    "docker/zeroshot-oecp/Dockerfile.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
+    "docker/zeroshot-oecp/package-lock.json": "70b56078784e0e835bc45fbf8dc0ae88d5b195402a957cdd3ed9891951055749",
+    "docker/zeroshot-oecp/package.json": "83eeeb4df59be148d962232a99e98744011ab747ace52da79378d0fca211d1b0",
+    "lib/agent-cli-provider": "629c3e514cd4f1bef6d0172e27b48017c869365f0a73f019228374c0acfa045a",
+    "lib/provider-detection.js": "8a57242a38aa2da62912fc525af9995f61c8e84724e715342c765e5bf15e7893",
     "lib/cluster-worker/contracts.js": "a8c97f5ef0e3e5b8caef4acf7f7a2efd2a71019c6b08a3066c2078246c19b455",
     "lib/cluster-worker/engine-adapter-common.js": "4183281e75530b9a064f11f3c97e5355e85d29e23096a93735ad470ef7343f80",
     "lib/cluster-worker/engine-start.js": "46266a3f20aa4c55c16209e02bd9708d661d0a3cbde7ab5858e96fc2f6b20c3f",
@@ -77,28 +75,29 @@
     "lib/cluster-worker/runtime-engine.js": "6b218495a079903610b5339ff49992bb1333548c1fea71478cd7b89e7ed2b59b",
     "lib/cluster-worker/runtime-support.js": "466bee5b44af2bd681471bd994121e98ccb685225cf3dd96e58d963cfa7ab4bf",
     "lib/cluster-worker/state-machine.js": "ad012ca16def06eba74fe97513a77fac00bbeafbf5bcb1c0f956aa04d85b2e4d",
-    "lib/cluster-worker/terminal-normalizer.js": "0049a82d60c3bf44ffd00701fb578a19be347d7a319153b6943a25ca63ffe140",
+    "lib/cluster-worker/terminal-normalizer.js": "99720fa379ebef7397a98b4b29eaa5b0043814aa8b7c15254d045ed329529343",
     "lib/cluster-worker/worker-internals.js": "db5d7d2f23f07f74aef7d029d1a0ee36ec9317a9f06ba0a5e7d2f15947cbab92",
     "lib/run-plan.js": "c70bae45c113ff7a25a9c8696756fc3799104b01a8dba957d4d0eaf3a55d8a27",
     "package-lock.json": "68123774904f4012bd4098ebcb1793001caced20f8540de6d66ea4eedcadfdbb",
     "package.json": "f910d212792ae64e9a2ebad120342653dcc77728bcc1246e8818dc50d5550920",
-    "scripts/hosted-oecp-image-commands.js": "8697dc1eba87e0238e7d158b5f1000c52020b28d9aad23d1d9823786b5c520a1",
-    "scripts/hosted-oecp-image-smoke.js": "8d374324b61fde1ddf0055fde13efd8adc193070283b299e89eb60314f69882e",
+    "scripts/hosted-oecp-image-commands.js": "cee0efa9a9ddf0cc3ce19829ea403dc0bbf74185d8ec2236acd866c53be3313d",
+    "scripts/hosted-oecp-image-smoke.js": "33a764499ada23b5fd27bf2f2bee5cf3ff0ff727f5800a2621fc1507e82e18eb",
     "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
-    "scripts/hosted-oecp-manifest.js": "2082c3ff2c96a6e425243e27d0f5e04e419ffd82393ba10de3f9d4d553ffc2ba",
+    "scripts/hosted-oecp-manifest.js": "874932d3fd566f8c18326d1b3efe54f8d9313237904a5d5b5b1b8c275093affa",
     "scripts/hosted-oecp-smoke-capability.js": "f0c70fa64405546cb8256b906d6cb6a0e117b88e8d12b19c1434ed78a4f1ec4c",
-    "scripts/hosted-oecp-smoke-client.js": "b4e044d1c4b05508d784d22776727f990b7c57aa812804465eb91560fd98d829",
-    "scripts/hosted-oecp-smoke-fixture.js": "f88f53ab049684a835d6cad410dcbd8e728e630e042dd5545784a714924e5b75",
-    "protocol/openengine-cluster/v1/worker.schema.json": "9f4f0aaa2009af552d1ec1d740f053e7d94ba5a6361231775b585c8e264deab4",
+    "scripts/hosted-oecp-smoke-client.js": "7b83a7c08e2bf4825b90fd72c9272f4bcd1359221b9bb70917a6b4e1ead2ecec",
+    "scripts/hosted-oecp-smoke-codex.mjs": "9eff5a4d33625753e382302b989457fdde1d2bf7c522037cead1e6151d76ae8b",
+    "scripts/hosted-oecp-smoke-fixture.js": "2fa9ccd003403504d7e4c52792bdbd6416c45aa602babb54173d468ca7733477",
+    "protocol/openengine-cluster/v1/worker.schema.json": "72d0f7ac851e689b3d4c36e58877ecf0490ff3621fa0d3195b946cc72bdca77e",
     "rust-toolchain.toml": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
     "zeroshot-rust/Cargo.toml": "2cc514805c12b11210553073a97536ad8a3efe4936773bd43cdf23a9a998fe45",
-    "zeroshot-rust/hosted-node": "c06a705258b8d955268931fb22da754b1beaaf474de017ded727aeb7909a3602",
-    "zeroshot-rust/src": "7ca37fedeb7c6ac3e1c5743175e741bcef0e07dca64d0b8ad672c77c717d86b7"
+    "zeroshot-rust/hosted-node": "6d375c573b086f910c2cbe57e99e9cb2097e12027565f717b02ef78bfc0a3e7c",
+    "zeroshot-rust/src": "39e72f8747c9c146ad2a85ed8b1cd8ae3b8fa2739aaff07b5ffc9b11f2f5bbf0"
   },
-  "imageInputsDigest": "20d882f3880a83cfe866b1f10678a563cca8015093437a618e8074ceb13e62b8",
+  "imageInputsDigest": "c2ab8c8f37bfa734674e3df85dfe0b2a2e602bb7ac5011c4416b9c6650351cbc",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "a0adf7a250203cd36848627a3ca1ea12f058f7133ab8af16f5dff77424a144f8"
+  "manifestDigest": "2df90627fba8671099048dd88c2f0b961c1e5bd0fd38fae2fc806fdfea12569e"
 }

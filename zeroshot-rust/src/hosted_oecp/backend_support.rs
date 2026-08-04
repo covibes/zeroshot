@@ -5,16 +5,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use openengine_cluster_protocol::{
     legacy_ship_request_payload_type, legacy_ship_result_payload_type, ApplyParams, ClusterStatus,
     DiagnosticSeverity, DispatchState, Generation, GraphDiagnostic, GraphDiagnosticCode, GraphNode,
-    GraphProfile, GraphSpec, Labels, LegacyShipRequest, LogLevel, NonEmptyVec, OperationalStatus,
-    Phase, PlanResult, PositiveInteger, RunId, StopMode, StructuralBounds, TerminationWitness,
-    WorkerErrorCode, WorkerOutcome, GENERATION_CONFLICT, GRAPH_INVALID, IDEMPOTENCY_REUSE,
-    INTERNAL_ERROR_CODE, RUN_CONFLICT, SCHEMA_VIOLATION,
+    GraphProfile, GraphSpec, Labels, LegacyShipRequest, LegacyShipSourceKind, LogLevel,
+    NonEmptyVec, OperationalStatus, Phase, PlanResult, PositiveInteger, RunId, StopMode,
+    StructuralBounds, TerminationWitness, WorkerErrorCode, WorkerOutcome, GENERATION_CONFLICT,
+    GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, RUN_CONFLICT, SCHEMA_VIOLATION,
 };
 use openengine_cluster_server::BackendError;
 use serde_json::{json, Value};
 use tokio::time::{timeout, Duration};
 
 use super::backend::HostedState;
+use super::config::HostedAuthority;
 use super::ports::{TrustedServiceError, ISOLATION_PROFILE, PROVIDER_PROFILE};
 use super::worker::WorkerError;
 
@@ -120,18 +121,40 @@ pub(super) fn validate_apply(params: &ApplyParams) -> Result<(), BackendError> {
     }
 }
 
-pub(super) fn validate_request(params: &ApplyParams) -> Result<LegacyShipRequest, BackendError> {
+pub(super) fn validate_request(
+    params: &ApplyParams,
+    authority: &HostedAuthority,
+) -> Result<LegacyShipRequest, BackendError> {
     let input = params
         .input
         .clone()
         .ok_or_else(|| schema_error("committed apply requires input"))?;
     let request: LegacyShipRequest = serde_json::from_value(input)
         .map_err(|_| schema_error("input does not match LegacyShipRequest"))?;
-    if request.isolation_profile.as_str() != ISOLATION_PROFILE
-        || request.provider_profile.as_str() != PROVIDER_PROFILE
-    {
+    if request.source == LegacyShipSourceKind::Artifact {
+        return Err(safe_application_error(
+            "HOSTED_ARTIFACT_UNSUPPORTED",
+            "Hosted artifact input requires unavailable trusted staging",
+        ));
+    }
+    if request.isolation_profile.as_str() != ISOLATION_PROFILE {
         return Err(schema_error(
-            "legacy request must select the fixed prepared-worktree and proxy profiles",
+            "legacy request must select the fixed prepared-worktree profile",
+        ));
+    }
+    if request.repository != authority.repository() {
+        return Err(safe_application_error(
+            "HOSTED_REPOSITORY_MISMATCH",
+            "Hosted request repository does not match capsule authority",
+        ));
+    }
+    if request.provider_profile.as_str() != PROVIDER_PROFILE
+        || request.provider != authority.provider()
+        || request.model_level != authority.model_level()
+    {
+        return Err(safe_application_error(
+            "HOSTED_PROVIDER_MISMATCH",
+            "Hosted request provider does not match capsule authority",
         ));
     }
     Ok(request)

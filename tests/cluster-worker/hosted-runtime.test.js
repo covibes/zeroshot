@@ -29,21 +29,28 @@ describe('private hosted worker runtime', () => {
   });
 
   it('refuses to launch outside the fixed prepared workspace', () => {
-    const result = spawnSync(process.execPath, ['zeroshot-rust/hosted-node/worker.js'], {
+    const result = spawnSync(process.execPath, ['zeroshot-rust/hosted-node/worker-launcher.js'], {
       cwd: ROOT,
       env: {
         HOME: '/tmp/zeroshot-oecp',
         LANG: 'C.UTF-8',
         NODE_ENV: 'production',
-        OPENAI_API_KEY: 'zeroshot-capsule-sentinel',
-        OPENAI_BASE_URL: 'http://127.0.0.1:8081/v1',
+        PATH: process.env.PATH,
+        ZEROSHOT_HOSTED_CREDENTIALS_JSON: JSON.stringify({
+          GH_TOKEN: 'git-canary',
+          OPENAI_API_KEY: 'provider-canary',
+        }),
+        ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
+        ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
+        ZEROSHOT_HOSTED_PROVIDER: 'codex',
+        ZEROSHOT_HOSTED_MODEL_LEVEL: 'level2',
         ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
-        ZEROSHOT_MODEL: 'zeroshot-capsule-model',
-        ZEROSHOT_PROVIDER_PROFILE: 'provider.fixed-proxy@1',
+        ZEROSHOT_PROVIDER_PROFILE: 'provider.hosted-direct@1',
       },
       encoding: 'utf8',
     });
     assert.notStrictEqual(result.status, 0);
     assert.match(result.stderr, /Invalid fixed capsule workspace/);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /git-canary|provider-canary/);
   });
 });

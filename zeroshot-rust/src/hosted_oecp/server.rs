@@ -3,20 +3,20 @@ use std::io;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use openengine_cluster_protocol::{LegacyShipResult, LegacyShipStatus};
 use openengine_cluster_server::admission::CancellationSignal;
 use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionBinding, ConnectionIdentity, ConnectionIdentityConfig,
     PrincipalId, StaticConnectionIdentityResolver, SystemConnectionTime, TenantId,
 };
 use openengine_cluster_server::stdio::{serve_ndjson, NdjsonIo};
-use serde::{Deserialize, Serialize};
-#[cfg(unix)]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use sha2::{Digest as _, Sha256};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
+use super::config::HostedAuthority;
 use super::server_auth::{
     authenticate_first_request, authentication_error, load_transport_capability,
     TransportCapability, AUTHENTICATION_DEADLINE,
@@ -26,7 +26,6 @@ use super::backend::HostedBackend;
 use super::ports::{
     DeliveryIntent, DeliveryReadinessReceipt, DeliveryReceipt, ProxyCleanupReceipt,
     ProxyReadinessPort, ProxyReadinessReceipt, TrustedServiceError, WorkspaceDeliveryPort,
-    CAPSULE_AGENT_SOCKET_ROOT,
 };
 
 pub const OECP_PORT: u16 = 8080;
@@ -36,19 +35,22 @@ pub(super) const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(45);
 // 10s start + 1s drain + 5s tree reap + three sequential 5s trusted-service stages.
 pub(super) const SEQUENTIAL_FINALIZATION_BOUND: Duration = Duration::from_secs(31);
 const _: () = assert!(SHUTDOWN_DEADLINE.as_secs() > SEQUENTIAL_FINALIZATION_BOUND.as_secs());
-const TRUSTED_SERVICE_DEADLINE: Duration = Duration::from_secs(5);
-const MAX_TRUSTED_FRAME_BYTES: u64 = 4096;
-const PROXY_CONTROL_SOCKET: &str = "/run/zeroshot-capsule-agent/proxy.sock";
-const DELIVERY_SOCKET: &str = "/run/zeroshot-capsule-agent/delivery.sock";
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 const STARTUP_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
-pub fn production_backend() -> Arc<HostedBackend> {
-    Arc::new(HostedBackend::new(
+pub async fn production_backend() -> io::Result<Arc<HostedBackend>> {
+    let authority = HostedAuthority::from_environment()?;
+    authority.verify_worker_configuration().await?;
+    let delivery = Arc::new(InlineDirtyDelivery::new(
+        authority.repository(),
+        authority.base_revision(),
+    ));
+    Ok(Arc::new(HostedBackend::new(
         Arc::new(PreparedWorktreeReadiness),
-        Arc::new(FixedLoopbackProxy::new()),
-        Arc::new(CapsuleAgentDelivery::new()),
-    ))
+        Arc::new(DirectProviderControl),
+        delivery,
+        authority,
+    )))
 }
 
 pub async fn serve<F>(
@@ -59,8 +61,27 @@ pub async fn serve<F>(
 where
     F: Future<Output = ()>,
 {
+    let capability = prepare_server(&backend).await?;
+    serve_prepared(listener, backend, capability, shutdown).await
+}
+
+pub(super) async fn prepare_server(
+    backend: &HostedBackend,
+) -> io::Result<Arc<TransportCapability>> {
     let capability = Arc::new(load_startup_capability().await?);
-    verify_startup_readiness(&backend).await?;
+    verify_startup_readiness(backend).await?;
+    Ok(capability)
+}
+
+pub(super) async fn serve_prepared<F>(
+    listener: TcpListener,
+    backend: Arc<HostedBackend>,
+    capability: Arc<TransportCapability>,
+    shutdown: F,
+) -> io::Result<()>
+where
+    F: Future<Output = ()>,
+{
     let capacity = Arc::new(Semaphore::new(ACTIVE_CONNECTION_CAPACITY));
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
@@ -139,13 +160,16 @@ async fn serve_connection(
     .map_err(|_| authentication_error())??;
     let (reader, writer) = stream.into_split();
     let reader = tokio::io::AsyncReadExt::chain(std::io::Cursor::new(authenticated), reader);
+    let cancellation = CancellationSignal::default();
     let binding = ConnectionBinding::new(
         backend,
         StaticConnectionIdentityResolver::new(static_identity()),
         SystemConnectionTime,
-        CancellationSignal::default(),
+        cancellation.clone(),
     );
-    serve_ndjson(binding, NdjsonIo::new(reader, writer, tokio::io::sink())).await
+    let result = serve_ndjson(binding, NdjsonIo::new(reader, writer, tokio::io::sink())).await;
+    cancellation.cancel();
+    result
 }
 
 fn static_identity() -> ConnectionIdentity {
@@ -158,64 +182,88 @@ fn static_identity() -> ConnectionIdentity {
     })
 }
 
-struct FixedLoopbackProxy {
-    control: TrustedChannel,
-}
-
-impl FixedLoopbackProxy {
-    fn new() -> Self {
-        Self {
-            control: TrustedChannel::new(PROXY_CONTROL_SOCKET),
-        }
-    }
-}
+struct DirectProviderControl;
 
 #[async_trait]
-impl ProxyReadinessPort for FixedLoopbackProxy {
+impl ProxyReadinessPort for DirectProviderControl {
     async fn verify_ready(&self) -> Result<ProxyReadinessReceipt, TrustedServiceError> {
-        timeout(
-            TRUSTED_SERVICE_DEADLINE,
-            TcpStream::connect(("127.0.0.1", 8081)),
-        )
-        .await
-        .map_err(|_| TrustedServiceError::DeadlineExceeded)?
-        .map_err(|_| TrustedServiceError::Unavailable)?;
-        self.control.connect().await?;
         Ok(ProxyReadinessReceipt::ready())
     }
 
     async fn stop_admission_and_cleanup(&self) -> Result<ProxyCleanupReceipt, TrustedServiceError> {
-        let response: ProxyCleanupWire = self
-            .control
-            .exchange(&ProxyControlRequest {
-                version: 1,
-                operation: "stop_and_cleanup",
-            })
-            .await?;
-        if response.version == 1 && response.admission_stopped && response.credentials_cleaned {
-            Ok(ProxyCleanupReceipt::complete())
-        } else {
-            Err(TrustedServiceError::InvalidReceipt)
-        }
+        Ok(ProxyCleanupReceipt::complete())
     }
 }
 
-struct CapsuleAgentDelivery {
-    delivery: TrustedChannel,
+pub(super) struct InlineDirtyDelivery {
+    repository: String,
+    base_revision: String,
 }
 
-impl CapsuleAgentDelivery {
-    fn new() -> Self {
+impl InlineDirtyDelivery {
+    pub(super) fn new(repository: &str, base_revision: &str) -> Self {
         Self {
-            delivery: TrustedChannel::new(DELIVERY_SOCKET),
+            repository: repository.to_owned(),
+            base_revision: base_revision.to_owned(),
         }
     }
+
+    pub(super) fn validate(&self, intent: &DeliveryIntent) -> Result<String, TrustedServiceError> {
+        let result: LegacyShipResult = serde_json::from_value(intent.output.clone())
+            .map_err(|_| TrustedServiceError::InvalidReceipt)?;
+        let (repository, branch, head, review) = successful_delivery_fields(result)?;
+        let branch_digest = format!("{:x}", Sha256::digest(intent.worker_cluster_id.as_bytes()));
+        let expected_branch = format!("zeroshot/hosted-{}", &branch_digest[..20]);
+        let review_prefix = format!("https://github.com/{repository}/pull/");
+        let valid = repository == self.repository
+            && branch == expected_branch
+            && valid_head_revision(&head, &self.base_revision)
+            && valid_review_number(&review, &review_prefix);
+        valid
+            .then_some(review)
+            .ok_or(TrustedServiceError::InvalidReceipt)
+    }
+}
+
+fn successful_delivery_fields(
+    result: LegacyShipResult,
+) -> Result<(String, String, String, String), TrustedServiceError> {
+    if result.status != LegacyShipStatus::Succeeded {
+        return Err(TrustedServiceError::InvalidReceipt);
+    }
+    match (
+        result.repository,
+        result.branch,
+        result.head_revision,
+        result.pull_request_url,
+    ) {
+        (Some(repository), Some(branch), Some(head), Some(review)) => {
+            Ok((repository, branch, head, review))
+        }
+        _ => Err(TrustedServiceError::InvalidReceipt),
+    }
+}
+
+fn valid_head_revision(head: &str, base_revision: &str) -> bool {
+    head != base_revision
+        && head.len() == 40
+        && head
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_review_number(review: &str, prefix: &str) -> bool {
+    let Some(number) = review.strip_prefix(prefix) else {
+        return false;
+    };
+    !number.is_empty()
+        && !number.starts_with('0')
+        && number.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[async_trait]
-impl WorkspaceDeliveryPort for CapsuleAgentDelivery {
+impl WorkspaceDeliveryPort for InlineDirtyDelivery {
     async fn verify_ready(&self) -> Result<DeliveryReadinessReceipt, TrustedServiceError> {
-        self.delivery.connect().await?;
         Ok(DeliveryReadinessReceipt::ready())
     }
 
@@ -223,170 +271,10 @@ impl WorkspaceDeliveryPort for CapsuleAgentDelivery {
         &self,
         intent: DeliveryIntent,
     ) -> Result<DeliveryReceipt, TrustedServiceError> {
-        let response: DeliveryWire = self
-            .delivery
-            .exchange(&DeliveryRequest {
-                version: 1,
-                operation: "deliver",
-                intent,
-            })
-            .await?;
-        if response.version != 1 {
-            return Err(TrustedServiceError::InvalidReceipt);
-        }
-        Ok(response.receipt)
+        let review_ref = self.validate(&intent)?;
+        Ok(DeliveryReceipt {
+            review_ref,
+            delivery_id: intent.delivery_id,
+        })
     }
-}
-
-#[cfg(unix)]
-struct TrustedChannel {
-    socket: &'static str,
-    stream: Mutex<Option<tokio::net::UnixStream>>,
-}
-
-#[cfg(unix)]
-impl TrustedChannel {
-    fn new(socket: &'static str) -> Self {
-        Self {
-            socket,
-            stream: Mutex::new(None),
-        }
-    }
-
-    async fn connect(&self) -> Result<(), TrustedServiceError> {
-        let mut retained = self.stream.lock().await;
-        if retained.is_some() {
-            return Ok(());
-        }
-        if !self.socket.starts_with(CAPSULE_AGENT_SOCKET_ROOT) {
-            return Err(TrustedServiceError::Unavailable);
-        }
-        let stream = timeout(
-            TRUSTED_SERVICE_DEADLINE,
-            tokio::net::UnixStream::connect(self.socket),
-        )
-        .await
-        .map_err(|_| TrustedServiceError::DeadlineExceeded)?
-        .map_err(|_| TrustedServiceError::Unavailable)?;
-        *retained = Some(stream);
-        Ok(())
-    }
-
-    async fn exchange<T, R>(&self, request: &T) -> Result<R, TrustedServiceError>
-    where
-        T: Serialize,
-        R: for<'de> Deserialize<'de>,
-    {
-        let stream = self
-            .stream
-            .lock()
-            .await
-            .take()
-            .ok_or(TrustedServiceError::Unavailable)?;
-        let frame = encode_trusted_frame(request)?;
-        timeout(
-            TRUSTED_SERVICE_DEADLINE,
-            exchange_trusted_frame(stream, &frame),
-        )
-        .await
-        .map_err(|_| TrustedServiceError::DeadlineExceeded)?
-    }
-}
-
-#[cfg(unix)]
-fn encode_trusted_frame<T: Serialize>(request: &T) -> Result<Vec<u8>, TrustedServiceError> {
-    let mut frame = serde_json::to_vec(request).map_err(|_| TrustedServiceError::InvalidReceipt)?;
-    frame.push(b'\n');
-    if frame.len() as u64 > MAX_TRUSTED_FRAME_BYTES {
-        return Err(TrustedServiceError::InvalidReceipt);
-    }
-    Ok(frame)
-}
-
-#[cfg(unix)]
-async fn exchange_trusted_frame<R>(
-    mut stream: tokio::net::UnixStream,
-    frame: &[u8],
-) -> Result<R, TrustedServiceError>
-where
-    R: for<'de> Deserialize<'de>,
-{
-    stream
-        .write_all(frame)
-        .await
-        .map_err(|_| TrustedServiceError::Unavailable)?;
-    stream
-        .shutdown()
-        .await
-        .map_err(|_| TrustedServiceError::Unavailable)?;
-    let response = read_trusted_frame(stream).await?;
-    serde_json::from_slice(&response).map_err(|_| TrustedServiceError::InvalidReceipt)
-}
-
-#[cfg(unix)]
-async fn read_trusted_frame(
-    stream: tokio::net::UnixStream,
-) -> Result<Vec<u8>, TrustedServiceError> {
-    let mut response = Vec::new();
-    stream
-        .take(MAX_TRUSTED_FRAME_BYTES + 1)
-        .read_to_end(&mut response)
-        .await
-        .map_err(|_| TrustedServiceError::Unavailable)?;
-    if response.is_empty() || response.len() as u64 > MAX_TRUSTED_FRAME_BYTES {
-        return Err(TrustedServiceError::InvalidReceipt);
-    }
-    Ok(response)
-}
-
-#[cfg(not(unix))]
-struct TrustedChannel;
-
-#[cfg(not(unix))]
-impl TrustedChannel {
-    fn new(_socket: &'static str) -> Self {
-        Self
-    }
-
-    async fn connect(&self) -> Result<(), TrustedServiceError> {
-        Err(TrustedServiceError::Unavailable)
-    }
-
-    async fn exchange<T, R>(&self, _request: &T) -> Result<R, TrustedServiceError>
-    where
-        T: Serialize,
-        R: for<'de> Deserialize<'de>,
-    {
-        Err(TrustedServiceError::Unavailable)
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProxyControlRequest {
-    version: u8,
-    operation: &'static str,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct ProxyCleanupWire {
-    version: u8,
-    admission_stopped: bool,
-    credentials_cleaned: bool,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DeliveryRequest {
-    version: u8,
-    operation: &'static str,
-    intent: DeliveryIntent,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct DeliveryWire {
-    version: u8,
-    receipt: DeliveryReceipt,
 }
