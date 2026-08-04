@@ -973,7 +973,11 @@
       "hasInstallScript": true,
       "license": "MIT",
       "optional": true,
-      "os": ["win32", "darwin", "linux"],
+      "os": [
+        "win32",
+        "darwin",
+        "linux"
+      ],
       "dependencies": {
         "adm-zip": "^0.5.16",
         "global-agent": "^3.0.0",
@@ -1072,10 +1076,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-darwin-arm64/-/sharp-darwin-arm64-0.35.3.tgz",
       "integrity": "sha512-RMnFX7YQsMoh7lWfcM4NEHHymBX/rLuKNPVM84XE9ONPcaSCDgE7CHIHpSgPcO2xcRthgBy1HfNO319mwhIAkg==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1090,10 +1098,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-darwin-x64/-/sharp-darwin-x64-0.35.3.tgz",
       "integrity": "sha512-Xo+5uFBtLN0BKqieTxiFzFPQAUlBbbH5iBKyRX/z1JrbnYsHTfKJnUfL8+p2TPXr1pXqao4eeL4Rl144uDpK9w==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1110,7 +1122,9 @@
       "integrity": "sha512-lUxcqWIj2wMQ9BrwNjngcr1gWUr5xgaGThBRqPPalIC2n67Cqj1uPh8NnA/ZhAg8hUbKl+kVHKwgUIwe6ZYPrg==",
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["freebsd"],
+      "os": [
+        "freebsd"
+      ],
       "dependencies": {
         "@img/sharp-wasm32": "0.35.3"
       },
@@ -1125,10 +1139,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-darwin-arm64/-/sharp-libvips-darwin-arm64-1.3.2.tgz",
       "integrity": "sha512-9J6ypZFpQBj4YnePGoq/S38w6nz+vqg5WZLrLGY4YuSemdMq47GMLBPO42MzwdGwpg/agZ7xzZcFHa48xlywfg==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1137,10 +1155,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-darwin-x64/-/sharp-libvips-darwin-x64-1.3.2.tgz",
       "integrity": "sha512-m2pW1n6cns9VaubNwsZ+c3CRYjxNQWgJ5gPlnL1nbBcpkBvFm6SCFN5o0psFHI8w9n11NKhFkeEDns98tiqbEw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1149,10 +1171,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-arm/-/sharp-libvips-linux-arm-1.3.2.tgz",
       "integrity": "sha512-1eMLzy92I4J6rmi4mAT8yC3HxOtniyGELlzGbNMLLeqe052ahFQ0h6LFq+lh5DsDIdYViIDst08abvSbcEdLXQ==",
-      "cpu": ["arm"],
+      "cpu": [
+        "arm"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1161,10 +1187,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-arm64/-/sharp-libvips-linux-arm64-1.3.2.tgz",
       "integrity": "sha512-dqVSFynCox4C/J8kT16V7SIFAns0IjgLwkvYT7p8LQVmJ5OS5b6tI9IGflxTeuBS//zXeFIUbwt5dwxyZ17cnA==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1173,10 +1203,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-ppc64/-/sharp-libvips-linux-ppc64-1.3.2.tgz",
       "integrity": "sha512-3z0NHDxD6n5I9gc05U1eW1AyRm+Gznzq3naMrthPNqE6oYykcogW0l/jfpJdjYnuNl8R7yI9pNbE1XiUeyq0Aw==",
-      "cpu": ["ppc64"],
+      "cpu": [
+        "ppc64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1185,10 +1219,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-riscv64/-/sharp-libvips-linux-riscv64-1.3.2.tgz",
       "integrity": "sha512-bsb4rI+NldGOsXuej2r8OdSS8+zXDVaCWxyWrcv6kneTOlgAHtZABRzBBCwdsPiD90J4myNJuHpg6kA20ImW/w==",
-      "cpu": ["riscv64"],
+      "cpu": [
+        "riscv64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1197,10 +1235,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-s390x/-/sharp-libvips-linux-s390x-1.3.2.tgz",
       "integrity": "sha512-/ABshyj8gCpyIrNXnHn4LorDJ0HHm1VhXPBlxZ8zAtfVPAaSafXPGn+sUSIRiwaSBy0mmFjSjiXI5mkcwdChKQ==",
-      "cpu": ["s390x"],
+      "cpu": [
+        "s390x"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1209,10 +1251,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linux-x64/-/sharp-libvips-linux-x64-1.3.2.tgz",
       "integrity": "sha512-ITPEtgffGJ0S6G9dRyw/366tJQqFRcHWPHhC+Stpg3Z8AEMrDrTr2lhdz4f/Y/HMbRh//7Z5mBzEpVdi62Oc3w==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1221,10 +1267,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linuxmusl-arm64/-/sharp-libvips-linuxmusl-arm64-1.3.2.tgz",
       "integrity": "sha512-zE9EdiUzUmg5mDT5a1rk5fYJ6GWPloTwWBYDS14naqHsL+EaMpDj1AWnpLgh3u0YCORv2Tt50wrcrpYqkP97Kw==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1233,10 +1283,14 @@
       "version": "1.3.2",
       "resolved": "https://registry.npmjs.org/@img/sharp-libvips-linuxmusl-x64/-/sharp-libvips-linuxmusl-x64-1.3.2.tgz",
       "integrity": "sha512-m0lrLiUt+lBYnCFr8qV/65yMR4E/c7/wf78I5eKTdkEakFAlZ9QlzEM3QIhhAwVeUhLAHLcCq7a7Vszq/oFNZQ==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "LGPL-3.0-or-later",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "funding": {
         "url": "https://opencollective.com/libvips"
       }
@@ -1245,10 +1299,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-arm/-/sharp-linux-arm-0.35.3.tgz",
       "integrity": "sha512-affVWCTLooy8TSxbDx2qkzuDeaWLNVBA+P//FNBirHsXpP2fuBhk5AuboYUnrDnzoXes8GFjpTx0SBFOCRg+FA==",
-      "cpu": ["arm"],
+      "cpu": [
+        "arm"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1263,10 +1321,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-arm64/-/sharp-linux-arm64-0.35.3.tgz",
       "integrity": "sha512-QgKDspHPnrU+GQ55XPhGwyhC8acLVOOSyAvo1oVfFmrIXLkDNmGWzAfDZ4xK8oSA1qBQrALcHX0G5UZni/SuFQ==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1281,10 +1343,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-ppc64/-/sharp-linux-ppc64-0.35.3.tgz",
       "integrity": "sha512-sMd8rDxmpLOwv/7N44klFjOD5DUO7FLdjiXDI0hoxYaf7Ar262dQIEkosE98bps+5HPLtp/EvNqeqQtOycP/IA==",
-      "cpu": ["ppc64"],
+      "cpu": [
+        "ppc64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1299,10 +1365,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-riscv64/-/sharp-linux-riscv64-0.35.3.tgz",
       "integrity": "sha512-0Eob78yjlYPfL5vMNWAW55l3R9Y6BQS/gOfe0ZcP9mEz9ohhKSt4im1hayiknXgf8AWrFqMvJcKIdmLmEe7yeQ==",
-      "cpu": ["riscv64"],
+      "cpu": [
+        "riscv64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1317,10 +1387,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-s390x/-/sharp-linux-s390x-0.35.3.tgz",
       "integrity": "sha512-KgAxQ0DxpNOq1rG2t5cgTgShJFGSuU7XO45cqC+1NVOuZnP6tlgZRuSYOfNupGkHID0o3cJOsw4DVeJpMovcGw==",
-      "cpu": ["s390x"],
+      "cpu": [
+        "s390x"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1335,10 +1409,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linux-x64/-/sharp-linux-x64-0.35.3.tgz",
       "integrity": "sha512-8pqvxubL2PGdhlPy6GLqzDYMUjyRmKAwKHYKixpdJYBUK7PJ0C029XdsnpFIdgRZG68fZiGdHVWcKPvtiPB4cA==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1353,10 +1431,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linuxmusl-arm64/-/sharp-linuxmusl-arm64-0.35.3.tgz",
       "integrity": "sha512-Vz0iQjzzcSX3HCbfwFfCSG/9SCIqyO0mH2sXyiHaAYfBk0cRsCWXRyQYX0ovCK/PAQBbTzQ0dsPQHh5MAFL59w==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1371,10 +1453,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-linuxmusl-x64/-/sharp-linuxmusl-x64-0.35.3.tgz",
       "integrity": "sha512-6O1NPKcDVj9QEdg7Hx549EX8U0rp6yXQERqru6yRN7fGBn32UvIRJUlWnk+8xDCiG76hXVBbX82NZ/ZKr0euIg==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1405,7 +1491,9 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-webcontainers-wasm32/-/sharp-webcontainers-wasm32-0.35.3.tgz",
       "integrity": "sha512-2rnq7bX3NzeR2T4YWgz8qiG4h3TSdMe+vN1iQXpJleSJ3SM5zQ8Fy2SyyXAWlbxpEZ2Y+Z4u1BePgJEYbSy80Q==",
-      "cpu": ["wasm32"],
+      "cpu": [
+        "wasm32"
+      ],
       "license": "Apache-2.0",
       "optional": true,
       "dependencies": {
@@ -1422,10 +1510,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-win32-arm64/-/sharp-win32-arm64-0.35.3.tgz",
       "integrity": "sha512-4bPwFdMbeC4JQ8L8LOyWp6nsHcboP5fxkp6iPOXz2Vg49R42TuMs2whkJ5OAP4/Ul035qOzy0AecOF9VOscn4w==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "Apache-2.0 AND LGPL-3.0-or-later",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1437,10 +1529,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-win32-ia32/-/sharp-win32-ia32-0.35.3.tgz",
       "integrity": "sha512-r53mXsBN6lFUDiST764SvgwUdHAqM4rPAiDzAmf4fLoB6X/rkfyTrLCg6+g17wJJiCmB3JYgHuUldCWUIRFSXw==",
-      "cpu": ["ia32"],
+      "cpu": [
+        "ia32"
+      ],
       "license": "Apache-2.0 AND LGPL-3.0-or-later",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": "^20.9.0"
       },
@@ -1452,10 +1548,14 @@
       "version": "0.35.3",
       "resolved": "https://registry.npmjs.org/@img/sharp-win32-x64/-/sharp-win32-x64-0.35.3.tgz",
       "integrity": "sha512-D4y1vNeZrIIJCN+uHaWVtH86B+aCrdMYYjicy9pXHvbGZeGYLLSd3wdVuC37FxVXlU1ARsk84eKWfWMXGYEqvA==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "Apache-2.0 AND LGPL-3.0-or-later",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": ">=20.9.0"
       },
@@ -1751,10 +1851,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-darwin-arm64/-/keyring-darwin-arm64-1.3.0.tgz",
       "integrity": "sha512-pl76hJvdYUBn6I24bXiOBMA9nbDapo3I5B+f3OorjDU4dUMSypXeKbOVehJe8fhgTiH24flMyTS3aAIy43xegQ==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1763,10 +1867,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-darwin-x64/-/keyring-darwin-x64-1.3.0.tgz",
       "integrity": "sha512-YcJtEV5LA3cvA4z3BurgxH5IhTsW1JfIvcAAcqcecwk06Si9F9NqkxbZVIfDwQ8oRHgaBmT3zZJnLAotCrVahw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1775,10 +1883,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-freebsd-x64/-/keyring-freebsd-x64-1.3.0.tgz",
       "integrity": "sha512-vlLf31TGhfRAaxLDBhg8b89ss0HHD/lyNmL5F3UjSaz5CUXElsJmKYq9fqA/B+cZKUEUcLHHGhF0I/CqcFdaVw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["freebsd"],
+      "os": [
+        "freebsd"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1787,10 +1899,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-linux-arm-gnueabihf/-/keyring-linux-arm-gnueabihf-1.3.0.tgz",
       "integrity": "sha512-KiWdMMu/Inz/bHHIAGrnF7r54FZDYXuHO6UFF/rhIrshUsxbMG1Rl9lEymNtqqsVo927G0VYcb02FzWQ3iBQRQ==",
-      "cpu": ["arm"],
+      "cpu": [
+        "arm"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1799,10 +1915,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-linux-arm64-gnu/-/keyring-linux-arm64-gnu-1.3.0.tgz",
       "integrity": "sha512-eyKGpY40lm9Jvs1aD294XRH4y7+TlJM0YVAryZeXA6TX0mb4gMkxVXwSQv7MCwgah7raeUd0dKUb4BPAYIgcMg==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1811,10 +1931,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-linux-arm64-musl/-/keyring-linux-arm64-musl-1.3.0.tgz",
       "integrity": "sha512-iIK6JWHXAJqDrEyLY3TmswwloVyt2vj+04TZnew+uSJ9gnDO8EwRbp3/iw3LpWaXiDO7VomGO6y8I0Id8uBZSw==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1823,10 +1947,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-linux-riscv64-gnu/-/keyring-linux-riscv64-gnu-1.3.0.tgz",
       "integrity": "sha512-/PGqrwn6EwgtK6vccASSXJRfOSP4vN1F4ASsIQ+7MdrK6hNvAJ1FZPrIuD5gGGdxezo3F++To2Wq7DbuGIeuNQ==",
-      "cpu": ["riscv64"],
+      "cpu": [
+        "riscv64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1835,10 +1963,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-linux-x64-gnu/-/keyring-linux-x64-gnu-1.3.0.tgz",
       "integrity": "sha512-2PDK1WKWTu9lBGq9VvNEkSlQD3O7YwVpmnyN2M3cy4v7NJ/8gDMd9GXv3G+FVXN13uhp4gnnPBS+ScefmEeD2A==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1847,10 +1979,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-linux-x64-musl/-/keyring-linux-x64-musl-1.3.0.tgz",
       "integrity": "sha512-oJ2HkX8YUo46QBkn0pG+HuIKQNqr523q6vBobCn+P95s4C4K6/kLBqHY/1bg5J4ap31DzsznhnFKcfBNBsjCnw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1859,10 +1995,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-win32-arm64-msvc/-/keyring-win32-arm64-msvc-1.3.0.tgz",
       "integrity": "sha512-tOd3c/uAaeoE4ycVlmAdSvygz0Zt3zdca6Y7gokBeIbaRDWpjDIUOpU3MvML59XAaqyuKGsVVu0F/DZb1lHPmw==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1871,10 +2011,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-win32-ia32-msvc/-/keyring-win32-ia32-msvc-1.3.0.tgz",
       "integrity": "sha512-sPSqeAFZMGqP1R++M2JTza7GQJJ/TpCo6JU6Vcd4jnebvOaEDs9b7eipakU1PJdSvhpC2yXMCNRk9gXfrhuwHQ==",
-      "cpu": ["ia32"],
+      "cpu": [
+        "ia32"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -1883,10 +2027,14 @@
       "version": "1.3.0",
       "resolved": "https://registry.npmjs.org/@napi-rs/keyring-win32-x64-msvc/-/keyring-win32-x64-msvc-1.3.0.tgz",
       "integrity": "sha512-4DnCWXwDc0HRKwyRlG5y0VhKZW2tNRQfKKfyj6IX/KWfDNyq9hn4n+GL1auyDcOO/v8PwnhmYo2+rOOqCkvvOg==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": ">= 10"
       }
@@ -2351,10 +2499,14 @@
       "version": "17.2.1",
       "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-darwin-arm64/-/pi-natives-darwin-arm64-17.2.1.tgz",
       "integrity": "sha512-V7FcEF/+d/WFTumucykmWwc8fsHzoGYBM0ZvLM3FJMWTl/j+OGe/3ZubsACgdLccKYr2CC61ygXH2RByK8T+HA==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "bun": ">=1.3.14"
       }
@@ -2363,10 +2515,14 @@
       "version": "17.2.1",
       "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-darwin-x64/-/pi-natives-darwin-x64-17.2.1.tgz",
       "integrity": "sha512-INODXqftsj1z3/x4Y/ajHbMY7MFRfUmplnvZc9HoSkmnWW6190frTlX2ZcQYUy7PUDlHCefkePaSGKbyy9HO2g==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "bun": ">=1.3.14"
       }
@@ -2375,10 +2531,14 @@
       "version": "17.2.1",
       "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-arm64/-/pi-natives-linux-arm64-17.2.1.tgz",
       "integrity": "sha512-t1pIfLQp+L7QGR396fPaxvMArm0URjR5PfD3tU6F0VY4HMaS+cSBoLngh0na7SGk+EXnAz1X84kWTrb+Pz7K9w==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "bun": ">=1.3.14"
       }
@@ -2387,10 +2547,14 @@
       "version": "17.2.1",
       "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-x64/-/pi-natives-linux-x64-17.2.1.tgz",
       "integrity": "sha512-lhJNgkBbMO2wzyAn3zsWtrkZk3UpiSz5lAIpTEHRjZlc/0WwoJ2BTfyg26omROd5Ejio128lmeukM0RuobCTbw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "bun": ">=1.3.14"
       }
@@ -2399,10 +2563,14 @@
       "version": "17.2.1",
       "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-win32-x64/-/pi-natives-win32-x64-17.2.1.tgz",
       "integrity": "sha512-N1PZh3E8cyqQMgNfEQbNcneVTUd+1blUpILZDQr+YUraaECr2DdJg350kdFrPHMLKpgKrjaeKj4zn+V/Sx3zRw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "bun": ">=1.3.14"
       }
@@ -2965,145 +3133,209 @@
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-darwin-aarch64/-/bun-darwin-aarch64-1.3.14.tgz",
       "integrity": "sha512-Omj20SuiHBOUjUBIyqtkNjSUIjOtEOJwmbix/ZyFH4BaQ6OZTaaRWIR4TjHVz0yadHgli6lLTiAh1uarnvD49A==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"]
+      "os": [
+        "darwin"
+      ]
     },
     "node_modules/@oven/bun-darwin-x64": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-darwin-x64/-/bun-darwin-x64-1.3.14.tgz",
       "integrity": "sha512-FFj3QdU/OhlDyZOJ8CWfN5eWLpRlT4qjZg7lMQi7jA6GuoY5ajlO1zWLP/MuHYRSbXQUvV52RejNi8DVnAp13w==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"]
+      "os": [
+        "darwin"
+      ]
     },
     "node_modules/@oven/bun-darwin-x64-baseline": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-darwin-x64-baseline/-/bun-darwin-x64-baseline-1.3.14.tgz",
       "integrity": "sha512-OSfsTZstc898HHElhU4NccaBGOSSDn5VfahiVTnidZ9B/+wb7WTyfZJaBeJcfjwJ9H2W9uTh2TGtl3UfcXgV9g==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"]
+      "os": [
+        "darwin"
+      ]
     },
     "node_modules/@oven/bun-freebsd-aarch64": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-freebsd-aarch64/-/bun-freebsd-aarch64-1.3.14.tgz",
       "integrity": "sha512-LIKrXaFxAHybVO5Pf+9XP2FHUj/5APvXTUKk9dqHm5iFz4oH+W24cmhjkJirNujh9hKeTyrpWSe3no9JZKowIw==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["freebsd"]
+      "os": [
+        "freebsd"
+      ]
     },
     "node_modules/@oven/bun-freebsd-x64": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-freebsd-x64/-/bun-freebsd-x64-1.3.14.tgz",
       "integrity": "sha512-uwD+fGUH1ADpIF3B1U2jWzzb20QwRLZfj5QZ28GUCGrAJ/nTmWrD6YYGsblCY1wuhldRez3lU40AyuvSCyLYmw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["freebsd"]
+      "os": [
+        "freebsd"
+      ]
     },
     "node_modules/@oven/bun-linux-aarch64": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-aarch64/-/bun-linux-aarch64-1.3.14.tgz",
       "integrity": "sha512-X5SsPZHs+iYO8R/efIcRtc7gT2Q2DgPfliCxEkx4cXBumwkw0c/EsHMNwH3EgGpCDaZ7IYVPhpCG/xBOQHEwZw==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/@oven/bun-linux-aarch64-android": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-aarch64-android/-/bun-linux-aarch64-android-1.3.14.tgz",
       "integrity": "sha512-y4kq5b85lsrmFb9Xvi4w9mA5IEFJkLMrSmYn06q24KjL9rUWDWO3VFZEtteZxUN5+ec3Zm5S8OnJw1umaCbVjA==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["android"]
+      "os": [
+        "android"
+      ]
     },
     "node_modules/@oven/bun-linux-aarch64-musl": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-aarch64-musl/-/bun-linux-aarch64-musl-1.3.14.tgz",
       "integrity": "sha512-jmqOA92Cd1NL/1XBd4bFkJLxQ86K0RW7ohxS2qzzAvuitO4JiIxjjTeCspoU44zCozH72HpfZfUE2On31OjnWA==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/@oven/bun-linux-x64": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-1.3.14.tgz",
       "integrity": "sha512-7OVTAKvwfPmSbIV1HpdOoVVx5VRc427GuPPne93N6vk4eQBPId9nXmZDh9/zGaKPdbVjVtQSZafWQoUjx38Utw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/@oven/bun-linux-x64-android": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64-android/-/bun-linux-x64-android-1.3.14.tgz",
       "integrity": "sha512-qe9e1d+3VAEU7nAA2ol9Jvmy/o99PVMSgZhHn7Q/9O3YcDrfEqyQ8zm4zoe5qTEo8HZH0dN03Le0Ys2eQPs7eg==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["android"]
+      "os": [
+        "android"
+      ]
     },
     "node_modules/@oven/bun-linux-x64-baseline": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64-baseline/-/bun-linux-x64-baseline-1.3.14.tgz",
       "integrity": "sha512-q/8EdOC0yUE8FPeoOVq8/Pw5I9/tJaYmUfO/uDUAREx8IUnOJH1RJ5A3BjFqre8pvJoiZA9AovPJq5FnNNjSxA==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/@oven/bun-linux-x64-musl": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64-musl/-/bun-linux-x64-musl-1.3.14.tgz",
       "integrity": "sha512-GBCB/k/sIqcr06eTNgg7g46qiUv35Jasx4XiccJ/n7RGqrE4RWUD/XJBbWFprVPjvqd59+QtSnS99XGqvftHfg==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/@oven/bun-linux-x64-musl-baseline": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-linux-x64-musl-baseline/-/bun-linux-x64-musl-baseline-1.3.14.tgz",
       "integrity": "sha512-n6iE71G4lQE4XkrZhQQcL5YUlxDbnq6nqV7zeQi33PMsLT/0kYE+RvHOtBWZ3w0wMdXZfINmp63hIb9ijUBGtw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/@oven/bun-windows-aarch64": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-windows-aarch64/-/bun-windows-aarch64-1.3.14.tgz",
       "integrity": "sha512-T7s3x/BsVKQObGU6QDkZeI6wKynzqGbBH1yI77jrrj5siElclxr3DQrDIk8CV4G5/SJq2HHq4kpLyYY2DKCSmA==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["win32"]
+      "os": [
+        "win32"
+      ]
     },
     "node_modules/@oven/bun-windows-x64": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-windows-x64/-/bun-windows-x64-1.3.14.tgz",
       "integrity": "sha512-mUFWL3BoYkNpjd8e9PqROiFF/1Xeotq20mABJsiQH62jM1g5zqWh4khw1RZ6bX8Q8fWvlPaxG1PjofkmjUi3vg==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["win32"]
+      "os": [
+        "win32"
+      ]
     },
     "node_modules/@oven/bun-windows-x64-baseline": {
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/@oven/bun-windows-x64-baseline/-/bun-windows-x64-baseline-1.3.14.tgz",
       "integrity": "sha512-uIjLUC1S9DWgICzuoMba7vurBJnBruE4S5CxnvmZkdqWVXRzx1Rgu636HoH+k0qeaQCFh3jeG3JQ1y6fRHv0sw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MIT",
       "optional": true,
-      "os": ["win32"]
+      "os": [
+        "win32"
+      ]
     },
     "node_modules/@pkgjs/parseargs": {
       "version": "0.11.0",
@@ -4796,7 +5028,9 @@
       "resolved": "https://registry.npmjs.org/@xterm/headless/-/headless-6.0.0.tgz",
       "integrity": "sha512-5Yj1QINYCyzrZtf8OFIHi47iQtI+0qYFPHmouEfG8dHNxbZ9Tb9YGSuLcsEwj9Z+OL75GJqPyJbyoFer80a2Hw==",
       "license": "MIT",
-      "workspaces": ["addons/*"]
+      "workspaces": [
+        "addons/*"
+      ]
     },
     "node_modules/acorn": {
       "version": "8.15.0",
@@ -5349,10 +5583,19 @@
       "version": "1.3.14",
       "resolved": "https://registry.npmjs.org/bun/-/bun-1.3.14.tgz",
       "integrity": "sha512-aB6GVd42x1Y5ie1K16SF+oLGtgSkwX9hgoDdIW88pjvfTccU8F1vfpoOt34QLv0dZ1v3XimtaxPlZUG81Gx9Zg==",
-      "cpu": ["arm64", "x64"],
+      "cpu": [
+        "arm64",
+        "x64"
+      ],
       "hasInstallScript": true,
       "license": "MIT",
-      "os": ["darwin", "linux", "android", "freebsd", "win32"],
+      "os": [
+        "darwin",
+        "linux",
+        "android",
+        "freebsd",
+        "win32"
+      ],
       "bin": {
         "bun": "bin/bun.exe",
         "bunx": "bin/bunx.exe"
@@ -9084,7 +9327,9 @@
       "resolved": "https://registry.npmjs.org/jsonparse/-/jsonparse-1.3.1.tgz",
       "integrity": "sha512-POQXvpdL69+CluYsillJ7SUhKvytYjW9vG/GKpnf+xP8UWgYEM/RaMzHHofbALDiKbbP1W8UEYmgGl39WkPZsg==",
       "dev": true,
-      "engines": ["node >= 0.2.0"],
+      "engines": [
+        "node >= 0.2.0"
+      ],
       "license": "MIT"
     },
     "node_modules/JSONStream": {
@@ -9208,10 +9453,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-android-arm64/-/lightningcss-android-arm64-1.32.0.tgz",
       "integrity": "sha512-YK7/ClTt4kAK0vo6w3X+Pnm0D2cf2vPHbhOXdoNti1Ga0al1P4TBZhwjATvjNwLEBCnKvjJc2jQgHXH0NEwlAg==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["android"],
+      "os": [
+        "android"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9224,10 +9473,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-darwin-arm64/-/lightningcss-darwin-arm64-1.32.0.tgz",
       "integrity": "sha512-RzeG9Ju5bag2Bv1/lwlVJvBE3q6TtXskdZLLCyfg5pt+HLz9BqlICO7LZM7VHNTTn/5PRhHFBSjk5lc4cmscPQ==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9240,10 +9493,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-darwin-x64/-/lightningcss-darwin-x64-1.32.0.tgz",
       "integrity": "sha512-U+QsBp2m/s2wqpUYT/6wnlagdZbtZdndSmut/NJqlCcMLTWp5muCrID+K5UJ6jqD2BFshejCYXniPDbNh73V8w==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["darwin"],
+      "os": [
+        "darwin"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9256,10 +9513,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-freebsd-x64/-/lightningcss-freebsd-x64-1.32.0.tgz",
       "integrity": "sha512-JCTigedEksZk3tHTTthnMdVfGf61Fky8Ji2E4YjUTEQX14xiy/lTzXnu1vwiZe3bYe0q+SpsSH/CTeDXK6WHig==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["freebsd"],
+      "os": [
+        "freebsd"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9272,10 +9533,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-linux-arm-gnueabihf/-/lightningcss-linux-arm-gnueabihf-1.32.0.tgz",
       "integrity": "sha512-x6rnnpRa2GL0zQOkt6rts3YDPzduLpWvwAF6EMhXFVZXD4tPrBkEFqzGowzCsIWsPjqSK+tyNEODUBXeeVHSkw==",
-      "cpu": ["arm"],
+      "cpu": [
+        "arm"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9288,10 +9553,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-gnu/-/lightningcss-linux-arm64-gnu-1.32.0.tgz",
       "integrity": "sha512-0nnMyoyOLRJXfbMOilaSRcLH3Jw5z9HDNGfT/gwCPgaDjnx0i8w7vBzFLFR1f6CMLKF8gVbebmkUN3fa/kQJpQ==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9304,10 +9573,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-linux-arm64-musl/-/lightningcss-linux-arm64-musl-1.32.0.tgz",
       "integrity": "sha512-UpQkoenr4UJEzgVIYpI80lDFvRmPVg6oqboNHfoH4CQIfNA+HOrZ7Mo7KZP02dC6LjghPQJeBsvXhJod/wnIBg==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9320,10 +9593,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-gnu/-/lightningcss-linux-x64-gnu-1.32.0.tgz",
       "integrity": "sha512-V7Qr52IhZmdKPVr+Vtw8o+WLsQJYCTd8loIfpDaMRWGUZfBOYEJeyJIkqGIDMZPwPx24pUMfwSxxI8phr/MbOA==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9336,10 +9613,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-linux-x64-musl/-/lightningcss-linux-x64-musl-1.32.0.tgz",
       "integrity": "sha512-bYcLp+Vb0awsiXg/80uCRezCYHNg1/l3mt0gzHnWV9XP1W5sKa5/TCdGWaR/zBM2PeF/HbsQv/j2URNOiVuxWg==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["linux"],
+      "os": [
+        "linux"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9352,10 +9633,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-win32-arm64-msvc/-/lightningcss-win32-arm64-msvc-1.32.0.tgz",
       "integrity": "sha512-8SbC8BR40pS6baCM8sbtYDSwEVQd4JlFTOlaD3gWGHfThTcABnNDBda6eTZeqbofalIJhFx0qKzgHJmcPTnGdw==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -9368,10 +9653,14 @@
       "version": "1.32.0",
       "resolved": "https://registry.npmjs.org/lightningcss-win32-x64-msvc/-/lightningcss-win32-x64-msvc-1.32.0.tgz",
       "integrity": "sha512-Amq9B/SoZYdDi1kFrojnoqPLxYhQ4Wo5XiL8EVJrVsB8ARoC1PWW6VGtT0WKCemjy8aC+louJnjS7U18x3b06Q==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "MPL-2.0",
       "optional": true,
-      "os": ["win32"],
+      "os": [
+        "win32"
+      ],
       "engines": {
         "node": ">= 12.0.0"
       },
@@ -10044,7 +10333,9 @@
       "resolved": "https://registry.npmjs.org/mime/-/mime-4.1.0.tgz",
       "integrity": "sha512-X5ju04+cAzsojXKes0B/S4tcYtFAJ6tTMuSPBEn9CPGlrWr8Fiw7qYeLT0XyH80HSoAoqWCaz+MWKh22P7G1cw==",
       "dev": true,
-      "funding": ["https://github.com/sponsors/broofa"],
+      "funding": [
+        "https://github.com/sponsors/broofa"
+      ],
       "license": "MIT",
       "bin": {
         "mime": "bin/cli.js"
@@ -10514,7 +10805,13 @@
       ],
       "dev": true,
       "license": "Artistic-2.0",
-      "workspaces": ["docs", "smoke-tests", "mock-globals", "mock-registry", "workspaces/*"],
+      "workspaces": [
+        "docs",
+        "smoke-tests",
+        "mock-globals",
+        "mock-registry",
+        "workspaces/*"
+      ],
       "dependencies": {
         "@isaacs/string-locale-compare": "^1.1.0",
         "@npmcli/arborist": "^9.9.0",
@@ -11382,7 +11679,9 @@
     "node_modules/npm/node_modules/jsonparse": {
       "version": "1.3.1",
       "dev": true,
-      "engines": ["node >= 0.2.0"],
+      "engines": [
+        "node >= 0.2.0"
+      ],
       "inBundle": true,
       "license": "MIT"
     },
@@ -12606,30 +12905,42 @@
     },
     "node_modules/opcore/node_modules/@the-open-engine/opcore-graph-core-darwin-arm64": {
       "version": "0.2.1",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "dev": true,
       "inBundle": true,
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"]
+      "os": [
+        "darwin"
+      ]
     },
     "node_modules/opcore/node_modules/@the-open-engine/opcore-graph-core-darwin-x64": {
       "version": "0.2.1",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "dev": true,
       "inBundle": true,
       "license": "MIT",
       "optional": true,
-      "os": ["darwin"]
+      "os": [
+        "darwin"
+      ]
     },
     "node_modules/opcore/node_modules/@the-open-engine/opcore-graph-core-linux-x64": {
       "version": "0.2.1",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "dev": true,
       "inBundle": true,
       "license": "MIT",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/opcore/node_modules/@the-open-engine/opcore-validation": {
       "version": "0.2.1",
@@ -15458,37 +15769,53 @@
       "version": "1.13.4",
       "resolved": "https://registry.npmjs.org/sherpa-onnx-darwin-arm64/-/sherpa-onnx-darwin-arm64-1.13.4.tgz",
       "integrity": "sha512-QcYKzyrTzGSx6aKCD6hUODgRS1LetqfG57Z/+i5LCyfMlrgCvDc1lRcl9cdB+TozBsLha9QwLTlI0vmDcf5JKg==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["darwin"]
+      "os": [
+        "darwin"
+      ]
     },
     "node_modules/sherpa-onnx-darwin-x64": {
       "version": "1.13.4",
       "resolved": "https://registry.npmjs.org/sherpa-onnx-darwin-x64/-/sherpa-onnx-darwin-x64-1.13.4.tgz",
       "integrity": "sha512-6RGeis9K9gV/UQWOgd6Rf3iqXr2/YsBQswxHaCR4hrYkHfEIpHMfFmRWLt6nJJCOWgYW2xFxEd9yzjrafAV/Pw==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["darwin"]
+      "os": [
+        "darwin"
+      ]
     },
     "node_modules/sherpa-onnx-linux-arm64": {
       "version": "1.13.4",
       "resolved": "https://registry.npmjs.org/sherpa-onnx-linux-arm64/-/sherpa-onnx-linux-arm64-1.13.4.tgz",
       "integrity": "sha512-RMjMRqT82BgTXypNNGmLe6ZFYhc3WEvnAGl3DdkK7qB/kuXwkL3iHhV31wAecbnWPsnEpUoD+8cFovWSBzsCuw==",
-      "cpu": ["arm64"],
+      "cpu": [
+        "arm64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/sherpa-onnx-linux-x64": {
       "version": "1.13.4",
       "resolved": "https://registry.npmjs.org/sherpa-onnx-linux-x64/-/sherpa-onnx-linux-x64-1.13.4.tgz",
       "integrity": "sha512-WZh5NCkGPFHHpYSd78iN4OnmxQeSTGyt9uZskH+im/NFHQ7elQ7B0sLzCMeRpvJxiIKvd9C6WxIJ4hYaxClfsQ==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["linux"]
+      "os": [
+        "linux"
+      ]
     },
     "node_modules/sherpa-onnx-node": {
       "version": "1.13.2",
@@ -15509,19 +15836,27 @@
       "version": "1.13.4",
       "resolved": "https://registry.npmjs.org/sherpa-onnx-win-ia32/-/sherpa-onnx-win-ia32-1.13.4.tgz",
       "integrity": "sha512-/JbPjldrfNv+t+uIS3MlkuhfIf5l3FHUGkRC2oRXgjRqOaVmEyP3vLlQ7dTa4J7raG5oB8c3GoPjuSWSqT9GOQ==",
-      "cpu": ["ia32"],
+      "cpu": [
+        "ia32"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["win32"]
+      "os": [
+        "win32"
+      ]
     },
     "node_modules/sherpa-onnx-win-x64": {
       "version": "1.13.4",
       "resolved": "https://registry.npmjs.org/sherpa-onnx-win-x64/-/sherpa-onnx-win-x64-1.13.4.tgz",
       "integrity": "sha512-R0PWby1VxC14TDZPq7GcfSyXSY6SAFO8Y4JwdCdqouFmeXkZ1L7Is9m98C9KxQ0dN7ZtDzhAmE/43FUs/elXRQ==",
-      "cpu": ["x64"],
+      "cpu": [
+        "x64"
+      ],
       "license": "Apache-2.0",
       "optional": true,
-      "os": ["win32"]
+      "os": [
+        "win32"
+      ]
     },
     "node_modules/signal-exit": {
       "version": "4.1.0",
