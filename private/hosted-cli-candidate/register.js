@@ -19,6 +19,10 @@ function commandNamed(program, name) {
   return command;
 }
 
+function invokedThroughAlias(command, alias) {
+  return command.aliases().includes(alias) && command.parent?.args?.[0] === alias;
+}
+
 function explicitOptionNames(command) {
   return command.options
     .filter((option) => command.getOptionValueSource(option.attributeName()) === 'cli')
@@ -170,7 +174,7 @@ function registerHostedList(program, service) {
       if (typeof options.target !== 'string' || options.target.length === 0) {
         throw new Error('--target must name a registered target');
       }
-      if (command.parent?.rawArgs?.[2] === 'ls') {
+      if (invokedThroughAlias(command, 'ls')) {
         throw new Error('hosted list is available only as `list --target`');
       }
       assertOnlyOptions(command, new Set(['target', 'limit', 'json']));

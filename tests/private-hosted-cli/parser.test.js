@@ -9,6 +9,7 @@ const { registerPrivateHostedCandidate } = require('../../private/hosted-cli-can
 function harness() {
   const calls = [];
   const program = new Command();
+  program.option('--quiet');
   program.exitOverride().configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
   program
     .command('run <input>')
@@ -121,13 +122,14 @@ describe('private candidate closed parser', () => {
     assert.equal(process.exitCode, 1);
   });
 
-  it('rejects explicit empty targets and the ls hosted alias without local fallback', async () => {
+  it('rejects explicit empty targets and every ls hosted alias position without fallback', async () => {
     for (const argv of [
       ['run', 'local-task', '--target', ''],
       ['list', '--target', ''],
       ['status', 'cap-1', '--target', ''],
       ['stop', 'cap-1', '--target', ''],
       ['ls', '--target', 'prod'],
+      ['--quiet', 'ls', '--target', 'prod'],
     ]) {
       const { program, calls, settingsReads } = harness();
       await parse(program, argv);
@@ -136,6 +138,17 @@ describe('private candidate closed parser', () => {
       assert.equal(process.exitCode, 1);
       process.exitCode = 0;
     }
+  });
+
+  it('preserves the local ls alias when a global option precedes it', async () => {
+    const { program, calls, settingsReads } = harness();
+    await parse(program, ['--quiet', 'ls', '--json']);
+    assert.deepEqual(
+      calls.map((call) => call[0]),
+      ['local-list']
+    );
+    assert.equal(settingsReads(), 0);
+    assert.equal(process.exitCode, 0);
   });
 
   it('dispatches each remote lifecycle route without conflating stop and terminate', async () => {
