@@ -4,12 +4,11 @@ const PROVIDER = 'codex';
 const MODEL_LEVEL = 'level2';
 
 function repositoryBinding(repository) {
-  if (
-    typeof repository !== 'string' ||
-    !/^[a-z0-9](?:[a-z0-9_.-]{0,99})\/[a-z0-9](?:[a-z0-9_.-]{0,99})$/.test(repository) ||
-    repository.endsWith('.git')
-  ) {
-    throw new Error('repository must be one canonical GitHub owner/name');
+  const [owner, name, extra] = typeof repository === 'string' ? repository.split('/') : [];
+  const validOwner = /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(owner ?? '');
+  const validName = /^[a-z0-9](?:[a-z0-9._-]{0,98}[a-z0-9._])?$/.test(name ?? '');
+  if (!validOwner || !validName || extra !== undefined || name.endsWith('.git')) {
+    throw new Error('repository must be one canonical lowercase GitHub owner/name');
   }
   return `github.com/${repository}`;
 }

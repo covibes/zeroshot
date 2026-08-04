@@ -1,9 +1,11 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { validateLegacyShipRequest } = require('../../lib/cluster-worker/contracts');
 const {
   HostedProtocolError,
   HostedTransportUncertainError,
+  isDeterministicAllocationRefusal,
   RemoteAllocationUncertainError,
   RemoteDetachedError,
   safeWatchProjection,
@@ -13,6 +15,38 @@ const {
 
 const READY_TIMEOUT_MS = 5 * 60 * 1000;
 const READY_POLL_MS = 2000;
+const ISOLATION_PROFILE = 'isolation.prepared-worktree@1';
+const PROVIDER_PROFILE = 'provider.hosted-direct@1';
+const AUTHORITY_REFUSAL_CODES = new Set(['HOSTED_REPOSITORY_MISMATCH', 'HOSTED_PROVIDER_MISMATCH']);
+
+function authorityRefusalCode(error) {
+  const code = error?.data?.code ?? error?.code;
+  return AUTHORITY_REFUSAL_CODES.has(code) ? code : undefined;
+}
+
+function buildLegacyShipRequest(input, setup) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError('hosted input must be a LegacyShipRequest object');
+  }
+  if (input.source === 'artifact') {
+    throw new Error('hosted artifact input is unavailable without trusted artifact staging');
+  }
+  const authority = Object.freeze({
+    isolationProfile: ISOLATION_PROFILE,
+    providerProfile: PROVIDER_PROFILE,
+    repository: setup.repository,
+    provider: setup.provider,
+    modelLevel: setup.modelLevel,
+  });
+  for (const [field, value] of Object.entries(authority)) {
+    if (Object.hasOwn(input, field) && input[field] !== value) {
+      throw new Error(`hosted input ${field} does not match the fixed server authority`);
+    }
+  }
+  const request = { ...input, ...authority };
+  validateLegacyShipRequest(request);
+  return Object.freeze(request);
+}
 
 class HostedRunOrchestrator {
   constructor(options) {
@@ -45,10 +79,12 @@ class HostedRunOrchestrator {
     ) {
       throw new Error('target setup does not match the fixed hosted runtime selection');
     }
+    const request = buildLegacyShipRequest(inputs.input, setup);
     let capsule;
     let coordinator;
     let uncertain = false;
     let canTerminate = false;
+    if (options.signal?.aborted) throw options.signal.reason;
     try {
       this.output.stdout(`Allocation key: ${identities.allocationIdempotencyKey}`);
       try {
@@ -60,6 +96,7 @@ class HostedRunOrchestrator {
           options.signal
         );
       } catch (error) {
+        if (isDeterministicAllocationRefusal(error)) throw error;
         const allocationError = new RemoteAllocationUncertainError(
           identities.allocationIdempotencyKey,
           error
@@ -97,15 +134,26 @@ class HostedRunOrchestrator {
         uncertain = true;
         canTerminate = false;
         this.output.stdout(`Apply key: ${identities.applyIdempotencyKey}`);
-        const applied = await initial.client.apply(
-          {
-            graph: inputs.graph,
-            input: inputs.input,
-            idempotencyKey: identities.applyIdempotencyKey,
-            ifGeneration: 0,
-          },
-          options.signal === undefined ? undefined : { signal: options.signal }
-        );
+        let applied;
+        try {
+          applied = await initial.client.apply(
+            {
+              graph: inputs.graph,
+              input: request,
+              idempotencyKey: identities.applyIdempotencyKey,
+              ifGeneration: 0,
+            },
+            options.signal === undefined ? undefined : { signal: options.signal }
+          );
+        } catch (error) {
+          const code = authorityRefusalCode(error);
+          if (code !== undefined) {
+            uncertain = false;
+            canTerminate = true;
+            throw new HostedProtocolError(`capsule refused fixed hosted authority (${code})`);
+          }
+          throw error;
+        }
         if (
           !Number.isSafeInteger(applied.generation) ||
           typeof applied.runId !== 'string' ||
@@ -221,6 +269,7 @@ class HostedRunOrchestrator {
 }
 
 module.exports = {
+  buildLegacyShipRequest,
   RemoteAllocationUncertainError,
   HostedRunOrchestrator,
   READY_POLL_MS,

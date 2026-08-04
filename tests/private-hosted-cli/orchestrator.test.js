@@ -13,9 +13,15 @@ const GRAPH = {
   profile: 'openengine.graph.single-worker/v1',
   root: { kind: 'step', worker: 'legacy.zeroshot.ship@1', attempts: 1 },
 };
+const CALLER_INPUT = Object.freeze({
+  source: 'prompt',
+  prompt: 'Ship the requested change.',
+  artifacts: [],
+});
 
 function base(overrides = {}) {
   const sequence = [];
+  const requests = { plan: [], apply: [] };
   let ids = 0;
   const adapter = {
     allocate() {
@@ -33,12 +39,14 @@ function base(overrides = {}) {
     ...overrides.adapter,
   };
   const initialClient = {
-    plan() {
+    plan(params) {
       sequence.push('plan');
+      requests.plan.push(params);
       return { ok: true, diagnostics: [] };
     },
-    apply() {
+    apply(params) {
       sequence.push('apply');
+      requests.apply.push(params);
       return { generation: 1, runId: 'server-run-1', phase: 'running', deduped: false };
     },
     ...overrides.initialClient,
@@ -112,7 +120,7 @@ function base(overrides = {}) {
     assertGraphSpec: () => undefined,
     readInputs: () => {
       sequence.push('read-inputs');
-      return { graph: GRAPH, input: null };
+      return { graph: GRAPH, input: overrides.input ?? CALLER_INPUT };
     },
     checkHostedSetup: () => {
       sequence.push('check-setup');
@@ -132,6 +140,7 @@ function base(overrides = {}) {
     coordinator,
     orchestrator,
     output,
+    requests,
     sequence,
     options: {
       adapter,
@@ -155,6 +164,27 @@ it('refuses setup mismatches before allocation', async () => {
   assert.deepEqual(h.sequence, ['read-inputs', 'check-setup']);
 });
 
+it('rejects caller authority mismatches and malformed requests before allocation', async () => {
+  for (const input of [
+    { ...CALLER_INPUT, repository: 'other/repo' },
+    { ...CALLER_INPUT, provider: 'gateway' },
+    { ...CALLER_INPUT, modelLevel: 'level3' },
+    { ...CALLER_INPUT, providerProfile: 'provider.other@1' },
+    { ...CALLER_INPUT, isolationProfile: 'isolation.other@1' },
+    { ...CALLER_INPUT, command: 'caller-controlled' },
+  ]) {
+    const h = base({ input });
+    await assert.rejects(h.orchestrator.run(h.options));
+    assert.equal(h.sequence.includes('allocate'), false);
+  }
+});
+
+it('rejects unsupported artifact input before allocation', async () => {
+  const h = base({ input: { source: 'artifact', artifacts: [] } });
+  await assert.rejects(h.orchestrator.run(h.options), /artifact input is unavailable/);
+  assert.equal(h.sequence.includes('allocate'), false);
+});
+
 it('emits one stable ownership key before an ambiguous allocation and never retries', async () => {
   let allocations = 0;
   const h = base({
@@ -170,6 +200,23 @@ it('emits one stable ownership key before an ambiguous allocation and never retr
   assert.equal(allocations, 1);
   assert.match(h.output.stdout[0], /^Allocation key: allocate_/);
   assert.match(h.output.stderr[0], /Do not allocate a replacement/);
+  assert.equal(h.sequence.includes('initialize'), false);
+});
+
+it('propagates deterministic allocation refusals without claiming ambiguity', async () => {
+  const refusal = Object.assign(new Error('Target access authorization failed'), {
+    code: 'AUTH_FAILED',
+  });
+  const h = base({
+    adapter: {
+      allocate() {
+        h.sequence.push('allocate');
+        throw refusal;
+      },
+    },
+  });
+  await assert.rejects(h.orchestrator.run(h.options), (error) => error === refusal);
+  assert.equal(h.output.stderr.length, 0);
   assert.equal(h.sequence.includes('initialize'), false);
 });
 
@@ -197,6 +244,16 @@ describe('hosted lifecycle orchestration', () => {
     ]);
     assert.equal(result.identities.applyIdempotencyKey, 'apply_00000002000000000000000000000000');
     assert.equal(h.sequence.includes('terminate'), false);
+    assert.deepEqual(h.requests.apply[0].input, {
+      source: 'prompt',
+      prompt: 'Ship the requested change.',
+      artifacts: [],
+      isolationProfile: 'isolation.prepared-worktree@1',
+      providerProfile: 'provider.hosted-direct@1',
+      repository: 'owner/repo',
+      provider: 'codex',
+      modelLevel: 'level2',
+    });
   });
 
   it('returns detached only after committed apply when -d is used', async () => {
@@ -206,6 +263,28 @@ describe('hosted lifecycle orchestration', () => {
     assert.equal(result.apply.runId, 'server-run-1');
     assert.equal(h.sequence.includes('watch'), false);
     assert.equal(h.sequence.includes('get'), false);
+  });
+
+  it('surfaces only safe authority diagnostics and terminates the refused capsule', async () => {
+    const h = base({
+      initialClient: {
+        apply() {
+          h.sequence.push('apply');
+          throw Object.assign(new Error('peer-controlled detail'), {
+            code: 'HOSTED_REPOSITORY_MISMATCH',
+            data: { code: 'HOSTED_REPOSITORY_MISMATCH' },
+          });
+        },
+      },
+    });
+    await assert.rejects(h.orchestrator.run(h.options), (error) => {
+      assert.equal(error.name, 'HostedProtocolError');
+      assert.match(error.message, /HOSTED_REPOSITORY_MISMATCH/);
+      assert.doesNotMatch(error.message, /peer-controlled/);
+      return true;
+    });
+    assert.equal(h.sequence.filter((step) => step === 'apply').length, 1);
+    assert.equal(h.sequence.filter((step) => step === 'terminate').length, 1);
   });
 
   it('preserves the capsule and identities when apply response is ambiguous', async () => {
@@ -249,6 +328,63 @@ describe('hosted lifecycle orchestration', () => {
     });
     await assert.rejects(h.orchestrator.run(h.options), RemoteDetachedError);
     assert.equal(h.sequence.includes('terminate'), false);
+  });
+  it('detaches on SIGINT with stable remediation identities and no termination', async () => {
+    const abort = new AbortController();
+    let h;
+    h = base({
+      coordinator: {
+        watch() {
+          h.sequence.push('watch');
+          abort.abort(
+            new globalThis.DOMException('operator interrupted observation', 'AbortError')
+          );
+          throw abort.signal.reason;
+        },
+      },
+    });
+    await assert.rejects(h.orchestrator.run({ ...h.options, signal: abort.signal }), (error) => {
+      assert.ok(error instanceof RemoteDetachedError);
+      assert.equal(error.capsuleId, 'cap1');
+      assert.match(error.identities.allocationIdempotencyKey, /^allocate_/);
+      assert.match(error.identities.applyIdempotencyKey, /^apply_/);
+      return true;
+    });
+    assert.match(
+      h.output.stdout.find((line) => line.startsWith('Allocation key:')),
+      /allocate_/
+    );
+    assert.match(
+      h.output.stdout.find((line) => line.startsWith('Apply key:')),
+      /apply_/
+    );
+    assert.equal(h.sequence.includes('terminate'), false);
+  });
+
+  it('does not read, log, serialize, or send direct credential environment values', async () => {
+    const credentials = {
+      GH_TOKEN: 'gh-direct-secret-canary-884',
+      OPENAI_API_KEY: 'openai-direct-secret-canary-884',
+    };
+    const previous = Object.fromEntries(
+      Object.keys(credentials).map((name) => [name, process.env[name]])
+    );
+    Object.assign(process.env, credentials);
+    try {
+      const h = base();
+      const result = await h.orchestrator.run(h.options);
+      const observed = JSON.stringify({ requests: h.requests, output: h.output, result });
+      for (const [name, value] of Object.entries(credentials)) {
+        assert.equal(observed.includes(name), false);
+        assert.equal(observed.includes(value), false);
+        assert.equal(Object.hasOwn(h.requests.apply[0].input, name), false);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it('terminates only a definitely owned provisional capsule after deterministic plan refusal', async () => {

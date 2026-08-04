@@ -109,6 +109,18 @@ describe('stable/candidate package isolation', () => {
     ];
     assert.throws(() => parseArgs([...prefix, '--provider', 'gateway', '--model-level', 'level2']));
     assert.throws(() => parseArgs([...prefix, '--provider', 'codex', '--model-level', 'level3']));
+    assert.throws(
+      () =>
+        parseArgs([
+          ...prefix.slice(0, -1),
+          'Owner/repository',
+          '--provider',
+          'codex',
+          '--model-level',
+          'level2',
+        ]),
+      /lowercase/
+    );
     assert.throws(() => parseArgs(prefix), /provider/);
   });
 });

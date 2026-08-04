@@ -135,6 +135,10 @@ it('rejects any repository, provider, or model-level mismatch without mutation',
     { repository: 'Owner/Repo', provider: 'codex', modelLevel: 'level2' },
     { repository: 'owner/repo', provider: 'gateway', modelLevel: 'level2' },
     { repository: 'owner/repo', provider: 'codex', modelLevel: 'level3' },
+    { repository: 'owner-/repo', provider: 'codex', modelLevel: 'level2' },
+    { repository: 'owner.name/repo', provider: 'codex', modelLevel: 'level2' },
+    { repository: `${'o'.repeat(40)}/repo`, provider: 'codex', modelLevel: 'level2' },
+    { repository: 'owner/repo-', provider: 'codex', modelLevel: 'level2' },
   ]) {
     const state = { _targets: { prod: { id: 'target-1' } } };
     await assert.rejects(

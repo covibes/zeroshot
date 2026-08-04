@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('./manifest');
+const { repositoryBinding } = require('./credentials');
 
 const ROOT = path.resolve(__dirname, '../..');
 const CANDIDATE_FILES = Object.freeze([
@@ -24,6 +25,7 @@ const PROTOCOL_FILES = Object.freeze([
   'src/cluster/generated/protocol-schema.ts',
   'protocol/openengine-cluster/v1/schema.json',
   'protocol/openengine-cluster/v1/graph.schema.json',
+  'protocol/openengine-cluster/v1/worker.schema.json',
 ]);
 const FIXTURE_FILES = Object.freeze([
   'protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json',
@@ -88,14 +90,10 @@ function parseArgs(argv) {
   if (!/^[a-f0-9]{40}$/.test(args.zeroCloudCommit || '')) {
     throw new Error('--zero-cloud-commit <40 lowercase hex> is required');
   }
-  if (
-    typeof args.repository !== 'string' ||
-    !/^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$/.test(
-      args.repository
-    ) ||
-    args.repository.endsWith('.git')
-  ) {
-    throw new Error('--repository must be one canonical GitHub owner/name');
+  try {
+    repositoryBinding(args.repository);
+  } catch {
+    throw new Error('--repository must be one canonical lowercase GitHub owner/name');
   }
   if (args.provider !== 'codex') throw new Error('--provider must be exactly codex');
   if (args.modelLevel !== 'level2') throw new Error('--model-level must be exactly level2');

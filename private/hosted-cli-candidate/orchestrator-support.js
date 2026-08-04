@@ -1,6 +1,17 @@
 'use strict';
 
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
+const DETERMINISTIC_ALLOCATION_CODES = new Set([
+  'AUTH_FAILED',
+  'SERVER_REJECTED',
+  'CAPACITY',
+  'NOT_FOUND',
+  'RATE_LIMITED',
+]);
+
+function isDeterministicAllocationRefusal(error) {
+  return DETERMINISTIC_ALLOCATION_CODES.has(error?.code);
+}
 class HostedProtocolError extends Error {
   constructor(message, options) {
     super(message, options);
@@ -97,6 +108,7 @@ function safeWatchProjection(capsuleId, item) {
 module.exports = {
   HostedProtocolError,
   HostedTransportUncertainError,
+  isDeterministicAllocationRefusal,
   RemoteAllocationUncertainError,
   RemoteDetachedError,
   safeWatchProjection,

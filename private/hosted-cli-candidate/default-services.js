@@ -3,7 +3,10 @@
 const crypto = require('node:crypto');
 const { checkHostedSetup } = require('./credentials');
 const { HostedRunOrchestrator } = require('./orchestrator');
-const { RemoteAllocationUncertainError } = require('./orchestrator-support');
+const {
+  isDeterministicAllocationRefusal,
+  RemoteAllocationUncertainError,
+} = require('./orchestrator-support');
 const { readHostedInputs } = require('./readers');
 const { createTargetServices, targetSessionManager } = require('./target-services');
 
@@ -38,10 +41,9 @@ function requireOrganization(target) {
     throw new Error('Target login is required before remote capsule operations');
 }
 
-async function createSessionContext(name, runtime, settings) {
+async function createSessionContext(name, runtime, settings, http = httpTransport()) {
   const target = requireTarget(name, runtime, settings);
   requireOrganization(target);
-  const http = httpTransport();
   const descriptor = await runtime.target.discoverTarget(target.url, http);
   const credentialStore = await runtime.target.KeyringCredentialStore.create();
   const sessionManager = targetSessionManager({
@@ -91,14 +93,25 @@ async function sanitizeRemoteOperation(label, operation) {
 }
 
 function createDefaultServices(dependencies) {
-  const runtime = loadRuntime();
+  const runtime = dependencies.runtime ?? loadRuntime();
   const settings = targetSettings(dependencies);
+  const createHttp = dependencies.httpTransport ?? httpTransport;
+  const randomUUID = dependencies.randomUUID ?? crypto.randomUUID;
+  const inputReader = dependencies.readHostedInputs ?? readHostedInputs;
+  const candidateManifest = () => dependencies.manifest ?? buildManifest();
+  const contextFor = (name) => createSessionContext(name, runtime, settings, createHttp());
+  const coordinatorFor =
+    dependencies.createCoordinator ??
+    ((init) => new runtime.hostedSession.HostedSessionCoordinator(init));
   const services = {
-    ...createTargetServices({ runtime, settings, httpTransport, requireTarget }),
+    ...createTargetServices({ runtime, settings, httpTransport: createHttp, requireTarget }),
 
     async capsuleCreate(options) {
-      const context = await createSessionContext(options.target, runtime, settings);
-      const allocationIdempotencyKey = `capsule_${crypto.randomUUID().replaceAll('-', '')}`;
+      const context = await contextFor(options.target);
+      if (options.size !== undefined && !context.descriptor.sizes.catalog.includes(options.size)) {
+        throw new Error('capsule size is not advertised by the target');
+      }
+      const allocationIdempotencyKey = `capsule_${randomUUID().replaceAll('-', '')}`;
       console.log(`Allocation key: ${allocationIdempotencyKey}`);
       let capsule;
       try {
@@ -108,6 +121,7 @@ function createDefaultServices(dependencies) {
           ...(options.size === undefined ? {} : { size: options.size }),
         });
       } catch (error) {
+        if (isDeterministicAllocationRefusal(error)) throw error;
         throw new RemoteAllocationUncertainError(allocationIdempotencyKey, error);
       }
       console.log(`Capsule: ${capsule.id}`);
@@ -115,19 +129,19 @@ function createDefaultServices(dependencies) {
     },
 
     async capsuleTerminate(capsuleId, options) {
-      const context = await createSessionContext(options.target, runtime, settings);
+      const context = await contextFor(options.target);
       const capsule = await context.adapter.terminate(capsuleId);
       console.log(`Termination requested for capsule ${capsule.id}; host state: ${capsule.state}`);
     },
 
     async remoteRun(options) {
-      const inputs = await readHostedInputs(
+      const inputs = await inputReader(
         options.graph,
         options.input,
         runtime.cluster.assertGraphSpec
       );
-      const context = await createSessionContext(options.target, runtime, settings);
-      const manifest = buildManifest();
+      const context = await contextFor(options.target);
+      const manifest = candidateManifest();
       const abort = new AbortController();
       const onSigint = () =>
         abort.abort(new globalThis.DOMException('remote observation interrupted', 'AbortError'));
@@ -137,8 +151,10 @@ function createDefaultServices(dependencies) {
           assertGraphSpec: runtime.cluster.assertGraphSpec,
           readInputs: () => inputs,
           checkHostedSetup,
-          createCoordinator: (init) => new runtime.hostedSession.HostedSessionCoordinator(init),
+          createCoordinator: coordinatorFor,
           runtimeImageDigest: manifest.runtimeImageDigest,
+          randomUUID,
+          output: dependencies.orchestratorOutput,
         });
         return await orchestrator.run({
           ...context,
@@ -156,7 +172,7 @@ function createDefaultServices(dependencies) {
     },
 
     async remoteList(options) {
-      const context = await createSessionContext(options.target, runtime, settings);
+      const context = await contextFor(options.target);
       const page = await context.adapter.list(
         options.limit === undefined ? {} : { limit: options.limit }
       );
@@ -170,11 +186,11 @@ function createDefaultServices(dependencies) {
 
     remoteStatus(capsuleId, options) {
       return sanitizeRemoteOperation('status', async () => {
-        const context = await createSessionContext(options.target, runtime, settings);
+        const context = await contextFor(options.target);
         const host = await context.adapter.inspect(capsuleId);
         let oecp = null;
         if (host.state === 'ready') {
-          const coordinator = new runtime.hostedSession.HostedSessionCoordinator({
+          const coordinator = coordinatorFor({
             adapter: context.adapter,
             capsuleId,
             targetAuthority: context.target.url,
@@ -197,10 +213,10 @@ function createDefaultServices(dependencies) {
 
     remoteStop(capsuleId, options) {
       return sanitizeRemoteOperation('stop', async () => {
-        const context = await createSessionContext(options.target, runtime, settings);
+        const context = await contextFor(options.target);
         const host = await context.adapter.inspect(capsuleId);
         if (host.state !== 'ready') throw new Error('OECP stop is unavailable');
-        const coordinator = new runtime.hostedSession.HostedSessionCoordinator({
+        const coordinator = coordinatorFor({
           adapter: context.adapter,
           capsuleId,
           targetAuthority: context.target.url,
@@ -213,7 +229,7 @@ function createDefaultServices(dependencies) {
             throw new Error('capsule has no current OECP generation to stop');
           }
           const stopped = await session.client.stop({
-            idempotencyKey: `stop_${crypto.randomUUID().replaceAll('-', '')}`,
+            idempotencyKey: `stop_${randomUUID().replaceAll('-', '')}`,
             ifGeneration: generation,
             mode: options.force ? 'force' : 'drain',
           });
