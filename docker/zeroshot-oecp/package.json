@@ -1,0 +1,13 @@
+{
+  "name": "zeroshot-oecp-private-runtime",
+  "private": true,
+  "version": "0.0.0-development",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.221",
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "@github/copilot": "1.0.78",
+    "@google/gemini-cli": "0.53.1",
+    "@openai/codex": "0.146.0",
+    "ajv": "8.18.0"
+  }
+}

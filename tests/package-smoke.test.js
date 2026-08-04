@@ -67,5 +67,14 @@ describe('npm package smoke', function () {
     ]) {
       assert.ok(files.has(requiredFile), `npm package must include ${requiredFile}`);
     }
+
+    for (const file of files) {
+      assert.ok(
+        !file.startsWith('docker/zeroshot-oecp/') &&
+          !file.startsWith('scripts/hosted-oecp-') &&
+          !file.startsWith('zeroshot-rust/'),
+        `npm package must not expose the private hosted runtime: ${file}`
+      );
+    }
   });
 });

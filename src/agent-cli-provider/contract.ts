@@ -32,6 +32,7 @@ export interface ProviderExecutableResponse {
 
 export interface ProviderExecutableOptions {
   readonly runner?: ProcessRunner;
+  readonly runtimeSettings?: Record<string, unknown>;
 }
 
 export async function runProviderExecutable(
@@ -41,7 +42,11 @@ export async function runProviderExecutable(
   const fallback = requestEnvelopeData(input);
   try {
     const request = validateRequest(input, providerExecutableSchemaVersion);
-    const envelope = await dispatchRequest(request, options.runner ?? spawnProcessRunner());
+    const envelope = await dispatchRequest(
+      request,
+      options.runner ?? spawnProcessRunner(),
+      options.runtimeSettings
+    );
     return {
       envelope: finalizeEnvelope(envelope, request.env),
       exitCode: 0,

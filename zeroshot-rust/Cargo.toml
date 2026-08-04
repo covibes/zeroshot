@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "zeroshot-rust"
 path = "src/main.rs"
 
+[[bin]]
+name = "zeroshot-oecp-server"
+path = "src/bin/zeroshot-oecp-server.rs"
+
 [dependencies]
 async-trait.workspace = true
 fs2.workspace = true
@@ -25,7 +29,7 @@ openengine-cluster-server.workspace = true
 rust_decimal.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

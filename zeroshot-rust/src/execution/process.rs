@@ -1,12 +1,16 @@
 mod io;
 mod platform;
+#[cfg(unix)]
+mod platform_unix;
+#[cfg(windows)]
+mod platform_windows;
 mod session;
+mod session_runtime;
+mod spawn_recovery;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use thiserror::Error;
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 
@@ -15,7 +19,11 @@ use io::{
     ProcessEvent, collect_remaining_events, join_errors, record_process_event, spawn_reader_task,
     spawn_stdin_task,
 };
-use platform::{capture_process_tree, register_process_tree, terminate_process_tree};
+use platform::{
+    ProcessContainment, capture_process_tree, process_tree_has_live_members,
+    register_process_tree_for, terminate_process_tree,
+};
+use spawn_recovery::{ChildCommandSpec, build_child_command, validate_launch_fields, validate_stdin};
 pub use session::{
     MAX_PROCESS_FRAME_BYTES, MAX_PROCESS_FRAMING_OVERHEAD_BYTES, MAX_PROCESS_MESSAGE_BYTES,
     PROCESS_STDIN_CAPACITY, PROCESS_STDOUT_CAPACITY, ProcessFrame, ProcessOutputChunk,
@@ -29,6 +37,8 @@ pub const MAX_PROCESS_ENV_ITEMS: usize = 256;
 pub const MAX_PROCESS_ENV_BYTES: usize = 64 * 1024;
 pub const MAX_PROCESS_STDIN_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_PROCESS_STDIO_BYTES: usize = 8 * 1024 * 1024;
+pub const HOSTED_WORKER_UID: u32 = 10_002;
+pub const HOSTED_WORKER_GID: u32 = 10_002;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessCommand {
@@ -112,109 +122,204 @@ impl ProcessRunnerError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LocalProcessRunner;
+#[derive(Clone, Copy, Debug)]
+pub struct LocalProcessRunner {
+    containment: ProcessContainment,
+}
+
+impl Default for LocalProcessRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LocalProcessRunner {
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self {
+            containment: ProcessContainment::ProcessGroup,
+        }
+    }
+
+    pub fn hosted_worker() -> Result<Self, ProcessRunnerError> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Self {
+                containment: ProcessContainment::WorkerUid {
+                    uid: HOSTED_WORKER_UID,
+                    gid: HOSTED_WORKER_GID,
+                },
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(ProcessRunnerError::Launch(
+                "hosted worker containment requires Linux".to_owned(),
+            ))
+        }
     }
 
     pub async fn run(
         &self,
         command: ProcessCommand,
-        mut cancellation: DriverCancellation,
+        cancellation: DriverCancellation,
     ) -> Result<ProcessRunOutput, ProcessRunnerError> {
         command.validate()?;
-
-        let process_tree_registration = register_process_tree().map_err(|_| {
-            ProcessRunnerError::Launch("process containment registration failed".to_owned())
-        })?;
-        let mut child = build_child_command(
-            &command.program,
-            &command.argv,
-            &command.environment,
-            &command.workspace,
+        let (process_tree, mut child) = launch_contained_child(&command, self.containment).await?;
+        let mut event_rx = spawn_process_io(&mut child, command.stdin.into_inner());
+        let state = drive_run(
+            &process_tree,
+            &mut child,
+            &mut event_rx,
+            RunControls {
+                cancellation,
+                deadline: command.deadline,
+            },
         )
-        .spawn()
-        .map_err(|error| ProcessRunnerError::Launch(error.to_string()))?;
-        let process_tree = match capture_process_tree(process_tree_registration, &mut child) {
-            Ok(process_tree) => process_tree,
-            Err(_) => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                return Err(ProcessRunnerError::Io(
-                    "process containment capture failed".to_owned(),
-                ));
-            }
-        };
-        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-        spawn_stdin_task(
-            child.stdin.take(),
-            command.stdin.into_inner(),
-            event_tx.clone(),
-        );
-        spawn_reader_task(
-            child.stdout.take(),
-            MAX_PROCESS_STDIO_BYTES,
-            io::ProcessStream::Stdout,
-            event_tx.clone(),
-        );
-        spawn_reader_task(
-            child.stderr.take(),
-            MAX_PROCESS_DIAGNOSTIC_BYTES,
-            io::ProcessStream::Stderr,
-            event_tx.clone(),
-        );
-        drop(event_tx);
+        .await;
+        finalize_run(&process_tree, &mut child, &mut event_rx, state).await
+    }
+}
 
-        let mut state = RunState::default();
-        let mut io_events_open = true;
-        let deadline = sleep_until(command.deadline);
-        tokio::pin!(deadline);
+fn spawn_process_io(
+    child: &mut tokio::process::Child,
+    stdin: Vec<u8>,
+) -> mpsc::UnboundedReceiver<ProcessEvent> {
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    spawn_stdin_task(child.stdin.take(), stdin, event_tx.clone());
+    spawn_reader_task(
+        child.stdout.take(),
+        MAX_PROCESS_STDIO_BYTES,
+        io::ProcessStream::Stdout,
+        event_tx.clone(),
+    );
+    spawn_reader_task(
+        child.stderr.take(),
+        MAX_PROCESS_DIAGNOSTIC_BYTES,
+        io::ProcessStream::Stderr,
+        event_tx,
+    );
+    event_rx
+}
 
-        while state.exit_status.is_none() {
-            tokio::select! {
-                status = child.wait() => handle_wait(status, &mut state).await,
-                _ = cancellation.cancelled() => cancel_child(&process_tree, &mut child, &mut state).await,
-                _ = &mut deadline => timeout_child(&process_tree, &mut child, &mut state).await,
-                event = event_rx.recv(), if io_events_open => {
-                    if let Some(event) = event {
-                        handle_event(event, &process_tree, &mut child, &mut state).await;
-                    } else {
-                        io_events_open = false;
-                    }
+struct RunControls {
+    cancellation: DriverCancellation,
+    deadline: Instant,
+}
+
+async fn drive_run(
+    process_tree: &platform::ProcessTreeHandle,
+    child: &mut tokio::process::Child,
+    event_rx: &mut mpsc::UnboundedReceiver<ProcessEvent>,
+    mut controls: RunControls,
+) -> RunState {
+    let mut state = RunState::default();
+    let mut io_events_open = true;
+    let deadline = sleep_until(controls.deadline);
+    tokio::pin!(deadline);
+    while state.exit_status.is_none() {
+        tokio::select! {
+            status = child.wait() => handle_wait(status, &mut state).await,
+            _ = controls.cancellation.cancelled() => cancel_child(process_tree, child, &mut state).await,
+            _ = &mut deadline => timeout_child(process_tree, child, &mut state).await,
+            event = event_rx.recv(), if io_events_open => {
+                if let Some(event) = event {
+                    handle_event(event, process_tree, child, &mut state).await;
+                } else {
+                    io_events_open = false;
                 }
             }
         }
+    }
+    state
+}
 
-        let post_launch_error_count = state.post_launch_errors.len();
-        collect_remaining_events(
-            &mut event_rx,
-            io::PendingIo::new(
-                &mut state.stdin_done,
-                &mut state.stdout,
-                &mut state.stderr,
-                &mut state.post_launch_errors,
-            ),
-        )
-        .await;
-        if state.cleanup == ProcessCleanupEvidence::NotRequired
-            && state.post_launch_errors.len() > post_launch_error_count
-        {
-            apply_termination(&process_tree, &mut child, &mut state).await;
+async fn finalize_run(
+    process_tree: &platform::ProcessTreeHandle,
+    child: &mut tokio::process::Child,
+    event_rx: &mut mpsc::UnboundedReceiver<ProcessEvent>,
+    mut state: RunState,
+) -> Result<ProcessRunOutput, ProcessRunnerError> {
+    let prior_errors = state.post_launch_errors.len();
+    collect_remaining_events(
+        event_rx,
+        io::PendingIo::new(
+            &mut state.stdin_done,
+            &mut state.stdout,
+            &mut state.stderr,
+            &mut state.post_launch_errors,
+        ),
+    )
+    .await;
+    ensure_run_containment(process_tree, child, &mut state, prior_errors).await;
+    Ok(ProcessRunOutput {
+        launch_evidence: ProcessLaunchEvidence::MayHaveStarted,
+        exit_code: state.exit_status.and_then(|status| status.code()),
+        stdout: state.stdout.map_or_else(Vec::new, |outcome| outcome.output),
+        stderr: state.stderr.map_or_else(Vec::new, |outcome| outcome.output),
+        cancelled: state.cancelled,
+        timed_out: state.timed_out,
+        cleanup: state.cleanup,
+        post_launch_error: join_errors(state.post_launch_errors),
+    })
+}
+
+async fn ensure_run_containment(
+    process_tree: &platform::ProcessTreeHandle,
+    child: &mut tokio::process::Child,
+    state: &mut RunState,
+    prior_errors: usize,
+) {
+    if state.cleanup != ProcessCleanupEvidence::NotRequired {
+        return;
+    }
+    let tree_has_live_members = inspect_process_tree(process_tree, &mut state.post_launch_errors);
+    if state.post_launch_errors.len() > prior_errors || tree_has_live_members {
+        apply_termination(process_tree, child, state).await;
+    } else if process_tree.requires_explicit_cleanup_evidence() {
+        state.cleanup = ProcessCleanupEvidence::Reaped;
+    }
+}
+
+fn inspect_process_tree(
+    process_tree: &platform::ProcessTreeHandle,
+    errors: &mut Vec<String>,
+) -> bool {
+    match process_tree_has_live_members(process_tree) {
+        Ok(has_live_members) => has_live_members,
+        Err(_) => {
+            errors.push("process containment inspection failed".to_owned());
+            true
         }
-        Ok(ProcessRunOutput {
-            launch_evidence: ProcessLaunchEvidence::MayHaveStarted,
-            exit_code: state.exit_status.and_then(|status| status.code()),
-            stdout: state.stdout.map_or_else(Vec::new, |outcome| outcome.output),
-            stderr: state.stderr.map_or_else(Vec::new, |outcome| outcome.output),
-            cancelled: state.cancelled,
-            timed_out: state.timed_out,
-            cleanup: state.cleanup,
-            post_launch_error: join_errors(state.post_launch_errors),
-        })
+    }
+}
+async fn launch_contained_child(
+    command: &ProcessCommand,
+    containment: ProcessContainment,
+) -> Result<(platform::ProcessTreeHandle, tokio::process::Child), ProcessRunnerError> {
+    let process_tree_registration = register_process_tree_for(containment).map_err(|_| {
+        ProcessRunnerError::Launch("process containment registration failed".to_owned())
+    })?;
+    let mut child = build_child_command(
+        ChildCommandSpec {
+            program: &command.program,
+            argv: &command.argv,
+            environment: &command.environment,
+            workspace: &command.workspace,
+        },
+        containment,
+    )
+    .spawn()
+    .map_err(|error| ProcessRunnerError::Launch(error.to_string()))?;
+    match capture_process_tree(process_tree_registration, &mut child) {
+        Ok(process_tree) => Ok((process_tree, child)),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            Err(ProcessRunnerError::Io(
+                "process containment capture failed".to_owned(),
+            ))
+        }
     }
 }
 
@@ -228,126 +333,6 @@ struct RunState {
     cancelled: bool,
     timed_out: bool,
     cleanup: ProcessCleanupEvidence,
-}
-
-struct CollectionLimit {
-    label: &'static str,
-    max_items: usize,
-    max_bytes: usize,
-}
-
-impl CollectionLimit {
-    const fn new(label: &'static str, max_items: usize, max_bytes: usize) -> Self {
-        Self {
-            label,
-            max_items,
-            max_bytes,
-        }
-    }
-}
-
-fn build_child_command(
-    program: &str,
-    argv: &[String],
-    environment: &BTreeMap<String, String>,
-    workspace: &WorkspaceCapability,
-) -> Command {
-    let mut child = Command::new(program);
-    child.args(argv);
-    child.current_dir(PathBuf::from(&workspace.current_dir));
-    child.env_clear();
-    child.envs(environment.iter());
-    child.stdin(std::process::Stdio::piped());
-    child.stdout(std::process::Stdio::piped());
-    child.stderr(std::process::Stdio::piped());
-    platform::configure_process_group(&mut child);
-    child
-}
-
-fn validate_launch_fields(
-    program: &str,
-    argv: &[String],
-    environment: &BTreeMap<String, String>,
-) -> Result<(), ProcessRunnerError> {
-    validate_program(program)?;
-    validate_collection(
-        CollectionLimit::new("argv", MAX_PROCESS_ARGV_ITEMS, MAX_PROCESS_ARGV_BYTES),
-        argv.len(),
-        format_arg_bytes(program, argv)?,
-    )?;
-    validate_collection(
-        CollectionLimit::new("environment", MAX_PROCESS_ENV_ITEMS, MAX_PROCESS_ENV_BYTES),
-        environment.len(),
-        total_env_bytes(environment)?,
-    )
-}
-fn validate_program(program: &str) -> Result<(), ProcessRunnerError> {
-    if program.is_empty() {
-        return Err(ProcessRunnerError::InvalidCommand(
-            "program must not be empty".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_collection(
-    limit: CollectionLimit,
-    items: usize,
-    bytes: usize,
-) -> Result<(), ProcessRunnerError> {
-    if items > limit.max_items {
-        return Err(ProcessRunnerError::InvalidCommand(format!(
-            "{} has {} items; maximum is {}",
-            limit.label, items, limit.max_items
-        )));
-    }
-    if bytes > limit.max_bytes {
-        return Err(ProcessRunnerError::InvalidCommand(format!(
-            "{} is {} bytes; maximum is {}",
-            limit.label, bytes, limit.max_bytes
-        )));
-    }
-    Ok(())
-}
-
-fn validate_stdin(stdin: &[u8]) -> Result<(), ProcessRunnerError> {
-    if stdin.len() > MAX_PROCESS_STDIN_BYTES {
-        return Err(ProcessRunnerError::InvalidCommand(format!(
-            "stdin is {} bytes; maximum is {}",
-            stdin.len(),
-            MAX_PROCESS_STDIN_BYTES
-        )));
-    }
-    Ok(())
-}
-
-fn format_arg_bytes(program: &str, argv: &[String]) -> Result<usize, ProcessRunnerError> {
-    argv.iter()
-        .map(String::as_str)
-        .chain(std::iter::once(program))
-        .try_fold(0usize, |total, value| {
-            total
-                .checked_add(c_string_storage_bytes(value))
-                .ok_or_else(|| {
-                    ProcessRunnerError::InvalidCommand("argv byte count overflowed".to_owned())
-                })
-        })
-}
-
-fn total_env_bytes(environment: &BTreeMap<String, String>) -> Result<usize, ProcessRunnerError> {
-    environment.iter().try_fold(0usize, |total, (key, value)| {
-        total
-            .checked_add(c_string_storage_bytes(key))
-            .and_then(|subtotal| subtotal.checked_add(value.len()))
-            .and_then(|subtotal| subtotal.checked_add(1))
-            .ok_or_else(|| {
-                ProcessRunnerError::InvalidCommand("environment byte count overflowed".to_owned())
-            })
-    })
-}
-
-fn c_string_storage_bytes(value: &str) -> usize {
-    value.len() + 1
 }
 
 async fn handle_wait(

@@ -248,7 +248,10 @@ fn legacy_ship_contract_is_single_worker_and_source_consistent() {
         "prompt": null,
         "artifacts": [],
         "isolationProfile": "isolation.worktree@1",
-        "providerProfile": "provider.default@1"
+        "providerProfile": "provider.default@1",
+        "repository": "the-open-engine/zeroshot",
+        "provider": "codex",
+        "modelLevel": "level2"
     });
     assert!(serde_json::from_value::<LegacyShipRequest>(base.clone()).is_ok());
     let mut inconsistent = base;

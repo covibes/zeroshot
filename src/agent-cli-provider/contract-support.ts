@@ -94,7 +94,10 @@ function buildOptions(request: RequestData): BuildProviderCommandOptions {
   return { ...options, cwd };
 }
 
-export function buildCommandSpec(request: RequestData): {
+export function buildCommandSpec(
+  request: RequestData,
+  runtimeSettings?: Record<string, unknown>
+): {
   readonly adapter: ProviderAdapter;
   readonly commandSpec: CommandSpec;
   readonly options: BuildProviderCommandOptions;
@@ -103,11 +106,14 @@ export function buildCommandSpec(request: RequestData): {
   const adapter = adapterForProvider(request.provider);
   const context = requiredString(request.raw, 'context');
   const options = buildOptions(request);
-  const prepared = prepareSingleAgentProviderCommand({
-    provider: adapter.id,
-    context,
-    options,
-  });
+  const prepared = prepareSingleAgentProviderCommand(
+    {
+      provider: adapter.id,
+      context,
+      options,
+    },
+    runtimeSettings
+  );
   return {
     adapter: prepared.adapter,
     context,

@@ -17,6 +17,10 @@ fn is_architecture_guard(relative: &str) -> bool {
     )
 }
 
+fn is_private_hosted_source(relative: &str) -> bool {
+    relative.starts_with("src/hosted_oecp/") || relative == "src/bin/zeroshot-oecp-server.rs"
+}
+
 #[test]
 fn worker_catalog_has_no_build_or_node_typescript_source_inputs() {
     let product = product_root();
@@ -46,10 +50,11 @@ fn worker_catalog_has_no_build_or_node_typescript_source_inputs() {
     let mut product_files = BTreeSet::new();
     relative_files(&product, &product, &mut product_files);
     let mut build_and_source_inputs = manifest;
-    for relative in product_files
-        .iter()
-        .filter(|relative| relative.ends_with(".rs") && !is_architecture_guard(relative))
-    {
+    for relative in product_files.iter().filter(|relative| {
+        relative.ends_with(".rs")
+            && !is_architecture_guard(relative)
+            && !is_private_hosted_source(relative)
+    }) {
         build_and_source_inputs.push('\n');
         build_and_source_inputs.push_str(&read(&product.join(relative)));
     }
@@ -65,7 +70,9 @@ fn worker_catalog_has_no_build_or_node_typescript_source_inputs() {
             .strip_prefix(&product)
             .ok()
             .and_then(|path| path.to_str());
-        if source.starts_with(&product) && relative.is_none_or(|path| !is_architecture_guard(path))
+        if source.starts_with(&product)
+            && relative
+                .is_none_or(|path| !is_architecture_guard(path) && !is_private_hosted_source(path))
         {
             build_and_source_inputs.push('\n');
             build_and_source_inputs.push_str(&read(source));

@@ -21,8 +21,11 @@ import { getString, isRecord, unknownToMessage } from './json';
 import type { ErrorClassification } from './types';
 import type { ProcessRunner } from './process-runner';
 
-function runBuildCommand(request: RequestData): ContractEnvelope {
-  const { adapter, commandSpec, options } = buildCommandSpec(request);
+function runBuildCommand(
+  request: RequestData,
+  runtimeSettings?: Record<string, unknown>
+): ContractEnvelope {
+  const { adapter, commandSpec, options } = buildCommandSpec(request, runtimeSettings);
   const webSearch = {
     requested: options.webSearch === true,
     effective: options.webSearch === true && options.cliFeatures?.supportsWebSearch === true,
@@ -134,19 +137,20 @@ function runClassifyError(request: RequestData): ContractEnvelope {
 
 export function dispatchRequest(
   request: RequestData,
-  runner: ProcessRunner
+  runner: ProcessRunner,
+  runtimeSettings?: Record<string, unknown>
 ): ContractEnvelope | Promise<ContractEnvelope> {
   switch (request.command) {
     case 'probe':
       return runProbe(request);
     case 'build-command':
-      return runBuildCommand(request);
+      return runBuildCommand(request, runtimeSettings);
     case 'parse-output':
       return runParseOutput(request);
     case 'classify-error':
       return runClassifyError(request);
     case 'invoke':
-      return runInvoke(request, runner);
+      return runInvoke(request, runner, runtimeSettings);
     default:
       throw contractError({
         code: 'unknown-command',

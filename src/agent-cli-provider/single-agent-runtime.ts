@@ -86,23 +86,19 @@ type MutableModelSpec = {
 const MODEL_LEVELS: readonly ModelLevel[] = ['level1', 'level2', 'level3'];
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV = 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON';
-const settingsModule: unknown = require('../../lib/settings');
 const providerDetectionModule: unknown = require('../../lib/provider-detection');
-const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
 
-const loadSettingsFn = moduleFunction(settingsModule, 'loadSettings');
-const getClaudeCommandFn = moduleFunction(settingsModule, 'getClaudeCommand');
 const commandExistsFn = moduleFunction(providerDetectionModule, 'commandExists');
 const getHelpOutputFn = moduleFunction(providerDetectionModule, 'getHelpOutput');
 const getVersionOutputFn = moduleFunction(providerDetectionModule, 'getVersionOutput');
-const resolveClaudeAuthFn = moduleFunction(claudeAuthModule, 'resolveClaudeAuth');
 
 export function prepareSingleAgentProviderCommand(
-  input: SingleAgentProviderCommandInput
+  input: SingleAgentProviderCommandInput,
+  runtimeSettings?: Record<string, unknown>
 ): PreparedSingleAgentProviderCommand {
   rejectCallerSuppliedModelProvenance(input);
   const baseOptions = input.options ?? {};
-  const settings = loadRuntimeSettings();
+  const settings = runtimeSettings ?? loadRuntimeSettings();
   const adapter = adapterForRuntimeInput(input.provider, settings);
   const providerSettings = runtimeProviderSettings(
     settings,
@@ -116,7 +112,8 @@ export function prepareSingleAgentProviderCommand(
   const cliFeatures = resolveRuntimeCliFeatures(
     adapter.id,
     baseOptions.cliFeatures,
-    requestedWebSearch === true
+    requestedWebSearch === true,
+    settings
   );
   const authEnv = baseOptions.authEnv ?? resolveRuntimeAuthEnv(adapter.id, settings);
   const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
@@ -161,17 +158,21 @@ function buildRuntimeCommand(
   return recoveryAdapter.buildStructuredOutputRecoveryCommand(context, options);
 }
 
-export function detectRuntimeProviderCliFeatures(provider: string): ProviderCliFeatures {
-  return probeRuntimeProviderCli(provider).capabilities;
+export function detectRuntimeProviderCliFeatures(
+  provider: string,
+  runtimeSettings?: Record<string, unknown>
+): ProviderCliFeatures {
+  return probeRuntimeProviderCli(provider, undefined, runtimeSettings).capabilities;
 }
 
 function resolveRuntimeCliFeatures(
   provider: ProviderId,
   overrides: CliFeatureOverrides | undefined,
-  webSearchRequested: boolean
+  webSearchRequested: boolean,
+  runtimeSettings: Record<string, unknown>
 ): CliFeatureOverrides {
   if (provider === 'gateway') {
-    const detected = detectRuntimeProviderCliFeatures(provider);
+    const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
     return {
       ...detected,
       ...overrides,
@@ -180,13 +181,13 @@ function resolveRuntimeCliFeatures(
     };
   }
   if (getProviderRegistryEntry(provider).invoke.lane === 'acp-stdio') {
-    const detected = detectRuntimeProviderCliFeatures(provider);
+    const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
     if (overrides === undefined) return detected;
     return mergeAcpFailClosedCliFeatures(detected, overrides);
   }
-  if (overrides === undefined) return detectRuntimeProviderCliFeatures(provider);
+  if (overrides === undefined) return detectRuntimeProviderCliFeatures(provider, runtimeSettings);
   if (!webSearchRequested) return overrides;
-  const detected = detectRuntimeProviderCliFeatures(provider);
+  const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
   return {
     ...overrides,
     supportsResume:
@@ -225,14 +226,16 @@ function mergeAcpFailClosedCliFeatures(
 
 export function probeRuntimeProviderCli(
   provider: string,
-  evidence?: RuntimeProbeEvidence
+  evidence?: RuntimeProbeEvidence,
+  runtimeSettings?: Record<string, unknown>
 ): RuntimeProviderProbe {
   const adapter = getProviderAdapter(provider);
   if (adapter.id === 'gateway') {
-    return probeGatewayProvider(adapter);
+    return probeGatewayProvider(adapter, runtimeSettings);
   }
   const requested = getProviderRegistryEntry(adapter.id).settingsFields.includes('webSearch')
-    ? runtimeProviderSettings(loadRuntimeSettings(), adapter.id, process.cwd()).webSearch === true
+    ? runtimeProviderSettings(runtimeSettings ?? loadRuntimeSettings(), adapter.id, process.cwd())
+        .webSearch === true
     : false;
   const helpCommand = runtimeHelpCommand(adapter.id);
   const commandAvailable =
@@ -406,7 +409,9 @@ function resolveRuntimeAuthEnv(
   settings: Record<string, unknown>
 ): Readonly<Record<string, string>> {
   if (provider !== 'claude') return {};
-  return stringRecordFromUnknown(resolveClaudeAuthFn(settings), 'resolveClaudeAuth');
+  const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
+  const resolveClaudeAuth = moduleFunction(claudeAuthModule, 'resolveClaudeAuth');
+  return stringRecordFromUnknown(resolveClaudeAuth(settings), 'resolveClaudeAuth');
 }
 
 function adapterForRuntimeInput(
@@ -452,16 +457,16 @@ function runtimeProviderSettings(
 }
 
 function runtimeHelpCommand(provider: ProviderId): CommandParts {
-  if (provider === 'claude') {
-    return commandPartsFromUnknown(getClaudeCommandFn(), 'getClaudeCommand');
-  }
   return resolveProviderCommand(provider);
 }
 
-function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
+function probeGatewayProvider(
+  adapter: ProviderAdapter,
+  runtimeSettings?: Record<string, unknown>
+): RuntimeProviderProbe {
   const capabilities = attestedCliFeatures(adapter, '', '');
   try {
-    const settings = loadRuntimeSettings();
+    const settings = runtimeSettings ?? loadRuntimeSettings();
     const providerSettings = runtimeProviderSettings(settings, 'gateway', process.cwd());
     resolveGatewayConfiguration(
       providerSettings.gateway,
@@ -532,7 +537,9 @@ function loadRuntimeSettings(): Record<string, unknown> {
       `${LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV} is not a trusted settings channel; use the settings file.`
     );
   }
-  return requiredRecord(loadSettingsFn(), 'loadSettings');
+  const settingsModule: unknown = require('../../lib/settings');
+  const loadSettings = moduleFunction(settingsModule, 'loadSettings');
+  return requiredRecord(loadSettings(), 'loadSettings');
 }
 
 function rejectCallerSuppliedModelProvenance(input: SingleAgentProviderCommandInput): void {
@@ -554,13 +561,6 @@ function isUnknownFunction(value: unknown): value is UnknownFunction {
   return typeof value === 'function';
 }
 
-function commandPartsFromUnknown(value: unknown, field: string): CommandParts {
-  const record = requiredRecord(value, field);
-  return {
-    command: requiredStringValue(record.command, `${field}.command`),
-    args: stringArray(record.args, `${field}.args`),
-  };
-}
 
 function levelOverridesFromUnknown(value: unknown, field: string): LevelOverrides {
   if (value === undefined) return {};
@@ -632,10 +632,6 @@ function optionalString(value: unknown, field: string): string | undefined {
   throw new Error(`${field} must be a string.`);
 }
 
-function requiredStringValue(value: unknown, field: string): string {
-  if (typeof value === 'string' && value.length > 0) return value;
-  throw new Error(`${field} must be a non-empty string.`);
-}
 
 function optionalRecord(
   value: unknown,
@@ -661,15 +657,6 @@ function stringRecordFromUnknown(value: unknown, field: string): Readonly<Record
   return result;
 }
 
-function stringArray(value: unknown, field: string): readonly string[] {
-  if (!Array.isArray(value)) throw new Error(`${field} must be an array.`);
-  const result: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') throw new Error(`${field} entries must be strings.`);
-    result.push(item);
-  }
-  return result;
-}
 
 function stringResult(value: unknown): string {
   if (typeof value === 'string') return value;
