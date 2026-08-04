@@ -12,6 +12,7 @@ const {
   runExecutable,
   withFakeProviderCli,
   withTempEnv,
+  withOmpRpcSettings,
 } = require('./executable-contract-helpers.cjs');
 
 test('build-command returns command spec without executing provider CLI', () => {
@@ -156,55 +157,129 @@ test('build-command preserves Codex explicit session resume through JSON contrac
   assert.equal(resumed.envelope.result.commandSpec.cwd, '/tmp/project');
 });
 
-test('build-command emits the omp-jsonschema warning through the executable envelope', () => {
-  const response = runExecutable({
-    schemaVersion: 1,
-    command: 'build-command',
-    provider: 'omp',
-    context: 'ctx',
-    options: {
-      modelSpec: { level: 'level3', model: 'm', reasoningEffort: 'high' },
-      jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
-      cliFeatures: {
-        versionMatches: true,
-        supportsRpcMode: true,
-        supportsConfig: true,
-        supportsModel: true,
-        supportsThinking: true,
-        supportsApprovalMode: true,
-        supportsNoTitle: true,
-        supportsNoSession: true,
-        supportsSessionDir: false,
-        supportsResume: false,
+test('build-command emits the omp-jsonschema warning through the executable envelope', () =>
+  withOmpRpcSettings(() => {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'build-command',
+      provider: 'omp',
+      context: 'ctx',
+      options: {
+        modelSpec: { level: 'level3', model: 'm', reasoningEffort: 'high' },
+        jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+        cliFeatures: {
+          versionMatches: true,
+          supportsRpcMode: true,
+          supportsConfig: true,
+          supportsModel: true,
+          supportsThinking: true,
+          supportsApprovalMode: true,
+          supportsNoTitle: true,
+          supportsNoSession: true,
+          supportsSessionDir: false,
+          supportsResume: false,
+        },
       },
-    },
-  });
+    });
 
-  assert.equal(response.exitCode, 0);
-  assert.equal(response.envelope.ok, true);
-  const { args } = response.envelope.result.commandSpec;
-  assert.deepEqual(args.slice(0, 6), [
-    '--mode',
-    'rpc',
-    '--no-session',
-    '--model',
-    'm',
-    '--thinking',
-  ]);
-  assert.equal(args[6], 'high');
-  assert.deepEqual(args.slice(7), [
-    '--approval-mode',
-    'yolo',
-    '--no-title',
-    '--config',
-    args.at(-1),
-  ]);
-  assert.deepEqual(
-    response.envelope.warnings.map(({ code }) => code),
-    ['omp-jsonschema']
+    assert.equal(response.exitCode, 0);
+    assert.equal(response.envelope.ok, true);
+    const { args } = response.envelope.result.commandSpec;
+    assert.deepEqual(args.slice(0, 6), [
+      '--mode',
+      'rpc',
+      '--no-session',
+      '--model',
+      'm',
+      '--thinking',
+    ]);
+    assert.equal(args[6], 'high');
+    assert.deepEqual(args.slice(7), [
+      '--approval-mode',
+      'yolo',
+      '--no-title',
+      '--config',
+      args.at(-1),
+    ]);
+    assert.deepEqual(
+      response.envelope.warnings.map(({ code }) => code),
+      ['omp-jsonschema']
+    );
+    const overlayDir = path.dirname(args.at(-1));
+    fs.rmSync(overlayDir, { recursive: true, force: true });
+  }));
+
+test('build-command refuses to export an OMP invocation when transport defaults to SDK', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-sdk-build-contract-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  const credentialName = 'AWS_BEARER_TOKEN_BEDROCK';
+  const secret = 'sdk-build-command-secret';
+  const model = 'amazon-bedrock/openai.gpt-5.6-luna';
+  const level = { model, reasoningEffort: 'max' };
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({
+      providerSettings: {
+        omp: {
+          minLevel: 'level1',
+          defaultLevel: 'level2',
+          maxLevel: 'level3',
+          levelOverrides: { level1: level, level2: level, level3: level },
+          modelsConfig: { providers: {} },
+          auth: {
+            mode: 'environment',
+            credentials: { 'amazon-bedrock': { env: credentialName } },
+          },
+          tools: ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'lsp', 'ast_edit'],
+          nestedAgents: false,
+          mcp: false,
+        },
+      },
+    }),
+    { mode: 0o600 }
   );
-  const overlayDir = path.dirname(args.at(-1));
-  fs.rmSync(overlayDir, { recursive: true, force: true });
+
+  try {
+    const response = withTempEnv(
+      {
+        ZEROSHOT_SETTINGS_FILE: settingsFile,
+        TMPDIR: tempDir,
+        [credentialName]: secret,
+      },
+      () =>
+        runExecutable({
+          schemaVersion: 1,
+          command: 'build-command',
+          provider: 'omp',
+          context: 'private SDK prompt',
+          options: {
+            cwd: process.cwd(),
+            executionContext: 'host',
+            outputFormat: 'json',
+            jsonSchema: {
+              type: 'object',
+              properties: { answer: { type: 'string' } },
+              required: ['answer'],
+              additionalProperties: false,
+            },
+            strictSchema: true,
+            modelSpec: { level: 'level2', model, reasoningEffort: 'max' },
+          },
+        })
+    );
+
+    assert.equal(response.exitCode, 4);
+    assert.equal(response.envelope.ok, false);
+    assert.equal(response.envelope.error.code, 'unsupported-capability');
+    assert.match(response.envelope.error.message, /build-command.*use invoke instead/i);
+    assert.equal(Object.hasOwn(response.envelope, 'result'), false);
+    assert.equal(JSON.stringify(response.envelope).includes('commandSpec'), false);
+    assert.equal(JSON.stringify(response.envelope).includes('omp-sdk-sidecar'), false);
+    assertNoSecret(response.envelope, secret);
+    assert.deepEqual(fs.readdirSync(tempDir), ['settings.json']);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test('build-command redacts adapter auth env values from command spec output', () => {

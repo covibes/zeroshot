@@ -81,6 +81,22 @@ async function runHarness({ provider, model, prompt }) {
   fs.chmodSync(fakeOmp, 0o755);
   const harnessPath = path.join(home, 'harness.mjs');
   fs.writeFileSync(harnessPath, HARNESS);
+  const settingsFile = path.join(home, 'settings.json');
+  const level = { model: 'openai/test-model', reasoningEffort: 'max' };
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({
+      providerSettings: {
+        omp: {
+          transport: 'rpc',
+          minLevel: 'level1',
+          defaultLevel: 'level2',
+          maxLevel: 'level3',
+          levelOverrides: { level1: level, level2: level, level3: level },
+        },
+      },
+    })
+  );
 
   try {
     const { stdout } = await execFileAsync(process.execPath, [harnessPath], {
@@ -89,6 +105,7 @@ async function runHarness({ provider, model, prompt }) {
         HOME: home,
         USERPROFILE: home,
         ZEROSHOT_HOME: home,
+        ZEROSHOT_SETTINGS_FILE: settingsFile,
         HARNESS_PROVIDER: provider,
         HARNESS_MODEL: model,
         HARNESS_PROMPT: prompt,
@@ -107,7 +124,7 @@ describe('detached watcher prompt channel (task-lib/runner.js)', function () {
   it('keeps the OMP prompt out of argv and hands it to the watcher over a private pipe', async function () {
     const forks = await runHarness({
       provider: 'omp',
-      model: 'test-model',
+      model: 'openai/test-model',
       prompt: SENTINEL_PROMPT,
     });
     expect(forks).to.have.lengthOf(1);

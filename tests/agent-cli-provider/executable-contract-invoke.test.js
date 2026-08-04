@@ -793,6 +793,12 @@ process.stdout.write(fs.readFileSync(process.env.COPILOT_FIXTURE, 'utf8'));
 
 test('invoke runs the omp rpc-stdio lane through the shared driver, from a real CLI probe', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-worktree-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({ providerSettings: { omp: { transport: 'rpc' } } }),
+    { mode: 0o600 }
+  );
 
   try {
     withFakeProviderCli(
@@ -868,16 +874,18 @@ rl.on('line', (line) => {
 });
 `),
       () => {
-        const response = runExecutable({
-          schemaVersion: 1,
-          command: 'invoke',
-          provider: 'omp',
-          context: 'Reply with OMP invoke OK',
-          timeoutMs: 5000,
-          options: {
-            cwd: tempDir,
-          },
-        });
+        const response = withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () =>
+          runExecutable({
+            schemaVersion: 1,
+            command: 'invoke',
+            provider: 'omp',
+            context: 'Reply with OMP invoke OK',
+            timeoutMs: 5000,
+            options: {
+              cwd: tempDir,
+            },
+          })
+        );
 
         assert.equal(response.exitCode, 0);
         assert.equal(response.envelope.ok, true);

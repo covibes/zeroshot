@@ -28,9 +28,30 @@ test('omp registry entry has the exact display name, invoke spec, and settings f
   assert.equal(omp.displayName, 'OMP (Oh My Pi)');
   assert.deepEqual(omp.aliases, ['oh-my-pi']);
   assert.deepEqual(omp.invoke, { lane: 'rpc-stdio', protocol: 'omp-v2' });
-  assert.deepEqual(omp.settingsFields, []);
-  assert.equal(omp.settingsDefaults, undefined);
-  assert.equal(omp.settingsValidator, undefined);
+  assert.deepEqual(omp.settingsFields, [
+    'transport',
+    'minLevel',
+    'defaultLevel',
+    'maxLevel',
+    'levelOverrides',
+    'modelsConfig',
+    'auth',
+    'tools',
+    'nestedAgents',
+    'mcp',
+  ]);
+  assert.deepEqual(omp.settingsDefaults, {
+    transport: 'sdk',
+    minLevel: 'level1',
+    defaultLevel: 'level2',
+    maxLevel: 'level3',
+    levelOverrides: {},
+    modelsConfig: { providers: {} },
+    tools: ['read', 'bash', 'edit', 'write', 'grep', 'glob', 'lsp', 'ast_edit'],
+    nestedAgents: false,
+    mcp: false,
+  });
+  assert.equal(omp.settingsValidator(omp.settingsDefaults), null);
 });
 
 test('omp registry entry has exactly the nine specified capability values', () => {
@@ -48,10 +69,14 @@ test('omp registry entry has exactly the nine specified capability values', () =
   });
 });
 
-test('omp install/auth instructions describe version-selected package install, not an asset installer', () => {
+test('omp install/auth instructions require manual provider settings and local auth policy', () => {
   const omp = getProviderRegistryEntry('omp');
   assert.equal(omp.installInstructions, 'bun install -g @oh-my-pi/pi-coding-agent@17.2.1');
-  assert.equal(omp.authInstructions, 'omp\n/login');
+  assert.equal(
+    omp.authInstructions,
+    'Manually edit providerSettings.omp in ZEROSHOT_SETTINGS_FILE or $HOME/.zeroshot/settings.json (file 0600, parent directory 0700). Use declared environment or broker variables, an explicit host-only OMP agent directory containing agent.db, or keyless mode; Zeroshot never logs in or stores credential values.'
+  );
+  assert.doesNotMatch(omp.authInstructions, /login/i);
 });
 
 test('omp Docker metadata is env/broker-only: no automatic mount, exact 5-name allowlist', () => {

@@ -79,7 +79,7 @@ const { loadTasks } = await import(${JSON.stringify(storeUrl)});
 let threw = null;
 let spawnedId = null;
 try {
-  spawnedId = spawnTask('do the thing', { provider: 'omp', model: 'test-model' })?.id ?? null;
+  spawnedId = spawnTask('do the thing', { provider: 'omp', model: 'openai/test-model' })?.id ?? null;
 } catch (error) {
   threw = { message: error.message, code: error.code ?? null };
 }
@@ -106,14 +106,31 @@ function makeHome(label) {
   const fakeOmp = path.join(binDir, 'omp');
   fs.writeFileSync(fakeOmp, FAKE_OMP);
   fs.chmodSync(fakeOmp, 0o755);
-  return { home, binDir };
+  const settingsFile = path.join(home, 'settings.json');
+  const level = { model: 'openai/test-model', reasoningEffort: 'max' };
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({
+      providerSettings: {
+        omp: {
+          transport: 'rpc',
+          minLevel: 'level1',
+          defaultLevel: 'level2',
+          maxLevel: 'level3',
+          levelOverrides: { level1: level, level2: level, level3: level },
+        },
+      },
+    })
+  );
+  return { home, binDir, settingsFile };
 }
 
-function homeEnv({ home, binDir }) {
+function homeEnv({ home, binDir, settingsFile }) {
   return {
     HOME: home,
     USERPROFILE: home,
     ZEROSHOT_HOME: home,
+    ZEROSHOT_SETTINGS_FILE: settingsFile,
     PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
   };
 }

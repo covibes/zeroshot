@@ -416,21 +416,23 @@ test('runtime Pi command facade delegates to helper', () => {
 });
 
 test('runtime OMP command facade delegates to helper', () => {
-  assertRuntimeCommandParity('omp', 'omp context', {
-    cwd: '/tmp/project',
-    modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
-    cliFeatures: {
-      versionMatches: true,
-      supportsRpcMode: true,
-      supportsConfig: true,
-      supportsModel: true,
-      supportsThinking: true,
-      supportsApprovalMode: true,
-      supportsNoTitle: true,
-      supportsNoSession: true,
-      supportsSessionDir: true,
-      supportsResume: true,
-    },
+  withTempSettings({ providerSettings: { omp: { transport: 'rpc' } } }, () => {
+    assertRuntimeCommandParity('omp', 'omp context', {
+      cwd: '/tmp/project',
+      modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
+      cliFeatures: {
+        versionMatches: true,
+        supportsRpcMode: true,
+        supportsConfig: true,
+        supportsModel: true,
+        supportsThinking: true,
+        supportsApprovalMode: true,
+        supportsNoTitle: true,
+        supportsNoSession: true,
+        supportsSessionDir: true,
+        supportsResume: true,
+      },
+    });
   });
 });
 

@@ -133,6 +133,14 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "ompSdkHostContainment": {
+    "platforms": [
+      "linux:arm64",
+      "linux:x64"
+    ],
+    "supervisor": "scripts/omp-sdk-host-supervisor.ts",
+    "protocolVersion": 1
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -168,12 +176,15 @@
     "docs/openengine-cluster-protocol/v1/legacy-worker.md",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "npm-shrinkwrap.json"
   ],
   "dependencies": {
+    "@oh-my-pi/pi-coding-agent": "17.2.1",
     "ajv": "^8.18.0",
     "ansi-to-html": "^0.7.2",
     "better-sqlite3": "^12.6.2",
+    "bun": "1.3.14",
     "chalk": "^4.1.2",
     "commander": "^14.0.2",
     "node-pty": "^1.1.0",

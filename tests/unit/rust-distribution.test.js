@@ -876,6 +876,7 @@ describe('Rust npm shim integration', function () {
       'README.md',
       'LICENSE',
       'CHANGELOG.md',
+      'npm-shrinkwrap.json',
     ]);
     assert(!rootPackage.files.some((entry) => entry.startsWith('zeroshot-rust')));
     assert.strictEqual(
