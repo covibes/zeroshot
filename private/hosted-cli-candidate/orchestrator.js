@@ -108,8 +108,6 @@ class HostedRunOrchestrator {
       canTerminate = true;
       capsule = await this.#waitReady(options.adapter, capsule, options.signal);
 
-      canTerminate = true;
-
       try {
         coordinator = this.createCoordinator({
           adapter: options.adapter,
@@ -161,7 +159,6 @@ class HostedRunOrchestrator {
         ) {
           throw new Error('apply response omitted the committed generation or run identity');
         }
-        uncertain = false;
         this.output.stdout(`Run: ${applied.runId}`);
         if (options.detach) {
           return Object.freeze({
@@ -176,7 +173,6 @@ class HostedRunOrchestrator {
           params: { runId: applied.runId },
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
-        uncertain = true;
         try {
           for await (const item of watch) {
             this.output.stdout(JSON.stringify(safeWatchProjection(capsule.id, item)));
@@ -200,7 +196,6 @@ class HostedRunOrchestrator {
         ) {
           throw new Error('authoritative final state is not terminal for the committed run');
         }
-        uncertain = false;
         this.output.stdout(
           JSON.stringify({
             capsuleId: capsule.id,

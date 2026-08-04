@@ -33,7 +33,7 @@ function getSetup(target) {
   return setup;
 }
 
-async function configureTargetSetup(options) {
+function configureTargetSetup(options) {
   const { targetName, target, repository, provider, modelLevel, settings, clock = Date } = options;
   if (provider !== PROVIDER) throw new Error(`provider must be exactly ${PROVIDER}`);
   if (modelLevel !== MODEL_LEVEL) throw new Error(`model level must be exactly ${MODEL_LEVEL}`);

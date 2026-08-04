@@ -129,7 +129,7 @@ it('stores only the fixed nonsecret hosted selection', async () => {
   assert.equal(JSON.stringify(state).match(/token|apiKey|openrouter|keyring/gi), null);
 });
 
-it('rejects any repository, provider, or model-level mismatch without mutation', async () => {
+it('rejects any repository, provider, or model-level mismatch without mutation', () => {
   for (const options of [
     { repository: 'owner/repo.git', provider: 'codex', modelLevel: 'level2' },
     { repository: 'Owner/Repo', provider: 'codex', modelLevel: 'level2' },
@@ -141,7 +141,7 @@ it('rejects any repository, provider, or model-level mismatch without mutation',
     { repository: 'owner/repo-', provider: 'codex', modelLevel: 'level2' },
   ]) {
     const state = { _targets: { prod: { id: 'target-1' } } };
-    await assert.rejects(
+    assert.throws(() =>
       configureTargetSetup({
         targetName: 'prod',
         target: state._targets.prod,
