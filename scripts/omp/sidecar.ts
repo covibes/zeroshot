@@ -34,14 +34,21 @@ function safeError(
 function runIdFrom(value: unknown): string {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'unknown';
   const runId = (value as Record<string, unknown>).runId;
-  return typeof runId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(runId) && Buffer.byteLength(runId) <= 128
+  return typeof runId === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(runId) &&
+    Buffer.byteLength(runId) <= 128
     ? runId
     : 'unknown';
 }
 
 async function assertPrivateRequest(requestPath: string): Promise<void> {
   const stat = await fs.stat(requestPath);
-  if (!stat.isFile() || stat.size <= 0 || stat.size > OMP_SDK_MAX_REQUEST_BYTES || (stat.mode & 0o077) !== 0) {
+  if (
+    !stat.isFile() ||
+    stat.size <= 0 ||
+    stat.size > OMP_SDK_MAX_REQUEST_BYTES ||
+    (stat.mode & 0o077) !== 0
+  ) {
     throw new Error('invalid private request file');
   }
 }
@@ -72,42 +79,46 @@ let frame: OmpSdkProtocolFrame;
 let requestPath: string | undefined;
 let request: unknown;
 let removeRequest = false;
-try {
-  if (process.argv.length !== 3) throw new Error('one request path is required');
-  requestPath = process.argv[2];
-  if (requestPath === undefined) throw new Error('request path is required');
-  await assertPrivateRequest(requestPath);
-  removeRequest = true;
-  request = JSON.parse(await fs.readFile(requestPath, 'utf8')) as unknown;
-  frame = await executeOmpSdkSidecar(request, { signal: abortController.signal });
-} catch {
+async function main(): Promise<void> {
   try {
-    closeSync(3);
+    if (process.argv.length !== 3) throw new Error('one request path is required');
+    requestPath = process.argv[2];
+    if (requestPath === undefined) throw new Error('request path is required');
+    await assertPrivateRequest(requestPath);
+    removeRequest = true;
+    request = JSON.parse(await fs.readFile(requestPath, 'utf8')) as unknown;
+    frame = await executeOmpSdkSidecar(request, { signal: abortController.signal });
   } catch {
-    // The credential channel may already have been consumed and closed.
+    try {
+      closeSync(3);
+    } catch {
+      // The credential channel may already have been consumed and closed.
+    }
+    frame = safeError(runIdFrom(request), 'invalid-request', 'request');
   }
-  frame = safeError(runIdFrom(request), 'invalid-request', 'request');
+
+  if (requestPath !== undefined && removeRequest) {
+    try {
+      await fs.unlink(requestPath);
+    } catch {
+      frame = safeError(runIdFrom(request), 'cleanup-error', 'cleanup');
+    }
+  }
+  process.removeListener('SIGINT', abort);
+  process.removeListener('SIGTERM', abort);
+  if (abortController.signal.aborted) {
+    frame = safeError(runIdFrom(request), 'cancelled', 'cancelled');
+  }
+
+  console.debug = originalConsole.debug;
+  console.error = originalConsole.error;
+  console.info = originalConsole.info;
+  console.log = originalConsole.log;
+  console.warn = originalConsole.warn;
+  process.stdout.write = originalStdoutWrite as typeof process.stdout.write;
+  process.stderr.write = originalStderrWrite as typeof process.stderr.write;
+  originalStdoutWrite(serializeOmpSdkFrame(frame));
+  process.exitCode = frame.type === 'result' ? 0 : 1;
 }
 
-if (requestPath !== undefined && removeRequest) {
-  try {
-    await fs.unlink(requestPath);
-  } catch {
-    frame = safeError(runIdFrom(request), 'cleanup-error', 'cleanup');
-  }
-}
-process.removeListener('SIGINT', abort);
-process.removeListener('SIGTERM', abort);
-if (abortController.signal.aborted) {
-  frame = safeError(runIdFrom(request), 'cancelled', 'cancelled');
-}
-
-console.debug = originalConsole.debug;
-console.error = originalConsole.error;
-console.info = originalConsole.info;
-console.log = originalConsole.log;
-console.warn = originalConsole.warn;
-process.stdout.write = originalStdoutWrite as typeof process.stdout.write;
-process.stderr.write = originalStderrWrite as typeof process.stderr.write;
-originalStdoutWrite(serializeOmpSdkFrame(frame));
-process.exitCode = frame.type === 'result' ? 0 : 1;
+void main();

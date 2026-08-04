@@ -253,4 +253,4 @@ async function main(): Promise<void> {
   process.exitCode = frame.type === 'result' ? 0 : 1;
 }
 
-if (import.meta.main) await main();
+void main();

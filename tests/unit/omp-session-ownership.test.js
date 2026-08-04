@@ -22,14 +22,7 @@
  */
 
 const assert = require('assert');
-const { execFile } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { pathToFileURL } = require('url');
-const { promisify } = require('util');
-
-const execFileAsync = promisify(execFile);
+const { fs, os, path, pathToFileURL, runNodeModule } = require('../helpers/test-runtime');
 
 const { makeSessionPartition } = require('../helpers/omp-session-fixtures');
 
@@ -39,11 +32,8 @@ const ownershipUrl = pathToFileURL(
   path.resolve(__dirname, '../../task-lib/omp-session-ownership.js')
 ).href;
 
-async function runStoreScript(script) {
-  const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script], {
-    env: { ...process.env, ZEROSHOT_HOME: zeroshotHome },
-  });
-  return stdout;
+function runStoreScript(script) {
+  return runNodeModule(script, { ZEROSHOT_HOME: zeroshotHome });
 }
 
 let idCounter = 0;

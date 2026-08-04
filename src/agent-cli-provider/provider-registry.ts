@@ -17,10 +17,7 @@ import {
   OMP_DOCKER_PLATFORM,
   OMP_INSTALL_COMMAND,
 } from './omp/release';
-import {
-  OMP_SDK_SETTINGS_DEFAULTS,
-  validateOmpSdkSettings,
-} from './omp/sdk-settings';
+import { OMP_SDK_SETTINGS_DEFAULTS, validateOmpSdkSettings } from './omp/sdk-settings';
 import type { OmpSettingsValidationContext } from './omp/sdk-settings';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
@@ -265,7 +262,7 @@ export const providerRegistry = [
       default: claudeAdapter.defaultLevel,
       max: claudeAdapter.defaultMaxLevel,
     },
-    adapter: claudeAdapter,
+    adapter: claudeAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'codex',
@@ -307,7 +304,7 @@ export const providerRegistry = [
       default: codexAdapter.defaultLevel,
       max: codexAdapter.defaultMaxLevel,
     },
-    adapter: codexAdapter,
+    adapter: codexAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'gateway',
@@ -394,7 +391,7 @@ export const providerRegistry = [
       default: geminiAdapter.defaultLevel,
       max: geminiAdapter.defaultMaxLevel,
     },
-    adapter: geminiAdapter,
+    adapter: geminiAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'opencode',
@@ -435,7 +432,7 @@ export const providerRegistry = [
       default: opencodeAdapter.defaultLevel,
       max: opencodeAdapter.defaultMaxLevel,
     },
-    adapter: opencodeAdapter,
+    adapter: opencodeAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'pi',
