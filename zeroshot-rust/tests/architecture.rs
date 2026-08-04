@@ -30,8 +30,15 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
                 || file.ends_with(".rs")
                 || matches!(
                     file.as_str(),
-                    "hosted-node/engine-adapter.js"
+                    "hosted-node/capsule-entrypoint.js"
+                        | "hosted-node/config-check.js"
+                        | "hosted-node/engine-adapter.js"
+                        | "hosted-node/git-askpass.js"
+                        | "hosted-node/hosted-config.js"
+                        | "hosted-node/worker-launcher.js"
                         | "hosted-node/worker.js"
+                        | "hosted-node/workspace-bootstrap.js"
+                        | "hosted-node/workspace-ship.js"
                         | "hosted-node/workspace-tools.js"
                 ),
             "native product may contain only Rust or the issue-authorized private hosted adapter: {file}"
