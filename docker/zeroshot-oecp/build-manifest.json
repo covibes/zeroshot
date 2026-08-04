@@ -8,8 +8,12 @@
   "protocol": {
     "version": "openengine.cluster/v1",
     "route": "/oecp",
-    "graphProfiles": ["openengine.graph.single-worker/v1"],
-    "workerProfiles": ["legacy.zeroshot.ship@1"]
+    "graphProfiles": [
+      "openengine.graph.single-worker/v1"
+    ],
+    "workerProfiles": [
+      "legacy.zeroshot.ship@1"
+    ]
   },
   "runtime": {
     "supervisor": {
@@ -79,7 +83,7 @@
     "lib/cluster-worker/worker-internals.js": "db5d7d2f23f07f74aef7d029d1a0ee36ec9317a9f06ba0a5e7d2f15947cbab92",
     "lib/run-plan.js": "c70bae45c113ff7a25a9c8696756fc3799104b01a8dba957d4d0eaf3a55d8a27",
     "package-lock.json": "68123774904f4012bd4098ebcb1793001caced20f8540de6d66ea4eedcadfdbb",
-    "package.json": "f910d212792ae64e9a2ebad120342653dcc77728bcc1246e8818dc50d5550920",
+    "package.json": "9bfb3c816ab933b6ee65d655add4b90e7c9ebd6fe129f63ffe3edd9995cc5028",
     "scripts/hosted-oecp-image-commands.js": "cee0efa9a9ddf0cc3ce19829ea403dc0bbf74185d8ec2236acd866c53be3313d",
     "scripts/hosted-oecp-image-smoke.js": "33a764499ada23b5fd27bf2f2bee5cf3ff0ff727f5800a2621fc1507e82e18eb",
     "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
@@ -94,10 +98,10 @@
     "zeroshot-rust/hosted-node": "8d3a7d9d38d8f4cd0fdb5bef2e38dbf0d030b2b2e56e24b02d7a02020ea355c8",
     "zeroshot-rust/src": "9b4a67bcf9fffac122b92fcbdcbdd2d25a82903c0149b183a4e6a4528167cb1a"
   },
-  "imageInputsDigest": "1c454752d8ceb8c7d838e2e1f99a2e02d5ff790b770ecce7d659ad3fc546cf8b",
+  "imageInputsDigest": "957871f456494612d32de62c15749abf0b1603b778a45f99a5236094a566e43b",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "8ec8dfbceb6c237fea6dc7eb4e420fd08c4bb39835fbf365eaa03bad77a04aa0"
+  "manifestDigest": "95205734fd7d8739c6c5d409881fe11296c38e0cc89fdc9f1ea5e46da67fb034"
 }
