@@ -24,6 +24,8 @@ const {
   prepareSingleAgentProviderCommand,
 } = require('./provider-helper-runtime.js');
 const { getDefaultProviderId } = require('../lib/provider-names.js');
+const { loadSettings } = require('../lib/settings.js');
+const { resolveOmpTransport } = require('./omp-sdk-runtime.js');
 const {
   ISOLATED_SETTINGS_FILE_ENV,
   ISOLATED_SETTINGS_FILE_MARKER,
@@ -155,10 +157,11 @@ export function resolveOmpResumeExpectation({ descriptor, storageRoot, canonical
  * the structural/identity/fingerprint verification plus the owner transfer happen in the rpc-stdio
  * watcher, not here.
  */
-function resolveOmpSessionPlan({ id, cwd, options }) {
+function resolveOmpSessionPlan({ id, cwd, options, providerName }) {
   if (options.structuredOutputRecovery) return null;
-  const providerName = normalizeProviderName(options.provider || getDefaultProviderId());
-  if (providerName !== 'omp') return null;
+  const resolvedProviderName =
+    providerName || normalizeProviderName(options.provider || getDefaultProviderId());
+  if (resolvedProviderName !== 'omp') return null;
   // Docker stays fresh-only (issue #866). Returning null here means no partition is allocated, no
   // ownership row is written, and the adapter falls back to `--no-session`.
   if (isOmpSessionlessRun(options)) return null;
@@ -237,6 +240,47 @@ function failSpawnAtProvisionalBoundary(id, error) {
     console.warn(`Warning: failed to mark task ${id} failed: ${updateError.message}`);
   }
 }
+function prepareTaskSpawn(prompt, options, runtime) {
+  const outputFormat = resolveOutputFormat(options);
+  const jsonSchema = resolveJsonSchema(options, outputFormat);
+  const settings = loadSettings();
+  const providerName = normalizeProviderName(
+    options.provider || settings.defaultProvider || getDefaultProviderId()
+  );
+  const ompTransport = providerName === 'omp' ? resolveOmpTransport(settings) : null;
+  const providerOutputFormat =
+    ompTransport === 'sdk' && outputFormat === 'stream-json' && jsonSchema === null
+      ? 'text'
+      : outputFormat;
+  if (ompTransport === 'sdk' && options.ompResume) {
+    throw new Error(
+      'OMP SDK detached runs are always fresh; --omp-resume requires transport "rpc".'
+    );
+  }
+  const ompPlan =
+    ompTransport === 'rpc' ? resolveOmpSessionPlan({ ...runtime, options, providerName }) : null;
+  const prepared = prepareTaskProviderCommandFromResolved(
+    prompt,
+    options,
+    {
+      outputFormat: providerOutputFormat,
+      jsonSchema,
+      cwd: runtime.cwd,
+      ompSession: ompPlan?.session,
+    },
+    settings
+  );
+  const resolvedProviderName = prepared.adapter.id;
+  return {
+    outputFormat,
+    jsonSchema,
+    ompPlan,
+    prepared,
+    providerName: resolvedProviderName,
+    modelSpec: prepared.options.modelSpec,
+    commandSpec: attachClaudeOverlayCleanup(prepared.commandSpec, resolvedProviderName),
+  };
+}
 
 export function spawnTask(prompt, options = {}) {
   ensureDirs();
@@ -245,18 +289,8 @@ export function spawnTask(prompt, options = {}) {
   const logFile = join(LOGS_DIR, `${id}.log`);
   const cwd = options.cwd || process.cwd();
 
-  const outputFormat = resolveOutputFormat(options);
-  const jsonSchema = resolveJsonSchema(options, outputFormat);
-  const ompPlan = resolveOmpSessionPlan({ id, cwd, options });
-  const prepared = prepareTaskProviderCommandFromResolved(prompt, options, {
-    outputFormat,
-    jsonSchema,
-    cwd,
-    ompSession: ompPlan?.session,
-  });
-  const providerName = prepared.adapter.id;
-  const modelSpec = prepared.options.modelSpec;
-  const commandSpec = attachClaudeOverlayCleanup(prepared.commandSpec, providerName);
+  const { outputFormat, jsonSchema, ompPlan, prepared, providerName, modelSpec, commandSpec } =
+    prepareTaskSpawn(prompt, options, { id, cwd });
 
   const task = buildTaskRecord({
     id,
@@ -293,6 +327,7 @@ export function spawnTask(prompt, options = {}) {
     jsonSchema,
     options,
     providerName,
+    prepared,
     commandSpec,
     ompPlan
   );
@@ -301,7 +336,8 @@ export function spawnTask(prompt, options = {}) {
       attachable: options.attachable,
       jsonSchema,
     },
-    providerName
+    providerName,
+    prepared.invoke
   );
   spawnWatcher({
     watcherScript,
@@ -310,10 +346,9 @@ export function spawnTask(prompt, options = {}) {
     logFile,
     finalArgs: commandSpec.args,
     watcherConfig,
-    // Prompt bytes never enter argv: the rpc-stdio watcher receives them over a private pipe
-    // (src/watcher-prompt-channel.js). Every other lane passes the prompt to the provider through
-    // commandSpec.args, which the provider process — not a long-lived watcher — then owns.
-    ...(isRpcStdioLane(providerName)
+    // Prompt bytes never enter argv: the rpc-stdio watcher receives them over a private pipe,
+    // while the SDK watcher receives only the path to its owner-only request file.
+    ...(isRpcStdioInvoke(prepared.invoke)
       ? { rpcPrompt: buildOmpPrompt(prompt, prepared.options || {}) }
       : {}),
   });
@@ -323,20 +358,40 @@ export function spawnTask(prompt, options = {}) {
 
 export function prepareTaskProviderCommand(prompt, options = {}) {
   const outputFormat = resolveOutputFormat(options);
-  return prepareTaskProviderCommandFromResolved(prompt, options, {
-    outputFormat,
-    jsonSchema: resolveJsonSchema(options, outputFormat),
-    cwd: options.cwd || process.cwd(),
-  });
+  const jsonSchema = resolveJsonSchema(options, outputFormat);
+  const settings = loadSettings();
+  const providerName = normalizeProviderName(
+    options.provider || settings.defaultProvider || getDefaultProviderId()
+  );
+  const providerOutputFormat =
+    providerName === 'omp' &&
+    resolveOmpTransport(settings) === 'sdk' &&
+    outputFormat === 'stream-json' &&
+    jsonSchema === null
+      ? 'text'
+      : outputFormat;
+  return prepareTaskProviderCommandFromResolved(
+    prompt,
+    options,
+    {
+      outputFormat: providerOutputFormat,
+      jsonSchema,
+      cwd: options.cwd || process.cwd(),
+    },
+    settings
+  );
 }
 
-function prepareTaskProviderCommandFromResolved(prompt, options, runtime) {
+function prepareTaskProviderCommandFromResolved(prompt, options, runtime, settings) {
   const modelSelection = resolveRequestedModelSelection(options);
-  return prepareSingleAgentProviderCommand({
-    provider: options.provider || null,
-    context: prompt,
-    options: buildProviderOptions(options, runtime, modelSelection),
-  });
+  return prepareSingleAgentProviderCommand(
+    {
+      provider: options.provider || null,
+      context: prompt,
+      options: buildProviderOptions(options, runtime, modelSelection),
+    },
+    settings
+  );
 }
 
 function resolveOutputFormat(options) {
@@ -358,6 +413,7 @@ function buildProviderOptions(options, runtime, modelSelection) {
     outputFormat: runtime.outputFormat,
     jsonSchema: runtime.jsonSchema,
     cwd: runtime.cwd,
+    executionContext: 'detached',
     autoApprove: !structuredOutputRecovery,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
@@ -490,14 +546,27 @@ export function buildTaskRecord({
   };
 }
 
-function isRpcStdioLane(providerName) {
-  return getProviderRegistryEntry(providerName).invoke.lane === 'rpc-stdio';
+function isRpcStdioInvoke(invoke) {
+  return invoke.lane === 'rpc-stdio';
+}
+
+function isOmpSdkInvoke(invoke) {
+  return invoke.parser === 'omp-sdk-ndjson';
 }
 
 // The returned object is JSON-serialized into the detached watcher's argv, so it must never carry
 // prompt or other task content: `ps` and /proc/<pid>/cmdline expose argv to every local user for
 // the whole lifetime of the watcher. Partition paths, ids, and digests are not secret.
-function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, commandSpec, ompPlan) {
+function buildWatcherConfig(
+  outputFormat,
+  jsonSchema,
+  options,
+  providerName,
+  prepared,
+  commandSpec,
+  ompPlan
+) {
+  const protocolInvoke = isRpcStdioInvoke(prepared.invoke) || isOmpSdkInvoke(prepared.invoke);
   return {
     outputFormat,
     jsonSchema,
@@ -506,7 +575,20 @@ function buildWatcherConfig(outputFormat, jsonSchema, options, providerName, com
     provider: providerName,
     command: commandSpec.binary,
     env: commandSpec.env || {},
-    commandSpec: buildWatcherCommandSpec(commandSpec, isRpcStdioLane(providerName)),
+    commandSpec: buildWatcherCommandSpec(commandSpec, protocolInvoke),
+    ...(isOmpSdkInvoke(prepared.invoke)
+      ? {
+          sdkPrepared: {
+            invoke: prepared.invoke,
+            environmentPolicy: prepared.environmentPolicy,
+            credentialNames: prepared.credentialNames,
+            privateArtifacts: prepared.privateArtifacts,
+            executionIdentity: prepared.executionIdentity,
+            semanticIdentity: prepared.semanticIdentity,
+            containmentRequirement: prepared.containmentRequirement,
+          },
+        }
+      : {}),
     ...(ompPlan
       ? {
           ompSession: ompPlan.session,
@@ -532,7 +614,7 @@ export function shouldUseAttachableWatcher(options, providerName) {
 
   // The rpc-stdio lane owns bidirectional correlated RPC over stdio itself (see
   // omp-rpc-driver.ts) and always uses rpc-watcher.js instead of the attachable PTY watcher.
-  if (isRpcStdioLane(providerName)) {
+  if (getProviderRegistryEntry(providerName).invoke.lane === 'rpc-stdio') {
     return false;
   }
 
@@ -543,10 +625,9 @@ export function shouldUseAttachableWatcher(options, providerName) {
   return !(providerName === 'claude' && options.jsonSchema);
 }
 
-function resolveWatcherScript(options, providerName) {
-  if (isRpcStdioLane(providerName)) {
-    return join(__dirname, 'rpc-watcher.js');
-  }
+function resolveWatcherScript(options, providerName, invoke) {
+  if (isOmpSdkInvoke(invoke)) return join(__dirname, 'sdk-watcher.js');
+  if (isRpcStdioInvoke(invoke)) return join(__dirname, 'rpc-watcher.js');
   const useAttachable = shouldUseAttachableWatcher(options, providerName);
   return useAttachable ? join(__dirname, 'attachable-watcher.js') : join(__dirname, 'watcher.js');
 }

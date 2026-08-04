@@ -17,6 +17,7 @@ const POLICY_DIRECTORY_PATTERN = /^zeroshot-gemini-policy-[A-Za-z0-9_-]+$/u;
 const POLICY_FILE_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.toml$/u;
 const OPENCODE_CONFIG_DIRECTORY_PATTERN = /^zeroshot-opencode-config-[A-Za-z0-9_-]+$/u;
+const OMP_SDK_PRIVATE_DIRECTORY_PATTERN = /^zeroshot-omp-sdk-[A-Za-z0-9_-]+$/u;
 
 function assertClosedCleanupMetadata(cleanupPath, metadata) {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
@@ -121,6 +122,16 @@ function assertOwnedOmpConfigDirectory(cleanupPath) {
   }
   return false;
 }
+function assertOwnedOmpSdkDirectory(cleanupPath) {
+  if (assertOwnedNamedTempDirectory(cleanupPath, OMP_SDK_PRIVATE_DIRECTORY_PATTERN)) return true;
+  const stat = lstatSync(cleanupPath);
+  const ownedByProcess = typeof process.getuid !== 'function' || stat.uid === process.getuid();
+  const privateMode = process.platform === 'win32' || (stat.mode & 0o777) === 0o700;
+  if (!ownedByProcess || !privateMode) {
+    throw new Error(`Refusing unowned temporary directory cleanup: ${cleanupPath}`);
+  }
+  return false;
+}
 
 function assertOwnedTempDirectory(cleanupPath, metadata) {
   const isOpenCodeConfig =
@@ -132,6 +143,10 @@ function assertOwnedTempDirectory(cleanupPath, metadata) {
   const isOmpConfig = metadata.provider === 'omp' && metadata.reason === 'isolated-config';
   if (isOmpConfig) {
     return assertOwnedOmpConfigDirectory(cleanupPath);
+  }
+  const isOmpSdkPrivateRoot = metadata.provider === 'omp' && metadata.reason === 'sdk-private-root';
+  if (isOmpSdkPrivateRoot) {
+    return assertOwnedOmpSdkDirectory(cleanupPath);
   }
 
   if (

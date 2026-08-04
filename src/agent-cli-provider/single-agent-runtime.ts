@@ -128,6 +128,13 @@ const getHelpOutputFn = moduleFunction(providerDetectionModule, 'getHelpOutput')
 const getVersionOutputFn = moduleFunction(providerDetectionModule, 'getVersionOutput');
 const resolveOmpSdkRuntimeFn = moduleFunction(ompSdkRuntimeModule, 'resolveOmpSdkRuntime');
 
+export const resolveOmpTransport = (runtimeSettings?: Record<string, unknown>): 'sdk' | 'rpc' => {
+  const settings = runtimeSettings ?? loadRuntimeSettings();
+  const providerSettings = settings.providerSettings;
+  if (!isRecord(providerSettings)) return 'sdk';
+  const omp = providerSettings.omp;
+  return isRecord(omp) && omp.transport === 'rpc' ? 'rpc' : 'sdk';
+};
 export function prepareSingleAgentProviderCommand(
   input: SingleAgentProviderCommandInput,
   runtimeSettings?: Record<string, unknown>
@@ -136,7 +143,7 @@ export function prepareSingleAgentProviderCommand(
   const baseOptions = input.options ?? {};
   const settings = runtimeSettings ?? loadRuntimeSettings();
   const adapter = adapterForRuntimeInput(input.provider, settings);
-  const ompTransport = adapter.id === 'omp' ? runtimeOmpTransport(settings) : undefined;
+  const ompTransport = adapter.id === 'omp' ? resolveOmpTransport(settings) : undefined;
   if (ompTransport === 'sdk') {
     const configuredOmpSettings = resolveOmpSdkSettings(settings);
     return prepareOmpProviderCommand(input, adapter, baseOptions, configuredOmpSettings);
@@ -421,12 +428,6 @@ function ompExecutionContext(
   throw new Error('options.executionContext must be "host", "detached", "docker", or "benchmark".');
 }
 
-function runtimeOmpTransport(settings: Record<string, unknown>): 'sdk' | 'rpc' {
-  const providerSettings = settings.providerSettings;
-  if (!isRecord(providerSettings)) return 'sdk';
-  const omp = providerSettings.omp;
-  return isRecord(omp) && omp.transport === 'rpc' ? 'rpc' : 'sdk';
-}
 
 function ompSdkOutputContract(
   options: BuildProviderCommandOptions
@@ -635,7 +636,7 @@ export function probeRuntimeProviderCli(
   }
   const registryEntry = getProviderRegistryEntry(adapter.id);
   const settings = runtimeSettings ?? loadRuntimeSettings();
-  if (adapter.id === 'omp' && runtimeOmpTransport(settings) === 'sdk') {
+  if (adapter.id === 'omp' && resolveOmpTransport(settings) === 'sdk') {
     const capabilities = adapter.detectCliFeatures('', '');
     try {
       const runtime = ompSdkRuntimeAssets();
@@ -989,7 +990,6 @@ function isUnknownFunction(value: unknown): value is UnknownFunction {
   return typeof value === 'function';
 }
 
-
 function levelOverridesFromUnknown(value: unknown, field: string): LevelOverrides {
   if (value === undefined) return {};
   const record = requiredRecord(value, field);
@@ -1060,7 +1060,6 @@ function optionalString(value: unknown, field: string): string | undefined {
   throw new Error(`${field} must be a string.`);
 }
 
-
 function optionalRecord(
   value: unknown,
   field: string
@@ -1084,7 +1083,6 @@ function stringRecordFromUnknown(value: unknown, field: string): Readonly<Record
   }
   return result;
 }
-
 
 function stringResult(value: unknown): string {
   if (typeof value === 'string') return value;
