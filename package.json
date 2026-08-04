@@ -138,7 +138,7 @@
       "linux:arm64",
       "linux:x64"
     ],
-    "supervisor": "scripts/omp-sdk-host-supervisor.ts",
+    "supervisor": "scripts/omp/host-supervisor.ts",
     "protocolVersion": 1
   },
   "publishConfig": {

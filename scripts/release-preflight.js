@@ -3,7 +3,7 @@
 const fs = require('fs');
 const https = require('https');
 const { execFileSync } = require('child_process');
-const { REQUIRED_OMP_SDK_SOURCES, validateOmpSdkReleaseAssets } = require('./omp-sdk-runtime');
+const { REQUIRED_OMP_SDK_SOURCES, validateOmpSdkReleaseAssets } = require('./omp/runtime');
 
 const RELEASE_ORDER = ['patch', 'minor', 'major'];
 const REQUIRED_PLUGINS = [

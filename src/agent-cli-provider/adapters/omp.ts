@@ -2,9 +2,9 @@ import { contractError } from '../contract-errors';
 import { UnsupportedProviderCapabilityError } from '../errors';
 import { appendJsonSchemaPrompt } from '../schema';
 import { isRecord, unknownToMessage } from '../json';
-import { OMP_REMEDIATION, OMP_SUPPORTED_VERSION } from '../omp-release';
-import { parseNormalizedOmpRpcEventLine } from '../omp-rpc-events';
-import type { OmpSessionLaunch } from '../omp-rpc-session';
+import { OMP_REMEDIATION, OMP_SUPPORTED_VERSION } from '../omp/release';
+import { parseNormalizedOmpRpcEventLine } from '../omp/rpc-events';
+import type { OmpSessionLaunch } from '../omp/rpc-session';
 import {
   InvalidProviderModelError,
   type BuildProviderCommandOptions,

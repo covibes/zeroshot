@@ -18,9 +18,9 @@ import {
   type OmpSdkErrorCode,
   type OmpSdkProtocolFrame,
   type OmpSdkSidecarRequest,
-} from './omp-sdk-protocol';
-import { compilePrivateOmpModelsYaml } from './omp-sdk-settings';
-import { openOmpAuthStorage } from './omp-auth-policy';
+} from './sdk-protocol';
+import { compilePrivateOmpModelsYaml } from './sdk-settings';
+import { openOmpAuthStorage } from './auth-policy';
 
 const PRIVATE_BASE_ENV_KEYS = [
   'HOME',

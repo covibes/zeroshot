@@ -10,7 +10,7 @@ const {
   OMP_INSTALL_COMMAND,
   OMP_PACKAGE_NAME,
   OMP_SUPPORTED_VERSION,
-} = require('../../lib/agent-cli-provider/omp-release');
+} = require('../../lib/agent-cli-provider/omp/release');
 const { ENV_PRESETS, MOUNT_PRESETS } = require('../../lib/docker-config');
 const { validateSetting } = require('../../lib/settings');
 const {

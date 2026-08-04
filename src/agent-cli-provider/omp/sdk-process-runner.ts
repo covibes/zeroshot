@@ -15,13 +15,13 @@ import {
   type OmpSdkCollectedTerminal,
   type OmpSdkProtocolProgressFrame,
   type OmpSdkSidecarRequest,
-} from './omp-sdk-protocol';
+} from './sdk-protocol';
 import {
   OMP_SDK_MAX_SUPERVISOR_ATTESTATION_BYTES,
   parseOmpSdkSupervisorAttestation,
   resolveOmpSdkHostSupervisorPath,
-} from './omp-sdk-runtime';
-import type { PreparedSingleAgentProviderCommand } from './single-agent-runtime';
+} from './sdk-runtime';
+import type { PreparedSingleAgentProviderCommand } from '../single-agent-runtime';
 import type {
   OmpSdkCleanupAttestation,
   OmpSdkContainmentRequirement,
@@ -30,8 +30,8 @@ import type {
   PreparedEnvironmentPolicy,
   PreparedPrivateArtifacts,
   PreparedProviderInvoke,
-} from './types';
-import type { ProcessResult, ProcessRunnerOptions } from './process-runner';
+} from '../types';
+import type { ProcessResult, ProcessRunnerOptions } from '../process-runner';
 
 const CREDENTIAL_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PRIVATE_ROOT_NAME = /^zeroshot-omp-sdk-[A-Za-z0-9_-]+$/u;

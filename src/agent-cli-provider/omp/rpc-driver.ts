@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { omitProcessControlEnv, omitUnsafeProviderEnv } from './env-safety';
+import { omitProcessControlEnv, omitUnsafeProviderEnv } from '../env-safety';
 import {
   DEFAULT_OMP_RPC_DECODER_LIMITS,
   OmpRpcFrameDecoder,
@@ -8,16 +8,16 @@ import {
   encodeOmpRpcCommand,
   type OmpRpcCommand,
   type OmpRpcInboundFrame,
-} from './omp-rpc-protocol';
-import { createOmpRpcEventState, normalizeOmpRpcFrame } from './omp-rpc-events';
+} from './rpc-protocol';
+import { createOmpRpcEventState, normalizeOmpRpcFrame } from './rpc-events';
 import {
   MAX_LIFETIME_REQUEST_IDS,
   MAX_PENDING_REQUESTS,
   MAX_STDERR_TAIL_BYTES,
-} from './omp-rpc-bounds';
-import { getArray, getBoolean, getNumber, getOptionalString, getRecord, getString } from './json';
-import type { OmpSessionLaunch } from './omp-rpc-session';
-import type { CommandSpec, OutputEvent } from './types';
+} from './rpc-bounds';
+import { getArray, getBoolean, getNumber, getOptionalString, getRecord, getString } from '../json';
+import type { OmpSessionLaunch } from './rpc-session';
+import type { CommandSpec, OutputEvent } from '../types';
 
 export interface OmpRpcSpawnEvidence {
   readonly pid: number;

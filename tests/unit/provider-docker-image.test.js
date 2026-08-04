@@ -21,7 +21,7 @@ const {
   OMP_RELEASE_DOWNLOAD_BASE_URL,
   OMP_SUPPORTED_VERSION,
   findOmpReleaseAsset,
-} = require('../../lib/agent-cli-provider/omp-release');
+} = require('../../lib/agent-cli-provider/omp/release');
 
 // Mirrors IsolationManager.imageForProvider: the derived tag is built from the base reference's
 // NAME (tag/digest stripped, registry port kept), while the hash covers the FULL base reference.

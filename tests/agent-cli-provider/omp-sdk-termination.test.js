@@ -9,7 +9,7 @@ const test = require('node:test');
 const {
   runOmpSdkProcess,
   spawnOmpSdkProcess,
-} = require('../../lib/agent-cli-provider/omp-sdk-process-runner');
+} = require('../../lib/agent-cli-provider/omp/sdk-process-runner');
 const { MODEL } = require('./omp-sdk-test-fixtures.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..');

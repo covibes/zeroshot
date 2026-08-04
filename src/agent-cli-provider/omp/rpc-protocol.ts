@@ -1,5 +1,5 @@
-import { getNumber, getString, isRecord } from './json';
-import { OMP_SUPPORTED_VERSION } from './omp-release';
+import { getNumber, getString, isRecord } from '../json';
+import { OMP_SUPPORTED_VERSION } from './release';
 
 // Purely for traceability/doc; no runtime coupling to omp-release's spawn/install concerns.
 export const OMP_RPC_CONTRACT_RELEASE = OMP_SUPPORTED_VERSION;

@@ -2,13 +2,13 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { test } = require('node:test');
 
-const { runOmpRpcTask } = require('../../lib/agent-cli-provider/omp-rpc-driver');
+const { runOmpRpcTask } = require('../../lib/agent-cli-provider/omp/rpc-driver');
 const {
   MAX_PENDING_REQUESTS,
   MAX_LIFETIME_REQUEST_IDS,
   MAX_NORMALIZED_OUTPUT_BYTES,
   MAX_STDERR_TAIL_BYTES,
-} = require('../../lib/agent-cli-provider/omp-rpc-bounds');
+} = require('../../lib/agent-cli-provider/omp/rpc-bounds');
 
 const FAKE_OMP_RPC_PATH = path.join(__dirname, '..', 'helpers', 'fake-omp-rpc.js');
 

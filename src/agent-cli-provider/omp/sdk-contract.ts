@@ -1,7 +1,7 @@
-import { isRecord } from './json';
-import type { OmpSdkErrorCategory } from './omp-sdk-protocol';
-import type { ProcessResult } from './process-runner';
-import type { ErrorClassification } from './types';
+import { isRecord } from '../json';
+import type { OmpSdkErrorCategory } from './sdk-protocol';
+import type { ProcessResult } from '../process-runner';
+import type { ErrorClassification } from '../types';
 
 export type ContractOmpSdkTerminal =
   | {

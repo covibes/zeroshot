@@ -1,5 +1,5 @@
-import { OmpRpcProtocolError, type OmpRpcInboundFrame } from './omp-rpc-protocol';
-import { MAX_NORMALIZED_OUTPUT_BYTES } from './omp-rpc-bounds';
+import { OmpRpcProtocolError, type OmpRpcInboundFrame } from './rpc-protocol';
+import { MAX_NORMALIZED_OUTPUT_BYTES } from './rpc-bounds';
 import {
   getArray,
   getBoolean,
@@ -10,8 +10,8 @@ import {
   isRecord,
   stringifyContent,
   tryParseJson,
-} from './json';
-import type { OutputEvent, ProviderParseResult, ProviderParserState } from './types';
+} from '../json';
+import type { OutputEvent, ProviderParseResult, ProviderParserState } from '../types';
 
 export interface OmpRpcEventState {
   lastAssistantText: string;

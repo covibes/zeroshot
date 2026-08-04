@@ -10,11 +10,11 @@ import {
   type OmpSdkErrorCategory,
   type OmpSdkErrorCode,
   type OmpSdkProtocolFrame,
-} from '../src/agent-cli-provider/omp-sdk-protocol';
+} from '../../src/agent-cli-provider/omp/sdk-protocol';
 import {
   executeOmpSdkSidecar,
   serializeOmpSdkFrame,
-} from '../src/agent-cli-provider/omp-sdk-sidecar';
+} from '../../src/agent-cli-provider/omp/sdk-sidecar';
 
 function safeError(
   runId: string,

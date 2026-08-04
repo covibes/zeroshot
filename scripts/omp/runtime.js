@@ -9,8 +9,8 @@ const OMP_PACKAGE_NAME = '@oh-my-pi/pi-coding-agent';
 const OMP_SDK_VERSION = '17.2.1';
 const BUN_PACKAGE_NAME = 'bun';
 const BUN_RUNTIME_VERSION = '1.3.14';
-const SIDECAR_RELATIVE_PATH = path.join('scripts', 'omp-sdk-sidecar.ts');
-const HOST_SUPERVISOR_RELATIVE_PATH = path.join('scripts', 'omp-sdk-host-supervisor.ts');
+const SIDECAR_RELATIVE_PATH = path.join('scripts', 'omp', 'sidecar.ts');
+const HOST_SUPERVISOR_RELATIVE_PATH = path.join('scripts', 'omp', 'host-supervisor.ts');
 const HOST_SDK_PLATFORM_KEYS = Object.freeze(['linux:arm64', 'linux:x64']);
 
 const BUN_PLATFORM_PACKAGES = Object.freeze({
@@ -29,7 +29,7 @@ const OMP_NATIVE_PLATFORM_PACKAGES = Object.freeze({
   'win32:x64': '@oh-my-pi/pi-natives-win32-x64',
 });
 const REQUIRED_OMP_SDK_SOURCES = Object.freeze([
-  'scripts/omp-sdk-runtime.js',
+  'scripts/omp/runtime.js',
   SIDECAR_RELATIVE_PATH.replaceAll('\\', '/'),
   HOST_SUPERVISOR_RELATIVE_PATH.replaceAll('\\', '/'),
 ]);
@@ -149,7 +149,7 @@ function assertPackageIdentity(packageName, expectedVersion, metadata) {
 function resolveOmpSdkRuntime(options = {}) {
   const runtimeOptions = Object.assign(
     {
-      packageRoot: path.join(__dirname, '..'),
+      packageRoot: path.join(__dirname, '..', '..'),
       platform: process.platform,
       arch: process.arch,
       fileExists: fs.existsSync,

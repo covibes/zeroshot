@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 
-import { invalidField } from './contract-errors';
-import { isRecord } from './json';
+import { invalidField } from '../contract-errors';
+import { isRecord } from '../json';
 
 export const OMP_SDK_TOOL_IDS = [
   'read',

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const test = require('node:test');
 
 const helper = require('../../lib/agent-cli-provider');
-const sdkRunner = require('../../lib/agent-cli-provider/omp-sdk-process-runner');
+const sdkRunner = require('../../lib/agent-cli-provider/omp/sdk-process-runner');
 const {
   JSON_SCHEMA,
   MODEL,

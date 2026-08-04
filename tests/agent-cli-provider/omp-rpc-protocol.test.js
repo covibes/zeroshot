@@ -11,7 +11,7 @@ const {
   OMP_SUPPORTED_VERSION,
   findOmpReleaseAsset,
   ompReleaseAssetDownloadUrl,
-} = require('../../lib/agent-cli-provider/omp-release');
+} = require('../../lib/agent-cli-provider/omp/release');
 const {
   DEFAULT_OMP_RPC_DECODER_LIMITS,
   OmpRpcFrameDecoder,
@@ -19,7 +19,7 @@ const {
   assertNoPreNegotiationRpcChunk,
   classifyOmpRpcFrameType,
   encodeOmpRpcCommand,
-} = require('../../lib/agent-cli-provider/omp-rpc-protocol');
+} = require('../../lib/agent-cli-provider/omp/rpc-protocol');
 const {
   exactBoundaryPromptCommand,
   multibyteUtf8PromptCommand,

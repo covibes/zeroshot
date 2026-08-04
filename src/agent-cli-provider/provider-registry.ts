@@ -16,12 +16,12 @@ import {
   OMP_DOCKER_INSTALL_COMMAND,
   OMP_DOCKER_PLATFORM,
   OMP_INSTALL_COMMAND,
-} from './omp-release';
+} from './omp/release';
 import {
   OMP_SDK_SETTINGS_DEFAULTS,
   validateOmpSdkSettings,
-} from './omp-sdk-settings';
-import type { OmpSettingsValidationContext } from './omp-sdk-settings';
+} from './omp/sdk-settings';
+import type { OmpSettingsValidationContext } from './omp/sdk-settings';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';

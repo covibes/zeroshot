@@ -17,7 +17,7 @@ const {
   OMP_PACKAGE_NAME,
   OMP_SDK_VERSION,
   resolveOmpSdkRuntime,
-} = require('../scripts/omp-sdk-runtime');
+} = require('../scripts/omp/runtime');
 
 const repositoryRoot = path.join(__dirname, '..');
 const fakePackageRoot = path.resolve('/package');
@@ -207,7 +207,7 @@ describe('OMP SDK runtime release assets', () => {
     ]);
     assert.strictEqual(
       exactPackageJson.ompSdkHostContainment.supervisor,
-      'scripts/omp-sdk-host-supervisor.ts'
+      'scripts/omp/host-supervisor.ts'
     );
     assert.deepStrictEqual(exactPackageJson.ompSdkHostContainment.platforms, [
       'linux:arm64',
@@ -277,22 +277,22 @@ describe('OMP SDK runtime release assets', () => {
 
   it('rejects missing sidecar, shrinkwrap, and publish allowlist coverage', () => {
     assert.throws(
-      () => validateAssets({ sourceFiles: ['scripts/omp-sdk-runtime.js'] }),
-      /OMP SDK release source is missing: scripts\/omp-sdk-sidecar\.ts/
+      () => validateAssets({ sourceFiles: ['scripts/omp/runtime.js'] }),
+      /OMP SDK release source is missing: scripts\/omp\/sidecar\.ts/
     );
     assert.throws(
       () =>
         validateAssets({
-          sourceFiles: ['scripts/omp-sdk-runtime.js', 'scripts/omp-sdk-sidecar.ts'],
+          sourceFiles: ['scripts/omp/runtime.js', 'scripts/omp/sidecar.ts'],
         }),
-      /OMP SDK release source is missing: scripts\/omp-sdk-host-supervisor\.ts/
+      /OMP SDK release source is missing: scripts\/omp\/host-supervisor\.ts/
     );
 
     const packageJson = clone(exactPackageJson);
     packageJson.files = packageJson.files.filter((entry) => entry !== 'scripts/');
     assert.throws(
       () => validateAssets({ packageJson }),
-      /publish allowlist excludes scripts\/omp-sdk-runtime\.js/
+      /publish allowlist excludes scripts\/omp\/runtime\.js/
     );
 
     const shrinkwrapExcluded = clone(exactPackageJson);
@@ -331,11 +331,11 @@ describe('OMP SDK runtime resolver', () => {
     );
     assert.strictEqual(
       runtime.sidecarPath,
-      path.join(fakePackageRoot, 'scripts', 'omp-sdk-sidecar.ts')
+      path.join(fakePackageRoot, 'scripts', 'omp', 'sidecar.ts')
     );
     assert.strictEqual(
       runtime.hostSupervisorPath,
-      path.join(fakePackageRoot, 'scripts', 'omp-sdk-host-supervisor.ts')
+      path.join(fakePackageRoot, 'scripts', 'omp', 'host-supervisor.ts')
     );
     assert.strictEqual(runtime.bunPlatformPackage, '@oven/bun-linux-x64');
     assert.strictEqual(runtime.ompNativePlatformPackage, '@oh-my-pi/pi-natives-linux-x64');
@@ -454,7 +454,7 @@ describe('OMP SDK runtime asset failures', () => {
       () =>
         resolveOmpSdkRuntime({
           ...exactRuntimeOptions,
-          fileExists: (candidate) => !candidate.endsWith('omp-sdk-sidecar.ts'),
+          fileExists: (candidate) => !candidate.endsWith(path.join('omp', 'sidecar.ts')),
         }),
       /OMP SDK sidecar is missing/
     );
@@ -462,7 +462,7 @@ describe('OMP SDK runtime asset failures', () => {
       () =>
         resolveOmpSdkRuntime({
           ...exactRuntimeOptions,
-          fileExists: (candidate) => !candidate.endsWith('omp-sdk-host-supervisor.ts'),
+          fileExists: (candidate) => !candidate.endsWith(path.join('omp', 'host-supervisor.ts')),
         }),
       /OMP SDK host supervisor is missing/
     );

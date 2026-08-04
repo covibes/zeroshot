@@ -1,9 +1,9 @@
 import { buildAcpPrompt } from './adapters/acp';
 import { buildOmpPrompt } from './adapters/omp';
 import { runAcpStdioPrompt } from './acp-stdio-runner';
-import { runOmpRpcTask } from './omp-rpc-driver';
-import { ABORT_GRACE_MS, EXIT_GRACE_MS } from './omp-rpc-bounds';
-import { OMP_SUPPORTED_VERSION } from './omp-release';
+import { runOmpRpcTask } from './omp/rpc-driver';
+import { ABORT_GRACE_MS, EXIT_GRACE_MS } from './omp/rpc-bounds';
+import { OMP_SUPPORTED_VERSION } from './omp/release';
 import { commandRedactions } from './contract-env';
 import { successEnvelope, type ContractEnvelope } from './contract-envelope';
 import { buildCommandSpec, optionalNumber, schemaMode, type RequestData } from './contract-support';
@@ -14,8 +14,8 @@ import {
   invokeEvidence,
   isContractOmpSdkProcessResult,
   ompSdkFailureClassification,
-} from './omp-sdk-contract';
-import { runOmpSdkProcess } from './omp-sdk-process-runner';
+} from './omp/sdk-contract';
+import { runOmpSdkProcess } from './omp/sdk-process-runner';
 import type { CommandSpec } from './types';
 import type { ProcessResult, ProcessRunner, ProcessRunnerOptions } from './process-runner';
 

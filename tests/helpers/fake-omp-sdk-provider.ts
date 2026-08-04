@@ -6,7 +6,7 @@ import { dirname } from 'node:path';
 import {
   executeOmpSdkSidecar,
   serializeOmpSdkFrame,
-} from '../../src/agent-cli-provider/omp-sdk-sidecar';
+} from '../../src/agent-cli-provider/omp/sdk-sidecar';
 
 type Scenario = {
   readonly abortAfterMs?: number;

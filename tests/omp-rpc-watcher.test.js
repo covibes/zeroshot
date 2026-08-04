@@ -620,7 +620,7 @@ watcher.disconnect();
       partitionPathFor,
       createOmpSessionPartitionDirectory,
     } = require('../src/omp-session-partition');
-    const { OMP_SUPPORTED_VERSION } = require('../lib/agent-cli-provider/omp-release.js');
+    const { OMP_SUPPORTED_VERSION } = require('../lib/agent-cli-provider/omp/release.js');
 
     /**
      * A pre-prompt failure raised from the driver's `ready` hook can terminate the watcher through

@@ -3,20 +3,20 @@ import { TextDecoder } from 'node:util';
 
 import Ajv from 'ajv';
 
-import { contractError } from './contract-errors';
+import { contractError } from '../contract-errors';
 import {
   normalizeOmpSdkSettings,
   OMP_SDK_REASONING_EFFORTS,
   OMP_SDK_SETTINGS_DEFAULTS,
   OMP_SDK_TOOL_IDS,
   parseExactOmpModelSelector,
-} from './omp-sdk-settings';
+} from './sdk-settings';
 import type {
   ConfiguredOmpSdkSettings,
   OmpModelsConfig,
   OmpSdkAuth,
   OmpSdkToolId as SettingsOmpSdkToolId,
-} from './omp-sdk-settings';
+} from './sdk-settings';
 import type {
   OmpSdkRequestedIdentity,
   OmpSdkStrictOutputEvidence,
@@ -24,7 +24,7 @@ import type {
   OmpSdkUsageEvidence,
   ReasoningEffort,
   ResultEvent,
-} from './types';
+} from '../types';
 
 export const OMP_SDK_PROTOCOL_VERSION = 1 as const;
 export const OMP_SDK_BACKEND_VERSION = '17.2.1' as const;

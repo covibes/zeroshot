@@ -13,15 +13,15 @@ import {
   OMP_SDK_MAX_REQUEST_BYTES,
   OMP_SDK_PROTOCOL_VERSION,
   parseOmpSdkSidecarRequest,
-} from './omp-sdk-protocol';
-import type { OmpSdkExecutionContext, OmpSdkSidecarRequest } from './omp-sdk-protocol';
+} from './omp/sdk-protocol';
+import type { OmpSdkExecutionContext, OmpSdkSidecarRequest } from './omp/sdk-protocol';
 import {
   normalizeOmpSdkSettings,
   OMP_AUTH_BROKER_ENV_NAMES,
   parseExactOmpModelSelector,
   resolveOmpSdkSettings,
-} from './omp-sdk-settings';
-import type { ConfiguredOmpSdkSettings } from './omp-sdk-settings';
+} from './omp/sdk-settings';
+import type { ConfiguredOmpSdkSettings } from './omp/sdk-settings';
 import {
   getDefaultProviderId,
   getProviderRegistryEntry,
@@ -123,7 +123,7 @@ const LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV = 'ZEROSHOT_ISOLATED_PROVIDER_SETTIN
 const settingsModule: unknown = require('../../lib/settings');
 const providerDetectionModule: unknown = require('../../lib/provider-detection');
 const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
-const ompSdkRuntimeModule: unknown = require('../../scripts/omp-sdk-runtime');
+const ompSdkRuntimeModule: unknown = require('../../scripts/omp/runtime');
 
 const loadSettingsFn = moduleFunction(settingsModule, 'loadSettings');
 const getClaudeCommandFn = moduleFunction(settingsModule, 'getClaudeCommand');
@@ -329,7 +329,7 @@ function prepareOmpProviderCommand(
         bunExecutable: '/opt/zeroshot/node_modules/bun/bin/bun.exe',
         bunVersion: OMP_SDK_BUN_VERSION,
         ompVersion: OMP_SDK_BACKEND_VERSION,
-        sidecarPath: '/opt/zeroshot/scripts/omp-sdk-sidecar.ts',
+        sidecarPath: '/opt/zeroshot/scripts/omp/sidecar.ts',
       }
     : ompSdkRuntimeAssets();
   let privateRoot: string | undefined;

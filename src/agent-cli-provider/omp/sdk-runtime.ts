@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { isRecord } from './json';
+import { isRecord } from '../json';
 
 export const OMP_SDK_HOST_SUPERVISOR_PROTOCOL_VERSION = 1 as const;
 export const OMP_SDK_MAX_SUPERVISOR_ATTESTATION_BYTES = 8 * 1024;
@@ -155,5 +155,5 @@ export function parseOmpSdkSupervisorAttestation(bytes: Buffer): OmpSdkSuperviso
 }
 
 export function resolveOmpSdkHostSupervisorPath(): string {
-  return resolve(__dirname, '..', '..', 'scripts', 'omp-sdk-host-supervisor.ts');
+  return resolve(__dirname, '..', '..', '..', 'scripts', 'omp', 'host-supervisor.ts');
 }

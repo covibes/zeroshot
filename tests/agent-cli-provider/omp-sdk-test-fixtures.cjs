@@ -12,7 +12,7 @@ const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const { resolveOmpSdkRuntime } = require('../../scripts/omp-sdk-runtime');
+const { resolveOmpSdkRuntime } = require('../../scripts/omp/runtime');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const FAKE = path.join(ROOT, 'tests', 'helpers', 'fake-omp-sdk-provider.ts');
