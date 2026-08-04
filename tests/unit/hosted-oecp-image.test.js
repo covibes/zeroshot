@@ -16,7 +16,13 @@ function imageMetadata(manifestDigest) {
   return {
     User: '0:0',
     Labels: { 'org.opencontainers.image.revision': manifestDigest },
-    Entrypoint: ['/usr/bin/tini', '-s', '--', '/usr/local/bin/zeroshot-oecp-server'],
+    Entrypoint: [
+      '/usr/bin/tini',
+      '-s',
+      '--',
+      '/usr/local/bin/node',
+      '/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js',
+    ],
     ExposedPorts: { '8080/tcp': {} },
     Env: ['ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability'],
   };
@@ -26,12 +32,13 @@ function runtimeInspection() {
   return {
     uid: 0,
     worker: { uid: 10002, gid: 10002 },
-    workspace: { uid: 1000, gid: 10002, mode: '770' },
+    workspace: { uid: 10002, gid: 10002, mode: '770' },
     controlRoot: { uid: 1000, gid: 10002, mode: '700' },
     forbiddenPresent: [],
     runtimeModules: { engineStart: true, runtimeDependencies: true },
     serverExecutable: true,
     tiniExecutable: true,
+    gitExecutable: true,
     ajvVersion: '8.18.0',
   };
 }

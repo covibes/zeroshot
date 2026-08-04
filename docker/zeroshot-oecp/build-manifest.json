@@ -56,7 +56,7 @@
     "Cargo.lock": "0815b2383e774601f3de58ede274de3c4afbe512547fecac3ea7b42caf35ead2",
     "Cargo.toml": "1447ba71479b3a64e29d445634221583349bb87b3c73b1f09184fbcb1773323b",
     "clippy.toml": "3c652ff2949df903bd0b80c8f14a7196ff9ad1e12841ddb614d080c4a03d1aa2",
-    "crates": "c4ba735d1bbda4e6eeec92622d1a48ee2e9b9e4bd1a17ce54d5315e2cc6e463b",
+    "crates": "a2f7c3bb65eb2b150647b00aab00f510ea67356dd08990e1bb9afa626b8bac9e",
     "docker/zeroshot-oecp/.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
     "docker/zeroshot-oecp/Dockerfile": "499a58c84e503fa8a2652e78f00c2ebbba015c7abc5add1f9772589cde15d06e",
     "docker/zeroshot-oecp/Dockerfile.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
@@ -86,18 +86,18 @@
     "scripts/hosted-oecp-manifest.js": "874932d3fd566f8c18326d1b3efe54f8d9313237904a5d5b5b1b8c275093affa",
     "scripts/hosted-oecp-smoke-capability.js": "f0c70fa64405546cb8256b906d6cb6a0e117b88e8d12b19c1434ed78a4f1ec4c",
     "scripts/hosted-oecp-smoke-client.js": "7b83a7c08e2bf4825b90fd72c9272f4bcd1359221b9bb70917a6b4e1ead2ecec",
-    "scripts/hosted-oecp-smoke-codex.mjs": "9eff5a4d33625753e382302b989457fdde1d2bf7c522037cead1e6151d76ae8b",
+    "scripts/hosted-oecp-smoke-codex.mjs": "f7a480ae1ca6ee5e8c7f5fcba505fcaa74c0179a4b34e8449804f7d5f6d36948",
     "scripts/hosted-oecp-smoke-fixture.js": "2fa9ccd003403504d7e4c52792bdbd6416c45aa602babb54173d468ca7733477",
     "protocol/openengine-cluster/v1/worker.schema.json": "72d0f7ac851e689b3d4c36e58877ecf0490ff3621fa0d3195b946cc72bdca77e",
     "rust-toolchain.toml": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
     "zeroshot-rust/Cargo.toml": "2cc514805c12b11210553073a97536ad8a3efe4936773bd43cdf23a9a998fe45",
-    "zeroshot-rust/hosted-node": "6d375c573b086f910c2cbe57e99e9cb2097e12027565f717b02ef78bfc0a3e7c",
-    "zeroshot-rust/src": "39e72f8747c9c146ad2a85ed8b1cd8ae3b8fa2739aaff07b5ffc9b11f2f5bbf0"
+    "zeroshot-rust/hosted-node": "8d3a7d9d38d8f4cd0fdb5bef2e38dbf0d030b2b2e56e24b02d7a02020ea355c8",
+    "zeroshot-rust/src": "9b4a67bcf9fffac122b92fcbdcbdd2d25a82903c0149b183a4e6a4528167cb1a"
   },
-  "imageInputsDigest": "c2ab8c8f37bfa734674e3df85dfe0b2a2e602bb7ac5011c4416b9c6650351cbc",
+  "imageInputsDigest": "1c454752d8ceb8c7d838e2e1f99a2e02d5ff790b770ecce7d659ad3fc546cf8b",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "2df90627fba8671099048dd88c2f0b961c1e5bd0fd38fae2fc806fdfea12569e"
+  "manifestDigest": "8ec8dfbceb6c237fea6dc7eb4e420fd08c4bb39835fbf365eaa03bad77a04aa0"
 }
