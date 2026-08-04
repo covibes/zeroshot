@@ -85,9 +85,8 @@ function workspacePath(relative) {
     throw new Error('Tool path is invalid');
   }
   const absolute = path.resolve(WORKSPACE, ...segments);
-  if (!absolute.startsWith(`${WORKSPACE}${path.sep}`)) {
+  if (!absolute.startsWith(`${WORKSPACE}${path.sep}`))
     throw new Error('Tool path escaped workspace');
-  }
   return { absolute, relative: segments.join('/') };
 }
 
