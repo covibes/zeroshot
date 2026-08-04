@@ -190,12 +190,17 @@ function normalizeBaselineRename(baseline, change) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.renameSync(source, target);
 }
+function applyBaselineDeletion(baseline, change) {
+  if (change.kind !== 'D') return;
+  fs.rmSync(safePath(baseline, change.path), { recursive: true, force: true });
+}
 
 function createRequest(repo, baseline, changes, options) {
   const overlays = [];
   const files = [];
   for (const change of changes) {
     normalizeBaselineRename(baseline, change);
+    applyBaselineDeletion(baseline, change);
     if (change.kind === 'D') {
       continue;
     }
