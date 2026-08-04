@@ -9,9 +9,8 @@ import {
   getString,
   isRecord,
   stringifyContent,
-  tryParseJson,
 } from '../json';
-import type { OutputEvent, ProviderParseResult, ProviderParserState } from '../types';
+import type { OutputEvent } from '../types';
 
 export interface OmpRpcEventState {
   lastAssistantText: string;
@@ -256,63 +255,4 @@ export function normalizeOmpRpcFrame(
   }
 }
 
-/**
- * Parse one line of the rpc-stdio lane's already-normalized OutputEvent JSON stream (produced
- * from `OmpRpcTaskResult.events` by `contract-invoke.ts` / `rpc-watcher.js`). This is the
- * `ProviderAdapter.parseEvent` counterpart to `normalizeOmpRpcFrame` above: the driver normalizes
- * raw RPC frames to OutputEvent once, and this function is a validating passthrough over that
- * already-normalized shape so generic log/attach tooling built on `adapter.parseEvent` keeps
- * working for the omp provider without re-deriving events from raw frames. Each case rebuilds a
- * literal matching its OutputEvent variant instead of casting the parsed record, so an
- * unexpectedly-shaped line fails closed (returns null) rather than passing through untyped.
- */
-export function parseNormalizedOmpRpcEventLine(
-  line: string,
-  _state: ProviderParserState
-): ProviderParseResult {
-  const parsed = tryParseJson(line);
-  if (!isRecord(parsed)) return null;
-  switch (parsed.type) {
-    case 'text':
-    case 'thinking': {
-      const text = getString(parsed, 'text');
-      return text === null ? null : { type: parsed.type, text };
-    }
-    case 'tool_call':
-      return {
-        type: 'tool_call',
-        toolName: getOptionalString(parsed, 'toolName'),
-        toolId: getOptionalString(parsed, 'toolId'),
-        input: parsed.input,
-      };
-    case 'tool_result':
-      return {
-        type: 'tool_result',
-        toolId: getOptionalString(parsed, 'toolId'),
-        content: parsed.content,
-        isError: parsed.isError,
-      };
-    case 'result': {
-      if (typeof parsed.success !== 'boolean') return null;
-      const inputTokens = getNumber(parsed, 'inputTokens');
-      const outputTokens = getNumber(parsed, 'outputTokens');
-      const cacheReadInputTokens = getNumber(parsed, 'cacheReadInputTokens');
-      const cacheCreationInputTokens = getNumber(parsed, 'cacheCreationInputTokens');
-      return {
-        type: 'result',
-        success: parsed.success,
-        result: parsed.result,
-        error: parsed.error,
-        cost: parsed.cost,
-        duration: parsed.duration,
-        ...(inputTokens === null ? {} : { inputTokens }),
-        ...(outputTokens === null ? {} : { outputTokens }),
-        ...(cacheReadInputTokens === null ? {} : { cacheReadInputTokens }),
-        ...(cacheCreationInputTokens === null ? {} : { cacheCreationInputTokens }),
-        modelUsage: parsed.modelUsage,
-      };
-    }
-    default:
-      return null;
-  }
-}
+export { parseNormalizedOmpRpcEventLine } from './rpc-event-lines';
