@@ -6,11 +6,8 @@ const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { afterEach, describe, it } = require('node:test');
 const {
+  checkHostedSetup,
   configureTargetSetup,
-  openRouterAccount,
-  openRouterService,
-  PromptInput,
-  readInstallCredentials,
 } = require('../../private/hosted-cli-candidate/credentials');
 const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers');
 const GRAPH_FIXTURE = path.join(
@@ -73,164 +70,81 @@ describe('explicit hosted readers', () => {
   });
 });
 
-it('requires explicit consent, stores only OpenRouter in target/profile keyring, and zeroes buffers', async () => {
-  let acquisitionReads = 0;
-  const openrouterCanary = Buffer.from('openrouter-canary-884');
-  const consent = Buffer.from('yes');
+it('stores only the fixed nonsecret hosted selection', async () => {
   const state = {
     _targets: {
       prod: { id: 'target-1', url: 'https://target.example', createdAt: '2026-08-03T00:00:00Z' },
     },
   };
-  const keyring = new Map();
-  const credentialStore = {
-    get(service, account) {
-      return keyring.get(`${service}:${account}`) ?? null;
-    },
-    set(service, account, value) {
-      keyring.set(`${service}:${account}`, value);
-    },
-    delete(service, account) {
-      keyring.delete(`${service}:${account}`);
-    },
-  };
-  let promptCount = 0;
-  const prompt = {
-    line(_text, options) {
-      promptCount += 1;
-      return options?.secret ? openrouterCanary : consent;
-    },
-    clear() {},
-  };
+  let secretReads = 0;
   const metadata = await configureTargetSetup({
     targetName: 'prod',
     target: state._targets.prod,
     repository: 'owner/repository',
-    provider: 'codex-openrouter',
+    provider: 'codex',
+    modelLevel: 'level2',
     settings: {
-      load: () => state,
       mutate: (mutator) => mutator(state),
     },
-    credentialStore,
+    credentialStore: {
+      get() {
+        secretReads += 1;
+        throw new Error('setup must not read a keyring');
+      },
+    },
     github: {
       inspect() {
-        return { source: 'gh-cli', host: 'github.com', account: 'octocat' };
+        secretReads += 1;
+        throw new Error('setup must not inspect GitHub credentials');
       },
       acquire() {
-        acquisitionReads += 1;
-        throw new Error('setup must not acquire a token');
+        secretReads += 1;
+        throw new Error('setup must not acquire GitHub credentials');
       },
     },
-    prompt,
+    prompt: {
+      line() {
+        secretReads += 1;
+        throw new Error('setup must not prompt');
+      },
+    },
     clock: { now: () => Date.parse('2026-08-03T00:00:00Z') },
   });
-  assert.equal(promptCount, 2);
-  assert.equal(
-    keyring.get(`${openRouterService('target-1')}:${openRouterAccount()}`),
-    'openrouter-canary-884'
-  );
-  assert.equal(acquisitionReads, 0);
-  assert.ok(openrouterCanary.every((byte) => byte === 0));
-  assert.ok(consent.every((byte) => byte === 0));
-  const settingsJson = JSON.stringify(state);
-  assert.equal(settingsJson.includes('github-canary-884'), false);
-  assert.equal(settingsJson.includes('openrouter-canary-884'), false);
-  assert.equal(JSON.stringify(metadata).includes('canary'), false);
-  assert.equal(metadata.repository, 'github.com/owner/repository');
-  assert.equal(metadata.github.account, 'octocat');
-});
-
-it('does not read either secret when GitHub CLI use is declined', async () => {
-  const state = { _targets: { prod: { id: 'target-1' } } };
-  let tokenReads = 0;
-  let keyringReads = 0;
-  const no = Buffer.from('no');
-  await assert.rejects(
-    configureTargetSetup({
-      targetName: 'prod',
-      target: state._targets.prod,
-      repository: 'owner/repo',
-      provider: 'codex-openrouter',
-      settings: { load: () => state, mutate: (mutator) => mutator(state) },
-      credentialStore: {
-        get() {
-          keyringReads += 1;
-          return null;
-        },
-        async set() {},
-        async delete() {},
-      },
-      github: {
-        inspect() {
-          return { source: 'gh-cli', host: 'github.com', account: 'octocat' };
-        },
-        acquire() {
-          tokenReads += 1;
-          return { metadata: {}, token: Buffer.from('forbidden') };
-        },
-      },
-      prompt: {
-        line() {
-          return no;
-        },
-        clear() {},
-      },
-    }),
-    /explicit consent/
-  );
-  assert.equal(tokenReads, 0);
-  assert.equal(keyringReads, 0);
-  assert.ok(no.every((byte) => byte === 0));
-});
-
-it('supports explicit noninteractive consent and secret on bounded stdin lines', async () => {
-  const { Readable } = require('node:stream');
-  const input = Readable.from([Buffer.from('yes\nopenrouter-from-stdin\n')]);
-  const output = { write() {} };
-  const prompt = new PromptInput(input, output);
-  const consent = await prompt.line('consent: ', { maxBytes: 8 });
-  const secret = await prompt.line('secret: ', { secret: true });
-  assert.equal(consent.toString('utf8'), 'yes');
-  assert.equal(secret.toString('utf8'), 'openrouter-from-stdin');
-  consent.fill(0);
-  secret.fill(0);
-  prompt.clear();
-});
-
-it('rejects an atomically acquired token for a switched GitHub account', async () => {
-  const token = Buffer.from('github-canary-884');
-  let keyringReads = 0;
-  const target = {
-    hostedSetup: {
-      kind: 'zeroshot.private-hosted-setup/v1',
-      repository: 'github.com/owner/repo',
-      provider: 'codex-openrouter',
-      profile: 'provider.codex-openrouter-pr@1',
-      model: 'openai/gpt-5.2-codex',
-      github: { source: 'gh-cli', host: 'github.com', account: 'octocat' },
-      openrouter: { source: 'os-keyring', service: 'service', account: 'account' },
+  assert.equal(secretReads, 0);
+  assert.deepEqual(
+    {
+      kind: metadata.kind,
+      repository: metadata.repository,
+      provider: metadata.provider,
+      modelLevel: metadata.modelLevel,
     },
-  };
-  await assert.rejects(
-    readInstallCredentials(
-      target,
-      {
-        get() {
-          keyringReads += 1;
-          return 'openrouter-canary';
-        },
-      },
-      {
-        acquire() {
-          return {
-            metadata: { host: 'github.com', account: 'switched-user' },
-            token,
-          };
-        },
-      }
-    ),
-    /does not match target setup/
+    {
+      kind: 'zeroshot.private-hosted-setup/v1',
+      repository: 'owner/repository',
+      provider: 'codex',
+      modelLevel: 'level2',
+    }
   );
-  assert.equal(keyringReads, 0);
-  assert.ok(token.every((byte) => byte === 0));
+  assert.deepEqual(checkHostedSetup(state._targets.prod), metadata);
+  assert.equal(JSON.stringify(state).match(/token|apiKey|openrouter|keyring/gi), null);
+});
+
+it('rejects any repository, provider, or model-level mismatch without mutation', async () => {
+  for (const options of [
+    { repository: 'owner/repo.git', provider: 'codex', modelLevel: 'level2' },
+    { repository: 'Owner/Repo', provider: 'codex', modelLevel: 'level2' },
+    { repository: 'owner/repo', provider: 'gateway', modelLevel: 'level2' },
+    { repository: 'owner/repo', provider: 'codex', modelLevel: 'level3' },
+  ]) {
+    const state = { _targets: { prod: { id: 'target-1' } } };
+    await assert.rejects(
+      configureTargetSetup({
+        targetName: 'prod',
+        target: state._targets.prod,
+        ...options,
+        settings: { mutate: (mutator) => mutator(state) },
+      })
+    );
+    assert.equal(state._targets.prod.hostedSetup, undefined);
+  }
 });

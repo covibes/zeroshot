@@ -18,7 +18,6 @@ function base(overrides = {}) {
   const sequence = [];
   let ids = 0;
   const adapter = {
-    credentialInstall: { supported: true, descriptor: {} },
     allocate() {
       sequence.push('allocate');
       return { id: 'cap1', state: 'ready' };
@@ -108,8 +107,6 @@ function base(overrides = {}) {
     },
     ...overrides.coordinator,
   };
-  const githubToken = Buffer.from('github-canary');
-  const openrouterKey = Buffer.from('openrouter-canary');
   const output = { stdout: [], stderr: [] };
   const orchestrator = new HostedRunOrchestrator({
     assertGraphSpec: () => undefined,
@@ -117,32 +114,9 @@ function base(overrides = {}) {
       sequence.push('read-inputs');
       return { graph: GRAPH, input: null };
     },
-    checkCredentialSources: () => {
-      sequence.push('check-credentials');
-      return {
-        repository: 'github.com/owner/repo',
-        profile: 'provider.codex-openrouter-pr@1',
-        model: 'openai/gpt-5.2-codex',
-        github: { account: 'octocat' },
-      };
-    },
-    readCredentials: () => {
-      sequence.push('read-credentials');
-      return { githubToken, openrouterKey };
-    },
-    installClient: {
-      preflight() {
-        sequence.push('install-preflight');
-        return { expected: {}, capability: {} };
-      },
-      async install(options) {
-        const credentials = await options.credentialProvider();
-        sequence.push('install');
-        options.onUploadStart();
-        credentials.githubToken.fill(0);
-        credentials.openrouterKey.fill(0);
-      },
-      ...overrides.installClient,
+    checkHostedSetup: () => {
+      sequence.push('check-setup');
+      return { repository: 'owner/repo', provider: 'codex', modelLevel: 'level2' };
     },
     createCoordinator: () => coordinator,
     randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-0000-0000-000000000000`,
@@ -156,34 +130,29 @@ function base(overrides = {}) {
   return {
     adapter,
     coordinator,
-    githubToken,
-    openrouterKey,
     orchestrator,
     output,
     sequence,
     options: {
       adapter,
-      descriptor: { origin: 'https://target.example' },
-      sessionManager: {},
       target: { id: 'target1', url: 'https://target.example', organization: { id: 'org1' } },
-      credentialStore: {},
       graphPath: 'graph.json',
       inputPath: 'input.json',
+      expectedRepository: 'owner/repo',
+      expectedProvider: 'codex',
+      expectedModelLevel: 'level2',
       detach: false,
     },
   };
 }
-it('refuses install capability preflight before allocation or secret acquisition', async () => {
-  const h = base({
-    installClient: {
-      preflight() {
-        h.sequence.push('install-preflight');
-        throw new Error('sealed install unsupported');
-      },
-    },
-  });
-  await assert.rejects(h.orchestrator.run(h.options), /sealed install unsupported/);
-  assert.deepEqual(h.sequence, ['read-inputs', 'check-credentials', 'install-preflight']);
+
+it('refuses setup mismatches before allocation', async () => {
+  const h = base();
+  await assert.rejects(
+    h.orchestrator.run({ ...h.options, expectedRepository: 'other/repo' }),
+    /does not match/
+  );
+  assert.deepEqual(h.sequence, ['read-inputs', 'check-setup']);
 });
 
 it('emits one stable ownership key before an ambiguous allocation and never retries', async () => {
@@ -201,7 +170,7 @@ it('emits one stable ownership key before an ambiguous allocation and never retr
   assert.equal(allocations, 1);
   assert.match(h.output.stdout[0], /^Allocation key: allocate_/);
   assert.match(h.output.stderr[0], /Do not allocate a replacement/);
-  assert.equal(h.sequence.includes('read-credentials'), false);
+  assert.equal(h.sequence.includes('initialize'), false);
 });
 
 afterEach(() => {
@@ -209,17 +178,14 @@ afterEach(() => {
 });
 
 describe('hosted lifecycle orchestration', () => {
-  it('runs the exact allocate/install/initialize/plan/apply/watch/get sequence with stable identities', async () => {
+  it('runs the exact allocate/initialize/plan/apply/watch/get sequence', async () => {
     const h = base();
     const result = await h.orchestrator.run(h.options);
     assert.equal(result.final.status.phase, 'finished');
     assert.deepEqual(h.sequence, [
       'read-inputs',
-      'check-credentials',
-      'install-preflight',
+      'check-setup',
       'allocate',
-      'read-credentials',
-      'install',
       'initialize',
       'plan',
       'apply',
@@ -229,10 +195,8 @@ describe('hosted lifecycle orchestration', () => {
       'get',
       'close',
     ]);
-    assert.equal(result.identities.applyIdempotencyKey, 'apply_00000003000000000000000000000000');
+    assert.equal(result.identities.applyIdempotencyKey, 'apply_00000002000000000000000000000000');
     assert.equal(h.sequence.includes('terminate'), false);
-    assert.ok(h.githubToken.every((byte) => byte === 0));
-    assert.ok(h.openrouterKey.every((byte) => byte === 0));
   });
 
   it('returns detached only after committed apply when -d is used', async () => {
@@ -259,8 +223,32 @@ describe('hosted lifecycle orchestration', () => {
       assert.match(error.message, /preserved/);
       return true;
     });
+    assert.match(
+      h.output.stdout.find((line) => line.startsWith('Apply key:')),
+      /^Apply key: apply_/
+    );
     assert.equal(h.sequence.includes('terminate'), false);
     assert.equal(h.output.stderr.length, 1);
+  });
+
+  it('preserves the capsule when authoritative final state remains nonterminal', async () => {
+    const h = base({
+      finalClient: {
+        get() {
+          h.sequence.push('get');
+          return {
+            status: {
+              phase: 'running',
+              observedGeneration: 1,
+              currentRunId: 'server-run-1',
+              atCursor: 'cursor-2',
+            },
+          };
+        },
+      },
+    });
+    await assert.rejects(h.orchestrator.run(h.options), RemoteDetachedError);
+    assert.equal(h.sequence.includes('terminate'), false);
   });
 
   it('terminates only a definitely owned provisional capsule after deterministic plan refusal', async () => {
@@ -295,6 +283,6 @@ describe('hosted lifecycle orchestration', () => {
     await assert.rejects(h.orchestrator.run(h.options), RemoteDetachedError);
     assert.equal(allocations, 1);
     assert.equal(h.sequence.includes('terminate'), false);
-    assert.equal(h.sequence.includes('install'), false);
+    assert.equal(h.sequence.includes('initialize'), false);
   });
 });

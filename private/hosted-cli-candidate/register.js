@@ -85,13 +85,14 @@ function registerTarget(program, service) {
     .action((name, options) => failClosed(() => service().targetRemove(name, options)));
   target
     .command('setup <name>')
-    .description('Bind one GitHub repository and the fixed Codex/OpenRouter profile')
+    .description('Bind the fixed private repository and server-provisioned provider selection')
     .requiredOption('--repository <owner/name>', 'Exact GitHub owner/name')
-    .requiredOption('--provider <provider>', 'Must be codex-openrouter')
+    .requiredOption('--provider <provider>', 'Must be codex')
+    .requiredOption('--model-level <level>', 'Must be level2')
     .action((name, options) =>
       failClosed(() => {
-        if (options.provider !== 'codex-openrouter') {
-          throw new Error('provider must be exactly codex-openrouter');
+        if (options.provider !== 'codex') {
+          throw new Error('provider must be exactly codex');
         }
         repositoryBinding(options.repository);
         return service().targetSetup(name, options);

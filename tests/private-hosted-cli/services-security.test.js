@@ -12,7 +12,9 @@ function removalHarness(deleteFailure) {
     id: 'target-uuid',
     url: 'https://offline.example',
     hostedSetup: {
-      openrouter: { service: 'provider-service', account: 'provider-account' },
+      repository: 'owner/repository',
+      provider: 'codex',
+      modelLevel: 'level2',
     },
   };
   const credentialStore = {
@@ -47,26 +49,20 @@ function removalHarness(deleteFailure) {
   return { deleted, removed: () => removed, services };
 }
 
-it('force removal clears both local keyring families even when discovery is offline', async () => {
+it('force removal clears only the login keyring when discovery is offline', async () => {
   const harness = removalHarness();
   await harness.services.targetRemove('prod', { force: true });
-  assert.deepEqual(harness.deleted, [
-    ['zeroshot-target-target-uuid', 'refresh-token'],
-    ['provider-service', 'provider-account'],
-  ]);
+  assert.deepEqual(harness.deleted, [['zeroshot-target-target-uuid', 'refresh-token']]);
   assert.equal(harness.removed(), true);
 });
 
-it('force removal preserves target metadata when any local keyring deletion fails', async () => {
-  const harness = removalHarness('provider-service');
+it('force removal preserves target metadata when login keyring deletion fails', async () => {
+  const harness = removalHarness('zeroshot-target-target-uuid');
   await assert.rejects(
     harness.services.targetRemove('prod', { force: true }),
     /settings were preserved for an exact retry/
   );
-  assert.deepEqual(harness.deleted, [
-    ['zeroshot-target-target-uuid', 'refresh-token'],
-    ['provider-service', 'provider-account'],
-  ]);
+  assert.deepEqual(harness.deleted, [['zeroshot-target-target-uuid', 'refresh-token']]);
   assert.equal(harness.removed(), false);
 });
 

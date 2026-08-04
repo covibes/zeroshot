@@ -1,8 +1,9 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { InstallProtocolError, InstallTransportUncertainError } = require('./install-client');
 const {
+  HostedProtocolError,
+  HostedTransportUncertainError,
   RemoteAllocationUncertainError,
   RemoteDetachedError,
   safeWatchProjection,
@@ -17,9 +18,7 @@ class HostedRunOrchestrator {
   constructor(options) {
     this.assertGraphSpec = options.assertGraphSpec;
     this.readInputs = options.readInputs;
-    this.checkCredentialSources = options.checkCredentialSources;
-    this.readCredentials = options.readCredentials;
-    this.installClient = options.installClient;
+    this.checkHostedSetup = options.checkHostedSetup;
     this.createCoordinator = options.createCoordinator;
     this.randomUUID = options.randomUUID ?? crypto.randomUUID;
     this.runtimeImageDigest = options.runtimeImageDigest;
@@ -37,15 +36,15 @@ class HostedRunOrchestrator {
       options.inputPath,
       this.assertGraphSpec
     );
-    const setup = await this.checkCredentialSources(options.target, options.credentialStore);
+    const setup = this.checkHostedSetup(options.target);
     const identities = stableIdentities(this.randomUUID, this.runtimeImageDigest);
-    const preparation = this.installClient.preflight({
-      adapter: options.adapter,
-      descriptor: options.descriptor,
-      identities,
-      setup,
-      organizationId: options.target.organization.id,
-    });
+    if (
+      setup.repository !== options.expectedRepository ||
+      setup.provider !== options.expectedProvider ||
+      setup.modelLevel !== options.expectedModelLevel
+    ) {
+      throw new Error('target setup does not match the fixed hosted runtime selection');
+    }
     let capsule;
     let coordinator;
     let uncertain = false;
@@ -72,19 +71,6 @@ class HostedRunOrchestrator {
       canTerminate = true;
       capsule = await this.#waitReady(options.adapter, capsule, options.signal);
 
-      await this.installClient.install({
-        preparation,
-        sessionManager: options.sessionManager,
-        credentialProvider: () => this.readCredentials(options.target, options.credentialStore),
-        identities,
-        capsuleId: capsule.id,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-        onUploadStart: () => {
-          uncertain = true;
-          canTerminate = false;
-        },
-      });
-      uncertain = false;
       canTerminate = true;
 
       try {
@@ -96,7 +82,7 @@ class HostedRunOrchestrator {
         const initial = await coordinator.open(options.signal);
         const profiles = initial.initializeResult.capabilities.graphProfiles ?? [];
         if (profiles.length !== 1 || profiles[0] !== 'openengine.graph.single-worker/v1') {
-          throw new InstallProtocolError(
+          throw new HostedProtocolError(
             'capsule does not advertise the exact single-worker profile'
           );
         }
@@ -105,11 +91,12 @@ class HostedRunOrchestrator {
           options.signal === undefined ? undefined : { signal: options.signal }
         );
         if (!plan.ok || plan.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
-          throw new InstallProtocolError('capsule refused the graph during side-effect-free plan');
+          throw new HostedProtocolError('capsule refused the graph during side-effect-free plan');
         }
 
         uncertain = true;
         canTerminate = false;
+        this.output.stdout(`Apply key: ${identities.applyIdempotencyKey}`);
         const applied = await initial.client.apply(
           {
             graph: inputs.graph,
@@ -128,7 +115,6 @@ class HostedRunOrchestrator {
         }
         uncertain = false;
         this.output.stdout(`Run: ${applied.runId}`);
-        this.output.stdout(`Apply key: ${identities.applyIdempotencyKey}`);
         if (options.detach) {
           return Object.freeze({
             capsuleId: capsule.id,
@@ -143,12 +129,10 @@ class HostedRunOrchestrator {
           ...(options.signal === undefined ? {} : { signal: options.signal }),
         });
         uncertain = true;
-        let observedFinished = false;
         try {
           for await (const item of watch) {
             this.output.stdout(JSON.stringify(safeWatchProjection(capsule.id, item)));
             if (item.type === 'event' && item.event.type === 'finished') {
-              observedFinished = true;
               break;
             }
           }
@@ -164,7 +148,7 @@ class HostedRunOrchestrator {
         if (
           final.status.currentRunId !== applied.runId ||
           final.status.observedGeneration !== applied.generation ||
-          (!observedFinished && final.status.phase !== 'finished')
+          final.status.phase !== 'finished'
         ) {
           throw new Error('authoritative final state is not terminal for the committed run');
         }
@@ -186,14 +170,14 @@ class HostedRunOrchestrator {
           detached: false,
         });
       } catch (error) {
-        if (error instanceof InstallProtocolError && !uncertain) throw error;
+        if (error instanceof HostedProtocolError && !uncertain) throw error;
         uncertain = true;
         canTerminate = false;
         throw error;
       }
     } catch (error) {
       if (!capsule) throw error;
-      if (options.signal?.aborted || uncertain || error instanceof InstallTransportUncertainError) {
+      if (options.signal?.aborted || uncertain || error instanceof HostedTransportUncertainError) {
         const detached = new RemoteDetachedError(capsule.id, identities, error);
         this.output.stderr(detached.message);
         throw detached;
@@ -218,18 +202,18 @@ class HostedRunOrchestrator {
     let capsule = initial;
     while (capsule.state === 'provisioning') {
       if (this.clock.now() >= deadline) {
-        throw new InstallTransportUncertainError('capsule readiness timed out');
+        throw new HostedTransportUncertainError('capsule readiness timed out');
       }
       await this.sleep(READY_POLL_MS, signal);
       try {
         capsule = await adapter.inspect(capsule.id, signal);
       } catch (error) {
-        throw new InstallTransportUncertainError('capsule readiness outcome is unknown', error);
+        throw new HostedTransportUncertainError('capsule readiness outcome is unknown', error);
       }
     }
     if (capsule.state !== 'ready') {
-      throw new InstallProtocolError(
-        `capsule entered terminal host state ${capsule.state} before install`
+      throw new HostedProtocolError(
+        `capsule entered terminal host state ${capsule.state} before readiness`
       );
     }
     return capsule;

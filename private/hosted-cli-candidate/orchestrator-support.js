@@ -1,6 +1,19 @@
 'use strict';
 
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
+class HostedProtocolError extends Error {
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'HostedProtocolError';
+  }
+}
+
+class HostedTransportUncertainError extends Error {
+  constructor(message, cause) {
+    super(message, { cause });
+    this.name = 'HostedTransportUncertainError';
+  }
+}
 
 class RemoteAllocationUncertainError extends Error {
   constructor(allocationIdempotencyKey, cause) {
@@ -35,7 +48,6 @@ function stableIdentities(randomUUID, runtimeImageDigest) {
   const id = (prefix) => `${prefix}_${randomUUID().replaceAll('-', '')}`;
   return Object.freeze({
     allocationIdempotencyKey: id('allocate'),
-    installIdempotencyKey: id('install'),
     applyIdempotencyKey: id('apply'),
     clientRunId: id('run'),
     runtimeImageDigest,
@@ -83,6 +95,8 @@ function safeWatchProjection(capsuleId, item) {
 }
 
 module.exports = {
+  HostedProtocolError,
+  HostedTransportUncertainError,
   RemoteAllocationUncertainError,
   RemoteDetachedError,
   safeWatchProjection,

@@ -180,7 +180,7 @@ describe('private candidate closed parser', () => {
     const setup = target.commands.find((command) => command.name() === 'setup');
     assert.deepEqual(
       setup.options.map((option) => option.long),
-      ['--repository', '--provider']
+      ['--repository', '--provider', '--model-level']
     );
     assert.equal(
       process.argv.some((arg) => /token|api-key|secret/i.test(arg)),

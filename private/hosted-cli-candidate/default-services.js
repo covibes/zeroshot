@@ -1,8 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { checkCredentialSources, readInstallCredentials } = require('./credentials');
-const { SealedInstallClient } = require('./install-client');
+const { checkHostedSetup } = require('./credentials');
 const { HostedRunOrchestrator } = require('./orchestrator');
 const { RemoteAllocationUncertainError } = require('./orchestrator-support');
 const { readHostedInputs } = require('./readers');
@@ -137,9 +136,7 @@ function createDefaultServices(dependencies) {
         const orchestrator = new HostedRunOrchestrator({
           assertGraphSpec: runtime.cluster.assertGraphSpec,
           readInputs: () => inputs,
-          checkCredentialSources,
-          readCredentials: readInstallCredentials,
-          installClient: new SealedInstallClient(),
+          checkHostedSetup,
           createCoordinator: (init) => new runtime.hostedSession.HostedSessionCoordinator(init),
           runtimeImageDigest: manifest.runtimeImageDigest,
         });
@@ -149,6 +146,9 @@ function createDefaultServices(dependencies) {
           inputPath: options.input,
           detach: Boolean(options.detach),
           signal: abort.signal,
+          expectedRepository: manifest.repository,
+          expectedProvider: manifest.provider,
+          expectedModelLevel: manifest.modelLevel,
         });
       } finally {
         process.removeListener('SIGINT', onSigint);

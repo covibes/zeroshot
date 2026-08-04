@@ -6,17 +6,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { COMMAND_MANIFEST, FIXTURE_DIGEST, PRIVATE_MARKER } = require('./manifest');
+const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('./manifest');
 
 const ROOT = path.resolve(__dirname, '../..');
 const CANDIDATE_FILES = Object.freeze([
   'manifest.js',
   'readers.js',
   'credentials.js',
-  'github-credential.js',
-  'secret-input.js',
-  'install-client.js',
-  'install-protocol.js',
   'orchestrator.js',
   'orchestrator-support.js',
   'default-services.js',
@@ -28,6 +24,9 @@ const PROTOCOL_FILES = Object.freeze([
   'src/cluster/generated/protocol-schema.ts',
   'protocol/openengine-cluster/v1/schema.json',
   'protocol/openengine-cluster/v1/graph.schema.json',
+]);
+const FIXTURE_FILES = Object.freeze([
+  'protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json',
 ]);
 const GENERATED_OUTPUT_DIRS = Object.freeze([
   'lib/agent-cli-provider',
@@ -62,25 +61,45 @@ function fileDigest(file) {
 }
 
 function parseArgs(argv) {
-  let runtimeImageDigest;
-  let output;
+  const args = {};
   let valueFor;
+  const names = Object.freeze({
+    '--runtime-image-digest': 'runtimeImageDigest',
+    '--zero-cloud-commit': 'zeroCloudCommit',
+    '--repository': 'repository',
+    '--provider': 'provider',
+    '--model-level': 'modelLevel',
+    '--out': 'output',
+  });
   for (const arg of argv) {
-    if (valueFor === 'runtime') {
-      runtimeImageDigest = arg;
+    if (valueFor !== undefined) {
+      args[valueFor] = arg;
       valueFor = undefined;
-    } else if (valueFor === 'output') {
-      output = arg;
-      valueFor = undefined;
-    } else if (arg === '--runtime-image-digest') valueFor = 'runtime';
-    else if (arg === '--out') valueFor = 'output';
-    else throw new Error(`unknown build argument ${arg}`);
+    } else if (names[arg]) {
+      valueFor = names[arg];
+    } else {
+      throw new Error(`unknown build argument ${arg}`);
+    }
   }
   if (valueFor !== undefined) throw new Error('build argument value is missing');
-  if (!/^sha256:[a-f0-9]{64}$/.test(runtimeImageDigest || '')) {
+  if (!/^sha256:[a-f0-9]{64}$/.test(args.runtimeImageDigest || '')) {
     throw new Error('--runtime-image-digest sha256:<64 lowercase hex> is required');
   }
-  return { runtimeImageDigest, output };
+  if (!/^[a-f0-9]{40}$/.test(args.zeroCloudCommit || '')) {
+    throw new Error('--zero-cloud-commit <40 lowercase hex> is required');
+  }
+  if (
+    typeof args.repository !== 'string' ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$/.test(
+      args.repository
+    ) ||
+    args.repository.endsWith('.git')
+  ) {
+    throw new Error('--repository must be one canonical GitHub owner/name');
+  }
+  if (args.provider !== 'codex') throw new Error('--provider must be exactly codex');
+  if (args.modelLevel !== 'level2') throw new Error('--model-level must be exactly level2');
+  return Object.freeze(args);
 }
 
 function assertCleanSource(allowGeneratedOutputs = false) {
@@ -96,30 +115,6 @@ function assertCleanSource(allowGeneratedOutputs = false) {
   if (unexpected.length > 0) {
     throw new Error('candidate source tree must be clean before immutable packing');
   }
-}
-
-function fixtureDigest() {
-  const corpus = path.join(ROOT, 'tests/fixtures/zero-cloud-44');
-  const http = path.join(corpus, 'contracts/http');
-  const meta = JSON.parse(fs.readFileSync(path.join(http, 'hosted-target/META.json'), 'utf8'));
-  const files = [
-    ...meta.promoted_schemas.map((entry) => path.resolve(corpus, entry)),
-    ...['valid', 'invalid'].flatMap((kind) =>
-      fs
-        .readdirSync(path.join(http, 'hosted-target/fixtures', kind))
-        .filter((name) => name.endsWith('.json'))
-        .map((name) => path.join(http, 'hosted-target/fixtures', kind, name))
-    ),
-  ].sort((left, right) => path.relative(corpus, left).localeCompare(path.relative(corpus, right)));
-  const hash = crypto.createHash('sha256');
-  for (const file of files) {
-    const name = path.relative(corpus, file);
-    const bytes = fs.readFileSync(file);
-    hash.update(`${name}\0${bytes.length}\0`);
-    hash.update(bytes);
-    hash.update('\0');
-  }
-  return `sha256:${hash.digest('hex')}`;
 }
 
 function copyStablePackage(stage) {
@@ -209,9 +204,9 @@ function main() {
   const stage = path.join(output, 'staging');
   fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
 
-  const observedFixtureDigest = fixtureDigest();
-  if (observedFixtureDigest !== FIXTURE_DIGEST)
-    throw new Error('frozen Zero Cloud fixture digest mismatch');
+  const fixtureDigests = Object.fromEntries(
+    FIXTURE_FILES.map((file) => [file, fileDigest(path.join(ROOT, file))])
+  );
   const commandManifestDigest = sha256(Buffer.from(`${JSON.stringify(COMMAND_MANIFEST)}\n`));
   const immutable = Object.freeze({
     privateMarker: PRIVATE_MARKER,
@@ -219,7 +214,11 @@ function main() {
     lockfileDigest: fileDigest(path.join(ROOT, 'package-lock.json')),
     commandManifest: COMMAND_MANIFEST,
     commandManifestDigest,
-    fixtureDigest: observedFixtureDigest,
+    fixtureDigests,
+    zeroCloudCommit: args.zeroCloudCommit,
+    repository: args.repository,
+    provider: args.provider,
+    modelLevel: args.modelLevel,
     runtimeImageDigest: args.runtimeImageDigest,
     protocolDigests: Object.fromEntries(
       PROTOCOL_FILES.map((file) => [file, fileDigest(path.join(ROOT, file))])
@@ -259,9 +258,13 @@ function main() {
   );
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`candidate pack failed: ${error.message}\n`);
-  process.exitCode = 1;
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`candidate pack failed: ${error.message}\n`);
+    process.exitCode = 1;
+  }
 }
+
+module.exports = { parseArgs };

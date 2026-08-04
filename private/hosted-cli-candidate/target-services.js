@@ -44,22 +44,14 @@ function targetSessionManager({
 }
 
 async function deleteTargetCredentials(runtime, target, credentialStore) {
-  const failures = [];
-  const remove = async (service, account) => {
-    try {
-      await credentialStore.delete(service, account);
-    } catch {
-      failures.push(`${service}:${account}`);
-    }
-  };
-  await remove(runtime.target.targetServiceKey(target.id), runtime.target.TARGET_ACCOUNT);
-  const setup = target.hostedSetup;
-  if (setup?.openrouter?.service && setup?.openrouter?.account) {
-    await remove(setup.openrouter.service, setup.openrouter.account);
-  }
-  if (failures.length > 0) {
+  try {
+    await credentialStore.delete(
+      runtime.target.targetServiceKey(target.id),
+      runtime.target.TARGET_ACCOUNT
+    );
+  } catch {
     throw new Error(
-      'Local keyring cleanup failed; target settings were preserved for an exact retry.'
+      'Local login credential cleanup failed; target settings were preserved for an exact retry.'
     );
   }
 }
@@ -130,18 +122,16 @@ function createTargetServices({ runtime, settings, httpTransport, requireTarget 
 
     async targetSetup(name, options) {
       const target = requireTarget(name, runtime, settings);
-      const credentialStore = await runtime.target.KeyringCredentialStore.create();
       const metadata = await configureTargetSetup({
         targetName: name,
         target,
         repository: options.repository,
         provider: options.provider,
+        modelLevel: options.modelLevel,
         settings,
-        credentialStore,
       });
       console.log(
-        `Configured ${name}: ${metadata.repository}, ${metadata.profile}, ${metadata.model}, ` +
-          `GitHub ${metadata.github.account} via gh, OpenRouter via OS keyring`
+        `Configured ${name}: ${metadata.repository}, ${metadata.provider}, ${metadata.modelLevel}`
       );
     },
   };

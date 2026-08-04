@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { describe, it } = require('node:test');
 const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('../../private/hosted-cli-candidate/manifest');
+const { parseArgs } = require('../../private/hosted-cli-candidate/build-candidate');
 
 const ROOT = path.resolve(__dirname, '../..');
 
@@ -72,5 +73,42 @@ describe('stable/candidate package isolation', () => {
     assert.equal(/semantic-release|npm\s+publish|git\s+tag|gh\s+release/.test(builder), false);
     assert.match(builder, /pkg\.private = true/);
     assert.match(builder, /delete pkg\.publishConfig/);
+  });
+
+  it('requires the runtime, cloud commit, and fixed hosted selection', () => {
+    const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
+    const zeroCloudCommit = 'b'.repeat(40);
+    const parsed = parseArgs([
+      '--runtime-image-digest',
+      runtimeImageDigest,
+      '--zero-cloud-commit',
+      zeroCloudCommit,
+      '--repository',
+      'owner/repository',
+      '--provider',
+      'codex',
+      '--model-level',
+      'level2',
+    ]);
+    assert.deepEqual(parsed, {
+      runtimeImageDigest,
+      zeroCloudCommit,
+      repository: 'owner/repository',
+      provider: 'codex',
+      modelLevel: 'level2',
+    });
+    assert.equal(Object.isFrozen(parsed), true);
+
+    const prefix = [
+      '--runtime-image-digest',
+      runtimeImageDigest,
+      '--zero-cloud-commit',
+      zeroCloudCommit,
+      '--repository',
+      'owner/repository',
+    ];
+    assert.throws(() => parseArgs([...prefix, '--provider', 'gateway', '--model-level', 'level2']));
+    assert.throws(() => parseArgs([...prefix, '--provider', 'codex', '--model-level', 'level3']));
+    assert.throws(() => parseArgs(prefix), /provider/);
   });
 });
