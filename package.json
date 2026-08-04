@@ -172,6 +172,7 @@
     "!scripts/hosted-oecp-manifest.js",
     "!scripts/hosted-oecp-smoke-capability.js",
     "!scripts/hosted-oecp-smoke-client.js",
+    "!scripts/hosted-oecp-smoke-codex.mjs",
     "!scripts/hosted-oecp-smoke-fixture.js",
     "protocol/openengine-cluster/v1/worker.schema.json",
     "docs/openengine-cluster-protocol/v1/legacy-worker.md",
