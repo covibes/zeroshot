@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
-const crypto = require('node:crypto');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
+const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('./manifest');
@@ -55,7 +55,7 @@ function run(command, args, cwd = ROOT) {
 }
 
 function sha256(bytes) {
-  return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
 function fileDigest(file) {
@@ -196,7 +196,7 @@ function main() {
   const sourceSha = run('git', ['rev-parse', 'HEAD']);
   const output = path.resolve(
     args.output ||
-      path.join(os.tmpdir(), `zeroshot-private-hosted-candidate-${sourceSha.slice(0, 12)}`)
+      path.join(tmpdir(), `zeroshot-private-hosted-candidate-${sourceSha.slice(0, 12)}`)
   );
   if (fs.existsSync(output)) throw new Error(`output path already exists: ${output}`);
   const stage = path.join(output, 'staging');
