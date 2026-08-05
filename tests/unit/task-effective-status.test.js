@@ -1,6 +1,11 @@
 const assert = require('assert');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const Database = require('better-sqlite3');
+const { execFileAsync, fs, os } = require('../helpers/test-runtime');
+
+const CLI_PATH = path.join(__dirname, '..', '..', 'cli', 'index.js');
+const REPO_ROOT = path.join(__dirname, '..', '..');
 
 let resolveEffectiveTaskStatus;
 let getTasksData;
@@ -110,15 +115,7 @@ describe('task list JSON projection', function () {
     late: {
       id: 'task-late',
       status: 'completed',
-      cwd: '/repo/late',
-      provider: 'codex',
-      model: 'gpt',
       createdAt: '2026-01-03T00:00:00.000Z',
-      updatedAt: '2026-01-04T00:00:00.000Z',
-      exitCode: 0,
-      error: null,
-      attachable: false,
-      fullPrompt: 'must stay private',
       spawnOwnershipToken: 'must stay private',
     },
     stale: {
@@ -138,17 +135,9 @@ describe('task list JSON projection', function () {
     early: {
       id: 'task-early',
       status: 'completed',
-      cwd: '/repo/early',
-      provider: null,
-      model: null,
       createdAt: '2026-01-02T00:00:00.000Z',
-      updatedAt: '2026-01-02T01:00:00.000Z',
-      exitCode: 1,
-      error: 'failed',
-      attachable: false,
     },
   };
-
   function deps() {
     return {
       loadTasks: () => tasks,
@@ -210,9 +199,6 @@ describe('task status JSON projection', function () {
     model: 'sonnet',
     attachable: true,
     socketPath: '/private/socket',
-    processGroupId: 321,
-    spawnOwnershipToken: 'private-token',
-    ompSessionOwnership: { partitionPath: '/private/session' },
   };
 
   it('returns the detailed public status shown to humans', function () {
@@ -248,10 +234,64 @@ describe('task status JSON projection', function () {
     });
   });
 
-  it('fails when the task does not exist', function () {
+  it('fails when detailed task data is missing', function () {
     assert.throws(
       () => getStatusData('missing', { getTask: () => null }),
       /Task not found: missing/
     );
+  });
+});
+
+function invokeCliFailure(home, args) {
+  const env = Object.assign({}, process.env, {
+    CI: '1',
+    HOME: home,
+    NO_COLOR: '1',
+    ZEROSHOT_HOME: home,
+  });
+  return execFileAsync(process.execPath, [CLI_PATH, ...args], {
+    cwd: REPO_ROOT,
+    env,
+  }).then(
+    () => {
+      throw new Error('Expected CLI failure');
+    },
+    (error) => error
+  );
+}
+
+describe('task JSON store failures', function () {
+  const homes = [];
+
+  afterEach(function () {
+    fs.rmSync(homes.pop(), { recursive: true, force: true });
+  });
+
+  function tempHome(prefix) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    homes.push(home);
+    return home;
+  }
+
+  it('fails list JSON instead of reporting an empty task set', async function () {
+    const home = tempHome('zeroshot-list-json-failure-');
+    fs.mkdirSync(path.join(home, '.claude-zeroshot', 'store.db'), { recursive: true });
+    const error = await invokeCliFailure(home, ['list', '--json']);
+
+    assert.deepStrictEqual(Object.keys(JSON.parse(error.stdout)), ['error']);
+    assert.doesNotMatch(error.stdout, /"tasks"/);
+  });
+
+  it('fails status JSON instead of reporting only a task type and id', async function () {
+    const home = tempHome('zeroshot-status-json-failure-');
+    const taskDir = path.join(home, '.claude-zeroshot');
+    fs.mkdirSync(taskDir, { recursive: true });
+    const database = new Database(path.join(taskDir, 'store.db'));
+    database.exec("CREATE TABLE tasks (id TEXT PRIMARY KEY); INSERT INTO tasks VALUES ('broken')");
+    database.close();
+    const error = await invokeCliFailure(home, ['status', 'broken', '--json']);
+
+    assert.deepStrictEqual(Object.keys(JSON.parse(error.stdout)), ['error']);
+    assert.doesNotMatch(error.stdout, /"type"/);
   });
 });

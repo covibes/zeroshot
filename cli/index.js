@@ -788,17 +788,6 @@ function printClusterTable(enrichedClusters) {
   }
 }
 
-async function tryGetTasksData(getTasksData, options) {
-  if (typeof getTasksData !== 'function') {
-    return [];
-  }
-  try {
-    return await getTasksData(options);
-  } catch {
-    return [];
-  }
-}
-
 function printListJson(enrichedClusters, tasks) {
   console.log(
     JSON.stringify(
@@ -810,6 +799,10 @@ function printListJson(enrichedClusters, tasks) {
       2
     )
   );
+}
+
+function printJsonError(error) {
+  console.log(JSON.stringify({ error: error.message }, null, 2));
 }
 
 function reportMissingId(id, options) {
@@ -931,22 +924,11 @@ function printClusterStatusHuman(status, tokensByRole, clusterId) {
   printClusterAgents(status);
 }
 
-async function tryGetTaskStatusData(getStatusData, id) {
-  if (typeof getStatusData !== 'function') {
-    return null;
-  }
-  try {
-    return await getStatusData(id);
-  } catch {
-    return null;
-  }
-}
-
 async function showTaskStatus(id, options) {
   const { showStatus, getStatusData } = await import('../task-lib/commands/status.js');
   if (options.json) {
-    const taskData = await tryGetTaskStatusData(getStatusData, id);
-    console.log(JSON.stringify({ type: 'task', id, ...taskData }, null, 2));
+    const taskData = await getStatusData(id);
+    console.log(JSON.stringify({ type: 'task', ...taskData }, null, 2));
     return;
   }
   await showStatus(id);
@@ -3005,7 +2987,7 @@ program
       const { listTasks, getTasksData } = await import('../task-lib/commands/list.js');
 
       if (options.json) {
-        const tasks = await tryGetTasksData(getTasksData, options);
+        const tasks = await getTasksData(options);
         printListJson(enrichedClusters, tasks);
         return;
       }
@@ -3015,7 +2997,11 @@ program
       console.log(chalk.bold('\n=== Tasks ==='));
       await listTasks(options);
     } catch (error) {
-      console.error('Error listing:', error.message);
+      if (options.json) {
+        printJsonError(error);
+      } else {
+        console.error('Error listing:', error.message);
+      }
       process.exit(1);
     }
   });
@@ -3051,7 +3037,7 @@ program
       await showTaskStatus(id, options);
     } catch (error) {
       if (options.json) {
-        console.log(JSON.stringify({ error: error.message }, null, 2));
+        printJsonError(error);
       } else {
         console.error('Error getting status:', error.message);
       }
