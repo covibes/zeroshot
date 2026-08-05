@@ -1,13 +1,17 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { describe, it } = require('node:test');
 const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('../../private/hosted-cli-candidate/manifest');
-const { parseArgs } = require('../../private/hosted-cli-candidate/build-candidate');
+const {
+  candidateLockfileDigest,
+  parseArgs,
+} = require('../../private/hosted-cli-candidate/build-candidate');
 
 const ROOT = path.resolve(__dirname, '../..');
 
@@ -19,6 +23,10 @@ function run(command, args, options = {}) {
     shell: false,
     ...options,
   });
+}
+
+function digest(value) {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
 function assertPackedCandidateLaunches() {
@@ -44,6 +52,8 @@ function assertPackedCandidateLaunches() {
     ]);
     assert.equal(built.status, 0, built.stderr || built.stdout);
     const candidate = JSON.parse(built.stdout);
+    assert.equal(candidate.lockfileDigest, candidateLockfileDigest(candidate.stagingPath));
+    assert.equal(fs.existsSync(path.join(candidate.stagingPath, 'npm-shrinkwrap.json')), true);
 
     const installation = path.join(temporaryRoot, 'installation');
     const installed = run(
@@ -109,7 +119,24 @@ function assertNormalPackExcludesCandidate() {
     false
   );
   assert.equal(paths.includes('PRIVATE_HOSTED_CANDIDATE.txt'), false);
+  assert.equal(paths.includes('npm-shrinkwrap.json'), true);
   assert.equal(JSON.stringify(packed).includes(PRIVATE_MARKER), false);
+}
+
+function assertCandidateLockfileUsesShrinkwrap() {
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-candidate-lockfile-'));
+  const packageLock = Buffer.from('package lock\n');
+  const shrinkwrap = Buffer.from('effective shrinkwrap\n');
+  try {
+    fs.writeFileSync(path.join(stage, 'package-lock.json'), packageLock);
+    fs.writeFileSync(path.join(stage, 'npm-shrinkwrap.json'), shrinkwrap);
+    assert.equal(candidateLockfileDigest(stage), digest(shrinkwrap));
+    assert.notEqual(candidateLockfileDigest(stage), digest(packageLock));
+    fs.rmSync(path.join(stage, 'npm-shrinkwrap.json'));
+    assert.throws(() => candidateLockfileDigest(stage), /ENOENT/);
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
 }
 
 function assertStableEntrypointExcludesPrivateRegistration() {
@@ -232,6 +259,7 @@ function registerPackageIsolationTests() {
     'candidate build code contains no publication or release invocation',
     assertCandidateBuilderCannotPublish
   );
+  it('attests the npm-effective candidate shrinkwrap', assertCandidateLockfileUsesShrinkwrap);
   it(
     'builds, installs, and launches the packed candidate',
     { timeout: 180_000 },

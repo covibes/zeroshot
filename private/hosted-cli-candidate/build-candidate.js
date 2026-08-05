@@ -64,6 +64,10 @@ function fileDigest(file) {
   return sha256(fs.readFileSync(file));
 }
 
+function candidateLockfileDigest(stage) {
+  return fileDigest(path.join(stage, 'npm-shrinkwrap.json'));
+}
+
 function parseOptionValues(argv) {
   const args = {};
   let valueFor;
@@ -222,10 +226,11 @@ function main() {
     FIXTURE_FILES.map((file) => [file, fileDigest(path.join(ROOT, file))])
   );
   const commandManifestDigest = sha256(Buffer.from(`${JSON.stringify(COMMAND_MANIFEST)}\n`));
+  copyStablePackage(stage);
   const immutable = Object.freeze({
     privateMarker: PRIVATE_MARKER,
     sourceSha,
-    lockfileDigest: fileDigest(path.join(ROOT, 'package-lock.json')),
+    lockfileDigest: candidateLockfileDigest(stage),
     commandManifest: COMMAND_MANIFEST,
     commandManifestDigest,
     fixtureDigests,
@@ -240,7 +245,6 @@ function main() {
     ),
   });
 
-  copyStablePackage(stage);
   writeCandidateFiles(stage, immutable);
   const packed = JSON.parse(
     run(
@@ -282,4 +286,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseArgs };
+module.exports = { candidateLockfileDigest, parseArgs };
