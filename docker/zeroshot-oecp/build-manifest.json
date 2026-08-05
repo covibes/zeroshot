@@ -94,7 +94,7 @@
     "clippy.toml": "3c652ff2949df903bd0b80c8f14a7196ff9ad1e12841ddb614d080c4a03d1aa2",
     "crates": "a2f7c3bb65eb2b150647b00aab00f510ea67356dd08990e1bb9afa626b8bac9e",
     "docker/zeroshot-oecp/.dockerignore": "4c0173b38b56c7de7272025d3fb29b9a5183bd787a48e27df240d73896e0a913",
-    "docker/zeroshot-oecp/Dockerfile": "c4cbfdc0b68c630db5b7d94b7a4c9bdbd75368215bda535c2246509fe6384468",
+    "docker/zeroshot-oecp/Dockerfile": "adce54e881867409bc37cbb9c1771923b10e45e0fbcdc3fac3c8af70a1d07a01",
     "docker/zeroshot-oecp/Dockerfile.dockerignore": "4c0173b38b56c7de7272025d3fb29b9a5183bd787a48e27df240d73896e0a913",
     "docker/zeroshot-oecp/package-lock.json": "5b163d46a2408c6bbfac8c85d2d1d08caa612f5c649fa08a758130127719283f",
     "docker/zeroshot-oecp/package.json": "cc6a842bc289a0b59a13df298bcf07ceeae7b8f34f1a8727c90332248cde00ed",
@@ -139,10 +139,10 @@
     "zeroshot-rust/hosted-node": "6bcee8099f0fa4afab01a304e665317a1daa5592e2fcfa4983ef15fcd8a8baee",
     "zeroshot-rust/src": "92d29a321ee9d2f2183912a56ceca962fc5959052385c2d76f2e01e92881b4d3"
   },
-  "imageInputsDigest": "8b09b7729ea33f7d495503f400bd7372f3439fe938ed715e8a49aeb03670c5cd",
+  "imageInputsDigest": "82f326282f8b2c7fbdf7416108f08cfc2149b899cde7990e1e80f05028a1ae98",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "c5bf2aeb59ec963717d0a9d57141cf1edb5c266003ce41d8960ee367c3047f7c"
+  "manifestDigest": "c7856ec7cb22ded4b52bd39359a315edb5023b720323f08329be6eb25c1fd28d"
 }
