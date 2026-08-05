@@ -35,11 +35,7 @@ const {
   formatClusterFailed,
   formatGenericMessage,
 } = require('./message-formatters-normal');
-const {
-  getColorForSender,
-  buildMessagePrefix,
-  buildClusterPrefix,
-} = require('./message-formatter-utils');
+const { getColorForSender, buildMessagePrefix } = require('./message-formatter-utils');
 const {
   loadSettings,
   mutateSettings,
@@ -119,30 +115,41 @@ const PROVIDER_CHOICES = VALID_PROVIDERS.join(', ');
 /** @type {import('../src/status-footer').StatusFooter | null} */
 let activeStatusFooter = null;
 
-/**
- * Safe print - routes through statusFooter when active to prevent garbling
- * @param {...any} args - Arguments to print (like console.log)
- */
-function safePrint(...args) {
-  const text = args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' ');
-
-  if (activeStatusFooter) {
-    activeStatusFooter.print(text + '\n');
-  } else {
-    console.log(...args);
+function normalizeLineText(text) {
+  let line = String(text);
+  while (line.endsWith('\n')) {
+    line = line.slice(0, -1);
+    if (line.endsWith('\r')) line = line.slice(0, -1);
   }
+  return line;
 }
 
-/**
- * Safe write - routes through statusFooter when active
- * @param {string} text - Text to write
- */
-function safeWrite(text) {
+function printLine(text = '') {
+  const line = normalizeLineText(text);
   if (activeStatusFooter) {
-    activeStatusFooter.print(text);
-  } else {
-    process.stdout.write(text);
+    activeStatusFooter.print(line);
+    return;
   }
+  process.stdout.write(`${line}\n`);
+}
+
+function write(text) {
+  const chunk = String(text);
+  if (activeStatusFooter) {
+    activeStatusFooter.write(chunk);
+    return;
+  }
+  process.stdout.write(chunk);
+}
+
+const liveOutputWriter = Object.freeze({ printLine, write });
+
+function safePrint(...args) {
+  printLine(args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' '));
+}
+
+function safeWrite(text) {
+  write(text);
 }
 
 /**
@@ -5978,14 +5985,15 @@ function formatAgentOutput(msg, prefix) {
 }
 
 const NORMAL_MESSAGE_HANDLERS = {
-  AGENT_LIFECYCLE: ({ msg, prefix }) => formatAgentLifecycle(msg, prefix),
-  AGENT_ERROR: ({ msg, prefix, timestamp }) => formatAgentErrorNormal(msg, prefix, timestamp),
+  AGENT_LIFECYCLE: ({ msg, prefix }) => formatAgentLifecycle(msg, prefix, safePrint),
+  AGENT_ERROR: ({ msg, prefix, timestamp }) =>
+    formatAgentErrorNormal(msg, prefix, timestamp, safePrint),
   ISSUE_OPENED: ({ msg, prefix, timestamp }) =>
-    formatIssueOpenedNormal(msg, prefix, timestamp, shownNewTaskForCluster),
+    formatIssueOpenedNormal(msg, prefix, timestamp, shownNewTaskForCluster, safePrint),
   IMPLEMENTATION_READY: ({ msg, prefix, timestamp }) =>
-    formatImplementationReadyNormal(msg, prefix, timestamp),
+    formatImplementationReadyNormal(msg, prefix, timestamp, safePrint),
   VALIDATION_RESULT: ({ msg, prefix, timestamp }) =>
-    formatValidationResultNormal(msg, prefix, timestamp),
+    formatValidationResultNormal(msg, prefix, timestamp, safePrint),
   PR_CREATED: ({ msg, prefix, timestamp }) => formatPrCreated(msg, prefix, timestamp, safePrint),
   CLUSTER_COMPLETE: ({ msg, prefix, timestamp }) =>
     formatClusterComplete(msg, prefix, timestamp, safePrint),
@@ -6002,8 +6010,7 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
 
   // Watch mode: delegate to watch mode formatter
   if (watchMode) {
-    const clusterPrefix = buildClusterPrefix(msg, isActive);
-    formatWatchMode(msg, clusterPrefix);
+    formatWatchMode(msg, isActive, liveOutputWriter);
     return;
   }
 

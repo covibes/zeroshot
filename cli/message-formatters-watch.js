@@ -1,8 +1,3 @@
-/**
- * Watch mode message formatters
- * Simplified, high-level event display for zeroshot watch command
- */
-
 const chalk = require('chalk');
 const {
   buildClusterPrefix,
@@ -11,177 +6,94 @@ const {
 } = require('./message-formatter-utils');
 const { EVENT_COPY, formatMergeStatus } = require('./event-copy');
 
-/**
- * Format AGENT_ERROR for watch mode
- * @param {Object} msg - Message object
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function formatAgentError(msg, clusterPrefix) {
-  const errorMsg = `${msg.sender} ${chalk.bold.red('ERROR')}`;
-  console.log(`${clusterPrefix} ${errorMsg}`);
+const DEFAULT_WRITER = Object.freeze({ printLine: (text) => console.log(text) });
+
+function formatAgentError(msg, clusterPrefix, writer) {
+  writer.printLine(`${clusterPrefix} ${chalk.bold.red(`Error: ${msg.sender}`)}`);
   if (msg.content?.text) {
-    console.log(`${clusterPrefix}   ${chalk.red(msg.content.text)}`);
+    writer.printLine(`${clusterPrefix}   ${chalk.red(msg.content.text)}`);
   }
+  writer.printLine(`${clusterPrefix}   Next: zeroshot logs ${msg.cluster_id} -f`);
 }
 
-/**
- * Format ISSUE_OPENED for watch mode
- * @param {Object} msg - Message object
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function formatIssueOpened(msg, clusterPrefix) {
+function formatIssueOpened(msg, clusterPrefix, writer) {
   const issueNum = msg.content?.data?.issue_number || '';
   const title = msg.content?.data?.title || '';
   const prompt = msg.content?.data?.prompt || msg.content?.text || '';
-
   const taskDesc = title === 'Manual Input' && prompt ? prompt : title;
   const truncatedDesc =
-    taskDesc && taskDesc.length > 60 ? taskDesc.substring(0, 60) + '...' : taskDesc;
-
+    taskDesc && taskDesc.length > 60 ? `${taskDesc.substring(0, 60)}...` : taskDesc;
   const eventText = `Started ${issueNum ? `#${issueNum}` : 'task'}${truncatedDesc ? chalk.dim(` - ${truncatedDesc}`) : ''}`;
-  console.log(`${clusterPrefix} ${eventText}`);
+  writer.printLine(`${clusterPrefix} ${eventText}`);
 }
 
-/**
- * Format IMPLEMENTATION_READY for watch mode
- * @param {Object} msg - Message object
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function formatImplementationReady(msg, clusterPrefix) {
-  const agentColor = getColorForSender(msg.sender);
-  const agentName = agentColor(msg.sender);
-  const eventText = `${agentName} ${EVENT_COPY.IMPLEMENTATION_READY.toLowerCase()}`;
-  console.log(`${clusterPrefix} ${eventText}`);
+function formatImplementationReady(msg, clusterPrefix, writer = DEFAULT_WRITER) {
+  const agentName = getColorForSender(msg.sender)(msg.sender);
+  writer.printLine(
+    `${clusterPrefix} ${agentName} ${EVENT_COPY.IMPLEMENTATION_READY.toLowerCase()}`
+  );
 }
 
-/**
- * Format VALIDATION_RESULT for watch mode
- * @param {Object} msg - Message object
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function formatValidationResult(msg, clusterPrefix) {
-  const agentColor = getColorForSender(msg.sender);
-  const agentName = agentColor(msg.sender);
-  const data = msg.content?.data;
-  const approved = data?.approved === 'true' || data?.approved === true;
-  const status = approved ? chalk.green('APPROVED') : chalk.red('REJECTED');
-
-  let eventText = `${agentName} ${status}`;
-  if (data?.summary && !approved) {
-    eventText += chalk.dim(` - ${data.summary}`);
-  }
-  console.log(`${clusterPrefix} ${eventText}`);
-
-  if (!approved) {
-    printRejectionDetails(data, clusterPrefix);
-  }
-}
-
-/**
- * Print rejection details (errors/issues)
- * @param {Object} data - Validation data
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function printRejectionDetails(data, clusterPrefix) {
+function printRejectionDetails(data, clusterPrefix, writer) {
   const errors = parseDataField(data.errors);
   const issues = parseDataField(data.issues);
-
   if (errors.length > 0) {
-    const errorsCharCount = JSON.stringify(errors).length;
-    console.log(
-      `${clusterPrefix}   ${chalk.red('•')} ${errors.length} error${errors.length > 1 ? 's' : ''} (${errorsCharCount} chars)`
+    const count = JSON.stringify(errors).length;
+    writer.printLine(
+      `${clusterPrefix}   ${chalk.red('•')} ${errors.length} error${errors.length > 1 ? 's' : ''} (${count} chars)`
     );
   }
-
   if (issues.length > 0) {
-    const issuesCharCount = JSON.stringify(issues).length;
-    console.log(
-      `${clusterPrefix}   ${chalk.yellow('•')} ${issues.length} issue${issues.length > 1 ? 's' : ''} (${issuesCharCount} chars)`
+    const count = JSON.stringify(issues).length;
+    writer.printLine(
+      `${clusterPrefix}   ${chalk.yellow('•')} ${issues.length} issue${issues.length > 1 ? 's' : ''} (${count} chars)`
     );
   }
 }
 
-/**
- * Format PR_CREATED for watch mode
- * @param {Object} msg - Message object
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function formatPrCreated(msg, clusterPrefix) {
-  const agentColor = getColorForSender(msg.sender);
-  const agentName = agentColor(msg.sender);
+function formatValidationResult(msg, clusterPrefix, writer) {
+  const agentName = getColorForSender(msg.sender)(msg.sender);
+  const data = msg.content?.data;
+  const approved = data?.approved === 'true' || data?.approved === true;
+  const status = approved ? chalk.green('Approved') : chalk.red('Rejected');
+  let eventText = `${agentName} ${status}`;
+  if (data?.summary && !approved) eventText += chalk.dim(` - ${data.summary}`);
+  writer.printLine(`${clusterPrefix} ${eventText}`);
+  if (!approved) printRejectionDetails(data, clusterPrefix, writer);
+}
+
+function formatPrCreated(msg, clusterPrefix, writer = DEFAULT_WRITER) {
+  const agentName = getColorForSender(msg.sender)(msg.sender);
   const prNum = msg.content?.data?.pr_number || '';
   let eventText = `${agentName} ${EVENT_COPY.PR_CREATED.toLowerCase()}${prNum ? ` #${prNum}` : ''}`;
   const mergeStatus = formatMergeStatus(msg.content?.data?.merged);
-  if (mergeStatus) {
-    eventText += chalk.dim(` — ${mergeStatus}`);
-  }
-  console.log(`${clusterPrefix} ${eventText}`);
+  if (mergeStatus) eventText += chalk.dim(` — ${mergeStatus}`);
+  writer.printLine(`${clusterPrefix} ${eventText}`);
 }
 
-/**
- * Format PR_MERGED for watch mode
- * @param {Object} msg - Message object
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function formatPrMerged(msg, clusterPrefix) {
-  const agentColor = getColorForSender(msg.sender);
-  const agentName = agentColor(msg.sender);
-  const eventText = `${agentName} merged PR`;
-  console.log(`${clusterPrefix} ${eventText}`);
+function formatPrMerged(msg, clusterPrefix, writer) {
+  const agentName = getColorForSender(msg.sender)(msg.sender);
+  writer.printLine(`${clusterPrefix} ${agentName} merged PR`);
 }
 
-/**
- * Format unknown topic for watch mode (fallback)
- * @param {Object} msg - Message object
- * @param {string} clusterPrefix - Formatted cluster prefix
- */
-function formatUnknownTopic(msg, clusterPrefix) {
-  const agentColor = getColorForSender(msg.sender);
-  const agentName = agentColor(msg.sender);
+function formatUnknownTopic(msg, clusterPrefix, writer) {
+  const agentName = getColorForSender(msg.sender)(msg.sender);
   const eventText = `${agentName} ${msg.topic.toLowerCase().replace(/_/g, ' ')}`;
-  console.log(`${clusterPrefix} ${eventText}`);
+  writer.printLine(`${clusterPrefix} ${eventText}`);
 }
 
-/**
- * Main watch mode formatter
- * @param {Object} msg - Message object
- * @param {boolean} isActive - Whether cluster is active
- * @returns {boolean} True if message was handled
- */
-function formatWatchMode(msg, isActive) {
-  // Skip low-level topics (too noisy for watch mode)
-  if (msg.topic === 'AGENT_OUTPUT' || msg.topic === 'AGENT_LIFECYCLE') {
-    return true;
-  }
-
-  // Clear status line, print message, will be redrawn by status interval
-  process.stdout.write('\r' + ' '.repeat(120) + '\r');
-
+function formatWatchMode(msg, isActive, writer = DEFAULT_WRITER) {
+  if (msg.topic === 'AGENT_OUTPUT' || msg.topic === 'AGENT_LIFECYCLE') return true;
   const clusterPrefix = buildClusterPrefix(msg.cluster_id, isActive);
-
-  switch (msg.topic) {
-    case 'AGENT_ERROR':
-      formatAgentError(msg, clusterPrefix);
-      break;
-    case 'ISSUE_OPENED':
-      formatIssueOpened(msg, clusterPrefix);
-      break;
-    case 'IMPLEMENTATION_READY':
-      formatImplementationReady(msg, clusterPrefix);
-      break;
-    case 'VALIDATION_RESULT':
-      formatValidationResult(msg, clusterPrefix);
-      break;
-    case 'PR_CREATED':
-      formatPrCreated(msg, clusterPrefix);
-      break;
-    case 'PR_MERGED':
-      formatPrMerged(msg, clusterPrefix);
-      break;
-    default:
-      formatUnknownTopic(msg, clusterPrefix);
-  }
-
+  const handlers = {
+    AGENT_ERROR: formatAgentError,
+    ISSUE_OPENED: formatIssueOpened,
+    IMPLEMENTATION_READY: formatImplementationReady,
+    VALIDATION_RESULT: formatValidationResult,
+    PR_CREATED: formatPrCreated,
+    PR_MERGED: formatPrMerged,
+  };
+  (handlers[msg.topic] || formatUnknownTopic)(msg, clusterPrefix, writer);
   return true;
 }
 

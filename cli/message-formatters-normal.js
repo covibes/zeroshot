@@ -53,9 +53,9 @@ function formatAgentLifecycle(msg, prefix, print = console.log) {
  * @returns {boolean} True if message was handled
  */
 function formatAgentError(msg, prefix, timestamp, print = console.log) {
-  print(''); // Blank line before error
+  print('');
   print(chalk.bold.red(`${'─'.repeat(60)}`));
-  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.red('🔴 AGENT ERROR')}`);
+  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.red('Error: agent failed')}`);
 
   if (msg.content?.text) {
     print(`${prefix} ${chalk.red(msg.content.text)}`);
@@ -64,12 +64,11 @@ function formatAgentError(msg, prefix, timestamp, print = console.log) {
   if (msg.content?.data?.stack) {
     const stackLines = msg.content.data.stack.split('\n').slice(0, 5);
     for (const line of stackLines) {
-      if (line.trim()) {
-        print(`${prefix} ${chalk.dim(line)}`);
-      }
+      if (line.trim()) print(`${prefix} ${chalk.dim(line)}`);
     }
   }
 
+  print(`${prefix} Next: inspect the agent logs and retry after fixing the cause.`);
   print(chalk.bold.red(`${'─'.repeat(60)}`));
   return true;
 }
@@ -90,9 +89,9 @@ function formatIssueOpened(msg, prefix, timestamp, shownNewTaskForCluster, print
   }
   shownNewTaskForCluster.add(msg.cluster_id);
 
-  print(''); // Blank line before new task
+  print('');
   print(chalk.bold.blue(`${'─'.repeat(60)}`));
-  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.blue('📋 NEW TASK')}`);
+  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.blue('📋 New task')}`);
 
   if (msg.content?.text) {
     const lines = msg.content.text.split('\n').slice(0, 3);
@@ -140,7 +139,7 @@ function formatImplementationReady(msg, prefix, timestamp, print = console.log) 
 function formatValidationResult(msg, prefix, timestamp, print = console.log) {
   const data = msg.content?.data || {};
   const approved = data.approved === true || data.approved === 'true';
-  const status = approved ? chalk.bold.green('✓ APPROVED') : chalk.bold.red('✗ REJECTED');
+  const status = approved ? chalk.bold.green('✓ Approved') : chalk.bold.red('✗ Rejected');
 
   print(`${prefix} ${chalk.gray(timestamp)} ${status}`);
 
@@ -190,9 +189,9 @@ function formatValidationResult(msg, prefix, timestamp, print = console.log) {
  * @returns {boolean} True if message was handled
  */
 function formatClusterComplete(msg, prefix, timestamp, print = console.log) {
-  print(''); // Blank line
+  print('');
   print(chalk.bold.green(`${'═'.repeat(60)}`));
-  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.green('🎉 CLUSTER COMPLETE')}`);
+  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.green('🎉 Cluster complete')}`);
   if (msg.content?.data?.reason) {
     print(`${prefix} ${chalk.green(msg.content.data.reason)}`);
   }
@@ -209,15 +208,12 @@ function formatClusterComplete(msg, prefix, timestamp, print = console.log) {
  * @returns {boolean} True if message was handled
  */
 function formatClusterFailed(msg, prefix, timestamp, print = console.log) {
-  print(''); // Blank line
+  print('');
   print(chalk.bold.red(`${'═'.repeat(60)}`));
-  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.red('❌ CLUSTER FAILED')}`);
-  if (msg.content?.text) {
-    print(`${prefix} ${chalk.red(msg.content.text)}`);
-  }
-  if (msg.content?.data?.reason) {
-    print(`${prefix} ${chalk.red(msg.content.data.reason)}`);
-  }
+  print(`${prefix} ${chalk.gray(timestamp)} ${chalk.bold.red('Error: cluster failed')}`);
+  if (msg.content?.text) print(`${prefix} ${chalk.red(msg.content.text)}`);
+  if (msg.content?.data?.reason) print(`${prefix} ${chalk.red(msg.content.data.reason)}`);
+  print(`${prefix} Next: inspect the cluster logs, then resume after fixing the cause.`);
   print(chalk.bold.red(`${'═'.repeat(60)}`));
   return true;
 }
