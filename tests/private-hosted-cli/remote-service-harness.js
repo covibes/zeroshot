@@ -185,9 +185,9 @@ function createRuntime({ adapter, calls, context, options, state }) {
     },
     target: {
       TargetSessionManager: createTargetSessionManager(),
-      discoverTarget() {
+      discoverTargetSessionEndpoints() {
         calls.push(['discover']);
-        return options.descriptor ?? DESCRIPTOR;
+        return { descriptor: options.descriptor ?? DESCRIPTOR };
       },
       getTarget: (name) => state._targets[name],
       KeyringCredentialStore: { create: () => ({}) },

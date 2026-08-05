@@ -35,6 +35,7 @@ const INPUTS = Object.freeze([
   'package-lock.json',
   'package.json',
   'scripts/hosted-oecp-image-commands.js',
+  'scripts/hosted-oecp-image-inspection.js',
   'scripts/hosted-oecp-certification.js',
   'scripts/hosted-oecp-certification-runtime.js',
   'scripts/hosted-oecp-certification-scenarios.js',

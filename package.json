@@ -182,6 +182,7 @@
     "!scripts/hosted-oecp-certification-scenarios.js",
     "!scripts/hosted-oecp-certification-workspace-ship.js",
     "!scripts/hosted-oecp-image-commands.js",
+    "!scripts/hosted-oecp-image-inspection.js",
     "!scripts/hosted-oecp-image-smoke.js",
     "!scripts/hosted-oecp-manifest.js",
     "!scripts/hosted-oecp-smoke-capability.js",

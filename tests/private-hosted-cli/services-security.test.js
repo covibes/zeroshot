@@ -5,6 +5,7 @@ const { it } = require('node:test');
 const { sanitizeRemoteOperation } = require('../../private/hosted-cli-candidate/default-services');
 const { createTargetServices } = require('../../private/hosted-cli-candidate/target-services');
 const { captureLogs } = require('./candidate-fixtures');
+const { assertSecretsAbsent, withEnvironment } = require('./environment-harness');
 const { remoteHarness } = require('./remote-service-harness');
 
 const INTENT_ID = '019fd184-bcb4-73dd-a631-d43c64297869';
@@ -38,7 +39,7 @@ function removalHarness(deleteFailure) {
           return credentialStore;
         },
       },
-      discoverTarget() {
+      discoverTargetSessionEndpoints() {
         throw new Error('target offline');
       },
       removeTarget() {
@@ -93,12 +94,8 @@ it('queued transport never serializes process credentials or reusable authority'
     OPENAI_API_KEY: 'openai-queue-secret-canary-884',
     ZEROSHOT_TARGET_ACCESS_TOKEN: 'target-queue-secret-canary-884',
   };
-  const previous = Object.fromEntries(
-    Object.keys(secrets).map((name) => [name, process.env[name]])
-  );
   let submitted;
-  Object.assign(process.env, secrets);
-  try {
+  await withEnvironment(secrets, async () => {
     const h = remoteHarness({
       createRunIntentClient: () => ({
         submit(request) {
@@ -127,17 +124,9 @@ it('queued transport never serializes process credentials or reusable authority'
         detach: true,
       })
     );
-  } finally {
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
+  });
   const serialized = JSON.stringify(submitted);
-  for (const [name, value] of Object.entries(secrets)) {
-    assert.equal(serialized.includes(name), false);
-    assert.equal(serialized.includes(value), false);
-  }
+  assertSecretsAbsent(serialized, secrets);
   assert.deepEqual(Object.keys(submitted.envelope), ['version', 'graph', 'input']);
   assert.deepEqual(submitted.envelope.input, {
     source: 'prompt',

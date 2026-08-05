@@ -1,28 +1,13 @@
 'use strict';
 
 const { configureTargetSetup } = require('./credentials');
-const { URL } = require('node:url');
-
-function discoveryEndpoints(descriptor) {
-  return {
-    deviceAuthorizationEndpoint: descriptor.oauth.deviceAuthorizationEndpoint,
-    tokenEndpoint: descriptor.oauth.tokenEndpoint,
-    revocationEndpoint: descriptor.oauth.revocationEndpoint,
-    clientId: descriptor.oauth.clientId,
-    capsuleApiBaseUrl: descriptor.capsule.baseUrl.replace(/\/$/, ''),
-    deviceGrantType: descriptor.oauth.deviceGrantType,
-    audience: descriptor.oauth.audience,
-    sessionEndpoint: new URL(descriptor.session.routeTemplate.template, descriptor.origin).href,
-    descriptor,
-  };
-}
 
 function targetSessionManager({
   runtime,
   settings,
   name,
   target,
-  descriptor,
+  endpoints,
   credentialStore,
   open,
   http = { fetch: (url, init) => globalThis.fetch(url, init) },
@@ -38,7 +23,7 @@ function targetSessionManager({
       clock: Date,
       browserOpener: { open },
       stderr: process.stderr,
-      discoveryEndpoints: discoveryEndpoints(descriptor),
+      discoveryEndpoints: endpoints,
     },
   });
 }
@@ -56,84 +41,110 @@ async function deleteTargetCredentials(runtime, target, credentialStore) {
   }
 }
 
+async function targetAdd(service, name, options) {
+  const url = service.runtime.target.normalizeAndValidateUrl(options.url);
+  const endpoints = await service.runtime.target.discoverTargetSessionEndpoints(
+    url,
+    service.httpTransport()
+  );
+  const record = service.runtime.target.addTarget(
+    name,
+    url,
+    service.settings,
+    endpoints.descriptor
+  );
+  console.log(`Target "${name}" added (${record.url})`);
+}
+
+async function targetLogin(service, name) {
+  const target = service.requireTarget(name, service.runtime, service.settings);
+  const endpoints = await service.runtime.target.discoverTargetSessionEndpoints(
+    target.url,
+    service.httpTransport()
+  );
+  const credentialStore = await service.runtime.target.KeyringCredentialStore.create();
+  const manager = service.managerFor({ name, target, endpoints, credentialStore }, async (url) => {
+    const imported = await import('open');
+    await imported.default(url);
+  });
+  const result = await manager.login();
+  console.log(`Logged in to "${name}" (organization: ${result.organization.id})`);
+}
+
+function targetList(service, options) {
+  const targets = service.runtime.target.listTargets(service.settings);
+  if (options.json) {
+    const rows = targets.map(({ name, record }) => ({
+      name,
+      id: record.id,
+      url: record.url,
+      organization: record.organization ?? null,
+      configured: record.hostedSetup?.kind === 'zeroshot.private-hosted-setup/v1',
+      createdAt: record.createdAt,
+    }));
+    console.log(JSON.stringify(rows, null, 2));
+    return;
+  }
+  if (targets.length === 0) {
+    console.log('No targets registered.');
+    return;
+  }
+  for (const { name, record } of targets) {
+    console.log(`${name}\t${record.url}\t${record.organization?.id ?? 'not-logged-in'}`);
+  }
+}
+
+async function targetRemove(service, name, options) {
+  const target = service.requireTarget(name, service.runtime, service.settings);
+  const credentialStore = await service.runtime.target.KeyringCredentialStore.create();
+  let remoteError;
+  try {
+    const endpoints = await service.runtime.target.discoverTargetSessionEndpoints(
+      target.url,
+      service.httpTransport()
+    );
+    const manager = service.managerFor({ name, target, endpoints, credentialStore }, () =>
+      Promise.resolve()
+    );
+    await manager.revoke(Boolean(options.force));
+  } catch (error) {
+    remoteError = error;
+  }
+  if (remoteError && !options.force) throw remoteError;
+  await deleteTargetCredentials(service.runtime, target, credentialStore);
+  service.runtime.target.removeTarget(name, service.settings);
+  console.log(`Target "${name}" removed`);
+}
+
+async function targetSetup(service, name, options) {
+  const target = service.requireTarget(name, service.runtime, service.settings);
+  const metadata = await configureTargetSetup({
+    targetName: name,
+    target,
+    repository: options.repository,
+    provider: options.provider,
+    modelLevel: options.modelLevel,
+    settings: service.settings,
+  });
+  console.log(
+    `Configured ${name}: ${metadata.repository}, ${metadata.provider}, ${metadata.modelLevel}`
+  );
+}
+
 function createTargetServices({ runtime, settings, httpTransport, requireTarget }) {
-  const managerFor = (values, open) => targetSessionManager({ runtime, settings, ...values, open });
+  const service = {
+    runtime,
+    settings,
+    httpTransport,
+    requireTarget,
+    managerFor: (values, open) => targetSessionManager({ runtime, settings, ...values, open }),
+  };
   return {
-    async targetAdd(name, options) {
-      const url = runtime.target.normalizeAndValidateUrl(options.url);
-      const descriptor = await runtime.target.discoverTarget(url, httpTransport());
-      const record = runtime.target.addTarget(name, url, settings, descriptor);
-      console.log(`Target "${name}" added (${record.url})`);
-    },
-
-    async targetLogin(name) {
-      const target = requireTarget(name, runtime, settings);
-      const descriptor = await runtime.target.discoverTarget(target.url, httpTransport());
-      const credentialStore = await runtime.target.KeyringCredentialStore.create();
-      const manager = managerFor({ name, target, descriptor, credentialStore }, async (url) => {
-        const imported = await import('open');
-        await imported.default(url);
-      });
-      const result = await manager.login();
-      console.log(`Logged in to "${name}" (organization: ${result.organization.id})`);
-    },
-
-    targetList(options) {
-      const targets = runtime.target.listTargets(settings);
-      if (options.json) {
-        const rows = targets.map(({ name, record }) => ({
-          name,
-          id: record.id,
-          url: record.url,
-          organization: record.organization ?? null,
-          configured: record.hostedSetup?.kind === 'zeroshot.private-hosted-setup/v1',
-          createdAt: record.createdAt,
-        }));
-        console.log(JSON.stringify(rows, null, 2));
-        return;
-      }
-      if (targets.length === 0) {
-        console.log('No targets registered.');
-        return;
-      }
-      for (const { name, record } of targets) {
-        console.log(`${name}\t${record.url}\t${record.organization?.id ?? 'not-logged-in'}`);
-      }
-    },
-
-    async targetRemove(name, options) {
-      const target = requireTarget(name, runtime, settings);
-      const credentialStore = await runtime.target.KeyringCredentialStore.create();
-      let remoteError;
-      try {
-        const descriptor = await runtime.target.discoverTarget(target.url, httpTransport());
-        const manager = managerFor({ name, target, descriptor, credentialStore }, () =>
-          Promise.resolve()
-        );
-        await manager.revoke(Boolean(options.force));
-      } catch (error) {
-        remoteError = error;
-      }
-      if (remoteError && !options.force) throw remoteError;
-      await deleteTargetCredentials(runtime, target, credentialStore);
-      runtime.target.removeTarget(name, settings);
-      console.log(`Target "${name}" removed`);
-    },
-
-    async targetSetup(name, options) {
-      const target = requireTarget(name, runtime, settings);
-      const metadata = await configureTargetSetup({
-        targetName: name,
-        target,
-        repository: options.repository,
-        provider: options.provider,
-        modelLevel: options.modelLevel,
-        settings,
-      });
-      console.log(
-        `Configured ${name}: ${metadata.repository}, ${metadata.provider}, ${metadata.modelLevel}`
-      );
-    },
+    targetAdd: (name, options) => targetAdd(service, name, options),
+    targetLogin: (name) => targetLogin(service, name),
+    targetList: (options) => targetList(service, options),
+    targetRemove: (name, options) => targetRemove(service, name, options),
+    targetSetup: (name, options) => targetSetup(service, name, options),
   };
 }
 

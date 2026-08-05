@@ -46,9 +46,9 @@ function targetHarness() {
         });
         return record;
       },
-      discoverTarget(url) {
+      discoverTargetSessionEndpoints(url) {
         calls.push(['discover', url]);
-        return DESCRIPTOR;
+        return { descriptor: DESCRIPTOR };
       },
       KeyringCredentialStore: {
         create() {

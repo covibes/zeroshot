@@ -6,6 +6,7 @@ const {
   RemoteAllocationUncertainError,
   RemoteDetachedError,
 } = require('../../private/hosted-cli-candidate/orchestrator');
+const { assertSecretsAbsent, withEnvironment } = require('./environment-harness');
 const { base, CALLER_INPUT } = require('./orchestrator-harness');
 async function refusesSetupMismatchesBeforeAllocation() {
   const h = base();
@@ -212,25 +213,15 @@ async function excludesDirectCredentialEnvironmentValues() {
     GH_TOKEN: 'gh-direct-secret-canary-884',
     OPENAI_API_KEY: 'openai-direct-secret-canary-884',
   };
-  const previous = Object.fromEntries(
-    Object.keys(credentials).map((name) => [name, process.env[name]])
-  );
-  Object.assign(process.env, credentials);
-  try {
+  await withEnvironment(credentials, async () => {
     const h = base();
     const result = await h.orchestrator.run(h.options);
     const observed = JSON.stringify({ requests: h.requests, output: h.output, result });
-    for (const [name, value] of Object.entries(credentials)) {
-      assert.equal(observed.includes(name), false);
-      assert.equal(observed.includes(value), false);
+    assertSecretsAbsent(observed, credentials);
+    for (const name of Object.keys(credentials)) {
       assert.equal(Object.hasOwn(h.requests.apply[0].input, name), false);
     }
-  } finally {
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
+  });
 }
 
 async function terminatesOwnedCapsuleAfterPlanRefusal() {

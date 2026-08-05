@@ -23,6 +23,7 @@ const {
 const ORGANIZATION_ID = '019fd17e-5e50-7c66-a68c-3fcf4d8f06c0';
 const SUBMISSION_KEY = '019fd17e-8406-41b4-8730-1c54fd44c70e';
 const CAPSULE_ID = '019fd17e-b9c4-7ef1-99da-cc0ef3905402';
+const OTHER_INTENT_ID = '019fd184-52c3-7e1f-a567-4ecb6fc6a0ec';
 
 function jsonResponse(value, status = 200) {
   return new globalThis.Response(JSON.stringify(value), {
@@ -56,6 +57,17 @@ function clientHarness(responses) {
     },
   });
   return { client, refreshes: () => refreshes, requests, tokens };
+}
+
+async function rejectsMismatchedRunIntentResponses() {
+  for (const [method, status] of [
+    ['get', 200],
+    ['cancel', 202],
+  ]) {
+    const h = clientHarness([jsonResponse(runIntent({ intent_id: OTHER_INTENT_ID }), status)]);
+    await assert.rejects(h.client[method](INTENT_ID), /identity does not match/);
+    assert.equal(h.requests.length, 1);
+  }
 }
 
 describe('private RunIntent v2 envelope', () => {
@@ -132,6 +144,11 @@ describe('bounded authenticated RunIntent client', () => {
     assert.equal(Object.hasOwn(h.requests[0].init.headers, 'idempotency-key'), false);
   });
 
+  it('rejects status and cancellation responses for a different intent', () =>
+    rejectsMismatchedRunIntentResponses());
+});
+
+describe('bounded RunIntent authentication and bodies', () => {
   it('checks HTTP status before decoding and refreshes authentication exactly once', async () => {
     const h = clientHarness([
       new globalThis.Response('peer-controlled non-json', { status: 401 }),

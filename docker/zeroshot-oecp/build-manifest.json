@@ -115,15 +115,16 @@
     "lib/cluster-worker/worker-internals.js": "db5d7d2f23f07f74aef7d029d1a0ee36ec9317a9f06ba0a5e7d2f15947cbab92",
     "lib/run-plan.js": "c70bae45c113ff7a25a9c8696756fc3799104b01a8dba957d4d0eaf3a55d8a27",
     "package-lock.json": "b75c87f09360a76e5630698fba03ecd6127b486e94b6d98b99b0ff3974dce967",
-    "package.json": "ca319fc044e0da9da6e26bd4385cd942fe2b279683b6940d86ece6cb2cf0a90b",
-    "scripts/hosted-oecp-image-commands.js": "77750bc418277db43dd02c92efafc943b1393a1ca2871c5f2d4376be3d36fd29",
+    "package.json": "3ec527b676df2d0202d883971d9ed10cf6c27fe7982fb9d0989ee451705dbe9a",
+    "scripts/hosted-oecp-image-commands.js": "40f55ff0609cce025e401affa1ca8f35bf59ed0c5ba4a49e62391e9b7eab1b66",
+    "scripts/hosted-oecp-image-inspection.js": "14265cd9e1a88cc122ffafffe05763a4c39e39afe270a9e1dce5ba7d1d8fa40f",
     "scripts/hosted-oecp-certification.js": "38e420f6bb087633517c5a3871ab2b2bc6d62035eb23ce8a6ccde101d8b27483",
     "scripts/hosted-oecp-certification-runtime.js": "538e0a79557a08cbefc4255916d972f3a789194e2fc4c703b7bf089e9d494ca9",
     "scripts/hosted-oecp-certification-scenarios.js": "ca8da45add3cbf5e005f8ce411e5158b690fcb31a6be895bc57920a59804ea3b",
     "scripts/hosted-oecp-certification-workspace-ship.js": "5106f2ae9fe41d2c4bf4e0608a1b6fed30fda678fea940d59d62ee5afe3ed738",
     "scripts/hosted-oecp-image-smoke.js": "b1119dc1028c3a73e507c4b08d4039b0dfdf7853607f226444f45c4bd142f2e0",
     "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
-    "scripts/hosted-oecp-manifest.js": "9d40ebb811ccd3880aef5fa6e4c72a1d6e9ca1fed20ee03576060d0d7bffcc09",
+    "scripts/hosted-oecp-manifest.js": "4495587ef242de1a1120ca85deb32a8e5b881058f3ed1d5ed19795b2f5fdde17",
     "scripts/hosted-oecp-smoke-capability.js": "d87d5c94536ba653df3c8f89fa08058c495d51a1be96b228f9ee0d9f88e67560",
     "scripts/hosted-oecp-smoke-client.js": "abf0975c1dd96d5d951eb9ca5e7ed0b0a8f1986daa89b65f14dbd21fe1ae813f",
     "scripts/hosted-oecp-smoke-codex.mjs": "13fe43a06fb05b16ae429e7b7d4ae4792a76c96b88a8e34b6b79b096757e3df8",
@@ -139,10 +140,10 @@
     "zeroshot-rust/hosted-node": "6bcee8099f0fa4afab01a304e665317a1daa5592e2fcfa4983ef15fcd8a8baee",
     "zeroshot-rust/src": "92d29a321ee9d2f2183912a56ceca962fc5959052385c2d76f2e01e92881b4d3"
   },
-  "imageInputsDigest": "82f326282f8b2c7fbdf7416108f08cfc2149b899cde7990e1e80f05028a1ae98",
+  "imageInputsDigest": "ff8c82b937b261fea0ea2e2f8f521db5a72040013125a3a8f756625c05be24e1",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "c7856ec7cb22ded4b52bd39359a315edb5023b720323f08329be6eb25c1fd28d"
+  "manifestDigest": "1518e57fa361609777b546fa795e1c9dbacb13791f1d7d8066897671256ec419"
 }

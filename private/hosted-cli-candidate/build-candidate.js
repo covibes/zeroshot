@@ -18,9 +18,16 @@ const CANDIDATE_FILES = Object.freeze([
   'orchestrator-support.js',
   'queued-execution.js',
   'default-services.js',
+  'default-capsule-services.js',
+  'default-run-intent-services.js',
+  'interrupt-signal.js',
   'run-intent.js',
+  'run-intent-schema.js',
+  'run-intent-http.js',
+  'run-intent-observer.js',
   'target-services.js',
   'register.js',
+  'register-support.js',
 ]);
 const PROTOCOL_FILES = Object.freeze([
   'src/cluster/generated/protocol.ts',
