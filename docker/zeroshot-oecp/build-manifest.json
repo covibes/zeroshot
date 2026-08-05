@@ -62,7 +62,7 @@
     "clippy.toml": "3c652ff2949df903bd0b80c8f14a7196ff9ad1e12841ddb614d080c4a03d1aa2",
     "crates": "a2f7c3bb65eb2b150647b00aab00f510ea67356dd08990e1bb9afa626b8bac9e",
     "docker/zeroshot-oecp/.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
-    "docker/zeroshot-oecp/Dockerfile": "8c36654fcaec00488ccba2bf93261761a28467481ccc31e400d7cd2740c2a571",
+    "docker/zeroshot-oecp/Dockerfile": "9e50d74c15acaa885c5693a05bacc3f42a6929c4872b65e39602273745c39ab2",
     "docker/zeroshot-oecp/Dockerfile.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
     "docker/zeroshot-oecp/package-lock.json": "5711bf91423b0095adda9e149699ae5ab3ae631e93284da88fc635eab78e8f9b",
     "docker/zeroshot-oecp/package.json": "c940926d527e0f8a7acc435ef4866574ffb0743e6696ee4370bee9213469403a",
@@ -84,7 +84,7 @@
     "lib/run-plan.js": "c70bae45c113ff7a25a9c8696756fc3799104b01a8dba957d4d0eaf3a55d8a27",
     "package-lock.json": "b75c87f09360a76e5630698fba03ecd6127b486e94b6d98b99b0ff3974dce967",
     "package.json": "521c013acc0eb3436648321a0eba277eeaced52b7fc8462a0d46a11034eb28e6",
-    "scripts/hosted-oecp-image-commands.js": "cee0efa9a9ddf0cc3ce19829ea403dc0bbf74185d8ec2236acd866c53be3313d",
+    "scripts/hosted-oecp-image-commands.js": "eeca1152aac68c5ff5243a46f4d900eb2ded118be73ce300902b3ed5869667cb",
     "scripts/hosted-oecp-image-smoke.js": "33a764499ada23b5fd27bf2f2bee5cf3ff0ff727f5800a2621fc1507e82e18eb",
     "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
     "scripts/hosted-oecp-manifest.js": "874932d3fd566f8c18326d1b3efe54f8d9313237904a5d5b5b1b8c275093affa",
@@ -98,10 +98,10 @@
     "zeroshot-rust/hosted-node": "8d3a7d9d38d8f4cd0fdb5bef2e38dbf0d030b2b2e56e24b02d7a02020ea355c8",
     "zeroshot-rust/src": "9b4a67bcf9fffac122b92fcbdcbdd2d25a82903c0149b183a4e6a4528167cb1a"
   },
-  "imageInputsDigest": "69858a76f1c1d8279795b2a76d497c06a0c7e91de8d3cac150852ecac38171b3",
+  "imageInputsDigest": "3d635f26ac8f400d908c170f65528bc05b5a03ee9f9e990736f461104cf872eb",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "01e3aad31c2d36d58480a3814b598193a2bdf3c646418d2de05d3992c5d86028"
+  "manifestDigest": "c7e260a377c22a557df26b779fbc09327053760379ac4b1904c4098e41526b63"
 }

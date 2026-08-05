@@ -2,6 +2,7 @@
 
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { isDeepStrictEqual } = require('util');
 const { ROOT, check } = require('./hosted-oecp-manifest');
 
 const DOCKERFILE = path.join(ROOT, 'docker', 'zeroshot-oecp', 'Dockerfile');
@@ -82,6 +83,15 @@ function validTag(reference) {
 const RUNTIME_INSPECTION_SCRIPT = `
 'use strict';
 const fs = require('fs');
+const present = (target) => {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+};
 const ownership = (target) => {
   const stat = fs.statSync(target);
   return { uid: stat.uid, gid: stat.gid, mode: (stat.mode & 0o777).toString(8).padStart(3, '0') };
@@ -100,6 +110,18 @@ process.stdout.write(JSON.stringify({
     '/opt/zeroshot/src/target',
     '/opt/zeroshot/lib/cluster-worker/engine-adapter.js',
   ].filter((target) => fs.existsSync(target)),
+  packageManagerPaths: {
+    '/usr/local/bin/npm': present('/usr/local/bin/npm'),
+    '/usr/local/bin/npx': present('/usr/local/bin/npx'),
+    '/usr/local/bin/corepack': present('/usr/local/bin/corepack'),
+    '/usr/local/bin/yarn': present('/usr/local/bin/yarn'),
+    '/usr/local/bin/yarnpkg': present('/usr/local/bin/yarnpkg'),
+    '/usr/local/bin/pnpm': present('/usr/local/bin/pnpm'),
+    '/usr/local/bin/pnpx': present('/usr/local/bin/pnpx'),
+    '/usr/local/lib/node_modules/npm': present('/usr/local/lib/node_modules/npm'),
+    '/usr/local/lib/node_modules/corepack': present('/usr/local/lib/node_modules/corepack'),
+    '/opt/yarn-v1.22.22': present('/opt/yarn-v1.22.22'),
+  },
   runtimeModules: {
     engineStart: fs.existsSync('/opt/zeroshot/lib/cluster-worker/engine-start.js'),
     runtimeDependencies: fs.existsSync('/opt/zeroshot/lib/cluster-worker/runtime-dependencies.js'),
@@ -164,9 +186,25 @@ function validateRuntimePermissions(runtime) {
   }
 }
 
+const EXPECTED_PACKAGE_MANAGER_PATHS = Object.freeze({
+  '/usr/local/bin/npm': false,
+  '/usr/local/bin/npx': false,
+  '/usr/local/bin/corepack': false,
+  '/usr/local/bin/yarn': false,
+  '/usr/local/bin/yarnpkg': false,
+  '/usr/local/bin/pnpm': false,
+  '/usr/local/bin/pnpx': false,
+  '/usr/local/lib/node_modules/npm': false,
+  '/usr/local/lib/node_modules/corepack': false,
+  '/opt/yarn-v1.22.22': false,
+});
+
 function validateRuntimeContents(runtime) {
   if (!Array.isArray(runtime.forbiddenPresent) || runtime.forbiddenPresent.length > 0) {
     throw new Error('Hosted image contains a forbidden runtime path');
+  }
+  if (!isDeepStrictEqual(runtime.packageManagerPaths, EXPECTED_PACKAGE_MANAGER_PATHS)) {
+    throw new Error('Hosted image package manager paths are invalid');
   }
   if (
     runtime.runtimeModules?.engineStart !== true ||
