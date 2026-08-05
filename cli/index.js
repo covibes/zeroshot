@@ -2599,9 +2599,10 @@ if (shouldShowBanner) {
 
 program
   .name('zeroshot')
-  .description('Multi-agent orchestration and task management for Claude, Codex, and Gemini')
+  .description('Independent executor–verifier orchestration for software changes.')
   .version(require('../package.json').version)
   .option('-q, --quiet', 'Suppress prompts (first-run wizard, update checks)')
+  .helpCommand(false)
   .addHelpText(
     'after',
     `
@@ -2648,6 +2649,7 @@ Shell completion:
 
 program
   .command('run <input>')
+  .helpGroup('Start:')
   .description(
     'Start a multi-agent cluster (GitHub issue, markdown file, plain text, or "-" for stdin)'
   )
@@ -2891,10 +2893,14 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
 
 // === TASK COMMANDS ===
 // Task run - single-agent background task
-const taskCmd = program.command('task').description('Single-agent task management');
+const taskCmd = program
+  .command('task')
+  .helpGroup('Automation:')
+  .description('Single-agent task management');
 
 const cmdproofCmd = program
   .command('cmdproof')
+  .helpGroup('Configure:')
   .description('Run configured cmdproof command proofs');
 
 for (const mode of ['prove', 'verify', 'check']) {
@@ -3013,6 +3019,7 @@ taskCmd
 // List command - unified (shows both tasks and clusters)
 program
   .command('list')
+  .helpGroup('Observe:')
   .alias('ls')
   .description('List all tasks and clusters')
   .option('-s, --status <status>', 'Filter tasks by status (running, completed, failed)')
@@ -3045,6 +3052,7 @@ program
 // Status command - smart (works for both tasks and clusters)
 program
   .command('status <id>')
+  .helpGroup('Observe:')
   .description('Get detailed status of a task or cluster')
   .option('--json', 'Output as JSON')
   .action(async (id, options) => {
@@ -3082,6 +3090,7 @@ program
 
 program
   .command('inspect <id>')
+  .helpGroup('Observe:')
   .description('Inspect live process activity for a task or cluster')
   .option('--json', 'Output as JSON')
   .option('--sample-ms <ms>', 'Sampling period for process activity checks', '1000')
@@ -3101,6 +3110,7 @@ program
 // Logs command - smart (works for both tasks and clusters)
 program
   .command('logs [id]')
+  .helpGroup('Observe:')
   .description('View logs (omit ID for all clusters)')
   .option('-f, --follow', 'Follow logs in real-time (stream output like tail -f)')
   .option('-n, --limit <number>', 'Number of recent messages to show (default: 50)', '50')
@@ -3133,6 +3143,7 @@ program
 // Stop command (cluster-only)
 program
   .command('stop <cluster-id>')
+  .helpGroup('Control:')
   .description('Stop a cluster gracefully')
   .action(async (clusterId) => {
     try {
@@ -3148,6 +3159,7 @@ program
 // Kill command - smart (works for both tasks and clusters)
 program
   .command('kill <id>')
+  .helpGroup('Control:')
   .description('Kill a task or cluster')
   .action(async (id) => {
     try {
@@ -3177,6 +3189,7 @@ program
 // Attach command - tmux-style attach to running task or cluster agent
 program
   .command('attach [id]')
+  .helpGroup('Observe:')
   .description('Attach to a running task or cluster agent (Ctrl+C to detach, task keeps running)')
   .option('-a, --agent <name>', 'Attach to specific agent in cluster (required for clusters)')
   .addHelpText(
@@ -3229,6 +3242,7 @@ Key bindings:
 // Kill-all command - kills all running tasks and clusters
 program
   .command('kill-all')
+  .helpGroup('Maintenance:')
   .description('Kill all running tasks and clusters')
   .option('-y, --yes', 'Skip confirmation')
   .action(async (options) => {
@@ -3301,6 +3315,7 @@ program
 // Export command (cluster-only)
 program
   .command('export <cluster-id>')
+  .helpGroup('Maintenance:')
   .description('Export cluster conversation')
   .option('-f, --format <format>', 'Export format: json, markdown, html', 'html')
   .option('-o, --output <file>', 'Output file (auto-generated for html)')
@@ -3415,6 +3430,7 @@ program
 // Resume task or cluster
 program
   .command('resume <id> [prompt]')
+  .helpGroup('Control:')
   .description('Resume a failed task or cluster')
   .option('-d, --detach', 'Resume in background (daemon mode)')
   .action(async (id, prompt, options) => {
@@ -3658,6 +3674,7 @@ program
 // Finish cluster - convert to single-agent completion task
 program
   .command('finish <id>')
+  .helpGroup('Control:')
   .description('Take existing cluster and create completion-focused task (creates PR and merges)')
   .option('-y, --yes', 'Skip confirmation if cluster is running')
   .action(async (id, options) => {
@@ -3696,6 +3713,7 @@ program
 // Clean tasks
 program
   .command('clean')
+  .helpGroup('Maintenance:')
   .description('Remove old task records and logs')
   .option('-a, --all', 'Remove all tasks')
   .option('-c, --completed', 'Remove completed tasks')
@@ -3763,6 +3781,7 @@ async function detectAndReportCorruptedClusters(dryRun) {
 
 program
   .command('gc')
+  .helpGroup('Maintenance:')
   .description('Clean up orphaned worktree directories and stale database files')
   .option('--dry-run', 'Show what would be removed without deleting')
   .action(async (options) => {
@@ -3778,6 +3797,7 @@ program
 // Purge all runs (clusters + tasks) - NUCLEAR option
 program
   .command('purge')
+  .helpGroup('Maintenance:')
   .description('NUCLEAR: Kill all running processes and delete all data')
   .option('-y, --yes', 'Skip confirmation')
   .action(async (options) => {
@@ -3814,6 +3834,7 @@ program
 // Schedule a task
 program
   .command('schedule <prompt>')
+  .helpGroup('Automation:')
   .description('Create a recurring scheduled task')
   .option('-e, --every <interval>', 'Interval (e.g., "1h", "30m", "1d")')
   .option('--cron <expression>', 'Cron expression')
@@ -3831,6 +3852,7 @@ program
 // List schedules
 program
   .command('schedules')
+  .helpGroup('Automation:')
   .description('List all scheduled tasks')
   .action(async () => {
     try {
@@ -3845,6 +3867,7 @@ program
 // Unschedule a task
 program
   .command('unschedule <scheduleId>')
+  .helpGroup('Automation:')
   .description('Remove a scheduled task')
   .action(async (scheduleId) => {
     try {
@@ -3859,6 +3882,7 @@ program
 // Scheduler daemon management
 program
   .command('scheduler <action>')
+  .helpGroup('Automation:')
   .description('Manage scheduler daemon (start, stop, status, logs)')
   .action(async (action) => {
     try {
@@ -3872,7 +3896,7 @@ program
 
 // Get log path (machine-readable)
 program
-  .command('get-log-path <taskId>')
+  .command('get-log-path <taskId>', { hidden: true })
   .description('Output log file path for a task (machine-readable)')
   .action(async (taskId) => {
     try {
@@ -3886,7 +3910,7 @@ program
 
 // Resolve the durable task ownership receipt for an in-flight detached launch.
 program
-  .command('get-task-id-by-spawn-token <token>')
+  .command('get-task-id-by-spawn-token <token>', { hidden: true })
   .description('Output task ID for an internal spawn ownership token (machine-readable)')
   .action(async (token) => {
     try {
@@ -3906,10 +3930,13 @@ function failTuiUnavailable() {
   process.exit(1);
 }
 
-program.command('watch').description('TUI unavailable in this release').action(failTuiUnavailable);
+program
+  .command('watch', { hidden: true })
+  .description('TUI unavailable in this release')
+  .action(failTuiUnavailable);
 
 program
-  .command('tui')
+  .command('tui', { hidden: true })
   .description('TUI unavailable in this release')
   .allowExcessArguments(true)
   .allowUnknownOption(true)
@@ -3917,7 +3944,7 @@ program
 
 function registerTuiEntrypoint(commandName, providerName) {
   program
-    .command(commandName)
+    .command(commandName, { hidden: true })
     .description(`TUI unavailable in this release (provider: ${providerName})`)
     .allowExcessArguments(true)
     .allowUnknownOption(true)
@@ -3929,7 +3956,10 @@ for (const providerName of VALID_PROVIDERS) {
 }
 
 // Settings management
-const settingsCmd = program.command('settings').description('Manage zeroshot settings');
+const settingsCmd = program
+  .command('settings')
+  .helpGroup('Configure:')
+  .description('Manage zeroshot settings');
 const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', 'setupVersion', '_targets']);
 // Fail closed while hosted commands are unpublished. Keeping these names out of the
 // default `run` rewrite makes them unknown commands rather than local task input.
@@ -4468,7 +4498,10 @@ settingsCmd.action(() => {
 
 // Hosted target commands intentionally are not registered on the stable CLI.
 // Providers management
-const providersCmd = program.command('providers').description('Manage AI providers');
+const providersCmd = program
+  .command('providers')
+  .helpGroup('Configure:')
+  .description('Manage AI providers');
 providersCmd.action(async () => {
   await providersCommand();
 });
@@ -4488,7 +4521,10 @@ providersCmd
   });
 
 // Setup wizard (read-only facts + setup contract; apply/undo/TTY wizard land separately)
-const setupCmd = program.command('setup').description('Setup and configuration wizard');
+const setupCmd = program
+  .command('setup')
+  .helpGroup('Start:')
+  .description('Setup and configuration wizard');
 setupCmd.action(async () => {
   const result = await runSetupWizard();
   process.exitCode = result.exitCode;
@@ -4556,6 +4592,7 @@ setupCmd
 // Update command
 program
   .command('update')
+  .helpGroup('Maintenance:')
   .description('Update zeroshot to the latest version')
   .option('--check', 'Check for updates without installing')
   .action(async (options) => {
@@ -4596,7 +4633,10 @@ program
   });
 
 // Config visualization commands
-const configCmd = program.command('config').description('Manage and visualize cluster configs');
+const configCmd = program
+  .command('config')
+  .helpGroup('Configure:')
+  .description('Manage and visualize cluster configs');
 
 configCmd
   .command('list')
@@ -4707,7 +4747,10 @@ configCmd
   });
 
 // Agent library commands
-const agentsCmd = program.command('agents').description('View available agent definitions');
+const agentsCmd = program
+  .command('agents')
+  .helpGroup('Configure:')
+  .description('View available agent definitions');
 
 agentsCmd
   .command('list')

@@ -1,7 +1,7 @@
 {
   "name": "@the-open-engine/zeroshot",
   "version": "0.0.0-development",
-  "description": "Multi-agent orchestration engine for Claude, Codex, and Gemini",
+  "description": "Independent executor–verifier orchestration for software changes.",
   "main": "src/orchestrator.js",
   "bin": {
     "zeroshot": "./cli/index.js",
