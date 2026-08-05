@@ -2607,41 +2607,10 @@ program
     'after',
     `
 Examples:
-  ${chalk.cyan('zeroshot run 123 --ship')}             Full automation: isolated + auto-merge PR
-  ${chalk.cyan('zeroshot run 123')}                    Run cluster from GitHub issue
-  ${chalk.cyan('zeroshot run feature.md')}             Run cluster from markdown file
-  ${chalk.cyan('zeroshot run "Implement feature X"')}  Run cluster from plain text
-  ${chalk.cyan('zeroshot run 123 -d')}                 Run in background (detached)
-  ${chalk.cyan('zeroshot run 123 --docker')}           Run in Docker container (safe for e2e tests)
-  ${chalk.cyan('zeroshot task run "Fix the bug"')}     Run single-agent background task
-  ${chalk.cyan('zeroshot list')}                       List all tasks and clusters
-  ${chalk.cyan('zeroshot task list')}                  List tasks only
-  ${chalk.cyan('zeroshot attach <id>')}                Attach to running task (Ctrl+B d to detach)
-  ${chalk.cyan('zeroshot logs -f')}                    Stream logs in real-time (like tail -f)
-  ${chalk.cyan('zeroshot logs -w')}                    Watch cluster lifecycle and event summaries
-  ${chalk.cyan('zeroshot logs <id> -f')}               Stream logs for specific cluster/task
-  ${chalk.cyan('zeroshot status <id>')}                Detailed status of task or cluster
-  ${chalk.cyan('zeroshot finish <id>')}                Convert cluster to completion task (creates and merges PR)
-  ${chalk.cyan('zeroshot kill <id>')}                  Kill a running task or cluster
-  ${chalk.cyan('zeroshot purge')}                      Kill all processes and delete all data (with confirmation)
-  ${chalk.cyan('zeroshot purge -y')}                   Purge everything without confirmation
-  ${chalk.cyan('zeroshot settings')}                   Show/manage zeroshot settings (maxModel, config, etc.)
-  ${chalk.cyan('zeroshot settings set <key> <val>')}   Set a setting (e.g., maxModel haiku)
-  ${chalk.cyan('zeroshot providers')}                  Show provider status and defaults
-  ${chalk.cyan('zeroshot config list')}                List available cluster configs
-  ${chalk.cyan('zeroshot config show <name>')}         Visualize a cluster config (agents, triggers, flow)
-  ${chalk.cyan('zeroshot export <id>')}                Export cluster conversation to file
-
-Automation levels (cascading: --ship → --pr → --worktree):
-  ${chalk.yellow('zeroshot run 123')}            → Local run, no isolation
-  ${chalk.yellow('zeroshot run 123 --docker')}   → Docker isolation, no PR
-  ${chalk.yellow('zeroshot run 123 --worktree')} → Git worktree isolation, no PR
-  ${chalk.yellow('zeroshot run 123 --pr')}       → Worktree + PR (human reviews)
-  ${chalk.yellow('zeroshot run 123 --ship')}     → Worktree + PR + auto-merge (full automation)
-  ${chalk.yellow('zeroshot task run')}           → Single-agent background task (simpler, faster)
-
-Shell completion:
-  ${chalk.dim('zeroshot --completion >> ~/.bashrc && source ~/.bashrc')}
+  ${chalk.cyan('zeroshot')}                             Run guided setup or show help
+  ${chalk.cyan('zeroshot run "Add tests"')}             Start an explicit software-change run
+  ${chalk.cyan('zeroshot list')}                        List tasks and clusters
+  ${chalk.cyan('zeroshot logs <id> -f')}                Follow a run
 `
   );
 
@@ -2653,7 +2622,14 @@ program
   .description(
     'Start a multi-agent cluster (GitHub issue, markdown file, plain text, or "-" for stdin)'
   )
+  .optionsGroup('Input:')
   .option('--config <file>', 'Path to cluster config JSON (default: conductor-bootstrap)')
+  .option('-G, --github', 'Force GitHub as issue source')
+  .option('-L, --gitlab', 'Force GitLab as issue source')
+  .option('-J, --jira', 'Force Jira as issue source')
+  .option('-D, --devops', 'Force Azure DevOps as issue source')
+  .option('-N, --linear', 'Force Linear as issue source')
+  .optionsGroup('Isolation:')
   .option('--docker', 'Run cluster inside Docker container (full isolation)')
   .option('--worktree', 'Use git worktree for isolation (lightweight, no Docker required)')
   .addOption(
@@ -2663,10 +2639,13 @@ program
     '--docker-image <image>',
     'Docker image for --docker mode (default: zeroshot-cluster-base)'
   )
+  .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
+  .option('--no-mounts', 'Disable all Docker credential mounts')
   .option(
-    '--strict-schema',
-    'Enforce JSON schema via CLI (no live streaming). Default: live streaming with local validation'
+    '--container-home <path>',
+    'Container home directory for $HOME expansion (default: /root)'
   )
+  .optionsGroup('Delivery:')
   .option(
     '--pr',
     'Create PR for human review (uses worktree isolation by default, use --docker for Docker). Never auto-merges itself; a repo-side branch-protection auto-merge rule or merge queue may still merge the PR independently of zeroshot.'
@@ -2681,26 +2660,21 @@ program
     '--close-issue <mode>',
     'When to close issue after merge: auto|always|never (default: from .zeroshot/settings.json or never)'
   )
-  .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
+  .optionsGroup('Provider:')
   .option('--provider <provider>', `Override all agents to use a provider (${PROVIDER_CHOICES})`)
   .option('--model <model>', 'Override all agent models (provider-specific model id)')
+  .optionsGroup('Runtime:')
+  .option(
+    '--strict-schema',
+    'Enforce JSON schema via CLI (no live streaming). Default: live streaming with local validation'
+  )
+  .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
   .option(
     '--sim <mode>',
     'Token-free simulation gate for templates (off|fast|deep). Default: fast',
     'fast'
   )
-  .option('-G, --github', 'Force GitHub as issue source')
-  .option('-L, --gitlab', 'Force GitLab as issue source')
-  .option('-J, --jira', 'Force Jira as issue source')
-  .option('-D, --devops', 'Force Azure DevOps as issue source')
-  .option('-N, --linear', 'Force Linear as issue source')
   .option('-d, --detach', 'Run in background (default: attach to first agent)')
-  .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
-  .option('--no-mounts', 'Disable all Docker credential mounts')
-  .option(
-    '--container-home <path>',
-    'Container home directory for $HOME expansion (default: /root)'
-  )
   .addHelpText(
     'after',
     `
@@ -3794,11 +3768,11 @@ program
     }
   });
 
-// Purge all runs (clusters + tasks) - NUCLEAR option
+// Purge all runs (clusters + tasks).
 program
   .command('purge')
   .helpGroup('Maintenance:')
-  .description('NUCLEAR: Kill all running processes and delete all data')
+  .description('Kill all running tasks and clusters, then delete all Zeroshot run data')
   .option('-y, --yes', 'Skip confirmation')
   .action(async (options) => {
     try {

@@ -34,6 +34,22 @@ describe('curated CLI help', function () {
     }
   });
 
+  it('groups run options and removes stale destructive copy', function () {
+    const runHelp = runCli(['run', '--help']);
+    assert.strictEqual(runHelp.status, 0, runHelp.stderr);
+    let previousIndex = -1;
+    for (const heading of ['Input:', 'Isolation:', 'Delivery:', 'Provider:', 'Runtime:']) {
+      const index = runHelp.stdout.indexOf(`\n${heading}\n`);
+      assert.ok(index > previousIndex, `missing or out-of-order run option group ${heading}`);
+      previousIndex = index;
+    }
+
+    const rootHelp = runCli(['--help']);
+    assert.strictEqual(rootHelp.status, 0, rootHelp.stderr);
+    assert.doesNotMatch(rootHelp.stdout, /maxModel|Automation levels|NUCLEAR/);
+    assert.match(rootHelp.stdout, /delete all Zeroshot run data/);
+  });
+
   it('hides internal and compatibility commands from root help', function () {
     const result = runCli(['--help']);
     assert.strictEqual(result.status, 0, result.stderr);
