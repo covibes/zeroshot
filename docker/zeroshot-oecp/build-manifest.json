@@ -83,7 +83,7 @@
     "lib/cluster-worker/worker-internals.js": "db5d7d2f23f07f74aef7d029d1a0ee36ec9317a9f06ba0a5e7d2f15947cbab92",
     "lib/run-plan.js": "c70bae45c113ff7a25a9c8696756fc3799104b01a8dba957d4d0eaf3a55d8a27",
     "package-lock.json": "b75c87f09360a76e5630698fba03ecd6127b486e94b6d98b99b0ff3974dce967",
-    "package.json": "6e147b0503e5eb5c3e310951db136ab45d35466f6eb983dc0a18843918fdadde",
+    "package.json": "118872d7320c1e304115501fd482ce5c0c9694e1a051d101f05569a128d93b16",
     "scripts/hosted-oecp-image-commands.js": "2d22af7d0b2cb0db8c38b30f4a2f441303d8b9f1ab91a9869b267e0529894692",
     "scripts/hosted-oecp-image-smoke.js": "a402d0f9c8805c67729719e2073bf4563a5629f9a782dff2593e0d01f267c795",
     "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
@@ -102,10 +102,10 @@
     "zeroshot-rust/hosted-node": "8d3a7d9d38d8f4cd0fdb5bef2e38dbf0d030b2b2e56e24b02d7a02020ea355c8",
     "zeroshot-rust/src": "9b4a67bcf9fffac122b92fcbdcbdd2d25a82903c0149b183a4e6a4528167cb1a"
   },
-  "imageInputsDigest": "d6e63031e24372854ce796e8f7b26547fc7883a166d496d21a90f5d54bd491df",
+  "imageInputsDigest": "73927a71835d3a99ff08ecefad076c8c3bab4ef76e9628ab4034d87756126a3b",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "ae127b29250b2d7fdddd503918eb4fe7ee11034a15ec8832ab98a5651186b4f5"
+  "manifestDigest": "3333811de8647cdfd64bbcba496eff0475fd097129bdd0be70e1c44f6dca3502"
 }
