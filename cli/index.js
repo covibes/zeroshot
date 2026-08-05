@@ -3959,7 +3959,7 @@ for (const providerName of VALID_PROVIDERS) {
 
 // Settings management
 const settingsCmd = program.command('settings').description('Manage zeroshot settings');
-const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', '_targets']);
+const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', 'setupVersion', '_targets']);
 // Fail closed while hosted commands are unpublished. Keeping these names out of the
 // default `run` rewrite makes them unknown commands rather than local task input.
 // Issue #920 deliberately has no CLI lifecycle or runtime execution surface.

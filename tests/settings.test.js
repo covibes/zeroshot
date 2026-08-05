@@ -107,6 +107,7 @@ function registerSettingsDefaultTests() {
     assert.strictEqual(DEFAULT_SETTINGS.maxModel, 'opus');
     assert.strictEqual(DEFAULT_SETTINGS.defaultConfig, 'conductor-bootstrap');
     assert.strictEqual(DEFAULT_SETTINGS.defaultIsolation, 'none');
+    assert.strictEqual(DEFAULT_SETTINGS.setupVersion, null);
     assert.strictEqual(DEFAULT_SETTINGS.strictSchema, true);
     assert.strictEqual(DEFAULT_SETTINGS.logLevel, 'normal');
     assert.strictEqual(DEFAULT_SETTINGS.defaultProvider, 'claude');
@@ -158,6 +159,17 @@ function registerSettingsPersistenceTests() {
     loaded = settingsModule.loadSettings();
     assert.strictEqual(loaded.defaultIsolation, 'worktree');
     assert.strictEqual(loaded.defaultDocker, undefined);
+  });
+
+  it('keeps setupVersion internal to the settings CLI', function () {
+    writeSettingsFile({ setupVersion: 1 });
+    const listed = runSettingsCli([]);
+    assert.strictEqual(listed.status, 0, listed.stderr);
+    assert.ok(!listed.stdout.includes('setupVersion'));
+
+    const fetched = runSettingsCli(['get', 'setupVersion']);
+    assert.strictEqual(fetched.status, 1);
+    assert.match(fetched.stderr, /Setting not found: setupVersion/);
   });
 }
 
