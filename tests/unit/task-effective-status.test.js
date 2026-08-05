@@ -4,6 +4,7 @@ const { pathToFileURL } = require('url');
 
 let resolveEffectiveTaskStatus;
 let getTasksData;
+let getStatusData;
 
 before(async function () {
   const effectiveStatusUrl = pathToFileURL(
@@ -12,8 +13,12 @@ before(async function () {
   const listUrl = pathToFileURL(
     path.join(__dirname, '..', '..', 'task-lib', 'commands', 'list.js')
   ).href;
+  const statusUrl = pathToFileURL(
+    path.join(__dirname, '..', '..', 'task-lib', 'commands', 'status.js')
+  ).href;
   ({ resolveEffectiveTaskStatus } = await import(effectiveStatusUrl));
   ({ getTasksData } = await import(listUrl));
+  ({ getStatusData } = await import(statusUrl));
 });
 
 describe('effective task status', function () {
@@ -29,7 +34,12 @@ describe('effective task status', function () {
       }
     );
 
-    assert.deepStrictEqual(result, { status: 'completed', reason: null, label: 'completed' });
+    assert.deepStrictEqual(result, {
+      status: 'completed',
+      reason: null,
+      detail: null,
+      label: 'completed',
+    });
     assert.strictEqual(probed, false);
   });
 
@@ -54,7 +64,12 @@ describe('effective task status', function () {
       pid: 123,
       ownership: { processGroupId: 456, terminationStrategy: 'process-group' },
     });
-    assert.deepStrictEqual(result, { status: 'running', reason: null, label: 'running' });
+    assert.deepStrictEqual(result, {
+      status: 'running',
+      reason: null,
+      detail: null,
+      label: 'running',
+    });
   });
 
   it('projects a dead running task as stale', function () {
@@ -66,6 +81,7 @@ describe('effective task status', function () {
     assert.deepStrictEqual(result, {
       status: 'stale',
       reason: 'process_died',
+      detail: 'process died',
       label: 'stale (process died)',
     });
   });
@@ -83,6 +99,7 @@ describe('effective task status', function () {
     assert.deepStrictEqual(result, {
       status: 'stale',
       reason: 'invalid_process_ownership',
+      detail: 'invalid process ownership',
       label: 'stale (invalid process ownership)',
     });
   });
@@ -170,5 +187,71 @@ describe('task list JSON projection', function () {
         attachable: true,
       },
     ]);
+  });
+});
+
+describe('task status JSON projection', function () {
+  const task = {
+    id: 'task-detail',
+    status: 'running',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-02T00:00:00.000Z',
+    cwd: '/repo',
+    pid: 321,
+    exitCode: null,
+    sessionId: 'session-1',
+    requestedResumeSessionId: 'session-0',
+    commandCleanup: { kind: 'temp-directory', path: '/private' },
+    logFile: '/logs/task.log',
+    prompt: 'short prompt',
+    fullPrompt: 'complete prompt',
+    error: 'process exited',
+    provider: 'claude',
+    model: 'sonnet',
+    attachable: true,
+    socketPath: '/private/socket',
+    processGroupId: 321,
+    spawnOwnershipToken: 'private-token',
+    ompSessionOwnership: { partitionPath: '/private/session' },
+  };
+
+  it('returns the detailed public status shown to humans', function () {
+    const status = getStatusData('task-detail', {
+      getTask: () => task,
+      resolveEffectiveTaskStatus: () => ({
+        status: 'stale',
+        reason: 'process_died',
+        detail: 'process died',
+        label: 'stale (process died)',
+      }),
+    });
+
+    assert.deepStrictEqual(status, {
+      id: 'task-detail',
+      status: 'stale',
+      statusReason: 'process_died',
+      statusDetail: 'process died',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+      cwd: '/repo',
+      pid: 321,
+      exitCode: null,
+      sessionId: 'session-1',
+      requestedResumeSessionId: 'session-0',
+      cleanup: 'pending',
+      logFile: '/logs/task.log',
+      prompt: 'complete prompt',
+      error: 'process exited',
+      provider: 'claude',
+      model: 'sonnet',
+      attachable: true,
+    });
+  });
+
+  it('fails when the task does not exist', function () {
+    assert.throws(
+      () => getStatusData('missing', { getTask: () => null }),
+      /Task not found: missing/
+    );
   });
 });
