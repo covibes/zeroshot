@@ -444,6 +444,11 @@ cancels and voids leases without fabricating output. Each stopped run has one fi
 event. Stop acknowledgements never claim rollback or absence of external side effects. These are
 deterministic scripted-backend semantics, not a native graph scheduler or worker executor.
 
+Guided setup lives in `cli/lib/setup-wizard.js`. `defaultIsolation` is the sole saved isolation
+default; persisted `defaultDocker` exists only as one-way migration input. Preflight, startup copy,
+and execution must consume the same canonical effective run plan. Human live events must use the
+footer-aware line/raw writer; JSON output bypasses that writer and remains ANSI-free.
+
 The TUI is not included in this release. Use `zeroshot list`, `zeroshot status <id>`,
 and `zeroshot logs <id> -f` or `zeroshot logs <id> -w` for monitoring.
 
