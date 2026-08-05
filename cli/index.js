@@ -241,6 +241,7 @@ async function runClusterPreflight({
     autoPr: effectivePlan.delivery !== 'none',
     quiet: process.env.ZEROSHOT_DAEMON === '1',
     provider: providerOverride,
+    settings,
     issueProvider,
     targetHost,
   });

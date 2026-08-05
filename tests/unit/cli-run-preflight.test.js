@@ -44,4 +44,10 @@ describe('runClusterPreflight effective plan', function () {
     assert.strictEqual(local.requireGit, false);
     assert.strictEqual(local.autoPr, false);
   });
+
+  it('passes the resolved settings into preflight validation', async function () {
+    const settings = { defaultIsolation: 'worktree' };
+    const received = await capture({}, settings);
+    assert.strictEqual(received.settings, settings);
+  });
 });

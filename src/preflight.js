@@ -468,6 +468,31 @@ function validateProviderIsolationCapabilities(providerName, options) {
   return errors;
 }
 
+function validateProviderExecutionSettings(providerName, settings, options) {
+  const metadata = getProviderMetadata(providerName);
+  if (!metadata.settingsValidator) return [];
+
+  const providerSettings = settings.providerSettings?.[providerName];
+  if (
+    !providerSettings ||
+    typeof providerSettings !== 'object' ||
+    Array.isArray(providerSettings)
+  ) {
+    return [];
+  }
+
+  const executionContext = options.requireDocker ? 'docker' : 'detached';
+  const error = metadata.settingsValidator(providerSettings, { executionContext });
+  if (!error) return [];
+
+  return [
+    formatError(`${metadata.displayName} configuration cannot run cluster agents`, error, [
+      metadata.authInstructions,
+      'Or select a different provider with: zeroshot providers set-default <provider>',
+    ]),
+  ];
+}
+
 function validateProvider(providerName, options) {
   let metadata;
   try {
@@ -623,7 +648,7 @@ async function runPreflight(options = {}) {
   const errors = [];
   const warnings = [];
 
-  const settings = loadSettings();
+  const settings = options.settings || loadSettings();
 
   if (process.platform === 'win32') {
     return {
@@ -648,6 +673,7 @@ async function runPreflight(options = {}) {
 
   const providerResult = validateProvider(providerName, options);
   errors.push(...providerResult.errors);
+  errors.push(...validateProviderExecutionSettings(providerName, settings, options));
   warnings.push(...providerResult.warnings);
 
   // 4. Check issue provider CLI (if required)
