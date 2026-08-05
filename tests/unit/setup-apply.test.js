@@ -95,6 +95,19 @@ describe('setup-apply', function () {
     assert.strictEqual(journal.entries[0].appliedValue, 'codex');
   });
 
+  it('stores defaultIsolation without boolean translation', function () {
+    const results = applyModule.applyDecisions({
+      decisionsPath: decisionsFile({ defaultIsolation: 'worktree' }),
+      cwd: repoRoot,
+    });
+
+    assert.deepStrictEqual(results, [
+      { decisionId: 'defaultIsolation', applied: true, from: 'none', to: 'worktree' },
+    ]);
+    assert.strictEqual(readSettings().defaultIsolation, 'worktree');
+    assert.strictEqual(readSettings().defaultDocker, undefined);
+  });
+
   it('is idempotent: applying identical decisions twice writes only on the first run', function () {
     const decisions = decisionsFile({ defaultProvider: 'codex', defaultDelivery: 'pr' });
 

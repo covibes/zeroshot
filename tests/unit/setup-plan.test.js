@@ -95,7 +95,7 @@ function fullyConfiguredPlan() {
     settings: {
       __meta: { fileExists: true },
       defaultProvider: 'claude',
-      defaultDocker: false,
+      defaultIsolation: 'none',
       defaultDelivery: 'none',
       allowLocalNoIsolation: false,
       defaultIssueSource: 'github',
@@ -139,7 +139,7 @@ describe('buildSetupPlan', function () {
       const plan = freshMachinePlan();
       const allowedPaths = new Set([
         'defaultProvider',
-        'defaultDocker',
+        'defaultIsolation',
         'defaultDelivery',
         'defaultIssueSource',
         'dockerMounts',
@@ -272,7 +272,7 @@ describe('buildSetupPlan', function () {
   });
 
   describe('canonical write paths', function () {
-    it('defaultIsolation only ever writes defaultDocker, defaultDelivery only ever writes defaultDelivery', function () {
+    it('maps isolation and delivery decisions directly to their canonical settings keys', function () {
       const plan = freshMachinePlan();
       const isolationWrites = plan.proposedWrites.filter(
         (w) => w.decisionId === 'defaultIsolation'
@@ -280,9 +280,9 @@ describe('buildSetupPlan', function () {
       const deliveryWrites = plan.proposedWrites.filter((w) => w.decisionId === 'defaultDelivery');
       assert.ok(isolationWrites.length > 0);
       assert.ok(deliveryWrites.length > 0);
-      assert.ok(isolationWrites.every((w) => w.path === 'defaultDocker'));
+      assert.ok(isolationWrites.every((w) => w.path === 'defaultIsolation'));
       assert.ok(deliveryWrites.every((w) => w.path === 'defaultDelivery'));
-      assert.ok(isolationWrites.every((w) => typeof w.to === 'boolean'));
+      assert.ok(isolationWrites.every((w) => w.to === plan.recommended.defaultIsolation));
     });
   });
 
