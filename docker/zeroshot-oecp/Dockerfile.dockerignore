@@ -31,6 +31,12 @@
 !lib/cluster-worker/state-machine.js
 !lib/cluster-worker/terminal-normalizer.js
 !lib/cluster-worker/worker-internals.js
+!scripts/
+!scripts/omp/
+!scripts/omp/runtime.js
+!scripts/omp/runtime-identities.js
+!scripts/omp/runtime-lock.js
+!scripts/omp/runtime-release.js
 !protocol/
 !protocol/openengine-cluster/
 !protocol/openengine-cluster/v1/

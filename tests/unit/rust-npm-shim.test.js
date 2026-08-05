@@ -105,6 +105,7 @@ function registerNativeMetadataTest() {
       'docker/',
       '!docker/zeroshot-oecp/',
       'scripts/',
+      '!scripts/hosted-oecp-ci-relevance.js',
       '!scripts/hosted-oecp-image.js',
       '!scripts/hosted-oecp-image-commands.js',
       '!scripts/hosted-oecp-image-smoke.js',

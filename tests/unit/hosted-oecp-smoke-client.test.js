@@ -10,6 +10,7 @@ const {
   readCapabilityFile,
   resolveTransportCapability,
 } = require('../../scripts/hosted-oecp-smoke-capability');
+const { safeApplyFailure } = require('../../scripts/hosted-oecp-image-smoke');
 
 const CAPABILITY = 'A'.repeat(32);
 
@@ -194,10 +195,39 @@ function registerCapabilityFileTests() {
   });
 }
 
+function registerSafeDiagnosticTests() {
+  it('projects only the closed worker-start code from an apply failure', function () {
+    const sensitiveFragments = [
+      'HOSTED_SMOKE_PROMPT_CANARY',
+      'HOSTED_SMOKE_GIT_TOKEN_CANARY',
+      'HOSTED_SMOKE_PROVIDER_TOKEN_CANARY',
+      '/private/host/worktree',
+      '{"type":"turn.failed","error":{"message":"raw provider output"}}',
+    ];
+    const rawContext = sensitiveFragments.join(' ');
+    const projected = safeApplyFailure({
+      error: {
+        data: { code: 'WORKER_START', diagnostic: rawContext },
+        message: rawContext,
+      },
+      message: rawContext,
+    });
+
+    assert.strictEqual(projected.message, 'Hosted apply request failed (WORKER_START)');
+    assert.strictEqual(projected.stack, projected.message);
+    for (const fragment of sensitiveFragments) assert(!projected.stack.includes(fragment));
+
+    const unknown = safeApplyFailure({ error: { data: { code: rawContext } } });
+    assert.strictEqual(unknown.message, 'Hosted apply request failed');
+    assert.strictEqual(unknown.stack, unknown.message);
+  });
+}
+
 function registerSmokeRpcClientTests() {
   describe('request lifecycle', registerRequestLifecycleTests);
   describe('socket termination', registerSocketTerminationTests);
   describe('capability loading', registerCapabilityFileTests);
+  describe('safe diagnostics', registerSafeDiagnosticTests);
 }
 
 describe('hosted OECP smoke RPC client', registerSmokeRpcClientTests);

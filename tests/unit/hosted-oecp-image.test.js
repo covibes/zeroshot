@@ -12,6 +12,23 @@ const {
   validateContextAllowlist,
 } = require('../../scripts/hosted-oecp-manifest');
 
+const packageManagerPaths = [
+  '/usr/local/bin/npm',
+  '/usr/local/bin/npx',
+  '/usr/local/bin/corepack',
+  '/usr/local/bin/yarn',
+  '/usr/local/bin/yarnpkg',
+  '/usr/local/bin/pnpm',
+  '/usr/local/bin/pnpx',
+  '/usr/local/lib/node_modules/npm',
+  '/usr/local/lib/node_modules/corepack',
+  '/opt/yarn-v1.22.22',
+];
+
+function absentPackageManagerPaths() {
+  return Object.fromEntries(packageManagerPaths.map((path) => [path, false]));
+}
+
 function imageMetadata(manifestDigest) {
   return {
     User: '0:0',
@@ -35,15 +52,45 @@ function runtimeInspection() {
     workspace: { uid: 10002, gid: 10002, mode: '770' },
     controlRoot: { uid: 1000, gid: 10002, mode: '700' },
     forbiddenPresent: [],
-    runtimeModules: { engineStart: true, runtimeDependencies: true },
+    packageManagerPaths: absentPackageManagerPaths(),
+    runtimeModules: {
+      engineStart: true,
+      runtimeDependencies: true,
+      ompRuntime: true,
+      ompRuntimeIdentities: true,
+      ompRuntimeLock: true,
+      ompRuntimeRelease: true,
+    },
     serverExecutable: true,
     tiniExecutable: true,
     gitExecutable: true,
     ajvVersion: '8.18.0',
+    undiciVersion: '8.9.0',
   };
 }
 
-describe('hosted OECP image contracts', function () {
+function registerPackageManagerInspectionTest() {
+  it('requires an exact absent package manager path inspection', function () {
+    const expectedPaths = absentPackageManagerPaths();
+    assert.deepStrictEqual(runtimeInspection().packageManagerPaths, expectedPaths);
+
+    for (const target of packageManagerPaths) {
+      const present = runtimeInspection();
+      present.packageManagerPaths[target] = true;
+      assert.throws(() => validateRuntimeInspection(present), /package manager paths are invalid/);
+    }
+
+    const missing = runtimeInspection();
+    delete missing.packageManagerPaths['/usr/local/bin/npm'];
+    assert.throws(() => validateRuntimeInspection(missing), /package manager paths are invalid/);
+
+    const extra = runtimeInspection();
+    extra.packageManagerPaths['/usr/local/bin/bun'] = false;
+    assert.throws(() => validateRuntimeInspection(extra), /package manager paths are invalid/);
+  });
+}
+
+function registerImageReferenceTests() {
   it('accepts Docker references with registry ports without accepting option or shell injection', function () {
     const accepted = [
       'zeroshot-oecp:private',
@@ -64,7 +111,9 @@ describe('hosted OECP image contracts', function () {
     for (const reference of accepted) assert.strictEqual(validTag(reference), true, reference);
     for (const reference of rejected) assert.strictEqual(validTag(reference), false, reference);
   });
+}
 
+function registerRuntimeInspectionTests() {
   it('validates exact revision, root supervisor, and complete runtime modules', function () {
     const digest = 'manifest-digest';
     assert.doesNotThrow(() => validateImageMetadata(imageMetadata(digest), digest));
@@ -83,8 +132,23 @@ describe('hosted OECP image contracts', function () {
     const missingModule = runtimeInspection();
     missingModule.runtimeModules.runtimeDependencies = false;
     assert.throws(() => validateRuntimeInspection(missingModule), /required runtime module/);
+
+    const missingOmpRuntime = runtimeInspection();
+    missingOmpRuntime.runtimeModules.ompRuntimeRelease = false;
+    assert.throws(() => validateRuntimeInspection(missingOmpRuntime), /required runtime module/);
+
+    const vulnerableUndici = runtimeInspection();
+    vulnerableUndici.undiciVersion = '8.5.0';
+    assert.throws(
+      () => validateRuntimeInspection(vulnerableUndici),
+      /runtime contents are invalid/
+    );
   });
 
+  registerPackageManagerInspectionTest();
+}
+
+function registerManifestTests() {
   it('records immutable image identities and enforces deny-all allowlist parity', function () {
     const manifest = createManifest();
     assert.strictEqual(manifest.schemaVersion, 2);
@@ -100,6 +164,14 @@ describe('hosted OECP image contracts', function () {
       typeof manifest.inputs['docker/zeroshot-oecp/Dockerfile.dockerignore'],
       'string'
     );
+    for (const runtimeModule of [
+      'scripts/omp/runtime.js',
+      'scripts/omp/runtime-identities.js',
+      'scripts/omp/runtime-lock.js',
+      'scripts/omp/runtime-release.js',
+    ]) {
+      assert.strictEqual(typeof manifest.inputs[runtimeModule], 'string');
+    }
 
     const denyAll = '**\n!Cargo.lock\n';
     assert.doesNotThrow(() => validateContextAllowlist(denyAll, denyAll));
@@ -110,4 +182,10 @@ describe('hosted OECP image contracts', function () {
     assert.throws(() => validateContextAllowlist('!Cargo.lock\n', '!Cargo.lock\n'), /deny-all/);
     assert.throws(() => immutableBaseImages('FROM node:22-bookworm-slim'), /not immutable/);
   });
+}
+
+describe('hosted OECP image contracts', function () {
+  registerImageReferenceTests();
+  registerRuntimeInspectionTests();
+  registerManifestTests();
 });

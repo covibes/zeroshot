@@ -8,6 +8,19 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(projectRoot, relativePath), 'utf8');
 }
 
+function assertCiTrunkTriggers(ci) {
+  assert(!/\bbranches:\s*\[main,\s*dev\]/.test(ci), 'CI must not target a retired dev branch');
+  assert(!/enforce-main-pr-source/.test(ci), 'CI must not require dev-to-main promotions');
+  assert(
+    (ci.match(/\bbranches:\s*\[main\]/g) || []).length >= 2,
+    'push and pull request CI must target main'
+  );
+  assert(
+    /merge_group:\s*\n\s*types:\s*\[checks_requested\]/.test(ci),
+    'merge queue CI must use the supported checks_requested trigger'
+  );
+}
+
 describe('release topology', function () {
   it('uses main as the single development and release trunk', function () {
     const ci = readText('.github/workflows/ci.yml');
@@ -28,12 +41,7 @@ describe('release topology', function () {
       releaseWorkflow.indexOf('\n  recover:')
     );
 
-    assert(!/\bbranches:\s*\[main,\s*dev\]/.test(ci), 'CI must not target a retired dev branch');
-    assert(!/enforce-main-pr-source/.test(ci), 'CI must not require dev-to-main promotions');
-    assert(
-      (ci.match(/\bbranches:\s*\[main\]/g) || []).length >= 3,
-      'push, pull request, and merge queue CI must target main'
-    );
+    assertCiTrunkTriggers(ci);
 
     assert(
       /github\.event\.workflow_run\.head_sha/.test(releaseWorkflow),
@@ -48,7 +56,10 @@ describe('release topology', function () {
       'manual dry runs must analyze the dispatched candidate as a release branch'
     );
     assert(/contents:\s*read/.test(dryRunJob), 'dry runs must remain read-only');
-    assert(!/environment:\s*release/.test(dryRunJob), 'dry runs must not enter release environment');
+    assert(
+      !/environment:\s*release/.test(dryRunJob),
+      'dry runs must not enter release environment'
+    );
     assert(!/id-token:\s*write/.test(dryRunJob), 'dry runs must not receive npm OIDC authority');
     assert(/environment:\s*release/.test(publishJob), 'publishing must use release environment');
     assert(/contents:\s*write/.test(publishJob), 'publishing must be allowed to create releases');
