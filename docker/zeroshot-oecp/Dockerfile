@@ -9,7 +9,10 @@ RUN cargo build --locked --release -p zeroshot-rust --bin zeroshot-oecp-server
 FROM docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS node-deps
 WORKDIR /opt/node-runtime
 COPY docker/zeroshot-oecp/package.json docker/zeroshot-oecp/package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+    && npm install brace-expansion@5.0.8 --no-save --ignore-scripts --no-audit --no-fund \
+    && cp -r node_modules/brace-expansion/. node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/ \
+    && rm -rf node_modules/brace-expansion
 
 FROM docker.io/instructure/tini:v0.19.0@sha256:0f9ccf2e54d010735ad691ebe670e256a3820fe8b92c28101194c68ee1216092 AS tini
 
