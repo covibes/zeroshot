@@ -51,8 +51,14 @@ function makeDeps(overrides = {}) {
       throw new Error('not a repo');
     },
     listProviders: () => PROVIDER_NAMES,
+    getProviderMetadata: (name) => ({
+      displayName: name.toUpperCase(),
+      binary: name,
+      installInstructions: `Install ${name}`,
+    }),
     getProvider: (name) => ({
       cliCommand: name,
+      isAvailable: () => false,
     }),
     getProviderDefaults: () => makeProviderDefaults(),
     getNodeVersion: () => 'v99.0.0',
@@ -83,11 +89,11 @@ function fullyConfiguredPlan() {
   const deps = makeDeps({
     commandExists: () => true,
     getCommandPath: (cmd) => `/usr/local/bin/${cmd}`,
+    getProvider: (name) => ({ cliCommand: name, isAvailable: () => true }),
     checkDocker: () => ({ available: true }),
     checkGhAuth: () => ({ authenticated: true }),
     execSync: (command) => fullyConfiguredExecSync(command),
   });
-
   return buildSetupPlan({
     cwd: '/configured/repo',
     settings: {
@@ -293,6 +299,10 @@ describe('buildSetupPlan', function () {
         env: {},
         deps: makeDeps({
           commandExists: (cmd) => cmd === 'codex' || cmd === 'gemini',
+          getProvider: (name) => ({
+            cliCommand: name,
+            isAvailable: () => name === 'codex' || name === 'gemini',
+          }),
         }),
       });
       assert.strictEqual(plan.recommended.defaultProvider, 'claude');
@@ -307,6 +317,10 @@ describe('buildSetupPlan', function () {
         env: {},
         deps: makeDeps({
           commandExists: (cmd) => cmd === 'claude' || cmd === 'codex' || cmd === 'gemini',
+          getProvider: (name) => ({
+            cliCommand: name,
+            isAvailable: () => ['claude', 'codex', 'gemini'].includes(name),
+          }),
         }),
       });
       assert.strictEqual(plan.recommended.defaultProvider, 'claude');
