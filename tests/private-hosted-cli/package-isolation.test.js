@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { describe, it } = require('node:test');
@@ -18,6 +19,74 @@ function run(command, args, options = {}) {
     shell: false,
     ...options,
   });
+}
+
+function assertPackedCandidateLaunches() {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-candidate-installation-'));
+  try {
+    const output = path.join(temporaryRoot, 'candidate');
+    const built = run(process.execPath, [
+      'private/hosted-cli-candidate/build-candidate.js',
+      '--runtime-image-digest',
+      `sha256:${'a'.repeat(64)}`,
+      '--runtime-manifest-digest',
+      'b'.repeat(64),
+      '--zero-cloud-commit',
+      'c'.repeat(40),
+      '--repository',
+      'the-open-engine/zeroshot',
+      '--provider',
+      'codex',
+      '--model-level',
+      'level2',
+      '--out',
+      output,
+    ]);
+    assert.equal(built.status, 0, built.stderr || built.stdout);
+    const candidate = JSON.parse(built.stdout);
+
+    const installation = path.join(temporaryRoot, 'installation');
+    const installed = run(
+      'npm',
+      [
+        'install',
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-fund',
+        '--no-package-lock',
+        '--omit=optional',
+        '--prefix',
+        installation,
+        candidate.tarballPath,
+      ],
+      { timeout: 120_000 }
+    );
+    assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+
+    const executable = path.join(
+      installation,
+      'node_modules',
+      '@the-open-engine',
+      'zeroshot-private-hosted-candidate',
+      'cli',
+      'index.js'
+    );
+    const launched = run(process.execPath, [executable, '--help'], {
+      cwd: installation,
+      env: {
+        ...process.env,
+        CI: '1',
+        HOME: temporaryRoot,
+        NO_UPDATE_NOTIFIER: '1',
+        USERPROFILE: temporaryRoot,
+      },
+    });
+    assert.equal(launched.status, 0, launched.stderr || launched.stdout);
+    assert.match(launched.stdout, /\btarget\b/);
+    assert.match(launched.stdout, /\bcapsule\b/);
+  } finally {
+    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 }
 
 describe('stable/candidate package isolation', () => {
@@ -75,6 +144,12 @@ describe('stable/candidate package isolation', () => {
     assert.match(builder, /delete pkg\.publishConfig/);
     assert.match(builder, /run-intent\.js/);
   });
+
+  it(
+    'builds, installs, and launches the packed candidate',
+    { timeout: 180_000 },
+    assertPackedCandidateLaunches
+  );
 
   it('requires the runtime, cloud commit, and fixed hosted selection', () => {
     const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
