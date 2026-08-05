@@ -1,4 +1,5 @@
 node_modules
+npm-shrinkwrap.json
 coverage
 *.db
 .tsbuildinfo

@@ -10,7 +10,7 @@ const {
   OMP_INSTALL_COMMAND,
   OMP_PACKAGE_NAME,
   OMP_SUPPORTED_VERSION,
-} = require('../../lib/agent-cli-provider/omp-release');
+} = require('../../lib/agent-cli-provider/omp/release');
 const { ENV_PRESETS, MOUNT_PRESETS } = require('../../lib/docker-config');
 const { validateSetting } = require('../../lib/settings');
 const {
@@ -416,21 +416,23 @@ test('runtime Pi command facade delegates to helper', () => {
 });
 
 test('runtime OMP command facade delegates to helper', () => {
-  assertRuntimeCommandParity('omp', 'omp context', {
-    cwd: '/tmp/project',
-    modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
-    cliFeatures: {
-      versionMatches: true,
-      supportsRpcMode: true,
-      supportsConfig: true,
-      supportsModel: true,
-      supportsThinking: true,
-      supportsApprovalMode: true,
-      supportsNoTitle: true,
-      supportsNoSession: true,
-      supportsSessionDir: true,
-      supportsResume: true,
-    },
+  withTempSettings({ providerSettings: { omp: { transport: 'rpc' } } }, () => {
+    assertRuntimeCommandParity('omp', 'omp context', {
+      cwd: '/tmp/project',
+      modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
+      cliFeatures: {
+        versionMatches: true,
+        supportsRpcMode: true,
+        supportsConfig: true,
+        supportsModel: true,
+        supportsThinking: true,
+        supportsApprovalMode: true,
+        supportsNoTitle: true,
+        supportsNoSession: true,
+        supportsSessionDir: true,
+        supportsResume: true,
+      },
+    });
   });
 });
 

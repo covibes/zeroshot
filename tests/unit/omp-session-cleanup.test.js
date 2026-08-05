@@ -15,14 +15,7 @@
  */
 
 const assert = require('assert');
-const { execFile } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { pathToFileURL } = require('url');
-const { promisify } = require('util');
-
-const execFileAsync = promisify(execFile);
+const { fs, os, path, pathToFileURL, runNodeModule } = require('../helpers/test-runtime');
 
 const {
   deleteOmpSessionPartition,
@@ -42,20 +35,12 @@ const cleanCommandUrl = pathToFileURL(
   path.resolve(__dirname, '../../task-lib/commands/clean.js')
 ).href;
 
-async function runStoreScript(script, env = {}, { allowFailure = false } = {}) {
-  try {
-    const { stdout } = await execFileAsync(
-      process.execPath,
-      ['--input-type=module', '-e', script],
-      { env: { ...process.env, ZEROSHOT_HOME: zeroshotHome, ...env } }
-    );
-    return stdout;
-  } catch (error) {
-    // `cleanTasks` sets a non-zero exit code whenever it retains a row, which is a legitimate
-    // outcome for several of these tests. The durable state is what the assertions judge.
-    if (allowFailure && typeof error.stdout === 'string') return error.stdout;
-    throw error;
-  }
+function runStoreScript(script, env = {}, { allowFailure = false } = {}) {
+  return runNodeModule(
+    script,
+    { ZEROSHOT_HOME: zeroshotHome, ...env },
+    allowFailure ? () => true : undefined
+  );
 }
 
 let idCounter = 0;

@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+
 import { classifyProviderError } from './adapters';
 import { envRedactions, commandRedactions } from './contract-env';
 import { contractError } from './contract-errors';
@@ -15,7 +17,7 @@ import {
   schemaMode,
   type RequestData,
 } from './contract-support';
-import { extractErrorStatus } from './errors';
+import { extractErrorStatus, UnsupportedProviderCapabilityError } from './errors';
 import { probeRuntimeProviderCli } from './single-agent-runtime';
 import { getString, isRecord, unknownToMessage } from './json';
 import type { ErrorClassification } from './types';
@@ -25,7 +27,17 @@ function runBuildCommand(
   request: RequestData,
   runtimeSettings?: Record<string, unknown>
 ): ContractEnvelope {
-  const { adapter, commandSpec, options } = buildCommandSpec(request, runtimeSettings);
+  const prepared = buildCommandSpec(request, runtimeSettings);
+  if (prepared.invoke.parser === 'omp-sdk-ndjson') {
+    const privateRoot = prepared.privateArtifacts?.root;
+    if (privateRoot !== undefined) fs.rmSync(privateRoot, { recursive: true, force: true });
+    throw new UnsupportedProviderCapabilityError(
+      'omp',
+      'buildCommand',
+      'OMP SDK invocations cannot be exported by build-command because invoke owns the private request, minimal environment, protocol, containment, and cleanup. Use invoke instead.'
+    );
+  }
+  const { adapter, commandSpec, options } = prepared;
   const webSearch = {
     requested: options.webSearch === true,
     effective: options.webSearch === true && options.cliFeatures?.supportsWebSearch === true,

@@ -3,6 +3,7 @@
 const fs = require('fs');
 const https = require('https');
 const { execFileSync } = require('child_process');
+const { REQUIRED_OMP_SDK_SOURCES, validateOmpSdkReleaseAssets } = require('./omp/runtime');
 
 const RELEASE_ORDER = ['patch', 'minor', 'major'];
 const REQUIRED_PLUGINS = [
@@ -218,9 +219,25 @@ async function releaseSignal() {
 async function main() {
   const packageJson = readJson('package.json');
   const pluginNames = validateReleaseConfig(packageJson);
+  const packageLockSource = fs.readFileSync('package-lock.json');
+  const packageLock = JSON.parse(packageLockSource);
+  const packageShrinkwrapSource = fs.existsSync('npm-shrinkwrap.json')
+    ? fs.readFileSync('npm-shrinkwrap.json')
+    : null;
+  const packageShrinkwrap = packageShrinkwrapSource ? JSON.parse(packageShrinkwrapSource) : null;
+  const sourceFiles = REQUIRED_OMP_SDK_SOURCES.filter((sourceFile) => fs.existsSync(sourceFile));
+  const runtimeAssets = validateOmpSdkReleaseAssets(packageJson, packageLock, {
+    packageLockSource,
+    packageShrinkwrap,
+    packageShrinkwrapSource,
+    sourceFiles,
+  });
   const signal = await releaseSignal();
 
   console.log(`Effective release plugins: ${pluginNames.join(', ')}`);
+  console.log(`Published runtime closure SHA-256: ${runtimeAssets.runtimeClosureSha256}`);
+  console.log(`Published shrinkwrap SHA-256: ${runtimeAssets.shrinkwrapSha256}`);
+  console.log(`Supported OMP SDK platforms: ${runtimeAssets.supportedPlatforms.join(', ')}`);
   console.log(`Latest release tag: ${signal.latestTag}`);
   console.log(`Commits since tag: ${signal.commitCount}`);
   if (signal.prTitle) console.log(`Release PR title: ${signal.prTitle}`);
@@ -241,8 +258,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  REQUIRED_OMP_SDK_SOURCES,
   analyzeMessage,
   maxReleaseType,
   releaseTypeForMessages,
+  validateOmpSdkReleaseAssets,
   validateReleaseConfig,
 };

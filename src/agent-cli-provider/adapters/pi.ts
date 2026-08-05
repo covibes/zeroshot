@@ -1,16 +1,15 @@
 import { appendJsonSchemaPrompt } from '../schema';
 import { contractError } from '../contract-errors';
 import {
-  getArray,
-  getBoolean,
-  getNumber,
-  getOptionalString,
-  getRecord,
-  getString,
-  isRecord,
-  tryParseJson,
-  unknownToMessage,
-} from '../json';
+  emitAssistantSnapshot,
+  parseAssistantDelta,
+  parseToolExecutionEnd,
+  parseToolExecutionStart,
+  parseToolExecutionUpdate,
+  parseTurnEndResult,
+  resetAssistantSnapshot,
+} from '../assistant-stream';
+import { getRecord, getString, isRecord, tryParseJson, unknownToMessage } from '../json';
 import {
   type BuildProviderCommandOptions,
   type CommandSpec,
@@ -152,138 +151,13 @@ function createPiState(): ProviderParserState {
   };
 }
 
-function assistantSnapshot(message: Record<string, unknown>): { text: string; thinking: string } {
-  if (getString(message, 'role') !== 'assistant') return { text: '', thinking: '' };
-
-  let text = '';
-  let thinking = '';
-  for (const item of getArray(message, 'content')) {
-    if (!isRecord(item)) continue;
-    const type = getString(item, 'type');
-    if (type === 'text') {
-      text += getString(item, 'text') ?? '';
-    } else if (type === 'thinking') {
-      thinking += getString(item, 'thinking') ?? '';
-    }
-  }
-
-  return { text, thinking };
-}
-
-function snapshotDelta(previous: string, current: string): string | null {
-  if (!current) return null;
-  if (previous === current) return null;
-  if (current.startsWith(previous)) return current.slice(previous.length) || null;
-  return current;
-}
-
-function emitAssistantSnapshot(
-  message: Record<string, unknown>,
-  state: ProviderParserState
-): readonly OutputEvent[] {
-  const snapshot = assistantSnapshot(message);
-  const events: OutputEvent[] = [];
-
-  const textDelta = snapshotDelta(state.lastAssistantText ?? '', snapshot.text);
-  if (textDelta) events.push({ type: 'text', text: textDelta });
-  state.lastAssistantText = snapshot.text;
-
-  const thinkingDelta = snapshotDelta(state.lastAssistantThinking ?? '', snapshot.thinking);
-  if (thinkingDelta) events.push({ type: 'thinking', text: thinkingDelta });
-  state.lastAssistantThinking = snapshot.thinking;
-
-  return events;
-}
-
-function parseAssistantEvent(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent | null {
-  const type = getString(event, 'type');
-  if (type === 'text_delta') {
-    const delta = getString(event, 'delta');
-    if (!delta) return null;
-    state.lastAssistantText += delta;
-    return { type: 'text', text: delta };
-  }
-  if (type === 'thinking_delta') {
-    const delta = getString(event, 'delta');
-    if (!delta) return null;
-    state.lastAssistantThinking += delta;
-    return { type: 'thinking', text: delta };
-  }
-  return null;
-}
-
-function parseToolExecutionStart(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent {
-  const toolId = getOptionalString(event, 'toolCallId');
-  state.lastToolId = toolId;
-  return {
-    type: 'tool_call',
-    toolName: getOptionalString(event, 'toolName'),
-    toolId,
-    input: event.args ?? {},
-  };
-}
-
-function parseToolExecutionUpdate(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent | null {
-  const toolId = getOptionalString(event, 'toolCallId') ?? state.lastToolId;
-  if (toolId !== undefined) state.lastToolId = toolId;
-  if (!Object.prototype.hasOwnProperty.call(event, 'partialResult')) return null;
-  return {
-    type: 'tool_result',
-    toolId,
-    content: event.partialResult,
-    isError: false,
-  };
-}
-
-function parseToolExecutionEnd(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent {
-  const toolId = getOptionalString(event, 'toolCallId') ?? state.lastToolId;
-  return {
-    type: 'tool_result',
-    toolId,
-    content: event.result ?? '',
-    isError: getBoolean(event, 'isError') ?? false,
-  };
-}
-
-function parseTurnEnd(
+function parsePiTurnEnd(
   event: Record<string, unknown>,
   state: ProviderParserState
 ): readonly OutputEvent[] {
   const message = getRecord(event, 'message');
-  const events: OutputEvent[] = [];
-  if (message !== null) {
-    events.push(...emitAssistantSnapshot(message, state));
-  }
-
-  const usage = message ? getRecord(message, 'usage') ?? {} : {};
-  const stopReason = message ? getString(message, 'stopReason') : null;
-  const errorMessage = message ? getString(message, 'errorMessage') : null;
-  const snapshot = message ? assistantSnapshot(message) : { text: '', thinking: '' };
-  const success = stopReason !== 'error' && stopReason !== 'aborted' && !errorMessage;
-  events.push({
-    type: 'result',
-    success,
-    result: success ? snapshot.text || null : null,
-    error: success ? null : (errorMessage ?? stopReason ?? 'Pi turn failed'),
-    inputTokens: getNumber(usage, 'input') ?? 0,
-    outputTokens: getNumber(usage, 'output') ?? 0,
-    cacheReadInputTokens: getNumber(usage, 'cacheRead') ?? 0,
-    cacheCreationInputTokens: getNumber(usage, 'cacheWrite') ?? 0,
-    cost: getRecord(usage, 'cost') ?? null,
-    modelUsage: usage,
-  });
+  const events = message === null ? [] : [...emitAssistantSnapshot(message, state)];
+  events.push(parseTurnEndResult(event, { failureMessage: 'Pi turn failed' }));
   return events;
 }
 
@@ -293,18 +167,14 @@ function parseMessageEvent(
   state: ProviderParserState
 ): readonly OutputEvent[] | OutputEvent | null | undefined {
   if (type === 'message_start') {
-    const message = getRecord(event, 'message');
-    if (message !== null && getString(message, 'role') === 'assistant') {
-      state.lastAssistantText = '';
-      state.lastAssistantThinking = '';
-    }
+    resetAssistantSnapshot(getRecord(event, 'message'), state);
     return null;
   }
 
   if (type === 'message_update') {
     const assistantMessageEvent = getRecord(event, 'assistantMessageEvent');
     if (assistantMessageEvent !== null) {
-      const assistantEvent = parseAssistantEvent(assistantMessageEvent, state);
+      const assistantEvent = parseAssistantDelta(assistantMessageEvent, state);
       if (assistantEvent !== null) return assistantEvent;
     }
     const message = getRecord(event, 'message');
@@ -343,7 +213,7 @@ function parseEvent(
   const toolEvent = parseToolEvent(type, parsed, state);
   if (toolEvent !== undefined) return toolEvent;
 
-  if (type === 'turn_end') return parseTurnEnd(parsed, state);
+  if (type === 'turn_end') return parsePiTurnEnd(parsed, state);
   return null;
 }
 

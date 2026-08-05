@@ -83,6 +83,7 @@ test('live runtime paths only import the built provider helper through approved 
     'lib/provider-names.js',
     'src/providers/index.js',
     'task-lib/provider-helper-runtime.js',
+    'task-lib/omp-sdk-runtime.js',
   ]);
   const runtimeFiles = ['src', 'lib', 'cli', 'task-lib']
     .flatMap((dir) => walk(path.join(repoRoot, dir)))

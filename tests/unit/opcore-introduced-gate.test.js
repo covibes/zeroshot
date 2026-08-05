@@ -164,6 +164,36 @@ function deletedFileCase() {
     fs.rmSync(repo, { recursive: true, force: true });
   }
 }
+function deletedCloneSourceCase() {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opcore-move-'));
+  const source = [
+    'pub fn moved() -> i32 {',
+    '    let one = 1;',
+    '    let two = 2;',
+    '    let three = 3;',
+    '    let four = 4;',
+    '    one + two + three + four',
+    '}',
+    '',
+  ].join('\n');
+  try {
+    initializeRepo(repo, source);
+    fs.unlinkSync(path.join(repo, 'lib.rs'));
+    fs.writeFileSync(path.join(repo, 'moved.rs'), source);
+
+    const run = runOpcore(repo, [], 'clone.duplication');
+    const result = parseResult(run);
+    assert.strictEqual(run.status, 0, `${run.stderr}\n${run.stdout}`);
+    assert.strictEqual(result.validationResult.status, 'passed');
+    assert.ok(
+      result.validationResult.diagnostics.every(
+        (diagnostic) => diagnostic.code !== 'CLONE_DUPLICATE'
+      )
+    );
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+}
 
 function specializedTypeScriptAuthorityCase() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-opcore-typescript-'));
@@ -229,6 +259,7 @@ describe('Opcore introduced-change gate', function () {
   it('ignores baseline debt but blocks a newly introduced violation', baselineDebtCase);
   it('validates the staged index rather than an unstaged replacement', stagedIndexCase);
   it('does not validate a path after it is deleted', deletedFileCase);
+  it('removes deleted sources before checking moved code for clones', deletedCloneSourceCase);
   it('uses the specialized TypeScript project authority', specializedTypeScriptAuthorityCase);
   it(
     'allows a clean pre-write and blocks an introduced violation within its deadline',

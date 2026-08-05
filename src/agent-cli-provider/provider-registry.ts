@@ -13,11 +13,12 @@ import { ompAdapter } from './adapters/omp';
 import { piAdapter } from './adapters/pi';
 import { resolveClaudeCommand } from './claude-command';
 import {
-  OMP_AUTH_INSTRUCTIONS,
   OMP_DOCKER_INSTALL_COMMAND,
   OMP_DOCKER_PLATFORM,
   OMP_INSTALL_COMMAND,
-} from './omp-release';
+} from './omp/release';
+import { OMP_SDK_SETTINGS_DEFAULTS, validateOmpSdkSettings } from './omp/sdk-settings';
+import type { OmpSettingsValidationContext } from './omp/sdk-settings';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';
@@ -125,7 +126,10 @@ interface ProviderRegistryEntryBase {
   readonly credentialEnvKeys: readonly string[];
   readonly settingsFields: readonly string[];
   readonly settingsDefaults?: Readonly<Record<string, unknown>>;
-  readonly settingsValidator?: (settings: Record<string, unknown>) => string | null;
+  readonly settingsValidator?: (
+    settings: Record<string, unknown>,
+    context?: OmpSettingsValidationContext
+  ) => string | null;
   readonly availabilityProbe?: 'command' | 'help-or-version';
   readonly docs: ProviderDocsMetadata;
   readonly docker: ProviderDockerMetadata;
@@ -258,7 +262,7 @@ export const providerRegistry = [
       default: claudeAdapter.defaultLevel,
       max: claudeAdapter.defaultMaxLevel,
     },
-    adapter: claudeAdapter,
+    adapter: claudeAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'codex',
@@ -300,7 +304,7 @@ export const providerRegistry = [
       default: codexAdapter.defaultLevel,
       max: codexAdapter.defaultMaxLevel,
     },
-    adapter: codexAdapter,
+    adapter: codexAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'gateway',
@@ -387,7 +391,7 @@ export const providerRegistry = [
       default: geminiAdapter.defaultLevel,
       max: geminiAdapter.defaultMaxLevel,
     },
-    adapter: geminiAdapter,
+    adapter: geminiAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'opencode',
@@ -428,7 +432,7 @@ export const providerRegistry = [
       default: opencodeAdapter.defaultLevel,
       max: opencodeAdapter.defaultMaxLevel,
     },
-    adapter: opencodeAdapter,
+    adapter: opencodeAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'pi',
@@ -478,10 +482,25 @@ export const providerRegistry = [
     command: { kind: 'fixed', command: 'omp', args: [] },
     invoke: RPC_STDIO_INVOKE,
     installInstructions: OMP_INSTALL_COMMAND,
-    authInstructions: OMP_AUTH_INSTRUCTIONS,
+    authInstructions:
+      'Manually edit providerSettings.omp in ZEROSHOT_SETTINGS_FILE or $HOME/.zeroshot/settings.json (file 0600, parent directory 0700). Use declared environment or broker variables, an explicit host-only OMP agent directory containing agent.db, or keyless mode; Zeroshot never logs in or stores credential values.',
     credentialPaths: ['~/.omp'],
     credentialEnvKeys: ompAdapter.credentialEnvKeys,
-    settingsFields: [],
+    settingsFields: [
+      'transport',
+      'minLevel',
+      'defaultLevel',
+      'maxLevel',
+      'levelOverrides',
+      'modelsConfig',
+      'auth',
+      'tools',
+      'nestedAgents',
+      'mcp',
+    ],
+    settingsDefaults: { ...OMP_SDK_SETTINGS_DEFAULTS },
+    settingsValidator: (settings, context): string | null =>
+      settings.transport === 'rpc' ? null : validateOmpSdkSettings(settings, context),
     availabilityProbe: 'help-or-version',
     // Written out explicitly rather than spread from STANDARD_CAPABILITIES, which defaults
     // dockerIsolation to true; OMP's Docker path is env/broker-only and sessionless (see
@@ -505,7 +524,7 @@ export const providerRegistry = [
     },
     docs: {
       label: 'OMP',
-      setupHeading: 'OMP Setup',
+      setupHeading: 'OMP Manual Configuration',
     },
     docker: {
       // No `mount`: OMP's Docker credential surface is env/broker-only with zero automatic
