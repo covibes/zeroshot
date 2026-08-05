@@ -2934,7 +2934,8 @@ async function parseResultOutput(agent, output, { allowRecovery = true } = {}) {
 
   const errorDetail = directValidation?.error || 'unknown schema error';
   const message = `Agent ${agent.id} output failed JSON schema validation: ${errorDetail}`;
-  if (recovery?.status === 'exhausted') {
+  const terminalStructuredRole = ['planner', 'conductor', 'validator'].includes(agent.role);
+  if (recovery?.status === 'exhausted' && terminalStructuredRole) {
     throw createStructuredOutputInvalidError(
       `${message}. Recovery exhausted after ${recovery.attempts} attempts: ${recovery.lastError}`,
       'schema_validation',
