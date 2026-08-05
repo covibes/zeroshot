@@ -8,12 +8,8 @@
   "protocol": {
     "version": "openengine.cluster/v1",
     "route": "/oecp",
-    "graphProfiles": [
-      "openengine.graph.single-worker/v1"
-    ],
-    "workerProfiles": [
-      "legacy.zeroshot.ship@1"
-    ]
+    "graphProfiles": ["openengine.graph.single-worker/v1"],
+    "workerProfiles": ["legacy.zeroshot.ship@1"]
   },
   "runtime": {
     "supervisor": {
@@ -62,10 +58,10 @@
     "clippy.toml": "3c652ff2949df903bd0b80c8f14a7196ff9ad1e12841ddb614d080c4a03d1aa2",
     "crates": "a2f7c3bb65eb2b150647b00aab00f510ea67356dd08990e1bb9afa626b8bac9e",
     "docker/zeroshot-oecp/.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
-    "docker/zeroshot-oecp/Dockerfile": "5a18451b5fc7f41d4bfe84ddf88df64c3b194d1e0085540b82b281e5493d15f9",
+    "docker/zeroshot-oecp/Dockerfile": "8c36654fcaec00488ccba2bf93261761a28467481ccc31e400d7cd2740c2a571",
     "docker/zeroshot-oecp/Dockerfile.dockerignore": "ea747fa7c0886f9a13a0f15fcb747cf61033850f002e2746d43f713835fc1dfd",
-    "docker/zeroshot-oecp/package-lock.json": "3f98c36741fb197cb75e2eb921173b33bf291724bfe1babc13bc250e94f9e1d4",
-    "docker/zeroshot-oecp/package.json": "3015b31b75d38d930a768d532e5b809e01c37f4f91076075367649614ca280b5",
+    "docker/zeroshot-oecp/package-lock.json": "5711bf91423b0095adda9e149699ae5ab3ae631e93284da88fc635eab78e8f9b",
+    "docker/zeroshot-oecp/package.json": "c940926d527e0f8a7acc435ef4866574ffb0743e6696ee4370bee9213469403a",
     "lib/agent-cli-provider": "665ea5edab232eb718a685005828ab8fdccf2c72d6c20c1baee594ad39ce3a68",
     "lib/provider-detection.js": "8a57242a38aa2da62912fc525af9995f61c8e84724e715342c765e5bf15e7893",
     "lib/cluster-worker/contracts.js": "a8c97f5ef0e3e5b8caef4acf7f7a2efd2a71019c6b08a3066c2078246c19b455",
@@ -98,10 +94,10 @@
     "zeroshot-rust/hosted-node": "8d3a7d9d38d8f4cd0fdb5bef2e38dbf0d030b2b2e56e24b02d7a02020ea355c8",
     "zeroshot-rust/src": "9b4a67bcf9fffac122b92fcbdcbdd2d25a82903c0149b183a4e6a4528167cb1a"
   },
-  "imageInputsDigest": "010248943dcf38d1eca4b205e744d568a37947c20ab9b49fd5c47e949032ba3e",
+  "imageInputsDigest": "69858a76f1c1d8279795b2a76d497c06a0c7e91de8d3cac150852ecac38171b3",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "60b01863b74231dd58ec5d9e316c6b4cac35d6a79e0bb29a6b1be2b0344889ef"
+  "manifestDigest": "01e3aad31c2d36d58480a3814b598193a2bdf3c646418d2de05d3992c5d86028"
 }
