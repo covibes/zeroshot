@@ -8,8 +8,12 @@
   "protocol": {
     "version": "openengine.cluster/v1",
     "route": "/oecp",
-    "graphProfiles": ["openengine.graph.single-worker/v1"],
-    "workerProfiles": ["legacy.zeroshot.ship@1"]
+    "graphProfiles": [
+      "openengine.graph.single-worker/v1"
+    ],
+    "workerProfiles": [
+      "legacy.zeroshot.ship@1"
+    ]
   },
   "runtime": {
     "supervisor": {
