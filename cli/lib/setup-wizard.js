@@ -1,116 +1,197 @@
-const { buildSetupPlan } = require('../../lib/setup-plan');
+const { isDeepStrictEqual } = require('util');
+
 const { applyDecisionValues } = require('../../lib/setup-apply');
-const { loadSettings, mutateSettings, settingsFileExists } = require('../../lib/settings');
+const { buildSetupPlan, getNestedValue, resolveDecisionPath } = require('../../lib/setup-plan');
+const {
+  getSettingsFile,
+  loadSettings,
+  mutateSettings,
+  settingsFileExists,
+} = require('../../lib/settings');
 const { readRepoSettings } = require('../../lib/repo-settings');
+const { runPreflight } = require('../../src/preflight');
+const { providerChoices } = require('./setup-provider-readiness');
+const { scanSetupEnvironment } = require('./setup-scanner');
+const {
+  buildWizardDecisions,
+  buildWizardPlanModel,
+  collectSetupScan,
+  isolationChoices,
+  preferredIndex,
+} = require('./setup-wizard-model');
 const {
   beginTerminal,
   createKeyReader,
   line,
   parseKeys,
   selectChoice,
+  stripAnsi,
 } = require('./setup-wizard-terminal');
+const { WizardRenderer } = require('./setup-wizard-view');
 
 function defaultDeps() {
   return {
-    buildSetupPlan,
     applyDecisionValues,
+    buildSetupPlan,
+    getSettingsFile,
     loadSettings,
     mutateSettings,
-    settingsFileExists,
     readRepoSettings,
+    runPreflight,
+    scanSetupEnvironment,
+    settingsFileExists,
   };
 }
 
-function usableProviders(plan) {
-  return Object.entries(plan.facts.providers)
-    .filter(([, facts]) => facts.available)
-    .map(([id, facts]) => ({ id, ...facts }));
-}
-
-function buildWizardDecisions(plan, provider, isolation) {
-  const decisions = {
-    defaultProvider: provider,
-    [`providerLevel.${provider}`]: plan.recommended[`providerLevel.${provider}`],
-    defaultIsolation: isolation,
-    defaultDelivery: 'none',
-    defaultIssueSource: plan.recommended.defaultIssueSource,
-    updatePolicy: plan.recommended.updatePolicy,
-  };
-  if (isolation === 'docker') {
-    decisions.dockerMounts = plan.recommended.dockerMounts;
-    decisions.dockerEnvPassthrough = plan.recommended.dockerEnvPassthrough;
+function verifyPersistedDecisions(decisions, persisted) {
+  for (const [decisionId, expected] of Object.entries(decisions)) {
+    const target = resolveDecisionPath(decisionId);
+    if (!target || target.scope !== 'global') continue;
+    const actual = getNestedValue(persisted, target.path);
+    if (decisionId.startsWith('providerLevel.')) {
+      for (const [key, value] of Object.entries(expected)) {
+        if (actual?.[key] !== value) {
+          throw new Error(`Persisted ${target.path}.${key} did not match the approved plan`);
+        }
+      }
+    } else if (!isDeepStrictEqual(actual, expected)) {
+      throw new Error(`Persisted ${target.path} did not match the approved plan`);
+    }
   }
-  return decisions;
 }
 
-function renderScan(stdout, plan) {
-  line(stdout, 'Setup scan');
-  line(stdout, `Node: ${plan.facts.node.version}`);
-  line(stdout, `Zeroshot: ${plan.facts.node.packageVersion}`);
-  line(
-    stdout,
-    `Git: ${plan.facts.git.isRepo ? `repository (${plan.facts.git.branch || 'detached'})` : 'not a repository'}`
-  );
-  line(stdout, `Docker: ${plan.facts.docker.available ? 'available' : 'unavailable'}`);
-  for (const [id, provider] of Object.entries(plan.facts.providers)) {
+function preflightFailure(result) {
+  const message = result.errors
+    .map((error) => stripAnsi(error).trim())
+    .filter(Boolean)
+    .join('\n');
+  return new Error(message || 'Setup preflight failed');
+}
+
+async function verifyAppliedSetup({ resolved, decisions, provider, isolation, cwd }) {
+  const persisted = resolved.loadSettings();
+  verifyPersistedDecisions(decisions, persisted);
+  const preflight = await resolved.runPreflight({
+    cwd,
+    settings: persisted,
+    provider,
+    requireDocker: isolation === 'docker',
+    requireGit: isolation === 'worktree',
+    quiet: true,
+  });
+  if (!preflight.valid) throw preflightFailure(preflight);
+  return { persisted, preflight };
+}
+
+function renderBlockedProviders(renderer, choices) {
+  const theme = renderer.theme;
+  line(renderer.stdout, theme.danger('No provider is ready for the selected isolation.'));
+  for (const choice of choices) {
     line(
-      stdout,
-      `${provider.displayName} (${id}): ${provider.available ? provider.path || 'available' : 'unavailable'}`
+      renderer.stdout,
+      `  ${choice.label}: ${choice.status}${choice.detail ? ` · ${choice.detail}` : ''}`
     );
+    const action =
+      choice.status === 'unavailable' ? choice.installInstructions : choice.authInstructions;
+    if (action) line(renderer.stdout, `    ${action.split('\n')[0]}`);
   }
+  line(renderer.stdout, 'Run `zeroshot setup` again after resolving one provider.');
 }
 
-function renderNoProviders(stdout, plan) {
-  line(stdout, '\nNo usable provider was detected.');
-  for (const provider of Object.values(plan.facts.providers)) {
-    line(stdout, `\n${provider.displayName}`);
-    for (const instruction of provider.installInstructions.split('\n'))
-      line(stdout, `  ${instruction}`);
+function cancelledResult(renderer, plan) {
+  renderer.cancelled();
+  return { status: 'cancelled', applied: false, exitCode: 130, plan };
+}
+
+function hasAvailableProvider(probes) {
+  return Object.entries(probes).some(
+    ([id, probe]) => id.startsWith('provider:') && probe.available
+  );
+}
+
+function blockedProviderResult(renderer, request) {
+  renderBlockedProviders(renderer, providerChoices(request));
+  return { status: 'no-provider', applied: false, exitCode: 1, plan: request.plan };
+}
+
+async function chooseWizardConfiguration({ renderer, reader, plan, probes, settings }) {
+  const isolations = isolationChoices(plan);
+  if (!hasAvailableProvider(probes)) {
+    const preview = isolations.find((choice) => !choice.disabled)?.value || 'none';
+    return {
+      result: blockedProviderResult(renderer, { plan, probes, isolation: preview, settings }),
+    };
   }
-  line(stdout, '\nRun zeroshot setup after installing a provider.');
+  const isolation = await renderer.choose({
+    title: 'Isolation',
+    meta: 'execution context',
+    choices: isolations,
+    initial: preferredIndex(isolations, plan.recommended.defaultIsolation),
+    reader,
+  });
+  if (!isolation) return { result: cancelledResult(renderer, plan) };
+  const providers = providerChoices({ plan, probes, isolation, settings });
+  if (!providers.some((choice) => !choice.disabled)) {
+    return {
+      result: blockedProviderResult(renderer, { plan, probes, isolation, settings }),
+    };
+  }
+  const provider = await renderer.choose({
+    title: 'Provider',
+    meta: `${isolation}-compatible`,
+    choices: providers,
+    initial: preferredIndex(providers, plan.recommended.defaultProvider),
+    reader,
+    provider: true,
+  });
+  return provider ? { provider, isolation } : { result: cancelledResult(renderer, plan) };
 }
 
-function isolationChoices(plan) {
-  const worktreeUnavailable = plan.facts.git.isRepo ? '' : ' (unavailable: not a git repository)';
-  const dockerUnavailable = plan.facts.docker.available ? '' : ' (unavailable)';
-  return [
-    {
-      value: 'worktree',
-      label: `Worktree — isolated checkout, current checkout untouched${worktreeUnavailable}`,
-      disabled: !plan.facts.git.isRepo,
-    },
-    {
-      value: 'docker',
-      label: `Docker — strongest isolation, slower startup${dockerUnavailable}`,
-      disabled: !plan.facts.docker.available,
-    },
-    {
-      value: 'none',
-      label: 'None — edits the current checkout directly',
-      disabled: false,
-    },
-  ];
-}
-
-function renderReview(stdout, plan, provider, isolation) {
-  const levels = plan.recommended[`providerLevel.${provider}`];
-  line(stdout, '\nReview');
-  line(stdout, `Provider: ${plan.facts.providers[provider].displayName}`);
-  line(stdout, `Model levels: ${levels.minLevel} → ${levels.defaultLevel} → ${levels.maxLevel}`);
-  line(stdout, `Isolation: ${isolation}`);
-  line(stdout, 'Delivery: none');
-  line(stdout, `Issue source: ${plan.recommended.defaultIssueSource}`);
-  line(stdout, `Update policy: ${plan.recommended.updatePolicy}`);
-}
-
-function renderComplete(stdout, provider, isolation) {
-  line(stdout, '\nSetup complete');
-  line(stdout, `Provider: ${provider}`);
-  line(stdout, `Isolation: ${isolation}`);
-  line(stdout, '\nNext actions:');
-  line(stdout, '  zeroshot run <input>');
-  line(stdout, `  zeroshot providers setup ${provider}`);
-  line(stdout, '  zeroshot --help');
+async function applyApprovedPlan({
+  renderer,
+  resolved,
+  plan,
+  provider,
+  isolation,
+  enabledGroups,
+  cwd,
+}) {
+  renderer.applyStarted();
+  const decisions = buildWizardDecisions(plan, provider, isolation, enabledGroups);
+  let receipts = [];
+  try {
+    receipts = resolved.applyDecisionValues({ decisions, cwd });
+    renderer.applyReceipts(receipts);
+    const verification = await verifyAppliedSetup({
+      resolved,
+      decisions,
+      provider,
+      isolation,
+      cwd,
+    });
+    resolved.mutateSettings((current) => {
+      current.setupVersion = 1;
+    });
+    renderer.applyVerified(receipts);
+    renderer.ready(provider, isolation);
+    return {
+      status: 'applied',
+      applied: true,
+      exitCode: 0,
+      decisions,
+      results: receipts,
+      verification,
+      plan,
+    };
+  } catch (error) {
+    renderer.failed('Setup was not completed.', error, receipts);
+    return {
+      status: 'failed',
+      applied: receipts.some((receipt) => receipt.applied),
+      exitCode: 1,
+      error,
+    };
+  }
 }
 
 async function runSetupWizard({
@@ -125,76 +206,63 @@ async function runSetupWizard({
     line(stdout, 'Use `zeroshot setup plan` and `zeroshot setup apply --decisions <file>`.');
     return { status: 'non-interactive', applied: false, exitCode: 1 };
   }
-
   const resolved = { ...defaultDeps(), ...deps };
   const settings = resolved.loadSettings();
   settings.__meta = { fileExists: resolved.settingsFileExists() };
   const { settings: repoSettings } = resolved.readRepoSettings(cwd);
-  const plan = resolved.buildSetupPlan({
-    cwd,
-    settings,
-    repoSettings,
-    env: { ...env, __isTTY: true },
-    deps: resolved.setupPlanDeps,
-  });
-
   const restoreTerminal = beginTerminal(stdin, stdout);
-  const reader = createKeyReader(stdin);
+  const reader = createKeyReader(stdin, stdout);
+  const renderer = new WizardRenderer({
+    stdout,
+    env,
+    clock: resolved.clock,
+    motion: resolved.motion,
+  });
   try {
-    renderScan(stdout, plan);
-    const providers = usableProviders(plan);
-    if (providers.length === 0) {
-      renderNoProviders(stdout, plan);
-      return { status: 'no-provider', applied: false, exitCode: 1, plan };
-    }
-
-    const preferredProvider = providers.findIndex(
-      (provider) => provider.id === plan.recommended.defaultProvider
-    );
-    const provider = await selectChoice({
-      stdout,
+    renderer.intro();
+    const scanPresenter = renderer.scanPresenter();
+    const scan = await collectSetupScan({
+      cwd,
+      settings,
+      repoSettings,
+      env,
+      resolved,
+      deps,
+      onProgress: (event) => scanPresenter.handle(event),
+    });
+    scanPresenter.commit(scan);
+    const selection = await chooseWizardConfiguration({
+      renderer,
       reader,
-      title: 'Provider',
-      choices: providers.map((item) => ({
-        value: item.id,
-        label: `${item.displayName} — ${item.path}`,
-      })),
-      initial: preferredProvider < 0 ? 0 : preferredProvider,
+      plan: scan.plan,
+      probes: scan.probes,
+      settings,
     });
-    if (!provider) return { status: 'cancelled', applied: false, exitCode: 130 };
-
-    const isolations = isolationChoices(plan);
-    const preferredIsolation = isolations.findIndex(
-      (choice) => choice.value === plan.recommended.defaultIsolation && !choice.disabled
-    );
-    const isolation = await selectChoice({
-      stdout,
-      reader,
-      title: 'Isolation',
-      choices: isolations,
-      initial: preferredIsolation < 0 ? 0 : preferredIsolation,
+    if (selection.result) return selection.result;
+    const settingsFile = resolved.getSettingsFile();
+    const buildModel = (enabledGroups) =>
+      buildWizardPlanModel({
+        plan: scan.plan,
+        settings,
+        settingsFile,
+        provider: selection.provider,
+        isolation: selection.isolation,
+        enabledGroups,
+      });
+    const approval = await renderer.plan(reader, buildModel);
+    if (approval.action !== 'apply') return cancelledResult(renderer, scan.plan);
+    return applyApprovedPlan({
+      renderer,
+      resolved,
+      plan: scan.plan,
+      provider: selection.provider,
+      isolation: selection.isolation,
+      enabledGroups: approval.enabled,
+      cwd,
     });
-    if (!isolation) return { status: 'cancelled', applied: false, exitCode: 130 };
-
-    renderReview(stdout, plan, provider, isolation);
-    const review = await selectChoice({
-      stdout,
-      reader,
-      title: 'Apply setup?',
-      choices: [
-        { value: 'apply', label: 'Apply' },
-        { value: 'cancel', label: 'Cancel' },
-      ],
-    });
-    if (review !== 'apply') return { status: 'cancelled', applied: false, exitCode: 130 };
-
-    const decisions = buildWizardDecisions(plan, provider, isolation);
-    const results = resolved.applyDecisionValues({ decisions, cwd });
-    resolved.mutateSettings((current) => {
-      current.setupVersion = 1;
-    });
-    renderComplete(stdout, provider, isolation);
-    return { status: 'applied', applied: true, exitCode: 0, decisions, results, plan };
+  } catch (error) {
+    renderer.fatal('Setup scan failed.', error);
+    return { status: 'failed', applied: false, exitCode: 1, error };
   } finally {
     reader.close();
     restoreTerminal();
@@ -204,6 +272,10 @@ async function runSetupWizard({
 module.exports = {
   runSetupWizard,
   buildWizardDecisions,
+  buildWizardPlanModel,
+  isolationChoices,
   parseKeys,
+  preferredIndex,
   selectChoice,
+  verifyPersistedDecisions,
 };
