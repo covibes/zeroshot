@@ -23,6 +23,7 @@ async-trait.workspace = true
 fs2.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
+httparse.workspace = true
 libc.workspace = true
 openengine-cluster-protocol.workspace = true
 openengine-cluster-server.workspace = true

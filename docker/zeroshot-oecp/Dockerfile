@@ -62,7 +62,7 @@ RUN groupadd --gid 10002 zeroshot-worker \
     && useradd --uid 10002 --gid 10002 --home-dir /tmp/zeroshot-oecp --no-create-home --shell /usr/sbin/nologin zeroshot-worker \
     && mkdir -p /workspace /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chown 10002:10002 /workspace \
-    && chown 1000:10002 /run/zeroshot-capsule-agent \
+    && chown 0:10002 /run/zeroshot-capsule-agent \
     && chown 10002:10002 /tmp/zeroshot-oecp \
     && chmod 0770 /workspace \
     && chmod 0700 /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
@@ -72,8 +72,8 @@ RUN groupadd --gid 10002 zeroshot-worker \
 
 ENV ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability
 ENV PATH=/opt/zeroshot/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-USER 0:0
+USER 0:10002
 WORKDIR /workspace
-EXPOSE 8080
+EXPOSE 8083 8084 8085
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD ["/usr/local/bin/zeroshot-oecp-server", "--healthcheck"]
 ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/node", "/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js"]

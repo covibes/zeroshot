@@ -166,19 +166,43 @@ function createManifest() {
   const inputs = Object.fromEntries(INPUTS.map((relative) => [relative, digestInput(relative)]));
   const imageInputsDigest = sha256(canonical(inputs));
   const document = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifact: { name: 'zeroshot-oecp', private: true, published: false },
     protocol: {
       version: 'openengine.cluster/v1',
-      route: '/oecp',
       graphProfiles: ['openengine.graph.single-worker/v1'],
       workerProfiles: ['legacy.zeroshot.ship@1'],
     },
     runtime: {
-      supervisor: { user: 'root', uid: 0, gid: 0 },
+      supervisor: { user: 'root', uid: 0, gid: 10002 },
       worker: { user: 'zeroshot-worker', uid: 10002, gid: 10002 },
+      controlRoot: {
+        path: '/run/zeroshot-capsule-agent',
+        user: 'root',
+        uid: 0,
+        gid: 10002,
+        mode: '0700',
+      },
       capabilityFile: '/run/zeroshot-capsule-agent/capability',
-      port: 8080,
+      transports: {
+        ndjson: {
+          protocol: 'ndjson',
+          scope: 'task-local',
+          port: 8085,
+        },
+        websocket: {
+          protocol: 'websocket',
+          scope: 'capsule-agent',
+          route: '/oecp',
+          port: 8083,
+        },
+        runIntent: {
+          protocol: 'http',
+          scope: 'internal',
+          route: '/internal/run-intents/{intent_id}',
+          port: 8084,
+        },
+      },
       workspace: '/workspace',
       legacyLimitation: 'bounded Node worker; not native-v2 or openengine.graph.full/v1 certified',
     },

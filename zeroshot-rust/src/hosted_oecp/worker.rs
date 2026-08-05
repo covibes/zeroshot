@@ -179,6 +179,10 @@ impl WorkerExecution {
     }
 }
 
+pub(super) fn validate_worker_request(request: &LegacyShipRequest) -> Result<(), WorkerError> {
+    build_request_frame(1, "start", json!({ "request": request })).map(|_frame| ())
+}
+
 fn build_request_frame(id: u64, method: &str, params: Value) -> Result<ProcessFrame, WorkerError> {
     let mut frame = serde_json::to_vec(&json!({
         "id": id,

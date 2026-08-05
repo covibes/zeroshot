@@ -2,11 +2,13 @@
 
 const { spawn } = require('node:child_process');
 const { loadHostedWorkerConfiguration } = require('./hosted-config');
+const { installRuntimeCapability } = require('./runtime-capability');
 const { cloneFixedRepository } = require('./workspace-bootstrap');
 
 const SERVER = '/usr/local/bin/zeroshot-oecp-server';
 
 async function main() {
+  installRuntimeCapability();
   const configuration = loadHostedWorkerConfiguration();
   await cloneFixedRepository(configuration);
   const server = spawn(SERVER, [], { env: process.env, stdio: 'inherit', windowsHide: true });

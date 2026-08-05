@@ -11,6 +11,7 @@ const DOMAIN = `(?:${DOMAIN_COMPONENT}(?:\\.${DOMAIN_COMPONENT})*|\\[[a-fA-F0-9:
 const PATH_COMPONENT = '[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*';
 const NAME_PATTERN = new RegExp(`^(?:${DOMAIN}/)?${PATH_COMPONENT}(?:/${PATH_COMPONENT})*$`);
 const TAG_PATTERN = /^\w[\w.-]{0,127}$/;
+const EXPOSED_PORTS = Object.freeze(['8083/tcp', '8084/tcp', '8085/tcp']);
 
 const isAsciiLetter = (character) =>
   (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z');
@@ -104,6 +105,7 @@ const worker = fs.readFileSync('/etc/passwd', 'utf8').split('\\n')
   .find((line) => line.startsWith('zeroshot-worker:')).split(':');
 process.stdout.write(JSON.stringify({
   uid: process.getuid(),
+  gid: process.getgid(),
   worker: { uid: Number(worker[2]), gid: Number(worker[3]) },
   workspace: ownership('/workspace'),
   controlRoot: ownership('/run/zeroshot-capsule-agent'),
@@ -144,8 +146,8 @@ process.stdout.write(JSON.stringify({
 `;
 
 function validateImageMetadata(metadata, manifestDigest) {
-  if (!metadata || metadata.User !== '0:0') {
-    throw new Error('Hosted image supervisor is not root');
+  if (!metadata || metadata.User !== '0:10002') {
+    throw new Error('Hosted image supervisor identity is invalid');
   }
   if (metadata.Labels?.['org.opencontainers.image.revision'] !== manifestDigest) {
     throw new Error('Hosted image OCI revision does not match the current manifest digest');
@@ -162,7 +164,8 @@ function validateImageMetadata(metadata, manifestDigest) {
     throw new Error('Hosted image does not use the containment subreaper entrypoint');
   }
   if (
-    JSON.stringify(Object.keys(metadata.ExposedPorts || {}).sort()) !== JSON.stringify(['8080/tcp'])
+    JSON.stringify(Object.keys(metadata.ExposedPorts || {}).sort()) !==
+    JSON.stringify(EXPOSED_PORTS)
   ) {
     throw new Error('Hosted image exposes an unexpected port');
   }
@@ -176,7 +179,9 @@ function validateImageMetadata(metadata, manifestDigest) {
 }
 
 function validateRuntimeIdentity(runtime) {
-  if (runtime.uid !== 0) throw new Error('Hosted image runtime supervisor is not root');
+  if (runtime.uid !== 0 || runtime.gid !== 10002) {
+    throw new Error('Hosted image runtime supervisor identity is invalid');
+  }
   if (runtime.worker?.uid !== 10002 || runtime.worker?.gid !== 10002) {
     throw new Error('Hosted image worker identity is invalid');
   }
@@ -186,8 +191,8 @@ function validateRuntimePermissions(runtime) {
   if (!isDeepStrictEqual(runtime.workspace, { uid: 10002, gid: 10002, mode: '770' })) {
     throw new Error('Hosted image workspace ownership is invalid');
   }
-  if (!isDeepStrictEqual(runtime.controlRoot, { uid: 1000, gid: 10002, mode: '700' })) {
-    throw new Error('Hosted image control directory is not capsule-agent-only');
+  if (!isDeepStrictEqual(runtime.controlRoot, { uid: 0, gid: 10002, mode: '700' })) {
+    throw new Error('Hosted image control directory is not root-owned and private');
   }
 }
 

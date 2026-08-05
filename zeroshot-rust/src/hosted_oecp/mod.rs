@@ -7,6 +7,7 @@
 mod backend;
 mod backend_admission_support;
 mod backend_finalization;
+mod backend_run_intent;
 mod backend_runtime;
 mod backend_support;
 mod config;
@@ -14,11 +15,23 @@ mod journal;
 #[cfg(test)]
 mod journal_tests;
 pub mod ports;
+mod run_intent;
+mod run_intent_executor;
+#[cfg(all(test, unix))]
+mod run_intent_executor_tests;
+mod run_intent_http;
+#[cfg(all(test, unix))]
+mod run_intent_test_support;
+#[cfg(all(test, unix))]
+mod run_intent_tests;
 mod server;
 mod server_auth;
 mod server_process;
 #[cfg(all(test, unix))]
 mod server_tests;
+mod server_transport;
+#[cfg(all(test, unix))]
+mod server_transport_tests;
 mod server_workspace;
 #[cfg(all(test, unix))]
 mod test_support;

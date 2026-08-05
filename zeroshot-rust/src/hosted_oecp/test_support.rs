@@ -40,8 +40,13 @@ impl NodeWorkerFixture {
     }
 
     pub(super) fn command(&self, mode: &str, delay_ms: u64) -> WorkerCommand {
+        let program = if Path::new(NODE_PROGRAM).is_file() {
+            NODE_PROGRAM
+        } else {
+            "/usr/bin/node"
+        };
         WorkerCommand {
-            program: NODE_PROGRAM.to_owned(),
+            program: program.to_owned(),
             argv: vec![
                 self.script.to_string_lossy().into_owned(),
                 mode.to_owned(),

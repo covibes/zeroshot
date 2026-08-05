@@ -156,6 +156,15 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 
 The unpublished hosted OECP runtime is a one-run compatibility capsule, not native-v2. It advertises
 only `openengine.graph.single-worker/v1` and runs exactly `legacy.zeroshot.ship@1` with one attempt.
+Authenticated raw NDJSON uses task-local `8085`; the capsule agent uses `/oecp` WebSocket on
+loopback `8083`, and bounded internal HTTP `PUT`/`GET /internal/run-intents/{id}` uses loopback
+`8084`. All three transports require the same per-task runtime capability.
+All three listeners share the same `HostedBackend`. The HTTP adapter accepts only digest-verified
+`zeroshot.run-intent/v2` envelopes containing `GraphSpec` plus closed source/issue/prompt/artifact
+job input. Repository, revision, provider, model, endpoint, runtime profiles, credentials, and
+environment are not client-representable and come only from server-owned authority/configuration.
+The adapter retains one bounded in-memory intent identity/status, treats matching retries as replays
+and all second identities as conflicts, and leaves queue cancellation to capsule termination.
 Its fixed `/workspace` must be prepared without `.git`, credentials, provider configuration,
 symlinks, or host-path authority. Before worker launch, the runtime retains the sole preconnected
 one-shot proxy-cleanup and delivery channels; the child inherits neither those descriptors nor a

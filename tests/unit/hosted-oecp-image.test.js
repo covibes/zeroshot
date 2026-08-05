@@ -31,7 +31,7 @@ function absentPackageManagerPaths() {
 
 function imageMetadata(manifestDigest) {
   return {
-    User: '0:0',
+    User: '0:10002',
     Labels: { 'org.opencontainers.image.revision': manifestDigest },
     Entrypoint: [
       '/usr/bin/tini',
@@ -40,7 +40,7 @@ function imageMetadata(manifestDigest) {
       '/usr/local/bin/node',
       '/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js',
     ],
-    ExposedPorts: { '8080/tcp': {} },
+    ExposedPorts: { '8083/tcp': {}, '8084/tcp': {}, '8085/tcp': {} },
     Env: ['ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability'],
   };
 }
@@ -48,9 +48,10 @@ function imageMetadata(manifestDigest) {
 function runtimeInspection() {
   return {
     uid: 0,
+    gid: 10002,
     worker: { uid: 10002, gid: 10002 },
     workspace: { uid: 10002, gid: 10002, mode: '770' },
-    controlRoot: { uid: 1000, gid: 10002, mode: '700' },
+    controlRoot: { uid: 0, gid: 10002, mode: '700' },
     forbiddenPresent: [],
     packageManagerPaths: absentPackageManagerPaths(),
     runtimeModules: {
@@ -90,6 +91,38 @@ function registerPackageManagerInspectionTest() {
   });
 }
 
+function manifestRuntimeContract() {
+  return {
+    supervisor: { user: 'root', uid: 0, gid: 10002 },
+    controlRoot: {
+      path: '/run/zeroshot-capsule-agent',
+      user: 'root',
+      uid: 0,
+      gid: 10002,
+      mode: '0700',
+    },
+    transports: {
+      ndjson: {
+        protocol: 'ndjson',
+        scope: 'task-local',
+        port: 8085,
+      },
+      websocket: {
+        protocol: 'websocket',
+        scope: 'capsule-agent',
+        route: '/oecp',
+        port: 8083,
+      },
+      runIntent: {
+        protocol: 'http',
+        scope: 'internal',
+        route: '/internal/run-intents/{intent_id}',
+        port: 8084,
+      },
+    },
+  };
+}
+
 function registerImageReferenceTests() {
   it('accepts Docker references with registry ports without accepting option or shell injection', function () {
     const accepted = [
@@ -127,7 +160,19 @@ function registerRuntimeInspectionTests() {
 
     const nonRoot = imageMetadata(digest);
     nonRoot.User = '10001:10001';
-    assert.throws(() => validateImageMetadata(nonRoot, digest), /supervisor is not root/);
+    assert.throws(() => validateImageMetadata(nonRoot, digest), /supervisor identity is invalid/);
+
+    const nonRootControl = runtimeInspection();
+    nonRootControl.controlRoot.uid = 1000;
+    assert.throws(() => validateRuntimeInspection(nonRootControl), /root-owned and private/);
+
+    const missingPort = imageMetadata(digest);
+    delete missingPort.ExposedPorts['8084/tcp'];
+    assert.throws(() => validateImageMetadata(missingPort, digest), /unexpected port/);
+
+    const extraPort = imageMetadata(digest);
+    extraPort.ExposedPorts['8086/tcp'] = {};
+    assert.throws(() => validateImageMetadata(extraPort, digest), /unexpected port/);
 
     const missingModule = runtimeInspection();
     missingModule.runtimeModules.runtimeDependencies = false;
@@ -151,7 +196,13 @@ function registerRuntimeInspectionTests() {
 function registerManifestTests() {
   it('records immutable image identities and enforces deny-all allowlist parity', function () {
     const manifest = createManifest();
-    assert.strictEqual(manifest.schemaVersion, 2);
+    assert.strictEqual(manifest.schemaVersion, 3);
+    assert.strictEqual(Object.hasOwn(manifest.protocol, 'route'), false);
+    assert.strictEqual(Object.hasOwn(manifest.runtime, 'port'), false);
+    const runtimeContract = manifestRuntimeContract();
+    assert.deepStrictEqual(manifest.runtime.supervisor, runtimeContract.supervisor);
+    assert.deepStrictEqual(manifest.runtime.controlRoot, runtimeContract.controlRoot);
+    assert.deepStrictEqual(manifest.runtime.transports, runtimeContract.transports);
     assert.deepStrictEqual(
       manifest.image.baseImages.map(({ stage }) => stage),
       ['rust-build', 'node-deps', 'tini', 'runtime']

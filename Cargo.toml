@@ -19,6 +19,7 @@ repository = "https://github.com/the-open-engine/zeroshot"
 async-trait = "0.1.89"
 fs2 = "0.4.3"
 getrandom = "0.3.4"
+httparse = "1.10.1"
 libc = "0.2.177"
 parking_lot = "0.12.5"
 rust_decimal = { version = "1.39.0", features = ["serde"] }

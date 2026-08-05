@@ -37,15 +37,15 @@ function startSmokeContainer(tag, name, capabilityFile) {
     '--name',
     name,
     '--publish',
-    '127.0.0.1::8080',
+    '127.0.0.1::8085',
     '--mount',
     `type=bind,src=${SMOKE_FIXTURE},dst=/usr/bin/git,readonly`,
     '--mount',
     `type=bind,src=${SMOKE_FIXTURE},dst=/usr/local/bin/codex,readonly`,
     '--mount',
     `type=bind,src=${CODEX_SMOKE_FIXTURE},dst=/opt/zeroshot/node_modules/@openai/codex/bin/codex.js,readonly`,
-    '--mount',
-    `type=bind,src=${capabilityFile},dst=/bootstrap-capability,readonly`,
+    '--env',
+    `ZEROSHOT_OECP_RUNTIME_CAPABILITY=${fs.readFileSync(capabilityFile, 'ascii')}`,
     '--env',
     `ZEROSHOT_OECP_CAPABILITY_FILE=${CAPABILITY_PATH}`,
     '--env',
@@ -58,11 +58,7 @@ function startSmokeContainer(tag, name, capabilityFile) {
     'ZEROSHOT_HOSTED_MODEL_LEVEL=level1',
     '--env',
     `ZEROSHOT_HOSTED_CREDENTIALS_JSON=${JSON.stringify({ GH_TOKEN: GIT_CANARY, OPENAI_API_KEY: PROVIDER_CANARY })}`,
-    '--entrypoint',
-    '/bin/sh',
     tag,
-    '-c',
-    `cp /bootstrap-capability ${CAPABILITY_PATH} && chown 0:0 ${CAPABILITY_PATH} && chmod 0400 ${CAPABILITY_PATH} || exit 1; exec /usr/bin/tini -s -- /usr/local/bin/node /opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js`,
   ]);
 }
 
@@ -212,7 +208,7 @@ async function smoke(tag) {
   const name = `zeroshot-oecp-smoke-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
   startSmokeContainer(tag, name, capability.capabilityFile);
   try {
-    const mapped = capture('docker', ['port', name, '8080/tcp']);
+    const mapped = capture('docker', ['port', name, '8085/tcp']);
     const port = Number(mapped.slice(mapped.lastIndexOf(':') + 1));
     await waitForServer(name);
     await exerciseServer({ host: '127.0.0.1', port }, capability.capabilityFile);

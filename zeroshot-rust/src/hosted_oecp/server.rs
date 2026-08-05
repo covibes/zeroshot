@@ -1,40 +1,28 @@
 use std::future::Future;
 use std::io;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{LegacyShipResult, LegacyShipStatus};
-use openengine_cluster_server::admission::CancellationSignal;
-use openengine_cluster_server::identity::{
-    BindingAttributes, ConnectionBinding, ConnectionIdentity, ConnectionIdentityConfig,
-    PrincipalId, StaticConnectionIdentityResolver, SystemConnectionTime, TenantId,
-};
-use openengine_cluster_server::stdio::{serve_ndjson, NdjsonIo};
 use sha2::{Digest as _, Sha256};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
-use tokio::time::{sleep, timeout, Duration, Instant};
+use tokio::net::TcpListener;
+use tokio::time::{sleep, Duration, Instant};
 
-use super::config::HostedAuthority;
-use super::server_auth::{
-    authenticate_first_request, authentication_error, load_transport_capability,
-    TransportCapability, AUTHENTICATION_DEADLINE,
-};
-use super::server_workspace::PreparedWorktreeReadiness;
 use super::backend::HostedBackend;
+use super::config::HostedAuthority;
 use super::ports::{
     DeliveryIntent, DeliveryReadinessReceipt, DeliveryReceipt, ProxyCleanupReceipt,
     ProxyReadinessPort, ProxyReadinessReceipt, TrustedServiceError, WorkspaceDeliveryPort,
 };
+use super::server_auth::{load_transport_capability, TransportCapability};
+use super::server_workspace::PreparedWorktreeReadiness;
+pub(super) use super::server_transport::{serve_prepared, HostedListeners};
 
-pub const OECP_PORT: u16 = 8080;
+pub const OECP_PORT: u16 = 8_085;
+pub const OECP_WEBSOCKET_PORT: u16 = 8_083;
+pub const RUN_INTENT_PORT: u16 = 8_084;
 pub use super::server_auth::OECP_CAPABILITY_FILE_ENV;
-const ACTIVE_CONNECTION_CAPACITY: usize = 32;
-pub(super) const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(45);
-// 10s start + 1s drain + 5s tree reap + three sequential 5s trusted-service stages.
-pub(super) const SEQUENTIAL_FINALIZATION_BOUND: Duration = Duration::from_secs(31);
-const _: () = assert!(SHUTDOWN_DEADLINE.as_secs() > SEQUENTIAL_FINALIZATION_BOUND.as_secs());
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 const STARTUP_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -62,7 +50,17 @@ where
     F: Future<Output = ()>,
 {
     let capability = prepare_server(&backend).await?;
-    serve_prepared(listener, backend, capability, shutdown).await
+    let websocket =
+        TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, OECP_WEBSOCKET_PORT))).await?;
+    let run_intent =
+        TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, RUN_INTENT_PORT))).await?;
+    serve_prepared(
+        HostedListeners::new(listener, websocket, run_intent),
+        backend,
+        capability,
+        shutdown,
+    )
+    .await
 }
 
 pub(super) async fn prepare_server(
@@ -71,56 +69,6 @@ pub(super) async fn prepare_server(
     let capability = Arc::new(load_startup_capability().await?);
     verify_startup_readiness(backend).await?;
     Ok(capability)
-}
-
-pub(super) async fn serve_prepared<F>(
-    listener: TcpListener,
-    backend: Arc<HostedBackend>,
-    capability: Arc<TransportCapability>,
-    shutdown: F,
-) -> io::Result<()>
-where
-    F: Future<Output = ()>,
-{
-    let capacity = Arc::new(Semaphore::new(ACTIVE_CONNECTION_CAPACITY));
-    let mut connections = JoinSet::new();
-    tokio::pin!(shutdown);
-    loop {
-        tokio::select! {
-            () = &mut shutdown => break,
-            completed = connections.join_next(), if !connections.is_empty() => {
-                if let Some(Err(error)) = completed {
-                    return Err(io::Error::other(error));
-                }
-            }
-            accepted = listener.accept() => {
-                let (stream, _) = accepted?;
-                let Ok(permit) = Arc::clone(&capacity).try_acquire_owned() else {
-                    continue;
-                };
-                let backend = Arc::clone(&backend);
-                let capability = Arc::clone(&capability);
-                connections.spawn(async move {
-                    let _permit = permit;
-                    let _ = serve_connection(stream, backend, capability).await;
-                });
-            }
-        }
-    }
-
-    let cleanup = async {
-        let backend_cleanup = backend.shutdown().await;
-        connections.abort_all();
-        while connections.join_next().await.is_some() {}
-        backend_cleanup.map_err(|_| io::Error::other("hosted trusted cleanup failed"))
-    };
-    timeout(SHUTDOWN_DEADLINE, cleanup).await.map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            "hosted shutdown exceeded its deadline",
-        )
-    })??;
-    Ok(())
 }
 
 async fn load_startup_capability() -> io::Result<TransportCapability> {
@@ -145,41 +93,6 @@ async fn verify_startup_readiness(backend: &HostedBackend) -> io::Result<()> {
             Err(_) => return Err(io::Error::other("hosted startup readiness failed")),
         }
     }
-}
-
-async fn serve_connection(
-    mut stream: TcpStream,
-    backend: Arc<HostedBackend>,
-    capability: Arc<TransportCapability>,
-) -> io::Result<()> {
-    let authenticated = timeout(
-        AUTHENTICATION_DEADLINE,
-        authenticate_first_request(&mut stream, &capability),
-    )
-    .await
-    .map_err(|_| authentication_error())??;
-    let (reader, writer) = stream.into_split();
-    let reader = tokio::io::AsyncReadExt::chain(std::io::Cursor::new(authenticated), reader);
-    let cancellation = CancellationSignal::default();
-    let binding = ConnectionBinding::new(
-        backend,
-        StaticConnectionIdentityResolver::new(static_identity()),
-        SystemConnectionTime,
-        cancellation.clone(),
-    );
-    let result = serve_ndjson(binding, NdjsonIo::new(reader, writer, tokio::io::sink())).await;
-    cancellation.cancel();
-    result
-}
-
-fn static_identity() -> ConnectionIdentity {
-    ConnectionIdentity::new(ConnectionIdentityConfig {
-        principal: PrincipalId::new("hosted-capsule"),
-        tenant: TenantId::new("hosted-capsule"),
-        issued_at_ms: None,
-        expires_at_ms: u64::MAX,
-        binding_attributes: BindingAttributes::default(),
-    })
 }
 
 struct DirectProviderControl;

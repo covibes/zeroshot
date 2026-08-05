@@ -1,12 +1,34 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { installRuntimeCapability } = require('../../zeroshot-rust/hosted-node/runtime-capability');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
 describe('private hosted worker runtime', () => {
+  it('materializes and removes the one-time task capability', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runtime-capability-'));
+    const capabilityFile = path.join(directory, 'capability');
+    const environment = {
+      ZEROSHOT_OECP_RUNTIME_CAPABILITY: 'a'.repeat(64),
+      ZEROSHOT_OECP_CAPABILITY_FILE: capabilityFile,
+    };
+    try {
+      installRuntimeCapability(environment);
+      assert.strictEqual(environment.ZEROSHOT_OECP_RUNTIME_CAPABILITY, undefined);
+      assert.strictEqual(fs.readFileSync(capabilityFile, 'ascii'), 'a'.repeat(64));
+      assert.strictEqual(fs.statSync(capabilityFile).mode & 0o777, 0o400);
+      environment.ZEROSHOT_OECP_RUNTIME_CAPABILITY = 'b'.repeat(64);
+      assert.throws(() => installRuntimeCapability(environment), /EEXIST/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('loads an injected adapter without loading the production engine', () => {
     const probe = [
       "const Module = require('module');",
