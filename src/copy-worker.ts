@@ -5,7 +5,6 @@
  * Used by IsolationManager._copyDirExcluding() for parallel copying.
  */
 import fs = require('fs');
-import path = require('path');
 import { parentPort, workerData } from 'worker_threads';
 import {
   CopyBoundary,
@@ -24,6 +23,7 @@ interface CopyError {
   name: string;
   code: string | null;
   message: string;
+  relativePath: unknown;
 }
 function isCopyWorkerData(value: unknown): value is CopyWorkerData {
   return (
@@ -61,18 +61,8 @@ let skipped = 0;
 let error: CopyError | null = null;
 for (const relativePath of files) {
   try {
-    // Ensure parent directory exists
-    const parentRelativePath = path.dirname(relativePath);
-    if (parentRelativePath !== '.') {
-      const { destinationPath: destinationDirectory } = resolveCopyPath(
-        copyBoundary,
-        parentRelativePath
-      );
-      if (!fs.existsSync(destinationDirectory)) {
-        fs.mkdirSync(destinationDirectory, { recursive: true });
-      }
-    }
-    // Copy the file
+    // Phase two creates every parent directory. Re-resolve the source and
+    // destination immediately before the only worker filesystem effect.
     const { sourcePath, destinationPath } = resolveCopyPath(copyBoundary, relativePath);
     fs.copyFileSync(sourcePath, destinationPath);
     copied++;
@@ -91,6 +81,12 @@ for (const relativePath of files) {
       name: caughtError instanceof Error ? caughtError.name : 'Error',
       code,
       message: errorMessage(caughtError),
+      relativePath:
+        typeof caughtError === 'object' &&
+        caughtError !== null &&
+        'relativePath' in caughtError
+          ? caughtError.relativePath
+          : relativePath,
     };
     break;
   }

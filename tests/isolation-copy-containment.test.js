@@ -6,6 +6,7 @@ const path = require('path');
 const IsolationManager = require('../src/isolation-manager');
 const {
   CONTAINMENT_ERROR_CODE,
+  CopyContainmentError,
   createCopyBoundary,
   resolveCopyPath,
 } = require('../src/copy-containment');
@@ -18,6 +19,17 @@ function writeFlatFiles(directory, count) {
 
 function isContainmentError(error) {
   return error?.code === CONTAINMENT_ERROR_CODE && /containment/i.test(error.message);
+}
+
+async function captureContainmentError(copyPromise) {
+  try {
+    await copyPromise;
+    assert.fail('expected copy containment to reject');
+  } catch (error) {
+    assert.ok(error instanceof CopyContainmentError, error.stack || error.message);
+    assert.strictEqual(isContainmentError(error), true);
+    return error;
+  }
 }
 
 describe('isolation copy containment', function () {
@@ -59,16 +71,27 @@ describe('isolation copy containment', function () {
     const boundary = createCopyBoundary(sourceRoot, destinationRoot);
 
     for (const unsafePath of [
-      '../escape',
-      'nested/../../escape',
-      'nested\\..\\escape',
+      ['..', 'escape'].join(path.sep),
+      ['nested', '..', '..', 'escape'].join(path.sep),
       path.resolve(fixtureRoot, 'absolute'),
-      'C:\\absolute\\escape',
-      '\\\\server\\share\\escape',
     ]) {
       assert.throws(() => resolveCopyPath(boundary, unsafePath), isContainmentError);
     }
   });
+
+  if (path.sep === '/') {
+    it('preserves POSIX filenames that contain Windows-looking separators', async function () {
+      for (const fileName of ['C:\\literal', '\\leading', 'literal\\..\\name']) {
+        fs.writeFileSync(path.join(sourceRoot, fileName), fileName);
+      }
+
+      await manager._copyDirExcluding(sourceRoot, destinationRoot, []);
+
+      for (const fileName of ['C:\\literal', '\\leading', 'literal\\..\\name']) {
+        assert.strictEqual(fs.readFileSync(path.join(destinationRoot, fileName), 'utf8'), fileName);
+      }
+    });
+  }
 
   for (const fileCount of [1, 100]) {
     const mode = fileCount < 100 ? 'synchronous' : 'worker';
@@ -87,59 +110,69 @@ describe('isolation copy containment', function () {
     });
   }
 
-  it('preserves source symlinks whose file and directory targets stay in-root', async function () {
-    fs.mkdirSync(path.join(sourceRoot, 'targets', 'directory'), { recursive: true });
-    fs.writeFileSync(path.join(sourceRoot, 'targets', 'file.txt'), 'file target');
-    fs.writeFileSync(path.join(sourceRoot, 'targets', 'directory', 'nested.txt'), 'dir target');
-    fs.symlinkSync(
-      path.join(sourceRoot, 'targets', 'file.txt'),
-      path.join(sourceRoot, 'file-alias.txt')
-    );
-    fs.symlinkSync(
-      path.join(sourceRoot, 'targets', 'directory'),
-      path.join(sourceRoot, 'directory-alias'),
-      'dir'
-    );
+  for (const fillerCount of [0, 96]) {
+    const mode = fillerCount === 0 ? 'synchronous' : 'worker';
 
-    await manager._copyDirExcluding(sourceRoot, destinationRoot, []);
+    it(`preserves in-root source file and directory symlinks through the ${mode} path`, async function () {
+      fs.mkdirSync(path.join(sourceRoot, 'targets', 'directory'), { recursive: true });
+      fs.writeFileSync(path.join(sourceRoot, 'targets', 'file.txt'), 'file target');
+      fs.writeFileSync(path.join(sourceRoot, 'targets', 'directory', 'nested.txt'), 'dir target');
+      fs.symlinkSync(
+        path.join(sourceRoot, 'targets', 'file.txt'),
+        path.join(sourceRoot, 'file-alias.txt')
+      );
+      fs.symlinkSync(
+        path.join(sourceRoot, 'targets', 'directory'),
+        path.join(sourceRoot, 'directory-alias'),
+        'dir'
+      );
+      writeFlatFiles(sourceRoot, fillerCount);
 
-    assert.strictEqual(
-      fs.readFileSync(path.join(destinationRoot, 'file-alias.txt'), 'utf8'),
-      'file target'
-    );
-    assert.strictEqual(
-      fs.readFileSync(path.join(destinationRoot, 'directory-alias', 'nested.txt'), 'utf8'),
-      'dir target'
-    );
-  });
+      await manager._copyDirExcluding(sourceRoot, destinationRoot, []);
 
-  it('permits destination symlinks only when their resolved targets stay in-root', async function () {
-    fs.mkdirSync(path.join(sourceRoot, 'nested'));
-    fs.writeFileSync(path.join(sourceRoot, 'nested', 'file.txt'), 'nested content');
-    fs.writeFileSync(path.join(sourceRoot, 'alias.txt'), 'replacement');
-    fs.mkdirSync(path.join(destinationRoot, 'storage'));
-    fs.writeFileSync(path.join(destinationRoot, 'storage', 'target.txt'), 'old content');
-    fs.symlinkSync(
-      path.join(destinationRoot, 'storage'),
-      path.join(destinationRoot, 'nested'),
-      'dir'
-    );
-    fs.symlinkSync(
-      path.join(destinationRoot, 'storage', 'target.txt'),
-      path.join(destinationRoot, 'alias.txt')
-    );
+      assert.strictEqual(
+        fs.readFileSync(path.join(destinationRoot, 'file-alias.txt'), 'utf8'),
+        'file target'
+      );
+      assert.strictEqual(
+        fs.readFileSync(path.join(destinationRoot, 'directory-alias', 'nested.txt'), 'utf8'),
+        'dir target'
+      );
+    });
+  }
 
-    await manager._copyDirExcluding(sourceRoot, destinationRoot, []);
+  for (const fillerCount of [0, 98]) {
+    const mode = fillerCount === 0 ? 'synchronous' : 'worker';
 
-    assert.strictEqual(
-      fs.readFileSync(path.join(destinationRoot, 'storage', 'file.txt'), 'utf8'),
-      'nested content'
-    );
-    assert.strictEqual(
-      fs.readFileSync(path.join(destinationRoot, 'storage', 'target.txt'), 'utf8'),
-      'replacement'
-    );
-  });
+    it(`permits destination symlinks whose targets stay in-root through the ${mode} path`, async function () {
+      fs.mkdirSync(path.join(sourceRoot, 'nested'));
+      fs.writeFileSync(path.join(sourceRoot, 'nested', 'file.txt'), 'nested content');
+      fs.writeFileSync(path.join(sourceRoot, 'alias.txt'), 'replacement');
+      writeFlatFiles(sourceRoot, fillerCount);
+      fs.mkdirSync(path.join(destinationRoot, 'storage'));
+      fs.writeFileSync(path.join(destinationRoot, 'storage', 'target.txt'), 'old content');
+      fs.symlinkSync(
+        path.join(destinationRoot, 'storage'),
+        path.join(destinationRoot, 'nested'),
+        'dir'
+      );
+      fs.symlinkSync(
+        path.join(destinationRoot, 'storage', 'target.txt'),
+        path.join(destinationRoot, 'alias.txt')
+      );
+
+      await manager._copyDirExcluding(sourceRoot, destinationRoot, []);
+
+      assert.strictEqual(
+        fs.readFileSync(path.join(destinationRoot, 'storage', 'file.txt'), 'utf8'),
+        'nested content'
+      );
+      assert.strictEqual(
+        fs.readFileSync(path.join(destinationRoot, 'storage', 'target.txt'), 'utf8'),
+        'replacement'
+      );
+    });
+  }
 
   it('continues to ignore an ordinary broken source symlink', async function () {
     fs.symlinkSync(path.join(sourceRoot, 'missing.txt'), path.join(sourceRoot, 'broken.txt'));
@@ -173,16 +206,41 @@ describe('isolation copy containment', function () {
   for (const fileCount of [99, 100]) {
     const mode = fileCount < 100 ? 'synchronous' : 'worker';
 
+    it(`rejects a raw traversal entry before the ${mode} path can normalize it`, async function () {
+      writeFlatFiles(sourceRoot, fileCount - 1);
+      const originalReaddirSync = fs.readdirSync;
+      fs.readdirSync = function (targetPath, options) {
+        const entries = originalReaddirSync.call(fs, targetPath, options);
+        if (path.resolve(targetPath) === fs.realpathSync(sourceRoot)) {
+          entries.push({
+            name: ['..', 'escape.txt'].join(path.sep),
+            isDirectory: () => false,
+            isSymbolicLink: () => false,
+          });
+        }
+        return entries;
+      };
+
+      try {
+        const error = await captureContainmentError(
+          manager._copyDirExcluding(sourceRoot, destinationRoot, [])
+        );
+        assert.strictEqual(error.relativePath, ['..', 'escape.txt'].join(path.sep));
+      } finally {
+        fs.readdirSync = originalReaddirSync;
+      }
+    });
+
     it(`rejects an escaping source file symlink through the ${mode} path`, async function () {
       writeFlatFiles(sourceRoot, fileCount - 1);
       const outsideFile = path.join(outsideRoot, 'secret.txt');
       fs.writeFileSync(outsideFile, 'outside');
       fs.symlinkSync(outsideFile, path.join(sourceRoot, 'escape.txt'));
 
-      await assert.rejects(
-        manager._copyDirExcluding(sourceRoot, destinationRoot, []),
-        isContainmentError
+      const error = await captureContainmentError(
+        manager._copyDirExcluding(sourceRoot, destinationRoot, [])
       );
+      assert.strictEqual(error.relativePath, 'escape.txt');
       assert.strictEqual(fs.existsSync(path.join(destinationRoot, 'escape.txt')), false);
     });
 
@@ -193,10 +251,10 @@ describe('isolation copy containment', function () {
       fs.writeFileSync(outsideFile, 'unchanged');
       fs.symlinkSync(outsideFile, path.join(destinationRoot, 'escape.txt'));
 
-      await assert.rejects(
-        manager._copyDirExcluding(sourceRoot, destinationRoot, []),
-        isContainmentError
+      const error = await captureContainmentError(
+        manager._copyDirExcluding(sourceRoot, destinationRoot, [])
       );
+      assert.strictEqual(error.relativePath, 'escape.txt');
       assert.strictEqual(fs.readFileSync(outsideFile, 'utf8'), 'unchanged');
     });
   }

@@ -36,9 +36,11 @@ const { readRepoSettings } = require('../lib/repo-settings');
 const { provisionClaudeCredentials } = require('./claude-credentials');
 const {
   CopyContainmentError,
+  copyErrorFromPayload,
   createCopyBoundary,
   resolveCopyPath,
   resolveSourcePath,
+  validateRelativePath,
 } = require('./copy-containment');
 
 const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
@@ -1337,12 +1339,9 @@ class IsolationManager {
 
     function handleEntry(entry, srcPath, relPath, relativePath, ancestorDirectories) {
       if (entry.isSymbolicLink()) {
-        const targetStats = fs.statSync(srcPath);
+        const resolvedSourcePath = resolveSourcePath(copyBoundary, relPath);
+        const targetStats = fs.statSync(resolvedSourcePath);
         if (targetStats.isDirectory()) {
-          const resolvedSourcePath = resolveSourcePath(copyBoundary, relPath);
-          if (ancestorDirectories.has(resolvedSourcePath)) {
-            throw new CopyContainmentError(relPath, 'source directory symlink creates a cycle');
-          }
           directories.add(relPath);
           collectFiles(relPath, ancestorDirectories);
           return;
@@ -1379,8 +1378,9 @@ class IsolationManager {
           continue;
         }
 
-        const srcPath = path.join(currentSrc, entry.name);
-        const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
+        const entryName = validateRelativePath(entry.name);
+        const srcPath = path.join(currentSrc, entryName);
+        const relPath = relativePath ? path.join(relativePath, entryName) : entryName;
 
         try {
           handleEntry(entry, srcPath, relPath, relativePath, childAncestors);
@@ -1442,6 +1442,7 @@ class IsolationManager {
     }
 
     // Spawn workers and wait for completion
+    const workers = [];
     const workerPromises = chunks.map((chunk) => {
       return new Promise((resolve, reject) => {
         const worker = new Worker(workerPath, {
@@ -1452,9 +1453,11 @@ class IsolationManager {
             expectedBoundary: copyBoundary,
           },
         });
+        workers.push(worker);
+        let result = null;
 
-        worker.on('message', (result) => {
-          resolve(result);
+        worker.on('message', (workerResult) => {
+          result = workerResult;
         });
 
         worker.on('error', (err) => {
@@ -1464,6 +1467,12 @@ class IsolationManager {
         worker.on('exit', (code) => {
           if (code !== 0) {
             reject(new Error(`Worker exited with code ${code}`));
+          } else if (!result) {
+            reject(new Error('Copy worker exited without reporting a result'));
+          } else if (result.error) {
+            reject(copyErrorFromPayload(result.error));
+          } else {
+            resolve(result);
           }
         });
       });
@@ -1472,15 +1481,11 @@ class IsolationManager {
     // Wait for all workers to complete (proper async/await - no busy-wait!)
     // FIX: Previous version used busy-wait which blocked the event loop,
     // preventing worker thread messages from being processed (timeout bug)
-    const workerResults = await Promise.all(workerPromises);
-    const failedResult = workerResults.find((result) => result.error);
-    if (failedResult) {
-      const error = new Error(failedResult.error.message);
-      error.name = failedResult.error.name || 'Error';
-      if (failedResult.error.code) {
-        error.code = failedResult.error.code;
-      }
-      throw error;
+    try {
+      await Promise.all(workerPromises);
+    } catch (err) {
+      await Promise.all(workers.map((worker) => worker.terminate().catch(() => undefined)));
+      throw err;
     }
   }
 
