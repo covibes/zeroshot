@@ -781,6 +781,11 @@ Agent A -> publish() -> SQLite Ledger -> LogicEngine -> trigger match -> Agent B
 
 Restart persistence: orchestrator publishes `AGENT_RESTART_ATTEMPT` to the ledger so restart limits survive orchestrator restarts.
 
+Detached Docker startup records its closed, deterministic container/workspace/config ownership in
+the provisional cluster before setup begins. Setup-cluster kill reaps the daemon first, verifies
+that receipt against the cluster ID, then removes only the derived container name and direct-child
+temporary directories. Never persist or honor caller-selected cleanup paths for this boundary.
+
 Provider task ownership: task watchers persist an owned termination boundary with each active task.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup

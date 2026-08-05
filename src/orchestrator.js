@@ -2221,6 +2221,12 @@ class Orchestrator {
   async _killSetupCluster(clusterId, cluster) {
     await this._signalSetupProcess(clusterId, cluster);
 
+    if (cluster.setupResources) {
+      this._log(`[Orchestrator] Cleaning provisional setup resources for ${clusterId}...`);
+      const manager = new IsolationManager();
+      manager.cleanupDetachedSetupResources(clusterId, cluster.setupResources);
+    }
+
     if (cluster.worktree?.path) {
       this._teardownWorktreeCompose(cluster.worktree.path);
       try {
