@@ -191,13 +191,13 @@
     "npm-shrinkwrap.json"
   ],
   "dependencies": {
-    "@oh-my-pi/pi-coding-agent": "17.2.1",
-    "ajv": "^8.18.0",
+    "@oh-my-pi/pi-coding-agent": "17.2.4",
+    "ajv": "^8.20.0",
     "ansi-to-html": "^0.7.2",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "^12.11.1",
     "bun": "1.3.14",
     "chalk": "^4.1.2",
-    "commander": "^14.0.2",
+    "commander": "^14.0.3",
     "node-pty": "^1.1.0",
     "omelette": "^0.4.17",
     "open": "^10.1.0",

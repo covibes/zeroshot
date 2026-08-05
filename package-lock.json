@@ -10,13 +10,13 @@
       "hasInstallScript": true,
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-coding-agent": "17.2.1",
-        "ajv": "^8.18.0",
+        "@oh-my-pi/pi-coding-agent": "17.2.4",
+        "ajv": "^8.20.0",
         "ansi-to-html": "^0.7.2",
-        "better-sqlite3": "^12.6.2",
+        "better-sqlite3": "^12.11.1",
         "bun": "1.3.14",
         "chalk": "^4.1.2",
-        "commander": "^14.0.2",
+        "commander": "^14.0.3",
         "node-pty": "^1.1.0",
         "omelette": "^0.4.17",
         "open": "^10.1.0",
@@ -2263,12 +2263,12 @@
       }
     },
     "node_modules/@oh-my-pi/hashline": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/hashline/-/hashline-17.2.1.tgz",
-      "integrity": "sha512-9i1S+39QoyhVwom7uRE42jK8UO8s1BvqmZtryThjUcy/w+pi9EVuGHh7U/+CKuJ191s/hiJEBS1OhuweLEj5Gg==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/hashline/-/hashline-17.2.4.tgz",
+      "integrity": "sha512-p/hMMzk3Qhk3EOKEZhUsCMR4GOpnr0ZZuMqsJcSia2psGRFwsinnJDvFLiUpeIFA11o54LbnjhwnpAYuZ890NA==",
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-natives": "17.2.1",
+        "@oh-my-pi/pi-natives": "17.2.4",
         "lru-cache": "11.5.2"
       },
       "engines": {
@@ -2285,14 +2285,14 @@
       }
     },
     "node_modules/@oh-my-pi/omp-stats": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/omp-stats/-/omp-stats-17.2.1.tgz",
-      "integrity": "sha512-xvYjRQYlz5r5tYihyCAxS12piInWt7fXSy7EfgTqVmHKXy+0/vEm1MUj0/Hk6EhMH9OGjzOK0J7+DPHEF127nw==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/omp-stats/-/omp-stats-17.2.4.tgz",
+      "integrity": "sha512-z1DO1hc3g0PyaENSUadopdCMVryIjf9vsL74D99r1wafqwpDzK9Ex/MIg+1v8X64u/0zS6HWROQzWEv+wV1YAg==",
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-ai": "17.2.1",
-        "@oh-my-pi/pi-catalog": "17.2.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
+        "@oh-my-pi/pi-ai": "17.2.4",
+        "@oh-my-pi/pi-catalog": "17.2.4",
+        "@oh-my-pi/pi-utils": "17.2.4",
         "@tailwindcss/node": "^4.3.2",
         "chart.js": "^4.5.1",
         "date-fns": "^4.4.0",
@@ -2310,17 +2310,17 @@
       }
     },
     "node_modules/@oh-my-pi/pi-agent-core": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-agent-core/-/pi-agent-core-17.2.1.tgz",
-      "integrity": "sha512-eWEYRXnb/Qc07ATr6VhB6dyVwJspSPvt+70deJlcCR/jo9A4O52gwpKruuWgEcAhJM+LqwQ0EThAsY88Ds6d4w==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-agent-core/-/pi-agent-core-17.2.4.tgz",
+      "integrity": "sha512-//PKwg1VhvqeNPiPXiW0mZMPSkfw3D769osxU8bsx9Bz2h7l2zQryUunKfGaNCTvTpBYugHkQ7IAVzX8Te1Q+w==",
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-ai": "17.2.1",
-        "@oh-my-pi/pi-catalog": "17.2.1",
-        "@oh-my-pi/pi-natives": "17.2.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
-        "@oh-my-pi/pi-wire": "17.2.1",
-        "@oh-my-pi/snapcompact": "17.2.1",
+        "@oh-my-pi/pi-ai": "17.2.4",
+        "@oh-my-pi/pi-catalog": "17.2.4",
+        "@oh-my-pi/pi-natives": "17.2.4",
+        "@oh-my-pi/pi-utils": "17.2.4",
+        "@oh-my-pi/pi-wire": "17.2.4",
+        "@oh-my-pi/snapcompact": "17.2.4",
         "@opentelemetry/api": "^1.9.1"
       },
       "engines": {
@@ -2328,15 +2328,15 @@
       }
     },
     "node_modules/@oh-my-pi/pi-ai": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-ai/-/pi-ai-17.2.1.tgz",
-      "integrity": "sha512-zQG52eeW+yCUp1ueS8NydZCuj5i7BDFNNmkodt844XlXmILjCTzp9Dsapq9QyvbM9RJfhxwcC905bgqtz8yMTQ==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-ai/-/pi-ai-17.2.4.tgz",
+      "integrity": "sha512-4/juSiUGZO+a+VJj9HcRK9Z2DiRtX54sps1Im+PJ/5KebG+QE+YS/KTHcgkXmyD1vRmrGihe89heJvk3MkT9cg==",
       "license": "MIT",
       "dependencies": {
         "@bufbuild/protobuf": "^2.12.1",
-        "@oh-my-pi/pi-catalog": "17.2.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
-        "@oh-my-pi/pi-wire": "17.2.1",
+        "@oh-my-pi/pi-catalog": "17.2.4",
+        "@oh-my-pi/pi-utils": "17.2.4",
+        "@oh-my-pi/pi-wire": "17.2.4",
         "arktype": "2.2.3",
         "zod": "^4"
       },
@@ -2345,13 +2345,13 @@
       }
     },
     "node_modules/@oh-my-pi/pi-catalog": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-catalog/-/pi-catalog-17.2.1.tgz",
-      "integrity": "sha512-qZat1nqemS+m25r2lGjYdRX+KxYGUMIwrRaOKyqZaoGsg+cYaS/uqzewU8VgtqmM76pXxocnwbqmzOLGkkjtvQ==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-catalog/-/pi-catalog-17.2.4.tgz",
+      "integrity": "sha512-GEtQwzsgdehtvlOfDfh8nLF9EzlH9+UBDudURW6Ohv+N7JKoyjg6kvlMKTMDravFqO03F9+PD8RyJW8kpAFHfA==",
       "license": "MIT",
       "dependencies": {
         "@bufbuild/protobuf": "^2.12.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
+        "@oh-my-pi/pi-utils": "17.2.4",
         "arktype": "2.2.3",
         "zod": "^4"
       },
@@ -2360,25 +2360,25 @@
       }
     },
     "node_modules/@oh-my-pi/pi-coding-agent": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/-/pi-coding-agent-17.2.1.tgz",
-      "integrity": "sha512-Mg1IVCTyxZ+FnYd7AJtqxYEQClfPssgxF1airlFcm4d8j09cfuabh17n+3eprLL3/Un9fe3MOXha1NqICoY4Bg==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/-/pi-coding-agent-17.2.4.tgz",
+      "integrity": "sha512-QacpPUqMHyvosFeXB3XcNydgS32UwEqUqaglPWRcWlQHKK6U+6S/V7UMq3mjeYfds6e1hfHmpsRbK4KKGLVsPA==",
       "license": "MIT",
       "dependencies": {
         "@agentclientprotocol/sdk": "1.2.1",
         "@babel/parser": "^7.29.7",
         "@mozilla/readability": "^0.6.0",
-        "@oh-my-pi/hashline": "17.2.1",
-        "@oh-my-pi/omp-stats": "17.2.1",
-        "@oh-my-pi/pi-agent-core": "17.2.1",
-        "@oh-my-pi/pi-ai": "17.2.1",
-        "@oh-my-pi/pi-catalog": "17.2.1",
-        "@oh-my-pi/pi-mnemopi": "17.2.1",
-        "@oh-my-pi/pi-natives": "17.2.1",
-        "@oh-my-pi/pi-tui": "17.2.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
-        "@oh-my-pi/pi-wire": "17.2.1",
-        "@oh-my-pi/snapcompact": "17.2.1",
+        "@oh-my-pi/hashline": "17.2.4",
+        "@oh-my-pi/omp-stats": "17.2.4",
+        "@oh-my-pi/pi-agent-core": "17.2.4",
+        "@oh-my-pi/pi-ai": "17.2.4",
+        "@oh-my-pi/pi-catalog": "17.2.4",
+        "@oh-my-pi/pi-mnemopi": "17.2.4",
+        "@oh-my-pi/pi-natives": "17.2.4",
+        "@oh-my-pi/pi-tui": "17.2.4",
+        "@oh-my-pi/pi-utils": "17.2.4",
+        "@oh-my-pi/pi-wire": "17.2.4",
+        "@oh-my-pi/snapcompact": "17.2.4",
         "@opentelemetry/api": "^1.9.1",
         "@opentelemetry/api-logs": "^0.220.0",
         "@opentelemetry/context-async-hooks": "^2.9.0",
@@ -2440,15 +2440,15 @@
       }
     },
     "node_modules/@oh-my-pi/pi-mnemopi": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-mnemopi/-/pi-mnemopi-17.2.1.tgz",
-      "integrity": "sha512-pe1PywuOw61WZ9IIBQJnCkmt8u0BlM9b/4TdMarIAkbOnXgpj94UsiE4ymBuFi5j2TBV9wTUaxGQ2iaOoJHs9w==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-mnemopi/-/pi-mnemopi-17.2.4.tgz",
+      "integrity": "sha512-QCWU/+5J2kyeZZKTcVyjHY8P8IOSx/IqSSBzL0Y65Fs38bSWrCb036kvp8E2hee7WMPF61yRQxCQCU9c3tIJdg==",
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-ai": "17.2.1",
-        "@oh-my-pi/pi-catalog": "17.2.1",
-        "@oh-my-pi/pi-natives": "17.2.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
+        "@oh-my-pi/pi-ai": "17.2.4",
+        "@oh-my-pi/pi-catalog": "17.2.4",
+        "@oh-my-pi/pi-natives": "17.2.4",
+        "@oh-my-pi/pi-utils": "17.2.4",
         "lru-cache": "11.5.2"
       },
       "bin": {
@@ -2480,25 +2480,25 @@
       }
     },
     "node_modules/@oh-my-pi/pi-natives": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives/-/pi-natives-17.2.1.tgz",
-      "integrity": "sha512-74BJXOPPnTKPGG65p6pXIlh1sODwLCntSFh/5sp9GzZN+hcrwTF7kxJGscw2Ky5tQLle7EczlduPALpLOaE0gg==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives/-/pi-natives-17.2.4.tgz",
+      "integrity": "sha512-+feLzUzLzs7fI2dC1XFlBWF5ou7oPegX6rAzrGka3R1oWJ5Bep73nyRijckzlli5iYe3G6r4+Rt1EsgQiQSLZA==",
       "license": "MIT",
       "engines": {
         "bun": ">=1.3.14"
       },
       "optionalDependencies": {
-        "@oh-my-pi/pi-natives-darwin-arm64": "17.2.1",
-        "@oh-my-pi/pi-natives-darwin-x64": "17.2.1",
-        "@oh-my-pi/pi-natives-linux-arm64": "17.2.1",
-        "@oh-my-pi/pi-natives-linux-x64": "17.2.1",
-        "@oh-my-pi/pi-natives-win32-x64": "17.2.1"
+        "@oh-my-pi/pi-natives-darwin-arm64": "17.2.4",
+        "@oh-my-pi/pi-natives-darwin-x64": "17.2.4",
+        "@oh-my-pi/pi-natives-linux-arm64": "17.2.4",
+        "@oh-my-pi/pi-natives-linux-x64": "17.2.4",
+        "@oh-my-pi/pi-natives-win32-x64": "17.2.4"
       }
     },
     "node_modules/@oh-my-pi/pi-natives-darwin-arm64": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-darwin-arm64/-/pi-natives-darwin-arm64-17.2.1.tgz",
-      "integrity": "sha512-V7FcEF/+d/WFTumucykmWwc8fsHzoGYBM0ZvLM3FJMWTl/j+OGe/3ZubsACgdLccKYr2CC61ygXH2RByK8T+HA==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-darwin-arm64/-/pi-natives-darwin-arm64-17.2.4.tgz",
+      "integrity": "sha512-/MQbqu4PRK7MLuRVS0RHNhUhj/F39/V21WJXPwUsFklbFtfLpNuu88+ML0ZDpMxzYZd/r0kJYlMV5x0nVa3/zg==",
       "cpu": [
         "arm64"
       ],
@@ -2512,9 +2512,9 @@
       }
     },
     "node_modules/@oh-my-pi/pi-natives-darwin-x64": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-darwin-x64/-/pi-natives-darwin-x64-17.2.1.tgz",
-      "integrity": "sha512-INODXqftsj1z3/x4Y/ajHbMY7MFRfUmplnvZc9HoSkmnWW6190frTlX2ZcQYUy7PUDlHCefkePaSGKbyy9HO2g==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-darwin-x64/-/pi-natives-darwin-x64-17.2.4.tgz",
+      "integrity": "sha512-kBzh52/6nJQUzqzYyQl3ea2z5+/fQ8OCjKNvzw+v+uIkad9UK2MnjK9O4pxiE3xJrYSiXVJkNxsN/9MzCGBx1Q==",
       "cpu": [
         "x64"
       ],
@@ -2528,9 +2528,9 @@
       }
     },
     "node_modules/@oh-my-pi/pi-natives-linux-arm64": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-arm64/-/pi-natives-linux-arm64-17.2.1.tgz",
-      "integrity": "sha512-t1pIfLQp+L7QGR396fPaxvMArm0URjR5PfD3tU6F0VY4HMaS+cSBoLngh0na7SGk+EXnAz1X84kWTrb+Pz7K9w==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-arm64/-/pi-natives-linux-arm64-17.2.4.tgz",
+      "integrity": "sha512-MkOvum84gSKDoxCHslld1B6gVLWMV6dMajmWwHg2ySjXEoKm+HECjqubHhdEjHmYra/HtUjzs39LTOulceditg==",
       "cpu": [
         "arm64"
       ],
@@ -2544,9 +2544,9 @@
       }
     },
     "node_modules/@oh-my-pi/pi-natives-linux-x64": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-x64/-/pi-natives-linux-x64-17.2.1.tgz",
-      "integrity": "sha512-lhJNgkBbMO2wzyAn3zsWtrkZk3UpiSz5lAIpTEHRjZlc/0WwoJ2BTfyg26omROd5Ejio128lmeukM0RuobCTbw==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-linux-x64/-/pi-natives-linux-x64-17.2.4.tgz",
+      "integrity": "sha512-w2h1kA+6bv4hG3uXUcYcdLYQjRJ461NRRmAAD65FAQwEnAFvMCvHGMX3PjbL5dwVTuZDV5DTKeyotrkRVqj3ug==",
       "cpu": [
         "x64"
       ],
@@ -2560,9 +2560,9 @@
       }
     },
     "node_modules/@oh-my-pi/pi-natives-win32-x64": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-win32-x64/-/pi-natives-win32-x64-17.2.1.tgz",
-      "integrity": "sha512-N1PZh3E8cyqQMgNfEQbNcneVTUd+1blUpILZDQr+YUraaECr2DdJg350kdFrPHMLKpgKrjaeKj4zn+V/Sx3zRw==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-natives-win32-x64/-/pi-natives-win32-x64-17.2.4.tgz",
+      "integrity": "sha512-DHxtW75SW0eEDZp5YNEFTixuHtOGo8ntBamgrUAuD+DRp4h9jY8rgVLirmD6wLvpxfZXEYFOcvUpRyF8v3Gl3A==",
       "cpu": [
         "x64"
       ],
@@ -2576,13 +2576,13 @@
       }
     },
     "node_modules/@oh-my-pi/pi-tui": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-tui/-/pi-tui-17.2.1.tgz",
-      "integrity": "sha512-ei2fBmyxWgnXJRaZiUI/Eo0i28ycEHQFOnZVnbBU5OUqzqpV7Vm1eY2U15v24zEy1ZXXUAnabNhGi5aphVOflA==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-tui/-/pi-tui-17.2.4.tgz",
+      "integrity": "sha512-eKO7SQo06129RkThrxGP8s7dn3+WUmLjHflODU3uGUHR/0YJ5hcd1K90D1+FszBBIzUqK0aT5o4ZcCmrTm0hsQ==",
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-natives": "17.2.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
+        "@oh-my-pi/pi-natives": "17.2.4",
+        "@oh-my-pi/pi-utils": "17.2.4",
         "lru-cache": "11.5.2",
         "marked": "^18.0.6"
       },
@@ -2600,12 +2600,12 @@
       }
     },
     "node_modules/@oh-my-pi/pi-utils": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-utils/-/pi-utils-17.2.1.tgz",
-      "integrity": "sha512-vw81uPHsA6wBJM77mo3Bw2FVGn0JTjVbK1yemxewPbBlXcAQ5pUfQXMOSApbR7mnW//JJcW0AzCILvOlL3kWlQ==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-utils/-/pi-utils-17.2.4.tgz",
+      "integrity": "sha512-2GIyhizfNBqQVROmgs5oDoMeZlHg+I978eB+CWtuzOHzl92dHMKOi3pe3HkzqKmnkzeMkJkKAt15DMbW4yBLCg==",
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-natives": "17.2.1",
+        "@oh-my-pi/pi-natives": "17.2.4",
         "handlebars": "^4.7.9",
         "winston": "^3.19.0",
         "winston-daily-rotate-file": "5.0.0"
@@ -2615,24 +2615,24 @@
       }
     },
     "node_modules/@oh-my-pi/pi-wire": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-wire/-/pi-wire-17.2.1.tgz",
-      "integrity": "sha512-2i0ktu/KxB3RSrWOJq5OXL/X+meW4hDRsLtjhrm1VcMREZmLBPHfarbMlvzZ5/M97PmlysRmh9j/pQtRcCcVZA==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/pi-wire/-/pi-wire-17.2.4.tgz",
+      "integrity": "sha512-zONiiV93C5QLVUAQG3MlaWAv5PT94sjuH4+X7RS3cE/XHXlHBljR5CwBagg21vWAEAic/otkvixdVB9ckOe/Rg==",
       "license": "MIT",
       "engines": {
         "bun": ">=1.3.14"
       }
     },
     "node_modules/@oh-my-pi/snapcompact": {
-      "version": "17.2.1",
-      "resolved": "https://registry.npmjs.org/@oh-my-pi/snapcompact/-/snapcompact-17.2.1.tgz",
-      "integrity": "sha512-qdoZUQ4fTT4wRgIguiHaDGXNktzDHaEfyk8gKjrCniDdP6NRZxs+62RF3IbabB6Sn9Sbz802lmPk2cHFaScAPQ==",
+      "version": "17.2.4",
+      "resolved": "https://registry.npmjs.org/@oh-my-pi/snapcompact/-/snapcompact-17.2.4.tgz",
+      "integrity": "sha512-dFOdOiJyJRKLedsX1+olEAZHAhX25Pif6Zl177LHtEah4FDOaVIVFEgY9WQlJaFu2LxaDF9BJYKuTInyFPjE0w==",
       "license": "MIT",
       "dependencies": {
-        "@oh-my-pi/pi-ai": "17.2.1",
-        "@oh-my-pi/pi-natives": "17.2.1",
-        "@oh-my-pi/pi-utils": "17.2.1",
-        "@oh-my-pi/pi-wire": "17.2.1"
+        "@oh-my-pi/pi-ai": "17.2.4",
+        "@oh-my-pi/pi-natives": "17.2.4",
+        "@oh-my-pi/pi-utils": "17.2.4",
+        "@oh-my-pi/pi-wire": "17.2.4"
       },
       "engines": {
         "bun": ">=1.3.14"
@@ -5075,9 +5075,9 @@
       }
     },
     "node_modules/ajv": {
-      "version": "8.18.0",
-      "resolved": "https://registry.npmjs.org/ajv/-/ajv-8.18.0.tgz",
-      "integrity": "sha512-PlXPeEWMXMZ7sPYOHqmDyCJzcfNrUr3fGNKtezX14ykXOEIvyK81d+qydx89KY5O71FKMPaQ2vBfBFI5NHR63A==",
+      "version": "8.20.0",
+      "resolved": "https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz",
+      "integrity": "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==",
       "license": "MIT",
       "dependencies": {
         "fast-deep-equal": "^3.1.3",
@@ -5311,9 +5311,9 @@
       "license": "Apache-2.0"
     },
     "node_modules/better-sqlite3": {
-      "version": "12.6.2",
-      "resolved": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.6.2.tgz",
-      "integrity": "sha512-8VYKM3MjCa9WcaSAI3hzwhmyHVlH8tiGFwf0RlTsZPWJ1I5MkzjiudCo4KC4DxOaL/53A5B1sI/IbldNFDbsKA==",
+      "version": "12.11.1",
+      "resolved": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.11.1.tgz",
+      "integrity": "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA==",
       "hasInstallScript": true,
       "license": "MIT",
       "dependencies": {
@@ -5321,7 +5321,7 @@
         "prebuild-install": "^7.1.1"
       },
       "engines": {
-        "node": "20.x || 22.x || 23.x || 24.x || 25.x"
+        "node": "20.x || 22.x || 23.x || 24.x || 25.x || 26.x"
       }
     },
     "node_modules/bindings": {
@@ -6142,9 +6142,9 @@
       }
     },
     "node_modules/commander": {
-      "version": "14.0.2",
-      "resolved": "https://registry.npmjs.org/commander/-/commander-14.0.2.tgz",
-      "integrity": "sha512-TywoWNNRbhoD0BXs1P3ZEScW8W5iKrnbithIl0YH+uCmBd0QpPOA8yc82DS3BIE5Ma6FnBVUsJ7wVUDz4dvOWQ==",
+      "version": "14.0.3",
+      "resolved": "https://registry.npmjs.org/commander/-/commander-14.0.3.tgz",
+      "integrity": "sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==",
       "license": "MIT",
       "engines": {
         "node": ">=20"
@@ -9556,6 +9556,9 @@
       "cpu": [
         "arm64"
       ],
+      "libc": [
+        "glibc"
+      ],
       "license": "MPL-2.0",
       "optional": true,
       "os": [
@@ -9575,6 +9578,9 @@
       "integrity": "sha512-UpQkoenr4UJEzgVIYpI80lDFvRmPVg6oqboNHfoH4CQIfNA+HOrZ7Mo7KZP02dC6LjghPQJeBsvXhJod/wnIBg==",
       "cpu": [
         "arm64"
+      ],
+      "libc": [
+        "musl"
       ],
       "license": "MPL-2.0",
       "optional": true,
@@ -9596,6 +9602,9 @@
       "cpu": [
         "x64"
       ],
+      "libc": [
+        "glibc"
+      ],
       "license": "MPL-2.0",
       "optional": true,
       "os": [
@@ -9615,6 +9624,9 @@
       "integrity": "sha512-bYcLp+Vb0awsiXg/80uCRezCYHNg1/l3mt0gzHnWV9XP1W5sKa5/TCdGWaR/zBM2PeF/HbsQv/j2URNOiVuxWg==",
       "cpu": [
         "x64"
+      ],
+      "libc": [
+        "musl"
       ],
       "license": "MPL-2.0",
       "optional": true,
