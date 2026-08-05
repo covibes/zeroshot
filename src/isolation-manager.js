@@ -34,6 +34,12 @@ const { resolveProviderCredentialPaths } = require('../lib/provider-credential-p
 const { getProvider } = require('./providers');
 const { readRepoSettings } = require('../lib/repo-settings');
 const { provisionClaudeCredentials } = require('./claude-credentials');
+const {
+  CopyContainmentError,
+  createCopyBoundary,
+  resolveCopyPath,
+  resolveSourcePath,
+} = require('./copy-containment');
 
 const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 const FRESH_BASE_REF_PREFIX = 'refs/zeroshot/base-fetch';
@@ -1298,6 +1304,7 @@ class IsolationManager {
     // Phase 1: Collect all files and directories
     const files = [];
     const directories = new Set();
+    const copyBoundary = createCopyBoundary(src, dest);
 
     const shouldIgnoreFsError = (err) =>
       err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'ENOENT';
@@ -1328,12 +1335,16 @@ class IsolationManager {
       }
     };
 
-    function handleEntry(entry, srcPath, relPath, relativePath) {
+    function handleEntry(entry, srcPath, relPath, relativePath, ancestorDirectories) {
       if (entry.isSymbolicLink()) {
         const targetStats = fs.statSync(srcPath);
         if (targetStats.isDirectory()) {
+          const resolvedSourcePath = resolveSourcePath(copyBoundary, relPath);
+          if (ancestorDirectories.has(resolvedSourcePath)) {
+            throw new CopyContainmentError(relPath, 'source directory symlink creates a cycle');
+          }
           directories.add(relPath);
-          collectFiles(srcPath, relPath);
+          collectFiles(relPath, ancestorDirectories);
           return;
         }
 
@@ -1344,7 +1355,7 @@ class IsolationManager {
 
       if (entry.isDirectory()) {
         directories.add(relPath);
-        collectFiles(srcPath, relPath);
+        collectFiles(relPath, ancestorDirectories);
         return;
       }
 
@@ -1352,7 +1363,15 @@ class IsolationManager {
       ensureParentDirTracked(relativePath);
     }
 
-    function collectFiles(currentSrc, relativePath = '') {
+    function collectFiles(relativePath = '', ancestorDirectories = new Set()) {
+      const currentSrc = relativePath
+        ? resolveSourcePath(copyBoundary, relativePath)
+        : copyBoundary.sourceRoot.canonicalPath;
+      if (ancestorDirectories.has(currentSrc)) {
+        throw new CopyContainmentError(relativePath, 'source directory symlink creates a cycle');
+      }
+      const childAncestors = new Set(ancestorDirectories);
+      childAncestors.add(currentSrc);
       const entries = readEntries(currentSrc);
 
       for (const entry of entries) {
@@ -1364,7 +1383,7 @@ class IsolationManager {
         const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
 
         try {
-          handleEntry(entry, srcPath, relPath, relativePath);
+          handleEntry(entry, srcPath, relPath, relativePath, childAncestors);
         } catch (err) {
           if (shouldIgnoreFsError(err)) {
             continue;
@@ -1374,7 +1393,7 @@ class IsolationManager {
       }
     }
 
-    collectFiles(src);
+    collectFiles();
 
     // Phase 2: Create directory structure (sequential - must exist before file copy)
     // Sort directories by depth to ensure parents are created before children
@@ -1385,7 +1404,7 @@ class IsolationManager {
     });
 
     for (const dir of sortedDirs) {
-      const destDir = path.join(dest, dir);
+      const { destinationPath: destDir } = resolveCopyPath(copyBoundary, dir);
       try {
         fs.mkdirSync(destDir, { recursive: true });
       } catch (err) {
@@ -1399,10 +1418,9 @@ class IsolationManager {
     // For small file counts (<100), use synchronous copy (worker overhead not worth it)
     if (files.length < 100) {
       for (const relPath of files) {
-        const srcPath = path.join(src, relPath);
-        const destPath = path.join(dest, relPath);
         try {
-          fs.copyFileSync(srcPath, destPath);
+          const { sourcePath, destinationPath } = resolveCopyPath(copyBoundary, relPath);
+          fs.copyFileSync(sourcePath, destinationPath);
         } catch (err) {
           if (err.code !== 'EACCES' && err.code !== 'EPERM' && err.code !== 'ENOENT') {
             throw err;
@@ -1429,8 +1447,9 @@ class IsolationManager {
         const worker = new Worker(workerPath, {
           workerData: {
             files: chunk,
-            sourceBase: src,
-            destBase: dest,
+            sourceBase: copyBoundary.sourceRoot.canonicalPath,
+            destBase: copyBoundary.destinationRoot.canonicalPath,
+            expectedBoundary: copyBoundary,
           },
         });
 
@@ -1453,7 +1472,16 @@ class IsolationManager {
     // Wait for all workers to complete (proper async/await - no busy-wait!)
     // FIX: Previous version used busy-wait which blocked the event loop,
     // preventing worker thread messages from being processed (timeout bug)
-    await Promise.all(workerPromises);
+    const workerResults = await Promise.all(workerPromises);
+    const failedResult = workerResults.find((result) => result.error);
+    if (failedResult) {
+      const error = new Error(failedResult.error.message);
+      error.name = failedResult.error.name || 'Error';
+      if (failedResult.error.code) {
+        error.code = failedResult.error.code;
+      }
+      throw error;
+    }
   }
 
   /**

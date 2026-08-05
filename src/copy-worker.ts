@@ -7,14 +7,23 @@
 import fs = require('fs');
 import path = require('path');
 import { parentPort, workerData } from 'worker_threads';
+import {
+  CopyBoundary,
+  createCopyBoundary,
+  isCopyContainmentError,
+  resolveCopyPath,
+} from './copy-containment';
 interface CopyWorkerData {
   files: string[];
   sourceBase: string;
   destBase: string;
+  expectedBoundary: CopyBoundary;
 }
 interface CopyError {
   file: string;
-  error: string;
+  name: string;
+  code: string | null;
+  message: string;
 }
 function isCopyWorkerData(value: unknown): value is CopyWorkerData {
   return (
@@ -26,7 +35,10 @@ function isCopyWorkerData(value: unknown): value is CopyWorkerData {
     'sourceBase' in value &&
     typeof value.sourceBase === 'string' &&
     'destBase' in value &&
-    typeof value.destBase === 'string'
+    typeof value.destBase === 'string' &&
+    'expectedBoundary' in value &&
+    typeof value.expectedBoundary === 'object' &&
+    value.expectedBoundary !== null
   );
 }
 function errorCode(error: unknown): string | null {
@@ -42,34 +54,49 @@ const rawWorkerData: unknown = workerData;
 if (!isCopyWorkerData(rawWorkerData)) {
   throw new TypeError('copy worker requires files, sourceBase, and destBase');
 }
-const { files, sourceBase, destBase } = rawWorkerData;
+const { files, sourceBase, destBase, expectedBoundary } = rawWorkerData;
+const copyBoundary = createCopyBoundary(sourceBase, destBase, expectedBoundary);
 let copied = 0;
 let skipped = 0;
-const errors: CopyError[] = [];
+let error: CopyError | null = null;
 for (const relativePath of files) {
-  const srcPath = path.join(sourceBase, relativePath);
-  const destPath = path.join(destBase, relativePath);
   try {
     // Ensure parent directory exists
-    const destDir = path.dirname(destPath);
-    if (!fs.existsSync(destDir)) {
-      fs.mkdirSync(destDir, { recursive: true });
+    const parentRelativePath = path.dirname(relativePath);
+    if (parentRelativePath !== '.') {
+      const { destinationPath: destinationDirectory } = resolveCopyPath(
+        copyBoundary,
+        parentRelativePath
+      );
+      if (!fs.existsSync(destinationDirectory)) {
+        fs.mkdirSync(destinationDirectory, { recursive: true });
+      }
     }
     // Copy the file
-    fs.copyFileSync(srcPath, destPath);
+    const { sourcePath, destinationPath } = resolveCopyPath(copyBoundary, relativePath);
+    fs.copyFileSync(sourcePath, destinationPath);
     copied++;
-  } catch (error: unknown) {
+  } catch (caughtError: unknown) {
     // Skip files we can't copy (permission denied, broken symlinks, etc.)
-    const code = errorCode(error);
-    if (code === 'EACCES' || code === 'EPERM' || code === 'ENOENT') {
+    const code = errorCode(caughtError);
+    if (
+      !isCopyContainmentError(caughtError) &&
+      (code === 'EACCES' || code === 'EPERM' || code === 'ENOENT')
+    ) {
       skipped++;
       continue;
     }
-    errors.push({ file: relativePath, error: errorMessage(error) });
+    error = {
+      file: relativePath,
+      name: caughtError instanceof Error ? caughtError.name : 'Error',
+      code,
+      message: errorMessage(caughtError),
+    };
+    break;
   }
 }
 // Report results back to main thread
 if (!parentPort) {
   throw new Error('copy worker requires a parent port');
 }
-parentPort.postMessage({ copied, skipped, errors });
+parentPort.postMessage({ copied, skipped, error });
