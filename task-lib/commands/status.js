@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { getTask } from '../store.js';
-import { isOwnedProcessTreeRunning } from '../runner.js';
+import { resolveEffectiveTaskStatus } from '../effective-status.js';
 
 export function showStatus(taskId) {
   const task = getTask(taskId);
@@ -10,31 +10,17 @@ export function showStatus(taskId) {
     process.exit(1);
   }
 
-  // Verify running status
-  let status = task.status;
-  if (status === 'running') {
-    try {
-      const running = isOwnedProcessTreeRunning(task.pid, {
-        processGroupId: task.processGroupId,
-        terminationStrategy: task.terminationStrategy || 'process',
-      });
-      if (!running) {
-        status = 'stale (process died)';
-      }
-    } catch (error) {
-      status = `stale (invalid process ownership: ${error.message})`;
-    }
-  }
+  const effectiveStatus = resolveEffectiveTaskStatus(task);
 
   const statusColor =
     {
       running: chalk.green,
       completed: chalk.green,
       failed: chalk.red,
-    }[task.status] || chalk.yellow;
+    }[effectiveStatus.status] || chalk.yellow;
 
   console.log(chalk.bold(`\nTask: ${task.id}\n`));
-  console.log(`${chalk.dim('Status:')}     ${statusColor(status)}`);
+  console.log(`${chalk.dim('Status:')}     ${statusColor(effectiveStatus.label)}`);
   console.log(`${chalk.dim('Created:')}    ${task.createdAt}`);
   console.log(`${chalk.dim('Updated:')}    ${task.updatedAt}`);
   console.log(`${chalk.dim('CWD:')}        ${task.cwd}`);

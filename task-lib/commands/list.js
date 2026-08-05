@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { loadTasks } from '../store.js';
-import { isProcessRunning } from '../runner.js';
+import { resolveEffectiveTaskStatus } from '../effective-status.js';
 
 export function listTasks(options = {}) {
   const tasks = loadTasks();
@@ -30,11 +30,7 @@ export function listTasks(options = {}) {
     console.log(chalk.bold(`\nTasks (${filtered.length}/${taskList.length})\n`));
 
     for (const task of filtered) {
-      // Verify running status
-      let status = task.status;
-      if (status === 'running' && !isProcessRunning(task.pid)) {
-        status = 'stale';
-      }
+      const { status } = resolveEffectiveTaskStatus(task);
 
       const statusColor =
         {
@@ -67,11 +63,7 @@ export function listTasks(options = {}) {
     console.log('-'.repeat(100));
 
     for (const task of filtered) {
-      // Verify running status
-      let status = task.status;
-      if (status === 'running' && !isProcessRunning(task.pid)) {
-        status = 'stale';
-      }
+      const { status } = resolveEffectiveTaskStatus(task);
 
       const statusColor =
         {
