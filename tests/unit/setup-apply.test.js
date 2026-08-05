@@ -96,6 +96,19 @@ describe('setup-apply', function () {
     assert.strictEqual(journal.entries[0].appliedValue, 'codex');
   });
 
+  it('applies an in-memory decision object without reading a file', function () {
+    const results = applyModule.applyDecisionValues({
+      decisions: { defaultProvider: 'codex' },
+      cwd: repoRoot,
+      deps: {
+        readFile: () => assert.fail('object apply must not read a decisions file'),
+      },
+    });
+
+    assert.strictEqual(results[0].applied, true);
+    assert.strictEqual(readSettings().defaultProvider, 'codex');
+  });
+
   it('stores defaultIsolation without boolean translation', function () {
     const results = applyModule.applyDecisions({
       decisionsPath: decisionsFile({ defaultIsolation: 'worktree' }),
