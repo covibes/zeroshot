@@ -2576,9 +2576,6 @@ function buildTaskLogMessage({ taskId, timestamp, jsonContent, cluster, agent, i
   };
 }
 
-// Setup shell completion
-setupCompletion();
-
 // Banner disabled
 function showBanner() {
   // Banner removed for cleaner output
@@ -6104,6 +6101,7 @@ async function main() {
   const args = startupArgs;
 
   if (await handleNoArgumentInvocation({ args })) return;
+  setupCompletion(program);
 
   program.parse();
 }
