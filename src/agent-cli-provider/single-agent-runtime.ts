@@ -54,16 +54,12 @@ import type {
 
 type UnknownFunction = (...args: readonly unknown[]) => unknown;
 
-interface CommandParts {
-  readonly command: string;
-  readonly args: readonly string[];
-}
-
 interface RuntimeProviderSettings {
   readonly defaultLevel?: ModelLevel;
   readonly levelOverrides: LevelOverrides;
   readonly gateway?: GatewayBuildOptions;
   readonly webSearch?: boolean;
+  readonly trustIsolatedRecoveryProfile?: boolean;
 }
 
 interface RuntimeCommandContext {
@@ -428,7 +424,6 @@ function ompExecutionContext(
   throw new Error('options.executionContext must be "host", "detached", "docker", or "benchmark".');
 }
 
-
 function ompSdkOutputContract(
   options: BuildProviderCommandOptions
 ):
@@ -664,7 +659,7 @@ export function probeRuntimeProviderCli(
   const requested = registryEntry.settingsFields.includes('webSearch')
     ? runtimeProviderSettings(settings, adapter.id, process.cwd()).webSearch === true
     : false;
-  const helpCommand = runtimeHelpCommand(adapter.id);
+  const helpCommand = resolveProviderCommand(adapter.id);
   const commandAvailable =
     evidence === undefined
       ? booleanResult(commandExistsFn(helpCommand.command))
@@ -735,6 +730,10 @@ function buildRuntimeOptions(
     cliFeatures: runtime.cliFeatures,
   };
   const resolved = { ...baseResolved };
+  delete resolved.trustIsolatedCodexProfile;
+  if (baseOptions.structuredOutputRecovery && adapter.id === 'codex') {
+    resolved.trustIsolatedCodexProfile = providerSettings.trustIsolatedRecoveryProfile === true;
+  }
   if (baseOptions.structuredOutputRecovery) {
     delete resolved.resumeSessionId;
     delete resolved.continueSession;
@@ -870,6 +869,10 @@ function runtimeProviderSettings(
     providerSettings.webSearch,
     `settings.providerSettings.${provider}.webSearch`
   );
+  const trustIsolatedRecoveryProfile = optionalBoolean(
+    providerSettings.trustIsolatedRecoveryProfile,
+    `settings.providerSettings.${provider}.trustIsolatedRecoveryProfile`
+  );
   const gateway =
     provider === 'gateway'
       ? normalizeGatewayBuildOptions(providerSettings, 'settings.providerSettings.gateway', cwd)
@@ -878,12 +881,9 @@ function runtimeProviderSettings(
     levelOverrides,
     ...(gateway === undefined ? {} : { gateway }),
     ...(webSearch === undefined ? {} : { webSearch }),
+    ...(trustIsolatedRecoveryProfile === undefined ? {} : { trustIsolatedRecoveryProfile }),
   };
   return defaultLevel === undefined ? base : { ...base, defaultLevel };
-}
-
-function runtimeHelpCommand(provider: ProviderId): CommandParts {
-  return resolveProviderCommand(provider);
 }
 
 function probeGatewayProvider(

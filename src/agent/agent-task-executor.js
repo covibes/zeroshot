@@ -52,6 +52,10 @@ const {
   validateCompletedResumeIdentity,
 } = require('./provider-session');
 const { extractClaudeVertexModelError } = require('./output-extraction');
+const {
+  createStructuredOutputInvalidError,
+  isStructuredOutputInvalidError,
+} = require('./structured-output-error');
 const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -1412,6 +1416,7 @@ async function evaluateStructuredSuccess({ agent, taskId, state, success, allowR
     return { success: true, error: null };
   } catch (error) {
     if (
+      isStructuredOutputInvalidError(error) ||
       isNestedLifecycleError(error) ||
       error?.permanent === true ||
       error?.recoveryAbort === true
@@ -2858,7 +2863,10 @@ async function parseResultOutput(agent, output, { allowRecovery = true } = {}) {
   const schema = agent.config.jsonSchema;
   if (!schema) {
     if (parsed) return parsed;
-    throw new Error(`Agent ${agent.id} output missing required JSON block`);
+    throw createStructuredOutputInvalidError(
+      `Agent ${agent.id} output missing required JSON block`,
+      'missing_json'
+    );
   }
 
   const { createStructuredOutputValidator, reformatOutput } = require('./output-reformatter');
@@ -2911,7 +2919,12 @@ async function parseResultOutput(agent, output, { allowRecovery = true } = {}) {
       throw new Error('Task execution failed - no output');
     }
     const recoveryDetail = recovery?.lastError ? ` Recovery exhausted: ${recovery.lastError}.` : '';
-    throw new Error(`Agent ${agent.id} output missing required JSON block.${recoveryDetail}`);
+    throw createStructuredOutputInvalidError(
+      `Agent ${agent.id} output missing required JSON block.${recoveryDetail}`,
+      'missing_json',
+      directValidation,
+      recovery
+    );
   }
 
   if (!allowRecovery) {
@@ -2921,12 +2934,16 @@ async function parseResultOutput(agent, output, { allowRecovery = true } = {}) {
 
   const errorDetail = directValidation?.error || 'unknown schema error';
   const message = `Agent ${agent.id} output failed JSON schema validation: ${errorDetail}`;
-  if (agent.role === 'validator') {
-    throw new Error(
-      recovery?.status === 'exhausted'
-        ? `${message}. Recovery exhausted after ${recovery.attempts} attempts: ${recovery.lastError}`
-        : message
+  if (recovery?.status === 'exhausted') {
+    throw createStructuredOutputInvalidError(
+      `${message}. Recovery exhausted after ${recovery.attempts} attempts: ${recovery.lastError}`,
+      'schema_validation',
+      directValidation,
+      recovery
     );
+  }
+  if (agent.role === 'validator') {
+    throw new Error(message);
   }
 
   console.warn(`⚠️  ${message}`);

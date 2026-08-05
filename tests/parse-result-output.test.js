@@ -48,6 +48,7 @@ describe('parseResultOutput', function () {
   defineGeminiProviderTests();
   defineEdgeCaseTests();
   defineSchemaValidationTests();
+  defineStructuredOutputFailureTests();
   defineRegressionTests();
 });
 
@@ -321,12 +322,12 @@ function defineSchemaValidationTests() {
       await assert.rejects(() => parseResultOutput(agent, output), /failed JSON schema validation/);
     });
 
-    it('should warn but not throw for non-validator role with invalid schema', async function () {
+    it('should warn but not throw for non-validator roles without recovery support', async function () {
       const warnings = [];
       const agent = {
         ...createMockAgent({
-          provider: 'claude',
-          role: 'conductor', // Not validator - should warn, not throw
+          provider: 'gateway',
+          role: 'conductor',
         }),
         _publish: (msg) => {
           if (msg.topic === 'AGENT_SCHEMA_WARNING') {
@@ -343,6 +344,63 @@ function defineSchemaValidationTests() {
       // Should NOT throw, but should publish warning
       const result = await parseResultOutput(agent, output);
       assert.strictEqual(result.complexity, 'SIMPLE');
+    });
+  });
+}
+
+function defineStructuredOutputFailureTests() {
+  describe('Structured output failures', function () {
+    it('tags missing JSON after recovery exhaustion', async function () {
+      let recoveryAttempts = 0;
+      const agent = {
+        ...createMockAgent({ provider: 'codex', role: 'planner' }),
+        _spawnClaudeTask() {
+          recoveryAttempts += 1;
+          return Promise.resolve({ success: true, output: 'still not JSON' });
+        },
+      };
+
+      await assert.rejects(
+        () => parseResultOutput(agent, 'completed without JSON'),
+        (error) => {
+          assert.strictEqual(error.code, 'STRUCTURED_OUTPUT_INVALID');
+          assert.strictEqual(error.details.kind, 'missing_json');
+          assert.strictEqual(error.details.recoveryAttempts, 3);
+          return true;
+        }
+      );
+      assert.strictEqual(recoveryAttempts, 3);
+    });
+
+    it('tags schema-invalid recovery exhaustion for planner output', async function () {
+      let recoveryAttempts = 0;
+      const agent = {
+        ...createMockAgent({
+          provider: 'codex',
+          role: 'planner',
+          jsonSchema: {
+            type: 'object',
+            properties: { score: { type: 'number' } },
+            required: ['score'],
+          },
+        }),
+        _spawnClaudeTask() {
+          recoveryAttempts += 1;
+          return Promise.resolve({ success: true, output: '{"score":"invalid"}' });
+        },
+      };
+
+      await assert.rejects(
+        () => parseResultOutput(agent, '{"score":"invalid"}'),
+        (error) => {
+          assert.strictEqual(error.code, 'STRUCTURED_OUTPUT_INVALID');
+          assert.strictEqual(error.details.kind, 'schema_validation');
+          assert.strictEqual(error.details.recoveryAttempts, 3);
+          assert.match(error.details.validationError, /number/);
+          return true;
+        }
+      );
+      assert.strictEqual(recoveryAttempts, 3);
     });
   });
 }

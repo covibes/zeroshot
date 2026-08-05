@@ -108,12 +108,19 @@ describe('Provider settings', function () {
     }, /reasoningEffort overrides are only supported/);
   });
 
-  it('declares strict default-off web search only for Codex and OpenCode', function () {
-    assert.strictEqual(getProvider('codex').getDefaultSettings().webSearch, false);
+  it('declares secure default-off Codex and OpenCode provider features', function () {
+    const codexDefaults = getProvider('codex').getDefaultSettings();
+    assert.deepStrictEqual(
+      {
+        webSearch: codexDefaults.webSearch,
+        trustIsolatedRecoveryProfile: codexDefaults.trustIsolatedRecoveryProfile,
+      },
+      { webSearch: false, trustIsolatedRecoveryProfile: false }
+    );
     assert.strictEqual(getProvider('opencode').getDefaultSettings().webSearch, false);
     assert.strictEqual(
       validateSetting('providerSettings', {
-        codex: { webSearch: true },
+        codex: { webSearch: true, trustIsolatedRecoveryProfile: true },
         opencode: { webSearch: false },
       }),
       null
@@ -123,21 +130,29 @@ describe('Provider settings', function () {
       /providerSettings\.codex\.webSearch must be a boolean/
     );
     assert.match(
+      validateSetting('providerSettings', {
+        codex: { trustIsolatedRecoveryProfile: 'yes' },
+      }),
+      /providerSettings\.codex\.trustIsolatedRecoveryProfile must be a boolean/
+    );
+    assert.match(
       validateSetting('providerSettings', { claude: { webSearch: true } }),
       /Unknown provider setting: providerSettings\.claude\.webSearch/
     );
   });
 
-  it('round-trips web search through settings mutation and reads', function () {
+  it('round-trips Codex and OpenCode feature settings through mutation and reads', function () {
     process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
     fs.writeFileSync(settingsFile, '{}', 'utf8');
     try {
       mutateSettings((settings) => {
         settings.providerSettings.codex.webSearch = true;
+        settings.providerSettings.codex.trustIsolatedRecoveryProfile = true;
         settings.providerSettings.opencode.webSearch = true;
       });
       const settings = loadSettings();
       assert.strictEqual(settings.providerSettings.codex.webSearch, true);
+      assert.strictEqual(settings.providerSettings.codex.trustIsolatedRecoveryProfile, true);
       assert.strictEqual(settings.providerSettings.opencode.webSearch, true);
     } finally {
       delete process.env.ZEROSHOT_SETTINGS_FILE;

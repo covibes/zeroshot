@@ -134,9 +134,12 @@ async function runInProcessRecovery() {
   }
 }
 
-async function runStructuredOutputRecovery() {
+async function runStructuredOutputRecovery({
+  initialAction = 'malformed',
+  recoveryAction = 'success',
+} = {}) {
   const fixture = setupFixture({
-    actions: ['malformed'],
+    actions: [initialAction],
     maxRetries: 1,
     timeout: 20000,
     staleDuration: 15000,
@@ -151,7 +154,7 @@ async function runStructuredOutputRecovery() {
           ...fixture.env,
           RECOVERY_CONFIG: fixture.configFile,
           RECOVERY_STORAGE_DIR: fixture.storage,
-          FAKE_CODEX_RECOVERY_ACTION: 'success',
+          FAKE_CODEX_RECOVERY_ACTION: recoveryAction,
           FAKE_CODEX_EMIT_SESSION: '1',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
