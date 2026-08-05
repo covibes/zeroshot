@@ -14,7 +14,7 @@ on:
   pull_request:
     branches: [main]
   merge_group:
-    branches: [main]
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       include_docker_e2e:
@@ -134,6 +134,98 @@ jobs:
       - name: Docker isolation e2e
         run: npm run test:e2e:docker
         timeout-minutes: 15
+
+  hosted-oecp-relevance:
+    name: Hosted OECP image relevance
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.relevance.outputs.relevant }}
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+
+      - name: Determine hosted image relevance
+        id: relevance
+        run: node scripts/hosted-oecp-ci-relevance.js
+
+  hosted-oecp-image:
+    name: Hosted OECP private image
+    needs: hosted-oecp-relevance
+    if: needs.hosted-oecp-relevance.outputs.relevant == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HOSTED_OECP_IMAGE: zeroshot-oecp:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      TRIVY_IMAGE: docker.io/aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build agent CLI provider
+        run: npm run build:agent-cli-provider
+
+      - name: Build hosted OECP image
+        run: node scripts/hosted-oecp-image.js build "$HOSTED_OECP_IMAGE"
+
+      - name: Inspect hosted OECP image
+        run: node scripts/hosted-oecp-image.js inspect "$HOSTED_OECP_IMAGE"
+
+      - name: Smoke hosted OECP image
+        run: node scripts/hosted-oecp-image.js smoke "$HOSTED_OECP_IMAGE"
+
+      - name: Record Trivy and vulnerability database identity
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: |
+          set -euo pipefail
+          mkdir -p "$TRIVY_CACHE_DIR"
+          echo "Trivy scanner image: $TRIVY_IMAGE"
+          docker run --rm \
+            --volume "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" image --cache-dir /root/.cache/trivy --download-db-only
+          docker run --rm \
+            --volume "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+            "$TRIVY_IMAGE" version --cache-dir /root/.cache/trivy --format json
+
+      - name: Scan hosted OECP npm lockfile vulnerabilities
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: |
+          set -euo pipefail
+          echo "Trivy filesystem scan target: docker/zeroshot-oecp"
+          echo "Trivy vulnerability scope: library lockfiles, fixed HIGH/CRITICAL vulnerabilities"
+          docker run --rm \
+            --volume "$TRIVY_CACHE_DIR:/root/.cache/trivy" \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            --workdir /workspace \
+            "$TRIVY_IMAGE" fs \
+              --cache-dir /root/.cache/trivy \
+              --scanners vuln \
+              --pkg-types library \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --skip-db-update \
+              --offline-scan \
+              --no-progress \
+              docker/zeroshot-oecp
 
   # Cross-platform/version compatibility (main only)
   # NOTE: macOS runners cost 10x Linux minutes - keep this scoped to main.
@@ -266,6 +358,8 @@ jobs:
       - check
       - install-matrix
       - release-preflight
+      - hosted-oecp-relevance
+      - hosted-oecp-image
     runs-on: ubuntu-latest
     steps:
       - name: Require every applicable CI gate
@@ -273,6 +367,9 @@ jobs:
           CHECK_RESULT: ${{ needs.check.result }}
           INSTALL_MATRIX_RESULT: ${{ needs.install-matrix.result }}
           RELEASE_PREFLIGHT_RESULT: ${{ needs.release-preflight.result }}
+          HOSTED_OECP_RELEVANCE_RESULT: ${{ needs.hosted-oecp-relevance.result }}
+          HOSTED_OECP_RELEVANT: ${{ needs.hosted-oecp-relevance.outputs.relevant }}
+          HOSTED_OECP_IMAGE_RESULT: ${{ needs.hosted-oecp-image.result }}
         run: |
           if [[ "$CHECK_RESULT" != "success" ]]; then
             echo "::error::check concluded with $CHECK_RESULT"
@@ -284,5 +381,21 @@ jobs:
           fi
           if [[ "$RELEASE_PREFLIGHT_RESULT" != "success" && "$RELEASE_PREFLIGHT_RESULT" != "skipped" ]]; then
             echo "::error::release-preflight concluded with $RELEASE_PREFLIGHT_RESULT"
+            exit 1
+          fi
+          if [[ "$HOSTED_OECP_RELEVANCE_RESULT" != "success" ]]; then
+            echo "::error::hosted-oecp-relevance concluded with $HOSTED_OECP_RELEVANCE_RESULT"
+            exit 1
+          fi
+          if [[ "$HOSTED_OECP_RELEVANT" != "true" && "$HOSTED_OECP_RELEVANT" != "false" ]]; then
+            echo "::error::hosted-oecp-relevance emitted invalid relevance: $HOSTED_OECP_RELEVANT"
+            exit 1
+          fi
+          if [[ "$HOSTED_OECP_RELEVANT" == "true" && "$HOSTED_OECP_IMAGE_RESULT" != "success" ]]; then
+            echo "::error::hosted-oecp-image concluded with $HOSTED_OECP_IMAGE_RESULT for relevant changes"
+            exit 1
+          fi
+          if [[ "$HOSTED_OECP_RELEVANT" == "false" && "$HOSTED_OECP_IMAGE_RESULT" != "skipped" ]]; then
+            echo "::error::hosted-oecp-image concluded with $HOSTED_OECP_IMAGE_RESULT for irrelevant changes"
             exit 1
           fi

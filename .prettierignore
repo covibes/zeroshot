@@ -8,5 +8,6 @@ lib/agent-cli-provider
 lib/cluster
 src/cluster/generated
 protocol/openengine-cluster/v1
+docker/zeroshot-oecp/build-manifest.json
 
 tests/fixtures/zero-cloud-44/contracts/http

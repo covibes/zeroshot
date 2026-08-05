@@ -97,6 +97,13 @@ function smokeApplyParams(graph) {
   };
 }
 
+function safeApplyFailure(error) {
+  const suffix = error?.error?.data?.code === 'WORKER_START' ? ' (WORKER_START)' : '';
+  const projected = new Error(`Hosted apply request failed${suffix}`);
+  projected.stack = projected.message;
+  return projected;
+}
+
 async function expectRpcCode(promise, code, successMessage) {
   try {
     await promise;
@@ -105,6 +112,34 @@ async function expectRpcCode(promise, code, successMessage) {
     throw error;
   }
   throw new Error(successMessage);
+}
+
+async function collectFailureEvents(client, runId) {
+  await client.request(4, 'watch', { runId });
+  const events = [];
+  try {
+    while (events.length < 3) events.push(await nextEvent(client));
+  } catch {
+    const observed = events.map((record) => record.event?.type ?? 'invalid');
+    throw new Error(`Hosted watch stopped after safe event types: ${JSON.stringify(observed)}`);
+  }
+  const types = events.map((record) => record.event.type);
+  if (JSON.stringify(types) !== '["phase","node_begin","node_end"]') {
+    throw new Error(`Hosted failure watch order is invalid: ${JSON.stringify(types)}`);
+  }
+  if (events[2].event.outcome?.status !== 'error') {
+    throw new Error(
+      `Hosted provider failure was not process-derived: ${JSON.stringify(events[2])}`
+    );
+  }
+  return events;
+}
+
+function rejectWatchCanaries(events) {
+  const serialized = JSON.stringify(events);
+  for (const canary of [PROMPT_CANARY, GIT_CANARY, PROVIDER_CANARY]) {
+    if (serialized.includes(canary)) throw new Error('Hosted watch leaked a smoke canary');
+  }
 }
 
 async function exerciseServer(endpoint, capabilityFile) {
@@ -123,27 +158,16 @@ async function exerciseServer(endpoint, capabilityFile) {
     const planned = await client.request(2, 'plan', { graph });
     if (!planned.ok) throw new Error(`Hosted smoke graph was rejected: ${JSON.stringify(planned)}`);
     const applyParams = smokeApplyParams(graph);
-    const applied = await client.request(3, 'apply', applyParams);
+    let applied;
+    try {
+      applied = await client.request(3, 'apply', applyParams);
+    } catch (error) {
+      throw safeApplyFailure(error);
+    }
     if (applied.phase !== 'running' || !applied.runId) {
       throw new Error(`Hosted apply returned an invalid receipt: ${JSON.stringify(applied)}`);
     }
-    await client.request(4, 'watch', { runId: applied.runId });
-    const events = [];
-    try {
-      while (events.length < 3) events.push(await nextEvent(client));
-    } catch {
-      const observed = events.map((record) => record.event?.type ?? 'invalid');
-      throw new Error(`Hosted watch stopped after safe event types: ${JSON.stringify(observed)}`);
-    }
-    const types = events.map((record) => record.event.type);
-    if (JSON.stringify(types) !== '["phase","node_begin","node_end"]') {
-      throw new Error(`Hosted failure watch order is invalid: ${JSON.stringify(types)}`);
-    }
-    if (events[2].event.outcome?.status !== 'error') {
-      throw new Error(
-        `Hosted provider failure was not process-derived: ${JSON.stringify(events[2])}`
-      );
-    }
+    const events = await collectFailureEvents(client, applied.runId);
     const replay = await client.request(5, 'apply', applyParams);
     if (!replay.deduped || replay.runId !== applied.runId) {
       throw new Error(`Hosted apply replay changed its receipt: ${JSON.stringify(replay)}`);
@@ -158,10 +182,7 @@ async function exerciseServer(endpoint, capabilityFile) {
       'RUN_CONFLICT',
       'Hosted runtime accepted a distinct second apply'
     );
-    const serialized = JSON.stringify(events);
-    for (const canary of [PROMPT_CANARY, GIT_CANARY, PROVIDER_CANARY]) {
-      if (serialized.includes(canary)) throw new Error('Hosted watch leaked a smoke canary');
-    }
+    rejectWatchCanaries(events);
   } finally {
     client.socket.destroy();
   }
@@ -202,4 +223,4 @@ async function smoke(tag) {
   }
 }
 
-module.exports = { smoke };
+module.exports = { safeApplyFailure, smoke };

@@ -12,17 +12,12 @@ const PATH_COMPONENT = '[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*';
 const NAME_PATTERN = new RegExp(`^(?:${DOMAIN}/)?${PATH_COMPONENT}(?:/${PATH_COMPONENT})*$`);
 const TAG_PATTERN = /^\w[\w.-]{0,127}$/;
 
-function isAsciiLetter(character) {
-  return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z');
-}
+const isAsciiLetter = (character) =>
+  (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z');
 
-function isAsciiDigit(character) {
-  return character >= '0' && character <= '9';
-}
+const isAsciiDigit = (character) => character >= '0' && character <= '9';
 
-function isAlgorithmSeparator(character) {
-  return ['+', '.', '_', '-'].includes(character);
-}
+const isAlgorithmSeparator = (character) => ['+', '.', '_', '-'].includes(character);
 
 function validDigestAlgorithm(algorithm) {
   if (!isAsciiLetter(algorithm[0])) return false;
@@ -97,6 +92,14 @@ const ownership = (target) => {
   return { uid: stat.uid, gid: stat.gid, mode: (stat.mode & 0o777).toString(8).padStart(3, '0') };
 };
 const executable = (target) => (fs.statSync(target).mode & 0o111) !== 0;
+const loadable = (target) => {
+  try {
+    require(target);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const worker = fs.readFileSync('/etc/passwd', 'utf8').split('\\n')
   .find((line) => line.startsWith('zeroshot-worker:')).split(':');
 process.stdout.write(JSON.stringify({
@@ -125,11 +128,18 @@ process.stdout.write(JSON.stringify({
   runtimeModules: {
     engineStart: fs.existsSync('/opt/zeroshot/lib/cluster-worker/engine-start.js'),
     runtimeDependencies: fs.existsSync('/opt/zeroshot/lib/cluster-worker/runtime-dependencies.js'),
+    ompRuntime: loadable('/opt/zeroshot/scripts/omp/runtime.js'),
+    ompRuntimeIdentities: loadable('/opt/zeroshot/scripts/omp/runtime-identities.js'),
+    ompRuntimeLock: loadable('/opt/zeroshot/scripts/omp/runtime-lock.js'),
+    ompRuntimeRelease: loadable('/opt/zeroshot/scripts/omp/runtime-release.js'),
   },
   serverExecutable: executable('/usr/local/bin/zeroshot-oecp-server'),
   tiniExecutable: executable('/usr/bin/tini'),
   gitExecutable: executable('/usr/bin/git'),
   ajvVersion: require('/opt/zeroshot/node_modules/ajv/package.json').version,
+  undiciVersion: require(
+    '/opt/zeroshot/node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json'
+  ).version,
 }));
 `;
 
@@ -141,8 +151,7 @@ function validateImageMetadata(metadata, manifestDigest) {
     throw new Error('Hosted image OCI revision does not match the current manifest digest');
   }
   if (
-    JSON.stringify(metadata.Entrypoint) !==
-    JSON.stringify([
+    !isDeepStrictEqual(metadata.Entrypoint, [
       '/usr/bin/tini',
       '-s',
       '--',
@@ -174,14 +183,10 @@ function validateRuntimeIdentity(runtime) {
 }
 
 function validateRuntimePermissions(runtime) {
-  if (
-    JSON.stringify(runtime.workspace) !== JSON.stringify({ uid: 10002, gid: 10002, mode: '770' })
-  ) {
+  if (!isDeepStrictEqual(runtime.workspace, { uid: 10002, gid: 10002, mode: '770' })) {
     throw new Error('Hosted image workspace ownership is invalid');
   }
-  if (
-    JSON.stringify(runtime.controlRoot) !== JSON.stringify({ uid: 1000, gid: 10002, mode: '700' })
-  ) {
+  if (!isDeepStrictEqual(runtime.controlRoot, { uid: 1000, gid: 10002, mode: '700' })) {
     throw new Error('Hosted image control directory is not capsule-agent-only');
   }
 }
@@ -199,6 +204,31 @@ const EXPECTED_PACKAGE_MANAGER_PATHS = Object.freeze({
   '/opt/yarn-v1.22.22': false,
 });
 
+function validateRequiredRuntimeModules(runtimeModules) {
+  if (
+    runtimeModules?.engineStart !== true ||
+    runtimeModules?.runtimeDependencies !== true ||
+    runtimeModules?.ompRuntime !== true ||
+    runtimeModules?.ompRuntimeIdentities !== true ||
+    runtimeModules?.ompRuntimeLock !== true ||
+    runtimeModules?.ompRuntimeRelease !== true
+  ) {
+    throw new Error('Hosted image is missing a required runtime module');
+  }
+}
+
+function validateRuntimeExecutables(runtime) {
+  if (
+    runtime.serverExecutable !== true ||
+    runtime.tiniExecutable !== true ||
+    runtime.gitExecutable !== true ||
+    runtime.ajvVersion !== '8.18.0' ||
+    runtime.undiciVersion !== '8.9.0'
+  ) {
+    throw new Error('Hosted image runtime contents are invalid');
+  }
+}
+
 function validateRuntimeContents(runtime) {
   if (!Array.isArray(runtime.forbiddenPresent) || runtime.forbiddenPresent.length > 0) {
     throw new Error('Hosted image contains a forbidden runtime path');
@@ -206,20 +236,8 @@ function validateRuntimeContents(runtime) {
   if (!isDeepStrictEqual(runtime.packageManagerPaths, EXPECTED_PACKAGE_MANAGER_PATHS)) {
     throw new Error('Hosted image package manager paths are invalid');
   }
-  if (
-    runtime.runtimeModules?.engineStart !== true ||
-    runtime.runtimeModules?.runtimeDependencies !== true
-  ) {
-    throw new Error('Hosted image is missing a required runtime module');
-  }
-  if (
-    runtime.serverExecutable !== true ||
-    runtime.tiniExecutable !== true ||
-    runtime.gitExecutable !== true ||
-    runtime.ajvVersion !== '8.18.0'
-  ) {
-    throw new Error('Hosted image runtime contents are invalid');
-  }
+  validateRequiredRuntimeModules(runtime.runtimeModules);
+  validateRuntimeExecutables(runtime);
 }
 
 function validateRuntimeInspection(runtime) {
