@@ -44,6 +44,7 @@ describe('private hosted worker runtime', () => {
         ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
         ZEROSHOT_HOSTED_PROVIDER: 'codex',
         ZEROSHOT_HOSTED_MODEL_LEVEL: 'level2',
+        OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
         ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
         ZEROSHOT_PROVIDER_PROFILE: 'provider.hosted-direct@1',
       },

@@ -57,8 +57,8 @@
     }
   },
   "inputs": {
-    "Cargo.lock": "0815b2383e774601f3de58ede274de3c4afbe512547fecac3ea7b42caf35ead2",
-    "Cargo.toml": "1447ba71479b3a64e29d445634221583349bb87b3c73b1f09184fbcb1773323b",
+    "Cargo.lock": "e1623bd3d3f4628115a073b4d706ba9d2bb9cf40b02e64e6de4fda7a0cbdc8c2",
+    "Cargo.toml": "e9d442d6611a377e303018e422f7b3a2e17d6b063d516c061fb6cae88f21defe",
     "clippy.toml": "3c652ff2949df903bd0b80c8f14a7196ff9ad1e12841ddb614d080c4a03d1aa2",
     "crates": "a2f7c3bb65eb2b150647b00aab00f510ea67356dd08990e1bb9afa626b8bac9e",
     "docker/zeroshot-oecp/.dockerignore": "51985d438bb5d7007e5a365127a73a21669e94997787925f5a3b41d86fbda8c4",
@@ -83,7 +83,7 @@
     "lib/cluster-worker/worker-internals.js": "db5d7d2f23f07f74aef7d029d1a0ee36ec9317a9f06ba0a5e7d2f15947cbab92",
     "lib/run-plan.js": "c70bae45c113ff7a25a9c8696756fc3799104b01a8dba957d4d0eaf3a55d8a27",
     "package-lock.json": "b75c87f09360a76e5630698fba03ecd6127b486e94b6d98b99b0ff3974dce967",
-    "package.json": "118872d7320c1e304115501fd482ce5c0c9694e1a051d101f05569a128d93b16",
+    "package.json": "6e147b0503e5eb5c3e310951db136ab45d35466f6eb983dc0a18843918fdadde",
     "scripts/hosted-oecp-image-commands.js": "2d22af7d0b2cb0db8c38b30f4a2f441303d8b9f1ab91a9869b267e0529894692",
     "scripts/hosted-oecp-image-smoke.js": "a402d0f9c8805c67729719e2073bf4563a5629f9a782dff2593e0d01f267c795",
     "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
@@ -98,14 +98,14 @@
     "scripts/omp/runtime.js": "ee1f677b07d21ca3da155c58da645685f510498111d1453c7ab26b46267aaede",
     "protocol/openengine-cluster/v1/worker.schema.json": "72d0f7ac851e689b3d4c36e58877ecf0490ff3621fa0d3195b946cc72bdca77e",
     "rust-toolchain.toml": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
-    "zeroshot-rust/Cargo.toml": "2cc514805c12b11210553073a97536ad8a3efe4936773bd43cdf23a9a998fe45",
-    "zeroshot-rust/hosted-node": "8d3a7d9d38d8f4cd0fdb5bef2e38dbf0d030b2b2e56e24b02d7a02020ea355c8",
-    "zeroshot-rust/src": "9b4a67bcf9fffac122b92fcbdcbdd2d25a82903c0149b183a4e6a4528167cb1a"
+    "zeroshot-rust/Cargo.toml": "985c8f2183da05c8c5fddf396d37b0a7c3802fe9b7a26f4ad833283d9bf1171c",
+    "zeroshot-rust/hosted-node": "27932ab20262d8a6fec4cf46b5b4d64ddc546c8085a9d515c7fc8f2938c64978",
+    "zeroshot-rust/src": "54f331227bf7cd287eb2fb5aec7a71a4eb7737196cf7e4df388000c7dbbe4dc9"
   },
-  "imageInputsDigest": "73927a71835d3a99ff08ecefad076c8c3bab4ef76e9628ab4034d87756126a3b",
+  "imageInputsDigest": "023fc003687894b8453b5dbeb276f04c7f6158f2899bb6492242dc007dcaa350",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "3333811de8647cdfd64bbcba496eff0475fd097129bdd0be70e1c44f6dca3502"
+  "manifestDigest": "006b5ea9a888e209b4d69f10774c2dc9d549cb0f25373ceb2cc5eb4f5b7d2a1b"
 }

@@ -14,6 +14,7 @@ const childEnvironment = {
   ZEROSHOT_HOSTED_BASE_REVISION: configuration.baseRevision,
   ZEROSHOT_HOSTED_PROVIDER: configuration.provider,
   ZEROSHOT_HOSTED_MODEL_LEVEL: configuration.modelLevel,
+  OPENAI_BASE_URL: configuration.providerEndpoint,
   ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
   ZEROSHOT_PROVIDER_PROFILE: 'provider.hosted-direct@1',
   ...configuration.workerEnvironment,

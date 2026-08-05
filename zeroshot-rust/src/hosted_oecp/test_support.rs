@@ -58,6 +58,10 @@ impl NodeWorkerFixture {
                 ("GH_TOKEN".to_owned(), "git-canary".to_owned()),
                 ("OPENAI_API_KEY".to_owned(), "provider-canary".to_owned()),
                 (
+                    "OPENAI_BASE_URL".to_owned(),
+                    "https://openrouter.ai/api/v1".to_owned(),
+                ),
+                (
                     "ZEROSHOT_HOSTED_REPOSITORY".to_owned(),
                     "the-open-engine/zeroshot".to_owned(),
                 ),
@@ -171,7 +175,7 @@ if (mode === 'child') {
   return;
 }
 const expectedEnv = [
-  'GH_TOKEN', 'HOME', 'LANG', 'NODE_ENV', 'OPENAI_API_KEY', 'PATH',
+  'GH_TOKEN', 'HOME', 'LANG', 'NODE_ENV', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'PATH',
   'ZEROSHOT_HOSTED_BASE_REVISION', 'ZEROSHOT_HOSTED_MODEL_LEVEL',
   'ZEROSHOT_HOSTED_PROVIDER', 'ZEROSHOT_HOSTED_REPOSITORY',
   'ZEROSHOT_ISOLATION_PROFILE', 'ZEROSHOT_PROVIDER_PROFILE'

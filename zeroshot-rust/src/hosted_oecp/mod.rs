@@ -25,6 +25,6 @@ mod test_support;
 mod worker;
 
 pub use backend::HostedBackend;
-pub use config::HostedAuthority;
+pub use config::{HostedAuthority, HostedAuthorityConfig};
 pub use server::{production_backend, serve, OECP_CAPABILITY_FILE_ENV, OECP_PORT};
 pub use server_process::run_server_process;

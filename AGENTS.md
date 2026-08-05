@@ -161,7 +161,8 @@ symlinks, or host-path authority. Before worker launch, the runtime retains the 
 one-shot proxy-cleanup and delivery channels; the child inherits neither those descriptors nor a
 usable listener. The untrusted Node tree receives only the fixed loopback proxy sentinels and a
 bounded list/read/atomic-write tool loop—never shell, subprocess, or arbitrary network tools—and a
-text-only response with no real workspace mutation cannot succeed. The complete tree is reaped
+validated server-owned HTTPS model endpoint; no graph input may select or override that endpoint.
+A text-only response with no real workspace mutation cannot succeed. The complete tree is reaped
 after proxy admission/credential cleanup and before the trusted `WorkspaceDeliveryPort` runs.
 Delivery is idempotent and secret-free; `Finished` follows cleanup and delivery, and any defect
 replaces successful output with a closed failure. Keep the runtime,
