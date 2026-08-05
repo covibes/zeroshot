@@ -69,6 +69,7 @@ function parseArgs(argv) {
   let valueFor;
   const names = Object.freeze({
     '--runtime-image-digest': 'runtimeImageDigest',
+    '--runtime-manifest-digest': 'runtimeManifestDigest',
     '--zero-cloud-commit': 'zeroCloudCommit',
     '--repository': 'repository',
     '--provider': 'provider',
@@ -88,6 +89,9 @@ function parseArgs(argv) {
   if (valueFor !== undefined) throw new Error('build argument value is missing');
   if (!/^sha256:[a-f0-9]{64}$/.test(args.runtimeImageDigest || '')) {
     throw new Error('--runtime-image-digest sha256:<64 lowercase hex> is required');
+  }
+  if (!/^[a-f0-9]{64}$/.test(args.runtimeManifestDigest || '')) {
+    throw new Error('--runtime-manifest-digest <64 lowercase hex> is required');
   }
   if (!/^[a-f0-9]{40}$/.test(args.zeroCloudCommit || '')) {
     throw new Error('--zero-cloud-commit <40 lowercase hex> is required');
@@ -220,6 +224,7 @@ function main() {
     provider: args.provider,
     modelLevel: args.modelLevel,
     runtimeImageDigest: args.runtimeImageDigest,
+    runtimeManifestDigest: args.runtimeManifestDigest,
     protocolDigests: Object.fromEntries(
       PROTOCOL_FILES.map((file) => [file, fileDigest(path.join(ROOT, file))])
     ),

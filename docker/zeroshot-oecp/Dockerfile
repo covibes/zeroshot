@@ -56,10 +56,16 @@ COPY lib/cluster-worker/runtime-dependencies.js /opt/zeroshot/lib/cluster-worker
 COPY lib/run-plan.js /opt/zeroshot/lib/run-plan.js
 COPY scripts/omp/runtime.js scripts/omp/runtime-identities.js scripts/omp/runtime-lock.js scripts/omp/runtime-release.js /opt/zeroshot/scripts/omp/
 COPY protocol/openengine-cluster/v1/worker.schema.json /opt/zeroshot/protocol/openengine-cluster/v1/worker.schema.json
+COPY scripts/omp/runtime.js \
+     scripts/omp/runtime-identities.js \
+     scripts/omp/runtime-lock.js \
+     scripts/omp/runtime-release.js \
+     /opt/zeroshot/scripts/omp/
 COPY zeroshot-rust/hosted-node /opt/zeroshot/zeroshot-rust/hosted-node
 
 RUN groupadd --gid 10002 zeroshot-worker \
     && useradd --uid 10002 --gid 10002 --home-dir /tmp/zeroshot-oecp --no-create-home --shell /usr/sbin/nologin zeroshot-worker \
+    && chmod -R a+rX /opt/zeroshot/lib /opt/zeroshot/protocol /opt/zeroshot/scripts /opt/zeroshot/zeroshot-rust/hosted-node \
     && mkdir -p /workspace /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chown 10002:10002 /workspace \
     && chown 0:10002 /run/zeroshot-capsule-agent \

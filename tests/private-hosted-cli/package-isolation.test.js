@@ -78,10 +78,13 @@ describe('stable/candidate package isolation', () => {
 
   it('requires the runtime, cloud commit, and fixed hosted selection', () => {
     const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
+    const runtimeManifestDigest = 'c'.repeat(64);
     const zeroCloudCommit = 'b'.repeat(40);
     const parsed = parseArgs([
       '--runtime-image-digest',
       runtimeImageDigest,
+      '--runtime-manifest-digest',
+      runtimeManifestDigest,
       '--zero-cloud-commit',
       zeroCloudCommit,
       '--repository',
@@ -93,6 +96,7 @@ describe('stable/candidate package isolation', () => {
     ]);
     assert.deepEqual(parsed, {
       runtimeImageDigest,
+      runtimeManifestDigest,
       zeroCloudCommit,
       repository: 'owner/repository',
       provider: 'codex',
@@ -103,6 +107,8 @@ describe('stable/candidate package isolation', () => {
     const prefix = [
       '--runtime-image-digest',
       runtimeImageDigest,
+      '--runtime-manifest-digest',
+      runtimeManifestDigest,
       '--zero-cloud-commit',
       zeroCloudCommit,
       '--repository',
@@ -123,5 +129,21 @@ describe('stable/candidate package isolation', () => {
       /lowercase/
     );
     assert.throws(() => parseArgs(prefix), /provider/);
+    assert.throws(
+      () =>
+        parseArgs([
+          '--runtime-image-digest',
+          runtimeImageDigest,
+          '--zero-cloud-commit',
+          zeroCloudCommit,
+          '--repository',
+          'owner/repository',
+          '--provider',
+          'codex',
+          '--model-level',
+          'level2',
+        ]),
+      /runtime-manifest-digest/
+    );
   });
 });

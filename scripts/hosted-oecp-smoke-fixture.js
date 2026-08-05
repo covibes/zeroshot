@@ -5,9 +5,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const BASE_REVISION = 'a'.repeat(40);
+const HEAD_REVISION = 'b'.repeat(40);
 const REPOSITORY = 'the-open-engine/zeroshot-smoke';
 const REMOTE = `https://github.com/${REPOSITORY}.git`;
 const WORKSPACE = '/workspace';
+const MODE_FILE = '/tmp/zeroshot-oecp-certification-mode';
+const COMMIT_MARKER = path.join(WORKSPACE, '.git', 'certification-commit');
+const OUTPUT_FILE = path.join(WORKSPACE, 'hosted-smoke-output.txt');
+
+function certificationMode() {
+  try {
+    return fs.readFileSync(MODE_FILE, 'utf8').trim();
+  } catch (error) {
+    if (error.code === 'ENOENT') return 'failure';
+    throw error;
+  }
+}
 
 function gitCommandArguments() {
   let args = process.argv.slice(2);
@@ -29,14 +42,29 @@ function runGitFixture() {
     return;
   }
   if (command === 'rev-parse') {
-    process.stdout.write(`${BASE_REVISION}\n`);
+    const revision =
+      args[1] === 'refs/remotes/origin/HEAD' || !fs.existsSync(COMMIT_MARKER)
+        ? BASE_REVISION
+        : HEAD_REVISION;
+    process.stdout.write(`${revision}\n`);
     return;
   }
   if (command === 'remote' && args[1] === 'get-url') {
     process.stdout.write(`${REMOTE}\n`);
     return;
   }
-  if (command === 'status' || command === 'config') return;
+  if (command === 'status') {
+    if (fs.existsSync(OUTPUT_FILE)) process.stdout.write(' M hosted-smoke-output.txt\0');
+    return;
+  }
+  if (command === 'config') {
+    process.stdout.write('core.repositoryformatversion\0remote.origin.url\0');
+    return;
+  }
+  if (command === 'commit') {
+    fs.writeFileSync(COMMIT_MARKER, `${HEAD_REVISION}\n`, 'ascii');
+    return;
+  }
   throw new Error(`unsupported smoke Git command: ${args.join(' ')}`);
 }
 
@@ -52,16 +80,23 @@ function runCodexFixture() {
     );
     return;
   }
-  fs.writeFileSync(
-    path.join(WORKSPACE, 'hosted-smoke-output.txt'),
-    'process-derived hosted smoke output',
-    'utf8'
-  );
+  const mode = certificationMode();
+  if (mode === 'slow') {
+    process.on('SIGTERM', () => {});
+    setInterval(() => {}, 1_000);
+    return;
+  }
+  fs.writeFileSync(OUTPUT_FILE, 'process-derived hosted smoke output', 'utf8');
   process.stdout.write(
     `${JSON.stringify({ type: 'thread.started', thread_id: 'smoke-thread' })}\n`
   );
   process.stdout.write(
-    `${JSON.stringify({ type: 'turn.failed', error: { message: 'bounded smoke refusal' } })}\n`
+    mode === 'success'
+      ? `${JSON.stringify({
+          type: 'turn.completed',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        })}\n`
+      : `${JSON.stringify({ type: 'turn.failed', error: { message: 'bounded smoke refusal' } })}\n`
   );
 }
 

@@ -6,6 +6,7 @@ const {
   resolveTransportCapability,
   validateCapability,
 } = require('./hosted-oecp-smoke-capability');
+const { connectWebSocketSocket } = require('./hosted-oecp-websocket-socket');
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
 function record(fields) {
@@ -104,7 +105,8 @@ class RpcClient {
     this.waiters = [];
     this.requestTimeoutMs = validateTimeout(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
     this.timers = options.timers ?? { setTimeout, clearTimeout };
-    this.transportCapability = validateCapability(options.capability);
+    this.transportCapability =
+      options.capability === undefined ? undefined : validateCapability(options.capability);
     this.decoder = new StringDecoder('utf8');
     this.inbound = '';
     this.terminalError = null;
@@ -252,6 +254,20 @@ async function connectClient(endpoint, options = {}) {
   });
   return client;
 }
+
+async function connectWebSocketClient(endpoint, options = {}) {
+  const capability = resolveTransportCapability(options);
+  const expiresAt = Math.floor(Date.now() / 1_000) + 60;
+  const socket = await connectWebSocketSocket(`ws://${endpoint.host}:${endpoint.port}/oecp`, {
+    'x-zero-runtime-capability': capability,
+    'x-zero-capsule-id': options.capsuleId ?? 'certification-capsule',
+    'x-zero-organization-id': options.organizationId ?? 'certification-organization',
+    'x-zero-actor-handle': options.actorHandle ?? 'certification-actor',
+    'x-capsule-grant-expires-at': String(options.expiresAt ?? expiresAt),
+  });
+  const client = new RpcClient(socket, { requestTimeoutMs: options.requestTimeoutMs });
+  return client;
+}
 async function nextEvent(client) {
   for (;;) {
     const notification = await client.nextNotification();
@@ -265,6 +281,7 @@ async function nextEvent(client) {
 module.exports = {
   RpcClient,
   connectClient,
+  connectWebSocketClient,
   nextEvent,
   smokeGraph,
 };
