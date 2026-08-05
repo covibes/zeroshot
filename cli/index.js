@@ -22,7 +22,7 @@ const { URL } = require('url');
 const chalk = require('chalk');
 const Orchestrator = require('../src/orchestrator');
 const { setupCompletion } = require('../lib/completion');
-const { resolveRunMode, describeRunMode } = require('../lib/run-mode');
+const { resolveRunMode, runModeFromPlan, describeRunMode } = require('../lib/run-mode');
 const { formatWatchMode } = require('./message-formatters-watch');
 const {
   formatAgentLifecycle,
@@ -74,6 +74,7 @@ const {
   startClusterFromFile,
   startClusterFromIssue,
   startClusterFromText,
+  resolveEffectiveRunPlan,
 } = require('../lib/start-cluster');
 const { requirePreflight } = require('../src/preflight');
 const {
@@ -199,24 +200,6 @@ process.on('unhandledRejection', (reason) => {
 // Package root directory (for resolving default config paths)
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
-function normalizeRunOptions(options) {
-  if (options.ship) {
-    options.pr = true;
-    if (!options.docker) {
-      options.worktree = true;
-    }
-  }
-  if (options.pr && !options.docker && !options.worktree) {
-    options.worktree = true;
-  }
-  if (options.docker) {
-    options.worktree = false;
-  }
-  // autoMerge is NOT stored here — it is derived from the run plan (delivery ===
-  // 'ship') at every consumer. Writing it here unconditionally would clobber an
-  // explicit autoMerge intent (e.g. a future `--auto-merge` flag) back to false.
-}
-
 async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
   // Detect which issue provider tool is needed
   let issueProvider = null;
@@ -256,8 +239,8 @@ function shouldRunDetached(options) {
   return options.detach && !process.env.ZEROSHOT_DAEMON;
 }
 
-function printDetachedClusterStart(options, clusterId, logPath) {
-  const runMode = resolveRunMode(options);
+function printDetachedClusterStart(plan, clusterId, logPath) {
+  const runMode = runModeFromPlan(plan);
   console.log(runMode ? `Started ${clusterId} (${runMode})` : `Started ${clusterId}`);
   if (logPath) {
     console.log(`Setup log: ${logPath}`);
@@ -329,7 +312,18 @@ function spawnDetachedChild(env, cwd, logFd) {
   return daemon;
 }
 
-async function spawnDetachedCluster(options, clusterId, stdinText) {
+function applyRunPlanToOptions(options, plan) {
+  return {
+    ...options,
+    docker: plan.isolation === 'docker',
+    worktree: plan.isolation === 'worktree',
+    pr: plan.delivery === 'pr',
+    ship: plan.delivery === 'ship',
+    noIsolation: plan.isolation === 'none',
+  };
+}
+
+async function spawnDetachedCluster(options, plan, clusterId, stdinText) {
   const logFd = createDaemonLogFile(clusterId);
   const targetCwd = detectGitRepoRoot();
   const logPath = path.join(os.homedir(), '.zeroshot', `${clusterId}-daemon.log`);
@@ -347,7 +341,7 @@ async function spawnDetachedCluster(options, clusterId, stdinText) {
     cwd: targetCwd,
   });
   fs.closeSync(logFd);
-  printDetachedClusterStart(options, clusterId, logPath);
+  printDetachedClusterStart(plan, clusterId, logPath);
 }
 
 // Resume's daemon env is deliberately NOT buildDaemonEnv: run-only keys like
@@ -408,11 +402,11 @@ function trackActiveCluster(clusterId, orchestrator) {
   orchestratorInstance = orchestrator;
 }
 
-function printForegroundStartInfo(options, clusterId, configName) {
+function printForegroundStartInfo(plan, clusterId, configName) {
   if (process.env.ZEROSHOT_DAEMON) {
     return;
   }
-  const runMode = resolveRunMode(options);
+  const runMode = runModeFromPlan(plan);
   console.log(runMode ? `Starting ${clusterId} (${runMode})` : `Starting ${clusterId}`);
   console.log(chalk.dim(`Config: ${configName}`));
   console.log(chalk.dim('Ctrl+C to stop following (cluster keeps running)\n'));
@@ -657,11 +651,11 @@ function waitForClusterCompletion(orchestrator, clusterId, cleanup) {
   });
 }
 
-async function streamClusterInForeground(cluster, orchestrator, clusterId, options) {
+async function streamClusterInForeground(cluster, orchestrator, clusterId, plan) {
   const sendersWithOutput = new Set();
   const processedMessageIds = new Set();
 
-  const statusFooter = createStatusFooter(clusterId, cluster.messageBus, resolveRunMode(options));
+  const statusFooter = createStatusFooter(clusterId, cluster.messageBus, runModeFromPlan(plan));
   const handleLifecycleMessage = createLifecycleHandler(statusFooter);
   const lifecycleUnsubscribe = cluster.messageBus.subscribeTopic(
     'AGENT_LIFECYCLE',
@@ -2656,6 +2650,9 @@ program
   .option('--config <file>', 'Path to cluster config JSON (default: conductor-bootstrap)')
   .option('--docker', 'Run cluster inside Docker container (full isolation)')
   .option('--worktree', 'Use git worktree for isolation (lightweight, no Docker required)')
+  .addOption(
+    new Option('--no-isolation', 'Run in the current checkout without isolation').default(undefined)
+  )
   .option(
     '--docker-image <image>',
     'Docker image for --docker mode (default: zeroshot-cluster-base)'
@@ -2736,10 +2733,6 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
   )
   .action(async (inputArg, options) => {
     try {
-      // Normalize options (--ship → --pr → --worktree flags)
-      normalizeRunOptions(options);
-
-      // Determine force provider from CLI flags
       let forceProvider = null;
       if (options.github) forceProvider = 'github';
       else if (options.gitlab) forceProvider = 'gitlab';
@@ -2747,7 +2740,6 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       else if (options.devops) forceProvider = 'azure-devops';
       else if (options.linear) forceProvider = 'linear';
 
-      // Stdin input ('-'): read task body from stdin to avoid shell-quoting breakage
       let stdinText;
       if (isStdinInput(inputArg)) {
         if (process.env.ZEROSHOT_DAEMON === '1') {
@@ -2770,24 +2762,28 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
         }
       }
 
-      // Auto-detect input type
       const settings = loadSettings();
       const input =
         stdinText !== undefined
           ? buildTextInput(stdinText)
           : detectRunInput(inputArg, settings, forceProvider);
       const providerOverride = resolveProviderOverride(options);
+      const effectiveRunPlan = resolveEffectiveRunPlan(options, settings);
+      const effectiveOptions = applyRunPlanToOptions(options, effectiveRunPlan);
 
-      // Preflight checks
-      await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+      await runClusterPreflight({
+        input,
+        options: effectiveOptions,
+        providerOverride,
+        settings,
+        forceProvider,
+      });
 
-      // Secondary preflight: token-free template simulation/validation
-      const simMode = String(options.sim || 'fast').toLowerCase();
+      const simMode = String(effectiveOptions.sim || 'fast').toLowerCase();
       if (simMode !== 'off') {
         const { validateTemplates } = require('../src/template-validation');
         const templatesDir = path.join(PACKAGE_ROOT, 'cluster-templates');
-        const deep = simMode === 'deep';
-        const report = await validateTemplates({ templatesDir, deep });
+        const report = await validateTemplates({ templatesDir, deep: simMode === 'deep' });
         if (!report.valid) {
           console.error('\n' + '='.repeat(60));
           console.error(`TEMPLATE VALIDATION FAILED (sim=${simMode})`);
@@ -2796,9 +2792,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
             if (result.valid) continue;
             const rel = path.relative(process.cwd(), filePath);
             console.error(`\n❌ ${rel}`);
-            for (const err of result.errors) {
-              console.error(`   ERROR: ${err}`);
-            }
+            for (const err of result.errors) console.error(`   ERROR: ${err}`);
           }
           console.error('\nFix template errors before running to avoid token burn.\n');
           process.exit(1);
@@ -2806,67 +2800,42 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       }
 
       const { generateName } = require('../src/name-generator');
-
-      if (shouldRunDetached(options)) {
+      if (shouldRunDetached(effectiveOptions)) {
         const clusterId = generateName('cluster');
-        await spawnDetachedCluster(options, clusterId, stdinText);
+        await spawnDetachedCluster(effectiveOptions, effectiveRunPlan, clusterId, stdinText);
         return;
       }
 
       const clusterId = resolveClusterId(generateName);
-
-      // === LOAD CONFIG ===
-      // Priority: CLI --config > settings.defaultConfig
-      const configName = resolveConfigName(options, settings);
+      const configName = resolveConfigName(effectiveOptions, settings);
       const configPath = resolveConfigPath(configName);
       const orchestrator = await getOrchestrator();
       const config = loadClusterConfig(orchestrator, configPath, settings, providerOverride);
       trackActiveCluster(clusterId, orchestrator);
-      printForegroundStartInfo(options, clusterId, configName);
+      printForegroundStartInfo(effectiveRunPlan, clusterId, configName);
 
-      const strictSchema = resolveStrictSchema(options, settings);
+      const strictSchema = resolveStrictSchema(effectiveOptions, settings);
       applyStrictSchema(config, strictSchema);
-
-      const modelOverride = resolveModelOverride(options);
+      const modelOverride = resolveModelOverride(effectiveOptions);
       applyModelOverrideToConfig(config, modelOverride, providerOverride, settings);
 
-      let cluster = null;
+      const startArgs = {
+        orchestrator,
+        config,
+        settings,
+        providerOverride,
+        modelOverride,
+        forceProvider,
+        clusterId,
+        options: effectiveOptions,
+      };
+      let cluster;
       if (input.text) {
-        cluster = await startClusterFromText({
-          orchestrator,
-          text: input.text,
-          config,
-          settings,
-          providerOverride,
-          modelOverride,
-          forceProvider,
-          clusterId,
-          options,
-        });
+        cluster = await startClusterFromText({ ...startArgs, text: input.text });
       } else if (input.issue) {
-        cluster = await startClusterFromIssue({
-          orchestrator,
-          issue: input.issue,
-          config,
-          settings,
-          providerOverride,
-          modelOverride,
-          forceProvider,
-          clusterId,
-          options,
-        });
+        cluster = await startClusterFromIssue({ ...startArgs, issue: input.issue });
       } else if (input.file) {
-        cluster = await startClusterFromFile({
-          orchestrator,
-          file: input.file,
-          config,
-          settings,
-          providerOverride,
-          modelOverride,
-          forceProvider,
-          clusterId,
-          options,
-        });
+        cluster = await startClusterFromFile({ ...startArgs, file: input.file });
       } else {
         throw new Error(
           `Invalid run input for cluster ${clusterId}: expected text, issue, or file`
@@ -2874,15 +2843,12 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       }
 
       if (!process.env.ZEROSHOT_DAEMON) {
-        await streamClusterInForeground(cluster, orchestrator, clusterId, options);
+        await streamClusterInForeground(cluster, orchestrator, clusterId, effectiveRunPlan);
         orchestrator.close();
       }
-
       setupDaemonCleanup(orchestrator, clusterId);
     } catch (error) {
       if (error.code === 'DUPLICATE_CLUSTER') {
-        // Benign guard rejection, not a crash: nothing was allocated, so there is
-        // nothing to roll back. No stack trace, no "Error:" framing.
         if (process.env.ZEROSHOT_DAEMON && process.env.ZEROSHOT_CLUSTER_ID) {
           try {
             await removeDetachedSetupCluster({
