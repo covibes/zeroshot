@@ -24,10 +24,10 @@
  *   - 'crash': after prompt ack, writes to stderr and exits with a non-zero code.
  *   - 'ignore-abort': never exits on its own; used to prove the driver's SIGTERM/SIGKILL
  *     escalation actually terminates a stuck process.
- *   - 'pending-flood': after prompt ack, emits OMP_FAKE_RPC_PENDING_COUNT extension_ui_request
- *     frames in a single stdout write (one chunk), each with a unique id; emits agent_end once
- *     it has received that many extension_ui_response replies (never reached when the count
- *     exceeds the driver's pending-frame-queue bound, since the driver fails first).
+ *   - 'pending-flood': after prompt ack, performs one request/response handshake so the driver has
+ *     dispatched that ack, then emits OMP_FAKE_RPC_PENDING_COUNT extension_ui_request frames in
+ *     one stdout write, each with a unique id; emits agent_end once it has received that many
+ *     extension_ui_response replies (never reached when the count exceeds the queue bound).
  *   - 'lifetime-id-flood': after prompt ack, ping-pongs OMP_FAKE_RPC_LIFETIME_COUNT distinct
  *     extension_ui_request/extension_ui_response round trips one at a time, then agent_end.
  *   - 'output-cap': after prompt ack, emits message_update text_delta frames whose combined
@@ -356,20 +356,14 @@ function main() {
       }
       if (scenario === 'pending-flood') {
         pendingFloodTarget = Number(process.env.OMP_FAKE_RPC_PENDING_COUNT || 0);
-        const lines = [];
-        for (let i = 0; i < pendingFloodTarget; i += 1) {
-          lines.push(
-            JSON.stringify({
-              type: 'extension_ui_request',
-              id: `pf-${i}`,
-              method: 'confirm',
-              title: 'Confirm',
-              message: 'Continue?',
-              timeout: 30000,
-            })
-          );
-        }
-        process.stdout.write(`${lines.join('\n')}\n`);
+        emit({
+          type: 'extension_ui_request',
+          id: 'pending-flood-ready',
+          method: 'confirm',
+          title: 'Ready',
+          message: 'Begin flood?',
+          timeout: 30000,
+        });
         return;
       }
       if (scenario === 'lifetime-id-flood') {
@@ -458,6 +452,27 @@ function main() {
     }
 
     if (command.type === 'extension_ui_response' && scenario === 'pending-flood') {
+      if (command.id === 'pending-flood-ready') {
+        if (pendingFloodTarget === 0) {
+          emit({ type: 'agent_end', messages: [] });
+          return;
+        }
+        const lines = [];
+        for (let i = 0; i < pendingFloodTarget; i += 1) {
+          lines.push(
+            JSON.stringify({
+              type: 'extension_ui_request',
+              id: `pf-${i}`,
+              method: 'confirm',
+              title: 'Confirm',
+              message: 'Continue?',
+              timeout: 30000,
+            })
+          );
+        }
+        process.stdout.write(`${lines.join('\n')}\n`);
+        return;
+      }
       pendingFloodReceived += 1;
       if (pendingFloodReceived >= pendingFloodTarget) emit({ type: 'agent_end', messages: [] });
       return;
