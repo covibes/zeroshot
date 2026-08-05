@@ -17,6 +17,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
+const { VALID_PROVIDERS } = require('../../lib/provider-names');
 
 const settingsPath = require.resolve('../../lib/settings');
 const setupApplyPath = require.resolve('../../lib/setup-apply');
@@ -292,26 +293,35 @@ describe('setup-apply', function () {
     assert.ok(!logs.some((line) => line.includes('gh auth login')));
   });
 
-  it('converts providerLevel.<provider> min/default/max into providerSettings levels', function () {
-    // codex's stock defaults are already haiku/sonnet/opus (level1/level2/level3),
-    // so submit a value that actually differs to exercise a real write.
-    const decisions = decisionsFile({
-      'providerLevel.codex': { min: 'sonnet', default: 'sonnet', max: 'opus' },
+  it('round-trips canonical levels for every registry provider', function () {
+    const providerDecisions = Object.fromEntries(
+      VALID_PROVIDERS.map((provider) => [
+        `providerLevel.${provider}`,
+        { minLevel: 'level1', defaultLevel: 'level2', maxLevel: 'level3' },
+      ])
+    );
+    applyModule.applyDecisions({
+      decisionsPath: decisionsFile({ defaultIsolation: 'worktree', ...providerDecisions }),
+      cwd: repoRoot,
     });
-    const results = applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot });
 
-    assert.strictEqual(results[0].applied, true);
     const settings = readSettings();
-    assert.strictEqual(settings.providerSettings.codex.minLevel, 'level2');
-    assert.strictEqual(settings.providerSettings.codex.defaultLevel, 'level2');
-    assert.strictEqual(settings.providerSettings.codex.maxLevel, 'level3');
+    for (const provider of VALID_PROVIDERS) {
+      assert.strictEqual(settings.providerSettings[provider].minLevel, 'level1');
+      assert.strictEqual(settings.providerSettings[provider].defaultLevel, 'level2');
+      assert.strictEqual(settings.providerSettings[provider].maxLevel, 'level3');
+    }
   });
 
-  it('rejects an out-of-domain providerLevel value without writing anything', function () {
-    const decisions = decisionsFile({
-      'providerLevel.codex': { min: 'not-a-model', default: 'sonnet', max: 'opus' },
+  for (const [name, value] of [
+    ['unknown key', { minLevel: 'level1', defaultLevel: 'level2', maxLevel: 'level3', model: 'x' }],
+    ['invalid level', { minLevel: 'level0', defaultLevel: 'level2', maxLevel: 'level3' }],
+    ['invalid ordering', { minLevel: 'level2', defaultLevel: 'level1', maxLevel: 'level3' }],
+  ]) {
+    it(`rejects provider levels with ${name}`, function () {
+      const decisions = decisionsFile({ 'providerLevel.codex': value });
+      assert.throws(() => applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot }));
+      assert.ok(!fs.existsSync(TEST_SETTINGS_FILE));
     });
-    assert.throws(() => applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot }));
-    assert.ok(!fs.existsSync(TEST_SETTINGS_FILE));
-  });
+  }
 });

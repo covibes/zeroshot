@@ -13,8 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { buildSetupPlan, isConsumedPath } = require('../../lib/setup-plan');
-
-const PROVIDER_NAMES = ['claude', 'codex', 'gemini', 'opencode'];
+const { VALID_PROVIDERS: PROVIDER_NAMES } = require('../../lib/provider-names');
 
 const EXPECTED_DECISION_IDS = new Set([
   'defaultProvider',
@@ -54,7 +53,6 @@ function makeDeps(overrides = {}) {
     listProviders: () => PROVIDER_NAMES,
     getProvider: (name) => ({
       cliCommand: name,
-      resolveModelSpec: (level) => ({ model: `${name}-${level}-model` }),
     }),
     getProviderDefaults: () => makeProviderDefaults(),
     getNodeVersion: () => 'v99.0.0',
@@ -113,7 +111,7 @@ describe('buildSetupPlan', function () {
   describe('shape', function () {
     it('always returns a typed schemaVersion/facts/decisions/recommended/risk/proposedWrites', function () {
       const plan = freshMachinePlan();
-      assert.strictEqual(plan.schemaVersion, 1);
+      assert.strictEqual(plan.schemaVersion, 2);
       assert.strictEqual(typeof plan.facts, 'object');
       assert.ok(Array.isArray(plan.decisions));
       assert.strictEqual(typeof plan.recommended, 'object');
@@ -191,9 +189,9 @@ describe('buildSetupPlan', function () {
         assert.strictEqual(write.scope, 'global');
         assert.strictEqual(write.from, null);
         assert.deepStrictEqual(write.to, {
-          min: `${providerName}-level1-model`,
-          default: `${providerName}-level2-model`,
-          max: `${providerName}-level3-model`,
+          minLevel: 'level1',
+          defaultLevel: 'level2',
+          maxLevel: 'level3',
         });
       }
     });
