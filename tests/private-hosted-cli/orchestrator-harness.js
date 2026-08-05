@@ -9,25 +9,7 @@ const CALLER_INPUT = Object.freeze({
   artifacts: [],
 });
 
-function base(overrides = {}) {
-  const sequence = [];
-  const requests = { plan: [], apply: [] };
-  let ids = 0;
-  const adapter = {
-    allocate() {
-      sequence.push('allocate');
-      return { id: 'cap1', state: 'ready' };
-    },
-    inspect() {
-      sequence.push('inspect');
-      return { id: 'cap1', state: 'ready' };
-    },
-    terminate() {
-      sequence.push('terminate');
-      return { id: 'cap1', state: 'terminating' };
-    },
-    ...overrides.adapter,
-  };
+function createCoordinatorHarness(sequence, requests, overrides) {
   const initialClient = {
     plan(params) {
       sequence.push('plan');
@@ -80,6 +62,29 @@ function base(overrides = {}) {
     },
     ...overrides.coordinator,
   };
+  return coordinator;
+}
+
+function base(overrides = {}) {
+  const sequence = [];
+  const requests = { plan: [], apply: [] };
+  let ids = 0;
+  const adapter = {
+    allocate() {
+      sequence.push('allocate');
+      return { id: 'cap1', state: 'ready' };
+    },
+    inspect() {
+      sequence.push('inspect');
+      return { id: 'cap1', state: 'ready' };
+    },
+    terminate() {
+      sequence.push('terminate');
+      return { id: 'cap1', state: 'terminating' };
+    },
+    ...overrides.adapter,
+  };
+  const coordinator = createCoordinatorHarness(sequence, requests, overrides);
   const output = { stdout: [], stderr: [] };
   const orchestrator = new HostedRunOrchestrator({
     assertGraphSpec: () => undefined,

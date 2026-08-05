@@ -64,7 +64,7 @@ function fileDigest(file) {
   return sha256(fs.readFileSync(file));
 }
 
-function parseArgs(argv) {
+function parseOptionValues(argv) {
   const args = {};
   let valueFor;
   const names = Object.freeze({
@@ -87,6 +87,10 @@ function parseArgs(argv) {
     }
   }
   if (valueFor !== undefined) throw new Error('build argument value is missing');
+  return args;
+}
+
+function validateBuildArgs(args) {
   if (!/^sha256:[a-f0-9]{64}$/.test(args.runtimeImageDigest || '')) {
     throw new Error('--runtime-image-digest sha256:<64 lowercase hex> is required');
   }
@@ -103,6 +107,11 @@ function parseArgs(argv) {
   }
   if (args.provider !== 'codex') throw new Error('--provider must be exactly codex');
   if (args.modelLevel !== 'level2') throw new Error('--model-level must be exactly level2');
+}
+
+function parseArgs(argv) {
+  const args = parseOptionValues(argv);
+  validateBuildArgs(args);
   return Object.freeze(args);
 }
 
@@ -162,7 +171,8 @@ function writeCandidateFiles(stage, immutable) {
   const needle = '  program.parse();';
   if (stableCli.split(needle).length !== 2) throw new Error('stable CLI injection point changed');
   const registration =
-    "  require('../lib/private-hosted-cli/register').registerPrivateHostedCandidate(program, { loadSettings, mutateSettings });\n";
+    "  require('../lib/private-hosted-cli/register').registerPrivateHostedCandidate(" +
+    'program, { loadSettings, mutateSettings });\n';
   fs.writeFileSync(cliPath, stableCli.replace(needle, `${registration}${needle}`));
 
   const scriptsPath = path.join(stage, 'scripts');

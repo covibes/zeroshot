@@ -56,7 +56,7 @@ describe('private target services', () => {
   });
 });
 
-describe('private capsule and observation services', () => {
+function registerCapsuleServiceTests() {
   it('creates, lists, and host-terminates capsules with distinct operations', async () => {
     const h = remoteHarness();
     await captureLogs(() =>
@@ -121,125 +121,139 @@ describe('private capsule and observation services', () => {
       false
     );
   });
+}
 
-  it('uses fresh access and the delivered cursor after a real 4401 reconnect', async () => {
-    const sockets = [];
-    const headers = [];
-    let accessCount = 0;
-    let deliveredBookmark;
-    const bookmarkDelivered = new Promise((resolve) => {
-      deliveredBookmark = resolve;
-    });
-    const webSocketFactory = (_url, _protocols, connectOptions) => {
-      headers.push(connectOptions.headers.Authorization);
-      const socket = new FakeWebSocket();
-      sockets.push(socket);
-      return socket;
-    };
-    const h = remoteHarness({
-      run: true,
-      access: () =>
-        makeAccess(`fresh-${++accessCount}`, {
-          websocketUrl: 'wss://target.example/v1/capsules/cap-1/oecp',
-        }),
-      createCoordinator: (init) =>
-        new RealHostedSessionCoordinator({
-          ...init,
-          connectOptions: { webSocketFactory },
-        }),
-      orchestratorOutput: {
-        stdout(line) {
-          if (line.includes('"cursor":"cursor-1"')) deliveredBookmark();
-        },
-        stderr() {},
+function createReconnectFixture() {
+  const sockets = [];
+  const headers = [];
+  let accessCount = 0;
+  let deliveredBookmark;
+  const bookmarkDelivered = new Promise((resolve) => {
+    deliveredBookmark = resolve;
+  });
+  const webSocketFactory = (_url, _protocols, connectOptions) => {
+    headers.push(connectOptions.headers.Authorization);
+    const socket = new FakeWebSocket();
+    sockets.push(socket);
+    return socket;
+  };
+  const harness = remoteHarness({
+    run: true,
+    access: () =>
+      makeAccess(`fresh-${++accessCount}`, {
+        websocketUrl: 'wss://target.example/v1/capsules/cap-1/oecp',
+      }),
+    createCoordinator: (init) =>
+      new RealHostedSessionCoordinator({
+        ...init,
+        connectOptions: { webSocketFactory },
+      }),
+    orchestratorOutput: {
+      stdout(line) {
+        if (line.includes('"cursor":"cursor-1"')) deliveredBookmark();
       },
-    });
-    const running = captureLogs(() =>
-      h.services.remoteRun({
-        target: 'prod',
-        graph: 'graph.json',
-        input: 'input.json',
-        detach: false,
-      })
-    );
-    const capabilities = { graphProfiles: ['openengine.graph.single-worker/v1'] };
-    const initialize = async (index) => {
-      const socket = await waitForSocket(sockets, index);
-      const request = await waitForRequest(socket, 'initialize');
-      socket.respond(request.id, {
-        protocolVersion: 'openengine.cluster/v1',
-        capabilities,
-        status: { phase: 'running' },
-      });
-      return socket;
-    };
+      stderr() {},
+    },
+  });
+  return { bookmarkDelivered, harness, headers, sockets };
+}
 
-    const initial = await initialize(0);
-    const plan = await waitForRequest(initial, 'plan');
-    initial.respond(plan.id, { ok: true, diagnostics: [] });
-    const apply = await waitForRequest(initial, 'apply');
-    initial.respond(apply.id, {
-      generation: 1,
-      runId: 'run-1',
-      phase: 'running',
-      deduped: false,
-    });
+async function initializeReconnectSocket(sockets, index, capabilities) {
+  const socket = await waitForSocket(sockets, index);
+  const request = await waitForRequest(socket, 'initialize');
+  socket.respond(request.id, {
+    protocolVersion: 'openengine.cluster/v1',
+    capabilities,
+    status: { phase: 'running' },
+  });
+  return socket;
+}
 
-    const watched = await initialize(1);
-    const watch = await waitForRequest(watched, 'watch');
-    watched.respond(watch.id, { subscriptionId: 'watch-1', runId: 'run-1' });
-    watched.notify('event', {
-      subscriptionId: 'watch-1',
-      runId: 'run-1',
-      cursor: 'cursor-1',
-      event: { type: 'bookmark' },
-    });
-    await settle();
-    await bookmarkDelivered;
-    watched.readyState = 3;
-    watched.emit('close', { code: 4401, reason: '' });
+async function proveReconnectUsesFreshAccess() {
+  const { bookmarkDelivered, harness, headers, sockets } = createReconnectFixture();
+  const running = captureLogs(() =>
+    harness.services.remoteRun({
+      target: 'prod',
+      graph: 'graph.json',
+      input: 'input.json',
+      detach: false,
+    })
+  );
+  const capabilities = { graphProfiles: ['openengine.graph.single-worker/v1'] };
+  const initial = await initializeReconnectSocket(sockets, 0, capabilities);
+  const plan = await waitForRequest(initial, 'plan');
+  initial.respond(plan.id, { ok: true, diagnostics: [] });
+  const apply = await waitForRequest(initial, 'apply');
+  initial.respond(apply.id, {
+    generation: 1,
+    runId: 'run-1',
+    phase: 'running',
+    deduped: false,
+  });
 
-    const replacement = await initialize(2);
-    const resumed = await waitForRequest(replacement, 'watch');
-    assert.deepEqual(resumed.params, { runId: 'run-1', fromCursor: 'cursor-1' });
-    replacement.respond(resumed.id, { subscriptionId: 'watch-2', runId: 'run-1' });
-    replacement.notify('event', {
-      subscriptionId: 'watch-2',
-      runId: 'run-1',
-      cursor: 'cursor-2',
-      event: {
-        type: 'finished',
-        final_status: {
-          phase: 'finished',
-          observedGeneration: 1,
-          currentRunId: 'run-1',
-          atCursor: 'cursor-2',
-        },
-      },
-    });
-    await settle();
+  const watched = await initializeReconnectSocket(sockets, 1, capabilities);
+  const watch = await waitForRequest(watched, 'watch');
+  watched.respond(watch.id, { subscriptionId: 'watch-1', runId: 'run-1' });
+  watched.notify('event', {
+    subscriptionId: 'watch-1',
+    runId: 'run-1',
+    cursor: 'cursor-1',
+    event: { type: 'bookmark' },
+  });
+  await settle();
+  await bookmarkDelivered;
+  watched.readyState = 3;
+  watched.emit('close', { code: 4401, reason: '' });
 
-    const finalSocket = await initialize(3);
-    const get = await waitForRequest(finalSocket, 'get');
-    finalSocket.respond(get.id, {
-      status: {
+  const replacement = await initializeReconnectSocket(sockets, 2, capabilities);
+  const resumed = await waitForRequest(replacement, 'watch');
+  assert.deepEqual(resumed.params, { runId: 'run-1', fromCursor: 'cursor-1' });
+  replacement.respond(resumed.id, { subscriptionId: 'watch-2', runId: 'run-1' });
+  replacement.notify('event', {
+    subscriptionId: 'watch-2',
+    runId: 'run-1',
+    cursor: 'cursor-2',
+    event: {
+      type: 'finished',
+      final_status: {
         phase: 'finished',
         observedGeneration: 1,
         currentRunId: 'run-1',
         atCursor: 'cursor-2',
       },
-      atCursor: 'cursor-2',
-    });
-    const result = await running;
-    assert.equal(result.value.final.status.atCursor, 'cursor-2');
-    assert.deepEqual(headers, [
-      'Bearer fresh-1',
-      'Bearer fresh-2',
-      'Bearer fresh-3',
-      'Bearer fresh-4',
-    ]);
+    },
   });
+  await settle();
 
+  const finalSocket = await initializeReconnectSocket(sockets, 3, capabilities);
+  const get = await waitForRequest(finalSocket, 'get');
+  finalSocket.respond(get.id, {
+    status: {
+      phase: 'finished',
+      observedGeneration: 1,
+      currentRunId: 'run-1',
+      atCursor: 'cursor-2',
+    },
+    atCursor: 'cursor-2',
+  });
+  const result = await running;
+  assert.equal(result.value.final.status.atCursor, 'cursor-2');
+  assert.deepEqual(headers, [
+    'Bearer fresh-1',
+    'Bearer fresh-2',
+    'Bearer fresh-3',
+    'Bearer fresh-4',
+  ]);
+}
+
+function registerReconnectTest() {
+  it(
+    'uses fresh access and the delivered cursor after a real 4401 reconnect',
+    proveReconnectUsesFreshAccess
+  );
+}
+
+function registerRemoteOperationTests() {
   it('reports remote status and keeps drain/force stop separate from host termination', async () => {
     const h = remoteHarness();
     await captureLogs(() => h.services.remoteStatus('cap-1', { target: 'prod', json: true }));
@@ -299,7 +313,9 @@ describe('private capsule and observation services', () => {
       }
     );
   });
+}
 
+function registerQueueSubmissionTests() {
   it('submits and follows a credential-free v2 RunIntent through one client', async () => {
     const queueCalls = [];
     const h = remoteHarness({
@@ -362,7 +378,9 @@ describe('private capsule and observation services', () => {
       /does not advertise RunIntent v2/
     );
   });
+}
 
+function registerQueueObservationTests() {
   it('keeps Ctrl+C as queue observation disconnect without cancellation', async () => {
     const queueCalls = [];
     const h = remoteHarness({
@@ -431,7 +449,9 @@ describe('private capsule and observation services', () => {
     );
     assert.equal(submissions, 1);
   });
+}
 
+function registerRunIntentManagementTests() {
   it('reads status, follows, and cancels only through explicit RunIntent operations', async () => {
     const queueCalls = [];
     const h = remoteHarness({
@@ -481,4 +501,15 @@ describe('private capsule and observation services', () => {
     assert.match(result.lines.join('\n'), /result is no longer retained/);
     assert.doesNotMatch(result.lines.join('\n'), /^\{\}$/m);
   });
-});
+}
+
+function registerCapsuleAndObservationServiceTests() {
+  registerCapsuleServiceTests();
+  registerReconnectTest();
+  registerRemoteOperationTests();
+  registerQueueSubmissionTests();
+  registerQueueObservationTests();
+  registerRunIntentManagementTests();
+}
+
+describe('private capsule and observation services', registerCapsuleAndObservationServiceTests);

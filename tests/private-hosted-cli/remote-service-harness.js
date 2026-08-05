@@ -3,10 +3,8 @@
 const { createDefaultServices } = require('../../private/hosted-cli-candidate/default-services');
 const { DESCRIPTOR, finishedWatch, GRAPH, RUNTIME_DIGEST } = require('./candidate-fixtures');
 
-function remoteHarness(options = {}) {
-  const calls = [];
-  let ids = 0;
-  const target = {
+function createTarget() {
+  return {
     id: 'target-prod',
     url: 'https://target.example',
     organization: { id: 'org-1' },
@@ -18,8 +16,10 @@ function remoteHarness(options = {}) {
       configuredAt: '2026-08-03T00:00:00.000Z',
     },
   };
-  const state = { _targets: { prod: target } };
-  const adapter = {
+}
+
+function createAdapter(options, calls) {
+  return {
     access(capsuleId, signal) {
       const access = options.access?.(capsuleId, signal);
       if (!access) throw new Error('unexpected capsule access request');
@@ -59,84 +59,97 @@ function remoteHarness(options = {}) {
       return { id, state: 'terminating' };
     },
   };
-  let runOpenCount = 0;
-  class HostedSessionCoordinator {
+}
+
+function createRunClient(calls) {
+  return {
+    plan(params) {
+      calls.push(['plan', params]);
+      return { ok: true, diagnostics: [] };
+    },
+    apply(params) {
+      calls.push(['apply', params]);
+      return { generation: 1, runId: 'run-1' };
+    },
+  };
+}
+
+function createFinishedClient(calls, status) {
+  return {
+    get() {
+      calls.push(['get']);
+      return { status };
+    },
+  };
+}
+
+function createObservationClient(calls) {
+  return {
+    ...createFinishedClient(calls, {
+      phase: 'finished',
+      observedGeneration: 3,
+      currentRunId: 'run-3',
+      atCursor: 'cursor-3',
+    }),
+    stop(params) {
+      calls.push(['stop', params]);
+      return { effectiveMode: params.mode, runId: 'run-3' };
+    },
+  };
+}
+
+function openHostedSession(context) {
+  const { calls, options } = context;
+  calls.push(['initialize']);
+  context.runOpenCount += 1;
+  if (options.run) {
+    return {
+      initializeResult: {
+        capabilities: { graphProfiles: ['openengine.graph.single-worker/v1'] },
+      },
+      client:
+        context.runOpenCount === 1
+          ? createRunClient(calls)
+          : createFinishedClient(calls, {
+              phase: 'finished',
+              observedGeneration: 1,
+              currentRunId: 'run-1',
+              atCursor: 'cursor-1',
+            }),
+    };
+  }
+  return { client: createObservationClient(calls) };
+}
+
+function interruptedWatch(calls, params) {
+  process.emit('SIGINT');
+  return {
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next() {
+      return Promise.reject(params.signal.reason);
+    },
+    cancel() {
+      calls.push(['watch-cancel']);
+    },
+  };
+}
+
+function createHostedSessionCoordinator(context) {
+  return class HostedSessionCoordinator {
     constructor(init) {
-      calls.push(['coordinator', init.capsuleId, init.targetAuthority]);
+      context.calls.push(['coordinator', init.capsuleId, init.targetAuthority]);
     }
 
     open() {
-      calls.push(['initialize']);
-      runOpenCount += 1;
-      if (options.run) {
-        return {
-          initializeResult: {
-            capabilities: { graphProfiles: ['openengine.graph.single-worker/v1'] },
-          },
-          client:
-            runOpenCount === 1
-              ? {
-                  plan(params) {
-                    calls.push(['plan', params]);
-                    return { ok: true, diagnostics: [] };
-                  },
-                  apply(params) {
-                    calls.push(['apply', params]);
-                    return { generation: 1, runId: 'run-1' };
-                  },
-                }
-              : {
-                  get() {
-                    calls.push(['get']);
-                    return {
-                      status: {
-                        phase: 'finished',
-                        observedGeneration: 1,
-                        currentRunId: 'run-1',
-                        atCursor: 'cursor-1',
-                      },
-                    };
-                  },
-                },
-        };
-      }
-      return {
-        client: {
-          get() {
-            calls.push(['get']);
-            return {
-              status: {
-                phase: 'finished',
-                observedGeneration: 3,
-                currentRunId: 'run-3',
-                atCursor: 'cursor-3',
-              },
-            };
-          },
-          stop(params) {
-            calls.push(['stop', params]);
-            return { effectiveMode: params.mode, runId: 'run-3' };
-          },
-        },
-      };
+      return openHostedSession(context);
     }
 
     watch(params) {
+      const { calls, options } = context;
       calls.push(['watch', params]);
-      if (options.interruptWatch) {
-        process.emit('SIGINT');
-        return {
-          [Symbol.asyncIterator]() {
-            return this;
-          },
-          next() {
-            return Promise.reject(params.signal.reason);
-          },
-          cancel() {
-            calls.push(['watch-cancel']);
-          },
-        };
-      }
+      if (options.interruptWatch) return interruptedWatch(calls, params);
       return finishedWatch({
         runId: 'run-1',
         cursor: 'cursor-1',
@@ -145,17 +158,25 @@ function remoteHarness(options = {}) {
     }
 
     close() {
-      calls.push(['close']);
+      context.calls.push(['close']);
     }
-  }
-  class TargetSessionManager {
+  };
+}
+
+function createTargetSessionManager() {
+  return class TargetSessionManager {
     tokenProvider() {
       return () => Promise.resolve('access-token');
     }
-  }
-  const runtime = {
+  };
+}
+
+function createRuntime({ adapter, calls, context, options, state }) {
+  return {
     cluster: { assertGraphSpec: () => undefined },
-    hostedSession: { HostedSessionCoordinator },
+    hostedSession: {
+      HostedSessionCoordinator: createHostedSessionCoordinator(context),
+    },
     hostedTarget: {
       createTargetAdapter(init) {
         calls.push(['adapter', init.organization.id]);
@@ -163,7 +184,7 @@ function remoteHarness(options = {}) {
       },
     },
     target: {
-      TargetSessionManager,
+      TargetSessionManager: createTargetSessionManager(),
       discoverTarget() {
         calls.push(['discover']);
         return options.descriptor ?? DESCRIPTOR;
@@ -172,6 +193,37 @@ function remoteHarness(options = {}) {
       KeyringCredentialStore: { create: () => ({}) },
     },
   };
+}
+
+function createManifest() {
+  return {
+    privateMarker: 'ZEROSHOT_PRIVATE_HOSTED_CLI_CANDIDATE_DO_NOT_PUBLISH',
+    repository: 'owner/repository',
+    provider: 'codex',
+    modelLevel: 'level2',
+    runtimeImageDigest: RUNTIME_DIGEST,
+  };
+}
+
+function readHostedInputs(options, calls) {
+  calls.push(['read-inputs']);
+  return {
+    graph: GRAPH,
+    input: options.hostedInput ?? {
+      source: 'prompt',
+      prompt: 'Ship the change.',
+      artifacts: [],
+    },
+  };
+}
+
+function remoteHarness(options = {}) {
+  const calls = [];
+  let ids = 0;
+  const state = { _targets: { prod: createTarget() } };
+  const adapter = createAdapter(options, calls);
+  const context = { calls, options, runOpenCount: 0 };
+  const runtime = createRuntime({ adapter, calls, context, options, state });
   const services = createDefaultServices({
     createCoordinator: options.createCoordinator,
     orchestratorOutput: options.orchestratorOutput,
@@ -183,24 +235,8 @@ function remoteHarness(options = {}) {
     followRunIntent: options.followRunIntent,
     runIntentSleep: options.runIntentSleep,
     randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-0000-0000-000000000000`,
-    manifest: {
-      privateMarker: 'ZEROSHOT_PRIVATE_HOSTED_CLI_CANDIDATE_DO_NOT_PUBLISH',
-      repository: 'owner/repository',
-      provider: 'codex',
-      modelLevel: 'level2',
-      runtimeImageDigest: RUNTIME_DIGEST,
-    },
-    readHostedInputs: () => {
-      calls.push(['read-inputs']);
-      return {
-        graph: GRAPH,
-        input: options.hostedInput ?? {
-          source: 'prompt',
-          prompt: 'Ship the change.',
-          artifacts: [],
-        },
-      };
-    },
+    manifest: createManifest(),
+    readHostedInputs: () => readHostedInputs(options, calls),
   });
   return { adapter, calls, services };
 }
