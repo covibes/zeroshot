@@ -1067,6 +1067,58 @@ test('eligible adapters build restricted provider-owned recovery commands', () =
   }
 });
 
+test('Codex recovery trusts only an explicitly configured isolated profile', () => {
+  const cliFeatures = {
+    supportsSandbox: true,
+    supportsEphemeral: true,
+    supportsIgnoreUserConfig: false,
+    supportsIgnoreRules: true,
+    supportsStrictConfig: true,
+    supportsConfigOverride: true,
+  };
+
+  withTempSettings({ providerSettings: { codex: {} } }, () => {
+    assert.throws(
+      () =>
+        helper.prepareSingleAgentProviderCommand({
+          provider: 'codex',
+          context: 'repair this output',
+          options: { structuredOutputRecovery: true, cliFeatures },
+        }),
+      /--ignore-user-config/
+    );
+  });
+
+  withTempSettings({ providerSettings: { codex: { trustIsolatedRecoveryProfile: true } } }, () => {
+    const prepared = helper.prepareSingleAgentProviderCommand({
+      provider: 'codex',
+      context: 'repair this output',
+      options: {
+        structuredOutputRecovery: true,
+        resumeSessionId: 'must-not-survive',
+        cliFeatures,
+      },
+    });
+    const { args } = prepared.commandSpec;
+    assert.equal(prepared.options.trustIsolatedCodexProfile, true);
+    assert.equal(args.includes('--ignore-user-config'), false);
+    assert.ok(args.includes('--sandbox'));
+    assert.ok(args.includes('read-only'));
+    assert.ok(args.includes('--ephemeral'));
+    assert.ok(args.includes('--ignore-rules'));
+    assert.ok(args.includes('--strict-config'));
+    assert.ok(args.includes('web_search="disabled"'));
+    assert.equal(args.includes('resume'), false);
+
+    const ordinary = helper.prepareSingleAgentProviderCommand({
+      provider: 'codex',
+      context: 'ordinary turn',
+      options: { cliFeatures },
+    });
+    assert.equal(ordinary.options.trustIsolatedCodexProfile, undefined);
+  });
+});
+
 test('eligible adapters fail closed without recovery safety evidence', () => {
   for (const provider of ['claude', 'codex', 'gemini', 'opencode']) {
     assert.throws(

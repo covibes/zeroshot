@@ -2839,4 +2839,26 @@ describe('Codex planner structured-output recovery', function () {
       true,
     ]);
   });
+
+  it('stops a planner with one typed cluster failure after recovery exhaustion', async function () {
+    const result = await runStructuredOutputRecovery({
+      initialAction: 'schema-invalid',
+      recoveryAction: 'schema-invalid',
+    });
+
+    assert.strictEqual(result.state, 'stopped', JSON.stringify(result, null, 2));
+    assert.strictEqual(result.configuredRole, 'planner');
+    assert.strictEqual(result.fakeCount, '4', JSON.stringify(result, null, 2));
+    assert.strictEqual(result.lifecycle.includes('TASK_COMPLETED'), false);
+    assert.strictEqual(result.lifecycle.filter((event) => event === 'TASK_FAILED').length, 1);
+    assert.strictEqual(result.topics.includes('CLUSTER_COMPLETE'), false);
+    assert.strictEqual(result.topics.includes('AGENT_ERROR'), true);
+    assert.strictEqual(result.clusterFailures.length, 1);
+    assert.strictEqual(result.clusterFailures[0].reason, 'structured_output_invalid');
+    assert.strictEqual(result.clusterFailures[0].code, 'STRUCTURED_OUTPUT_INVALID');
+    assert.strictEqual(result.clusterFailures[0].details.kind, 'schema_validation');
+    assert.strictEqual(result.clusterFailures[0].details.recoveryAttempts, 3);
+    assert.strictEqual(result.failureInfo.code, 'STRUCTURED_OUTPUT_INVALID');
+    assert.deepStrictEqual(result.failureInfo.details, result.clusterFailures[0].details);
+  });
 });

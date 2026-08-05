@@ -399,17 +399,17 @@ describe('Output Reformatter', function () {
     assert.match(runReformat.firstCall.args[0], /required property.*plan/);
   });
 
-  it('retains the original invalid object for non-validators after exhaustion and warns once', async function () {
+  it('rejects the original invalid object after recovery exhaustion', async function () {
     const published = [];
     const runReformat = sinon.stub().resolves({ success: true, output: 'invalid' });
     const agent = recoveryAgent({ provider: 'codex', runReformat, published });
 
-    const result = await parseResultOutput(agent, JSON.stringify({ wrong: true }));
-
-    assert.deepEqual(result, {});
+    await assert.rejects(
+      parseResultOutput(agent, JSON.stringify({ wrong: true })),
+      (error) => error.code === 'STRUCTURED_OUTPUT_INVALID'
+    );
     assert.equal(runReformat.callCount, DEFAULT_MAX_ATTEMPTS);
-    assert.equal(published.length, 1);
-    assert.equal(published[0].topic, 'AGENT_SCHEMA_WARNING');
+    assert.equal(published.length, 0);
   });
 
   it('keeps validators strict after the same three-attempt exhaustion', async function () {

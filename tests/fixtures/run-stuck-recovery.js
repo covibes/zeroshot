@@ -30,6 +30,7 @@ async function main() {
 
   const cluster = orchestrator.getCluster(started.id);
   const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  const messages = cluster.messageBus.getAll(started.id);
   const lifecycle = cluster.messageBus
     .query({
       cluster_id: started.id,
@@ -47,8 +48,12 @@ async function main() {
         state: orchestrator.getStatus(started.id).state,
         configuredRole: config.agents[0].role,
         lifecycle,
-        topics: cluster.messageBus.getAll(started.id).map((message) => message.topic),
+        topics: messages.map((message) => message.topic),
         completionData: completion?.content?.data || null,
+        clusterFailures: messages
+          .filter((message) => message.topic === 'CLUSTER_FAILED')
+          .map((message) => message.content.data),
+        failureInfo: registry[started.id].failureInfo || null,
         agentState: registry[started.id].agentStates[0],
         tasks: Object.fromEntries(
           Object.entries(loadTasks()).map(([id, task]) => [

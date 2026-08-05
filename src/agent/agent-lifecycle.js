@@ -25,6 +25,10 @@ const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-back
 const { updateAgentProviderSession } = require('./provider-session');
 const { rebuildProviderSessionAfterCommit } = require('./agent-task-executor');
 const {
+  buildStructuredOutputClusterFailure,
+  isStructuredOutputInvalidError,
+} = require('./structured-output-error');
+const {
   commitRecordedOwnership,
   markCleanupRequired,
 } = require('../../task-lib/omp-session-ownership.js');
@@ -735,6 +739,7 @@ async function handleFinalFailure(agent, triggeringMessage, error, maxRetries) {
   const failureAttempts = error?.terminationAttempts ?? maxRetries;
   const unsupportedCapability =
     error?.code === 'unsupported-capability' && error?.permanent === true;
+  const structuredOutputInvalid = isStructuredOutputInvalidError(error);
   console.error(`
 ${'='.repeat(80)}`);
   console.error(`🔴🔴🔴 MAX RETRIES EXHAUSTED - AGENT: ${agent.id} 🔴🔴🔴`);
@@ -810,6 +815,9 @@ ${'='.repeat(80)}`);
     });
   }
 
+  if (structuredOutputInvalid) {
+    agent._publish(buildStructuredOutputClusterFailure(agent, error));
+  }
   if (unsupportedCapability) {
     agent._publish({
       topic: 'CLUSTER_FAILED',
@@ -880,6 +888,7 @@ ${'='.repeat(80)}`);
           capability: error.capability,
         }
       : {}),
+    ...(structuredOutputInvalid ? { code: error.code, details: error.details ?? null } : {}),
     timestamp: Date.now(),
   };
 
@@ -910,6 +919,7 @@ ${'='.repeat(80)}`);
               capability: error.capability,
             }
           : {}),
+        ...(structuredOutputInvalid ? { code: error.code, details: error.details ?? null } : {}),
         hookFailureContext: error.message.includes('Hook uses result')
           ? {
               taskId: agent.currentTaskId || 'UNKNOWN',
@@ -936,7 +946,7 @@ ${'='.repeat(80)}`);
     orchestrator: agent.orchestrator,
   });
 
-  if (!error?.terminationExhausted && !unsupportedCapability) {
+  if (!error?.terminationExhausted && !unsupportedCapability && !structuredOutputInvalid) {
     agent.state = 'idle';
   }
 }

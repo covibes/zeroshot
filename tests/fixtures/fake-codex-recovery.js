@@ -31,7 +31,12 @@ if (action === 'hang') {
   console.error('simulated provider process death');
   process.exit(17);
 } else {
-  const message = action === 'malformed' ? 'completed without json' : '{"done":true}';
+  const message =
+    action === 'malformed'
+      ? 'completed without json'
+      : action === 'schema-invalid'
+        ? '{"done":"invalid"}'
+        : '{"done":true}';
   if (isRecovery && process.env.FAKE_CODEX_EMIT_SESSION === '1') {
     console.log(JSON.stringify({ type: 'thread.started', thread_id: `thread-${count}` }));
   }

@@ -255,7 +255,9 @@ function assertStructuredOutputRecoveryFeatures(options: BuildProviderCommandOpt
   const missing = [
     ['--sandbox', features.supportsSandbox],
     ['--ephemeral', features.supportsEphemeral],
-    ['--ignore-user-config', features.supportsIgnoreUserConfig],
+    ...(options.trustIsolatedCodexProfile === true
+      ? []
+      : [['--ignore-user-config', features.supportsIgnoreUserConfig] as const]),
     ['--ignore-rules', features.supportsIgnoreRules],
     ['--strict-config', features.supportsStrictConfig],
     ['--config', features.supportsConfigOverride],
@@ -284,17 +286,11 @@ function buildStructuredOutputRecoveryCommand(
   const args = [...spec.args];
   const prompt = args.pop();
   if (prompt === undefined) throw new Error('Codex recovery command is missing its prompt');
-  args.push(
-    '--sandbox',
-    'read-only',
-    '--ephemeral',
-    '--ignore-user-config',
-    '--ignore-rules',
-    '--strict-config',
-    '--config',
-    'web_search="disabled"',
-    prompt
-  );
+  args.push('--sandbox', 'read-only', '--ephemeral');
+  if (options.trustIsolatedCodexProfile !== true) {
+    args.push('--ignore-user-config');
+  }
+  args.push('--ignore-rules', '--strict-config', '--config', 'web_search="disabled"', prompt);
   return { ...spec, args };
 }
 

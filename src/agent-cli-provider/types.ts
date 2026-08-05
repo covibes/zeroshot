@@ -468,6 +468,8 @@ export interface BuildProviderCommandOptions {
   readonly mcpConfig?: readonly string[];
   /** Internal profile for provider-neutral structured-output correction turns. */
   readonly structuredOutputRecovery?: boolean;
+  /** Preserve a caller-isolated CODEX_HOME profile during Codex recovery. */
+  readonly trustIsolatedCodexProfile?: boolean;
 }
 
 export interface TextEvent {

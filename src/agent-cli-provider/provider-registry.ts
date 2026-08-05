@@ -276,9 +276,9 @@ export const providerRegistry = [
     authInstructions: 'codex login',
     credentialPaths: ['~/.config/codex', '~/.codex'],
     credentialEnvKeys: codexAdapter.credentialEnvKeys,
-    settingsFields: ['webSearch'],
-    settingsDefaults: { webSearch: false },
-    settingsValidator: (settings): string | null => validateWebSearchSettings('codex', settings),
+    settingsFields: ['webSearch', 'trustIsolatedRecoveryProfile'],
+    settingsDefaults: { webSearch: false, trustIsolatedRecoveryProfile: false },
+    settingsValidator: validateCodexSettings,
     capabilities: {
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
@@ -661,6 +661,18 @@ export const providerRegistry = [
     adapter: copilotAdapter,
   },
 ] as const satisfies readonly ProviderRegistryEntry[];
+
+function validateCodexSettings(settings: Record<string, unknown>): string | null {
+  const webSearchError = validateWebSearchSettings('codex', settings);
+  if (webSearchError) return webSearchError;
+  if (
+    settings.trustIsolatedRecoveryProfile === undefined ||
+    typeof settings.trustIsolatedRecoveryProfile === 'boolean'
+  ) {
+    return null;
+  }
+  return 'providerSettings.codex.trustIsolatedRecoveryProfile must be a boolean';
+}
 
 function validateWebSearchSettings(
   provider: 'codex' | 'opencode',
