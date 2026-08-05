@@ -22,7 +22,11 @@ FROM docker.io/instructure/tini:v0.19.0@sha256:0f9ccf2e54d010735ad691ebe670e256a
 FROM docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f -- /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+        /usr/local/bin/yarn /usr/local/bin/yarnpkg /usr/local/bin/pnpm /usr/local/bin/pnpx \
+    && rm -rf -- /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+        /opt/yarn-v1.22.22
 ARG BUILD_MANIFEST_DIGEST
 LABEL org.opencontainers.image.title="zeroshot-oecp-private" \
       org.opencontainers.image.description="Unpublished legacy single-worker capsule runtime" \

@@ -12,6 +12,23 @@ const {
   validateContextAllowlist,
 } = require('../../scripts/hosted-oecp-manifest');
 
+const packageManagerPaths = [
+  '/usr/local/bin/npm',
+  '/usr/local/bin/npx',
+  '/usr/local/bin/corepack',
+  '/usr/local/bin/yarn',
+  '/usr/local/bin/yarnpkg',
+  '/usr/local/bin/pnpm',
+  '/usr/local/bin/pnpx',
+  '/usr/local/lib/node_modules/npm',
+  '/usr/local/lib/node_modules/corepack',
+  '/opt/yarn-v1.22.22',
+];
+
+function absentPackageManagerPaths() {
+  return Object.fromEntries(packageManagerPaths.map((path) => [path, false]));
+}
+
 function imageMetadata(manifestDigest) {
   return {
     User: '0:0',
@@ -35,12 +52,34 @@ function runtimeInspection() {
     workspace: { uid: 10002, gid: 10002, mode: '770' },
     controlRoot: { uid: 1000, gid: 10002, mode: '700' },
     forbiddenPresent: [],
+    packageManagerPaths: absentPackageManagerPaths(),
     runtimeModules: { engineStart: true, runtimeDependencies: true },
     serverExecutable: true,
     tiniExecutable: true,
     gitExecutable: true,
     ajvVersion: '8.18.0',
   };
+}
+
+function registerPackageManagerInspectionTest() {
+  it('requires an exact absent package manager path inspection', function () {
+    const expectedPaths = absentPackageManagerPaths();
+    assert.deepStrictEqual(runtimeInspection().packageManagerPaths, expectedPaths);
+
+    for (const target of packageManagerPaths) {
+      const present = runtimeInspection();
+      present.packageManagerPaths[target] = true;
+      assert.throws(() => validateRuntimeInspection(present), /package manager paths are invalid/);
+    }
+
+    const missing = runtimeInspection();
+    delete missing.packageManagerPaths['/usr/local/bin/npm'];
+    assert.throws(() => validateRuntimeInspection(missing), /package manager paths are invalid/);
+
+    const extra = runtimeInspection();
+    extra.packageManagerPaths['/usr/local/bin/bun'] = false;
+    assert.throws(() => validateRuntimeInspection(extra), /package manager paths are invalid/);
+  });
 }
 
 describe('hosted OECP image contracts', function () {
@@ -84,6 +123,8 @@ describe('hosted OECP image contracts', function () {
     missingModule.runtimeModules.runtimeDependencies = false;
     assert.throws(() => validateRuntimeInspection(missingModule), /required runtime module/);
   });
+
+  registerPackageManagerInspectionTest();
 
   it('records immutable image identities and enforces deny-all allowlist parity', function () {
     const manifest = createManifest();
