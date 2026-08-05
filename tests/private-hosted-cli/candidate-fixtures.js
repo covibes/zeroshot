@@ -1,6 +1,19 @@
 'use strict';
 
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
+const RUN_INTENT_ID = '019fd17e-71f3-7cf5-a57b-b8f1845c140c';
+const RUN_INTENT_NOW = '2026-08-05T10:00:00.000Z';
+
+function route(template) {
+  return {
+    template,
+    expand(values) {
+      return template.replace(/\{([^}]+)\}/g, (_match, name) =>
+        encodeURIComponent(String(values[name]))
+      );
+    },
+  };
+}
 const GRAPH = {
   profile: 'openengine.graph.single-worker/v1',
   root: { kind: 'step', worker: 'legacy.zeroshot.ship@1', attempts: 1 },
@@ -16,9 +29,33 @@ const DESCRIPTOR = {
     audience: 'capsule',
   },
   capsule: { baseUrl: 'https://target.example/capsules/' },
+  runIntent: {
+    kind: 'zeroshot.run-intent/v2',
+    baseUrl: 'https://target.example/api/v1',
+    routes: {
+      submit: route('/orgs/{org_id}/run-intents'),
+      status: route('/orgs/{org_id}/run-intents/{intent_id}'),
+      cancel: route('/orgs/{org_id}/run-intents/{intent_id}'),
+    },
+  },
   session: { routeTemplate: { template: '/sessions/{capsuleId}' } },
   sizes: { catalog: ['tiny', 'small', 'standard', 'large'], default: 'small' },
 };
+
+function runIntent(overrides = {}) {
+  return {
+    intent_id: RUN_INTENT_ID,
+    state: 'queued',
+    waiting_reason: null,
+    capsule_id: null,
+    result: null,
+    error_code: null,
+    submitted_at: RUN_INTENT_NOW,
+    updated_at: RUN_INTENT_NOW,
+    terminal_at: null,
+    ...overrides,
+  };
+}
 
 async function captureLogs(operation) {
   const original = console.log;
@@ -63,4 +100,13 @@ function finishedWatch({ runId, cursor, onCancel }) {
   };
 }
 
-module.exports = { captureLogs, DESCRIPTOR, finishedWatch, GRAPH, RUNTIME_DIGEST };
+module.exports = {
+  captureLogs,
+  DESCRIPTOR,
+  finishedWatch,
+  GRAPH,
+  runIntent,
+  RUN_INTENT_ID,
+  RUN_INTENT_NOW,
+  RUNTIME_DIGEST,
+};

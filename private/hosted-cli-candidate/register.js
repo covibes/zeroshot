@@ -4,6 +4,7 @@ const { InvalidArgumentError } = require('commander');
 const { createDefaultServices } = require('./default-services');
 const { COMMAND_MANIFEST } = require('./manifest');
 const { repositoryBinding } = require('./credentials');
+const { isUuid } = require('./run-intent');
 
 function positiveInteger(value) {
   if (!/^[1-9][0-9]*$/.test(value)) throw new InvalidArgumentError('must be a positive integer');
@@ -11,6 +12,11 @@ function positiveInteger(value) {
   if (!Number.isSafeInteger(parsed))
     throw new InvalidArgumentError('is outside the safe integer range');
   return parsed;
+}
+
+function canonicalUuid(value) {
+  if (!isUuid(value)) throw new InvalidArgumentError('must be a canonical UUID');
+  return value;
 }
 
 function commandNamed(program, name) {
@@ -98,6 +104,29 @@ function registerTarget(program, service) {
         return service().targetSetup(name, options);
       })
     );
+  target
+    .command('status <name> <intent-id>')
+    .description('Inspect or follow a queued private hosted run')
+    .option('--follow', 'Follow until the run reaches a terminal state')
+    .option('--json', 'Output one current status as JSON')
+    .action((name, intentId, options) =>
+      failClosed(() => {
+        canonicalUuid(intentId);
+        if (options.follow && options.json) {
+          throw new Error('--json cannot be combined with --follow');
+        }
+        return service().runIntentStatus(name, intentId, options);
+      })
+    );
+  target
+    .command('cancel <name> <intent-id>')
+    .description('Request cancellation of a queued private hosted run')
+    .action((name, intentId) =>
+      failClosed(() => {
+        canonicalUuid(intentId);
+        return service().runIntentCancel(name, intentId);
+      })
+    );
   target.action(() => target.help());
 }
 
@@ -142,12 +171,23 @@ function registerHostedRun(program, service) {
   run
     .option('--graph <file>', 'Explicit hosted GraphSpec JSON')
     .option('--input <file>', 'Explicit hosted JSON input')
-    .option('--target <name>', 'Named private hosted target');
+    .option('--target <name>', 'Named private hosted target')
+    .option('--queue', 'Submit through the durable private RunIntent queue')
+    .option('--submission-key <uuid>', 'Retry-stable RunIntent submission key', canonicalUuid);
   wrapExisting(run, ({ args, options, command, invokeLocal }) => {
     const inputArg = args[0];
     if (options.target === undefined) {
-      if (options.graph !== undefined || options.input !== undefined) {
-        return failClosed(() => Promise.reject(new Error('--graph and --input require --target')));
+      if (
+        options.graph !== undefined ||
+        options.input !== undefined ||
+        options.queue ||
+        options.submissionKey !== undefined
+      ) {
+        return failClosed(() =>
+          Promise.reject(
+            new Error('--graph, --input, --queue, and --submission-key require --target')
+          )
+        );
       }
       if (inputArg === undefined) command.error("error: missing required argument 'input'");
       return invokeLocal();
@@ -156,12 +196,18 @@ function registerHostedRun(program, service) {
       if (typeof options.target !== 'string' || options.target.length === 0) {
         throw new Error('--target must name a registered target');
       }
-      assertOnlyOptions(command, new Set(['graph', 'input', 'target', 'detach']));
+      assertOnlyOptions(
+        command,
+        new Set(['graph', 'input', 'target', 'detach', 'queue', 'submissionKey'])
+      );
       if (inputArg !== undefined)
         throw new Error('general text/issue run is not available with --target');
       if (!options.graph || !options.input)
         throw new Error('hosted run requires both --graph and --input');
-      return service().remoteRun(options);
+      if (options.submissionKey !== undefined && !options.queue) {
+        throw new Error('--submission-key requires --queue');
+      }
+      return options.queue ? service().remoteQueueRun(options) : service().remoteRun(options);
     });
   });
 }

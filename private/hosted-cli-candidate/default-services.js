@@ -7,7 +7,16 @@ const {
   isDeterministicAllocationRefusal,
   RemoteAllocationUncertainError,
 } = require('./orchestrator-support');
+const { buildQueuedHostedExecution } = require('./queued-execution');
 const { readHostedInputs } = require('./readers');
+const {
+  RunIntentClient,
+  RunIntentHttpError,
+  RunIntentRequestError,
+  buildRunIntentEnvelope,
+  displayRunIntentState,
+  followRunIntent,
+} = require('./run-intent');
 const { createTargetServices, targetSessionManager } = require('./target-services');
 
 function loadRuntime() {
@@ -56,12 +65,21 @@ async function createSessionContext(name, runtime, settings, http = httpTranspor
     open: () => Promise.resolve(),
     http,
   });
+  const tokenProvider = sessionManager.tokenProvider('capsule');
   const adapter = runtime.hostedTarget.createTargetAdapter({
     descriptor,
     organization: { id: target.organization.id },
-    tokenProvider: sessionManager.tokenProvider('capsule'),
+    tokenProvider,
   });
-  return { target, descriptor, credentialStore, sessionManager, adapter };
+  return {
+    target,
+    descriptor,
+    credentialStore,
+    sessionManager,
+    tokenProvider,
+    adapter,
+    http,
+  };
 }
 
 function outputCapsule(capsule, json) {
@@ -92,6 +110,67 @@ async function sanitizeRemoteOperation(label, operation) {
   }
 }
 
+function defaultRunIntentClient(context) {
+  if (context.descriptor.runIntent === null) {
+    throw new Error('target does not advertise RunIntent v2');
+  }
+  return new RunIntentClient({
+    descriptor: context.descriptor.runIntent,
+    organizationId: context.target.organization.id,
+    tokenProvider: context.tokenProvider,
+    clearAccess: () => context.sessionManager.clearMemory(),
+    fetch: (url, init) => context.http.fetch(url, init),
+  });
+}
+
+function isDeterministicSubmissionError(error) {
+  return (
+    error instanceof RunIntentRequestError ||
+    (error instanceof RunIntentHttpError && error.status < 500)
+  );
+}
+
+function submissionUncertain(submissionKey, cause) {
+  return new Error(
+    'RunIntent submission outcome is uncertain. Do not create a replacement. ' +
+      `Recover by rerunning the same command with --submission-key ${submissionKey}.`,
+    { cause }
+  );
+}
+
+function resumeCommand(targetName, intentId) {
+  return `zeroshot target status ${targetName} ${intentId} --follow`;
+}
+
+function printRunIntentState(intent) {
+  console.log(`Run ${intent.intent_id}: ${displayRunIntentState(intent)}`);
+}
+
+function finishRunIntent(intent) {
+  if (intent.state === 'succeeded') {
+    if (intent.result === null) {
+      console.log(`Run ${intent.intent_id} succeeded; its result is no longer retained.`);
+      return intent;
+    }
+    console.log(JSON.stringify(intent.result, null, 2));
+    return intent;
+  }
+  const code = intent.error_code === null ? '' : ` (${intent.error_code})`;
+  throw new Error(`queued hosted run ${intent.state}${code}`);
+}
+
+async function withDisconnectSignal(operation) {
+  const abort = new AbortController();
+  const onSigint = () =>
+    abort.abort(new globalThis.DOMException('remote observation interrupted', 'AbortError'));
+  process.once('SIGINT', onSigint);
+  try {
+    return await operation(abort.signal);
+  } finally {
+    process.removeListener('SIGINT', onSigint);
+  }
+}
+
 function createDefaultServices(dependencies) {
   const runtime = dependencies.runtime ?? loadRuntime();
   const settings = targetSettings(dependencies);
@@ -103,6 +182,13 @@ function createDefaultServices(dependencies) {
   const coordinatorFor =
     dependencies.createCoordinator ??
     ((init) => new runtime.hostedSession.HostedSessionCoordinator(init));
+  const runIntentClientFor = dependencies.createRunIntentClient ?? defaultRunIntentClient;
+  const followQueuedRun = dependencies.followRunIntent ?? followRunIntent;
+  const followOptions = (signal) => ({
+    signal,
+    ...(dependencies.runIntentSleep === undefined ? {} : { sleep: dependencies.runIntentSleep }),
+    onChange: printRunIntentState,
+  });
   const services = {
     ...createTargetServices({ runtime, settings, httpTransport: createHttp, requireTarget }),
 
@@ -169,6 +255,82 @@ function createDefaultServices(dependencies) {
       } finally {
         process.removeListener('SIGINT', onSigint);
       }
+    },
+
+    async remoteQueueRun(options) {
+      const inputs = await inputReader(
+        options.graph,
+        options.input,
+        runtime.cluster.assertGraphSpec
+      );
+      const context = await contextFor(options.target);
+      const manifest = candidateManifest();
+      const execution = buildQueuedHostedExecution(
+        inputs,
+        checkHostedSetup(context.target),
+        manifest
+      );
+      const envelope = buildRunIntentEnvelope(execution.graph, execution.input);
+      const submissionKey = options.submissionKey ?? randomUUID();
+      const client = runIntentClientFor(context);
+      console.log(`Submission key: ${submissionKey}`);
+      return withDisconnectSignal(async (signal) => {
+        let created;
+        try {
+          created = await client.submit({
+            envelope,
+            submissionKey,
+            size: 'standard',
+            signal,
+          });
+        } catch (error) {
+          if (isDeterministicSubmissionError(error)) throw error;
+          throw submissionUncertain(submissionKey, error);
+        }
+        console.log(`Run ${created.intent_id} queued`);
+        console.log(`Resume: ${resumeCommand(options.target, created.intent_id)}`);
+        if (options.detach) return created;
+        console.log('Ctrl+C disconnects without cancelling.');
+        try {
+          const terminal = await followQueuedRun(client, created, followOptions(signal));
+          return finishRunIntent(terminal);
+        } catch (error) {
+          if (!signal.aborted) throw error;
+          console.log(`Disconnected; run ${created.intent_id} was not cancelled.`);
+          return created;
+        }
+      });
+    },
+
+    async runIntentStatus(targetName, intentId, options) {
+      const context = await contextFor(targetName);
+      const client = runIntentClientFor(context);
+      if (!options.follow) {
+        const intent = await client.get(intentId);
+        if (options.json) console.log(JSON.stringify(intent, null, 2));
+        else printRunIntentState(intent);
+        return intent;
+      }
+      return withDisconnectSignal(async (signal) => {
+        const initial = await client.get(intentId, { signal });
+        console.log(`Following ${intentId}; Ctrl+C disconnects without cancelling.`);
+        console.log(`Resume: ${resumeCommand(targetName, intentId)}`);
+        try {
+          const terminal = await followQueuedRun(client, initial, followOptions(signal));
+          return finishRunIntent(terminal);
+        } catch (error) {
+          if (!signal.aborted) throw error;
+          console.log(`Disconnected; run ${intentId} was not cancelled.`);
+          return initial;
+        }
+      });
+    },
+
+    async runIntentCancel(targetName, intentId) {
+      const context = await contextFor(targetName);
+      const intent = await runIntentClientFor(context).cancel(intentId);
+      printRunIntentState(intent);
+      return intent;
     },
 
     async remoteList(options) {

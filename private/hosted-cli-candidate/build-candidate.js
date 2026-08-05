@@ -16,7 +16,9 @@ const CANDIDATE_FILES = Object.freeze([
   'credentials.js',
   'orchestrator.js',
   'orchestrator-support.js',
+  'queued-execution.js',
   'default-services.js',
+  'run-intent.js',
   'target-services.js',
   'register.js',
 ]);

@@ -9,6 +9,10 @@ import {
   stringField,
   type CredentialInstallDescriptor,
 } from './discovery-validation.js';
+import {
+  parseRunIntent,
+  type RunIntentDescriptor,
+} from './run-intent-discovery.js';
 import { routeTemplate } from './route-template.js';
 
 export function parseAdapter(discovery: Record<string, unknown>): {
@@ -29,8 +33,11 @@ export function parseAdapter(discovery: Record<string, unknown>): {
 export function validateCachePolicy(discovery: Record<string, unknown>): void {
   const cache = closedRecord(discovery.cache_policy, 'cache_policy', ['control', 'discovery']);
   exact(cache.control, 'no-store', 'cache_policy.control');
-  if (cache.discovery !== undefined && cache.discovery !== null &&
-      typeof cache.discovery !== 'string') {
+  if (
+    cache.discovery !== undefined &&
+    cache.discovery !== null &&
+    typeof cache.discovery !== 'string'
+  ) {
     throw new TargetDiscoveryError('cache_policy.discovery must be a string or null');
   }
 }
@@ -40,9 +47,12 @@ export function parseSizes(discovery: Record<string, unknown>): {
   readonly default: 'tiny' | 'small' | 'standard' | 'large';
 } {
   const sizes = closedRecord(discovery.sizes, 'sizes', ['catalog', 'default']);
-  if (!Array.isArray(sizes.catalog) || sizes.catalog.length === 0 ||
-      new Set(sizes.catalog).size !== sizes.catalog.length ||
-      sizes.catalog.some((size) => !['tiny', 'small', 'standard', 'large'].includes(String(size)))) {
+  if (
+    !Array.isArray(sizes.catalog) ||
+    sizes.catalog.length === 0 ||
+    new Set(sizes.catalog).size !== sizes.catalog.length ||
+    sizes.catalog.some((size) => !['tiny', 'small', 'standard', 'large'].includes(String(size)))
+  ) {
     throw new TargetDiscoveryError('sizes.catalog contains an unsupported size');
   }
   if (!sizes.catalog.includes(sizes.default)) {
@@ -56,44 +66,58 @@ export function parseSizes(discovery: Record<string, unknown>): {
 
 export function parseExtensions(
   discovery: Record<string, unknown>,
-  origin: string,
-): CredentialInstallDescriptor | null {
-  if (discovery.extensions === undefined || discovery.extensions === null) return null;
+  origin: string
+): {
+  readonly credentialInstall: CredentialInstallDescriptor | null;
+  readonly runIntent: RunIntentDescriptor | null;
+} {
+  if (discovery.extensions === undefined || discovery.extensions === null) {
+    return Object.freeze({ credentialInstall: null, runIntent: null });
+  }
   const extensions = closedRecord(discovery.extensions, 'extensions', [
-    'connections', 'credential_install',
+    'connections',
+    'credential_install',
+    'run_intent',
   ]);
   if (extensions.connections === undefined) {
     throw new TargetDiscoveryError('extensions.connections is required');
   }
   const connections = closedRecord(extensions.connections, 'extensions.connections', [
-    'kind', 'base_url', 'route_templates',
+    'kind',
+    'base_url',
+    'route_templates',
   ]);
   exact(connections.kind, 'zerocloud.connections/v1', 'extensions.connections.kind');
   sameOriginUrl(connections.base_url, 'extensions.connections.base_url', origin);
-  const routes = closedRecord(connections.route_templates, 'extensions.connections.route_templates', [
-    'list', 'create', 'update',
-  ]);
+  const routes = closedRecord(
+    connections.route_templates,
+    'extensions.connections.route_templates',
+    ['list', 'create', 'update']
+  );
   routeTemplate(routes.list, 'extensions.connections.route_templates.list', []);
   routeTemplate(routes.create, 'extensions.connections.route_templates.create', []);
   routeTemplate(routes.update, 'extensions.connections.route_templates.update', ['connection_id']);
-  return parseCredentialInstall(extensions.credential_install);
+  return Object.freeze({
+    credentialInstall: parseCredentialInstall(extensions.credential_install),
+    runIntent: parseRunIntent(extensions.run_intent, origin),
+  });
 }
 
 export function validateOAuthMetadata(
   metadata: Record<string, unknown>,
   origin: string,
-  expected: readonly [string, string, string],
+  expected: readonly [string, string, string]
 ): void {
   const device = sameOriginUrl(
     metadata.device_authorization_endpoint,
     'OAuth metadata device_authorization_endpoint',
-    origin,
+    origin
   );
   const token = sameOriginUrl(metadata.token_endpoint, 'OAuth metadata token_endpoint', origin);
   const revoke = sameOriginUrl(
     metadata.revocation_endpoint,
     'OAuth metadata revocation_endpoint',
-    origin,
+    origin
   );
   if (device !== expected[0] || token !== expected[1] || revoke !== expected[2]) {
     throw new TargetDiscoveryError('OAuth metadata does not match hosted-target discovery');
@@ -108,20 +132,15 @@ export function parseEndpoint(discovery: Record<string, unknown>, origin: string
   exact(binding.scope, 'organization', 'binding.scope');
   exact(binding.auth_location, 'authorization_header', 'binding.auth_location');
   const endpoint = closedRecord(discovery.endpoint, 'endpoint', ['url', 'capabilities']);
-  const capabilities = exactStringSet(
-    endpoint.capabilities,
-    'endpoint.capabilities',
-    ['exec', 'log_stream'],
-  ) as readonly ['exec', 'log_stream'];
+  const capabilities = exactStringSet(endpoint.capabilities, 'endpoint.capabilities', [
+    'exec',
+    'log_stream',
+  ]) as readonly ['exec', 'log_stream'];
   const pagination = closedRecord(discovery.pagination, 'pagination', [
     'default_page_size',
     'max_page_size',
   ]);
-  const defaultPageSize = integer(
-    pagination.default_page_size,
-    'pagination.default_page_size',
-    1,
-  );
+  const defaultPageSize = integer(pagination.default_page_size, 'pagination.default_page_size', 1);
   const maxPageSize = integer(pagination.max_page_size, 'pagination.max_page_size', 1);
   if (defaultPageSize > maxPageSize) {
     throw new TargetDiscoveryError('pagination.default_page_size exceeds maximum');
@@ -151,11 +170,14 @@ export function parseCapsule(discovery: Record<string, unknown>, origin: string)
   ]);
   exact(capsule.name, 'openengine.capsules/v1', 'capsule_protocol.name');
   exact(capsule.major_version, 1, 'capsule_protocol.major_version');
-  const routes = closedRecord(
-    capsule.route_templates,
-    'capsule_protocol.route_templates',
-    ['allocate', 'list', 'inspect', 'terminate', 'limits', 'access'],
-  );
+  const routes = closedRecord(capsule.route_templates, 'capsule_protocol.route_templates', [
+    'allocate',
+    'list',
+    'inspect',
+    'terminate',
+    'limits',
+    'access',
+  ]);
   const route = (name: string, variables: readonly string[]) =>
     routeTemplate(routes[name], `capsule_protocol.route_templates.${name}`, variables);
   return Object.freeze({
@@ -185,26 +207,25 @@ export function parseOAuth(discovery: Record<string, unknown>, origin: string) {
   exact(
     oauth.device_grant_type,
     'urn:ietf:params:oauth:grant-type:device_code',
-    'oauth.device_grant_type',
+    'oauth.device_grant_type'
   );
-  exactStringSet(
-    oauth.device_exchange_fields,
-    'oauth.device_exchange_fields',
-    ['device_token', 'device_label'],
-  );
+  exactStringSet(oauth.device_exchange_fields, 'oauth.device_exchange_fields', [
+    'device_token',
+    'device_label',
+  ]);
   exact(oauth.audience, 'capsule', 'oauth.audience');
   return Object.freeze({
     metadataUrl: sameOriginUrl(oauth.metadata_url, 'oauth.metadata_url', origin),
     deviceAuthorizationEndpoint: sameOriginUrl(
       oauth.device_authorization_endpoint,
       'oauth.device_authorization_endpoint',
-      origin,
+      origin
     ),
     tokenEndpoint: sameOriginUrl(oauth.token_endpoint, 'oauth.token_endpoint', origin),
     revocationEndpoint: sameOriginUrl(
       oauth.revocation_endpoint,
       'oauth.revocation_endpoint',
-      origin,
+      origin
     ),
     clientId: stringField(oauth, 'client_id', 'oauth.'),
     deviceGrantType: 'urn:ietf:params:oauth:grant-type:device_code' as const,
@@ -243,7 +264,7 @@ export function parseTransport(discovery: Record<string, unknown>) {
     websocketRouteTemplate: routeTemplate(
       transport.websocket_route_template,
       'transport.websocket_route_template',
-      ['capsule_id'],
+      ['capsule_id']
     ),
     unauthorizedStatus: 401 as const,
     closeCodes: Object.freeze({ expired: 4401 as const, revoked: 4403 as const }),

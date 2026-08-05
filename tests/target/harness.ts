@@ -36,23 +36,25 @@ export class FakeHttpTransport implements HttpTransport {
   enqueue(
     responseOrStatus: CannedResponse | Response | number,
     body?: unknown,
-    headers?: Record<string, string>,
+    headers?: Record<string, string>
   ): void {
     this.responses.push(
       typeof responseOrStatus === 'number'
         ? respond(responseOrStatus, body, headers)
-        : responseOrStatus,
+        : responseOrStatus
     );
   }
 
   async fetch(
     url: string,
-    init: RequestInit & { redirect: 'error' | 'manual' },
+    init: RequestInit & { redirect: 'error' | 'manual' }
   ): Promise<Response> {
     const headers: Record<string, string> = {};
     if (init.headers) {
       if (init.headers instanceof Headers) {
-        init.headers.forEach((v, k) => { headers[k] = v; });
+        init.headers.forEach((v, k) => {
+          headers[k] = v;
+        });
       } else if (Array.isArray(init.headers)) {
         for (const [k, v] of init.headers) headers[k] = v;
       } else {
@@ -124,7 +126,7 @@ export class FakeStderr {
 export function respond(
   status: number,
   body: unknown,
-  headers?: Record<string, string>,
+  headers?: Record<string, string>
 ): CannedResponse {
   return {
     status,
@@ -171,7 +173,7 @@ function route(template: string, variables: readonly string[]): RouteTemplate {
 }
 
 export function makeDiscovery(
-  baseUrl: string = 'https://api.test.example',
+  baseUrl: string = 'https://api.test.example'
 ): TargetDiscoveryDescriptor {
   return {
     origin: baseUrl,
@@ -206,14 +208,21 @@ export function makeDiscovery(
       unauthorizedStatus: 401,
       closeCodes: { expired: 4401, revoked: 4403 },
     },
-    capabilityFlags: ['capsule_allocate', 'capsule_read', 'capsule_terminate', 'capsule_access', 'connections_onboarding'],
+    capabilityFlags: [
+      'capsule_allocate',
+      'capsule_read',
+      'capsule_terminate',
+      'capsule_access',
+      'connections_onboarding',
+    ],
     credentialInstall: null,
+    runIntent: null,
     additional: {},
   };
 }
 
 export function makeDiscoveryEndpoints(
-  baseUrl: string = 'https://api.test.example',
+  baseUrl: string = 'https://api.test.example'
 ): TargetSessionEndpoints {
   const descriptor = makeDiscovery(baseUrl);
   return {
@@ -255,4 +264,3 @@ export function fakeLock(): () => Promise<() => Promise<void>> {
     return async () => {};
   };
 }
-

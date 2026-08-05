@@ -42,9 +42,12 @@ function harness() {
     'capsuleCreate',
     'capsuleTerminate',
     'remoteRun',
+    'remoteQueueRun',
     'remoteList',
     'remoteStatus',
     'remoteStop',
+    'runIntentStatus',
+    'runIntentCancel',
   ];
   const services = Object.fromEntries(
     serviceNames.map((name) => [name, (...args) => calls.push([name, ...args])])
@@ -73,7 +76,7 @@ describe('private candidate closed parser', () => {
   it('publishes exactly the frozen private command manifest', () => {
     const { program } = harness();
     assert.deepEqual(program.privateHostedCommandManifest, COMMAND_MANIFEST);
-    assert.equal(COMMAND_MANIFEST.length, 11);
+    assert.equal(COMMAND_MANIFEST.length, 13);
   });
 
   it('preserves stable handlers and never reads hosted settings without --target', async () => {
@@ -120,6 +123,80 @@ describe('private candidate closed parser', () => {
     ]);
     assert.deepEqual(calls, []);
     assert.equal(process.exitCode, 1);
+  });
+
+  it('keeps direct hosted run as the default and requires queue-only recovery syntax', async () => {
+    const direct = harness();
+    await parse(direct.program, [
+      'run',
+      '--target',
+      'prod',
+      '--graph',
+      'g.json',
+      '--input',
+      'i.json',
+    ]);
+    assert.deepEqual(
+      direct.calls.map((call) => call[0]),
+      ['remoteRun']
+    );
+
+    const queued = harness();
+    await parse(queued.program, [
+      'run',
+      '--target',
+      'prod',
+      '--graph',
+      'g.json',
+      '--input',
+      'i.json',
+      '--queue',
+      '--submission-key',
+      '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec',
+    ]);
+    assert.deepEqual(
+      queued.calls.map((call) => call[0]),
+      ['remoteQueueRun']
+    );
+
+    for (const argv of [
+      ['run', 'local-task', '--queue'],
+      [
+        'run',
+        '--target',
+        'prod',
+        '--graph',
+        'g.json',
+        '--input',
+        'i.json',
+        '--submission-key',
+        '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec',
+      ],
+    ]) {
+      const rejected = harness();
+      await parse(rejected.program, argv);
+      assert.deepEqual(rejected.calls, []);
+      assert.equal(process.exitCode, 1);
+      process.exitCode = 0;
+    }
+
+    const invalidKey = harness();
+    await assert.rejects(
+      parse(invalidKey.program, [
+        'run',
+        '--target',
+        'prod',
+        '--graph',
+        'g.json',
+        '--input',
+        'i.json',
+        '--queue',
+        '--submission-key',
+        'not-a-uuid',
+      ]),
+      /canonical UUID/
+    );
+    assert.deepEqual(invalidKey.calls, []);
   });
 
   it('rejects explicit empty targets and every ls hosted alias position without fallback', async () => {
@@ -172,6 +249,23 @@ describe('private candidate closed parser', () => {
       ['remoteRun', 'remoteList', 'remoteStatus', 'remoteStop', 'capsuleTerminate']
     );
     assert.equal(calls[3][2].force, true);
+  });
+
+  it('exposes RunIntent status/follow and cancellation only below private target', async () => {
+    const { program, calls } = harness();
+    await parse(program, [
+      'target',
+      'status',
+      'prod',
+      '019fd17e-11a9-7f05-8e44-6ae3b08a335f',
+      '--follow',
+    ]);
+    await parse(program, ['target', 'cancel', 'prod', '019fd17e-11a9-7f05-8e44-6ae3b08a335f']);
+    assert.deepEqual(
+      calls.map((call) => call[0]),
+      ['runIntentStatus', 'runIntentCancel']
+    );
+    assert.equal(calls[0][3].follow, true);
   });
 
   it('exposes target setup without any secret-valued option', () => {

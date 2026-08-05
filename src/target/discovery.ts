@@ -8,6 +8,7 @@ import {
   record,
   type CredentialInstallDescriptor,
 } from './discovery-validation.js';
+import type { RunIntentDescriptor } from './run-intent-discovery.js';
 import {
   parseAdapter,
   parseCapsule,
@@ -20,6 +21,7 @@ import {
   validateOAuthMetadata,
 } from './discovery-sections.js';
 export type { CredentialInstallDescriptor } from './discovery-validation.js';
+export type { RunIntentDescriptor } from './run-intent-discovery.js';
 export { TargetDiscoveryError } from './discovery-errors.js';
 export { expandRoute, type RouteTemplate } from './route-template.js';
 
@@ -84,6 +86,7 @@ export interface TargetDiscoveryDescriptor {
   };
   readonly capabilityFlags: readonly string[];
   readonly credentialInstall: CredentialInstallDescriptor | null;
+  readonly runIntent: RunIntentDescriptor | null;
   readonly additional: Readonly<Record<string, unknown>>;
 }
 
@@ -100,8 +103,6 @@ export interface TargetSessionEndpoints {
   readonly descriptor: TargetDiscoveryDescriptor;
 }
 
-
-
 async function readBoundedJson(response: Response): Promise<unknown> {
   return readBoundedResponseJson(response, MAX_DISCOVERY_BYTES, (kind) =>
     new TargetDiscoveryError(
@@ -109,7 +110,6 @@ async function readBoundedJson(response: Response): Promise<unknown> {
     ),
   );
 }
-
 
 async function fetchDocument(http: HttpTransport, url: string): Promise<Record<string, unknown>> {
   const response = await http.fetch(url, {
@@ -128,13 +128,11 @@ async function fetchDocument(http: HttpTransport, url: string): Promise<Record<s
   return record(await readBoundedJson(response), 'response');
 }
 
-
-export async function discoverTarget(targetUrl: string, http: HttpTransport): Promise<TargetDiscoveryDescriptor> {
-  const target = new URL(targetUrl);
-  const origin = target.origin;
-  const discovery = await fetchDocument(http, new URL(DISCOVERY_PATH, target).href);
+function parseDiscoveryDocument(
+  discovery: Record<string, unknown>,
+  origin: string,
+): TargetDiscoveryDescriptor {
   exact(discovery.kind, 'openengine.hosted-target/v1', 'kind');
-
   const adapter = parseAdapter(discovery);
   const endpoint = parseEndpoint(discovery, origin);
   const capsule = parseCapsule(discovery, origin);
@@ -150,19 +148,13 @@ export async function discoverTarget(targetUrl: string, http: HttpTransport): Pr
   const sizes = parseSizes(discovery);
   const session = parseSession(discovery);
   const transport = parseTransport(discovery);
-  const credentialInstall = parseExtensions(discovery, origin);
-
-  const metadata = await fetchDocument(http, oauth.metadataUrl);
-  validateOAuthMetadata(metadata, origin, [
-    oauth.deviceAuthorizationEndpoint,
-    oauth.tokenEndpoint,
-    oauth.revocationEndpoint,
-  ]);
-
+  const extensions = parseExtensions(discovery, origin);
   const additional = Object.freeze(
-    Object.fromEntries(Object.entries(discovery).filter(([key]) =>
-      !ROOT_FIELDS.includes(key as (typeof ROOT_FIELDS)[number]),
-    )),
+    Object.fromEntries(
+      Object.entries(discovery).filter(
+        ([key]) => !ROOT_FIELDS.includes(key as (typeof ROOT_FIELDS)[number])
+      )
+    )
   );
   return Object.freeze({
     origin,
@@ -176,9 +168,24 @@ export async function discoverTarget(targetUrl: string, http: HttpTransport): Pr
     capsule,
     transport,
     capabilityFlags,
-    credentialInstall,
+    credentialInstall: extensions.credentialInstall,
+    runIntent: extensions.runIntent,
     additional,
   });
+}
+
+export async function discoverTarget(targetUrl: string, http: HttpTransport): Promise<TargetDiscoveryDescriptor> {
+  const target = new URL(targetUrl);
+  const origin = target.origin;
+  const discovery = await fetchDocument(http, new URL(DISCOVERY_PATH, target).href);
+  const descriptor = parseDiscoveryDocument(discovery, origin);
+  const metadata = await fetchDocument(http, descriptor.oauth.metadataUrl);
+  validateOAuthMetadata(metadata, origin, [
+    descriptor.oauth.deviceAuthorizationEndpoint,
+    descriptor.oauth.tokenEndpoint,
+    descriptor.oauth.revocationEndpoint,
+  ]);
+  return descriptor;
 }
 
 export async function discoverTargetSessionEndpoints(targetUrl: string, http: HttpTransport): Promise<TargetSessionEndpoints> {

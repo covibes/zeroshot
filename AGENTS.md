@@ -201,6 +201,9 @@ The hosted-client vertical is descriptor-driven: `discoverTarget` validates the 
 sole owner of each target's locked rotating refresh family and audience access cache, and
 `createTargetAdapter` is the sole capsule-adapter constructor. Hosted-session accepts that adapter
 and a capsule ID, so every initial/replacement OECP connection obtains fresh access. The immutable
+private RunIntent client requires the validated same-origin `zeroshot.run-intent/v2` discovery
+extension; its queued input carries job data only and never repository, provider, model, endpoint,
+credential, or runtime authority. The immutable
 Zero Cloud #55 corpus lives at `tests/fixtures/zero-cloud-44`, pinned to commit
 `e8e746d` and digest
 `sha256:6636d50cd60067241a50d1ee027d86fc1738aa933f086d8bb2c496c5be31b85e`; never hand-author a

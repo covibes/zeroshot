@@ -73,6 +73,7 @@ describe('stable/candidate package isolation', () => {
     assert.equal(/semantic-release|npm\s+publish|git\s+tag|gh\s+release/.test(builder), false);
     assert.match(builder, /pkg\.private = true/);
     assert.match(builder, /delete pkg\.publishConfig/);
+    assert.match(builder, /run-intent\.js/);
   });
 
   it('requires the runtime, cloud commit, and fixed hosted selection', () => {

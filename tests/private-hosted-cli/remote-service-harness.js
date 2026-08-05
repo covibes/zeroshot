@@ -179,6 +179,9 @@ function remoteHarness(options = {}) {
     loadSettings: () => state,
     mutateSettings: (mutator) => mutator(state),
     httpTransport: () => ({ fetch: () => undefined }),
+    createRunIntentClient: options.createRunIntentClient,
+    followRunIntent: options.followRunIntent,
+    runIntentSleep: options.runIntentSleep,
     randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-0000-0000-000000000000`,
     manifest: {
       privateMarker: 'ZEROSHOT_PRIVATE_HOSTED_CLI_CANDIDATE_DO_NOT_PUBLISH',
@@ -191,7 +194,11 @@ function remoteHarness(options = {}) {
       calls.push(['read-inputs']);
       return {
         graph: GRAPH,
-        input: { source: 'prompt', prompt: 'Ship the change.', artifacts: [] },
+        input: options.hostedInput ?? {
+          source: 'prompt',
+          prompt: 'Ship the change.',
+          artifacts: [],
+        },
       };
     },
   });

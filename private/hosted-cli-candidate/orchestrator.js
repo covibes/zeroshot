@@ -48,6 +48,24 @@ function buildLegacyShipRequest(input, setup) {
   return Object.freeze(request);
 }
 
+function assertHostedSelection(setup, expected) {
+  if (
+    setup.repository !== expected.repository ||
+    setup.provider !== expected.provider ||
+    setup.modelLevel !== expected.modelLevel
+  ) {
+    throw new Error('target setup does not match the fixed hosted runtime selection');
+  }
+}
+
+function buildHostedExecution(inputs, setup, expected) {
+  assertHostedSelection(setup, expected);
+  return Object.freeze({
+    graph: inputs.graph,
+    input: buildLegacyShipRequest(inputs.input, setup),
+  });
+}
+
 class HostedRunOrchestrator {
   constructor(options) {
     this.assertGraphSpec = options.assertGraphSpec;
@@ -71,15 +89,12 @@ class HostedRunOrchestrator {
       this.assertGraphSpec
     );
     const setup = this.checkHostedSetup(options.target);
+    const execution = buildHostedExecution(inputs, setup, {
+      repository: options.expectedRepository,
+      provider: options.expectedProvider,
+      modelLevel: options.expectedModelLevel,
+    });
     const identities = stableIdentities(this.randomUUID, this.runtimeImageDigest);
-    if (
-      setup.repository !== options.expectedRepository ||
-      setup.provider !== options.expectedProvider ||
-      setup.modelLevel !== options.expectedModelLevel
-    ) {
-      throw new Error('target setup does not match the fixed hosted runtime selection');
-    }
-    const request = buildLegacyShipRequest(inputs.input, setup);
     let capsule;
     let coordinator;
     let uncertain = false;
@@ -122,7 +137,7 @@ class HostedRunOrchestrator {
           );
         }
         const plan = await initial.client.plan(
-          { graph: inputs.graph },
+          { graph: execution.graph },
           options.signal === undefined ? undefined : { signal: options.signal }
         );
         if (!plan.ok || plan.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) {
@@ -136,8 +151,8 @@ class HostedRunOrchestrator {
         try {
           applied = await initial.client.apply(
             {
-              graph: inputs.graph,
-              input: request,
+              graph: execution.graph,
+              input: execution.input,
               idempotencyKey: identities.applyIdempotencyKey,
               ifGeneration: 0,
             },
@@ -264,7 +279,11 @@ class HostedRunOrchestrator {
 }
 
 module.exports = {
+  assertHostedSelection,
+  buildHostedExecution,
   buildLegacyShipRequest,
+  ISOLATION_PROFILE,
+  PROVIDER_PROFILE,
   RemoteAllocationUncertainError,
   HostedRunOrchestrator,
   READY_POLL_MS,
