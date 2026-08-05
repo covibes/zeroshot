@@ -200,38 +200,42 @@ process.on('unhandledRejection', (reason) => {
 // Package root directory (for resolving default config paths)
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
-async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
-  // Detect which issue provider tool is needed
+async function runClusterPreflight({
+  input,
+  options,
+  plan,
+  providerOverride,
+  settings,
+  forceProvider,
+  deps = {},
+}) {
   let issueProvider = null;
   let targetHost = null;
 
   if (input.issue) {
     const { detectProvider: detectIssueProvider } = require('../src/issue-providers');
     const ProviderClass = detectIssueProvider(input.issue, settings, forceProvider);
-    if (ProviderClass) {
-      issueProvider = ProviderClass.id;
-    }
-
-    // Extract hostname from URL input for auth checks
-    // This ensures we check auth for the target host, not the current git repo
+    if (ProviderClass) issueProvider = ProviderClass.id;
     if (/^https?:\/\//.test(input.issue)) {
       try {
-        const url = new URL(input.issue);
-        targetHost = url.hostname;
+        targetHost = new URL(input.issue).hostname;
       } catch {
-        // Invalid URL - let provider handle the error
+        // Provider parsing reports malformed issue URLs.
       }
     }
   }
 
-  await requirePreflight({
-    requireGh: issueProvider === 'github', // gh CLI required for GitHub
-    requireDocker: options.docker,
-    requireGit: options.worktree,
+  const effectivePlan = plan || resolveEffectiveRunPlan(options, settings);
+  const preflight = deps.requirePreflight || requirePreflight;
+  await preflight({
+    requireGh: issueProvider === 'github',
+    requireDocker: effectivePlan.isolation === 'docker',
+    requireGit: effectivePlan.isolation === 'worktree',
+    autoPr: effectivePlan.delivery !== 'none',
     quiet: process.env.ZEROSHOT_DAEMON === '1',
     provider: providerOverride,
-    issueProvider, // Pass detected issue provider for tool checking
-    targetHost, // Pass target host for multi-instance auth checks (e.g., GitLab self-hosted)
+    issueProvider,
+    targetHost,
   });
 }
 
@@ -2777,6 +2781,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
         providerOverride,
         settings,
         forceProvider,
+        plan: effectiveRunPlan,
       });
 
       const simMode = String(effectiveOptions.sim || 'fast').toLowerCase();
@@ -6081,6 +6086,7 @@ if (require.main === module) {
 
 module.exports = {
   assertRequestedWebSearchCliAvailable,
+  runClusterPreflight,
   applyModelOverrideToConfig,
   inspectAgentAttachment,
   printAttachableAgentList,
