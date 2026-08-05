@@ -22,6 +22,7 @@ const {
 
 const ORGANIZATION_ID = '019fd17e-5e50-7c66-a68c-3fcf4d8f06c0';
 const SUBMISSION_KEY = '019fd17e-8406-41b4-8730-1c54fd44c70e';
+const CAPSULE_ID = '019fd17e-b9c4-7ef1-99da-cc0ef3905402';
 
 function jsonResponse(value, status = 200) {
   return new globalThis.Response(JSON.stringify(value), {
@@ -118,7 +119,9 @@ describe('bounded authenticated RunIntent client', () => {
   });
 
   it('uses the same validated projection for explicit cancellation', async () => {
-    const h = clientHarness([jsonResponse(runIntent({ state: 'cancelling' }), 202)]);
+    const h = clientHarness([
+      jsonResponse(runIntent({ state: 'cancelling', capsule_id: CAPSULE_ID }), 202),
+    ]);
     const result = await h.client.cancel(INTENT_ID);
     assert.equal(result.state, 'cancelling');
     assert.equal(
@@ -191,6 +194,11 @@ describe('bounded authenticated RunIntent client', () => {
 
 describe('RunIntent lifecycle projection', () => {
   it('rejects every malformed field and unknown state or shape', () => {
+    const failed = runIntent({
+      state: 'failed',
+      error_code: 'runtime_failed',
+      terminal_at: NOW,
+    });
     const malformed = [
       null,
       [],
@@ -201,6 +209,9 @@ describe('RunIntent lifecycle projection', () => {
       { ...runIntent(), capsule_id: 'cap-1' },
       { ...runIntent(), result: [] },
       { ...runIntent(), error_code: 42 },
+      { ...failed, error_code: '1runtime_failed' },
+      { ...failed, error_code: 'Runtime_failed' },
+      { ...failed, error_code: `a${'0'.repeat(64)}` },
       { ...runIntent(), submitted_at: 'yesterday' },
       { ...runIntent(), terminal_at: 7 },
     ];
@@ -209,13 +220,16 @@ describe('RunIntent lifecycle projection', () => {
     }
     assert.deepEqual(validateRunIntent(runIntent()), runIntent());
   });
+});
 
+describe('RunIntent observation', () => {
   it('polls validated states to a terminal result without invoking cancellation', async () => {
     const calls = [];
     const states = [
-      runIntent({ state: 'running' }),
+      runIntent({ state: 'running', capsule_id: CAPSULE_ID }),
       runIntent({
         state: 'succeeded',
+        capsule_id: CAPSULE_ID,
         result: { summary: 'done' },
         terminal_at: NOW,
       }),

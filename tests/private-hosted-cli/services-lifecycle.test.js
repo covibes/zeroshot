@@ -13,6 +13,7 @@ const { remoteHarness } = require('./remote-service-harness');
 const { targetHarness } = require('./target-service-harness');
 
 const INTENT_ID = '019fd184-52c3-7e1f-a567-4ecb6fc6a0ec';
+const INTENT_CAPSULE_ID = '019fd184-58d2-7db4-a878-5bd495c986a4';
 const SUBMISSION_KEY = '019fd184-637d-4f26-af31-5ec3b3ef1dd6';
 const NOW = '2026-08-05T10:00:00.000Z';
 
@@ -311,6 +312,7 @@ describe('private capsule and observation services', () => {
           queueCalls.push(['get', id]);
           return intent({
             state: 'succeeded',
+            capsule_id: INTENT_CAPSULE_ID,
             result: { summary: 'done' },
             terminal_at: NOW,
           });
@@ -438,13 +440,14 @@ describe('private capsule and observation services', () => {
           queueCalls.push(['get', id]);
           return intent({
             state: 'succeeded',
+            capsule_id: INTENT_CAPSULE_ID,
             result: { summary: 'done' },
             terminal_at: NOW,
           });
         },
         cancel(id) {
           queueCalls.push(['cancel', id]);
-          return intent({ state: 'cancelling' });
+          return intent({ state: 'cancelling', capsule_id: INTENT_CAPSULE_ID });
         },
       }),
     });
@@ -464,6 +467,7 @@ describe('private capsule and observation services', () => {
         get() {
           return intent({
             state: 'succeeded',
+            capsule_id: INTENT_CAPSULE_ID,
             result: null,
             terminal_at: NOW,
           });

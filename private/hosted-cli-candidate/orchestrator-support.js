@@ -72,11 +72,16 @@ function abortReason(signal) {
 function sleep(ms, signal) {
   if (signal?.aborted) return Promise.reject(abortReason(signal));
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    const onAbort = () => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }
+    function onAbort() {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       reject(abortReason(signal));
-    };
+    }
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 }

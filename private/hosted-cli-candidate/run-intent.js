@@ -27,6 +27,37 @@ const WAITING_REASONS = new Set([
   'subscription_payment_failed',
   'billing_configuration_error',
 ]);
+const RUN_INTENT_STATE_RULES = Object.freeze({
+  queued: { null: ['result', 'error_code', 'terminal_at'], required: [] },
+  provisioning: {
+    null: ['waiting_reason', 'result', 'error_code', 'terminal_at'],
+    required: ['capsule_id'],
+  },
+  running: {
+    null: ['waiting_reason', 'result', 'error_code', 'terminal_at'],
+    required: ['capsule_id'],
+  },
+  cancelling: {
+    null: ['waiting_reason', 'result', 'error_code', 'terminal_at'],
+    required: ['capsule_id'],
+  },
+  succeeded: {
+    null: ['waiting_reason', 'error_code'],
+    required: ['capsule_id', 'terminal_at'],
+  },
+  failed: {
+    null: ['waiting_reason', 'result'],
+    required: ['error_code', 'terminal_at'],
+  },
+  cancelled: {
+    null: ['waiting_reason', 'result', 'error_code'],
+    required: ['terminal_at'],
+  },
+  expired: {
+    null: ['waiting_reason', 'result', 'error_code'],
+    required: ['terminal_at'],
+  },
+});
 const RUN_INTENT_KEYS = Object.freeze([
   'capsule_id',
   'error_code',
@@ -136,6 +167,15 @@ function isNullable(value, predicate) {
   return value === null || predicate(value);
 }
 
+function hasRunIntentStateShape(value) {
+  const rule = RUN_INTENT_STATE_RULES[value.state];
+  if (rule === undefined) return false;
+  return (
+    rule.null.every((field) => value[field] === null) &&
+    rule.required.every((field) => value[field] !== null)
+  );
+}
+
 function validateRunIntent(value) {
   if (!isPlainObject(value) || !hasExactRunIntentKeys(value)) {
     throw invalidRunIntent();
@@ -148,11 +188,12 @@ function validateRunIntent(value) {
     isNullable(value.result, isPlainObject),
     isNullable(
       value.error_code,
-      (code) => typeof code === 'string' && /^[a-z0-9_]{1,128}$/.test(code)
+      (code) => typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(code)
     ),
     isDateTime(value.submitted_at),
     isDateTime(value.updated_at),
     isNullable(value.terminal_at, isDateTime),
+    hasRunIntentStateShape(value),
   ];
   if (!validFields.every(Boolean)) throw invalidRunIntent();
   return value;
