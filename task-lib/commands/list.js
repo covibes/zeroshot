@@ -1,87 +1,107 @@
 import chalk from 'chalk';
-import { loadTasks } from '../store.js';
 import { resolveEffectiveTaskStatus } from '../effective-status.js';
+import { loadTasks } from '../store.js';
 
-export function listTasks(options = {}) {
-  const tasks = loadTasks();
-  const taskList = Object.values(tasks);
+const DEFAULT_LIMIT = 20;
 
-  if (taskList.length === 0) {
+function selectTasks(options = {}, deps = {}) {
+  const readTasks = deps.loadTasks || loadTasks;
+  const resolveStatus = deps.resolveEffectiveTaskStatus || resolveEffectiveTaskStatus;
+  const allTasks = Object.values(readTasks());
+  const selected = allTasks
+    .map((task) => ({ task, effectiveStatus: resolveStatus(task) }))
+    .sort((left, right) => new Date(left.task.createdAt) - new Date(right.task.createdAt))
+    .filter(({ effectiveStatus }) => !options.status || effectiveStatus.status === options.status)
+    .slice(0, options.limit || DEFAULT_LIMIT);
+  return { total: allTasks.length, selected };
+}
+
+function projectTask({ task, effectiveStatus }) {
+  return {
+    id: task.id,
+    status: effectiveStatus.status,
+    statusReason: effectiveStatus.reason,
+    cwd: task.cwd,
+    provider: task.provider || null,
+    model: task.model || null,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    exitCode: task.exitCode ?? null,
+    error: task.error || null,
+    attachable: task.attachable === true,
+  };
+}
+
+export function getTasksData(options = {}, deps = {}) {
+  return selectTasks(options, deps).selected.map(projectTask);
+}
+
+export function listTasks(options = {}, deps = {}) {
+  const { selected, total } = selectTasks(options, deps);
+
+  if (total === 0) {
     console.log(chalk.dim('No tasks found.'));
     return;
   }
 
-  // Sort by creation date, oldest first (chronological)
-  taskList.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-
-  // Filter by status if specified
-  let filtered = taskList;
-  if (options.status) {
-    filtered = taskList.filter((t) => t.status === options.status);
-  }
-
-  // Limit results
-  const limit = options.limit || 20;
-  filtered = filtered.slice(0, limit);
-
-  // Table format (default) or verbose format
   if (options.verbose) {
-    // Verbose format (old behavior)
-    console.log(chalk.bold(`\nTasks (${filtered.length}/${taskList.length})\n`));
-
-    for (const task of filtered) {
-      const { status } = resolveEffectiveTaskStatus(task);
-
-      const statusColor =
-        {
-          running: chalk.green,
-          completed: chalk.green,
-          failed: chalk.red,
-          stale: chalk.yellow,
-        }[status] || chalk.dim;
-
-      const age = getAge(task.createdAt);
-      const timestamp = new Date(task.createdAt).toLocaleString();
-
-      console.log(
-        `${statusColor('●')} ${chalk.cyan(task.id)} ${statusColor(`[${status}]`)} ${chalk.dim(age + ' • ' + timestamp)}`
-      );
-      console.log(`  ${chalk.dim('CWD:')} ${task.cwd}`);
-      console.log(`  ${chalk.dim('Prompt:')} ${task.prompt}`);
-      if (task.pid && status === 'running') {
-        console.log(`  ${chalk.dim('PID:')} ${task.pid}`);
-      }
-      if (task.error) {
-        console.log(`  ${chalk.red('Error:')} ${task.error}`);
-      }
-      console.log();
-    }
+    printVerboseTasks(selected, total);
   } else {
-    // Table format (clean, default)
-    console.log(chalk.bold(`\n=== Tasks (${filtered.length}/${taskList.length}) ===`));
-    console.log(`${'ID'.padEnd(25)} ${'Status'.padEnd(12)} ${'Age'.padEnd(10)} CWD`);
-    console.log('-'.repeat(100));
+    printTaskTable(selected, total);
+  }
+}
 
-    for (const task of filtered) {
-      const { status } = resolveEffectiveTaskStatus(task);
+function printVerboseTasks(selected, total) {
+  console.log(chalk.bold(`\nTasks (${selected.length}/${total})\n`));
 
-      const statusColor =
-        {
-          running: chalk.green,
-          completed: chalk.green,
-          failed: chalk.red,
-          stale: chalk.yellow,
-        }[status] || chalk.dim;
+  for (const { task, effectiveStatus } of selected) {
+    const statusColor = colorForStatus(effectiveStatus.status);
+    const age = getAge(task.createdAt);
+    const timestamp = new Date(task.createdAt).toLocaleString();
 
-      const age = getAge(task.createdAt);
-      const cwd = task.cwd.replace(process.env.HOME, '~');
-
-      console.log(
-        `${chalk.cyan(task.id.padEnd(25))} ${statusColor(status.padEnd(12))} ${chalk.dim(age.padEnd(10))} ${chalk.dim(cwd)}`
-      );
+    const heading = `${statusColor('●')} ${chalk.cyan(task.id)}`;
+    const status = statusColor(`[${effectiveStatus.status}]`);
+    const timing = chalk.dim(age + ' • ' + timestamp);
+    console.log(`${heading} ${status} ${timing}`);
+    console.log(`  ${chalk.dim('CWD:')} ${task.cwd}`);
+    console.log(`  ${chalk.dim('Prompt:')} ${task.prompt}`);
+    if (task.pid && effectiveStatus.status === 'running') {
+      console.log(`  ${chalk.dim('PID:')} ${task.pid}`);
+    }
+    if (task.error) {
+      console.log(`  ${chalk.red('Error:')} ${task.error}`);
     }
     console.log();
   }
+}
+
+function printTaskTable(selected, total) {
+  console.log(chalk.bold(`\n=== Tasks (${selected.length}/${total}) ===`));
+  console.log(`${'ID'.padEnd(25)} ${'Status'.padEnd(12)} ${'Age'.padEnd(10)} CWD`);
+  console.log('-'.repeat(100));
+
+  for (const { task, effectiveStatus } of selected) {
+    const statusColor = colorForStatus(effectiveStatus.status);
+    const age = getAge(task.createdAt);
+    const cwd = process.env.HOME ? task.cwd.replace(process.env.HOME, '~') : task.cwd;
+
+    const id = chalk.cyan(task.id.padEnd(25));
+    const status = statusColor(effectiveStatus.status.padEnd(12));
+    const timing = chalk.dim(age.padEnd(10));
+    console.log(`${id} ${status} ${timing} ${chalk.dim(cwd)}`);
+  }
+  console.log();
+}
+
+function colorForStatus(status) {
+  return (
+    {
+      running: chalk.green,
+      completed: chalk.green,
+      failed: chalk.red,
+      stale: chalk.yellow,
+    }[status] || chalk.dim
+  );
 }
 
 function getAge(dateStr) {
