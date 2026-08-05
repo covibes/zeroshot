@@ -9,10 +9,7 @@ import {
   stringField,
   type CredentialInstallDescriptor,
 } from './discovery-validation.js';
-import {
-  parseRunIntent,
-  type RunIntentDescriptor,
-} from './run-intent-discovery.js';
+import { parseRunIntent, type RunIntentDescriptor } from './run-intent-discovery.js';
 import { routeTemplate } from './route-template.js';
 
 export function parseAdapter(discovery: Record<string, unknown>): {

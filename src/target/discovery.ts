@@ -103,34 +103,19 @@ export interface TargetSessionEndpoints {
   readonly descriptor: TargetDiscoveryDescriptor;
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
-  return readBoundedResponseJson(response, MAX_DISCOVERY_BYTES, (kind) =>
-    new TargetDiscoveryError(
-      kind === 'size' ? 'response exceeds the size limit' : 'response is not valid UTF-8 JSON',
-    ),
-  );
-}
-
-async function fetchDocument(http: HttpTransport, url: string): Promise<Record<string, unknown>> {
-  const response = await http.fetch(url, {
-    method: 'GET',
-    headers: { Accept: 'application/json' },
-    redirect: 'error',
-  });
-  if (response.url && new URL(response.url).href !== url) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new TargetDiscoveryError('request changed target route or authority');
-  }
-  if (!response.ok) {
-    await response.body?.cancel().catch(() => undefined);
-    throw new TargetDiscoveryError(`request failed with status ${response.status}`);
-  }
-  return record(await readBoundedJson(response), 'response');
-}
+const FLAGS = [
+  'capsule_allocate',
+  'capsule_read',
+  'capsule_terminate',
+  'capsule_access',
+  'connections_onboarding',
+] as const;
+const SIZE_ERROR = 'response exceeds the size limit';
+const JSON_ERROR = 'response is not valid UTF-8 JSON';
 
 function parseDiscoveryDocument(
   discovery: Record<string, unknown>,
-  origin: string,
+  origin: string
 ): TargetDiscoveryDescriptor {
   exact(discovery.kind, 'openengine.hosted-target/v1', 'kind');
   const adapter = parseAdapter(discovery);
@@ -138,13 +123,7 @@ function parseDiscoveryDocument(
   const capsule = parseCapsule(discovery, origin);
   const oauth = parseOAuth(discovery, origin);
   exact(discovery.organization_binding, 'device_approval', 'organization_binding');
-  const capabilityFlags = exactStringSet(discovery.capability_flags, 'capability_flags', [
-    'capsule_allocate',
-    'capsule_read',
-    'capsule_terminate',
-    'capsule_access',
-    'connections_onboarding',
-  ]);
+  const capabilityFlags = exactStringSet(discovery.capability_flags, 'capability_flags', FLAGS);
   const sizes = parseSizes(discovery);
   const session = parseSession(discovery);
   const transport = parseTransport(discovery);
@@ -174,7 +153,10 @@ function parseDiscoveryDocument(
   });
 }
 
-export async function discoverTarget(targetUrl: string, http: HttpTransport): Promise<TargetDiscoveryDescriptor> {
+export async function discoverTarget(
+  targetUrl: string,
+  http: HttpTransport
+): Promise<TargetDiscoveryDescriptor> {
   const target = new URL(targetUrl);
   const origin = target.origin;
   const discovery = await fetchDocument(http, new URL(DISCOVERY_PATH, target).href);
@@ -188,7 +170,10 @@ export async function discoverTarget(targetUrl: string, http: HttpTransport): Pr
   return descriptor;
 }
 
-export async function discoverTargetSessionEndpoints(targetUrl: string, http: HttpTransport): Promise<TargetSessionEndpoints> {
+export async function discoverTargetSessionEndpoints(
+  targetUrl: string,
+  http: HttpTransport
+): Promise<TargetSessionEndpoints> {
   const descriptor = await discoverTarget(targetUrl, http);
   return Object.freeze({
     deviceAuthorizationEndpoint: descriptor.oauth.deviceAuthorizationEndpoint,
@@ -201,4 +186,29 @@ export async function discoverTargetSessionEndpoints(targetUrl: string, http: Ht
     sessionEndpoint: new URL(descriptor.session.routeTemplate.template, descriptor.origin).href,
     descriptor,
   });
+}
+
+function boundedResponseError(kind: 'size' | 'json'): Error {
+  return new TargetDiscoveryError(kind === 'size' ? SIZE_ERROR : JSON_ERROR);
+}
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  return readBoundedResponseJson(response, MAX_DISCOVERY_BYTES, boundedResponseError);
+}
+
+async function fetchDocument(http: HttpTransport, url: string): Promise<Record<string, unknown>> {
+  const response = await http.fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    redirect: 'error',
+  });
+  if (response.url && new URL(response.url).href !== url) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new TargetDiscoveryError('request changed target route or authority');
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new TargetDiscoveryError(`request failed with status ${response.status}`);
+  }
+  return record(await readBoundedJson(response), 'response');
 }
