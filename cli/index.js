@@ -93,7 +93,7 @@ const {
   waitForResumeOwnership,
 } = require('../lib/detached-startup');
 const { isProcessRunning: isClusterProcessAlive } = require('../lib/process-liveness');
-// Setup wizard removed - use: zeroshot settings set <key> <value>
+const { runSetupWizard } = require('./lib/setup-wizard');
 const {
   checkForUpdates,
   isAutomaticUpdateEligible,
@@ -4489,6 +4489,10 @@ providersCmd
 
 // Setup wizard (read-only facts + setup contract; apply/undo/TTY wizard land separately)
 const setupCmd = program.command('setup').description('Setup and configuration wizard');
+setupCmd.action(async () => {
+  const result = await runSetupWizard();
+  process.exitCode = result.exitCode;
+});
 setupCmd
   .command('plan')
   .description('Show read-only setup facts and proposed contract (no writes)')
