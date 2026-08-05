@@ -7,6 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { connectClient, nextEvent, smokeGraph } = require('./hosted-oecp-smoke-client');
 const { ROOT, capture, inspect, validTag } = require('./hosted-oecp-image-commands');
+const { deliverCapability } = require('./hosted-oecp-smoke-capability');
 
 const SMOKE_FIXTURE = path.join(ROOT, 'scripts', 'hosted-oecp-smoke-fixture.js');
 const CODEX_SMOKE_FIXTURE = path.join(ROOT, 'scripts', 'hosted-oecp-smoke-codex.mjs');
@@ -29,11 +30,10 @@ function createCapabilityFile() {
   return { capabilityFile, directory };
 }
 
-function startSmokeContainer(tag, name, capabilityFile) {
+function startSmokeContainer(tag, name) {
   capture('docker', [
     'run',
     '--detach',
-    '--rm',
     '--name',
     name,
     '--publish',
@@ -45,7 +45,7 @@ function startSmokeContainer(tag, name, capabilityFile) {
     '--mount',
     `type=bind,src=${CODEX_SMOKE_FIXTURE},dst=/opt/zeroshot/node_modules/@openai/codex/bin/codex.js,readonly`,
     '--env',
-    `ZEROSHOT_OECP_RUNTIME_CAPABILITY=${fs.readFileSync(capabilityFile, 'ascii')}`,
+    'ZEROSHOT_OECP_CAPABILITY_BOOTSTRAP=loopback-v1',
     '--env',
     `ZEROSHOT_OECP_CAPABILITY_FILE=${CAPABILITY_PATH}`,
     '--env',
@@ -56,6 +56,8 @@ function startSmokeContainer(tag, name, capabilityFile) {
     'ZEROSHOT_HOSTED_PROVIDER=codex',
     '--env',
     'ZEROSHOT_HOSTED_MODEL_LEVEL=level1',
+    '--env',
+    'OPENAI_BASE_URL=https://openrouter.ai/api/v1',
     '--env',
     `ZEROSHOT_HOSTED_CREDENTIALS_JSON=${JSON.stringify({ GH_TOKEN: GIT_CANARY, OPENAI_API_KEY: PROVIDER_CANARY })}`,
     tag,
@@ -184,7 +186,7 @@ async function exerciseServer(endpoint, capabilityFile) {
   }
 }
 
-function verifyImageEffects(name) {
+function verifyImageEffects(name, capability) {
   const output = capture('docker', [
     'exec',
     name,
@@ -196,7 +198,7 @@ function verifyImageEffects(name) {
     throw new Error('Hosted provider did not produce the expected workspace effect');
   }
   const logs = capture('docker', ['logs', name]);
-  for (const canary of [PROMPT_CANARY, GIT_CANARY, PROVIDER_CANARY]) {
+  for (const canary of [PROMPT_CANARY, GIT_CANARY, PROVIDER_CANARY, capability]) {
     if (logs.includes(canary)) throw new Error('Hosted image logs leaked a smoke canary');
   }
 }
@@ -206,13 +208,14 @@ async function smoke(tag) {
   inspect(tag);
   const capability = createCapabilityFile();
   const name = `zeroshot-oecp-smoke-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  startSmokeContainer(tag, name, capability.capabilityFile);
+  startSmokeContainer(tag, name);
   try {
     const mapped = capture('docker', ['port', name, '8085/tcp']);
     const port = Number(mapped.slice(mapped.lastIndexOf(':') + 1));
+    deliverCapability(tag, name, capability.capabilityFile);
     await waitForServer(name);
     await exerciseServer({ host: '127.0.0.1', port }, capability.capabilityFile);
-    verifyImageEffects(name);
+    verifyImageEffects(name, fs.readFileSync(capability.capabilityFile, 'ascii'));
   } finally {
     spawnSync('docker', ['rm', '--force', name], { cwd: ROOT, stdio: 'ignore' });
     fs.rmSync(capability.directory, { force: true, recursive: true });

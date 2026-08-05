@@ -33,6 +33,14 @@
       "mode": "0700"
     },
     "capabilityFile": "/run/zeroshot-capsule-agent/capability",
+    "capabilityBootstrap": {
+      "protocol": "tcp",
+      "scope": "task-local",
+      "direction": "agent-to-runtime",
+      "host": "127.0.0.1",
+      "port": 8086,
+      "oneShot": true
+    },
     "transports": {
       "ndjson": {
         "protocol": "ndjson",
@@ -110,13 +118,13 @@
     "package.json": "ca319fc044e0da9da6e26bd4385cd942fe2b279683b6940d86ece6cb2cf0a90b",
     "scripts/hosted-oecp-image-commands.js": "77750bc418277db43dd02c92efafc943b1393a1ca2871c5f2d4376be3d36fd29",
     "scripts/hosted-oecp-certification.js": "38e420f6bb087633517c5a3871ab2b2bc6d62035eb23ce8a6ccde101d8b27483",
-    "scripts/hosted-oecp-certification-runtime.js": "56f6c51b6a32b8a8b7ec45a03e78de9ed376745a60dd710399a95d8df64c3faf",
+    "scripts/hosted-oecp-certification-runtime.js": "538e0a79557a08cbefc4255916d972f3a789194e2fc4c703b7bf089e9d494ca9",
     "scripts/hosted-oecp-certification-scenarios.js": "ca8da45add3cbf5e005f8ce411e5158b690fcb31a6be895bc57920a59804ea3b",
     "scripts/hosted-oecp-certification-workspace-ship.js": "5106f2ae9fe41d2c4bf4e0608a1b6fed30fda678fea940d59d62ee5afe3ed738",
-    "scripts/hosted-oecp-image-smoke.js": "3642f8cc8a70c767c3cb70ecf249e6da14fa101b2e2daca28f9c7ec524045150",
+    "scripts/hosted-oecp-image-smoke.js": "b1119dc1028c3a73e507c4b08d4039b0dfdf7853607f226444f45c4bd142f2e0",
     "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
-    "scripts/hosted-oecp-manifest.js": "715502d98b069eea6bed592e57ba2e5547155611133a1d9f59936743c0fbe101",
-    "scripts/hosted-oecp-smoke-capability.js": "f0c70fa64405546cb8256b906d6cb6a0e117b88e8d12b19c1434ed78a4f1ec4c",
+    "scripts/hosted-oecp-manifest.js": "9d40ebb811ccd3880aef5fa6e4c72a1d6e9ca1fed20ee03576060d0d7bffcc09",
+    "scripts/hosted-oecp-smoke-capability.js": "d87d5c94536ba653df3c8f89fa08058c495d51a1be96b228f9ee0d9f88e67560",
     "scripts/hosted-oecp-smoke-client.js": "abf0975c1dd96d5d951eb9ca5e7ed0b0a8f1986daa89b65f14dbd21fe1ae813f",
     "scripts/hosted-oecp-smoke-codex.mjs": "13fe43a06fb05b16ae429e7b7d4ae4792a76c96b88a8e34b6b79b096757e3df8",
     "scripts/hosted-oecp-smoke-fixture.js": "901f05bcedd5594bea4db5b9b2e3647ba051025b48e0b88697715429e36ed1e8",
@@ -128,13 +136,13 @@
     "protocol/openengine-cluster/v1/worker.schema.json": "72d0f7ac851e689b3d4c36e58877ecf0490ff3621fa0d3195b946cc72bdca77e",
     "rust-toolchain.toml": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
     "zeroshot-rust/Cargo.toml": "c93acfb107b62e8d27692671e4f6cd45ce1714ba82800e621c29e827fe6def48",
-    "zeroshot-rust/hosted-node": "740adb28ed9bf9035e3ac6218ae962104c13e58ac3f710c84260568b6b23dd44",
+    "zeroshot-rust/hosted-node": "6bcee8099f0fa4afab01a304e665317a1daa5592e2fcfa4983ef15fcd8a8baee",
     "zeroshot-rust/src": "92d29a321ee9d2f2183912a56ceca962fc5959052385c2d76f2e01e92881b4d3"
   },
-  "imageInputsDigest": "c9dff52e5db6e9cd39bbf9f05b870f416f5f5ac214e26869cb7f40eabed3ac2e",
+  "imageInputsDigest": "8b09b7729ea33f7d495503f400bd7372f3439fe938ed715e8a49aeb03670c5cd",
   "rollback": {
     "policy": "remove-or-restore-private-digest",
     "stableReleasesUntouched": true
   },
-  "manifestDigest": "c5742fc7623ec950ba8733653f246666cb00390d927b27f15ea12b7a8e158194"
+  "manifestDigest": "c5bf2aeb59ec963717d0a9d57141cf1edb5c266003ce41d8960ee367c3047f7c"
 }

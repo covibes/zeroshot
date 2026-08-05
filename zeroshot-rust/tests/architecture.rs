@@ -35,6 +35,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
                         | "hosted-node/engine-adapter.js"
                         | "hosted-node/git-askpass.js"
                         | "hosted-node/hosted-config.js"
+                        | "hosted-node/runtime-capability.js"
                         | "hosted-node/worker-launcher.js"
                         | "hosted-node/worker.js"
                         | "hosted-node/workspace-bootstrap.js"

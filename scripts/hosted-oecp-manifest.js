@@ -189,6 +189,14 @@ function createManifest() {
         mode: '0700',
       },
       capabilityFile: '/run/zeroshot-capsule-agent/capability',
+      capabilityBootstrap: {
+        protocol: 'tcp',
+        scope: 'task-local',
+        direction: 'agent-to-runtime',
+        host: '127.0.0.1',
+        port: 8086,
+        oneShot: true,
+      },
       transports: {
         ndjson: {
           protocol: 'ndjson',

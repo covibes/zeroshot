@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { capture } = require('./hosted-oecp-image-commands');
+const { deliverCapability } = require('./hosted-oecp-smoke-capability');
 const {
   GIT_CANARY,
   INTENT_ID,
@@ -58,7 +59,7 @@ function assertPortsAvailable() {
   );
 }
 
-function prepareMounts(directory, mode) {
+function prepareMounts(directory, mode, capability) {
   const files = [
     [FIXTURE, 'git', 0o755],
     [CODEX_FIXTURE, 'codex.mjs', 0o755],
@@ -75,10 +76,12 @@ function prepareMounts(directory, mode) {
   mounts.mode = path.join(directory, 'mode');
   fs.writeFileSync(mounts.mode, `${mode}\n`, { mode: 0o644 });
   fs.chmodSync(mounts.mode, 0o644);
+  mounts.capability = path.join(directory, 'capability');
+  fs.writeFileSync(mounts.capability, capability, { encoding: 'ascii', flag: 'wx', mode: 0o400 });
   return mounts;
 }
 
-function containerArguments(tag, name, capability, mounts) {
+function containerArguments(tag, name, mounts) {
   const mount = (source, target) => `type=bind,src=${source},dst=${target},readonly`;
   return [
     'run',
@@ -103,7 +106,7 @@ function containerArguments(tag, name, capability, mounts) {
     '--mount',
     mount(mounts['workspace-ship.js'], `${CONTAINER_SHIP_ROOT}/workspace-ship.js`),
     '--env',
-    `ZEROSHOT_OECP_RUNTIME_CAPABILITY=${capability}`,
+    'ZEROSHOT_OECP_CAPABILITY_BOOTSTRAP=loopback-v1',
     '--env',
     'ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability',
     '--env',
@@ -138,9 +141,9 @@ async function waitForServer(name) {
   throw new Error(`Hosted image did not become ready: ${containerLogs(name)}`);
 }
 
-function assertContainerLogs(name) {
+function assertContainerLogs(name, capability) {
   const logs = containerLogs(name);
-  for (const canary of [GIT_CANARY, PROVIDER_CANARY]) {
+  for (const canary of [GIT_CANARY, PROVIDER_CANARY, capability]) {
     invariant(!logs.includes(canary), 'Hosted image logs leaked a credential canary');
   }
 }
@@ -152,16 +155,17 @@ function removeContainer(name) {
 async function withContainer(tag, mode, exercise) {
   await assertPortsAvailable();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-oecp-certification-mode-'));
-  const mounts = prepareMounts(directory, mode);
   const name = `zeroshot-oecp-certification-${mode}-${process.pid}-${crypto
     .randomBytes(3)
     .toString('hex')}`;
   const capability = crypto.randomBytes(32).toString('hex');
-  capture('docker', containerArguments(tag, name, capability, mounts));
+  const mounts = prepareMounts(directory, mode, capability);
   try {
+    capture('docker', containerArguments(tag, name, mounts));
+    deliverCapability(tag, name, mounts.capability);
     await waitForServer(name);
     await exercise({ capability, name });
-    assertContainerLogs(name);
+    assertContainerLogs(name, capability);
   } finally {
     removeContainer(name);
     fs.rmSync(directory, { recursive: true, force: true });
@@ -171,13 +175,14 @@ async function withContainer(tag, mode, exercise) {
 async function exerciseShutdown(tag) {
   await assertPortsAvailable();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-oecp-certification-mode-'));
-  const mounts = prepareMounts(directory, 'slow');
   const name = `zeroshot-oecp-certification-shutdown-${process.pid}-${crypto
     .randomBytes(3)
     .toString('hex')}`;
   const capability = crypto.randomBytes(32).toString('hex');
-  capture('docker', containerArguments(tag, name, capability, mounts));
+  const mounts = prepareMounts(directory, 'slow', capability);
   try {
+    capture('docker', containerArguments(tag, name, mounts));
+    deliverCapability(tag, name, mounts.capability);
     await waitForServer(name);
     const body = queueEnvelope('certification-shutdown');
     const accepted = await runIntentRequest(capability, {
@@ -187,7 +192,7 @@ async function exerciseShutdown(tag) {
       body,
     });
     invariant(accepted.status === 202, 'Slow RunIntent was not admitted before shutdown');
-    assertContainerLogs(name);
+    assertContainerLogs(name, capability);
     const started = Date.now();
     capture('docker', ['kill', '--signal', 'TERM', name]);
     const deadline = started + 20_000;

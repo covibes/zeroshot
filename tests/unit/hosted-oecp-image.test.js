@@ -101,25 +101,6 @@ function manifestRuntimeContract() {
       gid: 10002,
       mode: '0700',
     },
-    transports: {
-      ndjson: {
-        protocol: 'ndjson',
-        scope: 'task-local',
-        port: 8085,
-      },
-      websocket: {
-        protocol: 'websocket',
-        scope: 'capsule-agent',
-        route: '/oecp',
-        port: 8083,
-      },
-      runIntent: {
-        protocol: 'http',
-        scope: 'internal',
-        route: '/internal/run-intents/{intent_id}',
-        port: 8084,
-      },
-    },
   };
 }
 
@@ -202,7 +183,21 @@ function registerManifestTests() {
     const runtimeContract = manifestRuntimeContract();
     assert.deepStrictEqual(manifest.runtime.supervisor, runtimeContract.supervisor);
     assert.deepStrictEqual(manifest.runtime.controlRoot, runtimeContract.controlRoot);
-    assert.deepStrictEqual(manifest.runtime.transports, runtimeContract.transports);
+    assert.deepStrictEqual(manifest.runtime.capabilityBootstrap, {
+      protocol: 'tcp',
+      scope: 'task-local',
+      direction: 'agent-to-runtime',
+      host: '127.0.0.1',
+      port: 8086,
+      oneShot: true,
+    });
+    assert.strictEqual(
+      JSON.stringify(manifest.runtime.transports),
+      '{"ndjson":{"protocol":"ndjson","scope":"task-local","port":8085},' +
+        '"websocket":{"protocol":"websocket","scope":"capsule-agent","route":"/oecp","port":8083},' +
+        '"runIntent":{"protocol":"http","scope":"internal",' +
+        '"route":"/internal/run-intents/{intent_id}","port":8084}}'
+    );
     assert.deepStrictEqual(
       manifest.image.baseImages.map(({ stage }) => stage),
       ['rust-build', 'node-deps', 'tini', 'runtime']

@@ -2,12 +2,69 @@
 
 const assert = require('assert');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { installRuntimeCapability } = require('../../zeroshot-rust/hosted-node/runtime-capability');
+const {
+  LOOPBACK_BOOTSTRAP_MODE,
+  installRuntimeCapability,
+  provisionRuntimeCapability,
+} = require('../../zeroshot-rust/hosted-node/runtime-capability');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+
+function sendCapability(address, capability) {
+  return new Promise((resolve, reject) => {
+    let response = Buffer.alloc(0);
+    const socket = net.createConnection({ host: address.address, port: address.port }, () =>
+      socket.end(capability)
+    );
+    socket.on('data', (chunk) => {
+      response = Buffer.concat([response, chunk]);
+    });
+    socket.once('end', () => resolve(response.toString('ascii')));
+    socket.once('error', reject);
+  });
+}
+
+function createBootstrapFixture() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runtime-bootstrap-'));
+  const capabilityFile = path.join(directory, 'capability');
+  return {
+    capabilityFile,
+    directory,
+    environment: {
+      ZEROSHOT_OECP_CAPABILITY_BOOTSTRAP: LOOPBACK_BOOTSTRAP_MODE,
+      ZEROSHOT_OECP_CAPABILITY_FILE: capabilityFile,
+    },
+  };
+}
+
+async function assertRejectedFirstPayload(payload) {
+  const { capabilityFile, directory, environment } = createBootstrapFixture();
+  const capability = 'c'.repeat(64);
+  let address;
+  let delivery;
+  try {
+    await assert.rejects(
+      provisionRuntimeCapability(environment, {
+        port: 0,
+        timeoutMs: 500,
+        onListening(listeningAddress) {
+          address = listeningAddress;
+          delivery = sendCapability(listeningAddress, payload);
+        },
+      }),
+      /bootstrap failed/
+    );
+    await Promise.allSettled([delivery]);
+    assert.strictEqual(fs.existsSync(capabilityFile), false);
+    await assert.rejects(sendCapability(address, capability), /ECONNREFUSED/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 describe('private hosted worker runtime', () => {
   it('materializes and removes the one-time task capability', () => {
@@ -29,6 +86,113 @@ describe('private hosted worker runtime', () => {
     }
   });
 
+  it('accepts one bounded task-local bootstrap and then closes the listener', async () => {
+    const { capabilityFile, directory, environment } = createBootstrapFixture();
+    const capability = 'b'.repeat(64);
+    let address;
+    let exchange;
+    try {
+      await provisionRuntimeCapability(environment, {
+        port: 0,
+        timeoutMs: 500,
+        onListening(listeningAddress) {
+          address = listeningAddress;
+          exchange = sendCapability(listeningAddress, capability);
+        },
+      });
+      assert.strictEqual(await exchange, 'OK\n');
+      assert.strictEqual(environment.ZEROSHOT_OECP_CAPABILITY_BOOTSTRAP, undefined);
+      assert.strictEqual(fs.readFileSync(capabilityFile, 'ascii'), capability);
+      assert.strictEqual(fs.statSync(capabilityFile).mode & 0o777, 0o400);
+      await assert.rejects(sendCapability(address, capability), /ECONNREFUSED/);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('private hosted capability failure handling', () => {
+  it('rejects malformed first input and refuses a second connection', async () => {
+    await assertRejectedFirstPayload('not-a-capability');
+  });
+
+  it('rejects an overlong first input and refuses a second connection', async () => {
+    await assertRejectedFirstPayload('d'.repeat(65));
+  });
+
+  it('treats an idle first connection timeout as terminal', async () => {
+    const { capabilityFile, directory, environment } = createBootstrapFixture();
+    const capability = 'e'.repeat(64);
+    let address;
+    let idleSocket;
+    try {
+      await assert.rejects(
+        provisionRuntimeCapability(environment, {
+          port: 0,
+          timeoutMs: 1000,
+          connectionTimeoutMs: 50,
+          onListening(listeningAddress) {
+            address = listeningAddress;
+            idleSocket = net.createConnection({
+              host: listeningAddress.address,
+              port: listeningAddress.port,
+            });
+            idleSocket.on('error', () => {});
+          },
+        }),
+        /bootstrap failed/
+      );
+      assert.strictEqual(fs.existsSync(capabilityFile), false);
+      await assert.rejects(sendCapability(address, capability), /ECONNREFUSED/);
+    } finally {
+      idleSocket?.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('cannot write after the bootstrap deadline becomes terminal', async () => {
+    const { capabilityFile, directory, environment } = createBootstrapFixture();
+    let lateSocket;
+    try {
+      await assert.rejects(
+        provisionRuntimeCapability(environment, {
+          port: 0,
+          timeoutMs: 30,
+          connectionTimeoutMs: 500,
+          onListening(address) {
+            lateSocket = net.createConnection({
+              host: address.address,
+              port: address.port,
+            });
+            lateSocket.once('connect', () => {
+              setTimeout(() => lateSocket.end('d'.repeat(64)), 60);
+            });
+            lateSocket.on('error', () => {});
+          },
+        }),
+        /bootstrap failed/
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.strictEqual(fs.existsSync(capabilityFile), false);
+    } finally {
+      lateSocket?.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ambiguous capability delivery modes', async () => {
+    await assert.rejects(
+      provisionRuntimeCapability({
+        ZEROSHOT_OECP_RUNTIME_CAPABILITY: 'c'.repeat(64),
+        ZEROSHOT_OECP_CAPABILITY_BOOTSTRAP: LOOPBACK_BOOTSTRAP_MODE,
+        ZEROSHOT_OECP_CAPABILITY_FILE: '/unused',
+      }),
+      /configuration is invalid/
+    );
+  });
+});
+
+describe('private hosted worker boundaries', () => {
   it('loads an injected adapter without loading the production engine', () => {
     const probe = [
       "const Module = require('module');",
