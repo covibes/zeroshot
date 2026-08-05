@@ -405,6 +405,32 @@ function defineRunPreflightTests() {
       }
     });
 
+    it('should reject host-only OMP auth before detached cluster execution', async () => {
+      const metadata = getProviderMetadata('omp');
+      const result = await runPreflight({
+        requireGh: false,
+        requireDocker: false,
+        quiet: true,
+        provider: 'omp',
+        settings: {
+          providerSettings: {
+            omp: {
+              ...metadata.settingsDefaults,
+              auth: { mode: 'omp-home', path: path.join(os.tmpdir(), 'omp-agent') },
+            },
+          },
+        },
+      });
+
+      const errorText = result.errors.join('');
+      expect(result.valid).to.be.false;
+      expect(errorText).to.include('OMP (Oh My Pi) configuration cannot run cluster agents');
+      expect(errorText).to.include(
+        'omp-home authentication is local host-only and forbidden for detached or Docker execution.'
+      );
+      expect(errorText).to.include('zeroshot providers set-default <provider>');
+    });
+
     it('should allow a configured gateway provider when PATH has no node shim', async () => {
       const settingsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-gateway-'));
       const settingsFile = path.join(settingsDir, 'settings.json');

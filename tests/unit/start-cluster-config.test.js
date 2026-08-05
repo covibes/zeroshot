@@ -85,15 +85,14 @@ describe('buildStartOptions() isolation (single producer via run plan)', functio
     assert.strictEqual(result.worktree, true);
   });
 
-  it('folds settings.defaultDocker into the plan (isolation without a CLI flag)', function () {
+  it('folds settings.defaultIsolation into the plan', function () {
     const result = buildStartOptions({
       clusterId: 'c1',
       options: {},
-      settings: { defaultDocker: true },
+      settings: { defaultIsolation: 'docker' },
     });
     assert.strictEqual(result.isolation, true);
     assert.strictEqual(result.worktree, false);
-    // Label reflects the SAME effective plan, not just the raw flags.
     assert.strictEqual(result.runMode, 'docker');
   });
 

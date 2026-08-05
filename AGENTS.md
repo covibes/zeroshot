@@ -444,6 +444,11 @@ cancels and voids leases without fabricating output. Each stopped run has one fi
 event. Stop acknowledgements never claim rollback or absence of external side effects. These are
 deterministic scripted-backend semantics, not a native graph scheduler or worker executor.
 
+Guided setup lives in `cli/lib/setup-wizard.js`. `defaultIsolation` is the sole saved isolation
+default; persisted `defaultDocker` exists only as one-way migration input. Preflight, startup copy,
+and execution must consume the same canonical effective run plan. Human live events must use the
+footer-aware line/raw writer; JSON output bypasses that writer and remains ANSI-free.
+
 The TUI is not included in this release. Use `zeroshot list`, `zeroshot status <id>`,
 and `zeroshot logs <id> -f` or `zeroshot logs <id> -w` for monitoring.
 
@@ -522,6 +527,7 @@ UX modes:
 Settings: `defaultProvider`, `providerSettings` (claude/codex/gateway/gemini/opencode/pi/copilot), legacy `maxModel`, `defaultConfig`, `logLevel`, robustness (`maxRetries`, `backoffBaseMs`, `backoffMaxMs`, `jitterFactor`, `maxRestartAttempts`, `maxTotalRestarts`, `staleWarningsBeforeKill`).
 
 Provider engines are registry-owned: adding an engine means one entry in `src/agent-cli-provider/provider-registry.ts`, plus the provider-specific adapter and tests. Docker credential mount/env presets, CLI aliases, visible preset lists, and any nontrivial availability probe rules must derive from that registry entry; do not add new provider identity lists or provider preset lists elsewhere.
+Cluster preflight validates the selected registry entry's `settingsValidator` with the actual detached or Docker execution context before isolation side effects. Provider configuration that cannot run cluster workers must fail once at preflight, never after allocation or through repeated agent retries.
 
 OMP's supported version, package identity, and release asset digests are pinned once in `omp-release.ts`; the RPC codec and any registry/version-probing/Docker-build code import it. Never recopy the version string, asset names, or digests elsewhere.
 

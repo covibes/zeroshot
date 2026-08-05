@@ -13,8 +13,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { buildSetupPlan, isConsumedPath } = require('../../lib/setup-plan');
-
-const PROVIDER_NAMES = ['claude', 'codex', 'gemini', 'opencode'];
+const { VALID_PROVIDERS: PROVIDER_NAMES } = require('../../lib/provider-names');
 
 const EXPECTED_DECISION_IDS = new Set([
   'defaultProvider',
@@ -52,9 +51,14 @@ function makeDeps(overrides = {}) {
       throw new Error('not a repo');
     },
     listProviders: () => PROVIDER_NAMES,
+    getProviderMetadata: (name) => ({
+      displayName: name.toUpperCase(),
+      binary: name,
+      installInstructions: `Install ${name}`,
+    }),
     getProvider: (name) => ({
       cliCommand: name,
-      resolveModelSpec: (level) => ({ model: `${name}-${level}-model` }),
+      isAvailable: () => false,
     }),
     getProviderDefaults: () => makeProviderDefaults(),
     getNodeVersion: () => 'v99.0.0',
@@ -85,17 +89,17 @@ function fullyConfiguredPlan() {
   const deps = makeDeps({
     commandExists: () => true,
     getCommandPath: (cmd) => `/usr/local/bin/${cmd}`,
+    getProvider: (name) => ({ cliCommand: name, isAvailable: () => true }),
     checkDocker: () => ({ available: true }),
     checkGhAuth: () => ({ authenticated: true }),
     execSync: (command) => fullyConfiguredExecSync(command),
   });
-
   return buildSetupPlan({
     cwd: '/configured/repo',
     settings: {
       __meta: { fileExists: true },
       defaultProvider: 'claude',
-      defaultDocker: false,
+      defaultIsolation: 'none',
       defaultDelivery: 'none',
       allowLocalNoIsolation: false,
       defaultIssueSource: 'github',
@@ -113,7 +117,7 @@ describe('buildSetupPlan', function () {
   describe('shape', function () {
     it('always returns a typed schemaVersion/facts/decisions/recommended/risk/proposedWrites', function () {
       const plan = freshMachinePlan();
-      assert.strictEqual(plan.schemaVersion, 1);
+      assert.strictEqual(plan.schemaVersion, 2);
       assert.strictEqual(typeof plan.facts, 'object');
       assert.ok(Array.isArray(plan.decisions));
       assert.strictEqual(typeof plan.recommended, 'object');
@@ -139,7 +143,7 @@ describe('buildSetupPlan', function () {
       const plan = freshMachinePlan();
       const allowedPaths = new Set([
         'defaultProvider',
-        'defaultDocker',
+        'defaultIsolation',
         'defaultDelivery',
         'defaultIssueSource',
         'dockerMounts',
@@ -191,9 +195,9 @@ describe('buildSetupPlan', function () {
         assert.strictEqual(write.scope, 'global');
         assert.strictEqual(write.from, null);
         assert.deepStrictEqual(write.to, {
-          min: `${providerName}-level1-model`,
-          default: `${providerName}-level2-model`,
-          max: `${providerName}-level3-model`,
+          minLevel: 'level1',
+          defaultLevel: 'level2',
+          maxLevel: 'level3',
         });
       }
     });
@@ -272,7 +276,7 @@ describe('buildSetupPlan', function () {
   });
 
   describe('canonical write paths', function () {
-    it('defaultIsolation only ever writes defaultDocker, defaultDelivery only ever writes defaultDelivery', function () {
+    it('maps isolation and delivery decisions directly to their canonical settings keys', function () {
       const plan = freshMachinePlan();
       const isolationWrites = plan.proposedWrites.filter(
         (w) => w.decisionId === 'defaultIsolation'
@@ -280,9 +284,9 @@ describe('buildSetupPlan', function () {
       const deliveryWrites = plan.proposedWrites.filter((w) => w.decisionId === 'defaultDelivery');
       assert.ok(isolationWrites.length > 0);
       assert.ok(deliveryWrites.length > 0);
-      assert.ok(isolationWrites.every((w) => w.path === 'defaultDocker'));
+      assert.ok(isolationWrites.every((w) => w.path === 'defaultIsolation'));
       assert.ok(deliveryWrites.every((w) => w.path === 'defaultDelivery'));
-      assert.ok(isolationWrites.every((w) => typeof w.to === 'boolean'));
+      assert.ok(isolationWrites.every((w) => w.to === plan.recommended.defaultIsolation));
     });
   });
 
@@ -295,6 +299,10 @@ describe('buildSetupPlan', function () {
         env: {},
         deps: makeDeps({
           commandExists: (cmd) => cmd === 'codex' || cmd === 'gemini',
+          getProvider: (name) => ({
+            cliCommand: name,
+            isAvailable: () => name === 'codex' || name === 'gemini',
+          }),
         }),
       });
       assert.strictEqual(plan.recommended.defaultProvider, 'claude');
@@ -309,6 +317,10 @@ describe('buildSetupPlan', function () {
         env: {},
         deps: makeDeps({
           commandExists: (cmd) => cmd === 'claude' || cmd === 'codex' || cmd === 'gemini',
+          getProvider: (name) => ({
+            cliCommand: name,
+            isAvailable: () => ['claude', 'codex', 'gemini'].includes(name),
+          }),
         }),
       });
       assert.strictEqual(plan.recommended.defaultProvider, 'claude');

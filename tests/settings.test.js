@@ -57,7 +57,10 @@ function registerSettingsHooks() {
     process.env.ZEROSHOT_SETTINGS_FILE = TEST_SETTINGS_FILE;
     fs.mkdirSync(TEST_STORAGE_DIR, { recursive: true });
     settingsModule = require('../lib/settings');
-    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
+    assert.strictEqual(
+      path.resolve(settingsModule.SETTINGS_FILE),
+      path.resolve(TEST_SETTINGS_FILE)
+    );
   });
 
   after(function () {
@@ -76,7 +79,10 @@ function registerSettingsHooks() {
 
   beforeEach(function () {
     assert.strictEqual(process.env.ZEROSHOT_SETTINGS_FILE, TEST_SETTINGS_FILE);
-    assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
+    assert.strictEqual(
+      path.resolve(settingsModule.SETTINGS_FILE),
+      path.resolve(TEST_SETTINGS_FILE)
+    );
     if (fs.existsSync(TEST_SETTINGS_FILE)) {
       fs.unlinkSync(TEST_SETTINGS_FILE);
     }
@@ -100,7 +106,8 @@ function registerSettingsDefaultTests() {
 
     assert.strictEqual(DEFAULT_SETTINGS.maxModel, 'opus');
     assert.strictEqual(DEFAULT_SETTINGS.defaultConfig, 'conductor-bootstrap');
-    assert.strictEqual(DEFAULT_SETTINGS.defaultDocker, false);
+    assert.strictEqual(DEFAULT_SETTINGS.defaultIsolation, 'none');
+    assert.strictEqual(DEFAULT_SETTINGS.setupVersion, null);
     assert.strictEqual(DEFAULT_SETTINGS.strictSchema, true);
     assert.strictEqual(DEFAULT_SETTINGS.logLevel, 'normal');
     assert.strictEqual(DEFAULT_SETTINGS.defaultProvider, 'claude');
@@ -116,7 +123,7 @@ function registerSettingsDefaultTests() {
 
     assert.strictEqual(settings.maxModel, 'opus');
     assert.strictEqual(settings.defaultConfig, 'conductor-bootstrap');
-    assert.strictEqual(settings.defaultDocker, false);
+    assert.strictEqual(settings.defaultIsolation, 'none');
     assert.strictEqual(settings.strictSchema, true);
     assert.strictEqual(settings.logLevel, 'normal');
   });
@@ -127,18 +134,42 @@ function registerSettingsPersistenceTests() {
     const newSettings = {
       maxModel: 'haiku',
       defaultConfig: 'conductor-junior-bootstrap',
-      defaultDocker: true,
+      defaultIsolation: 'worktree',
       logLevel: 'verbose',
     };
 
     writeSettingsFile(newSettings);
     assert.ok(fs.existsSync(TEST_SETTINGS_FILE), 'Settings file should exist');
 
-    const loaded = loadSettingsWithDefaults();
+    const loaded = settingsModule.loadSettings();
     assert.strictEqual(loaded.maxModel, 'haiku');
     assert.strictEqual(loaded.defaultConfig, 'conductor-junior-bootstrap');
-    assert.strictEqual(loaded.defaultDocker, true);
+    assert.strictEqual(loaded.defaultIsolation, 'worktree');
+    assert.strictEqual(loaded.defaultDocker, undefined);
     assert.strictEqual(loaded.logLevel, 'verbose');
+  });
+
+  it('migrates persisted defaultDocker only when defaultIsolation is absent', function () {
+    writeSettingsFile({ defaultDocker: true });
+    let loaded = settingsModule.loadSettings();
+    assert.strictEqual(loaded.defaultIsolation, 'docker');
+    assert.strictEqual(loaded.defaultDocker, undefined);
+
+    writeSettingsFile({ defaultDocker: true, defaultIsolation: 'worktree' });
+    loaded = settingsModule.loadSettings();
+    assert.strictEqual(loaded.defaultIsolation, 'worktree');
+    assert.strictEqual(loaded.defaultDocker, undefined);
+  });
+
+  it('keeps setupVersion internal to the settings CLI', function () {
+    writeSettingsFile({ setupVersion: 1 });
+    const listed = runSettingsCli([]);
+    assert.strictEqual(listed.status, 0, listed.stderr);
+    assert.ok(!listed.stdout.includes('setupVersion'));
+
+    const fetched = runSettingsCli(['get', 'setupVersion']);
+    assert.strictEqual(fetched.status, 1);
+    assert.match(fetched.stderr, /Setting not found: setupVersion/);
   });
 }
 
@@ -157,18 +188,21 @@ function registerSettingsValidationTests() {
     assert.ok(error.includes('Invalid model'));
   });
 
-  it('should validate log level values', function () {
+  it('should validate log level and isolation values', function () {
     const { validateSetting } = settingsModule;
 
-    // Valid log levels
     assert.strictEqual(validateSetting('logLevel', 'quiet'), null);
     assert.strictEqual(validateSetting('logLevel', 'normal'), null);
     assert.strictEqual(validateSetting('logLevel', 'verbose'), null);
+    assert.ok(validateSetting('logLevel', 'debug').includes('Invalid log level'));
 
-    // Invalid log level
-    const error = validateSetting('logLevel', 'debug');
-    assert.ok(error !== null);
-    assert.ok(error.includes('Invalid log level'));
+    for (const isolation of ['none', 'worktree', 'docker']) {
+      assert.strictEqual(validateSetting('defaultIsolation', isolation), null);
+    }
+    assert.strictEqual(
+      validateSetting('defaultIsolation', 'container'),
+      'Invalid defaultIsolation: container. Valid: none, worktree, docker'
+    );
   });
 }
 
@@ -176,14 +210,8 @@ function registerSettingsCoercionTests() {
   it('should coerce boolean values', function () {
     const { coerceValue } = settingsModule;
 
-    // defaultDocker
-    assert.strictEqual(coerceValue('defaultDocker', 'true'), true);
-    assert.strictEqual(coerceValue('defaultDocker', '1'), true);
-    assert.strictEqual(coerceValue('defaultDocker', 'yes'), true);
-    assert.strictEqual(coerceValue('defaultDocker', true), true);
-    assert.strictEqual(coerceValue('defaultDocker', 'false'), false);
-    assert.strictEqual(coerceValue('defaultDocker', 'no'), false);
-    assert.strictEqual(coerceValue('defaultDocker', false), false);
+    // String enums remain strings.
+    assert.strictEqual(coerceValue('defaultIsolation', 'worktree'), 'worktree');
 
     // strictSchema
     assert.strictEqual(coerceValue('strictSchema', 'true'), true);
@@ -206,7 +234,7 @@ function registerSettingsFileFormatTests() {
     const settings = {
       maxModel: 'sonnet',
       defaultConfig: 'test-config',
-      defaultDocker: false,
+      defaultIsolation: 'none',
       logLevel: 'normal',
     };
 
@@ -367,7 +395,10 @@ function registerTransactionalRecoveryTests() {
 
       assert.strictEqual(result.status, 0, result.stderr);
       assert.ok(result.stdout.includes('Set logLevel = "verbose"'));
-      assert.strictEqual(JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel, 'verbose');
+      assert.strictEqual(
+        JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8')).logLevel,
+        'verbose'
+      );
     });
 
     it('repairs a null settings document through reset --yes', function () {
@@ -401,7 +432,10 @@ function registerTransactionalRecoveryTests() {
 
     it('surfaces a settings read failure without replacing the existing file', function () {
       writeSettingsFile({ logLevel: 'verbose', unrelated: 'preserved' });
-      assert.strictEqual(path.resolve(settingsModule.SETTINGS_FILE), path.resolve(TEST_SETTINGS_FILE));
+      assert.strictEqual(
+        path.resolve(settingsModule.SETTINGS_FILE),
+        path.resolve(TEST_SETTINGS_FILE)
+      );
       const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
       const originalReadFileSync = fs.readFileSync;
       fs.readFileSync = (filePath, ...args) => {
@@ -471,11 +505,7 @@ function registerTransactionalRecoveryTests() {
     it('reports an invalid nested provider level without persistence wording or a write', function () {
       writeSettingsFile({});
       const before = fs.readFileSync(TEST_SETTINGS_FILE, 'utf8');
-      const result = runSettingsCli([
-        'set',
-        'providerSettings.claude.defaultLevel',
-        'level9',
-      ]);
+      const result = runSettingsCli(['set', 'providerSettings.claude.defaultLevel', 'level9']);
 
       assert.strictEqual(result.status, 1);
       assert.ok(result.stderr.includes('Invalid defaultLevel for claude: level9'));

@@ -1,7 +1,7 @@
 {
   "name": "@the-open-engine/zeroshot",
   "version": "0.0.0-development",
-  "description": "Multi-agent orchestration engine for Claude, Codex, and Gemini",
+  "description": "Independent executor–verifier orchestration for software changes.",
   "main": "src/orchestrator.js",
   "bin": {
     "zeroshot": "./cli/index.js",
@@ -38,7 +38,7 @@
     "test:all": "npm run test && npm run test:e2e && npm run test:slow",
     "test:coverage": "c8 npm run test:unit",
     "test:coverage:report": "c8 --reporter=html npm run test:unit && echo 'Coverage report generated at coverage/index.html'",
-    "postinstall": "node scripts/fix-node-pty-permissions.js && node scripts/check-path.js",
+    "postinstall": "node scripts/postinstall.js",
     "start": "node cli/index.js",
     "typecheck": "tsc --noEmit && npm run typecheck:cluster && npm run typecheck:hosted-target && npm run typecheck:hosted-session && npm run typecheck:target",
     "typecheck:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.json",

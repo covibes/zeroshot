@@ -17,6 +17,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
+const { VALID_PROVIDERS } = require('../../lib/provider-names');
 
 const settingsPath = require.resolve('../../lib/settings');
 const setupApplyPath = require.resolve('../../lib/setup-apply');
@@ -93,6 +94,32 @@ describe('setup-apply', function () {
     assert.strictEqual(journal.entries.length, 1);
     assert.strictEqual(journal.entries[0].priorValue, 'claude');
     assert.strictEqual(journal.entries[0].appliedValue, 'codex');
+  });
+
+  it('applies an in-memory decision object without reading a file', function () {
+    const results = applyModule.applyDecisionValues({
+      decisions: { defaultProvider: 'codex' },
+      cwd: repoRoot,
+      deps: {
+        readFile: () => assert.fail('object apply must not read a decisions file'),
+      },
+    });
+
+    assert.strictEqual(results[0].applied, true);
+    assert.strictEqual(readSettings().defaultProvider, 'codex');
+  });
+
+  it('stores defaultIsolation without boolean translation', function () {
+    const results = applyModule.applyDecisions({
+      decisionsPath: decisionsFile({ defaultIsolation: 'worktree' }),
+      cwd: repoRoot,
+    });
+
+    assert.deepStrictEqual(results, [
+      { decisionId: 'defaultIsolation', applied: true, from: 'none', to: 'worktree' },
+    ]);
+    assert.strictEqual(readSettings().defaultIsolation, 'worktree');
+    assert.strictEqual(readSettings().defaultDocker, undefined);
   });
 
   it('is idempotent: applying identical decisions twice writes only on the first run', function () {
@@ -279,26 +306,35 @@ describe('setup-apply', function () {
     assert.ok(!logs.some((line) => line.includes('gh auth login')));
   });
 
-  it('converts providerLevel.<provider> min/default/max into providerSettings levels', function () {
-    // codex's stock defaults are already haiku/sonnet/opus (level1/level2/level3),
-    // so submit a value that actually differs to exercise a real write.
-    const decisions = decisionsFile({
-      'providerLevel.codex': { min: 'sonnet', default: 'sonnet', max: 'opus' },
+  it('round-trips canonical levels for every registry provider', function () {
+    const providerDecisions = Object.fromEntries(
+      VALID_PROVIDERS.map((provider) => [
+        `providerLevel.${provider}`,
+        { minLevel: 'level1', defaultLevel: 'level2', maxLevel: 'level3' },
+      ])
+    );
+    applyModule.applyDecisions({
+      decisionsPath: decisionsFile({ defaultIsolation: 'worktree', ...providerDecisions }),
+      cwd: repoRoot,
     });
-    const results = applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot });
 
-    assert.strictEqual(results[0].applied, true);
     const settings = readSettings();
-    assert.strictEqual(settings.providerSettings.codex.minLevel, 'level2');
-    assert.strictEqual(settings.providerSettings.codex.defaultLevel, 'level2');
-    assert.strictEqual(settings.providerSettings.codex.maxLevel, 'level3');
+    for (const provider of VALID_PROVIDERS) {
+      assert.strictEqual(settings.providerSettings[provider].minLevel, 'level1');
+      assert.strictEqual(settings.providerSettings[provider].defaultLevel, 'level2');
+      assert.strictEqual(settings.providerSettings[provider].maxLevel, 'level3');
+    }
   });
 
-  it('rejects an out-of-domain providerLevel value without writing anything', function () {
-    const decisions = decisionsFile({
-      'providerLevel.codex': { min: 'not-a-model', default: 'sonnet', max: 'opus' },
+  for (const [name, value] of [
+    ['unknown key', { minLevel: 'level1', defaultLevel: 'level2', maxLevel: 'level3', model: 'x' }],
+    ['invalid level', { minLevel: 'level0', defaultLevel: 'level2', maxLevel: 'level3' }],
+    ['invalid ordering', { minLevel: 'level2', defaultLevel: 'level1', maxLevel: 'level3' }],
+  ]) {
+    it(`rejects provider levels with ${name}`, function () {
+      const decisions = decisionsFile({ 'providerLevel.codex': value });
+      assert.throws(() => applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot }));
+      assert.ok(!fs.existsSync(TEST_SETTINGS_FILE));
     });
-    assert.throws(() => applyModule.applyDecisions({ decisionsPath: decisions, cwd: repoRoot }));
-    assert.ok(!fs.existsSync(TEST_SETTINGS_FILE));
-  });
+  }
 });

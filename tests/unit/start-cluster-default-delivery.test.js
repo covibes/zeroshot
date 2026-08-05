@@ -51,4 +51,58 @@ describe('resolveEffectiveRunPlan() settings.defaultDelivery (issue #606)', func
     assert.strictEqual(result.autoMerge, true);
     assert.strictEqual(result.worktree, true);
   });
+
+  it('uses saved worktree isolation when no explicit mode exists', function () {
+    const plan = resolveEffectiveRunPlan({}, { defaultIsolation: 'worktree' });
+    assert.strictEqual(plan.isolation, 'worktree');
+  });
+
+  it('lets explicit CLI and run-options isolation override saved defaults', function () {
+    assert.strictEqual(
+      resolveEffectiveRunPlan({ worktree: true }, { defaultIsolation: 'docker' }).isolation,
+      'worktree'
+    );
+    process.env.ZEROSHOT_RUN_OPTIONS = JSON.stringify({ docker: true });
+    try {
+      assert.strictEqual(
+        resolveEffectiveRunPlan({}, { defaultIsolation: 'worktree' }).isolation,
+        'docker'
+      );
+      assert.strictEqual(
+        resolveEffectiveRunPlan({ worktree: true }, { defaultIsolation: 'docker' }).isolation,
+        'worktree'
+      );
+    } finally {
+      delete process.env.ZEROSHOT_RUN_OPTIONS;
+    }
+  });
+
+  it('uses explicit isolation env before the saved default', function () {
+    process.env.ZEROSHOT_DOCKER = '1';
+    try {
+      assert.strictEqual(
+        resolveEffectiveRunPlan({}, { defaultIsolation: 'worktree' }).isolation,
+        'docker'
+      );
+    } finally {
+      delete process.env.ZEROSHOT_DOCKER;
+    }
+  });
+
+  it('--no-isolation overrides a saved default and conflicts with explicit modes', function () {
+    assert.strictEqual(
+      resolveEffectiveRunPlan({ noIsolation: true }, { defaultIsolation: 'worktree' }).isolation,
+      'none'
+    );
+    for (const mode of ['docker', 'worktree', 'pr', 'ship']) {
+      assert.throws(
+        () =>
+          resolveEffectiveRunPlan(
+            { noIsolation: true, [mode]: true },
+            { defaultIsolation: 'none' }
+          ),
+        /--no-isolation conflicts/
+      );
+    }
+  });
 });
