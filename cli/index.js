@@ -3935,10 +3935,6 @@ const settingsCmd = program
   .helpGroup('Configure:')
   .description('Manage zeroshot settings');
 const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', 'setupVersion', '_targets']);
-// Fail closed while hosted commands are unpublished. Keeping these names out of the
-// default `run` rewrite makes them unknown commands rather than local task input.
-// Issue #920 deliberately has no CLI lifecycle or runtime execution surface.
-const UNREGISTERED_HOSTED_COMMAND_NAMES = new Set(['target', 'capsule']);
 
 function visibleSettingKeys() {
   return Object.keys(DEFAULT_SETTINGS).filter((key) => !INTERNAL_SETTINGS_KEYS.has(key));
@@ -6048,16 +6044,6 @@ function isStartupUpdateEligible(argv, options = {}) {
   });
 }
 
-function applyDefaultCommand(args) {
-  const firstArg = args[0];
-  if (!firstArg || firstArg.startsWith('-')) return;
-
-  const commandNames = program.commands.map((command) => command.name());
-  if (commandNames.includes(firstArg) || UNREGISTERED_HOSTED_COMMAND_NAMES.has(firstArg)) return;
-
-  process.argv.splice(2, 0, 'run');
-}
-
 function shouldRunInitialSetup({ args, stdin, stdout, settingsExist }) {
   return (
     args.length === 0 &&
@@ -6118,10 +6104,6 @@ async function main() {
   const args = startupArgs;
 
   if (await handleNoArgumentInvocation({ args })) return;
-
-  // Preserve the default local run shorthand without treating hosted-only command
-  // names as task input in the stable parser.
-  applyDefaultCommand(args);
 
   program.parse();
 }

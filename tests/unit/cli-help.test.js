@@ -68,6 +68,13 @@ describe('curated CLI help', function () {
     }
   });
 
+  it('rejects implicit run shorthand', function () {
+    const implicit = runCli(['123']);
+    assert.notStrictEqual(implicit.status, 0);
+    assert.match(implicit.stderr, /unknown command ['‘]123['’]/);
+    assert.doesNotMatch(implicit.stderr, /Start a multi-agent cluster/);
+  });
+
   it('keeps hidden compatibility commands fail-closed', function () {
     const result = runCli(['watch']);
     assert.strictEqual(result.status, 1);
