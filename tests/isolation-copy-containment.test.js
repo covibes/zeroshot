@@ -9,6 +9,7 @@ const {
   CopyContainmentError,
   createCopyBoundary,
   resolveCopyPath,
+  validateRelativePath,
 } = require('../src/copy-containment');
 
 function writeFlatFiles(directory, count) {
@@ -48,6 +49,12 @@ describe('isolation copy containment', function () {
     fs.mkdirSync(destinationRoot);
     fs.mkdirSync(outsideRoot);
     manager = new IsolationManager();
+  });
+
+  it('rejects either Windows separator before win32 normalization', function () {
+    for (const unsafePath of ['nested\\..\\..\\escape', 'nested/../../escape']) {
+      assert.throws(() => validateRelativePath(unsafePath, path.win32), isContainmentError);
+    }
   });
 
   afterEach(function () {

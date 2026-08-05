@@ -1337,7 +1337,7 @@ class IsolationManager {
       }
     };
 
-    function handleEntry(entry, srcPath, relPath, relativePath, ancestorDirectories) {
+    function handleEntry(entry, relPath, relativePath, ancestorDirectories) {
       if (entry.isSymbolicLink()) {
         const resolvedSourcePath = resolveSourcePath(copyBoundary, relPath);
         const targetStats = fs.statSync(resolvedSourcePath);
@@ -1379,11 +1379,10 @@ class IsolationManager {
         }
 
         const entryName = validateRelativePath(entry.name);
-        const srcPath = path.join(currentSrc, entryName);
         const relPath = relativePath ? path.join(relativePath, entryName) : entryName;
 
         try {
-          handleEntry(entry, srcPath, relPath, relativePath, childAncestors);
+          handleEntry(entry, relPath, relativePath, childAncestors);
         } catch (err) {
           if (shouldIgnoreFsError(err)) {
             continue;
