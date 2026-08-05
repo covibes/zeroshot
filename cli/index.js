@@ -6041,6 +6041,38 @@ function applyDefaultCommand(args) {
   process.argv.splice(2, 0, 'run');
 }
 
+function shouldRunInitialSetup({ args, stdin, stdout, settingsExist }) {
+  return (
+    args.length === 0 &&
+    !args.includes('--quiet') &&
+    !settingsExist &&
+    stdin.isTTY === true &&
+    stdout.isTTY === true
+  );
+}
+
+async function handleNoArgumentInvocation({
+  args,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  settingsExist,
+  runWizard = runSetupWizard,
+  outputHelp = () => program.outputHelp(),
+  setExitCode = (code) => {
+    process.exitCode = code;
+  },
+}) {
+  if (args.length !== 0) return false;
+  const hasSettings = settingsExist ?? settingsFileExists();
+  if (shouldRunInitialSetup({ args, stdin, stdout, settingsExist: hasSettings })) {
+    const result = await runWizard({ stdin, stdout });
+    setExitCode(result.exitCode);
+  } else {
+    outputHelp();
+  }
+  return true;
+}
+
 // Main entry point
 async function main() {
   printLegacyDistroNotice();
@@ -6068,10 +6100,7 @@ async function main() {
 
   const args = startupArgs;
 
-  if (args.length === 0) {
-    program.outputHelp();
-    return;
-  }
+  if (await handleNoArgumentInvocation({ args })) return;
 
   // Preserve the default local run shorthand without treating hosted-only command
   // names as task input in the stable parser.
@@ -6096,6 +6125,8 @@ module.exports = {
   printAttachableAgentList,
   renderRecentMessagesToTerminal,
   isStartupUpdateEligible,
+  handleNoArgumentInvocation,
+  shouldRunInitialSetup,
   resolveRunMode,
   killRunningClusters,
 };
