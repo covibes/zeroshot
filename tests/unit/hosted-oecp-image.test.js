@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const nodePath = require('path');
 const {
   immutableBaseImages,
   validTag,
@@ -169,6 +171,14 @@ function registerBuildInputTests() {
     );
     assert.throws(() => validateContextAllowlist('!Cargo.lock\n', '!Cargo.lock\n'), /deny-all/);
     assert.throws(() => immutableBaseImages('FROM node:22-bookworm-slim'), /not immutable/);
+  });
+
+  it('installs the CA bundle used by hosted Git', function () {
+    const dockerfile = fs.readFileSync(
+      nodePath.join(__dirname, '..', '..', 'docker', 'zeroshot-oecp', 'Dockerfile'),
+      'utf8'
+    );
+    assert.match(dockerfile, /apt-get install -y --no-install-recommends ca-certificates git/);
   });
 }
 
