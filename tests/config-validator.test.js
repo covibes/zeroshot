@@ -696,20 +696,20 @@ describe('validateAgents', function () {
   });
 });
 
-describe('validateAgents - validator Git usage', function () {
-  function validatePrompt(prompt) {
-    return validateAgents({
-      agents: [
-        {
-          id: 'validator',
-          role: 'validator',
-          triggers: [{ topic: 'IMPLEMENTATION_READY' }],
-          prompt,
-        },
-      ],
-    }).errors;
-  }
+function validatePrompt(prompt) {
+  return validateAgents({
+    agents: [
+      {
+        id: 'validator',
+        role: 'validator',
+        triggers: [{ topic: 'IMPLEMENTATION_READY' }],
+        prompt,
+      },
+    ],
+  }).errors;
+}
 
+describe('validateAgents - validator Git usage', function () {
   it('allows clear prohibitions of Git inspection commands', function () {
     const safePrompts = [
       'Do NOT use git diff or git status. Read files directly.',
@@ -794,15 +794,19 @@ describe('validateAgents - validator Git usage', function () {
 
   it('rejects conditional exceptions to prohibitive wording', function () {
     const prompts = [
-      'Do not use git diff unless necessary.',
-      'Never run git log without first reading the files.',
-      'Git status is forbidden except during final validation.',
+      ['Do not use git diff unless necessary.', 1],
+      ['Do not use git diff or git status during validation unless necessary.', 1],
+      ['Do not use git diff or git status during validation only.', 1],
+      ['Do not use git diff or git status by default.', 1],
+      ['Never run git log without first reading the files.', 1],
+      ['Git status is forbidden except during final validation.', 1],
+      ['Git diff and git status are forbidden for now.', 2],
     ];
 
-    for (const prompt of prompts) {
+    for (const [prompt, expectedErrors] of prompts) {
       assert.strictEqual(
         validatePrompt(prompt).length,
-        1,
+        expectedErrors,
         `Expected prompt to be unsafe: ${prompt}`
       );
     }
@@ -814,6 +818,70 @@ describe('validateAgents - validator Git usage', function () {
 
     assert.strictEqual(errors.length, 1);
     assert.ok(errors[0].includes("'git status'"), errors[0]);
+  });
+});
+
+describe('validateAgents - validator Git review regressions', function () {
+  it('rejects double negations of Git prohibitions', function () {
+    const unsafePrompts = [
+      ['Do not avoid using git diff.', 'git diff'],
+      ['Never refrain from running git status.', 'git status'],
+      ['Do not ever avoid running git log.', 'git log'],
+      ['Cannot avoid git show.', 'git show'],
+      ['Do not never run git log.', 'git log'],
+      [{ system: 'Do not avoid inspecting git show.' }, 'git show'],
+    ];
+
+    for (const [prompt, command] of unsafePrompts) {
+      const errors = validatePrompt(prompt);
+      assert.strictEqual(errors.length, 1, `Expected prompt to be rejected: ${prompt}`);
+      assert.ok(errors[0].includes(`'${command}'`), errors[0]);
+    }
+  });
+
+  it('keeps independent prohibitions safe after a double negation', function () {
+    const prompts = [
+      'Do not avoid git diff and never run git status.',
+      'Do not avoid git diff and git status is forbidden.',
+    ];
+
+    for (const prompt of prompts) {
+      const errors = validatePrompt(prompt);
+      assert.strictEqual(errors.length, 1);
+      assert.ok(errors[0].includes("'git diff'"), errors[0]);
+      assert.ok(!errors[0].includes("'git status'"), errors[0]);
+    }
+  });
+
+  it('allows prohibited command lists with ordinary trailing qualifiers', function () {
+    const safePrompts = [
+      'Do not use git diff or git status during validation.',
+      'Never run git log and git show while validating.',
+      { system: 'Do not inspect git diff or git status in validator prompts.' },
+    ];
+
+    for (const prompt of safePrompts) {
+      assert.deepStrictEqual(
+        validatePrompt(prompt),
+        [],
+        `Expected qualified prohibition to be allowed: ${prompt}`
+      );
+    }
+  });
+
+  it('allows postfix prohibitions with ordinary trailing qualifiers', function () {
+    const safePrompts = [
+      'git diff and git status are forbidden during validation.',
+      'Both commands git log and git show must never be used by validators.',
+    ];
+
+    for (const prompt of safePrompts) {
+      assert.deepStrictEqual(
+        validatePrompt(prompt),
+        [],
+        `Expected qualified postfix prohibition to be allowed: ${prompt}`
+      );
+    }
   });
 });
 

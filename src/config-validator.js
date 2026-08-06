@@ -883,6 +883,14 @@ const VALIDATOR_GIT_POSTFIX_PARTICIPLES = new Set([
   'inspected',
   'checked',
 ]);
+const VALIDATOR_GIT_BENIGN_TERMINAL_QUALIFIERS = [
+  ['during', 'validation'],
+  ['during', 'final', 'validation'],
+  ['while', 'validating'],
+  ['in', 'validator', 'prompt'],
+  ['in', 'validator', 'prompts'],
+  ['by', 'validators'],
+];
 
 function normalizeValidatorGitToken(rawToken) {
   let value = rawToken.toLowerCase().replaceAll('’', "'");
@@ -1038,6 +1046,17 @@ function parsePrefixProhibition(atoms, index, end) {
   return parseGitCommandList(atoms, skipCommandLabel(atoms, cursor), end);
 }
 
+function findNegatedProhibitionStarts(atoms, start, end) {
+  const negatedStarts = new Set();
+  for (let index = start; index < end; index += 1) {
+    let innerStart = skipNegatedInstruction(atoms, index);
+    if (innerStart < 0) continue;
+    if (atoms[innerStart]?.value === 'ever') innerStart += 1;
+    if (parsePrefixProhibition(atoms, innerStart, end)) negatedStarts.add(innerStart);
+  }
+  return negatedStarts;
+}
+
 function parsePostfixProhibition(atoms, index, end) {
   const first = atoms[index]?.value;
   const second = atoms[index + 1]?.value;
@@ -1069,6 +1088,17 @@ function skipCommas(atoms, index) {
   return cursor;
 }
 
+function isBenignTerminalQualifier(atoms, index, end) {
+  return VALIDATOR_GIT_BENIGN_TERMINAL_QUALIFIERS.some(
+    (qualifier) =>
+      end - index === qualifier.length &&
+      qualifier.every(
+        (word, offset) =>
+          atoms[index + offset]?.type === 'word' && atoms[index + offset].value === word
+      )
+  );
+}
+
 function commandsCoveredByPrefix(atoms, commandList, end) {
   const suffixStart = skipCommas(atoms, commandList.end);
   if (suffixStart >= end) return commandList.commands;
@@ -1078,19 +1108,37 @@ function commandsCoveredByPrefix(atoms, commandList, end) {
   ) {
     return commandList.commands;
   }
-
-  const postfixEnd = parsePostfixProhibition(atoms, suffixStart, end);
-  if (postfixEnd !== null && skipCommas(atoms, postfixEnd) >= end) {
+  if (isBenignTerminalQualifier(atoms, suffixStart, end)) {
     return commandList.commands;
   }
 
   return commandList.commands.slice(0, -1);
 }
 
+function commandCoveredByTerminalPostfix(atoms, commandList, end) {
+  const postfixStart = skipCommas(atoms, commandList.end);
+  const postfixEnd = parsePostfixProhibition(atoms, postfixStart, end);
+  if (postfixEnd === null) return -1;
+
+  const qualifierStart = skipCommas(atoms, postfixEnd);
+  if (qualifierStart < end && !isBenignTerminalQualifier(atoms, qualifierStart, end)) {
+    return -1;
+  }
+  return commandList.commands[commandList.commands.length - 1];
+}
+
 function markPrefixProhibitions(atoms, start, end, prohibited) {
+  const negatedStarts = findNegatedProhibitionStarts(atoms, start, end);
   for (let index = start; index < end; index += 1) {
     const commandList = parsePrefixProhibition(atoms, index, end);
     if (!commandList) continue;
+
+    const negatesProhibition = negatedStarts.has(index);
+    const postfixCommand = commandCoveredByTerminalPostfix(atoms, commandList, end);
+    if (postfixCommand >= 0 && (!negatesProhibition || commandList.commands.length > 1)) {
+      prohibited.add(postfixCommand);
+    }
+    if (negatesProhibition) continue;
 
     for (const command of commandsCoveredByPrefix(atoms, commandList, end)) {
       prohibited.add(command);
@@ -1118,7 +1166,9 @@ function markPostfixProhibitions(atoms, start, end, prohibited) {
     const continuesWithProhibition =
       (atoms[next]?.value === 'and' || atoms[next]?.value === 'or') &&
       atoms[next + 1]?.type === 'command';
-    if (next < end && !continuesWithProhibition) return;
+    if (next < end && !continuesWithProhibition && !isBenignTerminalQualifier(atoms, next, end)) {
+      return;
+    }
 
     for (const command of commandList.commands) prohibited.add(command);
     if (!continuesWithProhibition) return;
