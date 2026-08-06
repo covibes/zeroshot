@@ -13,54 +13,32 @@ import { BoundedQueue } from './queue.js';
 import { addSocketListener } from './socket.js';
 import type { WebSocketLike } from './socket.js';
 import { assertDefinition, assertMethodResult } from './validators.js';
-if (!Object.prototype.hasOwnProperty.call(Symbol, 'asyncDispose')) {
-  Object.defineProperty(Symbol, 'asyncDispose', {
-    configurable: false, enumerable: false,
-    value: Symbol.for('Symbol.asyncDispose'), writable: false,
-  });
-}
-
-export type ConnectionState = 'OPEN' | 'CLOSING' | 'CLOSED';
-export const CONNECTION_TRANSITIONS: Readonly<Record<ConnectionState, readonly ConnectionState[]>> = Object.freeze({
-  OPEN: Object.freeze(['CLOSING'] as const),
-  CLOSING: Object.freeze(['CLOSED'] as const),
-  CLOSED: Object.freeze([] as const),
-});
-export const PROTOCOL_DIAGNOSTIC_CAPACITY = 128;
-export interface CallOptions { readonly signal?: AbortSignal; readonly requestTimeoutMs?: number; }
-
-type Deferred<T> = {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-};
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void; let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((onResolve, onReject) => {
-    resolve = onResolve; reject = onReject;
-  });
-  return { promise, resolve, reject };
-}
-export type SubscriptionKind = 'watch' | 'logs' | 'agent/attach';
-export type SubscriptionRegistration = {
-  readonly id: string;
-  readonly kind: SubscriptionKind;
-  readonly queue: BoundedQueue<FrameRecord>;
-  overflowed: boolean;
-  cancelSent: boolean;
-  abortHandler?: () => void;
-  abortSignal?: AbortSignal;
-};
-export type EstablishedSubscription<R> = {
-  readonly result: R;
-  readonly registration: SubscriptionRegistration;
-};
-type PendingEntry = {
-  readonly id: string; readonly method: ClusterMethod; readonly expectedId: string;
-  readonly resolve: (value: unknown) => void; readonly reject: (reason: unknown) => void;
-  readonly subscriptionKind?: SubscriptionKind; settled: boolean;
-  abortHandler?: () => void; signal?: AbortSignal; timeout?: ReturnType<typeof setTimeout>;
-};
+import {
+  CONNECTION_TRANSITIONS,
+  PROTOCOL_DIAGNOSTIC_CAPACITY,
+  deferred,
+  type ConnectionCloseSnapshot,
+  type ConnectionState,
+} from './connection-state.js';
+export {
+  CONNECTION_TRANSITIONS,
+  PROTOCOL_DIAGNOSTIC_CAPACITY,
+  type ConnectionCloseSnapshot,
+  type ConnectionState,
+} from './connection-state.js';
+import type {
+  CallOptions,
+  EstablishedSubscription,
+  PendingEntry,
+  SubscriptionKind,
+  SubscriptionRegistration,
+} from './connection-types.js';
+export type {
+  CallOptions,
+  EstablishedSubscription,
+  SubscriptionKind,
+  SubscriptionRegistration,
+} from './connection-types.js';
 
 export class Connection {
   #state: ConnectionState = 'OPEN'; #sequence = 1;
@@ -70,6 +48,10 @@ export class Connection {
   readonly #removeSocketListeners: Array<() => void> = [];
   readonly #ownedSubscriptions = new WeakSet<SubscriptionRegistration>();
   #closePromise?: Promise<void>;
+  #closeCode: number | undefined;
+  readonly #closedCompletion = deferred<ConnectionCloseSnapshot>();
+  readonly closed: Promise<ConnectionCloseSnapshot> = this.#closedCompletion.promise;
+  #closeSnapshot: ConnectionCloseSnapshot | undefined;
   readonly closeDiagnostics: unknown[] = [];
   readonly protocolDiagnostics: ClusterProtocolError[] = [];
 
@@ -80,12 +62,15 @@ export class Connection {
     this.#removeSocketListeners.push(
       addSocketListener(socket, 'message', (event) => this.#onMessage(event)),
       addSocketListener(socket, 'error', () => { void this.#startClose(false); }),
-      addSocketListener(socket, 'close', () => { void this.#startClose(false); }),
+      addSocketListener(socket, 'close', (...args: unknown[]) => { this.#captureCloseState(args); void this.#startClose(false); }),
     );
   }
   get state(): ConnectionState { return this.#state; }
   get pendingSize(): number { return this.#pending.size; }
   get subscriptionCount(): number { return this.#subscriptions.size; }
+  get closeCode(): number | undefined { return this.#closeCode; }
+  get closeReason(): undefined { return undefined; }
+  get closeSnapshot(): ConnectionCloseSnapshot | undefined { return this.#closeSnapshot; }
   call<M extends UnaryClusterMethod>(method: M, params: ClusterMethodParams[M], options: CallOptions = {}): Promise<ClusterMethodResults[M]> {
     if (!(UNARY_METHODS as readonly string[]).includes(method)) {
       throw new ClusterConfigError(`${method} is a subscription method`, 'INVALID_METHOD');
@@ -266,6 +251,16 @@ export class Connection {
     if (this.protocolDiagnostics.length === PROTOCOL_DIAGNOSTIC_CAPACITY) this.protocolDiagnostics.shift();
     this.protocolDiagnostics.push(new ClusterProtocolError(message, 'INVALID_PEER_FRAME', cause === undefined ? undefined : { cause }));
   }
+  #captureCloseState(args: unknown[]): void {
+    if (args.length === 0) return;
+    const first = args[0];
+    if (typeof first === 'number') {
+      this.#closeCode = first;
+    } else if (first !== null && typeof first === 'object') {
+      const event = first as { code?: unknown };
+      if (typeof event.code === 'number') this.#closeCode = event.code;
+    }
+  }
   #startClose(sendCancels: boolean): Promise<void> {
     if (this.#closePromise) return this.#closePromise; if (this.#state === 'CLOSED') return Promise.resolve();
     this.#transition('CLOSING'); this.#closePromise = Promise.resolve().then(() => this.#finishClose(sendCancels)); return this.#closePromise;
@@ -288,6 +283,11 @@ export class Connection {
       try { remove(); } catch (error) { this.recordDiagnostic(error); }
     }
     this.#transition('CLOSED');
+    this.#closeSnapshot = Object.freeze({
+      code: this.#closeCode ?? null,
+      reason: null,
+    });
+    this.#closedCompletion.resolve(this.#closeSnapshot);
   }
   #transition(to: ConnectionState): void {
     if (!CONNECTION_TRANSITIONS[this.#state].includes(to)) throw new ClusterInternalError(`illegal connection transition ${this.#state} -> ${to}`, 'ILLEGAL_STATE_TRANSITION');

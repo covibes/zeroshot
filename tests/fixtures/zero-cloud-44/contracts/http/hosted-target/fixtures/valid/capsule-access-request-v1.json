@@ -1,0 +1,13 @@
+{
+  "description": "Fresh OECP access accepts exactly the pinned cluster protocol atom.",
+  "schema": "capsule-access-request",
+  "expect_schema_valid": true,
+  "request": {
+    "operation": "access",
+    "method": "POST",
+    "required_headers": ["Authorization", "Content-Type"]
+  },
+  "body": {
+    "protocol": "openengine.cluster/v1"
+  }
+}

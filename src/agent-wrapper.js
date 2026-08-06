@@ -13,7 +13,7 @@
 const LogicEngine = require('./logic-engine');
 const { validateAgentConfig } = require('./agent/agent-config');
 const { loadSettings, validateModelAgainstMax, VALID_MODELS } = require('../lib/settings');
-const { normalizeProviderName } = require('../lib/provider-names');
+const { normalizeProviderName, getDefaultProviderId } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
 const { buildContext } = require('./agent/agent-context-builder');
 const { collectQueuedGuidance } = require('./agent/guidance-queue');
@@ -160,9 +160,9 @@ class AgentWrapper {
       this.config.provider ||
       clusterConfig.defaultProvider ||
       settings.defaultProvider ||
-      'claude';
+      getDefaultProviderId();
 
-    return normalizeProviderName(resolved) || 'claude';
+    return normalizeProviderName(resolved) || getDefaultProviderId();
   }
 
   _resolveModelSpec() {
@@ -586,8 +586,8 @@ class AgentWrapper {
    * Falls back to reformatting if extraction fails
    * @private
    */
-  _parseResultOutput(output) {
-    return parseResultOutput(this, output);
+  _parseResultOutput(output, options = {}) {
+    return parseResultOutput(this, output, options);
   }
 
   /**

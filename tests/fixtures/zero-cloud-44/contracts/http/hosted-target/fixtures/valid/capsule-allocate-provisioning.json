@@ -1,0 +1,16 @@
+{
+  "description": "A successful allocation is 201 and returns the complete closed Capsule projection.",
+  "schema": "capsule",
+  "expect_schema_valid": true,
+  "response": {
+    "operation": "allocate",
+    "status": 201,
+    "headers": {"cache-control": "no-store"}
+  },
+  "body": {
+    "capsule_id": "cap_opaque-allocate-01",
+    "state": "provisioning",
+    "label": "opaque fixture capsule",
+    "created_at": "2026-08-03T12:00:00Z"
+  }
+}

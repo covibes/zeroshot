@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { omitProcessControlEnv, omitUnsafeProviderEnv } from './env-safety';
 import type { CommandSpec } from './types';
 
@@ -8,6 +8,7 @@ const PROVIDER_STDIO: ['ignore', 'pipe', 'pipe'] = ['ignore', 'pipe', 'pipe'];
 export interface ProcessRunnerOptions {
   readonly timeoutMs?: number;
   readonly timeoutKillGraceMs?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface ProcessResult {
@@ -29,26 +30,39 @@ interface TimeoutState {
   timedOut: boolean;
   timeout?: NodeJS.Timeout;
   timeoutKill?: NodeJS.Timeout;
+  removeAbortListener?: () => void;
 }
 
 function clearTimeoutState(state: TimeoutState): void {
   if (state.timeout !== undefined) clearTimeout(state.timeout);
   if (state.timeoutKill !== undefined) clearTimeout(state.timeoutKill);
+  state.removeAbortListener?.();
 }
 
-function armTimeout(
-  child: ReturnType<typeof spawn>,
+function armTermination(
+  child: ChildProcess,
   options: ProcessRunnerOptions,
   state: TimeoutState,
   isSettled: () => boolean
 ): void {
-  if (options.timeoutMs === undefined) return;
-  state.timeout = setTimeout(() => {
-    state.timedOut = true;
+  const terminate = (): void => {
     child.kill('SIGTERM');
+    if (state.timeoutKill !== undefined) return;
     state.timeoutKill = setTimeout(() => {
       if (!isSettled()) child.kill('SIGKILL');
     }, options.timeoutKillGraceMs ?? DEFAULT_TIMEOUT_KILL_GRACE_MS);
+  };
+
+  if (options.signal !== undefined) {
+    const abort = (): void => terminate();
+    options.signal.addEventListener('abort', abort, { once: true });
+    state.removeAbortListener = (): void => options.signal?.removeEventListener('abort', abort);
+    if (options.signal.aborted) terminate();
+  }
+  if (options.timeoutMs === undefined) return;
+  state.timeout = setTimeout(() => {
+    state.timedOut = true;
+    terminate();
   }, options.timeoutMs);
 }
 
@@ -95,7 +109,7 @@ function spawnOptions(commandSpec: CommandSpec): {
 }
 
 function attachOutputCollectors(
-  child: ReturnType<typeof spawn>,
+  child: ChildProcess,
   stdout: Buffer[],
   stderr: Buffer[]
 ): void {
@@ -140,6 +154,6 @@ export function spawnProcessRunner(): ProcessRunner {
         }
       });
 
-      armTimeout(child, options, timeoutState, () => settled);
+      armTermination(child, options, timeoutState, () => settled);
     });
 }

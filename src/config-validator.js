@@ -14,6 +14,7 @@
 const { loadSettings } = require('../lib/settings');
 const {
   VALID_PROVIDERS,
+  getDefaultProviderId,
   normalizeProviderName,
   providerSupportsCapability,
 } = require('../lib/provider-names');
@@ -1987,8 +1988,8 @@ function resolveProviderName(agent, config, settings) {
     agent.provider ||
     config.defaultProvider ||
     settings.defaultProvider ||
-    'claude';
-  return normalizeProviderName(resolved) || 'claude';
+    getDefaultProviderId();
+  return normalizeProviderName(resolved) || getDefaultProviderId();
 }
 
 function validateProviderLevel(provider, requestedLevel, minLevel, maxLevel) {

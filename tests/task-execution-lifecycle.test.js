@@ -21,11 +21,7 @@ const {
   killTask,
   parseResultOutput,
 } = require('../src/agent/agent-task-executor');
-const {
-  startLivenessCheck,
-  stop,
-  stopLivenessCheck,
-} = require('../src/agent/agent-lifecycle');
+const { startLivenessCheck, stop, stopLivenessCheck } = require('../src/agent/agent-lifecycle');
 
 afterEach(function () {
   sinon.restore();
@@ -108,9 +104,7 @@ describe('TaskExecutionHandle', function () {
     handle.assignTaskId('consumed-cleanup-result');
     handle.setCancelAction(() => {
       attempts++;
-      return attempts === 1
-        ? { forced: false, reason: 'cleanup still pending' }
-        : { forced: true };
+      return attempts === 1 ? { forced: false, reason: 'cleanup still pending' } : { forced: true };
     });
 
     const firstTermination = await handle.cancel('deadline cleanup');
@@ -473,7 +467,11 @@ describe('Parent identity preserved across nested reformat', function () {
       _resolveProvider: () => 'opencode',
       _spawnClaudeTask: (prompt, options) => {
         // Simulate a nested launch that must NOT overwrite parent identity.
-        assert.strictEqual(options.nested, true, 'reformat must pass nested: true');
+        assert.deepStrictEqual(options, {
+          skipStructuredResultCheck: true,
+          nested: true,
+          structuredOutputRecovery: true,
+        });
         return {
           success: true,
           output: opencodeTextEvent({ plan: 'recovered plan' }),
@@ -674,7 +672,6 @@ describe('Cached parsed result — one recovery model call', function () {
       }
     );
   });
-
 });
 
 describe('Cancellation identity end-to-end', function () {

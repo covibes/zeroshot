@@ -48,3 +48,39 @@ describe('StatusFooter runMode badge', () => {
     assert.ok(!line.includes('['), `expected no badge, got: ${line}`);
   });
 });
+
+describe('StatusFooter output contract', () => {
+  let originalWrite;
+  let output;
+
+  beforeEach(() => {
+    output = '';
+    originalWrite = process.stdout.write;
+    process.stdout.write = (text) => {
+      output += text;
+      return true;
+    };
+  });
+
+  afterEach(() => {
+    process.stdout.write = originalWrite;
+  });
+
+  it('adds one newline for print and preserves raw writes', () => {
+    const footer = new StatusFooter({ enabled: false });
+    footer.print('line');
+    footer.write('chunk\n\n');
+    assert.strictEqual(output, 'line\nchunk\n\n');
+  });
+
+  it('preserves queued line and raw chunk boundaries', () => {
+    const footer = new StatusFooter({ enabled: false });
+    footer.isRendering = true;
+    footer.print('line');
+    footer.write('chunk');
+    assert.strictEqual(output, '');
+    footer.isRendering = false;
+    footer._flushPrintQueue();
+    assert.strictEqual(output, 'line\nchunk');
+  });
+});

@@ -34,6 +34,27 @@ export {
   type ProcessRunnerOptions,
 } from './process-runner';
 export {
+  runOmpRpcTask,
+  type OmpRpcSessionEvidence,
+  type OmpRpcSpawnEvidence,
+  type OmpRpcTaskHooks,
+  type OmpRpcTaskRequest,
+  type OmpRpcTaskResult,
+} from './omp/rpc-driver';
+export { buildOmpPrompt } from './adapters/omp';
+export { DEFAULT_OMP_RPC_DECODER_LIMITS } from './omp/rpc-protocol';
+export { ABORT_GRACE_MS, EXIT_GRACE_MS } from './omp/rpc-bounds';
+export { OMP_SUPPORTED_VERSION } from './omp/release';
+export type { OmpSessionLaunch, VerifiedOmpPartition, VerifiedOmpSessionFile } from './omp/rpc-session';
+export {
+  OmpSdkProcessRunnerError,
+  runOmpSdkProcess,
+  spawnOmpSdkProcess,
+  type OmpSdkProcessResult,
+  type OmpSdkProcessRunnerOptions,
+  type OmpSdkRunningProcess,
+} from './omp/sdk-process-runner';
+export {
   detectRuntimeProviderCliFeatures,
   prepareSingleAgentProviderCommand,
   probeRuntimeProviderCli,
@@ -42,6 +63,7 @@ export {
   type SingleAgentProviderCommandInput,
 } from './single-agent-runtime';
 export {
+  credentialEnvKeysForProvider,
   findProviderRegistryEntry,
   getProviderRegistryEntry,
   knownProviderNames,
@@ -53,7 +75,48 @@ export {
   providerRegistry,
   resolveProviderCommand,
   supportsProviderCapability,
+  supportsProviderOutputReformatting,
 } from './provider-registry';
+export {
+  createOmpSdkProtocolCollector,
+  decodeOmpSdkProtocolFrame,
+  decodeOmpSdkSidecarRequest,
+  normalizeOmpSdkResultFrame,
+  ompSdkOutputSchemaForRequest,
+  parseOmpSdkProtocolFrame,
+  parseOmpSdkSidecarRequest,
+  validateOmpSdkProtocolResultFrame,
+  OMP_SDK_BACKEND_VERSION,
+  OMP_SDK_BUN_VERSION,
+  OMP_SDK_ERROR_CODES,
+  OMP_SDK_MAX_FRAME_BYTES,
+  OMP_SDK_MAX_REQUEST_BYTES,
+  OMP_SDK_MAX_STDOUT_BYTES,
+  OMP_SDK_PROGRESS_STAGES,
+  OMP_SDK_PROTOCOL_VERSION,
+  OMP_SDK_TEXT_OUTPUT_SCHEMA,
+  OMP_SDK_TOOL_IDS,
+  type OmpSdkCollectedTerminal,
+  type OmpSdkErrorCategory,
+  type OmpSdkErrorCode,
+  type OmpSdkJsonSidecarRequest,
+  type OmpSdkModelsConfig,
+  type OmpSdkOutputMode,
+  type OmpSdkProgressStage,
+  type OmpSdkProtocolCollector,
+  type OmpSdkProtocolCollectorOptions,
+  type OmpSdkProtocolErrorFrame,
+  type OmpSdkProtocolFrame,
+  type OmpSdkProtocolProgressFrame,
+  type OmpSdkProtocolResultFrame,
+  type OmpSdkProtocolTerminalFrame,
+  type OmpSdkRequestAuth,
+  type OmpSdkSafeError,
+  type OmpSdkSidecarRequest,
+  type OmpSdkTextSidecarRequest,
+  type OmpSdkToolId,
+} from './omp/sdk-protocol';
+
 
 export type {
   AgentCliProviderHelperMetadata,
@@ -73,11 +136,19 @@ export type {
   GatewayToolPolicy,
   GeminiCliFeatures,
   KnownProviderName,
+  InvocationLane,
+  InvocationLaneMetadata,
   LevelModelSpec,
   LevelOverrides,
   ModelCatalogEntry,
   ModelLevel,
   ModelSpec,
+  OmpCliFeatures,
+  OmpSdkRequestedIdentity,
+  OmpSdkResolvedIdentity,
+  OmpSdkStrictOutputEvidence,
+  OmpSdkTerminalEvidence,
+  OmpSdkUsageEvidence,
   OpencodeCliFeatures,
   OutputEvent,
   OutputFormat,
@@ -92,6 +163,9 @@ export type {
   ProviderCliFeatures,
   ProviderId,
   ProviderRegistryEntry,
+  StructuredOutputRecoveryAdapter,
+  StructuredOutputProviderRegistryEntry,
+  UnstructuredOutputProviderRegistryEntry,
   RedactionMetadata,
   ReasoningEffort,
   ResolvedGatewayBuildOptions,

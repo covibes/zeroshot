@@ -33,13 +33,12 @@ describe('Conductor Duplicate Spawning Prevention', function () {
     testDir = path.join(os.tmpdir(), `zeroshot-test-${crypto.randomBytes(8).toString('hex')}`);
     fs.mkdirSync(testDir, { recursive: true });
 
-    // Create settings file to avoid first-run wizard (using env var override)
+    // Create isolated settings using the environment override.
     const settingsPath = path.join(testDir, 'settings.json');
     fs.writeFileSync(
       settingsPath,
       JSON.stringify(
         {
-          firstRunComplete: true,
           defaultProvider: 'claude',
           defaultConfig: 'conductor-bootstrap',
           autoCheckUpdates: false, // Disable update prompts in tests

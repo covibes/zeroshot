@@ -8,6 +8,7 @@ const {
   fakeCodexScript,
   fakeCopilotScript,
   fakeKiroScript,
+  fakeOmpScript,
   fakePiScript,
   invokeCodexSchemaRequest,
   runExecutable,
@@ -784,6 +785,143 @@ process.stdout.write(fs.readFileSync(process.env.COPILOT_FIXTURE, 'utf8'));
             assert.equal(events.at(-1).success, true);
           }
         )
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('invoke runs the omp rpc-stdio lane through the shared driver, from a real CLI probe', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-worktree-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify({ providerSettings: { omp: { transport: 'rpc' } } }),
+    { mode: 0o600 }
+  );
+
+  try {
+    withFakeProviderCli(
+      'omp',
+      fakeOmpScript(`
+if (process.argv.includes('--help') || process.argv.includes('-h')) {
+  process.stdout.write([
+    'Usage: omp [command] [options]',
+    'Commands:',
+    '  rpc                  Run in RPC mode',
+    'Options:',
+    '  --config <path>',
+    '  --model <selector>',
+    '  --thinking <level>',
+    '  --approval-mode <mode>',
+    '  --no-title',
+    '  --no-session',
+    '  --session-dir <dir>',
+    '  --resume <id>',
+  ].join('\\n') + '\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('omp 17.2.1\\n');
+  process.exit(0);
+}
+const readline = require('node:readline');
+function emit(frame) { process.stdout.write(JSON.stringify(frame) + '\\n'); }
+emit({ type: 'ready', protocolVersion: 1, supportedProtocolVersions: [1, 2], maxFrameBytes: 1048576, maxReassembledFrameBytes: 67108864 });
+emit({ type: 'available_commands_update', commands: [] });
+const rl = readline.createInterface({ input: process.stdin, terminal: false });
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  let command;
+  try { command = JSON.parse(line); } catch { return; }
+  if (!command || typeof command !== 'object') return;
+  if (command.type === 'negotiate_protocol') {
+    emit({ id: command.id, type: 'response', command: 'negotiate_protocol', success: true });
+    return;
+  }
+  if (command.type === 'get_state') {
+    emit({
+      id: command.id,
+      type: 'response',
+      command: 'get_state',
+      success: true,
+      data: { model: { provider: 'anthropic', id: '@default' }, thinkingLevel: 'medium' },
+    });
+    return;
+  }
+  if (command.type === 'prompt') {
+    emit({ id: command.id, type: 'response', command: 'prompt', success: true, data: { agentInvoked: true } });
+    emit({ type: 'agent_start' });
+    emit({ type: 'turn_start' });
+    emit({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'OMP invoke OK' } });
+    emit({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'OMP invoke OK' }] } });
+    emit({
+      type: 'turn_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'OMP invoke OK' }],
+        stopReason: 'stop',
+        usage: { input: 5, output: 3, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+      },
+    });
+    emit({ type: 'agent_end', messages: [] });
+    return;
+  }
+  if (command.type === 'abort') {
+    emit({ type: 'agent_end', messages: [] });
+  }
+});
+`),
+      () => {
+        const response = withTempEnv({ ZEROSHOT_SETTINGS_FILE: settingsFile }, () =>
+          runExecutable({
+            schemaVersion: 1,
+            command: 'invoke',
+            provider: 'omp',
+            context: 'Reply with OMP invoke OK',
+            timeoutMs: 5000,
+            options: {
+              cwd: tempDir,
+            },
+          })
+        );
+
+        assert.equal(response.exitCode, 0);
+        assert.equal(response.envelope.ok, true);
+        assert.equal(response.envelope.result.commandSpec.binary, 'omp');
+        const args = response.envelope.result.commandSpec.args;
+        assert.deepEqual(args.slice(0, 3), ['--mode', 'rpc', '--no-session']);
+        assert.equal(args.includes('--approval-mode'), true);
+        assert.equal(args[args.indexOf('--approval-mode') + 1], 'yolo');
+        assert.equal(args.includes('--no-title'), true);
+        assert.equal(args.includes('--config'), true);
+        assert.deepEqual(response.envelope.result.events, [
+          { type: 'text', text: 'OMP invoke OK' },
+          {
+            type: 'result',
+            success: true,
+            result: 'OMP invoke OK',
+            error: null,
+            inputTokens: 5,
+            outputTokens: 3,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cost: { total: 0.001 },
+            modelUsage: {
+              input: 5,
+              output: 3,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: { total: 0.001 },
+            },
+          },
+        ]);
+        // The config overlay is a real owned temp directory that cleanup must have removed.
+        assert.equal(response.envelope.result.cleanup.length, 1);
+        assert.equal(response.envelope.result.cleanup[0].removed, true);
+        assert.equal(fs.existsSync(path.dirname(args[args.indexOf('--config') + 1])), false);
+      }
     );
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

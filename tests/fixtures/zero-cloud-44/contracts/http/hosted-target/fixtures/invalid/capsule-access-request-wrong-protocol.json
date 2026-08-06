@@ -1,0 +1,8 @@
+{
+  "description": "Access rejects every protocol atom except openengine.cluster/v1.",
+  "schema": "capsule-access-request",
+  "expect_schema_valid": false,
+  "body": {
+    "protocol": "openengine.cluster/v2"
+  }
+}

@@ -6,6 +6,11 @@ const path = require('node:path');
 const { afterEach, test } = require('node:test');
 
 const helper = require('../../lib/agent-cli-provider');
+const {
+  OMP_INSTALL_COMMAND,
+  OMP_PACKAGE_NAME,
+  OMP_SUPPORTED_VERSION,
+} = require('../../lib/agent-cli-provider/omp/release');
 const { ENV_PRESETS, MOUNT_PRESETS } = require('../../lib/docker-config');
 const { validateSetting } = require('../../lib/settings');
 const {
@@ -25,9 +30,11 @@ const CONTROL_MODEL_IDS = [
 
 afterEach(() => {
   for (const file of createdTempFiles) {
-    if (fs.existsSync(file)) fs.unlinkSync(file);
     const parentDir = path.dirname(file);
-    if (path.basename(parentDir).startsWith('zeroshot-schema-')) {
+    if (
+      path.basename(parentDir).startsWith('zeroshot-schema-') ||
+      path.basename(parentDir).startsWith('zeroshot-gemini-policy-')
+    ) {
       fs.rmSync(parentDir, { recursive: true, force: true });
     }
   }
@@ -38,20 +45,23 @@ function trackCleanup(command) {
   for (const file of command.cleanup || []) createdTempFiles.add(file);
 }
 
+const VOLATILE_TEMP_PATH_PATTERN =
+  /zeroshot-schema-.*\.json$|zeroshot-omp-config-[A-Za-z0-9_-]+(\/[^/]+\.yml)?$/;
+
 function normalizeCommand(command) {
   trackCleanup(command);
   return {
     binary: command.binary,
     args: command.args.map((arg) =>
-      typeof arg === 'string' && /zeroshot-schema-.*\.json$/.test(arg) ? '<schema-file>' : arg
+      typeof arg === 'string' && VOLATILE_TEMP_PATH_PATTERN.test(arg) ? '<temp-path>' : arg
     ),
     env: command.env,
     cleanup: (command.cleanup || []).map((file) =>
-      /zeroshot-schema-.*\.json$/.test(file) ? '<schema-file>' : file
+      VOLATILE_TEMP_PATH_PATTERN.test(file) ? '<temp-path>' : file
     ),
     cleanupMetadata: (command.cleanupMetadata || []).map((item) => ({
       ...item,
-      path: /zeroshot-schema-.*\.json$/.test(item.path) ? '<schema-file>' : item.path,
+      path: VOLATILE_TEMP_PATH_PATTERN.test(item.path) ? '<temp-path>' : item.path,
     })),
   };
 }
@@ -405,6 +415,37 @@ test('runtime Pi command facade delegates to helper', () => {
   });
 });
 
+test('runtime OMP command facade delegates to helper', () => {
+  withTempSettings({ providerSettings: { omp: { transport: 'rpc' } } }, () => {
+    assertRuntimeCommandParity('omp', 'omp context', {
+      cwd: '/tmp/project',
+      modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
+      cliFeatures: {
+        versionMatches: true,
+        supportsRpcMode: true,
+        supportsConfig: true,
+        supportsModel: true,
+        supportsThinking: true,
+        supportsApprovalMode: true,
+        supportsNoTitle: true,
+        supportsNoSession: true,
+        supportsSessionDir: true,
+        supportsResume: true,
+      },
+    });
+  });
+});
+
+test('OMP registry install guidance is the pinned omp-release command, not a parallel literal', () => {
+  const metadata = helper.getProviderRegistryEntry('omp');
+  assert.equal(metadata.installInstructions, OMP_INSTALL_COMMAND);
+  assert.equal(
+    metadata.installInstructions,
+    `bun install -g ${OMP_PACKAGE_NAME}@${OMP_SUPPORTED_VERSION}`
+  );
+  assert.match(metadata.installInstructions, new RegExp(`@${OMP_SUPPORTED_VERSION}$`));
+});
+
 test('runtime Copilot command facade delegates to helper', () => {
   assertRuntimeCommandParity('copilot', 'copilot context', {
     outputFormat: 'json',
@@ -556,7 +597,12 @@ test('model resolution and invalid-model permanence match helper', () => {
       );
     }
 
-    if (provider === 'pi' || provider === 'copilot' || provider === 'gateway') {
+    if (
+      provider === 'pi' ||
+      provider === 'omp' ||
+      provider === 'copilot' ||
+      provider === 'gateway'
+    ) {
       assert.deepEqual(
         helper.resolveModelSpec(provider, 'level2', { level2: { model: 'invalid' } }),
         current.resolveModelSpec('level2', { level2: { model: 'invalid' } })
@@ -616,6 +662,7 @@ test('parser output from runtime facade matches helper fixtures', () => {
       ],
     ],
     ['pi', ['text.jsonl', 'tool.jsonl', 'command-failure.jsonl']],
+    ['omp', ['text.jsonl', 'tool.jsonl', 'command-failure.jsonl']],
     ['copilot', ['text.jsonl', 'tool.jsonl', 'unknown-event.jsonl']],
   ]) {
     for (const file of files) {
@@ -699,6 +746,9 @@ test('feature probing is deterministic from injected help text', () => {
     supportsSettings: false,
     supportsMcpConfig: false,
     supportsResume: true,
+    supportsTools: false,
+    supportsStrictMcpConfig: false,
+    supportsNoSessionPersistence: false,
     unknown: true,
   });
   const claudeFeatures = helper
@@ -748,6 +798,19 @@ test('feature probing is deterministic from injected help text', () => {
         'pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve --model'
       ).supportsNoApprove,
     true
+  );
+  assert.equal(
+    helper
+      .getProviderAdapter('omp')
+      .detectCliFeatures(
+        'omp --mode rpc --config --model --thinking --approval-mode --no-title --no-session --session-dir --resume',
+        '17.2.1'
+      ).supportsApprovalMode,
+    true
+  );
+  assert.equal(
+    helper.getProviderAdapter('omp').detectCliFeatures('omp --mode rpc').supportsApprovalMode,
+    false
   );
   assert.equal(
     helper
@@ -875,5 +938,201 @@ test('provider registry stays in parity across helper runtime settings and probe
   for (const metadata of helper.listProviderRegistryEntries()) {
     assert.deepEqual(MOUNT_PRESETS[metadata.id], metadata.docker.mount);
     assert.deepEqual(ENV_PRESETS[metadata.id], metadata.docker.envPassthrough);
+  }
+});
+
+test('structured-output registry entries require recovery adapters', () => {
+  for (const entry of helper.listProviderRegistryEntries()) {
+    const eligible = entry.capabilities.jsonSchema !== false;
+    assert.equal(helper.supportsProviderOutputReformatting(entry.id), eligible);
+    assert.equal(
+      typeof entry.adapter.buildStructuredOutputRecoveryCommand === 'function',
+      eligible,
+      entry.id
+    );
+  }
+});
+
+test('eligible adapters build restricted provider-owned recovery commands', () => {
+  const cases = [
+    {
+      provider: 'claude',
+      cliFeatures: {
+        supportsTools: true,
+        supportsStrictMcpConfig: true,
+        supportsNoSessionPersistence: true,
+      },
+      assertCommand(command) {
+        assert.ok(command.args.includes('--tools'));
+        assert.ok(command.args.includes('--strict-mcp-config'));
+        assert.ok(command.args.includes('--no-session-persistence'));
+        assert.equal(command.args.includes('--dangerously-skip-permissions'), false);
+        assert.equal(command.args.includes('--mcp-config'), false);
+        assert.equal(command.args.includes('--resume'), false);
+      },
+    },
+    {
+      provider: 'codex',
+      cliFeatures: {
+        supportsSandbox: true,
+        supportsEphemeral: true,
+        supportsIgnoreUserConfig: true,
+        supportsIgnoreRules: true,
+        supportsStrictConfig: true,
+        supportsConfigOverride: true,
+        supportsOutputSchema: true,
+      },
+      assertCommand(command) {
+        assert.ok(command.args.includes('--sandbox'));
+        assert.ok(command.args.includes('read-only'));
+        assert.ok(command.args.includes('--ephemeral'));
+        assert.ok(command.args.includes('--ignore-user-config'));
+        assert.ok(command.args.includes('--ignore-rules'));
+        assert.ok(command.args.includes('--strict-config'));
+        assert.ok(command.args.includes('web_search="disabled"'));
+        assert.equal(command.args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
+        assert.equal(command.args.includes('resume'), false);
+      },
+    },
+    {
+      provider: 'gemini',
+      cliFeatures: { supportsAdminPolicy: true },
+      assertCommand(command) {
+        const policyPath = command.args[command.args.indexOf('--admin-policy') + 1];
+        assert.ok(command.args.includes('--admin-policy'));
+        assert.match(
+          fs.readFileSync(policyPath, 'utf8'),
+          /toolName = "\*"[\s\S]*decision = "deny"[\s\S]*priority = 999/
+        );
+        assert.equal(command.args.includes('--yolo'), false);
+        assert.deepEqual(command.cleanupMetadata.at(-1), {
+          kind: 'temp-file',
+          provider: 'gemini',
+          path: policyPath,
+          reason: 'admin-policy',
+        });
+      },
+    },
+    {
+      provider: 'opencode',
+      cliFeatures: { supportsAgent: true, supportsRecoveryIsolation: true },
+      assertCommand(command) {
+        const agentIndex = command.args.indexOf('--agent');
+        assert.match(command.args[agentIndex + 1], /^zeroshot-output-reformatter-/);
+        const config = JSON.parse(command.env.OPENCODE_CONFIG_CONTENT);
+        assert.equal(config.default_agent, command.args[agentIndex + 1]);
+        assert.deepEqual(config.permission, { '*': 'deny' });
+        assert.deepEqual(config.tools, { '*': false });
+        assert.deepEqual(config.agent[config.default_agent].permission, { '*': 'deny' });
+        assert.deepEqual(config.mcp, {});
+        assert.deepEqual(config.instructions, []);
+        assert.deepEqual(config.plugin, []);
+        assert.deepEqual(config.command, {});
+        assert.equal(command.env.OPENCODE_DISABLE_PROJECT_CONFIG, '1');
+        assert.equal(command.env.OPENCODE_PURE, '1');
+        assert.equal(command.env.OPENCODE_DISABLE_DEFAULT_PLUGINS, '1');
+        assert.equal(command.env.OPENCODE_DISABLE_EXTERNAL_SKILLS, '1');
+        assert.equal(command.env.OPENCODE_DISABLE_CLAUDE_CODE, '1');
+        assert.equal(command.env.OPENCODE_PERMISSION, '{"*":"deny"}');
+        assert.equal(command.env.XDG_CONFIG_HOME, command.env.OPENCODE_CONFIG_DIR);
+        assert.equal(command.env.OPENCODE_DB, ':memory:');
+        assert.equal(command.cleanup.at(-1), command.env.XDG_CONFIG_HOME);
+        assert.deepEqual(command.cleanupMetadata.at(-1), {
+          kind: 'temp-directory',
+          provider: 'opencode',
+          path: command.env.XDG_CONFIG_HOME,
+          reason: 'isolated-config',
+        });
+      },
+    },
+  ];
+
+  for (const { provider, cliFeatures, assertCommand } of cases) {
+    const prepared = helper.prepareSingleAgentProviderCommand({
+      provider,
+      context: 'repair this output',
+      options: {
+        outputFormat: 'json',
+        jsonSchema: { type: 'object' },
+        autoApprove: true,
+        resumeSessionId: 'must-not-survive',
+        continueSession: true,
+        mcpConfig: ['must-not-survive'],
+        structuredOutputRecovery: true,
+        cliFeatures,
+      },
+    });
+    trackCleanup(prepared.commandSpec);
+    assertCommand(prepared.commandSpec);
+  }
+});
+
+test('Codex recovery trusts only an explicitly configured isolated profile', () => {
+  const cliFeatures = {
+    supportsSandbox: true,
+    supportsEphemeral: true,
+    supportsIgnoreUserConfig: false,
+    supportsIgnoreRules: true,
+    supportsStrictConfig: true,
+    supportsConfigOverride: true,
+  };
+
+  withTempSettings({ providerSettings: { codex: {} } }, () => {
+    assert.throws(
+      () =>
+        helper.prepareSingleAgentProviderCommand({
+          provider: 'codex',
+          context: 'repair this output',
+          options: { structuredOutputRecovery: true, cliFeatures },
+        }),
+      /--ignore-user-config/
+    );
+  });
+
+  withTempSettings({ providerSettings: { codex: { trustIsolatedRecoveryProfile: true } } }, () => {
+    const prepared = helper.prepareSingleAgentProviderCommand({
+      provider: 'codex',
+      context: 'repair this output',
+      options: {
+        structuredOutputRecovery: true,
+        resumeSessionId: 'must-not-survive',
+        cliFeatures,
+      },
+    });
+    const { args } = prepared.commandSpec;
+    assert.equal(prepared.options.trustIsolatedCodexProfile, true);
+    assert.equal(args.includes('--ignore-user-config'), false);
+    assert.ok(args.includes('--sandbox'));
+    assert.ok(args.includes('read-only'));
+    assert.ok(args.includes('--ephemeral'));
+    assert.ok(args.includes('--ignore-rules'));
+    assert.ok(args.includes('--strict-config'));
+    assert.ok(args.includes('web_search="disabled"'));
+    assert.equal(args.includes('resume'), false);
+
+    const ordinary = helper.prepareSingleAgentProviderCommand({
+      provider: 'codex',
+      context: 'ordinary turn',
+      options: { cliFeatures },
+    });
+    assert.equal(ordinary.options.trustIsolatedCodexProfile, undefined);
+  });
+});
+
+test('eligible adapters fail closed without recovery safety evidence', () => {
+  for (const provider of ['claude', 'codex', 'gemini', 'opencode']) {
+    assert.throws(
+      () =>
+        helper.prepareSingleAgentProviderCommand({
+          provider,
+          context: 'repair this output',
+          options: {
+            structuredOutputRecovery: true,
+            cliFeatures: {},
+          },
+        }),
+      (error) =>
+        error.code === 'unsupported-capability' && error.capability === 'structuredOutputRecovery'
+    );
   }
 });

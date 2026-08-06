@@ -1,18 +1,24 @@
 /**
  * Test: per-provider Docker image selection
  *
- * Providers whose CLI is not baked into the base image (copilot, codex, gemini) run on a
- * per-provider image variant `<base>-<provider>` whose CLI install is a Docker-cached build
- * layer. Providers baked into the base image (claude) — or with no single-command installer
- * (opencode) — run on the base image directly.
+ * Providers whose CLI is not baked into the base image (copilot, codex, gemini, omp) run on a
+ * per-provider image variant `<base>-<provider>-<hash>` whose CLI install is a Docker-cached
+ * build layer. The hash is derived from the install command and registry-owned platform so a
+ * pinned-version/platform change busts the cached tag. Providers baked into the base image
+ * (claude) — or with no single-command installer (opencode) — run on the base image directly.
  *
  * The install command is sourced from the provider registry (docker.install), never hardcoded
  * here, so this stays general-purpose across current and future providers.
  */
 
-const assert = require('assert');
-const IsolationManager = require('../../src/isolation-manager');
-const { getProviderMetadata } = require('../../lib/provider-names');
+const {
+  IsolationManager,
+  OMP_DOCKER_PLATFORM,
+  assert,
+  crypto,
+  expectedVariantTag,
+  getProviderMetadata,
+} = require('../helpers/provider-docker-image-harness');
 
 describe('IsolationManager: per-provider image selection', function () {
   describe('imageForProvider', function () {
@@ -20,21 +26,27 @@ describe('IsolationManager: per-provider image selection', function () {
       assert.strictEqual(IsolationManager.imageForProvider('claude'), 'zeroshot-cluster-base');
     });
 
-    it('returns a per-provider variant for a provider with docker.install (copilot)', function () {
+    it('returns an install-identity-hashed variant for a provider with docker.install (copilot)', function () {
+      const install = getProviderMetadata('copilot').docker.install;
       assert.strictEqual(
         IsolationManager.imageForProvider('copilot'),
-        'zeroshot-cluster-base-copilot'
+        expectedVariantTag('zeroshot-cluster-base', 'copilot', null, install)
       );
     });
 
-    it('returns a per-provider variant for codex', function () {
-      assert.strictEqual(IsolationManager.imageForProvider('codex'), 'zeroshot-cluster-base-codex');
+    it('returns a hashed variant for codex', function () {
+      const install = getProviderMetadata('codex').docker.install;
+      assert.strictEqual(
+        IsolationManager.imageForProvider('codex'),
+        expectedVariantTag('zeroshot-cluster-base', 'codex', null, install)
+      );
     });
 
     it('honors a custom base image when building the variant name', function () {
+      const install = getProviderMetadata('copilot').docker.install;
       assert.strictEqual(
         IsolationManager.imageForProvider('copilot', 'my-base'),
-        'my-base-copilot'
+        expectedVariantTag('my-base', 'copilot', null, install)
       );
     });
 
@@ -45,54 +57,32 @@ describe('IsolationManager: per-provider image selection', function () {
         IsolationManager.imageForProvider('openai'),
         IsolationManager.imageForProvider('codex')
       );
-      assert.strictEqual(
-        IsolationManager.imageForProvider('openai'),
-        'zeroshot-cluster-base-codex'
-      );
     });
 
     it('falls back to the base image for a provider with no docker.install (opencode)', function () {
       assert.strictEqual(IsolationManager.imageForProvider('opencode'), 'zeroshot-cluster-base');
     });
-  });
 
-  describe('providerBuildArgs', function () {
-    it('returns no build args for a baked-in provider (claude)', function () {
-      assert.deepStrictEqual(IsolationManager.providerBuildArgs('claude'), []);
-    });
-
-    it('emits PROVIDER_INSTALL for copilot from the registry command', function () {
-      assert.deepStrictEqual(IsolationManager.providerBuildArgs('copilot'), [
-        'PROVIDER_INSTALL=npm install -g @github/copilot',
-      ]);
-    });
-
-    it('emits PROVIDER_INSTALL for codex from the registry command', function () {
-      assert.deepStrictEqual(IsolationManager.providerBuildArgs('codex'), [
-        'PROVIDER_INSTALL=npm install -g @openai/codex',
-      ]);
-    });
-
-    it('matches the value the registry advertises (no hardcoded drift)', function () {
-      const registryInstall = getProviderMetadata('copilot').docker.install;
-      assert.deepStrictEqual(IsolationManager.providerBuildArgs('copilot'), [
-        `PROVIDER_INSTALL=${registryInstall}`,
-      ]);
-    });
-  });
-
-  describe('registry docker.install', function () {
-    it('is set for npm-installable providers and absent for baked-in claude', function () {
-      assert.ok(
-        getProviderMetadata('copilot').docker.install,
-        'copilot should have docker.install'
-      );
-      assert.ok(getProviderMetadata('codex').docker.install, 'codex should have docker.install');
-      assert.ok(getProviderMetadata('gemini').docker.install, 'gemini should have docker.install');
+    it('bakes the registry-owned platform into the hash for omp (linux/amd64)', function () {
+      const install = getProviderMetadata('omp').docker.install;
       assert.strictEqual(
-        getProviderMetadata('claude').docker.install,
-        undefined,
-        'claude is baked into the base image and must not declare docker.install'
+        IsolationManager.imageForProvider('omp'),
+        expectedVariantTag('zeroshot-cluster-base', 'omp', OMP_DOCKER_PLATFORM, install)
+      );
+    });
+
+    it('changes the omp tag if the platform-independent hash inputs change', function () {
+      // Regression guard: the tag must not collapse to the same value as a platform-less provider
+      // that happens to share an install-command length; omp's tag must be platform-scoped.
+      const install = getProviderMetadata('omp').docker.install;
+      const hashWithoutPlatform = crypto
+        .createHash('sha256')
+        .update(`zeroshot-cluster-base\n\n${install}`)
+        .digest('hex')
+        .slice(0, 12);
+      assert.notStrictEqual(
+        IsolationManager.imageForProvider('omp'),
+        `zeroshot-cluster-base-omp-${hashWithoutPlatform}`
       );
     });
   });

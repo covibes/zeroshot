@@ -15,7 +15,7 @@
 [![npm](https://img.shields.io/npm/v/@the-open-engine/zeroshot?style=flat&labelColor=171411&color=171411)](https://www.npmjs.com/package/@the-open-engine/zeroshot)
 [![CI](https://img.shields.io/github/actions/workflow/status/the-open-engine/zeroshot/ci.yml?style=flat&labelColor=171411&label=CI)](https://github.com/the-open-engine/zeroshot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-171411?style=flat)](LICENSE)
-[![node](https://img.shields.io/badge/node-%E2%89%A5%2018-171411?style=flat)](#install)
+[![node](https://img.shields.io/badge/node-%E2%89%A5%2022-171411?style=flat)](#install)
 [![platforms](https://img.shields.io/badge/platforms-linux%20%C2%B7%20macos-171411?style=flat)](#install)
 [![stars](https://img.shields.io/github/stars/the-open-engine/zeroshot?style=flat&labelColor=171411&color=171411)](https://github.com/the-open-engine/zeroshot)
 [![Layer 01 · The Open Engine](https://img.shields.io/badge/Layer_01-The_Open_Engine-C2240C?style=flat&labelColor=171411)](#the-open-engine)
@@ -24,16 +24,7 @@
 
 **The agent that wrote the code shouldn't be the one that says it works.**
 
-Zeroshot is an open-source, multi-agent orchestration engine for autonomous software engineering. It drives a coding agent you already run (Claude Code, OpenAI Codex, Gemini CLI, or OpenCode) through an **executor-verifier loop**: an agent writes the change, then an _independent_ verifier that never saw how it was made approves it, or hands back a reproducible failure. The loop runs until the change is verified.
-
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/zeroshot-architecture-dark.webp">
-    <img alt="One Zeroshot run drawn as a graph: an issue enters, a junior conductor escalates to a senior one, the config router sizes the cluster, a planner and worker execute, two stages of validators judge the result, the run is rejected once and approved on the second pass, and every event is appended to the ledger" src="docs/assets/zeroshot-architecture-light.webp" width="100%">
-  </picture>
-  <br>
-  <em>One run, drawn as it happens. The conductor escalates to a senior model, the router sizes the cluster, and the change is rejected once before it is approved.</em>
-</div>
+Independent executor–verifier orchestration for software changes.
 
 ## Install
 
@@ -41,123 +32,100 @@ Zeroshot is an open-source, multi-agent orchestration engine for autonomous soft
 
 ```bash
 npm install -g @the-open-engine/zeroshot
+zeroshot
 ```
 
-Requires **Node ≥ 18** and at least one provider CLI (Claude Code, Codex, Gemini, or OpenCode). Linux and macOS today; Windows is deferred.
+Requires **Node ≥ 22** and one supported provider. Guided setup detects installed providers, chooses a default, and configures worktree isolation for fresh repositories. Linux and macOS today; Windows is deferred.
+
+## First run
+
+```bash
+cd your-repo
+zeroshot run "Add a --json flag with tests"
+```
+
+In a git repository, the guided default runs in a separate worktree, so the current checkout is not edited. Use `--no-isolation` only when you explicitly want the run to modify the current checkout.
+
+Observe the result from another terminal:
+
+```bash
+zeroshot list
+zeroshot logs <id> -f
+```
 
 <div align="center">
   <img src="docs/assets/zeroshot-demo.gif" alt="Zeroshot resolving an issue through the executor-verifier loop" width="760">
   <br>
-  <em>And here it is actually running. Unattended, 100× speed · 90-minute run · 5 iterations to approval.</em>
+  <em>Unattended, 100× speed · 90-minute run · 5 iterations to approval.</em>
 </div>
 
 ## How it works
 
-Zeroshot separates the agent that **writes** the code from the agent that **judges** it.
+Zeroshot drives a coding agent through an **executor–verifier loop**. A conductor sizes the workflow, an executor implements the change in an isolated workspace, and a separate verifier judges the observable result. Validators do not share the executor's session or reasoning context; they may receive explicit handoff artifacts and must reproduce reported failures. The loop continues until the change is verified or returns a concrete reason it is not.
 
-A conductor sizes the workflow to the task. An executor (an AI coding agent) implements the change in an isolated workspace (git worktree or Docker). Then an **independent verifier** inspects the result without ever seeing the executor's context or history, so it cannot approve its own reasoning. The verifier returns `APPROVED`, or `REJECTED` with an actionable, reproducible failure, and the loop repeats until the change is verified or hands back a concrete reason it isn't. Every step is written to a crash-safe SQLite ledger, so a run survives a reboot and resumes where it stopped.
+Every step is written to a crash-safe SQLite ledger. Bring your own provider and backend: Zeroshot orchestrates their CLIs without storing provider keys.
 
-Bring your own provider and your own backend. Zeroshot orchestrates the agents that write your code; it doesn't store your keys or replace your models.
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/zeroshot-architecture-dark.webp">
+    <img alt="One Zeroshot run drawn as a graph: an issue enters, a conductor sizes the cluster, an executor implements it, and validators reject or approve the result" src="docs/assets/zeroshot-architecture-light.webp" width="100%">
+  </picture>
+  <br>
+  <em>One run: classify, execute, verify, and repeat when evidence fails.</em>
+</div>
 
-## How is this different from a single coding agent?
+## Providers and issue sources
 
-|                             | A single coding agent        | Zeroshot                                                                                    |
-| --------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
-| Who says it is correct?     | the same agent that wrote it | a separate agent that never saw how it was written                                          |
-| Is the code actually run?   | usually just claimed         | executed against your real tests                                                            |
-| When it fails, you get      | an assertion it is fine      | a reproducible failure                                                                      |
-| When does it stop?          | when it decides it is done   | when the change is verified, or provably is not                                             |
-| Which coding agent runs it? | one, fixed                   | any you already run: Zeroshot is the harness around Claude Code, Codex, Gemini, or OpenCode |
-
-## Quick start
-
-```bash
-zeroshot run 123                 # a GitHub issue number
-zeroshot run feature.md          # a markdown spec
-zeroshot run "Add a --json flag" # inline text
-```
-
-Describe a non-trivial task inline and let the loop run it to a verified change:
+Provider engines come from the registry: **Claude, Codex, bundled Gateway, Gemini, OpenCode, Pi, OMP, Kiro, and Copilot**. Model gateways stay behind the single Gateway provider.
 
 ```bash
-zeroshot run "Add optimistic locking with automatic retry: when updating a user,
-retry with exponential backoff up to 3 times, merge non-conflicting field changes,
-and surface conflicts with details. Handle the ABA problem where version goes A->B->A."
+zeroshot providers
+zeroshot providers set-default codex
+zeroshot run 123 --provider gemini
 ```
+
+Issue sources are auto-detected from repository context or explicit URLs: **GitHub, GitLab, Jira, Azure DevOps, and Linear**. Each source requires its own authenticated client where applicable. See [`docs/providers.md`](docs/providers.md) for provider installation, model levels, and credentials.
+
+## Isolation and delivery
+
+Guided setup defaults fresh repositories to git worktree isolation. Delivery flags cascade: `--ship` implies `--pr`, which implies `--worktree`.
+
+| Mode             | Flag             | Behavior                                            |
+| ---------------- | ---------------- | --------------------------------------------------- |
+| Git worktree     | `--worktree`     | isolated branch and checkout; guided default        |
+| Docker           | `--docker`       | container isolation for riskier workloads           |
+| Current checkout | `--no-isolation` | explicit escape hatch; modifies the active checkout |
+| Pull request     | `--pr`           | worktree plus PR creation                           |
+| Ship             | `--ship`         | worktree, PR, and merge after approval              |
 
 <details>
 <summary><strong>Command reference</strong></summary>
 
 ```bash
-# Run
-zeroshot run <input>            # issue number / URL / key / markdown file / inline text
-zeroshot run 123 --worktree     # isolate in a git worktree
-zeroshot run 123 --docker       # isolate in a container
-zeroshot run 123 --pr           # worktree + open a pull request
-zeroshot run 123 --ship         # worktree + PR + auto-merge on approval
-zeroshot run 123 -d             # background (daemon)
-zeroshot run 123 --provider gemini   # override the provider for this run
+zeroshot run <input>             # issue, URL, markdown file, or inline text
+zeroshot run 123 --docker        # container isolation
+zeroshot run 123 --pr            # worktree + pull request
+zeroshot run 123 --ship          # worktree + PR + merge after approval
+zeroshot run 123 -d              # background run
 
-# Monitor & manage
-zeroshot list                   # all clusters (--json)
-zeroshot status <id>            # cluster details
-zeroshot logs <id> -f           # stream logs
-zeroshot resume <id> [prompt]   # resume a stopped/failed run
-zeroshot stop <id>              # graceful stop
-zeroshot kill <id>              # force kill
-zeroshot export <id>            # export the conversation
+zeroshot list                    # tasks and clusters (--json)
+zeroshot status <id>             # detailed status (--json)
+zeroshot logs <id> -f            # stream logs
+zeroshot resume <id> [prompt]    # resume a stopped or failed run
+zeroshot stop <id>               # graceful stop
+zeroshot kill <id>               # force stop
 
-# Library & config
-zeroshot providers              # list providers / set-default / setup
-zeroshot agents list            # available agents (agents show <name>)
-zeroshot settings               # view / get / set settings
-zeroshot cmdproof check <id>    # reuse a verified command result
+zeroshot providers               # provider availability and defaults
+zeroshot settings                # effective settings
+zeroshot agents list             # available agents
 ```
 
 </details>
 
-## Providers and backends
-
-Zeroshot shells out to provider CLIs; it stores no API keys and manages no auth. Pick a default and override per run.
-
-| Provider     | CLI                                    |
-| ------------ | -------------------------------------- |
-| Claude Code  | `npm i -g @anthropic-ai/claude-code`   |
-| OpenAI Codex | `npm i -g @openai/codex`               |
-| Gemini CLI   | `npm i -g @google/gemini-cli`          |
-| OpenCode     | see [opencode.ai](https://opencode.ai) |
-
-```bash
-zeroshot providers                    # see what's installed
-zeroshot providers set-default codex
-zeroshot run 123 --provider gemini
-```
-
-Issue backends are **auto-detected from your git remote**: **GitHub, GitLab, Jira, and Azure DevOps**. Paste a number, key, or URL:
-
-```bash
-zeroshot run 123                                              # GitHub
-zeroshot run https://gitlab.com/org/repo/-/issues/456        # GitLab
-zeroshot run PROJ-789                                         # Jira
-zeroshot run https://dev.azure.com/org/project/_workitems/edit/999  # Azure DevOps
-```
-
-Each backend needs its own CLI installed (`gh`, `glab`, `jira`, or `az`). See [`docs/providers.md`](docs/providers.md) for model levels and setup.
-
-## Isolation
-
-By default, agents modify files only; they do **not** commit or push. Opt into isolation to let the loop own a branch (the flags cascade: `--ship` → `--pr` → `--worktree`).
-
-| Mode         | Flag         | Use when                                         |
-| ------------ | ------------ | ------------------------------------------------ |
-| None         | _(default)_  | quick task, you review the changes yourself      |
-| Git worktree | `--worktree` | PR workflows, lightweight branch isolation       |
-| Docker       | `--docker`   | risky experiments, parallel runs, full isolation |
-
 <details>
-<summary><strong>Docker credential mounts</strong></summary>
+<summary><strong>Docker credential configuration</strong></summary>
 
-When using `--docker`, Zeroshot mounts credential directories so agents can reach provider CLIs and tools. Defaults: `gh`, `git`, `ssh`. Presets include `aws`, `azure`, `kube`, `terraform`, `gcloud`, and the provider configs.
+Docker mounts and environment forwarding are explicit and provider-aware. Defaults include `gh`, `git`, and `ssh`; provider-specific authentication follows the registry contract.
 
 ```bash
 zeroshot settings set dockerMounts '["gh","git","ssh","aws"]'
@@ -165,7 +133,7 @@ zeroshot run 123 --docker --mount ~/.aws:/root/.aws:ro
 zeroshot run 123 --docker --no-mounts
 ```
 
-See [`docs/providers.md`](docs/providers.md) for mount details.
+See [`docs/providers.md`](docs/providers.md) for details.
 
 </details>
 
@@ -207,7 +175,7 @@ Zeroshot is **Layer 01 · Verification** of [The Open Engine](https://theopeneng
 | 02     | Constraints: **Opcore**    | Sibling · alpha             |
 | 03-05  | Intent · Context · Runtime | In development              |
 
-Zeroshot runs the loop: an agent writes the change, and an **independent** verifier decides whether it holds: approve, or a reproducible failure. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents (currently private alpha `0.1.0-alpha.0`, built in the open, not yet published). Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
+Zeroshot runs the loop: an agent writes the change, and an **independent** verifier decides whether it holds: approve, or a reproducible failure. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents. Zeroshot packages Opcore `0.2.1` and uses introduced-change validation so existing repository debt never blocks an otherwise clean change. Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
 
 Each layer ships the same way: extracted from the platform we run, then opened. **Trust nothing. Verify everything.**
 

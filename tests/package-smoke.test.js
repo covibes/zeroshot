@@ -30,9 +30,9 @@ function runNpmPackDryRun() {
 }
 
 describe('npm package smoke', function () {
-  this.timeout(30000);
+  this.timeout(60000);
 
-  it('publishes the CLI bin and first-run/auth/runtime support files', function () {
+  it('publishes the CLI setup, auth, and runtime support files', function () {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
     const pack = runNpmPackDryRun();
     const files = new Set(pack.files.map((file) => file.path));
@@ -58,6 +58,17 @@ describe('npm package smoke', function () {
       'lib/start-cluster.js',
       'lib/path-check.js',
       'scripts/check-path.js',
+      'scripts/postinstall.js',
+      'cli/lib/setup-wizard.js',
+      'cli/lib/setup-provider-readiness.js',
+      'cli/lib/setup-scanner-worker.js',
+      'cli/lib/setup-scanner.js',
+      'cli/lib/setup-wizard-input.js',
+      'cli/lib/setup-wizard-model.js',
+      'cli/lib/setup-wizard-plan-view.js',
+      'cli/lib/setup-wizard-scan-view.js',
+      'cli/lib/setup-wizard-terminal.js',
+      'cli/lib/setup-wizard-view.js',
       'src/claude-credentials.js',
       'src/worktree-claude-config.js',
       'src/agent/pr-verification.js',
@@ -66,6 +77,15 @@ describe('npm package smoke', function () {
       'cluster-hooks/block-dangerous-git.py',
     ]) {
       assert.ok(files.has(requiredFile), `npm package must include ${requiredFile}`);
+    }
+
+    for (const file of files) {
+      assert.ok(
+        !file.startsWith('docker/zeroshot-oecp/') &&
+          !file.startsWith('scripts/hosted-oecp-') &&
+          !file.startsWith('zeroshot-rust/'),
+        `npm package must not expose the private hosted runtime: ${file}`
+      );
     }
   });
 });

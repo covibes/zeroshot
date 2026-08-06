@@ -11,22 +11,31 @@ const {
 const { serializeTaskStartupError } = require('../src/task-startup-error');
 const OWNERSHIP_ENV = 'ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN';
 
-function createProcess() {
+function createProcess({ deferSpawn = false } = {}) {
   const proc = new EventEmitter();
   proc.stdout = new PassThrough();
   proc.stderr = new PassThrough();
-  proc.pid = 12345;
+  proc.pid = deferSpawn ? undefined : 12345;
   proc.closed = false;
   proc.kill = (signal) => {
-    if (proc.closed) return;
+    if (proc.closed || !proc.pid) return false;
     proc.closed = true;
     setImmediate(() => proc.emit('close', null, signal));
+    return true;
+  };
+  proc.spawn = () => {
+    proc.pid = 12345;
+    proc.emit('spawn');
   };
   return proc;
 }
 
-function createLaunchHarness({ spawnTimeoutMs = 1000, lookupFailures = 0 } = {}) {
-  const proc = createProcess();
+function createLaunchHarness({
+  spawnTimeoutMs = 1000,
+  lookupFailures = 0,
+  deferSpawn = false,
+} = {}) {
+  const proc = createProcess({ deferSpawn });
   const taskId = 'task-durable-race1';
   const commands = [];
   let rowVisible = false;
@@ -85,6 +94,9 @@ function createLaunchHarness({ spawnTimeoutMs = 1000, lookupFailures = 0 } = {})
     setRowVisible() {
       rowVisible = true;
     },
+    spawnWrapper() {
+      proc.spawn();
+    },
     get capturedEnv() {
       return capturedEnv;
     },
@@ -116,8 +128,28 @@ describe('Isolated detached launch ownership', function () {
     const termination = await expectCancelledLaunch(harness);
 
     assert.strictEqual(termination.taskId, null);
-    assert.strictEqual(harness.commands.some((command) => command[1] === 'kill'), false);
+    assert.strictEqual(
+      harness.commands.some((command) => command[1] === 'kill'),
+      false
+    );
     assert.ok(harness.capturedEnv[OWNERSHIP_ENV]);
+  });
+
+  it('waits for the container wrapper to spawn before cancelling it', async function () {
+    const harness = createLaunchHarness({ deferSpawn: true });
+    const launch = spawnClaudeTaskIsolated(harness.agent, 'test context');
+    await waitFor(() => harness.agent.currentTask?.pendingLaunch);
+
+    const terminationPromise = killTask(harness.agent, 'cancel pre-spawn launch');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(harness.proc.closed, false);
+
+    harness.spawnWrapper();
+    const termination = await terminationPromise;
+    assert.notStrictEqual(termination?.forced, false);
+    await assert.rejects(launch, /Task launch cancelled/);
+    assert.strictEqual(harness.proc.closed, true);
+    assert.strictEqual(harness.agent.currentTask, null);
   });
 
   it('restores permanent capability faults from the isolated task-start wrapper', async function () {
@@ -144,7 +176,10 @@ describe('Isolated detached launch ownership', function () {
     assert.strictEqual(rejection.capability, capabilityError.capability);
     assert.strictEqual(rejection.message, capabilityError.message);
     assert.strictEqual(harness.agent.currentTask, null);
-    assert.strictEqual(harness.commands.some((command) => command[1] === 'kill'), false);
+    assert.strictEqual(
+      harness.commands.some((command) => command[1] === 'kill'),
+      false
+    );
   });
 
   it('resolves the durable token and kills a post-row task before wrapper close', async function () {
@@ -374,5 +409,62 @@ describe('Isolated terminal cleanup recovery', function () {
     assert.strictEqual(cleanupPending, false);
     assert.strictEqual(agent.currentTask, null);
     assert.ok(commands.some((command) => command[1] === 'kill'));
+  });
+
+  it('validates stale isolated output without launching recovery', async function () {
+    this.timeout(5000);
+    let parserOptions;
+    const manager = {
+      spawnInContainer() {
+        return createProcess();
+      },
+      execInContainer(_clusterId, command) {
+        const commandText = command.join(' ');
+        if (commandText.includes('get-log-path')) {
+          return Promise.resolve({ code: 0, stdout: '/tmp/stale-provider.log\n', stderr: '' });
+        }
+        if (commandText.includes('status')) {
+          return Promise.resolve({ code: 0, stdout: 'Status: stale\n', stderr: '' });
+        }
+        if (commandText.includes('cat')) {
+          return Promise.resolve({ code: 0, stdout: '{"wrong":true}\n', stderr: '' });
+        }
+        throw new Error(`Unexpected command: ${commandText}`);
+      },
+    };
+    const agent = {
+      id: 'stale-isolated-follower',
+      cluster: { id: 'cluster-1' },
+      config: {
+        cwd: '/tmp/work',
+        jsonSchema: {
+          type: 'object',
+          properties: { plan: { type: 'string' } },
+          required: ['plan'],
+        },
+      },
+      worktree: null,
+      isolation: { enabled: true, clusterId: 'cluster-1', manager },
+      currentTask: null,
+      currentTaskId: 'stale-isolated-task',
+      processPid: 123,
+      timeout: 0,
+      enableLivenessCheck: false,
+      quiet: true,
+      messageBus: { publish() {} },
+      _resolveProvider: () => 'codex',
+      _parseResultOutput(_output, options) {
+        parserOptions = options;
+        return Promise.reject(new Error('stale schema-invalid output'));
+      },
+      _stopLivenessCheck() {},
+      _log() {},
+    };
+
+    const result = await followClaudeTaskLogsIsolated(agent, agent.currentTaskId);
+
+    assert.deepStrictEqual(parserOptions, { allowRecovery: false });
+    assert.strictEqual(result.success, false);
+    assert.match(result.error, /stale schema-invalid output/);
   });
 });

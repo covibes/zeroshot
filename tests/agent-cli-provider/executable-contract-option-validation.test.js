@@ -4,6 +4,7 @@ const {
   runExecutable,
   runProviderExecutable,
   runnerResult,
+  withOmpRpcSettings,
 } = require('./executable-contract-helpers.cjs');
 
 const invalidNestedOptionCases = [
@@ -152,3 +153,53 @@ test('invoke rejects invalid nested options before runner execution', async () =
     assert.equal(runnerCalled, false, name);
   }
 });
+
+test('invoke preserves false for every required OMP RPC feature and fails before execution', () =>
+  withOmpRpcSettings(async () => {
+    for (const [feature, label] of [
+      ['versionMatches', '17.2.1'],
+      ['supportsRpcMode', '"rpc" mode'],
+      ['supportsConfig', '--config'],
+      ['supportsModel', '--model'],
+      ['supportsApprovalMode', '--approval-mode'],
+      ['supportsNoTitle', '--no-title'],
+      ['supportsNoSession', '--no-session'],
+    ]) {
+      let runnerCalled = false;
+      const response = await runProviderExecutable(
+        {
+          schemaVersion: 1,
+          command: 'invoke',
+          provider: 'omp',
+          context: 'ctx',
+          options: {
+            cliFeatures: {
+              versionMatches: true,
+              supportsRpcMode: true,
+              supportsConfig: true,
+              supportsModel: true,
+              supportsThinking: true,
+              supportsApprovalMode: true,
+              supportsNoTitle: true,
+              supportsNoSession: true,
+              supportsSessionDir: true,
+              supportsResume: true,
+              [feature]: false,
+            },
+          },
+        },
+        {
+          runner: () => {
+            runnerCalled = true;
+            return runnerResult();
+          },
+        }
+      );
+
+      assert.equal(response.exitCode, 2, feature);
+      assert.equal(response.envelope.ok, false, feature);
+      assert.equal(response.envelope.error.code, 'unsupported-provider-cli', feature);
+      assert.ok(response.envelope.error.message.includes(label), feature);
+      assert.equal(runnerCalled, false, feature);
+    }
+  }));

@@ -2,12 +2,24 @@ import { createAcpAdapter } from './adapters/acp';
 import { claudeAdapter } from './adapters/claude';
 import { codexAdapter } from './adapters/codex';
 import { copilotAdapter } from './adapters/copilot';
-import { gatewayAdapter, gatewaySettingsDefaults, validateGatewaySettings } from './adapters/gateway';
+import {
+  gatewayAdapter,
+  gatewaySettingsDefaults,
+  validateGatewaySettings,
+} from './adapters/gateway';
 import { geminiAdapter } from './adapters/gemini';
 import { opencodeAdapter } from './adapters/opencode';
+import { ompAdapter } from './adapters/omp';
 import { piAdapter } from './adapters/pi';
 import { resolveClaudeCommand } from './claude-command';
-import type { ModelLevel, ProviderAdapter } from './types';
+import {
+  OMP_DOCKER_INSTALL_COMMAND,
+  OMP_DOCKER_PLATFORM,
+  OMP_INSTALL_COMMAND,
+} from './omp/release';
+import { OMP_SDK_SETTINGS_DEFAULTS, validateOmpSdkSettings } from './omp/sdk-settings';
+import type { OmpSettingsValidationContext } from './omp/sdk-settings';
+import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
 export type ProviderCapabilityState = boolean | 'experimental';
 
@@ -42,7 +54,15 @@ export interface AcpStdioProviderInvokeSpec {
   readonly transport: 'stdio';
 }
 
-export type ProviderInvokeSpec = SpawnProviderInvokeSpec | AcpStdioProviderInvokeSpec;
+export interface RpcStdioProviderInvokeSpec {
+  readonly lane: 'rpc-stdio';
+  readonly protocol: 'omp-v2';
+}
+
+export type ProviderInvokeSpec =
+  | SpawnProviderInvokeSpec
+  | AcpStdioProviderInvokeSpec
+  | RpcStdioProviderInvokeSpec;
 
 export type ProviderCommandSpec = FixedProviderCommandSpec | ConfiguredClaudeCommandSpec;
 
@@ -57,8 +77,24 @@ export interface ProviderDockerMountPreset {
   readonly readonly: boolean;
 }
 
+export interface ProviderDockerEnvAuth {
+  // At least one of these env vars must carry a usable (non-empty, non-whitespace) value for the
+  // effective container plan to be considered automatically authenticated. This is the AUTOMATIC
+  // allowlist only; a registry-known credential outside it is accepted when — and only when — the
+  // user explicitly opted it in (dockerEnvPassthrough / --mount).
+  // Providers with no `mount` (env-only) fail closed when nothing is satisfied.
+  readonly requireOneOf: readonly string[];
+  // Each inner group must be all-set-or-all-unset (e.g. a broker URL + token pair); a partial
+  // group is treated as malformed auth, not "missing".
+  readonly requireTogether?: readonly (readonly string[])[];
+  // Env vars whose value must parse as an absolute http(s) URL to count as set. A non-URL value
+  // is malformed auth, not "missing".
+  readonly requireUrl?: readonly string[];
+}
+
 export interface ProviderDockerMetadata {
-  readonly mount: ProviderDockerMountPreset;
+  // Omitted for env-only providers with zero automatic credential mounts (e.g. omp).
+  readonly mount?: ProviderDockerMountPreset;
   readonly envPassthrough: readonly string[];
   // False when the mounted dir doesn't hold the secret (auth is via an envPassthrough token).
   readonly credentialInMount?: boolean;
@@ -66,10 +102,19 @@ export interface ProviderDockerMetadata {
   // a docker-cached build layer for the per-provider image variant. Omit for providers already
   // baked into the base image (e.g. Claude) or not installable via a single command.
   readonly install?: string;
+  // Docker platform (e.g. 'linux/amd64') passed to both image build and container run. Omitted
+  // providers keep today's unset (host-native) behavior.
+  readonly platform?: string;
+  // $HOME-placeholder directories created owner-only inside the container for this provider's
+  // config/session state (never mounted/copied from the host).
+  readonly configRoots?: readonly string[];
+  // Fail-closed env/broker auth requirement, checked against the effective container env plan.
+  readonly envAuth?: ProviderDockerEnvAuth;
 }
 
-export interface ProviderRegistryEntry {
+interface ProviderRegistryEntryBase {
   readonly id: string;
+  readonly default: boolean;
   readonly aliases: readonly string[];
   readonly displayName: string;
   readonly binary: string;
@@ -81,9 +126,11 @@ export interface ProviderRegistryEntry {
   readonly credentialEnvKeys: readonly string[];
   readonly settingsFields: readonly string[];
   readonly settingsDefaults?: Readonly<Record<string, unknown>>;
-  readonly settingsValidator?: (settings: Record<string, unknown>) => string | null;
+  readonly settingsValidator?: (
+    settings: Record<string, unknown>,
+    context?: OmpSettingsValidationContext
+  ) => string | null;
   readonly availabilityProbe?: 'command' | 'help-or-version';
-  readonly capabilities: ProviderCapabilities;
   readonly docs: ProviderDocsMetadata;
   readonly docker: ProviderDockerMetadata;
   readonly defaultLevels: Readonly<{
@@ -91,8 +138,25 @@ export interface ProviderRegistryEntry {
     readonly default: ModelLevel;
     readonly max: ModelLevel;
   }>;
+}
+
+export interface StructuredOutputProviderRegistryEntry extends ProviderRegistryEntryBase {
+  readonly capabilities: Omit<ProviderCapabilities, 'jsonSchema'> & {
+    readonly jsonSchema: true | 'experimental';
+  };
+  readonly adapter: StructuredOutputRecoveryAdapter;
+}
+
+export interface UnstructuredOutputProviderRegistryEntry extends ProviderRegistryEntryBase {
+  readonly capabilities: Omit<ProviderCapabilities, 'jsonSchema'> & {
+    readonly jsonSchema: false;
+  };
   readonly adapter: ProviderAdapter;
 }
+
+export type ProviderRegistryEntry =
+  | StructuredOutputProviderRegistryEntry
+  | UnstructuredOutputProviderRegistryEntry;
 
 const STANDARD_CAPABILITIES: Readonly<
   Pick<
@@ -127,6 +191,10 @@ const ACP_STDIO_INVOKE = Object.freeze({
   lane: 'acp-stdio',
   transport: 'stdio',
 }) as AcpStdioProviderInvokeSpec;
+const RPC_STDIO_INVOKE = Object.freeze({
+  lane: 'rpc-stdio',
+  protocol: 'omp-v2',
+}) as RpcStdioProviderInvokeSpec;
 
 const kiroAdapter = createAcpAdapter({
   provider: 'kiro',
@@ -159,6 +227,7 @@ const kiroAdapter = createAcpAdapter({
 export const providerRegistry = [
   {
     id: 'claude',
+    default: true,
     aliases: ['anthropic'],
     displayName: 'Claude',
     binary: 'claude',
@@ -193,10 +262,11 @@ export const providerRegistry = [
       default: claudeAdapter.defaultLevel,
       max: claudeAdapter.defaultMaxLevel,
     },
-    adapter: claudeAdapter,
+    adapter: claudeAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'codex',
+    default: false,
     aliases: ['openai'],
     displayName: 'Codex',
     binary: 'codex',
@@ -206,9 +276,9 @@ export const providerRegistry = [
     authInstructions: 'codex login',
     credentialPaths: ['~/.config/codex', '~/.codex'],
     credentialEnvKeys: codexAdapter.credentialEnvKeys,
-    settingsFields: ['webSearch'],
-    settingsDefaults: { webSearch: false },
-    settingsValidator: (settings): string | null => validateWebSearchSettings('codex', settings),
+    settingsFields: ['webSearch', 'trustIsolatedRecoveryProfile'],
+    settingsDefaults: { webSearch: false, trustIsolatedRecoveryProfile: false },
+    settingsValidator: validateCodexSettings,
     capabilities: {
       ...STANDARD_CAPABILITIES,
       jsonSchema: true,
@@ -234,10 +304,11 @@ export const providerRegistry = [
       default: codexAdapter.defaultLevel,
       max: codexAdapter.defaultMaxLevel,
     },
-    adapter: codexAdapter,
+    adapter: codexAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'gateway',
+    default: false,
     aliases: [],
     displayName: 'Gateway',
     binary: 'node',
@@ -286,6 +357,7 @@ export const providerRegistry = [
   },
   {
     id: 'gemini',
+    default: false,
     aliases: ['google'],
     displayName: 'Gemini',
     binary: 'gemini',
@@ -319,10 +391,11 @@ export const providerRegistry = [
       default: geminiAdapter.defaultLevel,
       max: geminiAdapter.defaultMaxLevel,
     },
-    adapter: geminiAdapter,
+    adapter: geminiAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'opencode',
+    default: false,
     aliases: [],
     displayName: 'Opencode',
     binary: 'opencode',
@@ -359,17 +432,17 @@ export const providerRegistry = [
       default: opencodeAdapter.defaultLevel,
       max: opencodeAdapter.defaultMaxLevel,
     },
-    adapter: opencodeAdapter,
+    adapter: opencodeAdapter as StructuredOutputRecoveryAdapter,
   },
   {
     id: 'pi',
+    default: false,
     aliases: [],
     displayName: 'Pi',
     binary: 'pi',
     command: { kind: 'fixed', command: 'pi', args: [] },
     invoke: SPAWN_INVOKE,
-    installInstructions:
-      'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3',
+    installInstructions: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3',
     authInstructions: 'pi\n/login',
     credentialPaths: ['~/.pi'],
     credentialEnvKeys: piAdapter.credentialEnvKeys,
@@ -401,7 +474,113 @@ export const providerRegistry = [
     adapter: piAdapter,
   },
   {
+    id: 'omp',
+    default: false,
+    aliases: ['oh-my-pi'],
+    displayName: 'OMP (Oh My Pi)',
+    binary: 'omp',
+    command: { kind: 'fixed', command: 'omp', args: [] },
+    invoke: RPC_STDIO_INVOKE,
+    installInstructions: OMP_INSTALL_COMMAND,
+    authInstructions:
+      'Manually edit providerSettings.omp in ZEROSHOT_SETTINGS_FILE or $HOME/.zeroshot/settings.json (file 0600, parent directory 0700). Use declared environment or broker variables, an explicit host-only OMP agent directory containing agent.db, or keyless mode; Zeroshot never logs in or stores credential values.',
+    credentialPaths: ['~/.omp'],
+    credentialEnvKeys: ompAdapter.credentialEnvKeys,
+    settingsFields: [
+      'transport',
+      'minLevel',
+      'defaultLevel',
+      'maxLevel',
+      'levelOverrides',
+      'modelsConfig',
+      'auth',
+      'tools',
+      'nestedAgents',
+      'mcp',
+    ],
+    settingsDefaults: { ...OMP_SDK_SETTINGS_DEFAULTS },
+    settingsValidator: (settings, context): string | null =>
+      settings.transport === 'rpc' ? null : validateOmpSdkSettings(settings, context),
+    availabilityProbe: 'help-or-version',
+    // Written out explicitly rather than spread from STANDARD_CAPABILITIES, which defaults
+    // dockerIsolation to true; OMP's Docker path is env/broker-only and sessionless (see
+    // AGENTS.md OMP Docker section) rather than the standard credential-mount + resume shape.
+    // sessionResume is true as of issue #866: verified UUID partitions, two-phase file
+    // verification, and the owner-fenced ownership FSM (task-lib/omp-session-ownership.js) are
+    // live end to end for host, worktree, detached cluster-agent, and standalone manual resume.
+    // The two are independent: an isolated (Docker) OMP task allocates no session partition at all
+    // and launches `--no-session`, so `sessionResume: true` never implies a resumable container
+    // turn (task-lib/runner.js#resolveOmpSessionPlan, OMP_SESSIONLESS_ENV).
+    capabilities: {
+      dockerIsolation: true,
+      worktreeIsolation: true,
+      mcpServers: false,
+      jsonSchema: false,
+      streamJson: true,
+      thinkingMode: true,
+      reasoningEffort: true,
+      sessionResume: true,
+      webSearch: false,
+    },
+    docs: {
+      label: 'OMP',
+      setupHeading: 'OMP Manual Configuration',
+    },
+    docker: {
+      // No `mount`: OMP's Docker credential surface is env/broker-only with zero automatic
+      // mounts. `~/.omp`, agent.db, WAL/SHM files, and host refresh tokens are never mounted or
+      // copied into the container.
+      //
+      // envPassthrough is deliberately narrower than `credentialEnvKeys` above (the full adapter
+      // credential inventory, used for host inspection/redaction). Exact 5-name automatic
+      // allowlist per the maintainer's authoritative clarification (verified verbatim via
+      // `gh api repos/the-open-engine/zeroshot/issues/comments/5160272623`): "the exact automatic
+      // OMP Docker environment allowlist is only ANTHROPIC_API_KEY, OPENAI_API_KEY,
+      // GEMINI_API_KEY, OMP_AUTH_BROKER_URL, and OMP_AUTH_BROKER_TOKEN ... ANTHROPIC_OAUTH_TOKEN,
+      // ANTHROPIC_FOUNDRY_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY, and every other
+      // credential/path require explicit dockerEnvPassthrough/mount opt-in; OAuth users should
+      // prefer the auth broker so host refresh/access tokens do not cross automatically." This
+      // supersedes PLAN_READY step 2's nine-name list. Any validator flagging this as missing the
+      // four excluded names is checking stale plan text against a clarification it never read.
+      platform: OMP_DOCKER_PLATFORM,
+      install: OMP_DOCKER_INSTALL_COMMAND,
+      configRoots: ['$HOME/.omp'],
+      credentialInMount: false,
+      envPassthrough: [
+        'ANTHROPIC_API_KEY',
+        'GEMINI_API_KEY',
+        'OMP_AUTH_BROKER_TOKEN',
+        'OMP_AUTH_BROKER_URL',
+        'OPENAI_API_KEY',
+      ],
+      envAuth: {
+        // The four automatic *credential* names (the fifth allowlist entry, OMP_AUTH_BROKER_URL,
+        // is a locator, not a credential — it authenticates nothing on its own). Any other
+        // registry-known OMP credential (ANTHROPIC_OAUTH_TOKEN, OPENROUTER_API_KEY, …) is usable
+        // only via explicit dockerEnvPassthrough/--mount opt-in, never automatic forwarding.
+        requireOneOf: [
+          'ANTHROPIC_API_KEY',
+          'GEMINI_API_KEY',
+          'OMP_AUTH_BROKER_TOKEN',
+          'OPENAI_API_KEY',
+        ],
+        requireTogether: [['OMP_AUTH_BROKER_URL', 'OMP_AUTH_BROKER_TOKEN']],
+        // Per OMP v17.2.1 docs/environment-variables.md, OMP_AUTH_BROKER_URL is the broker's base
+        // URL (e.g. https://broker.tailnet:8765); anything that is not an http(s) URL is
+        // malformed broker config, and OMP hard-errors on a broker URL with no resolvable token.
+        requireUrl: ['OMP_AUTH_BROKER_URL'],
+      },
+    },
+    defaultLevels: {
+      min: ompAdapter.defaultMinLevel,
+      default: ompAdapter.defaultLevel,
+      max: ompAdapter.defaultMaxLevel,
+    },
+    adapter: ompAdapter,
+  },
+  {
     id: 'kiro',
+    default: false,
     aliases: [],
     displayName: 'Kiro',
     binary: 'kiro-cli',
@@ -439,6 +618,7 @@ export const providerRegistry = [
   },
   {
     id: 'copilot',
+    default: false,
     aliases: [],
     displayName: 'Copilot',
     binary: 'copilot',
@@ -482,6 +662,18 @@ export const providerRegistry = [
   },
 ] as const satisfies readonly ProviderRegistryEntry[];
 
+function validateCodexSettings(settings: Record<string, unknown>): string | null {
+  const webSearchError = validateWebSearchSettings('codex', settings);
+  if (webSearchError) return webSearchError;
+  if (
+    settings.trustIsolatedRecoveryProfile === undefined ||
+    typeof settings.trustIsolatedRecoveryProfile === 'boolean'
+  ) {
+    return null;
+  }
+  return 'providerSettings.codex.trustIsolatedRecoveryProfile must be a boolean';
+}
+
 function validateWebSearchSettings(
   provider: 'codex' | 'opencode',
   settings: Record<string, unknown>
@@ -493,12 +685,16 @@ function validateWebSearchSettings(
 type RegistryProviderId = (typeof providerRegistry)[number]['id'];
 type RegistryProviderAlias = (typeof providerRegistry)[number]['aliases'][number];
 
-export const providerIds = providerRegistry.map((entry) => entry.id) as readonly RegistryProviderId[];
-export const providerAliases = providerRegistry.flatMap((entry) => entry.aliases) as readonly RegistryProviderAlias[];
-export const knownProviderNames = providerRegistry.flatMap((entry) => [entry.id, ...entry.aliases]) as readonly (
-  | RegistryProviderId
-  | RegistryProviderAlias
-)[];
+export const providerIds = providerRegistry.map(
+  (entry) => entry.id
+) as readonly RegistryProviderId[];
+export const providerAliases = providerRegistry.flatMap(
+  (entry) => entry.aliases
+) as readonly RegistryProviderAlias[];
+export const knownProviderNames = providerRegistry.flatMap((entry) => [
+  entry.id,
+  ...entry.aliases,
+]) as readonly (RegistryProviderId | RegistryProviderAlias)[];
 
 export const providerAliasMap: Readonly<Record<string, RegistryProviderId>> = Object.freeze(
   providerRegistry.reduce<Record<string, RegistryProviderId>>((result, entry) => {
@@ -510,6 +706,23 @@ export const providerAliasMap: Readonly<Record<string, RegistryProviderId>> = Ob
   }, {})
 );
 
+export function assertExactlyOneDefaultProvider<T extends { id: string; default: boolean }>(
+  entries: readonly T[]
+): T['id'] {
+  const defaults = entries.filter((e) => e.default);
+  const [onlyDefault, ...rest] = defaults;
+  if (!onlyDefault || rest.length > 0) {
+    throw new Error(
+      `Provider registry must declare exactly one default provider; found ${defaults.length}${defaults.length ? ' (' + defaults.map((e) => e.id).join(', ') + ')' : ''}`
+    );
+  }
+  return onlyDefault.id;
+}
+const DEFAULT_PROVIDER_ID = assertExactlyOneDefaultProvider(providerRegistry);
+export function getDefaultProviderId(): RegistryProviderId {
+  return DEFAULT_PROVIDER_ID;
+}
+
 export function normalizeProviderName(name: string): RegistryProviderId | string {
   const normalized = name.toLowerCase();
   return providerAliasMap[normalized] ?? name;
@@ -519,7 +732,9 @@ export function listProviderRegistryEntries(): readonly ProviderRegistryEntry[] 
   return providerRegistry;
 }
 
-export function findProviderRegistryEntry(name: string | null | undefined): ProviderRegistryEntry | undefined {
+export function findProviderRegistryEntry(
+  name: string | null | undefined
+): ProviderRegistryEntry | undefined {
   if (!name) return undefined;
   const normalized = normalizeProviderName(name);
   return providerRegistry.find((entry) => entry.id === normalized);
@@ -529,6 +744,10 @@ export function getProviderRegistryEntry(name: string): ProviderRegistryEntry {
   const entry = findProviderRegistryEntry(name);
   if (entry) return entry;
   throw new Error(`Unknown provider: ${name}. Valid: ${providerIds.join(', ')}`);
+}
+
+export function credentialEnvKeysForProvider(providerId: string): readonly string[] {
+  return getProviderRegistryEntry(providerId).credentialEnvKeys;
 }
 
 export function resolveProviderCommand(name: string): {
@@ -550,4 +769,8 @@ export function supportsProviderCapability(
   capability: keyof ProviderCapabilities
 ): boolean {
   return getProviderRegistryEntry(name).capabilities[capability] === true;
+}
+
+export function supportsProviderOutputReformatting(name: string): boolean {
+  return getProviderRegistryEntry(name).capabilities.jsonSchema !== false;
 }

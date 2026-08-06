@@ -4,9 +4,9 @@ import {
   METHOD_RESULT_DEFINITIONS,
   PROTOCOL_VERSION,
 } from './generated/protocol.js';
-import type { ClusterMethod } from './generated/protocol.js';
+import type { ClusterMethod, GraphProfile, GraphSpec, ServerCapabilities } from './generated/protocol.js';
 import { CLUSTER_PROTOCOL_SCHEMA } from './generated/protocol-schema.js';
-import { ClusterProtocolError } from './errors.js';
+import { ClusterProtocolError, ClusterRequestError } from './errors.js';
 
 const ajv = new Ajv2020({
   allErrors: true,
@@ -52,5 +52,35 @@ export function assertMethodResult(method: ClusterMethod, value: unknown): void 
       );
     }
     throw error;
+  }
+}
+
+function assertRequestDefinition(definition: string, value: unknown, code: string): void {
+  const validate = validatorFor(definition);
+  if (validate(value)) return;
+  const details = (validate.errors ?? []).map((error) =>
+    `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`
+  ).join('; ');
+  throw new ClusterRequestError(`${definition} validation failed: ${details}`, code);
+}
+
+/** Validate an execution graph against the frozen cluster protocol schema. */
+export function assertGraphSpec(value: unknown): asserts value is GraphSpec {
+  assertRequestDefinition('GraphSpec', value, 'INVALID_GRAPH');
+}
+
+export function assertGraphProfile(value: unknown): asserts value is GraphProfile {
+  assertRequestDefinition('GraphProfile', value, 'INVALID_GRAPH_PROFILE');
+}
+
+export function assertGraphProfileSupported(
+  profile: GraphProfile,
+  capabilities: ServerCapabilities,
+): void {
+  if (!capabilities.graphProfiles?.includes(profile)) {
+    throw new ClusterRequestError(
+      `graph profile ${profile} is not among the server's advertised graphProfiles`,
+      'UNSUPPORTED_GRAPH_PROFILE',
+    );
   }
 }

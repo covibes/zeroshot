@@ -407,7 +407,14 @@ function configurePassingPrModeMocks(gate, prNumber, prUrl) {
 async function startPassingPrModeCluster(config, inputText, options) {
   createOrchestrator();
 
-  const result = await orchestrator.start(config, { text: inputText }, options);
+  const result = await orchestrator.start(
+    config,
+    { text: inputText },
+    {
+      commandProofs: [],
+      ...options,
+    }
+  );
   await waitForClusterState(orchestrator, result.id, 'stopped', 10000);
   mockRunner.assertCalled('git-pusher', 1);
 
@@ -541,7 +548,7 @@ async function runBlockedPusherRepairLoopTest() {
   const result = await orchestrator.start(
     createPrConfig(),
     { text: 'Blocked pusher repair test' },
-    { autoPr: true, requiredQualityGates: [gate] }
+    { autoPr: true, requiredQualityGates: [gate], commandProofs: [] }
   );
   const clusterId = result.id;
   await waitForClusterState(orchestrator, clusterId, 'stopped', 15000);

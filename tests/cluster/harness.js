@@ -97,6 +97,15 @@ async function settle() {
   await Promise.resolve();
 }
 
+async function establish(client, socket, method, result) {
+  const pending =
+    method === 'agent/attach' ? client.agentAttach({ execution: 'exec-1' }) : client[method]();
+  await settle();
+  const request = socket.request(method);
+  socket.respond(request.id, result);
+  return pending;
+}
+
 function assertClean(connection) {
   assert.equal(connection.pendingSize, 0, 'pending requests leaked');
   assert.equal(connection.subscriptionCount, 0, 'subscriptions leaked');
@@ -129,6 +138,7 @@ module.exports = {
   connected,
   contentsBelow,
   deferred,
+  establish,
   filesBelow,
   settle,
 };

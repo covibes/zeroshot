@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(windows)]
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
 use tokio::sync::watch;
 use tokio::time::{Duration, Instant, timeout};
 use zeroshot_engine::execution::WorkspaceAccessMode;
-use zeroshot_engine::execution::driver::{DriverCancellation, WorkspaceCapability};
+use zeroshot_engine::execution::driver::WorkspaceCapability;
 use zeroshot_engine::execution::process::{
     LocalProcessRunner, ProcessCleanupEvidence, ProcessSessionCommand,
 };
@@ -16,6 +17,13 @@ use zeroshot_engine::execution::process::{
     MAX_PROCESS_MESSAGE_BYTES, PROCESS_STDIN_CAPACITY, PROCESS_STDOUT_CAPACITY, ProcessFrame,
     ProcessLaunchEvidence, ProcessRunnerError, ProcessSession,
 };
+#[path = "support/process_runner.rs"]
+mod process_runner_support;
+use process_runner_support::{
+    cancellation_pair, process_exists, unique_temp_path, wait_for_child_pid, wait_for_process_exit,
+};
+#[cfg(unix)]
+use process_runner_support::shell_quote;
 
 fn command(program: &str, argv: Vec<&str>) -> ProcessSessionCommand {
     ProcessSessionCommand {
@@ -28,11 +36,6 @@ fn command(program: &str, argv: Vec<&str>) -> ProcessSessionCommand {
         },
         deadline: Instant::now() + Duration::from_secs(10),
     }
-}
-
-fn cancellation_pair() -> (watch::Sender<bool>, DriverCancellation) {
-    let (sender, receiver) = watch::channel(false);
-    (sender, DriverCancellation::new(receiver))
 }
 
 #[cfg(unix)]
@@ -373,71 +376,4 @@ async fn windows_job_release_reaps_a_descendant() {
     assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
     wait_for_process_exit(child_pid).await;
     let _ = fs::remove_file(pid_file);
-}
-
-fn unique_temp_path(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!("{name}-{nanos}"))
-}
-
-#[cfg(unix)]
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-async fn wait_for_child_pid(path: &PathBuf) -> i32 {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Ok(contents) = fs::read_to_string(path) {
-            if let Ok(pid) = contents.trim().parse::<i32>() {
-                return pid;
-            }
-        }
-        assert!(Instant::now() < deadline, "child pid file was not written");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-async fn wait_for_process_exit(pid: i32) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while process_exists(pid) {
-        assert!(Instant::now() < deadline, "process {pid} did not exit");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
-#[cfg(unix)]
-fn process_exists(pid: i32) -> bool {
-    unsafe {
-        if libc::kill(pid, 0) == 0 {
-            true
-        } else {
-            std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-        }
-    }
-}
-
-#[cfg(windows)]
-fn process_exists(pid: i32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    let Ok(pid) = u32::try_from(pid) else {
-        return false;
-    };
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if process.is_null() {
-        return false;
-    }
-    let mut exit_code = 0;
-    let queried = unsafe { GetExitCodeProcess(process, &mut exit_code) };
-    unsafe {
-        CloseHandle(process);
-    }
-    queried != 0 && exit_code == STILL_ACTIVE as u32
 }

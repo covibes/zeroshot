@@ -10,7 +10,7 @@ import {
   type LevelOverrides,
   type ModelCatalogEntry,
   type ModelLevel,
-  type ProviderAdapter,
+  type StructuredOutputRecoveryAdapter,
   type ResolvedModelSpec,
   type WarningMetadata,
 } from '../types';
@@ -67,6 +67,11 @@ function detectCliFeatures(
     supportsResume: supports(help, /\bresume\b/),
     supportsWebSearch:
       !unknown && supportsConfigOverride && isCliVersionAtLeast(versionText, '0.146.0'),
+    supportsSandbox: !unknown && /--sandbox\b/.test(help),
+    supportsEphemeral: !unknown && /--ephemeral\b/.test(help),
+    supportsIgnoreUserConfig: !unknown && /--ignore-user-config\b/.test(help),
+    supportsIgnoreRules: !unknown && /--ignore-rules\b/.test(help),
+    supportsStrictConfig: !unknown && /--strict-config\b/.test(help),
     unknown,
   };
 }
@@ -245,6 +250,50 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   });
 }
 
+function assertStructuredOutputRecoveryFeatures(options: BuildProviderCommandOptions): void {
+  const features = optionFeatures(options);
+  const missing = [
+    ['--sandbox', features.supportsSandbox],
+    ['--ephemeral', features.supportsEphemeral],
+    ...(options.trustIsolatedCodexProfile === true
+      ? []
+      : [['--ignore-user-config', features.supportsIgnoreUserConfig] as const]),
+    ['--ignore-rules', features.supportsIgnoreRules],
+    ['--strict-config', features.supportsStrictConfig],
+    ['--config', features.supportsConfigOverride],
+  ].filter(([, supported]) => supported !== true);
+  if (missing.length === 0) return;
+  throw new UnsupportedProviderCapabilityError(
+    'codex',
+    'structuredOutputRecovery',
+    `Codex structured-output recovery requires CLI evidence for ${missing.map(([flag]) => flag).join(', ')}. Upgrade @openai/codex before retrying.`
+  );
+}
+
+function buildStructuredOutputRecoveryCommand(
+  context: string,
+  options: BuildProviderCommandOptions = {}
+): CommandSpec {
+  assertStructuredOutputRecoveryFeatures(options);
+  const recoveryOptions = { ...options };
+  delete recoveryOptions.resumeSessionId;
+  delete recoveryOptions.continueSession;
+  const spec = buildCommand(context, {
+    ...recoveryOptions,
+    autoApprove: false,
+    webSearch: false,
+  });
+  const args = [...spec.args];
+  const prompt = args.pop();
+  if (prompt === undefined) throw new Error('Codex recovery command is missing its prompt');
+  args.push('--sandbox', 'read-only', '--ephemeral');
+  if (options.trustIsolatedCodexProfile !== true) {
+    args.push('--ignore-user-config');
+  }
+  args.push('--ignore-rules', '--strict-config', '--config', 'web_search="disabled"', prompt);
+  return { ...spec, args };
+}
+
 function resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec {
   return resolveModelSpecWithConfig({
     mapping: LEVEL_MAPPING,
@@ -267,7 +316,7 @@ function classifyError(error: unknown): ErrorClassification {
   );
 }
 
-export const codexAdapter: ProviderAdapter = {
+export const codexAdapter: StructuredOutputRecoveryAdapter = {
   id: 'codex',
   displayName: 'Codex',
   binary: 'codex',
@@ -280,6 +329,7 @@ export const codexAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  buildStructuredOutputRecoveryCommand,
   extractSessionId,
   parseEvent: parseCodexEvent,
   createParserState: () => createParserState('codex'),

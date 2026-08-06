@@ -141,6 +141,28 @@ function extractFromTextEvents(output, providerName) {
 }
 
 /**
+ * Assemble assistant text through the active provider parser. Recovery prompts
+ * use this instead of exposing raw event envelopes when model text exists.
+ *
+ * @param {string} output
+ * @param {string} providerName
+ * @returns {string|null}
+ */
+function extractModelTextFromOutput(output, providerName) {
+  if (!output || typeof output !== 'string') return null;
+  const normalized = output
+    .split('\n')
+    .map((line) => stripTimestamp(line))
+    .filter(Boolean)
+    .join('\n');
+  const text = parseProviderChunk(providerName, normalized)
+    .filter((event) => event.type === 'text' && typeof event.text === 'string')
+    .map((event) => event.text)
+    .join('');
+  return text.trim() ? text : null;
+}
+
+/**
  * Strategy 3: Extract JSON from markdown code block
  * Handles: ```json\n{...}\n```
  *
@@ -280,13 +302,13 @@ function extractClaudeVertexModelError(output, { useVertex = false } = {}) {
  * Provider error formats:
  * - Claude: {type:"result", is_error:true, errors:["msg"]} or {type:"result", subtype:"error"}
  * - Codex:  {type:"turn.failed", error:{message:"msg"}}
- * - Gemini: {type:"result", success:false, error:"msg"}
+ * - Gemini: {type:"result", status:"error", error:{message:"msg"}} or {type:"error", severity:"error"}
  * - Opencode: {type:"session.error", error:{message:"msg"}}
  *
- * @param {string} output - Raw CLI output
+ * @param {string} providerName - Active provider whose terminal errors may be inspected
  * @returns {{error: string, provider: string}|null} Error info or null
  */
-function extractCliError(output) {
+function extractCliError(output, providerName = 'claude') {
   if (!output || typeof output !== 'string') return null;
 
   const lines = output.split('\n');
@@ -302,33 +324,35 @@ function extractCliError(output) {
       continue;
     }
 
-    // Claude: {type:"result", is_error:true, errors:[...]}
-    if (obj.type === 'result' && obj.is_error === true) {
+    if (providerName === 'claude' && obj.type === 'result' && obj.is_error === true) {
       const errorMsg = Array.isArray(obj.errors)
         ? obj.errors.join('; ')
         : obj.error || obj.result || 'Unknown CLI error';
       return { error: errorMsg, provider: 'claude' };
     }
 
-    // Claude: {type:"result", subtype:"error"}
-    if (obj.type === 'result' && obj.subtype === 'error') {
+    if (providerName === 'claude' && obj.type === 'result' && obj.subtype === 'error') {
       const errorMsg = obj.error || obj.result || 'CLI returned error';
       return { error: errorMsg, provider: 'claude' };
     }
 
-    // Codex: {type:"turn.failed", error:{message:"..."}}
-    if (obj.type === 'turn.failed') {
+    if (providerName === 'codex' && obj.type === 'turn.failed') {
       const errorMsg = obj.error?.message || obj.error || 'Turn failed';
       return { error: errorMsg, provider: 'codex' };
     }
 
-    // Gemini: {type:"result", success:false, error:"..."}
-    if (obj.type === 'result' && obj.success === false && obj.error) {
-      return { error: obj.error, provider: 'gemini' };
+    if (
+      providerName === 'gemini' &&
+      ((obj.type === 'result' && obj.status === 'error') ||
+        (obj.type === 'error' && obj.severity === 'error'))
+    ) {
+      return {
+        error: obj.error?.message || obj.message || 'Gemini CLI error',
+        provider: 'gemini',
+      };
     }
 
-    // Opencode: {type:"session.error", error:{...}}
-    if (obj.type === 'session.error') {
+    if (providerName === 'opencode' && (obj.type === 'session.error' || obj.type === 'error')) {
       const errorMsg =
         obj.error?.data?.message || obj.error?.message || obj.error?.name || 'Session error';
       return { error: errorMsg, provider: 'opencode' };
@@ -396,6 +420,7 @@ function extractJsonFromOutput(output, providerName = 'claude') {
 
 module.exports = {
   extractJsonFromOutput,
+  extractModelTextFromOutput,
   extractCliError,
   extractClaudeVertexModelError,
   extractFromResultWrapper,

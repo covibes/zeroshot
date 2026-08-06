@@ -1,0 +1,10 @@
+{
+  "description": "Nullable does not mean optional: Capsule.label must be present even when null.",
+  "schema": "capsule",
+  "expect_schema_valid": false,
+  "body": {
+    "capsule_id": "cap_partial",
+    "state": "ready",
+    "created_at": "2026-08-03T12:00:00Z"
+  }
+}

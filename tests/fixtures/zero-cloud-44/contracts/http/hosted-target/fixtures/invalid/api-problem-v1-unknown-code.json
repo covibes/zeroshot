@@ -1,0 +1,9 @@
+{
+  "description": "A code outside the closed ProblemCode vocabulary must fail closed.",
+  "schema": "api-problem-v1",
+  "expect_schema_valid": false,
+  "body": {
+    "code": "teapot",
+    "message": "the request is invalid"
+  }
+}

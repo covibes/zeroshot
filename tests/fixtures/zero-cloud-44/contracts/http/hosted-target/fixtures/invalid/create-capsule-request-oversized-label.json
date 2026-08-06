@@ -1,0 +1,8 @@
+{
+  "description": "A 101-character label exceeds the closed allocate bound and must fail before allocation.",
+  "schema": "create-capsule-request",
+  "expect_schema_valid": false,
+  "body": {
+    "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  }
+}

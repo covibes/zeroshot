@@ -4,8 +4,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
-const buildRoot = path.join(root, '.cluster-build');
-const outputRoot = path.join(root, 'lib/cluster');
+const clusterBuildRoot = path.join(root, '.cluster-build');
+const hostedSessionBuildRoot = path.join(root, '.hosted-session-build');
+const hostedTargetBuildRoot = path.join(root, '.hosted-target-build');
+const clusterOutputRoot = path.join(root, 'lib/cluster');
+const hostedSessionOutputRoot = path.join(root, 'lib/hosted-session');
+const hostedTargetOutputRoot = path.join(root, 'lib/hosted-target');
+const targetOutputRoot = path.join(root, 'lib/target');
 
 function filesBelow(directory) {
   const entries = fs.readdirSync(directory, { withFileTypes: true });
@@ -15,7 +20,16 @@ function filesBelow(directory) {
   });
 }
 
-function copyBuild(sourceRoot, mode) {
+function declarationContent(source, localExtension) {
+  return fs
+    .readFileSync(source, 'utf8')
+    .replace(/(["'])(\.\.?\/[^"']+)\.ts\1/g, (_match, quote, specifier) => {
+      const extension = specifier.startsWith('../target/') ? '.js' : localExtension;
+      return `${quote}${specifier}${extension}${quote}`;
+    });
+}
+
+function copyBuild(sourceRoot, outputRoot, mode) {
   for (const source of filesBelow(sourceRoot)) {
     const relative = path.relative(sourceRoot, source);
     const extension = path.extname(relative);
@@ -30,14 +44,34 @@ function copyBuild(sourceRoot, mode) {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, content);
     } else if (mode === 'cjs' && extension === '.ts' && relative.endsWith('.d.ts')) {
-      const target = path.join(outputRoot, relative);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(source, target);
+      const base = path.join(outputRoot, relative.slice(0, -5));
+      fs.mkdirSync(path.dirname(base), { recursive: true });
+      fs.writeFileSync(`${base}.d.ts`, declarationContent(source, '.js'));
+      fs.writeFileSync(`${base}.d.cts`, declarationContent(source, '.cjs'));
+      fs.writeFileSync(`${base}.d.mts`, declarationContent(source, '.mjs'));
     }
   }
 }
 
-fs.rmSync(outputRoot, { recursive: true, force: true });
-copyBuild(path.join(buildRoot, 'cjs'), 'cjs');
-copyBuild(path.join(buildRoot, 'esm'), 'esm');
-fs.rmSync(buildRoot, { recursive: true, force: true });
+fs.rmSync(clusterOutputRoot, { recursive: true, force: true });
+fs.rmSync(hostedSessionOutputRoot, { recursive: true, force: true });
+fs.rmSync(hostedTargetOutputRoot, { recursive: true, force: true });
+copyBuild(path.join(clusterBuildRoot, 'cjs'), clusterOutputRoot, 'cjs');
+copyBuild(path.join(clusterBuildRoot, 'esm'), clusterOutputRoot, 'esm');
+copyBuild(
+  path.join(hostedSessionBuildRoot, 'cjs', 'hosted-session'),
+  hostedSessionOutputRoot,
+  'cjs'
+);
+copyBuild(
+  path.join(hostedSessionBuildRoot, 'esm', 'hosted-session'),
+  hostedSessionOutputRoot,
+  'esm'
+);
+copyBuild(path.join(hostedTargetBuildRoot, 'cjs', 'hosted-target'), hostedTargetOutputRoot, 'cjs');
+copyBuild(path.join(hostedTargetBuildRoot, 'esm', 'hosted-target'), hostedTargetOutputRoot, 'esm');
+copyBuild(path.join(hostedTargetBuildRoot, 'cjs', 'target'), targetOutputRoot, 'cjs');
+copyBuild(path.join(hostedTargetBuildRoot, 'esm', 'target'), targetOutputRoot, 'esm');
+fs.rmSync(clusterBuildRoot, { recursive: true, force: true });
+fs.rmSync(hostedSessionBuildRoot, { recursive: true, force: true });
+fs.rmSync(hostedTargetBuildRoot, { recursive: true, force: true });

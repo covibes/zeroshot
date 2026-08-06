@@ -6,7 +6,7 @@
  */
 
 const assert = require('assert');
-const { normalizeProviderName } = require('../../lib/provider-names');
+const { normalizeProviderName, getDefaultProviderId } = require('../../lib/provider-names');
 
 // Mirrors resolveProviderOverride in cli/index.js
 function resolveProviderOverride(options) {
@@ -15,6 +15,15 @@ function resolveProviderOverride(options) {
     return null;
   }
   return normalizeProviderName(override);
+}
+
+// Mirrors ensureConfigProviderDefaults in lib/start-cluster.js: no --provider,
+// no ZEROSHOT_PROVIDER, no settings.defaultProvider override present.
+function resolveEffectiveProvider(options, settings) {
+  return (
+    resolveProviderOverride(options) ||
+    normalizeProviderName(settings.defaultProvider || getDefaultProviderId())
+  );
 }
 
 describe('CLI Provider Override', function () {
@@ -62,5 +71,11 @@ describe('CLI Provider Override', function () {
     process.env.ZEROSHOT_PROVIDER = 'gemini';
     const result = resolveProviderOverride({ provider: 'claude' });
     assert.strictEqual(result, 'claude');
+  });
+
+  it('falls back to the registry default when no override or settings provider is present', function () {
+    delete process.env.ZEROSHOT_PROVIDER;
+    const result = resolveEffectiveProvider({}, {});
+    assert.strictEqual(result, getDefaultProviderId());
   });
 });

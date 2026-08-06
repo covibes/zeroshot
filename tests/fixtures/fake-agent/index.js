@@ -149,6 +149,9 @@ function main() {
         '  --effort <effort>',
         '  --settings <path>',
         '  --mcp-config <path>',
+        '  --tools <tools>',
+        '  --strict-mcp-config',
+        '  --no-session-persistence',
         '  stream-json',
       ].join('\n')
     );

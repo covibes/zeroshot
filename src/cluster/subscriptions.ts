@@ -22,6 +22,11 @@ export interface Subscription<T> extends AsyncIterator<SubscriptionItem<T>>, Asy
   readonly retainedCount: number;
   cancel(): Promise<void>;
 }
+export interface WatchSubscription {
+  readonly result: WatchResult;
+  readonly stream: WatchSubscriptionStream;
+}
+
 
 type FrameParser<T> = (frame: FrameRecord) => SubscriptionItem<T>;
 class SubscriptionStream<T> implements Subscription<T> {
@@ -198,13 +203,13 @@ export class WatchSubscriptionStream implements AsyncIterator<WatchSubscriptionI
     await this.#terminate(true); throw error;
   }
   cancel(): Promise<void> { return this.#terminate(true); }
-  reconnect(freshConnection: Connection): Promise<import('./client.js').WatchSubscription> {
+  reconnect(freshConnection: Connection): Promise<WatchSubscription> {
     if (this.#reconnectConsumed) {
       throw new ClusterStateError('watch stream reconnect is one-shot', 'RECONNECT_CONSUMED');
     }
     this.#reconnectConsumed = true; return this.#reconnectOn(freshConnection);
   }
-  async #reconnectOn(freshConnection: Connection): Promise<import('./client.js').WatchSubscription> {
+  async #reconnectOn(freshConnection: Connection): Promise<WatchSubscription> {
     await this.#terminate(true);
     try {
       const runId = this.#runId; const fromCursor = this.#lastDelivered;

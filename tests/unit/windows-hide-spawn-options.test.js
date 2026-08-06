@@ -74,13 +74,13 @@ describe('windowsHide spawn options (Windows console window fix)', function () {
   it('adds windowsHide: true to spawnTaskProcess (src/agent/agent-task-executor.js)', function () {
     const source = readSource('src/agent/agent-task-executor.js');
     const match = source.match(
-      /function spawnTaskProcess\([\s\S]*?const proc = spawn\([\s\S]*?\);/
+      /function spawnTaskProcess\([\s\S]*?const proc = spawnProcess\([\s\S]*?\);/
     );
-    assert(match, 'spawnTaskProcess() spawn() call not found in agent-task-executor.js');
+    assert(match, 'spawnTaskProcess() process spawn call not found in agent-task-executor.js');
     assert.match(
       match[0],
       /windowsHide:\s*true/,
-      'spawnTaskProcess() must pass windowsHide: true to spawn()'
+      'spawnTaskProcess() must pass windowsHide: true to the process spawn call'
     );
   });
 });

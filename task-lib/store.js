@@ -10,9 +10,14 @@ import { join } from 'path';
 import Database from 'better-sqlite3';
 import { TASKS_DIR, LOGS_DIR } from './config.js';
 import { generateName } from './name-generator.js';
+import {
+  inspectStoredOmpSessionOwnership,
+  parseOmpSessionOwnership,
+  serializeOmpSessionOwnership,
+} from './omp-session-ownership-schema.js';
 
 const DB_FILE = join(TASKS_DIR, 'store.db');
-export const TASK_STORE_SCHEMA_VERSION = 4;
+export const TASK_STORE_SCHEMA_VERSION = 5;
 
 /** @type {Database.Database | null} */
 let db = null;
@@ -59,7 +64,8 @@ function getDb() {
       termination_strategy TEXT,
       command_cleanup TEXT,
       cancel_requested INTEGER DEFAULT 0,
-      spawn_ownership_token TEXT
+      spawn_ownership_token TEXT,
+      omp_session_ownership TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -110,6 +116,15 @@ function serializeCommandCleanup(value) {
   return value ? JSON.stringify(value) : null;
 }
 
+/**
+ * Internal accessor for modules that need direct prepared-statement access (SQL compare-and-swap
+ * transitions) beyond what the generic load/save/update helpers below offer. See
+ * task-lib/omp-session-ownership.js.
+ */
+export function getTaskStoreDatabase() {
+  return getDb();
+}
+
 export function migrateTaskStore(database) {
   ensureTaskColumn(database, 'process_group_id', 'INTEGER');
   ensureTaskColumn(database, 'termination_strategy', 'TEXT');
@@ -119,6 +134,9 @@ export function migrateTaskStore(database) {
   ensureTaskColumn(database, 'requested_resume_session_id', 'TEXT');
   ensureTaskColumn(database, 'session_id_conflict', 'INTEGER NOT NULL DEFAULT 0');
   ensureTaskColumn(database, 'resume_identity_verified', 'INTEGER NOT NULL DEFAULT 0');
+  // No backfill: every pre-v5 row has no OMP session concept, so NULL is exact truth, never a
+  // fabricated value. A non-OMP task's resume path is untouched by this column.
+  ensureTaskColumn(database, 'omp_session_ownership', 'TEXT');
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_spawn_ownership_token
       ON tasks(spawn_ownership_token)
@@ -143,6 +161,9 @@ export function migrateTaskStore(database) {
     }
     if (version < 4) {
       database.prepare('UPDATE tasks SET resume_identity_verified = 0').run();
+    }
+    if (version < 5) {
+      // omp_session_ownership already defaults to NULL via ensureTaskColumn above; no backfill.
     }
     database.pragma(`user_version = ${TASK_STORE_SCHEMA_VERSION}`);
   })();
@@ -192,7 +213,21 @@ function rowToTask(row) {
     commandCleanup: parseCommandCleanup(row.command_cleanup),
     cancelRequested: Boolean(row.cancel_requested),
     spawnOwnershipToken: row.spawn_ownership_token,
+    ompSessionOwnership: parseOmpSessionOwnership(row.omp_session_ownership),
+    // Raw-presence seam (see inspectStoredOmpSessionOwnership). `ompSessionOwnership: null` alone
+    // cannot distinguish "this task never had an OMP session" from "this task's owner record is
+    // unreadable", and those demand opposite handling: the first is nothing to clean, the second
+    // means a partition may exist that only this row still points at. The malformed bytes
+    // themselves are deliberately not exposed — nothing may act on them.
+    ompSessionOwnershipPresent: inspectStoredOmpSessionOwnership(row.omp_session_ownership).present,
   };
+}
+
+/** True when a task row carries an `omp_session_ownership` value that exists but cannot be read as
+ * the closed schema. Such a row is retained by every cleanup surface with a warning: deleting it
+ * would orphan whatever partition the unreadable record described. */
+export function hasUnreadableOmpSessionOwnership(task) {
+  return Boolean(task?.ompSessionOwnershipPresent) && !task?.ompSessionOwnership;
 }
 
 /**
@@ -207,77 +242,6 @@ export function loadTasks() {
     tasks[task.id] = task;
   }
   return tasks;
-}
-
-/**
- * Save all tasks (replaces entire store - for migration compatibility)
- * @param {Object.<string, Object>} tasks
- */
-export function saveTasks(tasks) {
-  const database = getDb();
-  const insert = database.prepare(`
-    INSERT OR REPLACE INTO tasks (
-      id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
-      created_at, updated_at, exit_code, error, provider, model,
-      schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup, cancel_requested, spawn_ownership_token
-    ) VALUES (
-      @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
-      @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
-      @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup, @cancelRequested, @spawnOwnershipToken
-    )
-  `);
-
-  const insertMany = database.transaction((tasksObj) => {
-    // Clear existing
-    database.prepare('DELETE FROM tasks').run();
-    // Insert all
-    for (const task of Object.values(tasksObj)) {
-      insert.run({
-        id: task.id,
-        prompt: task.prompt || null,
-        fullPrompt: task.fullPrompt || null,
-        cwd: task.cwd || null,
-        status: task.status || 'pending',
-        pid: task.pid || null,
-        sessionId: task.sessionId || null,
-        sessionIdConflict: task.sessionIdConflict ? 1 : 0,
-        requestedResumeSessionId: nullable(task.requestedResumeSessionId),
-        resumeIdentityVerified: task.resumeIdentityVerified ? 1 : 0,
-        logFile: task.logFile || null,
-        createdAt: task.createdAt || new Date().toISOString(),
-        updatedAt: task.updatedAt || new Date().toISOString(),
-        exitCode: task.exitCode ?? null,
-        error: task.error || null,
-        provider: task.provider || null,
-        model: task.model || null,
-        scheduleId: task.scheduleId || null,
-        socketPath: task.socketPath || null,
-        attachable: task.attachable ? 1 : 0,
-        processGroupId: task.processGroupId || null,
-        terminationStrategy: task.terminationStrategy || null,
-        commandCleanup: serializeCommandCleanup(task.commandCleanup),
-        cancelRequested: task.cancelRequested ? 1 : 0,
-        spawnOwnershipToken: task.spawnOwnershipToken || null,
-      });
-    }
-  });
-
-  insertMany(tasks);
-}
-
-/**
- * For API compatibility - just runs the modifier synchronously
- * SQLite WAL handles concurrency, no lock needed
- * @param {Function} modifier
- * @returns {any}
- */
-export function withTasksLock(modifier) {
-  const tasks = loadTasks();
-  const result = modifier(tasks);
-  saveTasks(tasks);
-  return result;
 }
 
 /**
@@ -350,7 +314,15 @@ export function updateTask(id, updates) {
       termination_strategy = @terminationStrategy,
       command_cleanup = @commandCleanup,
       cancel_requested =
-        CASE WHEN @hasCancelRequested = 1 THEN @cancelRequested ELSE cancel_requested END
+        CASE WHEN @hasCancelRequested = 1 THEN @cancelRequested ELSE cancel_requested END,
+      -- Only ever written when the caller explicitly supplies it. This is a read-modify-write
+      -- update, so unconditionally rewriting the ownership column would let an unrelated
+      -- updateTask (the watcher persisting spawn evidence, say) clobber an owner-fenced
+      -- compare-and-swap another process performed in between — see
+      -- task-lib/omp-session-ownership.js, whose transitions bypass this statement for exactly
+      -- that reason.
+      omp_session_ownership =
+        CASE WHEN @hasOmpSessionOwnership = 1 THEN @ompSessionOwnership ELSE omp_session_ownership END
     WHERE id = @id
   `
     )
@@ -379,6 +351,10 @@ export function updateTask(id, updates) {
       commandCleanup: serializeCommandCleanup(updated.commandCleanup),
       hasCancelRequested: Object.prototype.hasOwnProperty.call(updates, 'cancelRequested') ? 1 : 0,
       cancelRequested: updated.cancelRequested ? 1 : 0,
+      hasOmpSessionOwnership: Object.prototype.hasOwnProperty.call(updates, 'ompSessionOwnership')
+        ? 1
+        : 0,
+      ompSessionOwnership: serializeOmpSessionOwnership(updated.ompSessionOwnership || null),
     });
 
   return updated;
@@ -404,12 +380,12 @@ export function addTask(task) {
       id, prompt, full_prompt, cwd, status, pid, session_id, session_id_conflict, requested_resume_session_id, resume_identity_verified, log_file,
       created_at, updated_at, exit_code, error, provider, model,
       schedule_id, socket_path, attachable, process_group_id, termination_strategy,
-      command_cleanup, cancel_requested, spawn_ownership_token
+      command_cleanup, cancel_requested, spawn_ownership_token, omp_session_ownership
     ) VALUES (
       @id, @prompt, @fullPrompt, @cwd, @status, @pid, @sessionId, @sessionIdConflict, @requestedResumeSessionId, @resumeIdentityVerified, @logFile,
       @createdAt, @updatedAt, @exitCode, @error, @provider, @model,
       @scheduleId, @socketPath, @attachable, @processGroupId, @terminationStrategy,
-      @commandCleanup, @cancelRequested, @spawnOwnershipToken
+      @commandCleanup, @cancelRequested, @spawnOwnershipToken, @ompSessionOwnership
     )
   `
     )
@@ -439,6 +415,7 @@ export function addTask(task) {
       commandCleanup: serializeCommandCleanup(fullTask.commandCleanup),
       cancelRequested: fullTask.cancelRequested ? 1 : 0,
       spawnOwnershipToken: fullTask.spawnOwnershipToken || null,
+      ompSessionOwnership: serializeOmpSessionOwnership(fullTask.ompSessionOwnership || null),
     });
 
   return fullTask;
@@ -450,6 +427,59 @@ export function addTask(task) {
  */
 export function removeTask(id) {
   getDb().prepare('DELETE FROM tasks WHERE id = ?').run(id);
+}
+
+/**
+ * Remove a task row only while it still matches the snapshot the caller validated.
+ *
+ * `clean`/`purge` decide what to remove from one `loadTasks()` snapshot and then do real work
+ * (partition staging, command cleanup, log deletion) before they get to the delete. A watcher,
+ * a resume's ownership transfer, or a kill can land in that window; deleting on the strength of a
+ * stale snapshot would destroy a row that is no longer the row that was examined. The status and
+ * the exact ownership bytes are the two fields that decide whether removal is still correct, so
+ * both are the fence. `store.js` writes the ownership column only through
+ * `serializeOmpSessionOwnership`, whose output is canonical per record, which is what makes a
+ * byte comparison an exact "same record" test.
+ *
+ * @param {string} id
+ * @param {{status: string, ompSessionOwnership: object|null}} expected snapshot values
+ * @returns {boolean} true when the row was removed
+ */
+export function removeTaskIfUnchanged(id, expected) {
+  const result = getDb()
+    .prepare(
+      `DELETE FROM tasks
+       WHERE id = ? AND status IS ? AND omp_session_ownership IS ?`
+    )
+    .run(
+      id,
+      expected?.status ?? null,
+      serializeOmpSessionOwnership(expected?.ompSessionOwnership || null)
+    );
+  return result.changes === 1;
+}
+
+/**
+ * Clear one row's persisted command-cleanup receipt, and nothing else, only if it is still the
+ * exact serialized receipt the caller processed.
+ *
+ * Deliberately narrower than updateTask(), which is a read-modify-write over every column and
+ * would write back whatever the caller's snapshot held for the rest of the row. This is used on
+ * the retained path of `clean`, where a concurrent writer may already have installed a new cleanup
+ * receipt that must survive.
+ *
+ * @param {string} id
+ * @param {object} expected exact command-cleanup receipt processed by the caller
+ * @returns {boolean} true when that exact receipt was cleared
+ */
+export function clearTaskCommandCleanup(id, expected) {
+  const result = getDb()
+    .prepare(
+      `UPDATE tasks SET command_cleanup = NULL, updated_at = ?
+       WHERE id = ? AND command_cleanup IS ?`
+    )
+    .run(new Date().toISOString(), id, serializeCommandCleanup(expected));
+  return result.changes === 1;
 }
 
 export function generateId() {

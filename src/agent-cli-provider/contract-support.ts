@@ -1,8 +1,13 @@
+import * as fs from 'node:fs';
+
 import { getProviderAdapter } from './adapters';
 import { getString, isRecord, parseJson } from './json';
 import { mergeRedactions } from './redaction';
 import { requestOptions } from './contract-options';
-import { prepareSingleAgentProviderCommand } from './single-agent-runtime';
+import {
+  prepareSingleAgentProviderCommand,
+  type PreparedSingleAgentProviderCommand,
+} from './single-agent-runtime';
 import type { BuildProviderCommandOptions, CommandSpec, ProviderAdapter } from './types';
 export {
   contractError,
@@ -90,29 +95,101 @@ function findReservedCommandEnvKey(
 function buildOptions(request: RequestData): BuildProviderCommandOptions {
   const options = requestOptions(request.raw.options);
   const cwd = optionalString(request.raw, 'cwd');
-  if (cwd === undefined || options.cwd !== undefined) return options;
-  return { ...options, cwd };
+  const rawOptionExecutionContext = isRecord(request.raw.options)
+    ? request.raw.options.executionContext
+    : undefined;
+  if (
+    rawOptionExecutionContext !== undefined &&
+    typeof rawOptionExecutionContext !== 'string'
+  ) {
+    throw contractError({
+      code: 'invalid-field',
+      message:
+        'options.executionContext must be "host", "detached", "docker", or "benchmark".',
+      exitCode: 2,
+      field: 'options.executionContext',
+    });
+  }
+  const topLevelExecutionContext = optionalString(request.raw, 'executionContext');
+  const rawExecutionContext = rawOptionExecutionContext ?? topLevelExecutionContext;
+  let executionContext: BuildProviderCommandOptions['executionContext'];
+  if (
+    rawExecutionContext === undefined ||
+    rawExecutionContext === 'host' ||
+    rawExecutionContext === 'detached' ||
+    rawExecutionContext === 'docker' ||
+    rawExecutionContext === 'benchmark'
+  ) {
+    executionContext = rawExecutionContext;
+  } else {
+    throw contractError({
+      code: 'invalid-field',
+      message: `${
+        rawOptionExecutionContext === undefined ? 'executionContext' : 'options.executionContext'
+      } must be "host", "detached", "docker", or "benchmark".`,
+      exitCode: 2,
+      field:
+        rawOptionExecutionContext === undefined
+          ? 'executionContext'
+          : 'options.executionContext',
+    });
+  }
+  return {
+    ...options,
+    ...(cwd === undefined || options.cwd !== undefined ? {} : { cwd }),
+    ...(executionContext === undefined ? {} : { executionContext }),
+  };
 }
 
-export function buildCommandSpec(request: RequestData): {
-  readonly adapter: ProviderAdapter;
-  readonly commandSpec: CommandSpec;
-  readonly options: BuildProviderCommandOptions;
+export interface PreparedCommandSpec extends PreparedSingleAgentProviderCommand {
   readonly context: string;
-} {
+}
+
+export function buildCommandSpec(
+  request: RequestData,
+  runtimeSettings?: Record<string, unknown>
+): PreparedCommandSpec {
   const adapter = adapterForProvider(request.provider);
   const context = requiredString(request.raw, 'context');
   const options = buildOptions(request);
-  const prepared = prepareSingleAgentProviderCommand({
-    provider: adapter.id,
-    context,
-    options,
-  });
+  const prepared = prepareSingleAgentProviderCommand(
+    {
+      provider: adapter.id,
+      context,
+      options,
+    },
+    runtimeSettings
+  );
+  if (prepared.invoke.parser === 'omp-sdk-ndjson' && Object.keys(request.env).length > 0) {
+    const privateRoot = prepared.privateArtifacts?.root;
+    if (privateRoot !== undefined) {
+      try {
+        fs.rmSync(privateRoot, { recursive: true, force: true });
+        if (fs.existsSync(privateRoot)) throw new Error('private root still exists');
+      } catch {
+        throw contractError({
+          code: 'invalid-request',
+          message: 'OMP SDK private request cleanup failed before spawn.',
+          exitCode: 1,
+          field: 'env',
+        });
+      }
+    }
+    throw contractError({
+      code: 'forbidden-field',
+      message:
+        'env is not accepted for OMP SDK requests; the final spawn owner resolves only credential names declared by providerSettings.omp.auth.',
+      exitCode: 2,
+      field: 'env',
+    });
+  }
   return {
-    adapter: prepared.adapter,
+    ...prepared,
     context,
-    options: prepared.options,
-    commandSpec: mergeCommandSpec(prepared.commandSpec, request.env),
+    commandSpec:
+      prepared.invoke.parser === 'omp-sdk-ndjson'
+        ? prepared.commandSpec
+        : mergeCommandSpec(prepared.commandSpec, request.env),
   };
 }
 

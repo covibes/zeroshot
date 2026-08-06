@@ -7,13 +7,13 @@ const Ledger = require('../../src/ledger');
 const REPO_ROOT = path.resolve(__dirname, '../..');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function workerConfig(maxRetries, timeout) {
+function workerConfig(maxRetries, timeout, staleDuration = 1500, role = 'implementation') {
   return {
     defaultProvider: 'codex',
     agents: [
       {
         id: 'worker',
-        role: 'implementation',
+        role,
         provider: 'codex',
         modelLevel: 'level2',
         outputFormat: 'json',
@@ -22,14 +22,17 @@ function workerConfig(maxRetries, timeout) {
           properties: { done: { type: 'boolean' } },
           required: ['done'],
         },
-        staleDuration: 1500,
+        staleDuration,
         timeout,
         maxRetries,
         triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
         hooks: {
           onComplete: {
             action: 'publish_message',
-            config: { topic: 'CLUSTER_COMPLETE' },
+            config: {
+              topic: 'CLUSTER_COMPLETE',
+              content: { data: { repaired: '{{result.done}}' } },
+            },
           },
         },
       },
@@ -37,7 +40,7 @@ function workerConfig(maxRetries, timeout) {
   };
 }
 
-function setupFixture({ actions, maxRetries, timeout, prefix }) {
+function setupFixture({ actions, maxRetries, timeout, staleDuration, prefix, role }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const home = path.join(root, '.zeroshot');
   const bin = path.join(root, 'bin');
@@ -64,7 +67,10 @@ function setupFixture({ actions, maxRetries, timeout, prefix }) {
       jitterFactor: 0,
     })
   );
-  fs.writeFileSync(configFile, JSON.stringify(workerConfig(maxRetries, timeout)));
+  fs.writeFileSync(
+    configFile,
+    JSON.stringify(workerConfig(maxRetries, timeout, staleDuration, role))
+  );
   const env = {
     ...process.env,
     HOME: root,
@@ -116,6 +122,40 @@ async function runInProcessRecovery() {
           ...fixture.env,
           RECOVERY_CONFIG: fixture.configFile,
           RECOVERY_STORAGE_DIR: fixture.storage,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }
+    );
+    const line = stdout.split('\n').find((entry) => entry.startsWith('RESULT:'));
+    if (!line) throw new Error(`missing fixture result in:\n${stdout}`);
+    return JSON.parse(line.slice('RESULT:'.length));
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+}
+
+async function runStructuredOutputRecovery({
+  initialAction = 'malformed',
+  recoveryAction = 'success',
+} = {}) {
+  const fixture = setupFixture({
+    actions: [initialAction],
+    maxRetries: 1,
+    timeout: 20000,
+    staleDuration: 15000,
+    prefix: 'zeroshot-structured-recovery-',
+    role: 'planner',
+  });
+  try {
+    const stdout = await runProcess(
+      [path.join(REPO_ROOT, 'tests/fixtures/run-stuck-recovery.js')],
+      {
+        env: {
+          ...fixture.env,
+          RECOVERY_CONFIG: fixture.configFile,
+          RECOVERY_STORAGE_DIR: fixture.storage,
+          FAKE_CODEX_RECOVERY_ACTION: recoveryAction,
+          FAKE_CODEX_EMIT_SESSION: '1',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       }
@@ -242,4 +282,4 @@ async function runDetachedRecovery() {
   }
 }
 
-module.exports = { runDetachedRecovery, runInProcessRecovery };
+module.exports = { runDetachedRecovery, runInProcessRecovery, runStructuredOutputRecovery };

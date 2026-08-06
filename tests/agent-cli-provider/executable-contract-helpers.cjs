@@ -84,6 +84,29 @@ function withTempEnv(env, fn) {
   }
 }
 
+async function withOmpRpcSettings(fn) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-rpc-settings-'));
+  const settingsFile = path.join(tempDir, 'settings.json');
+  const previousSettingsFile = process.env.ZEROSHOT_SETTINGS_FILE;
+
+  try {
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify({ providerSettings: { omp: { transport: 'rpc' } } }),
+      { mode: 0o600 }
+    );
+    process.env.ZEROSHOT_SETTINGS_FILE = settingsFile;
+    return await fn();
+  } finally {
+    if (previousSettingsFile === undefined) {
+      delete process.env.ZEROSHOT_SETTINGS_FILE;
+    } else {
+      process.env.ZEROSHOT_SETTINGS_FILE = previousSettingsFile;
+    }
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function writeExecutable(file, body) {
   fs.writeFileSync(file, body, { mode: 0o755 });
 }
@@ -115,6 +138,10 @@ function fakeCopilotScript(body) {
   return `#!/usr/bin/env node\n${body}\n`;
 }
 
+function fakeOmpScript(body) {
+  return `#!/usr/bin/env node\n${body}\n`;
+}
+
 function invokeCodexSchemaRequest(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -133,6 +160,7 @@ module.exports = {
   fakeCodexScript,
   fakeCopilotScript,
   fakeKiroScript,
+  fakeOmpScript,
   fakePiScript,
   repoRoot,
   runExecutable,
@@ -140,4 +168,5 @@ module.exports = {
   runnerResult,
   withFakeProviderCli,
   withTempEnv,
+  withOmpRpcSettings,
 };

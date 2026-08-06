@@ -51,6 +51,8 @@ zeroshot-cluster-configs/
 *.pdf
 report/
 .eslintcache
+.opcore/*
+!.opcore/config
 
 # Turbo
 .turbo/
@@ -60,3 +62,5 @@ test-metadata-manual.sh
 test-isolated-fix.js
 lib/agent-cli-provider/
 lib/cluster/
+lib/hosted-session/
+lib/target/

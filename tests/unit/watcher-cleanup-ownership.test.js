@@ -1,11 +1,5 @@
 const assert = require('assert');
-const { execFile } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { promisify } = require('util');
-
-const execFileAsync = promisify(execFile);
+const { execFileAsync, fs, os, path } = require('../helpers/test-runtime');
 
 describe('watcher command cleanup ownership', function () {
   this.timeout(40000);

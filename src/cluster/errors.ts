@@ -13,7 +13,13 @@ export class ClusterInternalError extends ClusterError {}
 export class ClusterProtocolError extends ClusterError {}
 export class ClusterTransportError extends ClusterError {}
 export class ClusterTimeoutError extends ClusterError {}
+export class ClusterRequestError extends ClusterError {}
 
+export class ClusterUpgradeError extends ClusterTransportError {
+  constructor(readonly status: number) {
+    super(`WebSocket upgrade rejected with HTTP ${status}`, 'UPGRADE_REJECTED');
+  }
+}
 export function requestAbortError(method: string): DOMException {
   return new DOMException(
     `${method} aborted locally; the server may still have committed this request`,

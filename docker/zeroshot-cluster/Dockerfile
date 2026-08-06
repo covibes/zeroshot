@@ -4,12 +4,11 @@
 # Build: docker build -t vibe-cluster-base vibe/cluster/docker/vibe-cluster/
 # Usage: zeroshot run <task> --docker
 
-FROM node:20-slim
+FROM node:22-slim
 
 # Upgrade npm to fix Arborist isDescendantOf bug (npm 10.x crash on complex peer deps)
 # See: https://github.com/npm/cli/issues/7682
-# Pinned to npm@11 (the latest line that still supports the node:20-slim base); npm@latest (12.x)
-# now requires node >=22 and breaks the build with EBADENGINE.
+# Pinned to npm@11 to keep the container toolchain reproducible with the supported Node 22 line.
 RUN npm install -g npm@11
 
 # Version pinning for infrastructure tools
@@ -158,6 +157,13 @@ RUN if [ -n "$PROVIDER_INSTALL" ]; then sh -c "$PROVIDER_INSTALL"; fi
 
 # Switch to non-root user (required for --dangerously-skip-permissions)
 USER node
+
+# Create a provider's config/overlay roots as the non-root container user (owner-only), so a
+# provider whose credential surface is env/broker-only (no host mount) still gets a writable,
+# private state directory. Registry-fed via PROVIDER_CONFIG_ROOTS (docker.configRoots); no
+# provider name appears in this Dockerfile.
+ARG PROVIDER_CONFIG_ROOTS=""
+RUN if [ -n "$PROVIDER_CONFIG_ROOTS" ]; then for d in $PROVIDER_CONFIG_ROOTS; do mkdir -p "$d" && chmod 700 "$d"; done; fi
 
 # Default command (overridden by vibe)
 CMD ["bash"]

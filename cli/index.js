@@ -14,7 +14,7 @@
  * - export: Export cluster conversation
  */
 
-const { program } = require('commander');
+const { Option, program } = require('commander');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -22,7 +22,7 @@ const { URL } = require('url');
 const chalk = require('chalk');
 const Orchestrator = require('../src/orchestrator');
 const { setupCompletion } = require('../lib/completion');
-const { resolveRunMode, describeRunMode } = require('../lib/run-mode');
+const { resolveRunMode, runModeFromPlan, describeRunMode } = require('../lib/run-mode');
 const { formatWatchMode } = require('./message-formatters-watch');
 const {
   formatAgentLifecycle,
@@ -35,11 +35,7 @@ const {
   formatClusterFailed,
   formatGenericMessage,
 } = require('./message-formatters-normal');
-const {
-  getColorForSender,
-  buildMessagePrefix,
-  buildClusterPrefix,
-} = require('./message-formatter-utils');
+const { getColorForSender, buildMessagePrefix } = require('./message-formatter-utils');
 const {
   loadSettings,
   mutateSettings,
@@ -51,6 +47,7 @@ const {
 } = require('../lib/settings');
 const {
   VALID_PROVIDERS,
+  getDefaultProviderId,
   getProviderMetadata,
   normalizeProviderName,
   resolveProviderCommand,
@@ -73,6 +70,7 @@ const {
   startClusterFromFile,
   startClusterFromIssue,
   startClusterFromText,
+  resolveEffectiveRunPlan,
 } = require('../lib/start-cluster');
 const { requirePreflight } = require('../src/preflight');
 const {
@@ -91,7 +89,7 @@ const {
   waitForResumeOwnership,
 } = require('../lib/detached-startup');
 const { isProcessRunning: isClusterProcessAlive } = require('../lib/process-liveness');
-// Setup wizard removed - use: zeroshot settings set <key> <value>
+const { runSetupWizard } = require('./lib/setup-wizard');
 const {
   checkForUpdates,
   isAutomaticUpdateEligible,
@@ -117,30 +115,41 @@ const PROVIDER_CHOICES = VALID_PROVIDERS.join(', ');
 /** @type {import('../src/status-footer').StatusFooter | null} */
 let activeStatusFooter = null;
 
-/**
- * Safe print - routes through statusFooter when active to prevent garbling
- * @param {...any} args - Arguments to print (like console.log)
- */
-function safePrint(...args) {
-  const text = args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' ');
-
-  if (activeStatusFooter) {
-    activeStatusFooter.print(text + '\n');
-  } else {
-    console.log(...args);
+function normalizeLineText(text) {
+  let line = String(text);
+  while (line.endsWith('\n')) {
+    line = line.slice(0, -1);
+    if (line.endsWith('\r')) line = line.slice(0, -1);
   }
+  return line;
 }
 
-/**
- * Safe write - routes through statusFooter when active
- * @param {string} text - Text to write
- */
-function safeWrite(text) {
+function printLine(text = '') {
+  const line = normalizeLineText(text);
   if (activeStatusFooter) {
-    activeStatusFooter.print(text);
-  } else {
-    process.stdout.write(text);
+    activeStatusFooter.print(line);
+    return;
   }
+  process.stdout.write(`${line}\n`);
+}
+
+function write(text) {
+  const chunk = String(text);
+  if (activeStatusFooter) {
+    activeStatusFooter.write(chunk);
+    return;
+  }
+  process.stdout.write(chunk);
+}
+
+const liveOutputWriter = Object.freeze({ printLine, write });
+
+function safePrint(...args) {
+  printLine(args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' '));
+}
+
+function safeWrite(text) {
+  write(text);
 }
 
 /**
@@ -198,56 +207,43 @@ process.on('unhandledRejection', (reason) => {
 // Package root directory (for resolving default config paths)
 const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
-function normalizeRunOptions(options) {
-  if (options.ship) {
-    options.pr = true;
-    if (!options.docker) {
-      options.worktree = true;
-    }
-  }
-  if (options.pr && !options.docker && !options.worktree) {
-    options.worktree = true;
-  }
-  if (options.docker) {
-    options.worktree = false;
-  }
-  // autoMerge is NOT stored here — it is derived from the run plan (delivery ===
-  // 'ship') at every consumer. Writing it here unconditionally would clobber an
-  // explicit autoMerge intent (e.g. a future `--auto-merge` flag) back to false.
-}
-
-async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
-  // Detect which issue provider tool is needed
+async function runClusterPreflight({
+  input,
+  options,
+  plan,
+  providerOverride,
+  settings,
+  forceProvider,
+  deps = {},
+}) {
   let issueProvider = null;
   let targetHost = null;
 
   if (input.issue) {
     const { detectProvider: detectIssueProvider } = require('../src/issue-providers');
     const ProviderClass = detectIssueProvider(input.issue, settings, forceProvider);
-    if (ProviderClass) {
-      issueProvider = ProviderClass.id;
-    }
-
-    // Extract hostname from URL input for auth checks
-    // This ensures we check auth for the target host, not the current git repo
+    if (ProviderClass) issueProvider = ProviderClass.id;
     if (/^https?:\/\//.test(input.issue)) {
       try {
-        const url = new URL(input.issue);
-        targetHost = url.hostname;
+        targetHost = new URL(input.issue).hostname;
       } catch {
-        // Invalid URL - let provider handle the error
+        // Provider parsing reports malformed issue URLs.
       }
     }
   }
 
-  await requirePreflight({
-    requireGh: issueProvider === 'github', // gh CLI required for GitHub
-    requireDocker: options.docker,
-    requireGit: options.worktree,
+  const effectivePlan = plan || resolveEffectiveRunPlan(options, settings);
+  const preflight = deps.requirePreflight || requirePreflight;
+  await preflight({
+    requireGh: issueProvider === 'github',
+    requireDocker: effectivePlan.isolation === 'docker',
+    requireGit: effectivePlan.isolation === 'worktree',
+    autoPr: effectivePlan.delivery !== 'none',
     quiet: process.env.ZEROSHOT_DAEMON === '1',
     provider: providerOverride,
-    issueProvider, // Pass detected issue provider for tool checking
-    targetHost, // Pass target host for multi-instance auth checks (e.g., GitLab self-hosted)
+    settings,
+    issueProvider,
+    targetHost,
   });
 }
 
@@ -255,8 +251,8 @@ function shouldRunDetached(options) {
   return options.detach && !process.env.ZEROSHOT_DAEMON;
 }
 
-function printDetachedClusterStart(options, clusterId, logPath) {
-  const runMode = resolveRunMode(options);
+function printDetachedClusterStart(plan, clusterId, logPath) {
+  const runMode = runModeFromPlan(plan);
   console.log(runMode ? `Started ${clusterId} (${runMode})` : `Started ${clusterId}`);
   if (logPath) {
     console.log(`Setup log: ${logPath}`);
@@ -328,7 +324,18 @@ function spawnDetachedChild(env, cwd, logFd) {
   return daemon;
 }
 
-async function spawnDetachedCluster(options, clusterId, stdinText) {
+function applyRunPlanToOptions(options, plan) {
+  return {
+    ...options,
+    docker: plan.isolation === 'docker',
+    worktree: plan.isolation === 'worktree',
+    pr: plan.delivery === 'pr',
+    ship: plan.delivery === 'ship',
+    noIsolation: plan.isolation === 'none',
+  };
+}
+
+async function spawnDetachedCluster(options, plan, clusterId, stdinText) {
   const logFd = createDaemonLogFile(clusterId);
   const targetCwd = detectGitRepoRoot();
   const logPath = path.join(os.homedir(), '.zeroshot', `${clusterId}-daemon.log`);
@@ -346,7 +353,7 @@ async function spawnDetachedCluster(options, clusterId, stdinText) {
     cwd: targetCwd,
   });
   fs.closeSync(logFd);
-  printDetachedClusterStart(options, clusterId, logPath);
+  printDetachedClusterStart(plan, clusterId, logPath);
 }
 
 // Resume's daemon env is deliberately NOT buildDaemonEnv: run-only keys like
@@ -407,11 +414,11 @@ function trackActiveCluster(clusterId, orchestrator) {
   orchestratorInstance = orchestrator;
 }
 
-function printForegroundStartInfo(options, clusterId, configName) {
+function printForegroundStartInfo(plan, clusterId, configName) {
   if (process.env.ZEROSHOT_DAEMON) {
     return;
   }
-  const runMode = resolveRunMode(options);
+  const runMode = runModeFromPlan(plan);
   console.log(runMode ? `Starting ${clusterId} (${runMode})` : `Starting ${clusterId}`);
   console.log(chalk.dim(`Config: ${configName}`));
   console.log(chalk.dim('Ctrl+C to stop following (cluster keeps running)\n'));
@@ -442,7 +449,7 @@ function applyModelOverrideToConfig(config, modelOverride, providerOverride, set
   }
 
   const providerName = normalizeProviderName(
-    providerOverride || config.defaultProvider || settings.defaultProvider || 'claude'
+    providerOverride || config.defaultProvider || settings.defaultProvider || getDefaultProviderId()
   );
   const provider = getProvider(providerName);
   try {
@@ -656,11 +663,11 @@ function waitForClusterCompletion(orchestrator, clusterId, cleanup) {
   });
 }
 
-async function streamClusterInForeground(cluster, orchestrator, clusterId, options) {
+async function streamClusterInForeground(cluster, orchestrator, clusterId, plan) {
   const sendersWithOutput = new Set();
   const processedMessageIds = new Set();
 
-  const statusFooter = createStatusFooter(clusterId, cluster.messageBus, resolveRunMode(options));
+  const statusFooter = createStatusFooter(clusterId, cluster.messageBus, runModeFromPlan(plan));
   const handleLifecycleMessage = createLifecycleHandler(statusFooter);
   const lifecycleUnsubscribe = cluster.messageBus.subscribeTopic(
     'AGENT_LIFECYCLE',
@@ -789,17 +796,6 @@ function printClusterTable(enrichedClusters) {
   }
 }
 
-async function tryGetTasksData(getTasksData, options) {
-  if (typeof getTasksData !== 'function') {
-    return [];
-  }
-  try {
-    return await getTasksData(options);
-  } catch {
-    return [];
-  }
-}
-
 function printListJson(enrichedClusters, tasks) {
   console.log(
     JSON.stringify(
@@ -811,6 +807,10 @@ function printListJson(enrichedClusters, tasks) {
       2
     )
   );
+}
+
+function printJsonError(error) {
+  console.log(JSON.stringify({ error: error.message }, null, 2));
 }
 
 function reportMissingId(id, options) {
@@ -932,22 +932,11 @@ function printClusterStatusHuman(status, tokensByRole, clusterId) {
   printClusterAgents(status);
 }
 
-async function tryGetTaskStatusData(getStatusData, id) {
-  if (typeof getStatusData !== 'function') {
-    return null;
-  }
-  try {
-    return await getStatusData(id);
-  } catch {
-    return null;
-  }
-}
-
 async function showTaskStatus(id, options) {
   const { showStatus, getStatusData } = await import('../task-lib/commands/status.js');
   if (options.json) {
-    const taskData = await tryGetTaskStatusData(getStatusData, id);
-    console.log(JSON.stringify({ type: 'task', id, ...taskData }, null, 2));
+    const taskData = await getStatusData(id);
+    console.log(JSON.stringify({ type: 'task', ...taskData }, null, 2));
     return;
   }
   await showStatus(id);
@@ -2085,12 +2074,9 @@ async function getPurgeData(orchestrator) {
       cluster.state === 'running' || cluster.state === 'initializing' || cluster.state === 'setup'
   );
   const { loadTasks } = await import('../task-lib/store.js');
-  const { isProcessRunning } = await import('../task-lib/runner.js');
   const tasks = Object.values(loadTasks());
-  const runningTasks = tasks.filter(
-    (task) => task.status === 'running' && isProcessRunning(task.pid)
-  );
-  return { clusters, runningClusters, tasks, runningTasks, isProcessRunning };
+  const runningTasks = tasks.filter((task) => task.status === 'running');
+  return { clusters, runningClusters, tasks, runningTasks };
 }
 
 function printPurgeSummary({ clusters, runningClusters, tasks, runningTasks }) {
@@ -2132,53 +2118,150 @@ async function confirmPurge(options) {
   return answer.toLowerCase() === 'y';
 }
 
+function validateClusterKillResults(runningClusters, clusterResults) {
+  if (
+    clusterResults === null ||
+    typeof clusterResults !== 'object' ||
+    !Array.isArray(clusterResults.killed) ||
+    !Array.isArray(clusterResults.errors)
+  ) {
+    throw new Error(
+      'Refusing destructive cluster cleanup: kill-all returned incomplete or invalid results ' +
+        '(malformed fields: killed or errors). Retry after confirming every cluster process ' +
+        'boundary is terminal.'
+    );
+  }
+
+  const expectedIds = runningClusters.map((cluster) => cluster.id);
+  const expected = new Set(expectedIds);
+  const outcomeIds = [...clusterResults.killed, ...clusterResults.errors.map((error) => error?.id)];
+  const counts = outcomeIds.reduce((byId, id) => {
+    byId.set(id, (byId.get(id) || 0) + 1);
+    return byId;
+  }, new Map());
+  const problems = [
+    ['unknown outcomes', outcomeIds.filter((id) => typeof id !== 'string' || !expected.has(id))],
+    ['duplicate outcomes', expectedIds.filter((id) => (counts.get(id) || 0) > 1)],
+    ['missing outcomes', expectedIds.filter((id) => (counts.get(id) || 0) === 0)],
+  ]
+    .filter(([, ids]) => ids.length > 0)
+    .map(([label, ids]) => `${label}: ${ids.join(', ')}`);
+
+  if (problems.length > 0) {
+    throw new Error(
+      `Refusing destructive cluster cleanup: kill-all returned incomplete or invalid results (${problems.join(
+        '; '
+      )}). Retry after confirming every cluster process boundary is terminal.`
+    );
+  }
+
+  return clusterResults;
+}
+
 async function killRunningClusters(orchestrator, runningClusters) {
   if (runningClusters.length === 0) {
     return;
   }
   console.log(chalk.bold('Killing running clusters...'));
-  const clusterResults = await orchestrator.killAll();
-  for (const id of clusterResults.killed) {
+  const { killed, errors } = validateClusterKillResults(
+    runningClusters,
+    await orchestrator.killAll()
+  );
+
+  for (const id of killed) {
     console.log(chalk.green(`✓ Killed cluster: ${id}`));
   }
-  for (const err of clusterResults.errors) {
-    console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
+  if (errors.length > 0) {
+    for (const err of errors) {
+      console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
+    }
+    throw new Error(
+      `Refusing destructive cluster cleanup: termination failed for ${errors
+        .map((error) => error.id)
+        .join(', ')}. Retry after confirming every cluster process boundary is terminal.`
+    );
   }
 }
 
-async function killRunningTasks(runningTasks, isProcessRunning) {
+async function killRunningTasks(runningTasks) {
   if (runningTasks.length === 0) {
     return;
   }
   console.log(chalk.bold('Killing running tasks...'));
-  const { killTask } = await import('../task-lib/runner.js');
-  const { updateTask } = await import('../task-lib/store.js');
+  const [{ killTaskCommand }, { getTask }] = await Promise.all([
+    import('../task-lib/commands/kill.js'),
+    import('../task-lib/store.js'),
+  ]);
+  const unconfirmed = [];
 
+  // Reuse the standalone kill boundary instead of treating successful signal delivery as process
+  // termination. Then verify its durable terminal write: killTaskCommand also serves the interactive
+  // CLI and reports an unconfirmed boundary through process.exitCode rather than throwing. Purge
+  // must turn that report into a hard gate before it reaches any destructive cleanup.
   for (const task of runningTasks) {
-    if (!isProcessRunning(task.pid)) {
-      updateTask(task.id, {
-        status: 'stale',
-        error: 'Process died unexpectedly',
-      });
-      console.log(chalk.yellow(`○ Task ${task.id} was already dead, marked stale`));
-      continue;
+    await killTaskCommand(task.id);
+    const current = getTask(task.id);
+    if (
+      !current ||
+      current.status === 'running' ||
+      Number.isInteger(current.pid) ||
+      Number.isInteger(current.processGroupId)
+    ) {
+      unconfirmed.push(task.id);
     }
+  }
 
-    const killed = killTask(task.pid);
-    if (killed) {
-      updateTask(task.id, { status: 'killed', error: 'Killed by clear' });
-      console.log(chalk.green(`✓ Killed task: ${task.id}`));
-    } else {
-      console.log(chalk.red(`✗ Failed to kill task: ${task.id}`));
-    }
+  if (unconfirmed.length > 0) {
+    throw new Error(
+      `Refusing destructive task cleanup: provider termination is unconfirmed for ${unconfirmed.join(
+        ', '
+      )}. Retry after confirming the persisted provider process boundary is terminal.`
+    );
   }
 }
 
-function deleteClusterData(orchestrator, clusters) {
+/**
+ * Delete the OMP session partitions owned by the agents of the clusters being cleared (issue
+ * #866). Cluster partitions live under the owning cluster's `storageDir`, so nothing else in the
+ * cluster-clear path would ever reclaim them; the standalone `clean` surface only sees rows it is
+ * removing. The shared, machine-wide OMP CAS blob root is never touched, and a partition that
+ * cannot be safely resolved keeps its owner record plus a warning instead of being deleted.
+ */
+async function deleteClusterOmpSessions(clusters) {
+  const { cleanupOmpSessionPartitionsForCluster } =
+    await import('../task-lib/omp-session-cleanup.js');
+  let deleted = 0;
+  let retained = 0;
+  const unreadable = new Set();
+  for (const cluster of clusters) {
+    const result = cleanupOmpSessionPartitionsForCluster(cluster.id, (message) =>
+      console.log(chalk.yellow(`Warning: ${message}`))
+    );
+    deleted += result.deleted.length;
+    retained += result.retained.length;
+    for (const taskId of result.unreadable) unreadable.add(taskId);
+  }
+  if (deleted > 0) {
+    console.log(chalk.green(`✓ Deleted ${deleted} OMP session partition(s)`));
+  }
+  if (retained > 0) {
+    console.log(chalk.yellow(`○ Retained ${retained} OMP session partition(s) for inspection`));
+  }
+  if (unreadable.size > 0) {
+    console.log(
+      chalk.yellow(
+        `○ ${unreadable.size} task row(s) hold an unreadable OMP session ownership record and were left intact`
+      )
+    );
+  }
+}
+
+async function deleteClusterData(orchestrator, clusters) {
   if (clusters.length === 0) {
     return;
   }
   console.log(chalk.bold('Deleting cluster data...'));
+  await deleteClusterOmpSessions(clusters);
   const clustersFile = path.join(orchestrator.storageDir, 'clusters.json');
   const clustersDir = path.join(orchestrator.storageDir, 'clusters');
 
@@ -2483,9 +2566,6 @@ function buildTaskLogMessage({ taskId, timestamp, jsonContent, cluster, agent, i
   };
 }
 
-// Setup shell completion
-setupCompletion();
-
 // Banner disabled
 function showBanner() {
   // Banner removed for cleaner output
@@ -2506,68 +2586,53 @@ if (shouldShowBanner) {
 
 program
   .name('zeroshot')
-  .description('Multi-agent orchestration and task management for Claude, Codex, and Gemini')
+  .description('Independent executor–verifier orchestration for software changes.')
   .version(require('../package.json').version)
   .option('-q, --quiet', 'Suppress prompts (first-run wizard, update checks)')
+  .helpCommand(false)
   .addHelpText(
     'after',
     `
 Examples:
-  ${chalk.cyan('zeroshot run 123 --ship')}             Full automation: isolated + auto-merge PR
-  ${chalk.cyan('zeroshot run 123')}                    Run cluster from GitHub issue
-  ${chalk.cyan('zeroshot run feature.md')}             Run cluster from markdown file
-  ${chalk.cyan('zeroshot run "Implement feature X"')}  Run cluster from plain text
-  ${chalk.cyan('zeroshot run 123 -d')}                 Run in background (detached)
-  ${chalk.cyan('zeroshot run 123 --docker')}           Run in Docker container (safe for e2e tests)
-  ${chalk.cyan('zeroshot task run "Fix the bug"')}     Run single-agent background task
-  ${chalk.cyan('zeroshot list')}                       List all tasks and clusters
-  ${chalk.cyan('zeroshot task list')}                  List tasks only
-  ${chalk.cyan('zeroshot attach <id>')}                Attach to running task (Ctrl+B d to detach)
-  ${chalk.cyan('zeroshot logs -f')}                    Stream logs in real-time (like tail -f)
-  ${chalk.cyan('zeroshot logs -w')}                    Watch cluster lifecycle and event summaries
-  ${chalk.cyan('zeroshot logs <id> -f')}               Stream logs for specific cluster/task
-  ${chalk.cyan('zeroshot status <id>')}                Detailed status of task or cluster
-  ${chalk.cyan('zeroshot finish <id>')}                Convert cluster to completion task (creates and merges PR)
-  ${chalk.cyan('zeroshot kill <id>')}                  Kill a running task or cluster
-  ${chalk.cyan('zeroshot purge')}                      Kill all processes and delete all data (with confirmation)
-  ${chalk.cyan('zeroshot purge -y')}                   Purge everything without confirmation
-  ${chalk.cyan('zeroshot settings')}                   Show/manage zeroshot settings (maxModel, config, etc.)
-  ${chalk.cyan('zeroshot settings set <key> <val>')}   Set a setting (e.g., maxModel haiku)
-  ${chalk.cyan('zeroshot providers')}                  Show provider status and defaults
-  ${chalk.cyan('zeroshot config list')}                List available cluster configs
-  ${chalk.cyan('zeroshot config show <name>')}         Visualize a cluster config (agents, triggers, flow)
-  ${chalk.cyan('zeroshot export <id>')}                Export cluster conversation to file
-
-Automation levels (cascading: --ship → --pr → --worktree):
-  ${chalk.yellow('zeroshot run 123')}            → Local run, no isolation
-  ${chalk.yellow('zeroshot run 123 --docker')}   → Docker isolation, no PR
-  ${chalk.yellow('zeroshot run 123 --worktree')} → Git worktree isolation, no PR
-  ${chalk.yellow('zeroshot run 123 --pr')}       → Worktree + PR (human reviews)
-  ${chalk.yellow('zeroshot run 123 --ship')}     → Worktree + PR + auto-merge (full automation)
-  ${chalk.yellow('zeroshot task run')}           → Single-agent background task (simpler, faster)
-
-Shell completion:
-  ${chalk.dim('zeroshot --completion >> ~/.bashrc && source ~/.bashrc')}
+  ${chalk.cyan('zeroshot')}                             Run guided setup or show help
+  ${chalk.cyan('zeroshot run "Add tests"')}             Start an explicit software-change run
+  ${chalk.cyan('zeroshot list')}                        List tasks and clusters
+  ${chalk.cyan('zeroshot logs <id> -f')}                Follow a run
 `
   );
 
 // Run command - CLUSTER with auto-detection
+
 program
   .command('run <input>')
+  .helpGroup('Start:')
   .description(
     'Start a multi-agent cluster (GitHub issue, markdown file, plain text, or "-" for stdin)'
   )
+  .optionsGroup('Input:')
   .option('--config <file>', 'Path to cluster config JSON (default: conductor-bootstrap)')
+  .option('-G, --github', 'Force GitHub as issue source')
+  .option('-L, --gitlab', 'Force GitLab as issue source')
+  .option('-J, --jira', 'Force Jira as issue source')
+  .option('-D, --devops', 'Force Azure DevOps as issue source')
+  .option('-N, --linear', 'Force Linear as issue source')
+  .optionsGroup('Isolation:')
   .option('--docker', 'Run cluster inside Docker container (full isolation)')
   .option('--worktree', 'Use git worktree for isolation (lightweight, no Docker required)')
+  .addOption(
+    new Option('--no-isolation', 'Run in the current checkout without isolation').default(undefined)
+  )
   .option(
     '--docker-image <image>',
     'Docker image for --docker mode (default: zeroshot-cluster-base)'
   )
+  .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
+  .option('--no-mounts', 'Disable all Docker credential mounts')
   .option(
-    '--strict-schema',
-    'Enforce JSON schema via CLI (no live streaming). Default: live streaming with local validation'
+    '--container-home <path>',
+    'Container home directory for $HOME expansion (default: /root)'
   )
+  .optionsGroup('Delivery:')
   .option(
     '--pr',
     'Create PR for human review (uses worktree isolation by default, use --docker for Docker). Never auto-merges itself; a repo-side branch-protection auto-merge rule or merge queue may still merge the PR independently of zeroshot.'
@@ -2582,26 +2647,21 @@ program
     '--close-issue <mode>',
     'When to close issue after merge: auto|always|never (default: from .zeroshot/settings.json or never)'
   )
-  .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
+  .optionsGroup('Provider:')
   .option('--provider <provider>', `Override all agents to use a provider (${PROVIDER_CHOICES})`)
   .option('--model <model>', 'Override all agent models (provider-specific model id)')
+  .optionsGroup('Runtime:')
+  .option(
+    '--strict-schema',
+    'Enforce JSON schema via CLI (no live streaming). Default: live streaming with local validation'
+  )
+  .option('--workers <n>', 'Max sub-agents for worker to spawn in parallel', parseInt)
   .option(
     '--sim <mode>',
     'Token-free simulation gate for templates (off|fast|deep). Default: fast',
     'fast'
   )
-  .option('-G, --github', 'Force GitHub as issue source')
-  .option('-L, --gitlab', 'Force GitLab as issue source')
-  .option('-J, --jira', 'Force Jira as issue source')
-  .option('-D, --devops', 'Force Azure DevOps as issue source')
-  .option('-N, --linear', 'Force Linear as issue source')
   .option('-d, --detach', 'Run in background (default: attach to first agent)')
-  .option('--mount <spec...>', 'Add Docker mount (host:container[:ro]). Repeatable.')
-  .option('--no-mounts', 'Disable all Docker credential mounts')
-  .option(
-    '--container-home <path>',
-    'Container home directory for $HOME expansion (default: /root)'
-  )
   .addHelpText(
     'after',
     `
@@ -2640,10 +2700,6 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
   )
   .action(async (inputArg, options) => {
     try {
-      // Normalize options (--ship → --pr → --worktree flags)
-      normalizeRunOptions(options);
-
-      // Determine force provider from CLI flags
       let forceProvider = null;
       if (options.github) forceProvider = 'github';
       else if (options.gitlab) forceProvider = 'gitlab';
@@ -2651,7 +2707,6 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       else if (options.devops) forceProvider = 'azure-devops';
       else if (options.linear) forceProvider = 'linear';
 
-      // Stdin input ('-'): read task body from stdin to avoid shell-quoting breakage
       let stdinText;
       if (isStdinInput(inputArg)) {
         if (process.env.ZEROSHOT_DAEMON === '1') {
@@ -2674,24 +2729,29 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
         }
       }
 
-      // Auto-detect input type
       const settings = loadSettings();
       const input =
         stdinText !== undefined
           ? buildTextInput(stdinText)
           : detectRunInput(inputArg, settings, forceProvider);
       const providerOverride = resolveProviderOverride(options);
+      const effectiveRunPlan = resolveEffectiveRunPlan(options, settings);
+      const effectiveOptions = applyRunPlanToOptions(options, effectiveRunPlan);
 
-      // Preflight checks
-      await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+      await runClusterPreflight({
+        input,
+        options: effectiveOptions,
+        providerOverride,
+        settings,
+        forceProvider,
+        plan: effectiveRunPlan,
+      });
 
-      // Secondary preflight: token-free template simulation/validation
-      const simMode = String(options.sim || 'fast').toLowerCase();
+      const simMode = String(effectiveOptions.sim || 'fast').toLowerCase();
       if (simMode !== 'off') {
         const { validateTemplates } = require('../src/template-validation');
         const templatesDir = path.join(PACKAGE_ROOT, 'cluster-templates');
-        const deep = simMode === 'deep';
-        const report = await validateTemplates({ templatesDir, deep });
+        const report = await validateTemplates({ templatesDir, deep: simMode === 'deep' });
         if (!report.valid) {
           console.error('\n' + '='.repeat(60));
           console.error(`TEMPLATE VALIDATION FAILED (sim=${simMode})`);
@@ -2700,9 +2760,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
             if (result.valid) continue;
             const rel = path.relative(process.cwd(), filePath);
             console.error(`\n❌ ${rel}`);
-            for (const err of result.errors) {
-              console.error(`   ERROR: ${err}`);
-            }
+            for (const err of result.errors) console.error(`   ERROR: ${err}`);
           }
           console.error('\nFix template errors before running to avoid token burn.\n');
           process.exit(1);
@@ -2710,67 +2768,42 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       }
 
       const { generateName } = require('../src/name-generator');
-
-      if (shouldRunDetached(options)) {
+      if (shouldRunDetached(effectiveOptions)) {
         const clusterId = generateName('cluster');
-        await spawnDetachedCluster(options, clusterId, stdinText);
+        await spawnDetachedCluster(effectiveOptions, effectiveRunPlan, clusterId, stdinText);
         return;
       }
 
       const clusterId = resolveClusterId(generateName);
-
-      // === LOAD CONFIG ===
-      // Priority: CLI --config > settings.defaultConfig
-      const configName = resolveConfigName(options, settings);
+      const configName = resolveConfigName(effectiveOptions, settings);
       const configPath = resolveConfigPath(configName);
       const orchestrator = await getOrchestrator();
       const config = loadClusterConfig(orchestrator, configPath, settings, providerOverride);
       trackActiveCluster(clusterId, orchestrator);
-      printForegroundStartInfo(options, clusterId, configName);
+      printForegroundStartInfo(effectiveRunPlan, clusterId, configName);
 
-      const strictSchema = resolveStrictSchema(options, settings);
+      const strictSchema = resolveStrictSchema(effectiveOptions, settings);
       applyStrictSchema(config, strictSchema);
-
-      const modelOverride = resolveModelOverride(options);
+      const modelOverride = resolveModelOverride(effectiveOptions);
       applyModelOverrideToConfig(config, modelOverride, providerOverride, settings);
 
-      let cluster = null;
+      const startArgs = {
+        orchestrator,
+        config,
+        settings,
+        providerOverride,
+        modelOverride,
+        forceProvider,
+        clusterId,
+        options: effectiveOptions,
+      };
+      let cluster;
       if (input.text) {
-        cluster = await startClusterFromText({
-          orchestrator,
-          text: input.text,
-          config,
-          settings,
-          providerOverride,
-          modelOverride,
-          forceProvider,
-          clusterId,
-          options,
-        });
+        cluster = await startClusterFromText({ ...startArgs, text: input.text });
       } else if (input.issue) {
-        cluster = await startClusterFromIssue({
-          orchestrator,
-          issue: input.issue,
-          config,
-          settings,
-          providerOverride,
-          modelOverride,
-          forceProvider,
-          clusterId,
-          options,
-        });
+        cluster = await startClusterFromIssue({ ...startArgs, issue: input.issue });
       } else if (input.file) {
-        cluster = await startClusterFromFile({
-          orchestrator,
-          file: input.file,
-          config,
-          settings,
-          providerOverride,
-          modelOverride,
-          forceProvider,
-          clusterId,
-          options,
-        });
+        cluster = await startClusterFromFile({ ...startArgs, file: input.file });
       } else {
         throw new Error(
           `Invalid run input for cluster ${clusterId}: expected text, issue, or file`
@@ -2778,15 +2811,12 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       }
 
       if (!process.env.ZEROSHOT_DAEMON) {
-        await streamClusterInForeground(cluster, orchestrator, clusterId, options);
+        await streamClusterInForeground(cluster, orchestrator, clusterId, effectiveRunPlan);
         orchestrator.close();
       }
-
       setupDaemonCleanup(orchestrator, clusterId);
     } catch (error) {
       if (error.code === 'DUPLICATE_CLUSTER') {
-        // Benign guard rejection, not a crash: nothing was allocated, so there is
-        // nothing to roll back. No stack trace, no "Error:" framing.
         if (process.env.ZEROSHOT_DAEMON && process.env.ZEROSHOT_CLUSTER_ID) {
           try {
             await removeDetachedSetupCluster({
@@ -2824,10 +2854,14 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
 
 // === TASK COMMANDS ===
 // Task run - single-agent background task
-const taskCmd = program.command('task').description('Single-agent task management');
+const taskCmd = program
+  .command('task')
+  .helpGroup('Automation:')
+  .description('Single-agent task management');
 
 const cmdproofCmd = program
   .command('cmdproof')
+  .helpGroup('Configure:')
   .description('Run configured cmdproof command proofs');
 
 for (const mode of ['prove', 'verify', 'check']) {
@@ -2845,11 +2879,7 @@ for (const mode of ['prove', 'verify', 'check']) {
     });
 }
 
-function assertRequestedWebSearchCliAvailable(
-  provider,
-  settings,
-  exists = commandExists
-) {
+function assertRequestedWebSearchCliAvailable(provider, settings, exists = commandExists) {
   const metadata = getProviderMetadata(provider);
   if (!metadata.settingsFields.includes('webSearch')) return;
   if (settings.providerSettings?.[provider]?.webSearch !== true) return;
@@ -2878,9 +2908,12 @@ taskCmd
     '-r, --resume <sessionId>',
     'Resume a specific provider session (Claude, Codex, or OpenCode)'
   )
-  .option(
-    '-c, --continue',
-    'Continue the most recent provider session (Claude or OpenCode)'
+  .option('-c, --continue', 'Continue the most recent provider session (Claude or OpenCode)')
+  .addOption(
+    new Option(
+      '--omp-resume <descriptor>',
+      'Internal: complete OMP resume descriptor JSON, cross-checked against the prior owner row (see task-lib/commands/run.js)'
+    ).hideHelp()
   )
   .option(
     '-o, --output-format <format>',
@@ -2895,6 +2928,7 @@ taskCmd
     (value, previous) => (previous || []).concat([value])
   )
   .option('--silent-json-output', 'Log ONLY final structured output')
+  .addOption(new Option('--structured-output-recovery').hideHelp())
   .action(async (prompt, options) => {
     try {
       // === PREFLIGHT CHECKS ===
@@ -2912,6 +2946,9 @@ taskCmd
       });
 
       // Dynamically import task command (ESM module)
+      if (options.structuredOutputRecovery && (options.resume || options.continue)) {
+        throw new Error('Structured-output recovery must start a fresh provider session.');
+      }
       const { runTask } = await import('../task-lib/commands/run.js');
       await runTask(prompt, options);
     } catch (error) {
@@ -2943,6 +2980,7 @@ taskCmd
 // List command - unified (shows both tasks and clusters)
 program
   .command('list')
+  .helpGroup('Observe:')
   .alias('ls')
   .description('List all tasks and clusters')
   .option('-s, --status <status>', 'Filter tasks by status (running, completed, failed)')
@@ -2957,7 +2995,7 @@ program
       const { listTasks, getTasksData } = await import('../task-lib/commands/list.js');
 
       if (options.json) {
-        const tasks = await tryGetTasksData(getTasksData, options);
+        const tasks = await getTasksData(options);
         printListJson(enrichedClusters, tasks);
         return;
       }
@@ -2967,7 +3005,11 @@ program
       console.log(chalk.bold('\n=== Tasks ==='));
       await listTasks(options);
     } catch (error) {
-      console.error('Error listing:', error.message);
+      if (options.json) {
+        printJsonError(error);
+      } else {
+        console.error('Error listing:', error.message);
+      }
       process.exit(1);
     }
   });
@@ -2975,6 +3017,7 @@ program
 // Status command - smart (works for both tasks and clusters)
 program
   .command('status <id>')
+  .helpGroup('Observe:')
   .description('Get detailed status of a task or cluster')
   .option('--json', 'Output as JSON')
   .action(async (id, options) => {
@@ -3002,7 +3045,7 @@ program
       await showTaskStatus(id, options);
     } catch (error) {
       if (options.json) {
-        console.log(JSON.stringify({ error: error.message }, null, 2));
+        printJsonError(error);
       } else {
         console.error('Error getting status:', error.message);
       }
@@ -3012,6 +3055,7 @@ program
 
 program
   .command('inspect <id>')
+  .helpGroup('Observe:')
   .description('Inspect live process activity for a task or cluster')
   .option('--json', 'Output as JSON')
   .option('--sample-ms <ms>', 'Sampling period for process activity checks', '1000')
@@ -3031,6 +3075,7 @@ program
 // Logs command - smart (works for both tasks and clusters)
 program
   .command('logs [id]')
+  .helpGroup('Observe:')
   .description('View logs (omit ID for all clusters)')
   .option('-f, --follow', 'Follow logs in real-time (stream output like tail -f)')
   .option('-n, --limit <number>', 'Number of recent messages to show (default: 50)', '50')
@@ -3063,6 +3108,7 @@ program
 // Stop command (cluster-only)
 program
   .command('stop <cluster-id>')
+  .helpGroup('Control:')
   .description('Stop a cluster gracefully')
   .action(async (clusterId) => {
     try {
@@ -3078,6 +3124,7 @@ program
 // Kill command - smart (works for both tasks and clusters)
 program
   .command('kill <id>')
+  .helpGroup('Control:')
   .description('Kill a task or cluster')
   .action(async (id) => {
     try {
@@ -3107,6 +3154,7 @@ program
 // Attach command - tmux-style attach to running task or cluster agent
 program
   .command('attach [id]')
+  .helpGroup('Observe:')
   .description('Attach to a running task or cluster agent (Ctrl+C to detach, task keeps running)')
   .option('-a, --agent <name>', 'Attach to specific agent in cluster (required for clusters)')
   .addHelpText(
@@ -3159,6 +3207,7 @@ Key bindings:
 // Kill-all command - kills all running tasks and clusters
 program
   .command('kill-all')
+  .helpGroup('Maintenance:')
   .description('Kill all running tasks and clusters')
   .option('-y, --yes', 'Skip confirmation')
   .action(async (options) => {
@@ -3171,11 +3220,8 @@ program
       );
 
       const { loadTasks } = await import('../task-lib/store.js');
-      const { isProcessRunning } = await import('../task-lib/runner.js');
       const tasks = loadTasks();
-      const runningTasks = Object.values(tasks).filter(
-        (t) => t.status === 'running' && isProcessRunning(t.pid)
-      );
+      const runningTasks = Object.values(tasks).filter((task) => task.status === 'running');
 
       const totalCount = runningClusters.length + runningTasks.length;
 
@@ -3220,44 +3266,9 @@ program
 
       console.log('');
 
-      // Kill clusters
-      if (runningClusters.length > 0) {
-        const clusterResults = await orchestrator.killAll();
-        for (const id of clusterResults.killed) {
-          console.log(chalk.green(`✓ Killed cluster: ${id}`));
-        }
-        for (const err of clusterResults.errors) {
-          console.log(chalk.red(`✗ Failed to kill cluster ${err.id}: ${err.error}`));
-        }
-      }
+      await killRunningClusters(orchestrator, runningClusters);
 
-      // Kill tasks
-      if (runningTasks.length > 0) {
-        const { killTask, isProcessRunning: checkPid } = await import('../task-lib/runner.js');
-        const { updateTask } = await import('../task-lib/store.js');
-
-        for (const task of runningTasks) {
-          if (!checkPid(task.pid)) {
-            updateTask(task.id, {
-              status: 'stale',
-              error: 'Process died unexpectedly',
-            });
-            console.log(chalk.yellow(`○ Task ${task.id} was already dead, marked stale`));
-            continue;
-          }
-
-          const killed = killTask(task.pid);
-          if (killed) {
-            updateTask(task.id, {
-              status: 'killed',
-              error: 'Killed by kill-all',
-            });
-            console.log(chalk.green(`✓ Killed task: ${task.id}`));
-          } else {
-            console.log(chalk.red(`✗ Failed to kill task: ${task.id}`));
-          }
-        }
-      }
+      await killRunningTasks(runningTasks);
 
       console.log(chalk.bold.green(`\nDone.`));
     } catch (error) {
@@ -3269,6 +3280,7 @@ program
 // Export command (cluster-only)
 program
   .command('export <cluster-id>')
+  .helpGroup('Maintenance:')
   .description('Export cluster conversation')
   .option('-f, --format <format>', 'Export format: json, markdown, html', 'html')
   .option('-o, --output <file>', 'Output file (auto-generated for html)')
@@ -3383,6 +3395,7 @@ program
 // Resume task or cluster
 program
   .command('resume <id> [prompt]')
+  .helpGroup('Control:')
   .description('Resume a failed task or cluster')
   .option('-d, --detach', 'Resume in background (daemon mode)')
   .action(async (id, prompt, options) => {
@@ -3626,6 +3639,7 @@ program
 // Finish cluster - convert to single-agent completion task
 program
   .command('finish <id>')
+  .helpGroup('Control:')
   .description('Take existing cluster and create completion-focused task (creates PR and merges)')
   .option('-y, --yes', 'Skip confirmation if cluster is running')
   .action(async (id, options) => {
@@ -3664,6 +3678,7 @@ program
 // Clean tasks
 program
   .command('clean')
+  .helpGroup('Maintenance:')
   .description('Remove old task records and logs')
   .option('-a, --all', 'Remove all tasks')
   .option('-c, --completed', 'Remove completed tasks')
@@ -3731,6 +3746,7 @@ async function detectAndReportCorruptedClusters(dryRun) {
 
 program
   .command('gc')
+  .helpGroup('Maintenance:')
   .description('Clean up orphaned worktree directories and stale database files')
   .option('--dry-run', 'Show what would be removed without deleting')
   .action(async (options) => {
@@ -3743,10 +3759,11 @@ program
     }
   });
 
-// Purge all runs (clusters + tasks) - NUCLEAR option
+// Purge all runs (clusters + tasks).
 program
   .command('purge')
-  .description('NUCLEAR: Kill all running processes and delete all data')
+  .helpGroup('Maintenance:')
+  .description('Kill all running tasks and clusters, then delete all Zeroshot run data')
   .option('-y, --yes', 'Skip confirmation')
   .action(async (options) => {
     try {
@@ -3768,8 +3785,8 @@ program
       console.log('');
 
       await killRunningClusters(orchestrator, purgeData.runningClusters);
-      await killRunningTasks(purgeData.runningTasks, purgeData.isProcessRunning);
-      deleteClusterData(orchestrator, purgeData.clusters);
+      await killRunningTasks(purgeData.runningTasks);
+      await deleteClusterData(orchestrator, purgeData.clusters);
       await deleteTaskData(purgeData.tasks);
 
       console.log(chalk.bold.green('\nAll runs purged.'));
@@ -3782,6 +3799,7 @@ program
 // Schedule a task
 program
   .command('schedule <prompt>')
+  .helpGroup('Automation:')
   .description('Create a recurring scheduled task')
   .option('-e, --every <interval>', 'Interval (e.g., "1h", "30m", "1d")')
   .option('--cron <expression>', 'Cron expression')
@@ -3799,6 +3817,7 @@ program
 // List schedules
 program
   .command('schedules')
+  .helpGroup('Automation:')
   .description('List all scheduled tasks')
   .action(async () => {
     try {
@@ -3813,6 +3832,7 @@ program
 // Unschedule a task
 program
   .command('unschedule <scheduleId>')
+  .helpGroup('Automation:')
   .description('Remove a scheduled task')
   .action(async (scheduleId) => {
     try {
@@ -3827,6 +3847,7 @@ program
 // Scheduler daemon management
 program
   .command('scheduler <action>')
+  .helpGroup('Automation:')
   .description('Manage scheduler daemon (start, stop, status, logs)')
   .action(async (action) => {
     try {
@@ -3840,7 +3861,7 @@ program
 
 // Get log path (machine-readable)
 program
-  .command('get-log-path <taskId>')
+  .command('get-log-path <taskId>', { hidden: true })
   .description('Output log file path for a task (machine-readable)')
   .action(async (taskId) => {
     try {
@@ -3854,13 +3875,12 @@ program
 
 // Resolve the durable task ownership receipt for an in-flight detached launch.
 program
-  .command('get-task-id-by-spawn-token <token>')
+  .command('get-task-id-by-spawn-token <token>', { hidden: true })
   .description('Output task ID for an internal spawn ownership token (machine-readable)')
   .action(async (token) => {
     try {
-      const { getTaskIdBySpawnToken } = await import(
-        '../task-lib/commands/get-task-id-by-spawn-token.js'
-      );
+      const { getTaskIdBySpawnToken } =
+        await import('../task-lib/commands/get-task-id-by-spawn-token.js');
       getTaskIdBySpawnToken(token);
     } catch (error) {
       console.error('Error resolving task spawn ownership:', error.message);
@@ -3875,10 +3895,13 @@ function failTuiUnavailable() {
   process.exit(1);
 }
 
-program.command('watch').description('TUI unavailable in this release').action(failTuiUnavailable);
+program
+  .command('watch', { hidden: true })
+  .description('TUI unavailable in this release')
+  .action(failTuiUnavailable);
 
 program
-  .command('tui')
+  .command('tui', { hidden: true })
   .description('TUI unavailable in this release')
   .allowExcessArguments(true)
   .allowUnknownOption(true)
@@ -3886,7 +3909,7 @@ program
 
 function registerTuiEntrypoint(commandName, providerName) {
   program
-    .command(commandName)
+    .command(commandName, { hidden: true })
     .description(`TUI unavailable in this release (provider: ${providerName})`)
     .allowExcessArguments(true)
     .allowUnknownOption(true)
@@ -3898,8 +3921,11 @@ for (const providerName of VALID_PROVIDERS) {
 }
 
 // Settings management
-const settingsCmd = program.command('settings').description('Manage zeroshot settings');
-const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim']);
+const settingsCmd = program
+  .command('settings')
+  .helpGroup('Configure:')
+  .description('Manage zeroshot settings');
+const INTERNAL_SETTINGS_KEYS = new Set(['lastUpdateCheckClaim', 'setupVersion', '_targets']);
 
 function visibleSettingKeys() {
   return Object.keys(DEFAULT_SETTINGS).filter((key) => !INTERNAL_SETTINGS_KEYS.has(key));
@@ -4280,8 +4306,12 @@ function parseSettingValue(value) {
 
 function resetGlobalSettings() {
   mutateSettings((settings) => {
+    const preserved = {};
+    for (const key of INTERNAL_SETTINGS_KEYS) {
+      if (key in settings) preserved[key] = settings[key];
+    }
     for (const key of Object.keys(settings)) delete settings[key];
-    Object.assign(settings, JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS })));
+    Object.assign(settings, JSON.parse(JSON.stringify({ ...DEFAULT_SETTINGS })), preserved);
   });
 }
 
@@ -4427,8 +4457,12 @@ settingsCmd.action(() => {
   formatSettingsList(settings, true);
 });
 
+// Hosted target commands intentionally are not registered on the stable CLI.
 // Providers management
-const providersCmd = program.command('providers').description('Manage AI providers');
+const providersCmd = program
+  .command('providers')
+  .helpGroup('Configure:')
+  .description('Manage AI providers');
 providersCmd.action(async () => {
   await providersCommand();
 });
@@ -4448,7 +4482,14 @@ providersCmd
   });
 
 // Setup wizard (read-only facts + setup contract; apply/undo/TTY wizard land separately)
-const setupCmd = program.command('setup').description('Setup and configuration wizard');
+const setupCmd = program
+  .command('setup')
+  .helpGroup('Start:')
+  .description('Setup and configuration wizard');
+setupCmd.action(async () => {
+  const result = await runSetupWizard();
+  process.exitCode = result.exitCode;
+});
 setupCmd
   .command('plan')
   .description('Show read-only setup facts and proposed contract (no writes)')
@@ -4512,6 +4553,7 @@ setupCmd
 // Update command
 program
   .command('update')
+  .helpGroup('Maintenance:')
   .description('Update zeroshot to the latest version')
   .option('--check', 'Check for updates without installing')
   .action(async (options) => {
@@ -4552,7 +4594,10 @@ program
   });
 
 // Config visualization commands
-const configCmd = program.command('config').description('Manage and visualize cluster configs');
+const configCmd = program
+  .command('config')
+  .helpGroup('Configure:')
+  .description('Manage and visualize cluster configs');
 
 configCmd
   .command('list')
@@ -4663,7 +4708,10 @@ configCmd
   });
 
 // Agent library commands
-const agentsCmd = program.command('agents').description('View available agent definitions');
+const agentsCmd = program
+  .command('agents')
+  .helpGroup('Configure:')
+  .description('View available agent definitions');
 
 agentsCmd
   .command('list')
@@ -5938,14 +5986,15 @@ function formatAgentOutput(msg, prefix) {
 }
 
 const NORMAL_MESSAGE_HANDLERS = {
-  AGENT_LIFECYCLE: ({ msg, prefix }) => formatAgentLifecycle(msg, prefix),
-  AGENT_ERROR: ({ msg, prefix, timestamp }) => formatAgentErrorNormal(msg, prefix, timestamp),
+  AGENT_LIFECYCLE: ({ msg, prefix }) => formatAgentLifecycle(msg, prefix, safePrint),
+  AGENT_ERROR: ({ msg, prefix, timestamp }) =>
+    formatAgentErrorNormal(msg, prefix, timestamp, safePrint),
   ISSUE_OPENED: ({ msg, prefix, timestamp }) =>
-    formatIssueOpenedNormal(msg, prefix, timestamp, shownNewTaskForCluster),
+    formatIssueOpenedNormal(msg, prefix, timestamp, shownNewTaskForCluster, safePrint),
   IMPLEMENTATION_READY: ({ msg, prefix, timestamp }) =>
-    formatImplementationReadyNormal(msg, prefix, timestamp),
+    formatImplementationReadyNormal(msg, prefix, timestamp, safePrint),
   VALIDATION_RESULT: ({ msg, prefix, timestamp }) =>
-    formatValidationResultNormal(msg, prefix, timestamp),
+    formatValidationResultNormal(msg, prefix, timestamp, safePrint),
   PR_CREATED: ({ msg, prefix, timestamp }) => formatPrCreated(msg, prefix, timestamp, safePrint),
   CLUSTER_COMPLETE: ({ msg, prefix, timestamp }) =>
     formatClusterComplete(msg, prefix, timestamp, safePrint),
@@ -5962,8 +6011,7 @@ function printMessage(msg, showClusterId = false, watchMode = false, isActive = 
 
   // Watch mode: delegate to watch mode formatter
   if (watchMode) {
-    const clusterPrefix = buildClusterPrefix(msg, isActive);
-    formatWatchMode(msg, clusterPrefix);
+    formatWatchMode(msg, isActive, liveOutputWriter);
     return;
   }
 
@@ -5985,6 +6033,38 @@ function isStartupUpdateEligible(argv, options = {}) {
     commanderProgram: program,
     defaultCommandName: 'run',
   });
+}
+
+function shouldRunInitialSetup({ args, stdin, stdout, settingsExist }) {
+  return (
+    args.length === 0 &&
+    !args.includes('--quiet') &&
+    !settingsExist &&
+    stdin.isTTY === true &&
+    stdout.isTTY === true
+  );
+}
+
+async function handleNoArgumentInvocation({
+  args,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  settingsExist,
+  runWizard = runSetupWizard,
+  outputHelp = () => program.outputHelp(),
+  setExitCode = (code) => {
+    process.exitCode = code;
+  },
+}) {
+  if (args.length !== 0) return false;
+  const hasSettings = settingsExist ?? settingsFileExists();
+  if (shouldRunInitialSetup({ args, stdin, stdout, settingsExist: hasSettings })) {
+    const result = await runWizard({ stdin, stdout });
+    setExitCode(result.exitCode);
+  } else {
+    outputHelp();
+  }
+  return true;
 }
 
 // Main entry point
@@ -6012,31 +6092,10 @@ async function main() {
     checkForUpdates({ argv: startupArgs, eligibilityChecked: true });
   }
 
-  let args = startupArgs;
+  const args = startupArgs;
 
-  if (args.length === 0) {
-    program.outputHelp();
-    return;
-  }
-
-  // Default command handling: if first arg doesn't match a known command, treat it as 'run'
-  // This allows `zeroshot "task"` to work the same as `zeroshot run "task"`
-  args = process.argv.slice(2);
-  if (args.length > 0) {
-    const firstArg = args[0];
-
-    // Skip if it's a flag/option (starts with -)
-    // Skip if it's --help or --version (these are handled by commander)
-    if (!firstArg.startsWith('-')) {
-      // Get all registered command names
-      const commandNames = program.commands.map((cmd) => cmd.name());
-
-      // If first arg is not a known command, prepend 'run'
-      if (!commandNames.includes(firstArg)) {
-        process.argv.splice(2, 0, 'run');
-      }
-    }
-  }
+  if (await handleNoArgumentInvocation({ args })) return;
+  setupCompletion(program);
 
   program.parse();
 }
@@ -6051,10 +6110,14 @@ if (require.main === module) {
 
 module.exports = {
   assertRequestedWebSearchCliAvailable,
+  runClusterPreflight,
   applyModelOverrideToConfig,
   inspectAgentAttachment,
   printAttachableAgentList,
   renderRecentMessagesToTerminal,
   isStartupUpdateEligible,
+  handleNoArgumentInvocation,
+  shouldRunInitialSetup,
   resolveRunMode,
+  killRunningClusters,
 };

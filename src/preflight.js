@@ -21,8 +21,10 @@ const {
 const { loadSettings, getClaudeCommand } = require('../lib/settings.js');
 const {
   VALID_PROVIDERS,
+  getDefaultProviderId,
   getProviderMetadata,
   normalizeProviderName,
+  providerSupportsCapability,
   resolveProviderCommand,
 } = require('../lib/provider-names');
 const { detectGitContext } = require('../lib/git-remote-utils');
@@ -440,6 +442,57 @@ function validateGatewayProvider() {
   };
 }
 
+function validateProviderIsolationCapabilities(providerName, options) {
+  const errors = [];
+  if (options.requireDocker && !providerSupportsCapability(providerName, 'dockerIsolation')) {
+    errors.push(
+      formatError(
+        'Provider does not support Docker isolation',
+        `Provider "${providerName}" does not advertise dockerIsolation`,
+        [
+          'Run without --docker (worktree isolation may be supported)',
+          'Or select a different provider',
+        ]
+      )
+    );
+  }
+  if (options.requireGit && !providerSupportsCapability(providerName, 'worktreeIsolation')) {
+    errors.push(
+      formatError(
+        'Provider does not support worktree isolation',
+        `Provider "${providerName}" does not advertise worktreeIsolation`,
+        ['Run without --worktree/--pr/--ship', 'Or select a different provider']
+      )
+    );
+  }
+  return errors;
+}
+
+function validateProviderExecutionSettings(providerName, settings, options) {
+  const metadata = getProviderMetadata(providerName);
+  if (!metadata.settingsValidator) return [];
+
+  const providerSettings = settings.providerSettings?.[providerName];
+  if (
+    !providerSettings ||
+    typeof providerSettings !== 'object' ||
+    Array.isArray(providerSettings)
+  ) {
+    return [];
+  }
+
+  const executionContext = options.requireDocker ? 'docker' : 'detached';
+  const error = metadata.settingsValidator(providerSettings, { executionContext });
+  if (!error) return [];
+
+  return [
+    formatError(`${metadata.displayName} configuration cannot run cluster agents`, error, [
+      metadata.authInstructions,
+      'Or select a different provider with: zeroshot providers set-default <provider>',
+    ]),
+  ];
+}
+
 function validateProvider(providerName, options) {
   let metadata;
   try {
@@ -455,14 +508,19 @@ function validateProvider(providerName, options) {
     };
   }
 
+  const isolationErrors = validateProviderIsolationCapabilities(providerName, options);
+
   if (metadata.command.kind === 'configured-claude') {
-    return validateClaudeProvider(options);
+    const result = validateClaudeProvider(options);
+    return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
   }
   if (providerName === 'gateway') {
-    return validateGatewayProvider();
+    const result = validateGatewayProvider();
+    return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
   }
 
-  return validateRegistryCliProvider(providerName);
+  const result = validateRegistryCliProvider(providerName);
+  return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
 }
 
 function validateRegistryCliProvider(providerName) {
@@ -518,7 +576,7 @@ function validateGhRequirement() {
   return errors;
 }
 
-function validateDockerRequirement() {
+function validateDockerRequirement(providerName) {
   const errors = [];
   const docker = checkDocker();
   if (!docker.available) {
@@ -533,6 +591,19 @@ function validateDockerRequirement() {
               'Then start Docker and verify: docker info',
             ]
       )
+    );
+    return errors;
+  }
+
+  try {
+    const IsolationManager = require('./isolation-manager');
+    IsolationManager.assertPlatformSupported(IsolationManager.providerDockerPlatform(providerName));
+  } catch (err) {
+    errors.push(
+      formatError('Docker cannot run required platform', err.message, [
+        'Install Buildx and run: docker run --privileged --rm tonistiigi/binfmt --install amd64',
+        'Or run Zeroshot on a native amd64 Docker host',
+      ])
     );
   }
 
@@ -577,7 +648,7 @@ async function runPreflight(options = {}) {
   const errors = [];
   const warnings = [];
 
-  const settings = loadSettings();
+  const settings = options.settings || loadSettings();
 
   if (process.platform === 'win32') {
     return {
@@ -597,11 +668,12 @@ async function runPreflight(options = {}) {
     };
   }
   const providerName = normalizeProviderName(
-    options.provider || settings.defaultProvider || 'claude'
+    options.provider || settings.defaultProvider || getDefaultProviderId()
   );
 
   const providerResult = validateProvider(providerName, options);
   errors.push(...providerResult.errors);
+  errors.push(...validateProviderExecutionSettings(providerName, settings, options));
   warnings.push(...providerResult.warnings);
 
   // 4. Check issue provider CLI (if required)
@@ -699,7 +771,7 @@ async function runPreflight(options = {}) {
 
   // 6. Check Docker (if required)
   if (options.requireDocker) {
-    errors.push(...validateDockerRequirement());
+    errors.push(...validateDockerRequirement(providerName));
   }
 
   // 7. Check git repo (if required for worktree isolation)

@@ -1,0 +1,11 @@
+{
+  "description": "A code outside the closed ProblemCode vocabulary must fail closed.",
+  "schema": "capsule-v1-error",
+  "expect_schema_valid": false,
+  "body": {
+    "code": "teapot",
+    "message": "the capsule could not be reached",
+    "capsule_id": "cap_1a2b3c4d",
+    "retryable": false
+  }
+}

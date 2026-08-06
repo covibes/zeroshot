@@ -1,3 +1,9 @@
+import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import { UnsupportedProviderCapabilityError } from '../errors';
 import { appendJsonSchemaPrompt } from '../schema';
 import {
   getOrStringFromKeys,
@@ -16,7 +22,7 @@ import {
   type ModelCatalogEntry,
   type ModelLevel,
   type OutputEvent,
-  type ProviderAdapter,
+  type StructuredOutputRecoveryAdapter,
   type ProviderParserState,
   type ResolvedModelSpec,
   type WarningMetadata,
@@ -52,6 +58,7 @@ function detectCliFeatures(helpText?: string | null): GeminiCliFeatures {
     supportsAutoApprove: unknown ? true : /--yolo\b/.test(help),
     supportsCwd: unknown ? true : /--cwd\b/.test(help),
     supportsModel: unknown ? true : /\s-m\b/.test(help) || /--model\b/.test(help),
+    supportsAdminPolicy: !unknown && /--admin-policy\b/.test(help),
     unknown,
   };
 }
@@ -109,6 +116,75 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   });
 }
 
+function standardAdminPolicyDirectory(): string {
+  if (process.platform === 'darwin') {
+    return '/Library/Application Support/GeminiCli/policies';
+  }
+  if (process.platform === 'win32') {
+    return path.join(process.env.ProgramData || 'C:\\ProgramData', 'gemini-cli', 'policies');
+  }
+  return '/etc/gemini-cli/policies';
+}
+
+function assertSupplementalAdminPolicyEffective(): void {
+  const directory = standardAdminPolicyDirectory();
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch (error) {
+    if (isRecord(error) && error.code === 'ENOENT') return;
+    throw new UnsupportedProviderCapabilityError(
+      'gemini',
+      'structuredOutputRecovery',
+      `Gemini structured-output recovery cannot inspect the standard admin-policy directory ${directory}; refuse a supplemental policy that may be ignored.`
+    );
+  }
+  if (!entries.some((entry) => entry.isFile() && entry.name.endsWith('.toml'))) return;
+  throw new UnsupportedProviderCapabilityError(
+    'gemini',
+    'structuredOutputRecovery',
+    `Gemini ignores --admin-policy when ${directory} contains TOML policies. Remove the conflict or use an administrator-managed deny-all policy before retrying.`
+  );
+}
+
+function writeRecoveryAdminPolicy(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-gemini-policy-'));
+  const policyPath = path.join(directory, `${randomUUID()}.toml`);
+  fs.writeFileSync(policyPath, '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n', {
+    flag: 'wx',
+    mode: 0o600,
+  });
+  return policyPath;
+}
+
+function buildStructuredOutputRecoveryCommand(
+  context: string,
+  options: BuildProviderCommandOptions = {}
+): CommandSpec {
+  if (optionFeatures(options).supportsAdminPolicy !== true) {
+    throw new UnsupportedProviderCapabilityError(
+      'gemini',
+      'structuredOutputRecovery',
+      'Gemini structured-output recovery requires CLI evidence for --admin-policy. Upgrade @google/gemini-cli before retrying.'
+    );
+  }
+  assertSupplementalAdminPolicyEffective();
+  const recoveryOptions = { ...options };
+  delete recoveryOptions.resumeSessionId;
+  delete recoveryOptions.continueSession;
+  const spec = buildCommand(context, { ...recoveryOptions, autoApprove: false });
+  const policyPath = writeRecoveryAdminPolicy();
+  return {
+    ...spec,
+    args: ['--admin-policy', policyPath, ...spec.args],
+    cleanup: [...(spec.cleanup || []), policyPath],
+    cleanupMetadata: [
+      ...spec.cleanupMetadata,
+      { kind: 'temp-file', provider: 'gemini', path: policyPath, reason: 'admin-policy' },
+    ],
+  };
+}
+
 function normalizeMessageContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -148,6 +224,11 @@ function parseToolUseEvent(
   };
 }
 
+function geminiErrorMessage(event: Record<string, unknown>, fallback: string): string {
+  const error = isRecord(event.error) ? event.error : null;
+  return (error && getString(error, 'message')) || getString(event, 'message') || fallback;
+}
+
 function parseToolResultEvent(
   event: Record<string, unknown>,
   state: ProviderParserState
@@ -157,20 +238,32 @@ function parseToolResultEvent(
     ['tool_call_id', 'tool_id', 'id'],
     state.lastToolId
   );
+  const isError = getString(event, 'status') === 'error';
   return {
     type: 'tool_result',
     toolId,
-    content: event.output ?? event.content ?? '',
-    isError: event.success === false,
+    content: event.output ?? (isError ? geminiErrorMessage(event, 'Tool failed') : ''),
+    isError,
   };
 }
 
 function parseResultEvent(event: Record<string, unknown>): OutputEvent {
+  const success = getString(event, 'status') === 'success';
   return {
     type: 'result',
-    success: event.success !== false,
+    success,
     result: event.result || '',
-    error: event.success === false ? (getString(event, 'error') ?? 'Result failed') : null,
+    error: success ? null : geminiErrorMessage(event, 'Result failed'),
+  };
+}
+
+function parseErrorEvent(event: Record<string, unknown>): OutputEvent | null {
+  if (getString(event, 'severity') !== 'error') return null;
+  return {
+    type: 'result',
+    success: false,
+    result: '',
+    error: getString(event, 'message') || 'Gemini CLI error',
   };
 }
 
@@ -189,6 +282,8 @@ function parseEvent(line: string, state: ProviderParserState): OutputEvent | nul
       return parseToolResultEvent(event, state);
     case 'result':
       return parseResultEvent(event);
+    case 'error':
+      return parseErrorEvent(event);
     default:
       return null;
   }
@@ -229,7 +324,7 @@ function classifyError(error: unknown): ErrorClassification {
   );
 }
 
-export const geminiAdapter: ProviderAdapter = {
+export const geminiAdapter: StructuredOutputRecoveryAdapter = {
   id: 'gemini',
   displayName: 'Gemini',
   binary: 'gemini',
@@ -242,6 +337,7 @@ export const geminiAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
+  buildStructuredOutputRecoveryCommand,
   parseEvent,
   createParserState: () => createParserState('gemini'),
   resolveModelSpec,

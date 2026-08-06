@@ -1,0 +1,45 @@
+{
+  "artifact": "openengine.hosted-target/v1",
+  "version": "v1",
+  "promoted_schemas": [
+    "contracts/http/hosted-target-v1.schema.json",
+    "contracts/http/api-problem-v1.schema.json",
+    "contracts/http/capsule-v1-error.schema.json",
+    "contracts/http/target-session-v1.schema.json",
+    "contracts/http/create-capsule-request.schema.json",
+    "contracts/http/capsule.schema.json",
+    "contracts/http/capsule-page.schema.json",
+    "contracts/http/capsule-limits.schema.json",
+    "contracts/http/capsule-access-request.schema.json",
+    "contracts/http/capsule-access-response.schema.json"
+  ],
+  "digest": "sha256:6636d50cd60067241a50d1ee027d86fc1738aa933f086d8bb2c496c5be31b85e",
+  "fixtures_dir": "contracts/http/hosted-target/fixtures",
+  "invocation": {
+    "generate": "npm run contracts:generate",
+    "validate": "npm run contracts:hosted-target:test",
+    "digest_check": "npm run contracts:hosted-target:digest:check",
+    "gateway_fixture": "npm run contracts:hosted-target:router"
+  },
+  "gateway_fixture": {
+    "version": "2026-08-03",
+    "controls": [
+      "access_invalid",
+      "access_expired",
+      "access_revoked",
+      "transport_loss",
+      "allocate_list_inspect_limits",
+      "target_session",
+      "terminate_202",
+      "unsafe_origin",
+      "absent_device_context",
+      "oversized_access_body",
+      "websocket_401_4401_4403"
+    ]
+  },
+  "consumed_by": [
+    "zeroshot#881",
+    "zeroshot#889",
+    "zeroshot#920"
+  ]
+}

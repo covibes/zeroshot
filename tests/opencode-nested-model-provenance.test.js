@@ -3,14 +3,10 @@ const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { URL } = require('node:url');
 const { PassThrough } = require('stream');
 const AgentWrapper = require('../src/agent-wrapper');
 const ClaudeTaskRunner = require('../src/claude-task-runner');
-const {
-  buildSpawnEnv,
-  spawnClaudeTaskIsolated,
-} = require('../src/agent/agent-task-executor');
+const { spawnClaudeTaskIsolated } = require('../src/agent/agent-task-executor');
 const { appendTaskRunModelArgs } = require('../src/task-run-model-args');
 const { reformatOutput } = require('../src/agent/output-reformatter');
 
@@ -89,60 +85,6 @@ describe('Nested task model argument encoding', function () {
       'provider-level'
     );
     assertConfiguredModelArgs(args);
-  });
-
-  it('installs a unique tool-disabled profile while preserving hostile JSONC config', function () {
-    const previousConfig = process.env.OPENCODE_CONFIG_CONTENT;
-    const formatterAgentName = 'zeroshot-output-reformatter-unique-local-test';
-    process.env.OPENCODE_CONFIG_CONTENT = `{
-      // OpenCode accepts comments and trailing commas.
-      "share": "disabled",
-      "provider": { "container-only": { "npm": "@ai-sdk/openai-compatible", }, },
-      "agent": {
-        "zeroshot-output-reformatter": {
-          "permission": { "*": "allow", "bash": "allow", },
-          "tools": { "*": true, },
-        },
-      },
-      "mode": {
-        "zeroshot-output-reformatter": { "tools": { "bash": true, }, },
-      },
-    }`;
-    try {
-      const env = buildSpawnEnv(
-        { config: {} },
-        'opencode',
-        {},
-        {
-          disableTools: true,
-          formatterAgentName,
-          applyDarwinKeychainBoundary() {},
-        }
-      );
-      const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
-      const formatter = config.agent[formatterAgentName];
-      assert.strictEqual(env.ZEROSHOT_OPENCODE_AGENT, formatterAgentName);
-      assert.strictEqual(config.default_agent, formatterAgentName);
-      assert.strictEqual(config.share, 'disabled');
-      assert.deepStrictEqual(config.provider, {
-        'container-only': { npm: '@ai-sdk/openai-compatible' },
-      });
-      assert.strictEqual(config.permission, 'deny');
-      assert.deepStrictEqual(config.tools, { '*': false });
-      assert.strictEqual(formatter.mode, 'primary');
-      assert.deepStrictEqual(formatter.permission, { '*': 'deny' });
-      assert.deepStrictEqual(formatter.tools, { '*': false });
-      assert.deepStrictEqual(config.mode[formatterAgentName].permission, { '*': 'deny' });
-      assert.deepStrictEqual(config.mode[formatterAgentName].tools, { '*': false });
-      assert.strictEqual(config.agent['zeroshot-output-reformatter'].permission.bash, 'allow');
-      assert.strictEqual(config.mode['zeroshot-output-reformatter'].tools.bash, true);
-    } finally {
-      if (previousConfig === undefined) {
-        delete process.env.OPENCODE_CONFIG_CONTENT;
-      } else {
-        process.env.OPENCODE_CONFIG_CONTENT = previousConfig;
-      }
-    }
   });
 
   it('selects the unique formatter identity explicitly in the OpenCode command', async function () {
@@ -255,122 +197,8 @@ describe('Nested task model argument encoding', function () {
     assert.deepStrictEqual(capturedOptions.options, {
       skipStructuredResultCheck: true,
       nested: true,
-      disableTools: true,
+      structuredOutputRecovery: true,
     });
-  });
-
-  it('applies the unique tool boundary before a real local task launch', async function () {
-    this.timeout(5000);
-    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-local-reformat-env-'));
-    const fakeZeroshot = path.join(fixtureDir, 'zeroshot');
-    const captureFile = path.join(fixtureDir, 'launch-env.json');
-    const logFile = path.join(fixtureDir, 'task.log');
-    const taskId = 'task-local-env-a1';
-    const storeUrl = new URL('../task-lib/store.js', `file://${__filename}`).href;
-    const storeConfigUrl = new URL('../task-lib/config.js', `file://${__filename}`).href;
-    const { TASKS_DIR } = await import(storeConfigUrl);
-    const taskStoreHome = path.dirname(TASKS_DIR);
-    fs.writeFileSync(logFile, opencodeTextEvent({ plan: 'local env recovery' }));
-    fs.writeFileSync(
-      fakeZeroshot,
-      `#!/usr/bin/env node
-      (async () => {
-        const fs = require('node:fs');
-        process.env.ZEROSHOT_HOME = ${JSON.stringify(taskStoreHome)};
-        const { addTask, removeTask, updateTask } = await import(${JSON.stringify(storeUrl)});
-        const action = process.argv[2];
-        const taskId = ${JSON.stringify(taskId)};
-        if (action === 'task') {
-          const spawnOwnershipToken = process.env.ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN;
-          if (!spawnOwnershipToken) {
-            throw new Error('Missing durable task spawn ownership token');
-          }
-          removeTask(taskId);
-          addTask({
-            id: taskId,
-            status: 'completed',
-            provider: 'opencode',
-            logFile: ${JSON.stringify(logFile)},
-            commandCleanup: null,
-            spawnOwnershipToken
-          });
-          fs.writeFileSync(
-            ${JSON.stringify(captureFile)},
-            JSON.stringify({
-              config: process.env.OPENCODE_CONFIG_CONTENT,
-              agent: process.env.ZEROSHOT_OPENCODE_AGENT,
-              taskStoreHome: process.env.ZEROSHOT_HOME
-            })
-          );
-          process.stdout.write('Task spawned: ' + taskId + '\\n');
-          return;
-        }
-        if (action === 'get-log-path') {
-          process.stdout.write(${JSON.stringify(`${logFile}\n`)});
-          return;
-        }
-        if (action === 'status') {
-          process.stdout.write('Status: completed\\n');
-          return;
-        }
-        if (action === 'kill') {
-          updateTask(process.argv[3], { status: 'killed', commandCleanup: null });
-          return;
-        }
-        process.exitCode = 2;
-      })().catch((error) => {
-        process.stderr.write(error.stack + '\\n');
-        process.exitCode = 1;
-      });
-      `,
-      { mode: 0o755 }
-    );
-    const { removeTask } = await import(storeUrl);
-    removeTask(taskId);
-    const previousZeroshotHome = process.env.ZEROSHOT_HOME;
-    try {
-      process.env.ZEROSHOT_HOME = fixtureDir;
-      assert.notStrictEqual(taskStoreHome, process.env.ZEROSHOT_HOME);
-      const schema = {
-        type: 'object',
-        properties: { plan: { type: 'string' } },
-        required: ['plan'],
-      };
-      const agent = new AgentWrapper(
-        {
-          id: 'local-env-reformat',
-          role: 'planner',
-          provider: 'opencode',
-          model: CATALOG_MODEL,
-          jsonSchema: schema,
-          timeout: 0,
-        },
-        { publish() {}, subscribe() {} },
-        { id: 'test-cluster', agents: [] },
-        { testMode: false }
-      );
-      agent.taskCliPath = fakeZeroshot;
-      agent.running = true;
-      agent.state = 'executing_task';
-
-      const result = await agent._parseResultOutput('Tool call completed without final JSON');
-      const captured = JSON.parse(fs.readFileSync(captureFile, 'utf8'));
-      const config = JSON.parse(captured.config);
-      assert.deepStrictEqual(result, { plan: 'local env recovery' });
-      assert.strictEqual(captured.taskStoreHome, taskStoreHome);
-      assert.strictEqual(captured.agent, config.default_agent);
-      assert.match(captured.agent, /^zeroshot-output-reformatter-[0-9a-f-]{36}$/);
-      assert.deepStrictEqual(config.agent[captured.agent].permission, { '*': 'deny' });
-      assert.deepStrictEqual(config.agent[captured.agent].tools, { '*': false });
-    } finally {
-      if (previousZeroshotHome === undefined) {
-        delete process.env.ZEROSHOT_HOME;
-      } else {
-        process.env.ZEROSHOT_HOME = previousZeroshotHome;
-      }
-      removeTask(taskId);
-      fs.rmSync(fixtureDir, { recursive: true, force: true });
-    }
   });
 });
 
@@ -432,27 +260,9 @@ describe('Isolated opencode structured-output recovery', function () {
     };
     const spawnedCommands = [];
     let spawnCount = 0;
-    let recoveryEnv;
-    const containerConfig = `{
-      "provider": {
-        "container-only": {
-          "npm": "@ai-sdk/openai-compatible",
-          "options": { "baseURL": "https://container.invalid/v1", },
-        },
-      },
-      "agent": {
-        "zeroshot-output-reformatter": {
-          "permission": { "*": "allow", "bash": "allow", },
-        },
-      },
-      "mode": {
-        "zeroshot-output-reformatter": { "tools": { "bash": true, }, },
-      },
-    }`;
     const manager = {
-      spawnInContainer(_clusterId, command, options) {
+      spawnInContainer(_clusterId, command, _options) {
         spawnedCommands.push(command);
-        if (options?.env?.OPENCODE_CONFIG_CONTENT) recoveryEnv = options.env;
         spawnCount++;
         if (spawnCount === 1) {
           return createClosingProcess(0, '✓ Task spawned: task-amber-fox-a1\n');
@@ -462,10 +272,6 @@ describe('Isolated opencode structured-output recovery', function () {
         tail.stderr = new PassThrough();
         tail.kill = () => {};
         return tail;
-      },
-      getContainerEnvironmentValue(_clusterId, name) {
-        assert.strictEqual(name, 'OPENCODE_CONFIG_CONTENT');
-        return Promise.resolve(containerConfig);
       },
       execInContainer(_clusterId, command) {
         const rendered = command.join(' ');
@@ -523,11 +329,15 @@ describe('Isolated opencode structured-output recovery', function () {
         spawnClaudeTaskIsolated(agent, prompt, {
           skipStructuredResultCheck: true,
           nested: true,
-          disableTools: true,
+          structuredOutputRecovery: true,
         }),
     });
 
-    assert.deepStrictEqual(result, { plan: 'isolated recovery' });
+    assert.deepStrictEqual(result, {
+      status: 'recovered',
+      value: { plan: 'isolated recovery' },
+      attempts: 1,
+    });
     const recoveryCommand = spawnedCommands[0];
     assert.deepStrictEqual(
       recoveryCommand.slice(
@@ -539,84 +349,9 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.ok(recoveryCommand.includes('zeroshot'));
     assert.ok(recoveryCommand.includes('task'));
     assert.ok(recoveryCommand.includes('run'));
-    const formatterConfig = JSON.parse(recoveryEnv.OPENCODE_CONFIG_CONTENT);
-    const formatter = formatterConfig.agent[formatterConfig.default_agent];
-    assert.strictEqual(recoveryEnv.ZEROSHOT_OPENCODE_AGENT, formatterConfig.default_agent);
-    assert.match(
-      formatterConfig.default_agent,
-      /^zeroshot-output-reformatter-[0-9a-f-]{36}$/
-    );
-    assert.notStrictEqual(formatterConfig.default_agent, 'zeroshot-output-reformatter');
-    assert.deepStrictEqual(formatterConfig.provider, {
-      'container-only': {
-        npm: '@ai-sdk/openai-compatible',
-        options: { baseURL: 'https://container.invalid/v1' },
-      },
-    });
-    assert.strictEqual(formatterConfig.permission, 'deny');
-    assert.deepStrictEqual(formatter.permission, { '*': 'deny' });
-    assert.deepStrictEqual(formatterConfig.mode[formatterConfig.default_agent].permission, {
-      '*': 'deny',
-    });
-    assert.deepStrictEqual(formatterConfig.mode[formatterConfig.default_agent].tools, {
-      '*': false,
-    });
-    assert.deepStrictEqual(formatter.tools, { '*': false });
-  });
-
-  it('aborts a stalled container-config lookup before any child launch', async function () {
-    this.timeout(1000);
-    let resolveLookup;
-    let spawnCount = 0;
-    const manager = {
-      getContainerEnvironmentValue() {
-        return new Promise((resolve) => {
-          resolveLookup = resolve;
-        });
-      },
-      spawnInContainer() {
-        spawnCount++;
-        throw new Error('child launch must not occur after setup timeout');
-      },
-    };
-    const agent = {
-      id: 'isolated-config-timeout',
-      role: 'planner',
-      iteration: 1,
-      running: true,
-      state: 'executing_task',
-      timeout: 10,
-      enableLivenessCheck: false,
-      config: { outputFormat: 'json', strictSchema: true },
-      cluster: { id: 'test-cluster' },
-      isolation: { enabled: true, clusterId: 'test-cluster', manager },
-      messageBus: { publish() {} },
-      _resolveProvider: () => 'opencode',
-      _resolveModelSpec: () => ({ model: CATALOG_MODEL }),
-      _resolveModelSpecSource: () => 'direct',
-      _log() {},
-      _publishLifecycle() {},
-      _stopLivenessCheck() {},
-    };
-
-    await assert.rejects(
-      spawnClaudeTaskIsolated(agent, 'format this', {
-        skipStructuredResultCheck: true,
-        nested: true,
-        disableTools: true,
-      }),
-      (error) => {
-        assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
-        assert.strictEqual(error.nestedExecutionCancellation, true);
-        return true;
-      }
-    );
-    assert.strictEqual(spawnCount, 0);
-    assert.strictEqual(agent.nestedExecutions.size, 0);
-
-    resolveLookup('{}');
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.strictEqual(spawnCount, 0);
+    assert.ok(recoveryCommand.includes('--structured-output-recovery'));
+    assert.strictEqual(recoveryCommand.includes('--resume'), false);
+    assert.strictEqual(recoveryCommand.includes('--mcp-config'), false);
   });
 
   it('retains an isolated nested launch after unconfirmed wrapper cleanup', async function () {
@@ -675,7 +410,7 @@ describe('Isolated opencode structured-output recovery', function () {
       await spawnClaudeTaskIsolated(agent, 'test context', {
         skipStructuredResultCheck: true,
         nested: true,
-        disableTools: true,
+        structuredOutputRecovery: true,
       });
     } catch (error) {
       rejection = error;
@@ -759,7 +494,7 @@ describe('Isolated opencode structured-output recovery', function () {
     const launch = spawnClaudeTaskIsolated(agent, 'test context', {
       skipStructuredResultCheck: true,
       nested: true,
-      disableTools: true,
+      structuredOutputRecovery: true,
     });
     while (!resolveLogPath) {
       await new Promise((resolve) => setImmediate(resolve));
@@ -768,14 +503,11 @@ describe('Isolated opencode structured-output recovery', function () {
     const cancellation = agent.nestedExecutions.cancelAll('Nested task timed out', {
       code: 'AGENT_TASK_TIMEOUT',
     });
-    await assert.rejects(
-      launch,
-      (error) => {
-        assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
-        assert.strictEqual(error.nestedExecutionCancellation, true);
-        return true;
-      }
-    );
+    await assert.rejects(launch, (error) => {
+      assert.strictEqual(error.code, 'AGENT_TASK_TIMEOUT');
+      assert.strictEqual(error.nestedExecutionCancellation, true);
+      return true;
+    });
     await cancellation;
 
     assert.ok(Date.now() - startedAt < 750, 'cancellation must not await the stalled log lookup');
@@ -856,7 +588,7 @@ describe('Isolated opencode structured-output recovery', function () {
       const launch = spawnClaudeTaskIsolated(agent, 'test context', {
         skipStructuredResultCheck: true,
         nested: true,
-        disableTools: true,
+        structuredOutputRecovery: true,
       });
       while (!resolveLogPath) {
         await new Promise((resolve) => setImmediate(resolve));
@@ -945,7 +677,7 @@ describe('Isolated opencode structured-output recovery', function () {
     const launch = spawnClaudeTaskIsolated(agent, 'test context', {
       skipStructuredResultCheck: true,
       nested: true,
-      disableTools: true,
+      structuredOutputRecovery: true,
     });
     while (!resolveLogPath) {
       await new Promise((resolve) => setImmediate(resolve));
@@ -1039,7 +771,7 @@ describe('Isolated opencode structured-output recovery', function () {
     const launch = spawnClaudeTaskIsolated(agent, 'test context', {
       skipStructuredResultCheck: true,
       nested: true,
-      disableTools: true,
+      structuredOutputRecovery: true,
     });
     while (!resolveFinalRead) {
       await new Promise((resolve) => setTimeout(resolve, 10));

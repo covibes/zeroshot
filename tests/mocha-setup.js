@@ -13,6 +13,7 @@ const fallbackSettingsFile = path.join(
   `zeroshot-mocha-settings-${process.pid}-${crypto.randomUUID()}.json`
 );
 const testSettingsFile = inheritedSettingsFile || fallbackSettingsFile;
+const taskStoreHome = process.env.ZEROSHOT_HOME;
 const ambientRunVariables = [
   'ZEROSHOT_CLOSE_ISSUE',
   'ZEROSHOT_CLAUDE_MCP_CONFIG_FILE',
@@ -35,6 +36,20 @@ const ambientRunVariables = [
   'ZEROSHOT_WORKTREE',
 ];
 
+function assertStableTaskStoreHome() {
+  if (process.env.ZEROSHOT_HOME === taskStoreHome) return;
+
+  if (taskStoreHome === undefined) {
+    delete process.env.ZEROSHOT_HOME;
+  } else {
+    process.env.ZEROSHOT_HOME = taskStoreHome;
+  }
+  throw new Error(
+    'Tests must not mutate ZEROSHOT_HOME in a shared Mocha worker. ' +
+      'task-lib/config.js caches the task-store root; run alternate-home scenarios in a child process.'
+  );
+}
+
 function restoreTestEnvironment() {
   for (const variable of ambientRunVariables) {
     delete process.env[variable];
@@ -47,7 +62,11 @@ function restoreTestEnvironment() {
 restoreTestEnvironment();
 
 exports.mochaHooks = {
-  beforeEach: restoreTestEnvironment,
+  beforeEach() {
+    assertStableTaskStoreHome();
+    restoreTestEnvironment();
+  },
+  afterEach: assertStableTaskStoreHome,
   afterAll() {
     if (!inheritedSettingsFile) {
       fs.rmSync(fallbackSettingsFile, { force: true });

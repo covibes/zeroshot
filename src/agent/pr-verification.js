@@ -3,6 +3,7 @@
  */
 
 const { spawnSync } = require('child_process');
+const { getDefaultProviderId } = require('../../lib/provider-names');
 
 const DEFAULT_VERIFICATION_PLATFORM = 'github';
 
@@ -588,7 +589,9 @@ async function verifyPullRequest({ result, agent, autoMerge }) {
   const platform = resolveVerificationPlatform(agent);
   const adapter = getVerificationAdapter(platform);
   const providerName =
-    typeof agent?._resolveProvider === 'function' ? agent._resolveProvider() : 'claude';
+    typeof agent?._resolveProvider === 'function'
+      ? agent._resolveProvider()
+      : getDefaultProviderId();
   const claims = resolvePrClaimsFromOutput({
     output: result.output,
     parsedResult: result.parsedResult,

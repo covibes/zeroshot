@@ -2,6 +2,7 @@ declare module 'ws' {
   const WebSocket: new (
     url: string,
     protocols?: string | readonly string[],
-  ) => import('./index.js').WebSocketLike;
+    options?: { readonly headers?: Readonly<Record<string, string>> },
+  ) => import('./socket.js').WebSocketLike;
   export default WebSocket;
 }

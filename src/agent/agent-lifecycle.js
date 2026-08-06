@@ -18,11 +18,20 @@ const IsolationManager = require('../isolation-manager');
 const crypto = require('crypto');
 const { bufferMessage, scheduleDrain, drainBufferedMessages } = require('../message-buffer');
 const { isPlatformSupported } = require('./agent-stuck-detector');
-const { normalizeProviderName } = require('../../lib/provider-names');
+const { normalizeProviderName, getDefaultProviderId } = require('../../lib/provider-names');
 const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
 const { updateAgentProviderSession } = require('./provider-session');
+const { rebuildProviderSessionAfterCommit } = require('./agent-task-executor');
+const {
+  buildStructuredOutputClusterFailure,
+  isStructuredOutputInvalidError,
+} = require('./structured-output-error');
+const {
+  commitRecordedOwnership,
+  markCleanupRequired,
+} = require('../../task-lib/omp-session-ownership.js');
 
 const DEFAULT_VALIDATOR_IMAGE = 'zeroshot-cluster-base';
 
@@ -64,11 +73,21 @@ async function createValidatorIsolation(agent, isolationConfig) {
       cluster.config?.forceProvider ||
       cluster.config?.defaultProvider ||
       loadSettings().defaultProvider ||
-      'claude'
+      getDefaultProviderId()
   );
+  // Pre-effect platform probe: fail before any workspace/container side effect when the Docker
+  // engine cannot run the provider's registry-owned platform (e.g. OMP's linux/amd64).
+  const platform = IsolationManager.providerDockerPlatform(providerName);
+  IsolationManager.assertPlatformSupported(platform);
+
   // Run validators on the provider's image variant (installs its CLI as a Docker-cached layer).
   const image = IsolationManager.imageForProvider(providerName, isolationConfig.image);
-  await IsolationManager.ensureImage(image, true, IsolationManager.providerBuildArgs(providerName));
+  await IsolationManager.ensureImage(
+    image,
+    true,
+    IsolationManager.providerBuildArgs(providerName, isolationConfig.containerHome || '/home/node'),
+    platform
+  );
 
   const manager = new IsolationManager({ image });
 
@@ -81,6 +100,7 @@ async function createValidatorIsolation(agent, isolationConfig) {
     containerHome: isolationConfig.containerHome,
     provider: providerName,
     reuseExistingWorkspace: true,
+    platform,
   });
 
   const validatorIsolation = {
@@ -427,11 +447,56 @@ function publishTaskStarted(agent, triggeringMessage) {
   agent._publishLifecycle('TASK_STARTED', {
     iteration: agent.iteration,
     model: agent._selectModel(),
-    provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
+    provider: agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId(),
     modelSpec,
     triggeredBy: triggeringMessage.topic,
     triggerFrom: triggeringMessage.sender,
   });
+}
+
+function resolveAgentProviderName(agent) {
+  return normalizeProviderName(
+    agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId()
+  );
+}
+
+/**
+ * Advance the OMP ownership record to `committed` and rebuild the provider-session snapshot from
+ * the row that commit produced.
+ *
+ * Ordering matters and is the whole point of this function. The detached RPC watcher verifies the
+ * materialized session but deliberately leaves a cluster-agent owner `provisional`, because this
+ * post-hook boundary — logical/schema output validated, onComplete hook succeeded — is the first
+ * moment the turn is durable. `result.providerSession` was therefore computed against a
+ * provisional row and is null for OMP by construction; publishing it would make every cluster
+ * session permanently non-reusable. So: commit, check that the commit actually applied, re-read
+ * the row, rebuild, and only then hand the snapshot to the agent and to TASK_COMPLETED.
+ *
+ * A commit that does not apply (no verified evidence recorded — a materialization the watcher
+ * could not verify, or a concurrent writer that already moved the row) means this turn has no
+ * durably resumable session: the partition is retired and the next turn starts fresh.
+ */
+function finalizeProviderSessionAfterCommit(agent, result) {
+  const providerName = resolveAgentProviderName(agent);
+  if (providerName !== 'omp') return result.providerSession;
+
+  if (!commitRecordedOwnership(result.taskId)) {
+    markCleanupRequired(result.taskId);
+    result.providerSession = null;
+    return null;
+  }
+  const rebuilt = rebuildProviderSessionAfterCommit({
+    agent,
+    providerName,
+    taskId: result.taskId,
+    logicalSuccess: true,
+  });
+  // A committed row that cannot be snapshotted (the agent moved workspace, isolation is on, the
+  // row's tuple failed re-validation) is not resumable by this agent, but it is still a valid
+  // session owned by a live task row — so it is left committed and reclaimed with that row rather
+  // than retired here.
+  result.providerSession = rebuilt;
+  return rebuilt;
 }
 
 function attachResultMetadata(agent, result) {
@@ -447,7 +512,7 @@ function publishTaskCompleted(agent, result) {
     iteration: agent.iteration,
     success: true,
     taskId: agent.currentTaskId,
-    provider: agent._resolveProvider ? agent._resolveProvider() : 'claude',
+    provider: agent._resolveProvider ? agent._resolveProvider() : getDefaultProviderId(),
     tokenUsage: result.tokenUsage || null,
     contextSequence: session?.contextSequence ?? agent.currentContextSequence,
     guidanceSequence: session?.guidanceSequence ?? agent.currentGuidanceSequence ?? null,
@@ -582,6 +647,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
     result = await agent._spawnClaudeTask(context);
   } catch (error) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(error.taskId || agent.currentTaskId);
     throw error;
   }
   attachResultMetadata(agent, result);
@@ -589,6 +655,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
   // Check if task execution failed
   if (!result.success) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(result.taskId);
     const error = new Error(result.error || 'Task execution failed');
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
@@ -599,21 +666,29 @@ async function runTaskAttempt(agent, triggeringMessage) {
   const fallbackReason = await maybeRetryValidatorInDocker(agent, result);
   if (fallbackReason) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(result.taskId);
     throw new Error(
       `Validator platform mismatch detected (${fallbackReason}). Retrying in Docker isolation.`
     );
   }
 
   // The hook publishes the logical output of the turn. Until it succeeds, neither
-  // TASK_COMPLETED nor its provider continuation boundary is durable.
+  // TASK_COMPLETED nor its provider continuation boundary is durable — an OMP cluster-agent
+  // owner's ownership record must stay unresumable until this succeeds too (see
+  // task-lib/rpc-watcher.js finalizeOmpOwnership, which only records evidence and defers the
+  // commit decision to this exact boundary).
   try {
     await executeOnCompleteHookWithRetry(agent, triggeringMessage, result);
   } catch (error) {
     updateAgentProviderSession(agent, null);
+    markCleanupRequired(result.taskId);
     throw error;
   }
 
-  updateAgentProviderSession(agent, result.providerSession);
+  // Checked commit, then snapshot. See finalizeProviderSessionAfterCommit: the snapshot inside
+  // `result` was built while the ownership row was still provisional, so it must be rebuilt from
+  // the committed row before it is stored on the agent or published with TASK_COMPLETED.
+  updateAgentProviderSession(agent, finalizeProviderSessionAfterCommit(agent, result));
   agent.lastGuidanceAppliedId = agent.currentGuidanceSequence;
 
   // Set state to idle BEFORE publishing lifecycle event
@@ -664,6 +739,7 @@ async function handleFinalFailure(agent, triggeringMessage, error, maxRetries) {
   const failureAttempts = error?.terminationAttempts ?? maxRetries;
   const unsupportedCapability =
     error?.code === 'unsupported-capability' && error?.permanent === true;
+  const structuredOutputInvalid = isStructuredOutputInvalidError(error);
   console.error(`
 ${'='.repeat(80)}`);
   console.error(`🔴🔴🔴 MAX RETRIES EXHAUSTED - AGENT: ${agent.id} 🔴🔴🔴`);
@@ -739,6 +815,9 @@ ${'='.repeat(80)}`);
     });
   }
 
+  if (structuredOutputInvalid) {
+    agent._publish(buildStructuredOutputClusterFailure(agent, error));
+  }
   if (unsupportedCapability) {
     agent._publish({
       topic: 'CLUSTER_FAILED',
@@ -809,6 +888,7 @@ ${'='.repeat(80)}`);
           capability: error.capability,
         }
       : {}),
+    ...(structuredOutputInvalid ? { code: error.code, details: error.details ?? null } : {}),
     timestamp: Date.now(),
   };
 
@@ -839,6 +919,7 @@ ${'='.repeat(80)}`);
               capability: error.capability,
             }
           : {}),
+        ...(structuredOutputInvalid ? { code: error.code, details: error.details ?? null } : {}),
         hookFailureContext: error.message.includes('Hook uses result')
           ? {
               taskId: agent.currentTaskId || 'UNKNOWN',
@@ -865,7 +946,7 @@ ${'='.repeat(80)}`);
     orchestrator: agent.orchestrator,
   });
 
-  if (!error?.terminationExhausted && !unsupportedCapability) {
+  if (!error?.terminationExhausted && !unsupportedCapability && !structuredOutputInvalid) {
     agent.state = 'idle';
   }
 }
@@ -1405,6 +1486,10 @@ module.exports = {
   handleMessage,
   executeTriggerAction,
   executeTask,
+  // Exported for tests/unit/omp-provider-session.test.js: the commit-then-snapshot ordering it
+  // enforces is the difference between a reusable OMP cluster session and one that is silently
+  // never resumable, so it is covered directly rather than only through a full task attempt.
+  finalizeProviderSessionAfterCommit,
   startLivenessCheck,
   stopLivenessCheck,
 };

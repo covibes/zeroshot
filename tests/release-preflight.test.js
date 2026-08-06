@@ -1,11 +1,10 @@
-const assert = require('assert');
-
 const {
   analyzeMessage,
+  assert,
   maxReleaseType,
   releaseTypeForMessages,
   validateReleaseConfig,
-} = require('../scripts/release-preflight');
+} = require('./helpers/release-preflight-harness');
 
 describe('release preflight', () => {
   it('does not retain the retired release-promotion commit type', () => {
@@ -37,7 +36,9 @@ describe('release preflight', () => {
       'patch'
     );
   });
+});
 
+describe('release configuration', () => {
   it('rejects branch-writing plugins in the effective release config', () => {
     assert.throws(
       () =>

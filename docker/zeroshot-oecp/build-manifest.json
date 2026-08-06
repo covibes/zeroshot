@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 2,
+  "artifact": {
+    "name": "zeroshot-oecp",
+    "private": true,
+    "published": false
+  },
+  "protocol": {
+    "version": "openengine.cluster/v1",
+    "route": "/oecp",
+    "graphProfiles": [
+      "openengine.graph.single-worker/v1"
+    ],
+    "workerProfiles": [
+      "legacy.zeroshot.ship@1"
+    ]
+  },
+  "runtime": {
+    "supervisor": {
+      "user": "root",
+      "uid": 0,
+      "gid": 0
+    },
+    "worker": {
+      "user": "zeroshot-worker",
+      "uid": 10002,
+      "gid": 10002
+    },
+    "capabilityFile": "/run/zeroshot-capsule-agent/capability",
+    "port": 8080,
+    "workspace": "/workspace",
+    "legacyLimitation": "bounded Node worker; not native-v2 or openengine.graph.full/v1 certified"
+  },
+  "image": {
+    "baseImages": [
+      {
+        "reference": "docker.io/library/rust:1.97-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa",
+        "stage": "rust-build"
+      },
+      {
+        "reference": "docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46",
+        "stage": "node-deps"
+      },
+      {
+        "reference": "docker.io/instructure/tini:v0.19.0@sha256:0f9ccf2e54d010735ad691ebe670e256a3820fe8b92c28101194c68ee1216092",
+        "stage": "tini"
+      },
+      {
+        "reference": "docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46",
+        "stage": "runtime"
+      }
+    ],
+    "init": {
+      "path": "/usr/bin/tini",
+      "version": "0.19.0",
+      "sourceStage": "tini"
+    }
+  },
+  "inputs": {
+    "Cargo.lock": "0815b2383e774601f3de58ede274de3c4afbe512547fecac3ea7b42caf35ead2",
+    "Cargo.toml": "1447ba71479b3a64e29d445634221583349bb87b3c73b1f09184fbcb1773323b",
+    "clippy.toml": "3c652ff2949df903bd0b80c8f14a7196ff9ad1e12841ddb614d080c4a03d1aa2",
+    "crates": "a2f7c3bb65eb2b150647b00aab00f510ea67356dd08990e1bb9afa626b8bac9e",
+    "docker/zeroshot-oecp/.dockerignore": "51985d438bb5d7007e5a365127a73a21669e94997787925f5a3b41d86fbda8c4",
+    "docker/zeroshot-oecp/Dockerfile": "42a5f35003727eb3fdba4d412184ec4a14cb7e6d4b0225ca5b1dee17d36857e2",
+    "docker/zeroshot-oecp/Dockerfile.dockerignore": "51985d438bb5d7007e5a365127a73a21669e94997787925f5a3b41d86fbda8c4",
+    "docker/zeroshot-oecp/package-lock.json": "5b163d46a2408c6bbfac8c85d2d1d08caa612f5c649fa08a758130127719283f",
+    "docker/zeroshot-oecp/package.json": "cc6a842bc289a0b59a13df298bcf07ceeae7b8f34f1a8727c90332248cde00ed",
+    "lib/agent-cli-provider": "665ea5edab232eb718a685005828ab8fdccf2c72d6c20c1baee594ad39ce3a68",
+    "lib/provider-detection.js": "8a57242a38aa2da62912fc525af9995f61c8e84724e715342c765e5bf15e7893",
+    "lib/cluster-worker/contracts.js": "a8c97f5ef0e3e5b8caef4acf7f7a2efd2a71019c6b08a3066c2078246c19b455",
+    "lib/cluster-worker/engine-adapter-common.js": "4183281e75530b9a064f11f3c97e5355e85d29e23096a93735ad470ef7343f80",
+    "lib/cluster-worker/engine-start.js": "46266a3f20aa4c55c16209e02bd9708d661d0a3cbde7ab5858e96fc2f6b20c3f",
+    "lib/cluster-worker/executable.js": "4e7d91bcca3b4e891b11559876db83e60c78f97e422b51282ed5e620b3a43adf",
+    "lib/cluster-worker/index.js": "62247e911365df085467fc283e14563df1d2df65438edfe341cbb8ccd59ef29e",
+    "lib/cluster-worker/object-utils.js": "97fe37ad6333517659f2ed7b5e8b956d1928ff06afd7bf137af37bba4d5f0fe0",
+    "lib/cluster-worker/profiles.js": "28aac318abfb06285f5ecc56a1a5890de3276db0edf2770a988de7c541d39558",
+    "lib/cluster-worker/runtime-dependencies.js": "f046a51ce6762c29a60a63dbfc39d45d901a0babc4598cb9db11fd53fb8488a4",
+    "lib/cluster-worker/runtime-engine.js": "6b218495a079903610b5339ff49992bb1333548c1fea71478cd7b89e7ed2b59b",
+    "lib/cluster-worker/runtime-support.js": "466bee5b44af2bd681471bd994121e98ccb685225cf3dd96e58d963cfa7ab4bf",
+    "lib/cluster-worker/state-machine.js": "ad012ca16def06eba74fe97513a77fac00bbeafbf5bcb1c0f956aa04d85b2e4d",
+    "lib/cluster-worker/terminal-normalizer.js": "99720fa379ebef7397a98b4b29eaa5b0043814aa8b7c15254d045ed329529343",
+    "lib/cluster-worker/worker-internals.js": "db5d7d2f23f07f74aef7d029d1a0ee36ec9317a9f06ba0a5e7d2f15947cbab92",
+    "lib/run-plan.js": "c70bae45c113ff7a25a9c8696756fc3799104b01a8dba957d4d0eaf3a55d8a27",
+    "package-lock.json": "b75c87f09360a76e5630698fba03ecd6127b486e94b6d98b99b0ff3974dce967",
+    "package.json": "118872d7320c1e304115501fd482ce5c0c9694e1a051d101f05569a128d93b16",
+    "scripts/hosted-oecp-image-commands.js": "2d22af7d0b2cb0db8c38b30f4a2f441303d8b9f1ab91a9869b267e0529894692",
+    "scripts/hosted-oecp-image-smoke.js": "a402d0f9c8805c67729719e2073bf4563a5629f9a782dff2593e0d01f267c795",
+    "scripts/hosted-oecp-image.js": "bb75c266037febaaf1a617b139134dce1ba0d831d4583cab8c05146a354632a9",
+    "scripts/hosted-oecp-manifest.js": "2e9ad2a88a268a3eca097b4a3c20020501cf78b763d3702be10cc7fee59bd337",
+    "scripts/hosted-oecp-smoke-capability.js": "f0c70fa64405546cb8256b906d6cb6a0e117b88e8d12b19c1434ed78a4f1ec4c",
+    "scripts/hosted-oecp-smoke-client.js": "7b83a7c08e2bf4825b90fd72c9272f4bcd1359221b9bb70917a6b4e1ead2ecec",
+    "scripts/hosted-oecp-smoke-codex.mjs": "f7a480ae1ca6ee5e8c7f5fcba505fcaa74c0179a4b34e8449804f7d5f6d36948",
+    "scripts/hosted-oecp-smoke-fixture.js": "2fa9ccd003403504d7e4c52792bdbd6416c45aa602babb54173d468ca7733477",
+    "scripts/omp/runtime-identities.js": "1160b6488493e34d174142a6d98b4ff5544ccf20608ec9af03e85069e4a37708",
+    "scripts/omp/runtime-lock.js": "1159792eb4642e80b70fc6230aa13065f1eebba6b7e764e7aa424e839480a343",
+    "scripts/omp/runtime-release.js": "bb40b82aba40f9a9c58d5876f9086fd6c3b4e9995b2ec7e2fe4190a85c041d55",
+    "scripts/omp/runtime.js": "ee1f677b07d21ca3da155c58da645685f510498111d1453c7ab26b46267aaede",
+    "protocol/openengine-cluster/v1/worker.schema.json": "72d0f7ac851e689b3d4c36e58877ecf0490ff3621fa0d3195b946cc72bdca77e",
+    "rust-toolchain.toml": "d5de56d1101f9e3ba0d694a777665be841781229b16408c262294e4de9d2ca85",
+    "zeroshot-rust/Cargo.toml": "2cc514805c12b11210553073a97536ad8a3efe4936773bd43cdf23a9a998fe45",
+    "zeroshot-rust/hosted-node": "8d3a7d9d38d8f4cd0fdb5bef2e38dbf0d030b2b2e56e24b02d7a02020ea355c8",
+    "zeroshot-rust/src": "9b4a67bcf9fffac122b92fcbdcbdd2d25a82903c0149b183a4e6a4528167cb1a"
+  },
+  "imageInputsDigest": "73927a71835d3a99ff08ecefad076c8c3bab4ef76e9628ab4034d87756126a3b",
+  "rollback": {
+    "policy": "remove-or-restore-private-digest",
+    "stableReleasesUntouched": true
+  },
+  "manifestDigest": "3333811de8647cdfd64bbcba496eff0475fd097129bdd0be70e1c44f6dca3502"
+}

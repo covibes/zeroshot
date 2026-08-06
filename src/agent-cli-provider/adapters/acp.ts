@@ -1,4 +1,5 @@
 import { appendJsonSchemaPrompt } from '../schema';
+import { snapshotDelta } from '../assistant-stream';
 import { contractError } from '../contract-errors';
 import {
   getArray,
@@ -64,10 +65,7 @@ const DEFAULT_LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
   level3: { rank: 3, model: null },
 };
 
-function detectCliFeatures(
-  meta: AcpAdapterMetadata,
-  helpText?: string | null
-): AcpCliFeatures {
+function detectCliFeatures(meta: AcpAdapterMetadata, helpText?: string | null): AcpCliFeatures {
   const help = helpText ?? '';
   const unknown = !help;
   return {
@@ -183,15 +181,11 @@ function thinkingSnapshots(state: ProviderParserState): Map<string, string> {
   return state.assistantThinkingByMessageId;
 }
 
-function toolCalls(state: ProviderParserState): Map<string, { name: string | null | undefined; input: unknown }> {
+function toolCalls(
+  state: ProviderParserState
+): Map<string, { name: string | null | undefined; input: unknown }> {
   if (!state.toolCalls) state.toolCalls = new Map();
   return state.toolCalls;
-}
-
-function snapshotDelta(previous: string, current: string): string | null {
-  if (!current || previous === current) return null;
-  if (current.startsWith(previous)) return current.slice(previous.length) || null;
-  return current;
 }
 
 function resolveChunkSnapshot(previous: string, chunk: string): string {
@@ -270,7 +264,9 @@ function parseAssistantChunk(
   const textByMessageId = textSnapshots(state);
   const thinkingByMessageId = thinkingSnapshots(state);
   const nextText = options.textTypes ? joinTextBlocks(content, options.textTypes) : null;
-  const nextThinking = options.thinkingTypes ? joinTextBlocks(content, options.thinkingTypes) : null;
+  const nextThinking = options.thinkingTypes
+    ? joinTextBlocks(content, options.thinkingTypes)
+    : null;
 
   const events: OutputEvent[] = [];
   if (nextText !== null) {
@@ -331,8 +327,7 @@ function parseToolCallUpdate(
     update.rawOutput ?? update.output ?? update.partialResult ?? update.content ?? update.result;
   if (content === undefined) return null;
   const status = getOptionalString(update, 'status');
-  const isError =
-    getBoolean(update, 'isError') ?? (status === 'failed' || status === 'cancelled');
+  const isError = getBoolean(update, 'isError') ?? (status === 'failed' || status === 'cancelled');
   return {
     type: 'tool_result',
     toolId,
@@ -361,7 +356,7 @@ function resultFromStopReason(
     type: 'result',
     success,
     result: success ? resultText : null,
-    error: success ? null : explicitError ?? stopReason ?? 'ACP prompt failed.',
+    error: success ? null : (explicitError ?? stopReason ?? 'ACP prompt failed.'),
     ...(state.usage?.inputTokens === undefined ? {} : { inputTokens: state.usage.inputTokens }),
     ...(state.usage?.outputTokens === undefined ? {} : { outputTokens: state.usage.outputTokens }),
     ...(state.usage?.cacheReadInputTokens === undefined
@@ -414,7 +409,10 @@ function parseSessionUpdate(
   return null;
 }
 
-function parseRpcObject(parsed: Record<string, unknown>, state: ProviderParserState): ProviderParseResult {
+function parseRpcObject(
+  parsed: Record<string, unknown>,
+  state: ProviderParserState
+): ProviderParseResult {
   const method = getOptionalString(parsed, 'method');
   if (method === 'session/update') {
     const params = getRecord(parsed, 'params') ?? {};
@@ -430,7 +428,10 @@ function parseRpcObject(parsed: Record<string, unknown>, state: ProviderParserSt
   return null;
 }
 
-function parseEvent(line: string, state: ProviderParserState): OutputEvent | readonly OutputEvent[] | null {
+function parseEvent(
+  line: string,
+  state: ProviderParserState
+): OutputEvent | readonly OutputEvent[] | null {
   const parsed = tryParseJson(line);
   if (!isRecord(parsed)) return null;
   return parseRpcObject(parsed, state);

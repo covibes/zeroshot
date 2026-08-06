@@ -63,13 +63,35 @@ test('packed tarball resolves CJS, ESM, root, package metadata, and preserved de
     'lib/cluster/index.mjs',
     'lib/cluster/index.d.ts',
     'lib/cluster/generated/protocol.d.ts',
+    'lib/hosted-session/index.cjs',
+    'lib/hosted-session/index.mjs',
+    'lib/hosted-session/index.d.ts',
+    'lib/hosted-target/index.cjs',
+    'lib/hosted-target/index.mjs',
+    'lib/hosted-target/index.d.ts',
+    'lib/hosted-target/index.d.cts',
+    'lib/hosted-target/index.d.mts',
+    'lib/target/target-registry.js',
   ])
     assert.ok(names.has(required), required);
+  const installedRoot = paths.join(directory, 'node_modules', '@the-open-engine', 'zeroshot');
+  for (const artifact of files
+    .map(({ path: artifactPath }) => artifactPath)
+    .filter((artifactPath) =>
+      /^lib\/(?:hosted-target|hosted-session)\/.*\.(?:cjs|mjs)$/.test(artifactPath)
+    )) {
+    const source = fileSystem.readFileSync(paths.join(installedRoot, artifact), 'utf8');
+    assert.equal(
+      /(?:from\s+|require\()['"][^'"]+\.ts['"]/.test(source),
+      false,
+      `${artifact} imports source TypeScript`
+    );
+  }
   execute(
     process.execPath,
     [
       '-e',
-      "const c=require('@the-open-engine/zeroshot/cluster'); if(typeof c.connect!=='function'||typeof c.ClusterClient!=='function')process.exit(1)",
+      "const c=require('@the-open-engine/zeroshot/cluster');const h=require('@the-open-engine/zeroshot/hosted-session');const t=require('@the-open-engine/zeroshot/lib/hosted-target/index.cjs');if(typeof c.connect!=='function'||typeof c.ClusterClient!=='function'||typeof h.HostedSessionCoordinator!=='function'||typeof t.createTargetAdapter!=='function')process.exit(1)",
     ],
     directory
   );
@@ -78,7 +100,7 @@ test('packed tarball resolves CJS, ESM, root, package metadata, and preserved de
     [
       '--input-type=module',
       '-e',
-      "import {connect,ClusterClient} from '@the-open-engine/zeroshot/cluster'; if(typeof connect!=='function'||typeof ClusterClient!=='function')process.exit(1)",
+      "import {connect,ClusterClient} from '@the-open-engine/zeroshot/cluster';import {HostedSessionCoordinator} from '@the-open-engine/zeroshot/hosted-session';import {createTargetAdapter} from '@the-open-engine/zeroshot/lib/hosted-target/index.mjs';if(typeof connect!=='function'||typeof ClusterClient!=='function'||typeof HostedSessionCoordinator!=='function'||typeof createTargetAdapter!=='function')process.exit(1)",
     ],
     directory
   );
@@ -86,7 +108,7 @@ test('packed tarball resolves CJS, ESM, root, package metadata, and preserved de
     process.execPath,
     [
       '-e',
-      "require('@the-open-engine/zeroshot');require('@the-open-engine/zeroshot/src/orchestrator.js');require('@the-open-engine/zeroshot/lib/settings.js');require('@the-open-engine/zeroshot/package.json')",
+      "require('@the-open-engine/zeroshot');require('@the-open-engine/zeroshot/src/orchestrator.js');require('@the-open-engine/zeroshot/lib/settings.js');require('@the-open-engine/zeroshot/lib/target/target-registry.js');require('@the-open-engine/zeroshot/package.json')",
     ],
     directory
   );
@@ -98,8 +120,16 @@ test('packed declarations resolve under node16 and bundler modes', () => {
     paths.join(directory, 'consumer.ts'),
     [
       "import type { ClusterClient, Connection, WatchParams } from '@the-open-engine/zeroshot/cluster';",
+      "import type { HostedAccess, HostedSessionCoordinator } from '@the-open-engine/zeroshot/hosted-session';",
+      "import type { TargetAdapter } from '@the-open-engine/zeroshot/lib/hosted-target/index.cjs';",
       'declare const client: ClusterClient;',
       'declare const connection: Connection;',
+      'declare const hostedSession: HostedSessionCoordinator;',
+      'declare const access: HostedAccess;',
+      'declare const targetAdapter: TargetAdapter;',
+      'void hostedSession;',
+      'void access;',
+      'void targetAdapter;',
       'const params: WatchParams = {};',
       'void client.watch(params);',
       "void connection.call('get', {});",

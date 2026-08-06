@@ -46,7 +46,11 @@ const { generateName } = require('./name-generator');
 const configValidator = require('./config-validator');
 const TemplateResolver = require('./template-resolver');
 const { loadSettings } = require('../lib/settings');
-const { normalizeProviderName } = require('../lib/provider-names');
+const {
+  normalizeProviderName,
+  getDefaultProviderId,
+  providerSupportsCapability,
+} = require('../lib/provider-names');
 const { resolveRunPlan } = require('../lib/run-plan');
 const { isProcessRunning } = require('../lib/process-liveness');
 const { getProvider } = require('./providers');
@@ -270,6 +274,7 @@ class Orchestrator {
 
     // Track if orchestrator is closed (prevents _saveClusters race conditions during cleanup)
     this.closed = false;
+    this._conductorWatchdogs = new Set();
 
     // Track if clusters are loaded (for lazy loading pattern)
     this._clustersLoaded = options.skipLoad === true;
@@ -312,8 +317,8 @@ class Orchestrator {
       clusterConfig.forceProvider ||
       clusterConfig.defaultProvider ||
       settings.defaultProvider ||
-      'claude';
-    return normalizeProviderName(resolved) || 'claude';
+      getDefaultProviderId();
+    return normalizeProviderName(resolved) || getDefaultProviderId();
   }
 
   /**
@@ -1654,6 +1659,28 @@ class Orchestrator {
     const timeoutMs = 30000;
     let watchdogTimer = null;
     let completedAt = null;
+    const watchdog = {
+      clear: () => {
+        if (!watchdogTimer) {
+          return;
+        }
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+        this._conductorWatchdogs.delete(watchdog);
+        const elapsed = completedAt ? Date.now() - completedAt : 0;
+        this._log(
+          `✅ CLUSTER_OPERATIONS received (${elapsed}ms after conductor completed) - watchdog cleared`
+        );
+      },
+      dispose: () => {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = null;
+        }
+        this._conductorWatchdogs.delete(watchdog);
+      },
+    };
+    this._conductorWatchdogs.add(watchdog);
 
     this._subscribeToClusterTopic(messageBus, clusterId, 'AGENT_LIFECYCLE', (message) => {
       const event = message.content?.data?.event;
@@ -1666,6 +1693,11 @@ class Orchestrator {
         );
 
         watchdogTimer = setTimeout(() => {
+          watchdogTimer = null;
+          this._conductorWatchdogs.delete(watchdog);
+          if (this.closed || messageBus._closed) {
+            return;
+          }
           const clusterOps = messageBus.query({
             cluster_id: clusterId,
             topic: 'CLUSTER_OPERATIONS',
@@ -1700,19 +1732,7 @@ class Orchestrator {
       }
     });
 
-    return {
-      clear: () => {
-        if (!watchdogTimer) {
-          return;
-        }
-        clearTimeout(watchdogTimer);
-        watchdogTimer = null;
-        const elapsed = completedAt ? Date.now() - completedAt : 0;
-        this._log(
-          `✅ CLUSTER_OPERATIONS received (${elapsed}ms after conductor completed) - watchdog cleared`
-        );
-      },
-    };
+    return watchdog;
   }
 
   _registerClusterOperationsHandler(
@@ -1803,20 +1823,31 @@ class Orchestrator {
     let isolationImage = null;
 
     if (options.isolation) {
+      // Resolve the provider first so the capability gate and the cluster's image variant (which
+      // installs the provider CLI as a Docker-cached layer) both see the same provider. Providers
+      // baked into the base image (e.g. Claude) resolve back to the base image unchanged.
+      const providerName = this._resolveClusterProvider(config);
+      if (!providerSupportsCapability(providerName, 'dockerIsolation')) {
+        throw new Error(
+          `Provider ${providerName} does not support Docker isolation; run without --docker (worktree isolation is supported).`
+        );
+      }
       if (!IsolationManager.isDockerAvailable()) {
         throw new Error('Docker is not available. Install Docker to use --docker mode.');
       }
 
-      // Resolve the provider first so the cluster runs on that provider's image variant, which
-      // installs the provider CLI as a Docker-cached layer. Providers baked into the base image
-      // (e.g. Claude) resolve back to the base image unchanged.
-      const providerName = this._resolveClusterProvider(config);
+      // Pre-effect platform probe: fail before any workspace/container side effect when the
+      // Docker engine cannot run the provider's registry-owned platform (e.g. OMP's linux/amd64).
+      const platform = IsolationManager.providerDockerPlatform(providerName);
+      IsolationManager.assertPlatformSupported(platform);
+
       const baseImage = options.isolationImage || 'zeroshot-cluster-base';
       const image = IsolationManager.imageForProvider(providerName, baseImage);
       await IsolationManager.ensureImage(
         image,
         true,
-        IsolationManager.providerBuildArgs(providerName)
+        IsolationManager.providerBuildArgs(providerName, options.containerHome || '/home/node'),
+        platform
       );
       isolationImage = image;
 
@@ -1831,9 +1862,16 @@ class Orchestrator {
         mounts: options.mounts,
         containerHome: options.containerHome,
         provider: providerName,
+        platform,
       });
       this._log(`[Orchestrator] Container created: ${containerId} (workDir: ${workDir})`);
     } else if (options.worktree) {
+      const providerName = this._resolveClusterProvider(config);
+      if (!providerSupportsCapability(providerName, 'worktreeIsolation')) {
+        throw new Error(
+          `Provider ${providerName} does not support worktree isolation; run without --worktree.`
+        );
+      }
       const workDir = options.cwd || process.cwd();
 
       isolationManager = new IsolationManager({});
@@ -2414,6 +2452,10 @@ class Orchestrator {
       return;
     }
     this.closed = true;
+    for (const watchdog of this._conductorWatchdogs) {
+      watchdog.dispose();
+    }
+    this._conductorWatchdogs.clear();
 
     for (const cluster of this.clusters.values()) {
       if (typeof cluster.snapshotter?.stop === 'function') {
@@ -2813,11 +2855,14 @@ class Orchestrator {
     }
 
     const providerName = this._resolveClusterProvider(cluster.config);
+    const platform = IsolationManager.providerDockerPlatform(providerName);
+    IsolationManager.assertPlatformSupported(platform);
     const newContainerId = await cluster.isolation.manager.createContainer(clusterId, {
       workDir,
       image: cluster.isolation.image,
       reuseExistingWorkspace: true,
       provider: providerName,
+      platform,
     });
 
     this._log(`[Orchestrator] New container created: ${newContainerId}`);

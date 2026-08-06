@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"omp-command-failure","timestamp":"2026-07-09T00:00:00.000Z","cwd":"/tmp/omp"}
+{"type":"tool_execution_start","toolCallId":"tool-err","toolName":"bash","args":{"command":"omp --bogus"}}
+{"type":"tool_execution_end","toolCallId":"tool-err","toolName":"bash","result":"Unknown option --bogus","isError":true}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"command failed"}],"usage":{"input":3,"output":2,"cacheRead":0,"cacheWrite":0},"stopReason":"error","errorMessage":"Unknown option --bogus"},"toolResults":[]}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CapsuleLimits",
+  "description": "Public capsule concurrency projection.",
+  "type": "object",
+  "properties": {
+    "active_capsules": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "max_active_capsules": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint64",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "active_capsules",
+    "max_active_capsules"
+  ]
+}

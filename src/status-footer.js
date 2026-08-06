@@ -151,21 +151,29 @@ class StatusFooter {
   }
 
   /**
-   * Print text to stdout, coordinating with the render cycle.
-   * When a render is in progress, queues output to prevent cursor corruption.
-   * When no render is active, writes immediately.
-   *
-   * MUST be used instead of console.log() when status footer is active.
-   * @param {string} text - Text to print (newline will be added)
+   * Print one logical line while coordinating with footer rendering.
+   * The caller owns line normalization; this method appends one newline.
+   * @param {string} text
    */
   print(text) {
+    this._queueOrWrite(`${text}\n`);
+  }
+
+  /**
+   * Write an exact streaming chunk while coordinating with footer rendering.
+   * @param {string} text
+   */
+  write(text) {
+    this._queueOrWrite(String(text));
+  }
+
+  /** @private */
+  _queueOrWrite(text) {
     if (this.isRendering) {
-      // Queue for later - render() will flush after restoring cursor
       this.printQueue.push(text);
-    } else {
-      // Write immediately - no render in progress
-      process.stdout.write(text + '\n');
+      return;
     }
+    process.stdout.write(text);
   }
 
   /**
@@ -176,8 +184,7 @@ class StatusFooter {
   _flushPrintQueue() {
     if (this.printQueue.length === 0) return;
 
-    // Write all queued output
-    const output = this.printQueue.map((text) => text + '\n').join('');
+    const output = this.printQueue.join('');
     this.printQueue = [];
     process.stdout.write(output);
   }

@@ -19,7 +19,7 @@ Thank you for your interest in contributing to Zeroshot! This guide covers every
 
 ### Prerequisites
 
-- **Node.js 18+** (check: `node --version`)
+- **Node.js 22+** (check: `node --version`; `.nvmrc` pins the development line)
 - **npm** (bundled with Node)
 - **Docker** (optional, for isolation mode tests)
 - **AI provider** - Configure the bundled Gateway provider or install at least one supported provider

@@ -1,0 +1,45 @@
+export const OMP_CREDENTIAL_ENV_KEYS: readonly string[] = [
+  'AIMLAPI_API_KEY', 'AI_GATEWAY_API_KEY', 'ALIBABA_CODING_PLAN_API_KEY', 'ALIBABA_TOKEN_PLAN_API_KEY',
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_OAUTH_TOKEN', 'ANTHROPIC_SEARCH_API_KEY',
+  'AWS_ACCESS_KEY_ID', 'AWS_BEARER_TOKEN_BEDROCK', 'AWS_SECRET_ACCESS_KEY', 'AZURE_OPENAI_API_KEY',
+  'BAILIAN_TOKEN_PLAN_API_KEY', 'BRAVE_API_KEY', 'CEREBRAS_API_KEY', 'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY', 'CLOUDFLARE_AI_GATEWAY_API_KEY', 'COPILOT_GITHUB_TOKEN', 'CURSOR_ACCESS_TOKEN',
+  'DEEPSEEK_API_KEY', 'EXA_API_KEY', 'FIREPASS_API_KEY', 'FIREWORKS_API_KEY', 'GEMINI_API_KEY', 'GH_TOKEN',
+  'GITHUB_TOKEN', 'GITLAB_TOKEN', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_API_KEY',
+  'GROQ_API_KEY', 'HF_TOKEN', 'HUGGINGFACE_HUB_TOKEN', 'JINA_API_KEY', 'KAGI_API_KEY', 'KILO_API_KEY',
+  'KIMI_SEARCH_API_KEY', 'LITELLM_API_KEY', 'LLAMA_CPP_API_KEY', 'LM_STUDIO_API_KEY', 'MINIMAX_API_KEY',
+  'MINIMAX_CODE_API_KEY', 'MINIMAX_CODE_CN_API_KEY', 'MISTRAL_API_KEY', 'MOONSHOT_API_KEY',
+  'MOONSHOT_SEARCH_API_KEY', 'NANO_GPT_API_KEY', 'NOVITA_API_KEY', 'NVIDIA_API_KEY', 'OLLAMA_API_KEY',
+  'OLLAMA_CLOUD_API_KEY', 'OMP_AUTH_BROKER_TOKEN', 'OPENAI_API_KEY', 'OPENCODE_API_KEY', 'OPENROUTER_API_KEY',
+  'PARALLEL_API_KEY', 'PERPLEXITY_API_KEY', 'PERPLEXITY_COOKIES', 'QIANFAN_API_KEY', 'QWEN_OAUTH_TOKEN',
+  'QWEN_PORTAL_API_KEY', 'SEARXNG_BASIC_PASSWORD', 'SEARXNG_TOKEN', 'SILICONFLOW_API_KEY',
+  'SILICONFLOW_CN_API_KEY', 'SMITHERY_API_KEY', 'SYNTHETIC_API_KEY', 'TAVILY_API_KEY',
+  'TOGETHER_API_KEY', 'UMANS_AI_CODING_PLAN_API_KEY', 'VENICE_API_KEY', 'VLLM_API_KEY',
+  'WAFER_SERVERLESS_API_KEY', 'XAI_API_KEY', 'XAI_OAUTH_TOKEN', 'XIAOMI_API_KEY',
+  'XIAOMI_TOKEN_PLAN_AMS_API_KEY', 'XIAOMI_TOKEN_PLAN_CN_API_KEY', 'XIAOMI_TOKEN_PLAN_SGP_API_KEY',
+  'ZAI_API_KEY', 'ZENMUX_API_KEY', 'ZHIPU_API_KEY',
+];
+
+export const OMP_RETRYABLE_PATTERNS: readonly RegExp[] = [
+  /\brate(?:[_ -]?limit| limited)\b/i, /\bquota\b/i, /\bresource[_ -]?exhausted\b/i,
+  /\btemporar(?:y|ily)\b/i, /\boverloaded\b/i, /\bservice unavailable\b/i,
+];
+
+export const OMP_PERMANENT_PATTERNS: readonly RegExp[] = [
+  /\bunsupported-protocol\b/i, /\bunsupported-limits\b/i, /\bunsupported-provider-cli\b/i,
+  /\bunsupported-ui-method\b/i, /\bunsupported-capability\b/i, /\bunsafe-config\b/i,
+  /\bmalformed-response\b/i, /\bmalformed-extension-ui-request\b/i, /\bmalformed-host-tool-call\b/i,
+  /\bmalformed-host-uri-request\b/i, /\bextension-error\b/i, /\blocal-only-prompt\b/i,
+  /\blifetime-request-id-exceeded\b/i, /\bpending-request-exceeded\b/i, /\bspawn-hook-failed\b/i,
+  /\bphysical-frame-too-large\b/i, /\bmalformed-physical-frame\b/i, /\binvalid-chunk-metadata\b/i,
+  /\binvalid-chunk-data\b/i, /\bchunk-sequence-must-start-at-zero\b/i, /\bchunk-sequence-mismatch\b/i,
+  /\bchunk-sequence-exceeds-declared-length\b/i, /\bchunk-sequence-length-mismatch\b/i,
+  /\bmalformed-json-in-reassembled-frame\b/i, /\bnon-object-reassembled-frame\b/i,
+  /\binvalid-utf8-in-reassembled-frame\b/i, /\binflight-reassembly-bytes-exceeded\b/i,
+  /\binterleaved-chunk-sequence\b/i, /\binterrupted-chunk-sequence\b/i,
+  /\bincomplete-physical-frame\b/i, /\bincomplete-chunk-sequence\b/i, /\boutbound-frame-too-large\b/i,
+  /\bpre-negotiation-rpc-chunk\b/i, /\b[\w-]+-bound-exceeded\b/i, /\bno available authenticated\b/i,
+  /\bno keyless model\b/i, /\bno valid authentication\b/i, /\bmissing api key\b/i,
+  /\brun\s*\/login\b/i, /\bunknown option\b/i, /\bfailed to load\b/i,
+  /\bcannot find module\b/i, /\bno such file or directory\b/i,
+];

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TargetSessionV1",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "$ref": "#/$defs/TargetSessionKind"
+    },
+    "organization_id": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "organization_id"
+  ],
+  "$defs": {
+    "TargetSessionKind": {
+      "type": "string",
+      "enum": [
+        "openengine.target-session/v1"
+      ]
+    }
+  }
+}

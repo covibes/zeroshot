@@ -1,11 +1,33 @@
+import { randomUUID } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 import { getProviderAdapter } from './adapters';
 import { UnsupportedProviderCapabilityError } from './errors';
 import { normalizeGatewayBuildOptions, resolveGatewayConfiguration } from './gateway-tools';
 import { isRecord } from './json';
 import {
+  OMP_SDK_BACKEND_VERSION,
+  OMP_SDK_BUN_VERSION,
+  OMP_SDK_MAX_REQUEST_BYTES,
+  OMP_SDK_PROTOCOL_VERSION,
+  parseOmpSdkSidecarRequest,
+} from './omp/sdk-protocol';
+import type { OmpSdkExecutionContext, OmpSdkSidecarRequest } from './omp/sdk-protocol';
+import {
+  normalizeOmpSdkSettings,
+  OMP_AUTH_BROKER_ENV_NAMES,
+  parseExactOmpModelSelector,
+  resolveOmpSdkSettings,
+} from './omp/sdk-settings';
+import type { ConfiguredOmpSdkSettings } from './omp/sdk-settings';
+import {
+  getDefaultProviderId,
   getProviderRegistryEntry,
   resolveProviderCommand,
   supportsProviderCapability,
+  supportsProviderOutputReformatting,
 } from './provider-registry';
 import type {
   BuildProviderCommandOptions,
@@ -16,25 +38,28 @@ import type {
   ModelLevel,
   ModelSpec,
   ProviderAdapter,
+  StructuredOutputRecoveryAdapter,
   ProviderCliFeatures,
   ProviderId,
   ResolvedGatewayBuildOptions,
   ReasoningEffort,
+  OmpSdkContainmentRequirement,
+  OmpSdkExecutionIdentity,
+  OmpSdkSemanticIdentity,
+  PreparedEnvironmentPolicy,
+  PreparedPrivateArtifacts,
+  PreparedProviderInvoke,
   WebSearchAttestation,
 } from './types';
 
 type UnknownFunction = (...args: readonly unknown[]) => unknown;
-
-interface CommandParts {
-  readonly command: string;
-  readonly args: readonly string[];
-}
 
 interface RuntimeProviderSettings {
   readonly defaultLevel?: ModelLevel;
   readonly levelOverrides: LevelOverrides;
   readonly gateway?: GatewayBuildOptions;
   readonly webSearch?: boolean;
+  readonly trustIsolatedRecoveryProfile?: boolean;
 }
 
 interface RuntimeCommandContext {
@@ -51,11 +76,19 @@ export interface SingleAgentProviderCommandInput {
 export interface PreparedSingleAgentProviderCommand {
   readonly adapter: ProviderAdapter;
   readonly commandSpec: CommandSpec;
+  readonly context: string;
   readonly options: BuildProviderCommandOptions;
   readonly cliFeatures: CliFeatureOverrides;
   readonly configuration: {
     readonly webSearch: WebSearchAttestation;
   };
+  readonly invoke: PreparedProviderInvoke;
+  readonly environmentPolicy?: PreparedEnvironmentPolicy;
+  readonly credentialNames?: readonly string[];
+  readonly privateArtifacts?: PreparedPrivateArtifacts;
+  readonly executionIdentity?: OmpSdkExecutionIdentity;
+  readonly semanticIdentity?: OmpSdkSemanticIdentity;
+  readonly containmentRequirement?: OmpSdkContainmentRequirement;
 }
 
 export interface RuntimeProviderProbe {
@@ -83,35 +116,48 @@ type MutableModelSpec = {
 const MODEL_LEVELS: readonly ModelLevel[] = ['level1', 'level2', 'level3'];
 const REASONING_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 const LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV = 'ZEROSHOT_ISOLATED_PROVIDER_SETTINGS_JSON';
-const settingsModule: unknown = require('../../lib/settings');
 const providerDetectionModule: unknown = require('../../lib/provider-detection');
-const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
+const ompSdkRuntimeModule: unknown = require('../../scripts/omp/runtime');
 
-const loadSettingsFn = moduleFunction(settingsModule, 'loadSettings');
-const getClaudeCommandFn = moduleFunction(settingsModule, 'getClaudeCommand');
 const commandExistsFn = moduleFunction(providerDetectionModule, 'commandExists');
 const getHelpOutputFn = moduleFunction(providerDetectionModule, 'getHelpOutput');
 const getVersionOutputFn = moduleFunction(providerDetectionModule, 'getVersionOutput');
-const resolveClaudeAuthFn = moduleFunction(claudeAuthModule, 'resolveClaudeAuth');
+const resolveOmpSdkRuntimeFn = moduleFunction(ompSdkRuntimeModule, 'resolveOmpSdkRuntime');
 
+export const resolveOmpTransport = (runtimeSettings?: Record<string, unknown>): 'sdk' | 'rpc' => {
+  const settings = runtimeSettings ?? loadRuntimeSettings();
+  const providerSettings = settings.providerSettings;
+  if (!isRecord(providerSettings)) return 'sdk';
+  const omp = providerSettings.omp;
+  return isRecord(omp) && omp.transport === 'rpc' ? 'rpc' : 'sdk';
+};
 export function prepareSingleAgentProviderCommand(
-  input: SingleAgentProviderCommandInput
+  input: SingleAgentProviderCommandInput,
+  runtimeSettings?: Record<string, unknown>
 ): PreparedSingleAgentProviderCommand {
   rejectCallerSuppliedModelProvenance(input);
   const baseOptions = input.options ?? {};
-  const settings = loadRuntimeSettings();
+  const settings = runtimeSettings ?? loadRuntimeSettings();
   const adapter = adapterForRuntimeInput(input.provider, settings);
+  const ompTransport = adapter.id === 'omp' ? resolveOmpTransport(settings) : undefined;
+  if (ompTransport === 'sdk') {
+    const configuredOmpSettings = resolveOmpSdkSettings(settings);
+    return prepareOmpProviderCommand(input, adapter, baseOptions, configuredOmpSettings);
+  }
   const providerSettings = runtimeProviderSettings(
     settings,
     adapter.id,
     baseOptions.cwd ?? process.cwd()
   );
-  const requestedWebSearch = baseOptions.webSearch ?? providerSettings.webSearch;
+  const requestedWebSearch = baseOptions.structuredOutputRecovery
+    ? recoveryWebSearchOption(adapter)
+    : (baseOptions.webSearch ?? providerSettings.webSearch);
   assertWebSearchDeclared(adapter.id, requestedWebSearch);
   const cliFeatures = resolveRuntimeCliFeatures(
     adapter.id,
     baseOptions.cliFeatures,
-    requestedWebSearch === true
+    requestedWebSearch === true,
+    settings
   );
   const authEnv = baseOptions.authEnv ?? resolveRuntimeAuthEnv(adapter.id, settings);
   const options = buildRuntimeOptions(baseOptions, adapter, providerSettings, {
@@ -119,27 +165,411 @@ export function prepareSingleAgentProviderCommand(
     authEnv,
   });
   return {
+    invoke: preparedInvokeForRegistry(adapter, options),
     adapter,
+    context: input.context,
     options,
     cliFeatures,
     configuration: {
       webSearch: webSearchAttestation(options),
     },
-    commandSpec: adapter.buildCommand(input.context, options),
+    commandSpec: buildRuntimeCommand(adapter, input.context, options),
+  };
+}
+interface OmpSdkRuntimeAssets {
+  readonly bunExecutable: string;
+  readonly bunVersion: string;
+  readonly ompVersion: string;
+  readonly sidecarPath: string;
+}
+
+function prepareOmpProviderCommand(
+  input: SingleAgentProviderCommandInput,
+  adapter: ProviderAdapter,
+  baseOptions: BuildProviderCommandOptions,
+  rawOmpSettings: unknown
+): PreparedSingleAgentProviderCommand {
+  const executionContext = ompExecutionContext(baseOptions.executionContext);
+  const normalized = normalizeOmpSdkSettings(rawOmpSettings, {
+    ...(executionContext === undefined
+      ? {}
+      : {
+          executionContext: executionContext === 'benchmark' ? 'docker' : executionContext,
+        }),
+    requireModelConfiguration: true,
+  });
+  if (executionContext === undefined) {
+    throw new Error(
+      'options.executionContext is required for OMP SDK preparation and must be "host", "detached", "docker", or "benchmark".'
+    );
+  }
+  if (baseOptions.resumeSessionId !== undefined || baseOptions.continueSession === true) {
+    throw new UnsupportedProviderCapabilityError(
+      'omp',
+      'sessionResume',
+      'OMP SDK structured runs are always fresh; resume and continue are not supported.'
+    );
+  }
+  if (baseOptions.structuredOutputRecovery === true) {
+    throw new UnsupportedProviderCapabilityError(
+      'omp',
+      'structuredOutputRecovery',
+      'OMP SDK strict output is produced by the original coding turn and cannot run a recovery turn.'
+    );
+  }
+  if (baseOptions.mcpConfig !== undefined && baseOptions.mcpConfig.length > 0) {
+    throw new UnsupportedProviderCapabilityError(
+      'omp',
+      'mcpServers',
+      'OMP SDK preparation does not accept caller MCP configuration.'
+    );
+  }
+  if (baseOptions.webSearch === true) {
+    throw new UnsupportedProviderCapabilityError(
+      'omp',
+      'webSearch',
+      'OMP SDK preparation uses the configured closed coding-tool allowlist and does not enable web search.'
+    );
+  }
+  if (baseOptions.authEnv !== undefined && Object.keys(baseOptions.authEnv).length > 0) {
+    throw new Error(
+      'options.authEnv is not accepted for OMP SDK preparation; declare credential environment variable names in providerSettings.omp.auth.'
+    );
+  }
+
+  const configured = normalized as Readonly<ConfiguredOmpSdkSettings>;
+  const level = baseOptions.modelSpec?.level ?? configured.defaultLevel;
+  const levelOverride = configured.levelOverrides[level];
+  const requestedModel = baseOptions.modelSpec?.model;
+  if (requestedModel === null) {
+    throw new Error('options.modelSpec.model must be an exact OMP provider/model selector.');
+  }
+  if (
+    MODEL_LEVELS.indexOf(level) < MODEL_LEVELS.indexOf(configured.minLevel) ||
+    MODEL_LEVELS.indexOf(level) > MODEL_LEVELS.indexOf(configured.maxLevel)
+  ) {
+    throw new Error(
+      `options.modelSpec.level must be between providerSettings.omp.minLevel (${configured.minLevel}) and maxLevel (${configured.maxLevel}).`
+    );
+  }
+  if (requestedModel !== undefined && requestedModel !== levelOverride.model) {
+    throw new Error(
+      `options.modelSpec.model must exactly match providerSettings.omp.levelOverrides.${level}.model.`
+    );
+  }
+  const modelSelector = requestedModel ?? levelOverride.model;
+  const parsedSelector = parseExactOmpModelSelector(modelSelector);
+  const requestedReasoningEffort = baseOptions.modelSpec?.reasoningEffort;
+  if (
+    requestedReasoningEffort !== undefined &&
+    requestedReasoningEffort !== levelOverride.reasoningEffort
+  ) {
+    throw new Error(
+      `options.modelSpec.reasoningEffort must exactly match providerSettings.omp.levelOverrides.${level}.reasoningEffort.`
+    );
+  }
+  const reasoningEffort = requestedReasoningEffort ?? levelOverride.reasoningEffort;
+  const output = ompSdkOutputContract(baseOptions);
+  const cwd = path.resolve(baseOptions.cwd ?? process.cwd());
+  const cliFeatures = adapter.detectCliFeatures('', '');
+  const options: BuildProviderCommandOptions = {
+    cwd,
+    executionContext,
+    modelSpec: {
+      level,
+      model: modelSelector,
+      reasoningEffort,
+    },
+    outputFormat: output.mode,
+    ...(output.mode === 'json' ? { jsonSchema: output.schema } : {}),
+    strictSchema: true,
+    cliFeatures,
+  };
+
+  const requestInput: OmpSdkSidecarRequest =
+    output.mode === 'json'
+      ? {
+          protocolVersion: OMP_SDK_PROTOCOL_VERSION,
+          runId: randomUUID(),
+          cwd,
+          executionContext,
+          prompt: input.context,
+          modelSelector,
+          reasoningEffort,
+          modelsConfig: configured.modelsConfig,
+          auth: configured.auth,
+          tools: configured.tools,
+          context: '',
+          outputMode: 'json',
+          outputSchema: output.schema,
+        }
+      : {
+          protocolVersion: OMP_SDK_PROTOCOL_VERSION,
+          runId: randomUUID(),
+          cwd,
+          executionContext,
+          prompt: input.context,
+          modelSelector,
+          reasoningEffort,
+          modelsConfig: configured.modelsConfig,
+          auth: configured.auth,
+          tools: configured.tools,
+          context: '',
+          outputMode: 'text',
+        };
+  const request = parseOmpSdkSidecarRequest(requestInput);
+  const requestText = JSON.stringify(request);
+  if (Buffer.byteLength(requestText, 'utf8') > OMP_SDK_MAX_REQUEST_BYTES) {
+    throw new Error(`OMP SDK request exceeds ${OMP_SDK_MAX_REQUEST_BYTES} bytes.`);
+  }
+
+  const usesContainerRuntime = executionContext === 'docker' || executionContext === 'benchmark';
+  const runtime = usesContainerRuntime
+    ? {
+        bunExecutable: '/opt/zeroshot/node_modules/bun/bin/bun.exe',
+        bunVersion: OMP_SDK_BUN_VERSION,
+        ompVersion: OMP_SDK_BACKEND_VERSION,
+        sidecarPath: '/opt/zeroshot/scripts/omp/sidecar.ts',
+      }
+    : ompSdkRuntimeAssets();
+  let privateRoot: string | undefined;
+  try {
+    privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-sdk-request-'));
+    fs.chmodSync(privateRoot, 0o700);
+    const requestPath = path.join(privateRoot, 'request.json');
+    fs.writeFileSync(requestPath, requestText, { flag: 'wx', mode: 0o600 });
+    fs.chmodSync(requestPath, 0o600);
+    const credentialNames = ompSdkCredentialNames(configured, parsedSelector.provider);
+    const invoke = {
+      lane: 'spawn',
+      parser: 'omp-sdk-ndjson',
+      ptyEligible: false,
+      strictTerminal: true,
+    } as const;
+    return {
+      context: input.context,
+      adapter,
+      options,
+      cliFeatures,
+      configuration: {
+        webSearch: { requested: false, effective: false },
+      },
+      invoke,
+      environmentPolicy: {
+        inherit: 'minimal',
+        values: Object.freeze({}),
+      },
+      credentialNames,
+      privateArtifacts: {
+        root: privateRoot,
+        requestPath,
+        owned: true,
+      },
+      executionIdentity: {
+        backend: 'omp-sdk',
+        backendVersion: OMP_SDK_BACKEND_VERSION,
+        runtime: {
+          name: 'bun',
+          version: OMP_SDK_BUN_VERSION,
+        },
+        transport: 'sdk',
+      },
+      semanticIdentity: {
+        requestedModelSelector: modelSelector,
+        reasoningEffort,
+        provider: parsedSelector.provider,
+      },
+      containmentRequirement: {
+        mode: usesContainerRuntime ? 'container' : 'host-process-tree',
+        required: true,
+      },
+      commandSpec: {
+        binary: runtime.bunExecutable,
+        args: [runtime.sidecarPath, requestPath],
+        env: {},
+        cwd,
+        cleanup: [privateRoot],
+        cleanupMetadata: [
+          {
+            kind: 'temp-directory',
+            provider: 'omp',
+            path: privateRoot,
+            reason: 'sdk-private-root',
+          },
+        ],
+        warnings: [],
+        redactions: credentialNames.map((key) => ({ kind: 'env' as const, key })),
+        invocation: {
+          lane: 'spawn',
+          pty: false,
+          protocol: 'omp-sdk-v1',
+        },
+      },
+    };
+  } catch (error) {
+    if (privateRoot !== undefined) {
+      fs.rmSync(privateRoot, { recursive: true, force: true });
+    }
+    throw error;
+  }
+}
+
+function ompExecutionContext(
+  value: BuildProviderCommandOptions['executionContext']
+): OmpSdkExecutionContext | undefined {
+  if (value === undefined) return undefined;
+  if (value === 'host' || value === 'detached' || value === 'docker' || value === 'benchmark') {
+    return value;
+  }
+  throw new Error('options.executionContext must be "host", "detached", "docker", or "benchmark".');
+}
+
+function ompSdkOutputContract(
+  options: BuildProviderCommandOptions
+):
+  | { readonly mode: 'json'; readonly schema: boolean | Readonly<Record<string, unknown>> }
+  | { readonly mode: 'text' } {
+  const hasSchema = options.jsonSchema !== undefined && options.jsonSchema !== null;
+  if (hasSchema) {
+    if (options.outputFormat !== undefined && options.outputFormat !== 'json') {
+      throw new Error('OMP SDK caller schemas require options.outputFormat "json".');
+    }
+    if (options.strictSchema === false) {
+      throw new Error('OMP SDK caller schemas require strict schema enforcement.');
+    }
+    if (typeof options.jsonSchema !== 'boolean' && !isRecord(options.jsonSchema)) {
+      throw new Error('options.jsonSchema must be a boolean or JSON Schema object.');
+    }
+    return { mode: 'json', schema: options.jsonSchema };
+  }
+  if (options.outputFormat !== undefined && options.outputFormat !== 'text') {
+    throw new Error(
+      'OMP SDK output without a caller schema must use options.outputFormat "text" and the host-owned strict text envelope.'
+    );
+  }
+  if (options.strictSchema === false) {
+    throw new Error('OMP SDK text output always uses the host-owned strict text envelope.');
+  }
+  return { mode: 'text' };
+}
+
+function ompSdkCredentialNames(
+  settings: Readonly<ConfiguredOmpSdkSettings>,
+  provider: string
+): readonly string[] {
+  if (settings.auth.mode === 'environment') {
+    const credential = settings.auth.credentials[provider];
+    if (credential === undefined) {
+      throw new Error(`No OMP environment credential reference is declared for ${provider}.`);
+    }
+    return Object.freeze([credential.env]);
+  }
+  if (settings.auth.mode === 'broker') {
+    return Object.freeze(
+      [OMP_AUTH_BROKER_ENV_NAMES.token, OMP_AUTH_BROKER_ENV_NAMES.url].sort((left, right) =>
+        left.localeCompare(right, 'en')
+      )
+    );
+  }
+  return Object.freeze([]);
+}
+
+function requiredStringValue(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${field} must be a non-empty string.`);
+  }
+  return value;
+}
+
+function ompSdkRuntimeAssets(): OmpSdkRuntimeAssets {
+  const value = resolveOmpSdkRuntimeFn();
+  if (!isRecord(value))
+    throw new Error('Pinned OMP SDK runtime resolver returned invalid evidence.');
+  const runtime = {
+    bunExecutable: requiredStringValue(value.bunExecutable, 'ompSdkRuntime.bunExecutable'),
+    bunVersion: requiredStringValue(value.bunVersion, 'ompSdkRuntime.bunVersion'),
+    ompVersion: requiredStringValue(value.ompVersion, 'ompSdkRuntime.ompVersion'),
+    sidecarPath: requiredStringValue(value.sidecarPath, 'ompSdkRuntime.sidecarPath'),
+  };
+  if (
+    runtime.bunVersion !== OMP_SDK_BUN_VERSION ||
+    runtime.ompVersion !== OMP_SDK_BACKEND_VERSION
+  ) {
+    throw new Error('Pinned OMP SDK runtime identity does not match the sidecar protocol.');
+  }
+  return runtime;
+}
+
+function preparedInvokeForRegistry(
+  adapter: ProviderAdapter,
+  options: BuildProviderCommandOptions
+): PreparedProviderInvoke {
+  const invoke = getProviderRegistryEntry(adapter.id).invoke;
+  if (invoke.lane === 'acp-stdio') {
+    return {
+      lane: 'acp-stdio',
+      parser: 'acp',
+      ptyEligible: false,
+      strictTerminal: false,
+    };
+  }
+  if (invoke.lane === 'rpc-stdio') {
+    return {
+      lane: 'rpc-stdio',
+      parser: 'provider',
+      ptyEligible: false,
+      strictTerminal: false,
+    };
+  }
+  return {
+    lane: 'spawn',
+    parser: 'provider',
+    ptyEligible: !(adapter.id === 'claude' && Boolean(options.jsonSchema)),
+    strictTerminal: false,
   };
 }
 
-export function detectRuntimeProviderCliFeatures(provider: string): ProviderCliFeatures {
-  return probeRuntimeProviderCli(provider).capabilities;
+function buildRuntimeCommand(
+  adapter: ProviderAdapter,
+  context: string,
+  options: BuildProviderCommandOptions
+): CommandSpec {
+  if (options.structuredOutputRecovery !== true) {
+    return adapter.buildCommand(context, options);
+  }
+  if (!supportsProviderOutputReformatting(adapter.id)) {
+    throw new UnsupportedProviderCapabilityError(
+      adapter.id,
+      'structuredOutputRecovery',
+      `Provider ${adapter.id} does not advertise structured-output recovery.`
+    );
+  }
+  const recoveryAdapter = adapter as ProviderAdapter & Partial<StructuredOutputRecoveryAdapter>;
+  if (typeof recoveryAdapter.buildStructuredOutputRecoveryCommand !== 'function') {
+    throw new UnsupportedProviderCapabilityError(
+      adapter.id,
+      'structuredOutputRecovery',
+      `Provider ${adapter.id} advertises structured output without a recovery adapter. Upgrade Zeroshot before retrying.`
+    );
+  }
+  return recoveryAdapter.buildStructuredOutputRecoveryCommand(context, options);
+}
+
+export function detectRuntimeProviderCliFeatures(
+  provider: string,
+  runtimeSettings?: Record<string, unknown>
+): ProviderCliFeatures {
+  return probeRuntimeProviderCli(provider, undefined, runtimeSettings).capabilities;
 }
 
 function resolveRuntimeCliFeatures(
   provider: ProviderId,
   overrides: CliFeatureOverrides | undefined,
-  webSearchRequested: boolean
+  webSearchRequested: boolean,
+  runtimeSettings: Record<string, unknown>
 ): CliFeatureOverrides {
   if (provider === 'gateway') {
-    const detected = detectRuntimeProviderCliFeatures(provider);
+    const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
     return {
       ...detected,
       ...overrides,
@@ -148,21 +578,20 @@ function resolveRuntimeCliFeatures(
     };
   }
   if (getProviderRegistryEntry(provider).invoke.lane === 'acp-stdio') {
-    const detected = detectRuntimeProviderCliFeatures(provider);
+    const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
     if (overrides === undefined) return detected;
     return mergeAcpFailClosedCliFeatures(detected, overrides);
   }
-  if (overrides === undefined) return detectRuntimeProviderCliFeatures(provider);
+  if (overrides === undefined) return detectRuntimeProviderCliFeatures(provider, runtimeSettings);
   if (!webSearchRequested) return overrides;
-  const detected = detectRuntimeProviderCliFeatures(provider);
+  const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
   return {
     ...overrides,
     supportsResume:
       'supportsResume' in detected &&
       detected.supportsResume === true &&
       overrides.supportsResume !== false,
-    supportsWebSearch:
-      detected.supportsWebSearch === true && overrides.supportsWebSearch !== false,
+    supportsWebSearch: detected.supportsWebSearch === true && overrides.supportsWebSearch !== false,
   };
 }
 
@@ -193,16 +622,44 @@ function mergeAcpFailClosedCliFeatures(
 
 export function probeRuntimeProviderCli(
   provider: string,
-  evidence?: RuntimeProbeEvidence
+  evidence?: RuntimeProbeEvidence,
+  runtimeSettings?: Record<string, unknown>
 ): RuntimeProviderProbe {
   const adapter = getProviderAdapter(provider);
   if (adapter.id === 'gateway') {
-    return probeGatewayProvider(adapter);
+    return probeGatewayProvider(adapter, runtimeSettings);
   }
-  const requested = getProviderRegistryEntry(adapter.id).settingsFields.includes('webSearch')
-    ? runtimeProviderSettings(loadRuntimeSettings(), adapter.id, process.cwd()).webSearch === true
+  const registryEntry = getProviderRegistryEntry(adapter.id);
+  const settings = runtimeSettings ?? loadRuntimeSettings();
+  if (adapter.id === 'omp' && resolveOmpTransport(settings) === 'sdk') {
+    const capabilities = adapter.detectCliFeatures('', '');
+    try {
+      const runtime = ompSdkRuntimeAssets();
+      return {
+        available: true,
+        helpText: 'Pinned bundled OMP SDK sidecar',
+        versionText: `omp-sdk ${runtime.ompVersion}; bun ${runtime.bunVersion}`,
+        capabilities,
+        configuration: {
+          webSearch: { requested: false, effective: false },
+        },
+      };
+    } catch {
+      return {
+        available: false,
+        helpText: '',
+        versionText: '',
+        capabilities,
+        configuration: {
+          webSearch: { requested: false, effective: false },
+        },
+      };
+    }
+  }
+  const requested = registryEntry.settingsFields.includes('webSearch')
+    ? runtimeProviderSettings(settings, adapter.id, process.cwd()).webSearch === true
     : false;
-  const helpCommand = runtimeHelpCommand(adapter.id);
+  const helpCommand = resolveProviderCommand(adapter.id);
   const commandAvailable =
     evidence === undefined
       ? booleanResult(commandExistsFn(helpCommand.command))
@@ -228,18 +685,17 @@ export function probeRuntimeProviderCli(
     stringResult(
       getVersionOutputFn(
         helpCommand.command,
-        getProviderRegistryEntry(adapter.id).capabilities.webSearch === true
-          ? []
-          : helpCommand.args
+        registryEntry.capabilities.webSearch === true ? [] : helpCommand.args
       )
     ).trim();
-  const availabilityProbe = getProviderRegistryEntry(adapter.id).availabilityProbe ?? 'command';
   const capabilities = attestedCliFeatures(adapter, helpText, versionText);
 
   return {
     available:
       evidence?.available ??
-      (availabilityProbe === 'help-or-version' ? Boolean(helpText || versionText) : true),
+      (registryEntry.availabilityProbe === 'help-or-version'
+        ? Boolean(helpText || versionText)
+        : true),
     helpText,
     versionText,
     capabilities,
@@ -262,15 +718,30 @@ function buildRuntimeOptions(
     providerSettings,
     modelSpec
   );
-  const webSearch = baseOptions.webSearch ?? providerSettings.webSearch;
+  const webSearch = baseOptions.structuredOutputRecovery
+    ? recoveryWebSearchOption(adapter)
+    : (baseOptions.webSearch ?? providerSettings.webSearch);
   assertWebSearchDeclared(adapter.id, webSearch);
-  const resolved = {
+  const baseResolved = {
     ...baseOptions,
     modelSpec,
     ...(gateway === undefined ? {} : { gateway }),
     ...(webSearch === undefined ? {} : { webSearch }),
     cliFeatures: runtime.cliFeatures,
   };
+  const resolved = { ...baseResolved };
+  delete resolved.trustIsolatedCodexProfile;
+  if (baseOptions.structuredOutputRecovery && adapter.id === 'codex') {
+    resolved.trustIsolatedCodexProfile = providerSettings.trustIsolatedRecoveryProfile === true;
+  }
+  if (baseOptions.structuredOutputRecovery) {
+    delete resolved.resumeSessionId;
+    delete resolved.continueSession;
+    delete resolved.mcpConfig;
+    resolved.autoApprove = false;
+    if (recoveryWebSearchOption(adapter) === undefined) delete resolved.webSearch;
+    else resolved.webSearch = false;
+  }
   if (baseOptions.jsonSchema && !supportsProviderCapability(adapter.id, 'jsonSchema')) {
     if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) {
       return { ...resolved, strictSchema: false };
@@ -279,6 +750,10 @@ function buildRuntimeOptions(
   }
   if (!shouldIncludeAuthEnv(baseOptions, runtime.authEnv)) return resolved;
   return { ...resolved, authEnv: runtime.authEnv };
+}
+
+function recoveryWebSearchOption(adapter: ProviderAdapter): false | undefined {
+  return getProviderRegistryEntry(adapter.id).capabilities.webSearch === false ? undefined : false;
 }
 
 function resolveRuntimeGatewayOptions(
@@ -296,7 +771,7 @@ function resolveRuntimeGatewayOptions(
       ? settingsGateway.headers
       : { ...(settingsGateway.headers ?? {}), ...requestGateway.headers };
   const mergedGateway: GatewayBuildOptions = {
-    ...(requestGateway.protocol ?? settingsGateway.protocol
+    ...((requestGateway.protocol ?? settingsGateway.protocol)
       ? { protocol: requestGateway.protocol ?? settingsGateway.protocol }
       : {}),
     ...((requestGateway.baseUrl ?? settingsGateway.baseUrl)
@@ -307,7 +782,7 @@ function resolveRuntimeGatewayOptions(
       : {}),
     ...(mergedHeaders === undefined ? {} : { headers: mergedHeaders }),
     model: requestGateway.model ?? modelSpec.model ?? settingsGateway.model ?? null,
-    ...(requestGateway.maxTokens ?? settingsGateway.maxTokens
+    ...((requestGateway.maxTokens ?? settingsGateway.maxTokens)
       ? { maxTokens: requestGateway.maxTokens ?? settingsGateway.maxTokens }
       : {}),
     ...((requestGateway.toolPolicy ?? settingsGateway.toolPolicy)
@@ -359,7 +834,9 @@ function resolveRuntimeAuthEnv(
   settings: Record<string, unknown>
 ): Readonly<Record<string, string>> {
   if (provider !== 'claude') return {};
-  return stringRecordFromUnknown(resolveClaudeAuthFn(settings), 'resolveClaudeAuth');
+  const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
+  const resolveClaudeAuth = moduleFunction(claudeAuthModule, 'resolveClaudeAuth');
+  return stringRecordFromUnknown(resolveClaudeAuth(settings), 'resolveClaudeAuth');
 }
 
 function adapterForRuntimeInput(
@@ -368,7 +845,7 @@ function adapterForRuntimeInput(
 ): ProviderAdapter {
   const configured =
     provider ?? optionalString(settings.defaultProvider, 'settings.defaultProvider');
-  return getProviderAdapter(configured ?? 'claude');
+  return getProviderAdapter(configured ?? getDefaultProviderId());
 }
 
 function runtimeProviderSettings(
@@ -392,6 +869,10 @@ function runtimeProviderSettings(
     providerSettings.webSearch,
     `settings.providerSettings.${provider}.webSearch`
   );
+  const trustIsolatedRecoveryProfile = optionalBoolean(
+    providerSettings.trustIsolatedRecoveryProfile,
+    `settings.providerSettings.${provider}.trustIsolatedRecoveryProfile`
+  );
   const gateway =
     provider === 'gateway'
       ? normalizeGatewayBuildOptions(providerSettings, 'settings.providerSettings.gateway', cwd)
@@ -400,21 +881,18 @@ function runtimeProviderSettings(
     levelOverrides,
     ...(gateway === undefined ? {} : { gateway }),
     ...(webSearch === undefined ? {} : { webSearch }),
+    ...(trustIsolatedRecoveryProfile === undefined ? {} : { trustIsolatedRecoveryProfile }),
   };
   return defaultLevel === undefined ? base : { ...base, defaultLevel };
 }
 
-function runtimeHelpCommand(provider: ProviderId): CommandParts {
-  if (provider === 'claude') {
-    return commandPartsFromUnknown(getClaudeCommandFn(), 'getClaudeCommand');
-  }
-  return resolveProviderCommand(provider);
-}
-
-function probeGatewayProvider(adapter: ProviderAdapter): RuntimeProviderProbe {
+function probeGatewayProvider(
+  adapter: ProviderAdapter,
+  runtimeSettings?: Record<string, unknown>
+): RuntimeProviderProbe {
   const capabilities = attestedCliFeatures(adapter, '', '');
   try {
-    const settings = loadRuntimeSettings();
+    const settings = runtimeSettings ?? loadRuntimeSettings();
     const providerSettings = runtimeProviderSettings(settings, 'gateway', process.cwd());
     resolveGatewayConfiguration(
       providerSettings.gateway,
@@ -469,7 +947,10 @@ function webSearchAttestation(options: {
 }
 
 function assertWebSearchDeclared(provider: ProviderId, requested: boolean | undefined): void {
-  if (requested === undefined || getProviderRegistryEntry(provider).capabilities.webSearch === true) {
+  if (
+    requested === undefined ||
+    getProviderRegistryEntry(provider).capabilities.webSearch === true
+  ) {
     return;
   }
   throw new UnsupportedProviderCapabilityError(
@@ -485,7 +966,9 @@ function loadRuntimeSettings(): Record<string, unknown> {
       `${LEGACY_ISOLATED_PROVIDER_SETTINGS_ENV} is not a trusted settings channel; use the settings file.`
     );
   }
-  return requiredRecord(loadSettingsFn(), 'loadSettings');
+  const settingsModule: unknown = require('../../lib/settings');
+  const loadSettings = moduleFunction(settingsModule, 'loadSettings');
+  return requiredRecord(loadSettings(), 'loadSettings');
 }
 
 function rejectCallerSuppliedModelProvenance(input: SingleAgentProviderCommandInput): void {
@@ -505,14 +988,6 @@ function moduleFunction(moduleValue: unknown, field: string): UnknownFunction {
 
 function isUnknownFunction(value: unknown): value is UnknownFunction {
   return typeof value === 'function';
-}
-
-function commandPartsFromUnknown(value: unknown, field: string): CommandParts {
-  const record = requiredRecord(value, field);
-  return {
-    command: requiredStringValue(record.command, `${field}.command`),
-    args: stringArray(record.args, `${field}.args`),
-  };
 }
 
 function levelOverridesFromUnknown(value: unknown, field: string): LevelOverrides {
@@ -585,11 +1060,6 @@ function optionalString(value: unknown, field: string): string | undefined {
   throw new Error(`${field} must be a string.`);
 }
 
-function requiredStringValue(value: unknown, field: string): string {
-  if (typeof value === 'string' && value.length > 0) return value;
-  throw new Error(`${field} must be a non-empty string.`);
-}
-
 function optionalRecord(
   value: unknown,
   field: string
@@ -610,16 +1080,6 @@ function stringRecordFromUnknown(value: unknown, field: string): Readonly<Record
   for (const [key, item] of Object.entries(record)) {
     if (typeof item !== 'string') throw new Error(`${field}.${key} must be a string.`);
     result[key] = item;
-  }
-  return result;
-}
-
-function stringArray(value: unknown, field: string): readonly string[] {
-  if (!Array.isArray(value)) throw new Error(`${field} must be an array.`);
-  const result: string[] = [];
-  for (const item of value) {
-    if (typeof item !== 'string') throw new Error(`${field} entries must be strings.`);
-    result.push(item);
   }
   return result;
 }
