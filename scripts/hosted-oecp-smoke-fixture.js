@@ -11,6 +11,11 @@ const REMOTE = `https://github.com/${REPOSITORY}.git`;
 const WORKSPACE = '/workspace';
 const COMMIT_MARKER = path.join(WORKSPACE, '.git', 'smoke-commit');
 const OUTPUT_FILE = path.join(WORKSPACE, 'hosted-smoke-output.txt');
+const CODEX_HELP = [
+  'Usage: codex exec --json --skip-git-repo-check',
+  '--config --ephemeral --ignore-user-config --ignore-rules',
+  '--strict-config --sandbox -C -m',
+].join(' ');
 
 function gitCommandArguments() {
   let args = process.argv.slice(2);
@@ -65,10 +70,15 @@ function runCodexFixture() {
     return;
   }
   if (args.includes('--help')) {
-    process.stdout.write(
-      'Usage: codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --config --ephemeral --ignore-user-config --ignore-rules --strict-config --sandbox -C -m\n'
-    );
+    process.stdout.write(`${CODEX_HELP}\n`);
     return;
+  }
+  if (
+    args.includes('--dangerously-bypass-approvals-and-sandbox') ||
+    args[args.indexOf('--sandbox') + 1] !== 'workspace-write' ||
+    !args.includes('approval_policy="never"')
+  ) {
+    throw new Error('hosted Codex did not use unattended workspace sandboxing');
   }
   fs.writeFileSync(OUTPUT_FILE, 'process-derived hosted smoke output', 'utf8');
   process.stdout.write(
