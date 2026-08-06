@@ -66,6 +66,7 @@ RUN groupadd --gid 10002 zeroshot-worker \
     && chmod 0770 /workspace \
     && chmod 0700 /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chmod 0755 /usr/bin/tini \
+    && chmod 0555 /opt/zeroshot/zeroshot-rust/hosted-node/git-askpass.js \
     && test -x /usr/bin/git \
     && test ! -e /usr/bin/gh
 

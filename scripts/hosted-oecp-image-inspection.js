@@ -78,6 +78,9 @@ process.stdout.write(JSON.stringify({
   serverExecutable: executable('/usr/local/bin/zeroshot-oecp-server'),
   tiniExecutable: executable('/usr/bin/tini'),
   gitExecutable: executable('/usr/bin/git'),
+  gitAskpassExecutable: executable(
+    '/opt/zeroshot/zeroshot-rust/hosted-node/git-askpass.js'
+  ),
   ajvVersion: require('/opt/zeroshot/node_modules/ajv/package.json').version,
   undiciVersion: require(
     '/opt/zeroshot/node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json'
@@ -151,6 +154,7 @@ function validateRuntimeExecutables(runtime) {
     runtime.serverExecutable !== true ||
     runtime.tiniExecutable !== true ||
     runtime.gitExecutable !== true ||
+    runtime.gitAskpassExecutable !== true ||
     runtime.ajvVersion !== '8.18.0' ||
     runtime.undiciVersion !== '8.9.0'
   ) {

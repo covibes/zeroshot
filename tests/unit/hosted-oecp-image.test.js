@@ -63,6 +63,7 @@ function runtimeInspection() {
     serverExecutable: true,
     tiniExecutable: true,
     gitExecutable: true,
+    gitAskpassExecutable: true,
     ajvVersion: '8.18.0',
     undiciVersion: '8.9.0',
   };
@@ -145,6 +146,13 @@ function registerRuntimeInspectionTests() {
     vulnerableUndici.undiciVersion = '8.5.0';
     assert.throws(
       () => validateRuntimeInspection(vulnerableUndici),
+      /runtime contents are invalid/
+    );
+
+    const nonExecutableAskpass = runtimeInspection();
+    nonExecutableAskpass.gitAskpassExecutable = false;
+    assert.throws(
+      () => validateRuntimeInspection(nonExecutableAskpass),
       /runtime contents are invalid/
     );
   });

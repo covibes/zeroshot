@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   providerInvocation,
   validateRequestAuthority,
+  withoutGitCredential,
 } = require('../../zeroshot-rust/hosted-node/engine-adapter');
 const { deterministicBranch } = require('../../zeroshot-rust/hosted-node/workspace-ship');
 
@@ -36,17 +37,33 @@ describe('hosted direct provider adapter', () => {
     const invocation = providerInvocation(CONFIG, request());
     assert.equal(invocation.provider, 'codex');
     assert.deepEqual(invocation.options, {
-      authEnv: {},
+      authEnv: {
+        OPENAI_API_KEY: 'provider-canary',
+      },
+      autoApprove: true,
       cwd: '/workspace',
       modelSpec: { level: 'level2' },
     });
-    assert.deepEqual(invocation.env, {
-      GH_TOKEN: 'git-canary',
-      OPENAI_API_KEY: 'provider-canary',
-    });
+    assert.equal(Object.hasOwn(invocation, 'env'), false);
     assert.equal(Object.hasOwn(invocation, 'model'), false);
-    assert.equal(Object.hasOwn(invocation.env, 'ZEROSHOT_HOSTED_CREDENTIALS_JSON'), false);
-    assert.equal(Object.hasOwn(invocation.env, 'ANTHROPIC_API_KEY'), false);
+    assert.equal(Object.hasOwn(invocation.options.authEnv, 'GH_TOKEN'), false);
+    assert.equal(
+      Object.hasOwn(invocation.options.authEnv, 'ZEROSHOT_HOSTED_CREDENTIALS_JSON'),
+      false
+    );
+    assert.equal(Object.hasOwn(invocation.options.authEnv, 'ANTHROPIC_API_KEY'), false);
+  });
+
+  it('withholds the Git credential from the provider process and restores it for delivery', async () => {
+    const previous = process.env.GH_TOKEN;
+    process.env.GH_TOKEN = 'git-canary';
+    try {
+      assert.equal(await withoutGitCredential(() => process.env.GH_TOKEN), undefined);
+      assert.equal(process.env.GH_TOKEN, 'git-canary');
+    } finally {
+      if (previous === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previous;
+    }
   });
 
   it('rejects repository and provider authority mismatches with closed codes', () => {

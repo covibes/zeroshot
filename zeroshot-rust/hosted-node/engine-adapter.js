@@ -66,6 +66,9 @@ function providerPrompt(request) {
 }
 
 function providerInvocation(config, request) {
+  const authEnv = Object.fromEntries(
+    Object.entries(config.workerEnvironment).filter(([name]) => name !== 'GH_TOKEN')
+  );
   return Object.freeze({
     schemaVersion: 1,
     command: 'invoke',
@@ -73,13 +76,24 @@ function providerInvocation(config, request) {
     context: providerPrompt(request),
     cwd: WORKSPACE,
     options: Object.freeze({
-      authEnv: Object.freeze({}),
+      authEnv: Object.freeze(authEnv),
+      autoApprove: true,
       cwd: WORKSPACE,
       modelSpec: Object.freeze({ level: config.modelLevel }),
     }),
-    env: config.workerEnvironment,
     timeoutMs: PROVIDER_TIMEOUT_MS,
   });
+}
+
+async function withoutGitCredential(operation) {
+  const gitToken = process.env.GH_TOKEN;
+  delete process.env.GH_TOKEN;
+  try {
+    return await operation();
+  } finally {
+    if (gitToken === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = gitToken;
+  }
 }
 
 class HostedProviderEngineAdapter {
@@ -106,11 +120,10 @@ class HostedProviderEngineAdapter {
   async execute(request, clusterId) {
     try {
       const branch = await this.prepareWorkspace(this.config, clusterId);
-      const response = await this.invokeProvider(
-        JSON.stringify(providerInvocation(this.config, request)),
-        {
+      const response = await withoutGitCredential(() =>
+        this.invokeProvider(JSON.stringify(providerInvocation(this.config, request)), {
           runtimeSettings: Object.freeze({}),
-        }
+        })
       );
       const result = response?.envelope?.ok === true ? response.envelope.result : null;
       if (
@@ -169,4 +182,5 @@ module.exports = {
   providerInvocation,
   createHostedProviderEngineAdapter,
   validateRequestAuthority,
+  withoutGitCredential,
 };
