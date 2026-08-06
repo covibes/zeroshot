@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 use tokio::time::{sleep, timeout, Duration};
 
 use super::HostedBackend;
-use crate::hosted_oecp::HostedAuthority;
+use crate::hosted_oecp::{HostedAuthority, HostedAuthorityConfig};
 use crate::hosted_oecp::test_support::{all_processes_absent, NodeWorkerFixture};
 use crate::hosted_oecp::ports::{
     DeliveryIntent, DeliveryReadinessReceipt, DeliveryReceipt, ProxyCleanupReceipt,
@@ -181,12 +181,13 @@ impl RuntimeFixture {
             delivery_entered: Notify::new(),
             delivery_release: Notify::new(),
         });
-        let authority = HostedAuthority::new(
-            "the-open-engine/zeroshot".to_owned(),
-            "a".repeat(40),
-            "codex".to_owned(),
-            "level2".to_owned(),
-        )
+        let authority = HostedAuthority::new(HostedAuthorityConfig {
+            repository: "the-open-engine/zeroshot".to_owned(),
+            base_revision: "a".repeat(40),
+            provider: "codex".to_owned(),
+            model_level: "level2".to_owned(),
+            provider_endpoint: "https://openrouter.ai/api/v1".to_owned(),
+        })
         .unwrap();
         let mut backend =
             HostedBackend::new(worktree.clone(), proxy.clone(), delivery.clone(), authority);

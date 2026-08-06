@@ -1,5 +1,7 @@
 'use strict';
 
+const { URL } = require('node:url');
+
 const {
   credentialEnvKeysForProvider,
   findProviderRegistryEntry,
@@ -11,6 +13,7 @@ const REPOSITORY_ENV = 'ZEROSHOT_HOSTED_REPOSITORY';
 const BASE_REVISION_ENV = 'ZEROSHOT_HOSTED_BASE_REVISION';
 const PROVIDER_ENV = 'ZEROSHOT_HOSTED_PROVIDER';
 const MODEL_LEVEL_ENV = 'ZEROSHOT_HOSTED_MODEL_LEVEL';
+const PROVIDER_ENDPOINT_ENV = 'OPENAI_BASE_URL';
 const MAX_CREDENTIAL_BYTES = 64 * 1024;
 const MAX_CREDENTIAL_ENTRIES = 32;
 const MAX_CREDENTIAL_VALUE_BYTES = 16 * 1024;
@@ -145,7 +148,24 @@ function fixedSelectors(environment) {
   const modelLevel = requiredSelector(environment, MODEL_LEVEL_ENV, (value) =>
     MODEL_LEVELS.has(value)
   );
-  return { repository, baseRevision, provider, modelLevel };
+  const providerEndpoint = requiredSelector(environment, PROVIDER_ENDPOINT_ENV, (value) => {
+    try {
+      const endpoint = new URL(value);
+      return (
+        endpoint.protocol === 'https:' &&
+        endpoint.hostname.length > 0 &&
+        endpoint.username === '' &&
+        endpoint.password === '' &&
+        !value.includes('?') &&
+        !value.includes('#') &&
+        endpoint.search === '' &&
+        endpoint.hash === ''
+      );
+    } catch {
+      return false;
+    }
+  });
+  return { repository, baseRevision, provider, modelLevel, providerEndpoint };
 }
 
 function rejectUnsupportedHostedProvider(provider) {

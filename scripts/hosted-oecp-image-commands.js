@@ -1,10 +1,16 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { isDeepStrictEqual } = require('util');
-const { ROOT, check } = require('./hosted-oecp-manifest');
+const {
+  RUNTIME_INSPECTION_SCRIPT,
+  validateImageMetadata,
+  validateRuntimeInspection,
+} = require('./hosted-oecp-image-inspection');
 
+const ROOT = path.resolve(__dirname, '..');
+const DOCKER_DIRECTORY = path.join(ROOT, 'docker', 'zeroshot-oecp');
 const DOCKERFILE = path.join(ROOT, 'docker', 'zeroshot-oecp', 'Dockerfile');
 const DOMAIN_COMPONENT = '(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])';
 const DOMAIN = `(?:${DOMAIN_COMPONENT}(?:\\.${DOMAIN_COMPONENT})*|\\[[a-fA-F0-9:]+\\])(?::[0-9]+)?`;
@@ -75,176 +81,49 @@ function validTag(reference) {
   return name.length <= 255 && NAME_PATTERN.test(name);
 }
 
-const RUNTIME_INSPECTION_SCRIPT = `
-'use strict';
-const fs = require('fs');
-const present = (target) => {
-  try {
-    fs.lstatSync(target);
-    return true;
-  } catch (error) {
-    if (error.code === 'ENOENT') return false;
-    throw error;
+function parseBaseImage(line) {
+  const tokens = line.trim().split(/\s+/u);
+  if (tokens[0]?.toUpperCase() !== 'FROM') return null;
+  if (tokens.length !== 2 && tokens.length !== 4) {
+    throw new Error(`Hosted OECP Dockerfile has malformed FROM instruction: ${line}`);
   }
-};
-const ownership = (target) => {
-  const stat = fs.statSync(target);
-  return { uid: stat.uid, gid: stat.gid, mode: (stat.mode & 0o777).toString(8).padStart(3, '0') };
-};
-const executable = (target) => (fs.statSync(target).mode & 0o111) !== 0;
-const loadable = (target) => {
-  try {
-    require(target);
-    return true;
-  } catch {
-    return false;
+  if (tokens.length === 4 && tokens[2].toUpperCase() !== 'AS') {
+    throw new Error(`Hosted OECP Dockerfile has malformed FROM instruction: ${line}`);
   }
-};
-const worker = fs.readFileSync('/etc/passwd', 'utf8').split('\\n')
-  .find((line) => line.startsWith('zeroshot-worker:')).split(':');
-process.stdout.write(JSON.stringify({
-  uid: process.getuid(),
-  worker: { uid: Number(worker[2]), gid: Number(worker[3]) },
-  workspace: ownership('/workspace'),
-  controlRoot: ownership('/run/zeroshot-capsule-agent'),
-  forbiddenPresent: [
-    '/usr/bin/gh',
-    '/opt/zeroshot/cli',
-    '/opt/zeroshot/src/target',
-    '/opt/zeroshot/lib/cluster-worker/engine-adapter.js',
-  ].filter((target) => fs.existsSync(target)),
-  packageManagerPaths: {
-    '/usr/local/bin/npm': present('/usr/local/bin/npm'),
-    '/usr/local/bin/npx': present('/usr/local/bin/npx'),
-    '/usr/local/bin/corepack': present('/usr/local/bin/corepack'),
-    '/usr/local/bin/yarn': present('/usr/local/bin/yarn'),
-    '/usr/local/bin/yarnpkg': present('/usr/local/bin/yarnpkg'),
-    '/usr/local/bin/pnpm': present('/usr/local/bin/pnpm'),
-    '/usr/local/bin/pnpx': present('/usr/local/bin/pnpx'),
-    '/usr/local/lib/node_modules/npm': present('/usr/local/lib/node_modules/npm'),
-    '/usr/local/lib/node_modules/corepack': present('/usr/local/lib/node_modules/corepack'),
-    '/opt/yarn-v1.22.22': present('/opt/yarn-v1.22.22'),
-  },
-  runtimeModules: {
-    engineStart: fs.existsSync('/opt/zeroshot/lib/cluster-worker/engine-start.js'),
-    runtimeDependencies: fs.existsSync('/opt/zeroshot/lib/cluster-worker/runtime-dependencies.js'),
-    ompRuntime: loadable('/opt/zeroshot/scripts/omp/runtime.js'),
-    ompRuntimeIdentities: loadable('/opt/zeroshot/scripts/omp/runtime-identities.js'),
-    ompRuntimeLock: loadable('/opt/zeroshot/scripts/omp/runtime-lock.js'),
-    ompRuntimeRelease: loadable('/opt/zeroshot/scripts/omp/runtime-release.js'),
-  },
-  serverExecutable: executable('/usr/local/bin/zeroshot-oecp-server'),
-  tiniExecutable: executable('/usr/bin/tini'),
-  gitExecutable: executable('/usr/bin/git'),
-  ajvVersion: require('/opt/zeroshot/node_modules/ajv/package.json').version,
-  undiciVersion: require(
-    '/opt/zeroshot/node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json'
-  ).version,
-}));
-`;
+  return { reference: tokens[1], stage: tokens[3] || 'runtime' };
+}
 
-function validateImageMetadata(metadata, manifestDigest) {
-  if (!metadata || metadata.User !== '0:0') {
-    throw new Error('Hosted image supervisor is not root');
+function immutableImageReference(reference) {
+  const separator = reference.lastIndexOf('@sha256:');
+  if (separator <= 0) return false;
+  return /^[a-f0-9]{64}$/u.test(reference.slice(separator + '@sha256:'.length));
+}
+
+function immutableBaseImages(dockerfile = fs.readFileSync(DOCKERFILE, 'utf8')) {
+  const images = dockerfile.split('\n').map(parseBaseImage).filter(Boolean);
+  const mutable = images.find(({ reference }) => !immutableImageReference(reference));
+  if (mutable) {
+    throw new Error(`Hosted OECP base image is not immutable: ${mutable.reference}`);
   }
-  if (metadata.Labels?.['org.opencontainers.image.revision'] !== manifestDigest) {
-    throw new Error('Hosted image OCI revision does not match the current manifest digest');
+  if (images.length === 0 || images.at(-1).stage !== 'runtime') {
+    throw new Error('Hosted OECP Dockerfile has no final runtime image');
   }
-  if (
-    !isDeepStrictEqual(metadata.Entrypoint, [
-      '/usr/bin/tini',
-      '-s',
-      '--',
-      '/usr/local/bin/node',
-      '/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js',
-    ])
-  ) {
-    throw new Error('Hosted image does not use the containment subreaper entrypoint');
-  }
-  if (
-    JSON.stringify(Object.keys(metadata.ExposedPorts || {}).sort()) !== JSON.stringify(['8080/tcp'])
-  ) {
-    throw new Error('Hosted image exposes an unexpected port');
-  }
-  if (
-    (metadata.Env || []).some((entry) =>
-      /(?:GITHUB|OPENROUTER|CLOUD|INSTALL|CREDENTIAL|TOKEN|SECRET|API_KEY|MODEL)/i.test(entry)
-    )
-  ) {
-    throw new Error('Hosted image contains authority-bearing environment');
+  return images;
+}
+
+function validateContextAllowlist(checked, active) {
+  const checkedAllowlist =
+    checked ?? fs.readFileSync(path.join(DOCKER_DIRECTORY, '.dockerignore'), 'utf8');
+  const activeAllowlist =
+    active ?? fs.readFileSync(path.join(DOCKER_DIRECTORY, 'Dockerfile.dockerignore'), 'utf8');
+  if (checkedAllowlist !== activeAllowlist || !activeAllowlist.startsWith('**\n')) {
+    throw new Error('Hosted OECP Docker context allowlist drifted or is not deny-all');
   }
 }
 
-function validateRuntimeIdentity(runtime) {
-  if (runtime.uid !== 0) throw new Error('Hosted image runtime supervisor is not root');
-  if (runtime.worker?.uid !== 10002 || runtime.worker?.gid !== 10002) {
-    throw new Error('Hosted image worker identity is invalid');
-  }
-}
-
-function validateRuntimePermissions(runtime) {
-  if (!isDeepStrictEqual(runtime.workspace, { uid: 10002, gid: 10002, mode: '770' })) {
-    throw new Error('Hosted image workspace ownership is invalid');
-  }
-  if (!isDeepStrictEqual(runtime.controlRoot, { uid: 1000, gid: 10002, mode: '700' })) {
-    throw new Error('Hosted image control directory is not capsule-agent-only');
-  }
-}
-
-const EXPECTED_PACKAGE_MANAGER_PATHS = Object.freeze({
-  '/usr/local/bin/npm': false,
-  '/usr/local/bin/npx': false,
-  '/usr/local/bin/corepack': false,
-  '/usr/local/bin/yarn': false,
-  '/usr/local/bin/yarnpkg': false,
-  '/usr/local/bin/pnpm': false,
-  '/usr/local/bin/pnpx': false,
-  '/usr/local/lib/node_modules/npm': false,
-  '/usr/local/lib/node_modules/corepack': false,
-  '/opt/yarn-v1.22.22': false,
-});
-
-function validateRequiredRuntimeModules(runtimeModules) {
-  if (
-    runtimeModules?.engineStart !== true ||
-    runtimeModules?.runtimeDependencies !== true ||
-    runtimeModules?.ompRuntime !== true ||
-    runtimeModules?.ompRuntimeIdentities !== true ||
-    runtimeModules?.ompRuntimeLock !== true ||
-    runtimeModules?.ompRuntimeRelease !== true
-  ) {
-    throw new Error('Hosted image is missing a required runtime module');
-  }
-}
-
-function validateRuntimeExecutables(runtime) {
-  if (
-    runtime.serverExecutable !== true ||
-    runtime.tiniExecutable !== true ||
-    runtime.gitExecutable !== true ||
-    runtime.ajvVersion !== '8.18.0' ||
-    runtime.undiciVersion !== '8.9.0'
-  ) {
-    throw new Error('Hosted image runtime contents are invalid');
-  }
-}
-
-function validateRuntimeContents(runtime) {
-  if (!Array.isArray(runtime.forbiddenPresent) || runtime.forbiddenPresent.length > 0) {
-    throw new Error('Hosted image contains a forbidden runtime path');
-  }
-  if (!isDeepStrictEqual(runtime.packageManagerPaths, EXPECTED_PACKAGE_MANAGER_PATHS)) {
-    throw new Error('Hosted image package manager paths are invalid');
-  }
-  validateRequiredRuntimeModules(runtime.runtimeModules);
-  validateRuntimeExecutables(runtime);
-}
-
-function validateRuntimeInspection(runtime) {
-  if (!runtime) throw new Error('Hosted image runtime inspection is missing');
-  validateRuntimeIdentity(runtime);
-  validateRuntimePermissions(runtime);
-  validateRuntimeContents(runtime);
+function validateBuildInputs() {
+  immutableBaseImages();
+  validateContextAllowlist();
 }
 
 function run(program, args) {
@@ -254,7 +133,11 @@ function run(program, args) {
 }
 
 function capture(program, args) {
-  const result = spawnSync(program, args, { cwd: ROOT, encoding: 'utf8' });
+  const result = spawnSync(program, args, {
+    cwd: ROOT,
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`${program} exited with status ${result.status}: ${result.stderr.trim()}`);
@@ -264,24 +147,14 @@ function capture(program, args) {
 
 function build(tag) {
   if (!validTag(tag)) throw new Error('Image tag is invalid');
-  const digest = check().manifestDigest;
-  run('docker', [
-    'build',
-    '--file',
-    DOCKERFILE,
-    '--build-arg',
-    `BUILD_MANIFEST_DIGEST=${digest}`,
-    '--tag',
-    tag,
-    ROOT,
-  ]);
+  validateBuildInputs();
+  run('docker', ['build', '--file', DOCKERFILE, '--tag', tag, ROOT]);
 }
 
 function inspect(tag) {
   if (!validTag(tag)) throw new Error('Image tag is invalid');
-  const manifestDigest = check().manifestDigest;
   const metadata = JSON.parse(capture('docker', ['image', 'inspect', tag]))[0]?.Config;
-  validateImageMetadata(metadata, manifestDigest);
+  validateImageMetadata(metadata);
   const runtime = JSON.parse(
     capture('docker', ['run', '--rm', '--entrypoint', 'node', tag, '-e', RUNTIME_INSPECTION_SCRIPT])
   );
@@ -292,7 +165,9 @@ module.exports = {
   ROOT,
   build,
   capture,
+  immutableBaseImages,
   inspect,
+  validateContextAllowlist,
   validTag,
   validateImageMetadata,
   validateRuntimeInspection,

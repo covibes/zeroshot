@@ -5,9 +5,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const BASE_REVISION = 'a'.repeat(40);
+const HEAD_REVISION = 'b'.repeat(40);
 const REPOSITORY = 'the-open-engine/zeroshot-smoke';
 const REMOTE = `https://github.com/${REPOSITORY}.git`;
 const WORKSPACE = '/workspace';
+const COMMIT_MARKER = path.join(WORKSPACE, '.git', 'smoke-commit');
+const OUTPUT_FILE = path.join(WORKSPACE, 'hosted-smoke-output.txt');
+const CODEX_HELP = [
+  'Usage: codex exec --json --skip-git-repo-check',
+  '--config --ephemeral --ignore-user-config --ignore-rules',
+  '--strict-config --sandbox -C -m',
+].join(' ');
 
 function gitCommandArguments() {
   let args = process.argv.slice(2);
@@ -29,14 +37,29 @@ function runGitFixture() {
     return;
   }
   if (command === 'rev-parse') {
-    process.stdout.write(`${BASE_REVISION}\n`);
+    const revision =
+      args[1] === 'refs/remotes/origin/HEAD' || !fs.existsSync(COMMIT_MARKER)
+        ? BASE_REVISION
+        : HEAD_REVISION;
+    process.stdout.write(`${revision}\n`);
     return;
   }
   if (command === 'remote' && args[1] === 'get-url') {
     process.stdout.write(`${REMOTE}\n`);
     return;
   }
-  if (command === 'status' || command === 'config') return;
+  if (command === 'status') {
+    if (fs.existsSync(OUTPUT_FILE)) process.stdout.write(' M hosted-smoke-output.txt\0');
+    return;
+  }
+  if (command === 'config') {
+    process.stdout.write('core.repositoryformatversion\0remote.origin.url\0');
+    return;
+  }
+  if (command === 'commit') {
+    fs.writeFileSync(COMMIT_MARKER, `${HEAD_REVISION}\n`, 'ascii');
+    return;
+  }
   throw new Error(`unsupported smoke Git command: ${args.join(' ')}`);
 }
 
@@ -47,16 +70,17 @@ function runCodexFixture() {
     return;
   }
   if (args.includes('--help')) {
-    process.stdout.write(
-      'Usage: codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --config --ephemeral --ignore-user-config --ignore-rules --strict-config --sandbox -C -m\n'
-    );
+    process.stdout.write(`${CODEX_HELP}\n`);
     return;
   }
-  fs.writeFileSync(
-    path.join(WORKSPACE, 'hosted-smoke-output.txt'),
-    'process-derived hosted smoke output',
-    'utf8'
-  );
+  if (
+    args.includes('--dangerously-bypass-approvals-and-sandbox') ||
+    args[args.indexOf('--sandbox') + 1] !== 'danger-full-access' ||
+    !args.includes('approval_policy="never"')
+  ) {
+    throw new Error('hosted Codex did not use the fixed capsule boundary');
+  }
+  fs.writeFileSync(OUTPUT_FILE, 'process-derived hosted smoke output', 'utf8');
   process.stdout.write(
     `${JSON.stringify({ type: 'thread.started', thread_id: 'smoke-thread' })}\n`
   );

@@ -201,9 +201,10 @@ test('packed CJS and ESM consumers use the installed default ws runtime', () => 
   execute(process.execPath, ['-e', script], directory);
 });
 
-test('injected WebSocket factory works with optional runtime omitted', () => {
-  const { directory } = packedConsumer();
+test('injected WebSocket factory overrides the installed default runtime', () => {
+  const { directory } = packedConsumer(true);
   const script = String.raw`
+    const assert = require('node:assert').strict;
     delete globalThis.WebSocket;
     const { connect } = require('@the-open-engine/zeroshot/cluster');
     class Socket {
@@ -215,14 +216,23 @@ test('injected WebSocket factory works with optional runtime omitted', () => {
       close(){this.readyState=3;this.emit('close',{})}
     }
     (async()=>{
-      try {
-        await connect('ws://example');
-        throw new Error('default connection unexpectedly found a WebSocket runtime');
-      } catch (error) {
-        if (error.code !== 'WEBSOCKET_UNAVAILABLE' || !error.message.includes("install 'ws' or pass webSocketFactory")) throw error;
-      }
-      const connection = await connect('ws://example',{webSocketFactory:()=>new Socket()});
+      const calls = [];
+      const socket = new Socket();
+      const connection = await connect('ws://example',{
+        protocols: ['openengine.cluster'],
+        headers: { Authorization: 'Bearer test' },
+        webSocketFactory: (...args) => {
+          calls.push(args);
+          return socket;
+        },
+      });
+      assert.deepEqual(calls, [[
+        'ws://example',
+        ['openengine.cluster'],
+        { headers: { Authorization: 'Bearer test' } },
+      ]]);
       await connection.close();
+      assert.equal(socket.readyState, 3);
     })().catch(e=>{console.error(e);process.exit(1)});
   `;
   execute(process.execPath, ['-e', script], directory);

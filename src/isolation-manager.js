@@ -36,6 +36,40 @@ const { provisionClaudeCredentials } = require('./claude-credentials');
 
 const DEFAULT_WORKTREE_SETUP_TIMEOUT_MS = 15 * 60 * 1000;
 const FRESH_BASE_REF_PREFIX = 'refs/zeroshot/base-fetch';
+const DETACHED_SETUP_CLUSTER_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const DETACHED_SETUP_RESOURCE_KEYS = ['configDir', 'containerName', 'isolatedDir', 'kind'];
+
+function getDetachedSetupResources(clusterId) {
+  if (typeof clusterId !== 'string' || !DETACHED_SETUP_CLUSTER_ID_PATTERN.test(clusterId)) {
+    throw new Error(`Invalid detached setup cluster ID: ${clusterId}`);
+  }
+
+  return Object.freeze({
+    kind: 'docker',
+    containerName: `zeroshot-cluster-${clusterId}`,
+    isolatedDir: path.join(os.tmpdir(), 'zeroshot-isolated', clusterId),
+    configDir: path.join(os.tmpdir(), 'zeroshot-cluster-configs', clusterId),
+  });
+}
+
+function setupResourcesMatch(recorded, expected) {
+  if (!recorded || typeof recorded !== 'object' || Array.isArray(recorded)) return false;
+  const keys = Object.keys(recorded).sort();
+  return (
+    keys.length === DETACHED_SETUP_RESOURCE_KEYS.length &&
+    keys.every((key, index) => key === DETACHED_SETUP_RESOURCE_KEYS[index]) &&
+    keys.every((key) => recorded[key] === expected[key])
+  );
+}
+
+function removeBoundedSetupDirectory(root, target) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  if (path.dirname(resolvedTarget) !== resolvedRoot) {
+    throw new Error(`Refusing to remove setup directory outside ${resolvedRoot}`);
+  }
+  fs.rmSync(resolvedTarget, { recursive: true, force: true });
+}
 
 function runSync(command, args, options = {}) {
   const timeout = options.timeout ?? 30000;
@@ -362,6 +396,24 @@ class IsolationManager {
     }
 
     return this._isContainerRunning(existingId) ? existingId : null;
+  }
+
+  static getDetachedSetupResources(clusterId) {
+    return getDetachedSetupResources(clusterId);
+  }
+
+  cleanupDetachedSetupResources(clusterId, recordedResources) {
+    const expected = getDetachedSetupResources(clusterId);
+    if (!setupResourcesMatch(recordedResources, expected)) {
+      throw new Error(`Detached setup resources do not match cluster ${clusterId}`);
+    }
+
+    this._removeContainerByName(expected.containerName);
+    removeBoundedSetupDirectory(path.join(os.tmpdir(), 'zeroshot-isolated'), expected.isolatedDir);
+    removeBoundedSetupDirectory(
+      path.join(os.tmpdir(), 'zeroshot-cluster-configs'),
+      expected.configDir
+    );
   }
 
   async _prepareIsolatedWorkspace(clusterId, workDir, reuseExisting) {

@@ -2,7 +2,6 @@
 
 const assert = require('node:assert');
 const {
-  MANIFEST_PATH,
   comparisonChanges,
   comparisonForEvent,
   relevantPaths,
@@ -141,20 +140,24 @@ describe('hosted OECP comparison availability', function () {
 });
 
 describe('hosted OECP path matching', function () {
-  it('matches manifest-declared files and directories without matching unrelated paths', function () {
+  it('matches image inputs and directories without matching unrelated paths', function () {
     const changed = [
       'docs/hosted-oecp.md',
       'scripts/hosted-oecp-ci-relevance.js',
       'crates/openengine-cluster-protocol/src/lib.rs',
       'docker/zeroshot-oecp/package-lock.json',
-      MANIFEST_PATH,
+      'docs/unrelated.md',
     ];
     assert.deepStrictEqual(
-      relevantPaths(changed, ['crates', 'docker/zeroshot-oecp/package-lock.json']),
+      relevantPaths(changed, [
+        'crates',
+        'docker/zeroshot-oecp/package-lock.json',
+        'scripts/hosted-oecp-ci-relevance.js',
+      ]),
       [
+        'scripts/hosted-oecp-ci-relevance.js',
         'crates/openengine-cluster-protocol/src/lib.rs',
         'docker/zeroshot-oecp/package-lock.json',
-        MANIFEST_PATH,
       ]
     );
   });

@@ -83,7 +83,11 @@ impl HostedBackend {
             self.publish_terminal(request.outcome, request.stop_mode)
                 .await;
         } else {
-            self.close_failed_terminal(request.outcome).await;
+            let retryable = request.stop_mode.is_some()
+                || !request.cleanup_ok
+                || !request.process_cleanup_ok
+                || matches!(request.outcome, WorkerOutcome::Verified { .. });
+            self.close_failed_terminal(request.outcome, retryable).await;
         }
     }
 
@@ -142,7 +146,7 @@ impl HostedBackend {
 
     async fn publish_terminal(&self, outcome: WorkerOutcome, stop_mode: Option<StopMode>) {
         let Some(run_id) = self.publish_node_end(outcome).await else {
-            self.complete_terminal_failure().await;
+            self.complete_terminal_failure(true).await;
             return;
         };
         let mut state = self.state.lock().await;
@@ -184,7 +188,7 @@ impl HostedBackend {
         Some(run_id)
     }
 
-    async fn close_failed_terminal(&self, outcome: WorkerOutcome) {
+    async fn close_failed_terminal(&self, outcome: WorkerOutcome, retryable: bool) {
         let outcome = match outcome {
             WorkerOutcome::Verified { .. } => {
                 WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
@@ -192,7 +196,7 @@ impl HostedBackend {
             outcome => outcome,
         };
         self.publish_node_end(outcome).await;
-        self.complete_terminal_failure().await;
+        self.complete_terminal_failure(retryable).await;
     }
     async fn terminal_event_identity(
         &self,
@@ -204,10 +208,11 @@ impl HostedBackend {
         ))
     }
 
-    async fn complete_terminal_failure(&self) {
+    async fn complete_terminal_failure(&self, retryable: bool) {
         let mut state = self.state.lock().await;
         state.finished = true;
         state.terminal_failure = true;
+        state.terminal_failure_retryable = retryable;
         state.finalizing = false;
         state.finalization_request = None;
         self.journal.close();

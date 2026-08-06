@@ -18,7 +18,7 @@ use crate::execution::WorkspaceAccessMode;
 
 use super::config::{
     HostedAuthority, HOSTED_BASE_REVISION_ENV, HOSTED_CREDENTIALS_ENV, HOSTED_MODEL_LEVEL_ENV,
-    HOSTED_PROVIDER_ENV, HOSTED_REPOSITORY_ENV,
+    HOSTED_PROVIDER_ENDPOINT_ENV, HOSTED_PROVIDER_ENV, HOSTED_REPOSITORY_ENV,
 };
 use super::ports::{ISOLATION_PROFILE, PROVIDER_PROFILE, WORKSPACE_ROOT};
 
@@ -179,6 +179,10 @@ impl WorkerExecution {
     }
 }
 
+pub(super) fn validate_worker_request(request: &LegacyShipRequest) -> Result<(), WorkerError> {
+    build_request_frame(1, "start", json!({ "request": request })).map(|_frame| ())
+}
+
 fn build_request_frame(id: u64, method: &str, params: Value) -> Result<ProcessFrame, WorkerError> {
     let mut frame = serde_json::to_vec(&json!({
         "id": id,
@@ -223,6 +227,10 @@ fn fixed_environment(authority: &HostedAuthority) -> BTreeMap<String, String> {
         (
             HOSTED_MODEL_LEVEL_ENV.to_owned(),
             authority.model_level().to_owned(),
+        ),
+        (
+            HOSTED_PROVIDER_ENDPOINT_ENV.to_owned(),
+            authority.provider_endpoint().to_owned(),
         ),
     ]);
     if let Ok(credentials) = std::env::var(HOSTED_CREDENTIALS_ENV) {

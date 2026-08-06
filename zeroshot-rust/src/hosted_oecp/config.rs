@@ -4,16 +4,27 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
+use url::Url;
 
 pub const HOSTED_CREDENTIALS_ENV: &str = "ZEROSHOT_HOSTED_CREDENTIALS_JSON";
 pub(super) const HOSTED_REPOSITORY_ENV: &str = "ZEROSHOT_HOSTED_REPOSITORY";
 pub(super) const HOSTED_BASE_REVISION_ENV: &str = "ZEROSHOT_HOSTED_BASE_REVISION";
 pub(super) const HOSTED_PROVIDER_ENV: &str = "ZEROSHOT_HOSTED_PROVIDER";
 pub(super) const HOSTED_MODEL_LEVEL_ENV: &str = "ZEROSHOT_HOSTED_MODEL_LEVEL";
+pub(super) const HOSTED_PROVIDER_ENDPOINT_ENV: &str = "OPENAI_BASE_URL";
 const NODE_PROGRAM: &str = "/usr/local/bin/node";
 const CONFIG_CHECK_PROGRAM: &str = "/opt/zeroshot/zeroshot-rust/hosted-node/config-check.js";
 const CONFIG_CHECK_DEADLINE: Duration = Duration::from_secs(10);
 const HOSTED_PATH: &str = "/opt/zeroshot/node_modules/.bin:/usr/local/bin:/usr/bin:/bin";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostedAuthorityConfig {
+    pub repository: String,
+    pub base_revision: String,
+    pub provider: String,
+    pub model_level: String,
+    pub provider_endpoint: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostedAuthority {
@@ -21,28 +32,33 @@ pub struct HostedAuthority {
     base_revision: String,
     provider: String,
     model_level: String,
+    provider_endpoint: String,
 }
 
 impl HostedAuthority {
     pub fn from_environment() -> io::Result<Self> {
-        Self::new(
-            required_environment(HOSTED_REPOSITORY_ENV)?,
-            required_environment(HOSTED_BASE_REVISION_ENV)?,
-            required_environment(HOSTED_PROVIDER_ENV)?,
-            required_environment(HOSTED_MODEL_LEVEL_ENV)?,
-        )
+        Self::new(HostedAuthorityConfig {
+            repository: required_environment(HOSTED_REPOSITORY_ENV)?,
+            base_revision: required_environment(HOSTED_BASE_REVISION_ENV)?,
+            provider: required_environment(HOSTED_PROVIDER_ENV)?,
+            model_level: required_environment(HOSTED_MODEL_LEVEL_ENV)?,
+            provider_endpoint: required_environment(HOSTED_PROVIDER_ENDPOINT_ENV)?,
+        })
     }
 
-    pub fn new(
-        repository: String,
-        base_revision: String,
-        provider: String,
-        model_level: String,
-    ) -> io::Result<Self> {
+    pub fn new(config: HostedAuthorityConfig) -> io::Result<Self> {
+        let HostedAuthorityConfig {
+            repository,
+            base_revision,
+            provider,
+            model_level,
+            provider_endpoint,
+        } = config;
         if !valid_repository(&repository)
             || !valid_revision(&base_revision)
             || !valid_provider(&provider)
             || !matches!(model_level.as_str(), "level1" | "level2" | "level3")
+            || !valid_provider_endpoint(&provider_endpoint)
         {
             return Err(invalid_configuration());
         }
@@ -51,6 +67,7 @@ impl HostedAuthority {
             base_revision,
             provider,
             model_level,
+            provider_endpoint,
         })
     }
 
@@ -63,6 +80,7 @@ impl HostedAuthority {
             .env(HOSTED_BASE_REVISION_ENV, &self.base_revision)
             .env(HOSTED_PROVIDER_ENV, &self.provider)
             .env(HOSTED_MODEL_LEVEL_ENV, &self.model_level)
+            .env(HOSTED_PROVIDER_ENDPOINT_ENV, &self.provider_endpoint)
             .env("PATH", HOSTED_PATH)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -101,6 +119,11 @@ impl HostedAuthority {
     #[must_use]
     pub fn model_level(&self) -> &str {
         &self.model_level
+    }
+
+    #[must_use]
+    pub fn provider_endpoint(&self) -> &str {
+        &self.provider_endpoint
     }
 }
 
@@ -156,17 +179,30 @@ fn valid_provider(value: &str) -> bool {
         })
 }
 
+fn valid_provider_endpoint(value: &str) -> bool {
+    let Ok(endpoint) = Url::parse(value) else {
+        return false;
+    };
+    endpoint.scheme() == "https"
+        && endpoint.host_str().is_some()
+        && endpoint.username().is_empty()
+        && endpoint.password().is_none()
+        && endpoint.query().is_none()
+        && endpoint.fragment().is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn authority() -> HostedAuthority {
-        HostedAuthority::new(
-            "the-open-engine/zeroshot".to_owned(),
-            "a".repeat(40),
-            "codex".to_owned(),
-            "level2".to_owned(),
-        )
+        HostedAuthority::new(HostedAuthorityConfig {
+            repository: "the-open-engine/zeroshot".to_owned(),
+            base_revision: "a".repeat(40),
+            provider: "codex".to_owned(),
+            model_level: "level2".to_owned(),
+            provider_endpoint: "https://openrouter.ai/api/v1".to_owned(),
+        })
         .unwrap()
     }
 
@@ -177,25 +213,87 @@ mod tests {
         assert_eq!(authority.base_revision(), "a".repeat(40));
         assert_eq!(authority.provider(), "codex");
         assert_eq!(authority.model_level(), "level2");
+        assert_eq!(
+            authority.provider_endpoint(),
+            "https://openrouter.ai/api/v1"
+        );
     }
 
     #[test]
     fn rejects_noncanonical_fixed_authority() {
-        for (repository, revision, provider, level) in [
-            ("Owner/repo", "a".repeat(40), "codex", "level2"),
-            ("github.com/owner/repo", "a".repeat(40), "codex", "level2"),
-            ("owner/repo.git", "a".repeat(40), "codex", "level2"),
-            ("owner/repo", "abc".to_owned(), "codex", "level2"),
-            ("owner/repo", "a".repeat(40), "Codex", "level2"),
-            ("owner/repo", "a".repeat(40), "codex", "level4"),
+        for (repository, revision, provider, level, endpoint) in [
+            (
+                "Owner/repo",
+                "a".repeat(40),
+                "codex",
+                "level2",
+                "https://openrouter.ai/api/v1",
+            ),
+            (
+                "github.com/owner/repo",
+                "a".repeat(40),
+                "codex",
+                "level2",
+                "https://openrouter.ai/api/v1",
+            ),
+            (
+                "owner/repo.git",
+                "a".repeat(40),
+                "codex",
+                "level2",
+                "https://openrouter.ai/api/v1",
+            ),
+            (
+                "owner/repo",
+                "abc".to_owned(),
+                "codex",
+                "level2",
+                "https://openrouter.ai/api/v1",
+            ),
+            (
+                "owner/repo",
+                "a".repeat(40),
+                "Codex",
+                "level2",
+                "https://openrouter.ai/api/v1",
+            ),
+            (
+                "owner/repo",
+                "a".repeat(40),
+                "codex",
+                "level4",
+                "https://openrouter.ai/api/v1",
+            ),
+            (
+                "owner/repo",
+                "a".repeat(40),
+                "codex",
+                "level2",
+                "http://openrouter.ai/api/v1",
+            ),
+            (
+                "owner/repo",
+                "a".repeat(40),
+                "codex",
+                "level2",
+                "https://token@openrouter.ai/api/v1",
+            ),
+            (
+                "owner/repo",
+                "a".repeat(40),
+                "codex",
+                "level2",
+                "https://openrouter.ai/api/v1?model=other",
+            ),
         ] {
             assert!(
-                HostedAuthority::new(
-                    repository.to_owned(),
-                    revision,
-                    provider.to_owned(),
-                    level.to_owned(),
-                )
+                HostedAuthority::new(HostedAuthorityConfig {
+                    repository: repository.to_owned(),
+                    base_revision: revision,
+                    provider: provider.to_owned(),
+                    model_level: level.to_owned(),
+                    provider_endpoint: endpoint.to_owned(),
+                })
                 .is_err()
             );
         }

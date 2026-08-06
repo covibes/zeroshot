@@ -26,21 +26,19 @@ FROM docker.io/instructure/tini:v0.19.0@sha256:0f9ccf2e54d010735ad691ebe670e256a
 
 FROM docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f -- /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
         /usr/local/bin/yarn /usr/local/bin/yarnpkg /usr/local/bin/pnpm /usr/local/bin/pnpx \
     && rm -rf -- /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
         /opt/yarn-v1.22.22
-ARG BUILD_MANIFEST_DIGEST
 LABEL org.opencontainers.image.title="zeroshot-oecp-private" \
       org.opencontainers.image.description="Unpublished legacy single-worker capsule runtime" \
       org.opencontainers.image.version="private" \
-      org.opencontainers.image.revision="${BUILD_MANIFEST_DIGEST}" \
       io.openengine.private="true" \
       io.openengine.graph-profile="openengine.graph.single-worker/v1" \
       io.openengine.worker-profile="legacy.zeroshot.ship@1" \
-      io.openengine.limitation="bounded Node worker; not native-v2 or full-v1 certified"
+      io.openengine.limitation="bounded Node worker; not native-v2 or full-v1"
 
 COPY --from=rust-build /opt/zeroshot/target/release/zeroshot-oecp-server /usr/local/bin/zeroshot-oecp-server
 COPY --from=node-deps /opt/node-runtime/node_modules /opt/zeroshot/node_modules
@@ -60,20 +58,22 @@ COPY zeroshot-rust/hosted-node /opt/zeroshot/zeroshot-rust/hosted-node
 
 RUN groupadd --gid 10002 zeroshot-worker \
     && useradd --uid 10002 --gid 10002 --home-dir /tmp/zeroshot-oecp --no-create-home --shell /usr/sbin/nologin zeroshot-worker \
+    && chmod -R a+rX /opt/zeroshot/lib /opt/zeroshot/protocol /opt/zeroshot/scripts /opt/zeroshot/zeroshot-rust/hosted-node \
     && mkdir -p /workspace /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chown 10002:10002 /workspace \
-    && chown 1000:10002 /run/zeroshot-capsule-agent \
+    && chown 0:10002 /run/zeroshot-capsule-agent \
     && chown 10002:10002 /tmp/zeroshot-oecp \
     && chmod 0770 /workspace \
     && chmod 0700 /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chmod 0755 /usr/bin/tini \
+    && chmod 0555 /opt/zeroshot/zeroshot-rust/hosted-node/git-askpass.js \
     && test -x /usr/bin/git \
     && test ! -e /usr/bin/gh
 
 ENV ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability
 ENV PATH=/opt/zeroshot/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-USER 0:0
+USER 0:10002
 WORKDIR /workspace
-EXPOSE 8080
+EXPOSE 8083 8084 8085
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD ["/usr/local/bin/zeroshot-oecp-server", "--healthcheck"]
 ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/node", "/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js"]

@@ -40,8 +40,13 @@ impl NodeWorkerFixture {
     }
 
     pub(super) fn command(&self, mode: &str, delay_ms: u64) -> WorkerCommand {
+        let program = if Path::new(NODE_PROGRAM).is_file() {
+            NODE_PROGRAM
+        } else {
+            "/usr/bin/node"
+        };
         WorkerCommand {
-            program: NODE_PROGRAM.to_owned(),
+            program: program.to_owned(),
             argv: vec![
                 self.script.to_string_lossy().into_owned(),
                 mode.to_owned(),
@@ -57,6 +62,10 @@ impl NodeWorkerFixture {
                 ("PATH".to_owned(), "/usr/local/bin:/usr/bin:/bin".to_owned()),
                 ("GH_TOKEN".to_owned(), "git-canary".to_owned()),
                 ("OPENAI_API_KEY".to_owned(), "provider-canary".to_owned()),
+                (
+                    "OPENAI_BASE_URL".to_owned(),
+                    "https://openrouter.ai/api/v1".to_owned(),
+                ),
                 (
                     "ZEROSHOT_HOSTED_REPOSITORY".to_owned(),
                     "the-open-engine/zeroshot".to_owned(),
@@ -171,7 +180,7 @@ if (mode === 'child') {
   return;
 }
 const expectedEnv = [
-  'GH_TOKEN', 'HOME', 'LANG', 'NODE_ENV', 'OPENAI_API_KEY', 'PATH',
+  'GH_TOKEN', 'HOME', 'LANG', 'NODE_ENV', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'PATH',
   'ZEROSHOT_HOSTED_BASE_REVISION', 'ZEROSHOT_HOSTED_MODEL_LEVEL',
   'ZEROSHOT_HOSTED_PROVIDER', 'ZEROSHOT_HOSTED_REPOSITORY',
   'ZEROSHOT_ISOLATION_PROFILE', 'ZEROSHOT_PROVIDER_PROFILE'
@@ -224,6 +233,15 @@ input.on('line', (line) => {
       process.stdout.write(JSON.stringify({
         type: 'response', id: frame.id + 1, ok: true, result: {}
       }) + '\n');
+      return;
+    }
+    if (mode === 'failed-result') {
+      process.stdout.write(JSON.stringify({
+        type: 'response', id: frame.id, ok: true,
+        result: { state: 'failed', clusterId: 'hosted-test', finishedAt: 1,
+          outcome: { status: 'verified',
+            output: { secret: 'OPENROUTER_FAILURE_CANARY' }, artifacts: [] } }
+      }) + '\n', () => process.exit(0));
       return;
     }
     setTimeout(() => process.stdout.write(JSON.stringify({

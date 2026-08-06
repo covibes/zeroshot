@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "bindings": [
+    {
+      "source": "src/target/index.ts",
+      "document": "AGENTS.md"
+    }
+  ]
+}

@@ -23,6 +23,7 @@ async-trait.workspace = true
 fs2.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
+httparse.workspace = true
 libc.workspace = true
 openengine-cluster-protocol.workspace = true
 openengine-cluster-server.workspace = true
@@ -34,6 +35,7 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+url.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [

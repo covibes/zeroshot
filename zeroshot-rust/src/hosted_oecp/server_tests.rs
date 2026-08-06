@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 
 use super::server_auth::{authenticate_first_request, TransportCapability};
 use super::server_workspace::{verify_delivery_workspace_at, verify_prepared_workspace_at};
-use super::server::{InlineDirtyDelivery, SEQUENTIAL_FINALIZATION_BOUND, SHUTDOWN_DEADLINE};
+use super::server::InlineDirtyDelivery;
+use super::server_transport::{SEQUENTIAL_FINALIZATION_BOUND, SHUTDOWN_DEADLINE};
 use super::ports::DeliveryIntent;
 
 const CAPABILITY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

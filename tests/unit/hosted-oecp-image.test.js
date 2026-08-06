@@ -1,16 +1,15 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const nodePath = require('path');
 const {
+  immutableBaseImages,
   validTag,
+  validateContextAllowlist,
   validateImageMetadata,
   validateRuntimeInspection,
 } = require('../../scripts/hosted-oecp-image-commands');
-const {
-  createManifest,
-  immutableBaseImages,
-  validateContextAllowlist,
-} = require('../../scripts/hosted-oecp-manifest');
 
 const packageManagerPaths = [
   '/usr/local/bin/npm',
@@ -29,10 +28,9 @@ function absentPackageManagerPaths() {
   return Object.fromEntries(packageManagerPaths.map((path) => [path, false]));
 }
 
-function imageMetadata(manifestDigest) {
+function imageMetadata() {
   return {
-    User: '0:0',
-    Labels: { 'org.opencontainers.image.revision': manifestDigest },
+    User: '0:10002',
     Entrypoint: [
       '/usr/bin/tini',
       '-s',
@@ -40,7 +38,7 @@ function imageMetadata(manifestDigest) {
       '/usr/local/bin/node',
       '/opt/zeroshot/zeroshot-rust/hosted-node/capsule-entrypoint.js',
     ],
-    ExposedPorts: { '8080/tcp': {} },
+    ExposedPorts: { '8083/tcp': {}, '8084/tcp': {}, '8085/tcp': {} },
     Env: ['ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability'],
   };
 }
@@ -48,9 +46,10 @@ function imageMetadata(manifestDigest) {
 function runtimeInspection() {
   return {
     uid: 0,
+    gid: 10002,
     worker: { uid: 10002, gid: 10002 },
     workspace: { uid: 10002, gid: 10002, mode: '770' },
-    controlRoot: { uid: 1000, gid: 10002, mode: '700' },
+    controlRoot: { uid: 0, gid: 10002, mode: '700' },
     forbiddenPresent: [],
     packageManagerPaths: absentPackageManagerPaths(),
     runtimeModules: {
@@ -64,6 +63,7 @@ function runtimeInspection() {
     serverExecutable: true,
     tiniExecutable: true,
     gitExecutable: true,
+    gitAskpassExecutable: true,
     ajvVersion: '8.18.0',
     undiciVersion: '8.9.0',
   };
@@ -114,20 +114,25 @@ function registerImageReferenceTests() {
 }
 
 function registerRuntimeInspectionTests() {
-  it('validates exact revision, root supervisor, and complete runtime modules', function () {
-    const digest = 'manifest-digest';
-    assert.doesNotThrow(() => validateImageMetadata(imageMetadata(digest), digest));
+  it('validates root supervisor and complete runtime modules', function () {
+    assert.doesNotThrow(() => validateImageMetadata(imageMetadata()));
     assert.doesNotThrow(() => validateRuntimeInspection(runtimeInspection()));
 
-    const wrongRevision = imageMetadata('different-digest');
-    assert.throws(
-      () => validateImageMetadata(wrongRevision, digest),
-      /OCI revision does not match/
-    );
-
-    const nonRoot = imageMetadata(digest);
+    const nonRoot = imageMetadata();
     nonRoot.User = '10001:10001';
-    assert.throws(() => validateImageMetadata(nonRoot, digest), /supervisor is not root/);
+    assert.throws(() => validateImageMetadata(nonRoot), /supervisor identity is invalid/);
+
+    const nonRootControl = runtimeInspection();
+    nonRootControl.controlRoot.uid = 1000;
+    assert.throws(() => validateRuntimeInspection(nonRootControl), /root-owned and private/);
+
+    const missingPort = imageMetadata();
+    delete missingPort.ExposedPorts['8084/tcp'];
+    assert.throws(() => validateImageMetadata(missingPort), /unexpected port/);
+
+    const extraPort = imageMetadata();
+    extraPort.ExposedPorts['8086/tcp'] = {};
+    assert.throws(() => validateImageMetadata(extraPort), /unexpected port/);
 
     const missingModule = runtimeInspection();
     missingModule.runtimeModules.runtimeDependencies = false;
@@ -143,34 +148,27 @@ function registerRuntimeInspectionTests() {
       () => validateRuntimeInspection(vulnerableUndici),
       /runtime contents are invalid/
     );
+
+    const nonExecutableAskpass = runtimeInspection();
+    nonExecutableAskpass.gitAskpassExecutable = false;
+    assert.throws(
+      () => validateRuntimeInspection(nonExecutableAskpass),
+      /runtime contents are invalid/
+    );
   });
 
   registerPackageManagerInspectionTest();
 }
 
-function registerManifestTests() {
-  it('records immutable image identities and enforces deny-all allowlist parity', function () {
-    const manifest = createManifest();
-    assert.strictEqual(manifest.schemaVersion, 2);
+function registerBuildInputTests() {
+  it('requires immutable base images and deny-all allowlist parity', function () {
+    const baseImages = immutableBaseImages();
     assert.deepStrictEqual(
-      manifest.image.baseImages.map(({ stage }) => stage),
+      baseImages.map(({ stage }) => stage),
       ['rust-build', 'node-deps', 'tini', 'runtime']
     );
-    for (const { reference } of manifest.image.baseImages) {
+    for (const { reference } of baseImages) {
       assert.match(reference, /@sha256:[a-f0-9]{64}$/);
-    }
-    assert.strictEqual(typeof manifest.inputs['docker/zeroshot-oecp/.dockerignore'], 'string');
-    assert.strictEqual(
-      typeof manifest.inputs['docker/zeroshot-oecp/Dockerfile.dockerignore'],
-      'string'
-    );
-    for (const runtimeModule of [
-      'scripts/omp/runtime.js',
-      'scripts/omp/runtime-identities.js',
-      'scripts/omp/runtime-lock.js',
-      'scripts/omp/runtime-release.js',
-    ]) {
-      assert.strictEqual(typeof manifest.inputs[runtimeModule], 'string');
     }
 
     const denyAll = '**\n!Cargo.lock\n';
@@ -182,10 +180,18 @@ function registerManifestTests() {
     assert.throws(() => validateContextAllowlist('!Cargo.lock\n', '!Cargo.lock\n'), /deny-all/);
     assert.throws(() => immutableBaseImages('FROM node:22-bookworm-slim'), /not immutable/);
   });
+
+  it('installs the CA bundle used by hosted Git', function () {
+    const dockerfile = fs.readFileSync(
+      nodePath.join(__dirname, '..', '..', 'docker', 'zeroshot-oecp', 'Dockerfile'),
+      'utf8'
+    );
+    assert.match(dockerfile, /apt-get install -y --no-install-recommends ca-certificates git/);
+  });
 }
 
 describe('hosted OECP image contracts', function () {
   registerImageReferenceTests();
   registerRuntimeInspectionTests();
-  registerManifestTests();
+  registerBuildInputTests();
 });
