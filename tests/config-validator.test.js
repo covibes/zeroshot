@@ -696,6 +696,127 @@ describe('validateAgents', function () {
   });
 });
 
+describe('validateAgents - validator Git usage', function () {
+  function validatePrompt(prompt) {
+    return validateAgents({
+      agents: [
+        {
+          id: 'validator',
+          role: 'validator',
+          triggers: [{ topic: 'IMPLEMENTATION_READY' }],
+          prompt,
+        },
+      ],
+    }).errors;
+  }
+
+  it('allows clear prohibitions of Git inspection commands', function () {
+    const safePrompts = [
+      'Do NOT use git diff or git status. Read files directly.',
+      'never run git log',
+      'git status is forbidden',
+      'NEVER RUN GIT SHOW',
+      'Don’t use git diff. Read files directly.',
+      'Do not run the command git diff.',
+      'Avoid running git status; read files directly.',
+      'The validator is forbidden from running git log.',
+      'git diff and git status are forbidden.',
+      'git log must not be used.',
+      'Do not ever use git diff.',
+      'git diff must never be used.',
+      'Both git diff and git status are forbidden.',
+      'git diff is forbidden and git status is prohibited.',
+      'Do not use git diff and never run git status.',
+      'Do not use git diff, and do not use git status.',
+      { system: 'Do not inspect git diff and git status. Read files directly.' },
+    ];
+
+    for (const prompt of safePrompts) {
+      assert.deepStrictEqual(
+        validatePrompt(prompt),
+        [],
+        `Expected prompt to be allowed: ${prompt}`
+      );
+    }
+  });
+
+  it('rejects affirmative Git inspection instructions case-insensitively', function () {
+    const unsafePrompts = [
+      ['run git diff', 'git diff'],
+      ['inspect git status', 'git status'],
+      ['RUN GIT SHOW', 'git show'],
+      ['run git\nstatus', 'git status'],
+      ['run git\r\nstatus', 'git status'],
+      [{ system: 'Run Git Log before validating.' }, 'git log'],
+    ];
+
+    for (const [prompt, command] of unsafePrompts) {
+      const errors = validatePrompt(prompt);
+      assert.strictEqual(errors.length, 1, `Expected prompt to be rejected: ${prompt}`);
+      assert.ok(errors[0].includes(`'${command}'`), errors[0]);
+      assert.ok(errors[0].includes('instructs use'), errors[0]);
+      assert.ok(errors[0].includes('Read files directly'), errors[0]);
+    }
+  });
+
+  it('treats string prompts and prompt.system identically', function () {
+    for (const prompt of ['never run git log', 'inspect git status']) {
+      assert.deepStrictEqual(validatePrompt(prompt), validatePrompt({ system: prompt }));
+    }
+  });
+
+  it('rejects negation reversal instructions', function () {
+    const errors = validatePrompt('do not forget to run git log');
+
+    assert.strictEqual(errors.length, 1);
+    assert.ok(errors[0].includes("'git log'"), errors[0]);
+  });
+
+  it('evaluates mixed clauses independently', function () {
+    const mixedPrompts = [
+      'do not use git diff, but run git show',
+      'Do not use git diff, and git show must be inspected.',
+      'Do not use git diff or git show should be inspected.',
+      'Do not use git diff, or git show may be used.',
+      'Do not use git diff, and git show has to be inspected.',
+      'Do not use git diff, and git show ought to be inspected.',
+      'Do not use git diff or git show provides useful context.',
+      'Do not use git diff and run git show.',
+    ];
+
+    for (const prompt of mixedPrompts) {
+      const errors = validatePrompt(prompt);
+      assert.strictEqual(errors.length, 1, `Expected one unsafe clause: ${prompt}`);
+      assert.ok(!errors[0].includes("'git diff'"), errors[0]);
+      assert.ok(errors[0].includes("'git show'"), errors[0]);
+    }
+  });
+
+  it('rejects conditional exceptions to prohibitive wording', function () {
+    const prompts = [
+      'Do not use git diff unless necessary.',
+      'Never run git log without first reading the files.',
+      'Git status is forbidden except during final validation.',
+    ];
+
+    for (const prompt of prompts) {
+      assert.strictEqual(
+        validatePrompt(prompt).length,
+        1,
+        `Expected prompt to be unsafe: ${prompt}`
+      );
+    }
+  });
+
+  it('handles long malformed command lists without pathological backtracking', function () {
+    const prompt = `Do not use git diff,${' '.repeat(20_000)}then inspect git status`;
+    const errors = validatePrompt(prompt);
+
+    assert.strictEqual(errors.length, 1);
+    assert.ok(errors[0].includes("'git status'"), errors[0]);
+  });
+});
+
 // === LOGIC SCRIPT TESTS ===
 
 describe('validateLogicScripts', function () {

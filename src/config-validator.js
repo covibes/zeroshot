@@ -835,17 +835,341 @@ function validateOrchestratorTriggers(agent, warnings) {
   }
 }
 
+const VALIDATOR_GIT_CLAUSE_BOUNDARIES = new Set(['but', 'however', 'yet', 'then']);
+const VALIDATOR_GIT_COMMAND_NAMES = new Set(['diff', 'status', 'log', 'show']);
+const VALIDATOR_GIT_NEGATED_WORDS = new Set([
+  "don't",
+  'never',
+  "mustn't",
+  "shouldn't",
+  "can't",
+  'cannot',
+]);
+const VALIDATOR_GIT_NEGATABLE_MODALS = new Set(['do', 'must', 'should', 'may', 'can']);
+const VALIDATOR_GIT_ACTIONS = new Set([
+  'use',
+  'run',
+  'execute',
+  'invoke',
+  'call',
+  'inspect',
+  'check',
+]);
+const VALIDATOR_GIT_ACTION_GERUNDS = new Set([
+  'using',
+  'running',
+  'executing',
+  'invoking',
+  'calling',
+  'inspecting',
+  'checking',
+]);
+const VALIDATOR_GIT_BENIGN_POSTFIX_PREFIXES = new Set([
+  'both',
+  'the',
+  'command',
+  'commands',
+  'use',
+  'usage',
+  'of',
+  ...VALIDATOR_GIT_ACTION_GERUNDS,
+]);
+const VALIDATOR_GIT_POSTFIX_PARTICIPLES = new Set([
+  'used',
+  'run',
+  'executed',
+  'invoked',
+  'called',
+  'inspected',
+  'checked',
+]);
+
+function normalizeValidatorGitToken(rawToken) {
+  let value = rawToken.toLowerCase().replaceAll('’', "'");
+  while (value.startsWith("'")) value = value.slice(1);
+  while (value.endsWith("'")) value = value.slice(0, -1);
+  return value;
+}
+
+function validatorGitTokenType(rawToken) {
+  if (rawToken === ',') return 'comma';
+  return /[,.;:!?\r\n]/.test(rawToken) ? 'boundary' : 'word';
+}
+
+function scanValidatorGitTokens(prompt) {
+  const tokens = [];
+  const tokenPattern = /[a-z'’]+|[,.;:!?\r\n]/gi;
+  for (const match of prompt.matchAll(tokenPattern)) {
+    const value = normalizeValidatorGitToken(match[0]);
+    if (!value) continue;
+    tokens.push({
+      type: validatorGitTokenType(match[0]),
+      value,
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+  return tokens;
+}
+
+function validatorGitCommandEnd(prompt, tokens, index) {
+  const token = tokens[index];
+  let nextIndex = index + 1;
+  while (tokens[nextIndex]?.value === '\r' || tokens[nextIndex]?.value === '\n') {
+    nextIndex += 1;
+  }
+  const next = tokens[nextIndex];
+  if (token.value !== 'git' || next?.type !== 'word') return -1;
+  if (!VALIDATOR_GIT_COMMAND_NAMES.has(next.value)) return -1;
+  const separator = prompt.slice(token.end, next.start);
+  return separator.length > 0 && separator.trim() === '' ? nextIndex : -1;
+}
+
+function tokenizeValidatorGitPrompt(prompt) {
+  const tokens = scanValidatorGitTokens(prompt);
+
+  const atoms = [];
+  // A small token grammar keeps mixed instructions deterministic and avoids
+  // interpolated regular expressions over untrusted prompt text.
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    const commandEnd = validatorGitCommandEnd(prompt, tokens, index);
+
+    if (commandEnd >= 0) {
+      atoms.push({ type: 'command', value: `git ${tokens[commandEnd].value}` });
+      index = commandEnd + 1;
+    } else {
+      atoms.push({ type: token.type, value: token.value });
+      index += 1;
+    }
+  }
+
+  return atoms;
+}
+
+function nextListedCommand(atoms, index, end) {
+  let cursor = index;
+  if (atoms[cursor]?.type === 'comma') {
+    cursor += 1;
+    if (atoms[cursor]?.value === 'and' || atoms[cursor]?.value === 'or') cursor += 1;
+  } else if (atoms[cursor]?.value === 'and' || atoms[cursor]?.value === 'or') {
+    cursor += 1;
+  } else {
+    return -1;
+  }
+  return cursor < end && atoms[cursor]?.type === 'command' ? cursor : -1;
+}
+
+function parseGitCommandList(atoms, index, end) {
+  if (atoms[index]?.type !== 'command') return null;
+
+  const commands = [];
+  let cursor = index;
+  while (cursor >= 0) {
+    commands.push(cursor);
+    const afterCommand = cursor + 1;
+    cursor = nextListedCommand(atoms, afterCommand, end);
+    if (cursor < 0) return { commands, end: afterCommand };
+  }
+
+  return { commands, end };
+}
+
+function skipNegatedInstruction(atoms, index) {
+  if (VALIDATOR_GIT_NEGATED_WORDS.has(atoms[index]?.value)) {
+    return index + 1;
+  }
+  if (
+    VALIDATOR_GIT_NEGATABLE_MODALS.has(atoms[index]?.value) &&
+    atoms[index + 1]?.value === 'not'
+  ) {
+    return index + 2;
+  }
+  return -1;
+}
+
+function skipGitInspectionAction(atoms, index) {
+  if (VALIDATOR_GIT_ACTIONS.has(atoms[index]?.value)) {
+    return index + 1;
+  }
+  if (atoms[index]?.value === 'rely' && atoms[index + 1]?.value === 'on') {
+    return index + 2;
+  }
+  return -1;
+}
+
+function skipCommandLabel(atoms, index) {
+  let cursor = index;
+  if (atoms[cursor]?.value === 'the') cursor += 1;
+  if (atoms[cursor]?.value === 'command' || atoms[cursor]?.value === 'commands') cursor += 1;
+  return cursor;
+}
+
+function skipOptionalGerund(atoms, index) {
+  return VALIDATOR_GIT_ACTION_GERUNDS.has(atoms[index]?.value) ? index + 1 : index;
+}
+
+function skipAlternativeProhibition(atoms, index) {
+  if (atoms[index]?.value === 'avoid') {
+    return skipOptionalGerund(atoms, index + 1);
+  }
+  if (atoms[index]?.value === 'refrain' && atoms[index + 1]?.value === 'from') {
+    return skipOptionalGerund(atoms, index + 2);
+  }
+  if (
+    (atoms[index]?.value === 'is' || atoms[index]?.value === 'are') &&
+    (atoms[index + 1]?.value === 'forbidden' || atoms[index + 1]?.value === 'prohibited') &&
+    atoms[index + 2]?.value === 'from'
+  ) {
+    return skipOptionalGerund(atoms, index + 3);
+  }
+  return -1;
+}
+
+function parsePrefixProhibition(atoms, index, end) {
+  let negatedInstructionEnd = skipNegatedInstruction(atoms, index);
+  if (atoms[negatedInstructionEnd]?.value === 'ever') negatedInstructionEnd += 1;
+  const cursor =
+    negatedInstructionEnd >= 0
+      ? skipGitInspectionAction(atoms, negatedInstructionEnd)
+      : skipAlternativeProhibition(atoms, index);
+  if (cursor < 0) return null;
+  return parseGitCommandList(atoms, skipCommandLabel(atoms, cursor), end);
+}
+
+function parsePostfixProhibition(atoms, index, end) {
+  const first = atoms[index]?.value;
+  const second = atoms[index + 1]?.value;
+  if ((first === 'is' || first === 'are') && index + 1 < end) {
+    if (second === 'forbidden' || second === 'prohibited' || second === 'disallowed') {
+      return index + 2;
+    }
+    if (second === 'not' && ['allowed', 'permitted'].includes(atoms[index + 2]?.value)) {
+      return index + 3;
+    }
+  }
+
+  let cursor = index;
+  if (['must', 'should', 'may', 'can'].includes(first) && ['not', 'never'].includes(second)) {
+    cursor += 2;
+  } else if (["mustn't", "shouldn't", "can't", 'cannot'].includes(first)) {
+    cursor += 1;
+  } else {
+    return null;
+  }
+
+  if (atoms[cursor]?.value === 'be') cursor += 1;
+  return VALIDATOR_GIT_POSTFIX_PARTICIPLES.has(atoms[cursor]?.value) ? cursor + 1 : null;
+}
+
+function skipCommas(atoms, index) {
+  let cursor = index;
+  while (atoms[cursor]?.type === 'comma') cursor += 1;
+  return cursor;
+}
+
+function commandsCoveredByPrefix(atoms, commandList, end) {
+  const suffixStart = skipCommas(atoms, commandList.end);
+  if (suffixStart >= end) return commandList.commands;
+  if (
+    (atoms[suffixStart].value === 'and' || atoms[suffixStart].value === 'or') &&
+    atoms[suffixStart + 1]?.type !== 'command'
+  ) {
+    return commandList.commands;
+  }
+
+  const postfixEnd = parsePostfixProhibition(atoms, suffixStart, end);
+  if (postfixEnd !== null && skipCommas(atoms, postfixEnd) >= end) {
+    return commandList.commands;
+  }
+
+  return commandList.commands.slice(0, -1);
+}
+
+function markPrefixProhibitions(atoms, start, end, prohibited) {
+  for (let index = start; index < end; index += 1) {
+    const commandList = parsePrefixProhibition(atoms, index, end);
+    if (!commandList) continue;
+
+    for (const command of commandsCoveredByPrefix(atoms, commandList, end)) {
+      prohibited.add(command);
+    }
+  }
+}
+
+function isBenignPostfixPrefixAtom(atom) {
+  return (
+    atom.type === 'comma' ||
+    (atom.type === 'word' && VALIDATOR_GIT_BENIGN_POSTFIX_PREFIXES.has(atom.value))
+  );
+}
+
+function markPostfixProhibitions(atoms, start, end, prohibited) {
+  let cursor = start;
+  while (cursor < end && isBenignPostfixPrefixAtom(atoms[cursor])) cursor += 1;
+
+  while (cursor < end && atoms[cursor].type === 'command') {
+    const commandList = parseGitCommandList(atoms, cursor, end);
+    const predicateEnd = parsePostfixProhibition(atoms, commandList.end, end);
+    if (predicateEnd === null) return;
+
+    const next = skipCommas(atoms, predicateEnd);
+    const continuesWithProhibition =
+      (atoms[next]?.value === 'and' || atoms[next]?.value === 'or') &&
+      atoms[next + 1]?.type === 'command';
+    if (next < end && !continuesWithProhibition) return;
+
+    for (const command of commandList.commands) prohibited.add(command);
+    if (!continuesWithProhibition) return;
+    cursor = next + 1;
+  }
+}
+
+function findProhibitedGitCommands(atoms) {
+  const prohibited = new Set();
+  let clauseStart = 0;
+
+  for (let index = 0; index <= atoms.length; index += 1) {
+    const atBoundary =
+      index === atoms.length ||
+      atoms[index].type === 'boundary' ||
+      VALIDATOR_GIT_CLAUSE_BOUNDARIES.has(atoms[index].value);
+    if (!atBoundary) continue;
+
+    markPrefixProhibitions(atoms, clauseStart, index, prohibited);
+    markPostfixProhibitions(atoms, clauseStart, index, prohibited);
+    clauseStart = index + 1;
+  }
+
+  return prohibited;
+}
+
 function validateValidatorGitUsage(agent, errors) {
   if (agent.role !== 'validator') {
     return;
   }
 
   const prompt = typeof agent.prompt === 'string' ? agent.prompt : agent.prompt?.system;
-  const gitPatterns = ['git diff', 'git status', 'git log', 'git show'];
-  for (const pattern of gitPatterns) {
-    if (prompt?.includes(pattern)) {
-      errors.push(`Validator '${agent.id}' uses '${pattern}' - git state is unreliable in agents`);
+  if (typeof prompt !== 'string') {
+    return;
+  }
+
+  const atoms = tokenizeValidatorGitPrompt(prompt);
+  const prohibitedCommands = findProhibitedGitCommands(atoms);
+  const unsafeCommands = new Set();
+
+  for (let index = 0; index < atoms.length; index += 1) {
+    if (atoms[index].type === 'command' && !prohibitedCommands.has(index)) {
+      unsafeCommands.add(atoms[index].value);
     }
+  }
+
+  for (const command of unsafeCommands) {
+    errors.push(
+      `Validator '${agent.id}' instructs use of '${command}', but Git state is unreliable in validators. ` +
+        'Read files directly instead.'
+    );
   }
 }
 
