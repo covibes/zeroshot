@@ -64,7 +64,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Legacy worker facade                  | `lib/cluster-worker/`                                                                                                            |
 | Legacy worker executable              | `bin/zeroshot-cluster-worker.js`                                                                                                 |
 | Private hosted capsule runtime        | `zeroshot-rust/src/hosted_oecp/`, `zeroshot-rust/hosted-node/`                                                                   |
-| Hosted capsule image/manifest         | `docker/zeroshot-oecp/`, `scripts/hosted-oecp-image.js`                                                                          |
+| Hosted capsule image                  | `docker/zeroshot-oecp/`, `scripts/hosted-oecp-image.js`                                                                          |
 | Docker mounts/env                     | `lib/docker-config.js`                                                                                                           |
 | Container lifecycle                   | `src/isolation-manager.js`                                                                                                       |
 | Settings                              | `lib/settings.js`                                                                                                                |

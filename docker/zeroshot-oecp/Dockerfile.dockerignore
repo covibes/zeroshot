@@ -41,12 +41,6 @@
 !protocol/openengine-cluster/
 !protocol/openengine-cluster/v1/
 !protocol/openengine-cluster/v1/worker.schema.json
-!scripts/
-!scripts/omp/
-!scripts/omp/runtime.js
-!scripts/omp/runtime-identities.js
-!scripts/omp/runtime-lock.js
-!scripts/omp/runtime-release.js
 !zeroshot-rust/
 !zeroshot-rust/Cargo.toml
 !zeroshot-rust/hosted-node/

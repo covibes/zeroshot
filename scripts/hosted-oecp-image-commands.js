@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const {
@@ -7,8 +8,9 @@ const {
   validateImageMetadata,
   validateRuntimeInspection,
 } = require('./hosted-oecp-image-inspection');
-const { ROOT, check } = require('./hosted-oecp-manifest');
 
+const ROOT = path.resolve(__dirname, '..');
+const DOCKER_DIRECTORY = path.join(ROOT, 'docker', 'zeroshot-oecp');
 const DOCKERFILE = path.join(ROOT, 'docker', 'zeroshot-oecp', 'Dockerfile');
 const DOMAIN_COMPONENT = '(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])';
 const DOMAIN = `(?:${DOMAIN_COMPONENT}(?:\\.${DOMAIN_COMPONENT})*|\\[[a-fA-F0-9:]+\\])(?::[0-9]+)?`;
@@ -79,6 +81,51 @@ function validTag(reference) {
   return name.length <= 255 && NAME_PATTERN.test(name);
 }
 
+function parseBaseImage(line) {
+  const tokens = line.trim().split(/\s+/u);
+  if (tokens[0]?.toUpperCase() !== 'FROM') return null;
+  if (tokens.length !== 2 && tokens.length !== 4) {
+    throw new Error(`Hosted OECP Dockerfile has malformed FROM instruction: ${line}`);
+  }
+  if (tokens.length === 4 && tokens[2].toUpperCase() !== 'AS') {
+    throw new Error(`Hosted OECP Dockerfile has malformed FROM instruction: ${line}`);
+  }
+  return { reference: tokens[1], stage: tokens[3] || 'runtime' };
+}
+
+function immutableImageReference(reference) {
+  const separator = reference.lastIndexOf('@sha256:');
+  if (separator <= 0) return false;
+  return /^[a-f0-9]{64}$/u.test(reference.slice(separator + '@sha256:'.length));
+}
+
+function immutableBaseImages(dockerfile = fs.readFileSync(DOCKERFILE, 'utf8')) {
+  const images = dockerfile.split('\n').map(parseBaseImage).filter(Boolean);
+  const mutable = images.find(({ reference }) => !immutableImageReference(reference));
+  if (mutable) {
+    throw new Error(`Hosted OECP base image is not immutable: ${mutable.reference}`);
+  }
+  if (images.length === 0 || images.at(-1).stage !== 'runtime') {
+    throw new Error('Hosted OECP Dockerfile has no final runtime image');
+  }
+  return images;
+}
+
+function validateContextAllowlist(checked, active) {
+  const checkedAllowlist =
+    checked ?? fs.readFileSync(path.join(DOCKER_DIRECTORY, '.dockerignore'), 'utf8');
+  const activeAllowlist =
+    active ?? fs.readFileSync(path.join(DOCKER_DIRECTORY, 'Dockerfile.dockerignore'), 'utf8');
+  if (checkedAllowlist !== activeAllowlist || !activeAllowlist.startsWith('**\n')) {
+    throw new Error('Hosted OECP Docker context allowlist drifted or is not deny-all');
+  }
+}
+
+function validateBuildInputs() {
+  immutableBaseImages();
+  validateContextAllowlist();
+}
+
 function run(program, args) {
   const result = spawnSync(program, args, { cwd: ROOT, stdio: 'inherit' });
   if (result.error) throw result.error;
@@ -100,24 +147,14 @@ function capture(program, args) {
 
 function build(tag) {
   if (!validTag(tag)) throw new Error('Image tag is invalid');
-  const digest = check().manifestDigest;
-  run('docker', [
-    'build',
-    '--file',
-    DOCKERFILE,
-    '--build-arg',
-    `BUILD_MANIFEST_DIGEST=${digest}`,
-    '--tag',
-    tag,
-    ROOT,
-  ]);
+  validateBuildInputs();
+  run('docker', ['build', '--file', DOCKERFILE, '--tag', tag, ROOT]);
 }
 
 function inspect(tag) {
   if (!validTag(tag)) throw new Error('Image tag is invalid');
-  const manifestDigest = check().manifestDigest;
   const metadata = JSON.parse(capture('docker', ['image', 'inspect', tag]))[0]?.Config;
-  validateImageMetadata(metadata, manifestDigest);
+  validateImageMetadata(metadata);
   const runtime = JSON.parse(
     capture('docker', ['run', '--rm', '--entrypoint', 'node', tag, '-e', RUNTIME_INSPECTION_SCRIPT])
   );
@@ -128,7 +165,9 @@ module.exports = {
   ROOT,
   build,
   capture,
+  immutableBaseImages,
   inspect,
+  validateContextAllowlist,
   validTag,
   validateImageMetadata,
   validateRuntimeInspection,

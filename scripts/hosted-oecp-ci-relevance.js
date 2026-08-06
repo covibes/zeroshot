@@ -5,7 +5,34 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '..');
-const MANIFEST_PATH = 'docker/zeroshot-oecp/build-manifest.json';
+const WATCHED_PATHS = Object.freeze([
+  'Cargo.lock',
+  'Cargo.toml',
+  'clippy.toml',
+  'crates',
+  'docker/zeroshot-oecp',
+  'lib/agent-cli-provider',
+  'lib/provider-detection.js',
+  'lib/cluster-worker',
+  'lib/run-plan.js',
+  'package-lock.json',
+  'package.json',
+  'protocol/openengine-cluster/v1/worker.schema.json',
+  'rust-toolchain.toml',
+  'scripts/hosted-oecp-ci-relevance.js',
+  'scripts/hosted-oecp-image-commands.js',
+  'scripts/hosted-oecp-image-inspection.js',
+  'scripts/hosted-oecp-image-smoke.js',
+  'scripts/hosted-oecp-image.js',
+  'scripts/hosted-oecp-smoke-capability.js',
+  'scripts/hosted-oecp-smoke-client.js',
+  'scripts/hosted-oecp-smoke-codex.mjs',
+  'scripts/hosted-oecp-smoke-fixture.js',
+  'scripts/omp',
+  'zeroshot-rust/Cargo.toml',
+  'zeroshot-rust/hosted-node',
+  'zeroshot-rust/src',
+]);
 const SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const NULL_SHA_PATTERN = /^(?:0{40}|0{64})$/u;
 
@@ -41,18 +68,6 @@ function comparisonForEvent(eventName, event, fallbackHead) {
     return { base: commitSha(event.before, 'push base'), head };
   }
   throw new Error(`Unsupported GitHub event: ${eventName}`);
-}
-
-function manifestInputs(root = ROOT) {
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, MANIFEST_PATH), 'utf8'));
-  if (!manifest.inputs || typeof manifest.inputs !== 'object' || Array.isArray(manifest.inputs)) {
-    throw new Error('Hosted OECP build manifest has no input map');
-  }
-  const inputs = Object.keys(manifest.inputs);
-  if (inputs.length === 0 || inputs.some((input) => !input || path.isAbsolute(input))) {
-    throw new Error('Hosted OECP build manifest has an invalid input map');
-  }
-  return inputs;
 }
 
 function successful(result) {
@@ -109,9 +124,8 @@ function matchesInput(changedPath, input) {
   return changedPath === input || changedPath.startsWith(`${input}/`);
 }
 
-function relevantPaths(changed, inputs) {
-  const watched = [MANIFEST_PATH, ...inputs];
-  return changed.filter((changedPath) => watched.some((input) => matchesInput(changedPath, input)));
+function relevantPaths(changed, inputs = WATCHED_PATHS) {
+  return changed.filter((changedPath) => inputs.some((input) => matchesInput(changedPath, input)));
 }
 
 function writeResult(outputPath, relevant) {
@@ -141,9 +155,7 @@ function main(environment = process.env) {
   }
 
   const changed = changes.changed;
-  const matched = changed.includes(MANIFEST_PATH)
-    ? [MANIFEST_PATH]
-    : relevantPaths(changed, manifestInputs());
+  const matched = relevantPaths(changed);
   const relevant = matched.length > 0;
   writeResult(environment.GITHUB_OUTPUT, relevant);
   process.stdout.write(
@@ -161,7 +173,7 @@ function main(environment = process.env) {
 if (require.main === module) main();
 
 module.exports = {
-  MANIFEST_PATH,
+  WATCHED_PATHS,
   comparisonForEvent,
   comparisonChanges,
   relevantPaths,

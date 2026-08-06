@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 
-const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('./manifest');
+const { PRIVATE_MARKER } = require('./manifest');
 const { repositoryBinding } = require('./credentials');
 
 const ROOT = path.resolve(__dirname, '../..');
@@ -28,16 +27,6 @@ const CANDIDATE_FILES = Object.freeze([
   'target-services.js',
   'register.js',
   'register-support.js',
-]);
-const PROTOCOL_FILES = Object.freeze([
-  'src/cluster/generated/protocol.ts',
-  'src/cluster/generated/protocol-schema.ts',
-  'protocol/openengine-cluster/v1/schema.json',
-  'protocol/openengine-cluster/v1/graph.schema.json',
-  'protocol/openengine-cluster/v1/worker.schema.json',
-]);
-const FIXTURE_FILES = Object.freeze([
-  'protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json',
 ]);
 const GENERATED_OUTPUT_DIRS = Object.freeze([
   'lib/agent-cli-provider',
@@ -63,25 +52,11 @@ function run(command, args, cwd = ROOT) {
   return result.stdout.trim();
 }
 
-function sha256(bytes) {
-  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-}
-
-function fileDigest(file) {
-  return sha256(fs.readFileSync(file));
-}
-
-function candidateLockfileDigest(stage) {
-  return fileDigest(path.join(stage, 'npm-shrinkwrap.json'));
-}
-
 function parseOptionValues(argv) {
   const args = {};
   let valueFor;
   const names = Object.freeze({
     '--runtime-image-digest': 'runtimeImageDigest',
-    '--runtime-manifest-digest': 'runtimeManifestDigest',
-    '--zero-cloud-commit': 'zeroCloudCommit',
     '--repository': 'repository',
     '--provider': 'provider',
     '--model-level': 'modelLevel',
@@ -105,12 +80,6 @@ function validateBuildArgs(args) {
   if (!/^sha256:[a-f0-9]{64}$/.test(args.runtimeImageDigest || '')) {
     throw new Error('--runtime-image-digest sha256:<64 lowercase hex> is required');
   }
-  if (!/^[a-f0-9]{64}$/.test(args.runtimeManifestDigest || '')) {
-    throw new Error('--runtime-manifest-digest <64 lowercase hex> is required');
-  }
-  if (!/^[a-f0-9]{40}$/.test(args.zeroCloudCommit || '')) {
-    throw new Error('--zero-cloud-commit <40 lowercase hex> is required');
-  }
   try {
     repositoryBinding(args.repository);
   } catch {
@@ -126,21 +95,6 @@ function parseArgs(argv) {
   return Object.freeze(args);
 }
 
-function assertCleanSource(allowGeneratedOutputs = false) {
-  const status = run('git', ['status', '--porcelain=v1', '--untracked-files=all']);
-  const generatedPrefixes = GENERATED_OUTPUT_DIRS.map((directory) => `?? ${directory}/`);
-  const unexpected = status
-    .split('\n')
-    .filter(Boolean)
-    .filter(
-      (line) =>
-        !(allowGeneratedOutputs && generatedPrefixes.some((prefix) => line.startsWith(prefix)))
-    );
-  if (unexpected.length > 0) {
-    throw new Error('candidate source tree must be clean before immutable packing');
-  }
-}
-
 function copyStablePackage(stage) {
   const dryRun = JSON.parse(
     run('npm', ['pack', '--json', '--dry-run', '--ignore-scripts', '--foreground-scripts=false'])
@@ -148,7 +102,6 @@ function copyStablePackage(stage) {
   const files = dryRun[0]?.files;
   if (!Array.isArray(files) || files.length === 0)
     throw new Error('npm dry-run returned no package files');
-  files.push(...FIXTURE_FILES.map((file) => ({ path: file })));
   for (const item of files) {
     const relative = item.path;
     if (
@@ -166,7 +119,7 @@ function copyStablePackage(stage) {
   }
 }
 
-function writeCandidateFiles(stage, immutable) {
+function writeCandidateFiles(stage, buildManifest) {
   const target = path.join(stage, 'lib/private-hosted-cli');
   fs.mkdirSync(target, { recursive: true });
   for (const file of CANDIDATE_FILES) {
@@ -174,7 +127,7 @@ function writeCandidateFiles(stage, immutable) {
   }
   fs.writeFileSync(
     path.join(target, 'candidate-build.json'),
-    `${JSON.stringify(immutable, null, 2)}\n`
+    `${JSON.stringify(buildManifest, null, 2)}\n`
   );
   fs.writeFileSync(path.join(stage, 'PRIVATE_HOSTED_CANDIDATE.txt'), `${PRIVATE_MARKER}\n`);
 
@@ -207,56 +160,39 @@ function writeCandidateFiles(stage, immutable) {
   delete pkg.devDependencies;
   delete pkg['lint-staged'];
   pkg.scripts = pkg.scripts?.postinstall ? { postinstall: pkg.scripts.postinstall } : {};
-  pkg.files = [...new Set([...(pkg.files || []), ...FIXTURE_FILES])];
-  pkg.files.push('PRIVATE_HOSTED_CANDIDATE.txt');
-  pkg.zeroshotPrivateCandidate = immutable;
+  pkg.files = [...new Set([...(pkg.files || []), 'PRIVATE_HOSTED_CANDIDATE.txt'])];
   fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  assertCleanSource(true);
   for (const directory of GENERATED_OUTPUT_DIRS) {
     fs.rmSync(path.join(ROOT, directory), { recursive: true, force: true });
   }
   run('npm', ['run', 'build:agent-cli-provider']);
   run('npm', ['run', 'build:cluster']);
   run('npm', ['run', 'build:target']);
-  assertCleanSource(true);
 
-  const sourceSha = run('git', ['rev-parse', 'HEAD']);
-  const output = path.resolve(
-    args.output ||
-      path.join(tmpdir(), `zeroshot-private-hosted-candidate-${sourceSha.slice(0, 12)}`)
-  );
-  if (fs.existsSync(output)) throw new Error(`output path already exists: ${output}`);
+  const output =
+    args.output === undefined
+      ? fs.mkdtempSync(path.join(tmpdir(), 'zeroshot-private-hosted-candidate-'))
+      : path.resolve(args.output);
+  if (args.output !== undefined && fs.existsSync(output)) {
+    throw new Error(`output path already exists: ${output}`);
+  }
   const stage = path.join(output, 'staging');
   fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
 
-  const fixtureDigests = Object.fromEntries(
-    FIXTURE_FILES.map((file) => [file, fileDigest(path.join(ROOT, file))])
-  );
-  const commandManifestDigest = sha256(Buffer.from(`${JSON.stringify(COMMAND_MANIFEST)}\n`));
   copyStablePackage(stage);
-  const immutable = Object.freeze({
+  const buildManifest = Object.freeze({
     privateMarker: PRIVATE_MARKER,
-    sourceSha,
-    lockfileDigest: candidateLockfileDigest(stage),
-    commandManifest: COMMAND_MANIFEST,
-    commandManifestDigest,
-    fixtureDigests,
-    zeroCloudCommit: args.zeroCloudCommit,
     repository: args.repository,
     provider: args.provider,
     modelLevel: args.modelLevel,
     runtimeImageDigest: args.runtimeImageDigest,
-    runtimeManifestDigest: args.runtimeManifestDigest,
-    protocolDigests: Object.fromEntries(
-      PROTOCOL_FILES.map((file) => [file, fileDigest(path.join(ROOT, file))])
-    ),
   });
 
-  writeCandidateFiles(stage, immutable);
+  writeCandidateFiles(stage, buildManifest);
   const packed = JSON.parse(
     run(
       'npm',
@@ -274,18 +210,7 @@ function main() {
   const filename = packed[0]?.filename;
   if (typeof filename !== 'string') throw new Error('npm pack did not report a candidate filename');
   const tarballPath = path.join(output, filename);
-  const provenance = Object.freeze({
-    ...immutable,
-    tarball: filename,
-    tarballDigest: fileDigest(tarballPath),
-    stagingPath: stage,
-    generatedAt: new Date().toISOString(),
-  });
-  const provenancePath = path.join(output, 'candidate-provenance.json');
-  fs.writeFileSync(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`, { mode: 0o600 });
-  process.stdout.write(
-    `${JSON.stringify({ tarballPath, provenancePath, stage, ...provenance }, null, 2)}\n`
-  );
+  process.stdout.write(`${JSON.stringify({ tarballPath, stage }, null, 2)}\n`);
 }
 
 if (require.main === module) {
@@ -297,4 +222,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { candidateLockfileDigest, parseArgs };
+module.exports = { parseArgs };

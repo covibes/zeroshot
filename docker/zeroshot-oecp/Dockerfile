@@ -32,15 +32,13 @@ RUN apt-get update \
         /usr/local/bin/yarn /usr/local/bin/yarnpkg /usr/local/bin/pnpm /usr/local/bin/pnpx \
     && rm -rf -- /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
         /opt/yarn-v1.22.22
-ARG BUILD_MANIFEST_DIGEST
 LABEL org.opencontainers.image.title="zeroshot-oecp-private" \
       org.opencontainers.image.description="Unpublished legacy single-worker capsule runtime" \
       org.opencontainers.image.version="private" \
-      org.opencontainers.image.revision="${BUILD_MANIFEST_DIGEST}" \
       io.openengine.private="true" \
       io.openengine.graph-profile="openengine.graph.single-worker/v1" \
       io.openengine.worker-profile="legacy.zeroshot.ship@1" \
-      io.openengine.limitation="bounded Node worker; not native-v2 or full-v1 certified"
+      io.openengine.limitation="bounded Node worker; not native-v2 or full-v1"
 
 COPY --from=rust-build /opt/zeroshot/target/release/zeroshot-oecp-server /usr/local/bin/zeroshot-oecp-server
 COPY --from=node-deps /opt/node-runtime/node_modules /opt/zeroshot/node_modules

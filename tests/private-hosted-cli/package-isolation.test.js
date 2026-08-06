@@ -1,23 +1,16 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { createHash } = require('node:crypto');
-const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
 const { describe, it } = require('node:test');
 const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('../../private/hosted-cli-candidate/manifest');
-const {
-  candidateLockfileDigest,
-  parseArgs,
-} = require('../../private/hosted-cli-candidate/build-candidate');
-const { withCandidateSourceWorkspace } = require('./candidate-workspace');
+const { parseArgs } = require('../../private/hosted-cli-candidate/build-candidate');
 
 const ROOT = path.resolve(__dirname, '../..');
 const CANDIDATE_PACKAGE_PATH = 'node_modules/@the-open-engine/zeroshot-private-hosted-candidate';
-const CANDIDATE_FIXTURE =
-  'protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json';
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -29,95 +22,98 @@ function run(command, args, options = {}) {
   });
 }
 
-function digest(value) {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+function buildCandidate(output, runtimeImageDigest) {
+  const built = run(process.execPath, [
+    'private/hosted-cli-candidate/build-candidate.js',
+    '--runtime-image-digest',
+    runtimeImageDigest,
+    '--repository',
+    'the-open-engine/zeroshot',
+    '--provider',
+    'codex',
+    '--model-level',
+    'level2',
+    '--out',
+    output,
+  ]);
+  assert.equal(built.status, 0, built.stderr || built.stdout);
+  return JSON.parse(built.stdout);
 }
 
-function installedCandidateRoot(installation, candidate) {
-  const root = path.join(installation, CANDIDATE_PACKAGE_PATH);
-  assert.equal(
-    digest(fs.readFileSync(path.join(root, CANDIDATE_FIXTURE))),
-    candidate.fixtureDigests[CANDIDATE_FIXTURE]
+function assertCandidateOutput(candidate, output, runtimeImageDigest) {
+  assert.deepEqual(candidate, {
+    tarballPath: path.join(
+      output,
+      'the-open-engine-zeroshot-private-hosted-candidate-0.0.0-development.tgz'
+    ),
+    stage: path.join(output, 'staging'),
+  });
+  assert.equal(fs.existsSync(candidate.tarballPath), true);
+  const configuration = path.join(
+    candidate.stage,
+    'lib',
+    'private-hosted-cli',
+    'candidate-build.json'
   );
-  return root;
+  const configured = JSON.parse(fs.readFileSync(configuration, 'utf8'));
+  assert.equal(configured.privateMarker, PRIVATE_MARKER);
+  assert.equal(configured.runtimeImageDigest, runtimeImageDigest);
 }
 
-function assertPackedCandidateIncludesFixtureAndLaunches() {
+function installCandidate(temporaryRoot, tarballPath) {
+  const installation = path.join(temporaryRoot, 'installation');
+  const installed = run(
+    'npm',
+    [
+      'install',
+      '--no-audit',
+      '--no-fund',
+      '--no-package-lock',
+      '--omit=optional',
+      '--prefix',
+      installation,
+      tarballPath,
+    ],
+    {
+      timeout: 120_000,
+      env: {
+        ...process.env,
+        CI: '1',
+        HOME: temporaryRoot,
+        USERPROFILE: temporaryRoot,
+      },
+    }
+  );
+  assert.equal(installed.status, 0, installed.stderr || installed.stdout);
+  return installation;
+}
+
+function assertCandidateLaunches(temporaryRoot, installation) {
+  const executable = path.join(installation, CANDIDATE_PACKAGE_PATH, 'cli', 'index.js');
+  const launched = run(process.execPath, [executable, '--help'], {
+    cwd: installation,
+    env: {
+      ...process.env,
+      CI: '1',
+      HOME: temporaryRoot,
+      NO_UPDATE_NOTIFIER: '1',
+      USERPROFILE: temporaryRoot,
+    },
+  });
+  assert.equal(launched.status, 0, launched.stderr || launched.stdout);
+  assert.match(launched.stdout, /\btarget\b/);
+  assert.match(launched.stdout, /\bcapsule\b/);
+}
+
+function assertPackedCandidateBuildsInstallsAndLaunches() {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-candidate-installation-'));
   try {
-    withCandidateSourceWorkspace(ROOT, ({ sourceRoot, sourceSha }) => {
-      const output = path.join(temporaryRoot, 'candidate');
-      const built = run(
-        process.execPath,
-        [
-          'private/hosted-cli-candidate/build-candidate.js',
-          '--runtime-image-digest',
-          `sha256:${'a'.repeat(64)}`,
-          '--runtime-manifest-digest',
-          'b'.repeat(64),
-          '--zero-cloud-commit',
-          'c'.repeat(40),
-          '--repository',
-          'the-open-engine/zeroshot',
-          '--provider',
-          'codex',
-          '--model-level',
-          'level2',
-          '--out',
-          output,
-        ],
-        { cwd: sourceRoot }
-      );
-      assert.equal(built.status, 0, built.stderr || built.stdout);
-      const candidate = JSON.parse(built.stdout);
-      assert.equal(candidate.sourceSha, sourceSha);
-      assert.equal(candidate.lockfileDigest, candidateLockfileDigest(candidate.stagingPath));
-      assert.equal(fs.existsSync(path.join(candidate.stagingPath, 'npm-shrinkwrap.json')), true);
-
-      const installation = path.join(temporaryRoot, 'installation');
-      const installed = run(
-        'npm',
-        [
-          'install',
-          '--no-audit',
-          '--no-fund',
-          '--no-package-lock',
-          '--omit=optional',
-          '--prefix',
-          installation,
-          candidate.tarballPath,
-        ],
-        {
-          timeout: 120_000,
-          env: {
-            ...process.env,
-            CI: '1',
-            HOME: temporaryRoot,
-            USERPROFILE: temporaryRoot,
-          },
-        }
-      );
-      assert.equal(installed.status, 0, installed.stderr || installed.stdout);
-
-      const executable = path.join(
-        installedCandidateRoot(installation, candidate),
-        'cli',
-        'index.js'
-      );
-      const launched = run(process.execPath, [executable, '--help'], {
-        cwd: installation,
-        env: {
-          ...process.env,
-          CI: '1',
-          HOME: temporaryRoot,
-          NO_UPDATE_NOTIFIER: '1',
-          USERPROFILE: temporaryRoot,
-        },
-      });
-      assert.equal(launched.status, 0, launched.stderr || launched.stdout);
-      assert.match(launched.stdout, /\btarget\b/);
-      assert.match(launched.stdout, /\bcapsule\b/);
-    });
+    const output = path.join(temporaryRoot, 'candidate');
+    const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
+    const candidate = buildCandidate(output, runtimeImageDigest);
+    assertCandidateOutput(candidate, output, runtimeImageDigest);
+    const installation = installCandidate(temporaryRoot, candidate.tarballPath);
+    assertCandidateLaunches(temporaryRoot, installation);
   } finally {
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
@@ -144,24 +140,7 @@ function assertNormalPackExcludesCandidate() {
   );
   assert.equal(paths.includes('PRIVATE_HOSTED_CANDIDATE.txt'), false);
   assert.equal(paths.includes('npm-shrinkwrap.json'), true);
-  assert.equal(paths.includes(CANDIDATE_FIXTURE), false);
   assert.equal(JSON.stringify(packed).includes(PRIVATE_MARKER), false);
-}
-
-function assertCandidateLockfileUsesShrinkwrap() {
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-candidate-lockfile-'));
-  const packageLock = Buffer.from('package lock\n');
-  const shrinkwrap = Buffer.from('effective shrinkwrap\n');
-  try {
-    fs.writeFileSync(path.join(stage, 'package-lock.json'), packageLock);
-    fs.writeFileSync(path.join(stage, 'npm-shrinkwrap.json'), shrinkwrap);
-    assert.equal(candidateLockfileDigest(stage), digest(shrinkwrap));
-    assert.notEqual(candidateLockfileDigest(stage), digest(packageLock));
-    fs.rmSync(path.join(stage, 'npm-shrinkwrap.json'));
-    assert.throws(() => candidateLockfileDigest(stage), /ENOENT/);
-  } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
-  }
 }
 
 function assertStableEntrypointExcludesPrivateRegistration() {
@@ -198,15 +177,9 @@ function assertCandidateBuilderCannotPublish() {
 
 function assertRequiredBuildArguments() {
   const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
-  const runtimeManifestDigest = 'c'.repeat(64);
-  const zeroCloudCommit = 'b'.repeat(40);
   const parsed = parseArgs([
     '--runtime-image-digest',
     runtimeImageDigest,
-    '--runtime-manifest-digest',
-    runtimeManifestDigest,
-    '--zero-cloud-commit',
-    zeroCloudCommit,
     '--repository',
     'owner/repository',
     '--provider',
@@ -216,24 +189,13 @@ function assertRequiredBuildArguments() {
   ]);
   assert.deepEqual(parsed, {
     runtimeImageDigest,
-    runtimeManifestDigest,
-    zeroCloudCommit,
     repository: 'owner/repository',
     provider: 'codex',
     modelLevel: 'level2',
   });
   assert.equal(Object.isFrozen(parsed), true);
 
-  const prefix = [
-    '--runtime-image-digest',
-    runtimeImageDigest,
-    '--runtime-manifest-digest',
-    runtimeManifestDigest,
-    '--zero-cloud-commit',
-    zeroCloudCommit,
-    '--repository',
-    'owner/repository',
-  ];
+  const prefix = ['--runtime-image-digest', runtimeImageDigest, '--repository', 'owner/repository'];
   assert.throws(() => parseArgs([...prefix, '--provider', 'gateway', '--model-level', 'level2']));
   assert.throws(() => parseArgs([...prefix, '--provider', 'codex', '--model-level', 'level3']));
   assert.throws(
@@ -249,22 +211,6 @@ function assertRequiredBuildArguments() {
     /lowercase/
   );
   assert.throws(() => parseArgs(prefix), /provider/);
-  assert.throws(
-    () =>
-      parseArgs([
-        '--runtime-image-digest',
-        runtimeImageDigest,
-        '--zero-cloud-commit',
-        zeroCloudCommit,
-        '--repository',
-        'owner/repository',
-        '--provider',
-        'codex',
-        '--model-level',
-        'level2',
-      ]),
-    /runtime-manifest-digest/
-  );
 }
 
 function registerPackageIsolationTests() {
@@ -284,16 +230,12 @@ function registerPackageIsolationTests() {
     'candidate build code contains no publication or release invocation',
     assertCandidateBuilderCannotPublish
   );
-  it('attests the npm-effective candidate shrinkwrap', assertCandidateLockfileUsesShrinkwrap);
   it(
-    'packs the attested fixture and launches the installed candidate',
+    'builds, installs, and launches the packed candidate',
     { timeout: 180_000 },
-    assertPackedCandidateIncludesFixtureAndLaunches
+    assertPackedCandidateBuildsInstallsAndLaunches
   );
-  it(
-    'requires the runtime, cloud commit, and fixed hosted selection',
-    assertRequiredBuildArguments
-  );
+  it('requires the runtime image and fixed hosted selection', assertRequiredBuildArguments);
 }
 
 describe('stable/candidate package isolation', registerPackageIsolationTests);

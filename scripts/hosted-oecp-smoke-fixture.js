@@ -9,18 +9,8 @@ const HEAD_REVISION = 'b'.repeat(40);
 const REPOSITORY = 'the-open-engine/zeroshot-smoke';
 const REMOTE = `https://github.com/${REPOSITORY}.git`;
 const WORKSPACE = '/workspace';
-const MODE_FILE = '/tmp/zeroshot-oecp-certification-mode';
-const COMMIT_MARKER = path.join(WORKSPACE, '.git', 'certification-commit');
+const COMMIT_MARKER = path.join(WORKSPACE, '.git', 'smoke-commit');
 const OUTPUT_FILE = path.join(WORKSPACE, 'hosted-smoke-output.txt');
-
-function certificationMode() {
-  try {
-    return fs.readFileSync(MODE_FILE, 'utf8').trim();
-  } catch (error) {
-    if (error.code === 'ENOENT') return 'failure';
-    throw error;
-  }
-}
 
 function gitCommandArguments() {
   let args = process.argv.slice(2);
@@ -80,23 +70,12 @@ function runCodexFixture() {
     );
     return;
   }
-  const mode = certificationMode();
-  if (mode === 'slow') {
-    process.on('SIGTERM', () => {});
-    setInterval(() => {}, 1_000);
-    return;
-  }
   fs.writeFileSync(OUTPUT_FILE, 'process-derived hosted smoke output', 'utf8');
   process.stdout.write(
     `${JSON.stringify({ type: 'thread.started', thread_id: 'smoke-thread' })}\n`
   );
   process.stdout.write(
-    mode === 'success'
-      ? `${JSON.stringify({
-          type: 'turn.completed',
-          usage: { input_tokens: 1, output_tokens: 1 },
-        })}\n`
-      : `${JSON.stringify({ type: 'turn.failed', error: { message: 'bounded smoke refusal' } })}\n`
+    `${JSON.stringify({ type: 'turn.failed', error: { message: 'bounded smoke refusal' } })}\n`
   );
 }
 

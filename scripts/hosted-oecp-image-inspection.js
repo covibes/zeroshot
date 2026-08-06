@@ -85,12 +85,9 @@ process.stdout.write(JSON.stringify({
 }));
 `;
 
-function validateImageMetadata(metadata, manifestDigest) {
+function validateImageMetadata(metadata) {
   if (!metadata || metadata.User !== '0:10002') {
     throw new Error('Hosted image supervisor identity is invalid');
-  }
-  if (metadata.Labels?.['org.opencontainers.image.revision'] !== manifestDigest) {
-    throw new Error('Hosted image OCI revision does not match the current manifest digest');
   }
   if (
     !isDeepStrictEqual(metadata.Entrypoint, [

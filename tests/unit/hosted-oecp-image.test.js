@@ -2,15 +2,12 @@
 
 const assert = require('assert');
 const {
+  immutableBaseImages,
   validTag,
+  validateContextAllowlist,
   validateImageMetadata,
   validateRuntimeInspection,
 } = require('../../scripts/hosted-oecp-image-commands');
-const {
-  createManifest,
-  immutableBaseImages,
-  validateContextAllowlist,
-} = require('../../scripts/hosted-oecp-manifest');
 
 const packageManagerPaths = [
   '/usr/local/bin/npm',
@@ -29,10 +26,9 @@ function absentPackageManagerPaths() {
   return Object.fromEntries(packageManagerPaths.map((path) => [path, false]));
 }
 
-function imageMetadata(manifestDigest) {
+function imageMetadata() {
   return {
     User: '0:10002',
-    Labels: { 'org.opencontainers.image.revision': manifestDigest },
     Entrypoint: [
       '/usr/bin/tini',
       '-s',
@@ -91,19 +87,6 @@ function registerPackageManagerInspectionTest() {
   });
 }
 
-function manifestRuntimeContract() {
-  return {
-    supervisor: { user: 'root', uid: 0, gid: 10002 },
-    controlRoot: {
-      path: '/run/zeroshot-capsule-agent',
-      user: 'root',
-      uid: 0,
-      gid: 10002,
-      mode: '0700',
-    },
-  };
-}
-
 function registerImageReferenceTests() {
   it('accepts Docker references with registry ports without accepting option or shell injection', function () {
     const accepted = [
@@ -128,32 +111,25 @@ function registerImageReferenceTests() {
 }
 
 function registerRuntimeInspectionTests() {
-  it('validates exact revision, root supervisor, and complete runtime modules', function () {
-    const digest = 'manifest-digest';
-    assert.doesNotThrow(() => validateImageMetadata(imageMetadata(digest), digest));
+  it('validates root supervisor and complete runtime modules', function () {
+    assert.doesNotThrow(() => validateImageMetadata(imageMetadata()));
     assert.doesNotThrow(() => validateRuntimeInspection(runtimeInspection()));
 
-    const wrongRevision = imageMetadata('different-digest');
-    assert.throws(
-      () => validateImageMetadata(wrongRevision, digest),
-      /OCI revision does not match/
-    );
-
-    const nonRoot = imageMetadata(digest);
+    const nonRoot = imageMetadata();
     nonRoot.User = '10001:10001';
-    assert.throws(() => validateImageMetadata(nonRoot, digest), /supervisor identity is invalid/);
+    assert.throws(() => validateImageMetadata(nonRoot), /supervisor identity is invalid/);
 
     const nonRootControl = runtimeInspection();
     nonRootControl.controlRoot.uid = 1000;
     assert.throws(() => validateRuntimeInspection(nonRootControl), /root-owned and private/);
 
-    const missingPort = imageMetadata(digest);
+    const missingPort = imageMetadata();
     delete missingPort.ExposedPorts['8084/tcp'];
-    assert.throws(() => validateImageMetadata(missingPort, digest), /unexpected port/);
+    assert.throws(() => validateImageMetadata(missingPort), /unexpected port/);
 
-    const extraPort = imageMetadata(digest);
+    const extraPort = imageMetadata();
     extraPort.ExposedPorts['8086/tcp'] = {};
-    assert.throws(() => validateImageMetadata(extraPort, digest), /unexpected port/);
+    assert.throws(() => validateImageMetadata(extraPort), /unexpected port/);
 
     const missingModule = runtimeInspection();
     missingModule.runtimeModules.runtimeDependencies = false;
@@ -174,49 +150,15 @@ function registerRuntimeInspectionTests() {
   registerPackageManagerInspectionTest();
 }
 
-function registerManifestTests() {
-  it('records immutable image identities and enforces deny-all allowlist parity', function () {
-    const manifest = createManifest();
-    assert.strictEqual(manifest.schemaVersion, 3);
-    assert.strictEqual(Object.hasOwn(manifest.protocol, 'route'), false);
-    assert.strictEqual(Object.hasOwn(manifest.runtime, 'port'), false);
-    const runtimeContract = manifestRuntimeContract();
-    assert.deepStrictEqual(manifest.runtime.supervisor, runtimeContract.supervisor);
-    assert.deepStrictEqual(manifest.runtime.controlRoot, runtimeContract.controlRoot);
-    assert.deepStrictEqual(manifest.runtime.capabilityBootstrap, {
-      protocol: 'tcp',
-      scope: 'task-local',
-      direction: 'agent-to-runtime',
-      host: '127.0.0.1',
-      port: 8086,
-      oneShot: true,
-    });
-    assert.strictEqual(
-      JSON.stringify(manifest.runtime.transports),
-      '{"ndjson":{"protocol":"ndjson","scope":"task-local","port":8085},' +
-        '"websocket":{"protocol":"websocket","scope":"capsule-agent","route":"/oecp","port":8083},' +
-        '"runIntent":{"protocol":"http","scope":"internal",' +
-        '"route":"/internal/run-intents/{intent_id}","port":8084}}'
-    );
+function registerBuildInputTests() {
+  it('requires immutable base images and deny-all allowlist parity', function () {
+    const baseImages = immutableBaseImages();
     assert.deepStrictEqual(
-      manifest.image.baseImages.map(({ stage }) => stage),
+      baseImages.map(({ stage }) => stage),
       ['rust-build', 'node-deps', 'tini', 'runtime']
     );
-    for (const { reference } of manifest.image.baseImages) {
+    for (const { reference } of baseImages) {
       assert.match(reference, /@sha256:[a-f0-9]{64}$/);
-    }
-    assert.strictEqual(typeof manifest.inputs['docker/zeroshot-oecp/.dockerignore'], 'string');
-    assert.strictEqual(
-      typeof manifest.inputs['docker/zeroshot-oecp/Dockerfile.dockerignore'],
-      'string'
-    );
-    for (const runtimeModule of [
-      'scripts/omp/runtime.js',
-      'scripts/omp/runtime-identities.js',
-      'scripts/omp/runtime-lock.js',
-      'scripts/omp/runtime-release.js',
-    ]) {
-      assert.strictEqual(typeof manifest.inputs[runtimeModule], 'string');
     }
 
     const denyAll = '**\n!Cargo.lock\n';
@@ -233,5 +175,5 @@ function registerManifestTests() {
 describe('hosted OECP image contracts', function () {
   registerImageReferenceTests();
   registerRuntimeInspectionTests();
-  registerManifestTests();
+  registerBuildInputTests();
 });
