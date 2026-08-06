@@ -36,8 +36,6 @@ function fixedGitArguments(args) {
     '-c',
     'http.followRedirects=false',
     '-c',
-    'http.sslCAInfo=/etc/ssl/certs/ca-certificates.crt',
-    '-c',
     'http.proxy=',
     '-c',
     'https.proxy=',
