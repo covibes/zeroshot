@@ -25,6 +25,9 @@ if (configuration.provider === 'codex') {
       'wire_api = "responses"',
       'requires_openai_auth = false',
       'supports_websockets = false',
+      '[shell_environment_policy]',
+      'inherit = "core"',
+      'ignore_default_excludes = false',
       '',
     ].join('\n'),
     { encoding: 'utf8', flag: 'wx', mode: 0o600 }

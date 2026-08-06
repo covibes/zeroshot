@@ -253,6 +253,9 @@ describe('private hosted worker boundaries', () => {
           'wire_api = "responses"',
           'requires_openai_auth = false',
           'supports_websockets = false',
+          '[shell_environment_policy]',
+          'inherit = "core"',
+          'ignore_default_excludes = false',
           '',
         ].join('\n')
       );
