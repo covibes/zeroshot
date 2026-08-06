@@ -15,6 +15,9 @@ const {
 const { withCandidateSourceWorkspace } = require('./candidate-workspace');
 
 const ROOT = path.resolve(__dirname, '../..');
+const CANDIDATE_PACKAGE_PATH = 'node_modules/@the-open-engine/zeroshot-private-hosted-candidate';
+const CANDIDATE_FIXTURE =
+  'protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json';
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -30,7 +33,16 @@ function digest(value) {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
 
-function assertPackedCandidateLaunches() {
+function installedCandidateRoot(installation, candidate) {
+  const root = path.join(installation, CANDIDATE_PACKAGE_PATH);
+  assert.equal(
+    digest(fs.readFileSync(path.join(root, CANDIDATE_FIXTURE))),
+    candidate.fixtureDigests[CANDIDATE_FIXTURE]
+  );
+  return root;
+}
+
+function assertPackedCandidateIncludesFixtureAndLaunches() {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-candidate-installation-'));
   try {
     withCandidateSourceWorkspace(ROOT, ({ sourceRoot, sourceSha }) => {
@@ -88,10 +100,7 @@ function assertPackedCandidateLaunches() {
       assert.equal(installed.status, 0, installed.stderr || installed.stdout);
 
       const executable = path.join(
-        installation,
-        'node_modules',
-        '@the-open-engine',
-        'zeroshot-private-hosted-candidate',
+        installedCandidateRoot(installation, candidate),
         'cli',
         'index.js'
       );
@@ -135,6 +144,7 @@ function assertNormalPackExcludesCandidate() {
   );
   assert.equal(paths.includes('PRIVATE_HOSTED_CANDIDATE.txt'), false);
   assert.equal(paths.includes('npm-shrinkwrap.json'), true);
+  assert.equal(paths.includes(CANDIDATE_FIXTURE), false);
   assert.equal(JSON.stringify(packed).includes(PRIVATE_MARKER), false);
 }
 
@@ -276,9 +286,9 @@ function registerPackageIsolationTests() {
   );
   it('attests the npm-effective candidate shrinkwrap', assertCandidateLockfileUsesShrinkwrap);
   it(
-    'builds, installs, and launches the packed candidate',
+    'packs the attested fixture and launches the installed candidate',
     { timeout: 180_000 },
-    assertPackedCandidateLaunches
+    assertPackedCandidateIncludesFixtureAndLaunches
   );
   it(
     'requires the runtime, cloud commit, and fixed hosted selection',

@@ -148,6 +148,7 @@ function copyStablePackage(stage) {
   const files = dryRun[0]?.files;
   if (!Array.isArray(files) || files.length === 0)
     throw new Error('npm dry-run returned no package files');
+  files.push(...FIXTURE_FILES.map((file) => ({ path: file })));
   for (const item of files) {
     const relative = item.path;
     if (
@@ -206,7 +207,8 @@ function writeCandidateFiles(stage, immutable) {
   delete pkg.devDependencies;
   delete pkg['lint-staged'];
   pkg.scripts = pkg.scripts?.postinstall ? { postinstall: pkg.scripts.postinstall } : {};
-  pkg.files = [...new Set([...(pkg.files || []), 'PRIVATE_HOSTED_CANDIDATE.txt'])];
+  pkg.files = [...new Set([...(pkg.files || []), ...FIXTURE_FILES])];
+  pkg.files.push('PRIVATE_HOSTED_CANDIDATE.txt');
   pkg.zeroshotPrivateCandidate = immutable;
   fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
 }
