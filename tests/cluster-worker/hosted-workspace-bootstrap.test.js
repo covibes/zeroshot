@@ -59,6 +59,7 @@ describe('private hosted repository bootstrap', () => {
       );
       for (const call of calls) {
         assert.equal(call.program, '/usr/bin/git');
+        assert.ok(call.args.includes('http.sslCAInfo=/etc/ssl/certs/ca-certificates.crt'));
         assert.equal(call.options.env.GH_TOKEN, 'git-canary');
         assert.equal(call.options.env.OPENAI_API_KEY, undefined);
         assert.equal(call.options.uid, 10002);
