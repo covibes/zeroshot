@@ -79,6 +79,7 @@ function providerInvocation(config, request) {
       authEnv: Object.freeze(authEnv),
       autoApprove: true,
       cwd: WORKSPACE,
+      executionContext: 'docker',
       modelSpec: Object.freeze({ level: config.modelLevel }),
     }),
     timeoutMs: PROVIDER_TIMEOUT_MS,

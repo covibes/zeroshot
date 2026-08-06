@@ -47,29 +47,35 @@ test('build-command returns command spec without executing provider CLI', () => 
   assert.ok(Array.isArray(response.envelope.redactions));
 });
 
-test('build-command keeps unattended Codex execution inside the workspace sandbox', () => {
-  const response = runExecutable({
-    schemaVersion: 1,
-    command: 'build-command',
-    provider: 'codex',
-    context: 'Edit the workspace.',
-    options: {
-      autoApprove: true,
-      cliFeatures: {
-        supportsAutoApprove: true,
-        supportsConfigOverride: true,
-        supportsSandbox: true,
+test('build-command selects the Codex sandbox from the declared execution boundary', () => {
+  for (const { executionContext, sandboxMode } of [
+    { executionContext: undefined, sandboxMode: 'workspace-write' },
+    { executionContext: 'docker', sandboxMode: 'danger-full-access' },
+  ]) {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'build-command',
+      provider: 'codex',
+      context: 'Edit the workspace.',
+      options: {
+        autoApprove: true,
+        ...(executionContext === undefined ? {} : { executionContext }),
+        cliFeatures: {
+          supportsAutoApprove: true,
+          supportsConfigOverride: true,
+          supportsSandbox: true,
+        },
       },
-    },
-  });
+    });
 
-  assert.equal(response.exitCode, 0);
-  assert.equal(response.envelope.ok, true);
-  const { args } = response.envelope.result.commandSpec;
-  assert.ok(args.includes('--sandbox'));
-  assert.ok(args.includes('workspace-write'));
-  assert.ok(args.includes('approval_policy="never"'));
-  assert.equal(args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
+    assert.equal(response.exitCode, 0);
+    assert.equal(response.envelope.ok, true);
+    const { args } = response.envelope.result.commandSpec;
+    assert.ok(args.includes('--sandbox'));
+    assert.ok(args.includes(sandboxMode));
+    assert.ok(args.includes('approval_policy="never"'));
+    assert.equal(args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
+  }
 });
 
 test('partial CLI feature overrides do not probe or drift when web search is off', () => {

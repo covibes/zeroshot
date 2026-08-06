@@ -42,6 +42,7 @@ describe('hosted direct provider adapter', () => {
       },
       autoApprove: true,
       cwd: '/workspace',
+      executionContext: 'docker',
       modelSpec: { level: 'level2' },
     });
     assert.equal(Object.hasOwn(invocation, 'env'), false);

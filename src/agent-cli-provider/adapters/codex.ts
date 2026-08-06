@@ -114,7 +114,9 @@ function addCwdArgs(args: string[], options: BuildProviderCommandOptions): void 
 function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions): void {
   const features = optionFeatures(options);
   if (options.autoApprove && features.supportsAutoApprove) {
-    args.push('--sandbox', 'workspace-write', '--config', 'approval_policy="never"');
+    const sandboxMode =
+      options.executionContext === 'docker' ? 'danger-full-access' : 'workspace-write';
+    args.push('--sandbox', sandboxMode, '--config', 'approval_policy="never"');
   }
 }
 

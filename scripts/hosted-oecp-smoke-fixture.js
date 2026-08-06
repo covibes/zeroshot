@@ -75,10 +75,10 @@ function runCodexFixture() {
   }
   if (
     args.includes('--dangerously-bypass-approvals-and-sandbox') ||
-    args[args.indexOf('--sandbox') + 1] !== 'workspace-write' ||
+    args[args.indexOf('--sandbox') + 1] !== 'danger-full-access' ||
     !args.includes('approval_policy="never"')
   ) {
-    throw new Error('hosted Codex did not use unattended workspace sandboxing');
+    throw new Error('hosted Codex did not use the fixed capsule boundary');
   }
   fs.writeFileSync(OUTPUT_FILE, 'process-derived hosted smoke output', 'utf8');
   process.stdout.write(
