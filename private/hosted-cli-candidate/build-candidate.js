@@ -187,7 +187,9 @@ function writeCandidateFiles(stage, immutable) {
   fs.writeFileSync(cliPath, stableCli.replace(needle, `${registration}${needle}`));
 
   const scriptsPath = path.join(stage, 'scripts');
-  const runtimeScripts = new Set(['check-path.js', 'fix-node-pty-permissions.js', 'omp']);
+  const runtimeScripts = new Set(
+    'check-path.js fix-node-pty-permissions.js omp postinstall.js'.split(' ')
+  );
   for (const entry of fs.readdirSync(scriptsPath)) {
     if (!runtimeScripts.has(entry)) {
       fs.rmSync(path.join(scriptsPath, entry), { recursive: true, force: true });

@@ -60,7 +60,6 @@ function assertPackedCandidateLaunches() {
       'npm',
       [
         'install',
-        '--ignore-scripts',
         '--no-audit',
         '--no-fund',
         '--no-package-lock',
@@ -69,7 +68,15 @@ function assertPackedCandidateLaunches() {
         installation,
         candidate.tarballPath,
       ],
-      { timeout: 120_000 }
+      {
+        timeout: 120_000,
+        env: {
+          ...process.env,
+          CI: '1',
+          HOME: temporaryRoot,
+          USERPROFILE: temporaryRoot,
+        },
+      }
     );
     assert.equal(installed.status, 0, installed.stderr || installed.stdout);
 
