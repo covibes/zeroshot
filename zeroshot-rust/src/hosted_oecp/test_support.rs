@@ -235,6 +235,15 @@ input.on('line', (line) => {
       }) + '\n');
       return;
     }
+    if (mode === 'failed-result') {
+      process.stdout.write(JSON.stringify({
+        type: 'response', id: frame.id, ok: true,
+        result: { state: 'failed', clusterId: 'hosted-test', finishedAt: 1,
+          outcome: { status: 'verified',
+            output: { secret: 'OPENROUTER_FAILURE_CANARY' }, artifacts: [] } }
+      }) + '\n', () => process.exit(0));
+      return;
+    }
     setTimeout(() => process.stdout.write(JSON.stringify({
       type: 'response', id: frame.id, ok: true,
       result: { state: 'completed', clusterId: 'hosted-test', finishedAt: 1,
