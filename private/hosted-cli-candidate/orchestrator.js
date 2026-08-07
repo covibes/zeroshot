@@ -67,8 +67,8 @@ class HostedRunOrchestrator {
       options.inputPath,
       this.assertGraphSpec
     );
-    const execution = buildHostedExecution(inputs);
     const runtime = this.resolveRuntimeBundle(options.target);
+    const execution = buildHostedExecution(inputs, runtime);
     const identities = stableIdentities(this.randomUUID, this.runtimeImageDigest);
     return { execution, identities, runtime };
   }

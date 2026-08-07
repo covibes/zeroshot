@@ -91,7 +91,14 @@ async function runsExactHostedLifecycleSequence() {
   ]);
   assert.equal(result.identities.applyIdempotencyKey, 'apply_00000002000000000000000000000000');
   assert.equal(h.sequence.includes('terminate'), false);
-  assert.deepEqual(h.requests.apply[0].input, CALLER_INPUT);
+  assert.deepEqual(h.requests.apply[0].input, {
+    ...CALLER_INPUT,
+    isolationProfile: 'isolation.prepared-worktree@1',
+    providerProfile: 'provider.hosted-direct@1',
+    repository: 'owner/repository',
+    provider: 'claude',
+    modelLevel: 'level1',
+  });
   assert.equal(h.requests.runtime.accessToken, 'capsule-access');
   assert.equal(h.requests.runtime.runtime.runtime.provider, 'claude');
 }

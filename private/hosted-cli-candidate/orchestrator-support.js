@@ -4,6 +4,9 @@ const { validateLegacyShipRequest } = require('../../lib/cluster-worker/contract
 
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const HOSTED_INPUT_KEYS = new Set(['artifacts', 'issue', 'prompt', 'source']);
+const ISOLATION_PROFILE = 'isolation.prepared-worktree@1';
+const MODEL_LEVEL = 'level1';
+const PROVIDER_PROFILE = 'provider.hosted-direct@1';
 const DETERMINISTIC_ALLOCATION_CODES = new Set([
   'AUTH_FAILED',
   'SERVER_REJECTED',
@@ -29,19 +32,29 @@ function buildLegacyShipRequest(input) {
   }
   validateLegacyShipRequest({
     ...input,
-    isolationProfile: 'isolation.prepared-worktree@1',
-    providerProfile: 'provider.hosted-direct@1',
+    isolationProfile: ISOLATION_PROFILE,
+    providerProfile: PROVIDER_PROFILE,
     repository: 'runtime-owned/repository',
     provider: 'runtime-owned',
-    modelLevel: 'level1',
+    modelLevel: MODEL_LEVEL,
   });
   return Object.freeze({ ...input });
 }
 
-function buildHostedExecution(inputs) {
+function buildHostedExecution(inputs, runtime) {
+  const input = buildLegacyShipRequest(inputs.input);
+  const request = {
+    ...input,
+    isolationProfile: ISOLATION_PROFILE,
+    providerProfile: PROVIDER_PROFILE,
+    repository: runtime?.repository,
+    provider: runtime?.runtime?.provider,
+    modelLevel: MODEL_LEVEL,
+  };
+  validateLegacyShipRequest(request);
   return Object.freeze({
     graph: inputs.graph,
-    input: buildLegacyShipRequest(inputs.input),
+    input: Object.freeze(request),
   });
 }
 

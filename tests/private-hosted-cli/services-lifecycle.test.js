@@ -276,6 +276,11 @@ function registerRemoteOperationTests() {
       source: 'prompt',
       prompt: 'Ship the change.',
       artifacts: [],
+      isolationProfile: 'isolation.prepared-worktree@1',
+      providerProfile: 'provider.hosted-direct@1',
+      repository: 'owner/repository',
+      provider: 'claude',
+      modelLevel: 'level1',
     });
     const runtime = h.calls.find(([name]) => name === 'install-runtime')[2];
     assert.equal(runtime.repository, 'owner/repository');
