@@ -38,6 +38,7 @@ function registerTarget(program, service) {
     .command('setup <name>')
     .description('Bind a repository and local hosted runtime configuration')
     .requiredOption('--repository <owner/name>', 'Exact GitHub owner/name')
+    .requiredOption('--base-revision <sha>', 'Exact lowercase 40-character commit')
     .requiredOption('--runtime-config <file>', 'Generic hosted runtime JSON')
     .action((name, options) => failClosed(() => service().targetSetup(name, options)));
   target

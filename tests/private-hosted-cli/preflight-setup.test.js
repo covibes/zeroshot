@@ -15,6 +15,7 @@ const {
   readRuntimeConfig,
 } = require('../../private/hosted-cli-candidate/runtime-config');
 const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers');
+const BASE_REVISION = 'b'.repeat(40);
 const GRAPH_FIXTURE = path.join(
   __dirname,
   '..',
@@ -96,6 +97,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
     targetName: 'prod',
     target: state._targets.prod,
     repository: 'owner/repository',
+    baseRevision: BASE_REVISION,
     runtime,
     settings: {
       mutate: (mutator) => mutator(state),
@@ -104,6 +106,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   });
   assert.equal(metadata.kind, 'zeroshot.private-hosted-setup/v2');
   assert.equal(metadata.repository, 'owner/repository');
+  assert.equal(metadata.baseRevision, BASE_REVISION);
   assert.deepEqual(metadata.runtime, runtime);
   assert.deepEqual(checkHostedSetup(state._targets.prod), metadata);
   assert.equal(JSON.stringify(state).includes('aws-local-secret'), false);
@@ -113,6 +116,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
     LOCAL_AWS_ACCESS_KEY_ID: 'aws-local-secret',
   });
   assert.equal(bundle.githubToken, 'github-test-token');
+  assert.equal(bundle.baseRevision, BASE_REVISION);
   assert.equal(bundle.runtime.provider, 'bedrock-runner');
   assert.equal(bundle.runtime.executable, 'bedrock-agent');
   assert.equal(bundle.runtime.environment.AWS_ACCESS_KEY_ID, 'aws-local-secret');
@@ -165,10 +169,23 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
 
 it('rejects invalid repository or runtime configuration without mutation', () => {
   for (const options of [
-    { repository: 'owner/repo.git', runtime: { provider: 'claude' } },
-    { repository: 'Owner/Repo', runtime: { provider: 'claude' } },
-    { repository: 'owner/repo', runtime: { provider: '' } },
-    { repository: 'owner/repo', runtime: { provider: 'claude', unknown: true } },
+    {
+      repository: 'owner/repo.git',
+      baseRevision: BASE_REVISION,
+      runtime: { provider: 'claude' },
+    },
+    {
+      repository: 'Owner/Repo',
+      baseRevision: BASE_REVISION,
+      runtime: { provider: 'claude' },
+    },
+    { repository: 'owner/repo', baseRevision: 'not-a-commit', runtime: { provider: 'claude' } },
+    { repository: 'owner/repo', baseRevision: BASE_REVISION, runtime: { provider: '' } },
+    {
+      repository: 'owner/repo',
+      baseRevision: BASE_REVISION,
+      runtime: { provider: 'claude', unknown: true },
+    },
   ]) {
     const state = { _targets: { prod: { id: 'target-1' } } };
     assert.throws(() =>

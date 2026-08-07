@@ -3,6 +3,7 @@
 const { normalizeRuntimeConfig, resolveHostedRuntime } = require('./runtime-config');
 
 const MAX_RUNTIME_BUNDLE_BYTES = 4 * 1024 * 1024;
+const BASE_REVISION = /^[0-9a-f]{40}$/;
 
 function repositoryBinding(repository) {
   const [owner, name, extra] = typeof repository === 'string' ? repository.split('/') : [];
@@ -19,27 +20,37 @@ function normalizeRepository(repository) {
   return repository;
 }
 
+function normalizeBaseRevision(baseRevision) {
+  if (typeof baseRevision !== 'string' || !BASE_REVISION.test(baseRevision)) {
+    throw new Error('base revision must be one lowercase 40-character commit');
+  }
+  return baseRevision;
+}
+
 function getSetup(target) {
   const setup = target?.hostedSetup;
   if (
     !setup ||
     setup.kind !== 'zeroshot.private-hosted-setup/v2' ||
     typeof setup.repository !== 'string' ||
+    typeof setup.baseRevision !== 'string' ||
     !setup.runtime
   ) {
     throw new Error('target setup is missing; run `zeroshot target setup` first');
   }
   normalizeRepository(setup.repository);
+  normalizeBaseRevision(setup.baseRevision);
   normalizeRuntimeConfig(setup.runtime);
   return setup;
 }
 
 function configureTargetSetup(options) {
-  const { targetName, target, repository, runtime, settings, clock = Date } = options;
+  const { targetName, target, repository, baseRevision, runtime, settings, clock = Date } = options;
   const normalizedRepository = normalizeRepository(repository);
   const metadata = Object.freeze({
     kind: 'zeroshot.private-hosted-setup/v2',
     repository: normalizedRepository,
+    baseRevision: normalizeBaseRevision(baseRevision),
     runtime: normalizeRuntimeConfig(runtime),
     configuredAt: new Date(clock.now()).toISOString(),
   });
@@ -67,6 +78,7 @@ function resolveRuntimeBundle(target, environment = process.env) {
   const bundle = {
     githubToken: githubToken(environment),
     repository: setup.repository,
+    baseRevision: setup.baseRevision,
     runtime: resolveHostedRuntime(setup.runtime, environment),
   };
   if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_RUNTIME_BUNDLE_BYTES) {

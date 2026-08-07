@@ -1,6 +1,7 @@
 'use strict';
 
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
+const BASE_REVISION = 'b'.repeat(40);
 const RUNTIME_CONFIG = Object.freeze({
   provider: 'claude',
   executable: 'claude',
@@ -12,6 +13,7 @@ const RUNTIME_CONFIG = Object.freeze({
 const RUNTIME_BUNDLE = Object.freeze({
   githubToken: 'github-test-token',
   repository: 'owner/repository',
+  baseRevision: BASE_REVISION,
   runtime: {
     ...RUNTIME_CONFIG,
     environment: { ANTHROPIC_API_KEY: 'model-test-token' },
@@ -125,6 +127,7 @@ function finishedWatch({ runId, cursor, onCancel }) {
 }
 
 module.exports = {
+  BASE_REVISION,
   captureLogs,
   DESCRIPTOR,
   finishedWatch,

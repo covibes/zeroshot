@@ -2,6 +2,7 @@
 
 const { createDefaultServices } = require('../../private/hosted-cli-candidate/default-services');
 const {
+  BASE_REVISION,
   DESCRIPTOR,
   finishedWatch,
   GRAPH,
@@ -17,6 +18,7 @@ function createTarget() {
     hostedSetup: {
       kind: 'zeroshot.private-hosted-setup/v2',
       repository: 'owner/repository',
+      baseRevision: BASE_REVISION,
       runtime: RUNTIME_CONFIG,
       configuredAt: '2026-08-03T00:00:00.000Z',
     },

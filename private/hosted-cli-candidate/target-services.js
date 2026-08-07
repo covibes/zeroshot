@@ -123,10 +123,14 @@ async function targetSetup(service, name, options) {
     targetName: name,
     target,
     repository: options.repository,
+    baseRevision: options.baseRevision,
     runtime: readRuntimeConfig(options.runtimeConfig),
     settings: service.settings,
   });
-  console.log(`Configured ${name}: ${metadata.repository}, ${metadata.runtime.provider}`);
+  console.log(
+    `Configured ${name}: ${metadata.repository}@${metadata.baseRevision}, ` +
+      metadata.runtime.provider
+  );
 }
 
 function createTargetServices({ runtime, settings, httpTransport, requireTarget }) {

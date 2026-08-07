@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { describe, it } = require('node:test');
-const { captureLogs, RUNTIME_CONFIG } = require('./candidate-fixtures');
+const { BASE_REVISION, captureLogs, RUNTIME_CONFIG } = require('./candidate-fixtures');
 const { targetHarness } = require('./target-service-harness');
 
 describe('private target services', () => {
@@ -20,6 +20,7 @@ describe('private target services', () => {
       await captureLogs(() =>
         h.services.targetSetup('prod', {
           repository: 'owner/repository',
+          baseRevision: BASE_REVISION,
           runtimeConfig,
         })
       );
