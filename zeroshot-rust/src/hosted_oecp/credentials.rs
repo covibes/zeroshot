@@ -13,12 +13,14 @@ use super::config::{
 use super::ports::WORKSPACE_ROOT;
 
 pub(super) const MAX_CREDENTIAL_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const RUNTIME_MOUNT_ROOT: &str = "/tmp/zeroshot-oecp";
 pub(super) const RUNTIME_ROOT: &str = "/tmp/zeroshot-oecp/runtime";
 pub(super) const EXECUTABLE_RUNTIME_ROOT: &str = "/workspace/.git/zeroshot-runtime";
 pub(super) const SETTINGS_FILE: &str = "/tmp/zeroshot-oecp/runtime/settings.json";
 const SETTINGS_RUNTIME_PATH: &str = "settings.json";
 const WORKER_UID: u32 = 10_002;
-const WORKER_GID: u32 = 10_002;
+pub(super) const WORKER_GID: u32 = 10_002;
+pub(super) const SHARED_MOUNT_MODE: u32 = 0o2770;
 pub(super) const RUNTIME_DIRECTORY_MODE: u32 = 0o770;
 pub(super) const RUNTIME_FILE_MODE: u32 = 0o660;
 pub(super) const RUNTIME_EXECUTABLE_MODE: u32 = 0o770;

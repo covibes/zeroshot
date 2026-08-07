@@ -7,12 +7,13 @@ use tokio::process::Command;
 use super::credentials::{
     apply_uncredentialed_worker_to, CredentialBundle, RuntimeConfig, SecretString,
     EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
-    RUNTIME_ROOT, SETTINGS_FILE,
+    RUNTIME_MOUNT_ROOT, RUNTIME_ROOT, SETTINGS_FILE, SHARED_MOUNT_MODE, WORKER_GID,
 };
 use super::ports::WORKSPACE_ROOT;
 
 impl CredentialBundle {
     pub(super) async fn prepare_workspace(&self) -> Result<(), String> {
+        prepare_shared_mounts().await?;
         write_runtime_files(&self.runtime).await?;
         clone_exact_repository(self).await?;
         prepare_executable_runtime_directories().await?;
@@ -25,6 +26,40 @@ impl CredentialBundle {
         }
         verify_prepared_repository(self).await
     }
+}
+
+#[cfg(unix)]
+async fn prepare_shared_mounts() -> Result<(), String> {
+    for root in [Path::new(WORKSPACE_ROOT), Path::new(RUNTIME_MOUNT_ROOT)] {
+        prepare_shared_mount(root, WORKER_GID).await?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn prepare_shared_mounts() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(super) async fn prepare_shared_mount(path: &Path, worker_gid: u32) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let mut group = Command::new("/bin/chgrp");
+    group
+        .env_clear()
+        .current_dir("/")
+        .arg(worker_gid.to_string())
+        .arg(path);
+    run(&mut group, "set shared mount group").await?;
+    set_runtime_access_path(path, SHARED_MOUNT_MODE).await?;
+    let metadata = fs::metadata(path)
+        .await
+        .map_err(|error| format!("verify shared mount: {error}"))?;
+    if metadata.gid() != worker_gid || metadata.permissions().mode() & 0o7777 != SHARED_MOUNT_MODE {
+        return Err("shared mount ownership or mode was not applied".to_owned());
+    }
+    Ok(())
 }
 
 async fn clone_exact_repository(credentials: &CredentialBundle) -> Result<(), String> {

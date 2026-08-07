@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
+#[cfg(unix)]
+use super::credential_runtime::prepare_shared_mount;
 use super::credentials::{
     apply_uncredentialed_worker_to, CredentialInstallError, CredentialStore,
     EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
-    RUNTIME_ROOT,
+    RUNTIME_ROOT, SHARED_MOUNT_MODE,
 };
 use serde_json::json;
 
@@ -89,6 +91,7 @@ async fn install_is_provider_neutral_bounded_and_exact_replay_idempotent() {
 
 #[test]
 fn runtime_access_is_private_to_the_supervisor_and_worker_group() {
+    assert_eq!(SHARED_MOUNT_MODE, 0o2770);
     assert_eq!(RUNTIME_DIRECTORY_MODE, 0o770);
     assert_eq!(RUNTIME_FILE_MODE, 0o660);
     assert_eq!(RUNTIME_EXECUTABLE_MODE, 0o770);
@@ -97,6 +100,38 @@ fn runtime_access_is_private_to_the_supervisor_and_worker_group() {
     assert_eq!(RUNTIME_EXECUTABLE_MODE & 0o007, 0);
     assert_ne!(RUNTIME_ROOT, EXECUTABLE_RUNTIME_ROOT);
     assert!(EXECUTABLE_RUNTIME_ROOT.starts_with("/workspace/.git/"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shared_mount_is_private_idempotent_and_inherits_the_worker_group() {
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
+    let directory = std::env::temp_dir().join(format!(
+        "zeroshot-hosted-mount-{}-{}",
+        std::process::id(),
+        NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&directory).unwrap();
+    let original_gid = fs::metadata(&directory).unwrap().gid();
+
+    prepare_shared_mount(&directory, original_gid)
+        .await
+        .unwrap();
+    prepare_shared_mount(&directory, original_gid)
+        .await
+        .unwrap();
+    let child = directory.join("worker-owned");
+    fs::create_dir(&child).unwrap();
+
+    let metadata = fs::metadata(&directory).unwrap();
+    assert_eq!(metadata.gid(), original_gid);
+    assert_eq!(metadata.permissions().mode() & 0o7777, SHARED_MOUNT_MODE);
+    assert_eq!(fs::metadata(&child).unwrap().gid(), original_gid);
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test]
