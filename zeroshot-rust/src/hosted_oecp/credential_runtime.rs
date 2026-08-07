@@ -5,8 +5,9 @@ use tokio::fs;
 use tokio::process::Command;
 
 use super::credentials::{
-    CredentialBundle, RuntimeConfig, SecretString, EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE,
-    RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE, RUNTIME_ROOT, SETTINGS_FILE,
+    apply_uncredentialed_worker_to, CredentialBundle, RuntimeConfig, SecretString,
+    EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
+    RUNTIME_ROOT, SETTINGS_FILE,
 };
 use super::ports::WORKSPACE_ROOT;
 
@@ -137,19 +138,24 @@ async fn prepare_runtime_directories() -> Result<(), String> {
 }
 
 async fn prepare_executable_runtime_directories() -> Result<(), String> {
-    for directory in [
+    let directories = [
         EXECUTABLE_RUNTIME_ROOT.to_owned(),
         format!("{EXECUTABLE_RUNTIME_ROOT}/tmp"),
         format!("{EXECUTABLE_RUNTIME_ROOT}/bin"),
         format!("{EXECUTABLE_RUNTIME_ROOT}/.local"),
         format!("{EXECUTABLE_RUNTIME_ROOT}/.local/bin"),
-    ] {
-        fs::create_dir_all(&directory)
-            .await
-            .map_err(|error| format!("create executable runtime directory: {error}"))?;
-        set_runtime_access(&directory, RUNTIME_DIRECTORY_MODE).await?;
-    }
-    Ok(())
+    ];
+    let mut create = Command::new("/bin/mkdir");
+    create.args(["--parents", "--mode=0770"]).args(&directories);
+    apply_uncredentialed_worker_to(&mut create);
+    run(&mut create, "create executable runtime directories").await?;
+
+    let mut protect = Command::new("/bin/chmod");
+    protect.arg("0770").args(&directories);
+    apply_uncredentialed_worker_to(&mut protect);
+    run(&mut protect, "protect executable runtime directories")
+        .await
+        .map(|_| ())
 }
 
 async fn write_runtime_settings(settings: &serde_json::Value) -> Result<(), String> {

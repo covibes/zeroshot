@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::credentials::{
-    CredentialInstallError, CredentialStore, EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE,
-    RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE, RUNTIME_ROOT,
+    apply_uncredentialed_worker_to, CredentialInstallError, CredentialStore,
+    EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
+    RUNTIME_ROOT,
 };
 use serde_json::json;
 
@@ -127,6 +128,12 @@ async fn git_setup_and_worker_receive_only_their_owned_credentials() {
         Some(&Some("provider-canary".to_owned()))
     );
     assert!(!setup_environment.contains_key("GH_TOKEN"));
+
+    let mut uncredentialed = tokio::process::Command::new("true");
+    apply_uncredentialed_worker_to(&mut uncredentialed);
+    let uncredentialed_environment = command_environment(&uncredentialed);
+    assert!(!uncredentialed_environment.contains_key("FUTURE_PROVIDER_TOKEN"));
+    assert!(!uncredentialed_environment.contains_key("GH_TOKEN"));
 
     assert_eq!(
         installed

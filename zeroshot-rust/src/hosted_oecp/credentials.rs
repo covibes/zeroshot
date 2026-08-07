@@ -189,14 +189,10 @@ impl CredentialBundle {
     }
 
     pub(super) fn apply_setup_to(&self, command: &mut Command) {
-        command.env_clear();
+        apply_uncredentialed_worker_to(command);
         for (name, value) in &self.runtime.environment {
             command.env(name, value.expose());
         }
-        command
-            .envs(common_environment())
-            .current_dir(WORKSPACE_ROOT);
-        configure_worker_identity(command);
     }
 
     pub(super) fn apply_git_to(&self, command: &mut Command) {
@@ -214,6 +210,14 @@ impl CredentialBundle {
             .env("GIT_TERMINAL_PROMPT", "0");
         configure_worker_identity(command);
     }
+}
+
+pub(super) fn apply_uncredentialed_worker_to(command: &mut Command) {
+    command
+        .env_clear()
+        .envs(common_environment())
+        .current_dir(WORKSPACE_ROOT);
+    configure_worker_identity(command);
 }
 
 fn common_environment() -> BTreeMap<String, String> {
