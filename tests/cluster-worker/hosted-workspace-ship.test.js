@@ -16,14 +16,12 @@ const CONFIG = Object.freeze({
 });
 
 describe('private hosted Git delivery', () => {
-  it('prepares a deterministic branch only from the exact clean default-base checkout', async () => {
+  it('prepares a deterministic branch from the exact clean checkout', async () => {
     const calls = [];
     const git = (args) => {
       calls.push(args);
       const command = args.join(' ');
-      if (command === 'rev-parse HEAD' || command.includes('refs/remotes/origin/HEAD')) {
-        return { stdout: `${BASE}\n` };
-      }
+      if (command === 'rev-parse HEAD') return { stdout: `${BASE}\n` };
       if (command === 'remote get-url origin') {
         return { stdout: 'https://github.com/the-open-engine/zeroshot.git\n' };
       }
@@ -33,6 +31,10 @@ describe('private hosted Git delivery', () => {
 
     const branch = await prepareWorkspace(CONFIG, 'cluster-1', git);
     assert.equal(branch, deterministicBranch('cluster-1'));
+    assert.equal(
+      calls.some((args) => args.includes('refs/remotes/origin/HEAD')),
+      false
+    );
     assert.deepEqual(calls.at(-2), ['switch', '--detach', BASE]);
     assert.deepEqual(calls.at(-1), ['switch', '--create', branch]);
   });
@@ -99,16 +101,15 @@ describe('private hosted Git delivery', () => {
     };
     await assert.rejects(shipWorkspace(CONFIG, branch, { git }), /repository authority/);
   });
-  it('accepts only a pull request bound to the pushed branch and revisions', async () => {
+  it('accepts only a pull request bound to the pushed branch and current default branch', async () => {
     const branch = deterministicBranch('cluster-review');
     const response = {
       html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
       head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
-      base: { ref: 'main', sha: BASE, repo: { full_name: CONFIG.repository } },
+      base: { ref: 'main', sha: 'c'.repeat(40), repo: { full_name: CONFIG.repository } },
     };
     const request = (_repository, requestPath) => {
       if (requestPath === '') return { default_branch: 'main' };
-      if (requestPath === '/branches/main') return { commit: { sha: BASE } };
       return response;
     };
     assert.equal(await createPullRequest(CONFIG, branch, HEAD, request), response.html_url);
@@ -123,18 +124,19 @@ describe('private hosted Git delivery', () => {
     );
   });
 
-  it('refuses review creation if the authoritative default base moved', async () => {
-    const paths = [];
-    const request = (_repository, path) => {
-      paths.push(path);
-      if (path === '') return { default_branch: 'main' };
-      return { commit: { sha: 'c'.repeat(40) } };
-    };
-
+  it('rejects a pull request receipt without a canonical current base revision', async () => {
+    const branch = deterministicBranch('cluster-review-invalid-base');
     await assert.rejects(
-      createPullRequest(CONFIG, deterministicBranch('cluster-3'), HEAD, request),
-      /base revision changed/
+      createPullRequest(CONFIG, branch, HEAD, (_repository, path) =>
+        path === ''
+          ? { default_branch: 'main' }
+          : {
+              html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
+              head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
+              base: { ref: 'main', sha: 'not-a-revision', repo: { full_name: CONFIG.repository } },
+            }
+      ),
+      /receipt is invalid/
     );
-    assert.deepEqual(paths, ['', '/branches/main']);
   });
 });

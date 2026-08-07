@@ -44,16 +44,13 @@ function deterministicBranch(clusterId) {
 
 async function prepareWorkspace(config, clusterId, gitCommand = git) {
   const expectedRemote = `https://github.com/${config.repository}`;
-  const [{ stdout: head }, { stdout: defaultHead }, { stdout: remote }, { stdout: status }] =
-    await Promise.all([
-      gitCommand(['rev-parse', 'HEAD']),
-      gitCommand(['rev-parse', 'refs/remotes/origin/HEAD']),
-      gitCommand(['remote', 'get-url', 'origin']),
-      gitCommand(['status', '--porcelain=v1', '-z']),
-    ]);
+  const [{ stdout: head }, { stdout: remote }, { stdout: status }] = await Promise.all([
+    gitCommand(['rev-parse', 'HEAD']),
+    gitCommand(['remote', 'get-url', 'origin']),
+    gitCommand(['status', '--porcelain=v1', '-z']),
+  ]);
   if (
     head.trim() !== config.baseRevision ||
-    defaultHead.trim() !== config.baseRevision ||
     ![expectedRemote, `${expectedRemote}.git`].includes(remote.trim()) ||
     status.length !== 0
   ) {
@@ -99,25 +96,28 @@ async function github(repository, path, init = {}) {
   return boundedJson(response);
 }
 
-async function createPullRequest(config, branch, headRevision, request = github) {
-  const repository = await request(config.repository, '');
-  if (typeof repository.default_branch !== 'string' || repository.default_branch.length === 0) {
+function canonicalRevision(value) {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
+}
+
+function repositoryDefaultBranch(repository) {
+  const branch = repository?.default_branch;
+  if (typeof branch !== 'string' || branch.length === 0) {
     throw new Error('GitHub repository metadata is invalid');
   }
-  const baseBranch = await request(
-    config.repository,
-    `/branches/${encodeURIComponent(repository.default_branch)}`
-  );
-  if (baseBranch?.commit?.sha !== config.baseRevision) {
-    throw new Error('Hosted base revision changed before delivery');
-  }
+  return branch;
+}
+
+async function createPullRequest(config, branch, headRevision, request = github) {
+  const repository = await request(config.repository, '');
+  const defaultBranch = repositoryDefaultBranch(repository);
   const created = await request(config.repository, '/pulls', {
     method: 'POST',
     body: JSON.stringify({
       title: 'feat: complete hosted Zeroshot task',
       body: 'Created by the private Zeroshot hosted runtime.',
       head: branch,
-      base: repository.default_branch,
+      base: defaultBranch,
     }),
   });
   const expectedPrefix = `https://github.com/${config.repository}/pull/`;
@@ -128,8 +128,8 @@ async function createPullRequest(config, branch, headRevision, request = github)
     created.head?.ref !== branch ||
     created.head?.sha !== headRevision ||
     created.head?.repo?.full_name !== config.repository ||
-    created.base?.ref !== repository.default_branch ||
-    created.base?.sha !== config.baseRevision ||
+    created.base?.ref !== defaultBranch ||
+    !canonicalRevision(created.base?.sha) ||
     created.base?.repo?.full_name !== config.repository
   ) {
     throw new Error('GitHub pull request receipt is invalid');
