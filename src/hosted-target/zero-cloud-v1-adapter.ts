@@ -1,10 +1,5 @@
 import { IDEMPOTENCY_KEY_PATTERN, MAX_RESPONSE_BYTES } from './bounds.js';
-import {
-  TargetAdapterError,
-  TargetAuthError,
-  TargetProtocolError,
-  TargetTransportError,
-} from './errors.js';
+import { TargetProtocolError } from './errors.js';
 import { DefaultRetryPolicy } from './retry.js';
 import {
   assertCapsule,
@@ -20,10 +15,8 @@ import type {
   CapsuleLimits,
   CapsuleListPage,
   Clock,
-  HttpTransport,
   ListRequest,
   RetryPolicy,
-  TargetAccessTokenProvider,
 } from './types.js';
 import type { TargetDiscoveryDescriptor } from '../target/discovery.js';
 import { readBoundedResponseJson } from '../target/bounded-response.js';
@@ -32,22 +25,12 @@ import { withTargetRetry } from './retry-executor.js';
 import { installRuntime as installOpaqueRuntime } from './runtime-install.js';
 import { assertCapsuleResponseStatus } from './response-status.js';
 import {
-  requestUrl,
-  type AdapterRequest,
+  createAdapterRequester,
+  type AdapterRequester,
   type ExecuteArguments,
 } from './adapter-request.js';
 
-const DEFAULT_TRANSPORT: HttpTransport = {
-  fetch(url, init) {
-    return globalThis.fetch(url, init);
-  },
-};
 const DEFAULT_CLOCK: Clock = { now: () => Date.now() };
-
-function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted)
-    throw signal.reason ?? new globalThis.DOMException('The operation was aborted', 'AbortError');
-}
 
 function validOpaque(value: string, field: string): void {
   if (value.length === 0 || value.length > 1024)
@@ -58,12 +41,10 @@ function jsonRequest(body: unknown): string {
   return JSON.stringify(body);
 }
 
-
 export class ZeroCloudV1TargetAdapter implements TargetAdapter {
   readonly #descriptor: TargetDiscoveryDescriptor;
   readonly #organizationId: string;
-  readonly #tokenProvider: TargetAccessTokenProvider;
-  readonly #transport: HttpTransport;
+  readonly #request: AdapterRequester;
   readonly #clock: Clock;
   readonly #retryPolicy: RetryPolicy;
 
@@ -71,8 +52,11 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     this.#descriptor = options.descriptor;
     this.#organizationId = options.organization.id;
     validOpaque(this.#organizationId, 'organization id');
-    this.#tokenProvider = options.tokenProvider;
-    this.#transport = options.transport ?? DEFAULT_TRANSPORT;
+    this.#request = createAdapterRequester(
+      options.descriptor,
+      options.tokenProvider,
+      options.transport
+    );
     this.#clock = options.clock ?? DEFAULT_CLOCK;
     this.#retryPolicy = options.retryPolicy ?? new DefaultRetryPolicy();
   }
@@ -204,7 +188,7 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     capsuleId: string,
     runtime: unknown,
     accessToken: string,
-    signal?: AbortSignal,
+    signal?: AbortSignal
   ): Promise<void> {
     const descriptor = this.#descriptor.credentialInstall;
     if (descriptor === null) {
@@ -219,7 +203,13 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
       clock: this.#clock,
       retryPolicy: this.#retryPolicy,
       request: (method, path, requestSignal, body, token) =>
-        this.#request(method, path, requestSignal, { body }, token),
+        this.#request({
+          method,
+          path,
+          signal: requestSignal,
+          request: { body },
+          accessToken: token,
+        }),
     });
   }
 
@@ -228,16 +218,8 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
   }
 
   #executeExpanded<T>(args: ExecuteArguments<T>): Promise<T> {
-    const [
-      operation,
-      method,
-      template,
-      values,
-      expectedStatus,
-      validate,
-      signal,
-      request = {},
-    ] = args;
+    const [operation, method, template, values, expectedStatus, validate, signal, request = {}] =
+      args;
     let path: string;
     try {
       path = template.expand(values);
@@ -247,71 +229,36 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     return withTargetRetry(
       operation,
       async () => {
-        const response = await this.#request(method, path, signal, request);
+        const response = await this.#request({
+          method,
+          path,
+          signal,
+          request,
+          accessToken: undefined,
+        });
         await assertCapsuleResponseStatus(
           response,
           expectedStatus,
           (errorResponse) => this.#readJson(errorResponse),
-          this.#clock,
+          this.#clock
         );
         return validate(await this.#readJson(response));
       },
       signal,
-      { clock: this.#clock, policy: this.#retryPolicy },
+      { clock: this.#clock, policy: this.#retryPolicy }
     );
   }
 
-  async #request(
-    method: string,
-    path: string,
-    signal: AbortSignal | undefined,
-    request: AdapterRequest,
-    accessToken?: string,
-  ): Promise<Response> {
-    throwIfAborted(signal);
-    const url = requestUrl(path, this.#descriptor);
-    let token = accessToken;
-    if (token === undefined) {
-      try {
-        token = await this.#tokenProvider.getAccessToken(signal);
-      } catch {
-        throw new TargetAuthError('Target access authorization failed');
-      }
-    }
-    const init: RequestInit & { redirect: 'manual' } = {
-      method,
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-        ...(request.body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...request.headers,
-      },
-      redirect: 'manual',
-    };
-    if (request.body !== undefined) init.body = request.body;
-    if (signal !== undefined) init.signal = signal;
-    try {
-      const response = await this.#transport.fetch(url.href, init);
-      if (response.url && new globalThis.URL(response.url).href !== url.href) {
-        await response.body?.cancel().catch(() => undefined);
-        throw new TargetProtocolError('Capsule response changed target route');
-      }
-      return response;
-    } catch (error) {
-      if (error instanceof TargetAdapterError) throw error;
-      throwIfAborted(signal);
-      throw new TargetTransportError('Capsule transport failed');
-    }
-  }
-
-
   #readJson(response: Response): Promise<unknown> {
-    return readBoundedResponseJson(response, MAX_RESPONSE_BYTES, (kind) =>
-      new TargetProtocolError(
-        kind === 'size'
-          ? 'Capsule response exceeds the size limit'
-          : 'Capsule response is not valid UTF-8 JSON',
-      ),
+    return readBoundedResponseJson(
+      response,
+      MAX_RESPONSE_BYTES,
+      (kind) =>
+        new TargetProtocolError(
+          kind === 'size'
+            ? 'Capsule response exceeds the size limit'
+            : 'Capsule response is not valid UTF-8 JSON'
+        )
     );
   }
 }
