@@ -1,6 +1,6 @@
 use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, Cursor, GraphSpec, LegacyShipRequest, NodeAddress, Phase, PlanResult,
-    PositiveInteger, RunId, StopMode, WatchEvent, WorkerOutcome,
+    PositiveInteger, RunId, StopMode, WatchEvent,
 };
 use openengine_cluster_server::admission::CancellationSignal;
 use openengine_cluster_server::{BackendError, ConnectionContext};
@@ -13,6 +13,7 @@ use super::backend::{
 use super::backend_admission_support::{
     graph_diff, reject_cancelled, replay_apply, run_metadata, RunMetadata,
 };
+use super::backend_finalization::{Finalization, PostWorkerFinalization};
 use super::backend_support::{
     accepted_plan, graph_invalid, idempotency_reuse, internal_error, precheck_generation,
     redact_request, rejected_plan, safe_application_error, same_apply_identity, second_apply_error,
@@ -22,20 +23,6 @@ use super::backend_support::{
 };
 use super::worker::{WorkerCommand, WorkerError, WorkerExecution, WorkerSpawnError};
 
-pub(super) struct Finalization {
-    pub(super) execution: WorkerExecution,
-    pub(super) process_cancellation: watch::Sender<bool>,
-    pub(super) candidate: Result<WorkerOutcome, WorkerError>,
-    pub(super) worker_cluster_id: String,
-}
-
-pub(super) struct PostWorkerFinalization {
-    pub(super) outcome: WorkerOutcome,
-    pub(super) cleanup_ok: bool,
-    pub(super) process_cleanup_ok: bool,
-    pub(super) stop_mode: Option<StopMode>,
-    pub(super) worker_cluster_id: Option<String>,
-}
 fn shutdown_can_force(state: &HostedState) -> bool {
     !state.finished && !state.finalizing && state.phase == Phase::Running
 }

@@ -7,13 +7,27 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 
 use super::backend::{HostedBackend, HostedState};
-use super::backend_runtime::{Finalization, PostWorkerFinalization};
 use super::backend_support::{
     generation_error, idempotency_reuse, internal_error, operational, safe_application_error,
     status_from, terminal_failure_error, worker_error_outcome, TRUSTED_SERVICE_DEADLINE,
 };
 use super::ports::DeliveryIntent;
-use super::worker::WorkerError;
+use super::worker::{WorkerError, WorkerExecution};
+
+pub(super) struct Finalization {
+    pub(super) execution: WorkerExecution,
+    pub(super) process_cancellation: watch::Sender<bool>,
+    pub(super) candidate: Result<WorkerOutcome, WorkerError>,
+    pub(super) worker_cluster_id: String,
+}
+
+pub(super) struct PostWorkerFinalization {
+    pub(super) outcome: WorkerOutcome,
+    pub(super) cleanup_ok: bool,
+    pub(super) process_cleanup_ok: bool,
+    pub(super) stop_mode: Option<StopMode>,
+    pub(super) worker_cluster_id: Option<String>,
+}
 
 impl HostedBackend {
     pub(super) async fn cleanup_proxy_once(&self) -> bool {
