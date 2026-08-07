@@ -6,6 +6,7 @@ const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const {
   cloneFixedRepository,
+  fixedGitArguments,
   verifyEmptyWorkspace,
 } = require('../../zeroshot-rust/hosted-node/workspace-bootstrap');
 
@@ -50,6 +51,27 @@ function fixtureGit(calls, { headRevision = REVISION } = {}) {
 }
 
 describe('private hosted repository bootstrap', () => {
+  it('trusts only the fixed workspace for every worker-side Git command', () => {
+    assert.deepEqual(fixedGitArguments(['status', '--short']), [
+      '-c',
+      'credential.helper=',
+      '-c',
+      'core.askPass=/opt/zeroshot/zeroshot-rust/hosted-node/git-askpass.js',
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'safe.directory=/workspace',
+      '-c',
+      'http.followRedirects=false',
+      '-c',
+      'http.proxy=',
+      '-c',
+      'https.proxy=',
+      'status',
+      '--short',
+    ]);
+  });
+
   it('accepts the exact fixed revision when the default branch has advanced', async () => {
     const { root, workspace } = fixture();
     const calls = [];

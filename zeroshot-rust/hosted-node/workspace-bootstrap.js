@@ -34,6 +34,8 @@ function fixedGitArguments(args) {
     '-c',
     'core.hooksPath=/dev/null',
     '-c',
+    'safe.directory=/workspace',
+    '-c',
     'http.followRedirects=false',
     '-c',
     'http.proxy=',
