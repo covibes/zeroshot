@@ -101,12 +101,12 @@ describe('private hosted Git delivery', () => {
     };
     await assert.rejects(shipWorkspace(CONFIG, branch, { git }), /repository authority/);
   });
-  it('accepts only a pull request bound to the pushed branch and current default branch', async () => {
+  it('accepts only a pull request bound to the pushed branch and exact base revision', async () => {
     const branch = deterministicBranch('cluster-review');
     const response = {
       html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
       head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
-      base: { ref: 'main', sha: 'c'.repeat(40), repo: { full_name: CONFIG.repository } },
+      base: { ref: 'main', sha: BASE, repo: { full_name: CONFIG.repository } },
     };
     const request = (_repository, requestPath) => {
       if (requestPath === '') return { default_branch: 'main' };
@@ -124,7 +124,7 @@ describe('private hosted Git delivery', () => {
     );
   });
 
-  it('rejects a pull request receipt without a canonical current base revision', async () => {
+  it('rejects a pull request receipt whose default branch advanced past the exact base', async () => {
     const branch = deterministicBranch('cluster-review-invalid-base');
     await assert.rejects(
       createPullRequest(CONFIG, branch, HEAD, (_repository, path) =>
@@ -133,7 +133,7 @@ describe('private hosted Git delivery', () => {
           : {
               html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
               head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
-              base: { ref: 'main', sha: 'not-a-revision', repo: { full_name: CONFIG.repository } },
+              base: { ref: 'main', sha: 'c'.repeat(40), repo: { full_name: CONFIG.repository } },
             }
       ),
       /receipt is invalid/

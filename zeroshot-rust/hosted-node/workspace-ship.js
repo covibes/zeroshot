@@ -96,10 +96,6 @@ async function github(repository, path, init = {}) {
   return boundedJson(response);
 }
 
-function canonicalRevision(value) {
-  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
-}
-
 function repositoryDefaultBranch(repository) {
   const branch = repository?.default_branch;
   if (typeof branch !== 'string' || branch.length === 0) {
@@ -129,7 +125,7 @@ async function createPullRequest(config, branch, headRevision, request = github)
     created.head?.sha !== headRevision ||
     created.head?.repo?.full_name !== config.repository ||
     created.base?.ref !== defaultBranch ||
-    !canonicalRevision(created.base?.sha) ||
+    created.base?.sha !== config.baseRevision ||
     created.base?.repo?.full_name !== config.repository
   ) {
     throw new Error('GitHub pull request receipt is invalid');
