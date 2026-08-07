@@ -7,10 +7,12 @@ use serde_json::Value;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate::execution::process::{MAX_PROCESS_ENV_BYTES, MAX_PROCESS_ENV_ITEMS};
+
 use super::config::{
     valid_identifier, valid_repository, valid_revision, HostedAuthority, HostedAuthorityConfig,
 };
-use super::ports::WORKSPACE_ROOT;
+use super::ports::{ISOLATION_PROFILE, PROVIDER_PROFILE, WORKSPACE_ROOT};
 
 pub(super) const MAX_CREDENTIAL_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const RUNTIME_MOUNT_ROOT: &str = "/tmp/zeroshot-oecp";
@@ -99,11 +101,11 @@ fn validate_optional_command(
 fn validate_runtime_environment(
     environment: &BTreeMap<String, SecretString>,
 ) -> Result<(), &'static str> {
-    let invalid = environment.len() > 256
+    let invalid = environment.len() > MAX_PROCESS_ENV_ITEMS
         || environment.iter().any(|(name, value)| {
             !valid_environment_name(name)
                 || reserved_environment_name(name)
-                || value.expose().len() > 64 * 1_024
+                || value.expose().len() > MAX_PROCESS_ENV_BYTES
         });
     (!invalid)
         .then_some(())
@@ -141,7 +143,8 @@ impl CredentialBundle {
         if !valid_revision(&self.base_revision) {
             return Err("baseRevision must be a lowercase 40-character commit");
         }
-        self.runtime.validate()
+        self.runtime.validate()?;
+        validate_worker_environment_bounds(&self.worker_environment())
     }
 
     pub(super) fn authority(&self) -> HostedAuthority {
@@ -187,6 +190,16 @@ impl CredentialBundle {
         if let Some(model) = &self.runtime.model {
             environment.insert("ZEROSHOT_HOSTED_MODEL".to_owned(), model.clone());
         }
+        environment.extend([
+            (
+                "ZEROSHOT_ISOLATION_PROFILE".to_owned(),
+                ISOLATION_PROFILE.to_owned(),
+            ),
+            (
+                "ZEROSHOT_PROVIDER_PROFILE".to_owned(),
+                PROVIDER_PROFILE.to_owned(),
+            ),
+        ]);
         environment
     }
 
@@ -320,6 +333,23 @@ fn valid_environment_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+fn validate_worker_environment_bounds(
+    environment: &BTreeMap<String, String>,
+) -> Result<(), &'static str> {
+    let bytes = environment.iter().try_fold(0usize, |total, (name, value)| {
+        total
+            .checked_add(name.len())
+            .and_then(|subtotal| subtotal.checked_add(value.len()))
+            .and_then(|subtotal| subtotal.checked_add(2))
+    });
+    if environment.len() > MAX_PROCESS_ENV_ITEMS
+        || bytes.is_none_or(|bytes| bytes > MAX_PROCESS_ENV_BYTES)
+    {
+        return Err("runtime.environment exceeds the worker process bounds");
+    }
+    Ok(())
+}
+
 fn reserved_environment_name(value: &str) -> bool {
     matches!(
         value,
@@ -331,7 +361,11 @@ fn reserved_environment_name(value: &str) -> bool {
             | "GIT_TERMINAL_PROMPT"
             | "HOME"
             | "LANG"
+            | "LD_AUDIT"
+            | "LD_LIBRARY_PATH"
+            | "LD_PRELOAD"
             | "NODE_ENV"
+            | "NODE_OPTIONS"
             | "PATH"
             | "TMPDIR"
             | "ZEROSHOT_HOSTED_BASE_REVISION"

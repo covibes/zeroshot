@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
+use super::credential_runtime::apply_fixed_git_arguments;
 #[cfg(unix)]
 use super::credential_runtime::prepare_shared_mount;
-use super::credential_runtime::apply_fixed_git_arguments;
 use super::credentials::{
     apply_uncredentialed_worker_to, CredentialInstallError, CredentialStore,
     EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
     RUNTIME_ROOT, SHARED_MOUNT_MODE,
 };
+use crate::execution::process::{MAX_PROCESS_ENV_BYTES, MAX_PROCESS_ENV_ITEMS};
 use serde_json::json;
 
 fn bundle(provider: &str, environment: serde_json::Value) -> Vec<u8> {
@@ -40,6 +41,13 @@ fn command_environment(command: &tokio::process::Command) -> BTreeMap<String, Op
             ))
         })
         .collect()
+}
+
+fn environment_bytes(environment: &BTreeMap<String, String>) -> usize {
+    environment
+        .iter()
+        .map(|(name, value)| name.len() + value.len() + 2)
+        .sum()
 }
 
 #[test]
@@ -216,7 +224,11 @@ async fn install_rejects_reserved_environment_and_path_escape() {
         "GIT_TERMINAL_PROMPT",
         "HOME",
         "LANG",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
         "NODE_ENV",
+        "NODE_OPTIONS",
         "PATH",
         "TMPDIR",
         "ZEROSHOT_HOSTED_BASE_REVISION",
@@ -259,4 +271,79 @@ async fn install_rejects_reserved_environment_and_path_escape() {
             Err(CredentialInstallError::Invalid)
         );
     }
+}
+
+#[tokio::test]
+async fn install_matches_worker_process_environment_item_bound() {
+    let baseline = CredentialStore::default();
+    baseline
+        .install(bundle("future-provider", json!({})))
+        .await
+        .unwrap();
+    let fixed_items = baseline.resolve().await.unwrap().worker_environment().len();
+    let available_items = MAX_PROCESS_ENV_ITEMS - fixed_items;
+    let environment = (0..available_items)
+        .map(|index| (format!("RUNTIME_{index}"), json!("x")))
+        .collect::<serde_json::Map<_, _>>();
+
+    let accepted = CredentialStore::default();
+    accepted
+        .install(bundle(
+            "future-provider",
+            serde_json::Value::Object(environment.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        accepted.resolve().await.unwrap().worker_environment().len(),
+        MAX_PROCESS_ENV_ITEMS
+    );
+
+    let mut rejected_environment = environment;
+    rejected_environment.insert("RUNTIME_OVERFLOW".to_owned(), json!("x"));
+    assert_eq!(
+        CredentialStore::default()
+            .install(bundle(
+                "future-provider",
+                serde_json::Value::Object(rejected_environment),
+            ))
+            .await,
+        Err(CredentialInstallError::Invalid)
+    );
+}
+
+#[tokio::test]
+async fn install_matches_worker_process_environment_byte_bound() {
+    const NAME: &str = "RUNTIME_CREDENTIAL";
+
+    let baseline = CredentialStore::default();
+    baseline
+        .install(bundle("future-provider", json!({})))
+        .await
+        .unwrap();
+    let fixed_bytes = environment_bytes(&baseline.resolve().await.unwrap().worker_environment());
+    let maximum_value_bytes = MAX_PROCESS_ENV_BYTES - fixed_bytes - NAME.len() - 2;
+
+    let accepted = CredentialStore::default();
+    accepted
+        .install(bundle(
+            "future-provider",
+            json!({(NAME): "x".repeat(maximum_value_bytes)}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        environment_bytes(&accepted.resolve().await.unwrap().worker_environment()),
+        MAX_PROCESS_ENV_BYTES
+    );
+
+    assert_eq!(
+        CredentialStore::default()
+            .install(bundle(
+                "future-provider",
+                json!({(NAME): "x".repeat(maximum_value_bytes + 1)}),
+            ))
+            .await,
+        Err(CredentialInstallError::Invalid)
+    );
 }
