@@ -84,7 +84,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   };
   const runtime = {
     provider: 'bedrock-runner',
-    executable: 'bedrock-agent',
+    executable: 'claude',
     model: 'anthropic.claude-sonnet-4-5',
     environment: {
       AWS_ACCESS_KEY_ID: { from: 'LOCAL_AWS_ACCESS_KEY_ID' },
@@ -118,7 +118,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   assert.equal(bundle.githubToken, 'github-test-token');
   assert.equal(bundle.baseRevision, BASE_REVISION);
   assert.equal(bundle.runtime.provider, 'bedrock-runner');
-  assert.equal(bundle.runtime.executable, 'bedrock-agent');
+  assert.equal(bundle.runtime.executable, 'claude');
   assert.equal(bundle.runtime.environment.AWS_ACCESS_KEY_ID, 'aws-local-secret');
   assert.equal(bundle.runtime.environment.AWS_REGION, 'eu-west-1');
 });
@@ -127,11 +127,16 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
   assert.deepEqual(
     normalizeRuntimeConfig({
       provider: 'azure-openai',
+      executable: 'gateway',
       environment: {},
       files: {},
       settings: {},
     }).executable,
-    'azure-openai'
+    'gateway'
+  );
+  assert.throws(
+    () => normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }),
+    /supported Zeroshot adapter/
   );
   for (const name of [
     'GH_TOKEN',
@@ -155,13 +160,23 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
     'ZEROSHOT_SETTINGS_FILE',
   ]) {
     assert.throws(
-      () => normalizeRuntimeConfig({ provider: 'custom', environment: { [name]: '/escape' } }),
+      () =>
+        normalizeRuntimeConfig({
+          provider: 'custom',
+          executable: 'claude',
+          environment: { [name]: '/escape' },
+        }),
       /reserved/
     );
   }
   for (const filename of ['../escape', 'settings.json', 'settings.json/nested']) {
     assert.throws(
-      () => normalizeRuntimeConfig({ provider: 'custom', files: { [filename]: 'secret' } }),
+      () =>
+        normalizeRuntimeConfig({
+          provider: 'custom',
+          executable: 'claude',
+          files: { [filename]: 'secret' },
+        }),
       /runtime file path/
     );
   }
@@ -174,6 +189,7 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
     configFile,
     JSON.stringify({
       provider: 'custom',
+      executable: 'claude',
       files: { '.config/harness.json': { from: '../credentials/harness.json' } },
     })
   );

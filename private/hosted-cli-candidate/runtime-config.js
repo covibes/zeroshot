@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { providerIds } = require('../../lib/agent-cli-provider');
 
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
@@ -140,6 +141,9 @@ function normalizeRuntimeConfig(value) {
   const provider = boundedIdentifier(input.provider, 'runtime provider', 64);
   const executable =
     boundedIdentifier(input.executable, 'runtime executable', 128, true) ?? provider;
+  if (!providerIds.includes(executable)) {
+    throw new Error(`runtime executable must name a supported Zeroshot adapter: ${executable}`);
+  }
   const model = boundedString(input.model, 'runtime model', 512, true);
   const command = boundedString(input.command, 'runtime command', 4096, true);
   const setupCommand = boundedString(input.setupCommand, 'runtime setupCommand', 16 * 1024, true);
