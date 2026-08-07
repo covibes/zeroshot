@@ -20,7 +20,7 @@ use super::backend_support::{
     validate_graph_input, validate_request, verify_trusted_service, worker_error_outcome,
     worker_start_error,
 };
-use super::worker::{WorkerError, WorkerExecution, WorkerSpawnError};
+use super::worker::{WorkerCommand, WorkerError, WorkerExecution, WorkerSpawnError};
 
 pub(super) struct Finalization {
     pub(super) execution: WorkerExecution,
@@ -279,13 +279,26 @@ impl HostedBackend {
         cancellation: &CancellationSignal,
     ) -> Result<(LegacyShipRequest, RunMetadata), BackendError> {
         reject_cancelled(cancellation)?;
+        self.prepare_installed_workspace().await?;
         self.verify_startup_readiness().await?;
         reject_cancelled(cancellation)?;
         self.reject_shutdown().await?;
-        let request = validate_request(params, &self.authority)?;
+        let authority = self.runtime_authority().await.map_err(|_| {
+            safe_application_error("CREDENTIALS_REQUIRED", "Runtime bundle is unavailable")
+        })?;
+        let request = validate_request(params, &authority)?;
         reject_cancelled(cancellation)?;
         let metadata = run_metadata(params.graph.clone())?;
         Ok((request, metadata))
+    }
+
+    async fn prepare_installed_workspace(&self) -> Result<(), BackendError> {
+        let Ok(credentials) = self.credentials.resolve().await else {
+            return Ok(());
+        };
+        credentials.prepare_workspace().await.map_err(|_| {
+            safe_application_error("WORKSPACE_PREPARATION", "Workspace preparation failed")
+        })
     }
 
     async fn finish_worker_start(
@@ -350,25 +363,24 @@ impl HostedBackend {
         graph: &GraphSpec,
     ) -> Result<(WorkerDrive, watch::Sender<Option<StopMode>>), WorkerStartFailure> {
         let (process_cancellation, process_observer) = watch::channel(false);
-        let execution = match WorkerExecution::spawn_command(
-            request,
-            process_observer,
-            self.worker_command.clone(),
-        )
-        .await
-        {
-            Ok(execution) => execution,
-            Err(WorkerSpawnError::PreLaunch(error)) => {
-                return Err(WorkerStartFailure::PreLaunch(error));
-            }
-            Err(WorkerSpawnError::PostLaunch { error, execution }) => {
-                return Err(WorkerStartFailure::PostLaunch {
-                    error,
-                    execution,
-                    process_cancellation,
-                });
-            }
+        let command = match self.credentials.resolve().await {
+            Ok(credentials) => WorkerCommand::production(&credentials),
+            Err(_) => self.worker_command.clone(),
         };
+        let execution =
+            match WorkerExecution::spawn_command(request, process_observer, command).await {
+                Ok(execution) => execution,
+                Err(WorkerSpawnError::PreLaunch(error)) => {
+                    return Err(WorkerStartFailure::PreLaunch(error));
+                }
+                Err(WorkerSpawnError::PostLaunch { error, execution }) => {
+                    return Err(WorkerStartFailure::PostLaunch {
+                        error,
+                        execution,
+                        process_cancellation,
+                    });
+                }
+            };
         let (finalization_request, finalization_observer) = watch::channel(None);
         Ok((
             WorkerDrive {

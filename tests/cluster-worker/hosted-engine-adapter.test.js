@@ -11,12 +11,12 @@ const { deterministicBranch } = require('../../zeroshot-rust/hosted-node/workspa
 const CONFIG = Object.freeze({
   repository: 'the-open-engine/zeroshot',
   baseRevision: 'a'.repeat(40),
-  provider: 'codex',
-  modelLevel: 'level2',
-  workerEnvironment: Object.freeze({
-    GH_TOKEN: 'git-canary',
-    OPENAI_API_KEY: 'provider-canary',
+  provider: 'future-provider',
+  model: 'future/model',
+  runtimeEnvironment: Object.freeze({
+    FUTURE_PROVIDER_TOKEN: 'provider-canary',
   }),
+  settings: Object.freeze({ defaultProvider: 'future-provider' }),
 });
 
 function request() {
@@ -28,22 +28,22 @@ function request() {
     providerProfile: 'provider.hosted-direct@1',
     repository: CONFIG.repository,
     provider: CONFIG.provider,
-    modelLevel: CONFIG.modelLevel,
+    modelLevel: 'level3',
   };
 }
 
 describe('hosted direct provider adapter', () => {
-  it('constructs one registry-owned model-level invocation with only filtered credentials', () => {
+  it('constructs one provider-neutral invocation from the resolved runtime', () => {
     const invocation = providerInvocation(CONFIG, request());
-    assert.equal(invocation.provider, 'codex');
+    assert.equal(invocation.provider, 'future-provider');
     assert.deepEqual(invocation.options, {
       authEnv: {
-        OPENAI_API_KEY: 'provider-canary',
+        FUTURE_PROVIDER_TOKEN: 'provider-canary',
       },
       autoApprove: true,
       cwd: '/workspace',
       executionContext: 'docker',
-      modelSpec: { level: 'level2' },
+      modelSpec: { model: 'future/model' },
     });
     assert.equal(Object.hasOwn(invocation, 'env'), false);
     assert.equal(Object.hasOwn(invocation, 'model'), false);
@@ -52,7 +52,7 @@ describe('hosted direct provider adapter', () => {
       Object.hasOwn(invocation.options.authEnv, 'ZEROSHOT_HOSTED_CREDENTIALS_JSON'),
       false
     );
-    assert.equal(Object.hasOwn(invocation.options.authEnv, 'ANTHROPIC_API_KEY'), false);
+    assert.equal(Object.hasOwn(invocation.options.authEnv, 'OPENAI_API_KEY'), false);
   });
 
   it('withholds the Git credential from the provider process and restores it for delivery', async () => {
@@ -67,11 +67,10 @@ describe('hosted direct provider adapter', () => {
     }
   });
 
-  it('rejects repository and provider authority mismatches with closed codes', () => {
+  it('rejects repository and runtime provider authority mismatches with closed codes', () => {
     for (const [patch, code] of [
       [{ repository: 'other/repository' }, 'HOSTED_REPOSITORY_MISMATCH'],
       [{ provider: 'claude' }, 'HOSTED_PROVIDER_MISMATCH'],
-      [{ modelLevel: 'level3' }, 'HOSTED_PROVIDER_MISMATCH'],
     ]) {
       assert.throws(
         () => validateRequestAuthority(CONFIG, { ...request(), ...patch }),

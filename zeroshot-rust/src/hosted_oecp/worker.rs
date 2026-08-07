@@ -16,14 +16,11 @@ use crate::execution::process::{
 };
 use crate::execution::WorkspaceAccessMode;
 
-use super::config::{
-    HostedAuthority, HOSTED_BASE_REVISION_ENV, HOSTED_CREDENTIALS_ENV, HOSTED_MODEL_LEVEL_ENV,
-    HOSTED_PROVIDER_ENDPOINT_ENV, HOSTED_PROVIDER_ENV, HOSTED_REPOSITORY_ENV,
-};
+use super::credentials::CredentialBundle;
 use super::ports::{ISOLATION_PROFILE, PROVIDER_PROFILE, WORKSPACE_ROOT};
 
 pub(super) const NODE_PROGRAM: &str = "/usr/local/bin/node";
-const NODE_WORKER: &str = "/opt/zeroshot/zeroshot-rust/hosted-node/worker-launcher.js";
+const NODE_WORKER: &str = "/opt/zeroshot/zeroshot-rust/hosted-node/worker.js";
 const WORKER_FRAME_BYTES: usize = 64 * 1024;
 const PROCESS_SAFETY_DEADLINE: Duration = Duration::from_secs(24 * 60 * 60);
 const WORKER_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -55,13 +52,31 @@ pub(super) struct WorkerCommand {
 }
 
 impl WorkerCommand {
-    pub(super) fn production(authority: &HostedAuthority) -> Self {
+    pub(super) fn unconfigured() -> Self {
         Self {
             program: NODE_PROGRAM.to_owned(),
             argv: vec![NODE_WORKER.to_owned()],
             current_dir: PathBuf::from(WORKSPACE_ROOT),
             isolated: true,
-            environment: fixed_environment(authority),
+            environment: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn production(credentials: &CredentialBundle) -> Self {
+        let mut environment = credentials.worker_environment();
+        environment.extend([
+            (
+                "ZEROSHOT_ISOLATION_PROFILE".to_owned(),
+                ISOLATION_PROFILE.to_owned(),
+            ),
+            (
+                "ZEROSHOT_PROVIDER_PROFILE".to_owned(),
+                PROVIDER_PROFILE.to_owned(),
+            ),
+        ]);
+        Self {
+            environment,
+            ..Self::unconfigured()
         }
     }
 }
@@ -196,47 +211,6 @@ fn build_request_frame(id: u64, method: &str, params: Value) -> Result<ProcessFr
     }
     let message_bytes = frame.len() - 1;
     ProcessFrame::with_framing(frame, message_bytes).map_err(map_runner_error)
-}
-
-fn fixed_environment(authority: &HostedAuthority) -> BTreeMap<String, String> {
-    let mut environment = BTreeMap::from([
-        ("HOME".to_owned(), "/tmp/zeroshot-oecp".to_owned()),
-        ("LANG".to_owned(), "C.UTF-8".to_owned()),
-        ("NODE_ENV".to_owned(), "production".to_owned()),
-        ("PATH".to_owned(), "/usr/local/bin:/usr/bin:/bin".to_owned()),
-        (
-            "ZEROSHOT_ISOLATION_PROFILE".to_owned(),
-            ISOLATION_PROFILE.to_owned(),
-        ),
-        (
-            "ZEROSHOT_PROVIDER_PROFILE".to_owned(),
-            PROVIDER_PROFILE.to_owned(),
-        ),
-        (
-            HOSTED_REPOSITORY_ENV.to_owned(),
-            authority.repository().to_owned(),
-        ),
-        (
-            HOSTED_BASE_REVISION_ENV.to_owned(),
-            authority.base_revision().to_owned(),
-        ),
-        (
-            HOSTED_PROVIDER_ENV.to_owned(),
-            authority.provider().to_owned(),
-        ),
-        (
-            HOSTED_MODEL_LEVEL_ENV.to_owned(),
-            authority.model_level().to_owned(),
-        ),
-        (
-            HOSTED_PROVIDER_ENDPOINT_ENV.to_owned(),
-            authority.provider_endpoint().to_owned(),
-        ),
-    ]);
-    if let Ok(credentials) = std::env::var(HOSTED_CREDENTIALS_ENV) {
-        environment.insert(HOSTED_CREDENTIALS_ENV.to_owned(), credentials);
-    }
-    environment
 }
 
 fn take_line(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>, WorkerError> {

@@ -334,7 +334,7 @@ async fn canonical_watch_is_ordered_bounded_and_secret_free() {
     assert_eq!(reconnect.code, GONE);
 }
 #[tokio::test]
-async fn fixed_authority_mismatches_do_not_allocate_or_consume_the_run() {
+async fn installed_repository_and_runtime_mismatches_do_not_consume_the_run() {
     let fixture = RuntimeFixture::new(25);
     for (field, value, code, key) in [
         (
@@ -348,12 +348,6 @@ async fn fixed_authority_mismatches_do_not_allocate_or_consume_the_run() {
             json!("claude"),
             "HOSTED_PROVIDER_MISMATCH",
             "authority-provider",
-        ),
-        (
-            "modelLevel",
-            json!("level3"),
-            "HOSTED_PROVIDER_MISMATCH",
-            "authority-model",
         ),
     ] {
         let mut params = apply(key);

@@ -51,8 +51,13 @@ impl HostedRunIntentExecutor {
             });
         }
 
-        let params = apply_params(submission, &self.backend.authority)
+        let authority = self
+            .backend
+            .runtime_authority()
+            .await
             .map_err(|_| RunIntentSubmitError::Rejected)?;
+        let params =
+            apply_params(submission, &authority).map_err(|_| RunIntentSubmitError::Rejected)?;
         let planned = self
             .backend
             .plan(

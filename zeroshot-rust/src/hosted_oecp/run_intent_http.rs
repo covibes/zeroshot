@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{timeout, Duration};
 
+use super::credentials::{CredentialInstallError, CredentialInstaller, MAX_CREDENTIAL_BYTES};
 use super::run_intent::{
     canonical_intent_id, decode_submission, valid_digest, RunIntentExecutor, RunIntentIdentity,
     RunIntentLookup, RunIntentStatus, RunIntentSubmitError, MAX_RUN_INTENT_BYTES,
@@ -18,6 +19,7 @@ const REQUEST_READ_DEADLINE: Duration = Duration::from_secs(5);
 
 pub(super) async fn serve_run_intent_http<S>(
     mut stream: S,
+    credentials: Arc<dyn CredentialInstaller>,
     executor: Arc<dyn RunIntentExecutor>,
     capability: Arc<TransportCapability>,
 ) -> io::Result<()>
@@ -32,20 +34,26 @@ where
     {
         Ok(Ok(request)) => request,
         Ok(Err(error)) => {
-            return write_response(&mut stream, error.status, error_response(error.code)).await;
+            return write_response(&mut stream, error.status, Some(error_response(error.code)))
+                .await;
         }
         Err(_) => {
-            return write_response(&mut stream, 408, error_response("request_timeout")).await;
+            return write_response(&mut stream, 408, Some(error_response("request_timeout"))).await;
         }
     };
-    let (status, body) = dispatch_request(executor.as_ref(), request).await;
+    let (status, body) = dispatch_request(credentials.as_ref(), executor.as_ref(), request).await;
     write_response(&mut stream, status, body).await
 }
 
 struct HttpRequest {
     method: HttpMethod,
-    identity: RunIntentIdentity,
+    target: RequestTarget,
     body: Vec<u8>,
+}
+
+enum RequestTarget {
+    Credentials,
+    RunIntent(RunIntentIdentity),
 }
 
 #[derive(Clone, Copy)]
@@ -77,17 +85,17 @@ where
         head.content_length,
     )
     .await?;
-    validate_body(head.method, head.content_length, &body)?;
+    validate_body(head.method, &head.target, head.content_length, &body)?;
     Ok(HttpRequest {
         method: head.method,
-        identity: head.identity,
+        target: head.target,
         body,
     })
 }
 
 struct RequestHead {
     method: HttpMethod,
-    identity: RunIntentIdentity,
+    target: RequestTarget,
     content_length: Option<usize>,
     expect_continue: bool,
     header_end: usize,
@@ -106,28 +114,37 @@ fn parse_request_head(
     if request.version != Some(1) {
         return Err(bad_request("invalid_http_version"));
     }
-    let method = match request.method {
-        Some("GET") => HttpMethod::Get,
-        Some("PUT") => HttpMethod::Put,
-        _ => {
-            return Err(HttpError {
-                status: 405,
-                code: "method_not_allowed",
-            });
-        }
-    };
-    let identity = request_identity(request.path, request.headers, capability)?;
-    let content_length = content_length(request.headers)?;
+    let method = parse_method(request.method)?;
+    let target = request_target(request.path, request.headers, capability)?;
+    let content_length = content_length(request.headers, body_limit(&target))?;
     if has_header(request.headers, "transfer-encoding") {
         return Err(bad_request("invalid_body_framing"));
     }
     Ok(RequestHead {
         method,
-        identity,
+        target,
         content_length,
         expect_continue: has_expect_continue(request.headers),
         header_end,
     })
+}
+
+fn parse_method(method: Option<&str>) -> Result<HttpMethod, HttpError> {
+    match method {
+        Some("GET") => Ok(HttpMethod::Get),
+        Some("PUT") => Ok(HttpMethod::Put),
+        _ => Err(HttpError {
+            status: 405,
+            code: "method_not_allowed",
+        }),
+    }
+}
+
+fn body_limit(target: &RequestTarget) -> usize {
+    match target {
+        RequestTarget::Credentials => MAX_CREDENTIAL_BYTES,
+        RequestTarget::RunIntent(_) => MAX_RUN_INTENT_BYTES,
+    }
 }
 
 async fn write_continue<S>(stream: &mut S) -> Result<(), HttpError>
@@ -143,14 +160,20 @@ where
 
 fn validate_body(
     method: HttpMethod,
+    target: &RequestTarget,
     content_length: Option<usize>,
     body: &[u8],
 ) -> Result<(), HttpError> {
-    match method {
-        HttpMethod::Get if body.is_empty() => {}
-        HttpMethod::Get => return Err(bad_request("invalid_body")),
-        HttpMethod::Put if content_length.is_some() && !body.is_empty() => {}
-        HttpMethod::Put => return Err(bad_request("invalid_body")),
+    match (method, target) {
+        (HttpMethod::Get, RequestTarget::RunIntent(_)) if body.is_empty() => {}
+        (HttpMethod::Put, _) if content_length.is_some() && !body.is_empty() => {}
+        (HttpMethod::Get, RequestTarget::Credentials) => {
+            return Err(HttpError {
+                status: 405,
+                code: "method_not_allowed",
+            });
+        }
+        _ => return Err(bad_request("invalid_body")),
     }
     Ok(())
 }
@@ -182,11 +205,11 @@ where
     }
 }
 
-fn request_identity(
+fn request_target(
     path: Option<&str>,
     headers: &[httparse::Header<'_>],
     capability: &TransportCapability,
-) -> Result<RunIntentIdentity, HttpError> {
+) -> Result<RequestTarget, HttpError> {
     let presented = one_header(headers, RUNTIME_CAPABILITY_HEADER)?
         .ok_or_else(|| bad_request("invalid_runtime_capability"))?;
     if !capability.matches(presented.as_bytes()) {
@@ -194,6 +217,9 @@ fn request_identity(
             status: 401,
             code: "invalid_runtime_capability",
         });
+    }
+    if path == Some("/internal/credentials") {
+        return Ok(RequestTarget::Credentials);
     }
     let intent_id = path
         .and_then(|path| path.strip_prefix("/internal/run-intents/"))
@@ -203,13 +229,16 @@ fn request_identity(
     let digest = one_header(headers, RUN_INTENT_DIGEST_HEADER)?
         .filter(|value| valid_digest(value))
         .ok_or_else(|| bad_request("invalid_digest"))?;
-    Ok(RunIntentIdentity::new(
+    Ok(RequestTarget::RunIntent(RunIntentIdentity::new(
         intent_id.to_owned(),
         digest.to_owned(),
-    ))
+    )))
 }
 
-fn content_length(headers: &[httparse::Header<'_>]) -> Result<Option<usize>, HttpError> {
+fn content_length(
+    headers: &[httparse::Header<'_>],
+    maximum: usize,
+) -> Result<Option<usize>, HttpError> {
     let Some(value) = one_header(headers, "content-length")? else {
         return Ok(None);
     };
@@ -219,10 +248,10 @@ fn content_length(headers: &[httparse::Header<'_>]) -> Result<Option<usize>, Htt
     let length = value
         .parse::<usize>()
         .map_err(|_| bad_request("invalid_content_length"))?;
-    if length > MAX_RUN_INTENT_BYTES {
+    if length > maximum {
         return Err(HttpError {
             status: 413,
-            code: "intent_too_large",
+            code: "payload_too_large",
         });
     }
     Ok(Some(length))
@@ -285,41 +314,81 @@ where
     Ok(body)
 }
 
-async fn dispatch_request(executor: &dyn RunIntentExecutor, request: HttpRequest) -> (u16, Value) {
-    match request.method {
-        HttpMethod::Put => dispatch_put(executor, request).await,
-        HttpMethod::Get => match executor.lookup(&request.identity).await {
-            RunIntentLookup::Found(status) => status_response(status, false),
-            RunIntentLookup::NotFound => (404, error_response("intent_not_found")),
-            RunIntentLookup::Conflict => (409, error_response("intent_conflict")),
-        },
+async fn dispatch_request(
+    credentials: &dyn CredentialInstaller,
+    executor: &dyn RunIntentExecutor,
+    request: HttpRequest,
+) -> (u16, Option<Value>) {
+    match (request.method, request.target) {
+        (HttpMethod::Put, RequestTarget::Credentials) => {
+            dispatch_credentials(credentials, request.body).await
+        }
+        (HttpMethod::Put, RequestTarget::RunIntent(identity)) => {
+            dispatch_put(executor, identity, &request.body).await
+        }
+        (HttpMethod::Get, RequestTarget::RunIntent(identity)) => {
+            dispatch_get(executor, &identity).await
+        }
+        (HttpMethod::Get, RequestTarget::Credentials) => {
+            (405, Some(error_response("method_not_allowed")))
+        }
     }
 }
 
-async fn dispatch_put(executor: &dyn RunIntentExecutor, request: HttpRequest) -> (u16, Value) {
-    let submission = match decode_submission(request.identity, &request.body) {
+async fn dispatch_credentials(
+    credentials: &dyn CredentialInstaller,
+    body: Vec<u8>,
+) -> (u16, Option<Value>) {
+    match credentials.install_credentials(body).await {
+        Ok(()) => (204, None),
+        Err(CredentialInstallError::Invalid) => (400, Some(error_response("invalid_credentials"))),
+        Err(CredentialInstallError::Missing | CredentialInstallError::Conflict) => {
+            (409, Some(error_response("credential_conflict")))
+        }
+    }
+}
+
+async fn dispatch_get(
+    executor: &dyn RunIntentExecutor,
+    identity: &RunIntentIdentity,
+) -> (u16, Option<Value>) {
+    match executor.lookup(identity).await {
+        RunIntentLookup::Found(status) => status_response(status, false),
+        RunIntentLookup::NotFound => (404, Some(error_response("intent_not_found"))),
+        RunIntentLookup::Conflict => (409, Some(error_response("intent_conflict"))),
+    }
+}
+
+async fn dispatch_put(
+    executor: &dyn RunIntentExecutor,
+    identity: RunIntentIdentity,
+    body: &[u8],
+) -> (u16, Option<Value>) {
+    let submission = match decode_submission(identity, body) {
         Ok(submission) => submission,
-        Err("digest_mismatch") => return (409, error_response("digest_mismatch")),
-        Err(_) => return (400, error_response("invalid_run_intent")),
+        Err("digest_mismatch") => return (409, Some(error_response("digest_mismatch"))),
+        Err(_) => return (400, Some(error_response("invalid_run_intent"))),
     };
     match executor.submit(submission).await {
         Ok(status) => status_response(status, true),
-        Err(RunIntentSubmitError::Rejected) => (400, error_response("invalid_run_intent")),
-        Err(RunIntentSubmitError::Conflict) => (409, error_response("intent_conflict")),
-        Err(RunIntentSubmitError::Unavailable) => (503, error_response("runtime_unavailable")),
+        Err(RunIntentSubmitError::Rejected) => (400, Some(error_response("invalid_run_intent"))),
+        Err(RunIntentSubmitError::Conflict) => (409, Some(error_response("intent_conflict"))),
+        Err(RunIntentSubmitError::Unavailable) => {
+            (503, Some(error_response("runtime_unavailable")))
+        }
     }
 }
 
-fn status_response(status: RunIntentStatus, submitted: bool) -> (u16, Value) {
+fn status_response(status: RunIntentStatus, submitted: bool) -> (u16, Option<Value>) {
     match status {
         RunIntentStatus::Running => (
             if submitted { 202 } else { 200 },
-            json!({ "state": "running" }),
+            Some(json!({ "state": "running" })),
         ),
         RunIntentStatus::Succeeded(result) => {
-            (200, json!({ "state": "succeeded", "result": result }))
+            (200, Some(json!({ "state": "succeeded", "result": result })))
         }
-        RunIntentStatus::Failed(error_code) => (422, error_response(error_code)),
+        RunIntentStatus::Failed(error_code) => (422, Some(error_response(error_code))),
     }
 }
 
@@ -327,12 +396,15 @@ fn error_response(error_code: &'static str) -> Value {
     json!({ "state": "failed", "error_code": error_code })
 }
 
-async fn write_response<S>(stream: &mut S, status: u16, body: Value) -> io::Result<()>
+async fn write_response<S>(stream: &mut S, status: u16, body: Option<Value>) -> io::Result<()>
 where
     S: AsyncWrite + Unpin,
 {
-    let body = serde_json::to_vec(&body)
-        .map_err(|_| io::Error::other("run-intent response serialization failed"))?;
+    let body = body
+        .map(|body| serde_json::to_vec(&body))
+        .transpose()
+        .map_err(|_| io::Error::other("task response serialization failed"))?
+        .unwrap_or_default();
     let reason = status_reason(status);
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\n\
@@ -352,6 +424,7 @@ fn status_reason(status: u16) -> &'static str {
     const REASONS: &[(u16, &str)] = &[
         (200, "OK"),
         (202, "Accepted"),
+        (204, "No Content"),
         (400, "Bad Request"),
         (401, "Unauthorized"),
         (404, "Not Found"),

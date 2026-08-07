@@ -3,7 +3,8 @@ use openengine_cluster_server::{BackendError, ConnectionContext};
 
 use super::backend::HostedBackend;
 use super::backend_support::{
-    second_apply_error, validate_apply, validate_graph_input, validate_request,
+    safe_application_error, second_apply_error, validate_apply, validate_graph_input,
+    validate_request,
 };
 
 impl HostedBackend {
@@ -13,7 +14,10 @@ impl HostedBackend {
     ) -> Result<(), BackendError> {
         validate_apply(params)?;
         validate_graph_input(params)?;
-        validate_request(params, &self.authority)?;
+        let authority = self.runtime_authority().await.map_err(|_| {
+            safe_application_error("CREDENTIALS_REQUIRED", "Runtime bundle is unavailable")
+        })?;
+        validate_request(params, &authority)?;
         match self
             .reserve_apply(&ConnectionContext::default(), params)
             .await?

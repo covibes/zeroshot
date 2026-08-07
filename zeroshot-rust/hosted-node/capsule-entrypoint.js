@@ -1,16 +1,12 @@
 'use strict';
 
 const { spawn } = require('node:child_process');
-const { loadHostedWorkerConfiguration } = require('./hosted-config');
 const { provisionRuntimeCapability } = require('./runtime-capability');
-const { cloneFixedRepository } = require('./workspace-bootstrap');
 
 const SERVER = '/usr/local/bin/zeroshot-oecp-server';
 
 async function main() {
   await provisionRuntimeCapability();
-  const configuration = loadHostedWorkerConfiguration();
-  await cloneFixedRepository(configuration);
   const server = spawn(SERVER, [], { env: process.env, stdio: 'inherit', windowsHide: true });
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => server.kill(signal));

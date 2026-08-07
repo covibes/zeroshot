@@ -6,11 +6,60 @@ use serde_json::json;
 
 use super::run_intent::digest_bytes;
 use super::run_intent_test_support::{
-    assert_http_replay_and_conflicts, direct_input, encoded_envelope, envelope, graph, put_request,
-    response_json, response_status, tcp_http_exchange, wait_for_http_not_found,
+    assert_http_replay_and_conflicts, credential_request, direct_input, encoded_envelope, envelope,
+    graph, put_request, response_json, response_status, tcp_http_exchange, wait_for_http_not_found,
     wait_for_http_terminal, wait_for_http_terminal_response, HostedServerHarness, TestServices,
-    INTENT_ID,
+    CAPABILITY, INTENT_ID,
 };
+
+#[tokio::test]
+async fn credential_install_is_authenticated_generic_and_exact_replay_idempotent() {
+    let harness = HostedServerHarness::start().await;
+    let body = serde_json::to_vec(&json!({
+        "githubToken": "git-canary",
+        "repository": "the-open-engine/zeroshot",
+        "baseRevision": "a".repeat(40),
+        "runtime": {
+            "provider": "future-provider",
+            "executable": "future-cli",
+            "model": "future/model",
+            "command": "future-cli-wrapper",
+            "environment": {
+                "FUTURE_PROVIDER_TOKEN": "provider-canary",
+                "FUTURE_PROVIDER_ENDPOINT": "https://models.example"
+            },
+            "files": {".config/future/config.json": "{\"enabled\":true}"},
+            "settings": {"defaultProvider": "future-provider"}
+        }
+    }))
+    .expect("credential bundle serializes");
+
+    for _ in 0..2 {
+        let response = tcp_http_exchange(
+            harness.control_address,
+            credential_request(CAPABILITY, &body),
+        )
+        .await;
+        assert_eq!(response_status(&response), 204);
+    }
+
+    let mut different = body.clone();
+    different.push(b' ');
+    let conflict = tcp_http_exchange(
+        harness.control_address,
+        credential_request(CAPABILITY, &different),
+    )
+    .await;
+    assert_eq!(response_status(&conflict), 409);
+
+    let unauthorized = tcp_http_exchange(
+        harness.control_address,
+        credential_request("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", &body),
+    )
+    .await;
+    assert_eq!(response_status(&unauthorized), 401);
+    harness.shutdown().await;
+}
 
 #[tokio::test]
 async fn queue_reuses_backend_admission_worker_and_finalization_path() {

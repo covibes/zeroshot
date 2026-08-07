@@ -150,7 +150,6 @@ pub(super) fn validate_request(
     }
     if request.provider_profile.as_str() != PROVIDER_PROFILE
         || request.provider != authority.provider()
-        || request.model_level != authority.model_level()
     {
         return Err(safe_application_error(
             "HOSTED_PROVIDER_MISMATCH",

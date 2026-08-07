@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration, Instant};
 
 use super::backend::HostedBackend;
-use super::config::HostedAuthority;
+use super::credentials::CredentialStore;
 use super::ports::{
     DeliveryIntent, DeliveryReadinessReceipt, DeliveryReceipt, ProxyCleanupReceipt,
     ProxyReadinessPort, ProxyReadinessReceipt, TrustedServiceError, WorkspaceDeliveryPort,
@@ -27,17 +27,14 @@ const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
 const STARTUP_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 pub async fn production_backend() -> io::Result<Arc<HostedBackend>> {
-    let authority = HostedAuthority::from_environment()?;
-    authority.verify_worker_configuration().await?;
-    let delivery = Arc::new(InlineDirtyDelivery::new(
-        authority.repository(),
-        authority.base_revision(),
-    ));
-    Ok(Arc::new(HostedBackend::new(
+    let credentials = CredentialStore::default();
+    Ok(Arc::new(HostedBackend::production(
         Arc::new(PreparedWorktreeReadiness),
         Arc::new(DirectProviderControl),
-        delivery,
-        authority,
+        Arc::new(InlineDirtyDelivery {
+            credentials: credentials.clone(),
+        }),
+        credentials,
     )))
 }
 
@@ -64,10 +61,9 @@ where
 }
 
 pub(super) async fn prepare_server(
-    backend: &HostedBackend,
+    _backend: &HostedBackend,
 ) -> io::Result<Arc<TransportCapability>> {
     let capability = Arc::new(load_startup_capability().await?);
-    verify_startup_readiness(backend).await?;
     Ok(capability)
 }
 
@@ -80,17 +76,6 @@ async fn load_startup_capability() -> io::Result<TransportCapability> {
                 sleep(STARTUP_RETRY_INTERVAL).await;
             }
             Err(_) => return Err(io::Error::other("hosted OECP capability unavailable")),
-        }
-    }
-}
-
-async fn verify_startup_readiness(backend: &HostedBackend) -> io::Result<()> {
-    let deadline = Instant::now() + STARTUP_DEADLINE;
-    loop {
-        match backend.verify_startup_readiness().await {
-            Ok(()) => return Ok(()),
-            Err(_) if Instant::now() < deadline => sleep(STARTUP_RETRY_INTERVAL).await,
-            Err(_) => return Err(io::Error::other("hosted startup readiness failed")),
         }
     }
 }
@@ -109,28 +94,25 @@ impl ProxyReadinessPort for DirectProviderControl {
 }
 
 pub(super) struct InlineDirtyDelivery {
-    repository: String,
-    base_revision: String,
+    pub(super) credentials: CredentialStore,
 }
 
 impl InlineDirtyDelivery {
-    pub(super) fn new(repository: &str, base_revision: &str) -> Self {
-        Self {
-            repository: repository.to_owned(),
-            base_revision: base_revision.to_owned(),
-        }
-    }
-
-    pub(super) fn validate(&self, intent: &DeliveryIntent) -> Result<String, TrustedServiceError> {
+    pub(super) fn validate(
+        &self,
+        intent: &DeliveryIntent,
+        repository: &str,
+        base_revision: &str,
+    ) -> Result<String, TrustedServiceError> {
         let result: LegacyShipResult = serde_json::from_value(intent.output.clone())
             .map_err(|_| TrustedServiceError::InvalidReceipt)?;
-        let (repository, branch, head, review) = successful_delivery_fields(result)?;
+        let (actual_repository, branch, head, review) = successful_delivery_fields(result)?;
         let branch_digest = format!("{:x}", Sha256::digest(intent.worker_cluster_id.as_bytes()));
         let expected_branch = format!("zeroshot/hosted-{}", &branch_digest[..20]);
         let review_prefix = format!("https://github.com/{repository}/pull/");
-        let valid = repository == self.repository
+        let valid = actual_repository == repository
             && branch == expected_branch
-            && valid_head_revision(&head, &self.base_revision)
+            && valid_head_revision(&head, base_revision)
             && valid_review_number(&review, &review_prefix);
         valid
             .then_some(review)
@@ -184,7 +166,14 @@ impl WorkspaceDeliveryPort for InlineDirtyDelivery {
         &self,
         intent: DeliveryIntent,
     ) -> Result<DeliveryReceipt, TrustedServiceError> {
-        let review_ref = self.validate(&intent)?;
+        let credentials = self
+            .credentials
+            .resolve()
+            .await
+            .map_err(|_| TrustedServiceError::Unavailable)?;
+        let authority = credentials.authority();
+        let review_ref =
+            self.validate(&intent, authority.repository(), authority.base_revision())?;
         Ok(DeliveryReceipt {
             review_ref,
             delivery_id: intent.delivery_id,

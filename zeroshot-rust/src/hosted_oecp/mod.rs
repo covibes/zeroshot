@@ -11,6 +11,7 @@ mod backend_run_intent;
 mod backend_runtime;
 mod backend_support;
 mod config;
+mod credentials;
 mod journal;
 #[cfg(test)]
 mod journal_tests;

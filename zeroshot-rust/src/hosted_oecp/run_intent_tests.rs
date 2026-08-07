@@ -85,7 +85,7 @@ fn v2_is_closed_credential_free_and_digest_checked_before_parsing() {
         .expect("server authority completes the job input");
     assert_eq!(request.repository, authority.repository());
     assert_eq!(request.provider, authority.provider());
-    assert_eq!(request.model_level, authority.model_level());
+    assert_eq!(request.model_level, "level1");
 }
 
 fn assert_invalid(value: Value) {

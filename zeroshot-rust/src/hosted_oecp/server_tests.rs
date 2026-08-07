@@ -182,7 +182,9 @@ fn killed_atomic_write_orphan_is_removed_before_delivery_verification() {
 #[test]
 fn inline_delivery_accepts_only_canonical_fixed_repository_receipts() {
     let base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    let delivery = InlineDirtyDelivery::new("the-open-engine/private-repository", base);
+    let delivery = InlineDirtyDelivery {
+        credentials: Default::default(),
+    };
     let valid = ship_intent(json!({
         "status": "succeeded",
         "summary": "completed",
@@ -193,7 +195,9 @@ fn inline_delivery_accepts_only_canonical_fixed_repository_receipts() {
         "pullRequestUrl": "https://github.com/the-open-engine/private-repository/pull/17"
     }));
     assert_eq!(
-        delivery.validate(&valid).expect("canonical receipt"),
+        delivery
+            .validate(&valid, "the-open-engine/private-repository", base)
+            .expect("canonical receipt"),
         "https://github.com/the-open-engine/private-repository/pull/17"
     );
 
@@ -231,7 +235,15 @@ fn inline_delivery_accepts_only_canonical_fixed_repository_receipts() {
             "repository": null, "branch": null, "headRevision": null, "pullRequestUrl": null
         }),
     ] {
-        assert!(delivery.validate(&ship_intent(output)).is_err());
+        assert!(
+            delivery
+                .validate(
+                    &ship_intent(output),
+                    "the-open-engine/private-repository",
+                    base,
+                )
+                .is_err()
+        );
     }
 }
 
