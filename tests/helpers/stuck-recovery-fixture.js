@@ -23,6 +23,7 @@ function workerConfig(maxRetries, timeout, staleDuration = 1500, role = 'impleme
           required: ['done'],
         },
         staleDuration,
+        enableLivenessCheck: true,
         timeout,
         maxRetries,
         triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
