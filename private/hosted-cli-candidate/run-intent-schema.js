@@ -3,7 +3,10 @@
 const { TextDecoder } = require('node:util');
 
 const RUN_INTENT_VERSION = 'zeroshot.run-intent/v2';
-const MAX_RUN_INTENT_REQUEST_BYTES = 10 * 1024 * 1024 + 64 * 1024;
+const MAX_RUN_INTENT_BYTES = 10 * 1024 * 1024;
+const MAX_RUNTIME_BUNDLE_BYTES = 4 * 1024 * 1024;
+const MAX_RUN_INTENT_DISPATCH_BYTES = 10 * 1024 * 1024 + 64 * 1024;
+const MAX_RUN_INTENT_REQUEST_BYTES = 15 * 1024 * 1024;
 const MAX_RUN_INTENT_RESPONSE_BYTES = 11 * 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TERMINAL_STATES = new Set(['succeeded', 'failed', 'cancelled', 'expired']);
@@ -266,8 +269,11 @@ async function readBoundedJson(response) {
 }
 
 module.exports = {
+  MAX_RUN_INTENT_BYTES,
+  MAX_RUN_INTENT_DISPATCH_BYTES,
   MAX_RUN_INTENT_REQUEST_BYTES,
   MAX_RUN_INTENT_RESPONSE_BYTES,
+  MAX_RUNTIME_BUNDLE_BYTES,
   RUN_INTENT_VERSION,
   RunIntentProtocolError,
   RunIntentRequestError,

@@ -3,8 +3,11 @@
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
 const {
+  MAX_RUN_INTENT_BYTES,
+  MAX_RUN_INTENT_DISPATCH_BYTES,
   MAX_RUN_INTENT_REQUEST_BYTES,
   MAX_RUN_INTENT_RESPONSE_BYTES,
+  MAX_RUNTIME_BUNDLE_BYTES,
   RUN_INTENT_VERSION,
   RunIntentClient,
   RunIntentHttpError,
@@ -58,6 +61,11 @@ function clientHarness(responses) {
     },
   });
   return { client, refreshes: () => refreshes, requests, tokens };
+}
+
+function exactJsonObject(bytes) {
+  const empty = JSON.stringify({ value: '' });
+  return { value: 'x'.repeat(bytes - Buffer.byteLength(empty)) };
 }
 
 async function rejectsMismatchedRunIntentResponses() {
@@ -125,12 +133,22 @@ describe('bounded authenticated RunIntent client', () => {
     assert.equal(request.init.method, 'POST');
     assert.equal(request.init.headers.authorization, 'Bearer access-before-refresh');
     assert.equal(request.init.headers['idempotency-key'], SUBMISSION_KEY);
-    assert.deepEqual(JSON.parse(request.init.body), {
-      label: 'zeroshot-cli',
-      size: 'standard',
-      intent: envelope,
-      runtime: RUNTIME_BUNDLE,
-    });
+    const wrapper = JSON.parse(request.init.body);
+    assert.deepEqual(Object.keys(wrapper), ['label', 'size', 'intent', 'runtime']);
+    assert.equal(wrapper.label, 'zeroshot-cli');
+    assert.equal(wrapper.size, 'standard');
+    for (const field of ['intent', 'runtime']) {
+      assert.match(wrapper[field], /^[A-Za-z0-9_-]+$/);
+      assert.equal(wrapper[field].includes('='), false);
+    }
+    assert.equal(
+      Buffer.from(wrapper.intent, 'base64url').toString('utf8'),
+      JSON.stringify(envelope)
+    );
+    assert.equal(
+      Buffer.from(wrapper.runtime, 'base64url').toString('utf8'),
+      JSON.stringify(RUNTIME_BUNDLE)
+    );
   });
 
   it('uses the same validated projection for explicit cancellation', async () => {
@@ -189,20 +207,84 @@ describe('bounded RunIntent authentication and bodies', () => {
     assert.equal(h.refreshes(), 0);
     assert.equal(h.requests.length, 1);
   });
+});
 
-  it('bounds complete request and response bodies', async () => {
-    const oversizedRequest = clientHarness([]);
+describe('opaque RunIntent submit bodies', () => {
+  it('serializes each opaque submit field exactly once', async () => {
+    const h = clientHarness([jsonResponse(runIntent(), 202)]);
+    let intentSerializations = 0;
+    let runtimeSerializations = 0;
+    await h.client.submit({
+      envelope: {
+        toJSON() {
+          intentSerializations += 1;
+          return { version: RUN_INTENT_VERSION, graph: GRAPH, input: { source: 'prompt' } };
+        },
+      },
+      runtime: {
+        toJSON() {
+          runtimeSerializations += 1;
+          return RUNTIME_BUNDLE;
+        },
+      },
+      submissionKey: SUBMISSION_KEY,
+    });
+    assert.equal(intentSerializations, 1);
+    assert.equal(runtimeSerializations, 1);
+  });
+
+  it('bounds decoded intent, decoded runtime, complete request, and response bodies', async () => {
+    const runtimeAtLimit = exactJsonObject(MAX_RUNTIME_BUNDLE_BYTES);
+    const intentAtCombinedLimit = exactJsonObject(
+      MAX_RUN_INTENT_DISPATCH_BYTES - MAX_RUNTIME_BUNDLE_BYTES - 4
+    );
+    const boundary = clientHarness([jsonResponse(runIntent(), 202)]);
+    await boundary.client.submit({
+      envelope: intentAtCombinedLimit,
+      runtime: runtimeAtLimit,
+      submissionKey: SUBMISSION_KEY,
+    });
+    assert.ok(Buffer.byteLength(boundary.requests[0].init.body) <= MAX_RUN_INTENT_REQUEST_BYTES);
+
+    const oversizedDispatch = clientHarness([]);
     assert.throws(
       () =>
-        oversizedRequest.client.submit({
-          envelope: { value: 'x'.repeat(MAX_RUN_INTENT_REQUEST_BYTES) },
+        oversizedDispatch.client.submit({
+          envelope: exactJsonObject(
+            MAX_RUN_INTENT_DISPATCH_BYTES - MAX_RUNTIME_BUNDLE_BYTES - 3
+          ),
+          runtime: runtimeAtLimit,
+          submissionKey: SUBMISSION_KEY,
+        }),
+      /payloads exceed the decoded dispatch size bound/
+    );
+    assert.equal(oversizedDispatch.requests.length, 0);
+
+    const oversizedIntent = clientHarness([]);
+    assert.throws(
+      () =>
+        oversizedIntent.client.submit({
+          envelope: exactJsonObject(MAX_RUN_INTENT_BYTES + 1),
           runtime: RUNTIME_BUNDLE,
           submissionKey: SUBMISSION_KEY,
           size: 'standard',
         }),
-      /request exceeds/
+      /intent exceeds the decoded size bound/
     );
-    assert.equal(oversizedRequest.requests.length, 0);
+    assert.equal(oversizedIntent.requests.length, 0);
+
+    const oversizedRuntime = clientHarness([]);
+    assert.throws(
+      () =>
+        oversizedRuntime.client.submit({
+          envelope: buildRunIntentEnvelope(GRAPH, { source: 'prompt' }),
+          runtime: exactJsonObject(MAX_RUNTIME_BUNDLE_BYTES + 1),
+          submissionKey: SUBMISSION_KEY,
+          size: 'standard',
+        }),
+      /runtime bundle exceeds the decoded size bound/
+    );
+    assert.equal(oversizedRuntime.requests.length, 0);
 
     const oversizedResponse = clientHarness([
       new globalThis.Response('x'.repeat(MAX_RUN_INTENT_RESPONSE_BYTES + 1), {
