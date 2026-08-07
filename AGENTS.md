@@ -166,7 +166,10 @@ environment are not client-representable and come only from server-owned authori
 The adapter retains one bounded in-memory intent identity/status, treats matching retries as replays
 and all second identities as conflicts, and leaves queue cancellation to capsule termination.
 Its fixed `/workspace` must be prepared without `.git`, credentials, provider configuration,
-symlinks, or host-path authority. Before worker launch, the runtime retains the sole preconnected
+symlinks, or host-path authority. Runtime credentials and configuration remain under the noexec
+in-memory home; after the exact checkout, setup tools and command wrappers use only the private
+`.git/zeroshot-runtime` executable root and the workspace is reverified clean. Before worker
+launch, the runtime retains the sole preconnected
 one-shot proxy-cleanup and delivery channels; the child inherits neither those descriptors nor a
 usable listener. The untrusted Node tree receives only the fixed loopback proxy sentinels and a
 bounded list/read/atomic-write tool loop—never shell, subprocess, or arbitrary network tools—and a

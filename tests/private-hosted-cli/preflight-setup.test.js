@@ -160,6 +160,7 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
     'TMPDIR',
     'ZEROSHOT_HOSTED_BASE_REVISION',
     'ZEROSHOT_HOSTED_EXECUTABLE',
+    'ZEROSHOT_HOSTED_EXEC_ROOT',
     'ZEROSHOT_HOSTED_MODEL',
     'ZEROSHOT_HOSTED_PROVIDER',
     'ZEROSHOT_HOSTED_REPOSITORY',

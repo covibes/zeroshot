@@ -32,6 +32,7 @@ function fixture() {
       ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
       ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
       ZEROSHOT_HOSTED_EXECUTABLE: 'codex',
+      ZEROSHOT_HOSTED_EXEC_ROOT: '/workspace/.git/zeroshot-runtime',
       ZEROSHOT_HOSTED_PROVIDER: 'future-provider',
       ZEROSHOT_HOSTED_MODEL: 'future/model',
       ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',

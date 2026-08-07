@@ -1,0 +1,194 @@
+use std::collections::BTreeMap;
+
+use super::credentials::{
+    CredentialInstallError, CredentialStore, EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE,
+    RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE, RUNTIME_ROOT,
+};
+use serde_json::json;
+
+fn bundle(provider: &str, environment: serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "githubToken": "github-canary",
+        "repository": "the-open-engine/zeroshot",
+        "baseRevision": "a".repeat(40),
+        "runtime": {
+            "provider": provider,
+            "executable": "future-cli",
+            "model": "future/model",
+            "command": "future-cli-wrapper",
+            "setupCommand": "future-cli --version",
+            "environment": environment,
+            "files": {".config/future/config.json": "{\"enabled\":true}"},
+            "settings": {"defaultProvider": provider}
+        }
+    }))
+    .unwrap()
+}
+
+fn command_environment(command: &tokio::process::Command) -> BTreeMap<String, Option<String>> {
+    command
+        .as_std()
+        .get_envs()
+        .filter_map(|(key, value)| {
+            Some((
+                key.to_str()?.to_owned(),
+                value.and_then(|item| item.to_str()).map(str::to_owned),
+            ))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn install_is_provider_neutral_bounded_and_exact_replay_idempotent() {
+    let store = CredentialStore::default();
+    let bytes = bundle(
+        "future-provider",
+        json!({
+            "FUTURE_PROVIDER_TOKEN": "provider-canary",
+            "FUTURE_PROVIDER_ENDPOINT": "https://models.example"
+        }),
+    );
+    store.install(bytes.clone()).await.unwrap();
+    store.install(bytes.clone()).await.unwrap();
+    assert!(store.is_exact_replay(&bytes).await);
+    assert_eq!(
+        store
+            .install(bundle("another-provider", json!({"OTHER_TOKEN": "secret"})))
+            .await,
+        Err(CredentialInstallError::Conflict)
+    );
+
+    let installed = store.resolve().await.unwrap();
+    let environment = installed.worker_environment();
+    assert_eq!(
+        environment.get("FUTURE_PROVIDER_TOKEN").map(String::as_str),
+        Some("provider-canary")
+    );
+    assert_eq!(installed.authority().provider(), "future-provider");
+    assert_eq!(
+        environment
+            .get("ZEROSHOT_HOSTED_EXECUTABLE")
+            .map(String::as_str),
+        Some("future-cli")
+    );
+    assert_eq!(
+        environment
+            .get("ZEROSHOT_HOSTED_EXEC_ROOT")
+            .map(String::as_str),
+        Some(EXECUTABLE_RUNTIME_ROOT)
+    );
+    assert!(
+        environment
+            .get("PATH")
+            .is_some_and(|path| path.starts_with(&format!(
+                "{EXECUTABLE_RUNTIME_ROOT}/.local/bin:{EXECUTABLE_RUNTIME_ROOT}/bin:"
+            )))
+    );
+}
+
+#[test]
+fn runtime_access_is_private_to_the_supervisor_and_worker_group() {
+    assert_eq!(RUNTIME_DIRECTORY_MODE, 0o770);
+    assert_eq!(RUNTIME_FILE_MODE, 0o660);
+    assert_eq!(RUNTIME_EXECUTABLE_MODE, 0o770);
+    assert_eq!(RUNTIME_DIRECTORY_MODE & 0o007, 0);
+    assert_eq!(RUNTIME_FILE_MODE & 0o007, 0);
+    assert_eq!(RUNTIME_EXECUTABLE_MODE & 0o007, 0);
+    assert_ne!(RUNTIME_ROOT, EXECUTABLE_RUNTIME_ROOT);
+    assert!(EXECUTABLE_RUNTIME_ROOT.starts_with("/workspace/.git/"));
+}
+
+#[tokio::test]
+async fn git_setup_and_worker_receive_only_their_owned_credentials() {
+    let store = CredentialStore::default();
+    store
+        .install(bundle(
+            "future-provider",
+            json!({"FUTURE_PROVIDER_TOKEN": "provider-canary"}),
+        ))
+        .await
+        .unwrap();
+    let installed = store.resolve().await.unwrap();
+
+    let mut git = tokio::process::Command::new("true");
+    installed.apply_git_to(&mut git);
+    let git_environment = command_environment(&git);
+    assert_eq!(
+        git_environment.get("GH_TOKEN"),
+        Some(&Some("github-canary".to_owned()))
+    );
+    assert!(!git_environment.contains_key("FUTURE_PROVIDER_TOKEN"));
+
+    let mut setup = tokio::process::Command::new("true");
+    installed.apply_setup_to(&mut setup);
+    let setup_environment = command_environment(&setup);
+    assert_eq!(
+        setup_environment.get("FUTURE_PROVIDER_TOKEN"),
+        Some(&Some("provider-canary".to_owned()))
+    );
+    assert!(!setup_environment.contains_key("GH_TOKEN"));
+
+    assert_eq!(
+        installed
+            .worker_environment()
+            .get("FUTURE_PROVIDER_TOKEN")
+            .map(String::as_str),
+        Some("provider-canary")
+    );
+}
+
+#[tokio::test]
+async fn install_rejects_reserved_environment_and_path_escape() {
+    for environment_name in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GIT_ASKPASS",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_TERMINAL_PROMPT",
+        "HOME",
+        "LANG",
+        "NODE_ENV",
+        "PATH",
+        "TMPDIR",
+        "ZEROSHOT_HOSTED_BASE_REVISION",
+        "ZEROSHOT_HOSTED_EXECUTABLE",
+        "ZEROSHOT_HOSTED_EXEC_ROOT",
+        "ZEROSHOT_HOSTED_MODEL",
+        "ZEROSHOT_HOSTED_PROVIDER",
+        "ZEROSHOT_HOSTED_REPOSITORY",
+        "ZEROSHOT_ISOLATION_PROFILE",
+        "ZEROSHOT_PROVIDER_PROFILE",
+        "ZEROSHOT_SETTINGS_FILE",
+    ] {
+        assert_eq!(
+            CredentialStore::default()
+                .install(bundle(
+                    "future-provider",
+                    json!({(environment_name): "/untrusted"}),
+                ))
+                .await,
+            Err(CredentialInstallError::Invalid)
+        );
+    }
+
+    for filename in ["../escape", "settings.json", "settings.json/nested"] {
+        let bytes = serde_json::to_vec(&json!({
+            "githubToken": "github",
+            "repository": "the-open-engine/zeroshot",
+            "baseRevision": "a".repeat(40),
+            "runtime": {
+                "provider": "future-provider",
+                "executable": "future-cli",
+                "environment": {},
+                "files": {(filename): "secret"},
+                "settings": {}
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            CredentialStore::default().install(bytes).await,
+            Err(CredentialInstallError::Invalid)
+        );
+    }
+}
