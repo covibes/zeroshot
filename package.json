@@ -44,7 +44,7 @@
     "typecheck:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.json",
     "typecheck:hosted-target": "tsc --project tsconfig.hosted-target.json",
     "typecheck:hosted-session": "tsc --project tsconfig.hosted-session.json",
-    "test:hosted": "node --test tests/private-hosted-cli/*.test.js && npm run test:hosted-target",
+    "test:hosted": "npm run build:cluster && node --test tests/private-hosted-cli/*.test.js && npm run test:hosted-target",
     "test:hosted-target": "npm run build:cluster && npm run build:target && node --test tests/hosted-target/*.test.ts",
     "test:target": "npm run build:agent-cli-provider && npm run build:target && node --test tests/target/*.test.ts",
     "typecheck:target": "tsc --project tsconfig.target.json",
