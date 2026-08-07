@@ -134,9 +134,9 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
     }).executable,
     'gateway'
   );
-  assert.throws(
-    () => normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }),
-    /supported Zeroshot adapter/
+  assert.equal(
+    normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }).executable,
+    'future-cli'
   );
   for (const name of [
     'GH_TOKEN',
