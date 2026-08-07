@@ -883,15 +883,62 @@ const VALIDATOR_GIT_POSTFIX_PARTICIPLES = new Set([
   'inspected',
   'checked',
 ]);
-const VALIDATOR_GIT_BENIGN_TERMINAL_QUALIFIERS = [
-  ['during', 'validation'],
-  ['during', 'final', 'validation'],
-  ['while', 'validating'],
-  ['when', 'reviewing'],
-  ['in', 'validator', 'prompt'],
-  ['in', 'validator', 'prompts'],
-  ['by', 'validators'],
-];
+function validatorGitWordSet(words) {
+  return new Set(words.split(' '));
+}
+
+const VALIDATOR_GIT_QUALIFIER_INTRODUCERS = validatorGitWordSet(
+  'as by during in throughout under when whenever while within'
+);
+const VALIDATOR_GIT_WEAKENING_QUALIFIER_WORDS = validatorGitWordSet(
+  'almost assigned assuming barring certain chosen designated exception exceptions except excepting excluding few friday generally hours last largely limited monday mainly many most nearly no not occasional occasionally once only outside partly particular practically primarily provided roughly saturday scheduled selected some sometimes specific sunday temporarily thursday tuesday unless until usually virtually wednesday weekday weekdays weekend weekends'
+);
+const VALIDATOR_GIT_NESTED_SCOPE_WORDS = validatorGitWordSet(
+  'after as before by during except from if on provided throughout under unless until when whenever where while within'
+);
+const VALIDATOR_GIT_SCOPE_PREPOSITIONS = validatorGitWordSet(
+  'at by during for from if in on throughout under when while within'
+);
+const VALIDATOR_GIT_CONDITIONAL_VALUES = validatorGitWordSet(
+  'acceptable allowed appropriate available convenient needed necessary optional permitted possible required useful'
+);
+const VALIDATOR_GIT_CONDITIONAL_LINKERS = validatorGitWordSet(
+  'appear appeared appears are be became become becomes being considered deemed is remain remained remains seem seemed seems was were'
+);
+const VALIDATOR_GIT_UNIVERSAL_DETERMINERS = validatorGitWordSet('all any every');
+const VALIDATOR_GIT_UNIVERSAL_INTRODUCERS = validatorGitWordSet('at for in under');
+const VALIDATOR_GIT_UNIVERSAL_TAIL_STARTS = validatorGitWordSet(
+  'at for in regardless under with without'
+);
+const VALIDATOR_GIT_UNIVERSAL_MODIFIERS = validatorGitWordSet(
+  'absolutely categorically completely entirely literally strictly truly unconditionally universally'
+);
+const VALIDATOR_GIT_UNIVERSAL_NOMINAL_MODIFIERS = validatorGitWordSet('conceivable possible');
+const VALIDATOR_GIT_UNIVERSAL_SCOPE_NOUNS = validatorGitWordSet(
+  'case cases circumstance circumstances condition conditions context contexts occasion occasions reason reasons scenario scenarios situation situations time times'
+);
+const VALIDATOR_GIT_EXCEPTION_MODIFIERS = validatorGitWordSet('a any possible single');
+const VALIDATOR_GIT_HARD_LIMITER_WORDS = validatorGitWordSet(
+  'assuming barring except excepting excluding only provided unless until'
+);
+const VALIDATOR_GIT_COMPLEMENT_INTRODUCERS = validatorGitWordSet('at for in with');
+const VALIDATOR_GIT_RELATIVE_PRONOUNS = validatorGitWordSet('that which who whom whose');
+const VALIDATOR_GIT_PREDICATE_MODIFIERS = validatorGitWordSet(
+  'less longer more quite rather really still very'
+);
+const VALIDATOR_GIT_RUNTIME_SCOPE_WORDS = validatorGitWordSet(
+  'deploy deployed deploying deployment deployments production release releases stage staged stages staging'
+);
+const VALIDATOR_GIT_CONTEXT_PROCESS_WORDS = validatorGitWordSet(
+  'analyses analysis analyst analysts analyze analyzed analyzes analyzing assess assessed assesses assessing assessment assessments assessor assessors audit audited auditing audits auditor auditors check checked checking checks evaluate evaluated evaluates evaluating evaluation evaluations evaluator evaluators examination examinations examine examined examines examining inspect inspected inspecting inspection inspections inspector inspectors review reviewed reviewer reviewers reviewing reviews test tested tester testers testing tests validate validated validates validating validation validations verification verifications verified verifier verifiers verifies verify verifying'
+);
+const VALIDATOR_GIT_DOMAIN_ANCHORS = validatorGitWordSet(
+  'change changes code codes config configs configuration configurations file files implementation implementations prompt prompts quality task tasks test tests validator validators workflow workflows'
+);
+const VALIDATOR_GIT_RESTRICTIVE_COUNT_PATTERN = /^\d+(?:st|nd|rd|th)?$/;
+const VALIDATOR_GIT_RESTRICTIVE_COUNT_WORDS = validatorGitWordSet(
+  'eight eighth eleven eleventh fifth five first four fourth nine ninth one second seven seventh single six sixth ten tenth third three twelve twelfth two'
+);
 
 function normalizeValidatorGitToken(rawToken) {
   let value = rawToken.toLowerCase().replaceAll('’', "'");
@@ -907,7 +954,7 @@ function validatorGitTokenType(rawToken) {
 
 function scanValidatorGitTokens(prompt) {
   const tokens = [];
-  const tokenPattern = /[a-z'’]+|[,.;:!?\r\n]/gi;
+  const tokenPattern = /[a-z'’]+|\d+(?:st|nd|rd|th)?|[,.;:!?\r\n]/gi;
   for (const match of prompt.matchAll(tokenPattern)) {
     const value = normalizeValidatorGitToken(match[0]);
     if (!value) continue;
@@ -1089,15 +1136,301 @@ function skipCommas(atoms, index) {
   return cursor;
 }
 
-function isBenignTerminalQualifier(atoms, index, end) {
-  return VALIDATOR_GIT_BENIGN_TERMINAL_QUALIFIERS.some(
-    (qualifier) =>
-      end - index === qualifier.length &&
-      qualifier.every(
-        (word, offset) =>
-          atoms[index + offset]?.type === 'word' && atoms[index + offset].value === word
-      )
+function terminalQualifierWords(atoms, index, end) {
+  const words = [];
+  for (let cursor = index; cursor < end; cursor += 1) {
+    if (atoms[cursor].type === 'comma') continue;
+    if (atoms[cursor].type !== 'word') return null;
+    words.push(atoms[cursor].value);
+  }
+  return words;
+}
+
+function isStrengtheningException(words, index) {
+  let cursor = index - 1;
+  while (
+    VALIDATOR_GIT_EXCEPTION_MODIFIERS.has(words[cursor]) ||
+    VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])
+  ) {
+    cursor -= 1;
+  }
+  return words[cursor] === 'without';
+}
+
+function isStrengtheningScopeIntroducer(words, index) {
+  return words[index - 1] === 'even';
+}
+
+function isValidatorContextWord(word) {
+  return VALIDATOR_GIT_CONTEXT_PROCESS_WORDS.has(word) || VALIDATOR_GIT_DOMAIN_ANCHORS.has(word);
+}
+
+function isBenignByComplement(words, index) {
+  let cursor = index + 1;
+  if (words[cursor] === 'a' || words[cursor] === 'an' || words[cursor] === 'the') cursor += 1;
+  return isValidatorContextWord(words[cursor]);
+}
+
+function qualifierWordIsHardLimiter(words, index) {
+  const value = words[index];
+  const previousWord = words[index - 1];
+  return (
+    VALIDATOR_GIT_HARD_LIMITER_WORDS.has(value) ||
+    (previousWord === 'other' && value === 'than') ||
+    (previousWord === 'by' && value === 'default') ||
+    (previousWord === 'for' && value === 'now')
   );
+}
+
+function hasHardQualifierLimiter(words, index) {
+  return words
+    .slice(index)
+    .some((_word, offset) => qualifierWordIsHardLimiter(words, index + offset));
+}
+
+function isEvenStrengtheningTail(words, index) {
+  return (
+    words[index] === 'even' &&
+    VALIDATOR_GIT_SCOPE_PREPOSITIONS.has(words[index + 1]) &&
+    index + 2 < words.length &&
+    !hasHardQualifierLimiter(words, index + 2)
+  );
+}
+
+function exceptionQualifierEnd(words) {
+  let cursor = 1;
+  if (words[0] === 'with') {
+    while (VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])) cursor += 1;
+    if (words[cursor] !== 'no') return -1;
+    cursor += 1;
+  } else if (words[0] !== 'without') {
+    return -1;
+  }
+
+  while (
+    VALIDATOR_GIT_EXCEPTION_MODIFIERS.has(words[cursor]) ||
+    VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])
+  ) {
+    cursor += 1;
+  }
+  return words[cursor] === 'exception' || words[cursor] === 'exceptions' ? cursor + 1 : -1;
+}
+
+function isExceptionQualifierWords(words) {
+  const tailStart = exceptionQualifierEnd(words);
+  if (tailStart < 0) return false;
+  return tailStart === words.length || isEvenStrengtheningTail(words, tailStart);
+}
+
+function isRegardlessQualifierWords(words) {
+  if (words.length < 2 || hasHardQualifierLimiter(words, 1)) return false;
+  for (let cursor = 1; cursor < words.length; cursor += 1) {
+    if (words[cursor] === 'even') return isEvenStrengtheningTail(words, cursor);
+    if (VALIDATOR_GIT_SCOPE_PREPOSITIONS.has(words[cursor])) return false;
+  }
+  return true;
+}
+
+function isUniversalScopeWord(word) {
+  return VALIDATOR_GIT_UNIVERSAL_SCOPE_NOUNS.has(word) || isValidatorContextWord(word);
+}
+
+function universalScopeEnd(words, determinerIndex) {
+  let cursor = determinerIndex + 1;
+  while (VALIDATOR_GIT_UNIVERSAL_NOMINAL_MODIFIERS.has(words[cursor])) cursor += 1;
+  if (!isUniversalScopeWord(words[cursor])) return -1;
+  cursor += 1;
+  while (isValidatorContextWord(words[cursor])) cursor += 1;
+  return cursor;
+}
+
+function isUniversalStrengtheningTail(words, index) {
+  if (index === words.length) return true;
+  if (words[index] === 'whatsoever') return index + 1 === words.length;
+  if (words[index] === 'including') {
+    return index + 1 < words.length && !hasHardQualifierLimiter(words, index + 1);
+  }
+  if (words[index] === 'even') return isEvenStrengtheningTail(words, index);
+  if (words[index] === 'regardless') return isRegardlessQualifierWords(words.slice(index));
+  if (words[index] === 'with' || words[index] === 'without') {
+    return isExceptionQualifierWords(words.slice(index));
+  }
+  return false;
+}
+
+function isDeterminerUniversalQualifierWords(words) {
+  const determinerIndex = universalDeterminerIndex(words, 0);
+  if (
+    !VALIDATOR_GIT_UNIVERSAL_INTRODUCERS.has(words[0]) ||
+    !VALIDATOR_GIT_UNIVERSAL_DETERMINERS.has(words[determinerIndex])
+  ) {
+    return false;
+  }
+  const scopeEnd = universalScopeEnd(words, determinerIndex);
+  return scopeEnd >= 0 && isUniversalStrengtheningTail(words, scopeEnd);
+}
+
+function isUniversalQualifierWords(words) {
+  if (words[0] === 'regardless') return isRegardlessQualifierWords(words);
+  if (words[0] === 'with' || words[0] === 'without') return isExceptionQualifierWords(words);
+  return isDeterminerUniversalQualifierWords(words);
+}
+
+function universalDeterminerIndex(words, index) {
+  let cursor = index + 1;
+  while (VALIDATOR_GIT_UNIVERSAL_MODIFIERS.has(words[cursor])) cursor += 1;
+  return cursor;
+}
+
+function startsUniversalQualifier(words, index) {
+  const value = words[index];
+  if (value === 'regardless' || value === 'without') return true;
+
+  const determinerIndex = universalDeterminerIndex(words, index);
+  if (value === 'with') return words[determinerIndex] === 'no';
+  return (
+    VALIDATOR_GIT_UNIVERSAL_INTRODUCERS.has(value) &&
+    VALIDATOR_GIT_UNIVERSAL_DETERMINERS.has(words[determinerIndex])
+  );
+}
+
+function isUniversalTerminalQualifier(atoms, index, end) {
+  const words = terminalQualifierWords(atoms, index, end);
+  return words ? isUniversalQualifierWords(words) : false;
+}
+
+function conditionalQualifierValueWeakens(words, index, hasContextProcess) {
+  if (!VALIDATOR_GIT_CONDITIONAL_VALUES.has(words[index])) return false;
+
+  let linkerIndex = index - 1;
+  while (
+    linkerIndex > 0 &&
+    (words[linkerIndex].endsWith('ly') || VALIDATOR_GIT_PREDICATE_MODIFIERS.has(words[linkerIndex]))
+  ) {
+    linkerIndex -= 1;
+  }
+  if (linkerIndex === 0) return true;
+  if (!VALIDATOR_GIT_CONDITIONAL_LINKERS.has(words[linkerIndex])) return false;
+
+  let subjectIndex = linkerIndex - 1;
+  while (
+    subjectIndex > 0 &&
+    (words[subjectIndex].endsWith('ly') ||
+      VALIDATOR_GIT_PREDICATE_MODIFIERS.has(words[subjectIndex]))
+  ) {
+    subjectIndex -= 1;
+  }
+  if (!VALIDATOR_GIT_RELATIVE_PRONOUNS.has(words[subjectIndex])) return true;
+  return !(hasContextProcess && VALIDATOR_GIT_DOMAIN_ANCHORS.has(words[subjectIndex - 1]));
+}
+
+function isRestrictiveQualifierCount(words, index) {
+  const value = words[index];
+  if (
+    (VALIDATOR_GIT_RESTRICTIVE_COUNT_PATTERN.test(value) ||
+      VALIDATOR_GIT_RESTRICTIVE_COUNT_WORDS.has(value)) &&
+    isUniversalScopeWord(words[index + 1])
+  ) {
+    return true;
+  }
+  return value === 'couple' && words[index + 1] === 'of' && isUniversalScopeWord(words[index + 2]);
+}
+
+function qualifierWordWeakens(words, index, hasContextProcess) {
+  const value = words[index];
+  const previousWord = words[index - 1];
+  const strengtheningException =
+    (value === 'exception' || value === 'exceptions') && isStrengtheningException(words, index);
+  return (
+    (VALIDATOR_GIT_WEAKENING_QUALIFIER_WORDS.has(value) && !strengtheningException) ||
+    isRestrictiveQualifierCount(words, index) ||
+    (VALIDATOR_GIT_NESTED_SCOPE_WORDS.has(value) &&
+      !isStrengtheningScopeIntroducer(words, index) &&
+      !(value === 'by' && isBenignByComplement(words, index))) ||
+    conditionalQualifierValueWeakens(words, index, hasContextProcess) ||
+    (previousWord === 'other' && value === 'than') ||
+    (previousWord === 'every' && value === 'other') ||
+    (previousWord === 'in' && value === 'case') ||
+    (previousWord === 'by' && value === 'default') ||
+    (previousWord === 'for' && value === 'now')
+  );
+}
+
+function isStrengtheningRuntimeScope(words, index) {
+  return words[index - 2] === 'even' && VALIDATOR_GIT_SCOPE_PREPOSITIONS.has(words[index - 1]);
+}
+
+function hasInvalidUniversalOrdinaryStart(words) {
+  return (
+    VALIDATOR_GIT_UNIVERSAL_INTRODUCERS.has(words[0]) &&
+    words.slice(1).some((word) => VALIDATOR_GIT_UNIVERSAL_DETERMINERS.has(word))
+  );
+}
+
+function ordinaryQualifierWordResult(
+  words,
+  index,
+  hasContextProcess,
+  hasDomainAnchor,
+  hasRuntimeScope
+) {
+  const hasValidatorContext = hasContextProcess || hasDomainAnchor;
+  if (
+    VALIDATOR_GIT_UNIVERSAL_TAIL_STARTS.has(words[index]) &&
+    startsUniversalQualifier(words, index)
+  ) {
+    return hasValidatorContext &&
+      (!hasRuntimeScope || hasContextProcess) &&
+      isUniversalQualifierWords(words.slice(index))
+      ? 'safe-tail'
+      : 'unsafe';
+  }
+  if (qualifierWordWeakens(words, index, hasContextProcess)) return 'unsafe';
+  if (
+    VALIDATOR_GIT_COMPLEMENT_INTRODUCERS.has(words[index]) &&
+    !isStrengtheningScopeIntroducer(words, index) &&
+    !hasDomainAnchor
+  ) {
+    return 'unsafe';
+  }
+  if (!VALIDATOR_GIT_RUNTIME_SCOPE_WORDS.has(words[index])) return 'continue';
+  if (isStrengtheningRuntimeScope(words, index)) return 'continue';
+  return hasContextProcess ? 'unsafe' : 'runtime';
+}
+
+function isBenignOrdinaryQualifierWords(words) {
+  if (
+    words.length < 2 ||
+    !VALIDATOR_GIT_QUALIFIER_INTRODUCERS.has(words[0]) ||
+    hasInvalidUniversalOrdinaryStart(words)
+  ) {
+    return false;
+  }
+  let hasContextProcess = false;
+  let hasDomainAnchor = false;
+  let hasRuntimeScope = false;
+  for (let cursor = 1; cursor < words.length; cursor += 1) {
+    const result = ordinaryQualifierWordResult(
+      words,
+      cursor,
+      hasContextProcess,
+      hasDomainAnchor,
+      hasRuntimeScope
+    );
+    if (result === 'safe-tail') return true;
+    if (result === 'unsafe') return false;
+    hasRuntimeScope ||= result === 'runtime';
+    hasContextProcess ||= VALIDATOR_GIT_CONTEXT_PROCESS_WORDS.has(words[cursor]);
+    hasDomainAnchor ||= VALIDATOR_GIT_DOMAIN_ANCHORS.has(words[cursor]);
+  }
+
+  return (hasContextProcess || hasDomainAnchor) && (!hasRuntimeScope || hasContextProcess);
+}
+
+function isBenignTerminalQualifier(atoms, index, end) {
+  if (isUniversalTerminalQualifier(atoms, index, end)) return true;
+  const words = terminalQualifierWords(atoms, index, end);
+  return words ? isBenignOrdinaryQualifierWords(words) : false;
 }
 
 function commandsCoveredByPrefix(atoms, commandList, end) {

@@ -775,6 +775,7 @@ describe('validateAgents - validator Git usage', function () {
   it('evaluates mixed clauses independently', function () {
     const mixedPrompts = [
       'do not use git diff, but run git show',
+      'Do not use git diff or git status while reviewing changes, but run git show.',
       'Do not use git diff, and git show must be inspected.',
       'Do not use git diff or git show should be inspected.',
       'Do not use git diff, or git show may be used.',
@@ -854,13 +855,142 @@ describe('validateAgents - validator Git review regressions', function () {
     }
   });
 
+  it('keeps weakening continuations fail-closed', function () {
+    const unsafePrompts = [
+      ['Do not use git diff or git status while not reviewing.', ['git status']],
+      [{ system: 'Do not use git diff or git status as needed.' }, ['git status']],
+      ['Do not use git diff or git status when absolutely necessary.', ['git status']],
+      ['Do not use git diff or git status during deployment.', ['git status']],
+      ['Do not use git diff or git status during validation when needed.', ['git status']],
+      ['Do not use git diff or git status during validation while needed.', ['git status']],
+      ['Do not use git diff or git status during validation on Mondays.', ['git status']],
+      ['Do not use git diff or git status when review is required.', ['git status']],
+      ['Do not use git diff or git status when reviews are required.', ['git status']],
+      [
+        'Do not use git diff or git status when review becomes absolutely necessary.',
+        ['git status'],
+      ],
+      ['Do not use git diff or git status when review remains necessary.', ['git status']],
+      ['Do not use git diff or git status when review seems absolutely necessary.', ['git status']],
+      ['Do not use git diff or git status when review is still required.', ['git status']],
+      ['Do not use git diff or git status when review is no longer required.', ['git status']],
+      [
+        'Do not use git diff or git status during validation other than emergencies.',
+        ['git status'],
+      ],
+      ['Do not use git diff or git status during validation in case of emergency.', ['git status']],
+      ['Do not use git diff or git status during validation in production.', ['git status']],
+      ['Do not use git diff or git status while reviewing within office hours.', ['git status']],
+      ['Do not use git diff or git status during validation by Alice.', ['git status']],
+      ['Do not use git diff or git status when convenient during validation.', ['git status']],
+      ['Do not use git diff or git status during one review.', ['git status']],
+      ['Do not use git diff or git status during 1 review.', ['git status']],
+      ['Do not use git diff or git status during every other review.', ['git status']],
+      ['Do not use git diff or git status during selected reviews.', ['git status']],
+      ['Do not use git diff or git status during Monday reviews.', ['git status']],
+      ['Do not use git diff or git status during assigned tasks.', ['git status']],
+      ['Do not use git diff or git status during a checkout.', ['git status']],
+      ['Do not use git diff or git status during an auditorium event.', ['git status']],
+      ['Do not use git diff or git status under any circumstances if needed.', ['git status']],
+      [
+        'Do not use git diff or git status under any circumstances deemed necessary.',
+        ['git status'],
+      ],
+      ['Do not use git diff or git status under virtually all circumstances.', ['git status']],
+      ['Do not use git diff or git status at nearly any time.', ['git status']],
+      ['Do not use git diff or git status with generally no exceptions.', ['git status']],
+      ['Do not use git diff or git status with usually no exceptions.', ['git status']],
+      ['Do not use git diff or git status under any appropriate circumstances.', ['git status']],
+      ['Do not use git diff or git status for any permitted reason.', ['git status']],
+      ['Do not use git diff or git status in every optional review.', ['git status']],
+      ['Do not use git diff or git status during maintenance without exception.', ['git status']],
+      ['Do not use git diff or git status during office hours without exception.', ['git status']],
+      ['Do not use git diff or git status in staging regardless of circumstances.', ['git status']],
+      ['Do not use git diff or git status for no reason.', ['git status']],
+      ['git diff and git status are forbidden during review only.', ['git diff', 'git status']],
+      [
+        'git diff and git status are forbidden during review by default.',
+        ['git diff', 'git status'],
+      ],
+      [
+        'git diff and git status are forbidden without exception when necessary.',
+        ['git diff', 'git status'],
+      ],
+      [
+        'git diff and git status are forbidden under nearly all circumstances.',
+        ['git diff', 'git status'],
+      ],
+      [
+        'git diff and git status are forbidden during validation in production.',
+        ['git diff', 'git status'],
+      ],
+      [
+        'git diff and git status are forbidden during selected reviews.',
+        ['git diff', 'git status'],
+      ],
+      [
+        'git diff and git status are forbidden under any appropriate circumstances.',
+        ['git diff', 'git status'],
+      ],
+    ];
+
+    for (const [prompt, expectedCommands] of unsafePrompts) {
+      const commands = validatePrompt(prompt).map(
+        (error) => error.match(/'(git (?:diff|status|log|show))'/)?.[1]
+      );
+      assert.deepStrictEqual(commands, expectedCommands, `Expected unsafe qualifier: ${prompt}`);
+    }
+  });
+});
+
+describe('validateAgents - validator Git terminal qualifiers', function () {
   it('allows prohibited command lists with ordinary trailing qualifiers', function () {
     const safePrompts = [
       'Do not use git diff or git status during validation.',
       'Do not use git diff or git status when reviewing.',
-      'Never run git log and git show while validating.',
+      'Never run git log and git show while reviewing changes.',
+      'Do not use git diff or git status while assessing the implementation.',
+      'Do not use git diff or git status while checking the implementation.',
+      'Do not use git diff or git status while analyzing changes.',
+      'Do not use git diff or git status while examining the implementation.',
+      'Do not use git diff or git status when scrutinizing changes.',
+      'Do not use git diff or git status during a comprehensive code inspection.',
+      'Do not use git diff or git status during a code walkthrough.',
+      'Do not use git diff or git status during quality control.',
+      'Do not use git diff or git status during regression testing.',
+      'Do not use git diff or git status throughout the independent audit.',
+      'Do not use git diff or git status when changes are being evaluated.',
+      'Do not use git diff or git status as part of quality assurance.',
+      'Do not use git diff or git status in the default validator prompt.',
+      'Do not use git diff or git status when reviewing required changes.',
+      'Do not use git diff or git status when reviewing other changes.',
+      'Do not use git diff or git status when reviewing files used by tests.',
+      'Do not use git diff or git status when reviewing whether tests can run.',
+      'Do not use git diff or git status when reviewing changes that are required by the task.',
+      'Do not use git diff or git status when reviewing changes that still are required by task.',
+      'Do not use git diff or git status when reviewing files in the workspace.',
+      'Do not use git diff or git status when reviewing code for correctness.',
+      'Do not use git diff or git status while testing code with fixtures.',
+      'Do not use git diff or git status under all circumstances.',
+      'Do not use git diff or git status under absolutely all circumstances.',
+      'Do not use git diff or git status at any time.',
+      'Do not use git diff or git status at literally any time.',
+      'Do not use git diff or git status for any reason.',
+      'Do not use git diff or git status in any situation.',
+      'Do not use git diff or git status without any possible exceptions.',
+      'Do not use git diff or git status with no exceptions.',
+      'Do not use git diff or git status regardless of circumstances.',
+      'Do not use git diff or git status regardless of emergencies.',
+      'Do not use git diff or git status under all circumstances including emergencies.',
+      'Do not use git diff or git status under all circumstances without exception.',
+      'Do not use git diff or git status during validation without exception.',
+      'Do not use git diff or git status during validation even in emergencies.',
+      'Do not use git diff or git status during validation even in production.',
+      'Do not use git diff or git status during production code review.',
+      'Do not use git diff or git status during release validation.',
+      'Do not use git diff or git status while validators are running tests.',
       { system: 'Do not inspect git diff or git status in validator prompts.' },
-      { system: 'Do not inspect git diff or git status when reviewing.' },
+      { system: 'Do not inspect git diff or git status within the verification process.' },
     ];
 
     for (const prompt of safePrompts) {
@@ -876,7 +1006,17 @@ describe('validateAgents - validator Git review regressions', function () {
     const safePrompts = [
       'git diff and git status are forbidden during validation.',
       'git diff and git status are forbidden when reviewing.',
+      'git diff and git status are forbidden throughout code review.',
+      'git diff and git status are forbidden while evaluating changes.',
+      'git diff and git status are forbidden when scrutinizing changes.',
+      'git diff and git status are forbidden during a code walkthrough.',
+      'git diff and git status are forbidden when reviewing files in the workspace.',
+      'git diff and git status are forbidden while testing code with fixtures.',
+      'git diff and git status are forbidden under any circumstances.',
+      'git diff and git status are forbidden without exception.',
+      'git diff and git status are forbidden during validation without exception.',
       'Both commands git log and git show must never be used by validators.',
+      { system: 'Both commands git log and git show must never be used during code inspection.' },
     ];
 
     for (const prompt of safePrompts) {
@@ -886,6 +1026,75 @@ describe('validateAgents - validator Git review regressions', function () {
         `Expected qualified postfix prohibition to be allowed: ${prompt}`
       );
     }
+  });
+});
+
+describe('validateAgents - validator Git structural qualifier boundaries', function () {
+  it('keeps universal and nested scopes distinct in prefix and postfix prohibitions', function () {
+    const safeQualifiers = [
+      'during validation without a single exception',
+      'regardless of whether needed',
+      'under all circumstances with no exceptions',
+      'under all circumstances even when required',
+      'without exception even if necessary',
+      'while reviewing issue 876',
+      'while validating Node 22 compatibility',
+    ];
+    const unsafeQualifiers = [
+      'under no circumstances',
+      'at no time',
+      'in no situation',
+      'during validation in emergencies',
+      'during review at night',
+      'during validation with permission',
+      'during validation in the production environment',
+      'during deployment tasks without exception',
+      'during staging configuration under all circumstances',
+      'during two reviews',
+      'during the fifth review',
+      'during a couple of reviews',
+      'under any special circumstances',
+      'when a review that is required occurs',
+      'under all circumstances in production',
+      'with no exceptions in production',
+      'without exception in production',
+      'regardless of circumstances at night',
+      'in all production environments',
+    ];
+
+    for (const qualifier of safeQualifiers) {
+      assert.deepStrictEqual(
+        validatePrompt(`Do not use git diff or git status ${qualifier}.`),
+        [],
+        `Expected safe prefix qualifier: ${qualifier}`
+      );
+      assert.deepStrictEqual(
+        validatePrompt(`git diff and git status are forbidden ${qualifier}.`),
+        [],
+        `Expected safe postfix qualifier: ${qualifier}`
+      );
+    }
+
+    for (const qualifier of unsafeQualifiers) {
+      assert.ok(
+        validatePrompt(`Do not use git diff or git status ${qualifier}.`).length > 0,
+        `Expected unsafe prefix qualifier: ${qualifier}`
+      );
+      assert.ok(
+        validatePrompt(`git diff and git status are forbidden ${qualifier}.`).length > 0,
+        `Expected unsafe postfix qualifier: ${qualifier}`
+      );
+    }
+  });
+
+  it('handles repeated universal qualifier words without recursive parsing', function () {
+    const qualifier = 'under all circumstances '.repeat(6_400);
+
+    assert.strictEqual(validatePrompt(`Do not use git diff or git status ${qualifier}.`).length, 1);
+    assert.strictEqual(
+      validatePrompt(`git diff and git status are forbidden ${qualifier}.`).length,
+      2
+    );
   });
 });
 
