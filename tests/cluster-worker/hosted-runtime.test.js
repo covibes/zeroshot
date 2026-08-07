@@ -13,6 +13,28 @@ const {
 } = require('../../zeroshot-rust/hosted-node/runtime-capability');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const HOSTED_HOME = '/tmp/zeroshot-oecp';
+
+function hostedLauncherEnvironment(overrides = {}) {
+  return {
+    HOME: HOSTED_HOME,
+    LANG: 'C.UTF-8',
+    NODE_ENV: 'production',
+    PATH: process.env.PATH,
+    ZEROSHOT_HOSTED_CREDENTIALS_JSON: JSON.stringify({
+      GH_TOKEN: 'git-canary',
+      OPENAI_API_KEY: 'provider-canary',
+    }),
+    ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
+    ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
+    ZEROSHOT_HOSTED_PROVIDER: 'codex',
+    ZEROSHOT_HOSTED_MODEL_LEVEL: 'level2',
+    OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+    ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
+    ZEROSHOT_PROVIDER_PROFILE: 'provider.hosted-direct@1',
+    ...overrides,
+  };
+}
 
 function sendCapability(address, capability) {
   return new Promise((resolve, reject) => {
@@ -214,29 +236,41 @@ describe('private hosted worker boundaries', () => {
     assert.strictEqual(result.status, 0, result.stderr);
   });
 
+  it('pins worker and provider temporary files to the writable hosted home', () => {
+    const codexConfig = path.join(HOSTED_HOME, '.codex', 'config.toml');
+    const probe = [
+      "const { EventEmitter } = require('node:events');",
+      "const childProcess = require('node:child_process');",
+      'childProcess.spawn = (_command, _arguments, options) => {',
+      '  process.stdout.write(JSON.stringify({ HOME: options.env.HOME, TMPDIR: options.env.TMPDIR }));',
+      '  return new EventEmitter();',
+      '};',
+      "require('./zeroshot-rust/hosted-node/worker-launcher');",
+    ].join('\n');
+    fs.rmSync(codexConfig, { force: true });
+    try {
+      const result = spawnSync(process.execPath, ['-e', probe], {
+        cwd: ROOT,
+        env: hostedLauncherEnvironment({ TMPDIR: '/tmp/unwritable-parent' }),
+        encoding: 'utf8',
+      });
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.deepStrictEqual(JSON.parse(result.stdout), {
+        HOME: HOSTED_HOME,
+        TMPDIR: HOSTED_HOME,
+      });
+    } finally {
+      fs.rmSync(codexConfig, { force: true });
+    }
+  });
+
   it('refuses to launch outside the fixed prepared workspace', () => {
-    const codexConfig = '/tmp/zeroshot-oecp/.codex/config.toml';
+    const codexConfig = path.join(HOSTED_HOME, '.codex', 'config.toml');
     fs.rmSync(codexConfig, { force: true });
     try {
       const result = spawnSync(process.execPath, ['zeroshot-rust/hosted-node/worker-launcher.js'], {
         cwd: ROOT,
-        env: {
-          HOME: '/tmp/zeroshot-oecp',
-          LANG: 'C.UTF-8',
-          NODE_ENV: 'production',
-          PATH: process.env.PATH,
-          ZEROSHOT_HOSTED_CREDENTIALS_JSON: JSON.stringify({
-            GH_TOKEN: 'git-canary',
-            OPENAI_API_KEY: 'provider-canary',
-          }),
-          ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
-          ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
-          ZEROSHOT_HOSTED_PROVIDER: 'codex',
-          ZEROSHOT_HOSTED_MODEL_LEVEL: 'level2',
-          OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
-          ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
-          ZEROSHOT_PROVIDER_PROFILE: 'provider.hosted-direct@1',
-        },
+        env: hostedLauncherEnvironment(),
         encoding: 'utf8',
       });
       assert.notStrictEqual(result.status, 0);

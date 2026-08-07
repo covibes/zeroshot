@@ -38,6 +38,7 @@ const childEnvironment = {
   LANG: 'C.UTF-8',
   NODE_ENV: 'production',
   PATH: '/opt/zeroshot/node_modules/.bin:/usr/local/bin:/usr/bin:/bin',
+  TMPDIR: HOME,
   ZEROSHOT_HOSTED_REPOSITORY: configuration.repository,
   ZEROSHOT_HOSTED_BASE_REVISION: configuration.baseRevision,
   ZEROSHOT_HOSTED_PROVIDER: configuration.provider,
