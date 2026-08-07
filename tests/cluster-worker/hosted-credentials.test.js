@@ -13,6 +13,7 @@ const SELECTORS = Object.freeze({
   ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
   ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
   ZEROSHOT_HOSTED_MODEL_LEVEL: 'level2',
+  OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
 });
 
 function environment(provider, credentials) {
@@ -50,6 +51,7 @@ describe('hosted worker credential boundary', () => {
         })
       );
       assert.equal(config.provider, provider);
+      assert.equal(config.providerEndpoint, 'https://openrouter.ai/api/v1');
       assert.deepEqual(config.workerEnvironment, {
         GH_TOKEN: 'git-canary',
         ...expectedCredentials,
@@ -137,6 +139,9 @@ describe('hosted worker credential boundary', () => {
       { ZEROSHOT_HOSTED_BASE_REVISION: 'abc123' },
       { ZEROSHOT_HOSTED_PROVIDER: 'openai' },
       { ZEROSHOT_HOSTED_MODEL_LEVEL: 'level4' },
+      { OPENAI_BASE_URL: 'http://openrouter.ai/api/v1' },
+      { OPENAI_BASE_URL: 'https://token@openrouter.ai/api/v1' },
+      { OPENAI_BASE_URL: 'https://openrouter.ai/api/v1?model=other' },
     ]) {
       expectCode('HOSTED_CONFIGURATION_INVALID', () =>
         loadHostedWorkerConfiguration({

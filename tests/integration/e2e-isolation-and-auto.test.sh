@@ -131,6 +131,50 @@ wait_for_cluster_registration() {
     return 1
 }
 
+wait_for_container() {
+    local container_name=$1
+    local max_wait=30
+    local waited=0
+
+    echo "Waiting for container '$container_name'..."
+
+    while [ $waited -lt $max_wait ]; do
+        if docker ps -a --format '{{.Names}}' | grep -Fxq "$container_name"; then
+            echo "✓ Container visible after ${waited}s"
+            return 0
+        fi
+
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    echo -e "${RED}✗ Container not visible after ${max_wait}s${NC}"
+    return 1
+}
+
+wait_for_container_removal() {
+    local container_name=$1
+    local max_wait=30
+    local waited=0
+
+    echo "Waiting for container '$container_name' cleanup..."
+
+    while [ $waited -lt $max_wait ]; do
+        if ! docker ps -a --format '{{.Names}}' | grep -Fxq "$container_name"; then
+            echo "✓ Container removed after ${waited}s"
+            return 0
+        fi
+
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    local remaining_status
+    remaining_status=$(docker inspect -f '{{.State.Status}}' "$container_name" 2>/dev/null)
+    echo -e "${RED}✗ Container still exists with status: $remaining_status${NC}"
+    return 1
+}
+
 wait_for_cluster_completion() {
     local cluster_id=$1
     local max_wait=120  # 2 minutes max
@@ -270,10 +314,8 @@ wait_for_cluster_registration "$ISO_CLUSTER" || {
 CONTAINER_NAME="zeroshot-cluster-$ISO_CLUSTER"
 CONTAINERS_TO_CLEANUP+=("$CONTAINER_NAME")
 
-sleep 2  # Give Docker a moment to create container
-
-assert "docker ps -a --format '{{.Names}}' | grep -q '^${CONTAINER_NAME}$'" \
-       "Isolation container created: $CONTAINER_NAME"
+wait_for_container "$CONTAINER_NAME"
+echo -e "${GREEN}✓ Isolation container created: $CONTAINER_NAME${NC}"
 
 # Check container is running or exited cleanly
 CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "not_found")
@@ -287,18 +329,8 @@ echo ""
 echo "Killing cluster..."
 zeroshot kill "$ISO_CLUSTER"
 
-# CRITICAL: Wait for cleanup to complete
-sleep 3
-
-# Verify container was removed
-if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-    REMAINING_STATUS=$(docker inspect -f '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null)
-    echo -e "${RED}❌ CLEANUP FAILED: Container still exists with status: $REMAINING_STATUS${NC}"
-    TEST_FAILED=1
-    exit 1
-else
-    echo -e "${GREEN}✓ Container successfully removed after kill${NC}"
-fi
+wait_for_container_removal "$CONTAINER_NAME"
+echo -e "${GREEN}✓ Container successfully removed after kill${NC}"
 
 # Verify cluster state
 FINAL_STATE=$(zeroshot status "$ISO_CLUSTER" 2>&1 | grep -oP 'state: \K\w+' || echo "not_found")

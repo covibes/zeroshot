@@ -19,6 +19,7 @@ repository = "https://github.com/the-open-engine/zeroshot"
 async-trait = "0.1.89"
 fs2 = "0.4.3"
 getrandom = "0.3.4"
+httparse = "1.10.1"
 libc = "0.2.177"
 parking_lot = "0.12.5"
 rust_decimal = { version = "1.39.0", features = ["serde"] }
@@ -31,6 +32,7 @@ tokio = { version = "1.48.0", features = ["fs", "io-std", "io-util", "macros", "
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio-stream = "0.1"
 tokio-tungstenite = "0.26"
+url = "2.5.8"
 rustls = { version = "=0.23.42", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "=0.8.4"
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }

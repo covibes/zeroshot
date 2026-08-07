@@ -35,7 +35,6 @@ function adapter() {
 }
 
 describe('descriptor-driven TargetAdapter', () => {
-
   it('captures every discovered method, route, query, header, and body exactly', async () => {
     http.enqueue(201, capsule('cap/opaque'));
     http.enqueue(200, { capsules: [capsule('cap/opaque')], next_cursor: 'cursor/next ?' });
@@ -60,7 +59,7 @@ describe('descriptor-driven TargetAdapter', () => {
 
     assert.equal(
       http.requests[0]?.url,
-      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules'
+      'https://hosted.openengine.example/api/v1/orgs/org%2Fopaque%20value/capsules'
     );
     assert.equal(http.requests[0]?.init.method, 'POST');
     assert.deepEqual(bodyOf(http.requests[0]!), { label: 'worker', size: 'small' });
@@ -71,20 +70,20 @@ describe('descriptor-driven TargetAdapter', () => {
     );
     assert.equal(
       http.requests[1]?.url,
-      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules?cursor=cursor%2Fraw%20%3F&limit=37'
+      'https://hosted.openengine.example/api/v1/orgs/org%2Fopaque%20value/capsules?cursor=cursor%2Fraw%20%3F&limit=37'
     );
     assert.equal(http.requests[1]?.init.redirect, 'manual');
     assert.equal(
       http.requests[2]?.url,
-      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/capsules/cap%2Fopaque'
+      'https://hosted.openengine.example/api/v1/orgs/org%2Fopaque%20value/capsules/cap%2Fopaque'
     );
     assert.equal(
       http.requests[3]?.url,
-      'https://hosted.openengine.example/orgs/org%2Fopaque%20value/limits'
+      'https://hosted.openengine.example/api/v1/orgs/org%2Fopaque%20value/limits'
     );
     assert.equal(
       http.requests[4]?.url,
-      'https://hosted.openengine.example/capsules/cap%2Fopaque/access'
+      'https://hosted.openengine.example/api/v1/capsules/cap%2Fopaque/access'
     );
     assert.deepEqual(bodyOf(http.requests[4]!), { protocol: 'openengine.cluster/v1' });
     assert.equal(http.requests[5]?.init.method, 'DELETE');
@@ -93,7 +92,6 @@ describe('descriptor-driven TargetAdapter', () => {
     assert.equal(access.accessToken, 'capsule-grant-canary');
     assert.equal(terminating.state, 'terminating');
   });
-
 });
 
 describe('descriptor-driven TargetAdapter validation', () => {
@@ -167,7 +165,6 @@ describe('descriptor-driven TargetAdapter validation', () => {
       return true;
     });
   });
-
 });
 
 describe('descriptor-driven TargetAdapter wire errors', () => {
@@ -194,12 +191,16 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
       retryable: true,
     });
     await assert.rejects(adapter().limits(), /omitted Retry-After/);
-    http.enqueue(503, {
-      code: 'temporarily_unavailable',
-      message: 'try later',
-      capsule_id: null,
-      retryable: true,
-    }, { 'Retry-After': '1.5' });
+    http.enqueue(
+      503,
+      {
+        code: 'temporarily_unavailable',
+        message: 'try later',
+        capsule_id: null,
+        retryable: true,
+      },
+      { 'Retry-After': '1.5' }
+    );
     await assert.rejects(adapter().limits(), /Retry-After header is malformed/);
   });
 
@@ -212,10 +213,12 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
   });
 
   it('classifies redirects as one non-retryable protocol failure', async () => {
-    http.responses.push(new Response('{}', {
-      status: 302,
-      headers: { Location: 'https://attacker.example/capsules' },
-    }));
+    http.responses.push(
+      new Response('{}', {
+        status: 302,
+        headers: { Location: 'https://attacker.example/capsules' },
+      })
+    );
     await assert.rejects(adapter().inspect('cap-1'), /redirects are forbidden/);
     assert.equal(http.requests.length, 1);
   });
@@ -233,21 +236,25 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
     assert.equal(tokenProvider.calls.length, 0);
     assert.equal(http.requests.length, 0);
   });
-
 });
 
 describe('descriptor-driven TargetAdapter bounds and transport', () => {
   it('cancels a chunked capsule response at the cumulative byte bound', async () => {
     let cancelled = false;
-    http.responses.push(new Response(new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new Uint8Array(MAX_RESPONSE_BYTES));
-        controller.enqueue(new Uint8Array([1]));
-      },
-      cancel() {
-        cancelled = true;
-      },
-    }), { status: 200 }));
+    http.responses.push(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(MAX_RESPONSE_BYTES));
+            controller.enqueue(new Uint8Array([1]));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { status: 200 }
+      )
+    );
     await assert.rejects(adapter().inspect('cap-1'), /size limit/);
     assert.equal(cancelled, true);
   });
@@ -278,7 +285,7 @@ describe('descriptor-driven TargetAdapter bounds and transport', () => {
     });
     const access = await target.access('cap-1');
     assert.equal(access.websocketUrl, 'ws://127.0.0.1:8080/v1/capsules/cap-1/oecp');
-    assert.equal(http.requests[0]?.url, 'http://127.0.0.1:8080/capsules/cap-1/access');
+    assert.equal(http.requests[0]?.url, 'http://127.0.0.1:8080/api/v1/capsules/cap-1/access');
   });
 
   it('exposes absence of credential install as capability metadata without guessing a route', () => {

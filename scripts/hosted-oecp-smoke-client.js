@@ -104,7 +104,8 @@ class RpcClient {
     this.waiters = [];
     this.requestTimeoutMs = validateTimeout(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
     this.timers = options.timers ?? { setTimeout, clearTimeout };
-    this.transportCapability = validateCapability(options.capability);
+    this.transportCapability =
+      options.capability === undefined ? undefined : validateCapability(options.capability);
     this.decoder = new StringDecoder('utf8');
     this.inbound = '';
     this.terminalError = null;
@@ -252,6 +253,7 @@ async function connectClient(endpoint, options = {}) {
   });
   return client;
 }
+
 async function nextEvent(client) {
   for (;;) {
     const notification = await client.nextNotification();

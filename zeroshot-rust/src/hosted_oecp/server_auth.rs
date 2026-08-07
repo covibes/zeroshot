@@ -8,6 +8,7 @@ use tokio::time::Duration;
 
 pub const OECP_CAPABILITY_FILE_ENV: &str = "ZEROSHOT_OECP_CAPABILITY_FILE";
 pub(super) const AUTHENTICATION_DEADLINE: Duration = Duration::from_secs(5);
+pub(super) const RUNTIME_CAPABILITY_HEADER: &str = "x-zero-runtime-capability";
 const MAX_OECP_FRAME_BYTES: usize = 1_048_576;
 const MIN_CAPABILITY_BYTES: usize = 32;
 const MAX_CAPABILITY_BYTES: usize = 256;
@@ -34,7 +35,7 @@ impl TransportCapability {
         })
     }
 
-    fn matches(&self, candidate: &[u8]) -> bool {
+    pub(super) fn matches(&self, candidate: &[u8]) -> bool {
         let mut candidate_bytes = [0; MAX_CAPABILITY_BYTES];
         if candidate.len() <= MAX_CAPABILITY_BYTES {
             candidate_bytes[..candidate.len()].copy_from_slice(candidate);
@@ -44,6 +45,11 @@ impl TransportCapability {
             difference |= usize::from(expected ^ presented);
         }
         difference == 0
+    }
+
+    pub(super) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..self.len])
+            .expect("transport capabilities are validated ASCII")
     }
 }
 

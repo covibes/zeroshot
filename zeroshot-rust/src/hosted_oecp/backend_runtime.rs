@@ -207,7 +207,7 @@ impl HostedBackend {
         })
     }
 
-    async fn reserve_apply(
+    pub(super) async fn reserve_apply(
         &self,
         context: &ConnectionContext,
         params: &ApplyParams,
@@ -244,7 +244,7 @@ impl HostedBackend {
         }
     }
 
-    async fn begin_reserved_run(
+    pub(super) async fn begin_reserved_run(
         &self,
         params: ApplyParams,
         cancellation: CancellationSignal,

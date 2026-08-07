@@ -162,7 +162,7 @@ test('Claude fails closed before spawn when required settings or MCP flags are u
 });
 
 test('runtime Codex command facade delegates to helper', () => {
-  assertRuntimeCommandParity('codex', 'test context', {
+  const command = assertRuntimeCommandParity('codex', 'test context', {
     outputFormat: 'json',
     jsonSchema: { type: 'object', properties: { foo: { type: 'string' } } },
     cwd: '/tmp/project',
@@ -177,6 +177,10 @@ test('runtime Codex command facade delegates to helper', () => {
       supportsSkipGitRepoCheck: true,
     },
   });
+  assert.ok(command.args.includes('--sandbox'));
+  assert.ok(command.args.includes('workspace-write'));
+  assert.ok(command.args.includes('approval_policy="never"'));
+  assert.equal(command.args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
 });
 
 test('runtime Gemini command facade delegates to helper', () => {
@@ -777,7 +781,17 @@ test('feature probing is deterministic from injected help text', () => {
   assert.equal(
     helper
       .getProviderAdapter('codex')
-      .detectCliFeatures('codex exec --json --output-schema --config -m -C').supportsAutoApprove,
+      .detectCliFeatures('codex exec --json --output-schema --config --sandbox -m -C')
+      .supportsAutoApprove,
+    true
+  );
+  assert.equal(
+    helper.getProviderAdapter('codex').detectCliFeatures('codex exec --config').supportsAutoApprove,
+    false
+  );
+  assert.equal(
+    helper.getProviderAdapter('codex').detectCliFeatures('codex exec --sandbox')
+      .supportsAutoApprove,
     false
   );
   assert.equal(

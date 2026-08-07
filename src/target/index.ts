@@ -53,6 +53,7 @@ export {
   expandRoute,
   TargetDiscoveryError,
   type CredentialInstallDescriptor,
+  type RunIntentDescriptor,
   type RouteTemplate,
   type TargetDiscoveryDescriptor,
   type TargetSessionEndpoints,

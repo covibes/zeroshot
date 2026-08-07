@@ -8,6 +8,7 @@ import {
   record,
   type CredentialInstallDescriptor,
 } from './discovery-validation.js';
+import type { RunIntentDescriptor } from './run-intent-discovery.js';
 import {
   parseAdapter,
   parseCapsule,
@@ -20,6 +21,7 @@ import {
   validateOAuthMetadata,
 } from './discovery-sections.js';
 export type { CredentialInstallDescriptor } from './discovery-validation.js';
+export type { RunIntentDescriptor } from './run-intent-discovery.js';
 export { TargetDiscoveryError } from './discovery-errors.js';
 export { expandRoute, type RouteTemplate } from './route-template.js';
 
@@ -84,6 +86,7 @@ export interface TargetDiscoveryDescriptor {
   };
   readonly capabilityFlags: readonly string[];
   readonly credentialInstall: CredentialInstallDescriptor | null;
+  readonly runIntent: RunIntentDescriptor | null;
   readonly additional: Readonly<Record<string, unknown>>;
 }
 
@@ -100,16 +103,98 @@ export interface TargetSessionEndpoints {
   readonly descriptor: TargetDiscoveryDescriptor;
 }
 
+const FLAGS = [
+  'capsule_allocate',
+  'capsule_read',
+  'capsule_terminate',
+  'capsule_access',
+  'connections_onboarding',
+] as const;
+const SIZE_ERROR = 'response exceeds the size limit';
+const JSON_ERROR = 'response is not valid UTF-8 JSON';
 
-
-async function readBoundedJson(response: Response): Promise<unknown> {
-  return readBoundedResponseJson(response, MAX_DISCOVERY_BYTES, (kind) =>
-    new TargetDiscoveryError(
-      kind === 'size' ? 'response exceeds the size limit' : 'response is not valid UTF-8 JSON',
-    ),
+function parseDiscoveryDocument(
+  discovery: Record<string, unknown>,
+  origin: string
+): TargetDiscoveryDescriptor {
+  exact(discovery.kind, 'openengine.hosted-target/v1', 'kind');
+  const adapter = parseAdapter(discovery);
+  const endpoint = parseEndpoint(discovery, origin);
+  const capsule = parseCapsule(discovery, origin);
+  const oauth = parseOAuth(discovery, origin);
+  exact(discovery.organization_binding, 'device_approval', 'organization_binding');
+  const capabilityFlags = exactStringSet(discovery.capability_flags, 'capability_flags', FLAGS);
+  const sizes = parseSizes(discovery);
+  const session = parseSession(discovery);
+  const transport = parseTransport(discovery);
+  const extensions = parseExtensions(discovery, origin);
+  const additional = Object.freeze(
+    Object.fromEntries(
+      Object.entries(discovery).filter(
+        ([key]) => !ROOT_FIELDS.includes(key as (typeof ROOT_FIELDS)[number])
+      )
+    )
   );
+  return Object.freeze({
+    origin,
+    adapter,
+    endpoint: endpoint.url,
+    endpointCapabilities: endpoint.capabilities,
+    pagination: endpoint.pagination,
+    sizes,
+    oauth,
+    session,
+    capsule,
+    transport,
+    capabilityFlags,
+    credentialInstall: extensions.credentialInstall,
+    runIntent: extensions.runIntent,
+    additional,
+  });
 }
 
+export async function discoverTarget(
+  targetUrl: string,
+  http: HttpTransport
+): Promise<TargetDiscoveryDescriptor> {
+  const target = new URL(targetUrl);
+  const origin = target.origin;
+  const discovery = await fetchDocument(http, new URL(DISCOVERY_PATH, target).href);
+  const descriptor = parseDiscoveryDocument(discovery, origin);
+  const metadata = await fetchDocument(http, descriptor.oauth.metadataUrl);
+  validateOAuthMetadata(metadata, origin, [
+    descriptor.oauth.deviceAuthorizationEndpoint,
+    descriptor.oauth.tokenEndpoint,
+    descriptor.oauth.revocationEndpoint,
+  ]);
+  return descriptor;
+}
+
+export async function discoverTargetSessionEndpoints(
+  targetUrl: string,
+  http: HttpTransport
+): Promise<TargetSessionEndpoints> {
+  const descriptor = await discoverTarget(targetUrl, http);
+  return Object.freeze({
+    deviceAuthorizationEndpoint: descriptor.oauth.deviceAuthorizationEndpoint,
+    tokenEndpoint: descriptor.oauth.tokenEndpoint,
+    revocationEndpoint: descriptor.oauth.revocationEndpoint,
+    clientId: descriptor.oauth.clientId,
+    capsuleApiBaseUrl: descriptor.capsule.baseUrl.replace(/\/$/, ''),
+    deviceGrantType: descriptor.oauth.deviceGrantType,
+    audience: descriptor.oauth.audience,
+    sessionEndpoint: new URL(descriptor.session.routeTemplate.template, descriptor.origin).href,
+    descriptor,
+  });
+}
+
+function boundedResponseError(kind: 'size' | 'json'): Error {
+  return new TargetDiscoveryError(kind === 'size' ? SIZE_ERROR : JSON_ERROR);
+}
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  return readBoundedResponseJson(response, MAX_DISCOVERY_BYTES, boundedResponseError);
+}
 
 async function fetchDocument(http: HttpTransport, url: string): Promise<Record<string, unknown>> {
   const response = await http.fetch(url, {
@@ -126,72 +211,4 @@ async function fetchDocument(http: HttpTransport, url: string): Promise<Record<s
     throw new TargetDiscoveryError(`request failed with status ${response.status}`);
   }
   return record(await readBoundedJson(response), 'response');
-}
-
-
-export async function discoverTarget(targetUrl: string, http: HttpTransport): Promise<TargetDiscoveryDescriptor> {
-  const target = new URL(targetUrl);
-  const origin = target.origin;
-  const discovery = await fetchDocument(http, new URL(DISCOVERY_PATH, target).href);
-  exact(discovery.kind, 'openengine.hosted-target/v1', 'kind');
-
-  const adapter = parseAdapter(discovery);
-  const endpoint = parseEndpoint(discovery, origin);
-  const capsule = parseCapsule(discovery, origin);
-  const oauth = parseOAuth(discovery, origin);
-  exact(discovery.organization_binding, 'device_approval', 'organization_binding');
-  const capabilityFlags = exactStringSet(discovery.capability_flags, 'capability_flags', [
-    'capsule_allocate',
-    'capsule_read',
-    'capsule_terminate',
-    'capsule_access',
-    'connections_onboarding',
-  ]);
-  const sizes = parseSizes(discovery);
-  const session = parseSession(discovery);
-  const transport = parseTransport(discovery);
-  const credentialInstall = parseExtensions(discovery, origin);
-
-  const metadata = await fetchDocument(http, oauth.metadataUrl);
-  validateOAuthMetadata(metadata, origin, [
-    oauth.deviceAuthorizationEndpoint,
-    oauth.tokenEndpoint,
-    oauth.revocationEndpoint,
-  ]);
-
-  const additional = Object.freeze(
-    Object.fromEntries(Object.entries(discovery).filter(([key]) =>
-      !ROOT_FIELDS.includes(key as (typeof ROOT_FIELDS)[number]),
-    )),
-  );
-  return Object.freeze({
-    origin,
-    adapter,
-    endpoint: endpoint.url,
-    endpointCapabilities: endpoint.capabilities,
-    pagination: endpoint.pagination,
-    sizes,
-    oauth,
-    session,
-    capsule,
-    transport,
-    capabilityFlags,
-    credentialInstall,
-    additional,
-  });
-}
-
-export async function discoverTargetSessionEndpoints(targetUrl: string, http: HttpTransport): Promise<TargetSessionEndpoints> {
-  const descriptor = await discoverTarget(targetUrl, http);
-  return Object.freeze({
-    deviceAuthorizationEndpoint: descriptor.oauth.deviceAuthorizationEndpoint,
-    tokenEndpoint: descriptor.oauth.tokenEndpoint,
-    revocationEndpoint: descriptor.oauth.revocationEndpoint,
-    clientId: descriptor.oauth.clientId,
-    capsuleApiBaseUrl: descriptor.capsule.baseUrl.replace(/\/$/, ''),
-    deviceGrantType: descriptor.oauth.deviceGrantType,
-    audience: descriptor.oauth.audience,
-    sessionEndpoint: new URL(descriptor.session.routeTemplate.template, descriptor.origin).href,
-    descriptor,
-  });
 }

@@ -55,11 +55,12 @@ function detectCliFeatures(
   const help = helpText ?? '';
   const unknown = !help;
   const supportsConfigOverride = supports(help, /--config\b/);
+  const supportsSandbox = !unknown && /--sandbox\b/.test(help);
   return {
     provider: 'codex',
     supportsJson: supports(help, /--json\b/),
     supportsOutputSchema: supports(help, /--output-schema\b/),
-    supportsAutoApprove: supports(help, /--dangerously-bypass-approvals-and-sandbox\b/),
+    supportsAutoApprove: !unknown && supportsConfigOverride && supportsSandbox,
     supportsCwd: supports(help, /\s-C\b/) || supports(help, /--cwd\b/),
     supportsConfigOverride,
     supportsModel: supports(help, /\s-m\b/) || supports(help, /--model\b/),
@@ -67,7 +68,7 @@ function detectCliFeatures(
     supportsResume: supports(help, /\bresume\b/),
     supportsWebSearch:
       !unknown && supportsConfigOverride && isCliVersionAtLeast(versionText, '0.146.0'),
-    supportsSandbox: !unknown && /--sandbox\b/.test(help),
+    supportsSandbox,
     supportsEphemeral: !unknown && /--ephemeral\b/.test(help),
     supportsIgnoreUserConfig: !unknown && /--ignore-user-config\b/.test(help),
     supportsIgnoreRules: !unknown && /--ignore-rules\b/.test(help),
@@ -113,7 +114,9 @@ function addCwdArgs(args: string[], options: BuildProviderCommandOptions): void 
 function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions): void {
   const features = optionFeatures(options);
   if (options.autoApprove && features.supportsAutoApprove) {
-    args.push('--dangerously-bypass-approvals-and-sandbox');
+    const sandboxMode =
+      options.executionContext === 'docker' ? 'danger-full-access' : 'workspace-write';
+    args.push('--sandbox', sandboxMode, '--config', 'approval_policy="never"');
   }
 }
 
@@ -166,7 +169,7 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
       warning(
         'codex',
         'codex-auto-approve',
-        'Codex CLI does not support auto-approve; continuing without bypass flag.'
+        'Codex CLI does not support unattended workspace-write mode; continuing without it.'
       )
     );
   }

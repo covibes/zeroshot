@@ -64,7 +64,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Legacy worker facade                  | `lib/cluster-worker/`                                                                                                            |
 | Legacy worker executable              | `bin/zeroshot-cluster-worker.js`                                                                                                 |
 | Private hosted capsule runtime        | `zeroshot-rust/src/hosted_oecp/`, `zeroshot-rust/hosted-node/`                                                                   |
-| Hosted capsule image/manifest         | `docker/zeroshot-oecp/`, `scripts/hosted-oecp-image.js`                                                                          |
+| Hosted capsule image                  | `docker/zeroshot-oecp/`, `scripts/hosted-oecp-image.js`                                                                          |
 | Docker mounts/env                     | `lib/docker-config.js`                                                                                                           |
 | Container lifecycle                   | `src/isolation-manager.js`                                                                                                       |
 | Settings                              | `lib/settings.js`                                                                                                                |
@@ -156,12 +156,22 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 
 The unpublished hosted OECP runtime is a one-run compatibility capsule, not native-v2. It advertises
 only `openengine.graph.single-worker/v1` and runs exactly `legacy.zeroshot.ship@1` with one attempt.
+Authenticated raw NDJSON uses task-local `8085`; the capsule agent uses `/oecp` WebSocket on
+loopback `8083`, and bounded internal HTTP `PUT`/`GET /internal/run-intents/{id}` uses loopback
+`8084`. All three transports require the same per-task runtime capability.
+All three listeners share the same `HostedBackend`. The HTTP adapter accepts only digest-verified
+`zeroshot.run-intent/v2` envelopes containing `GraphSpec` plus closed source/issue/prompt/artifact
+job input. Repository, revision, provider, model, endpoint, runtime profiles, credentials, and
+environment are not client-representable and come only from server-owned authority/configuration.
+The adapter retains one bounded in-memory intent identity/status, treats matching retries as replays
+and all second identities as conflicts, and leaves queue cancellation to capsule termination.
 Its fixed `/workspace` must be prepared without `.git`, credentials, provider configuration,
 symlinks, or host-path authority. Before worker launch, the runtime retains the sole preconnected
 one-shot proxy-cleanup and delivery channels; the child inherits neither those descriptors nor a
 usable listener. The untrusted Node tree receives only the fixed loopback proxy sentinels and a
 bounded list/read/atomic-write tool loop—never shell, subprocess, or arbitrary network tools—and a
-text-only response with no real workspace mutation cannot succeed. The complete tree is reaped
+validated server-owned HTTPS model endpoint; no graph input may select or override that endpoint.
+A text-only response with no real workspace mutation cannot succeed. The complete tree is reaped
 after proxy admission/credential cleanup and before the trusted `WorkspaceDeliveryPort` runs.
 Delivery is idempotent and secret-free; `Finished` follows cleanup and delivery, and any defect
 replaces successful output with a closed failure. Keep the runtime,
@@ -200,6 +210,9 @@ The hosted-client vertical is descriptor-driven: `discoverTarget` validates the 
 sole owner of each target's locked rotating refresh family and audience access cache, and
 `createTargetAdapter` is the sole capsule-adapter constructor. Hosted-session accepts that adapter
 and a capsule ID, so every initial/replacement OECP connection obtains fresh access. The immutable
+private RunIntent client requires the validated same-origin `zeroshot.run-intent/v2` discovery
+extension; its queued input carries job data only and never repository, provider, model, endpoint,
+credential, or runtime authority. The immutable
 Zero Cloud #55 corpus lives at `tests/fixtures/zero-cloud-44`, pinned to commit
 `e8e746d` and digest
 `sha256:6636d50cd60067241a50d1ee027d86fc1738aa933f086d8bb2c496c5be31b85e`; never hand-author a
@@ -767,6 +780,11 @@ Agent A -> publish() -> SQLite Ledger -> LogicEngine -> trigger match -> Agent B
 | Hook         | Post-task action (publish message, execute command)         |
 
 Restart persistence: orchestrator publishes `AGENT_RESTART_ATTEMPT` to the ledger so restart limits survive orchestrator restarts.
+
+Detached Docker startup records its closed, deterministic container/workspace/config ownership in
+the provisional cluster before setup begins. Setup-cluster kill reaps the daemon first, verifies
+that receipt against the cluster ID, then removes only the derived container name and direct-child
+temporary directories. Never persist or honor caller-selected cleanup paths for this boundary.
 
 Provider task ownership: task watchers persist an owned termination boundary with each active task.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with

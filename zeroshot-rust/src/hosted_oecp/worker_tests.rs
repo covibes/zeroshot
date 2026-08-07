@@ -20,28 +20,23 @@ fn request() -> LegacyShipRequest {
     .expect("legacy request")
 }
 
-#[test]
-fn untrusted_failure_payload_is_reduced_to_a_closed_outcome() {
+#[tokio::test]
+async fn failed_worker_receipt_is_redacted_and_reaps_process_tree() {
     let canary = "OPENROUTER_FAILURE_CANARY";
-    let outcome = normalize_terminal_receipt(
-        json!({
-            "state": "failed",
-            "clusterId": "untrusted-cluster",
-            "finishedAt": 1,
-            "outcome": {
-                "status": "verified",
-                "output": { "secret": canary },
-                "artifacts": []
-            }
-        }),
-        None,
-    );
+    let fixture = NodeWorkerFixture::new("worker-failure");
+    let (_cancel, observer) = watch::channel(false);
+    let mut execution = fixture.spawn(&request(), observer, "failed-result").await;
+    let outcome = execution
+        .wait_terminal()
+        .await
+        .expect("worker terminal failure response");
     assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Crash));
     assert!(
         !serde_json::to_string(&outcome)
             .expect("closed outcome serializes")
             .contains(canary)
     );
+    fixture.assert_stopped(execution).await;
 }
 
 #[test]

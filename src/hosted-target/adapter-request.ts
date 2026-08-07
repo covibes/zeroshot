@@ -19,9 +19,14 @@ export type ExecuteArguments<T> = [
 ];
 
 export function requestUrl(path: string, descriptor: TargetDiscoveryDescriptor): URL {
-  const url = new globalThis.URL(path, descriptor.capsule.baseUrl);
-  if (url.origin !== descriptor.origin || url.hash ||
-      `${url.pathname}${url.search}` !== path) {
+  const baseUrl = new globalThis.URL(descriptor.capsule.baseUrl);
+  const requestPath = `${baseUrl.pathname.replace(/\/$/, '')}${path}`;
+  const url = new globalThis.URL(requestPath, baseUrl.origin);
+  if (
+    url.origin !== descriptor.origin ||
+    url.hash ||
+    `${url.pathname}${url.search}` !== requestPath
+  ) {
     throw new TargetProtocolError('Capsule route changed during URL canonicalization');
   }
   return url;
