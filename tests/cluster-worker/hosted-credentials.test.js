@@ -31,6 +31,7 @@ function fixture() {
       TMPDIR: '/tmp/zeroshot-oecp/runtime/tmp',
       ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
       ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
+      ZEROSHOT_HOSTED_EXECUTABLE: 'codex',
       ZEROSHOT_HOSTED_PROVIDER: 'future-provider',
       ZEROSHOT_HOSTED_MODEL: 'future/model',
       ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
@@ -47,6 +48,7 @@ describe('hosted worker runtime boundary', () => {
     const { directory, environment } = fixture();
     try {
       const config = loadInstalledHostedWorkerConfiguration(environment);
+      assert.equal(config.executable, 'codex');
       assert.equal(config.provider, 'future-provider');
       assert.equal(config.model, 'future/model');
       assert.deepEqual(config.runtimeEnvironment, {
@@ -71,6 +73,7 @@ describe('hosted worker runtime boundary', () => {
       for (const patch of [
         { ZEROSHOT_HOSTED_REPOSITORY: 'owner/repository/extra' },
         { ZEROSHOT_HOSTED_BASE_REVISION: 'not-a-commit' },
+        { ZEROSHOT_HOSTED_EXECUTABLE: 'command with spaces' },
         { ZEROSHOT_HOSTED_PROVIDER: 'provider with spaces' },
         { ZEROSHOT_HOSTED_MODEL: '' },
         { ZEROSHOT_SETTINGS_FILE: '/missing/settings.json' },

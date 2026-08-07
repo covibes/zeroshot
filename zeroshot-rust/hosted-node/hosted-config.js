@@ -4,6 +4,7 @@ const fs = require('node:fs');
 
 const REPOSITORY_ENV = 'ZEROSHOT_HOSTED_REPOSITORY';
 const BASE_REVISION_ENV = 'ZEROSHOT_HOSTED_BASE_REVISION';
+const EXECUTABLE_ENV = 'ZEROSHOT_HOSTED_EXECUTABLE';
 const PROVIDER_ENV = 'ZEROSHOT_HOSTED_PROVIDER';
 const MODEL_ENV = 'ZEROSHOT_HOSTED_MODEL';
 const SETTINGS_ENV = 'ZEROSHOT_SETTINGS_FILE';
@@ -24,6 +25,7 @@ const CONTROL_ENVIRONMENT = new Set([
   'PATH',
   'TMPDIR',
   BASE_REVISION_ENV,
+  EXECUTABLE_ENV,
   MODEL_ENV,
   PROVIDER_ENV,
   REPOSITORY_ENV,
@@ -102,11 +104,13 @@ function loadInstalledHostedWorkerConfiguration(environment = process.env) {
   const repository = required(environment, REPOSITORY_ENV, REPOSITORY);
   if (!validRepositoryAuthority(repository)) throw invalidConfiguration();
   const baseRevision = required(environment, BASE_REVISION_ENV, REVISION);
+  const executable = required(environment, EXECUTABLE_ENV, IDENTIFIER);
   const provider = required(environment, PROVIDER_ENV, IDENTIFIER);
   const model = optionalModel(environment);
   return Object.freeze({
     repository,
     baseRevision,
+    executable,
     provider,
     ...(model === undefined ? {} : { model }),
     runtimeEnvironment: selectedRuntimeEnvironment(environment),

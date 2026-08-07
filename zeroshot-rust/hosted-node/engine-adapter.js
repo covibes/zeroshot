@@ -70,7 +70,7 @@ function providerInvocation(config, request) {
   return Object.freeze({
     schemaVersion: 1,
     command: 'invoke',
-    provider: config.provider,
+    provider: config.executable,
     context: providerPrompt(request),
     cwd: WORKSPACE,
     options: Object.freeze({

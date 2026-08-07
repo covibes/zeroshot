@@ -11,7 +11,8 @@ const { deterministicBranch } = require('../../zeroshot-rust/hosted-node/workspa
 const CONFIG = Object.freeze({
   repository: 'the-open-engine/zeroshot',
   baseRevision: 'a'.repeat(40),
-  provider: 'future-provider',
+  executable: 'codex',
+  provider: 'azure-openai',
   model: 'future/model',
   runtimeEnvironment: Object.freeze({
     FUTURE_PROVIDER_TOKEN: 'provider-canary',
@@ -35,7 +36,7 @@ function request() {
 describe('hosted direct provider adapter', () => {
   it('constructs one provider-neutral invocation from the resolved runtime', () => {
     const invocation = providerInvocation(CONFIG, request());
-    assert.equal(invocation.provider, 'future-provider');
+    assert.equal(invocation.provider, 'codex');
     assert.deepEqual(invocation.options, {
       authEnv: {
         FUTURE_PROVIDER_TOKEN: 'provider-canary',
@@ -53,6 +54,11 @@ describe('hosted direct provider adapter', () => {
       false
     );
     assert.equal(Object.hasOwn(invocation.options.authEnv, 'OPENAI_API_KEY'), false);
+  });
+
+  it('keeps built-in provider and executable selection unchanged', () => {
+    const config = { ...CONFIG, executable: 'claude', provider: 'claude' };
+    assert.equal(providerInvocation(config, { ...request(), provider: 'claude' }).provider, 'claude');
   });
 
   it('withholds the Git credential from the provider process and restores it for delivery', async () => {

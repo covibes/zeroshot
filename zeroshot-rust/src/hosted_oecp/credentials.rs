@@ -17,6 +17,7 @@ use super::ports::WORKSPACE_ROOT;
 pub(super) const MAX_CREDENTIAL_BYTES: usize = 4 * 1024 * 1024;
 const RUNTIME_ROOT: &str = "/tmp/zeroshot-oecp/runtime";
 const SETTINGS_FILE: &str = "/tmp/zeroshot-oecp/runtime/settings.json";
+const SETTINGS_RUNTIME_PATH: &str = "settings.json";
 const WORKER_UID: u32 = 10_002;
 const WORKER_GID: u32 = 10_002;
 
@@ -169,6 +170,10 @@ impl CredentialBundle {
             (
                 "ZEROSHOT_HOSTED_BASE_REVISION".to_owned(),
                 self.base_revision.clone(),
+            ),
+            (
+                "ZEROSHOT_HOSTED_EXECUTABLE".to_owned(),
+                self.runtime.executable.clone(),
             ),
             (
                 "ZEROSHOT_HOSTED_PROVIDER".to_owned(),
@@ -489,6 +494,7 @@ fn reserved_environment_name(value: &str) -> bool {
             | "PATH"
             | "TMPDIR"
             | "ZEROSHOT_HOSTED_BASE_REVISION"
+            | "ZEROSHOT_HOSTED_EXECUTABLE"
             | "ZEROSHOT_HOSTED_MODEL"
             | "ZEROSHOT_HOSTED_PROVIDER"
             | "ZEROSHOT_HOSTED_REPOSITORY"
@@ -503,6 +509,10 @@ fn valid_runtime_path(value: &str) -> bool {
         && value.len() <= 512
         && !value.starts_with('/')
         && !value.contains('\\')
+        && value != SETTINGS_RUNTIME_PATH
+        && !value
+            .strip_prefix(SETTINGS_RUNTIME_PATH)
+            .is_some_and(|suffix| suffix.starts_with('/'))
         && value
             .split('/')
             .all(|segment| !segment.is_empty() && !matches!(segment, "." | ".."))
@@ -608,6 +618,12 @@ mod tests {
             Some("provider-canary")
         );
         assert_eq!(installed.authority().provider(), "future-provider");
+        assert_eq!(
+            environment
+                .get("ZEROSHOT_HOSTED_EXECUTABLE")
+                .map(String::as_str),
+            Some("future-cli")
+        );
     }
 
     #[tokio::test]
@@ -651,9 +667,40 @@ mod tests {
 
     #[tokio::test]
     async fn install_rejects_reserved_environment_and_path_escape() {
-        for bytes in [
-            bundle("future-provider", json!({"HOME": "/untrusted"})),
-            serde_json::to_vec(&json!({
+        for environment_name in [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GIT_ASKPASS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_TERMINAL_PROMPT",
+            "HOME",
+            "LANG",
+            "NODE_ENV",
+            "PATH",
+            "TMPDIR",
+            "ZEROSHOT_HOSTED_BASE_REVISION",
+            "ZEROSHOT_HOSTED_EXECUTABLE",
+            "ZEROSHOT_HOSTED_MODEL",
+            "ZEROSHOT_HOSTED_PROVIDER",
+            "ZEROSHOT_HOSTED_REPOSITORY",
+            "ZEROSHOT_ISOLATION_PROFILE",
+            "ZEROSHOT_PROVIDER_PROFILE",
+            "ZEROSHOT_SETTINGS_FILE",
+        ] {
+            assert_eq!(
+                CredentialStore::default()
+                    .install(bundle(
+                        "future-provider",
+                        json!({(environment_name): "/untrusted"}),
+                    ))
+                    .await,
+                Err(CredentialInstallError::Invalid)
+            );
+        }
+
+        for filename in ["../escape", "settings.json", "settings.json/nested"] {
+            let bytes = serde_json::to_vec(&json!({
                 "githubToken": "github",
                 "repository": "the-open-engine/zeroshot",
                 "baseRevision": "a".repeat(40),
@@ -661,12 +708,11 @@ mod tests {
                     "provider": "future-provider",
                     "executable": "future-cli",
                     "environment": {},
-                    "files": {"../escape": "secret"},
+                    "files": {(filename): "secret"},
                     "settings": {}
                 }
             }))
-            .unwrap(),
-        ] {
+            .unwrap();
             assert_eq!(
                 CredentialStore::default().install(bytes).await,
                 Err(CredentialInstallError::Invalid)

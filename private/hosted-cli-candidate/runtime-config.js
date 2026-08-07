@@ -6,16 +6,26 @@ const path = require('node:path');
 
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+const SETTINGS_RUNTIME_PATH = 'settings.json';
 const RESERVED_ENVIRONMENT = new Set([
   'GH_TOKEN',
   'GITHUB_TOKEN',
   'GIT_ASKPASS',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_NOSYSTEM',
   'GIT_TERMINAL_PROMPT',
   'HOME',
+  'LANG',
+  'NODE_ENV',
   'PATH',
   'TMPDIR',
+  'ZEROSHOT_HOSTED_BASE_REVISION',
+  'ZEROSHOT_HOSTED_EXECUTABLE',
   'ZEROSHOT_HOSTED_MODEL',
   'ZEROSHOT_HOSTED_PROVIDER',
+  'ZEROSHOT_HOSTED_REPOSITORY',
+  'ZEROSHOT_ISOLATION_PROFILE',
+  'ZEROSHOT_PROVIDER_PROFILE',
   'ZEROSHOT_SETTINGS_FILE',
 ]);
 const MAX_CONFIG_BYTES = 1024 * 1024;
@@ -77,6 +87,8 @@ function validRuntimePath(value) {
   return (
     normalized === value &&
     !path.posix.isAbsolute(value) &&
+    value !== SETTINGS_RUNTIME_PATH &&
+    !value.startsWith(`${SETTINGS_RUNTIME_PATH}/`) &&
     !value.split('/').some((segment) => !segment || segment === '.' || segment === '..')
   );
 }

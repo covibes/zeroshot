@@ -133,22 +133,38 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
     }).executable,
     'azure-openai'
   );
-  assert.throws(
-    () =>
-      normalizeRuntimeConfig({
-        provider: 'custom',
-        environment: { HOME: '/escape' },
-      }),
-    /reserved/
-  );
-  assert.throws(
-    () =>
-      normalizeRuntimeConfig({
-        provider: 'custom',
-        files: { '../escape': 'secret' },
-      }),
-    /runtime file path/
-  );
+  for (const name of [
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'GIT_ASKPASS',
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_NOSYSTEM',
+    'GIT_TERMINAL_PROMPT',
+    'HOME',
+    'LANG',
+    'NODE_ENV',
+    'PATH',
+    'TMPDIR',
+    'ZEROSHOT_HOSTED_BASE_REVISION',
+    'ZEROSHOT_HOSTED_EXECUTABLE',
+    'ZEROSHOT_HOSTED_MODEL',
+    'ZEROSHOT_HOSTED_PROVIDER',
+    'ZEROSHOT_HOSTED_REPOSITORY',
+    'ZEROSHOT_ISOLATION_PROFILE',
+    'ZEROSHOT_PROVIDER_PROFILE',
+    'ZEROSHOT_SETTINGS_FILE',
+  ]) {
+    assert.throws(
+      () => normalizeRuntimeConfig({ provider: 'custom', environment: { [name]: '/escape' } }),
+      /reserved/
+    );
+  }
+  for (const filename of ['../escape', 'settings.json', 'settings.json/nested']) {
+    assert.throws(
+      () => normalizeRuntimeConfig({ provider: 'custom', files: { [filename]: 'secret' } }),
+      /runtime file path/
+    );
+  }
 
   const root = temp();
   const configDirectory = path.join(root, 'config');
