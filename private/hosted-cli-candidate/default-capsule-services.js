@@ -1,6 +1,4 @@
 'use strict';
-
-const { checkHostedSetup } = require('./credentials');
 const { HostedRunOrchestrator } = require('./orchestrator');
 const {
   isDeterministicAllocationRefusal,
@@ -58,7 +56,7 @@ async function remoteRun(service, options) {
     const orchestrator = new HostedRunOrchestrator({
       assertGraphSpec: service.runtime.cluster.assertGraphSpec,
       readInputs: () => inputs,
-      checkHostedSetup,
+      resolveRuntimeBundle: service.runtimeBundleFor,
       createCoordinator: service.coordinatorFor,
       runtimeImageDigest: manifest.runtimeImageDigest,
       randomUUID: service.randomUUID,
@@ -70,9 +68,6 @@ async function remoteRun(service, options) {
       inputPath: options.input,
       detach: Boolean(options.detach),
       signal,
-      expectedRepository: manifest.repository,
-      expectedProvider: manifest.provider,
-      expectedModelLevel: manifest.modelLevel,
     });
   });
 }

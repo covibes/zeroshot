@@ -1,7 +1,13 @@
 'use strict';
 
 const { createDefaultServices } = require('../../private/hosted-cli-candidate/default-services');
-const { DESCRIPTOR, finishedWatch, GRAPH, RUNTIME_DIGEST } = require('./candidate-fixtures');
+const {
+  DESCRIPTOR,
+  finishedWatch,
+  GRAPH,
+  RUNTIME_CONFIG,
+  RUNTIME_DIGEST,
+} = require('./candidate-fixtures');
 
 function createTarget() {
   return {
@@ -9,10 +15,9 @@ function createTarget() {
     url: 'https://target.example',
     organization: { id: 'org-1' },
     hostedSetup: {
-      kind: 'zeroshot.private-hosted-setup/v1',
+      kind: 'zeroshot.private-hosted-setup/v2',
       repository: 'owner/repository',
-      provider: 'codex',
-      modelLevel: 'level2',
+      runtime: RUNTIME_CONFIG,
       configuredAt: '2026-08-03T00:00:00.000Z',
     },
   };
@@ -20,11 +25,16 @@ function createTarget() {
 
 function createAdapter(options, calls) {
   return {
+    credentialInstall: { supported: true, descriptor: DESCRIPTOR.credentialInstall },
     access(capsuleId, signal) {
-      const access = options.access?.(capsuleId, signal);
-      if (!access) throw new Error('unexpected capsule access request');
+      const access = options.access?.(capsuleId, signal) ?? {
+        accessToken: 'capsule-runtime-access',
+      };
       calls.push(['access', access.accessToken]);
       return access;
+    },
+    installRuntime(capsuleId, runtime, accessToken) {
+      calls.push(['install-runtime', capsuleId, runtime, accessToken]);
     },
     allocate(params) {
       calls.push(['allocate', params]);
@@ -198,9 +208,6 @@ function createRuntime({ adapter, calls, context, options, state }) {
 function createManifest() {
   return {
     privateMarker: 'ZEROSHOT_PRIVATE_HOSTED_CLI_CANDIDATE_DO_NOT_PUBLISH',
-    repository: 'owner/repository',
-    provider: 'codex',
-    modelLevel: 'level2',
     runtimeImageDigest: RUNTIME_DIGEST,
   };
 }
@@ -236,6 +243,10 @@ function remoteHarness(options = {}) {
     runIntentSleep: options.runIntentSleep,
     randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-0000-0000-000000000000`,
     manifest: createManifest(),
+    environment: options.environment ?? {
+      GH_TOKEN: 'github-test-token',
+      LOCAL_MODEL_KEY: 'model-test-token',
+    },
     readHostedInputs: () => readHostedInputs(options, calls),
   });
   return { adapter, calls, services };

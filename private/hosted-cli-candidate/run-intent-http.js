@@ -124,12 +124,20 @@ class RunIntentClient {
     this.#fetch = options.fetch;
   }
 
-  submit({ envelope, submissionKey, size = 'standard', signal }) {
+  submit({ envelope, runtime, submissionKey, size = 'standard', signal }) {
     assertUuid(submissionKey, 'submission key');
     if (!['tiny', 'small', 'standard', 'large'].includes(size)) {
       throw new RunIntentRequestError('RunIntent size is invalid');
     }
-    const body = encodeBoundedJson({ label: 'zeroshot-cli', size, intent: envelope });
+    if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) {
+      throw new RunIntentRequestError('RunIntent runtime bundle must be an object');
+    }
+    const body = encodeBoundedJson({
+      label: 'zeroshot-cli',
+      size,
+      intent: envelope,
+      runtime,
+    });
     return this.#request({
       route: this.#routes.submit,
       routeValues: { org_id: this.#organizationId },

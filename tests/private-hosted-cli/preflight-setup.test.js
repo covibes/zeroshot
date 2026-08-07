@@ -8,7 +8,12 @@ const { afterEach, describe, it } = require('node:test');
 const {
   checkHostedSetup,
   configureTargetSetup,
+  resolveRuntimeBundle,
 } = require('../../private/hosted-cli-candidate/credentials');
+const {
+  normalizeRuntimeConfig,
+  readRuntimeConfig,
+} = require('../../private/hosted-cli-candidate/runtime-config');
 const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers');
 const GRAPH_FIXTURE = path.join(
   __dirname,
@@ -70,75 +75,100 @@ describe('explicit hosted readers', () => {
   });
 });
 
-it('stores only the fixed nonsecret hosted selection', async () => {
+it('stores references and resolves one provider-neutral runtime bundle per run', async () => {
   const state = {
     _targets: {
       prod: { id: 'target-1', url: 'https://target.example', createdAt: '2026-08-03T00:00:00Z' },
     },
   };
-  let secretReads = 0;
+  const runtime = {
+    provider: 'bedrock-runner',
+    executable: 'bedrock-agent',
+    model: 'anthropic.claude-sonnet-4-5',
+    environment: {
+      AWS_ACCESS_KEY_ID: { from: 'LOCAL_AWS_ACCESS_KEY_ID' },
+      AWS_REGION: 'eu-west-1',
+    },
+    files: { '.config/provider.json': '{"endpoint":"https://models.example"}' },
+    settings: { providerSettings: { custom: { enabled: true } } },
+  };
   const metadata = await configureTargetSetup({
     targetName: 'prod',
     target: state._targets.prod,
     repository: 'owner/repository',
-    provider: 'codex',
-    modelLevel: 'level2',
+    runtime,
     settings: {
       mutate: (mutator) => mutator(state),
     },
-    credentialStore: {
-      get() {
-        secretReads += 1;
-        throw new Error('setup must not read a keyring');
-      },
-    },
-    github: {
-      inspect() {
-        secretReads += 1;
-        throw new Error('setup must not inspect GitHub credentials');
-      },
-      acquire() {
-        secretReads += 1;
-        throw new Error('setup must not acquire GitHub credentials');
-      },
-    },
-    prompt: {
-      line() {
-        secretReads += 1;
-        throw new Error('setup must not prompt');
-      },
-    },
     clock: { now: () => Date.parse('2026-08-03T00:00:00Z') },
   });
-  assert.equal(secretReads, 0);
-  assert.deepEqual(
-    {
-      kind: metadata.kind,
-      repository: metadata.repository,
-      provider: metadata.provider,
-      modelLevel: metadata.modelLevel,
-    },
-    {
-      kind: 'zeroshot.private-hosted-setup/v1',
-      repository: 'owner/repository',
-      provider: 'codex',
-      modelLevel: 'level2',
-    }
-  );
+  assert.equal(metadata.kind, 'zeroshot.private-hosted-setup/v2');
+  assert.equal(metadata.repository, 'owner/repository');
+  assert.deepEqual(metadata.runtime, runtime);
   assert.deepEqual(checkHostedSetup(state._targets.prod), metadata);
-  assert.equal(JSON.stringify(state).match(/token|apiKey|openrouter|keyring/gi), null);
+  assert.equal(JSON.stringify(state).includes('aws-local-secret'), false);
+
+  const bundle = resolveRuntimeBundle(state._targets.prod, {
+    GH_TOKEN: 'github-test-token',
+    LOCAL_AWS_ACCESS_KEY_ID: 'aws-local-secret',
+  });
+  assert.equal(bundle.githubToken, 'github-test-token');
+  assert.equal(bundle.runtime.provider, 'bedrock-runner');
+  assert.equal(bundle.runtime.executable, 'bedrock-agent');
+  assert.equal(bundle.runtime.environment.AWS_ACCESS_KEY_ID, 'aws-local-secret');
+  assert.equal(bundle.runtime.environment.AWS_REGION, 'eu-west-1');
 });
 
-it('rejects any repository, provider, or model-level mismatch without mutation', () => {
+it('validates generic runtime bounds and anchors mapped files to the config', () => {
+  assert.deepEqual(
+    normalizeRuntimeConfig({
+      provider: 'azure-openai',
+      environment: {},
+      files: {},
+      settings: {},
+    }).executable,
+    'azure-openai'
+  );
+  assert.throws(
+    () =>
+      normalizeRuntimeConfig({
+        provider: 'custom',
+        environment: { HOME: '/escape' },
+      }),
+    /reserved/
+  );
+  assert.throws(
+    () =>
+      normalizeRuntimeConfig({
+        provider: 'custom',
+        files: { '../escape': 'secret' },
+      }),
+    /runtime file path/
+  );
+
+  const root = temp();
+  const configDirectory = path.join(root, 'config');
+  const configFile = path.join(configDirectory, 'runtime.json');
+  fs.mkdirSync(configDirectory);
+  fs.writeFileSync(
+    configFile,
+    JSON.stringify({
+      provider: 'custom',
+      files: { '.config/harness.json': { from: '../credentials/harness.json' } },
+    })
+  );
+  assert.equal(
+    readRuntimeConfig(configFile).files['.config/harness.json'].from,
+    path.join(root, 'credentials', 'harness.json')
+  );
+});
+
+it('rejects invalid repository or runtime configuration without mutation', () => {
   for (const options of [
-    { repository: 'owner/repo.git', provider: 'codex', modelLevel: 'level2' },
-    { repository: 'Owner/Repo', provider: 'codex', modelLevel: 'level2' },
-    { repository: 'owner/repo', provider: 'gateway', modelLevel: 'level2' },
-    { repository: 'owner/repo', provider: 'codex', modelLevel: 'level3' },
-    { repository: 'owner-/repo', provider: 'codex', modelLevel: 'level2' },
-    { repository: 'owner.name/repo', provider: 'codex', modelLevel: 'level2' },
-    { repository: `${'o'.repeat(40)}/repo`, provider: 'codex', modelLevel: 'level2' },
-    { repository: 'owner/repo-', provider: 'codex', modelLevel: 'level2' },
+    { repository: 'owner/repo.git', runtime: { provider: 'claude' } },
+    { repository: 'Owner/Repo', runtime: { provider: 'claude' } },
+    { repository: 'owner/repo', runtime: { provider: '' } },
+    { repository: 'owner/repo', runtime: { provider: 'claude', unknown: true } },
   ]) {
     const state = { _targets: { prod: { id: 'target-1' } } };
     assert.throws(() =>

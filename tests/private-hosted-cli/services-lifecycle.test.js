@@ -194,10 +194,10 @@ async function proveReconnectUsesFreshAccess() {
   const result = await running;
   assert.equal(result.value.final.status.atCursor, 'cursor-2');
   assert.deepEqual(headers, [
-    'Bearer fresh-1',
     'Bearer fresh-2',
     'Bearer fresh-3',
     'Bearer fresh-4',
+    'Bearer fresh-5',
   ]);
 }
 
@@ -245,28 +245,41 @@ function registerRemoteOperationTests() {
     assert.deepEqual(
       h.calls
         .filter(([name]) =>
-          ['read-inputs', 'allocate', 'initialize', 'plan', 'apply', 'watch', 'get'].includes(name)
+          [
+            'read-inputs',
+            'allocate',
+            'access',
+            'install-runtime',
+            'initialize',
+            'plan',
+            'apply',
+            'watch',
+            'get',
+          ].includes(name)
         )
         .map(([name]) => name),
-      ['read-inputs', 'allocate', 'initialize', 'plan', 'apply', 'watch', 'initialize', 'get']
+      [
+        'read-inputs',
+        'allocate',
+        'access',
+        'install-runtime',
+        'initialize',
+        'plan',
+        'apply',
+        'watch',
+        'initialize',
+        'get',
+      ]
     );
     const request = h.calls.find(([name]) => name === 'apply')[1].input;
-    assert.deepEqual(
-      {
-        repository: request.repository,
-        provider: request.provider,
-        modelLevel: request.modelLevel,
-        providerProfile: request.providerProfile,
-        isolationProfile: request.isolationProfile,
-      },
-      {
-        repository: 'owner/repository',
-        provider: 'codex',
-        modelLevel: 'level2',
-        providerProfile: 'provider.hosted-direct@1',
-        isolationProfile: 'isolation.prepared-worktree@1',
-      }
-    );
+    assert.deepEqual(request, {
+      source: 'prompt',
+      prompt: 'Ship the change.',
+      artifacts: [],
+    });
+    const runtime = h.calls.find(([name]) => name === 'install-runtime')[2];
+    assert.equal(runtime.repository, 'owner/repository');
+    assert.equal(runtime.runtime.provider, 'claude');
   });
 }
 

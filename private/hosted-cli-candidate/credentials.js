@@ -1,7 +1,8 @@
 'use strict';
 
-const PROVIDER = 'codex';
-const MODEL_LEVEL = 'level2';
+const { normalizeRuntimeConfig, resolveHostedRuntime } = require('./runtime-config');
+
+const MAX_RUNTIME_BUNDLE_BYTES = 4 * 1024 * 1024;
 
 function repositoryBinding(repository) {
   const [owner, name, extra] = typeof repository === 'string' ? repository.split('/') : [];
@@ -22,27 +23,24 @@ function getSetup(target) {
   const setup = target?.hostedSetup;
   if (
     !setup ||
-    setup.kind !== 'zeroshot.private-hosted-setup/v1' ||
-    setup.provider !== PROVIDER ||
-    setup.modelLevel !== MODEL_LEVEL ||
-    typeof setup.repository !== 'string'
+    setup.kind !== 'zeroshot.private-hosted-setup/v2' ||
+    typeof setup.repository !== 'string' ||
+    !setup.runtime
   ) {
     throw new Error('target setup is missing; run `zeroshot target setup` first');
   }
   normalizeRepository(setup.repository);
+  normalizeRuntimeConfig(setup.runtime);
   return setup;
 }
 
 function configureTargetSetup(options) {
-  const { targetName, target, repository, provider, modelLevel, settings, clock = Date } = options;
-  if (provider !== PROVIDER) throw new Error(`provider must be exactly ${PROVIDER}`);
-  if (modelLevel !== MODEL_LEVEL) throw new Error(`model level must be exactly ${MODEL_LEVEL}`);
+  const { targetName, target, repository, runtime, settings, clock = Date } = options;
   const normalizedRepository = normalizeRepository(repository);
   const metadata = Object.freeze({
-    kind: 'zeroshot.private-hosted-setup/v1',
+    kind: 'zeroshot.private-hosted-setup/v2',
     repository: normalizedRepository,
-    provider: PROVIDER,
-    modelLevel: MODEL_LEVEL,
+    runtime: normalizeRuntimeConfig(runtime),
     configuredAt: new Date(clock.now()).toISOString(),
   });
   settings.mutate((state) => {
@@ -58,11 +56,29 @@ function checkHostedSetup(target) {
   return getSetup(target);
 }
 
+function githubToken(environment = process.env) {
+  const configured = environment.GH_TOKEN || environment.GITHUB_TOKEN;
+  if (configured?.trim()) return configured.trim();
+  throw new Error('hosted runs require GH_TOKEN or GITHUB_TOKEN');
+}
+
+function resolveRuntimeBundle(target, environment = process.env) {
+  const setup = getSetup(target);
+  const bundle = {
+    githubToken: githubToken(environment),
+    repository: setup.repository,
+    runtime: resolveHostedRuntime(setup.runtime, environment),
+  };
+  if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_RUNTIME_BUNDLE_BYTES) {
+    throw new Error('hosted runtime bundle exceeds 4 MiB');
+  }
+  return bundle;
+}
+
 module.exports = {
-  MODEL_LEVEL,
-  PROVIDER,
   checkHostedSetup,
   configureTargetSetup,
   getSetup,
   repositoryBinding,
+  resolveRuntimeBundle,
 };

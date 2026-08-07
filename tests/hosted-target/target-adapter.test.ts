@@ -34,6 +34,32 @@ function adapter() {
   });
 }
 
+function runtimeAdapter() {
+  const descriptor = fakeDiscovery();
+  return createTargetAdapter({
+    descriptor: {
+      ...descriptor,
+      credentialInstall: {
+        kind: 'openengine.capsule-credential-install/v1',
+        install: {
+          routeTemplate: {
+            template: '/capsules/{capsule_id}/credentials',
+            variables: ['capsule_id'],
+            expand: ({ capsule_id }: Readonly<Record<string, string | number | undefined>>) =>
+              `/capsules/${encodeURIComponent(String(capsule_id))}/credentials`,
+          },
+          method: 'PUT',
+        },
+        maxBodyBytes: 4096,
+      },
+    },
+    organization: { id: 'org/opaque value' },
+    tokenProvider: new FakeTokenProvider(),
+    transport: http,
+    retryPolicy: NO_RETRY,
+  });
+}
+
 describe('descriptor-driven TargetAdapter', () => {
   it('captures every discovered method, route, query, header, and body exactly', async () => {
     http.enqueue(201, capsule('cap/opaque'));
@@ -239,6 +265,28 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
 });
 
 describe('descriptor-driven TargetAdapter bounds and transport', () => {
+  it('installs one opaque runtime bundle with the capsule access bearer', async () => {
+    http.responses.push(new Response(null, { status: 204 }));
+    const target = runtimeAdapter();
+    const runtime = {
+      arbitrary: {
+        environment: { BEDROCK_REGION: 'eu-west-1' },
+        settings: { endpoint: 'https://models.example' },
+      },
+    };
+    await target.installRuntime('cap/raw', runtime, 'capsule-access-canary');
+    assert.equal(
+      http.requests[0]?.url,
+      'https://hosted.openengine.example/api/v1/capsules/cap%2Fraw/credentials'
+    );
+    assert.equal(http.requests[0]?.init.method, 'PUT');
+    assert.equal(
+      new Headers(http.requests[0]?.init.headers).get('Authorization'),
+      'Bearer capsule-access-canary'
+    );
+    assert.deepEqual(bodyOf(http.requests[0]!), runtime);
+  });
+
   it('cancels a chunked capsule response at the cumulative byte bound', async () => {
     let cancelled = false;
     http.responses.push(

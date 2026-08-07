@@ -27,12 +27,6 @@ function buildCandidate(output, runtimeImageDigest) {
     'private/hosted-cli-candidate/build-candidate.js',
     '--runtime-image-digest',
     runtimeImageDigest,
-    '--repository',
-    'the-open-engine/zeroshot',
-    '--provider',
-    'codex',
-    '--model-level',
-    'level2',
     '--out',
     output,
   ]);
@@ -177,40 +171,13 @@ function assertCandidateBuilderCannotPublish() {
 
 function assertRequiredBuildArguments() {
   const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
-  const parsed = parseArgs([
-    '--runtime-image-digest',
-    runtimeImageDigest,
-    '--repository',
-    'owner/repository',
-    '--provider',
-    'codex',
-    '--model-level',
-    'level2',
-  ]);
+  const parsed = parseArgs(['--runtime-image-digest', runtimeImageDigest]);
   assert.deepEqual(parsed, {
     runtimeImageDigest,
-    repository: 'owner/repository',
-    provider: 'codex',
-    modelLevel: 'level2',
   });
   assert.equal(Object.isFrozen(parsed), true);
-
-  const prefix = ['--runtime-image-digest', runtimeImageDigest, '--repository', 'owner/repository'];
-  assert.throws(() => parseArgs([...prefix, '--provider', 'gateway', '--model-level', 'level2']));
-  assert.throws(() => parseArgs([...prefix, '--provider', 'codex', '--model-level', 'level3']));
-  assert.throws(
-    () =>
-      parseArgs([
-        ...prefix.slice(0, -1),
-        'Owner/repository',
-        '--provider',
-        'codex',
-        '--model-level',
-        'level2',
-      ]),
-    /lowercase/
-  );
-  assert.throws(() => parseArgs(prefix), /provider/);
+  assert.throws(() => parseArgs([]), /runtime-image-digest/);
+  assert.throws(() => parseArgs(['--provider', 'codex']), /unknown build argument/);
 }
 
 function registerPackageIsolationTests() {
@@ -235,7 +202,7 @@ function registerPackageIsolationTests() {
     { timeout: 180_000 },
     assertPackedCandidateBuildsInstallsAndLaunches
   );
-  it('requires the runtime image and fixed hosted selection', assertRequiredBuildArguments);
+  it('requires only the runtime image identity', assertRequiredBuildArguments);
 }
 
 describe('stable/candidate package isolation', registerPackageIsolationTests);

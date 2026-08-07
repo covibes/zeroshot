@@ -1,6 +1,22 @@
 'use strict';
 
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
+const RUNTIME_CONFIG = Object.freeze({
+  provider: 'claude',
+  executable: 'claude',
+  model: 'claude-sonnet-4-5',
+  environment: { ANTHROPIC_API_KEY: { from: 'LOCAL_MODEL_KEY' } },
+  files: {},
+  settings: { defaultProvider: 'claude' },
+});
+const RUNTIME_BUNDLE = Object.freeze({
+  githubToken: 'github-test-token',
+  repository: 'owner/repository',
+  runtime: {
+    ...RUNTIME_CONFIG,
+    environment: { ANTHROPIC_API_KEY: 'model-test-token' },
+  },
+});
 const RUN_INTENT_ID = '019fd17e-71f3-7cf5-a57b-b8f1845c140c';
 const RUN_INTENT_NOW = '2026-08-05T10:00:00.000Z';
 
@@ -29,6 +45,14 @@ const DESCRIPTOR = {
     audience: 'capsule',
   },
   capsule: { baseUrl: 'https://target.example/capsules/' },
+  credentialInstall: {
+    kind: 'openengine.capsule-credential-install/v1',
+    install: {
+      routeTemplate: route('/capsules/{capsule_id}/credentials'),
+      method: 'PUT',
+    },
+    maxBodyBytes: 4 * 1024 * 1024,
+  },
   runIntent: {
     kind: 'zeroshot.run-intent/v2',
     baseUrl: 'https://target.example/api/v1',
@@ -105,6 +129,8 @@ module.exports = {
   DESCRIPTOR,
   finishedWatch,
   GRAPH,
+  RUNTIME_BUNDLE,
+  RUNTIME_CONFIG,
   runIntent,
   RUN_INTENT_ID,
   RUN_INTENT_NOW,

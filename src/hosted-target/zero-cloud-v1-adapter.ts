@@ -27,9 +27,10 @@ import type {
 } from './types.js';
 import type { TargetDiscoveryDescriptor } from '../target/discovery.js';
 import { readBoundedResponseJson } from '../target/bounded-response.js';
-import { throwCapsuleServerError } from './capsule-error-response.js';
 import { validateAccessUrl } from './access-url.js';
 import { withTargetRetry } from './retry-executor.js';
+import { installRuntime as installOpaqueRuntime } from './runtime-install.js';
+import { assertCapsuleResponseStatus } from './response-status.js';
 import {
   requestUrl,
   type AdapterRequest,
@@ -199,6 +200,29 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     return result;
   }
 
+  async installRuntime(
+    capsuleId: string,
+    runtime: unknown,
+    accessToken: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const descriptor = this.#descriptor.credentialInstall;
+    if (descriptor === null) {
+      throw new TargetProtocolError('Target does not advertise runtime installation');
+    }
+    await installOpaqueRuntime({
+      capsuleId,
+      runtime,
+      accessToken,
+      descriptor,
+      ...(signal === undefined ? {} : { signal }),
+      clock: this.#clock,
+      retryPolicy: this.#retryPolicy,
+      request: (method, path, requestSignal, body, token) =>
+        this.#request(method, path, requestSignal, { body }, token),
+    });
+  }
+
   #execute<T>(...args: ExecuteArguments<T>): Promise<T> {
     return Promise.resolve().then(() => this.#executeExpanded(args));
   }
@@ -224,21 +248,12 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
       operation,
       async () => {
         const response = await this.#request(method, path, signal, request);
-        if (response.status >= 300 && response.status < 400) {
-          await response.body?.cancel().catch(() => undefined);
-          throw new TargetProtocolError('Capsule redirects are forbidden');
-        }
-        if (response.status !== expectedStatus) {
-          if (response.status >= 200 && response.status < 300) {
-            await response.body?.cancel().catch(() => undefined);
-            throw new TargetProtocolError('Target returned an unexpected success status');
-          }
-          await throwCapsuleServerError(
-            response,
-            (errorResponse) => this.#readJson(errorResponse),
-            this.#clock,
-          );
-        }
+        await assertCapsuleResponseStatus(
+          response,
+          expectedStatus,
+          (errorResponse) => this.#readJson(errorResponse),
+          this.#clock,
+        );
         return validate(await this.#readJson(response));
       },
       signal,
@@ -251,14 +266,17 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     path: string,
     signal: AbortSignal | undefined,
     request: AdapterRequest,
+    accessToken?: string,
   ): Promise<Response> {
     throwIfAborted(signal);
     const url = requestUrl(path, this.#descriptor);
-    let token: string;
-    try {
-      token = await this.#tokenProvider.getAccessToken(signal);
-    } catch {
-      throw new TargetAuthError('Target access authorization failed');
+    let token = accessToken;
+    if (token === undefined) {
+      try {
+        token = await this.#tokenProvider.getAccessToken(signal);
+      } catch {
+        throw new TargetAuthError('Target access authorization failed');
+      }
     }
     const init: RequestInit & { redirect: 'manual' } = {
       method,

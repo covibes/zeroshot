@@ -7,6 +7,7 @@ const {
   defaultRunIntentClient,
 } = require('./default-run-intent-services');
 const { readHostedInputs } = require('./readers');
+const { resolveRuntimeBundle } = require('./credentials');
 const { followRunIntent } = require('./run-intent');
 const { createTargetServices, targetSessionManager } = require('./target-services');
 
@@ -106,6 +107,8 @@ function createServiceContext(dependencies) {
     randomUUID: () => randomUUID(),
     inputReader: (...args) => inputReader(...args),
     candidateManifest: () => dependencies.manifest ?? buildManifest(),
+    runtimeBundleFor: (target) =>
+      resolveRuntimeBundle(target, dependencies.environment ?? process.env),
     contextFor: (name) => createSessionContext(name, runtime, settings, createHttp()),
     coordinatorFor: (init) => coordinatorFor(init),
     runIntentClientFor: (context) => runIntentClientFor(context),

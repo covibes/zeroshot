@@ -15,6 +15,7 @@ const {
 const {
   DESCRIPTOR,
   GRAPH,
+  RUNTIME_BUNDLE,
   runIntent,
   RUN_INTENT_ID: INTENT_ID,
   RUN_INTENT_NOW: NOW,
@@ -113,6 +114,7 @@ describe('bounded authenticated RunIntent client', () => {
     const envelope = buildRunIntentEnvelope(GRAPH, { source: 'prompt' });
     const result = await h.client.submit({
       envelope,
+      runtime: RUNTIME_BUNDLE,
       submissionKey: SUBMISSION_KEY,
       size: 'standard',
     });
@@ -127,6 +129,7 @@ describe('bounded authenticated RunIntent client', () => {
       label: 'zeroshot-cli',
       size: 'standard',
       intent: envelope,
+      runtime: RUNTIME_BUNDLE,
     });
   });
 
@@ -193,6 +196,7 @@ describe('bounded RunIntent authentication and bodies', () => {
       () =>
         oversizedRequest.client.submit({
           envelope: { value: 'x'.repeat(MAX_RUN_INTENT_REQUEST_BYTES) },
+          runtime: RUNTIME_BUNDLE,
           submissionKey: SUBMISSION_KEY,
           size: 'standard',
         }),

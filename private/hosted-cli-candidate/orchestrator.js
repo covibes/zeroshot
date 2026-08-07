@@ -2,14 +2,11 @@
 
 const crypto = require('node:crypto');
 const {
-  assertHostedSelection,
   buildHostedExecution,
   buildLegacyShipRequest,
   HostedProtocolError,
   HostedTransportUncertainError,
-  ISOLATION_PROFILE,
   isDeterministicAllocationRefusal,
-  PROVIDER_PROFILE,
   RemoteAllocationUncertainError,
   RemoteDetachedError,
   safeWatchProjection,
@@ -19,12 +16,6 @@ const {
 
 const READY_TIMEOUT_MS = 5 * 60 * 1000;
 const READY_POLL_MS = 2000;
-const AUTHORITY_REFUSAL_CODES = new Set(['HOSTED_REPOSITORY_MISMATCH', 'HOSTED_PROVIDER_MISMATCH']);
-
-function authorityRefusalCode(error) {
-  const code = error?.data?.code ?? error?.code;
-  return AUTHORITY_REFUSAL_CODES.has(code) ? code : undefined;
-}
 
 function mustPreserveCapsule(options, ownership, error) {
   return (
@@ -36,7 +27,7 @@ class HostedRunOrchestrator {
   constructor(options) {
     this.assertGraphSpec = options.assertGraphSpec;
     this.readInputs = options.readInputs;
-    this.checkHostedSetup = options.checkHostedSetup;
+    this.resolveRuntimeBundle = options.resolveRuntimeBundle;
     this.createCoordinator = options.createCoordinator;
     this.randomUUID = options.randomUUID ?? crypto.randomUUID;
     this.runtimeImageDigest = options.runtimeImageDigest;
@@ -76,14 +67,10 @@ class HostedRunOrchestrator {
       options.inputPath,
       this.assertGraphSpec
     );
-    const setup = this.checkHostedSetup(options.target);
-    const execution = buildHostedExecution(inputs, setup, {
-      repository: options.expectedRepository,
-      provider: options.expectedProvider,
-      modelLevel: options.expectedModelLevel,
-    });
+    const execution = buildHostedExecution(inputs);
+    const runtime = this.resolveRuntimeBundle(options.target);
     const identities = stableIdentities(this.randomUUID, this.runtimeImageDigest);
-    return { execution, identities };
+    return { execution, identities, runtime };
   }
 
   async #allocate(options, identities) {
@@ -109,6 +96,7 @@ class HostedRunOrchestrator {
 
   async #execute(options, ownership, prepared) {
     try {
+      await this.#installRuntime(options, ownership.capsule.id, prepared.runtime);
       ownership.coordinator = this.createCoordinator({
         adapter: options.adapter,
         capsuleId: ownership.capsule.id,
@@ -141,6 +129,17 @@ class HostedRunOrchestrator {
     }
   }
 
+  async #installRuntime(options, capsuleId, runtime) {
+    if (
+      options.adapter.credentialInstall?.supported !== true ||
+      typeof options.adapter.installRuntime !== 'function'
+    ) {
+      throw new HostedProtocolError('target does not advertise runtime installation');
+    }
+    const access = await options.adapter.access(capsuleId, options.signal);
+    await options.adapter.installRuntime(capsuleId, runtime, access.accessToken, options.signal);
+  }
+
   async #plan(options, initial, graph) {
     const profiles = initial.initializeResult.capabilities.graphProfiles ?? [];
     if (profiles.length !== 1 || profiles[0] !== 'openengine.graph.single-worker/v1') {
@@ -159,26 +158,15 @@ class HostedRunOrchestrator {
     ownership.uncertain = true;
     ownership.canTerminate = false;
     this.output.stdout(`Apply key: ${prepared.identities.applyIdempotencyKey}`);
-    let applied;
-    try {
-      applied = await initial.client.apply(
-        {
-          graph: prepared.execution.graph,
-          input: prepared.execution.input,
-          idempotencyKey: prepared.identities.applyIdempotencyKey,
-          ifGeneration: 0,
-        },
-        options.signal === undefined ? undefined : { signal: options.signal }
-      );
-    } catch (error) {
-      const code = authorityRefusalCode(error);
-      if (code !== undefined) {
-        ownership.uncertain = false;
-        ownership.canTerminate = true;
-        throw new HostedProtocolError(`capsule refused fixed hosted authority (${code})`);
-      }
-      throw error;
-    }
+    const applied = await initial.client.apply(
+      {
+        graph: prepared.execution.graph,
+        input: prepared.execution.input,
+        idempotencyKey: prepared.identities.applyIdempotencyKey,
+        ifGeneration: 0,
+      },
+      options.signal === undefined ? undefined : { signal: options.signal }
+    );
     if (
       !Number.isSafeInteger(applied.generation) ||
       typeof applied.runId !== 'string' ||
@@ -278,11 +266,8 @@ class HostedRunOrchestrator {
 }
 
 module.exports = {
-  assertHostedSelection,
   buildHostedExecution,
   buildLegacyShipRequest,
-  ISOLATION_PROFILE,
-  PROVIDER_PROFILE,
   RemoteAllocationUncertainError,
   HostedRunOrchestrator,
   READY_POLL_MS,

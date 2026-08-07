@@ -1,6 +1,7 @@
 'use strict';
 
 const { configureTargetSetup } = require('./credentials');
+const { readRuntimeConfig } = require('./runtime-config');
 
 function targetSessionManager({
   runtime,
@@ -79,7 +80,7 @@ function targetList(service, options) {
       id: record.id,
       url: record.url,
       organization: record.organization ?? null,
-      configured: record.hostedSetup?.kind === 'zeroshot.private-hosted-setup/v1',
+      configured: record.hostedSetup?.kind === 'zeroshot.private-hosted-setup/v2',
       createdAt: record.createdAt,
     }));
     console.log(JSON.stringify(rows, null, 2));
@@ -122,13 +123,10 @@ async function targetSetup(service, name, options) {
     targetName: name,
     target,
     repository: options.repository,
-    provider: options.provider,
-    modelLevel: options.modelLevel,
+    runtime: readRuntimeConfig(options.runtimeConfig),
     settings: service.settings,
   });
-  console.log(
-    `Configured ${name}: ${metadata.repository}, ${metadata.provider}, ${metadata.modelLevel}`
-  );
+  console.log(`Configured ${name}: ${metadata.repository}, ${metadata.runtime.provider}`);
 }
 
 function createTargetServices({ runtime, settings, httpTransport, requireTarget }) {
