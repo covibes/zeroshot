@@ -21,12 +21,10 @@ const DEFAULT_MAX_ITERATIONS = 100;
 // Use positive number for timeout in milliseconds
 const DEFAULT_TIMEOUT = 0;
 
-// Stale detection - ENABLED by default using multi-indicator analysis (safe from false positives)
-// Multi-indicator approach checks: process state, CPU usage, context switches, network I/O
-// Only flags as stuck when ALL indicators show inactivity (score >= 3.5)
-// Single-indicator detection (just output freshness) was too risky - this is safe.
+// Output-silence detection is opt-in because healthy provider operations may be quiet for
+// longer than the stale threshold. Explicit task timeouts remain independently supported.
 const DEFAULT_STALE_DURATION_MS = 30 * 60 * 1000; // 30 minutes before triggering analysis
-const DEFAULT_LIVENESS_CHECK_ENABLED = true; // Safe with multi-indicator detection
+const DEFAULT_LIVENESS_CHECK_ENABLED = false;
 
 function applyOutputDefaults(config) {
   // CRITICAL: Enforce JSON schema output by default to prevent parse failures and crashes
