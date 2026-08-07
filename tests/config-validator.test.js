@@ -796,6 +796,7 @@ describe('validateAgents - validator Git usage', function () {
     const prompts = [
       ['Do not use git diff unless necessary.', 1],
       ['Do not use git diff or git status during validation unless necessary.', 1],
+      ['Do not use git diff or git status when reviewing unless necessary.', 1],
       ['Do not use git diff or git status during validation only.', 1],
       ['Do not use git diff or git status by default.', 1],
       ['Never run git log without first reading the files.', 1],
@@ -856,8 +857,10 @@ describe('validateAgents - validator Git review regressions', function () {
   it('allows prohibited command lists with ordinary trailing qualifiers', function () {
     const safePrompts = [
       'Do not use git diff or git status during validation.',
+      'Do not use git diff or git status when reviewing.',
       'Never run git log and git show while validating.',
       { system: 'Do not inspect git diff or git status in validator prompts.' },
+      { system: 'Do not inspect git diff or git status when reviewing.' },
     ];
 
     for (const prompt of safePrompts) {
@@ -872,6 +875,7 @@ describe('validateAgents - validator Git review regressions', function () {
   it('allows postfix prohibitions with ordinary trailing qualifiers', function () {
     const safePrompts = [
       'git diff and git status are forbidden during validation.',
+      'git diff and git status are forbidden when reviewing.',
       'Both commands git log and git show must never be used by validators.',
     ];
 

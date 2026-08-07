@@ -887,6 +887,7 @@ const VALIDATOR_GIT_BENIGN_TERMINAL_QUALIFIERS = [
   ['during', 'validation'],
   ['during', 'final', 'validation'],
   ['while', 'validating'],
+  ['when', 'reviewing'],
   ['in', 'validator', 'prompt'],
   ['in', 'validator', 'prompts'],
   ['by', 'validators'],
