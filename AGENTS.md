@@ -22,6 +22,8 @@ Operational rules and references for automated agents working on this repo. Inst
 - Curated notes live at `docs/releases/vX.Y.Z.md`. Recovery may operate only from an immutable
   `vX.Y.Z` tag whose exact commit is an ancestor of `main`, and it must never overwrite an existing
   npm version or GitHub Release.
+- Provider output-silence liveness checks are opt-in (`enableLivenessCheck: true`). Recovery tests
+  that exercise stale-agent termination must enable the watchdog explicitly.
 
 Worker git operations are allowed only with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). They are forbidden without isolation.
 
