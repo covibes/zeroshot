@@ -1,6 +1,7 @@
 'use strict';
 
-const { normalizeRuntimeConfig, resolveHostedRuntime } = require('./runtime-config');
+const path = require('node:path');
+const { readRuntimeConfig, resolveHostedRuntime } = require('./runtime-config');
 
 const MAX_RUNTIME_BUNDLE_BYTES = 4 * 1024 * 1024;
 const BASE_REVISION = /^[0-9a-f]{40}$/;
@@ -27,6 +28,15 @@ function normalizeBaseRevision(baseRevision) {
   return baseRevision;
 }
 
+function normalizeRuntimeConfigPath(runtimeConfigPath) {
+  if (typeof runtimeConfigPath !== 'string' || !runtimeConfigPath.trim()) {
+    throw new Error('runtime config path must be a nonempty string');
+  }
+  const resolved = path.resolve(runtimeConfigPath);
+  readRuntimeConfig(resolved);
+  return resolved;
+}
+
 function getSetup(target) {
   const setup = target?.hostedSetup;
   if (
@@ -34,24 +44,32 @@ function getSetup(target) {
     setup.kind !== 'zeroshot.private-hosted-setup/v2' ||
     typeof setup.repository !== 'string' ||
     typeof setup.baseRevision !== 'string' ||
-    !setup.runtime
+    typeof setup.runtimeConfigPath !== 'string' ||
+    !path.isAbsolute(setup.runtimeConfigPath)
   ) {
     throw new Error('target setup is missing; run `zeroshot target setup` first');
   }
   normalizeRepository(setup.repository);
   normalizeBaseRevision(setup.baseRevision);
-  normalizeRuntimeConfig(setup.runtime);
   return setup;
 }
 
 function configureTargetSetup(options) {
-  const { targetName, target, repository, baseRevision, runtime, settings, clock = Date } = options;
+  const {
+    targetName,
+    target,
+    repository,
+    baseRevision,
+    runtimeConfigPath,
+    settings,
+    clock = Date,
+  } = options;
   const normalizedRepository = normalizeRepository(repository);
   const metadata = Object.freeze({
     kind: 'zeroshot.private-hosted-setup/v2',
     repository: normalizedRepository,
     baseRevision: normalizeBaseRevision(baseRevision),
-    runtime: normalizeRuntimeConfig(runtime),
+    runtimeConfigPath: normalizeRuntimeConfigPath(runtimeConfigPath),
     configuredAt: new Date(clock.now()).toISOString(),
   });
   settings.mutate((state) => {
@@ -75,11 +93,12 @@ function githubToken(environment = process.env) {
 
 function resolveRuntimeBundle(target, environment = process.env) {
   const setup = getSetup(target);
+  const runtime = readRuntimeConfig(setup.runtimeConfigPath);
   const bundle = {
     githubToken: githubToken(environment),
     repository: setup.repository,
     baseRevision: setup.baseRevision,
-    runtime: resolveHostedRuntime(setup.runtime, environment),
+    runtime: resolveHostedRuntime(runtime, environment),
   };
   if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_RUNTIME_BUNDLE_BYTES) {
     throw new Error('hosted runtime bundle exceeds 4 MiB');

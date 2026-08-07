@@ -26,6 +26,10 @@ describe('private target services', () => {
       );
       const listed = await captureLogs(() => h.services.targetList({ json: true }));
       assert.match(listed.lines[0], /"configured": true/);
+      const persistedSetup = h.state._targets.prod.hostedSetup;
+      assert.equal(persistedSetup.runtimeConfigPath, runtimeConfig);
+      assert.equal('runtime' in persistedSetup, false);
+      assert.equal(JSON.stringify(persistedSetup).includes(RUNTIME_CONFIG.provider), false);
       await captureLogs(() => h.services.targetRemove('prod', { force: false }));
 
       assert.deepEqual(h.state._targets.prod, undefined);

@@ -1,15 +1,12 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
 const BASE_REVISION = 'b'.repeat(40);
-const RUNTIME_CONFIG = Object.freeze({
-  provider: 'claude',
-  executable: 'claude',
-  model: 'claude-sonnet-4-5',
-  environment: { ANTHROPIC_API_KEY: { from: 'LOCAL_MODEL_KEY' } },
-  files: {},
-  settings: { defaultProvider: 'claude' },
-});
+const RUNTIME_CONFIG_PATH = path.join(__dirname, 'fixtures', 'runtime-config.json');
+const RUNTIME_CONFIG = Object.freeze(JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, 'utf8')));
 const RUNTIME_BUNDLE = Object.freeze({
   githubToken: 'github-test-token',
   repository: 'owner/repository',
@@ -134,6 +131,7 @@ module.exports = {
   GRAPH,
   RUNTIME_BUNDLE,
   RUNTIME_CONFIG,
+  RUNTIME_CONFIG_PATH,
   runIntent,
   RUN_INTENT_ID,
   RUN_INTENT_NOW,

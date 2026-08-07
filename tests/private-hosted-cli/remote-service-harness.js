@@ -6,7 +6,7 @@ const {
   DESCRIPTOR,
   finishedWatch,
   GRAPH,
-  RUNTIME_CONFIG,
+  RUNTIME_CONFIG_PATH,
   RUNTIME_DIGEST,
 } = require('./candidate-fixtures');
 
@@ -19,7 +19,7 @@ function createTarget() {
       kind: 'zeroshot.private-hosted-setup/v2',
       repository: 'owner/repository',
       baseRevision: BASE_REVISION,
-      runtime: RUNTIME_CONFIG,
+      runtimeConfigPath: RUNTIME_CONFIG_PATH,
       configuredAt: '2026-08-03T00:00:00.000Z',
     },
   };

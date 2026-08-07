@@ -77,6 +77,9 @@ describe('explicit hosted readers', () => {
 });
 
 it('stores references and resolves one provider-neutral runtime bundle per run', async () => {
+  const root = temp();
+  const runtimeConfigPath = path.join(root, 'runtime.json');
+  const directSecret = 'direct-provider-secret';
   const state = {
     _targets: {
       prod: { id: 'target-1', url: 'https://target.example', createdAt: '2026-08-03T00:00:00Z' },
@@ -91,14 +94,15 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
       AWS_REGION: 'eu-west-1',
     },
     files: { '.config/provider.json': '{"endpoint":"https://models.example"}' },
-    settings: { providerSettings: { custom: { enabled: true } } },
+    settings: { providerSettings: { custom: { apiKey: directSecret } } },
   };
+  fs.writeFileSync(runtimeConfigPath, JSON.stringify(runtime));
   const metadata = await configureTargetSetup({
     targetName: 'prod',
     target: state._targets.prod,
     repository: 'owner/repository',
     baseRevision: BASE_REVISION,
-    runtime,
+    runtimeConfigPath,
     settings: {
       mutate: (mutator) => mutator(state),
     },
@@ -107,8 +111,11 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   assert.equal(metadata.kind, 'zeroshot.private-hosted-setup/v2');
   assert.equal(metadata.repository, 'owner/repository');
   assert.equal(metadata.baseRevision, BASE_REVISION);
-  assert.deepEqual(metadata.runtime, runtime);
+  assert.equal(metadata.runtimeConfigPath, runtimeConfigPath);
   assert.deepEqual(checkHostedSetup(state._targets.prod), metadata);
+  assert.equal('runtime' in metadata, false);
+  assert.equal(JSON.stringify(state).includes('bedrock-runner'), false);
+  assert.equal(JSON.stringify(state).includes(directSecret), false);
   assert.equal(JSON.stringify(state).includes('aws-local-secret'), false);
 
   const bundle = resolveRuntimeBundle(state._targets.prod, {
@@ -121,6 +128,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   assert.equal(bundle.runtime.executable, 'claude');
   assert.equal(bundle.runtime.environment.AWS_ACCESS_KEY_ID, 'aws-local-secret');
   assert.equal(bundle.runtime.environment.AWS_REGION, 'eu-west-1');
+  assert.equal(bundle.runtime.settings.providerSettings.custom.apiKey, directSecret);
 });
 
 it('validates generic runtime bounds and anchors mapped files to the config', () => {
@@ -200,23 +208,38 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
 });
 
 it('rejects invalid repository or runtime configuration without mutation', () => {
+  const root = temp();
+  const validRuntimeConfig = path.join(root, 'valid.json');
+  const emptyProviderConfig = path.join(root, 'empty-provider.json');
+  const unknownFieldConfig = path.join(root, 'unknown-field.json');
+  fs.writeFileSync(validRuntimeConfig, JSON.stringify({ provider: 'claude' }));
+  fs.writeFileSync(emptyProviderConfig, JSON.stringify({ provider: '' }));
+  fs.writeFileSync(unknownFieldConfig, JSON.stringify({ provider: 'claude', unknown: true }));
   for (const options of [
     {
       repository: 'owner/repo.git',
       baseRevision: BASE_REVISION,
-      runtime: { provider: 'claude' },
+      runtimeConfigPath: validRuntimeConfig,
     },
     {
       repository: 'Owner/Repo',
       baseRevision: BASE_REVISION,
-      runtime: { provider: 'claude' },
+      runtimeConfigPath: validRuntimeConfig,
     },
-    { repository: 'owner/repo', baseRevision: 'not-a-commit', runtime: { provider: 'claude' } },
-    { repository: 'owner/repo', baseRevision: BASE_REVISION, runtime: { provider: '' } },
+    {
+      repository: 'owner/repo',
+      baseRevision: 'not-a-commit',
+      runtimeConfigPath: validRuntimeConfig,
+    },
     {
       repository: 'owner/repo',
       baseRevision: BASE_REVISION,
-      runtime: { provider: 'claude', unknown: true },
+      runtimeConfigPath: emptyProviderConfig,
+    },
+    {
+      repository: 'owner/repo',
+      baseRevision: BASE_REVISION,
+      runtimeConfigPath: unknownFieldConfig,
     },
   ]) {
     const state = { _targets: { prod: { id: 'target-1' } } };

@@ -1,7 +1,6 @@
 'use strict';
 
 const { configureTargetSetup } = require('./credentials');
-const { readRuntimeConfig } = require('./runtime-config');
 
 function targetSessionManager({
   runtime,
@@ -124,13 +123,10 @@ async function targetSetup(service, name, options) {
     target,
     repository: options.repository,
     baseRevision: options.baseRevision,
-    runtime: readRuntimeConfig(options.runtimeConfig),
+    runtimeConfigPath: options.runtimeConfig,
     settings: service.settings,
   });
-  console.log(
-    `Configured ${name}: ${metadata.repository}@${metadata.baseRevision}, ` +
-      metadata.runtime.provider
-  );
+  console.log(`Configured ${name}: ${metadata.repository}@${metadata.baseRevision}`);
 }
 
 function createTargetServices({ runtime, settings, httpTransport, requireTarget }) {
