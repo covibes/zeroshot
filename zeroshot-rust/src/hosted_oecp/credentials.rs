@@ -20,6 +20,9 @@ const SETTINGS_FILE: &str = "/tmp/zeroshot-oecp/runtime/settings.json";
 const SETTINGS_RUNTIME_PATH: &str = "settings.json";
 const WORKER_UID: u32 = 10_002;
 const WORKER_GID: u32 = 10_002;
+const RUNTIME_DIRECTORY_MODE: u32 = 0o770;
+const RUNTIME_FILE_MODE: u32 = 0o660;
+const RUNTIME_EXECUTABLE_MODE: u32 = 0o770;
 
 #[derive(Deserialize)]
 #[serde(transparent)]
@@ -411,7 +414,7 @@ async fn prepare_runtime_directories() -> Result<(), String> {
         fs::create_dir_all(&directory)
             .await
             .map_err(|error| format!("create runtime directory: {error}"))?;
-        protect(&directory, 0o700).await?;
+        set_runtime_access(&directory, RUNTIME_DIRECTORY_MODE).await?;
     }
     Ok(())
 }
@@ -422,7 +425,7 @@ async fn write_runtime_settings(settings: &Value) -> Result<(), String> {
     fs::write(SETTINGS_FILE, settings)
         .await
         .map_err(|error| format!("write runtime settings: {error}"))?;
-    protect(SETTINGS_FILE, 0o600).await
+    set_runtime_access(SETTINGS_FILE, RUNTIME_FILE_MODE).await
 }
 
 async fn write_runtime_payload_files(files: &BTreeMap<String, SecretString>) -> Result<(), String> {
@@ -432,12 +435,12 @@ async fn write_runtime_payload_files(files: &BTreeMap<String, SecretString>) -> 
             fs::create_dir_all(parent)
                 .await
                 .map_err(|error| format!("create runtime file parent: {error}"))?;
-            protect_path(parent, 0o700).await?;
+            set_runtime_access_path(parent, RUNTIME_DIRECTORY_MODE).await?;
         }
         fs::write(&destination, contents.expose())
             .await
             .map_err(|error| format!("write runtime file: {error}"))?;
-        protect(&destination, 0o600).await?;
+        set_runtime_access(&destination, RUNTIME_FILE_MODE).await?;
     }
     Ok(())
 }
@@ -451,7 +454,7 @@ async fn write_runtime_wrapper(runtime: &RuntimeConfig) -> Result<(), String> {
         )
         .await
         .map_err(|error| format!("write runtime command wrapper: {error}"))?;
-        protect(&wrapper, 0o700).await?;
+        set_runtime_access(&wrapper, RUNTIME_EXECUTABLE_MODE).await?;
     }
     Ok(())
 }
@@ -527,28 +530,26 @@ fn configure_worker_identity(command: &mut Command) {
 fn configure_worker_identity(_command: &mut Command) {}
 
 #[cfg(unix)]
-async fn protect(path: &str, mode: u32) -> Result<(), String> {
-    protect_path(Path::new(path), mode).await
+async fn set_runtime_access(path: &str, mode: u32) -> Result<(), String> {
+    set_runtime_access_path(Path::new(path), mode).await
 }
 
 #[cfg(unix)]
-async fn protect_path(path: &Path, mode: u32) -> Result<(), String> {
+async fn set_runtime_access_path(path: &Path, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .await
-        .map_err(|error| format!("protect runtime path: {error}"))?;
-    std::os::unix::fs::chown(path, Some(WORKER_UID), Some(WORKER_GID))
-        .map_err(|error| format!("own runtime path: {error}"))
+        .map_err(|error| format!("protect runtime path: {error}"))
 }
 
 #[cfg(not(unix))]
-async fn protect(_path: &str, _mode: u32) -> Result<(), String> {
+async fn set_runtime_access(_path: &str, _mode: u32) -> Result<(), String> {
     Ok(())
 }
 
 #[cfg(not(unix))]
-async fn protect_path(_path: &Path, _mode: u32) -> Result<(), String> {
+async fn set_runtime_access_path(_path: &Path, _mode: u32) -> Result<(), String> {
     Ok(())
 }
 
@@ -556,7 +557,10 @@ async fn protect_path(_path: &Path, _mode: u32) -> Result<(), String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{CredentialInstallError, CredentialStore};
+    use super::{
+        CredentialInstallError, CredentialStore, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE,
+        RUNTIME_FILE_MODE,
+    };
     use serde_json::json;
 
     fn bundle(provider: &str, environment: serde_json::Value) -> Vec<u8> {
@@ -624,6 +628,16 @@ mod tests {
                 .map(String::as_str),
             Some("future-cli")
         );
+    }
+
+    #[test]
+    fn runtime_access_is_private_to_the_supervisor_and_worker_group() {
+        assert_eq!(RUNTIME_DIRECTORY_MODE, 0o770);
+        assert_eq!(RUNTIME_FILE_MODE, 0o660);
+        assert_eq!(RUNTIME_EXECUTABLE_MODE, 0o770);
+        assert_eq!(RUNTIME_DIRECTORY_MODE & 0o007, 0);
+        assert_eq!(RUNTIME_FILE_MODE & 0o007, 0);
+        assert_eq!(RUNTIME_EXECUTABLE_MODE & 0o007, 0);
     }
 
     #[tokio::test]
