@@ -117,6 +117,8 @@ async fn shared_mount_is_private_idempotent_and_inherits_the_worker_group() {
     ));
     fs::create_dir(&directory).unwrap();
     let original_gid = fs::metadata(&directory).unwrap().gid();
+    fs::remove_dir(&directory).unwrap();
+    assert!(!directory.exists());
 
     prepare_shared_mount(&directory, original_gid)
         .await

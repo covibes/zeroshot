@@ -7,7 +7,7 @@ use tokio::process::Command;
 use super::credentials::{
     apply_uncredentialed_worker_to, CredentialBundle, RuntimeConfig, SecretString,
     EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
-    RUNTIME_MOUNT_ROOT, RUNTIME_ROOT, SETTINGS_FILE, SHARED_MOUNT_MODE, WORKER_GID,
+    RUNTIME_MOUNT_ROOT, RUNTIME_ROOT, SETTINGS_FILE, SHARED_MOUNT_MODE, WORKER_GID, WORKER_UID,
 };
 use super::ports::WORKSPACE_ROOT;
 
@@ -45,19 +45,61 @@ async fn prepare_shared_mounts() -> Result<(), String> {
 pub(super) async fn prepare_shared_mount(path: &Path, worker_gid: u32) -> Result<(), String> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
+    fs::create_dir_all(path)
+        .await
+        .map_err(|error| format!("create shared mount root: {error}"))?;
+    let initial = fs::metadata(path)
+        .await
+        .map_err(|error| format!("inspect shared mount: {error}"))?;
+    ensure_shared_mount_group(path, initial.gid(), worker_gid).await?;
+    ensure_shared_mount_mode(path, initial.uid(), initial.permissions().mode() & 0o7777).await?;
+    let metadata = fs::metadata(path)
+        .await
+        .map_err(|error| format!("verify shared mount: {error}"))?;
+    if metadata.gid() != worker_gid || metadata.permissions().mode() & 0o7777 != SHARED_MOUNT_MODE {
+        return Err("shared mount ownership or mode was not applied".to_owned());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn ensure_shared_mount_group(
+    path: &Path,
+    current_gid: u32,
+    worker_gid: u32,
+) -> Result<(), String> {
+    if current_gid == worker_gid {
+        return Ok(());
+    }
     let mut group = Command::new("/bin/chgrp");
     group
         .env_clear()
         .current_dir("/")
         .arg(worker_gid.to_string())
         .arg(path);
-    run(&mut group, "set shared mount group").await?;
-    set_runtime_access_path(path, SHARED_MOUNT_MODE).await?;
-    let metadata = fs::metadata(path)
-        .await
-        .map_err(|error| format!("verify shared mount: {error}"))?;
-    if metadata.gid() != worker_gid || metadata.permissions().mode() & 0o7777 != SHARED_MOUNT_MODE {
-        return Err("shared mount ownership or mode was not applied".to_owned());
+    run(&mut group, "set shared mount group").await.map(|_| ())
+}
+
+#[cfg(unix)]
+async fn ensure_shared_mount_mode(
+    path: &Path,
+    current_uid: u32,
+    current_mode: u32,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if current_mode == SHARED_MOUNT_MODE {
+        return Ok(());
+    }
+    let mode = std::fs::Permissions::from_mode(SHARED_MOUNT_MODE);
+    if let Err(error) = fs::set_permissions(path, mode).await {
+        if current_uid != WORKER_UID {
+            return Err(format!("protect shared mount: {error}"));
+        }
+        let mut protect = Command::new("/bin/chmod");
+        protect.arg("2770").arg(path);
+        apply_uncredentialed_worker_to(&mut protect);
+        run(&mut protect, "protect worker-owned shared mount").await?;
     }
     Ok(())
 }
