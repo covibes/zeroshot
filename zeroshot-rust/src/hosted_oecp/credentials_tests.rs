@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 #[cfg(unix)]
 use super::credential_runtime::prepare_shared_mount;
+use super::credential_runtime::apply_fixed_git_arguments;
 use super::credentials::{
     apply_uncredentialed_worker_to, CredentialInstallError, CredentialStore,
     EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
@@ -39,6 +40,29 @@ fn command_environment(command: &tokio::process::Command) -> BTreeMap<String, Op
             ))
         })
         .collect()
+}
+
+#[test]
+fn git_commands_trust_only_the_fixed_capsule_workspace() {
+    let mut command = tokio::process::Command::new("/usr/bin/git");
+    apply_fixed_git_arguments(&mut command);
+    let arguments = command
+        .as_std()
+        .get_args()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        arguments,
+        [
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "safe.directory=/workspace",
+        ]
+    );
 }
 
 #[tokio::test]

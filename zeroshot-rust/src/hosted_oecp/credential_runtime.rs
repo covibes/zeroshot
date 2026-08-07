@@ -119,11 +119,8 @@ async fn clone_exact_repository(credentials: &CredentialBundle) -> Result<(), St
     }
     let remote = format!("https://github.com/{}.git", credentials.repository);
     let mut clone = Command::new("/usr/bin/git");
+    apply_fixed_git_arguments(&mut clone);
     clone.args([
-        "-c",
-        "credential.helper=",
-        "-c",
-        "core.hooksPath=/dev/null",
         "clone",
         "--no-checkout",
         "--origin",
@@ -135,17 +132,9 @@ async fn clone_exact_repository(credentials: &CredentialBundle) -> Result<(), St
     run(&mut clone, "git clone").await?;
 
     let mut checkout = Command::new("/usr/bin/git");
-    checkout.args([
-        "-c",
-        "credential.helper=",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-C",
-        WORKSPACE_ROOT,
-        "checkout",
-        "--detach",
-        &credentials.base_revision,
-    ]);
+    apply_fixed_git_arguments(&mut checkout);
+    checkout.args(["-C", WORKSPACE_ROOT, "checkout", "--detach"]);
+    checkout.arg(&credentials.base_revision);
     credentials.apply_git_to(&mut checkout);
     run(&mut checkout, "exact base checkout").await?;
     verify_prepared_repository(credentials).await
@@ -181,15 +170,18 @@ async fn git_output<const N: usize>(
     operation: &str,
 ) -> Result<String, String> {
     let mut command = Command::new("/usr/bin/git");
-    command
-        .args(["-c", "credential.helper=", "-c", "core.hooksPath=/dev/null"])
-        .arg("-C")
-        .arg(WORKSPACE_ROOT)
-        .args(args);
+    apply_fixed_git_arguments(&mut command);
+    command.arg("-C").arg(WORKSPACE_ROOT).args(args);
     credentials.apply_git_to(&mut command);
     run(&mut command, operation)
         .await
         .map(|output| String::from_utf8_lossy(&output).into_owned())
+}
+
+pub(super) fn apply_fixed_git_arguments(command: &mut Command) {
+    command
+        .args(["-c", "credential.helper=", "-c", "core.hooksPath=/dev/null"])
+        .args(["-c", "safe.directory=/workspace"]);
 }
 
 async fn write_runtime_files(runtime: &RuntimeConfig) -> Result<(), String> {
