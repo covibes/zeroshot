@@ -2,16 +2,16 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { describe, it } = require('node:test');
+const { createTempDirectory, removeTempDirectory } = require('../helpers/temp-directory');
 const { BASE_REVISION, captureLogs, RUNTIME_CONFIG } = require('./candidate-fixtures');
 const { targetHarness } = require('./target-service-harness');
 
 describe('private target services', () => {
   it('runs add, login, list, setup, and remove through production service wiring', async () => {
     const h = targetHarness();
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runtime-config-'));
+    const root = createTempDirectory('zeroshot-runtime-config-');
     const runtimeConfig = path.join(root, 'runtime.json');
     fs.writeFileSync(runtimeConfig, JSON.stringify(RUNTIME_CONFIG));
     try {
@@ -38,7 +38,7 @@ describe('private target services', () => {
       assert.equal(h.calls.filter(([name]) => name === 'revoke').length, 1);
       assert.equal(h.calls.filter(([name]) => name === 'delete').length, 1);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTempDirectory(root);
     }
   });
 });

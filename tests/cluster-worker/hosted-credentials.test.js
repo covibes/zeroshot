@@ -2,15 +2,15 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
+const { createTempDirectory, removeTempDirectory } = require('../helpers/temp-directory');
 const {
   HostedConfigError,
   loadInstalledHostedWorkerConfiguration,
 } = require('../../zeroshot-rust/hosted-node/hosted-config');
 
 function fixture() {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-hosted-config-'));
+  const directory = createTempDirectory('zeroshot-hosted-config-');
   const settingsFile = path.join(directory, 'settings.json');
   fs.writeFileSync(
     settingsFile,
@@ -64,7 +64,7 @@ describe('hosted worker runtime boundary', () => {
       });
       assert.equal(Object.hasOwn(config.runtimeEnvironment, 'GH_TOKEN'), false);
     } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
+      removeTempDirectory(directory);
     }
   });
 
@@ -90,7 +90,7 @@ describe('hosted worker runtime boundary', () => {
         );
       }
     } finally {
-      fs.rmSync(directory, { recursive: true, force: true });
+      removeTempDirectory(directory);
     }
   });
 });

@@ -1,10 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { openClusterWorker } = require('./helpers/cluster-worker-client');
+const { createTempDirectory, removeTempDirectory } = require('../helpers/temp-directory');
 
 const fixture = path.join(__dirname, 'fixtures', 'fake-cluster-worker.js');
 const artifact = {
@@ -19,8 +18,8 @@ const artifact = {
 };
 
 function openWorker() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-cluster-worker-home-'));
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-cluster-worker-repo-'));
+  const home = createTempDirectory('zeroshot-cluster-worker-home-');
+  const cwd = createTempDirectory('zeroshot-cluster-worker-repo-');
   const client = openClusterWorker({
     fixture,
     cwd,
@@ -37,8 +36,8 @@ function openWorker() {
 
   async function close() {
     await client.close();
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.rmSync(cwd, { recursive: true, force: true });
+    removeTempDirectory(home);
+    removeTempDirectory(cwd);
   }
 
   return { ...client, close };
