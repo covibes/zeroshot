@@ -15,6 +15,26 @@ const CONFIG = Object.freeze({
   baseRevision: BASE,
 });
 
+function deliveryGit(calls) {
+  let headReads = 0;
+  return (args, timeout) => {
+    calls.push({ args, timeout });
+    const command = args.join(' ');
+    if (command === 'rev-parse HEAD') {
+      headReads += 1;
+      return { stdout: `${headReads === 1 ? BASE : HEAD}\n` };
+    }
+    if (command === 'remote get-url origin') {
+      return { stdout: 'https://github.com/the-open-engine/zeroshot.git\n' };
+    }
+    if (command === 'config --local --null --name-only --list') {
+      return { stdout: 'core.repositoryformatversion\0remote.origin.url\0' };
+    }
+    if (command === 'status --porcelain=v1 -z') return { stdout: ' M source.js\0' };
+    return { stdout: '' };
+  };
+}
+
 describe('private hosted Git delivery', () => {
   it('prepares a deterministic branch from the exact clean checkout', async () => {
     const calls = [];
@@ -42,23 +62,7 @@ describe('private hosted Git delivery', () => {
   it('commits one dirty tree, pushes its deterministic branch, and returns canonical review data', async () => {
     const branch = deterministicBranch('cluster-2');
     const calls = [];
-    let headReads = 0;
-    const git = (args, timeout) => {
-      calls.push({ args, timeout });
-      const command = args.join(' ');
-      if (command === 'rev-parse HEAD') {
-        headReads += 1;
-        return { stdout: `${headReads === 1 ? BASE : HEAD}\n` };
-      }
-      if (command === 'remote get-url origin') {
-        return { stdout: 'https://github.com/the-open-engine/zeroshot.git\n' };
-      }
-      if (command === 'config --local --null --name-only --list') {
-        return { stdout: 'core.repositoryformatversion\0remote.origin.url\0' };
-      }
-      if (command === 'status --porcelain=v1 -z') return { stdout: ' M source.js\0' };
-      return { stdout: '' };
-    };
+    const git = deliveryGit(calls);
     const createReview = (config, candidateBranch, headRevision) => {
       assert.equal(config, CONFIG);
       assert.equal(candidateBranch, branch);
@@ -101,6 +105,9 @@ describe('private hosted Git delivery', () => {
     };
     await assert.rejects(shipWorkspace(CONFIG, branch, { git }), /repository authority/);
   });
+});
+
+describe('private hosted pull request delivery', () => {
   it('accepts only a pull request bound to the pushed branch and exact base revision', async () => {
     const branch = deterministicBranch('cluster-review');
     const response = {
@@ -126,17 +133,47 @@ describe('private hosted Git delivery', () => {
 
   it('rejects a pull request receipt whose default branch advanced past the exact base', async () => {
     const branch = deterministicBranch('cluster-review-invalid-base');
+    const requests = [];
     await assert.rejects(
-      createPullRequest(CONFIG, branch, HEAD, (_repository, path) =>
-        path === ''
-          ? { default_branch: 'main' }
-          : {
-              html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
-              head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
-              base: { ref: 'main', sha: 'c'.repeat(40), repo: { full_name: CONFIG.repository } },
-            }
-      ),
+      createPullRequest(CONFIG, branch, HEAD, (_repository, path, init) => {
+        requests.push({ path, init });
+        if (path === '') return { default_branch: 'main' };
+        if (path === '/pulls/123') return { state: 'closed' };
+        return {
+          html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
+          head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
+          base: { ref: 'main', sha: 'c'.repeat(40), repo: { full_name: CONFIG.repository } },
+        };
+      }),
       /receipt is invalid/
     );
+    assert.deepEqual(requests.at(-1), {
+      path: '/pulls/123',
+      init: { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) },
+    });
+  });
+
+  it('deletes the pushed branch when pull request delivery fails', async () => {
+    const branch = deterministicBranch('cluster-review-cleanup');
+    const calls = [];
+    const git = deliveryGit(calls);
+    await assert.rejects(
+      shipWorkspace(CONFIG, branch, {
+        git,
+        createPullRequest: () => {
+          throw new Error('receipt is invalid');
+        },
+      }),
+      /receipt is invalid/
+    );
+    assert.deepEqual(calls.at(-1), {
+      args: [
+        'push',
+        '--porcelain',
+        'https://github.com/the-open-engine/zeroshot',
+        `:refs/heads/${branch}`,
+      ],
+      timeout: 10 * 60 * 1000,
+    });
   });
 });

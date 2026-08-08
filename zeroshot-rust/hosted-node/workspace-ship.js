@@ -104,6 +104,22 @@ function repositoryDefaultBranch(repository) {
   return branch;
 }
 
+function pullRequestNumber(htmlUrl, expectedPrefix) {
+  if (typeof htmlUrl !== 'string' || !htmlUrl.startsWith(expectedPrefix)) return '';
+  const value = htmlUrl.slice(expectedPrefix.length);
+  return /^[1-9][0-9]*$/.test(value) ? value : '';
+}
+
+async function rejectPullRequestReceipt(config, number, request) {
+  if (number) {
+    await request(config.repository, `/pulls/${number}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ state: 'closed' }),
+    });
+  }
+  throw new Error('GitHub pull request receipt is invalid');
+}
+
 async function createPullRequest(config, branch, headRevision, request = github) {
   const repository = await request(config.repository, '');
   const defaultBranch = repositoryDefaultBranch(repository);
@@ -117,10 +133,9 @@ async function createPullRequest(config, branch, headRevision, request = github)
     }),
   });
   const expectedPrefix = `https://github.com/${config.repository}/pull/`;
+  const number = pullRequestNumber(created.html_url, expectedPrefix);
   if (
-    typeof created.html_url !== 'string' ||
-    !created.html_url.startsWith(expectedPrefix) ||
-    !/^[1-9][0-9]*$/.test(created.html_url.slice(expectedPrefix.length)) ||
+    !number ||
     created.head?.ref !== branch ||
     created.head?.sha !== headRevision ||
     created.head?.repo?.full_name !== config.repository ||
@@ -128,9 +143,32 @@ async function createPullRequest(config, branch, headRevision, request = github)
     created.base?.sha !== config.baseRevision ||
     created.base?.repo?.full_name !== config.repository
   ) {
-    throw new Error('GitHub pull request receipt is invalid');
+    return rejectPullRequestReceipt(config, number, request);
   }
   return created.html_url;
+}
+
+async function createReviewOrDeleteBranch({
+  config,
+  branch,
+  headRevision,
+  expectedRemote,
+  createReview,
+  gitCommand,
+}) {
+  try {
+    return await createReview(config, branch, headRevision);
+  } catch (error) {
+    try {
+      await gitCommand(
+        ['push', '--porcelain', expectedRemote, `:refs/heads/${branch}`],
+        PUSH_TIMEOUT_MS
+      );
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Hosted delivery cleanup failed');
+    }
+    throw error;
+  }
 }
 
 async function shipWorkspace(config, branch, dependencies = {}) {
@@ -179,7 +217,14 @@ async function shipWorkspace(config, branch, dependencies = {}) {
     ['push', '--porcelain', expectedRemote, `HEAD:refs/heads/${branch}`],
     PUSH_TIMEOUT_MS
   );
-  const pullRequestUrl = await createReview(config, branch, headRevision);
+  const pullRequestUrl = await createReviewOrDeleteBranch({
+    config,
+    branch,
+    headRevision,
+    expectedRemote,
+    createReview,
+    gitCommand,
+  });
   return Object.freeze({
     repository: config.repository,
     branch,
