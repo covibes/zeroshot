@@ -2296,6 +2296,7 @@ function createIsolatedLogState(skipStructuredResultCheck = false, nested = fals
     statusCheckInterval: null,
     timeoutTimer: null,
     lineBuffer: createLogRecordBuffer(),
+    tailDecoder: new StringDecoder('utf8'),
     skipStructuredResultCheck,
     nested,
   };
@@ -2647,6 +2648,13 @@ function appendIsolatedContent(state, content, onLine) {
   appendContentToBuffer(state, content, onLine, true);
 }
 
+function consumeIsolatedTailChunk(state, data, onLine) {
+  const chunk = typeof data === 'string' ? data : state.tailDecoder.write(data);
+  if (!chunk) return;
+  state.fullOutput += chunk;
+  appendIsolatedContent(state, chunk, onLine);
+}
+
 function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLine }) {
   state.tailProcess = manager.spawnInContainer(clusterId, [
     'sh',
@@ -2655,9 +2663,7 @@ function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLi
   ]);
 
   state.tailProcess.stdout.on('data', (data) => {
-    const chunk = data.toString();
-    state.fullOutput += chunk;
-    appendIsolatedContent(state, chunk, onLine);
+    consumeIsolatedTailChunk(state, data, onLine);
   });
 
   state.tailProcess.stderr.on('data', (data) => {
@@ -2668,6 +2674,7 @@ function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLi
   });
 
   state.tailProcess.on('close', (exitCode) => {
+    consumeIsolatedTailChunk(state, state.tailDecoder.end(), onLine);
     if (!state.taskExited) {
       agent._log(`[${agent.id}] tail process exited with code ${exitCode}`);
     }
@@ -3162,4 +3169,5 @@ module.exports = {
   killTask,
   createLogRecordBuffer,
   appendContentToBuffer,
+  consumeIsolatedTailChunk,
 };
