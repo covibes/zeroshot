@@ -16,7 +16,50 @@
  * 4. Direct JSON parse of entire output
  */
 
+const { createHash } = require('node:crypto');
 const { parseProviderChunk } = require('../providers');
+
+const MAX_CLI_ERROR_BYTES = 4096;
+const CLI_ERROR_TRUNCATION_SUFFIX = '… [truncated]';
+
+function truncateUtf8(text, maxBytes = MAX_CLI_ERROR_BYTES) {
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+
+  const suffixBytes = Buffer.byteLength(CLI_ERROR_TRUNCATION_SUFFIX);
+  const contentBudget = Math.max(0, maxBytes - suffixBytes);
+  let bytes = 0;
+  let truncated = '';
+  for (const character of text) {
+    const characterBytes = Buffer.byteLength(character);
+    if (bytes + characterBytes > contentBudget) break;
+    truncated += character;
+    bytes += characterBytes;
+  }
+  return `${truncated}${CLI_ERROR_TRUNCATION_SUFFIX}`;
+}
+
+function primitiveErrorText(value) {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value)
+    : '';
+}
+
+function cliErrorDetail(value, fallback) {
+  const candidate = Array.isArray(value)
+    ? value
+        .map(primitiveErrorText)
+        .filter((message) => message.trim())
+        .join('; ')
+    : primitiveErrorText(value);
+  const raw = candidate.trim() ? candidate : fallback;
+  return {
+    error: truncateUtf8(raw.trim()),
+    diagnostic: {
+      byteLength: Buffer.byteLength(raw),
+      sha256: createHash('sha256').update(raw).digest('hex'),
+    },
+  };
+}
 
 /**
  * Strip timestamp prefix from log lines.
@@ -308,58 +351,85 @@ function extractClaudeVertexModelError(output, { useVertex = false } = {}) {
  * @param {string} providerName - Active provider whose terminal errors may be inspected
  * @returns {{error: string, provider: string}|null} Error info or null
  */
-function extractCliError(output, providerName = 'claude') {
+function claudeFailureFromObject(obj) {
+  if (obj.type !== 'result') return null;
+  if (obj.is_error === true) {
+    const detail = cliErrorDetail(
+      Array.isArray(obj.errors) ? obj.errors : obj.error || obj.result,
+      'Unknown CLI error'
+    );
+    return { ...detail, provider: 'claude' };
+  }
+  if (obj.subtype !== 'error') return null;
+  return {
+    ...cliErrorDetail(obj.error || obj.result, 'CLI returned error'),
+    provider: 'claude',
+  };
+}
+
+function codexFailureFromObject(obj) {
+  if (obj.type !== 'turn.failed') return null;
+  return {
+    ...cliErrorDetail(obj.error?.message || obj.error?.code || obj.error, 'Turn failed'),
+    provider: 'codex',
+  };
+}
+
+function geminiFailureFromObject(obj) {
+  const geminiFailure =
+    (obj.type === 'result' && obj.status === 'error') ||
+    (obj.type === 'error' && obj.severity === 'error');
+  if (!geminiFailure) return null;
+  return {
+    ...cliErrorDetail(obj.error?.message || obj.message, 'Gemini CLI error'),
+    provider: 'gemini',
+  };
+}
+
+function opencodeFailureFromObject(obj) {
+  if (obj.type !== 'session.error' && obj.type !== 'error') return null;
+  return {
+    ...cliErrorDetail(
+      obj.error?.data?.message || obj.error?.message || obj.error?.name,
+      'Session error'
+    ),
+    provider: 'opencode',
+  };
+}
+
+function failureFromProviderObject(obj, providerName) {
+  if (providerName === 'claude') return claudeFailureFromObject(obj);
+  if (providerName === 'codex') return codexFailureFromObject(obj);
+  if (providerName === 'gemini') return geminiFailureFromObject(obj);
+  if (providerName === 'opencode') return opencodeFailureFromObject(obj);
+  return null;
+}
+
+function extractCliFailure(output, providerName = 'claude') {
   if (!output || typeof output !== 'string') return null;
 
   const lines = output.split('\n');
+  // Codex terminal truth is a turn.failed record at the newest end of JSONL output.
+  // Search it newest-first so a preserved terminal tail wins over older provider chatter.
+  if (providerName === 'codex') lines.reverse();
 
   for (const line of lines) {
     const content = stripTimestamp(line);
     if (!content.startsWith('{')) continue;
-
-    let obj;
     try {
-      obj = JSON.parse(content);
+      const failure = failureFromProviderObject(JSON.parse(content), providerName);
+      if (failure) return failure;
     } catch {
-      continue;
-    }
-
-    if (providerName === 'claude' && obj.type === 'result' && obj.is_error === true) {
-      const errorMsg = Array.isArray(obj.errors)
-        ? obj.errors.join('; ')
-        : obj.error || obj.result || 'Unknown CLI error';
-      return { error: errorMsg, provider: 'claude' };
-    }
-
-    if (providerName === 'claude' && obj.type === 'result' && obj.subtype === 'error') {
-      const errorMsg = obj.error || obj.result || 'CLI returned error';
-      return { error: errorMsg, provider: 'claude' };
-    }
-
-    if (providerName === 'codex' && obj.type === 'turn.failed') {
-      const errorMsg = obj.error?.message || obj.error || 'Turn failed';
-      return { error: errorMsg, provider: 'codex' };
-    }
-
-    if (
-      providerName === 'gemini' &&
-      ((obj.type === 'result' && obj.status === 'error') ||
-        (obj.type === 'error' && obj.severity === 'error'))
-    ) {
-      return {
-        error: obj.error?.message || obj.message || 'Gemini CLI error',
-        provider: 'gemini',
-      };
-    }
-
-    if (providerName === 'opencode' && (obj.type === 'session.error' || obj.type === 'error')) {
-      const errorMsg =
-        obj.error?.data?.message || obj.error?.message || obj.error?.name || 'Session error';
-      return { error: errorMsg, provider: 'opencode' };
+      // Ignore non-JSON output lines.
     }
   }
 
   return null;
+}
+
+function extractCliError(output, providerName = 'claude') {
+  const failure = extractCliFailure(output, providerName);
+  return failure ? { error: failure.error, provider: failure.provider } : null;
 }
 
 /**
@@ -419,8 +489,10 @@ function extractJsonFromOutput(output, providerName = 'claude') {
 }
 
 module.exports = {
+  MAX_CLI_ERROR_BYTES,
   extractJsonFromOutput,
   extractModelTextFromOutput,
+  extractCliFailure,
   extractCliError,
   extractClaudeVertexModelError,
   extractFromResultWrapper,

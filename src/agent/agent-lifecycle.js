@@ -24,6 +24,7 @@ const { findPlatformMismatchReason } = require('./validation-platform');
 const { calculateRateLimitDelay, isRateLimitError } = require('./rate-limit-backoff');
 const { updateAgentProviderSession } = require('./provider-session');
 const { rebuildProviderSessionAfterCommit } = require('./agent-task-executor');
+const providerFailures = require('./provider-terminal-failure');
 const {
   buildStructuredOutputClusterFailure,
   isStructuredOutputInvalidError,
@@ -660,6 +661,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
     error.code = result.code || result.errorType || null;
     error.taskId = result.taskId || null;
     error.vertexModelError = result.vertexModelError || null;
+    providerFailures.decorateError(error, result.providerFailure);
     throw error;
   }
 
@@ -795,6 +797,16 @@ ${'='.repeat(80)}`);
 
   // Non-validator agents: publish error and stop
   agent.state = 'error';
+  const workerFailure = providerFailures.workerFailure(error);
+  // Synchronous terminal listeners must see the final failure truth before persisting a stop.
+  agent.cluster.failureInfo = providerFailures.buildFinalFailureInfo({
+    agent,
+    error,
+    attempts: failureAttempts,
+    worker: workerFailure,
+    unsupportedCapability,
+    structuredOutputInvalid,
+  });
 
   // Hook failure: fail the whole cluster so it gets stopped + persisted (prevents deadlocked "running" clusters).
   if (error?.hookFailure) {
@@ -872,25 +884,14 @@ ${'='.repeat(80)}`);
     });
   }
 
-  // Save failure info to cluster for resume capability
-  agent.cluster.failureInfo = {
-    ...(error?.terminationExhausted ? agent.cluster.failureInfo : {}),
-    agentId: agent.id,
-    taskId: error?.taskId || agent.currentTaskId,
-    iteration: agent.iteration,
-    error: error.message,
+  providerFailures.publishCriticalFailure({
+    agent,
+    error,
     attempts: failureAttempts,
-    ...(unsupportedCapability
-      ? {
-          code: error.code,
-          permanent: true,
-          provider: error.provider,
-          capability: error.capability,
-        }
-      : {}),
-    ...(structuredOutputInvalid ? { code: error.code, details: error.details ?? null } : {}),
-    timestamp: Date.now(),
-  };
+    worker: workerFailure,
+    unsupportedCapability,
+    structuredOutputInvalid,
+  });
 
   // Publish error to message bus for visibility in logs
   agent._publish({
@@ -900,7 +901,7 @@ ${'='.repeat(80)}`);
       text: `Task execution failed after ${failureAttempts} attempts: ${error.message}`,
       data: {
         error: error.message,
-        stack: error.stack,
+        stack: error?.provider ? undefined : error.stack,
         hookFailure: error?.hookFailure === true,
         restartExhausted: error?.restartExhausted === true,
         terminationExhausted: error?.terminationExhausted === true,
@@ -911,6 +912,10 @@ ${'='.repeat(80)}`);
         iteration: agent.iteration,
         taskId: error?.taskId || agent.currentTaskId,
         attempts: failureAttempts,
+        ...providerFailures.receiptFields(error),
+        ...(error?.provider
+          ? { workerCode: workerFailure.code, workerReason: workerFailure.reason }
+          : {}),
         ...(unsupportedCapability
           ? {
               code: error.code,

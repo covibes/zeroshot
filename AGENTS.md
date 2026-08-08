@@ -807,6 +807,13 @@ isolated followers retain a bounded complete-record tail for parsing and diagnos
 terminal settlement. Isolated settlement re-reads only a fixed-size file tail; the raw task log is
 the sole complete-output authority. Never restore whole-record watcher buffering, cumulative output
 strings, whole-log terminal reads, or unbounded provider records/events in control-plane state.
+Provider terminal failures are parsed from the newest typed terminal event before generic status
+text. Raw provider diagnostics remain task-log-only; `AGENT_OUTPUT`, `failureInfo`, `AGENT_ERROR`,
+and `CLUSTER_FAILED` retain only a synthesized error plus provider/event/category/retryability and
+byte-length/SHA-256 receipt. Final critical-agent exhaustion installs `failureInfo` before emitting
+exactly one durable `CLUSTER_FAILED`; the legacy `AGENT_ERROR` stop fallback must not initiate a
+second stop after that terminal topic exists in the current run, while prior-run failures must not
+suppress terminalization after resume.
 The SQLite ledger additionally keeps one cluster-wide newest tail of non-replayable
 `AGENT_OUTPUT` (8 MiB / 8192 exported messages) and a persisted deterministic omission receipt;
 live delivery is unchanged, while control and explicitly replayable messages are never compacted.
