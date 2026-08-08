@@ -232,6 +232,13 @@ function registerCredentialProvisioningTests() {
       githubToken: 'HOSTED_SMOKE_GIT_TOKEN_CANARY',
       repository: 'the-open-engine/zeroshot-smoke',
       baseRevision: 'a'.repeat(40),
+      delivery: {
+        version: 'zeroshot.delivery/v1',
+        mode: 'pr',
+        repository: 'the-open-engine/zeroshot-smoke',
+        targetBranch: 'main',
+        baseRevision: 'a'.repeat(40),
+      },
       runtime: {
         provider: 'codex',
         executable: 'codex',

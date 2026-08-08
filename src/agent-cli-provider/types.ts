@@ -74,6 +74,7 @@ export interface GatewayBuildOptions {
   readonly protocol?: GatewayProtocol;
   readonly baseUrl?: string;
   readonly apiKey?: string;
+  readonly apiKeyEnv?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly model?: string | null;
   readonly maxTokens?: number;

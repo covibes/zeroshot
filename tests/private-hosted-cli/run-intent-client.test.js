@@ -170,6 +170,17 @@ describe('bounded RunIntent authentication and bodies', () => {
 });
 
 describe('opaque RunIntent submit serialization', () => {
+  it('omits capsule size when the caller preserves the target default', async () => {
+    const h = clientHarness([jsonResponse(runIntent(), 202)]);
+    await h.client.submit({
+      envelope: buildRunIntentEnvelope(GRAPH, { source: 'prompt' }),
+      runtime: RUNTIME_BUNDLE,
+      submissionKey: SUBMISSION_KEY,
+    });
+
+    assert.equal(Object.hasOwn(JSON.parse(h.requests[0].init.body), 'size'), false);
+  });
+
   it('serializes each opaque submit field exactly once', async () => {
     const h = clientHarness([jsonResponse(runIntent(), 202)]);
     let intentSerializations = 0;

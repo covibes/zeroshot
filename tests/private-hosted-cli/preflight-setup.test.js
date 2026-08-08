@@ -8,6 +8,7 @@ const { afterEach, describe, it } = require('node:test');
 const {
   checkHostedSetup,
   configureTargetSetup,
+  resolveSubmissionBase,
   resolveRuntimeBundle,
 } = require('../../private/hosted-cli-candidate/credentials');
 const {
@@ -101,16 +102,21 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
     targetName: 'prod',
     target: state._targets.prod,
     repository: 'owner/repository',
-    baseRevision: BASE_REVISION,
+    base: BASE_REVISION,
+    targetBranch: 'main',
     runtimeConfigPath,
     settings: {
       mutate: (mutator) => mutator(state),
     },
     clock: { now: () => Date.parse('2026-08-03T00:00:00Z') },
   });
-  assert.equal(metadata.kind, 'zeroshot.private-hosted-setup/v2');
+  assert.equal(metadata.kind, 'zeroshot.private-hosted-setup/v3');
   assert.equal(metadata.repository, 'owner/repository');
-  assert.equal(metadata.baseRevision, BASE_REVISION);
+  assert.deepEqual(metadata.base, {
+    kind: 'commit',
+    revision: BASE_REVISION,
+    targetBranch: 'main',
+  });
   assert.equal(metadata.runtimeConfigPath, runtimeConfigPath);
   assert.deepEqual(checkHostedSetup(state._targets.prod), metadata);
   assert.equal('runtime' in metadata, false);
@@ -118,17 +124,56 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   assert.equal(JSON.stringify(state).includes(directSecret), false);
   assert.equal(JSON.stringify(state).includes('aws-local-secret'), false);
 
-  const bundle = resolveRuntimeBundle(state._targets.prod, {
-    GH_TOKEN: 'github-test-token',
-    LOCAL_AWS_ACCESS_KEY_ID: 'aws-local-secret',
+  const bundle = await resolveRuntimeBundle(state._targets.prod, {
+    mode: 'pr',
+    environment: {
+      GH_TOKEN: 'github-test-token',
+      LOCAL_AWS_ACCESS_KEY_ID: 'aws-local-secret',
+    },
+    fetch: () => new globalThis.Response(JSON.stringify({ sha: BASE_REVISION }), { status: 200 }),
   });
   assert.equal(bundle.githubToken, 'github-test-token');
   assert.equal(bundle.baseRevision, BASE_REVISION);
+  assert.deepEqual(bundle.delivery, {
+    version: 'zeroshot.delivery/v1',
+    mode: 'pr',
+    repository: 'owner/repository',
+    targetBranch: 'main',
+    baseRevision: BASE_REVISION,
+  });
   assert.equal(bundle.runtime.provider, 'bedrock-runner');
   assert.equal(bundle.runtime.executable, 'claude');
   assert.equal(bundle.runtime.environment.AWS_ACCESS_KEY_ID, 'aws-local-secret');
   assert.equal(bundle.runtime.environment.AWS_REGION, 'eu-west-1');
   assert.equal(bundle.runtime.settings.providerSettings.custom.apiKey, directSecret);
+});
+
+it('resolves omitted and named bases to one immutable submission revision', async () => {
+  const requests = [];
+  const fetch = (url) => {
+    requests.push(url);
+    const body = url.endsWith('/repos/owner/repository')
+      ? { default_branch: 'trunk' }
+      : { object: { sha: BASE_REVISION } };
+    return new globalThis.Response(JSON.stringify(body), { status: 200 });
+  };
+  assert.deepEqual(
+    await resolveSubmissionBase(
+      { repository: 'owner/repository', base: { kind: 'default' } },
+      'token',
+      fetch
+    ),
+    { targetBranch: 'trunk', baseRevision: BASE_REVISION }
+  );
+  assert.deepEqual(
+    await resolveSubmissionBase(
+      { repository: 'owner/repository', base: { kind: 'branch', branch: 'release/next' } },
+      'token',
+      fetch
+    ),
+    { targetBranch: 'release/next', baseRevision: BASE_REVISION }
+  );
+  assert.match(requests.at(-1), /release%2Fnext$/);
 });
 
 it('validates generic runtime bounds and anchors mapped files to the config', () => {
@@ -142,32 +187,21 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
     }).executable,
     'gateway'
   );
-  assert.equal(
-    normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }).executable,
-    'future-cli'
+  assert.throws(
+    () => normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }),
+    /Unknown provider/
   );
-  for (const name of [
-    'GH_TOKEN',
-    'GITHUB_TOKEN',
-    'GIT_ASKPASS',
-    'GIT_CONFIG_GLOBAL',
-    'GIT_CONFIG_NOSYSTEM',
-    'GIT_TERMINAL_PROMPT',
-    'HOME',
-    'LANG',
-    'NODE_ENV',
-    'PATH',
-    'TMPDIR',
-    'ZEROSHOT_HOSTED_BASE_REVISION',
-    'ZEROSHOT_HOSTED_EXECUTABLE',
-    'ZEROSHOT_HOSTED_EXEC_ROOT',
-    'ZEROSHOT_HOSTED_MODEL',
-    'ZEROSHOT_HOSTED_PROVIDER',
-    'ZEROSHOT_HOSTED_REPOSITORY',
-    'ZEROSHOT_ISOLATION_PROFILE',
-    'ZEROSHOT_PROVIDER_PROFILE',
-    'ZEROSHOT_SETTINGS_FILE',
-  ]) {
+  const reservedNames = `
+    GH_TOKEN GITHUB_TOKEN GIT_ASKPASS GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+    GIT_TERMINAL_PROMPT HOME LANG NODE_ENV PATH TMPDIR ZEROSHOT_HOSTED_BASE_REVISION
+    ZEROSHOT_HOSTED_DELIVERY_MODE ZEROSHOT_HOSTED_DELIVERY_TARGET
+    ZEROSHOT_HOSTED_DELIVERY_VERSION ZEROSHOT_HOSTED_EXECUTABLE ZEROSHOT_HOSTED_EXEC_ROOT
+    ZEROSHOT_HOSTED_MODEL ZEROSHOT_HOSTED_PROVIDER ZEROSHOT_HOSTED_REPOSITORY
+    ZEROSHOT_ISOLATION_PROFILE ZEROSHOT_PROVIDER_PROFILE ZEROSHOT_SETTINGS_FILE
+  `
+    .trim()
+    .split(/\s+/);
+  for (const name of reservedNames) {
     assert.throws(
       () =>
         normalizeRuntimeConfig({
@@ -219,27 +253,29 @@ it('rejects invalid repository or runtime configuration without mutation', () =>
   for (const options of [
     {
       repository: 'owner/repo.git',
-      baseRevision: BASE_REVISION,
+      base: 'main',
       runtimeConfigPath: validRuntimeConfig,
     },
     {
       repository: 'Owner/Repo',
-      baseRevision: BASE_REVISION,
+      base: 'main',
       runtimeConfigPath: validRuntimeConfig,
     },
     {
       repository: 'owner/repo',
-      baseRevision: 'not-a-commit',
+      base: 'branch..invalid',
       runtimeConfigPath: validRuntimeConfig,
     },
     {
       repository: 'owner/repo',
-      baseRevision: BASE_REVISION,
+      base: BASE_REVISION,
+      targetBranch: 'main',
       runtimeConfigPath: emptyProviderConfig,
     },
     {
       repository: 'owner/repo',
-      baseRevision: BASE_REVISION,
+      base: BASE_REVISION,
+      targetBranch: 'main',
       runtimeConfigPath: unknownFieldConfig,
     },
   ]) {

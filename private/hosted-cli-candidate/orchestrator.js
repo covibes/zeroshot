@@ -67,7 +67,9 @@ class HostedRunOrchestrator {
       options.inputPath,
       this.assertGraphSpec
     );
-    const runtime = this.resolveRuntimeBundle(options.target);
+    const runtime = await this.resolveRuntimeBundle(options.target, {
+      mode: options.deliveryMode,
+    });
     const execution = buildHostedExecution(inputs, runtime);
     const identities = stableIdentities(this.randomUUID, this.runtimeImageDigest);
     return { execution, identities, runtime };
@@ -80,6 +82,7 @@ class HostedRunOrchestrator {
         {
           idempotencyKey: identities.allocationIdempotencyKey,
           label: `zeroshot-${identities.clientRunId.slice(-12)}`,
+          ...(options.size === undefined ? {} : { size: options.size }),
         },
         options.signal
       );

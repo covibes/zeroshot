@@ -4,6 +4,10 @@
     {
       "source": "src/target/index.ts",
       "document": "AGENTS.md"
+    },
+    {
+      "source": "src/agent-cli-provider/types.ts",
+      "document": "AGENTS.md"
     }
   ]
 }

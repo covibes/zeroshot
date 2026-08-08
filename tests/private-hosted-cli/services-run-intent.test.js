@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
-const { captureLogs, DESCRIPTOR } = require('./candidate-fixtures');
+const { captureLogs, DESCRIPTOR, detachedQueueOptions } = require('./candidate-fixtures');
 const { remoteHarness } = require('./remote-service-harness');
 
 const INTENT_ID = '019fd184-52c3-7e1f-a567-4ecb6fc6a0ec';
@@ -54,6 +54,8 @@ function registerQueueSubmissionTests() {
         queue: true,
         submissionKey: SUBMISSION_KEY,
         detach: false,
+        size: 'tiny',
+        ship: true,
       })
     );
     assert.equal(result.value.state, 'succeeded');
@@ -63,9 +65,11 @@ function registerQueueSubmissionTests() {
     );
     const submitted = queueCalls[0][1];
     assert.equal(submitted.submissionKey, SUBMISSION_KEY);
+    assert.equal(submitted.size, 'tiny');
     assert.deepEqual(Object.keys(submitted.envelope), ['version', 'graph', 'input']);
     assert.equal(submitted.envelope.version, 'zeroshot.run-intent/v2');
     assert.equal(submitted.runtime.runtime.provider, 'claude');
+    assert.equal(submitted.runtime.delivery.mode, 'ship');
     assert.equal(submitted.runtime.runtime.environment.ANTHROPIC_API_KEY, 'model-test-token');
     assert.deepEqual(submitted.envelope.input, {
       source: 'prompt',
@@ -89,6 +93,20 @@ function registerQueueSubmissionTests() {
       }),
       /does not advertise RunIntent v2/
     );
+  });
+
+  it('omits queue size to preserve the target-advertised default', async () => {
+    let submitted;
+    const h = remoteHarness({
+      createRunIntentClient: () => ({
+        submit(request) {
+          submitted = request;
+          return intent();
+        },
+      }),
+    });
+    await captureLogs(() => h.services.remoteQueueRun(detachedQueueOptions(SUBMISSION_KEY)));
+    assert.equal(Object.hasOwn(submitted, 'size'), false);
   });
 }
 

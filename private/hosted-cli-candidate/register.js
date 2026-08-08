@@ -13,6 +13,19 @@ const {
   wrapExisting,
 } = require('./register-support');
 
+const HOSTED_SIZES = Object.freeze(['tiny', 'small', 'standard', 'large']);
+const HOSTED_RUN_OPTIONS = new Set([
+  'graph',
+  'input',
+  'target',
+  'detach',
+  'queue',
+  'submissionKey',
+  'size',
+  'pr',
+  'ship',
+]);
+
 function registerTarget(program, service) {
   const target = program.command('target').description('Manage named private hosted targets');
   target
@@ -38,7 +51,8 @@ function registerTarget(program, service) {
     .command('setup <name>')
     .description('Bind a repository and local hosted runtime configuration')
     .requiredOption('--repository <owner/name>', 'Exact GitHub owner/name')
-    .requiredOption('--base-revision <sha>', 'Exact lowercase 40-character commit')
+    .option('--base <branch-or-sha>', 'Branch or exact lowercase 40-character commit')
+    .option('--target-branch <branch>', 'Delivery target required with an exact commit')
     .requiredOption('--runtime-config <file>', 'Generic hosted runtime JSON')
     .action((name, options) => failClosed(() => service().targetSetup(name, options)));
   target
@@ -82,10 +96,7 @@ function registerCapsule(program, service) {
         ) {
           throw new Error('capsule label must be between 1 and 100 characters');
         }
-        if (
-          options.size !== undefined &&
-          !['tiny', 'small', 'standard', 'large'].includes(options.size)
-        ) {
+        if (options.size !== undefined && !HOSTED_SIZES.includes(options.size)) {
           throw new Error('capsule size is not supported');
         }
         return service().capsuleCreate(options);
@@ -110,6 +121,7 @@ function registerHostedRun(program, service) {
     .option('--input <file>', 'Explicit hosted JSON input')
     .option('--target <name>', 'Named private hosted target')
     .option('--queue', 'Submit through the durable private RunIntent queue')
+    .option('--size <size>', 'Advertised capsule size')
     .option('--submission-key <uuid>', 'Retry-stable RunIntent submission key', canonicalUuid);
   wrapExisting(run, ({ args, options, command, invokeLocal }) => {
     const inputArg = args[0];
@@ -118,11 +130,12 @@ function registerHostedRun(program, service) {
         options.graph !== undefined ||
         options.input !== undefined ||
         options.queue ||
+        options.size !== undefined ||
         options.submissionKey !== undefined
       ) {
         return failClosed(() =>
           Promise.reject(
-            new Error('--graph, --input, --queue, and --submission-key require --target')
+            new Error('--graph, --input, --queue, --size, and --submission-key require --target')
           )
         );
       }
@@ -130,23 +143,42 @@ function registerHostedRun(program, service) {
       return invokeLocal();
     }
     return failClosed(() => {
-      if (typeof options.target !== 'string' || options.target.length === 0) {
-        throw new Error('--target must name a registered target');
-      }
-      assertOnlyOptions(
-        command,
-        new Set(['graph', 'input', 'target', 'detach', 'queue', 'submissionKey'])
-      );
-      if (inputArg !== undefined)
-        throw new Error('general text/issue run is not available with --target');
-      if (!options.graph || !options.input)
-        throw new Error('hosted run requires both --graph and --input');
-      if (options.submissionKey !== undefined && !options.queue) {
-        throw new Error('--submission-key requires --queue');
-      }
+      validateHostedRun({ options, command, inputArg });
       return options.queue ? service().remoteQueueRun(options) : service().remoteRun(options);
     });
   });
+}
+
+function validateHostedRun({ options, command, inputArg }) {
+  validateHostedRunTarget(options, inputArg);
+  assertOnlyOptions(command, HOSTED_RUN_OPTIONS);
+  validateHostedRunInput(options);
+  validateHostedRunDelivery(options);
+}
+
+function validateHostedRunTarget(options, inputArg) {
+  if (typeof options.target !== 'string' || options.target.length === 0) {
+    throw new Error('--target must name a registered target');
+  }
+  if (inputArg !== undefined) {
+    throw new Error('general text/issue run is not available with --target');
+  }
+}
+
+function validateHostedRunInput(options) {
+  if (!options.graph || !options.input) {
+    throw new Error('hosted run requires both --graph and --input');
+  }
+  if (options.submissionKey !== undefined && !options.queue) {
+    throw new Error('--submission-key requires --queue');
+  }
+}
+
+function validateHostedRunDelivery(options) {
+  if (!options.pr && !options.ship) throw new Error('hosted run requires --pr or --ship');
+  if (options.size !== undefined && !HOSTED_SIZES.includes(options.size)) {
+    throw new Error('capsule size is not supported');
+  }
 }
 
 function registerHostedList(program, service) {

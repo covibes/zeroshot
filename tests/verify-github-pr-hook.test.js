@@ -35,6 +35,28 @@ function createMockAgent(workingDirectory = process.cwd(), providerName = 'claud
   };
 }
 
+function openPullRequestClaim(merged = true) {
+  return {
+    output: JSON.stringify({
+      pr_url: 'https://github.com/org/repo/pull/123',
+      pr_number: 123,
+      merged,
+    }),
+  };
+}
+
+function openPullRequestView(overrides = {}) {
+  return spawnSuccess(
+    JSON.stringify({
+      number: 123,
+      state: 'OPEN',
+      mergedAt: null,
+      url: 'https://github.com/org/repo/pull/123',
+      ...overrides,
+    })
+  );
+}
+
 describe('verify_pull_request hook action', () => {
   let executeHook;
   let mockSpawnSyncFn;
@@ -189,37 +211,40 @@ describe('verify_pull_request hook action', () => {
     }
   });
 
-  it('should complete with verification-pending when PR remains OPEN after all polls', async function () {
+  it('defaults to ship verification and fails an OPEN PR without authoritative auto-merge', async function () {
+    const agent = createMockAgent();
+    mockSpawnSyncFn = () => openPullRequestView();
+    await assert.rejects(
+      () =>
+        executeHook({
+          hook: { action: 'verify_pull_request' },
+          agent,
+          result: openPullRequestClaim(),
+        }),
+      /neither merged nor authoritatively accepted for merge-method auto-merge/i
+    );
+    assert.strictEqual(agent.lastPublished, null);
+  });
+
+  it('should succeed when GitHub authoritatively accepts merge-method auto-merge', async function () {
     const agent = createMockAgent();
     const hook = { action: 'verify_pull_request' };
-    const result = {
-      output: JSON.stringify({
-        pr_url: 'https://github.com/org/repo/pull/123',
-        pr_number: 123,
-        merged: true,
-      }),
-    };
+    const result = openPullRequestClaim(false);
 
-    // Always returns OPEN
-    mockSpawnSyncFn = () => {
-      return spawnSuccess(
-        JSON.stringify({
-          number: 123,
-          state: 'OPEN',
-          mergedAt: null,
-          url: 'https://github.com/org/repo/pull/123',
-        })
-      );
-    };
+    mockSpawnSyncFn = () =>
+      openPullRequestView({
+        autoMergeRequest: {
+          enabledAt: '2026-08-08T12:00:00Z',
+          mergeMethod: 'MERGE',
+        },
+      });
 
     await executeHook({ hook, agent, result });
-    assert(agent.lastPublished, 'Expected message to be published');
-    assert.strictEqual(agent.lastPublished.topic, 'CLUSTER_COMPLETE');
     assert.strictEqual(
       agent.lastPublished.content.data.reason,
-      'git-pusher-complete-verification-pending'
+      'git-pusher-complete-auto-merge-accepted'
     );
-    assert.strictEqual(agent.lastPublished.content.data.verification_pending, true);
+    assert.strictEqual(agent.lastPublished.content.data.auto_merge_accepted, true);
   });
 
   it('should throw when PR is CLOSED without merge after all polls', async function () {
@@ -246,7 +271,7 @@ describe('verify_pull_request hook action', () => {
 
     await assert.rejects(
       () => executeHook({ hook, agent, result }),
-      /exists but is not merged \(state="CLOSED"\)/i
+      /neither merged nor authoritatively accepted.*\(state="CLOSED"\)/i
     );
   });
 
@@ -465,7 +490,10 @@ describe('verify_pull_request hook action', () => {
     };
 
     await executeHook({ hook, agent, result });
-    assert.strictEqual(capturedCmd, 'gh pr view 100 --json state,mergedAt,url,number');
+    assert.strictEqual(
+      capturedCmd,
+      'gh pr view 100 --json state,mergedAt,url,number,autoMergeRequest,mergeStateStatus'
+    );
   });
 
   it('should publish CLUSTER_COMPLETE when PR verified merged', async function () {
@@ -674,7 +702,9 @@ describe('verify_pull_request hook action', () => {
       assert.strictEqual(agent.lastPublished.content.data.merged, false);
       assert.strictEqual(callCount, 1, `Expected exactly 1 gh call (got ${callCount})`);
     });
+  });
 
+  describe('review mode fail-closed boundaries', () => {
     it('fails review mode when GitHub reports the PR is already merged', async function () {
       const agent = createMockAgent();
       const hook = { action: 'verify_pull_request', config: { autoMerge: false } };
@@ -716,38 +746,6 @@ describe('verify_pull_request hook action', () => {
       mockSpawnSyncFn = () => spawnFailure('Could not resolve to a PullRequest');
 
       await assert.rejects(() => executeHook({ hook, agent, result }), /DOES NOT EXIST/);
-    });
-
-    it('undefined autoMerge (existing callers) still defaults to merge-required (fail-closed)', async function () {
-      const agent = createMockAgent();
-      const hook = { action: 'verify_pull_request' }; // no config at all
-      const result = {
-        output: JSON.stringify({
-          pr_url: 'https://github.com/org/repo/pull/123',
-          pr_number: 123,
-          merged: true,
-        }),
-      };
-
-      // Always OPEN -> should hit the existing verification-pending path, not the
-      // review-mode short-circuit, proving the undefined -> true default held.
-      mockSpawnSyncFn = () => {
-        return spawnSuccess(
-          JSON.stringify({
-            number: 123,
-            state: 'OPEN',
-            mergedAt: null,
-            url: 'https://github.com/org/repo/pull/123',
-          })
-        );
-      };
-
-      await executeHook({ hook, agent, result });
-      assert.strictEqual(
-        agent.lastPublished.content.data.reason,
-        'git-pusher-complete-verification-pending'
-      );
-      assert.strictEqual(agent.lastPublished.content.data.verification_pending, true);
     });
   });
 });

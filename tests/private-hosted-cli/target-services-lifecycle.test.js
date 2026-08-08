@@ -20,7 +20,8 @@ describe('private target services', () => {
       await captureLogs(() =>
         h.services.targetSetup('prod', {
           repository: 'owner/repository',
-          baseRevision: BASE_REVISION,
+          base: BASE_REVISION,
+          targetBranch: 'main',
           runtimeConfig,
         })
       );

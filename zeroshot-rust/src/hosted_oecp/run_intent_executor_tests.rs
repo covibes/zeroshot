@@ -6,32 +6,22 @@ use serde_json::json;
 
 use super::run_intent::digest_bytes;
 use super::run_intent_test_support::{
-    assert_http_replay_and_conflicts, credential_request, direct_input, encoded_envelope, envelope,
-    graph, put_request, response_json, response_status, tcp_http_exchange, wait_for_http_not_found,
-    wait_for_http_terminal, wait_for_http_terminal_response, HostedServerHarness, TestServices,
-    CAPABILITY, INTENT_ID,
+    assert_http_replay_and_conflicts, credential_bundle, credential_request, direct_input,
+    encoded_envelope, envelope, graph, put_request, response_json, response_status,
+    tcp_http_exchange, wait_for_http_not_found, wait_for_http_terminal,
+    wait_for_http_terminal_response, HostedServerHarness, TestServices, CAPABILITY, INTENT_ID,
 };
 
 #[tokio::test]
 async fn credential_install_is_authenticated_generic_and_exact_replay_idempotent() {
     let harness = HostedServerHarness::start().await;
-    let body = serde_json::to_vec(&json!({
-        "githubToken": "git-canary",
-        "repository": "the-open-engine/zeroshot",
-        "baseRevision": "a".repeat(40),
-        "runtime": {
-            "provider": "future-provider",
-            "executable": "future-cli",
-            "model": "future/model",
-            "command": "future-cli-wrapper",
-            "environment": {
-                "FUTURE_PROVIDER_TOKEN": "provider-canary",
-                "FUTURE_PROVIDER_ENDPOINT": "https://models.example"
-            },
-            "files": {".config/future/config.json": "{\"enabled\":true}"},
-            "settings": {"defaultProvider": "future-provider"}
-        }
-    }))
+    let body = serde_json::to_vec(&credential_bundle(
+        "future-provider",
+        json!({
+            "FUTURE_PROVIDER_TOKEN": "provider-canary",
+            "FUTURE_PROVIDER_ENDPOINT": "https://models.example"
+        }),
+    ))
     .expect("credential bundle serializes");
 
     for _ in 0..2 {

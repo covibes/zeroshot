@@ -145,9 +145,9 @@ class RunIntentClient {
     this.#fetch = options.fetch;
   }
 
-  submit({ envelope, runtime, submissionKey, size = 'standard', signal }) {
+  submit({ envelope, runtime, submissionKey, size, signal }) {
     assertUuid(submissionKey, 'submission key');
-    if (!['tiny', 'small', 'standard', 'large'].includes(size)) {
+    if (size !== undefined && !['tiny', 'small', 'standard', 'large'].includes(size)) {
       throw new RunIntentRequestError('RunIntent size is invalid');
     }
     if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) {
@@ -163,7 +163,7 @@ class RunIntentClient {
     }
     const body = encodeBoundedJson({
       label: 'zeroshot-cli',
-      size,
+      ...(size === undefined ? {} : { size }),
       intent: intentBytes.toString('base64url'),
       runtime: runtimeBytes.toString('base64url'),
     });

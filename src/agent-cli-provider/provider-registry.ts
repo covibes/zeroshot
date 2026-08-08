@@ -316,13 +316,15 @@ export const providerRegistry = [
     invoke: SPAWN_INVOKE,
     installInstructions: 'Bundled with Zeroshot; no external provider CLI install is required.',
     authInstructions:
-      'Configure providerSettings.gateway.protocol, baseUrl, apiKey, model, maxTokens when required, and toolPolicy in Zeroshot settings.',
+      'Configure providerSettings.gateway protocol, base URL, apiKey or apiKeyEnv, model, ' +
+      'maxTokens, and toolPolicy in Zeroshot settings.',
     credentialPaths: [],
     credentialEnvKeys: gatewayAdapter.credentialEnvKeys,
     settingsFields: [
       'protocol',
       'baseUrl',
       'apiKey',
+      'apiKeyEnv',
       'headers',
       'model',
       'maxTokens',

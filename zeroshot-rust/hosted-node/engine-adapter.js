@@ -74,7 +74,7 @@ function providerInvocation(config, request) {
     context: providerPrompt(request),
     cwd: WORKSPACE,
     options: Object.freeze({
-      authEnv: config.runtimeEnvironment,
+      ...(config.executable === 'omp' ? {} : { authEnv: config.runtimeEnvironment }),
       autoApprove: true,
       cwd: WORKSPACE,
       executionContext: 'docker',
@@ -140,12 +140,18 @@ class HostedProviderEngineAdapter {
         throw new Error('Hosted provider execution failed');
       }
       if (this.closed) return;
-      const receipt = await this.shipWorkspace(this.config, branch);
+      const deliveryResult = await this.shipWorkspace(this.config, branch);
+      const receipt = {
+        repository: deliveryResult.repository,
+        branch: deliveryResult.deliveryBranch,
+        headRevision: deliveryResult.headRevision,
+        pullRequestUrl: deliveryResult.pullRequestUrl,
+      };
       if (!this.closed) {
         this.resource.onEvent({
           type: 'complete',
           result: {
-            summary: 'Hosted worker completed and opened a pull request',
+            summary: `Hosted worker completed ${deliveryResult.disposition}`,
             status: 'succeeded',
             artifacts: [],
             ...receipt,

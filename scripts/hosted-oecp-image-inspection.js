@@ -68,6 +68,7 @@ process.stdout.write(JSON.stringify({
     '/opt/yarn-v1.22.22': present('/opt/yarn-v1.22.22'),
   },
   runtimeModules: {
+    deliveryContract: loadable('/opt/zeroshot/lib/delivery-contract.js'),
     engineStart: fs.existsSync('/opt/zeroshot/lib/cluster-worker/engine-start.js'),
     runtimeDependencies: fs.existsSync('/opt/zeroshot/lib/cluster-worker/runtime-dependencies.js'),
     ompRuntime: loadable('/opt/zeroshot/scripts/omp/runtime.js'),
@@ -138,6 +139,7 @@ function validateRuntimePermissions(runtime) {
 
 function validateRequiredRuntimeModules(runtimeModules) {
   if (
+    runtimeModules?.deliveryContract !== true ||
     runtimeModules?.engineStart !== true ||
     runtimeModules?.runtimeDependencies !== true ||
     runtimeModules?.ompRuntime !== true ||

@@ -44,6 +44,7 @@ COPY --from=rust-build /opt/zeroshot/target/release/zeroshot-oecp-server /usr/lo
 COPY --from=node-deps /opt/node-runtime/node_modules /opt/zeroshot/node_modules
 COPY --from=tini /tini /usr/bin/tini
 COPY lib/agent-cli-provider /opt/zeroshot/lib/agent-cli-provider
+COPY lib/delivery-contract.js /opt/zeroshot/lib/delivery-contract.js
 COPY lib/provider-detection.js /opt/zeroshot/lib/provider-detection.js
 COPY lib/cluster-worker/contracts.js lib/cluster-worker/engine-adapter-common.js lib/cluster-worker/engine-start.js /opt/zeroshot/lib/cluster-worker/
 COPY lib/cluster-worker/executable.js lib/cluster-worker/index.js /opt/zeroshot/lib/cluster-worker/

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::credential_runtime::apply_fixed_git_arguments;
+use super::credential_runtime::{apply_fixed_git_arguments, run_bounded};
 #[cfg(unix)]
 use super::credential_runtime::prepare_shared_mount;
 use super::credentials::{
@@ -8,26 +8,30 @@ use super::credentials::{
     EXECUTABLE_RUNTIME_ROOT, RUNTIME_DIRECTORY_MODE, RUNTIME_EXECUTABLE_MODE, RUNTIME_FILE_MODE,
     RUNTIME_ROOT, SHARED_MOUNT_MODE,
 };
+use super::run_intent_test_support::credential_bundle;
 use crate::execution::process::{MAX_PROCESS_ENV_BYTES, MAX_PROCESS_ENV_ITEMS};
 use serde_json::json;
 
 fn bundle(provider: &str, environment: serde_json::Value) -> Vec<u8> {
-    serde_json::to_vec(&json!({
-        "githubToken": "github-canary",
-        "repository": "the-open-engine/zeroshot",
-        "baseRevision": "a".repeat(40),
-        "runtime": {
-            "provider": provider,
-            "executable": "future-cli",
-            "model": "future/model",
-            "command": "future-cli-wrapper",
-            "setupCommand": "future-cli --version",
-            "environment": environment,
-            "files": {".config/future/config.json": "{\"enabled\":true}"},
-            "settings": {"defaultProvider": provider}
-        }
-    }))
-    .unwrap()
+    let mut value = credential_bundle(provider, environment);
+    value["runtime"]["setupCommand"] = json!("future-cli --version");
+    serde_json::to_vec(&value).unwrap()
+}
+
+#[tokio::test]
+async fn setup_command_has_a_fixed_deadline_and_process_group_cleanup() {
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command.args(["-c", "sleep 30 & wait"]);
+    let result = run_bounded(
+        &mut command,
+        "runtime setup",
+        tokio::time::Duration::from_millis(25),
+    )
+    .await;
+    assert_eq!(
+        result,
+        Err("runtime setup exceeded its fixed deadline".to_owned())
+    );
 }
 
 fn command_environment(command: &tokio::process::Command) -> BTreeMap<String, Option<String>> {
@@ -232,6 +236,9 @@ async fn install_rejects_reserved_environment_and_path_escape() {
         "PATH",
         "TMPDIR",
         "ZEROSHOT_HOSTED_BASE_REVISION",
+        "ZEROSHOT_HOSTED_DELIVERY_MODE",
+        "ZEROSHOT_HOSTED_DELIVERY_TARGET",
+        "ZEROSHOT_HOSTED_DELIVERY_VERSION",
         "ZEROSHOT_HOSTED_EXECUTABLE",
         "ZEROSHOT_HOSTED_EXEC_ROOT",
         "ZEROSHOT_HOSTED_MODEL",

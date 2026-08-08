@@ -30,6 +30,30 @@ pub(super) const INTENT_ID: &str = "019f7437-8701-71e3-a056-2ba05c37609c";
 pub(super) const OTHER_INTENT_ID: &str = "019f7437-8701-71e3-a056-2ba05c37609d";
 pub(super) const CAPABILITY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+pub(super) fn credential_bundle(provider: &str, environment: Value) -> Value {
+    json!({
+        "githubToken": "github-canary",
+        "repository": "the-open-engine/zeroshot",
+        "baseRevision": "a".repeat(40),
+        "delivery": {
+            "version": "zeroshot.delivery/v1",
+            "mode": "pr",
+            "repository": "the-open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "a".repeat(40),
+        },
+        "runtime": {
+            "provider": provider,
+            "executable": "future-cli",
+            "model": "future/model",
+            "command": "future-cli-wrapper",
+            "environment": environment,
+            "files": {".config/future/config.json": "{\"enabled\":true}"},
+            "settings": {"defaultProvider": provider}
+        }
+    })
+}
+
 pub(super) fn hosted_authority() -> HostedAuthority {
     HostedAuthority::new(HostedAuthorityConfig {
         repository: "the-open-engine/zeroshot".to_owned(),

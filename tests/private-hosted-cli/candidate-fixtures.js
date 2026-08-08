@@ -11,6 +11,13 @@ const RUNTIME_BUNDLE = Object.freeze({
   githubToken: 'github-test-token',
   repository: 'owner/repository',
   baseRevision: BASE_REVISION,
+  delivery: {
+    version: 'zeroshot.delivery/v1',
+    mode: 'pr',
+    repository: 'owner/repository',
+    targetBranch: 'main',
+    baseRevision: BASE_REVISION,
+  },
   runtime: {
     ...RUNTIME_CONFIG,
     environment: { ANTHROPIC_API_KEY: 'model-test-token' },
@@ -80,6 +87,18 @@ function runIntent(overrides = {}) {
   };
 }
 
+function detachedQueueOptions(submissionKey, overrides = {}) {
+  return {
+    target: 'prod',
+    graph: 'graph.json',
+    input: 'input.json',
+    queue: true,
+    submissionKey,
+    detach: true,
+    ...overrides,
+  };
+}
+
 async function captureLogs(operation) {
   const original = console.log;
   const lines = [];
@@ -127,6 +146,7 @@ module.exports = {
   BASE_REVISION,
   captureLogs,
   DESCRIPTOR,
+  detachedQueueOptions,
   finishedWatch,
   GRAPH,
   RUNTIME_BUNDLE,

@@ -31,6 +31,9 @@ function fixture() {
       TMPDIR: '/tmp/zeroshot-oecp/runtime/tmp',
       ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
       ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
+      ZEROSHOT_HOSTED_DELIVERY_MODE: 'pr',
+      ZEROSHOT_HOSTED_DELIVERY_TARGET: 'main',
+      ZEROSHOT_HOSTED_DELIVERY_VERSION: 'zeroshot.delivery/v1',
       ZEROSHOT_HOSTED_EXECUTABLE: 'codex',
       ZEROSHOT_HOSTED_EXEC_ROOT: '/workspace/.git/zeroshot-runtime',
       ZEROSHOT_HOSTED_PROVIDER: 'future-provider',
@@ -52,6 +55,13 @@ describe('hosted worker runtime boundary', () => {
       assert.equal(config.executable, 'codex');
       assert.equal(config.provider, 'future-provider');
       assert.equal(config.model, 'future/model');
+      assert.deepEqual(config.delivery, {
+        version: 'zeroshot.delivery/v1',
+        mode: 'pr',
+        repository: 'the-open-engine/zeroshot',
+        targetBranch: 'main',
+        baseRevision: 'a'.repeat(40),
+      });
       assert.deepEqual(config.runtimeEnvironment, {
         FUTURE_PROVIDER_TOKEN: 'provider-canary',
         FUTURE_PROVIDER_ENDPOINT: 'https://models.example',
@@ -74,6 +84,7 @@ describe('hosted worker runtime boundary', () => {
       for (const patch of [
         { ZEROSHOT_HOSTED_REPOSITORY: 'owner/repository/extra' },
         { ZEROSHOT_HOSTED_BASE_REVISION: 'not-a-commit' },
+        { ZEROSHOT_HOSTED_DELIVERY_MODE: 'none' },
         { ZEROSHOT_HOSTED_EXECUTABLE: 'command with spaces' },
         { ZEROSHOT_HOSTED_PROVIDER: 'provider with spaces' },
         { ZEROSHOT_HOSTED_MODEL: '' },
