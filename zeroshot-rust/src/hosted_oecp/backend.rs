@@ -21,8 +21,9 @@ use super::backend_admission_support::RunMetadata;
 use super::backend_support::{
     internal_error, safe_application_error, status_from, terminal_failure_error,
 };
-use super::journal::EventJournal;
 use super::config::HostedAuthority;
+use super::credentials::{CredentialInstallError, CredentialInstaller, CredentialStore};
+use super::journal::EventJournal;
 use super::ports::{ProxyReadinessPort, WorktreeReadinessPort, WorkspaceDeliveryPort};
 use super::worker::{WorkerCommand, WorkerError, WorkerExecution};
 
@@ -100,13 +101,20 @@ impl Default for HostedState {
 }
 
 #[derive(Clone)]
+struct BackendCredentials {
+    authority: Option<HostedAuthority>,
+    store: CredentialStore,
+}
+
+#[derive(Clone)]
 pub struct HostedBackend {
     pub(super) state: Arc<Mutex<HostedState>>,
     pub(super) journal: Arc<EventJournal>,
     pub(super) worktree: Arc<dyn WorktreeReadinessPort>,
     pub(super) proxy: Arc<dyn ProxyReadinessPort>,
     pub(super) delivery: Arc<dyn WorkspaceDeliveryPort>,
-    pub(super) authority: HostedAuthority,
+    pub(super) authority: Option<HostedAuthority>,
+    pub(super) credentials: CredentialStore,
     pub(super) changed: Arc<Notify>,
     pub(super) worker_command: WorkerCommand,
     next_subscription: Arc<AtomicU64>,
@@ -120,18 +128,77 @@ impl HostedBackend {
         delivery: Arc<dyn WorkspaceDeliveryPort>,
         authority: HostedAuthority,
     ) -> Self {
-        let worker_command = WorkerCommand::production(&authority);
+        Self::from_parts(
+            worktree,
+            proxy,
+            delivery,
+            BackendCredentials {
+                authority: Some(authority),
+                store: CredentialStore::default(),
+            },
+        )
+    }
+
+    #[must_use]
+    pub(super) fn production(
+        worktree: Arc<dyn WorktreeReadinessPort>,
+        proxy: Arc<dyn ProxyReadinessPort>,
+        delivery: Arc<dyn WorkspaceDeliveryPort>,
+        credentials: CredentialStore,
+    ) -> Self {
+        Self::from_parts(
+            worktree,
+            proxy,
+            delivery,
+            BackendCredentials {
+                authority: None,
+                store: credentials,
+            },
+        )
+    }
+
+    fn from_parts(
+        worktree: Arc<dyn WorktreeReadinessPort>,
+        proxy: Arc<dyn ProxyReadinessPort>,
+        delivery: Arc<dyn WorkspaceDeliveryPort>,
+        credentials: BackendCredentials,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(HostedState::default())),
             journal: Arc::new(EventJournal::new()),
             worktree,
             proxy,
             delivery,
-            authority,
+            authority: credentials.authority,
+            credentials: credentials.store,
             changed: Arc::new(Notify::new()),
+            worker_command: WorkerCommand::unconfigured(),
             next_subscription: Arc::new(AtomicU64::new(1)),
-            worker_command,
         }
+    }
+
+    pub(super) async fn runtime_authority(
+        &self,
+    ) -> Result<HostedAuthority, CredentialInstallError> {
+        if let Ok(credentials) = self.credentials.resolve().await {
+            return Ok(credentials.authority());
+        }
+        self.authority
+            .clone()
+            .ok_or(CredentialInstallError::Missing)
+    }
+}
+
+#[async_trait]
+impl CredentialInstaller for HostedBackend {
+    async fn install_credentials(&self, bytes: Vec<u8>) -> Result<(), CredentialInstallError> {
+        if self.credentials.is_exact_replay(&bytes).await {
+            return Ok(());
+        }
+        if self.state.lock().await.phase != Phase::Empty {
+            return Err(CredentialInstallError::Conflict);
+        }
+        self.credentials.install(bytes).await
     }
 }
 

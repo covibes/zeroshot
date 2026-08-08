@@ -35,8 +35,6 @@ pub(super) fn hosted_authority() -> HostedAuthority {
         repository: "the-open-engine/zeroshot".to_owned(),
         base_revision: "a".repeat(40),
         provider: "codex".to_owned(),
-        model_level: "level2".to_owned(),
-        provider_endpoint: "https://openrouter.ai/api/v1".to_owned(),
     })
     .expect("hosted authority")
 }
@@ -93,6 +91,19 @@ pub(super) fn envelope() -> Value {
 
 pub(super) fn encoded_envelope() -> Vec<u8> {
     serde_json::to_vec(&envelope()).expect("run intent serializes")
+}
+
+pub(super) fn credential_request(capability: &str, body: &[u8]) -> Vec<u8> {
+    let headers = format!(
+        "PUT /internal/credentials HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         {RUNTIME_CAPABILITY_HEADER}: {capability}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    [headers.as_bytes(), body].concat()
 }
 
 pub(super) struct TestServices {
@@ -193,12 +204,13 @@ pub(super) async fn http_exchange(
 ) -> Vec<u8> {
     let listener = bind_listener().await;
     let address = listener.local_addr().expect("control listener address");
+    let backend = Arc::new(test_backend(Arc::new(TestServices::default())));
     let serving = tokio::spawn(async move {
         let (server, _) = listener.accept().await.expect("accept HTTP request");
         let capability = Arc::new(
             TransportCapability::parse(CAPABILITY.as_bytes()).expect("transport capability"),
         );
-        serve_run_intent_http(server, executor, capability).await
+        serve_run_intent_http(server, backend, executor, capability).await
     });
     let response = tcp_http_exchange(address, request).await;
     serving

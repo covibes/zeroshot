@@ -1,7 +1,7 @@
 'use strict';
 
 const { HostedRunOrchestrator } = require('../../private/hosted-cli-candidate/orchestrator');
-const { finishedWatch, GRAPH, RUNTIME_DIGEST } = require('./candidate-fixtures');
+const { finishedWatch, GRAPH, RUNTIME_BUNDLE, RUNTIME_DIGEST } = require('./candidate-fixtures');
 
 const CALLER_INPUT = Object.freeze({
   source: 'prompt',
@@ -67,9 +67,10 @@ function createCoordinatorHarness(sequence, requests, overrides) {
 
 function base(overrides = {}) {
   const sequence = [];
-  const requests = { plan: [], apply: [] };
+  const requests = { plan: [], apply: [], runtime: undefined };
   let ids = 0;
   const adapter = {
+    credentialInstall: { supported: true },
     allocate() {
       sequence.push('allocate');
       return { id: 'cap1', state: 'ready' };
@@ -82,6 +83,14 @@ function base(overrides = {}) {
       sequence.push('terminate');
       return { id: 'cap1', state: 'terminating' };
     },
+    access() {
+      sequence.push('access');
+      return { accessToken: 'capsule-access' };
+    },
+    installRuntime(_capsuleId, runtime, accessToken) {
+      sequence.push('install-runtime');
+      requests.runtime = { runtime, accessToken };
+    },
     ...overrides.adapter,
   };
   const coordinator = createCoordinatorHarness(sequence, requests, overrides);
@@ -92,9 +101,9 @@ function base(overrides = {}) {
       sequence.push('read-inputs');
       return { graph: GRAPH, input: overrides.input ?? CALLER_INPUT };
     },
-    checkHostedSetup: () => {
-      sequence.push('check-setup');
-      return { repository: 'owner/repo', provider: 'codex', modelLevel: 'level2' };
+    resolveRuntimeBundle: () => {
+      sequence.push('resolve-runtime');
+      return RUNTIME_BUNDLE;
     },
     createCoordinator: () => coordinator,
     randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-0000-0000-000000000000`,
@@ -117,9 +126,6 @@ function base(overrides = {}) {
       target: { id: 'target1', url: 'https://target.example', organization: { id: 'org1' } },
       graphPath: 'graph.json',
       inputPath: 'input.json',
-      expectedRepository: 'owner/repo',
-      expectedProvider: 'codex',
-      expectedModelLevel: 'level2',
       detach: false,
     },
   };

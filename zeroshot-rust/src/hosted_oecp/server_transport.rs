@@ -27,6 +27,7 @@ use tokio_tungstenite::{
 };
 
 use super::backend::HostedBackend;
+use super::credentials::CredentialInstaller;
 use super::run_intent::RunIntentExecutor;
 use super::run_intent_executor::HostedRunIntentExecutor;
 use super::run_intent_http::serve_run_intent_http;
@@ -78,10 +79,12 @@ where
 {
     let run_intents: Arc<dyn RunIntentExecutor> =
         Arc::new(HostedRunIntentExecutor::new(Arc::clone(&backend)));
+    let credential_installer: Arc<dyn CredentialInstaller> = backend.clone();
     let services = Arc::new(ServerServices {
         backend: Arc::clone(&backend),
         capability,
         run_intents,
+        credential_installer,
         ndjson_capacity: Arc::new(Semaphore::new(ACTIVE_CONNECTION_CAPACITY)),
         websocket_capacity: Arc::new(Semaphore::new(ACTIVE_CONNECTION_CAPACITY)),
         control_capacity: Arc::new(Semaphore::new(CONTROL_CONNECTION_CAPACITY)),
@@ -107,6 +110,7 @@ struct ServerServices {
     backend: Arc<HostedBackend>,
     capability: Arc<TransportCapability>,
     run_intents: Arc<dyn RunIntentExecutor>,
+    credential_installer: Arc<dyn CredentialInstaller>,
     ndjson_capacity: Arc<Semaphore>,
     websocket_capacity: Arc<Semaphore>,
     control_capacity: Arc<Semaphore>,
@@ -193,6 +197,7 @@ async fn serve_incoming(
         IncomingProtocol::RunIntent => {
             serve_run_intent_http(
                 stream,
+                services.credential_installer.clone(),
                 services.run_intents.clone(),
                 services.capability.clone(),
             )

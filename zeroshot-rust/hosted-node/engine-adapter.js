@@ -37,8 +37,8 @@ function requireHostedEnvironment(config) {
   if (process.env.ZEROSHOT_PROVIDER_PROFILE !== 'provider.hosted-direct@1') {
     throw new Error('Invalid fixed capsule provider profile');
   }
-  for (const [name, value] of Object.entries(config.workerEnvironment)) {
-    if (process.env[name] !== value) throw new Error('Invalid hosted worker credential boundary');
+  for (const [name, value] of Object.entries(config.runtimeEnvironment)) {
+    if (process.env[name] !== value) throw new Error('Invalid hosted worker runtime boundary');
   }
   rejectInheritedSockets();
 }
@@ -49,7 +49,7 @@ function validateRequestAuthority(config, request) {
     error.code = 'HOSTED_REPOSITORY_MISMATCH';
     throw error;
   }
-  if (request.provider !== config.provider || request.modelLevel !== config.modelLevel) {
+  if (request.provider !== config.provider) {
     const error = new Error('Hosted request provider does not match capsule authority');
     error.code = 'HOSTED_PROVIDER_MISMATCH';
     throw error;
@@ -66,21 +66,19 @@ function providerPrompt(request) {
 }
 
 function providerInvocation(config, request) {
-  const authEnv = Object.fromEntries(
-    Object.entries(config.workerEnvironment).filter(([name]) => name !== 'GH_TOKEN')
-  );
+  const modelSpec = config.model === undefined ? {} : { model: config.model };
   return Object.freeze({
     schemaVersion: 1,
     command: 'invoke',
-    provider: config.provider,
+    provider: config.executable,
     context: providerPrompt(request),
     cwd: WORKSPACE,
     options: Object.freeze({
-      authEnv: Object.freeze(authEnv),
+      authEnv: config.runtimeEnvironment,
       autoApprove: true,
       cwd: WORKSPACE,
       executionContext: 'docker',
-      modelSpec: Object.freeze({ level: config.modelLevel }),
+      ...(config.model === undefined ? {} : { modelSpec: Object.freeze(modelSpec) }),
     }),
     timeoutMs: PROVIDER_TIMEOUT_MS,
   });
@@ -88,12 +86,16 @@ function providerInvocation(config, request) {
 
 async function withoutGitCredential(operation) {
   const gitToken = process.env.GH_TOKEN;
+  const githubToken = process.env.GITHUB_TOKEN;
   delete process.env.GH_TOKEN;
+  delete process.env.GITHUB_TOKEN;
   try {
     return await operation();
   } finally {
     if (gitToken === undefined) delete process.env.GH_TOKEN;
     else process.env.GH_TOKEN = gitToken;
+    if (githubToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = githubToken;
   }
 }
 
@@ -123,7 +125,7 @@ class HostedProviderEngineAdapter {
       const branch = await this.prepareWorkspace(this.config, clusterId);
       const response = await withoutGitCredential(() =>
         this.invokeProvider(JSON.stringify(providerInvocation(this.config, request)), {
-          runtimeSettings: Object.freeze({}),
+          runtimeSettings: this.config.settings,
         })
       );
       const result = response?.envelope?.ok === true ? response.envelope.result : null;

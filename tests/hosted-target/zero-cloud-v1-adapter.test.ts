@@ -26,6 +26,12 @@ function discoveryFixtures(kind: 'valid' | 'invalid'): Array<{ name: string; val
     .map((name) => ({ name, value: fixture(join(directory, name)) }));
 }
 
+function validDiscoveryFixture(name: string): Record<string, unknown> {
+  const value = discoveryFixtures('valid').find((fixtureValue) => fixtureValue.name === name);
+  assert.ok(value);
+  return value.value.body;
+}
+
 function transport(document: Record<string, unknown>): { http: HttpTransport; requests: string[] } {
   const requests: string[] = [];
   const oauthValue = document.oauth;
@@ -57,7 +63,9 @@ function transport(document: Record<string, unknown>): { http: HttpTransport; re
 }
 
 describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
-  for (const { name, value } of discoveryFixtures('valid')) {
+  for (const { name, value } of discoveryFixtures('valid').filter(
+    ({ name }) => !name.includes('credential-install-present')
+  )) {
     it(`accepts ${name}`, async () => {
       const { http } = transport(value.body);
       const descriptor = await discoverTarget('https://hosted.openengine.example', http);
@@ -72,10 +80,7 @@ describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
           .includes('org%2Fraw%20value'),
         true
       );
-      assert.equal(
-        descriptor.credentialInstall !== null,
-        name.includes('credential-install-present')
-      );
+      assert.equal(descriptor.credentialInstall, null);
     });
   }
 
@@ -91,13 +96,10 @@ describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
   }
 
   it('rejects OAuth metadata authority disagreement', async () => {
-    const minimal = discoveryFixtures('valid').find(
-      ({ name }) => name === 'hosted-target-v1-minimal.json'
-    );
-    assert.ok(minimal);
-    const oauth = minimal.value.body.oauth as Record<string, unknown>;
+    const minimal = validDiscoveryFixture('hosted-target-v1-minimal.json');
+    const oauth = minimal.oauth as Record<string, unknown>;
     const bodies = [
-      minimal.value.body,
+      minimal,
       {
         device_authorization_endpoint: oauth.device_authorization_endpoint,
         token_endpoint: 'https://hosted.openengine.example/auth/other-token',
@@ -116,11 +118,9 @@ describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
   });
 
   it('accepts only same-origin closed RunIntent v2 routes', async () => {
-    const fixtureValue = discoveryFixtures('valid').find(
-      ({ name }) => name === 'hosted-target-v1-credential-install-absent.json'
+    const document = structuredClone(
+      validDiscoveryFixture('hosted-target-v1-credential-install-absent.json')
     );
-    assert.ok(fixtureValue);
-    const document = structuredClone(fixtureValue.value.body);
     const extensions = document.extensions as Record<string, unknown>;
     extensions.run_intent = {
       kind: 'zeroshot.run-intent/v2',
@@ -152,6 +152,42 @@ describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
     unsafeExtension.base_url = 'https://attacker.example/api/v1';
     await assert.rejects(
       discoverTarget('https://hosted.openengine.example', transport(unsafe).http),
+      TargetDiscoveryError
+    );
+  });
+});
+
+describe('direct runtime install discovery', () => {
+  it('accepts only the direct bounded runtime install route', async () => {
+    const document = structuredClone(
+      validDiscoveryFixture('hosted-target-v1-credential-install-absent.json')
+    );
+    const extensions = document.extensions as Record<string, unknown>;
+    extensions.credential_install = {
+      kind: 'openengine.capsule-credential-install/v1',
+      install: {
+        route_template: '/capsules/{capsule_id}/credentials',
+        method: 'PUT',
+      },
+      max_body_bytes: 4_194_304,
+    };
+    const descriptor = await discoverTarget(
+      'https://hosted.openengine.example',
+      transport(document).http
+    );
+    assert.equal(descriptor.credentialInstall?.maxBodyBytes, 4_194_304);
+    assert.equal(
+      descriptor.credentialInstall?.install.routeTemplate.expand({ capsule_id: 'cap/raw' }),
+      '/capsules/cap%2Fraw/credentials'
+    );
+
+    const legacy = structuredClone(document);
+    (legacy.extensions as Record<string, unknown>).credential_install = (
+      validDiscoveryFixture('hosted-target-v1-credential-install-present.json')
+        .extensions as Record<string, unknown>
+    ).credential_install;
+    await assert.rejects(
+      discoverTarget('https://hosted.openengine.example', transport(legacy).http),
       TargetDiscoveryError
     );
   });

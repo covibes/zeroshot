@@ -20,8 +20,7 @@ function removalHarness(deleteFailure) {
     url: 'https://offline.example',
     hostedSetup: {
       repository: 'owner/repository',
-      provider: 'codex',
-      modelLevel: 'level2',
+      runtime: { provider: 'custom-runtime' },
     },
   };
   const credentialStore = {
@@ -88,7 +87,7 @@ it('remote operation boundary never exposes peer-controlled error detail or caus
   );
 });
 
-it('queued transport never serializes process credentials or reusable authority', async () => {
+it('queued transport keeps runtime credentials outside the unchanged v2 envelope', async () => {
   const secrets = {
     GH_TOKEN: 'gh-queue-secret-canary-884',
     OPENAI_API_KEY: 'openai-queue-secret-canary-884',
@@ -97,6 +96,10 @@ it('queued transport never serializes process credentials or reusable authority'
   let submitted;
   await withEnvironment(secrets, async () => {
     const h = remoteHarness({
+      environment: {
+        GH_TOKEN: secrets.GH_TOKEN,
+        LOCAL_MODEL_KEY: secrets.OPENAI_API_KEY,
+      },
       createRunIntentClient: () => ({
         submit(request) {
           submitted = request;
@@ -126,19 +129,19 @@ it('queued transport never serializes process credentials or reusable authority'
     );
   });
   const serialized = JSON.stringify(submitted);
-  assertSecretsAbsent(serialized, secrets);
+  assertSecretsAbsent(JSON.stringify(submitted.envelope), secrets);
   assert.deepEqual(Object.keys(submitted.envelope), ['version', 'graph', 'input']);
   assert.deepEqual(submitted.envelope.input, {
     source: 'prompt',
     prompt: 'Ship the change.',
     artifacts: [],
   });
-  for (const authority of ['owner/repository', 'codex', 'level2']) {
-    assert.equal(serialized.includes(authority), false);
-  }
+  assert.equal(submitted.runtime.githubToken, secrets.GH_TOKEN);
+  assert.equal(submitted.runtime.runtime.environment.ANTHROPIC_API_KEY, secrets.OPENAI_API_KEY);
+  assert.equal(serialized.includes(secrets.ZEROSHOT_TARGET_ACCESS_TOKEN), false);
   assert.equal(
     /credentials|token|environment|endpoint|settings|command|path|runtime|repository|provider|modelLevel/i.test(
-      serialized
+      JSON.stringify(submitted.envelope)
     ),
     false
   );

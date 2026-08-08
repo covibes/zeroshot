@@ -79,7 +79,7 @@ function targetList(service, options) {
       id: record.id,
       url: record.url,
       organization: record.organization ?? null,
-      configured: record.hostedSetup?.kind === 'zeroshot.private-hosted-setup/v1',
+      configured: record.hostedSetup?.kind === 'zeroshot.private-hosted-setup/v2',
       createdAt: record.createdAt,
     }));
     console.log(JSON.stringify(rows, null, 2));
@@ -122,13 +122,11 @@ async function targetSetup(service, name, options) {
     targetName: name,
     target,
     repository: options.repository,
-    provider: options.provider,
-    modelLevel: options.modelLevel,
+    baseRevision: options.baseRevision,
+    runtimeConfigPath: options.runtimeConfig,
     settings: service.settings,
   });
-  console.log(
-    `Configured ${name}: ${metadata.repository}, ${metadata.provider}, ${metadata.modelLevel}`
-  );
+  console.log(`Configured ${name}: ${metadata.repository}@${metadata.baseRevision}`);
 }
 
 function createTargetServices({ runtime, settings, httpTransport, requireTarget }) {

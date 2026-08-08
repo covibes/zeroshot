@@ -13,6 +13,26 @@ const {
 } = require('../../zeroshot-rust/hosted-node/runtime-capability');
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const HOSTED_HOME = '/tmp/zeroshot-oecp';
+
+function hostedLauncherEnvironment(overrides = {}) {
+  return {
+    HOME: HOSTED_HOME,
+    LANG: 'C.UTF-8',
+    NODE_ENV: 'production',
+    PATH: process.env.PATH,
+    GH_TOKEN: 'git-canary',
+    FUTURE_PROVIDER_TOKEN: 'provider-canary',
+    ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
+    ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
+    ZEROSHOT_HOSTED_EXECUTABLE: 'future-cli',
+    ZEROSHOT_HOSTED_PROVIDER: 'future-provider',
+    ZEROSHOT_HOSTED_MODEL: 'future/model',
+    ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
+    ZEROSHOT_PROVIDER_PROFILE: 'provider.hosted-direct@1',
+    ...overrides,
+  };
+}
 
 function sendCapability(address, capability) {
   return new Promise((resolve, reject) => {
@@ -214,54 +234,44 @@ describe('private hosted worker boundaries', () => {
     assert.strictEqual(result.status, 0, result.stderr);
   });
 
+  it('forwards the already-resolved runtime environment unchanged', () => {
+    const probe = [
+      "const { EventEmitter } = require('node:events');",
+      "const childProcess = require('node:child_process');",
+      'childProcess.spawn = (_command, _arguments, options) => {',
+      '  process.stdout.write(JSON.stringify({ HOME: options.env.HOME, TMPDIR: options.env.TMPDIR }));',
+      '  return new EventEmitter();',
+      '};',
+      "require('./zeroshot-rust/hosted-node/worker-launcher');",
+    ].join('\n');
+    const result = spawnSync(process.execPath, ['-e', probe], {
+      cwd: ROOT,
+      env: hostedLauncherEnvironment({ TMPDIR: '/tmp/resolved-runtime' }),
+      encoding: 'utf8',
+    });
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.deepStrictEqual(JSON.parse(result.stdout), {
+      HOME: HOSTED_HOME,
+      TMPDIR: '/tmp/resolved-runtime',
+    });
+  });
+
   it('refuses to launch outside the fixed prepared workspace', () => {
-    const codexConfig = '/tmp/zeroshot-oecp/.codex/config.toml';
-    fs.rmSync(codexConfig, { force: true });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-hosted-settings-'));
+    const settingsFile = path.join(directory, 'settings.json');
+    fs.writeFileSync(settingsFile, '{}');
     try {
       const result = spawnSync(process.execPath, ['zeroshot-rust/hosted-node/worker-launcher.js'], {
         cwd: ROOT,
-        env: {
-          HOME: '/tmp/zeroshot-oecp',
-          LANG: 'C.UTF-8',
-          NODE_ENV: 'production',
-          PATH: process.env.PATH,
-          ZEROSHOT_HOSTED_CREDENTIALS_JSON: JSON.stringify({
-            GH_TOKEN: 'git-canary',
-            OPENAI_API_KEY: 'provider-canary',
-          }),
-          ZEROSHOT_HOSTED_REPOSITORY: 'the-open-engine/zeroshot',
-          ZEROSHOT_HOSTED_BASE_REVISION: 'a'.repeat(40),
-          ZEROSHOT_HOSTED_PROVIDER: 'codex',
-          ZEROSHOT_HOSTED_MODEL_LEVEL: 'level2',
-          OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
-          ZEROSHOT_ISOLATION_PROFILE: 'isolation.prepared-worktree@1',
-          ZEROSHOT_PROVIDER_PROFILE: 'provider.hosted-direct@1',
-        },
+        env: hostedLauncherEnvironment({ ZEROSHOT_SETTINGS_FILE: settingsFile }),
         encoding: 'utf8',
       });
       assert.notStrictEqual(result.status, 0);
       assert.match(result.stderr, /Invalid fixed capsule workspace/);
       assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /git-canary|provider-canary/);
-      assert.strictEqual(
-        fs.readFileSync(codexConfig, 'utf8'),
-        [
-          'model_provider = "zeroshot_hosted"',
-          '[model_providers.zeroshot_hosted]',
-          'name = "Zeroshot Hosted"',
-          'base_url = "https://openrouter.ai/api/v1"',
-          'env_key = "OPENAI_API_KEY"',
-          'wire_api = "responses"',
-          'requires_openai_auth = false',
-          'supports_websockets = false',
-          '[shell_environment_policy]',
-          'inherit = "core"',
-          'ignore_default_excludes = false',
-          '',
-        ].join('\n')
-      );
-      assert.strictEqual(fs.statSync(codexConfig).mode & 0o777, 0o600);
+      assert.strictEqual(fs.existsSync(path.join(HOSTED_HOME, '.codex', 'config.toml')), false);
     } finally {
-      fs.rmSync(codexConfig, { force: true });
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 });

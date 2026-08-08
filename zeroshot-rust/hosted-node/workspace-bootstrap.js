@@ -34,6 +34,8 @@ function fixedGitArguments(args) {
     '-c',
     'core.hooksPath=/dev/null',
     '-c',
+    'safe.directory=/workspace',
+    '-c',
     'http.followRedirects=false',
     '-c',
     'http.proxy=',
@@ -79,19 +81,12 @@ async function cloneFixedRepository(config, dependencies = {}) {
     execute
   );
   await runGit(['-C', workspace, 'checkout', '--detach', config.baseRevision], gitToken, execute);
-  const [{ stdout: head }, { stdout: defaultHead }, { stdout: origin }, { stdout: status }] =
-    await Promise.all([
-      runGit(['-C', workspace, 'rev-parse', 'HEAD'], gitToken, execute),
-      runGit(['-C', workspace, 'rev-parse', 'refs/remotes/origin/HEAD'], gitToken, execute),
-      runGit(['-C', workspace, 'remote', 'get-url', 'origin'], gitToken, execute),
-      runGit(['-C', workspace, 'status', '--porcelain=v1', '-z'], gitToken, execute),
-    ]);
-  if (
-    head.trim() !== config.baseRevision ||
-    defaultHead.trim() !== config.baseRevision ||
-    origin.trim() !== remote ||
-    status.length !== 0
-  ) {
+  const [{ stdout: head }, { stdout: origin }, { stdout: status }] = await Promise.all([
+    runGit(['-C', workspace, 'rev-parse', 'HEAD'], gitToken, execute),
+    runGit(['-C', workspace, 'remote', 'get-url', 'origin'], gitToken, execute),
+    runGit(['-C', workspace, 'status', '--porcelain=v1', '-z'], gitToken, execute),
+  ]);
+  if (head.trim() !== config.baseRevision || origin.trim() !== remote || status.length !== 0) {
     throw new Error('Hosted workspace clone does not match fixed repository authority');
   }
 }

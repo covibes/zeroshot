@@ -1,6 +1,4 @@
 'use strict';
-
-const { checkHostedSetup } = require('./credentials');
 const { withInterruptSignal } = require('./interrupt-signal');
 const { buildQueuedHostedExecution } = require('./queued-execution');
 const {
@@ -71,11 +69,8 @@ function followOptions(service, signal) {
 }
 
 async function submitQueuedRun(service, options, prepared, signal) {
-  const execution = buildQueuedHostedExecution(
-    prepared.inputs,
-    checkHostedSetup(prepared.context.target),
-    service.candidateManifest()
-  );
+  const execution = buildQueuedHostedExecution(prepared.inputs);
+  const runtime = service.runtimeBundleFor(prepared.context.target);
   const submissionKey = options.submissionKey ?? service.randomUUID();
   const client = service.runIntentClientFor(prepared.context);
   console.log(`Submission key: ${submissionKey}`);
@@ -83,6 +78,7 @@ async function submitQueuedRun(service, options, prepared, signal) {
   try {
     created = await client.submit({
       envelope: buildRunIntentEnvelope(execution.graph, execution.input),
+      runtime,
       submissionKey,
       size: 'standard',
       signal,

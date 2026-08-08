@@ -2,7 +2,6 @@
 
 const { createDefaultServices } = require('./default-services');
 const { COMMAND_MANIFEST } = require('./manifest');
-const { repositoryBinding } = require('./credentials');
 const {
   assertOnlyOptions,
   canonicalUuid,
@@ -37,19 +36,11 @@ function registerTarget(program, service) {
     .action((name, options) => failClosed(() => service().targetRemove(name, options)));
   target
     .command('setup <name>')
-    .description('Bind the fixed private repository and server-provisioned provider selection')
+    .description('Bind a repository and local hosted runtime configuration')
     .requiredOption('--repository <owner/name>', 'Exact GitHub owner/name')
-    .requiredOption('--provider <provider>', 'Must be codex')
-    .requiredOption('--model-level <level>', 'Must be level2')
-    .action((name, options) =>
-      failClosed(() => {
-        if (options.provider !== 'codex') {
-          throw new Error('provider must be exactly codex');
-        }
-        repositoryBinding(options.repository);
-        return service().targetSetup(name, options);
-      })
-    );
+    .requiredOption('--base-revision <sha>', 'Exact lowercase 40-character commit')
+    .requiredOption('--runtime-config <file>', 'Generic hosted runtime JSON')
+    .action((name, options) => failClosed(() => service().targetSetup(name, options)));
   target
     .command('status <name> <intent-id>')
     .description('Inspect or follow a queued private hosted run')

@@ -185,8 +185,6 @@ impl RuntimeFixture {
             repository: "the-open-engine/zeroshot".to_owned(),
             base_revision: "a".repeat(40),
             provider: "codex".to_owned(),
-            model_level: "level2".to_owned(),
-            provider_endpoint: "https://openrouter.ai/api/v1".to_owned(),
         })
         .unwrap();
         let mut backend =

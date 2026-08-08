@@ -10,7 +10,10 @@ const {
   readCapabilityFile,
   resolveTransportCapability,
 } = require('../../scripts/hosted-oecp-smoke-capability');
-const { safeApplyFailure } = require('../../scripts/hosted-oecp-image-smoke');
+const {
+  safeApplyFailure,
+  smokeCredentialBundle,
+} = require('../../scripts/hosted-oecp-image-smoke');
 
 const CAPABILITY = 'A'.repeat(32);
 
@@ -223,11 +226,32 @@ function registerSafeDiagnosticTests() {
   });
 }
 
+function registerCredentialProvisioningTests() {
+  it('builds the current provider-neutral credential install bundle', function () {
+    assert.deepStrictEqual(smokeCredentialBundle(), {
+      githubToken: 'HOSTED_SMOKE_GIT_TOKEN_CANARY',
+      repository: 'the-open-engine/zeroshot-smoke',
+      baseRevision: 'a'.repeat(40),
+      runtime: {
+        provider: 'codex',
+        executable: 'codex',
+        environment: {
+          OPENAI_API_KEY: 'HOSTED_SMOKE_PROVIDER_TOKEN_CANARY',
+          OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+        },
+        files: {},
+        settings: { defaultProvider: 'codex' },
+      },
+    });
+  });
+}
+
 function registerSmokeRpcClientTests() {
   describe('request lifecycle', registerRequestLifecycleTests);
   describe('socket termination', registerSocketTerminationTests);
   describe('capability loading', registerCapabilityFileTests);
   describe('safe diagnostics', registerSafeDiagnosticTests);
+  describe('credential provisioning', registerCredentialProvisioningTests);
 }
 
 describe('hosted OECP smoke RPC client', registerSmokeRpcClientTests);

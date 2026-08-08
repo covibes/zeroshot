@@ -6,13 +6,13 @@ const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { PRIVATE_MARKER } = require('./manifest');
-const { repositoryBinding } = require('./credentials');
 
 const ROOT = path.resolve(__dirname, '../..');
 const CANDIDATE_FILES = Object.freeze([
   'manifest.js',
   'readers.js',
   'credentials.js',
+  'runtime-config.js',
   'orchestrator.js',
   'orchestrator-support.js',
   'queued-execution.js',
@@ -57,9 +57,6 @@ function parseOptionValues(argv) {
   let valueFor;
   const names = Object.freeze({
     '--runtime-image-digest': 'runtimeImageDigest',
-    '--repository': 'repository',
-    '--provider': 'provider',
-    '--model-level': 'modelLevel',
     '--out': 'output',
   });
   for (const arg of argv) {
@@ -80,13 +77,6 @@ function validateBuildArgs(args) {
   if (!/^sha256:[a-f0-9]{64}$/.test(args.runtimeImageDigest || '')) {
     throw new Error('--runtime-image-digest sha256:<64 lowercase hex> is required');
   }
-  try {
-    repositoryBinding(args.repository);
-  } catch {
-    throw new Error('--repository must be one canonical lowercase GitHub owner/name');
-  }
-  if (args.provider !== 'codex') throw new Error('--provider must be exactly codex');
-  if (args.modelLevel !== 'level2') throw new Error('--model-level must be exactly level2');
 }
 
 function parseArgs(argv) {
@@ -186,9 +176,6 @@ function main() {
   copyStablePackage(stage);
   const buildManifest = Object.freeze({
     privateMarker: PRIVATE_MARKER,
-    repository: args.repository,
-    provider: args.provider,
-    modelLevel: args.modelLevel,
     runtimeImageDigest: args.runtimeImageDigest,
   });
 

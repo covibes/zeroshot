@@ -44,16 +44,13 @@ function deterministicBranch(clusterId) {
 
 async function prepareWorkspace(config, clusterId, gitCommand = git) {
   const expectedRemote = `https://github.com/${config.repository}`;
-  const [{ stdout: head }, { stdout: defaultHead }, { stdout: remote }, { stdout: status }] =
-    await Promise.all([
-      gitCommand(['rev-parse', 'HEAD']),
-      gitCommand(['rev-parse', 'refs/remotes/origin/HEAD']),
-      gitCommand(['remote', 'get-url', 'origin']),
-      gitCommand(['status', '--porcelain=v1', '-z']),
-    ]);
+  const [{ stdout: head }, { stdout: remote }, { stdout: status }] = await Promise.all([
+    gitCommand(['rev-parse', 'HEAD']),
+    gitCommand(['remote', 'get-url', 'origin']),
+    gitCommand(['status', '--porcelain=v1', '-z']),
+  ]);
   if (
     head.trim() !== config.baseRevision ||
-    defaultHead.trim() !== config.baseRevision ||
     ![expectedRemote, `${expectedRemote}.git`].includes(remote.trim()) ||
     status.length !== 0
   ) {
@@ -99,42 +96,78 @@ async function github(repository, path, init = {}) {
   return boundedJson(response);
 }
 
-async function createPullRequest(config, branch, headRevision, request = github) {
-  const repository = await request(config.repository, '');
-  if (typeof repository.default_branch !== 'string' || repository.default_branch.length === 0) {
+function repositoryDefaultBranch(repository) {
+  const branch = repository?.default_branch;
+  if (typeof branch !== 'string' || branch.length === 0) {
     throw new Error('GitHub repository metadata is invalid');
   }
-  const baseBranch = await request(
-    config.repository,
-    `/branches/${encodeURIComponent(repository.default_branch)}`
-  );
-  if (baseBranch?.commit?.sha !== config.baseRevision) {
-    throw new Error('Hosted base revision changed before delivery');
+  return branch;
+}
+
+function pullRequestNumber(value) {
+  return Number.isSafeInteger(value) && value > 0 ? String(value) : '';
+}
+
+async function rejectPullRequestReceipt(config, number, request) {
+  if (number) {
+    await request(config.repository, `/pulls/${number}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ state: 'closed' }),
+    });
   }
+  throw new Error('GitHub pull request receipt is invalid');
+}
+
+async function createPullRequest(config, branch, headRevision, request = github) {
+  const repository = await request(config.repository, '');
+  const defaultBranch = repositoryDefaultBranch(repository);
   const created = await request(config.repository, '/pulls', {
     method: 'POST',
     body: JSON.stringify({
       title: 'feat: complete hosted Zeroshot task',
       body: 'Created by the private Zeroshot hosted runtime.',
       head: branch,
-      base: repository.default_branch,
+      base: defaultBranch,
     }),
   });
   const expectedPrefix = `https://github.com/${config.repository}/pull/`;
+  const number = pullRequestNumber(created.number);
   if (
-    typeof created.html_url !== 'string' ||
-    !created.html_url.startsWith(expectedPrefix) ||
-    !/^[1-9][0-9]*$/.test(created.html_url.slice(expectedPrefix.length)) ||
+    !number ||
+    created.html_url !== `${expectedPrefix}${number}` ||
     created.head?.ref !== branch ||
     created.head?.sha !== headRevision ||
     created.head?.repo?.full_name !== config.repository ||
-    created.base?.ref !== repository.default_branch ||
+    created.base?.ref !== defaultBranch ||
     created.base?.sha !== config.baseRevision ||
     created.base?.repo?.full_name !== config.repository
   ) {
-    throw new Error('GitHub pull request receipt is invalid');
+    return rejectPullRequestReceipt(config, number, request);
   }
   return created.html_url;
+}
+
+async function createReviewOrDeleteBranch({
+  config,
+  branch,
+  headRevision,
+  expectedRemote,
+  createReview,
+  gitCommand,
+}) {
+  try {
+    return await createReview(config, branch, headRevision);
+  } catch (error) {
+    try {
+      await gitCommand(
+        ['push', '--porcelain', expectedRemote, `:refs/heads/${branch}`],
+        PUSH_TIMEOUT_MS
+      );
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Hosted delivery cleanup failed');
+    }
+    throw error;
+  }
 }
 
 async function shipWorkspace(config, branch, dependencies = {}) {
@@ -183,7 +216,14 @@ async function shipWorkspace(config, branch, dependencies = {}) {
     ['push', '--porcelain', expectedRemote, `HEAD:refs/heads/${branch}`],
     PUSH_TIMEOUT_MS
   );
-  const pullRequestUrl = await createReview(config, branch, headRevision);
+  const pullRequestUrl = await createReviewOrDeleteBranch({
+    config,
+    branch,
+    headRevision,
+    expectedRemote,
+    createReview,
+    gitCommand,
+  });
   return Object.freeze({
     repository: config.repository,
     branch,

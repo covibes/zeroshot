@@ -87,6 +87,10 @@ jobs:
       - name: Check provider CLI helper
         run: npm run check:agent-cli-provider:ci
 
+      - name: Hosted private CLI and target tests
+        run: npm run test:hosted
+        timeout-minutes: 5
+
       - name: Unit tests with coverage (fast)
         run: npm run test:coverage
         timeout-minutes: 3

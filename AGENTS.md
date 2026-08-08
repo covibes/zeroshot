@@ -163,22 +163,27 @@ loopback `8083`, and bounded internal HTTP `PUT`/`GET /internal/run-intents/{id}
 `8084`. All three transports require the same per-task runtime capability.
 All three listeners share the same `HostedBackend`. The HTTP adapter accepts only digest-verified
 `zeroshot.run-intent/v2` envelopes containing `GraphSpec` plus closed source/issue/prompt/artifact
-job input. Repository, revision, provider, model, endpoint, runtime profiles, credentials, and
-environment are not client-representable and come only from server-owned authority/configuration.
+job input. Run-intent envelopes remain credential- and runtime-free. The capsule process starts
+with an empty credential store and only its per-task transport capability; after allocation,
+hosting forwards one bounded opaque, provider-neutral runtime bundle directly to authenticated
+`PUT /internal/credentials` without interpreting provider or harness fields. The capsule validates
+and installs that bundle before plan/apply, accepts exact-byte retries as idempotent, and derives
+repository, revision, provider, model, executable, settings, files, and environment from it.
 The adapter retains one bounded in-memory intent identity/status, treats matching retries as replays
 and all second identities as conflicts, and leaves queue cancellation to capsule termination.
-Its fixed `/workspace` must be prepared without `.git`, credentials, provider configuration,
-symlinks, or host-path authority. Before worker launch, the runtime retains the sole preconnected
-one-shot proxy-cleanup and delivery channels; the child inherits neither those descriptors nor a
-usable listener. The untrusted Node tree receives only the fixed loopback proxy sentinels and a
-bounded list/read/atomic-write tool loop—never shell, subprocess, or arbitrary network tools—and a
-validated server-owned HTTPS model endpoint; no graph input may select or override that endpoint.
-A text-only response with no real workspace mutation cannot succeed. The complete tree is reaped
-after proxy admission/credential cleanup and before the trusted `WorkspaceDeliveryPort` runs.
-Delivery is idempotent and secret-free; `Finished` follows cleanup and delivery, and any defect
-replaces successful output with a closed failure. Keep the runtime,
-binary, image, and manifest private: never add npm/public CLI exports, full-v1 claims, raw credential
-routes, target/auth/store APIs, provider selection, or local fallback.
+Its fixed `/workspace` starts empty and receives the exact installed checkout. Runtime settings and
+files are materialized under the private runtime home, executable wrappers and setup output use the
+private `.git/zeroshot-runtime` executable root, and the workspace is reverified clean before worker
+launch. The worker inherits no trusted service sockets. It receives the installed runtime
+environment and settings, then uses Zeroshot's existing provider runner to launch the configured
+executable with the subprocess and network behavior owned by that harness; Git delivery credentials
+are withheld from the provider invocation. A text-only response with no real workspace mutation
+cannot succeed. After provider success, trusted Git delivery verifies the mutation, history, remote,
+and configuration before pushing the deterministic branch and creating a pull request; the backend
+validates the secret-free receipt, and any execution, cleanup, or delivery defect produces a closed
+failure. Keep the runtime, binary, image, and manifest private. Provider and harness interpretation
+belongs only in the Zeroshot runtime bundle and worker, never in hosting, IaC, or the run-intent
+schema; never add npm/public CLI exports, full-v1 claims, or a local fallback.
 
 Provider-specific settings, defaults, validation, and static capabilities derive from the provider
 registry; do not add parallel provider lists. Opt-in native CLI capabilities must keep requested

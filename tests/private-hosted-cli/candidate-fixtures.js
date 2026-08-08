@@ -1,6 +1,21 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
+const BASE_REVISION = 'b'.repeat(40);
+const RUNTIME_CONFIG_PATH = path.join(__dirname, 'fixtures', 'runtime-config.json');
+const RUNTIME_CONFIG = Object.freeze(JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, 'utf8')));
+const RUNTIME_BUNDLE = Object.freeze({
+  githubToken: 'github-test-token',
+  repository: 'owner/repository',
+  baseRevision: BASE_REVISION,
+  runtime: {
+    ...RUNTIME_CONFIG,
+    environment: { ANTHROPIC_API_KEY: 'model-test-token' },
+  },
+});
 const RUN_INTENT_ID = '019fd17e-71f3-7cf5-a57b-b8f1845c140c';
 const RUN_INTENT_NOW = '2026-08-05T10:00:00.000Z';
 
@@ -29,6 +44,14 @@ const DESCRIPTOR = {
     audience: 'capsule',
   },
   capsule: { baseUrl: 'https://target.example/capsules/' },
+  credentialInstall: {
+    kind: 'openengine.capsule-credential-install/v1',
+    install: {
+      routeTemplate: route('/capsules/{capsule_id}/credentials'),
+      method: 'PUT',
+    },
+    maxBodyBytes: 4 * 1024 * 1024,
+  },
   runIntent: {
     kind: 'zeroshot.run-intent/v2',
     baseUrl: 'https://target.example/api/v1',
@@ -101,10 +124,14 @@ function finishedWatch({ runId, cursor, onCancel }) {
 }
 
 module.exports = {
+  BASE_REVISION,
   captureLogs,
   DESCRIPTOR,
   finishedWatch,
   GRAPH,
+  RUNTIME_BUNDLE,
+  RUNTIME_CONFIG,
+  RUNTIME_CONFIG_PATH,
   runIntent,
   RUN_INTENT_ID,
   RUN_INTENT_NOW,

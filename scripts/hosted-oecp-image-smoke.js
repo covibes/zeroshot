@@ -17,6 +17,34 @@ const BASE_REVISION = 'a'.repeat(40);
 const PROMPT_CANARY = 'HOSTED_SMOKE_PROMPT_CANARY';
 const GIT_CANARY = 'HOSTED_SMOKE_GIT_TOKEN_CANARY';
 const PROVIDER_CANARY = 'HOSTED_SMOKE_PROVIDER_TOKEN_CANARY';
+const CREDENTIAL_INSTALL_SCRIPT = `
+  const fs = require('node:fs');
+  const http = require('node:http');
+  const body = fs.readFileSync(0);
+  const capability = fs.readFileSync('${CAPABILITY_PATH}', 'ascii');
+  const request = http.request({
+    host: '127.0.0.1',
+    port: 8084,
+    path: '/internal/credentials',
+    method: 'PUT',
+    headers: {
+      'connection': 'close',
+      'content-length': body.length,
+      'content-type': 'application/json',
+      'x-zero-runtime-capability': capability,
+    },
+  }, (response) => {
+    response.resume();
+    response.once('end', () => {
+      if (response.statusCode !== 204) process.exitCode = 1;
+    });
+  });
+  request.setTimeout(5000, () => request.destroy());
+  request.once('error', () => {
+    process.exitCode = 1;
+  });
+  request.end(body);
+`;
 
 function createCapabilityFile() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-oecp-smoke-'));
@@ -48,20 +76,44 @@ function startSmokeContainer(tag, name) {
     'ZEROSHOT_OECP_CAPABILITY_BOOTSTRAP=loopback-v1',
     '--env',
     `ZEROSHOT_OECP_CAPABILITY_FILE=${CAPABILITY_PATH}`,
-    '--env',
-    `ZEROSHOT_HOSTED_REPOSITORY=${REPOSITORY}`,
-    '--env',
-    `ZEROSHOT_HOSTED_BASE_REVISION=${BASE_REVISION}`,
-    '--env',
-    'ZEROSHOT_HOSTED_PROVIDER=codex',
-    '--env',
-    'ZEROSHOT_HOSTED_MODEL_LEVEL=level1',
-    '--env',
-    'OPENAI_BASE_URL=https://openrouter.ai/api/v1',
-    '--env',
-    `ZEROSHOT_HOSTED_CREDENTIALS_JSON=${JSON.stringify({ GH_TOKEN: GIT_CANARY, OPENAI_API_KEY: PROVIDER_CANARY })}`,
     tag,
   ]);
+}
+
+function smokeCredentialBundle() {
+  return {
+    githubToken: GIT_CANARY,
+    repository: REPOSITORY,
+    baseRevision: BASE_REVISION,
+    runtime: {
+      provider: 'codex',
+      executable: 'codex',
+      environment: {
+        OPENAI_API_KEY: PROVIDER_CANARY,
+        OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+      },
+      files: {},
+      settings: { defaultProvider: 'codex' },
+    },
+  };
+}
+
+function installCredentials(name) {
+  const installed = spawnSync(
+    'docker',
+    ['exec', '--interactive', name, '/usr/local/bin/node', '-e', CREDENTIAL_INSTALL_SCRIPT],
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+      input: JSON.stringify(smokeCredentialBundle()),
+      maxBuffer: 1024 * 1024,
+      shell: false,
+      timeout: 10_000,
+    }
+  );
+  if (installed.error || installed.status !== 0) {
+    throw new Error('Hosted image credential install failed');
+  }
 }
 
 async function waitForServer(name) {
@@ -214,6 +266,7 @@ async function smoke(tag) {
     const port = Number(mapped.slice(mapped.lastIndexOf(':') + 1));
     deliverCapability(tag, name, capability.capabilityFile);
     await waitForServer(name);
+    installCredentials(name);
     await exerciseServer({ host: '127.0.0.1', port }, capability.capabilityFile);
     verifyImageEffects(name, fs.readFileSync(capability.capabilityFile, 'ascii'));
   } finally {
@@ -222,4 +275,4 @@ async function smoke(tag) {
   }
 }
 
-module.exports = { safeApplyFailure, smoke };
+module.exports = { safeApplyFailure, smoke, smokeCredentialBundle };

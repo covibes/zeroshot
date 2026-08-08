@@ -26,7 +26,7 @@ function intent(overrides = {}) {
 }
 
 function registerQueueSubmissionTests() {
-  it('submits and follows a credential-free v2 RunIntent through one client', async () => {
+  it('submits one resolved runtime beside a credential-free v2 RunIntent', async () => {
     const queueCalls = [];
     const h = remoteHarness({
       createRunIntentClient: () => ({
@@ -65,6 +65,8 @@ function registerQueueSubmissionTests() {
     assert.equal(submitted.submissionKey, SUBMISSION_KEY);
     assert.deepEqual(Object.keys(submitted.envelope), ['version', 'graph', 'input']);
     assert.equal(submitted.envelope.version, 'zeroshot.run-intent/v2');
+    assert.equal(submitted.runtime.runtime.provider, 'claude');
+    assert.equal(submitted.runtime.runtime.environment.ANTHROPIC_API_KEY, 'model-test-token');
     assert.deepEqual(submitted.envelope.input, {
       source: 'prompt',
       prompt: 'Ship the change.',

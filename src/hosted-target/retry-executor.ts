@@ -2,7 +2,14 @@ import { MAX_RETRY_ELAPSED_MS } from './bounds.js';
 import { TargetAdapterError } from './errors.js';
 import type { Clock, RetryPolicy } from './types.js';
 
-export type TargetOperation = 'allocate' | 'list' | 'inspect' | 'terminate' | 'limits' | 'access';
+export type TargetOperation =
+  | 'allocate'
+  | 'list'
+  | 'inspect'
+  | 'terminate'
+  | 'limits'
+  | 'access'
+  | 'installRuntime';
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {

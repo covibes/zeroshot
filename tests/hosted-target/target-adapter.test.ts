@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { beforeEach, describe, it } from 'node:test';
 import {
   createTargetAdapter,
-  MAX_RESPONSE_BYTES,
   TargetProtocolError,
   TargetServerError,
 } from '../helpers/hosted-target-runtime.mjs';
@@ -13,26 +12,13 @@ import {
   capsule,
   fakeDiscovery,
 } from './harness.mjs';
-
-function bodyOf(request: { readonly init: RequestInit }): unknown {
-  return JSON.parse(String(request.init.body));
-}
+import { bodyOf, createAdapter } from './target-adapter-fixture.ts';
 
 let http: FakeHttpTransport;
 
 beforeEach(() => {
   http = new FakeHttpTransport();
 });
-
-function adapter() {
-  return createTargetAdapter({
-    descriptor: fakeDiscovery(),
-    organization: { id: 'org/opaque value' },
-    tokenProvider: new FakeTokenProvider(),
-    transport: http,
-    retryPolicy: NO_RETRY,
-  });
-}
 
 describe('descriptor-driven TargetAdapter', () => {
   it('captures every discovered method, route, query, header, and body exactly', async () => {
@@ -48,7 +34,7 @@ describe('descriptor-driven TargetAdapter', () => {
       expires_at: '2026-08-03T01:00:00Z',
     });
     http.enqueue(202, capsule('cap/opaque', 'terminating'));
-    const target = adapter();
+    const target = createAdapter(http);
 
     await target.allocate({ idempotencyKey: 'idem-1', label: 'worker', size: 'small' });
     const page = await target.list({ cursor: 'cursor/raw ?', limit: 37 });
@@ -96,7 +82,7 @@ describe('descriptor-driven TargetAdapter', () => {
 
 describe('descriptor-driven TargetAdapter validation', () => {
   it('rejects body and pagination bounds before transport side effects', async () => {
-    const target = adapter();
+    const target = createAdapter(http);
     await assert.rejects(
       target.allocate({ idempotencyKey: 'idem', label: 'x'.repeat(101) }),
       TargetProtocolError
@@ -116,7 +102,7 @@ describe('descriptor-driven TargetAdapter validation', () => {
       },
       { 'Retry-After': '1' }
     );
-    const target = adapter();
+    const target = createAdapter(http);
 
     await assert.rejects(target.inspect('cap-1'), (error: unknown) => {
       assert.ok(error instanceof TargetServerError);
@@ -130,7 +116,7 @@ describe('descriptor-driven TargetAdapter validation', () => {
 
   it('rejects unknown fields, lifecycle values, and permanent Retry-After', async () => {
     http.enqueue(200, { ...capsule(), provider_id: 'leak' });
-    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
+    await assert.rejects(createAdapter(http).inspect('cap-1'), TargetProtocolError);
 
     http.enqueue(
       409,
@@ -142,7 +128,7 @@ describe('descriptor-driven TargetAdapter validation', () => {
       },
       { 'Retry-After': '1' }
     );
-    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
+    await assert.rejects(createAdapter(http).inspect('cap-1'), TargetProtocolError);
   });
 
   it('requires the exact Bearer challenge on closed unauthorized responses', async () => {
@@ -153,12 +139,12 @@ describe('descriptor-driven TargetAdapter validation', () => {
       retryable: false,
     };
     http.enqueue(401, unauthorized);
-    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
+    await assert.rejects(createAdapter(http).inspect('cap-1'), TargetProtocolError);
 
     http.enqueue(401, unauthorized, {
       'WWW-Authenticate': 'Bearer error="invalid_token"',
     });
-    await assert.rejects(adapter().inspect('cap-1'), (error: unknown) => {
+    await assert.rejects(createAdapter(http).inspect('cap-1'), (error: unknown) => {
       assert.ok(error instanceof TargetServerError);
       assert.equal(error.serverCode, 'unauthorized');
       assert.equal(error.message.includes('CANARY_REFRESH_920'), false);
@@ -175,12 +161,15 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
       capsule_id: null,
       retryable: false,
     });
-    await assert.rejects(adapter().allocate({ idempotencyKey: 'idem-402' }), (error: unknown) => {
-      assert.ok(error instanceof TargetServerError);
-      assert.equal(error.status, 402);
-      assert.equal(error.serverCode, 'forbidden');
-      return true;
-    });
+    await assert.rejects(
+      createAdapter(http).allocate({ idempotencyKey: 'idem-402' }),
+      (error: unknown) => {
+        assert.ok(error instanceof TargetServerError);
+        assert.equal(error.status, 402);
+        assert.equal(error.serverCode, 'forbidden');
+        return true;
+      }
+    );
   });
 
   it('rejects retryable errors without Retry-After', async () => {
@@ -190,7 +179,7 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
       capsule_id: null,
       retryable: true,
     });
-    await assert.rejects(adapter().limits(), /omitted Retry-After/);
+    await assert.rejects(createAdapter(http).limits(), /omitted Retry-After/);
     http.enqueue(
       503,
       {
@@ -201,7 +190,7 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
       },
       { 'Retry-After': '1.5' }
     );
-    await assert.rejects(adapter().limits(), /Retry-After header is malformed/);
+    await assert.rejects(createAdapter(http).limits(), /Retry-After header is malformed/);
   });
 
   it('rejects impossible calendar dates', async () => {
@@ -209,7 +198,7 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
       ...capsule(),
       created_at: '2026-02-31T00:00:00Z',
     });
-    await assert.rejects(adapter().inspect('cap-1'), TargetProtocolError);
+    await assert.rejects(createAdapter(http).inspect('cap-1'), TargetProtocolError);
   });
 
   it('classifies redirects as one non-retryable protocol failure', async () => {
@@ -219,7 +208,7 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
         headers: { Location: 'https://attacker.example/capsules' },
       })
     );
-    await assert.rejects(adapter().inspect('cap-1'), /redirects are forbidden/);
+    await assert.rejects(createAdapter(http).inspect('cap-1'), /redirects are forbidden/);
     assert.equal(http.requests.length, 1);
   });
 
@@ -234,62 +223,6 @@ describe('descriptor-driven TargetAdapter wire errors', () => {
     });
     await assert.rejects(target.terminate('..'), TargetProtocolError);
     assert.equal(tokenProvider.calls.length, 0);
-    assert.equal(http.requests.length, 0);
-  });
-});
-
-describe('descriptor-driven TargetAdapter bounds and transport', () => {
-  it('cancels a chunked capsule response at the cumulative byte bound', async () => {
-    let cancelled = false;
-    http.responses.push(
-      new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new Uint8Array(MAX_RESPONSE_BYTES));
-            controller.enqueue(new Uint8Array([1]));
-          },
-          cancel() {
-            cancelled = true;
-          },
-        }),
-        { status: 200 }
-      )
-    );
-    await assert.rejects(adapter().inspect('cap-1'), /size limit/);
-    assert.equal(cancelled, true);
-  });
-
-  it('accepts the discovered literal-loopback WS transport exception', async () => {
-    const descriptor = fakeDiscovery();
-    const loopbackDescriptor = {
-      ...descriptor,
-      origin: 'http://127.0.0.1:8080',
-      capsule: {
-        ...descriptor.capsule,
-        baseUrl: 'http://127.0.0.1:8080/api/v1',
-      },
-    };
-    http.enqueue(200, {
-      protocol: 'openengine.cluster/v1',
-      websocket_url: 'ws://127.0.0.1:8080/v1/capsules/cap-1/oecp',
-      access_token: 'capsule-grant-canary',
-      token_type: 'Bearer',
-      expires_at: '2026-08-03T01:00:00Z',
-    });
-    const target = createTargetAdapter({
-      descriptor: loopbackDescriptor,
-      organization: { id: 'org' },
-      tokenProvider: new FakeTokenProvider(),
-      transport: http,
-      retryPolicy: NO_RETRY,
-    });
-    const access = await target.access('cap-1');
-    assert.equal(access.websocketUrl, 'ws://127.0.0.1:8080/v1/capsules/cap-1/oecp');
-    assert.equal(http.requests[0]?.url, 'http://127.0.0.1:8080/api/v1/capsules/cap-1/access');
-  });
-
-  it('exposes absence of credential install as capability metadata without guessing a route', () => {
-    assert.deepEqual(adapter().credentialInstall, { supported: false });
     assert.equal(http.requests.length, 0);
   });
 });

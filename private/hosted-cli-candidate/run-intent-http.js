@@ -2,6 +2,9 @@
 
 const { URL } = require('node:url');
 const {
+  MAX_RUN_INTENT_BYTES,
+  MAX_RUN_INTENT_DISPATCH_BYTES,
+  MAX_RUNTIME_BUNDLE_BYTES,
   RunIntentProtocolError,
   RunIntentRequestError,
   assertUuid,
@@ -12,6 +15,24 @@ const {
 } = require('./run-intent-schema');
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const DISPATCH_FRAME_BYTES = 4;
+
+function serializeOpaqueJson(value, maximum, label) {
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    throw new RunIntentRequestError(`RunIntent ${label} is not serializable`, { cause: error });
+  }
+  if (serialized === undefined) {
+    throw new RunIntentRequestError(`RunIntent ${label} is not serializable`);
+  }
+  const bytes = Buffer.from(serialized, 'utf8');
+  if (bytes.byteLength > maximum) {
+    throw new RunIntentRequestError(`RunIntent ${label} exceeds the decoded size bound`);
+  }
+  return bytes;
+}
 
 class RunIntentHttpError extends Error {
   constructor(status) {
@@ -124,12 +145,28 @@ class RunIntentClient {
     this.#fetch = options.fetch;
   }
 
-  submit({ envelope, submissionKey, size = 'standard', signal }) {
+  submit({ envelope, runtime, submissionKey, size = 'standard', signal }) {
     assertUuid(submissionKey, 'submission key');
     if (!['tiny', 'small', 'standard', 'large'].includes(size)) {
       throw new RunIntentRequestError('RunIntent size is invalid');
     }
-    const body = encodeBoundedJson({ label: 'zeroshot-cli', size, intent: envelope });
+    if (!runtime || typeof runtime !== 'object' || Array.isArray(runtime)) {
+      throw new RunIntentRequestError('RunIntent runtime bundle must be an object');
+    }
+    const intentBytes = serializeOpaqueJson(envelope, MAX_RUN_INTENT_BYTES, 'intent');
+    const runtimeBytes = serializeOpaqueJson(runtime, MAX_RUNTIME_BUNDLE_BYTES, 'runtime bundle');
+    if (
+      intentBytes.byteLength + runtimeBytes.byteLength + DISPATCH_FRAME_BYTES >
+      MAX_RUN_INTENT_DISPATCH_BYTES
+    ) {
+      throw new RunIntentRequestError('RunIntent payloads exceed the decoded dispatch size bound');
+    }
+    const body = encodeBoundedJson({
+      label: 'zeroshot-cli',
+      size,
+      intent: intentBytes.toString('base64url'),
+      runtime: runtimeBytes.toString('base64url'),
+    });
     return this.#request({
       route: this.#routes.submit,
       routeValues: { org_id: this.#organizationId },

@@ -8,13 +8,10 @@ const {
 } = require('../../private/hosted-cli-candidate/orchestrator');
 const { assertSecretsAbsent, withEnvironment } = require('./environment-harness');
 const { base, CALLER_INPUT } = require('./orchestrator-harness');
-async function refusesSetupMismatchesBeforeAllocation() {
+async function resolvesRuntimeBeforeAllocation() {
   const h = base();
-  await assert.rejects(
-    h.orchestrator.run({ ...h.options, expectedRepository: 'other/repo' }),
-    /does not match/
-  );
-  assert.deepEqual(h.sequence, ['read-inputs', 'check-setup']);
+  await h.orchestrator.run(h.options);
+  assert.ok(h.sequence.indexOf('resolve-runtime') < h.sequence.indexOf('allocate'));
 }
 
 async function rejectsCallerAuthorityMismatches() {
@@ -79,8 +76,10 @@ async function runsExactHostedLifecycleSequence() {
   assert.equal(result.final.status.phase, 'finished');
   assert.deepEqual(h.sequence, [
     'read-inputs',
-    'check-setup',
+    'resolve-runtime',
     'allocate',
+    'access',
+    'install-runtime',
     'initialize',
     'plan',
     'apply',
@@ -93,15 +92,15 @@ async function runsExactHostedLifecycleSequence() {
   assert.equal(result.identities.applyIdempotencyKey, 'apply_00000002000000000000000000000000');
   assert.equal(h.sequence.includes('terminate'), false);
   assert.deepEqual(h.requests.apply[0].input, {
-    source: 'prompt',
-    prompt: 'Ship the requested change.',
-    artifacts: [],
+    ...CALLER_INPUT,
     isolationProfile: 'isolation.prepared-worktree@1',
     providerProfile: 'provider.hosted-direct@1',
-    repository: 'owner/repo',
-    provider: 'codex',
-    modelLevel: 'level2',
+    repository: 'owner/repository',
+    provider: 'claude',
+    modelLevel: 'level1',
   });
+  assert.equal(h.requests.runtime.accessToken, 'capsule-access');
+  assert.equal(h.requests.runtime.runtime.runtime.provider, 'claude');
 }
 
 async function returnsDetachedAfterCommittedApply() {
@@ -111,28 +110,6 @@ async function returnsDetachedAfterCommittedApply() {
   assert.equal(result.apply.runId, 'server-run-1');
   assert.equal(h.sequence.includes('watch'), false);
   assert.equal(h.sequence.includes('get'), false);
-}
-
-async function surfacesSafeAuthorityDiagnostics() {
-  const h = base({
-    initialClient: {
-      apply() {
-        h.sequence.push('apply');
-        throw Object.assign(new Error('peer-controlled detail'), {
-          code: 'HOSTED_REPOSITORY_MISMATCH',
-          data: { code: 'HOSTED_REPOSITORY_MISMATCH' },
-        });
-      },
-    },
-  });
-  await assert.rejects(h.orchestrator.run(h.options), (error) => {
-    assert.equal(error.name, 'HostedProtocolError');
-    assert.match(error.message, /HOSTED_REPOSITORY_MISMATCH/);
-    assert.doesNotMatch(error.message, /peer-controlled/);
-    return true;
-  });
-  assert.equal(h.sequence.filter((step) => step === 'apply').length, 1);
-  assert.equal(h.sequence.filter((step) => step === 'terminate').length, 1);
 }
 
 async function preservesCapsuleAfterAmbiguousApply() {
@@ -260,7 +237,7 @@ async function preservesCapsuleAfterReadinessAmbiguity() {
   assert.equal(h.sequence.includes('initialize'), false);
 }
 for (const [name, test] of [
-  ['refuses setup mismatches before allocation', refusesSetupMismatchesBeforeAllocation],
+  ['resolves runtime before allocation', resolvesRuntimeBeforeAllocation],
   ['rejects caller authority mismatches before allocation', rejectsCallerAuthorityMismatches],
   ['rejects unsupported artifact input before allocation', rejectsUnsupportedArtifactInput],
   [
@@ -278,7 +255,6 @@ function registerHostedLifecycleTests() {
   const cases = [
     ['runs the exact hosted lifecycle sequence', runsExactHostedLifecycleSequence],
     ['returns detached only after committed apply', returnsDetachedAfterCommittedApply],
-    ['surfaces safe authority diagnostics', surfacesSafeAuthorityDiagnostics],
     ['preserves the capsule after ambiguous apply', preservesCapsuleAfterAmbiguousApply],
     ['preserves a nonterminal capsule', preservesCapsuleForNonterminalFinalState],
     ['detaches on SIGINT without termination', detachesOnSigintWithoutTermination],

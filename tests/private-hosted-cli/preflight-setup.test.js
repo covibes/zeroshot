@@ -8,8 +8,14 @@ const { afterEach, describe, it } = require('node:test');
 const {
   checkHostedSetup,
   configureTargetSetup,
+  resolveRuntimeBundle,
 } = require('../../private/hosted-cli-candidate/credentials');
+const {
+  normalizeRuntimeConfig,
+  readRuntimeConfig,
+} = require('../../private/hosted-cli-candidate/runtime-config');
 const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers');
+const BASE_REVISION = 'b'.repeat(40);
 const GRAPH_FIXTURE = path.join(
   __dirname,
   '..',
@@ -70,75 +76,172 @@ describe('explicit hosted readers', () => {
   });
 });
 
-it('stores only the fixed nonsecret hosted selection', async () => {
+it('stores references and resolves one provider-neutral runtime bundle per run', async () => {
+  const root = temp();
+  const runtimeConfigPath = path.join(root, 'runtime.json');
+  const directSecret = 'direct-provider-secret';
   const state = {
     _targets: {
       prod: { id: 'target-1', url: 'https://target.example', createdAt: '2026-08-03T00:00:00Z' },
     },
   };
-  let secretReads = 0;
+  const runtime = {
+    provider: 'bedrock-runner',
+    executable: 'claude',
+    model: 'anthropic.claude-sonnet-4-5',
+    environment: {
+      AWS_ACCESS_KEY_ID: { from: 'LOCAL_AWS_ACCESS_KEY_ID' },
+      AWS_REGION: 'eu-west-1',
+    },
+    files: { '.config/provider.json': '{"endpoint":"https://models.example"}' },
+    settings: { providerSettings: { custom: { apiKey: directSecret } } },
+  };
+  fs.writeFileSync(runtimeConfigPath, JSON.stringify(runtime));
   const metadata = await configureTargetSetup({
     targetName: 'prod',
     target: state._targets.prod,
     repository: 'owner/repository',
-    provider: 'codex',
-    modelLevel: 'level2',
+    baseRevision: BASE_REVISION,
+    runtimeConfigPath,
     settings: {
       mutate: (mutator) => mutator(state),
     },
-    credentialStore: {
-      get() {
-        secretReads += 1;
-        throw new Error('setup must not read a keyring');
-      },
-    },
-    github: {
-      inspect() {
-        secretReads += 1;
-        throw new Error('setup must not inspect GitHub credentials');
-      },
-      acquire() {
-        secretReads += 1;
-        throw new Error('setup must not acquire GitHub credentials');
-      },
-    },
-    prompt: {
-      line() {
-        secretReads += 1;
-        throw new Error('setup must not prompt');
-      },
-    },
     clock: { now: () => Date.parse('2026-08-03T00:00:00Z') },
   });
-  assert.equal(secretReads, 0);
-  assert.deepEqual(
-    {
-      kind: metadata.kind,
-      repository: metadata.repository,
-      provider: metadata.provider,
-      modelLevel: metadata.modelLevel,
-    },
-    {
-      kind: 'zeroshot.private-hosted-setup/v1',
-      repository: 'owner/repository',
-      provider: 'codex',
-      modelLevel: 'level2',
-    }
-  );
+  assert.equal(metadata.kind, 'zeroshot.private-hosted-setup/v2');
+  assert.equal(metadata.repository, 'owner/repository');
+  assert.equal(metadata.baseRevision, BASE_REVISION);
+  assert.equal(metadata.runtimeConfigPath, runtimeConfigPath);
   assert.deepEqual(checkHostedSetup(state._targets.prod), metadata);
-  assert.equal(JSON.stringify(state).match(/token|apiKey|openrouter|keyring/gi), null);
+  assert.equal('runtime' in metadata, false);
+  assert.equal(JSON.stringify(state).includes('bedrock-runner'), false);
+  assert.equal(JSON.stringify(state).includes(directSecret), false);
+  assert.equal(JSON.stringify(state).includes('aws-local-secret'), false);
+
+  const bundle = resolveRuntimeBundle(state._targets.prod, {
+    GH_TOKEN: 'github-test-token',
+    LOCAL_AWS_ACCESS_KEY_ID: 'aws-local-secret',
+  });
+  assert.equal(bundle.githubToken, 'github-test-token');
+  assert.equal(bundle.baseRevision, BASE_REVISION);
+  assert.equal(bundle.runtime.provider, 'bedrock-runner');
+  assert.equal(bundle.runtime.executable, 'claude');
+  assert.equal(bundle.runtime.environment.AWS_ACCESS_KEY_ID, 'aws-local-secret');
+  assert.equal(bundle.runtime.environment.AWS_REGION, 'eu-west-1');
+  assert.equal(bundle.runtime.settings.providerSettings.custom.apiKey, directSecret);
 });
 
-it('rejects any repository, provider, or model-level mismatch without mutation', () => {
+it('validates generic runtime bounds and anchors mapped files to the config', () => {
+  assert.deepEqual(
+    normalizeRuntimeConfig({
+      provider: 'azure-openai',
+      executable: 'gateway',
+      environment: {},
+      files: {},
+      settings: {},
+    }).executable,
+    'gateway'
+  );
+  assert.equal(
+    normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }).executable,
+    'future-cli'
+  );
+  for (const name of [
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'GIT_ASKPASS',
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_NOSYSTEM',
+    'GIT_TERMINAL_PROMPT',
+    'HOME',
+    'LANG',
+    'NODE_ENV',
+    'PATH',
+    'TMPDIR',
+    'ZEROSHOT_HOSTED_BASE_REVISION',
+    'ZEROSHOT_HOSTED_EXECUTABLE',
+    'ZEROSHOT_HOSTED_EXEC_ROOT',
+    'ZEROSHOT_HOSTED_MODEL',
+    'ZEROSHOT_HOSTED_PROVIDER',
+    'ZEROSHOT_HOSTED_REPOSITORY',
+    'ZEROSHOT_ISOLATION_PROFILE',
+    'ZEROSHOT_PROVIDER_PROFILE',
+    'ZEROSHOT_SETTINGS_FILE',
+  ]) {
+    assert.throws(
+      () =>
+        normalizeRuntimeConfig({
+          provider: 'custom',
+          executable: 'claude',
+          environment: { [name]: '/escape' },
+        }),
+      /reserved/
+    );
+  }
+  for (const filename of ['../escape', 'settings.json', 'settings.json/nested']) {
+    assert.throws(
+      () =>
+        normalizeRuntimeConfig({
+          provider: 'custom',
+          executable: 'claude',
+          files: { [filename]: 'secret' },
+        }),
+      /runtime file path/
+    );
+  }
+
+  const root = temp();
+  const configDirectory = path.join(root, 'config');
+  const configFile = path.join(configDirectory, 'runtime.json');
+  fs.mkdirSync(configDirectory);
+  fs.writeFileSync(
+    configFile,
+    JSON.stringify({
+      provider: 'custom',
+      executable: 'claude',
+      files: { '.config/harness.json': { from: '../credentials/harness.json' } },
+    })
+  );
+  assert.equal(
+    readRuntimeConfig(configFile).files['.config/harness.json'].from,
+    path.join(root, 'credentials', 'harness.json')
+  );
+});
+
+it('rejects invalid repository or runtime configuration without mutation', () => {
+  const root = temp();
+  const validRuntimeConfig = path.join(root, 'valid.json');
+  const emptyProviderConfig = path.join(root, 'empty-provider.json');
+  const unknownFieldConfig = path.join(root, 'unknown-field.json');
+  fs.writeFileSync(validRuntimeConfig, JSON.stringify({ provider: 'claude' }));
+  fs.writeFileSync(emptyProviderConfig, JSON.stringify({ provider: '' }));
+  fs.writeFileSync(unknownFieldConfig, JSON.stringify({ provider: 'claude', unknown: true }));
   for (const options of [
-    { repository: 'owner/repo.git', provider: 'codex', modelLevel: 'level2' },
-    { repository: 'Owner/Repo', provider: 'codex', modelLevel: 'level2' },
-    { repository: 'owner/repo', provider: 'gateway', modelLevel: 'level2' },
-    { repository: 'owner/repo', provider: 'codex', modelLevel: 'level3' },
-    { repository: 'owner-/repo', provider: 'codex', modelLevel: 'level2' },
-    { repository: 'owner.name/repo', provider: 'codex', modelLevel: 'level2' },
-    { repository: `${'o'.repeat(40)}/repo`, provider: 'codex', modelLevel: 'level2' },
-    { repository: 'owner/repo-', provider: 'codex', modelLevel: 'level2' },
+    {
+      repository: 'owner/repo.git',
+      baseRevision: BASE_REVISION,
+      runtimeConfigPath: validRuntimeConfig,
+    },
+    {
+      repository: 'Owner/Repo',
+      baseRevision: BASE_REVISION,
+      runtimeConfigPath: validRuntimeConfig,
+    },
+    {
+      repository: 'owner/repo',
+      baseRevision: 'not-a-commit',
+      runtimeConfigPath: validRuntimeConfig,
+    },
+    {
+      repository: 'owner/repo',
+      baseRevision: BASE_REVISION,
+      runtimeConfigPath: emptyProviderConfig,
+    },
+    {
+      repository: 'owner/repo',
+      baseRevision: BASE_REVISION,
+      runtimeConfigPath: unknownFieldConfig,
+    },
   ]) {
     const state = { _targets: { prod: { id: 'target-1' } } };
     assert.throws(() =>

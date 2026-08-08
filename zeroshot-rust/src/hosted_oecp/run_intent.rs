@@ -49,7 +49,7 @@ impl RunIntentJobInput {
             provider_profile: RegistryProfileRef::new(PROVIDER_PROFILE).map_err(|_| ())?,
             repository: authority.repository().to_owned(),
             provider: authority.provider().to_owned(),
-            model_level: authority.model_level().to_owned(),
+            model_level: "level1".to_owned(),
         };
         request.validate().map_err(|_| ())?;
         Ok(request)

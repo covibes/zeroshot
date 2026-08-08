@@ -1,0 +1,14 @@
+{
+  "provider": "claude",
+  "executable": "claude",
+  "model": "claude-sonnet-4-5",
+  "environment": {
+    "ANTHROPIC_API_KEY": {
+      "from": "LOCAL_MODEL_KEY"
+    }
+  },
+  "files": {},
+  "settings": {
+    "defaultProvider": "claude"
+  }
+}

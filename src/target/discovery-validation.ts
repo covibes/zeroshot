@@ -3,16 +3,8 @@ import { routeTemplate, type RouteTemplate } from './route-template.js';
 
 export interface CredentialInstallDescriptor {
   readonly kind: 'openengine.capsule-credential-install/v1';
-  readonly grant: { readonly routeTemplate: RouteTemplate; readonly method: 'POST' };
   readonly install: { readonly routeTemplate: RouteTemplate; readonly method: 'PUT' };
-  readonly uploadUrlOrigin: 'same_origin';
-  readonly sealedEnvelopeAlgorithms: readonly ['RSA-OAEP-3072-SHA256'];
-  readonly bounds: {
-    readonly maxEnvelopeBytes: number;
-    readonly maxBodyBytes: number;
-    readonly grantTtlSeconds: number;
-    readonly maxClockSkewSeconds: number;
-  };
+  readonly maxBodyBytes: number;
 }
 
 export function record(value: unknown, field: string): Record<string, unknown> {
@@ -116,29 +108,35 @@ export function sameOriginUrl(
 export function parseCredentialInstall(value: unknown): CredentialInstallDescriptor | null {
   if (value === undefined || value === null) return null;
   const extension = closedRecord(value, 'extensions.credential_install', [
-    'kind', 'grant', 'install', 'upload_url_origin', 'sealed_envelope_algorithms', 'bounds',
+    'kind',
+    'install',
+    'max_body_bytes',
   ]);
-  exact(extension.kind, 'openengine.capsule-credential-install/v1', 'extensions.credential_install.kind');
-  const grant = closedRecord(extension.grant, 'extensions.credential_install.grant', ['route_template', 'method']);
-  const install = closedRecord(extension.install, 'extensions.credential_install.install', ['route_template', 'method']);
-  exact(grant.method, 'POST', 'extensions.credential_install.grant.method');
+  exact(
+    extension.kind,
+    'openengine.capsule-credential-install/v1',
+    'extensions.credential_install.kind'
+  );
+  const install = closedRecord(extension.install, 'extensions.credential_install.install', [
+    'route_template',
+    'method',
+  ]);
   exact(install.method, 'PUT', 'extensions.credential_install.install.method');
-  exact(extension.upload_url_origin, 'same_origin', 'extensions.credential_install.upload_url_origin');
-  exactStringSet(extension.sealed_envelope_algorithms, 'extensions.credential_install.sealed_envelope_algorithms', ['RSA-OAEP-3072-SHA256']);
-  const bounds = closedRecord(extension.bounds, 'extensions.credential_install.bounds', [
-    'max_envelope_bytes', 'max_body_bytes', 'grant_ttl_seconds', 'max_clock_skew_seconds',
-  ]);
   return Object.freeze({
     kind: 'openengine.capsule-credential-install/v1' as const,
-    grant: Object.freeze({ routeTemplate: routeTemplate(grant.route_template, 'extensions.credential_install.grant.route_template', ['capsule_id']), method: 'POST' as const }),
-    install: Object.freeze({ routeTemplate: routeTemplate(install.route_template, 'extensions.credential_install.install.route_template', ['capsule_id']), method: 'PUT' as const }),
-    uploadUrlOrigin: 'same_origin' as const,
-    sealedEnvelopeAlgorithms: Object.freeze(['RSA-OAEP-3072-SHA256'] as const),
-    bounds: Object.freeze({
-      maxEnvelopeBytes: integer(bounds.max_envelope_bytes, 'extensions.credential_install.bounds.max_envelope_bytes', 1, 1_048_576),
-      maxBodyBytes: integer(bounds.max_body_bytes, 'extensions.credential_install.bounds.max_body_bytes', 1, 1_048_576),
-      grantTtlSeconds: integer(bounds.grant_ttl_seconds, 'extensions.credential_install.bounds.grant_ttl_seconds', 1, 3_600),
-      maxClockSkewSeconds: integer(bounds.max_clock_skew_seconds, 'extensions.credential_install.bounds.max_clock_skew_seconds', 0, 300),
+    install: Object.freeze({
+      routeTemplate: routeTemplate(
+        install.route_template,
+        'extensions.credential_install.install.route_template',
+        ['capsule_id']
+      ),
+      method: 'PUT' as const,
     }),
+    maxBodyBytes: integer(
+      extension.max_body_bytes,
+      'extensions.credential_install.max_body_bytes',
+      1,
+      4 * 1024 * 1024
+    ),
   });
 }

@@ -26,6 +26,12 @@ export interface TargetAdapter {
   terminate(capsuleId: string, signal?: AbortSignal): Promise<Capsule>;
   limits(signal?: AbortSignal): Promise<CapsuleLimits>;
   access(capsuleId: string, signal?: AbortSignal): Promise<CapsuleAccess>;
+  installRuntime(
+    capsuleId: string,
+    runtime: unknown,
+    accessToken: string,
+    signal?: AbortSignal
+  ): Promise<void>;
   readonly credentialInstall: CredentialInstallCapability;
 }
 

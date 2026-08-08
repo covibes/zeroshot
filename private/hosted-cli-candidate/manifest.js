@@ -6,7 +6,7 @@ const COMMAND_MANIFEST = Object.freeze([
   'target login <name>',
   'target list [--json]',
   'target remove <name> [--force]',
-  'target setup <name> --repository <owner/name> --provider codex --model-level level2',
+  'target setup <name> --repository <owner/name> --base-revision <sha> --runtime-config <file>',
   'target status <name> <intent-id> [--follow] [--json]',
   'target cancel <name> <intent-id>',
   'capsule create --target <name> [--label <label>] [--size <size>]',
