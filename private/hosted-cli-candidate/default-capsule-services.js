@@ -51,6 +51,9 @@ async function remoteRun(service, options) {
     service.runtime.cluster.assertGraphSpec
   );
   const context = await service.contextFor(options.target);
+  if (options.size !== undefined && !context.descriptor.sizes.catalog.includes(options.size)) {
+    throw new Error('capsule size is not advertised by the target');
+  }
   const manifest = service.candidateManifest();
   return withInterruptSignal((signal) => {
     const orchestrator = new HostedRunOrchestrator({
@@ -67,6 +70,8 @@ async function remoteRun(service, options) {
       graphPath: options.graph,
       inputPath: options.input,
       detach: Boolean(options.detach),
+      deliveryMode: options.ship ? 'ship' : 'pr',
+      ...(options.size === undefined ? {} : { size: options.size }),
       signal,
     });
   });

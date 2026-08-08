@@ -20,6 +20,9 @@ const RESERVED_ENVIRONMENT = new Set([
   'PATH',
   'TMPDIR',
   'ZEROSHOT_HOSTED_BASE_REVISION',
+  'ZEROSHOT_HOSTED_DELIVERY_MODE',
+  'ZEROSHOT_HOSTED_DELIVERY_TARGET',
+  'ZEROSHOT_HOSTED_DELIVERY_VERSION',
   'ZEROSHOT_HOSTED_EXECUTABLE',
   'ZEROSHOT_HOSTED_EXEC_ROOT',
   'ZEROSHOT_HOSTED_MODEL',
@@ -139,8 +142,10 @@ function normalizeRuntimeConfig(value) {
   if (unknown.length) throw new Error(`unknown runtime config field: ${unknown.join(', ')}`);
 
   const provider = boundedIdentifier(input.provider, 'runtime provider', 64);
-  const executable =
+  const requestedExecutable =
     boundedIdentifier(input.executable, 'runtime executable', 128, true) ?? provider;
+  const { getProviderRegistryEntry } = require('../../lib/agent-cli-provider');
+  const executable = getProviderRegistryEntry(requestedExecutable).id;
   const model = boundedString(input.model, 'runtime model', 512, true);
   const command = boundedString(input.command, 'runtime command', 4096, true);
   const setupCommand = boundedString(input.setupCommand, 'runtime setupCommand', 16 * 1024, true);

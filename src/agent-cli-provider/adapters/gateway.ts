@@ -33,6 +33,7 @@ export const gatewaySettingsDefaults: Readonly<Record<string, unknown>> = Object
   protocol: 'openai',
   baseUrl: null,
   apiKey: null,
+  apiKeyEnv: null,
   headers: null,
   model: null,
   maxTokens: null,

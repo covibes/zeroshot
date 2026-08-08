@@ -766,6 +766,7 @@ function resolveRuntimeGatewayOptions(
   const cwd = baseOptions.cwd ?? process.cwd();
   const settingsGateway = providerSettings.gateway ?? {};
   const requestGateway = baseOptions.gateway ?? {};
+  const apiKey = resolveGatewayApiKey(requestGateway, settingsGateway);
   const mergedHeaders =
     requestGateway.headers === undefined
       ? settingsGateway.headers
@@ -777,9 +778,7 @@ function resolveRuntimeGatewayOptions(
     ...((requestGateway.baseUrl ?? settingsGateway.baseUrl)
       ? { baseUrl: requestGateway.baseUrl ?? settingsGateway.baseUrl }
       : {}),
-    ...((requestGateway.apiKey ?? settingsGateway.apiKey)
-      ? { apiKey: requestGateway.apiKey ?? settingsGateway.apiKey }
-      : {}),
+    ...(apiKey === undefined ? {} : { apiKey }),
     ...(mergedHeaders === undefined ? {} : { headers: mergedHeaders }),
     model: requestGateway.model ?? modelSpec.model ?? settingsGateway.model ?? null,
     ...((requestGateway.maxTokens ?? settingsGateway.maxTokens)
@@ -790,6 +789,34 @@ function resolveRuntimeGatewayOptions(
       : {}),
   };
   return resolveGatewayConfiguration(mergedGateway, 'options.gateway', cwd);
+}
+
+function resolveGatewayApiKey(
+  request: GatewayBuildOptions,
+  settings: GatewayBuildOptions
+): string | undefined {
+  if (request.apiKeyEnv !== undefined) {
+    throw new Error('options.gateway.apiKeyEnv requires trusted provider settings');
+  }
+  const requestOwnsTransport =
+    request.protocol !== undefined ||
+    request.baseUrl !== undefined ||
+    request.headers !== undefined;
+  if ((settings.apiKeyEnv !== undefined || settings.apiKey !== undefined) && requestOwnsTransport) {
+    throw new Error('options.gateway transport cannot override credential settings');
+  }
+  const direct = request.apiKey ?? settings.apiKey;
+  const environmentName = settings.apiKeyEnv;
+  if (direct !== undefined && environmentName !== undefined) {
+    throw new Error('gateway apiKey and apiKeyEnv are mutually exclusive');
+  }
+  if (direct !== undefined) return direct;
+  if (environmentName === undefined) return undefined;
+  const value = process.env[environmentName];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`gateway apiKeyEnv requires environment variable ${environmentName}`);
+  }
+  return value;
 }
 
 function shouldIncludeAuthEnv(

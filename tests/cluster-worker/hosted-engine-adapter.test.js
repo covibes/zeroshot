@@ -11,6 +11,13 @@ const { deterministicBranch } = require('../../zeroshot-rust/hosted-node/workspa
 const CONFIG = Object.freeze({
   repository: 'the-open-engine/zeroshot',
   baseRevision: 'a'.repeat(40),
+  delivery: Object.freeze({
+    version: 'zeroshot.delivery/v1',
+    mode: 'pr',
+    repository: 'the-open-engine/zeroshot',
+    targetBranch: 'main',
+    baseRevision: 'a'.repeat(40),
+  }),
   executable: 'codex',
   provider: 'azure-openai',
   model: 'future/model',
@@ -58,7 +65,16 @@ describe('hosted direct provider adapter', () => {
 
   it('keeps built-in provider and executable selection unchanged', () => {
     const config = { ...CONFIG, executable: 'claude', provider: 'claude' };
-    assert.equal(providerInvocation(config, { ...request(), provider: 'claude' }).provider, 'claude');
+    assert.equal(
+      providerInvocation(config, { ...request(), provider: 'claude' }).provider,
+      'claude'
+    );
+  });
+
+  it('lets OMP resolve declared auth without passing incompatible authEnv options', () => {
+    const config = { ...CONFIG, executable: 'omp', provider: 'omp' };
+    const invocation = providerInvocation(config, { ...request(), provider: 'omp' });
+    assert.equal(Object.hasOwn(invocation.options, 'authEnv'), false);
   });
 
   it('withholds the Git credential from the provider process and restores it for delivery', async () => {

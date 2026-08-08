@@ -52,6 +52,7 @@ export function normalizeGatewayBuildOptions(
   const protocol = optionalGatewayProtocol(value.protocol, `${field}.protocol`);
   const baseUrl = optionalString(value.baseUrl, `${field}.baseUrl`);
   const apiKey = optionalString(value.apiKey, `${field}.apiKey`);
+  const apiKeyEnv = optionalEnvironmentName(value.apiKeyEnv, `${field}.apiKeyEnv`);
   const model = optionalNullableString(value.model, `${field}.model`);
   const maxTokens = optionalNullablePositiveInteger(value.maxTokens, `${field}.maxTokens`);
   const headers = optionalStringRecord(value.headers, `${field}.headers`);
@@ -60,6 +61,13 @@ export function normalizeGatewayBuildOptions(
   if (protocol !== undefined) result.protocol = protocol;
   if (baseUrl !== undefined) result.baseUrl = baseUrl;
   if (typeof apiKey === 'string') result.apiKey = apiKey;
+  if (apiKeyEnv !== undefined) result.apiKeyEnv = apiKeyEnv;
+  if (apiKey !== undefined && apiKeyEnv !== undefined) {
+    invalidField(
+      `${field}.apiKeyEnv`,
+      `${field}.apiKey and ${field}.apiKeyEnv are mutually exclusive.`
+    );
+  }
   if (model !== undefined) result.model = model;
   if (maxTokens !== undefined) result.maxTokens = maxTokens;
   if (headers !== undefined) result.headers = headers;
@@ -115,6 +123,18 @@ export function validateGatewaySettings(settings: Record<string, unknown>): stri
     );
     optionalString(settings.baseUrl, 'providerSettings.gateway.baseUrl');
     optionalString(settings.apiKey, 'providerSettings.gateway.apiKey');
+    optionalEnvironmentName(settings.apiKeyEnv, 'providerSettings.gateway.apiKeyEnv');
+    if (
+      settings.apiKey !== null &&
+      settings.apiKey !== undefined &&
+      settings.apiKeyEnv !== null &&
+      settings.apiKeyEnv !== undefined
+    ) {
+      invalidField(
+        'providerSettings.gateway.apiKeyEnv',
+        'providerSettings.gateway.apiKey and providerSettings.gateway.apiKeyEnv are mutually exclusive.'
+      );
+    }
     optionalNullableString(settings.model, 'providerSettings.gateway.model');
     const maxTokens = optionalNullablePositiveInteger(
       settings.maxTokens,
@@ -136,6 +156,14 @@ export function validateGatewaySettings(settings: Record<string, unknown>): stri
   } catch (error) {
     return unknownToMessage(error);
   }
+}
+
+function optionalEnvironmentName(value: unknown, field: string): string | undefined {
+  const name = optionalString(value, field);
+  if (name !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    invalidField(field, `${field} must name an environment variable.`);
+  }
+  return name;
 }
 
 export function normalizeGatewayToolPolicy(
@@ -212,7 +240,11 @@ function requiredGatewayToolPolicy(
   return normalizeGatewayToolPolicy(value, field, cwd);
 }
 
-function normalizeGatewayRoots(value: readonly string[], field: string, cwd: string): readonly string[] {
+function normalizeGatewayRoots(
+  value: readonly string[],
+  field: string,
+  cwd: string
+): readonly string[] {
   if (value.length === 0) {
     invalidField(field, `${field} must contain at least one root path.`);
   }
@@ -368,7 +400,11 @@ async function readGatewayFile(
   input: unknown,
   policy: GatewayToolPolicy
 ): Promise<Record<string, unknown>> {
-  const targetPath = await assertWithinRoots(readGatewayFileInput(input), policy.roots, 'read_file.path');
+  const targetPath = await assertWithinRoots(
+    readGatewayFileInput(input),
+    policy.roots,
+    'read_file.path'
+  );
   const content = await readFile(targetPath, 'utf8');
   return { path: targetPath, content };
 }
@@ -420,7 +456,9 @@ async function applyGatewayPatch(
   if (!current.includes(search)) {
     throw new Error('apply_patch.search did not match the target file.');
   }
-  const next = request.replaceAll ? current.split(search).join(replace) : current.replace(search, replace);
+  const next = request.replaceAll
+    ? current.split(search).join(replace)
+    : current.replace(search, replace);
   await writeFile(targetPath, next, 'utf8');
   return {
     path: targetPath,

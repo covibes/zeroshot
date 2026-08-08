@@ -46,7 +46,7 @@ const VERIFICATION_ADAPTERS = {
           'view',
           ...(prNumber ? [String(prNumber)] : []),
           '--json',
-          'state,mergedAt,url,number',
+          'state,mergedAt,url,number,autoMergeRequest,mergeStateStatus',
         ],
       };
     },
@@ -57,6 +57,8 @@ const VERIFICATION_ADAPTERS = {
         state: String(data.state || '').toUpperCase(),
         mergedAt: data.mergedAt || null,
         url: data.url || null,
+        autoMergeRequest: data.autoMergeRequest || null,
+        mergeStateStatus: data.mergeStateStatus || null,
       };
     },
     isNotFoundError(err) {
@@ -289,6 +291,8 @@ function normalizeFetchedPrData(prData, adapter) {
     state: String(prData?.state || '').toUpperCase(),
     mergedAt: prData?.mergedAt || null,
     url: prData?.url || null,
+    autoMergeRequest: prData?.autoMergeRequest || null,
+    mergeStateStatus: prData?.mergeStateStatus || null,
   };
 }
 
@@ -431,7 +435,7 @@ function isStatusOnlyPusherReason(reason) {
   return hasPendingSignal && !hasFailureSignal;
 }
 
-function handleBlockedPusherOutcome({ claims, platform, agent }) {
+function handleBlockedPusherOutcome({ claims, platform, agent, requireMerge }) {
   const structuredOutput = claims.structuredOutput || {};
   if (!isTrue(structuredOutput.blocked)) return false;
 
@@ -445,7 +449,7 @@ function handleBlockedPusherOutcome({ claims, platform, agent }) {
     reason: 'git-pusher-blocked',
   });
 
-  if (isStatusOnlyPusherReason(blockedReason)) {
+  if (isStatusOnlyPusherReason(blockedReason) && !requireMerge) {
     agent._log(`⚠️  git-pusher status pending: ${blockedReason}`);
     publishClusterComplete(agent, {
       ...payload,
@@ -507,30 +511,32 @@ function handleUnmergedPr({ adapter, platform, prData, agent }) {
   const windowSeconds = (pollAttempts * pollIntervalMs) / 1000;
   const itemLabel = adapter.itemName;
 
-  if (adapter.isOpenState(prData.state)) {
-    const reason =
-      `${itemLabel} merge not yet visible via ${adapter.displayName} API after polling window; ` +
-      'verification deferred.';
+  if (
+    adapter.platform === 'github' &&
+    prData.autoMergeRequest?.mergeMethod === 'MERGE' &&
+    prData.autoMergeRequest?.enabledAt
+  ) {
+    const reason = `${itemLabel} accepted by authoritative GitHub auto-merge policy.`;
     agent._log(
-      `⚠️  VERIFICATION PENDING: ${reason} ${itemLabel} #${prData.number}, state="${prData.state}"`
+      `✅ VERIFICATION PASSED: ${reason} ${itemLabel} #${prData.number}, state="${prData.state}"`
     );
     publishClusterComplete(agent, {
       ...buildVerificationPayload({
         platform,
         prData,
-        reason: 'git-pusher-complete-verification-pending',
+        reason: 'git-pusher-complete-auto-merge-accepted',
       }),
-      verification_pending: true,
+      auto_merge_accepted: true,
       verification_state: prData.state,
       verification_polls: pollAttempts,
       verification_window_seconds: windowSeconds,
-      verification_message: reason,
     });
     return;
   }
 
   throw new Error(
-    `VERIFICATION FAILED: ${itemLabel} #${prData.number} exists but is not merged ` +
+    `VERIFICATION FAILED: ${itemLabel} #${prData.number} exists but is neither merged nor ` +
+      'authoritatively accepted for merge-method auto-merge ' +
       `(state="${prData.state}") after ${pollAttempts} polls over ${windowSeconds}s.`
   );
 }
@@ -599,7 +605,7 @@ async function verifyPullRequest({ result, agent, autoMerge }) {
     adapter,
   });
 
-  if (handleBlockedPusherOutcome({ claims, platform, agent })) {
+  if (handleBlockedPusherOutcome({ claims, platform, agent, requireMerge })) {
     return;
   }
 

@@ -169,6 +169,11 @@ hosting forwards one bounded opaque, provider-neutral runtime bundle directly to
 `PUT /internal/credentials` without interpreting provider or harness fields. The capsule validates
 and installs that bundle before plan/apply, accepts exact-byte retries as idempotent, and derives
 repository, revision, provider, model, executable, settings, files, and environment from it.
+Each submission resolves its base selector to one immutable revision and includes a closed
+`zeroshot.delivery/v1` request. An omitted selector resolves the repository default branch, a named
+branch remains the delivery target, and an exact revision requires an explicit target branch.
+Direct and queued submissions use the same request; an explicit size must be advertised, while an
+omitted queued size preserves the target default.
 The adapter retains one bounded in-memory intent identity/status, treats matching retries as replays
 and all second identities as conflicts, and leaves queue cancellation to capsule termination.
 Its fixed `/workspace` starts empty and receives the exact installed checkout. Runtime settings and
@@ -179,8 +184,11 @@ environment and settings, then uses Zeroshot's existing provider runner to launc
 executable with the subprocess and network behavior owned by that harness; Git delivery credentials
 are withheld from the provider invocation. A text-only response with no real workspace mutation
 cannot succeed. After provider success, trusted Git delivery verifies the mutation, history, remote,
-and configuration before pushing the deterministic branch and creating a pull request; the backend
-validates the secret-free receipt, and any execution, cleanup, or delivery defect produces a closed
+configuration, and that the retained revision remains an ancestor of the current target before
+pushing one deterministic-branch commit. Review delivery succeeds only with a verified open pull
+request. Ship delivery succeeds only after an authoritative merge receipt or GitHub acceptance of
+merge-method auto-merge; an open pull request alone never succeeds. The backend validates the
+secret-free, versioned result, and any execution, cleanup, or delivery defect produces a closed
 failure. Keep the runtime, binary, image, and manifest private. Provider and harness interpretation
 belongs only in the Zeroshot runtime bundle and worker, never in hosting, IaC, or the run-intent
 schema; never add npm/public CLI exports, full-v1 claims, or a local fallback.

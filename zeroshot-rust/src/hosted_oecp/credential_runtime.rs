@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::process::Stdio;
 
 use tokio::fs;
 use tokio::process::Command;
+use tokio::time::{timeout, Duration};
 
 use super::credentials::{
     apply_uncredentialed_worker_to, CredentialBundle, RuntimeConfig, SecretString,
@@ -10,6 +12,8 @@ use super::credentials::{
     RUNTIME_MOUNT_ROOT, RUNTIME_ROOT, SETTINGS_FILE, SHARED_MOUNT_MODE, WORKER_GID, WORKER_UID,
 };
 use super::ports::WORKSPACE_ROOT;
+
+const SETUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 impl CredentialBundle {
     pub(super) async fn prepare_workspace(&self) -> Result<(), String> {
@@ -22,7 +26,7 @@ impl CredentialBundle {
             let mut command = Command::new("/bin/sh");
             command.args(["-c", setup_command.expose()]);
             self.apply_setup_to(&mut command);
-            run(&mut command, "runtime setup").await?;
+            run_bounded(&mut command, "runtime setup", SETUP_COMMAND_TIMEOUT).await?;
         }
         verify_prepared_repository(self).await
     }
@@ -277,6 +281,46 @@ async fn run(command: &mut Command, operation: &str) -> Result<Vec<u8>, String> 
     } else {
         Err(format!("{operation} failed with status {}", output.status))
     }
+}
+
+pub(super) async fn run_bounded(
+    command: &mut Command,
+    operation: &str,
+    deadline: Duration,
+) -> Result<Vec<u8>, String> {
+    command
+        .kill_on_drop(true)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("start {operation}: {error}"))?;
+    let status = match timeout(deadline, child.wait()).await {
+        Ok(result) => result.map_err(|error| format!("wait for {operation}: {error}"))?,
+        Err(_) => {
+            terminate_bounded_process(&mut child).await;
+            return Err(format!("{operation} exceeded its fixed deadline"));
+        }
+    };
+    if status.success() {
+        Ok(Vec::new())
+    } else {
+        Err(format!("{operation} failed with status {status}"))
+    }
+}
+
+async fn terminate_bounded_process(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        // SAFETY: the child was spawned as the leader of its own process group above.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 #[cfg(unix)]

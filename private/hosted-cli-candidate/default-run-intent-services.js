@@ -70,9 +70,17 @@ function followOptions(service, signal) {
 
 async function submitQueuedRun(service, options, prepared, signal) {
   const execution = buildQueuedHostedExecution(prepared.inputs);
-  const runtime = service.runtimeBundleFor(prepared.context.target);
-  const submissionKey = options.submissionKey ?? service.randomUUID();
   const client = service.runIntentClientFor(prepared.context);
+  if (
+    options.size !== undefined &&
+    !prepared.context.descriptor.sizes.catalog.includes(options.size)
+  ) {
+    throw new Error('capsule size is not advertised by the target');
+  }
+  const runtime = await service.runtimeBundleFor(prepared.context.target, {
+    mode: options.ship ? 'ship' : 'pr',
+  });
+  const submissionKey = options.submissionKey ?? service.randomUUID();
   console.log(`Submission key: ${submissionKey}`);
   let created;
   try {
@@ -80,7 +88,7 @@ async function submitQueuedRun(service, options, prepared, signal) {
       envelope: buildRunIntentEnvelope(execution.graph, execution.input),
       runtime,
       submissionKey,
-      size: 'standard',
+      ...(options.size === undefined ? {} : { size: options.size }),
       signal,
     });
   } catch (error) {

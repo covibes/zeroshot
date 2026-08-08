@@ -19,16 +19,22 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function fixedProfile() {
+function fixedProfile(delivery) {
   return deepFreeze({
     isolationProfile: ISOLATION_PROFILE,
     providerProfile: PROVIDER_PROFILE,
-    plan: { isolation: 'worktree', delivery: 'none', autoMerge: false },
+    plan: {
+      isolation: 'worktree',
+      delivery: delivery.mode,
+      autoMerge: delivery.mode === 'ship',
+    },
     deployment: { prepared: true },
     provider: { hostedDirect: true },
     bounds: { ...BOUNDS },
   });
 }
+
+const hostedConfig = loadInstalledHostedWorkerConfiguration();
 
 const profileRegistry = Object.freeze({
   bounds: BOUNDS,
@@ -36,7 +42,7 @@ const profileRegistry = Object.freeze({
     if (isolationProfile !== ISOLATION_PROFILE || providerProfile !== PROVIDER_PROFILE) {
       throw new Error('Legacy request does not use the fixed capsule profiles');
     }
-    return fixedProfile();
+    return fixedProfile(hostedConfig.delivery);
   },
 });
 
@@ -45,8 +51,6 @@ const artifactResolver = Object.freeze({
     return Object.freeze({ preparedArtifactCount: artifacts.length });
   },
 });
-
-const hostedConfig = loadInstalledHostedWorkerConfiguration();
 
 const worker = createLegacyClusterWorker({
   profileRegistry,

@@ -53,6 +53,7 @@ function runtimeInspection() {
     forbiddenPresent: [],
     packageManagerPaths: absentPackageManagerPaths(),
     runtimeModules: {
+      deliveryContract: true,
       engineStart: true,
       runtimeDependencies: true,
       ompRuntime: true,

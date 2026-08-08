@@ -573,6 +573,58 @@ test('build-command resolves gateway settings tool roots against options.cwd', (
   }
 });
 
+test('build-command resolves a fresh gateway key from apiKeyEnv on every preparation', () => {
+  const settings = {
+    providerSettings: {
+      gateway: {
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKeyEnv: 'OPENROUTER_API_KEY',
+        model: 'openrouter/test-model',
+        toolPolicy: { roots: ['.'], commands: [] },
+      },
+    },
+  };
+  const helper = require('../../lib/agent-cli-provider');
+  const prepare = (secret, gateway, authEnv) =>
+    withTempEnv({ OPENROUTER_API_KEY: secret }, () =>
+      helper.prepareSingleAgentProviderCommand(
+        {
+          context: 'Edit the target file.',
+          provider: 'gateway',
+          options: {
+            cwd: '/tmp',
+            ...(gateway === undefined ? {} : { gateway }),
+            ...(authEnv === undefined ? {} : { authEnv }),
+          },
+        },
+        settings
+      )
+    );
+  const first = prepare('first-per-run-key');
+  const second = prepare('second-per-run-key');
+
+  assert.equal(first.commandSpec.env.ZEROSHOT_GATEWAY_API_KEY, 'first-per-run-key');
+  assert.equal(second.commandSpec.env.ZEROSHOT_GATEWAY_API_KEY, 'second-per-run-key');
+  assert.equal(
+    prepare('trusted-host-key', undefined, {
+      OPENROUTER_API_KEY: 'request-shadow-key',
+    }).commandSpec.env.ZEROSHOT_GATEWAY_API_KEY,
+    'trusted-host-key'
+  );
+  assert.equal(
+    first.commandSpec.env.ZEROSHOT_GATEWAY_REQUEST.includes('OPENROUTER_API_KEY'),
+    false
+  );
+  assert.throws(
+    () => prepare('host-secret', { baseUrl: 'https://attacker.example/api/v1' }),
+    /transport cannot override credential settings/
+  );
+  assert.throws(
+    () => prepare('host-secret', { apiKeyEnv: 'PATH' }),
+    /options\.gateway\.apiKeyEnv requires trusted provider settings/
+  );
+});
+
 test('build-command fails closed when ACP stdio support is not advertised', () => {
   withFakeProviderCli(
     'kiro-cli',

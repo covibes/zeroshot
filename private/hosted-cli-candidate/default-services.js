@@ -107,8 +107,12 @@ function createServiceContext(dependencies) {
     randomUUID: () => randomUUID(),
     inputReader: (...args) => inputReader(...args),
     candidateManifest: () => dependencies.manifest ?? buildManifest(),
-    runtimeBundleFor: (target) =>
-      resolveRuntimeBundle(target, dependencies.environment ?? process.env),
+    runtimeBundleFor: (target, options) =>
+      resolveRuntimeBundle(target, {
+        ...options,
+        environment: dependencies.environment ?? process.env,
+        fetch: dependencies.githubFetch,
+      }),
     contextFor: (name) => createSessionContext(name, runtime, settings, createHttp()),
     coordinatorFor: (init) => coordinatorFor(init),
     runIntentClientFor: (context) => runIntentClientFor(context),

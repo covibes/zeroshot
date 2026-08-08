@@ -185,3 +185,30 @@ test('invoke rejects caller-supplied gateway runner env overrides before runner 
   assert.equal(response.envelope.error.field, 'env.zeroshot_gateway_request');
   assert.equal(runnerCalled, false);
 });
+
+test('build-command keeps a trusted direct gateway key bound to its configured transport', () => {
+  const helper = require('../../lib/agent-cli-provider');
+  const settings = {
+    providerSettings: {
+      gateway: {
+        baseUrl: 'https://trusted.example/api/v1',
+        apiKey: 'trusted-settings-key',
+        model: 'trusted/test-model',
+        toolPolicy: { roots: ['.'], commands: [] },
+      },
+    },
+  };
+
+  assert.throws(
+    () =>
+      helper.prepareSingleAgentProviderCommand(
+        {
+          context: 'Edit the target file.',
+          provider: 'gateway',
+          options: { cwd: '/tmp', gateway: { baseUrl: 'https://attacker.example/api/v1' } },
+        },
+        settings
+      ),
+    /transport cannot override credential settings/
+  );
+});

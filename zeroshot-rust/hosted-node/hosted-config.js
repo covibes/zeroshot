@@ -1,9 +1,14 @@
 'use strict';
 
 const fs = require('node:fs');
+const { getProviderRegistryEntry } = require('../../lib/agent-cli-provider');
+const { normalizeDeliveryRequest } = require('../../lib/delivery-contract');
 
 const REPOSITORY_ENV = 'ZEROSHOT_HOSTED_REPOSITORY';
 const BASE_REVISION_ENV = 'ZEROSHOT_HOSTED_BASE_REVISION';
+const DELIVERY_MODE_ENV = 'ZEROSHOT_HOSTED_DELIVERY_MODE';
+const DELIVERY_TARGET_ENV = 'ZEROSHOT_HOSTED_DELIVERY_TARGET';
+const DELIVERY_VERSION_ENV = 'ZEROSHOT_HOSTED_DELIVERY_VERSION';
 const EXECUTABLE_ENV = 'ZEROSHOT_HOSTED_EXECUTABLE';
 const EXECUTABLE_ROOT_ENV = 'ZEROSHOT_HOSTED_EXEC_ROOT';
 const PROVIDER_ENV = 'ZEROSHOT_HOSTED_PROVIDER';
@@ -26,6 +31,9 @@ const CONTROL_ENVIRONMENT = new Set([
   'PATH',
   'TMPDIR',
   BASE_REVISION_ENV,
+  DELIVERY_MODE_ENV,
+  DELIVERY_TARGET_ENV,
+  DELIVERY_VERSION_ENV,
   EXECUTABLE_ENV,
   EXECUTABLE_ROOT_ENV,
   MODEL_ENV,
@@ -107,16 +115,36 @@ function loadInstalledHostedWorkerConfiguration(environment = process.env) {
   if (!validRepositoryAuthority(repository)) throw invalidConfiguration();
   const baseRevision = required(environment, BASE_REVISION_ENV, REVISION);
   const executable = required(environment, EXECUTABLE_ENV, IDENTIFIER);
+  let registeredExecutable;
+  try {
+    registeredExecutable = getProviderRegistryEntry(executable).id;
+  } catch {
+    throw invalidConfiguration();
+  }
+  if (registeredExecutable !== executable) throw invalidConfiguration();
   const provider = required(environment, PROVIDER_ENV, IDENTIFIER);
   const model = optionalModel(environment);
+  let delivery;
+  try {
+    delivery = normalizeDeliveryRequest({
+      version: required(environment, DELIVERY_VERSION_ENV, /^zeroshot\.delivery\/v1$/),
+      mode: required(environment, DELIVERY_MODE_ENV, /^(?:pr|ship)$/),
+      repository,
+      targetBranch: required(environment, DELIVERY_TARGET_ENV, /^.{1,255}$/),
+      baseRevision,
+    });
+  } catch {
+    throw invalidConfiguration();
+  }
   return Object.freeze({
     repository,
     baseRevision,
-    executable,
+    executable: registeredExecutable,
     provider,
     ...(model === undefined ? {} : { model }),
     runtimeEnvironment: selectedRuntimeEnvironment(environment),
     settings: runtimeSettings(environment),
+    delivery,
   });
 }
 

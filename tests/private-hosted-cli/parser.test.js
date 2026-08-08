@@ -14,6 +14,8 @@ function harness() {
   program
     .command('run <input>')
     .option('--docker')
+    .option('--pr')
+    .option('--ship')
     .option('-d, --detach')
     .action((input, options) => {
       calls.push(['local-run', input, options.detach]);
@@ -68,6 +70,10 @@ async function parse(program, argv) {
   await program.parseAsync(['node', 'zeroshot', ...argv]);
 }
 
+function hostedRun(...options) {
+  return ['run', '--target', 'prod', '--graph', 'g.json', '--input', 'i.json', ...options];
+}
+
 afterEach(() => {
   process.exitCode = 0;
 });
@@ -93,16 +99,7 @@ async function preservesStableHandlersWithoutHostedSettings() {
 
 async function rejectsIncompatibleHostedRunSyntax() {
   const { program, calls, settingsReads } = harness();
-  await parse(program, [
-    'run',
-    '--target',
-    'prod',
-    '--graph',
-    'g.json',
-    '--input',
-    'i.json',
-    '--docker',
-  ]);
+  await parse(program, hostedRun('--pr', '--docker'));
   assert.deepEqual(calls, []);
   assert.equal(settingsReads(), 0);
   assert.equal(process.exitCode, 1);
@@ -119,6 +116,7 @@ async function rejectsGeneralTextRunWithTarget() {
     'g.json',
     '--input',
     'i.json',
+    '--pr',
   ]);
   assert.deepEqual(calls, []);
   assert.equal(process.exitCode, 1);
@@ -126,33 +124,17 @@ async function rejectsGeneralTextRunWithTarget() {
 
 async function keepsDirectRunDefaultAndQueueRecoverySyntax() {
   const direct = harness();
-  await parse(direct.program, [
-    'run',
-    '--target',
-    'prod',
-    '--graph',
-    'g.json',
-    '--input',
-    'i.json',
-  ]);
+  await parse(direct.program, hostedRun('--pr'));
   assert.deepEqual(
     direct.calls.map((call) => call[0]),
     ['remoteRun']
   );
 
   const queued = harness();
-  await parse(queued.program, [
-    'run',
-    '--target',
-    'prod',
-    '--graph',
-    'g.json',
-    '--input',
-    'i.json',
-    '--queue',
-    '--submission-key',
-    '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec',
-  ]);
+  await parse(
+    queued.program,
+    hostedRun('--queue', '--ship', '--submission-key', '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec')
+  );
   assert.deepEqual(
     queued.calls.map((call) => call[0]),
     ['remoteQueueRun']
@@ -160,17 +142,7 @@ async function keepsDirectRunDefaultAndQueueRecoverySyntax() {
 
   for (const argv of [
     ['run', 'local-task', '--queue'],
-    [
-      'run',
-      '--target',
-      'prod',
-      '--graph',
-      'g.json',
-      '--input',
-      'i.json',
-      '--submission-key',
-      '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec',
-    ],
+    hostedRun('--submission-key', '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec'),
   ]) {
     const rejected = harness();
     await parse(rejected.program, argv);
@@ -181,18 +153,7 @@ async function keepsDirectRunDefaultAndQueueRecoverySyntax() {
 
   const invalidKey = harness();
   await assert.rejects(
-    parse(invalidKey.program, [
-      'run',
-      '--target',
-      'prod',
-      '--graph',
-      'g.json',
-      '--input',
-      'i.json',
-      '--queue',
-      '--submission-key',
-      'not-a-uuid',
-    ]),
+    parse(invalidKey.program, hostedRun('--queue', '--submission-key', 'not-a-uuid')),
     /canonical UUID/
   );
   assert.deepEqual(invalidKey.calls, []);
@@ -229,7 +190,7 @@ async function preservesLocalLsAliasAfterGlobalOption() {
 
 async function dispatchesRemoteLifecycleRoutes() {
   const { program, calls } = harness();
-  await parse(program, ['run', '--target', 'prod', '--graph', 'g.json', '--input', 'i.json', '-d']);
+  await parse(program, hostedRun('--pr', '-d'));
   await parse(program, ['list', '--target', 'prod', '--limit', '7', '--json']);
   await parse(program, ['status', 'cap-1', '--target', 'prod', '--json']);
   await parse(program, ['stop', 'cap-1', '--target', 'prod', '--force']);
@@ -264,7 +225,7 @@ function exposesTargetSetupWithoutSecretOption() {
   const setup = target.commands.find((command) => command.name() === 'setup');
   assert.deepEqual(
     setup.options.map((option) => option.long),
-    ['--repository', '--base-revision', '--runtime-config']
+    ['--repository', '--base', '--target-branch', '--runtime-config']
   );
   assert.equal(
     process.argv.some((arg) => /token|api-key|secret/i.test(arg)),

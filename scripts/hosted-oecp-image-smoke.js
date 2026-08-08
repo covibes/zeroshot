@@ -85,6 +85,13 @@ function smokeCredentialBundle() {
     githubToken: GIT_CANARY,
     repository: REPOSITORY,
     baseRevision: BASE_REVISION,
+    delivery: {
+      version: 'zeroshot.delivery/v1',
+      mode: 'pr',
+      repository: REPOSITORY,
+      targetBranch: 'main',
+      baseRevision: BASE_REVISION,
+    },
     runtime: {
       provider: 'codex',
       executable: 'codex',

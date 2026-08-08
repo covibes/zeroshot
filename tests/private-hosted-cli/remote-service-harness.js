@@ -16,9 +16,9 @@ function createTarget() {
     url: 'https://target.example',
     organization: { id: 'org-1' },
     hostedSetup: {
-      kind: 'zeroshot.private-hosted-setup/v2',
+      kind: 'zeroshot.private-hosted-setup/v3',
       repository: 'owner/repository',
-      baseRevision: BASE_REVISION,
+      base: { kind: 'commit', revision: BASE_REVISION, targetBranch: 'main' },
       runtimeConfigPath: RUNTIME_CONFIG_PATH,
       configuredAt: '2026-08-03T00:00:00.000Z',
     },
@@ -249,6 +249,9 @@ function remoteHarness(options = {}) {
       GH_TOKEN: 'github-test-token',
       LOCAL_MODEL_KEY: 'model-test-token',
     },
+    githubFetch:
+      options.githubFetch ??
+      (() => new globalThis.Response(JSON.stringify({ sha: BASE_REVISION }), { status: 200 })),
     readHostedInputs: () => readHostedInputs(options, calls),
   });
   return { adapter, calls, services };

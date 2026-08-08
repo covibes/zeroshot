@@ -39,6 +39,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
                         | "hosted-node/worker-launcher.js"
                         | "hosted-node/worker.js"
                         | "hosted-node/workspace-bootstrap.js"
+                        | "hosted-node/workspace-delivery-github.js"
                         | "hosted-node/workspace-ship.js"
                         | "hosted-node/workspace-tools.js"
                 ),

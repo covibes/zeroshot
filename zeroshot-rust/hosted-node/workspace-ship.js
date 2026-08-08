@@ -3,13 +3,20 @@
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { normalizeDeliveryResult } = require('../../lib/delivery-contract');
 const { fixedGitArguments } = require('./workspace-bootstrap');
+const {
+  createPullRequest,
+  github,
+  githubGraphql,
+  GitHubRequestError,
+  mergePullRequest,
+} = require('./workspace-delivery-github');
 
 const execFileAsync = promisify(execFile);
 const GIT = '/usr/bin/git';
 const ASKPASS = '/opt/zeroshot/zeroshot-rust/hosted-node/git-askpass.js';
 const MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024;
-const MAX_GITHUB_RESPONSE_BYTES = 64 * 1024;
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 const PUSH_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -50,117 +57,25 @@ async function prepareWorkspace(config, clusterId, gitCommand = git) {
     gitCommand(['status', '--porcelain=v1', '-z']),
   ]);
   if (
-    head.trim() !== config.baseRevision ||
+    head.trim() !== config.delivery.baseRevision ||
     ![expectedRemote, `${expectedRemote}.git`].includes(remote.trim()) ||
     status.length !== 0
   ) {
     throw new Error('Hosted workspace does not match fixed repository authority');
   }
   const branch = deterministicBranch(clusterId);
-  await gitCommand(['switch', '--detach', config.baseRevision]);
+  await gitCommand(['switch', '--detach', config.delivery.baseRevision]);
   await gitCommand(['switch', '--create', branch]);
   return branch;
 }
 
-async function boundedJson(response) {
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length === 0 || bytes.length > MAX_GITHUB_RESPONSE_BYTES) {
-    throw new Error('GitHub returned an invalid hosted delivery response');
-  }
-  let document;
+async function createReviewOrDeleteBranch(options) {
   try {
-    document = JSON.parse(bytes.toString('utf8'));
-  } catch {
-    throw new Error('GitHub returned an invalid hosted delivery response');
-  }
-  if (!document || typeof document !== 'object' || Array.isArray(document)) {
-    throw new Error('GitHub returned an invalid hosted delivery response');
-  }
-  return document;
-}
-
-async function github(repository, path, init = {}) {
-  const response = await fetch(`https://api.github.com/repos/${repository}${path}`, {
-    ...init,
-    redirect: 'error',
-    headers: {
-      accept: 'application/vnd.github+json',
-      authorization: `Bearer ${process.env.GH_TOKEN}`,
-      'content-type': 'application/json',
-      'user-agent': 'zeroshot-private-hosted-runtime',
-      'x-github-api-version': '2022-11-28',
-      ...(init.headers || {}),
-    },
-  });
-  if (!response.ok) throw new Error('GitHub rejected hosted delivery');
-  return boundedJson(response);
-}
-
-function repositoryDefaultBranch(repository) {
-  const branch = repository?.default_branch;
-  if (typeof branch !== 'string' || branch.length === 0) {
-    throw new Error('GitHub repository metadata is invalid');
-  }
-  return branch;
-}
-
-function pullRequestNumber(value) {
-  return Number.isSafeInteger(value) && value > 0 ? String(value) : '';
-}
-
-async function rejectPullRequestReceipt(config, number, request) {
-  if (number) {
-    await request(config.repository, `/pulls/${number}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ state: 'closed' }),
-    });
-  }
-  throw new Error('GitHub pull request receipt is invalid');
-}
-
-async function createPullRequest(config, branch, headRevision, request = github) {
-  const repository = await request(config.repository, '');
-  const defaultBranch = repositoryDefaultBranch(repository);
-  const created = await request(config.repository, '/pulls', {
-    method: 'POST',
-    body: JSON.stringify({
-      title: 'feat: complete hosted Zeroshot task',
-      body: 'Created by the private Zeroshot hosted runtime.',
-      head: branch,
-      base: defaultBranch,
-    }),
-  });
-  const expectedPrefix = `https://github.com/${config.repository}/pull/`;
-  const number = pullRequestNumber(created.number);
-  if (
-    !number ||
-    created.html_url !== `${expectedPrefix}${number}` ||
-    created.head?.ref !== branch ||
-    created.head?.sha !== headRevision ||
-    created.head?.repo?.full_name !== config.repository ||
-    created.base?.ref !== defaultBranch ||
-    created.base?.sha !== config.baseRevision ||
-    created.base?.repo?.full_name !== config.repository
-  ) {
-    return rejectPullRequestReceipt(config, number, request);
-  }
-  return created.html_url;
-}
-
-async function createReviewOrDeleteBranch({
-  config,
-  branch,
-  headRevision,
-  expectedRemote,
-  createReview,
-  gitCommand,
-}) {
-  try {
-    return await createReview(config, branch, headRevision);
+    return await options.createReview(options.config, options.branch, options.headRevision);
   } catch (error) {
     try {
-      await gitCommand(
-        ['push', '--porcelain', expectedRemote, `:refs/heads/${branch}`],
+      await options.gitCommand(
+        ['push', '--porcelain', options.expectedRemote, `:refs/heads/${options.branch}`],
         PUSH_TIMEOUT_MS
       );
     } catch (cleanupError) {
@@ -170,24 +85,35 @@ async function createReviewOrDeleteBranch({
   }
 }
 
-async function shipWorkspace(config, branch, dependencies = {}) {
-  const gitCommand = dependencies.git || git;
-  const createReview = dependencies.createPullRequest || createPullRequest;
-  const expectedRemote = `https://github.com/${config.repository}`;
-  const [{ stdout: baseHead }, { stdout: status }, { stdout: remote }, { stdout: configNames }] =
-    await Promise.all([
-      gitCommand(['rev-parse', 'HEAD']),
-      gitCommand(['status', '--porcelain=v1', '-z']),
-      gitCommand(['remote', 'get-url', 'origin']),
-      gitCommand(['config', '--local', '--null', '--name-only', '--list']),
-    ]);
-  if (baseHead.trim() !== config.baseRevision) {
-    throw new Error('Hosted provider changed Git history');
+async function requireBaseAncestor(config, gitCommand, expectedRemote) {
+  await gitCommand(
+    [
+      'fetch',
+      '--no-tags',
+      expectedRemote,
+      `refs/heads/${config.delivery.targetBranch}:refs/zeroshot/delivery-target`,
+    ],
+    PUSH_TIMEOUT_MS
+  );
+  const { stdout } = await gitCommand(['rev-parse', 'refs/zeroshot/delivery-target']);
+  try {
+    await gitCommand(['merge-base', '--is-ancestor', config.delivery.baseRevision, stdout.trim()]);
+  } catch {
+    throw new Error('Hosted submission revision is not an ancestor of the delivery target');
   }
-  if (![expectedRemote, `${expectedRemote}.git`].includes(remote.trim())) {
-    throw new Error('Hosted provider changed repository authority');
+  return stdout.trim();
+}
+
+async function requireDeliveredRevision(targetRevision, mergeRevision, gitCommand) {
+  try {
+    await gitCommand(['merge-base', '--is-ancestor', mergeRevision, targetRevision]);
+  } catch {
+    throw new Error('Hosted merge revision is not on the delivery target');
   }
-  const unsafeConfig = configNames
+}
+
+function unsafeGitConfiguration(configNames) {
+  return configNames
     .split('\0')
     .filter(Boolean)
     .some((name) =>
@@ -195,8 +121,29 @@ async function shipWorkspace(config, branch, dependencies = {}) {
         (prefix) => name.toLowerCase().startsWith(prefix)
       )
     );
-  if (unsafeConfig) throw new Error('Hosted provider changed trusted Git configuration');
+}
+
+async function verifyDirtyWorkspace(config, gitCommand, expectedRemote) {
+  const [{ stdout: baseHead }, { stdout: status }, { stdout: remote }, { stdout: names }] =
+    await Promise.all([
+      gitCommand(['rev-parse', 'HEAD']),
+      gitCommand(['status', '--porcelain=v1', '-z']),
+      gitCommand(['remote', 'get-url', 'origin']),
+      gitCommand(['config', '--local', '--null', '--name-only', '--list']),
+    ]);
+  if (baseHead.trim() !== config.delivery.baseRevision) {
+    throw new Error('Hosted provider changed Git history');
+  }
+  if (![expectedRemote, `${expectedRemote}.git`].includes(remote.trim())) {
+    throw new Error('Hosted provider changed repository authority');
+  }
+  if (unsafeGitConfiguration(names)) {
+    throw new Error('Hosted provider changed trusted Git configuration');
+  }
   if (status.length === 0) throw new Error('Hosted provider completed without a workspace change');
+}
+
+async function commitAndPush(config, branch, gitCommand, expectedRemote) {
   await gitCommand(['add', '--all']);
   await gitCommand([
     '-c',
@@ -207,16 +154,31 @@ async function shipWorkspace(config, branch, dependencies = {}) {
     '--message',
     'feat: complete hosted Zeroshot task',
   ]);
-  const { stdout: head } = await gitCommand(['rev-parse', 'HEAD']);
-  const headRevision = head.trim();
-  if (!/^[0-9a-f]{40}$/.test(headRevision) || headRevision === config.baseRevision) {
+  const { stdout } = await gitCommand(['rev-parse', 'HEAD']);
+  const headRevision = stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(headRevision) || headRevision === config.delivery.baseRevision) {
     throw new Error('Hosted Git result is invalid');
   }
   await gitCommand(
     ['push', '--porcelain', expectedRemote, `HEAD:refs/heads/${branch}`],
     PUSH_TIMEOUT_MS
   );
-  const pullRequestUrl = await createReviewOrDeleteBranch({
+  return headRevision;
+}
+
+async function shipWorkspace(config, branch, dependencies = {}) {
+  const gitCommand = dependencies.git || git;
+  const request = dependencies.github || github;
+  const graphql = dependencies.graphql || githubGraphql;
+  const createReview =
+    dependencies.createPullRequest ||
+    ((authority, deliveryBranch, head) =>
+      createPullRequest(authority, deliveryBranch, head, request));
+  const expectedRemote = `https://github.com/${config.repository}`;
+  await verifyDirtyWorkspace(config, gitCommand, expectedRemote);
+  await requireBaseAncestor(config, gitCommand, expectedRemote);
+  const headRevision = await commitAndPush(config, branch, gitCommand, expectedRemote);
+  const created = await createReviewOrDeleteBranch({
     config,
     branch,
     headRevision,
@@ -224,16 +186,30 @@ async function shipWorkspace(config, branch, dependencies = {}) {
     createReview,
     gitCommand,
   });
-  return Object.freeze({
-    repository: config.repository,
-    branch,
+  await requireBaseAncestor(config, gitCommand, expectedRemote);
+  const outcome =
+    config.delivery.mode === 'pr'
+      ? { disposition: 'pull_request_open' }
+      : await mergePullRequest({ config, created, branch, headRevision, request, graphql });
+  if (config.delivery.mode === 'ship') {
+    const targetRevision = await requireBaseAncestor(config, gitCommand, expectedRemote);
+    if (outcome.disposition === 'merged') {
+      await requireDeliveredRevision(targetRevision, outcome.mergeRevision, gitCommand);
+    }
+  }
+  return normalizeDeliveryResult({
+    ...config.delivery,
+    deliveryBranch: branch,
     headRevision,
-    pullRequestUrl,
+    pullRequestUrl: created.html_url,
+    ...outcome,
   });
 }
+
 module.exports = {
   createPullRequest,
   deterministicBranch,
+  GitHubRequestError,
   prepareWorkspace,
   shipWorkspace,
 };

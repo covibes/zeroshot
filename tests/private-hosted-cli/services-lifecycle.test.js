@@ -238,6 +238,7 @@ function registerRemoteOperationTests() {
         graph: 'graph.json',
         input: 'input.json',
         detach: false,
+        size: 'tiny',
       })
     );
     assert.equal(result.value.final.status.phase, 'finished');
@@ -283,8 +284,10 @@ function registerRemoteOperationTests() {
       modelLevel: 'level1',
     });
     const runtime = h.calls.find(([name]) => name === 'install-runtime')[2];
+    assert.equal(h.calls.find(([name]) => name === 'allocate')[1].size, 'tiny');
     assert.equal(runtime.repository, 'owner/repository');
     assert.equal(runtime.runtime.provider, 'claude');
+    assert.equal(runtime.delivery.mode, 'pr');
   });
 }
 

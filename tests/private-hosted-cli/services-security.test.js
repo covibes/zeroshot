@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { it } = require('node:test');
 const { sanitizeRemoteOperation } = require('../../private/hosted-cli-candidate/default-services');
 const { createTargetServices } = require('../../private/hosted-cli-candidate/target-services');
-const { captureLogs } = require('./candidate-fixtures');
+const { captureLogs, detachedQueueOptions } = require('./candidate-fixtures');
 const { assertSecretsAbsent, withEnvironment } = require('./environment-harness');
 const { remoteHarness } = require('./remote-service-harness');
 
@@ -117,16 +117,7 @@ it('queued transport keeps runtime credentials outside the unchanged v2 envelope
         },
       }),
     });
-    await captureLogs(() =>
-      h.services.remoteQueueRun({
-        target: 'prod',
-        graph: 'graph.json',
-        input: 'input.json',
-        queue: true,
-        submissionKey: SUBMISSION_KEY,
-        detach: true,
-      })
-    );
+    await captureLogs(() => h.services.remoteQueueRun(detachedQueueOptions(SUBMISSION_KEY)));
   });
   const serialized = JSON.stringify(submitted);
   assertSecretsAbsent(JSON.stringify(submitted.envelope), secrets);

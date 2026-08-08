@@ -26,6 +26,7 @@ pub(super) const SHARED_MOUNT_MODE: u32 = 0o2770;
 pub(super) const RUNTIME_DIRECTORY_MODE: u32 = 0o770;
 pub(super) const RUNTIME_FILE_MODE: u32 = 0o660;
 pub(super) const RUNTIME_EXECUTABLE_MODE: u32 = 0o770;
+const DELIVERY_VERSION: &str = "zeroshot.delivery/v1";
 
 #[derive(Deserialize)]
 #[serde(transparent)]
@@ -128,7 +129,47 @@ pub(super) struct CredentialBundle {
     pub(super) github_token: SecretString,
     pub(super) repository: String,
     pub(super) base_revision: String,
+    delivery: DeliveryRequest,
     pub(super) runtime: RuntimeConfig,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DeliveryMode {
+    Pr,
+    Ship,
+}
+
+impl DeliveryMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pr => "pr",
+            Self::Ship => "ship",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DeliveryRequest {
+    version: String,
+    mode: DeliveryMode,
+    repository: String,
+    target_branch: String,
+    base_revision: String,
+}
+
+impl DeliveryRequest {
+    fn validate_for(&self, repository: &str, base_revision: &str) -> Result<(), &'static str> {
+        if self.version != DELIVERY_VERSION
+            || self.repository != repository
+            || self.base_revision != base_revision
+            || !valid_branch(&self.target_branch)
+        {
+            return Err("delivery must be a matching zeroshot.delivery/v1 request");
+        }
+        Ok(())
+    }
 }
 
 impl CredentialBundle {
@@ -143,6 +184,8 @@ impl CredentialBundle {
         if !valid_revision(&self.base_revision) {
             return Err("baseRevision must be a lowercase 40-character commit");
         }
+        self.delivery
+            .validate_for(&self.repository, &self.base_revision)?;
         self.runtime.validate()?;
         validate_worker_environment_bounds(&self.worker_environment())
     }
@@ -177,6 +220,18 @@ impl CredentialBundle {
             (
                 "ZEROSHOT_HOSTED_BASE_REVISION".to_owned(),
                 self.base_revision.clone(),
+            ),
+            (
+                "ZEROSHOT_HOSTED_DELIVERY_MODE".to_owned(),
+                self.delivery.mode.as_str().to_owned(),
+            ),
+            (
+                "ZEROSHOT_HOSTED_DELIVERY_TARGET".to_owned(),
+                self.delivery.target_branch.clone(),
+            ),
+            (
+                "ZEROSHOT_HOSTED_DELIVERY_VERSION".to_owned(),
+                DELIVERY_VERSION.to_owned(),
             ),
             (
                 "ZEROSHOT_HOSTED_EXECUTABLE".to_owned(),
@@ -369,6 +424,9 @@ fn reserved_environment_name(value: &str) -> bool {
             | "PATH"
             | "TMPDIR"
             | "ZEROSHOT_HOSTED_BASE_REVISION"
+            | "ZEROSHOT_HOSTED_DELIVERY_MODE"
+            | "ZEROSHOT_HOSTED_DELIVERY_TARGET"
+            | "ZEROSHOT_HOSTED_DELIVERY_VERSION"
             | "ZEROSHOT_HOSTED_EXECUTABLE"
             | "ZEROSHOT_HOSTED_EXEC_ROOT"
             | "ZEROSHOT_HOSTED_MODEL"
@@ -378,6 +436,22 @@ fn reserved_environment_name(value: &str) -> bool {
             | "ZEROSHOT_PROVIDER_PROFILE"
             | "ZEROSHOT_SETTINGS_FILE"
     )
+}
+
+fn valid_branch(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'/' | b'-'))
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && !value.contains("..")
+        && !value.contains("@{")
+        && !value.contains("//")
+        && !value.ends_with(['.', '/'])
 }
 
 fn valid_runtime_path(value: &str) -> bool {
