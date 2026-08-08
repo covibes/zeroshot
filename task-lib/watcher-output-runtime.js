@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import {
   detectProviderFatalError,
   detectProviderStreamingModeError,
@@ -8,6 +9,8 @@ import {
 import { terminateProcess } from './process-termination.js';
 
 export const COMMAND_CLEANUP_UNINITIALIZED = Symbol('command-cleanup-uninitialized');
+
+const MAX_CODEX_CONTROL_RECORD_BYTES = 64 * 1024;
 
 export function spawnWatcherProvider(command, finalArgs, options) {
   return spawn(command, finalArgs, {
@@ -36,6 +39,72 @@ function splitBufferLines(buffer, chunk) {
   const nextBuffer = buffer + chunk;
   const lines = nextBuffer.split('\n');
   return { lines: lines.slice(0, -1), remaining: lines.at(-1) || '' };
+}
+
+function createCodexOutputPassthrough({ log, captureProviderSession }) {
+  const decoder = new StringDecoder('utf8');
+  let atLineStart = true;
+  let inspectable = true;
+  let inspectionBytes = 0;
+  let inspectionParts = [];
+
+  function inspectPart(part) {
+    if (!inspectable || !part) return;
+    inspectionBytes += Buffer.byteLength(part);
+    if (inspectionBytes > MAX_CODEX_CONTROL_RECORD_BYTES) {
+      inspectable = false;
+      inspectionParts = [];
+      return;
+    }
+    inspectionParts.push(part);
+  }
+
+  function finishLine() {
+    if (inspectable) captureProviderSession(inspectionParts.join(''));
+    atLineStart = true;
+    inspectable = true;
+    inspectionBytes = 0;
+    inspectionParts = [];
+  }
+
+  function writeText(text, timestamp) {
+    if (!text) return;
+    const logged = [];
+    let offset = 0;
+    while (offset < text.length) {
+      if (atLineStart) {
+        logged.push(`[${timestamp}]`);
+        atLineStart = false;
+      }
+      const newline = text.indexOf('\n', offset);
+      if (newline === -1) {
+        const part = text.slice(offset);
+        inspectPart(part);
+        logged.push(part);
+        break;
+      }
+      const part = text.slice(offset, newline);
+      inspectPart(part);
+      logged.push(part, '\n');
+      finishLine();
+      offset = newline + 1;
+    }
+    log(logged.join(''));
+  }
+
+  return {
+    consume(chunk) {
+      const text = typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      writeText(text, Date.now());
+    },
+    flush() {
+      writeText(decoder.end(), Date.now());
+      if (!atLineStart) {
+        finishLine();
+        log('\n');
+      }
+    },
+  };
 }
 
 export function resolveWatcherCommand(config, commandSpec, fallbackArgs, normalizeProviderName) {
@@ -189,6 +258,8 @@ export function createWatcherOutputRuntime({
   let streamingModeError = null;
   let fatalError = null;
   const captureProviderSession = providerSessionCapture?.captureLine || (() => {});
+  const codexOutputPassthrough =
+    providerName === 'codex' ? createCodexOutputPassthrough({ log, captureProviderSession }) : null;
 
   function maybeHandleFatalError(line, timestamp) {
     if (fatalError) return false;
@@ -230,6 +301,10 @@ export function createWatcherOutputRuntime({
   }
 
   function consumeOutput(buffer, chunk) {
+    if (codexOutputPassthrough) {
+      codexOutputPassthrough.consume(chunk);
+      return '';
+    }
     const timestamp = Date.now();
     const { lines, remaining } = splitBufferLines(buffer, chunk.toString());
     for (const line of lines) handleOutputLine(line, timestamp);
@@ -284,7 +359,11 @@ export function createWatcherOutputRuntime({
 
   function complete({ code, signal, outputBuffer, stderrBuffer = null }) {
     const timestamp = Date.now();
-    flushOutput(outputBuffer, timestamp);
+    if (codexOutputPassthrough) {
+      codexOutputPassthrough.flush();
+    } else {
+      flushOutput(outputBuffer, timestamp);
+    }
     if (stderrBuffer !== null) flushStderr(stderrBuffer, timestamp);
     const recovered = attemptRecovery(code, timestamp);
     const sessionIdentityError = providerSessionCapture?.getCompletionError() || null;

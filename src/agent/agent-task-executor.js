@@ -11,8 +11,10 @@
  */
 
 const { spawn, spawnSync } = require('child_process');
+const { createHash } = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const { StringDecoder } = require('string_decoder');
 const { getNestedExecutionRegistry, TaskExecutionHandle } = require('./task-execution-handle');
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
@@ -57,6 +59,8 @@ const {
   isStructuredOutputInvalidError,
 } = require('./structured-output-error');
 const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
+const MAX_CONTROL_PLANE_RECORD_BYTES = 1024 * 1024;
+const LOG_READ_CHUNK_BYTES = 64 * 1024;
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
   if (timeout <= 0) {
@@ -1225,8 +1229,17 @@ function createLogFollowState() {
     pollInterval: null,
     statusCheckInterval: null,
     resolved: false,
-    lineBuffer: '',
+    lineBuffer: createLogRecordBuffer(),
+    logDecoder: new StringDecoder('utf8'),
     consecutiveExecFailures: 0,
+  };
+}
+
+function createLogRecordBuffer() {
+  return {
+    byteLength: 0,
+    fragments: [],
+    oversized: null,
   };
 }
 
@@ -1310,15 +1323,82 @@ function broadcastAgentLine({ agent, providerName, state, line }) {
   });
 }
 
-function appendContentToBuffer(state, content, onLine) {
-  state.lineBuffer += content;
-  const lines = state.lineBuffer.split('\n');
-
-  for (let i = 0; i < lines.length - 1; i++) {
-    onLine(lines[i]);
+function appendLogRecordFragment(buffer, fragment) {
+  const fragmentBytes = Buffer.byteLength(fragment);
+  buffer.byteLength += fragmentBytes;
+  if (buffer.oversized) {
+    buffer.oversized.digest.update(fragment);
+    return;
+  }
+  if (buffer.byteLength <= MAX_CONTROL_PLANE_RECORD_BYTES) {
+    buffer.fragments.push(fragment);
+    return;
   }
 
-  state.lineBuffer = lines[lines.length - 1];
+  const retainedPrefix = buffer.fragments.join('');
+  const prefixProbe = `${retainedPrefix}${fragment.slice(0, Math.max(0, 32 - retainedPrefix.length))}`;
+  const timestampPrefix = prefixProbe.match(/^\[\d{13}\]/)?.[0] || '';
+  const digest = createHash('sha256');
+  for (const retained of buffer.fragments) digest.update(retained);
+  digest.update(fragment);
+  buffer.fragments = [];
+  buffer.oversized = { digest, timestampPrefix };
+}
+
+function completeLogRecord(buffer, onLine, skipEmpty = false) {
+  let line;
+  if (buffer.oversized) {
+    const digest = buffer.oversized.digest.digest('hex');
+    line =
+      `${buffer.oversized.timestampPrefix}[ZEROSHOT] Provider output record retained in task log ` +
+      `but omitted from the control plane (byte_length=${buffer.byteLength}, sha256=${digest})`;
+  } else {
+    line = buffer.fragments.join('');
+  }
+  buffer.byteLength = 0;
+  buffer.fragments = [];
+  buffer.oversized = null;
+  if (!skipEmpty || line.trim()) onLine(line);
+}
+
+function appendContentToBuffer(state, content, onLine, skipEmpty = false) {
+  let offset = 0;
+  while (offset < content.length) {
+    const newline = content.indexOf('\n', offset);
+    if (newline === -1) {
+      appendLogRecordFragment(state.lineBuffer, content.slice(offset));
+      return;
+    }
+    appendLogRecordFragment(state.lineBuffer, content.slice(offset, newline));
+    completeLogRecord(state.lineBuffer, onLine, skipEmpty);
+    offset = newline + 1;
+  }
+}
+
+function replayCompleteLogContent(content, onLine) {
+  const replayState = { lineBuffer: createLogRecordBuffer() };
+  appendContentToBuffer(replayState, content, onLine, true);
+  if (replayState.lineBuffer.byteLength > 0) {
+    completeLogRecord(replayState.lineBuffer, onLine, true);
+  }
+}
+
+function readLogFileDelta({ fsModule, logFilePath, state, currentSize, onNewContent }) {
+  const fd = fsModule.openSync(logFilePath, 'r');
+  try {
+    let offset = state.lastSize;
+    const buffer = Buffer.allocUnsafe(LOG_READ_CHUNK_BYTES);
+    while (offset < currentSize) {
+      const requested = Math.min(buffer.length, currentSize - offset);
+      const bytesRead = fsModule.readSync(fd, buffer, 0, requested, offset);
+      if (bytesRead === 0) break;
+      onNewContent(state.logDecoder.write(buffer.subarray(0, bytesRead)));
+      offset += bytesRead;
+    }
+    state.lastSize = offset;
+  } finally {
+    fsModule.closeSync(fd);
+  }
 }
 
 function pollLogFileForUpdates({ agent, fsModule, ctPath, taskId, state, onNewContent }) {
@@ -1340,13 +1420,13 @@ function pollLogFileForUpdates({ agent, fsModule, ctPath, taskId, state, onNewCo
     const currentSize = stats.size;
 
     if (currentSize > state.lastSize) {
-      const fd = fsModule.openSync(state.logFilePath, 'r');
-      const buffer = Buffer.alloc(currentSize - state.lastSize);
-      fsModule.readSync(fd, buffer, 0, buffer.length, state.lastSize);
-      fsModule.closeSync(fd);
-
-      onNewContent(buffer.toString('utf-8'));
-      state.lastSize = currentSize;
+      readLogFileDelta({
+        fsModule,
+        logFilePath: state.logFilePath,
+        state,
+        currentSize,
+        onNewContent,
+      });
     }
   } catch (err) {
     const error = /** @type {Error} */ (err);
@@ -2215,7 +2295,8 @@ function createIsolatedLogState(skipStructuredResultCheck = false, nested = fals
     tailProcess: null,
     statusCheckInterval: null,
     timeoutTimer: null,
-    lineBuffer: '',
+    lineBuffer: createLogRecordBuffer(),
+    tailDecoder: new StringDecoder('utf8'),
     skipStructuredResultCheck,
     nested,
   };
@@ -2376,9 +2457,7 @@ function settleIsolatedTerminalStatus({
 
     if (finalReadResult.code === 0 && finalReadResult.stdout) {
       state.fullOutput = finalReadResult.stdout;
-      for (const line of state.fullOutput.split('\n')) {
-        if (line.trim()) onLine(line);
-      }
+      replayCompleteLogContent(state.fullOutput, onLine);
     }
 
     const vertexModelError =
@@ -2566,16 +2645,14 @@ function broadcastIsolatedLine({ agent, providerName, taskId, state, line }) {
 }
 
 function appendIsolatedContent(state, content, onLine) {
-  state.lineBuffer += content;
-  const lines = state.lineBuffer.split('\n');
+  appendContentToBuffer(state, content, onLine, true);
+}
 
-  for (let i = 0; i < lines.length - 1; i++) {
-    if (lines[i].trim()) {
-      onLine(lines[i]);
-    }
-  }
-
-  state.lineBuffer = lines[lines.length - 1];
+function consumeIsolatedTailChunk(state, data, onLine) {
+  const chunk = typeof data === 'string' ? data : state.tailDecoder.write(data);
+  if (!chunk) return;
+  state.fullOutput += chunk;
+  appendIsolatedContent(state, chunk, onLine);
 }
 
 function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLine }) {
@@ -2586,9 +2663,7 @@ function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLi
   ]);
 
   state.tailProcess.stdout.on('data', (data) => {
-    const chunk = data.toString();
-    state.fullOutput += chunk;
-    appendIsolatedContent(state, chunk, onLine);
+    consumeIsolatedTailChunk(state, data, onLine);
   });
 
   state.tailProcess.stderr.on('data', (data) => {
@@ -2599,6 +2674,7 @@ function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLi
   });
 
   state.tailProcess.on('close', (exitCode) => {
+    consumeIsolatedTailChunk(state, state.tailDecoder.end(), onLine);
     if (!state.taskExited) {
       agent._log(`[${agent.id}] tail process exited with code ${exitCode}`);
     }
@@ -3091,4 +3167,7 @@ module.exports = {
   buildTaskRunArgs,
   rebuildProviderSessionAfterCommit,
   killTask,
+  createLogRecordBuffer,
+  appendContentToBuffer,
+  consumeIsolatedTailChunk,
 };
