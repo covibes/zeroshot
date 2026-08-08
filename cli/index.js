@@ -3295,21 +3295,18 @@ program
         throw new Error(`Cluster ${clusterId} not found (no DB file)`);
       }
 
-      const ledger = new Ledger(dbPath);
-      const messages = ledger.getAll(clusterId);
-      ledger.close();
-
       // JSON export
       if (options.format === 'json') {
-        const data = JSON.stringify({ cluster_id: clusterId, messages }, null, 2);
+        exportClusterJson(dbPath, clusterId, options.output || null);
         if (options.output) {
-          require('fs').writeFileSync(options.output, data, 'utf8');
           console.log(`Exported to ${options.output}`);
-        } else {
-          console.log(data);
         }
         return;
       }
+
+      const ledger = new Ledger(dbPath);
+      const messages = ledger.getAll(clusterId);
+      ledger.close();
 
       // Terminal-style export (for markdown and pdf)
       const terminalOutput = renderMessagesToTerminal(clusterId, messages);
@@ -6065,6 +6062,35 @@ async function handleNoArgumentInvocation({
     outputHelp();
   }
   return true;
+}
+
+function tryExportClusterJsonSnapshot(dbPath, clusterId, outputPath) {
+  const Ledger = require('../src/ledger');
+  const { streamClusterJsonExport } = require('./json-export');
+  const ledger = new Ledger(dbPath, { readonly: true });
+  try {
+    return ledger.withReadSnapshot(() => {
+      if (ledger.needsAgentOutputReconciliation(clusterId)) return false;
+      streamClusterJsonExport({ ledger, clusterId, outputPath });
+      return true;
+    });
+  } finally {
+    ledger.close();
+  }
+}
+
+function exportClusterJson(dbPath, clusterId, outputPath) {
+  const Ledger = require('../src/ledger');
+  const maxReconciliationAttempts = 3;
+  for (let attempt = 0; attempt <= maxReconciliationAttempts; attempt += 1) {
+    if (tryExportClusterJsonSnapshot(dbPath, clusterId, outputPath)) return;
+    if (attempt === maxReconciliationAttempts) break;
+    const reconciliationLedger = new Ledger(dbPath);
+    reconciliationLedger.close();
+  }
+  throw new Error(
+    `Cluster ${clusterId} output changed during ${maxReconciliationAttempts} reconciliation attempts`
+  );
 }
 
 // Main entry point

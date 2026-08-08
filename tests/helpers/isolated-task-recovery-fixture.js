@@ -37,6 +37,7 @@ function createIsolationManager({
   unverifiableKillAttempts = 0,
   terminalStatusOnKill = null,
 } = {}) {
+  const providerOutput = '{"summary":"done","result":"ok"}\n';
   const commands = [];
   let taskStatus = status;
   let remainingKillCommandFailures = killCommandFailures;
@@ -104,8 +105,11 @@ function createIsolationManager({
           stderr: '',
         };
       }
-      if (commandText.includes('cat')) {
-        return { code: 0, stdout: '{"summary":"done","result":"ok"}\n', stderr: '' };
+      if (commandText.includes('wc -c')) {
+        return { code: 0, stdout: `${Buffer.byteLength(providerOutput)}\n`, stderr: '' };
+      }
+      if (commandText.includes('tail -c')) {
+        return { code: 0, stdout: providerOutput, stderr: '' };
       }
       throw new Error(`Unexpected isolated command: ${command.join(' ')}`);
     },

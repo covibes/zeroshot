@@ -7,6 +7,7 @@ const {
   killTask,
   spawnClaudeTaskIsolated,
 } = require('../src/agent/agent-task-executor');
+const { createStructuredOutputInvalidError } = require('../src/agent/structured-output-error');
 
 const { serializeTaskStartupError } = require('../src/task-startup-error');
 const OWNERSHIP_ENV = 'ZEROSHOT_TASK_SPAWN_OWNERSHIP_TOKEN';
@@ -333,6 +334,7 @@ describe('Isolated terminal cleanup recovery', function () {
 
   it('retains a terminal follower until persisted cleanup recovery succeeds', async function () {
     const commands = [];
+    const providerOutput = '{"summary":"done","result":"ok"}\n';
     let cleanupPending = true;
     let cleanupAttempts = 0;
     const manager = {
@@ -364,10 +366,17 @@ describe('Isolated terminal cleanup recovery', function () {
           cleanupPending = false;
           return Promise.resolve({ code: 0, stdout: 'cleanup recovered\n', stderr: '' });
         }
-        if (commandText.includes('cat')) {
+        if (commandText.includes('wc -c')) {
           return Promise.resolve({
             code: 0,
-            stdout: '{"summary":"done","result":"ok"}\n',
+            stdout: `${Buffer.byteLength(providerOutput)}\n`,
+            stderr: '',
+          });
+        }
+        if (commandText.includes('tail -c')) {
+          return Promise.resolve({
+            code: 0,
+            stdout: providerOutput,
             stderr: '',
           });
         }
@@ -414,6 +423,8 @@ describe('Isolated terminal cleanup recovery', function () {
   it('validates stale isolated output without launching recovery', async function () {
     this.timeout(5000);
     let parserOptions;
+    const published = [];
+    const providerOutput = '{"wrong":true}\n';
     const manager = {
       spawnInContainer() {
         return createProcess();
@@ -426,8 +437,15 @@ describe('Isolated terminal cleanup recovery', function () {
         if (commandText.includes('status')) {
           return Promise.resolve({ code: 0, stdout: 'Status: stale\n', stderr: '' });
         }
-        if (commandText.includes('cat')) {
-          return Promise.resolve({ code: 0, stdout: '{"wrong":true}\n', stderr: '' });
+        if (commandText.includes('wc -c')) {
+          return Promise.resolve({
+            code: 0,
+            stdout: `${Buffer.byteLength(providerOutput)}\n`,
+            stderr: '',
+          });
+        }
+        if (commandText.includes('tail -c')) {
+          return Promise.resolve({ code: 0, stdout: providerOutput, stderr: '' });
         }
         throw new Error(`Unexpected command: ${commandText}`);
       },
@@ -451,20 +469,24 @@ describe('Isolated terminal cleanup recovery', function () {
       timeout: 0,
       enableLivenessCheck: false,
       quiet: true,
-      messageBus: { publish() {} },
+      messageBus: { publish: (message) => published.push(message) },
       _resolveProvider: () => 'codex',
       _parseResultOutput(_output, options) {
         parserOptions = options;
-        return Promise.reject(new Error('stale schema-invalid output'));
+        return Promise.reject(
+          createStructuredOutputInvalidError('stale schema-invalid output', 'schema')
+        );
       },
       _stopLivenessCheck() {},
       _log() {},
     };
 
-    const result = await followClaudeTaskLogsIsolated(agent, agent.currentTaskId);
+    await assert.rejects(
+      followClaudeTaskLogsIsolated(agent, agent.currentTaskId),
+      /stale schema-invalid output/
+    );
 
     assert.deepStrictEqual(parserOptions, { allowRecovery: false });
-    assert.strictEqual(result.success, false);
-    assert.match(result.error, /stale schema-invalid output/);
+    assert.ok(published.some((message) => message.content.data.line.includes('wrong')));
   });
 });

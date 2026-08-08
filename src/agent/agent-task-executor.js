@@ -60,6 +60,11 @@ const {
 } = require('./structured-output-error');
 const TASK_TERMINAL_STATUSES = new Set(['completed', 'failed', 'killed', 'stale']);
 const MAX_CONTROL_PLANE_RECORD_BYTES = 1024 * 1024;
+const MAX_CONTROL_PLANE_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MAX_CONTROL_PLANE_OUTPUT_RECORDS = 1024;
+const MAX_LIVE_OUTPUT_BYTES = 512 * 1024;
+const MAX_LIVE_OUTPUT_RECORDS = 512;
+const CONTROL_PLANE_OMISSION_MARKER_BYTES = 1024;
 const LOG_READ_CHUNK_BYTES = 64 * 1024;
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
@@ -1222,8 +1227,8 @@ async function waitForTaskReady(agent, taskId, maxRetries = 10, delayMs = 200) {
 const MAX_STATUS_FAILURES = 30;
 
 function createLogFollowState() {
-  return {
-    output: '',
+  const state = {
+    controlPlaneOutput: createControlPlaneOutputState(),
     logFilePath: null,
     lastSize: 0,
     pollInterval: null,
@@ -1233,6 +1238,175 @@ function createLogFollowState() {
     logDecoder: new StringDecoder('utf8'),
     consecutiveExecFailures: 0,
   };
+  defineControlPlaneOutputAccessor(state, 'output');
+  return state;
+}
+
+function createControlPlaneOutputState(options = {}) {
+  const maxBytes = options.maxBytes || MAX_CONTROL_PLANE_OUTPUT_BYTES;
+  const maxRecords = options.maxRecords || MAX_CONTROL_PLANE_OUTPUT_RECORDS;
+  const liveByteLimit = options.liveByteLimit || MAX_LIVE_OUTPUT_BYTES;
+  const liveRecordLimit = options.liveRecordLimit || MAX_LIVE_OUTPUT_RECORDS;
+  if (maxBytes <= CONTROL_PLANE_OMISSION_MARKER_BYTES || maxRecords < 1) {
+    throw new Error('Control-plane output bounds must retain space for at least one record');
+  }
+  return {
+    records: [],
+    head: 0,
+    byteLength: 0,
+    maxBytes,
+    maxRecords,
+    liveByteLimit,
+    liveRecordLimit,
+    liveBytes: 0,
+    liveRecords: 0,
+    nextSequence: 0,
+    lastLiveSequence: -1,
+    liveSuppressed: false,
+    terminalFlushed: false,
+    omittedBytes: 0,
+    omittedRecords: 0,
+    omittedDigest: createHash('sha256'),
+    prefixOmitted: false,
+  };
+}
+
+function defineControlPlaneOutputAccessor(state, property) {
+  Object.defineProperty(state, property, {
+    configurable: true,
+    enumerable: true,
+    get: () => snapshotControlPlaneOutput(state.controlPlaneOutput),
+  });
+}
+
+function ensureControlPlaneOutputState(state = {}) {
+  if (state.controlPlaneOutput) return state;
+  let existingOutput = '';
+  if (typeof state.output === 'string') {
+    existingOutput = state.output;
+  } else if (typeof state.fullOutput === 'string') {
+    existingOutput = state.fullOutput;
+  }
+  state.controlPlaneOutput = createControlPlaneOutputState();
+  if (Object.hasOwn(state, 'output')) delete state.output;
+  if (Object.hasOwn(state, 'fullOutput')) delete state.fullOutput;
+  defineControlPlaneOutputAccessor(state, 'output');
+  if (existingOutput) {
+    replayCompleteLogContent(existingOutput, (content) =>
+      appendControlPlaneRecord(state.controlPlaneOutput, {
+        content,
+        timestamp: Date.now(),
+        type: isValidJsonLine(content) ? 'json' : 'text',
+      })
+    );
+  }
+  return state;
+}
+
+function retainedControlPlaneRecords(outputState) {
+  return outputState.records.slice(outputState.head);
+}
+
+function compactControlPlaneRecords(outputState) {
+  if (outputState.head >= 64 && outputState.head * 2 >= outputState.records.length) {
+    outputState.records = outputState.records.slice(outputState.head);
+    outputState.head = 0;
+  }
+}
+
+function omitOldestControlPlaneRecord(outputState) {
+  const record = outputState.records[outputState.head++];
+  outputState.byteLength -= record.byteLength;
+  outputState.omittedBytes += record.byteLength;
+  outputState.omittedRecords++;
+  outputState.omittedDigest.update(record.text);
+  compactControlPlaneRecords(outputState);
+}
+
+function appendControlPlaneRecord(outputState, { content, timestamp, type }) {
+  const text = `${content}\n`;
+  const record = {
+    sequence: outputState.nextSequence++,
+    content,
+    timestamp,
+    type,
+    text,
+    byteLength: Buffer.byteLength(text),
+  };
+  outputState.records.push(record);
+  outputState.byteLength += record.byteLength;
+
+  const payloadLimit = outputState.maxBytes - CONTROL_PLANE_OMISSION_MARKER_BYTES;
+  while (
+    outputState.byteLength > payloadLimit ||
+    outputState.records.length - outputState.head > outputState.maxRecords
+  ) {
+    omitOldestControlPlaneRecord(outputState);
+  }
+  return record;
+}
+
+function controlPlaneOmissionRecord(outputState) {
+  if (!outputState.prefixOmitted && outputState.omittedRecords === 0) return null;
+  const digest = outputState.omittedRecords
+    ? `, sha256=${outputState.omittedDigest.copy().digest('hex')}`
+    : '';
+  const known = outputState.omittedRecords
+    ? `records=${outputState.omittedRecords}, byte_length=${outputState.omittedBytes}${digest}`
+    : 'byte_length=unknown';
+  const content =
+    `[ZEROSHOT] Earlier provider output omitted from the bounded control-plane tail (${known}). ` +
+    'Complete output remains in the task log.';
+  return {
+    content,
+    timestamp: Date.now(),
+    type: 'text',
+    text: `${content}\n`,
+    byteLength: Buffer.byteLength(`${content}\n`),
+  };
+}
+
+function snapshotControlPlaneOutput(outputState) {
+  const omission = controlPlaneOmissionRecord(outputState);
+  const records = retainedControlPlaneRecords(outputState);
+  return `${omission ? omission.text : ''}${records.map((record) => record.text).join('')}`;
+}
+
+function resetControlPlaneTail(outputState, { prefixOmitted = false } = {}) {
+  outputState.records = [];
+  outputState.head = 0;
+  outputState.byteLength = 0;
+  outputState.omittedBytes = 0;
+  outputState.omittedRecords = 0;
+  outputState.omittedDigest = createHash('sha256');
+  outputState.prefixOmitted = prefixOmitted;
+}
+
+function publishLiveControlPlaneRecord(outputState, record, publish) {
+  if (
+    outputState.liveSuppressed ||
+    outputState.liveBytes + record.byteLength > outputState.liveByteLimit ||
+    outputState.liveRecords + 1 > outputState.liveRecordLimit
+  ) {
+    outputState.liveSuppressed = true;
+    return;
+  }
+  publish(record);
+  outputState.liveBytes += record.byteLength;
+  outputState.liveRecords++;
+  outputState.lastLiveSequence = record.sequence;
+}
+
+function flushTerminalControlPlaneOutput(outputState, publish) {
+  if (outputState.terminalFlushed) return;
+  outputState.terminalFlushed = true;
+  if (outputState.liveSuppressed) {
+    const omission = controlPlaneOmissionRecord(outputState);
+    if (omission) publish(omission);
+  }
+  for (const record of retainedControlPlaneRecords(outputState)) {
+    if (record.sequence > outputState.lastLiveSequence) publish(record);
+  }
 }
 
 function createLogRecordBuffer() {
@@ -1289,7 +1463,27 @@ function isValidJsonLine(content) {
   }
 }
 
+function publishAgentOutputRecord(agent, providerName, record) {
+  agent._publish({
+    topic: 'AGENT_OUTPUT',
+    receiver: 'broadcast',
+    metadata: buildRawLogOnlyMetadata(),
+    timestamp: record.timestamp,
+    content: {
+      data: {
+        type: record.type,
+        line: record.content,
+        agent: agent.id,
+        role: agent.role,
+        iteration: agent.iteration,
+        provider: providerName,
+      },
+    },
+  });
+}
+
 function broadcastAgentLine({ agent, providerName, state, line }) {
+  const followerState = ensureControlPlaneOutputState(state);
   if (!line.trim()) return;
 
   const { timestamp, content } = parseTimestampedLine(line);
@@ -1298,29 +1492,26 @@ function broadcastAgentLine({ agent, providerName, state, line }) {
   }
 
   const isValidJson = isValidJsonLine(content);
-  state.output += content + '\n';
+  const record = appendControlPlaneRecord(followerState.controlPlaneOutput, {
+    content,
+    timestamp,
+    type: isValidJson ? 'json' : 'text',
+  });
 
-  if (!state.nested) {
+  if (!followerState.nested) {
     agent.lastOutputTime = Date.now();
   }
 
-  agent._publish({
-    topic: 'AGENT_OUTPUT',
-    receiver: 'broadcast',
-    metadata: buildRawLogOnlyMetadata(),
-    timestamp,
-    content: {
-      text: content,
-      data: {
-        type: isValidJson ? 'json' : 'text',
-        line: content,
-        agent: agent.id,
-        role: agent.role,
-        iteration: agent.iteration,
-        provider: providerName,
-      },
-    },
-  });
+  publishLiveControlPlaneRecord(followerState.controlPlaneOutput, record, (item) =>
+    publishAgentOutputRecord(agent, providerName, item)
+  );
+}
+
+function flushAgentOutput(agent, providerName, state) {
+  const followerState = ensureControlPlaneOutputState(state);
+  flushTerminalControlPlaneOutput(followerState.controlPlaneOutput, (record) =>
+    publishAgentOutputRecord(agent, providerName, record)
+  );
 }
 
 function appendLogRecordFragment(buffer, fragment) {
@@ -1616,7 +1807,29 @@ function finalizeLogFollow(agent, state) {
   }
 }
 
-function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, resolve }) {
+function settleHostStatusFailure({ agent, providerName, state, resolve, text, data, error }) {
+  if (state.resolved) return;
+  state.resolved = true;
+  finalizeLogFollow(agent, state);
+  flushAgentOutput(agent, providerName, state);
+  agent._publish({
+    topic: 'AGENT_ERROR',
+    receiver: 'broadcast',
+    content: { text, data },
+  });
+  resolve({ success: false, output: state.output, error });
+}
+
+function handleStatusExecError({
+  agent,
+  providerName,
+  state,
+  ctPath,
+  taskId,
+  error,
+  stderr,
+  resolve,
+}) {
   if (!error) {
     return false;
   }
@@ -1641,30 +1854,20 @@ function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, re
       `[Agent ${agent.id}] ⚠️ Task ${taskId} not found - will restart to ensure completion`
     );
 
-    if (!state.resolved) {
-      state.resolved = true;
-      finalizeLogFollow(agent, state);
-
-      agent._publish({
-        topic: 'AGENT_ERROR',
-        receiver: 'broadcast',
-        content: {
-          text: `Task ${taskId} not found - restarting for safety`,
-          data: {
-            taskId,
-            error: 'task_not_found',
-            role: agent.role,
-            iteration: agent.iteration,
-          },
-        },
-      });
-
-      resolve({
-        success: false,
-        output: state.output,
-        error: `Task not found - restarting for safety`,
-      });
-    }
+    settleHostStatusFailure({
+      agent,
+      providerName,
+      state,
+      resolve,
+      text: `Task ${taskId} not found - restarting for safety`,
+      data: {
+        taskId,
+        error: 'task_not_found',
+        role: agent.role,
+        iteration: agent.iteration,
+      },
+      error: 'Task not found - restarting for safety',
+    });
 
     return true;
   }
@@ -1682,31 +1885,21 @@ function handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, re
   console.error(`  Stderr: ${stderr || 'none'}`);
   console.error(`  This may indicate zeroshot is not in PATH or task storage is corrupted.`);
 
-  if (!state.resolved) {
-    state.resolved = true;
-    finalizeLogFollow(agent, state);
-
-    agent._publish({
-      topic: 'AGENT_ERROR',
-      receiver: 'broadcast',
-      content: {
-        text: `Task ${taskId} polling failed after ${MAX_STATUS_FAILURES} consecutive failures`,
-        data: {
-          taskId,
-          error: 'polling_timeout',
-          attempts: state.consecutiveExecFailures,
-          role: agent.role,
-          iteration: agent.iteration,
-        },
-      },
-    });
-
-    resolve({
-      success: false,
-      output: state.output,
-      error: `Status polling failed ${MAX_STATUS_FAILURES} times - task may not exist`,
-    });
-  }
+  settleHostStatusFailure({
+    agent,
+    providerName,
+    state,
+    resolve,
+    text: `Task ${taskId} polling failed after ${MAX_STATUS_FAILURES} consecutive failures`,
+    data: {
+      taskId,
+      error: 'polling_timeout',
+      attempts: state.consecutiveExecFailures,
+      role: agent.role,
+      iteration: agent.iteration,
+    },
+    error: `Status polling failed ${MAX_STATUS_FAILURES} times - task may not exist`,
+  });
 
   return true;
 }
@@ -1761,6 +1954,7 @@ function handleStatusCompletion({
     state.resolved = true;
 
     finalizeLogFollow(agent, state);
+    flushAgentOutput(agent, providerName, state);
 
     buildCompletionResult({
       agent,
@@ -1783,6 +1977,7 @@ function buildKillHandler({ agent, taskId, state, providerName, resolve }) {
       if (state.resolved) return;
       state.resolved = true;
       finalizeLogFollow(agent, state);
+      flushAgentOutput(agent, providerName, state);
       if (!state.nested) {
         agent._stopLivenessCheck();
       }
@@ -1842,7 +2037,18 @@ function createLogFollower({
         (error, stdout, stderr) => {
           if (state.resolved) return;
 
-          if (handleStatusExecError({ agent, state, ctPath, taskId, error, stderr, resolve })) {
+          if (
+            handleStatusExecError({
+              agent,
+              providerName,
+              state,
+              ctPath,
+              taskId,
+              error,
+              stderr,
+              resolve,
+            })
+          ) {
             return;
           }
 
@@ -2283,7 +2489,7 @@ async function spawnClaudeTaskIsolatedExecution(agent, context, options = {}) {
  * - Result: 10-20% overall latency reduction
  */
 function createIsolatedLogState(skipStructuredResultCheck = false, nested = false) {
-  return {
+  const state = {
     taskExited: false,
     resolved: false,
     terminationPromise: null,
@@ -2291,8 +2497,10 @@ function createIsolatedLogState(skipStructuredResultCheck = false, nested = fals
     durableTaskStatus: null,
     lifecycleHandle: null,
     logFilePath: null,
-    fullOutput: '',
+    controlPlaneOutput: createControlPlaneOutputState(),
     tailProcess: null,
+    rawBytesSeen: 0,
+    ignoreTailOutput: false,
     statusCheckInterval: null,
     timeoutTimer: null,
     lineBuffer: createLogRecordBuffer(),
@@ -2300,6 +2508,9 @@ function createIsolatedLogState(skipStructuredResultCheck = false, nested = fals
     skipStructuredResultCheck,
     nested,
   };
+  defineControlPlaneOutputAccessor(state, 'output');
+  defineControlPlaneOutputAccessor(state, 'fullOutput');
+  return state;
 }
 
 function buildIsolatedCleanup(state) {
@@ -2422,6 +2633,41 @@ async function resolveIsolatedLogFilePath(manager, clusterId, taskId, state) {
   return state.logFilePath;
 }
 
+async function captureIsolatedFinalOutputTail(manager, clusterId, logFilePath, state) {
+  stopIsolatedTailForSettlement(state);
+  const sizeResult = await manager.execInContainer(clusterId, [
+    'sh',
+    '-c',
+    `wc -c < "${logFilePath}" 2>/dev/null || echo 0`,
+  ]);
+  const fileSize = Number.parseInt(sizeResult.stdout.trim(), 10);
+  const missingBytes = Number.isSafeInteger(fileSize)
+    ? Math.max(0, fileSize - state.rawBytesSeen)
+    : 0;
+
+  if (missingBytes > 0) {
+    const readBytes = Math.min(missingBytes, MAX_CONTROL_PLANE_OUTPUT_BYTES);
+    const finalReadResult = await manager.execInContainer(clusterId, [
+      'sh',
+      '-c',
+      `tail -c ${readBytes} "${logFilePath}" 2>/dev/null || echo ""`,
+    ]);
+    if (finalReadResult.code === 0 && finalReadResult.stdout) {
+      if (missingBytes > readBytes) {
+        resetControlPlaneTail(state.controlPlaneOutput, { prefixOmitted: true });
+        state.lineBuffer = createLogRecordBuffer();
+      }
+      appendIsolatedContent(state, finalReadResult.stdout, (line) =>
+        retainIsolatedLine(state, line)
+      );
+    }
+  }
+
+  if (state.lineBuffer.byteLength > 0) {
+    completeLogRecord(state.lineBuffer, (line) => retainIsolatedLine(state, line), true);
+  }
+}
+
 function settleIsolatedTerminalStatus({
   agent,
   manager,
@@ -2434,7 +2680,6 @@ function settleIsolatedTerminalStatus({
   cleanup,
   resolve,
   reject,
-  onLine,
 }) {
   if (state.resolved) return Promise.resolve();
   if (state.terminalSettlementPromise) return state.terminalSettlementPromise;
@@ -2448,17 +2693,9 @@ function settleIsolatedTerminalStatus({
     const logFilePath = await resolveIsolatedLogFilePath(manager, clusterId, taskId, state);
     await new Promise((settle) => setTimeout(settle, 200));
     if (state.resolved) return;
-    const finalReadResult = await manager.execInContainer(clusterId, [
-      'sh',
-      '-c',
-      `cat "${logFilePath}" 2>/dev/null || echo ""`,
-    ]);
+    await captureIsolatedFinalOutputTail(manager, clusterId, logFilePath, state);
     if (state.resolved) return;
-
-    if (finalReadResult.code === 0 && finalReadResult.stdout) {
-      state.fullOutput = finalReadResult.stdout;
-      replayCompleteLogContent(state.fullOutput, onLine);
-    }
+    flushIsolatedOutput(agent, providerName, taskId, state);
 
     const vertexModelError =
       providerName === 'claude'
@@ -2542,9 +2779,9 @@ function buildIsolatedLifecycleHandle({
   cleanup,
   resolve,
   reject,
-  onLine,
 }) {
-  const settleCancellation = (reason, details) =>
+  const settleCancellation = (reason, details) => {
+    flushIsolatedOutput(agent, providerName, taskId, state);
     settleIsolatedFollower({
       agent,
       state,
@@ -2559,6 +2796,7 @@ function buildIsolatedLifecycleHandle({
         tokenUsage: extractTokenUsage(state.fullOutput, providerName),
       },
     });
+  };
   const terminate = (reason = 'Task killed', details = {}) => {
     if (state.durableTaskTerminal) {
       if (state.nested) settleCancellation(reason, details);
@@ -2590,7 +2828,6 @@ function buildIsolatedLifecycleHandle({
           cleanup,
           resolve,
           reject,
-          onLine,
         });
         return termination;
       }
@@ -2618,11 +2855,14 @@ function buildIsolatedLifecycleHandle({
   };
 }
 
-function broadcastIsolatedLine({ agent, providerName, taskId, state, line }) {
+function parseIsolatedLogLine(line) {
   const timestampMatch = line.match(/^\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*(.*)$/);
   const timestamp = timestampMatch ? new Date(timestampMatch[1]).getTime() : Date.now();
   const content = timestampMatch ? timestampMatch[2] : line;
+  return { timestamp, content };
+}
 
+function publishIsolatedOutputRecord(agent, providerName, taskId, record) {
   agent.messageBus.publish({
     cluster_id: agent.cluster.id,
     topic: 'AGENT_OUTPUT',
@@ -2630,18 +2870,42 @@ function broadcastIsolatedLine({ agent, providerName, taskId, state, line }) {
     metadata: buildRawLogOnlyMetadata(),
     content: {
       data: {
-        line: content,
+        line: record.content,
         taskId,
         iteration: agent.iteration,
         provider: providerName,
       },
     },
-    timestamp,
+    timestamp: record.timestamp,
   });
+}
 
-  if (!state?.nested) {
+function retainIsolatedLine(state, line) {
+  const { timestamp, content } = parseIsolatedLogLine(line);
+  return appendControlPlaneRecord(state.controlPlaneOutput, {
+    content,
+    timestamp,
+    type: isValidJsonLine(content) ? 'json' : 'text',
+  });
+}
+
+function broadcastIsolatedLine({ agent, providerName, taskId, state, line }) {
+  const followerState = ensureControlPlaneOutputState(state);
+  const record = retainIsolatedLine(followerState, line);
+  publishLiveControlPlaneRecord(followerState.controlPlaneOutput, record, (item) =>
+    publishIsolatedOutputRecord(agent, providerName, taskId, item)
+  );
+
+  if (!followerState.nested) {
     agent.lastOutputTime = Date.now();
   }
+}
+
+function flushIsolatedOutput(agent, providerName, taskId, state) {
+  const followerState = ensureControlPlaneOutputState(state);
+  flushTerminalControlPlaneOutput(followerState.controlPlaneOutput, (record) =>
+    publishIsolatedOutputRecord(agent, providerName, taskId, record)
+  );
 }
 
 function appendIsolatedContent(state, content, onLine) {
@@ -2650,9 +2914,20 @@ function appendIsolatedContent(state, content, onLine) {
 
 function consumeIsolatedTailChunk(state, data, onLine) {
   const chunk = typeof data === 'string' ? data : state.tailDecoder.write(data);
-  if (!chunk) return;
-  state.fullOutput += chunk;
+  if (!chunk || state.ignoreTailOutput) return;
+  state.rawBytesSeen += Buffer.byteLength(chunk);
   appendIsolatedContent(state, chunk, onLine);
+}
+
+function stopIsolatedTailForSettlement(state) {
+  state.ignoreTailOutput = true;
+  if (!state.tailProcess) return;
+  try {
+    state.tailProcess.kill('SIGTERM');
+  } catch {
+    // Ignore - process may already be dead.
+  }
+  state.tailProcess = null;
 }
 
 function startIsolatedTail({ agent, manager, clusterId, logFilePath, state, onLine }) {
@@ -2696,7 +2971,6 @@ async function checkIsolatedStatus({
   cleanup,
   resolve,
   reject,
-  onLine,
 }) {
   if (state.taskExited) return;
 
@@ -2749,7 +3023,6 @@ async function checkIsolatedStatus({
     cleanup,
     resolve,
     reject,
-    onLine,
   });
 }
 
@@ -2764,7 +3037,6 @@ function startIsolatedStatusChecks({
   cleanup,
   resolve,
   reject,
-  onLine,
 }) {
   state.statusCheckInterval = setInterval(() => {
     checkIsolatedStatus({
@@ -2778,7 +3050,6 @@ function startIsolatedStatusChecks({
       cleanup,
       resolve,
       reject,
-      onLine,
     }).catch((statusErr) => {
       agent._log(`[${agent.id}] Status check error (will retry): ${statusErr.message}`);
     });
@@ -2812,7 +3083,6 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
       cleanup,
       resolve,
       reject,
-      onLine,
     });
     // Only register the lifecycle handle on the agent for top-level tasks.
     if (!options.nested) {
@@ -2883,7 +3153,6 @@ function followClaudeTaskLogsIsolated(agent, taskId, options = {}) {
           cleanup,
           resolve,
           reject,
-          onLine,
         });
 
         if (agent.timeout > 0 && !agent.enableLivenessCheck && !options.nested) {
@@ -3167,7 +3436,19 @@ module.exports = {
   buildTaskRunArgs,
   rebuildProviderSessionAfterCommit,
   killTask,
+  createLogFollowState,
+  createIsolatedLogState,
+  createControlPlaneOutputState,
+  appendControlPlaneRecord,
   createLogRecordBuffer,
   appendContentToBuffer,
   consumeIsolatedTailChunk,
+  flushAgentOutput,
+  flushIsolatedOutput,
+  CONTROL_PLANE_OUTPUT_LIMITS: Object.freeze({
+    maxBytes: MAX_CONTROL_PLANE_OUTPUT_BYTES,
+    maxRecords: MAX_CONTROL_PLANE_OUTPUT_RECORDS,
+    liveBytes: MAX_LIVE_OUTPUT_BYTES,
+    liveRecords: MAX_LIVE_OUTPUT_RECORDS,
+  }),
 };

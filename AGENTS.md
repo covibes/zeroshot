@@ -801,9 +801,22 @@ Provider task ownership: task watchers persist an owned termination boundary wit
 Codex JSONL is streamed losslessly into the task log instead of buffering an unbounded physical
 record in the watcher. Provider-session inspection is fixed-bound, and agent log framing replaces
 any record over 1 MiB with a byte-count/SHA-256 receipt before broadcast; the local lane also stores
-only that receipt in agent output while the complete record remains in the task log. Never restore
-whole-record watcher buffering or publish an oversized provider record directly into control-plane
-state.
+only that receipt in agent output while the complete record remains in the task log. Local and
+isolated followers retain a bounded complete-record tail for parsing and diagnostics, stop live
+`AGENT_OUTPUT` publication at cumulative byte/record limits, and publish that bounded tail once at
+terminal settlement. Isolated settlement re-reads only a fixed-size file tail; the raw task log is
+the sole complete-output authority. Never restore whole-record watcher buffering, cumulative output
+strings, whole-log terminal reads, or unbounded provider records/events in control-plane state.
+The SQLite ledger additionally keeps one cluster-wide newest tail of non-replayable
+`AGENT_OUTPUT` (8 MiB / 8192 exported messages) and a persisted deterministic omission receipt;
+live delivery is unchanged, while control and explicitly replayable messages are never compacted.
+Writable opens reconcile pre-budget or stale compaction state one cluster per transaction. JSON
+export verifies actual compactable row counts/bytes and streams rows in the same readonly snapshot;
+legacy writers therefore cannot race a verified export, and inconsistent snapshots receive only
+bounded repair attempts. A persisted high-water allocator assigns explicit message rowids, so
+deleting compacted output can never reuse a sequence already returned to a caller; later readonly
+exports and cursors remain bounded and monotonic. JSON export must iterate ledger rows directly to
+its destination instead of materializing the whole ledger or pretty-printed document in memory.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
 ownership is persisted with the task and may run only after that boundary is confirmed terminal.
@@ -929,6 +942,9 @@ Classifies tasks on Complexity x TaskType, routes to parameterized templates.
 | DEBUG    | Fix broken code       |
 
 Base templates: `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`.
+An exact whole-value `{{param}}` placeholder preserves the parameter's JSON type; placeholders
+embedded in surrounding text stringify their values. Keep numeric workflow controls typed through
+dynamic template loading.
 
 ## Isolation Modes
 

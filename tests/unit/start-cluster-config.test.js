@@ -48,7 +48,7 @@ describe('start-cluster config loading', function () {
     assert.strictEqual(config.params, undefined);
     assert.strictEqual(config.defaultProvider, 'claude');
     assert.strictEqual(config.agents[0].modelLevel, 'level3');
-    assert.strictEqual(config.agents[0].timeout, '0');
+    assert.strictEqual(config.agents[0].timeout, 0);
     assert.strictEqual(config.agents[0].prompt.system, 'Plan a TASK');
   });
 });
