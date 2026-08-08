@@ -177,7 +177,7 @@ async function resolveSubmissionBase(setup, token, fetchImpl = globalThis.fetch)
     targetBranch = setup.base.targetBranch;
     const commit = await githubMetadata(
       setup.repository,
-      `/commits/${setup.base.revision}`,
+      `/git/commits/${setup.base.revision}`,
       token,
       fetchImpl
     );
