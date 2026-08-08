@@ -798,6 +798,12 @@ that receipt against the cluster ID, then removes only the derived container nam
 temporary directories. Never persist or honor caller-selected cleanup paths for this boundary.
 
 Provider task ownership: task watchers persist an owned termination boundary with each active task.
+Codex JSONL is streamed losslessly into the task log instead of buffering an unbounded physical
+record in the watcher. Provider-session inspection is fixed-bound, and agent log framing replaces
+any record over 1 MiB with a byte-count/SHA-256 receipt before broadcast; the local lane also stores
+only that receipt in agent output while the complete record remains in the task log. Never restore
+whole-record watcher buffering or publish an oversized provider record directly into control-plane
+state.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
 ownership is persisted with the task and may run only after that boundary is confirmed terminal.
