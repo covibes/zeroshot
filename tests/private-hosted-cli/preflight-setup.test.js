@@ -130,7 +130,13 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
       GH_TOKEN: 'github-test-token',
       LOCAL_AWS_ACCESS_KEY_ID: 'aws-local-secret',
     },
-    fetch: () => new globalThis.Response(JSON.stringify({ sha: BASE_REVISION }), { status: 200 }),
+    fetch: (url) => {
+      assert.equal(
+        url,
+        `https://api.github.com/repos/owner/repository/git/commits/${BASE_REVISION}`
+      );
+      return new globalThis.Response(JSON.stringify({ sha: BASE_REVISION }), { status: 200 });
+    },
   });
   assert.equal(bundle.githubToken, 'github-test-token');
   assert.equal(bundle.baseRevision, BASE_REVISION);
