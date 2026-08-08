@@ -1,7 +1,8 @@
 /**
- * Ledger - Immutable event log for multi-agent coordination
+ * Ledger - Durable event log for multi-agent coordination
  *
  * Provides:
+ * - Immutable control/replayable messages plus a bounded newest tail of raw AGENT_OUTPUT
  * - SQLite-backed message storage with indexes
  * - Query API for message retrieval
  * - In-memory cache for recent queries
@@ -16,9 +17,14 @@ const {
   USER_GUIDANCE_AGENT,
   USER_GUIDANCE_CLUSTER,
 } = require('./guidance-topics');
+const { isReplayableMessage } = require('./agent/context-replay-policy');
 const { messageSequenceFromSql, messageSequenceToSql } = require('./ledger-sequence');
 
 const MESSAGE_SEQUENCE_SELECT = 'CAST(rowid AS TEXT) AS sequence';
+const AGENT_OUTPUT_EXPORT_MAX_BYTES = 8 * 1024 * 1024;
+const AGENT_OUTPUT_EXPORT_MAX_MESSAGES = 8192;
+const EMPTY_OMISSION_DIGEST = '0'.repeat(64);
+const AGENT_OUTPUT_RECEIPT_SENDER = 'zeroshot';
 
 class Ledger extends EventEmitter {
   constructor(dbPath = ':memory:', options = {}) {
@@ -87,16 +93,40 @@ class Ledger extends EventEmitter {
       CREATE INDEX IF NOT EXISTS idx_cluster_sender ON messages(cluster_id, sender);
       CREATE INDEX IF NOT EXISTS idx_cluster_topic ON messages(cluster_id, topic);
       CREATE INDEX IF NOT EXISTS idx_cluster_timestamp ON messages(cluster_id, timestamp);
+
+      CREATE TABLE IF NOT EXISTS agent_output_compaction (
+        cluster_id TEXT PRIMARY KEY,
+        receipt_message_id TEXT,
+        first_omitted_timestamp INTEGER,
+        omitted_messages INTEGER NOT NULL DEFAULT 0,
+        omitted_export_bytes INTEGER NOT NULL DEFAULT 0,
+        omission_digest TEXT NOT NULL,
+        retained_messages INTEGER NOT NULL DEFAULT 0,
+        retained_export_bytes INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS ledger_sequence (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        value INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO ledger_sequence (singleton, value) VALUES (1, 0);
+      UPDATE ledger_sequence
+      SET value = MAX(value, COALESCE((SELECT MAX(rowid) FROM messages), 0))
+      WHERE singleton = 1;
     `);
 
     this._prepareStatements();
     this._loadLastTimestamp();
+    this._reconcileAgentOutput();
   }
 
   _prepareStatements() {
     const insert = this.db.prepare(`
-        INSERT INTO messages (id, timestamp, topic, sender, receiver, content_text, content_data, metadata, cluster_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO messages (
+          rowid, id, timestamp, topic, sender, receiver,
+          content_text, content_data, metadata, cluster_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
     insert.safeIntegers(true);
 
@@ -111,7 +141,92 @@ class Ledger extends EventEmitter {
         `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages WHERE cluster_id = ?` +
           ` ORDER BY timestamp ASC, rowid ASC`
       ),
+
+      agentOutputRows: this.db.prepare(
+        `SELECT ${MESSAGE_SEQUENCE_SELECT}, * FROM messages` +
+          ` WHERE cluster_id = ? AND topic = 'AGENT_OUTPUT' ORDER BY timestamp ASC, rowid ASC`
+      ),
     };
+
+    if (!this.readonly) {
+      const nextSequence = this.db.prepare(`
+        UPDATE ledger_sequence
+        SET value = MAX(value, COALESCE((SELECT MAX(rowid) FROM messages), 0)) + 1
+        WHERE singleton = 1
+          AND value < 9223372036854775807
+          AND COALESCE((SELECT MAX(rowid) FROM messages), 0) < 9223372036854775807
+        RETURNING value
+      `);
+      nextSequence.safeIntegers(true);
+      this.stmts.nextSequence = nextSequence;
+      this._prepareAgentOutputCompactionStatements();
+    }
+  }
+
+  _prepareAgentOutputCompactionStatements() {
+    this.compactionStmts = {
+      get: this.db.prepare('SELECT * FROM agent_output_compaction WHERE cluster_id = ?'),
+      insert: this.db.prepare(`
+        INSERT INTO agent_output_compaction (
+          cluster_id, receipt_message_id, first_omitted_timestamp,
+          omitted_messages, omitted_export_bytes, omission_digest,
+          retained_messages, retained_export_bytes
+        ) VALUES (?, NULL, NULL, 0, 0, ?, ?, ?)
+      `),
+      update: this.db.prepare(`
+        UPDATE agent_output_compaction
+        SET receipt_message_id = ?, first_omitted_timestamp = ?, omitted_messages = ?,
+            omitted_export_bytes = ?, omission_digest = ?, retained_messages = ?,
+            retained_export_bytes = ?
+        WHERE cluster_id = ?
+      `),
+      deleteMessage: this.db.prepare('DELETE FROM messages WHERE id = ?'),
+      updateReceipt: this.db.prepare(`
+        UPDATE messages SET content_data = ?, metadata = ? WHERE id = ?
+      `),
+      receiptExists: this.db.prepare('SELECT 1 FROM messages WHERE id = ?'),
+      agentOutputClusterIds: this.db.prepare(`
+        SELECT cluster_id FROM agent_output_compaction
+        UNION
+        SELECT cluster_id FROM messages WHERE topic = 'AGENT_OUTPUT'
+      `),
+      deleteState: this.db.prepare('DELETE FROM agent_output_compaction'),
+    };
+  }
+
+  _reconcileAgentOutput() {
+    const clusterIds = this.compactionStmts.agentOutputClusterIds
+      .all()
+      .map((row) => row.cluster_id);
+    const reconcileCluster = this.db.transaction((clusterId) => {
+      const measured = this._measureCompactableAgentOutput(clusterId);
+      let state = this.compactionStmts.get.get(clusterId);
+      if (!state) {
+        if (measured.retained_messages === 0) return;
+        state = this._createCompactionState(clusterId, measured);
+      } else if (
+        state.retained_messages !== measured.retained_messages ||
+        state.retained_export_bytes !== measured.retained_export_bytes
+      ) {
+        state.retained_messages = measured.retained_messages;
+        state.retained_export_bytes = measured.retained_export_bytes;
+        this._updateCompactionState(state);
+      }
+      const receiptMissing =
+        state.omitted_messages > 0 &&
+        (!state.receipt_message_id ||
+          !this.compactionStmts.receiptExists.get(state.receipt_message_id));
+      if (
+        receiptMissing ||
+        state.retained_export_bytes > AGENT_OUTPUT_EXPORT_MAX_BYTES ||
+        state.retained_messages > AGENT_OUTPUT_EXPORT_MAX_MESSAGES
+      ) {
+        this._compactAgentOutput(clusterId);
+      }
+    });
+    for (const clusterId of clusterIds) {
+      reconcileCluster.immediate(clusterId);
+    }
   }
 
   _loadLastTimestamp() {
@@ -119,6 +234,191 @@ class Ledger extends EventEmitter {
     if (row && Number.isFinite(row.max_timestamp)) {
       this._lastTimestamp = row.max_timestamp;
     }
+  }
+
+  _insertRecord(record) {
+    const allocated = this.stmts.nextSequence.get();
+    if (!allocated) {
+      throw new RangeError('Ledger message sequence exhausted the SQLite rowid range');
+    }
+    this.stmts.insert.run(
+      allocated.value,
+      record.id,
+      record.timestamp,
+      record.topic,
+      record.sender,
+      record.receiver,
+      record.content_text,
+      record.content_data,
+      record.metadata,
+      record.cluster_id
+    );
+    record.sequence = messageSequenceFromSql(allocated.value);
+    return this._deserializeMessage(record);
+  }
+
+  _recordExportBytes(record) {
+    return Buffer.byteLength(JSON.stringify(this._deserializeMessage(record)));
+  }
+
+  _isCompactableAgentOutput(record) {
+    if (record.topic !== 'AGENT_OUTPUT') return false;
+    const message = this._deserializeMessage(record);
+    return message.metadata?.compactionReceipt !== true && !isReplayableMessage(message);
+  }
+
+  _measureCompactableAgentOutput(clusterId) {
+    let retainedMessages = 0;
+    let retainedExportBytes = 0;
+    for (const row of this.stmts.agentOutputRows.iterate(clusterId)) {
+      if (!this._isCompactableAgentOutput(row)) continue;
+      retainedMessages += 1;
+      retainedExportBytes += this._recordExportBytes(row);
+    }
+    return {
+      retained_messages: retainedMessages,
+      retained_export_bytes: retainedExportBytes,
+    };
+  }
+
+  _createCompactionState(clusterId, measured = this._measureCompactableAgentOutput(clusterId)) {
+    this.compactionStmts.insert.run(
+      clusterId,
+      EMPTY_OMISSION_DIGEST,
+      measured.retained_messages,
+      measured.retained_export_bytes
+    );
+    return this.compactionStmts.get.get(clusterId);
+  }
+
+  _updateCompactionState(state) {
+    this.compactionStmts.update.run(
+      state.receipt_message_id,
+      state.first_omitted_timestamp,
+      state.omitted_messages,
+      state.omitted_export_bytes,
+      state.omission_digest,
+      state.retained_messages,
+      state.retained_export_bytes,
+      state.cluster_id
+    );
+  }
+
+  _oldestCompactableAgentOutput(clusterId) {
+    for (const row of this.stmts.agentOutputRows.iterate(clusterId)) {
+      if (this._isCompactableAgentOutput(row)) return row;
+    }
+    return null;
+  }
+
+  _nextOmissionDigest(previousDigest, record) {
+    const hash = crypto.createHash('sha256');
+    hash.update(Buffer.from(previousDigest, 'hex'));
+    const exportedMessage = Buffer.from(JSON.stringify(this._deserializeMessage(record)));
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(exportedMessage.length));
+    hash.update(length);
+    hash.update(exportedMessage);
+    return hash.digest('hex');
+  }
+
+  _agentOutputReceiptRecord(state) {
+    const line =
+      `[ZEROSHOT] Earlier raw provider output omitted from the durable control-plane tail ` +
+      `(messages=${state.omitted_messages}, export_bytes=${state.omitted_export_bytes}, ` +
+      `sha256_chain=${state.omission_digest}). The newest output is retained within ` +
+      `${AGENT_OUTPUT_EXPORT_MAX_BYTES} exported bytes and ` +
+      `${AGENT_OUTPUT_EXPORT_MAX_MESSAGES} messages. Complete output remains in task logs.`;
+    return {
+      id:
+        state.receipt_message_id ||
+        `agent_output_receipt_${crypto.createHash('sha256').update(state.cluster_id).digest('hex').slice(0, 24)}`,
+      timestamp: state.first_omitted_timestamp,
+      topic: 'AGENT_OUTPUT',
+      sender: AGENT_OUTPUT_RECEIPT_SENDER,
+      receiver: 'broadcast',
+      content_text: null,
+      content_data: JSON.stringify({
+        type: 'output_omission',
+        line,
+        omittedMessages: state.omitted_messages,
+        omittedExportBytes: state.omitted_export_bytes,
+        sha256Chain: state.omission_digest,
+        retainedExportByteLimit: AGENT_OUTPUT_EXPORT_MAX_BYTES,
+        retainedMessageLimit: AGENT_OUTPUT_EXPORT_MAX_MESSAGES,
+        completeOutputAuthority: 'task_logs',
+      }),
+      metadata: JSON.stringify({
+        compactionReceipt: true,
+        contextSafe: false,
+        replayPolicy: 'raw_log_only',
+      }),
+      cluster_id: state.cluster_id,
+    };
+  }
+
+  _persistAgentOutputReceipt(state) {
+    const receipt = this._agentOutputReceiptRecord(state);
+    const updated = state.receipt_message_id
+      ? this.compactionStmts.updateReceipt.run(receipt.content_data, receipt.metadata, receipt.id)
+      : { changes: 0 };
+    if (updated.changes === 0) {
+      this._insertRecord(receipt);
+    }
+    state.receipt_message_id = receipt.id;
+  }
+
+  _compactAgentOutput(clusterId) {
+    const state = this.compactionStmts.get.get(clusterId) || this._createCompactionState(clusterId);
+    while (
+      state.retained_export_bytes > AGENT_OUTPUT_EXPORT_MAX_BYTES ||
+      state.retained_messages > AGENT_OUTPUT_EXPORT_MAX_MESSAGES
+    ) {
+      const oldest = this._oldestCompactableAgentOutput(clusterId);
+      if (!oldest) break;
+      const exportBytes = this._recordExportBytes(oldest);
+      state.first_omitted_timestamp ??= oldest.timestamp;
+      state.omitted_messages += 1;
+      state.omitted_export_bytes += exportBytes;
+      state.omission_digest = this._nextOmissionDigest(state.omission_digest, oldest);
+      state.retained_messages -= 1;
+      state.retained_export_bytes -= exportBytes;
+      if (
+        !state.receipt_message_id ||
+        !this.compactionStmts.receiptExists.get(state.receipt_message_id)
+      ) {
+        this._persistAgentOutputReceipt(state);
+      }
+      this.compactionStmts.deleteMessage.run(oldest.id);
+    }
+    if (state.omitted_messages > 0) {
+      this._persistAgentOutputReceipt(state);
+    }
+    this._updateCompactionState(state);
+  }
+
+  _insertAndCompact(record) {
+    const fullMessage = this._insertRecord(record);
+    if (this._isCompactableAgentOutput(record)) {
+      const state = this.compactionStmts.get.get(record.cluster_id);
+      if (state) {
+        state.retained_messages += 1;
+        state.retained_export_bytes += this._recordExportBytes(record);
+        this._updateCompactionState(state);
+      }
+      this._compactAgentOutput(record.cluster_id);
+    }
+    return fullMessage;
+  }
+
+  _appendRecord(record) {
+    const compactable = this._isCompactableAgentOutput(record);
+    if (!this._appendRecordTxn) {
+      this._appendRecordTxn = this.db.transaction((item, compact) =>
+        compact ? this._insertAndCompact(item) : this._insertRecord(item)
+      );
+    }
+    return this._appendRecordTxn(record, compactable);
   }
 
   /**
@@ -154,18 +454,7 @@ class Ledger extends EventEmitter {
     };
 
     try {
-      const insertResult = this.stmts.insert.run(
-        record.id,
-        record.timestamp,
-        record.topic,
-        record.sender,
-        record.receiver,
-        record.content_text,
-        record.content_data,
-        record.metadata,
-        record.cluster_id
-      );
-      record.sequence = messageSequenceFromSql(insertResult.lastInsertRowid);
+      const fullMessage = this._appendRecord(record);
 
       // Invalidate cache
       this.cache.clear();
@@ -173,7 +462,6 @@ class Ledger extends EventEmitter {
       this._lastTimestamp = Math.max(this._lastTimestamp, timestamp);
 
       // Emit event for subscriptions
-      const fullMessage = this._deserializeMessage(record);
       this.emit('message', fullMessage);
       this.emit(`topic:${message.topic}`, fullMessage);
 
@@ -229,20 +517,7 @@ class Ledger extends EventEmitter {
           cluster_id: message.cluster_id,
         };
 
-        const insertResult = this.stmts.insert.run(
-          record.id,
-          record.timestamp,
-          record.topic,
-          record.sender,
-          record.receiver,
-          record.content_text,
-          record.content_data,
-          record.metadata,
-          record.cluster_id
-        );
-        record.sequence = messageSequenceFromSql(insertResult.lastInsertRowid);
-
-        results.push(this._deserializeMessage(record));
+        results.push(this._insertAndCompact(record));
       }
 
       return { results, baseTimestamp };
@@ -547,6 +822,54 @@ class Ledger extends EventEmitter {
   }
 
   /**
+   * Iterate over all cluster messages without materializing the complete ledger.
+   * @param {String} cluster_id - Cluster ID
+   * @yields {Object} One deserialized message at a time
+   */
+  *iterateAll(cluster_id) {
+    for (const row of this.stmts.getAll.iterate(cluster_id)) {
+      yield this._deserializeMessage(row);
+    }
+  }
+
+  /**
+   * Run synchronous reads against one stable SQLite snapshot.
+   * @param {Function} callback - Work to perform inside the snapshot
+   * @returns {*} The callback result
+   */
+  withReadSnapshot(callback) {
+    return this.db.transaction(callback).deferred();
+  }
+
+  /**
+   * Return whether a legacy cluster requires one writable compaction pass.
+   * This preflight is read-only and does not acquire a writer lock.
+   * @param {String} cluster_id - Cluster ID
+   * @returns {Boolean} True when actual raw output disagrees with durable budget state
+   */
+  needsAgentOutputReconciliation(cluster_id) {
+    const hasCompactionTable = this.db
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_output_compaction'"
+      )
+      .get();
+    const state =
+      hasCompactionTable &&
+      this.db.prepare('SELECT * FROM agent_output_compaction WHERE cluster_id = ?').get(cluster_id);
+    const measured = this._measureCompactableAgentOutput(cluster_id);
+    if (!state) return measured.retained_messages > 0;
+    if (
+      state.retained_messages !== measured.retained_messages ||
+      state.retained_export_bytes !== measured.retained_export_bytes
+    ) {
+      return true;
+    }
+    if (state.omitted_messages === 0) return false;
+    if (!state.receipt_message_id) return true;
+    return !this.db.prepare('SELECT 1 FROM messages WHERE id = ?').get(state.receipt_message_id);
+  }
+
+  /**
    * Get aggregated token usage by agent role
    * Queries TOKEN_USAGE messages and sums tokens per role
    * @param {String} cluster_id - Cluster ID
@@ -811,9 +1134,19 @@ class Ledger extends EventEmitter {
    * Clear all messages (for testing)
    */
   clear() {
-    this.db.exec('DELETE FROM messages');
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM messages');
+      if (this.compactionStmts) {
+        this.compactionStmts.deleteState.run();
+      }
+    })();
     this.cache.clear();
   }
 }
+
+Ledger.AGENT_OUTPUT_EXPORT_LIMITS = Object.freeze({
+  maxBytes: AGENT_OUTPUT_EXPORT_MAX_BYTES,
+  maxMessages: AGENT_OUTPUT_EXPORT_MAX_MESSAGES,
+});
 
 module.exports = Ledger;

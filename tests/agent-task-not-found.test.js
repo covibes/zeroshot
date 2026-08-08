@@ -80,6 +80,9 @@ describe('Agent Task Not Found - Fail-Safe Restart', () => {
     assert.ok(functionMatch, 'Should find handleStatusExecError function');
 
     const functionBody = functionMatch[0];
+    const settlementBody = sourceCode.match(
+      /function settleHostStatusFailure\([^)]*\)\s*{[\s\S]*?^}/m
+    )[0];
 
     // Verify it has a dedicated "not found" check BEFORE the retry counter
     const notFoundCheckIndex = functionBody.indexOf('ID not found');
@@ -94,12 +97,12 @@ describe('Agent Task Not Found - Fail-Safe Restart', () => {
     const notFoundSection = functionBody.substring(notFoundCheckIndex, retryCounterIndex);
 
     assert.ok(
-      notFoundSection.includes('resolve('),
+      notFoundSection.includes('settleHostStatusFailure(') && settlementBody.includes('resolve('),
       'Should call resolve() immediately when task not found'
     );
 
     assert.ok(
-      notFoundSection.includes('success: false'),
+      settlementBody.includes('success: false'),
       'Should resolve with success: false when task not found'
     );
 
@@ -115,6 +118,9 @@ describe('Agent Task Not Found - Fail-Safe Restart', () => {
     );
 
     const functionBody = functionMatch[0];
+    const settlementBody = sourceCode.match(
+      /function settleHostStatusFailure\([^)]*\)\s*{[\s\S]*?^}/m
+    )[0];
 
     // Find the "not found" section
     const notFoundStart = functionBody.indexOf('ID not found');
@@ -123,7 +129,9 @@ describe('Agent Task Not Found - Fail-Safe Restart', () => {
 
     // Verify it publishes an error event
     assert.ok(
-      notFoundSection.includes('_publish') && notFoundSection.includes('AGENT_ERROR'),
+      notFoundSection.includes('settleHostStatusFailure(') &&
+        settlementBody.includes('_publish') &&
+        settlementBody.includes('AGENT_ERROR'),
       'Should publish AGENT_ERROR event when task not found'
     );
 

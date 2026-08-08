@@ -327,6 +327,11 @@ class TemplateResolver {
    * @returns {any}
    */
   _resolveString(str, params) {
+    const exactPlaceholder = str.match(/^\{\{(\w+)\}\}$/);
+    if (exactPlaceholder && params[exactPlaceholder[1]] !== undefined) {
+      return JSON.parse(JSON.stringify(params[exactPlaceholder[1]]));
+    }
+
     // Handle simple {{param}} substitutions
     let result = str.replace(
       /\{\{(\w+)\}\}/g,

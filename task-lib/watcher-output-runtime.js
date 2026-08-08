@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { StringDecoder } from 'string_decoder';
 import {
   detectProviderFatalError,
@@ -11,6 +12,7 @@ import { terminateProcess } from './process-termination.js';
 export const COMMAND_CLEANUP_UNINITIALIZED = Symbol('command-cleanup-uninitialized');
 
 const MAX_CODEX_CONTROL_RECORD_BYTES = 64 * 1024;
+const MAX_WATCHER_CONTROL_RECORD_BYTES = 1024 * 1024;
 
 export function spawnWatcherProvider(command, finalArgs, options) {
   return spawn(command, finalArgs, {
@@ -33,12 +35,6 @@ export async function terminateWatcherProvider(providerProcess, options = {}) {
     return false;
   }
   return result.terminated;
-}
-
-function splitBufferLines(buffer, chunk) {
-  const nextBuffer = buffer + chunk;
-  const lines = nextBuffer.split('\n');
-  return { lines: lines.slice(0, -1), remaining: lines.at(-1) || '' };
 }
 
 function createCodexOutputPassthrough({ log, captureProviderSession }) {
@@ -102,6 +98,98 @@ function createCodexOutputPassthrough({ log, captureProviderSession }) {
       if (!atLineStart) {
         finishLine();
         log('\n');
+      }
+    },
+  };
+}
+
+function createBoundedLinePassthrough({ log, handleLine, deferRawUntilOverflow = false }) {
+  const decoder = new StringDecoder('utf8');
+  let atLineStart = true;
+  let lineTimestamp = null;
+  let byteLength = 0;
+  let inspectable = true;
+  let inspectionParts = [];
+  let digest = createHash('sha256');
+  let rawOverflowStreaming = false;
+
+  function inspectPart(part) {
+    if (!part) return;
+    byteLength += Buffer.byteLength(part);
+    digest.update(part);
+    if (!inspectable) {
+      if (deferRawUntilOverflow && log) log(part);
+      return;
+    }
+    if (byteLength > MAX_WATCHER_CONTROL_RECORD_BYTES) {
+      if (deferRawUntilOverflow && log) {
+        log(`[${lineTimestamp}]${inspectionParts.join('')}${part}`);
+        rawOverflowStreaming = true;
+      }
+      inspectable = false;
+      inspectionParts = [];
+      return;
+    }
+    inspectionParts.push(part);
+  }
+
+  function finishLine() {
+    const oversized = !inspectable;
+    const line = inspectable
+      ? inspectionParts.join('')
+      : `[ZEROSHOT] Provider output record retained in task log but omitted from watcher inspection ` +
+        `(byte_length=${byteLength}, sha256=${digest.digest('hex')})`;
+    handleLine(line, lineTimestamp || Date.now(), { oversized });
+    atLineStart = true;
+    lineTimestamp = null;
+    byteLength = 0;
+    inspectable = true;
+    inspectionParts = [];
+    digest = createHash('sha256');
+    rawOverflowStreaming = false;
+  }
+
+  function appendRaw(logged, ...parts) {
+    if (log && !deferRawUntilOverflow) logged.push(...parts);
+  }
+
+  function writeText(text) {
+    if (!text) return;
+    const logged = [];
+    let offset = 0;
+    while (offset < text.length) {
+      if (atLineStart) {
+        lineTimestamp = Date.now();
+        appendRaw(logged, `[${lineTimestamp}]`);
+        atLineStart = false;
+      }
+      const newline = text.indexOf('\n', offset);
+      if (newline === -1) {
+        const part = text.slice(offset);
+        inspectPart(part);
+        appendRaw(logged, part);
+        break;
+      }
+      const part = text.slice(offset, newline);
+      inspectPart(part);
+      appendRaw(logged, part, '\n');
+      if (deferRawUntilOverflow && rawOverflowStreaming && log) log('\n');
+      finishLine();
+      offset = newline + 1;
+    }
+    if (log && logged.length > 0) log(logged.join(''));
+  }
+
+  return {
+    consume(chunk) {
+      writeText(typeof chunk === 'string' ? chunk : decoder.write(chunk));
+    },
+    flush() {
+      writeText(decoder.end());
+      if (!atLineStart) {
+        if (deferRawUntilOverflow && rawOverflowStreaming && log) log('\n');
+        finishLine();
+        if (log && !deferRawUntilOverflow) log('\n');
       }
     },
   };
@@ -260,6 +348,21 @@ export function createWatcherOutputRuntime({
   const captureProviderSession = providerSessionCapture?.captureLine || (() => {});
   const codexOutputPassthrough =
     providerName === 'codex' ? createCodexOutputPassthrough({ log, captureProviderSession }) : null;
+  const outputPassthrough = codexOutputPassthrough
+    ? null
+    : createBoundedLinePassthrough({
+        log,
+        deferRawUntilOverflow: silentJsonMode,
+        handleLine: (line, timestamp, { oversized }) =>
+          handleOutputLine(line, timestamp, {
+            alreadyLogged: !silentJsonMode,
+            oversized,
+          }),
+      });
+  const stderrPassthrough = createBoundedLinePassthrough({
+    log,
+    handleLine: (line, timestamp) => maybeHandleFatalError(line, timestamp),
+  });
 
   function maybeHandleFatalError(line, timestamp) {
     if (fatalError) return false;
@@ -288,56 +391,38 @@ export function createWatcherOutputRuntime({
     }
   }
 
-  function handleOutputLine(line, timestamp) {
+  function handleOutputLine(line, timestamp, { alreadyLogged = false, oversized = false } = {}) {
+    if (silentJsonMode && oversized) {
+      fatalError =
+        `Provider structured output exceeded the ${MAX_WATCHER_CONTROL_RECORD_BYTES}-byte ` +
+        'watcher inspection limit; complete output remains in the task log';
+      log(`[${timestamp}][FATAL] ${fatalError}\n`);
+      stopProvider(timestamp);
+      return;
+    }
     captureProviderSession(line);
     if (silentJsonMode && !line.trim()) return;
     maybeHandleFatalError(line, timestamp);
     if (captureStreamingError(line, timestamp)) return;
     if (silentJsonMode) {
       maybeCaptureStructuredOutput(line);
-    } else {
+    } else if (!alreadyLogged) {
       log(`[${timestamp}]${line}\n`);
     }
   }
 
-  function consumeOutput(buffer, chunk) {
+  function consumeOutput(_buffer, chunk) {
     if (codexOutputPassthrough) {
       codexOutputPassthrough.consume(chunk);
-      return '';
-    }
-    const timestamp = Date.now();
-    const { lines, remaining } = splitBufferLines(buffer, chunk.toString());
-    for (const line of lines) handleOutputLine(line, timestamp);
-    return remaining;
-  }
-
-  function consumeStderr(buffer, chunk) {
-    const timestamp = Date.now();
-    const { lines, remaining } = splitBufferLines(buffer, chunk.toString());
-    for (const line of lines) log(`[${timestamp}]${line}\n`);
-    return remaining;
-  }
-
-  function flushOutput(buffer, timestamp) {
-    if (!buffer.trim()) return;
-    captureProviderSession(buffer);
-    if (!enableRecovery) {
-      if (!silentJsonMode) log(`[${timestamp}]${buffer}\n`);
-      return;
-    }
-    maybeHandleFatalError(buffer, timestamp);
-    if (captureStreamingError(buffer, timestamp)) return;
-    if (silentJsonMode) {
-      maybeCaptureStructuredOutput(buffer);
     } else {
-      log(`[${timestamp}]${buffer}\n`);
+      outputPassthrough.consume(chunk);
     }
+    return '';
   }
 
-  function flushStderr(buffer, timestamp) {
-    if (!buffer.trim()) return;
-    maybeHandleFatalError(buffer, timestamp);
-    log(`[${timestamp}]${buffer}\n`);
+  function consumeStderr(_buffer, chunk) {
+    stderrPassthrough.consume(chunk);
+    return '';
   }
 
   function attemptRecovery(code, timestamp) {
@@ -357,14 +442,14 @@ export function createWatcherOutputRuntime({
     return recovered;
   }
 
-  function complete({ code, signal, outputBuffer, stderrBuffer = null }) {
+  function complete({ code, signal, stderrBuffer = null }) {
     const timestamp = Date.now();
     if (codexOutputPassthrough) {
       codexOutputPassthrough.flush();
     } else {
-      flushOutput(outputBuffer, timestamp);
+      outputPassthrough.flush();
     }
-    if (stderrBuffer !== null) flushStderr(stderrBuffer, timestamp);
+    if (stderrBuffer !== null) stderrPassthrough.flush();
     const recovered = attemptRecovery(code, timestamp);
     const sessionIdentityError = providerSessionCapture?.getCompletionError() || null;
     if (silentJsonMode && finalResultJson) log(`${finalResultJson}\n`);

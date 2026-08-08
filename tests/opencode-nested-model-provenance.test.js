@@ -258,6 +258,7 @@ describe('Isolated opencode structured-output recovery', function () {
       properties: { plan: { type: 'string' } },
       required: ['plan'],
     };
+    const recoveredOutput = opencodeTextEvent({ plan: 'isolated recovery' });
     const spawnedCommands = [];
     let spawnCount = 0;
     const manager = {
@@ -288,10 +289,17 @@ describe('Isolated opencode structured-output recovery', function () {
         if (rendered.includes('zeroshot status')) {
           return Promise.resolve({ code: 0, stdout: 'Status: completed\n', stderr: '' });
         }
-        if (rendered.includes('cat "/tmp/reformat.log"')) {
+        if (rendered.includes('wc -c < "/tmp/reformat.log"')) {
           return Promise.resolve({
             code: 0,
-            stdout: opencodeTextEvent({ plan: 'isolated recovery' }),
+            stdout: `${Buffer.byteLength(recoveredOutput)}\n`,
+            stderr: '',
+          });
+        }
+        if (rendered.includes('tail -c') && rendered.includes('"/tmp/reformat.log"')) {
+          return Promise.resolve({
+            code: 0,
+            stdout: recoveredOutput,
             stderr: '',
           });
         }
@@ -712,6 +720,7 @@ describe('Isolated opencode structured-output recovery', function () {
     let finalReadCount = 0;
     let spawnCount = 0;
     let tailKills = 0;
+    const lateOutput = opencodeTextEvent({ plan: 'too late' });
     const manager = {
       getContainerEnvironmentValue() {
         return null;
@@ -740,7 +749,11 @@ describe('Isolated opencode structured-output recovery', function () {
         if (rendered.includes('zeroshot status')) {
           return Promise.resolve({ code: 0, stdout: 'Status: completed\n', stderr: '' });
         }
-        if (rendered.includes('cat "/tmp/terminal-drain.log"')) {
+        if (rendered.includes('wc -c < "/tmp/terminal-drain.log"')) {
+          const stdout = `${Buffer.byteLength(lateOutput)}\n`;
+          return Promise.resolve({ code: 0, stdout, stderr: '' });
+        }
+        if (rendered.includes('tail -c') && rendered.includes('"/tmp/terminal-drain.log"')) {
           finalReadCount++;
           return new Promise((resolve) => {
             resolveFinalRead = resolve;
@@ -794,7 +807,7 @@ describe('Isolated opencode structured-output recovery', function () {
     assert.strictEqual(tailKills, 1);
     assert.strictEqual(agent.nestedExecutions.size, 0);
 
-    resolveFinalRead({ code: 0, stdout: opencodeTextEvent({ plan: 'too late' }), stderr: '' });
+    resolveFinalRead({ code: 0, stdout: lateOutput, stderr: '' });
     await new Promise((resolve) => setImmediate(resolve));
     assert.strictEqual(finalReadCount, 1);
     assert.strictEqual(spawnCount, 2);
