@@ -797,6 +797,16 @@ ${'='.repeat(80)}`);
 
   // Non-validator agents: publish error and stop
   agent.state = 'error';
+  const workerFailure = providerFailures.workerFailure(error);
+  // Synchronous terminal listeners must see the final failure truth before persisting a stop.
+  agent.cluster.failureInfo = providerFailures.buildFinalFailureInfo({
+    agent,
+    error,
+    attempts: failureAttempts,
+    worker: workerFailure,
+    unsupportedCapability,
+    structuredOutputInvalid,
+  });
 
   // Hook failure: fail the whole cluster so it gets stopped + persisted (prevents deadlocked "running" clusters).
   if (error?.hookFailure) {
@@ -874,16 +884,6 @@ ${'='.repeat(80)}`);
     });
   }
 
-  const workerFailure = providerFailures.workerFailure(error);
-  // Install failure truth first: synchronous listeners may immediately persist a stop.
-  agent.cluster.failureInfo = providerFailures.buildFinalFailureInfo({
-    agent,
-    error,
-    attempts: failureAttempts,
-    worker: workerFailure,
-    unsupportedCapability,
-    structuredOutputInvalid,
-  });
   providerFailures.publishCriticalFailure({
     agent,
     error,

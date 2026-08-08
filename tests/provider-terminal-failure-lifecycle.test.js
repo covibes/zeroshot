@@ -76,6 +76,35 @@ describe('provider terminal failure lifecycle', function () {
     assert.strictEqual(agent.cluster.failureInfo.attempts, 1);
   });
 
+  it('installs failure info before a specific terminal event is published', async function () {
+    const messages = [];
+    const lifecycle = [];
+    const agent = retryableFailureAgent(messages, lifecycle);
+    let failureInfoAtPublish = null;
+    agent._spawnClaudeTask = () => {
+      const error = new Error('onComplete hook failed');
+      error.hookFailure = true;
+      error.hookRetries = 1;
+      return Promise.reject(error);
+    };
+    agent._publish = (message) => {
+      if (message.topic === 'CLUSTER_FAILED' && failureInfoAtPublish === null) {
+        failureInfoAtPublish = { ...agent.cluster.failureInfo };
+      }
+      messages.push(message);
+    };
+
+    await executeTask(agent, { topic: 'ISSUE_OPENED', sender: 'user' });
+
+    assert.strictEqual(failureInfoAtPublish.error, 'onComplete hook failed');
+    assert.strictEqual(failureInfoAtPublish.attempts, 1);
+    assert.strictEqual(failureInfoAtPublish.agentId, 'worker');
+  });
+});
+
+describe('isolated provider terminal failure lifecycle', function () {
+  this.timeout(10_000);
+
   it('redacts an isolated failure observed only during terminal catch-up', async function () {
     const rawError = 'insufficient_quota: Authorization: Bearer isolated-final-secret';
     const raw = `${JSON.stringify({
