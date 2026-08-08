@@ -7,9 +7,12 @@
  */
 
 const assert = require('assert');
+const { createHash } = require('node:crypto');
 const {
   extractJsonFromOutput,
   extractCliError,
+  extractCliFailure,
+  MAX_CLI_ERROR_BYTES,
   extractFromResultWrapper,
   extractFromTextEvents,
   extractFromMarkdown,
@@ -366,6 +369,52 @@ function defineCliErrorExtractionTests() {
         error: 'Something went wrong',
         provider: 'codex',
       });
+    });
+
+    it('uses the newest Codex terminal record and ignores benign source text', function () {
+      const output = [
+        JSON.stringify({
+          type: 'item.completed',
+          item: {
+            type: 'command_execution',
+            aggregated_output: 'const Authorization = benignSource;',
+          },
+        }),
+        JSON.stringify({ type: 'turn.failed', error: { message: 'older failure' } }),
+        JSON.stringify({ type: 'turn.failed', error: { message: 'terminal provider failure' } }),
+      ].join('\n');
+
+      assert.deepStrictEqual(extractCliError(output, 'codex'), {
+        error: 'terminal provider failure',
+        provider: 'codex',
+      });
+    });
+
+    it('bounds Codex terminal messages by UTF-8 bytes and never returns object values', function () {
+      const huge = '🌍'.repeat(MAX_CLI_ERROR_BYTES);
+      const bounded = extractCliError(
+        JSON.stringify({ type: 'turn.failed', error: { message: huge } }),
+        'codex'
+      );
+      assert.ok(Buffer.byteLength(bounded.error) <= MAX_CLI_ERROR_BYTES);
+      assert.match(bounded.error, /\[truncated\]$/);
+      assert.deepStrictEqual(
+        extractCliFailure(
+          JSON.stringify({ type: 'turn.failed', error: { message: huge } }),
+          'codex'
+        ).diagnostic,
+        {
+          byteLength: Buffer.byteLength(huge),
+          sha256: createHash('sha256').update(huge).digest('hex'),
+        }
+      );
+      assert.deepStrictEqual(
+        extractCliError(
+          JSON.stringify({ type: 'turn.failed', error: { detail: { nested: true } } }),
+          'codex'
+        ),
+        { error: 'Turn failed', provider: 'codex' }
+      );
     });
 
     // Gemini errors

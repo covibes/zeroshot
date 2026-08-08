@@ -9,6 +9,24 @@ const Ledger = require('../../src/ledger');
 const MessageBus = require('../../src/message-bus');
 const Orchestrator = require('../../src/orchestrator');
 
+function publishAgentError(messageBus, clusterId, sender, data) {
+  messageBus.publish({
+    cluster_id: clusterId,
+    topic: 'AGENT_ERROR',
+    sender,
+    content: { data },
+  });
+}
+
+function publishClusterFailure(messageBus, clusterId) {
+  messageBus.publish({
+    cluster_id: clusterId,
+    topic: 'CLUSTER_FAILED',
+    sender: 'worker',
+    content: { data: { reason: 'provider_execution_failed' } },
+  });
+}
+
 describe('Orchestrator critical agent error handling', function () {
   this.timeout(10_000);
 
@@ -38,11 +56,10 @@ describe('Orchestrator critical agent error handling', function () {
     const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
     orchestrator._registerAgentErrorHandler(messageBus, 'c1');
 
-    messageBus.publish({
-      cluster_id: 'c1',
-      topic: 'AGENT_ERROR',
-      sender: 'consensus-coordinator',
-      content: { data: { role: 'coordinator', attempts: 3, error: 'boom' } },
+    publishAgentError(messageBus, 'c1', 'consensus-coordinator', {
+      role: 'coordinator',
+      attempts: 3,
+      error: 'boom',
     });
 
     await new Promise((r) => setTimeout(r, 10));
@@ -54,13 +71,11 @@ describe('Orchestrator critical agent error handling', function () {
     const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
     orchestrator._registerAgentErrorHandler(messageBus, 'c2');
 
-    messageBus.publish({
-      cluster_id: 'c2',
-      topic: 'AGENT_ERROR',
-      sender: 'consensus-coordinator',
-      content: {
-        data: { role: 'coordinator', attempts: 1, hookFailure: true, error: 'hook died' },
-      },
+    publishAgentError(messageBus, 'c2', 'consensus-coordinator', {
+      role: 'coordinator',
+      attempts: 1,
+      hookFailure: true,
+      error: 'hook died',
     });
 
     await new Promise((r) => setTimeout(r, 10));
@@ -72,14 +87,43 @@ describe('Orchestrator critical agent error handling', function () {
     const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
     orchestrator._registerAgentErrorHandler(messageBus, 'c3');
 
-    messageBus.publish({
-      cluster_id: 'c3',
-      topic: 'AGENT_ERROR',
-      sender: 'validator-1',
-      content: { data: { role: 'validator', attempts: 3, error: 'nope' } },
+    publishAgentError(messageBus, 'c3', 'validator-1', {
+      role: 'validator',
+      attempts: 3,
+      error: 'nope',
     });
 
     await new Promise((r) => setTimeout(r, 10));
     assert.equal(stopSpy.called, false);
+  });
+
+  it('does not terminalize a retryable critical-agent status observation', async () => {
+    const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
+    orchestrator._registerAgentErrorHandler(messageBus, 'c4');
+
+    publishAgentError(messageBus, 'c4', 'worker', {
+      role: 'implementation',
+      attempts: 1,
+      error: 'polling_timeout',
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(stopSpy.called, false);
+    assert.equal(messageBus.query({ cluster_id: 'c4', topic: 'CLUSTER_FAILED' }).length, 0);
+  });
+
+  it('does not stop twice after a durable cluster failure', async () => {
+    const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
+    orchestrator._registerClusterCompletionHandlers(messageBus, 'c5');
+    orchestrator._registerAgentErrorHandler(messageBus, 'c5');
+    publishClusterFailure(messageBus, 'c5');
+    publishAgentError(messageBus, 'c5', 'worker', {
+      role: 'implementation',
+      attempts: 3,
+      error: 'retry budget exhausted',
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(stopSpy.callCount, 1);
   });
 });

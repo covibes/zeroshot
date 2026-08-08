@@ -1580,6 +1580,10 @@ class Orchestrator {
       const attempts = message.content?.data?.attempts || 1;
       const hookFailure = message.content?.data?.hookFailure === true;
       const restartExhausted = message.content?.data?.restartExhausted === true;
+      const durableClusterFailure = messageBus.findLast({
+        cluster_id: clusterId,
+        topic: 'CLUSTER_FAILED',
+      });
 
       await this._saveClusters();
 
@@ -1587,7 +1591,10 @@ class Orchestrator {
         agentRole === 'implementation' ||
         agentRole === 'coordinator' ||
         message.sender === 'consensus-coordinator';
-      const shouldStop = shouldStopForRole && (hookFailure || restartExhausted || attempts >= 3);
+      const shouldStop =
+        !durableClusterFailure &&
+        shouldStopForRole &&
+        (hookFailure || restartExhausted || attempts >= 3);
 
       if (shouldStop) {
         this._log(`\n${'='.repeat(80)}`);

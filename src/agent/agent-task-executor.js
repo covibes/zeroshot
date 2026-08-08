@@ -55,6 +55,10 @@ const {
 } = require('./provider-session');
 const { extractClaudeVertexModelError } = require('./output-extraction');
 const {
+  extractProviderFailure,
+  redactTerminalFailureForControlPlane,
+} = require('./provider-terminal-failure');
+const {
   createStructuredOutputInvalidError,
   isStructuredOutputInvalidError,
 } = require('./structured-output-error');
@@ -66,6 +70,8 @@ const MAX_LIVE_OUTPUT_BYTES = 512 * 1024;
 const MAX_LIVE_OUTPUT_RECORDS = 512;
 const CONTROL_PLANE_OMISSION_MARKER_BYTES = 1024;
 const LOG_READ_CHUNK_BYTES = 64 * 1024;
+const MAX_FAILURE_ERROR_BYTES = 4096;
+const FAILURE_ERROR_TRUNCATION_SUFFIX = '… [truncated]';
 function runCommandWithTimeout(command, args, options = {}, callback = null) {
   const timeout = options.timeout ?? 30000;
   if (timeout <= 0) {
@@ -175,6 +181,22 @@ function buildClaudeEnv(modelSpec, options = {}) {
 function sanitizeErrorMessage(error) {
   if (!error) return null;
 
+  const original = String(error);
+  const suffixBytes = Buffer.byteLength(FAILURE_ERROR_TRUNCATION_SUFFIX);
+  const contentBudget = MAX_FAILURE_ERROR_BYTES - suffixBytes;
+  let boundedError = original;
+  if (Buffer.byteLength(original) > MAX_FAILURE_ERROR_BYTES) {
+    let bytes = 0;
+    let prefix = '';
+    for (const character of original) {
+      const characterBytes = Buffer.byteLength(character);
+      if (bytes + characterBytes > contentBudget) break;
+      prefix += character;
+      bytes += characterBytes;
+    }
+    boundedError = `${prefix}${FAILURE_ERROR_TRUNCATION_SUFFIX}`;
+  }
+
   // Patterns that look like TypeScript type annotations (not real error messages)
   const typeAnnotationPatterns = [
     /^string\s*\|\s*null$/i,
@@ -187,7 +209,7 @@ function sanitizeErrorMessage(error) {
     /^[A-Z][a-zA-Z]*\s*\|\s*(?:null|undefined)$/, // e.g., "Error | null"
   ];
 
-  const trimmedError = error.trim();
+  const trimmedError = boundedError.trim();
 
   // Check if it's a union type like "string | number | boolean" (ReDoS-safe approach)
   const unionParts = trimmedError.split(/\s*\|\s*/);
@@ -196,14 +218,16 @@ function sanitizeErrorMessage(error) {
   for (const pattern of typeAnnotationPatterns) {
     if (pattern.test(trimmedError) || isUnionType) {
       console.warn(
-        `[agent-task-executor] WARNING: Error message looks like a TypeScript type annotation: "${error}". ` +
+        `[agent-task-executor] WARNING: Error message looks like a TypeScript type annotation: "${boundedError}". ` +
           `This indicates corrupted data. Replacing with generic error.`
       );
-      return `Task failed with corrupted error data (original: "${error}")`;
+      return sanitizeErrorMessage(
+        `Task failed with corrupted error data (original: "${boundedError}")`
+      );
     }
   }
 
-  return error;
+  return boundedError;
 }
 
 function safeTail(text, maxChars) {
@@ -295,6 +319,30 @@ function logNoMessagesReturned({ taskId, output, statusOutput, debug }) {
   console.error('[AgentTaskExecutor] Claude CLI returned no messages', payload);
 }
 
+function extractKnownCliFailure({ fullOutput, taskId, statusOutput, debug }) {
+  if (fullOutput.includes('exceeds maximum allowed size') || fullOutput.includes('256KB')) {
+    return sanitizeErrorMessage(
+      `FILE TOO LARGE (Claude Code 256KB limit). ` +
+        `Use offset and limit parameters when reading large files. ` +
+        `Example: Read tool with offset=0, limit=1000 to read first 1000 lines.`
+    );
+  }
+  if (fullOutput.includes('only prompt commands are supported in streaming mode')) {
+    return sanitizeErrorMessage(
+      `STREAMING MODE ERROR: Agent tried to use interactive tools in streaming mode. ` +
+        `This usually happens with AskUserQuestion or interactive prompts. ` +
+        `Zeroshot agents must run non-interactively.`
+    );
+  }
+  if (fullOutput.includes('No messages returned')) {
+    logNoMessagesReturned({ taskId, output: fullOutput, statusOutput, debug });
+    return sanitizeErrorMessage(
+      `Claude CLI returned no messages. This is usually transient; retry the task or resume the cluster.`
+    );
+  }
+  return null;
+}
+
 /**
  * Extract error context from task output.
  * Shared by both isolated and non-isolated modes.
@@ -307,7 +355,15 @@ function logNoMessagesReturned({ taskId, output, statusOutput, debug }) {
  * @param {Object} [params.debug] - Additional debug context for logging
  * @returns {string|null} Sanitized error context or null if extraction failed
  */
-function extractErrorContext({ output, statusOutput, taskId, isNotFound = false, debug }) {
+function extractErrorContext({
+  output,
+  statusOutput,
+  taskId,
+  isNotFound = false,
+  providerName = getDefaultProviderId(),
+  providerFailure = null,
+  debug,
+}) {
   // Task not found - explicit error
   if (isNotFound) {
     return sanitizeErrorMessage(`Task ${taskId} not found (may have crashed or been killed)`);
@@ -321,37 +377,15 @@ function extractErrorContext({ output, statusOutput, taskId, isNotFound = false,
     }
   }
 
-  // KNOWN CLAUDE CODE LIMITATIONS - detect and provide actionable guidance
+  const terminalFailure = providerFailure || extractProviderFailure(output, providerName);
+  if (terminalFailure) {
+    return sanitizeErrorMessage(terminalFailure.error);
+  }
+
   const fullOutput = output || '';
+  const knownFailure = extractKnownCliFailure({ fullOutput, taskId, statusOutput, debug });
+  if (knownFailure) return knownFailure;
 
-  // 256KB file limit error
-  if (fullOutput.includes('exceeds maximum allowed size') || fullOutput.includes('256KB')) {
-    return sanitizeErrorMessage(
-      `FILE TOO LARGE (Claude Code 256KB limit). ` +
-        `Use offset and limit parameters when reading large files. ` +
-        `Example: Read tool with offset=0, limit=1000 to read first 1000 lines.`
-    );
-  }
-
-  // Streaming mode error (interactive tools in non-interactive mode)
-  if (fullOutput.includes('only prompt commands are supported in streaming mode')) {
-    return sanitizeErrorMessage(
-      `STREAMING MODE ERROR: Agent tried to use interactive tools in streaming mode. ` +
-        `This usually happens with AskUserQuestion or interactive prompts. ` +
-        `Zeroshot agents must run non-interactively.`
-    );
-  }
-
-  // Claude CLI transient failure: no messages returned
-  if (fullOutput.includes('No messages returned')) {
-    logNoMessagesReturned({ taskId, output: fullOutput, statusOutput, debug });
-    return sanitizeErrorMessage(
-      `Claude CLI returned no messages. This is usually transient; retry the task or resume the cluster.`
-    );
-  }
-
-  // NEVER TRUNCATE OUTPUT - truncation corrupts structured JSON and causes false "crash" status
-  // If output is too verbose, that's a prompt problem - fix the prompts, not the data
   const trimmedOutput = (output || '').trim();
   if (!trimmedOutput) {
     return sanitizeErrorMessage(
@@ -1490,10 +1524,15 @@ function broadcastAgentLine({ agent, providerName, state, line }) {
   if (shouldSkipLogLine(content)) {
     return;
   }
+  const controlPlaneContent = redactTerminalFailureForControlPlane(
+    followerState,
+    providerName,
+    content
+  );
 
-  const isValidJson = isValidJsonLine(content);
+  const isValidJson = isValidJsonLine(controlPlaneContent);
   const record = appendControlPlaneRecord(followerState.controlPlaneOutput, {
-    content,
+    content: controlPlaneContent,
     timestamp,
     type: isValidJson ? 'json' : 'text',
   });
@@ -1703,11 +1742,13 @@ async function evaluateStructuredSuccess({ agent, taskId, state, success, allowR
   }
 }
 
-function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
+function buildFailureContext({ agent, taskId, providerName, state, stdout, providerFailure }) {
   return extractErrorContext({
     output: state.output,
     statusOutput: stdout,
     taskId,
+    providerName,
+    providerFailure,
     debug: {
       agentId: agent.id,
       providerName,
@@ -1718,6 +1759,19 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout }) {
       logFilePath: state.logFilePath || null,
     },
   });
+}
+
+function resolveCompletionFailure({ classified, agent, taskId, providerName, state, stdout }) {
+  if (classified.success) return { providerFailure: null, errorContext: classified.error };
+  const providerFailure =
+    state.providerFailure || extractProviderFailure(state.output, providerName);
+  return {
+    providerFailure,
+    errorContext:
+      providerFailure?.error ||
+      classified.error ||
+      buildFailureContext({ agent, taskId, providerName, state, stdout, providerFailure }),
+  };
 }
 
 async function buildCompletionResult({
@@ -1753,10 +1807,14 @@ async function buildCompletionResult({
   if (vertexModelError) {
     classified.success = false;
   }
-  let errorContext = classified.error;
-  if (!errorContext && !classified.success) {
-    errorContext = buildFailureContext({ agent, taskId, providerName, state, stdout });
-  }
+  const { providerFailure, errorContext } = resolveCompletionFailure({
+    classified,
+    agent,
+    taskId,
+    providerName,
+    state,
+    stdout,
+  });
 
   return {
     success: classified.success,
@@ -1772,6 +1830,7 @@ async function buildCompletionResult({
       taskInfo,
       logicalSuccess: classified.success,
     }),
+    providerFailure,
     vertexModelError,
   };
 }
@@ -2633,7 +2692,13 @@ async function resolveIsolatedLogFilePath(manager, clusterId, taskId, state) {
   return state.logFilePath;
 }
 
-async function captureIsolatedFinalOutputTail(manager, clusterId, logFilePath, state) {
+async function captureIsolatedFinalOutputTail(
+  manager,
+  clusterId,
+  logFilePath,
+  state,
+  providerName
+) {
   stopIsolatedTailForSettlement(state);
   const sizeResult = await manager.execInContainer(clusterId, [
     'sh',
@@ -2658,14 +2723,56 @@ async function captureIsolatedFinalOutputTail(manager, clusterId, logFilePath, s
         state.lineBuffer = createLogRecordBuffer();
       }
       appendIsolatedContent(state, finalReadResult.stdout, (line) =>
-        retainIsolatedLine(state, line)
+        retainIsolatedLine(state, providerName, line)
       );
     }
   }
 
   if (state.lineBuffer.byteLength > 0) {
-    completeLogRecord(state.lineBuffer, (line) => retainIsolatedLine(state, line), true);
+    completeLogRecord(
+      state.lineBuffer,
+      (line) => retainIsolatedLine(state, providerName, line),
+      true
+    );
   }
+}
+
+function resolveIsolatedFailure({
+  success,
+  structuredError,
+  agent,
+  taskId,
+  providerName,
+  state,
+  status,
+  isNotFound,
+  clusterId,
+  logFilePath,
+}) {
+  if (success) return { providerFailure: null, errorContext: structuredError };
+  const providerFailure =
+    state.providerFailure || extractProviderFailure(state.fullOutput, providerName);
+  const errorContext =
+    providerFailure?.error ||
+    structuredError ||
+    extractErrorContext({
+      output: state.fullOutput,
+      statusOutput: status ? `Status: ${status}` : '',
+      taskId,
+      isNotFound,
+      providerName,
+      debug: {
+        agentId: agent.id,
+        providerName,
+        pid: agent.processPid,
+        cwd: agent.config.cwd || process.cwd(),
+        worktreePath: agent.worktree?.path || null,
+        isolation: true,
+        clusterId,
+        logFilePath,
+      },
+    });
+  return { providerFailure, errorContext };
 }
 
 function settleIsolatedTerminalStatus({
@@ -2693,7 +2800,7 @@ function settleIsolatedTerminalStatus({
     const logFilePath = await resolveIsolatedLogFilePath(manager, clusterId, taskId, state);
     await new Promise((settle) => setTimeout(settle, 200));
     if (state.resolved) return;
-    await captureIsolatedFinalOutputTail(manager, clusterId, logFilePath, state);
+    await captureIsolatedFinalOutputTail(manager, clusterId, logFilePath, state, providerName);
     if (state.resolved) return;
     flushIsolatedOutput(agent, providerName, taskId, state);
 
@@ -2720,26 +2827,18 @@ function settleIsolatedTerminalStatus({
       success = evaluated.success;
       structuredError = evaluated.error;
     }
-    const errorContext =
-      structuredError ||
-      (!success
-        ? extractErrorContext({
-            output: state.fullOutput,
-            statusOutput: status ? `Status: ${status}` : '',
-            taskId,
-            isNotFound,
-            debug: {
-              agentId: agent.id,
-              providerName,
-              pid: agent.processPid,
-              cwd: agent.config.cwd || process.cwd(),
-              worktreePath: agent.worktree?.path || null,
-              isolation: true,
-              clusterId,
-              logFilePath,
-            },
-          })
-        : null);
+    const { providerFailure, errorContext } = resolveIsolatedFailure({
+      success,
+      structuredError,
+      agent,
+      taskId,
+      providerName,
+      state,
+      status,
+      isNotFound,
+      clusterId,
+      logFilePath,
+    });
     let parsedResult = null;
     if (success && !state.skipStructuredResultCheck && !vertexModelError) {
       parsedResult = staleCandidate
@@ -2759,6 +2858,7 @@ function settleIsolatedTerminalStatus({
         parsedResult,
         error: errorContext,
         tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+        providerFailure,
         vertexModelError,
       },
     });
@@ -2880,18 +2980,19 @@ function publishIsolatedOutputRecord(agent, providerName, taskId, record) {
   });
 }
 
-function retainIsolatedLine(state, line) {
+function retainIsolatedLine(state, providerName, line) {
   const { timestamp, content } = parseIsolatedLogLine(line);
+  const controlPlaneContent = redactTerminalFailureForControlPlane(state, providerName, content);
   return appendControlPlaneRecord(state.controlPlaneOutput, {
-    content,
+    content: controlPlaneContent,
     timestamp,
-    type: isValidJsonLine(content) ? 'json' : 'text',
+    type: isValidJsonLine(controlPlaneContent) ? 'json' : 'text',
   });
 }
 
 function broadcastIsolatedLine({ agent, providerName, taskId, state, line }) {
   const followerState = ensureControlPlaneOutputState(state);
-  const record = retainIsolatedLine(followerState, line);
+  const record = retainIsolatedLine(followerState, providerName, line);
   publishLiveControlPlaneRecord(followerState.controlPlaneOutput, record, (item) =>
     publishIsolatedOutputRecord(agent, providerName, taskId, item)
   );

@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { createHash } = require('node:crypto');
 
 const { buildCompletionResult, parseResultOutput } = require('../src/agent/agent-task-executor');
 
@@ -141,6 +142,45 @@ describe('buildCompletionResult', function () {
     assert.deepStrictEqual(parserOptions, { allowRecovery: false });
     assert.strictEqual(result.success, false);
     assert.match(result.error, /stale schema-invalid output/);
+  });
+  it('uses a concise classified Codex terminal tail after output beyond the inspection budget', async function () {
+    const sourceRecord = JSON.stringify({
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        aggregated_output: `const Authorization = benignSource;${'x'.repeat(2 * 1024 * 1024)}`,
+      },
+    });
+    const terminalError = 'Synthetic provider failure after long output';
+    const output = `${sourceRecord}\n${JSON.stringify({
+      type: 'turn.failed',
+      error: { message: terminalError },
+    })}`;
+    assert.ok(Buffer.byteLength(output) > 2 * 1024 * 1024);
+
+    const result = await buildCompletionResult({
+      agent: createAgent({ outputFormat: 'text', jsonSchema: null }),
+      taskId: 'task-codex-tail',
+      providerName: 'codex',
+      state: createState(output),
+      stdout: 'Status: failed',
+      success: false,
+    });
+
+    assert.strictEqual(result.success, false);
+    assert.strictEqual(result.error, 'Provider codex failed (unknown; unknown-retryable)');
+    assert.doesNotMatch(result.error, /Authorization|Task failed\. Output/);
+    assert.deepStrictEqual(result.providerFailure, {
+      error: 'Provider codex failed (unknown; unknown-retryable)',
+      provider: 'codex',
+      event: 'turn.failed',
+      category: 'unknown',
+      classification: { retryable: true, kind: 'unknown-retryable' },
+      diagnostic: {
+        byteLength: Buffer.byteLength(terminalError),
+        sha256: createHash('sha256').update(terminalError).digest('hex'),
+      },
+    });
   });
   it('propagates unannotated local authentication recovery failures without outer retry', async function () {
     const agent = createAgent({ role: 'planner' });

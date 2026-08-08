@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { createHash } = require('node:crypto');
 
 const {
   CONTROL_PLANE_OUTPUT_LIMITS,
@@ -155,6 +156,37 @@ describe('bounded cumulative provider output', function () {
       assert.ok(state.fullOutput.includes(terminal));
       assert.ok(published.some((message) => message.content.data.line.includes(terminal)));
     }
+  });
+});
+
+describe('isolated provider terminal redaction', function () {
+  it('redacts an isolated provider terminal failure before live publication', function () {
+    const rawError = 'insufficient_quota: Authorization: Bearer isolated-secret';
+    const state = createIsolatedLogState();
+    const published = [];
+    const agent = {
+      id: 'isolated-failure-worker',
+      iteration: 1,
+      cluster: { id: 'cluster-1' },
+      messageBus: { publish: (message) => published.push(message) },
+    };
+
+    broadcastIsolatedLine({
+      agent,
+      providerName: 'codex',
+      taskId: 'isolated-failure',
+      state,
+      line: JSON.stringify({ type: 'turn.failed', error: { message: rawError } }),
+    });
+    flushIsolatedOutput(agent, 'codex', 'isolated-failure', state);
+
+    const serialized = JSON.stringify(published);
+    assert.doesNotMatch(serialized, /isolated-secret|Authorization: Bearer|insufficient_quota/);
+    assert.match(serialized, /Provider codex failed \(quota; permanent-pattern\)/);
+    assert.deepStrictEqual(state.providerFailure.diagnostic, {
+      byteLength: Buffer.byteLength(rawError),
+      sha256: createHash('sha256').update(rawError).digest('hex'),
+    });
   });
 });
 

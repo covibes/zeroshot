@@ -24,6 +24,7 @@ function writeChunked(buffer) {
 
 function providerOutput() {
   const targetBytes = Number(process.env.FAKE_CODEX_STRESS_BYTES || 12 * 1024 * 1024);
+  const failAtTerminal = process.env.FAKE_CODEX_TERMINAL_FAILURE === '1';
   const recordPayload = 'medium-output-🌍'.repeat(2048);
   const lines = [JSON.stringify({ type: 'thread.started', thread_id: 'fake-stress-thread' })];
   let outputBytes = Buffer.byteLength(lines[0]) + 1;
@@ -61,20 +62,43 @@ function providerOutput() {
     JSON.stringify({
       type: 'item.completed',
       item: {
-        type: 'agent_message',
-        text: JSON.stringify({
-          summary: 'Synthetic terminal stress completed',
-          result: 'UTF-8 and final structured output survived 🌍',
-        }),
+        id: 'benign-auth-source',
+        type: 'command_execution',
+        command: 'inspect-source',
+        aggregated_output: 'const Authorization = benignSource;',
+        exit_code: 0,
       },
     })
   );
-  lines.push(
-    JSON.stringify({
-      type: 'turn.completed',
-      usage: { input_tokens: 0, output_tokens: 0 },
-    })
-  );
+  if (failAtTerminal) {
+    lines.push(
+      JSON.stringify({
+        type: 'turn.failed',
+        error: {
+          message: 'insufficient_quota: Authorization: Bearer sk-zs-secret-qualification',
+        },
+      })
+    );
+  } else {
+    lines.push(
+      JSON.stringify({
+        type: 'item.completed',
+        item: {
+          type: 'agent_message',
+          text: JSON.stringify({
+            summary: 'Synthetic terminal stress completed',
+            result: 'UTF-8 and final structured output survived 🌍',
+          }),
+        },
+      })
+    );
+    lines.push(
+      JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      })
+    );
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -91,11 +115,17 @@ async function main() {
     return;
   }
 
+  const startDelayMs = Number(process.env.FAKE_CODEX_START_DELAY_MS || 0);
+  if (startDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, startDelayMs));
+  }
+
   const output = providerOutput();
   const expectedPath = process.env.FAKE_CODEX_EXPECTED_OUTPUT;
   if (!expectedPath) throw new Error('FAKE_CODEX_EXPECTED_OUTPUT is required');
   fs.writeFileSync(expectedPath, output);
   await writeChunked(Buffer.from(output));
+  if (process.env.FAKE_CODEX_TERMINAL_FAILURE === '1') process.exitCode = 1;
 }
 
 main().catch((error) => {

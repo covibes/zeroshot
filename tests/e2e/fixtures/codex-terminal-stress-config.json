@@ -6,6 +6,7 @@
       "role": "implementation",
       "modelLevel": "level1",
       "reasoningEffort": "max",
+      "maxRetries": 3,
       "timeout": 0,
       "triggers": [{ "topic": "ISSUE_OPENED", "action": "execute_task" }],
       "prompt": "Complete the synthetic terminal stress task.",
