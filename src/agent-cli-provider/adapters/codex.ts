@@ -115,7 +115,9 @@ function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions
   const features = optionFeatures(options);
   if (options.autoApprove && features.supportsAutoApprove) {
     const sandboxMode =
-      options.executionContext === 'docker' ? 'danger-full-access' : 'workspace-write';
+      options.executionContext === 'docker' || options.executionContext === 'benchmark'
+        ? 'danger-full-access'
+        : 'workspace-write';
     args.push('--sandbox', sandboxMode, '--config', 'approval_policy="never"');
   }
 }

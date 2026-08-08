@@ -50,7 +50,10 @@ test('build-command returns command spec without executing provider CLI', () => 
 test('build-command selects the Codex sandbox from the declared execution boundary', () => {
   for (const { executionContext, sandboxMode } of [
     { executionContext: undefined, sandboxMode: 'workspace-write' },
+    { executionContext: 'host', sandboxMode: 'workspace-write' },
+    { executionContext: 'detached', sandboxMode: 'workspace-write' },
     { executionContext: 'docker', sandboxMode: 'danger-full-access' },
+    { executionContext: 'benchmark', sandboxMode: 'danger-full-access' },
   ]) {
     const response = runExecutable({
       schemaVersion: 1,

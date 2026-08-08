@@ -43,6 +43,8 @@ const {
   partitionPathFor,
   createOmpSessionPartitionDirectory,
 } = require('../src/omp-session-partition');
+const TASK_EXECUTION_CONTEXT_ENV = 'ZEROSHOT_TASK_EXECUTION_CONTEXT';
+const TASK_EXECUTION_CONTEXTS = new Set(['host', 'detached', 'docker', 'benchmark']);
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -413,7 +415,7 @@ function buildProviderOptions(options, runtime, modelSelection) {
     outputFormat: runtime.outputFormat,
     jsonSchema: runtime.jsonSchema,
     cwd: runtime.cwd,
-    executionContext: 'detached',
+    executionContext: resolveTaskExecutionContext(),
     autoApprove: !structuredOutputRecovery,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
@@ -426,6 +428,17 @@ function buildProviderOptions(options, runtime, modelSelection) {
     ...(!structuredOutputRecovery && options.continue ? { continueSession: true } : {}),
     ...(structuredOutputRecovery ? { structuredOutputRecovery: true } : {}),
   };
+}
+
+export function resolveTaskExecutionContext(environment = process.env) {
+  const context = environment[TASK_EXECUTION_CONTEXT_ENV];
+  if (context === undefined) return 'detached';
+  if (!TASK_EXECUTION_CONTEXTS.has(context)) {
+    throw new Error(
+      `${TASK_EXECUTION_CONTEXT_ENV} must be one of: ${[...TASK_EXECUTION_CONTEXTS].join(', ')}.`
+    );
+  }
+  return context;
 }
 
 function claudeSettingsFileOption() {

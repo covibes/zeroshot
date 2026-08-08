@@ -548,6 +548,10 @@ Settings: `defaultProvider`, `providerSettings` (claude/codex/gateway/gemini/ope
 
 Provider engines are registry-owned: adding an engine means one entry in `src/agent-cli-provider/provider-registry.ts`, plus the provider-specific adapter and tests. Docker credential mount/env presets, CLI aliases, visible preset lists, and any nontrivial availability probe rules must derive from that registry entry; do not add new provider identity lists or provider preset lists elsewhere.
 Cluster preflight validates the selected registry entry's `settingsValidator` with the actual detached or Docker execution context before isolation side effects. Provider configuration that cannot run cluster workers must fail once at preflight, never after allocation or through repeated agent retries.
+Detached provider tasks default to the `detached` execution boundary. Embedding runtimes that
+already own process, filesystem, and network isolation must set
+`ZEROSHOT_TASK_EXECUTION_CONTEXT=benchmark`; the task runner validates and propagates this
+provider-neutral boundary so adapters do not attempt incompatible nested containment.
 
 OMP's supported version, package identity, and release asset digests are pinned once in `omp-release.ts`; the RPC codec and any registry/version-probing/Docker-build code import it. Never recopy the version string, asset names, or digests elsewhere.
 
