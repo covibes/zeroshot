@@ -27,30 +27,36 @@ function publishClusterFailure(messageBus, clusterId) {
   });
 }
 
+function settleHandlers() {
+  return new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+let tempDir;
+let ledger;
+let messageBus;
+let orchestrator;
+
+function setupHarness() {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-orchestrator-agent-error-'));
+  ledger = new Ledger(path.join(tempDir, 'test.db'));
+  messageBus = new MessageBus(ledger);
+  orchestrator = new Orchestrator({ quiet: true, skipLoad: true, storageDir: tempDir });
+  sinon.stub(orchestrator, '_saveClusters').resolves();
+}
+
+function cleanupHarness() {
+  sinon.restore();
+  if (ledger) ledger.close();
+  if (tempDir && fs.existsSync(tempDir)) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 describe('Orchestrator critical agent error handling', function () {
   this.timeout(10_000);
 
-  let tempDir;
-  let ledger;
-  let messageBus;
-  let orchestrator;
-
-  beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-orchestrator-agent-error-'));
-    ledger = new Ledger(path.join(tempDir, 'test.db'));
-    messageBus = new MessageBus(ledger);
-
-    orchestrator = new Orchestrator({ quiet: true, skipLoad: true, storageDir: tempDir });
-    sinon.stub(orchestrator, '_saveClusters').resolves();
-  });
-
-  afterEach(() => {
-    sinon.restore();
-    if (ledger) ledger.close();
-    if (tempDir && fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
+  beforeEach(setupHarness);
+  afterEach(cleanupHarness);
 
   it('stops cluster when coordinator fails after retries', async () => {
     const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
@@ -62,7 +68,7 @@ describe('Orchestrator critical agent error handling', function () {
       error: 'boom',
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await settleHandlers();
     assert.equal(stopSpy.calledOnce, true);
     assert.equal(stopSpy.firstCall.args[0], 'c1');
   });
@@ -78,7 +84,7 @@ describe('Orchestrator critical agent error handling', function () {
       error: 'hook died',
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await settleHandlers();
     assert.equal(stopSpy.calledOnce, true);
     assert.equal(stopSpy.firstCall.args[0], 'c2');
   });
@@ -93,7 +99,7 @@ describe('Orchestrator critical agent error handling', function () {
       error: 'nope',
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await settleHandlers();
     assert.equal(stopSpy.called, false);
   });
 
@@ -107,12 +113,17 @@ describe('Orchestrator critical agent error handling', function () {
       error: 'polling_timeout',
     });
 
-    await new Promise((r) => setTimeout(r, 10));
+    await settleHandlers();
     assert.equal(stopSpy.called, false);
     assert.equal(messageBus.query({ cluster_id: 'c4', topic: 'CLUSTER_FAILED' }).length, 0);
   });
+});
 
-  it('does not stop twice after a durable cluster failure', async () => {
+describe('Orchestrator terminal stop deduplication', function () {
+  beforeEach(setupHarness);
+  afterEach(cleanupHarness);
+
+  it('deduplicates only a current-run durable cluster failure', async () => {
     const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
     orchestrator._registerClusterCompletionHandlers(messageBus, 'c5');
     orchestrator._registerAgentErrorHandler(messageBus, 'c5');
@@ -123,7 +134,20 @@ describe('Orchestrator critical agent error handling', function () {
       error: 'retry budget exhausted',
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settleHandlers();
     assert.equal(stopSpy.callCount, 1);
+
+    stopSpy.resetHistory();
+    publishClusterFailure(messageBus, 'c6');
+    orchestrator._registerAgentErrorHandler(messageBus, 'c6');
+    publishAgentError(messageBus, 'c6', 'worker', {
+      role: 'implementation',
+      attempts: 3,
+      error: 'failed again after resume',
+    });
+
+    await settleHandlers();
+    assert.equal(stopSpy.callCount, 1);
+    assert.equal(stopSpy.firstCall.args[0], 'c6');
   });
 });

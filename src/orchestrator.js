@@ -275,6 +275,7 @@ class Orchestrator {
     // Track if orchestrator is closed (prevents _saveClusters race conditions during cleanup)
     this.closed = false;
     this._conductorWatchdogs = new Set();
+    this._clusterRunBoundaries = new Map();
 
     // Track if clusters are loaded (for lazy loading pattern)
     this._clustersLoaded = options.skipLoad === true;
@@ -1575,15 +1576,17 @@ class Orchestrator {
   }
 
   _registerAgentErrorHandler(messageBus, clusterId) {
+    this._recordClusterRunBoundary(messageBus, clusterId);
     this._subscribeToClusterTopic(messageBus, clusterId, 'AGENT_ERROR', async (message) => {
       const agentRole = message.content?.data?.role;
       const attempts = message.content?.data?.attempts || 1;
       const hookFailure = message.content?.data?.hookFailure === true;
       const restartExhausted = message.content?.data?.restartExhausted === true;
-      const durableClusterFailure = messageBus.findLast({
-        cluster_id: clusterId,
-        topic: 'CLUSTER_FAILED',
-      });
+      const durableClusterFailure = this._findCurrentRunClusterFailure(
+        messageBus,
+        clusterId,
+        message.sequence
+      );
 
       await this._saveClusters();
 
@@ -1615,6 +1618,25 @@ class Orchestrator {
         });
       }
     });
+  }
+
+  _recordClusterRunBoundary(messageBus, clusterId) {
+    const latest = messageBus.findLast({ cluster_id: clusterId, orderBySequence: true });
+    this._clusterRunBoundaries.set(clusterId, latest?.sequence ?? null);
+  }
+
+  _findCurrentRunClusterFailure(messageBus, clusterId, throughId) {
+    const boundary = this._clusterRunBoundaries.get(clusterId);
+    return (
+      messageBus.query({
+        cluster_id: clusterId,
+        topic: 'CLUSTER_FAILED',
+        order: 'desc',
+        limit: 1,
+        ...(boundary === null ? {} : { afterId: boundary }),
+        ...(throughId === undefined ? {} : { throughId }),
+      })[0] || null
+    );
   }
 
   _registerPushBlockedHandler(messageBus, clusterId) {
@@ -2432,6 +2454,7 @@ class Orchestrator {
 
     // Now remove from memory after persisting
     this.clusters.delete(clusterId);
+    this._clusterRunBoundaries.delete(clusterId);
   }
 
   /**
@@ -2469,6 +2492,7 @@ class Orchestrator {
       watchdog.dispose();
     }
     this._conductorWatchdogs.clear();
+    this._clusterRunBoundaries.clear();
 
     for (const cluster of this.clusters.values()) {
       if (typeof cluster.snapshotter?.stop === 'function') {
@@ -2909,6 +2933,7 @@ class Orchestrator {
   }
 
   async _restartClusterAgents(cluster) {
+    this._recordClusterRunBoundary(cluster.messageBus, cluster.id);
     cluster.state = 'running';
     cluster.pid = process.pid;
     for (const agent of cluster.agents) {
