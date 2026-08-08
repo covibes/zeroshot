@@ -812,7 +812,8 @@ text. Raw provider diagnostics remain task-log-only; `AGENT_OUTPUT`, `failureInf
 and `CLUSTER_FAILED` retain only a synthesized error plus provider/event/category/retryability and
 byte-length/SHA-256 receipt. Final critical-agent exhaustion installs `failureInfo` before emitting
 exactly one durable `CLUSTER_FAILED`; the legacy `AGENT_ERROR` stop fallback must not initiate a
-second stop after that terminal topic already exists.
+second stop after that terminal topic exists in the current run, while prior-run failures must not
+suppress terminalization after resume.
 The SQLite ledger additionally keeps one cluster-wide newest tail of non-replayable
 `AGENT_OUTPUT` (8 MiB / 8192 exported messages) and a persisted deterministic omission receipt;
 live delivery is unchanged, while control and explicitly replayable messages are never compacted.
