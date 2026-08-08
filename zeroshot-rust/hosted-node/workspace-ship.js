@@ -104,10 +104,8 @@ function repositoryDefaultBranch(repository) {
   return branch;
 }
 
-function pullRequestNumber(htmlUrl, expectedPrefix) {
-  if (typeof htmlUrl !== 'string' || !htmlUrl.startsWith(expectedPrefix)) return '';
-  const value = htmlUrl.slice(expectedPrefix.length);
-  return /^[1-9][0-9]*$/.test(value) ? value : '';
+function pullRequestNumber(value) {
+  return Number.isSafeInteger(value) && value > 0 ? String(value) : '';
 }
 
 async function rejectPullRequestReceipt(config, number, request) {
@@ -133,9 +131,10 @@ async function createPullRequest(config, branch, headRevision, request = github)
     }),
   });
   const expectedPrefix = `https://github.com/${config.repository}/pull/`;
-  const number = pullRequestNumber(created.html_url, expectedPrefix);
+  const number = pullRequestNumber(created.number);
   if (
     !number ||
+    created.html_url !== `${expectedPrefix}${number}` ||
     created.head?.ref !== branch ||
     created.head?.sha !== headRevision ||
     created.head?.repo?.full_name !== config.repository ||

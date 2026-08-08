@@ -111,6 +111,7 @@ describe('private hosted pull request delivery', () => {
   it('accepts only a pull request bound to the pushed branch and exact base revision', async () => {
     const branch = deterministicBranch('cluster-review');
     const response = {
+      number: 123,
       html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
       head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
       base: { ref: 'main', sha: BASE, repo: { full_name: CONFIG.repository } },
@@ -140,9 +141,35 @@ describe('private hosted pull request delivery', () => {
         if (path === '') return { default_branch: 'main' };
         if (path === '/pulls/123') return { state: 'closed' };
         return {
+          number: 123,
           html_url: 'https://github.com/the-open-engine/zeroshot/pull/123',
           head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
           base: { ref: 'main', sha: 'c'.repeat(40), repo: { full_name: CONFIG.repository } },
+        };
+      }),
+      /receipt is invalid/
+    );
+    assert.deepEqual(requests.at(-1), {
+      path: '/pulls/123',
+      init: { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) },
+    });
+  });
+});
+
+describe('private hosted delivery cleanup', () => {
+  it('closes a created pull request whose URL is malformed', async () => {
+    const branch = deterministicBranch('cluster-review-invalid-url');
+    const requests = [];
+    await assert.rejects(
+      createPullRequest(CONFIG, branch, HEAD, (_repository, path, init) => {
+        requests.push({ path, init });
+        if (path === '') return { default_branch: 'main' };
+        if (path === '/pulls/123') return { state: 'closed' };
+        return {
+          number: 123,
+          html_url: 'not-a-pull-request-url',
+          head: { ref: branch, sha: HEAD, repo: { full_name: CONFIG.repository } },
+          base: { ref: 'main', sha: BASE, repo: { full_name: CONFIG.repository } },
         };
       }),
       /receipt is invalid/
