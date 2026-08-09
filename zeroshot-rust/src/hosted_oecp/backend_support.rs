@@ -22,6 +22,8 @@ use super::worker::WorkerError;
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 pub(super) const MAX_WORKER_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 pub(super) const TRUSTED_SERVICE_DEADLINE: Duration = Duration::from_secs(5);
+// Workspace metadata scans include installed provider runtimes on capsule storage.
+pub(super) const WORKSPACE_READINESS_DEADLINE: Duration = Duration::from_secs(30);
 
 pub(super) async fn verify_trusted_service<F, T>(
     future: F,
@@ -31,7 +33,19 @@ pub(super) async fn verify_trusted_service<F, T>(
 where
     F: Future<Output = Result<T, TrustedServiceError>>,
 {
-    timeout(TRUSTED_SERVICE_DEADLINE, future)
+    verify_trusted_service_with_deadline(future, code, message, TRUSTED_SERVICE_DEADLINE).await
+}
+
+pub(super) async fn verify_trusted_service_with_deadline<F, T>(
+    future: F,
+    code: &'static str,
+    message: &'static str,
+    deadline: Duration,
+) -> Result<T, BackendError>
+where
+    F: Future<Output = Result<T, TrustedServiceError>>,
+{
+    timeout(deadline, future)
         .await
         .map_err(|_| safe_application_error(code, message))?
         .map_err(|_| safe_application_error(code, message))

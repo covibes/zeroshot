@@ -18,8 +18,9 @@ use super::backend_support::{
     accepted_plan, graph_invalid, idempotency_reuse, internal_error, precheck_generation,
     redact_request, rejected_plan, safe_application_error, same_apply_identity, second_apply_error,
     single_worker_diagnostics, status_from, step_timeout, terminal_failure_error, validate_apply,
-    validate_graph_input, validate_request, verify_trusted_service, worker_error_outcome,
-    worker_start_error,
+    validate_graph_input, validate_request, verify_trusted_service,
+    verify_trusted_service_with_deadline, worker_error_outcome, worker_start_error,
+    WORKSPACE_READINESS_DEADLINE,
 };
 use super::worker::{WorkerCommand, WorkerError, WorkerExecution, WorkerSpawnError};
 
@@ -29,10 +30,11 @@ fn shutdown_can_force(state: &HostedState) -> bool {
 
 impl HostedBackend {
     pub async fn verify_startup_readiness(&self) -> Result<(), BackendError> {
-        verify_trusted_service(
+        verify_trusted_service_with_deadline(
             self.worktree.verify_ready(),
             "WORKSPACE_NOT_READY",
             "Prepared workspace is not ready",
+            WORKSPACE_READINESS_DEADLINE,
         )
         .await?;
         verify_trusted_service(
