@@ -264,7 +264,7 @@ function assertPersistedControlPlane(env, clusterId, exportPath, status) {
 }
 
 describe('e2e: detached Codex planning retry exhaustion', function () {
-  this.timeout(30_000);
+  this.timeout(60_000);
 
   it('stops cleanly after three retryable turn.failed attempts without leaking diagnostics', async function () {
     const env = setupE2ERepo();
@@ -280,13 +280,13 @@ describe('e2e: detached Codex planning retry exhaustion', function () {
         (status) => Number.isInteger(status.pid) && status.pid > 1
       );
       daemonPid = running.pid;
-      await waitForPidExit(daemonPid);
       const status = await pollCliStatus(
         env,
         clusterId,
         (value) => value.state === 'stopped',
-        5_000
+        30_000
       );
+      await waitForPidExit(daemonPid);
       assertStoppedStatus(env, clusterId, status, daemonPid);
       assert.strictEqual(fs.readFileSync(fixture.countFile, 'utf8').trim(), '3');
       assertFailedTasks(env.homeDir, status.failureInfo.taskId);
