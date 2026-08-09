@@ -354,7 +354,7 @@ test('omp detectCliFeatures parses help evidence for every required and probed f
   const adapter = helper.getProviderAdapter('omp');
   const help = [
     'Usage: omp [options] [command]',
-    '  rpc',
+    '  --mode=<value>  Output mode: text (default), json, rpc, or rpc-ui',
     '  --config <path>',
     '  --model <selector>',
     '  --thinking <level>',
@@ -375,6 +375,7 @@ test('omp detectCliFeatures parses help evidence for every required and probed f
   assert.equal(features.supportsNoSession, true);
   assert.equal(features.supportsSessionDir, true);
   assert.equal(features.supportsResume, true);
+  assert.equal(adapter.detectCliFeatures('  --mode=<value>  rpc-ui', '').supportsRpcMode, false);
 });
 
 test('omp parseEvent is a validating passthrough over already-normalized OutputEvent JSON', () => {

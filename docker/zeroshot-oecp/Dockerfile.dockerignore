@@ -38,6 +38,11 @@
 !scripts/omp/runtime-identities.js
 !scripts/omp/runtime-lock.js
 !scripts/omp/runtime-release.js
+!src/
+!src/command-cleanup-ownership.js
+!src/omp-config-overlay.js
+!src/worktree-claude-config.js
+!src/worktree-tooling-env.js
 !protocol/
 !protocol/openengine-cluster/
 !protocol/openengine-cluster/v1/

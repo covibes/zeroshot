@@ -136,8 +136,27 @@ describe('hosted worker runtime preflight', () => {
       const ompEnvironment = {
         ...environment,
         PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+        TMPDIR: directory,
         ZEROSHOT_HOSTED_EXECUTABLE: 'omp',
       };
+      const missingContract = runConfigurationCheck(ompEnvironment);
+      assert.equal(missingContract.status, 1);
+
+      fs.writeFileSync(
+        fakeOmp,
+        [
+          '#!/bin/sh',
+          'if [ "$1" = "--help" ]; then',
+          '  echo "--mode=<value> text, json, rpc, or rpc-ui"',
+          '  echo "--config --model --approval-mode --no-title --no-session"',
+          '  exit 0',
+          'fi',
+          'if [ "$1" = "--version" ]; then echo "omp/17.2.1"; exit 0; fi',
+          'exit 1',
+          '',
+        ].join('\n'),
+        { mode: 0o700 }
+      );
       const available = runConfigurationCheck(ompEnvironment);
       assert.equal(available.status, 0, available.stderr);
 
@@ -166,6 +185,7 @@ describe('hosted worker runtime preflight', () => {
         ...environment,
         PATH: directory,
         ZEROSHOT_HOSTED_EXECUTABLE: 'gateway',
+        ZEROSHOT_HOSTED_MODEL: 'gateway/test-model',
       });
       assert.equal(gateway.status, 0, gateway.stderr);
     } finally {
