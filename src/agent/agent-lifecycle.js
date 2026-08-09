@@ -892,7 +892,6 @@ ${'='.repeat(80)}`);
     unsupportedCapability,
     structuredOutputInvalid,
   });
-
   // Publish error to message bus for visibility in logs
   agent._publish({
     topic: 'AGENT_ERROR',
@@ -905,6 +904,7 @@ ${'='.repeat(80)}`);
         hookFailure: error?.hookFailure === true,
         restartExhausted: error?.restartExhausted === true,
         terminationExhausted: error?.terminationExhausted === true,
+        retryBudgetExhausted: true,
         hookRetries: error?.hookRetries ?? undefined,
         originalHookError: error?.originalHookError ?? undefined,
         agent: agent.id,

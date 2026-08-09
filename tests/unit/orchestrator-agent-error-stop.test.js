@@ -65,6 +65,7 @@ describe('Orchestrator critical agent error handling', function () {
     publishAgentError(messageBus, 'c1', 'consensus-coordinator', {
       role: 'coordinator',
       attempts: 3,
+      retryBudgetExhausted: true,
       error: 'boom',
     });
 
@@ -98,7 +99,6 @@ describe('Orchestrator critical agent error handling', function () {
       attempts: 3,
       error: 'nope',
     });
-
     await settleHandlers();
     assert.equal(stopSpy.called, false);
   });
@@ -109,13 +109,42 @@ describe('Orchestrator critical agent error handling', function () {
 
     publishAgentError(messageBus, 'c4', 'worker', {
       role: 'implementation',
-      attempts: 1,
+      attempts: 30,
       error: 'polling_timeout',
     });
 
     await settleHandlers();
     assert.equal(stopSpy.called, false);
     assert.equal(messageBus.query({ cluster_id: 'c4', topic: 'CLUSTER_FAILED' }).length, 0);
+  });
+});
+
+describe('Orchestrator workflow role terminalization', function () {
+  beforeEach(setupHarness);
+  afterEach(cleanupHarness);
+
+  it('stops cluster when planner, conductor, and orchestrator roles exhaust retries', async () => {
+    const stopSpy = sinon.stub(orchestrator, 'stop').resolves();
+    for (const [clusterId, sender, role] of [
+      ['planning-cluster', 'planner', 'planning'],
+      ['conductor-cluster', 'junior-conductor', 'conductor'],
+      ['orchestrator-cluster', 'completion-detector', 'orchestrator'],
+    ]) {
+      orchestrator._registerAgentErrorHandler(messageBus, clusterId);
+      publishAgentError(messageBus, clusterId, sender, {
+        role,
+        attempts: 3,
+        retryBudgetExhausted: true,
+        error: 'retry budget exhausted',
+      });
+    }
+
+    await settleHandlers();
+    assert.deepStrictEqual(stopSpy.args.map(([clusterId]) => clusterId).sort(), [
+      'conductor-cluster',
+      'orchestrator-cluster',
+      'planning-cluster',
+    ]);
   });
 });
 
@@ -131,6 +160,7 @@ describe('Orchestrator terminal stop deduplication', function () {
     publishAgentError(messageBus, 'c5', 'worker', {
       role: 'implementation',
       attempts: 3,
+      retryBudgetExhausted: true,
       error: 'retry budget exhausted',
     });
 
@@ -143,6 +173,7 @@ describe('Orchestrator terminal stop deduplication', function () {
     publishAgentError(messageBus, 'c6', 'worker', {
       role: 'implementation',
       attempts: 3,
+      retryBudgetExhausted: true,
       error: 'failed again after resume',
     });
 

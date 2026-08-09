@@ -133,6 +133,12 @@ Priority order for bare numbers:
 Agent A → publish() → SQLite Ledger → LogicEngine → trigger match → Agent B executes
 ```
 
+**Failure terminalization:** Every named non-validator role is cluster-critical after final task
+retry exhaustion; validators alone publish rejection and remain non-terminal. Keep the role rule in
+`src/agent/critical-agent-policy.js`. Final `AGENT_ERROR` records explicitly set
+`retryBudgetExhausted: true`; never infer task exhaustion from `attempts`, because status polling
+uses that counter before the lifecycle retry budget is exhausted.
+
 ### Core Primitives
 
 | Primitive    | Purpose                                                     |

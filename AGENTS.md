@@ -822,6 +822,11 @@ byte-length/SHA-256 receipt. Final critical-agent exhaustion installs `failureIn
 exactly one durable `CLUSTER_FAILED`; the legacy `AGENT_ERROR` stop fallback must not initiate a
 second stop after that terminal topic exists in the current run, while prior-run failures must not
 suppress terminalization after resume.
+Every named non-validator role is cluster-critical after final task retry exhaustion, including
+planning, conductor, custom, and orchestrator roles; validators alone use their rejection path.
+Keep that rule centralized in `src/agent/critical-agent-policy.js`. Terminal `AGENT_ERROR` records
+set `retryBudgetExhausted: true`; never infer task exhaustion from `attempts`, because status-poll
+observations use the same counter while the lifecycle still owns a retry.
 The SQLite ledger additionally keeps one cluster-wide newest tail of non-replayable
 `AGENT_OUTPUT` (8 MiB / 8192 exported messages) and a persisted deterministic omission receipt;
 live delivery is unchanged, while control and explicitly replayable messages are never compacted.
