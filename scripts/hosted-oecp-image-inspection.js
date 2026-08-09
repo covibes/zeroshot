@@ -3,6 +3,19 @@
 const { isDeepStrictEqual } = require('util');
 
 const EXPOSED_PORTS = Object.freeze(['8083/tcp', '8084/tcp', '8085/tcp']);
+const REQUIRED_RUNTIME_MODULES = Object.freeze([
+  'commandCleanupOwnership',
+  'deliveryContract',
+  'engineStart',
+  'ompConfigOverlay',
+  'ompRuntime',
+  'ompRuntimeIdentities',
+  'ompRuntimeLock',
+  'ompRuntimeRelease',
+  'runtimeDependencies',
+  'worktreeClaudeConfig',
+  'worktreeToolingEnv',
+]);
 const EXPECTED_PACKAGE_MANAGER_PATHS = Object.freeze({
   '/usr/local/bin/npm': false,
   '/usr/local/bin/npx': false,
@@ -68,13 +81,17 @@ process.stdout.write(JSON.stringify({
     '/opt/yarn-v1.22.22': present('/opt/yarn-v1.22.22'),
   },
   runtimeModules: {
+    commandCleanupOwnership: loadable('/opt/zeroshot/src/command-cleanup-ownership.js'),
     deliveryContract: loadable('/opt/zeroshot/lib/delivery-contract.js'),
     engineStart: fs.existsSync('/opt/zeroshot/lib/cluster-worker/engine-start.js'),
+    ompConfigOverlay: loadable('/opt/zeroshot/src/omp-config-overlay.js'),
     runtimeDependencies: fs.existsSync('/opt/zeroshot/lib/cluster-worker/runtime-dependencies.js'),
     ompRuntime: loadable('/opt/zeroshot/scripts/omp/runtime.js'),
     ompRuntimeIdentities: loadable('/opt/zeroshot/scripts/omp/runtime-identities.js'),
     ompRuntimeLock: loadable('/opt/zeroshot/scripts/omp/runtime-lock.js'),
     ompRuntimeRelease: loadable('/opt/zeroshot/scripts/omp/runtime-release.js'),
+    worktreeClaudeConfig: loadable('/opt/zeroshot/src/worktree-claude-config.js'),
+    worktreeToolingEnv: loadable('/opt/zeroshot/src/worktree-tooling-env.js'),
   },
   serverExecutable: executable('/usr/local/bin/zeroshot-oecp-server'),
   tiniExecutable: executable('/usr/bin/tini'),
@@ -138,15 +155,7 @@ function validateRuntimePermissions(runtime) {
 }
 
 function validateRequiredRuntimeModules(runtimeModules) {
-  if (
-    runtimeModules?.deliveryContract !== true ||
-    runtimeModules?.engineStart !== true ||
-    runtimeModules?.runtimeDependencies !== true ||
-    runtimeModules?.ompRuntime !== true ||
-    runtimeModules?.ompRuntimeIdentities !== true ||
-    runtimeModules?.ompRuntimeLock !== true ||
-    runtimeModules?.ompRuntimeRelease !== true
-  ) {
+  if (!REQUIRED_RUNTIME_MODULES.every((name) => runtimeModules?.[name] === true)) {
     throw new Error('Hosted image is missing a required runtime module');
   }
 }

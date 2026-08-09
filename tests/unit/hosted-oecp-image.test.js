@@ -53,13 +53,17 @@ function runtimeInspection() {
     forbiddenPresent: [],
     packageManagerPaths: absentPackageManagerPaths(),
     runtimeModules: {
+      commandCleanupOwnership: true,
       deliveryContract: true,
       engineStart: true,
+      ompConfigOverlay: true,
       runtimeDependencies: true,
       ompRuntime: true,
       ompRuntimeIdentities: true,
       ompRuntimeLock: true,
       ompRuntimeRelease: true,
+      worktreeClaudeConfig: true,
+      worktreeToolingEnv: true,
     },
     serverExecutable: true,
     tiniExecutable: true,
@@ -142,6 +146,13 @@ function registerRuntimeInspectionTests() {
     const missingOmpRuntime = runtimeInspection();
     missingOmpRuntime.runtimeModules.ompRuntimeRelease = false;
     assert.throws(() => validateRuntimeInspection(missingOmpRuntime), /required runtime module/);
+
+    const missingProviderDependency = runtimeInspection();
+    missingProviderDependency.runtimeModules.commandCleanupOwnership = false;
+    assert.throws(
+      () => validateRuntimeInspection(missingProviderDependency),
+      /required runtime module/
+    );
 
     const vulnerableUndici = runtimeInspection();
     vulnerableUndici.undiciVersion = '8.5.0';

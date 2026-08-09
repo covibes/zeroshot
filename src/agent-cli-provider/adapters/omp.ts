@@ -81,7 +81,7 @@ function detectCliFeatures(helpText?: string | null, versionText?: string | null
   return {
     provider: 'omp',
     versionMatches: VERSION_TOKEN_PATTERN.test(version),
-    supportsRpcMode: /(^|\s)rpc(\s|$)/m.test(help),
+    supportsRpcMode: /(?<![A-Za-z0-9_-])rpc(?![A-Za-z0-9_-])/.test(help),
     supportsConfig: /--config\b/.test(help),
     supportsModel: /--model\b/.test(help),
     supportsThinking: /--thinking\b/.test(help),

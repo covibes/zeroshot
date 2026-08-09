@@ -54,6 +54,7 @@ COPY lib/cluster-worker/terminal-normalizer.js lib/cluster-worker/worker-interna
 COPY lib/cluster-worker/runtime-dependencies.js /opt/zeroshot/lib/cluster-worker/runtime-dependencies.js
 COPY lib/run-plan.js /opt/zeroshot/lib/run-plan.js
 COPY scripts/omp/runtime.js scripts/omp/runtime-identities.js scripts/omp/runtime-lock.js scripts/omp/runtime-release.js /opt/zeroshot/scripts/omp/
+COPY src/command-cleanup-ownership.js src/omp-config-overlay.js src/worktree-claude-config.js src/worktree-tooling-env.js /opt/zeroshot/src/
 COPY protocol/openengine-cluster/v1/worker.schema.json /opt/zeroshot/protocol/openengine-cluster/v1/worker.schema.json
 COPY zeroshot-rust/hosted-node /opt/zeroshot/zeroshot-rust/hosted-node
 
