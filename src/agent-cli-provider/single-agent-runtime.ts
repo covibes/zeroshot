@@ -921,11 +921,7 @@ function probeGatewayProvider(
   try {
     const settings = runtimeSettings ?? loadRuntimeSettings();
     const providerSettings = runtimeProviderSettings(settings, 'gateway', process.cwd());
-    resolveGatewayConfiguration(
-      providerSettings.gateway,
-      'settings.providerSettings.gateway',
-      process.cwd()
-    );
+    resolveRuntimeGatewayOptions('gateway', {}, providerSettings, providerSettings.gateway ?? {});
     return {
       available: true,
       helpText: 'Bundled gateway runner',

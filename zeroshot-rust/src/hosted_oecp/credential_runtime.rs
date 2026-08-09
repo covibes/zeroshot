@@ -12,8 +12,11 @@ use super::credentials::{
     RUNTIME_MOUNT_ROOT, RUNTIME_ROOT, SETTINGS_FILE, SHARED_MOUNT_MODE, WORKER_GID, WORKER_UID,
 };
 use super::ports::WORKSPACE_ROOT;
+use super::worker::NODE_PROGRAM;
 
 const SETUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const CONFIGURATION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+const CONFIGURATION_CHECK: &str = "/opt/zeroshot/zeroshot-rust/hosted-node/config-check.js";
 
 impl CredentialBundle {
     pub(super) async fn prepare_workspace(&self) -> Result<(), String> {
@@ -28,7 +31,22 @@ impl CredentialBundle {
             self.apply_setup_to(&mut command);
             run_bounded(&mut command, "runtime setup", SETUP_COMMAND_TIMEOUT).await?;
         }
+        self.verify_runtime_configuration().await?;
         verify_prepared_repository(self).await
+    }
+
+    async fn verify_runtime_configuration(&self) -> Result<(), String> {
+        let mut command = Command::new(NODE_PROGRAM);
+        command.arg(CONFIGURATION_CHECK);
+        apply_uncredentialed_worker_to(&mut command);
+        command.envs(self.worker_environment());
+        run_bounded(
+            &mut command,
+            "runtime configuration check",
+            CONFIGURATION_CHECK_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
     }
 }
 

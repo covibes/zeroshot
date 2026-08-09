@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createTempDirectory, removeTempDirectory } = require('../helpers/temp-directory');
@@ -8,6 +9,17 @@ const {
   HostedConfigError,
   loadInstalledHostedWorkerConfiguration,
 } = require('../../zeroshot-rust/hosted-node/hosted-config');
+
+const ROOT = path.resolve(__dirname, '..', '..');
+const CONFIGURATION_CHECK = path.join(ROOT, 'zeroshot-rust', 'hosted-node', 'config-check.js');
+
+function runConfigurationCheck(environment) {
+  return spawnSync(process.execPath, [CONFIGURATION_CHECK], {
+    cwd: ROOT,
+    env: environment,
+    encoding: 'utf8',
+  });
+}
 
 function fixture() {
   const directory = createTempDirectory('zeroshot-hosted-config-');
@@ -100,6 +112,62 @@ describe('hosted worker runtime boundary', () => {
           }
         );
       }
+    } finally {
+      removeTempDirectory(directory);
+    }
+  });
+});
+
+describe('hosted worker runtime preflight', () => {
+  it('uses the provider registry to preflight process and bundled runtimes', () => {
+    const { directory, environment } = fixture();
+    const settingsFile = environment.ZEROSHOT_SETTINGS_FILE;
+    const fakeOmp = path.join(directory, 'omp');
+    try {
+      fs.writeFileSync(
+        fakeOmp,
+        '#!/bin/sh\nif [ "$1" = "--help" ]; then echo "omp help"; exit 0; fi\nexit 1\n',
+        { mode: 0o700 }
+      );
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify({ providerSettings: { omp: { transport: 'rpc' } } })
+      );
+      const ompEnvironment = {
+        ...environment,
+        PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+        ZEROSHOT_HOSTED_EXECUTABLE: 'omp',
+      };
+      const available = runConfigurationCheck(ompEnvironment);
+      assert.equal(available.status, 0, available.stderr);
+
+      fs.rmSync(fakeOmp);
+      const rejected = runConfigurationCheck({
+        ...ompEnvironment,
+        PATH: directory,
+      });
+      assert.equal(rejected.status, 1);
+      assert.doesNotMatch(`${rejected.stdout}\n${rejected.stderr}`, /canary/);
+
+      fs.writeFileSync(
+        settingsFile,
+        JSON.stringify({
+          providerSettings: {
+            gateway: {
+              baseUrl: 'https://models.example/v1',
+              apiKeyEnv: 'FUTURE_PROVIDER_TOKEN',
+              model: 'gateway/test-model',
+              toolPolicy: { roots: ['.'], commands: [] },
+            },
+          },
+        })
+      );
+      const gateway = runConfigurationCheck({
+        ...environment,
+        PATH: directory,
+        ZEROSHOT_HOSTED_EXECUTABLE: 'gateway',
+      });
+      assert.equal(gateway.status, 0, gateway.stderr);
     } finally {
       removeTempDirectory(directory);
     }
