@@ -1,7 +1,7 @@
-const assert = require('assert');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const IsolationManager = require('../src/isolation-manager');
 const {
@@ -23,14 +23,14 @@ function isContainmentError(error) {
 }
 
 async function captureContainmentError(copyPromise) {
-  try {
-    await copyPromise;
-    assert.fail('expected copy containment to reject');
-  } catch (error) {
+  let containmentError;
+  await assert.rejects(copyPromise, (error) => {
     assert.ok(error instanceof CopyContainmentError, error.stack || error.message);
     assert.strictEqual(isContainmentError(error), true);
-    return error;
-  }
+    containmentError = error;
+    return true;
+  });
+  return containmentError;
 }
 
 describe('isolation copy containment', function () {

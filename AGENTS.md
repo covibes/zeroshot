@@ -24,6 +24,9 @@ Operational rules and references for automated agents working on this repo. Inst
   npm version or GitHub Release.
 - Provider output-silence liveness checks are opt-in (`enableLivenessCheck: true`). Recovery tests
   that exercise stale-agent termination must enable the watchdog explicitly.
+- Isolation copies must reuse the shared pinned-root boundary in `src/copy-containment.js` for
+  traversal, directory creation, synchronous copies, and worker copies. Revalidate the source and
+  destination immediately before every filesystem effect; never reconstruct unchecked effect paths.
 
 Worker git operations are allowed only with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). They are forbidden without isolation.
 
