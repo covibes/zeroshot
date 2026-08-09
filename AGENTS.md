@@ -179,10 +179,12 @@ and all second identities as conflicts, and leaves queue cancellation to capsule
 Its fixed `/workspace` starts empty and receives the exact installed checkout. Runtime settings and
 files are materialized under the private runtime home, executable wrappers and setup output use the
 private `.git/zeroshot-runtime` executable root, and the workspace is reverified clean before worker
-launch. The worker inherits no trusted service sockets. It receives the installed runtime
-environment and settings, then uses Zeroshot's existing provider runner to launch the configured
-executable with the subprocess and network behavior owned by that harness; Git delivery credentials
-are withheld from the provider invocation. A text-only response with no real workspace mutation
+launch. After bounded setup, the configured provider engine must pass the registry-owned runtime
+availability probe before apply can commit a run. The worker inherits no trusted service sockets. It
+receives the installed runtime environment and settings, then uses Zeroshot's existing provider
+runner to launch the configured executable with the subprocess and network behavior owned by that
+harness; Git delivery credentials are withheld from the provider invocation. A text-only response
+with no real workspace mutation
 cannot succeed. After provider success, trusted Git delivery verifies the mutation, history, remote,
 configuration, and that the retained revision remains an ancestor of the current target before
 pushing one deterministic-branch commit. Review delivery succeeds only with a verified open pull
