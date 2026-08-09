@@ -1,6 +1,7 @@
 // @ts-nocheck
 
 const { getProvider } = require('../providers');
+const { isCriticalAgent } = require('./critical-agent-policy');
 const { extractCliFailure } = require('./output-extraction');
 
 function categoryForProviderFailure(error, classification) {
@@ -120,10 +121,7 @@ function publishCriticalFailure({
     unsupportedCapability ||
     error?.vertexModelError ||
     error?.terminationExhausted;
-  const critical =
-    agent.role === 'implementation' ||
-    agent.role === 'coordinator' ||
-    agent.id === 'consensus-coordinator';
+  const critical = isCriticalAgent(agent);
   if (!critical || specific) return worker;
 
   agent._publish({

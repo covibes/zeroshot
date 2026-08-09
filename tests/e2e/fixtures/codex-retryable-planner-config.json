@@ -1,0 +1,37 @@
+{
+  "defaultProvider": "codex",
+  "agents": [
+    {
+      "id": "planner",
+      "role": "planning",
+      "provider": "codex",
+      "modelLevel": "level1",
+      "reasoningEffort": "max",
+      "maxRetries": 3,
+      "timeout": 0,
+      "outputFormat": "json",
+      "jsonSchema": {
+        "type": "object",
+        "properties": {
+          "plan": { "type": "string" },
+          "summary": { "type": "string" }
+        },
+        "required": ["plan", "summary"]
+      },
+      "triggers": [{ "topic": "ISSUE_OPENED", "action": "execute_task" }],
+      "prompt": "Produce a plan for the synthetic qualification task.",
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": { "topic": "PLAN_READY", "content": { "text": "Done" } }
+        }
+      }
+    },
+    {
+      "id": "completion-detector",
+      "role": "orchestrator",
+      "timeout": 0,
+      "triggers": [{ "topic": "PLAN_READY", "action": "stop_cluster" }]
+    }
+  ]
+}

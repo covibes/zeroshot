@@ -60,6 +60,7 @@ const {
   normalizeProviderSession,
   restoreAgentProviderSession,
 } = require('./agent/provider-session');
+const { isCriticalAgent } = require('./agent/critical-agent-policy');
 const {
   commandProofsToQualityGates,
   mergeCommandProofs,
@@ -1582,6 +1583,7 @@ class Orchestrator {
       const attempts = message.content?.data?.attempts || 1;
       const hookFailure = message.content?.data?.hookFailure === true;
       const restartExhausted = message.content?.data?.restartExhausted === true;
+      const retryBudgetExhausted = message.content?.data?.retryBudgetExhausted === true;
       const durableClusterFailure = this._findCurrentRunClusterFailure(
         messageBus,
         clusterId,
@@ -1590,14 +1592,14 @@ class Orchestrator {
 
       await this._saveClusters();
 
-      const shouldStopForRole =
-        agentRole === 'implementation' ||
-        agentRole === 'coordinator' ||
-        message.sender === 'consensus-coordinator';
+      const shouldStopForRole = isCriticalAgent({
+        id: message.sender,
+        role: agentRole,
+      });
       const shouldStop =
         !durableClusterFailure &&
         shouldStopForRole &&
-        (hookFailure || restartExhausted || attempts >= 3);
+        (hookFailure || restartExhausted || retryBudgetExhausted);
 
       if (shouldStop) {
         this._log(`\n${'='.repeat(80)}`);
@@ -1607,6 +1609,7 @@ class Orchestrator {
           `${message.sender} (${agentRole || 'unknown role'}) failed` +
             (hookFailure ? ` (hookFailure=true)` : ``) +
             (restartExhausted ? ` (restartExhausted=true)` : ``) +
+            (retryBudgetExhausted ? ` (retryBudgetExhausted=true)` : ``) +
             ` after ${attempts} attempts`
         );
         this._log(`Error: ${message.content?.data?.error || 'unknown'}`);

@@ -2,6 +2,10 @@
 
 const fs = require('node:fs');
 
+const RETRYABLE_FAILURE =
+  'service_unavailable: synthetic retryable provider outage; ' +
+  'Authorization: Bearer sk-zs-retryable-secret';
+
 function writeChunked(buffer) {
   return new Promise((resolve, reject) => {
     let offset = 0;
@@ -102,6 +106,23 @@ function providerOutput() {
   return `${lines.join('\n')}\n`;
 }
 
+async function retryableProviderOutput() {
+  const countFile = process.env.FAKE_CODEX_COUNT_FILE;
+  if (!countFile) throw new Error('FAKE_CODEX_COUNT_FILE is required');
+  const previous = fs.existsSync(countFile)
+    ? Number.parseInt(fs.readFileSync(countFile, 'utf8').trim(), 10) || 0
+    : 0;
+  const attempt = previous + 1;
+  fs.writeFileSync(countFile, `${attempt}\n`);
+  const delayMs = Number(process.env.FAKE_CODEX_DELAY_MS || 0);
+  if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  process.stdout.write(
+    `${JSON.stringify({ type: 'thread.started', thread_id: `fake-retry-${attempt}` })}\n` +
+      `${JSON.stringify({ type: 'turn.failed', error: { message: RETRYABLE_FAILURE } })}\n`
+  );
+  process.exitCode = 1;
+}
+
 async function main() {
   if (process.argv.includes('--version')) {
     process.stdout.write('codex-cli 0.147.0\n');
@@ -112,6 +133,11 @@ async function main() {
       'codex exec --json --output-schema -m -C --config --skip-git-repo-check ' +
         '--sandbox --ephemeral --ignore-user-config --ignore-rules --strict-config resume\n'
     );
+    return;
+  }
+
+  if (process.env.FAKE_CODEX_RETRYABLE_TERMINAL === '1') {
+    await retryableProviderOutput();
     return;
   }
 

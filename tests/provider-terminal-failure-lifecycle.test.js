@@ -4,6 +4,7 @@ const EventEmitter = require('node:events');
 const { PassThrough } = require('node:stream');
 
 const { executeTask } = require('../src/agent/agent-lifecycle');
+const { isCriticalAgent } = require('../src/agent/critical-agent-policy');
 const { followClaudeTaskLogsIsolated } = require('../src/agent/agent-task-executor');
 
 const SAFE_RETRYABLE_ERROR = 'Provider codex failed (unknown; unknown-retryable)';
@@ -99,6 +100,61 @@ describe('provider terminal failure lifecycle', function () {
     assert.strictEqual(failureInfoAtPublish.error, 'onComplete hook failed');
     assert.strictEqual(failureInfoAtPublish.attempts, 1);
     assert.strictEqual(failureInfoAtPublish.agentId, 'worker');
+  });
+});
+
+describe('critical workflow role terminalization', function () {
+  it('uses one terminal policy for executable workflow roles', function () {
+    for (const role of [
+      'planning',
+      'implementation',
+      'conductor',
+      'coordinator',
+      'completion',
+      'orchestrator',
+    ]) {
+      assert.strictEqual(isCriticalAgent({ id: role, role }), true);
+    }
+    assert.strictEqual(isCriticalAgent({ id: 'consensus-coordinator', role: 'custom' }), true);
+    assert.strictEqual(isCriticalAgent({ id: 'validator-1', role: 'validator' }), false);
+    assert.strictEqual(isCriticalAgent({ id: 'missing-role' }), false);
+  });
+
+  it('terminalizes retryable provider failure for planner, conductor, and orchestrator roles', async function () {
+    for (const [id, role] of [
+      ['planner', 'planning'],
+      ['junior-conductor', 'conductor'],
+      ['completion-detector', 'orchestrator'],
+    ]) {
+      const messages = [];
+      const lifecycle = [];
+      const agent = retryableFailureAgent(messages, lifecycle);
+      agent.id = id;
+      agent.role = role;
+
+      await executeTask(agent, { topic: 'ISSUE_OPENED', sender: 'user' });
+
+      const clusterFailures = messages.filter((message) => message.topic === 'CLUSTER_FAILED');
+      const agentErrors = messages.filter((message) => message.topic === 'AGENT_ERROR');
+      assert.strictEqual(clusterFailures.length, 1);
+      assert.strictEqual(clusterFailures[0].content.data.reason, 'provider_execution_failed');
+      assert.strictEqual(clusterFailures[0].content.data.role, role);
+      assert.strictEqual(agentErrors.length, 1);
+    }
+  });
+
+  it('keeps validator provider exhaustion nonterminal', async function () {
+    const messages = [];
+    const lifecycle = [];
+    const agent = retryableFailureAgent(messages, lifecycle);
+    agent.id = 'validator-requirements';
+    agent.role = 'validator';
+    agent.testMode = true;
+
+    await executeTask(agent, { topic: 'IMPLEMENTATION_READY', sender: 'worker' });
+
+    assert.strictEqual(messages.filter((message) => message.topic === 'CLUSTER_FAILED').length, 0);
+    assert.strictEqual(messages.filter((message) => message.topic === 'AGENT_ERROR').length, 1);
   });
 });
 
