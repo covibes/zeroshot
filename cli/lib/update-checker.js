@@ -385,7 +385,7 @@ function runUpdate(options = {}) {
 
     console.log('\n📥 Installing update...');
 
-    const safeNpmCommand = resolveNpmCommand();
+    const safeNpmCommand = resolveNpmCommand(updateTarget.installPrefix);
     const proc = childProcess.spawn(safeNpmCommand, buildInstallArgs(updateTarget), {
       stdio: 'inherit',
       shell: false,
