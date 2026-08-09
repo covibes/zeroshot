@@ -49,6 +49,16 @@ struct GatedWorktree {
     release: Notify,
 }
 
+struct SlowWorktree;
+
+#[async_trait]
+impl WorktreeReadinessPort for SlowWorktree {
+    async fn verify_ready(&self) -> Result<WorktreeReadinessReceipt, TrustedServiceError> {
+        sleep(Duration::from_secs(6)).await;
+        Ok(WorktreeReadinessReceipt::ready())
+    }
+}
+
 impl GatedWorktree {
     fn allow(&self) {
         self.released.store(true, Ordering::Release);
@@ -415,12 +425,15 @@ async fn timeout_reaps_before_failure_delivery() {
 
 #[tokio::test]
 async fn shutdown_without_a_run_still_cleans_the_proxy() {
-    let fixture = RuntimeFixture::new(10_000);
-    fixture
-        .backend
-        .verify_startup_readiness()
-        .await
-        .expect("startup readiness");
+    let mut fixture = RuntimeFixture::new(10_000);
+    fixture.backend.worktree = Arc::new(SlowWorktree);
+    timeout(
+        Duration::from_secs(10),
+        fixture.backend.verify_startup_readiness(),
+    )
+    .await
+    .expect("workspace readiness remains bounded")
+    .expect("large runtime workspace is ready");
     fixture
         .backend
         .shutdown()
