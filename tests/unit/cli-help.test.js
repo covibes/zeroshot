@@ -241,6 +241,7 @@ describe('CLI completion snapshots', function () {
       '--sim',
       '-d',
       '--detach',
+      '--result-file',
       '-h',
       '--help',
     ]);

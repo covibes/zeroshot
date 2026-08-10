@@ -46,4 +46,33 @@ describe('Agent lifecycle stop', function () {
       global.clearTimeout = originalClearTimeout;
     }
   });
+
+  it('fails closed instead of abandoning an in-flight execution after the wait bound', async function () {
+    const originalSetTimeout = global.setTimeout;
+    const originalClearTimeout = global.clearTimeout;
+    const execution = new Promise(() => {});
+    const timeoutHandle = {};
+    global.setTimeout = (callback, delay) => {
+      assert.strictEqual(delay, 5000);
+      setImmediate(callback);
+      return timeoutHandle;
+    };
+    global.clearTimeout = () => {};
+
+    const agent = {
+      id: 'slow-agent',
+      running: true,
+      currentTask: null,
+      _currentExecution: execution,
+      unsubscribe: null,
+      _log() {},
+    };
+    try {
+      await assert.rejects(stop(agent), /execution did not settle after task termination/);
+      assert.strictEqual(agent._currentExecution, execution);
+    } finally {
+      global.setTimeout = originalSetTimeout;
+      global.clearTimeout = originalClearTimeout;
+    }
+  });
 });

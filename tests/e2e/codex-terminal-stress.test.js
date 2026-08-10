@@ -55,9 +55,10 @@ function readTaskLog(homeDir) {
   const storePath = path.join(homeDir, '.claude-zeroshot', 'store.db');
   const database = new Database(storePath, { readonly: true, fileMustExist: true });
   try {
-    const tasks = database.prepare('SELECT status, error, log_file FROM tasks').all();
+    const tasks = database.prepare('SELECT status, error, log_file, attachable FROM tasks').all();
     assert.strictEqual(tasks.length, 1, `expected one real provider task, got ${tasks.length}`);
     assert.strictEqual(tasks[0].status, 'completed', tasks[0].error || 'task did not complete');
+    assert.strictEqual(tasks[0].attachable, 0, 'benchmark tasks must use the pipe watcher');
     return fs.readFileSync(tasks[0].log_file, 'utf8');
   } finally {
     database.close();
@@ -117,6 +118,7 @@ describe('e2e: Codex compressed terminal stress', function () {
       ],
       {
         ZEROSHOT_CLUSTER_ID: clusterId,
+        ZEROSHOT_TASK_EXECUTION_CONTEXT: 'benchmark',
         FAKE_CODEX_EXPECTED_OUTPUT: expectedOutputPath,
         FAKE_CODEX_STRESS_BYTES: String(STRESS_BYTES),
       }

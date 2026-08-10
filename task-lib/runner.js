@@ -625,6 +625,13 @@ export function shouldUseAttachableWatcher(options, providerName) {
     return false;
   }
 
+  // Benchmark runs are non-interactive and keep the cluster process in the foreground. Use the
+  // pipe watcher so task completion is observed only after stdout/stderr close; a PTY exit can
+  // race its final buffered output on remote runtimes and lose the terminal structured result.
+  if (resolveTaskExecutionContext() === 'benchmark') {
+    return false;
+  }
+
   // The rpc-stdio lane owns bidirectional correlated RPC over stdio itself (see
   // omp-rpc-driver.ts) and always uses rpc-watcher.js instead of the attachable PTY watcher.
   if (getProviderRegistryEntry(providerName).invoke.lane === 'rpc-stdio') {

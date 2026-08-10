@@ -34,6 +34,21 @@ describe('Detached task execution context', function () {
     }
   });
 
+  it('uses the close-delimited pipe watcher for non-interactive benchmark tasks', async function () {
+    const previous = process.env[EXECUTION_CONTEXT_ENV];
+    process.env[EXECUTION_CONTEXT_ENV] = 'benchmark';
+    try {
+      const { shouldUseAttachableWatcher } = await import('../task-lib/runner.js');
+      assert.equal(
+        shouldUseAttachableWatcher({ attachable: true, jsonSchema: { type: 'object' } }, 'codex'),
+        false
+      );
+    } finally {
+      if (previous === undefined) delete process.env[EXECUTION_CONTEXT_ENV];
+      else process.env[EXECUTION_CONTEXT_ENV] = previous;
+    }
+  });
+
   it('rejects an invalid outer boundary before provider command preparation', async function () {
     const previous = process.env[EXECUTION_CONTEXT_ENV];
     process.env[EXECUTION_CONTEXT_ENV] = 'modal';
