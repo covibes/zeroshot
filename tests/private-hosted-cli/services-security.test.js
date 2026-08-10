@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { it } = require('node:test');
 const { sanitizeRemoteOperation } = require('../../private/hosted-cli-candidate/default-services');
 const { createTargetServices } = require('../../private/hosted-cli-candidate/target-services');
-const { captureLogs, detachedQueueOptions } = require('./candidate-fixtures');
+const { captureLogs, detachedRunOptions } = require('./candidate-fixtures');
 const { assertSecretsAbsent, withEnvironment } = require('./environment-harness');
 const { remoteHarness } = require('./remote-service-harness');
 
@@ -87,7 +87,7 @@ it('remote operation boundary never exposes peer-controlled error detail or caus
   );
 });
 
-it('queued transport keeps runtime credentials outside the unchanged v2 envelope', async () => {
+it('RunIntent transport keeps runtime credentials outside the unchanged v2 envelope', async () => {
   const secrets = {
     GH_TOKEN: 'gh-queue-secret-canary-884',
     OPENAI_API_KEY: 'openai-queue-secret-canary-884',
@@ -117,7 +117,7 @@ it('queued transport keeps runtime credentials outside the unchanged v2 envelope
         },
       }),
     });
-    await captureLogs(() => h.services.remoteQueueRun(detachedQueueOptions(SUBMISSION_KEY)));
+    await captureLogs(() => h.services.remoteRun(detachedRunOptions(SUBMISSION_KEY)));
   });
   const serialized = JSON.stringify(submitted);
   assertSecretsAbsent(JSON.stringify(submitted.envelope), secrets);
@@ -138,7 +138,7 @@ it('queued transport keeps runtime credentials outside the unchanged v2 envelope
   );
 });
 
-it('rejects forbidden queued input before the RunIntent client can submit', async () => {
+it('rejects forbidden hosted input before the RunIntent client can submit', async () => {
   let submissions = 0;
   const h = remoteHarness({
     hostedInput: {
@@ -154,11 +154,10 @@ it('rejects forbidden queued input before the RunIntent client can submit', asyn
     }),
   });
   await assert.rejects(
-    h.services.remoteQueueRun({
+    h.services.remoteRun({
       target: 'prod',
       graph: 'graph.json',
       input: 'input.json',
-      queue: true,
       submissionKey: SUBMISSION_KEY,
       detach: true,
     })

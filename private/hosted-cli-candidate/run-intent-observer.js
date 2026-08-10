@@ -36,7 +36,7 @@ function transientRetryDelay(error, failures) {
   return RUN_INTENT_POLL_MS * 2 ** (failures + 1);
 }
 
-async function followRunIntent(client, initial, options = {}) {
+async function observeRunIntent(client, initial, options = {}) {
   const pause = options.sleep ?? delay;
   let intent = validateRunIntent(initial);
   let displayed;
@@ -47,7 +47,7 @@ async function followRunIntent(client, initial, options = {}) {
       options.onChange?.(intent);
       displayed = state;
     }
-    if (TERMINAL_STATES.has(intent.state)) return intent;
+    if (TERMINAL_STATES.has(intent.state) || options.until?.(intent)) return intent;
     await pause(RUN_INTENT_POLL_MS, options.signal);
     try {
       intent = await client.get(intent.intent_id, { signal: options.signal });
@@ -61,6 +61,10 @@ async function followRunIntent(client, initial, options = {}) {
   }
 }
 
+function followRunIntent(client, initial, options = {}) {
+  return observeRunIntent(client, initial, options);
+}
+
 function displayRunIntentState(intent) {
   return intent.waiting_reason ? `${intent.state} (${intent.waiting_reason})` : intent.state;
 }
@@ -69,4 +73,5 @@ module.exports = {
   MAX_TRANSIENT_POLL_FAILURES,
   displayRunIntentState,
   followRunIntent,
+  observeRunIntent,
 };

@@ -8,7 +8,7 @@ const {
 } = require('./default-run-intent-services');
 const { readHostedInputs } = require('./readers');
 const { resolveRuntimeBundle } = require('./credentials');
-const { followRunIntent } = require('./run-intent');
+const { followRunIntent, observeRunIntent } = require('./run-intent');
 const { createTargetServices, targetSessionManager } = require('./target-services');
 
 function loadRuntime() {
@@ -76,18 +76,6 @@ async function createSessionContext(name, runtime, settings, http = httpTranspor
   };
 }
 
-function buildManifest() {
-  try {
-    const manifest = require('./candidate-build.json');
-    if (manifest.privateMarker !== 'ZEROSHOT_PRIVATE_HOSTED_CLI_CANDIDATE_DO_NOT_PUBLISH') {
-      throw new Error('private candidate marker is missing');
-    }
-    return manifest;
-  } catch (error) {
-    throw new Error('private candidate build manifest is unavailable', { cause: error });
-  }
-}
-
 function createServiceContext(dependencies) {
   const runtime = dependencies.runtime ?? loadRuntime();
   const settings = targetSettings(dependencies);
@@ -98,7 +86,8 @@ function createServiceContext(dependencies) {
     dependencies.createCoordinator ??
     ((init) => new runtime.hostedSession.HostedSessionCoordinator(init));
   const runIntentClientFor = dependencies.createRunIntentClient ?? defaultRunIntentClient;
-  const followQueuedRun = dependencies.followRunIntent ?? followRunIntent;
+  const followRun = dependencies.followRunIntent ?? followRunIntent;
+  const waitForRun = dependencies.observeRunIntent ?? observeRunIntent;
   return {
     dependencies,
     runtime,
@@ -106,7 +95,6 @@ function createServiceContext(dependencies) {
     createHttp,
     randomUUID: () => randomUUID(),
     inputReader: (...args) => inputReader(...args),
-    candidateManifest: () => dependencies.manifest ?? buildManifest(),
     runtimeBundleFor: (target, options) =>
       resolveRuntimeBundle(target, {
         ...options,
@@ -116,7 +104,8 @@ function createServiceContext(dependencies) {
     contextFor: (name) => createSessionContext(name, runtime, settings, createHttp()),
     coordinatorFor: (init) => coordinatorFor(init),
     runIntentClientFor: (context) => runIntentClientFor(context),
-    followQueuedRun: (...args) => followQueuedRun(...args),
+    followRunIntent: (...args) => followRun(...args),
+    observeRunIntent: (...args) => waitForRun(...args),
   };
 }
 

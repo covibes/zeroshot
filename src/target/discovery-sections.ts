@@ -4,10 +4,9 @@ import {
   exact,
   exactStringSet,
   integer,
-  parseCredentialInstall,
+  record,
   sameOriginUrl,
   stringField,
-  type CredentialInstallDescriptor,
 } from './discovery-validation.js';
 import { parseRunIntent, type RunIntentDescriptor } from './run-intent-discovery.js';
 import { routeTemplate } from './route-template.js';
@@ -65,37 +64,13 @@ export function parseExtensions(
   discovery: Record<string, unknown>,
   origin: string
 ): {
-  readonly credentialInstall: CredentialInstallDescriptor | null;
   readonly runIntent: RunIntentDescriptor | null;
 } {
   if (discovery.extensions === undefined || discovery.extensions === null) {
-    return Object.freeze({ credentialInstall: null, runIntent: null });
+    return Object.freeze({ runIntent: null });
   }
-  const extensions = closedRecord(discovery.extensions, 'extensions', [
-    'connections',
-    'credential_install',
-    'run_intent',
-  ]);
-  if (extensions.connections === undefined) {
-    throw new TargetDiscoveryError('extensions.connections is required');
-  }
-  const connections = closedRecord(extensions.connections, 'extensions.connections', [
-    'kind',
-    'base_url',
-    'route_templates',
-  ]);
-  exact(connections.kind, 'zerocloud.connections/v1', 'extensions.connections.kind');
-  sameOriginUrl(connections.base_url, 'extensions.connections.base_url', origin);
-  const routes = closedRecord(
-    connections.route_templates,
-    'extensions.connections.route_templates',
-    ['list', 'create', 'update']
-  );
-  routeTemplate(routes.list, 'extensions.connections.route_templates.list', []);
-  routeTemplate(routes.create, 'extensions.connections.route_templates.create', []);
-  routeTemplate(routes.update, 'extensions.connections.route_templates.update', ['connection_id']);
+  const extensions = record(discovery.extensions, 'extensions');
   return Object.freeze({
-    credentialInstall: parseCredentialInstall(extensions.credential_install),
     runIntent: parseRunIntent(extensions.run_intent, origin),
   });
 }

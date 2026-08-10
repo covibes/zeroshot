@@ -1,10 +1,12 @@
 'use strict';
+
 const { withInterruptSignal } = require('./interrupt-signal');
-const { buildQueuedHostedExecution } = require('./queued-execution');
+const { buildRunIntentExecution } = require('./run-intent-execution');
 const {
   RunIntentClient,
   RunIntentHttpError,
   RunIntentRequestError,
+  TERMINAL_STATES,
   buildRunIntentEnvelope,
   displayRunIntentState,
 } = require('./run-intent');
@@ -38,7 +40,7 @@ function submissionUncertain(submissionKey, cause) {
 }
 
 function resumeCommand(targetName, intentId) {
-  return `zeroshot target status ${targetName} ${intentId} --follow`;
+  return `zeroshot attach ${intentId} --target ${targetName}`;
 }
 
 function printRunIntentState(intent) {
@@ -55,21 +57,139 @@ function finishRunIntent(intent) {
     return intent;
   }
   const code = intent.error_code === null ? '' : ` (${intent.error_code})`;
-  throw new Error(`queued hosted run ${intent.state}${code}`);
+  throw new Error(`hosted run ${intent.state}${code}`);
 }
 
-function followOptions(service, signal) {
+function observationOptions(service, signal, additional = {}) {
   return {
     signal,
     ...(service.dependencies.runIntentSleep === undefined
       ? {}
       : { sleep: service.dependencies.runIntentSleep }),
     onChange: printRunIntentState,
+    ...additional,
   };
 }
 
-async function submitQueuedRun(service, options, prepared, signal) {
-  const execution = buildQueuedHostedExecution(prepared.inputs);
+function safeWatchProjection(capsuleId, item) {
+  if (item.type === 'closed') {
+    return {
+      capsuleId,
+      observation: 'closed',
+      reason: item.reason,
+      ...(item.lastDeliveredCursor === undefined ? {} : { cursor: item.lastDeliveredCursor }),
+    };
+  }
+  let phase;
+  if (item.event.type === 'phase') phase = item.event.status.phase;
+  if (item.event.type === 'finished') phase = item.event.final_status.phase;
+  return {
+    capsuleId,
+    runId: item.runId,
+    cursor: item.cursor,
+    event: item.event.type,
+    ...(phase === undefined ? {} : { phase }),
+  };
+}
+
+function printSnapshot(capsuleId, snapshot) {
+  console.log(
+    JSON.stringify({
+      capsuleId,
+      runId: snapshot.status.currentRunId ?? null,
+      cursor: snapshot.atCursor ?? null,
+      phase: snapshot.status.phase,
+    })
+  );
+}
+
+function watchParams(snapshot) {
+  return {
+    ...(snapshot.status.currentRunId === null || snapshot.status.currentRunId === undefined
+      ? {}
+      : { runId: snapshot.status.currentRunId }),
+    ...(snapshot.atCursor === undefined ? {} : { fromCursor: snapshot.atCursor }),
+  };
+}
+
+async function reportCleanupFailure(label, cleanup) {
+  try {
+    await cleanup();
+  } catch {
+    console.log(`Live capsule ${label} failed; RunIntent status remains authoritative.`);
+  }
+}
+
+async function watchCapsule(coordinator, capsuleId, snapshot, signal) {
+  const watch = await coordinator.watch({
+    params: watchParams(snapshot),
+    ...(signal === undefined ? {} : { signal }),
+  });
+  try {
+    for await (const item of watch) {
+      console.log(JSON.stringify(safeWatchProjection(capsuleId, item)));
+      if (item.type === 'event' && item.event.type === 'finished') return;
+    }
+  } finally {
+    await reportCleanupFailure('watch cancellation', () => watch.cancel());
+  }
+}
+
+async function observeCapsule(service, context, intent, signal) {
+  const capsuleId = intent.capsule_id;
+  const coordinator = service.coordinatorFor({
+    adapter: context.adapter,
+    capsuleId,
+    targetAuthority: context.target.url,
+  });
+  try {
+    const session = await coordinator.open(signal);
+    const snapshot = await session.client.get({}, signal === undefined ? undefined : { signal });
+    printSnapshot(capsuleId, snapshot);
+    if (snapshot.status.phase === 'finished') return;
+    await watchCapsule(coordinator, capsuleId, snapshot, signal);
+  } catch (error) {
+    const interrupted = signal?.aborted || error?.name === 'AbortError';
+    if (!interrupted) {
+      console.log('Live capsule observation disconnected; RunIntent status remains authoritative.');
+    }
+  } finally {
+    await reportCleanupFailure('coordinator cleanup', () => coordinator.close());
+  }
+}
+
+async function followHostedRun(service, observation) {
+  const { context, client, initial, signal } = observation;
+  const attachable = await service.observeRunIntent(
+    client,
+    initial,
+    observationOptions(service, signal, {
+      until: (intent) => intent.state === 'running' && intent.capsule_id !== null,
+    })
+  );
+  if (TERMINAL_STATES.has(attachable.state)) return finishRunIntent(attachable);
+
+  const liveAbort = new AbortController();
+  const liveSignal =
+    signal === undefined
+      ? liveAbort.signal
+      : globalThis.AbortSignal.any([signal, liveAbort.signal]);
+  const live = observeCapsule(service, context, attachable, liveSignal);
+  try {
+    const terminal = await service.followRunIntent(
+      client,
+      attachable,
+      observationOptions(service, signal)
+    );
+    return finishRunIntent(terminal);
+  } finally {
+    liveAbort.abort(new globalThis.DOMException('RunIntent observation completed', 'AbortError'));
+    await live;
+  }
+}
+
+async function submitRun(service, options, prepared, signal) {
+  const execution = buildRunIntentExecution(prepared.inputs);
   const client = service.runIntentClientFor(prepared.context);
   if (
     options.size !== undefined &&
@@ -98,7 +218,7 @@ async function submitQueuedRun(service, options, prepared, signal) {
   return { client, created };
 }
 
-async function remoteQueueRun(service, options) {
+async function remoteRun(service, options) {
   const inputs = await service.inputReader(
     options.graph,
     options.input,
@@ -106,62 +226,50 @@ async function remoteQueueRun(service, options) {
   );
   const context = await service.contextFor(options.target);
   return withInterruptSignal(async (signal) => {
-    const { client, created } = await submitQueuedRun(
-      service,
-      options,
-      { context, inputs },
-      signal
-    );
-    console.log(`Run ${created.intent_id} queued`);
+    const { client, created } = await submitRun(service, options, { context, inputs }, signal);
+    console.log(`Run ${created.intent_id} submitted`);
     console.log(`Resume: ${resumeCommand(options.target, created.intent_id)}`);
     if (options.detach) return created;
-    console.log('Ctrl+C disconnects without cancelling.');
+    console.log('Ctrl+C detaches without cancelling.');
     try {
-      const terminal = await service.followQueuedRun(
-        client,
-        created,
-        followOptions(service, signal)
-      );
-      return finishRunIntent(terminal);
+      return await followHostedRun(service, { context, client, initial: created, signal });
     } catch (error) {
       if (!signal.aborted) throw error;
-      console.log(`Disconnected; run ${created.intent_id} was not cancelled.`);
+      console.log(`Detached; run ${created.intent_id} was not cancelled.`);
       return created;
+    }
+  });
+}
+
+async function remoteAttach(service, targetName, intentId) {
+  const context = await service.contextFor(targetName);
+  const client = service.runIntentClientFor(context);
+  return withInterruptSignal(async (signal) => {
+    const initial = await client.get(intentId, { signal });
+    console.log(`Attached to ${intentId}; Ctrl+C detaches without cancelling.`);
+    console.log(`Resume: ${resumeCommand(targetName, intentId)}`);
+    try {
+      return await followHostedRun(service, { context, client, initial, signal });
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      console.log(`Detached; run ${intentId} was not cancelled.`);
+      return initial;
     }
   });
 }
 
 async function runIntentStatus(service, targetName, intentId, options) {
   const context = await service.contextFor(targetName);
-  const client = service.runIntentClientFor(context);
-  if (!options.follow) {
-    const intent = await client.get(intentId);
-    if (options.json) console.log(JSON.stringify(intent, null, 2));
-    else printRunIntentState(intent);
-    return intent;
-  }
-  return withInterruptSignal(async (signal) => {
-    const initial = await client.get(intentId, { signal });
-    console.log(`Following ${intentId}; Ctrl+C disconnects without cancelling.`);
-    console.log(`Resume: ${resumeCommand(targetName, intentId)}`);
-    try {
-      const terminal = await service.followQueuedRun(
-        client,
-        initial,
-        followOptions(service, signal)
-      );
-      return finishRunIntent(terminal);
-    } catch (error) {
-      if (!signal.aborted) throw error;
-      console.log(`Disconnected; run ${intentId} was not cancelled.`);
-      return initial;
-    }
-  });
+  const intent = await service.runIntentClientFor(context).get(intentId);
+  if (options.json) console.log(JSON.stringify(intent, null, 2));
+  else printRunIntentState(intent);
+  return intent;
 }
 
 function createRunIntentServices(service) {
   return {
-    remoteQueueRun: (options) => remoteQueueRun(service, options),
+    remoteRun: (options) => remoteRun(service, options),
+    remoteAttach: (targetName, intentId) => remoteAttach(service, targetName, intentId),
     runIntentStatus: (targetName, intentId, options) =>
       runIntentStatus(service, targetName, intentId, options),
     runIntentCancel: async (targetName, intentId) => {

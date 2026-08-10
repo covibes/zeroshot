@@ -8,12 +8,13 @@ const COMMAND_MANIFEST = Object.freeze([
   'target remove <name> [--force]',
   'target setup <name> --repository <owner/name> [--base <branch-or-sha>] ' +
     '[--target-branch <branch>] --runtime-config <file>',
-  'target status <name> <intent-id> [--follow] [--json]',
+  'target status <name> <intent-id> [--json]',
   'target cancel <name> <intent-id>',
   'capsule create --target <name> [--label <label>] [--size <size>]',
   'capsule terminate <capsule-id> --target <name>',
   'run --graph <graph.json> --input <input.json> --target <name> (--pr|--ship) ' +
-    '[--queue] [--size <size>] [--submission-key <uuid>] [-d]',
+    '[--size <size>] [--submission-key <uuid>] [-d]',
+  'attach <intent-id> --target <name>',
   'list --target <name> [--limit <n>] [--json]',
   'status <capsule-id> --target <name> [--json]',
   'stop <capsule-id> --target <name> [--force]',

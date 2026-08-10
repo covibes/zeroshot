@@ -215,7 +215,6 @@ export function makeDiscovery(
       'capsule_access',
       'connections_onboarding',
     ],
-    credentialInstall: null,
     runIntent: null,
     additional: {},
   };

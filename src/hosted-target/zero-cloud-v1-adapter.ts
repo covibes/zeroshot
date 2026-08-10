@@ -22,7 +22,6 @@ import type { TargetDiscoveryDescriptor } from '../target/discovery.js';
 import { readBoundedResponseJson } from '../target/bounded-response.js';
 import { validateAccessUrl } from './access-url.js';
 import { withTargetRetry } from './retry-executor.js';
-import { installRuntime as installOpaqueRuntime } from './runtime-install.js';
 import { assertCapsuleResponseStatus } from './response-status.js';
 import {
   createAdapterRequester,
@@ -59,13 +58,6 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     );
     this.#clock = options.clock ?? DEFAULT_CLOCK;
     this.#retryPolicy = options.retryPolicy ?? new DefaultRetryPolicy();
-  }
-
-  get credentialInstall(): TargetAdapter['credentialInstall'] {
-    const descriptor = this.#descriptor.credentialInstall;
-    return descriptor === null
-      ? Object.freeze({ supported: false as const })
-      : Object.freeze({ supported: true as const, descriptor });
   }
 
   allocate(request: AllocateRequest, signal?: AbortSignal): Promise<Capsule> {
@@ -182,35 +174,6 @@ export class ZeroCloudV1TargetAdapter implements TargetAdapter {
     );
     validateAccessUrl(result.websocketUrl, capsuleId, this.#descriptor);
     return result;
-  }
-
-  async installRuntime(
-    capsuleId: string,
-    runtime: unknown,
-    accessToken: string,
-    signal?: AbortSignal
-  ): Promise<void> {
-    const descriptor = this.#descriptor.credentialInstall;
-    if (descriptor === null) {
-      throw new TargetProtocolError('Target does not advertise runtime installation');
-    }
-    await installOpaqueRuntime({
-      capsuleId,
-      runtime,
-      accessToken,
-      descriptor,
-      ...(signal === undefined ? {} : { signal }),
-      clock: this.#clock,
-      retryPolicy: this.#retryPolicy,
-      request: (method, path, requestSignal, body, token) =>
-        this.#request({
-          method,
-          path,
-          signal: requestSignal,
-          request: { body },
-          accessToken: token,
-        }),
-    });
   }
 
   #execute<T>(...args: ExecuteArguments<T>): Promise<T> {
