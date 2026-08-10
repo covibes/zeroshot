@@ -2,7 +2,6 @@ export {
   createTargetAdapter,
   type TargetAdapter,
   type CreateTargetAdapterOptions,
-  type CredentialInstallCapability,
 } from './target-adapter.js';
 export {
   TargetAdapterError,

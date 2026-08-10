@@ -1,6 +1,6 @@
 import type { RouteTemplate } from './route-template.js';
 import { routeTemplate } from './route-template.js';
-import { closedRecord, exact, sameOriginUrl } from './discovery-validation.js';
+import { closedRecord, record, sameOriginUrl } from './discovery-validation.js';
 
 export interface RunIntentDescriptor {
   readonly kind: 'zeroshot.run-intent/v2';
@@ -14,12 +14,13 @@ export interface RunIntentDescriptor {
 
 export function parseRunIntent(value: unknown, origin: string): RunIntentDescriptor | null {
   if (value === undefined || value === null) return null;
+  const advertised = record(value, 'extensions.run_intent');
+  if (advertised.kind !== 'zeroshot.run-intent/v2') return null;
   const extension = closedRecord(value, 'extensions.run_intent', [
     'kind',
     'base_url',
     'route_templates',
   ]);
-  exact(extension.kind, 'zeroshot.run-intent/v2', 'extensions.run_intent.kind');
   const routes = closedRecord(extension.route_templates, 'extensions.run_intent.route_templates', [
     'submit',
     'status',

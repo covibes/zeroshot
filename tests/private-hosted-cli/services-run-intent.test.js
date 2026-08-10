@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
-const { captureLogs, DESCRIPTOR, detachedQueueOptions } = require('./candidate-fixtures');
+const { captureLogs, DESCRIPTOR, detachedRunOptions } = require('./candidate-fixtures');
 const { remoteHarness } = require('./remote-service-harness');
 
 const INTENT_ID = '019fd184-52c3-7e1f-a567-4ecb6fc6a0ec';
@@ -25,33 +25,44 @@ function intent(overrides = {}) {
   };
 }
 
-function registerQueueSubmissionTests() {
-  it('submits one resolved runtime beside a credential-free v2 RunIntent', async () => {
-    const queueCalls = [];
+function succeeded() {
+  return intent({
+    state: 'succeeded',
+    capsule_id: INTENT_CAPSULE_ID,
+    result: { summary: 'done' },
+    terminal_at: NOW,
+  });
+}
+
+function stateClient(states, runCalls, additional = {}) {
+  return {
+    ...additional,
+    get(id) {
+      runCalls.push(['get', id]);
+      return states.shift();
+    },
+  };
+}
+
+function registerSubmissionTests() {
+  it('submits one runtime beside a credential-free v2 RunIntent and follows by default', async () => {
+    const runCalls = [];
+    const states = [intent({ state: 'running', capsule_id: INTENT_CAPSULE_ID }), succeeded()];
     const h = remoteHarness({
-      createRunIntentClient: () => ({
-        submit(request) {
-          queueCalls.push(['submit', request]);
-          return intent();
-        },
-        get(id) {
-          queueCalls.push(['get', id]);
-          return intent({
-            state: 'succeeded',
-            capsule_id: INTENT_CAPSULE_ID,
-            result: { summary: 'done' },
-            terminal_at: NOW,
-          });
-        },
-      }),
+      createRunIntentClient: () =>
+        stateClient(states, runCalls, {
+          submit(request) {
+            runCalls.push(['submit', request]);
+            return intent();
+          },
+        }),
       runIntentSleep: () => Promise.resolve(),
     });
     const result = await captureLogs(() =>
-      h.services.remoteQueueRun({
+      h.services.remoteRun({
         target: 'prod',
         graph: 'graph.json',
         input: 'input.json',
-        queue: true,
         submissionKey: SUBMISSION_KEY,
         detach: false,
         size: 'tiny',
@@ -60,10 +71,10 @@ function registerQueueSubmissionTests() {
     );
     assert.equal(result.value.state, 'succeeded');
     assert.deepEqual(
-      queueCalls.map(([name]) => name),
-      ['submit', 'get']
+      runCalls.map(([name]) => name),
+      ['submit', 'get', 'get']
     );
-    const submitted = queueCalls[0][1];
+    const submitted = runCalls[0][1];
     assert.equal(submitted.submissionKey, SUBMISSION_KEY);
     assert.equal(submitted.size, 'tiny');
     assert.deepEqual(Object.keys(submitted.envelope), ['version', 'graph', 'input']);
@@ -76,18 +87,23 @@ function registerQueueSubmissionTests() {
       prompt: 'Ship the change.',
       artifacts: [],
     });
+    assert.equal(
+      h.calls.some(([name]) => name === 'allocate'),
+      false
+    );
+    assert.equal(
+      h.calls.some(([name]) => name === 'coordinator'),
+      true
+    );
   });
 
   it('fails closed when the target does not advertise RunIntent v2', async () => {
-    const h = remoteHarness({
-      descriptor: { ...DESCRIPTOR, runIntent: null },
-    });
+    const h = remoteHarness({ descriptor: { ...DESCRIPTOR, runIntent: null } });
     await assert.rejects(
-      h.services.remoteQueueRun({
+      h.services.remoteRun({
         target: 'prod',
         graph: 'graph.json',
         input: 'input.json',
-        queue: true,
         submissionKey: SUBMISSION_KEY,
         detach: true,
       }),
@@ -95,7 +111,7 @@ function registerQueueSubmissionTests() {
     );
   });
 
-  it('omits queue size to preserve the target-advertised default', async () => {
+  it('omits size to preserve the target-advertised default', async () => {
     let submitted;
     const h = remoteHarness({
       createRunIntentClient: () => ({
@@ -105,38 +121,37 @@ function registerQueueSubmissionTests() {
         },
       }),
     });
-    await captureLogs(() => h.services.remoteQueueRun(detachedQueueOptions(SUBMISSION_KEY)));
+    await captureLogs(() => h.services.remoteRun(detachedRunOptions(SUBMISSION_KEY)));
     assert.equal(Object.hasOwn(submitted, 'size'), false);
   });
 }
 
-function registerQueueObservationTests() {
-  it('keeps Ctrl+C as queue observation disconnect without cancellation', async () => {
-    const queueCalls = [];
+function registerObservationTests() {
+  it('keeps Ctrl+C as a detach without cancellation', async () => {
+    const runCalls = [];
     const h = remoteHarness({
       createRunIntentClient: () => ({
         submit() {
-          queueCalls.push(['submit']);
+          runCalls.push(['submit']);
           return intent();
         },
         get(_id, options) {
-          queueCalls.push(['get']);
+          runCalls.push(['get']);
           process.emit('SIGINT');
           return Promise.reject(options.signal.reason);
         },
         cancel() {
-          queueCalls.push(['cancel']);
+          runCalls.push(['cancel']);
         },
       }),
       runIntentSleep: () => Promise.resolve(),
     });
     const listenersBefore = process.listenerCount('SIGINT');
     const result = await captureLogs(() =>
-      h.services.remoteQueueRun({
+      h.services.remoteRun({
         target: 'prod',
         graph: 'graph.json',
         input: 'input.json',
-        queue: true,
         submissionKey: SUBMISSION_KEY,
         detach: false,
       })
@@ -144,68 +159,80 @@ function registerQueueObservationTests() {
     assert.equal(result.value.state, 'queued');
     assert.equal(process.listenerCount('SIGINT'), listenersBefore);
     assert.equal(
-      queueCalls.some(([name]) => name === 'cancel'),
+      runCalls.some(([name]) => name === 'cancel'),
       false
     );
     assert.match(result.lines.join('\n'), /was not cancelled/);
   });
 
   it('preserves exact-key recovery guidance after an ambiguous submission', async () => {
-    let submissions = 0;
     const h = remoteHarness({
       createRunIntentClient: () => ({
         submit() {
-          submissions += 1;
           throw new Error('peer-secret-detail');
         },
       }),
     });
     await assert.rejects(
-      captureLogs(() =>
-        h.services.remoteQueueRun({
-          target: 'prod',
-          graph: 'graph.json',
-          input: 'input.json',
-          queue: true,
-          submissionKey: SUBMISSION_KEY,
-          detach: true,
-        })
-      ),
+      captureLogs(() => h.services.remoteRun(detachedRunOptions(SUBMISSION_KEY))),
       (error) => {
         assert.match(error.message, new RegExp(`--submission-key ${SUBMISSION_KEY}`));
         assert.doesNotMatch(error.message, /peer-secret-detail/);
         return true;
       }
     );
-    assert.equal(submissions, 1);
+  });
+
+  it('attaches by RunIntent ID using capsule get and cursor watch', async () => {
+    const runCalls = [];
+    const states = [intent({ state: 'running', capsule_id: INTENT_CAPSULE_ID }), succeeded()];
+    const h = remoteHarness({
+      observationSnapshot: {
+        status: {
+          phase: 'running',
+          observedGeneration: 1,
+          currentRunId: 'run-1',
+          atCursor: 'cursor-8',
+        },
+        atCursor: 'cursor-8',
+      },
+      createRunIntentClient: () => stateClient(states, runCalls),
+      runIntentSleep: () => Promise.resolve(),
+    });
+    const result = await captureLogs(() => h.services.remoteAttach('prod', INTENT_ID));
+    assert.equal(result.value.state, 'succeeded');
+    const watch = h.calls.find(([name]) => name === 'watch');
+    assert.deepEqual(watch[1].params, { runId: 'run-1', fromCursor: 'cursor-8' });
+    assert.equal(
+      h.calls.some(([name]) => name === 'watch-cancel'),
+      true
+    );
+    assert.deepEqual(runCalls, [
+      ['get', INTENT_ID],
+      ['get', INTENT_ID],
+    ]);
+    assert.doesNotMatch(result.lines.join('\n'), /agent.output|agent_output/);
   });
 }
 
-function registerRunIntentManagementTests() {
-  it('reads status, follows, and cancels only through explicit RunIntent operations', async () => {
-    const queueCalls = [];
+function registerManagementTests() {
+  it('reads status and cancels only through explicit RunIntent operations', async () => {
+    const runCalls = [];
     const h = remoteHarness({
       createRunIntentClient: () => ({
         get(id) {
-          queueCalls.push(['get', id]);
-          return intent({
-            state: 'succeeded',
-            capsule_id: INTENT_CAPSULE_ID,
-            result: { summary: 'done' },
-            terminal_at: NOW,
-          });
+          runCalls.push(['get', id]);
+          return succeeded();
         },
         cancel(id) {
-          queueCalls.push(['cancel', id]);
+          runCalls.push(['cancel', id]);
           return intent({ state: 'cancelling', capsule_id: INTENT_CAPSULE_ID });
         },
       }),
     });
-    await captureLogs(() =>
-      h.services.runIntentStatus('prod', INTENT_ID, { follow: true, json: false })
-    );
+    await captureLogs(() => h.services.runIntentStatus('prod', INTENT_ID, { json: false }));
     await captureLogs(() => h.services.runIntentCancel('prod', INTENT_ID));
-    assert.deepEqual(queueCalls, [
+    assert.deepEqual(runCalls, [
       ['get', INTENT_ID],
       ['cancel', INTENT_ID],
     ]);
@@ -224,19 +251,15 @@ function registerRunIntentManagementTests() {
         },
       }),
     });
-    const result = await captureLogs(() =>
-      h.services.runIntentStatus('prod', INTENT_ID, { follow: true, json: false })
-    );
+    const result = await captureLogs(() => h.services.remoteAttach('prod', INTENT_ID));
     assert.equal(result.value.result, null);
     assert.match(result.lines.join('\n'), /result is no longer retained/);
     assert.doesNotMatch(result.lines.join('\n'), /^\{\}$/m);
   });
 }
 
-function registerRunIntentServiceTests() {
-  registerQueueSubmissionTests();
-  registerQueueObservationTests();
-  registerRunIntentManagementTests();
-}
-
-describe('private RunIntent services', registerRunIntentServiceTests);
+describe('private RunIntent services', () => {
+  registerSubmissionTests();
+  registerObservationTests();
+  registerManagementTests();
+});

@@ -35,6 +35,10 @@ function harness() {
     .action((id) => calls.push(['local-status', id]));
   program.command('stop <id>').action((id) => calls.push(['local-stop', id]));
   program.command('logs [id]').action((id) => calls.push(['local-logs', id]));
+  program
+    .command('attach [id]')
+    .option('--agent <name>')
+    .action((id) => calls.push(['local-attach', id]));
   const serviceNames = [
     'targetAdd',
     'targetLogin',
@@ -44,7 +48,7 @@ function harness() {
     'capsuleCreate',
     'capsuleTerminate',
     'remoteRun',
-    'remoteQueueRun',
+    'remoteAttach',
     'remoteList',
     'remoteStatus',
     'remoteStop',
@@ -81,7 +85,7 @@ afterEach(() => {
 function assertsFrozenPrivateCommandManifest() {
   const { program } = harness();
   assert.deepEqual(program.privateHostedCommandManifest, COMMAND_MANIFEST);
-  assert.equal(COMMAND_MANIFEST.length, 13);
+  assert.equal(COMMAND_MANIFEST.length, 14);
 }
 
 async function preservesStableHandlersWithoutHostedSettings() {
@@ -90,9 +94,10 @@ async function preservesStableHandlersWithoutHostedSettings() {
   await parse(program, ['list', '--json']);
   await parse(program, ['status', 'local-id']);
   await parse(program, ['stop', 'local-id']);
+  await parse(program, ['attach', 'local-id']);
   assert.deepEqual(
     calls.map((call) => call[0]),
-    ['local-run', 'local-list', 'local-status', 'local-stop']
+    ['local-run', 'local-list', 'local-status', 'local-stop', 'local-attach']
   );
   assert.equal(settingsReads(), 0);
 }
@@ -122,38 +127,26 @@ async function rejectsGeneralTextRunWithTarget() {
   assert.equal(process.exitCode, 1);
 }
 
-async function keepsDirectRunDefaultAndQueueRecoverySyntax() {
-  const direct = harness();
-  await parse(direct.program, hostedRun('--pr'));
+async function usesOnlyRunIntentAndKeepsRecoverySyntax() {
+  const runIntent = harness();
+  await parse(
+    runIntent.program,
+    hostedRun('--pr', '--submission-key', '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec')
+  );
   assert.deepEqual(
-    direct.calls.map((call) => call[0]),
+    runIntent.calls.map((call) => call[0]),
     ['remoteRun']
   );
 
-  const queued = harness();
-  await parse(
-    queued.program,
-    hostedRun('--queue', '--ship', '--submission-key', '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec')
-  );
-  assert.deepEqual(
-    queued.calls.map((call) => call[0]),
-    ['remoteQueueRun']
-  );
-
-  for (const argv of [
-    ['run', 'local-task', '--queue'],
-    hostedRun('--submission-key', '019fd17d-d9a7-4ef7-8a62-4e46f907c8ec'),
-  ]) {
+  for (const argv of [['run', 'local-task', '--queue'], hostedRun('--queue', '--ship')]) {
     const rejected = harness();
-    await parse(rejected.program, argv);
+    await assert.rejects(parse(rejected.program, argv), /unknown option/);
     assert.deepEqual(rejected.calls, []);
-    assert.equal(process.exitCode, 1);
-    process.exitCode = 0;
   }
 
   const invalidKey = harness();
   await assert.rejects(
-    parse(invalidKey.program, hostedRun('--queue', '--submission-key', 'not-a-uuid')),
+    parse(invalidKey.program, hostedRun('--ship', '--submission-key', 'not-a-uuid')),
     /canonical UUID/
   );
   assert.deepEqual(invalidKey.calls, []);
@@ -195,28 +188,23 @@ async function dispatchesRemoteLifecycleRoutes() {
   await parse(program, ['status', 'cap-1', '--target', 'prod', '--json']);
   await parse(program, ['stop', 'cap-1', '--target', 'prod', '--force']);
   await parse(program, ['capsule', 'terminate', 'cap-1', '--target', 'prod']);
+  await parse(program, ['attach', '019fd17e-11a9-7f05-8e44-6ae3b08a335f', '--target', 'prod']);
   assert.deepEqual(
     calls.map((call) => call[0]),
-    ['remoteRun', 'remoteList', 'remoteStatus', 'remoteStop', 'capsuleTerminate']
+    ['remoteRun', 'remoteList', 'remoteStatus', 'remoteStop', 'capsuleTerminate', 'remoteAttach']
   );
   assert.equal(calls[3][2].force, true);
 }
 
 async function exposesPrivateTargetRunIntentRoutes() {
   const { program, calls } = harness();
-  await parse(program, [
-    'target',
-    'status',
-    'prod',
-    '019fd17e-11a9-7f05-8e44-6ae3b08a335f',
-    '--follow',
-  ]);
+  await parse(program, ['target', 'status', 'prod', '019fd17e-11a9-7f05-8e44-6ae3b08a335f']);
   await parse(program, ['target', 'cancel', 'prod', '019fd17e-11a9-7f05-8e44-6ae3b08a335f']);
   assert.deepEqual(
     calls.map((call) => call[0]),
     ['runIntentStatus', 'runIntentCancel']
   );
-  assert.equal(calls[0][3].follow, true);
+  assert.equal(calls[0][3].json, undefined);
 }
 
 function exposesTargetSetupWithoutSecretOption() {
@@ -248,7 +236,7 @@ function registerPrivateCandidateParserTests() {
     ],
     ['rejects incompatible hosted run syntax', rejectsIncompatibleHostedRunSyntax],
     ['rejects general text run with a target', rejectsGeneralTextRunWithTarget],
-    ['keeps direct run and queue recovery syntax', keepsDirectRunDefaultAndQueueRecoverySyntax],
+    ['uses only RunIntent and keeps recovery syntax', usesOnlyRunIntentAndKeepsRecoverySyntax],
     ['rejects empty targets and hosted ls aliases', rejectsEmptyTargetsAndHostedLsAliases],
     ['preserves local ls after a global option', preservesLocalLsAliasAfterGlobalOption],
     ['dispatches distinct remote lifecycle routes', dispatchesRemoteLifecycleRoutes],

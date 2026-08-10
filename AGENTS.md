@@ -172,8 +172,9 @@ repository, revision, provider, model, executable, settings, files, and environm
 Each submission resolves its base selector to one immutable revision and includes a closed
 `zeroshot.delivery/v1` request. An omitted selector resolves the repository default branch, a named
 branch remains the delivery target, and an exact revision requires an explicit target branch.
-Direct and queued submissions use the same request; an explicit size must be advertised, while an
-omitted queued size preserves the target default.
+Every hosted CLI run submits this RunIntent request. An explicit size must be advertised, while an
+omitted size preserves the target default. Runs follow by default; detach and Ctrl+C leave the
+RunIntent active, and later attachment uses the RunIntent ID plus capsule `get`/cursor `watch`.
 The adapter retains one bounded in-memory intent identity/status, treats matching retries as replays
 and all second identities as conflicts, and leaves queue cancellation to capsule termination.
 Its fixed `/workspace` starts empty and receives the exact installed checkout. Runtime settings and
@@ -228,8 +229,10 @@ sole owner of each target's locked rotating refresh family and audience access c
 `createTargetAdapter` is the sole capsule-adapter constructor. Hosted-session accepts that adapter
 and a capsule ID, so every initial/replacement OECP connection obtains fresh access. The immutable
 private RunIntent client requires the validated same-origin `zeroshot.run-intent/v2` discovery
-extension; its queued input carries job data only and never repository, provider, model, endpoint,
-credential, or runtime authority. The immutable
+extension; its job input carries only job data and never repository, provider, model, endpoint,
+credential, or runtime authority. Discovery `extensions` is an open capability advertisement:
+validate capabilities this client implements and ignore unsupported capabilities without inferring
+routes or behavior from them. The immutable
 Zero Cloud #55 corpus lives at `tests/fixtures/zero-cloud-44`, pinned to commit
 `e8e746d` and digest
 `sha256:6636d50cd60067241a50d1ee027d86fc1738aa933f086d8bb2c496c5be31b85e`; never hand-author a

@@ -7,7 +7,6 @@ const {
   finishedWatch,
   GRAPH,
   RUNTIME_CONFIG_PATH,
-  RUNTIME_DIGEST,
 } = require('./candidate-fixtures');
 
 function createTarget() {
@@ -27,16 +26,12 @@ function createTarget() {
 
 function createAdapter(options, calls) {
   return {
-    credentialInstall: { supported: true, descriptor: DESCRIPTOR.credentialInstall },
     access(capsuleId, signal) {
       const access = options.access?.(capsuleId, signal) ?? {
         accessToken: 'capsule-runtime-access',
       };
-      calls.push(['access', access.accessToken]);
+      calls.push(['access', capsuleId]);
       return access;
-    },
-    installRuntime(capsuleId, runtime, accessToken) {
-      calls.push(['install-runtime', capsuleId, runtime, accessToken]);
     },
     allocate(params) {
       calls.push(['allocate', params]);
@@ -73,77 +68,29 @@ function createAdapter(options, calls) {
   };
 }
 
-function createRunClient(calls) {
-  return {
-    plan(params) {
-      calls.push(['plan', params]);
-      return { ok: true, diagnostics: [] };
-    },
-    apply(params) {
-      calls.push(['apply', params]);
-      return { generation: 1, runId: 'run-1' };
-    },
-  };
+function observationSnapshot(options) {
+  return (
+    options.observationSnapshot ?? {
+      status: {
+        phase: 'finished',
+        observedGeneration: 3,
+        currentRunId: 'run-3',
+        atCursor: 'cursor-3',
+      },
+      atCursor: 'cursor-3',
+    }
+  );
 }
 
-function createFinishedClient(calls, status) {
+function createObservationClient(calls, options) {
   return {
     get() {
       calls.push(['get']);
-      return { status };
+      return observationSnapshot(options);
     },
-  };
-}
-
-function createObservationClient(calls) {
-  return {
-    ...createFinishedClient(calls, {
-      phase: 'finished',
-      observedGeneration: 3,
-      currentRunId: 'run-3',
-      atCursor: 'cursor-3',
-    }),
     stop(params) {
       calls.push(['stop', params]);
       return { effectiveMode: params.mode, runId: 'run-3' };
-    },
-  };
-}
-
-function openHostedSession(context) {
-  const { calls, options } = context;
-  calls.push(['initialize']);
-  context.runOpenCount += 1;
-  if (options.run) {
-    return {
-      initializeResult: {
-        capabilities: { graphProfiles: ['openengine.graph.single-worker/v1'] },
-      },
-      client:
-        context.runOpenCount === 1
-          ? createRunClient(calls)
-          : createFinishedClient(calls, {
-              phase: 'finished',
-              observedGeneration: 1,
-              currentRunId: 'run-1',
-              atCursor: 'cursor-1',
-            }),
-    };
-  }
-  return { client: createObservationClient(calls) };
-}
-
-function interruptedWatch(calls, params) {
-  process.emit('SIGINT');
-  return {
-    [Symbol.asyncIterator]() {
-      return this;
-    },
-    next() {
-      return Promise.reject(params.signal.reason);
-    },
-    cancel() {
-      calls.push(['watch-cancel']);
     },
   };
 }
@@ -155,18 +102,20 @@ function createHostedSessionCoordinator(context) {
     }
 
     open() {
-      return openHostedSession(context);
+      context.calls.push(['initialize']);
+      return { client: createObservationClient(context.calls, context.options) };
     }
 
-    watch(params) {
-      const { calls, options } = context;
-      calls.push(['watch', params]);
-      if (options.interruptWatch) return interruptedWatch(calls, params);
-      return finishedWatch({
-        runId: 'run-1',
-        cursor: 'cursor-1',
-        onCancel: () => calls.push(['watch-cancel']),
-      });
+    watch(options) {
+      context.calls.push(['watch', options]);
+      return (
+        context.options.observationWatch?.(options) ??
+        finishedWatch({
+          runId: 'run-3',
+          cursor: 'cursor-4',
+          onCancel: () => context.calls.push(['watch-cancel']),
+        })
+      );
     }
 
     close() {
@@ -180,6 +129,8 @@ function createTargetSessionManager() {
     tokenProvider() {
       return () => Promise.resolve('access-token');
     }
+
+    clearMemory() {}
   };
 }
 
@@ -207,13 +158,6 @@ function createRuntime({ adapter, calls, context, options, state }) {
   };
 }
 
-function createManifest() {
-  return {
-    privateMarker: 'ZEROSHOT_PRIVATE_HOSTED_CLI_CANDIDATE_DO_NOT_PUBLISH',
-    runtimeImageDigest: RUNTIME_DIGEST,
-  };
-}
-
 function readHostedInputs(options, calls) {
   calls.push(['read-inputs']);
   return {
@@ -231,20 +175,19 @@ function remoteHarness(options = {}) {
   let ids = 0;
   const state = { _targets: { prod: createTarget() } };
   const adapter = createAdapter(options, calls);
-  const context = { calls, options, runOpenCount: 0 };
+  const context = { calls, options };
   const runtime = createRuntime({ adapter, calls, context, options, state });
   const services = createDefaultServices({
     createCoordinator: options.createCoordinator,
-    orchestratorOutput: options.orchestratorOutput,
     runtime,
     loadSettings: () => state,
     mutateSettings: (mutator) => mutator(state),
     httpTransport: () => ({ fetch: () => undefined }),
     createRunIntentClient: options.createRunIntentClient,
     followRunIntent: options.followRunIntent,
+    observeRunIntent: options.observeRunIntent,
     runIntentSleep: options.runIntentSleep,
-    randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-0000-0000-000000000000`,
-    manifest: createManifest(),
+    randomUUID: () => `${String(++ids).padStart(8, '0')}-0000-4000-8000-000000000000`,
     environment: options.environment ?? {
       GH_TOKEN: 'github-test-token',
       LOCAL_MODEL_KEY: 'model-test-token',

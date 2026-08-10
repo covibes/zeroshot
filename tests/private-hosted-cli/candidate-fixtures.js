@@ -3,7 +3,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
 const BASE_REVISION = 'b'.repeat(40);
 const RUNTIME_CONFIG_PATH = path.join(__dirname, 'fixtures', 'runtime-config.json');
 const RUNTIME_CONFIG = Object.freeze(JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, 'utf8')));
@@ -51,14 +50,6 @@ const DESCRIPTOR = {
     audience: 'capsule',
   },
   capsule: { baseUrl: 'https://target.example/capsules/' },
-  credentialInstall: {
-    kind: 'openengine.capsule-credential-install/v1',
-    install: {
-      routeTemplate: route('/capsules/{capsule_id}/credentials'),
-      method: 'PUT',
-    },
-    maxBodyBytes: 4 * 1024 * 1024,
-  },
   runIntent: {
     kind: 'zeroshot.run-intent/v2',
     baseUrl: 'https://target.example/api/v1',
@@ -87,12 +78,11 @@ function runIntent(overrides = {}) {
   };
 }
 
-function detachedQueueOptions(submissionKey, overrides = {}) {
+function detachedRunOptions(submissionKey, overrides = {}) {
   return {
     target: 'prod',
     graph: 'graph.json',
     input: 'input.json',
-    queue: true,
     submissionKey,
     detach: true,
     ...overrides,
@@ -146,7 +136,7 @@ module.exports = {
   BASE_REVISION,
   captureLogs,
   DESCRIPTOR,
-  detachedQueueOptions,
+  detachedRunOptions,
   finishedWatch,
   GRAPH,
   RUNTIME_BUNDLE,
@@ -155,5 +145,4 @@ module.exports = {
   runIntent,
   RUN_INTENT_ID,
   RUN_INTENT_NOW,
-  RUNTIME_DIGEST,
 };

@@ -13,9 +13,7 @@ const CANDIDATE_FILES = Object.freeze([
   'readers.js',
   'credentials.js',
   'runtime-config.js',
-  'orchestrator.js',
-  'orchestrator-support.js',
-  'queued-execution.js',
+  'run-intent-execution.js',
   'default-services.js',
   'default-capsule-services.js',
   'default-run-intent-services.js',
@@ -56,7 +54,6 @@ function parseOptionValues(argv) {
   const args = {};
   let valueFor;
   const names = Object.freeze({
-    '--runtime-image-digest': 'runtimeImageDigest',
     '--out': 'output',
   });
   for (const arg of argv) {
@@ -73,16 +70,8 @@ function parseOptionValues(argv) {
   return args;
 }
 
-function validateBuildArgs(args) {
-  if (!/^sha256:[a-f0-9]{64}$/.test(args.runtimeImageDigest || '')) {
-    throw new Error('--runtime-image-digest sha256:<64 lowercase hex> is required');
-  }
-}
-
 function parseArgs(argv) {
-  const args = parseOptionValues(argv);
-  validateBuildArgs(args);
-  return Object.freeze(args);
+  return Object.freeze(parseOptionValues(argv));
 }
 
 function copyStablePackage(stage) {
@@ -109,16 +98,12 @@ function copyStablePackage(stage) {
   }
 }
 
-function writeCandidateFiles(stage, buildManifest) {
+function writeCandidateFiles(stage) {
   const target = path.join(stage, 'lib/private-hosted-cli');
   fs.mkdirSync(target, { recursive: true });
   for (const file of CANDIDATE_FILES) {
     fs.copyFileSync(path.join(__dirname, file), path.join(target, file));
   }
-  fs.writeFileSync(
-    path.join(target, 'candidate-build.json'),
-    `${JSON.stringify(buildManifest, null, 2)}\n`
-  );
   fs.writeFileSync(path.join(stage, 'PRIVATE_HOSTED_CANDIDATE.txt'), `${PRIVATE_MARKER}\n`);
 
   const cliPath = path.join(stage, 'cli/index.js');
@@ -174,12 +159,7 @@ function main() {
   fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
 
   copyStablePackage(stage);
-  const buildManifest = Object.freeze({
-    privateMarker: PRIVATE_MARKER,
-    runtimeImageDigest: args.runtimeImageDigest,
-  });
-
-  writeCandidateFiles(stage, buildManifest);
+  writeCandidateFiles(stage);
   const packed = JSON.parse(
     run(
       'npm',

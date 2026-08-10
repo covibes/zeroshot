@@ -2,14 +2,7 @@ import { MAX_RETRY_ELAPSED_MS } from './bounds.js';
 import { TargetAdapterError } from './errors.js';
 import type { Clock, RetryPolicy } from './types.js';
 
-export type TargetOperation =
-  | 'allocate'
-  | 'list'
-  | 'inspect'
-  | 'terminate'
-  | 'limits'
-  | 'access'
-  | 'installRuntime';
+export type TargetOperation = 'allocate' | 'list' | 'inspect' | 'terminate' | 'limits' | 'access';
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -22,10 +15,16 @@ async function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
   if (delayMs <= 0) return;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(resolve, delayMs);
-    signal?.addEventListener('abort', () => {
-      clearTimeout(timer);
-      reject(signal.reason ?? new globalThis.DOMException('The operation was aborted', 'AbortError'));
-    }, { once: true });
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(
+          signal.reason ?? new globalThis.DOMException('The operation was aborted', 'AbortError')
+        );
+      },
+      { once: true }
+    );
   });
 }
 
@@ -41,12 +40,11 @@ function validRetryDelay(retry: boolean, delayMs: number, remaining: number): bo
   return retry && Number.isFinite(delayMs) && delayMs >= 0 && delayMs < remaining;
 }
 
-
 export async function withTargetRetry<T>(
   operation: TargetOperation,
   effect: () => Promise<T>,
   signal: AbortSignal | undefined,
-  context: RetryContext,
+  context: RetryContext
 ): Promise<T> {
   const retrySafe = operation !== 'access';
   const started = context.clock.now();

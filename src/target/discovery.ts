@@ -2,12 +2,7 @@ import type { HttpTransport } from './device-flow.js';
 import { readBoundedResponseJson } from './bounded-response.js';
 import { TargetDiscoveryError } from './discovery-errors.js';
 import type { RouteTemplate } from './route-template.js';
-import {
-  exact,
-  exactStringSet,
-  record,
-  type CredentialInstallDescriptor,
-} from './discovery-validation.js';
+import { exact, exactStringSet, record } from './discovery-validation.js';
 import type { RunIntentDescriptor } from './run-intent-discovery.js';
 import {
   parseAdapter,
@@ -20,7 +15,6 @@ import {
   parseTransport,
   validateOAuthMetadata,
 } from './discovery-sections.js';
-export type { CredentialInstallDescriptor } from './discovery-validation.js';
 export type { RunIntentDescriptor } from './run-intent-discovery.js';
 export { TargetDiscoveryError } from './discovery-errors.js';
 export { expandRoute, type RouteTemplate } from './route-template.js';
@@ -85,7 +79,6 @@ export interface TargetDiscoveryDescriptor {
     readonly closeCodes: { readonly expired: 4401; readonly revoked: 4403 };
   };
   readonly capabilityFlags: readonly string[];
-  readonly credentialInstall: CredentialInstallDescriptor | null;
   readonly runIntent: RunIntentDescriptor | null;
   readonly additional: Readonly<Record<string, unknown>>;
 }
@@ -147,7 +140,6 @@ function parseDiscoveryDocument(
     capsule,
     transport,
     capabilityFlags,
-    credentialInstall: extensions.credentialInstall,
     runIntent: extensions.runIntent,
     additional,
   });

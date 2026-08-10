@@ -1,10 +1,28 @@
 'use strict';
-const { HostedRunOrchestrator } = require('./orchestrator');
-const {
-  isDeterministicAllocationRefusal,
-  RemoteAllocationUncertainError,
-} = require('./orchestrator-support');
-const { withInterruptSignal } = require('./interrupt-signal');
+
+const DETERMINISTIC_ALLOCATION_CODES = new Set([
+  'AUTH_FAILED',
+  'SERVER_REJECTED',
+  'CAPACITY',
+  'NOT_FOUND',
+  'RATE_LIMITED',
+]);
+
+function isDeterministicAllocationRefusal(error) {
+  return DETERMINISTIC_ALLOCATION_CODES.has(error?.code);
+}
+
+class RemoteAllocationUncertainError extends Error {
+  constructor(allocationIdempotencyKey, cause) {
+    super(
+      `remote allocation outcome is uncertain; allocation key ${allocationIdempotencyKey} was preserved. ` +
+        'Do not allocate a replacement. Reconcile this exact key with the target operator.',
+      { cause }
+    );
+    this.name = 'RemoteAllocationUncertainError';
+    this.allocationIdempotencyKey = allocationIdempotencyKey;
+  }
+}
 
 function outputCapsule(capsule, json) {
   if (json) {
@@ -42,39 +60,6 @@ async function capsuleCreate(service, options) {
   }
   console.log(`Capsule: ${capsule.id}`);
   outputCapsule(capsule, false);
-}
-
-async function remoteRun(service, options) {
-  const inputs = await service.inputReader(
-    options.graph,
-    options.input,
-    service.runtime.cluster.assertGraphSpec
-  );
-  const context = await service.contextFor(options.target);
-  if (options.size !== undefined && !context.descriptor.sizes.catalog.includes(options.size)) {
-    throw new Error('capsule size is not advertised by the target');
-  }
-  const manifest = service.candidateManifest();
-  return withInterruptSignal((signal) => {
-    const orchestrator = new HostedRunOrchestrator({
-      assertGraphSpec: service.runtime.cluster.assertGraphSpec,
-      readInputs: () => inputs,
-      resolveRuntimeBundle: service.runtimeBundleFor,
-      createCoordinator: service.coordinatorFor,
-      runtimeImageDigest: manifest.runtimeImageDigest,
-      randomUUID: service.randomUUID,
-      output: service.dependencies.orchestratorOutput,
-    });
-    return orchestrator.run({
-      ...context,
-      graphPath: options.graph,
-      inputPath: options.input,
-      detach: Boolean(options.detach),
-      deliveryMode: options.ship ? 'ship' : 'pr',
-      ...(options.size === undefined ? {} : { size: options.size }),
-      signal,
-    });
-  });
 }
 
 async function remoteList(service, options) {
@@ -157,7 +142,6 @@ function createCapsuleServices(service) {
       const capsule = await context.adapter.terminate(capsuleId);
       console.log(`Termination requested for capsule ${capsule.id}; host state: ${capsule.state}`);
     },
-    remoteRun: (options) => remoteRun(service, options),
     remoteList: (options) => remoteList(service, options),
     remoteStatus: (capsuleId, options) => remoteStatus(service, capsuleId, options),
     remoteStop: (capsuleId, options) => remoteStop(service, capsuleId, options),

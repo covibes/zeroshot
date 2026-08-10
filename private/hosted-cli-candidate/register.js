@@ -19,7 +19,6 @@ const HOSTED_RUN_OPTIONS = new Set([
   'input',
   'target',
   'detach',
-  'queue',
   'submissionKey',
   'size',
   'pr',
@@ -57,21 +56,17 @@ function registerTarget(program, service) {
     .action((name, options) => failClosed(() => service().targetSetup(name, options)));
   target
     .command('status <name> <intent-id>')
-    .description('Inspect or follow a queued private hosted run')
-    .option('--follow', 'Follow until the run reaches a terminal state')
+    .description('Inspect a private hosted run')
     .option('--json', 'Output one current status as JSON')
     .action((name, intentId, options) =>
       failClosed(() => {
         canonicalUuid(intentId);
-        if (options.follow && options.json) {
-          throw new Error('--json cannot be combined with --follow');
-        }
         return service().runIntentStatus(name, intentId, options);
       })
     );
   target
     .command('cancel <name> <intent-id>')
-    .description('Request cancellation of a queued private hosted run')
+    .description('Request cancellation of a private hosted run')
     .action((name, intentId) =>
       failClosed(() => {
         canonicalUuid(intentId);
@@ -120,7 +115,6 @@ function registerHostedRun(program, service) {
     .option('--graph <file>', 'Explicit hosted GraphSpec JSON')
     .option('--input <file>', 'Explicit hosted JSON input')
     .option('--target <name>', 'Named private hosted target')
-    .option('--queue', 'Submit through the durable private RunIntent queue')
     .option('--size <size>', 'Advertised capsule size')
     .option('--submission-key <uuid>', 'Retry-stable RunIntent submission key', canonicalUuid);
   wrapExisting(run, ({ args, options, command, invokeLocal }) => {
@@ -129,13 +123,12 @@ function registerHostedRun(program, service) {
       if (
         options.graph !== undefined ||
         options.input !== undefined ||
-        options.queue ||
         options.size !== undefined ||
         options.submissionKey !== undefined
       ) {
         return failClosed(() =>
           Promise.reject(
-            new Error('--graph, --input, --queue, --size, and --submission-key require --target')
+            new Error('--graph, --input, --size, and --submission-key require --target')
           )
         );
       }
@@ -144,7 +137,7 @@ function registerHostedRun(program, service) {
     }
     return failClosed(() => {
       validateHostedRun({ options, command, inputArg });
-      return options.queue ? service().remoteQueueRun(options) : service().remoteRun(options);
+      return service().remoteRun(options);
     });
   });
 }
@@ -156,10 +149,15 @@ function validateHostedRun({ options, command, inputArg }) {
   validateHostedRunDelivery(options);
 }
 
-function validateHostedRunTarget(options, inputArg) {
+function requireTargetName(options) {
   if (typeof options.target !== 'string' || options.target.length === 0) {
     throw new Error('--target must name a registered target');
   }
+  return options.target;
+}
+
+function validateHostedRunTarget(options, inputArg) {
+  requireTargetName(options);
   if (inputArg !== undefined) {
     throw new Error('general text/issue run is not available with --target');
   }
@@ -168,9 +166,6 @@ function validateHostedRunTarget(options, inputArg) {
 function validateHostedRunInput(options) {
   if (!options.graph || !options.input) {
     throw new Error('hosted run requires both --graph and --input');
-  }
-  if (options.submissionKey !== undefined && !options.queue) {
-    throw new Error('--submission-key requires --queue');
   }
 }
 
@@ -187,9 +182,7 @@ function registerHostedList(program, service) {
   wrapExisting(list, ({ options, command, invokeLocal }) => {
     if (options.target === undefined) return invokeLocal();
     return failClosed(() => {
-      if (typeof options.target !== 'string' || options.target.length === 0) {
-        throw new Error('--target must name a registered target');
-      }
+      requireTargetName(options);
       if (invokedThroughAlias(command, 'ls')) {
         throw new Error('hosted list is available only as `list --target`');
       }
@@ -205,15 +198,28 @@ function registerHostedList(program, service) {
   });
 }
 
+function registerHostedAttach(program, service) {
+  const attach = commandNamed(program, 'attach');
+  attach.option('--target <name>', 'Named private hosted target');
+  wrapExisting(attach, ({ args, options, command, invokeLocal }) => {
+    if (options.target === undefined) return invokeLocal();
+    return failClosed(() => {
+      const targetName = requireTargetName(options);
+      if (args[0] === undefined) throw new Error('hosted attach requires a RunIntent ID');
+      canonicalUuid(args[0]);
+      assertOnlyOptions(command, new Set(['target']));
+      return service().remoteAttach(targetName, args[0]);
+    });
+  });
+}
+
 function registerHostedStatus(program, service) {
   const status = commandNamed(program, 'status');
   status.option('--target <name>', 'Named private hosted target');
   wrapExisting(status, ({ args, options, command, invokeLocal }) => {
     if (options.target === undefined) return invokeLocal();
     return failClosed(() => {
-      if (typeof options.target !== 'string' || options.target.length === 0) {
-        throw new Error('--target must name a registered target');
-      }
+      requireTargetName(options);
       assertOnlyOptions(command, new Set(['target', 'json']));
       return service().remoteStatus(args[0], options);
     });
@@ -232,9 +238,7 @@ function registerHostedStop(program, service) {
       return invokeLocal();
     }
     return failClosed(() => {
-      if (typeof options.target !== 'string' || options.target.length === 0) {
-        throw new Error('--target must name a registered target');
-      }
+      requireTargetName(options);
       assertOnlyOptions(command, new Set(['target', 'force']));
       return service().remoteStop(args[0], options);
     });
@@ -258,6 +262,7 @@ function registerPrivateHostedCandidate(program, dependencies) {
   registerTarget(program, service);
   registerCapsule(program, service);
   registerHostedRun(program, service);
+  registerHostedAttach(program, service);
   registerHostedList(program, service);
   registerHostedStatus(program, service);
   registerHostedStop(program, service);

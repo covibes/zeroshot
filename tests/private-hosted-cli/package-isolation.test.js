@@ -22,11 +22,9 @@ function run(command, args, options = {}) {
   });
 }
 
-function buildCandidate(output, runtimeImageDigest) {
+function buildCandidate(output) {
   const built = run(process.execPath, [
     'private/hosted-cli-candidate/build-candidate.js',
-    '--runtime-image-digest',
-    runtimeImageDigest,
     '--out',
     output,
   ]);
@@ -34,7 +32,7 @@ function buildCandidate(output, runtimeImageDigest) {
   return JSON.parse(built.stdout);
 }
 
-function assertCandidateOutput(candidate, output, runtimeImageDigest) {
+function assertCandidateOutput(candidate, output) {
   assert.deepEqual(candidate, {
     tarballPath: path.join(
       output,
@@ -43,15 +41,10 @@ function assertCandidateOutput(candidate, output, runtimeImageDigest) {
     stage: path.join(output, 'staging'),
   });
   assert.equal(fs.existsSync(candidate.tarballPath), true);
-  const configuration = path.join(
-    candidate.stage,
-    'lib',
-    'private-hosted-cli',
-    'candidate-build.json'
+  assert.equal(
+    fs.existsSync(path.join(candidate.stage, 'lib', 'private-hosted-cli', 'candidate-build.json')),
+    false
   );
-  const configured = JSON.parse(fs.readFileSync(configuration, 'utf8'));
-  assert.equal(configured.privateMarker, PRIVATE_MARKER);
-  assert.equal(configured.runtimeImageDigest, runtimeImageDigest);
 }
 
 function installCandidate(temporaryRoot, tarballPath) {
@@ -103,9 +96,8 @@ function assertPackedCandidateBuildsInstallsAndLaunches() {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-candidate-installation-'));
   try {
     const output = path.join(temporaryRoot, 'candidate');
-    const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
-    const candidate = buildCandidate(output, runtimeImageDigest);
-    assertCandidateOutput(candidate, output, runtimeImageDigest);
+    const candidate = buildCandidate(output);
+    assertCandidateOutput(candidate, output);
     const installation = installCandidate(temporaryRoot, candidate.tarballPath);
     assertCandidateLaunches(temporaryRoot, installation);
   } finally {
@@ -169,14 +161,11 @@ function assertCandidateBuilderCannotPublish() {
   assert.match(builder, /run-intent\.js/);
 }
 
-function assertRequiredBuildArguments() {
-  const runtimeImageDigest = `sha256:${'a'.repeat(64)}`;
-  const parsed = parseArgs(['--runtime-image-digest', runtimeImageDigest]);
-  assert.deepEqual(parsed, {
-    runtimeImageDigest,
-  });
+function assertBuildArguments() {
+  const parsed = parseArgs([]);
+  assert.deepEqual(parsed, {});
   assert.equal(Object.isFrozen(parsed), true);
-  assert.throws(() => parseArgs([]), /runtime-image-digest/);
+  assert.deepEqual(parseArgs(['--out', 'candidate']), { output: 'candidate' });
   assert.throws(() => parseArgs(['--provider', 'codex']), /unknown build argument/);
 }
 
@@ -202,7 +191,7 @@ function registerPackageIsolationTests() {
     { timeout: 180_000 },
     assertPackedCandidateBuildsInstallsAndLaunches
   );
-  it('requires only the runtime image identity', assertRequiredBuildArguments);
+  it('accepts only the optional output path', assertBuildArguments);
 }
 
 describe('stable/candidate package isolation', registerPackageIsolationTests);

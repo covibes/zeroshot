@@ -63,9 +63,7 @@ function transport(document: Record<string, unknown>): { http: HttpTransport; re
 }
 
 describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
-  for (const { name, value } of discoveryFixtures('valid').filter(
-    ({ name }) => !name.includes('credential-install-present')
-  )) {
+  for (const { name, value } of discoveryFixtures('valid')) {
     it(`accepts ${name}`, async () => {
       const { http } = transport(value.body);
       const descriptor = await discoverTarget('https://hosted.openengine.example', http);
@@ -80,11 +78,12 @@ describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
           .includes('org%2Fraw%20value'),
         true
       );
-      assert.equal(descriptor.credentialInstall, null);
     });
   }
 
-  for (const { name, value } of discoveryFixtures('invalid')) {
+  for (const { name, value } of discoveryFixtures('invalid').filter(
+    ({ name }) => !name.includes('credential-install')
+  )) {
     it(`rejects ${name} before post-discovery side effects`, async () => {
       const { http, requests } = transport(value.body);
       await assert.rejects(
@@ -157,38 +156,32 @@ describe('Zero Cloud #44 hosted-target discovery fixtures', () => {
   });
 });
 
-describe('direct runtime install discovery', () => {
-  it('accepts only the direct bounded runtime install route', async () => {
+describe('hosted target capability discovery', () => {
+  it('ignores extensions the CLI does not support', async () => {
     const document = structuredClone(
       validDiscoveryFixture('hosted-target-v1-credential-install-absent.json')
     );
     const extensions = document.extensions as Record<string, unknown>;
     extensions.credential_install = {
-      kind: 'openengine.capsule-credential-install/v1',
-      install: {
-        route_template: '/capsules/{capsule_id}/credentials',
-        method: 'PUT',
-      },
-      max_body_bytes: 4_194_304,
+      malformed: 'unsupported capability payload',
     };
+    extensions.future_capability = { authority: 'https://attacker.example' };
     const descriptor = await discoverTarget(
       'https://hosted.openengine.example',
       transport(document).http
     );
-    assert.equal(descriptor.credentialInstall?.maxBodyBytes, 4_194_304);
-    assert.equal(
-      descriptor.credentialInstall?.install.routeTemplate.expand({ capsule_id: 'cap/raw' }),
-      '/capsules/cap%2Fraw/credentials'
-    );
+    assert.equal(descriptor.runIntent, null);
+    assert.equal(Object.hasOwn(descriptor, 'credentialInstall'), false);
 
-    const legacy = structuredClone(document);
-    (legacy.extensions as Record<string, unknown>).credential_install = (
-      validDiscoveryFixture('hosted-target-v1-credential-install-present.json')
-        .extensions as Record<string, unknown>
-    ).credential_install;
-    await assert.rejects(
-      discoverTarget('https://hosted.openengine.example', transport(legacy).http),
-      TargetDiscoveryError
+    const future = structuredClone(document);
+    (future.extensions as Record<string, unknown>).run_intent = {
+      kind: 'zeroshot.run-intent/v3',
+      arbitrary_future_contract: true,
+    };
+    const futureDescriptor = await discoverTarget(
+      'https://hosted.openengine.example',
+      transport(future).http
     );
+    assert.equal(futureDescriptor.runIntent, null);
   });
 });
