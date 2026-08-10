@@ -1866,6 +1866,19 @@ function finalizeLogFollow(agent, state) {
   }
 }
 
+function finishHostLogCapture(agent, state, pollLogFile, processNewContent, broadcastLine) {
+  // A task status can become terminal before the watcher has flushed its final
+  // filesystem write (observed on Modal). Stop the timers first, then take one
+  // authoritative catch-up read and finish any final UTF-8/non-newline record.
+  finalizeLogFollow(agent, state);
+  pollLogFile();
+  const decoderTail = state.logDecoder.end();
+  if (decoderTail) processNewContent(decoderTail);
+  if (state.lineBuffer.byteLength > 0) {
+    completeLogRecord(state.lineBuffer, broadcastLine, true);
+  }
+}
+
 function settleHostStatusFailure({ agent, providerName, state, resolve, text, data, error }) {
   if (state.resolved) return;
   state.resolved = true;
@@ -1986,6 +1999,7 @@ function handleStatusCompletion({
   state,
   stdout,
   pollLogFile,
+  finishLogCapture,
   resolve,
   reject,
 }) {
@@ -2012,7 +2026,7 @@ function handleStatusCompletion({
     if (state.resolved) return;
     state.resolved = true;
 
-    finalizeLogFollow(agent, state);
+    finishLogCapture();
     flushAgentOutput(agent, providerName, state);
 
     buildCompletionResult({
@@ -2066,14 +2080,12 @@ function createLogFollower({
     const state = createLogFollowState();
     state.skipStructuredResultCheck = skipStructuredResultCheck;
     state.nested = nested;
-
     state.logFilePath = lookupLogFilePath(ctPath, taskId);
     if (state.logFilePath) {
       agent._log(`📋 Agent ${agent.id}: Following ct logs for ${taskId}`);
     } else {
       agent._log(`⏳ Agent ${agent.id}: Waiting for log file...`);
     }
-
     const broadcastLine = (line) => broadcastAgentLine({ agent, providerName, state, line });
     const processNewContent = (content) => appendContentToBuffer(state, content, broadcastLine);
     const pollLogFile = () =>
@@ -2085,6 +2097,8 @@ function createLogFollower({
         state,
         onNewContent: processNewContent,
       });
+    const finishLogCapture = () =>
+      finishHostLogCapture(agent, state, pollLogFile, processNewContent, broadcastLine);
 
     state.pollInterval = setInterval(pollLogFile, 300);
 
@@ -2120,6 +2134,7 @@ function createLogFollower({
             state,
             stdout,
             pollLogFile,
+            finishLogCapture,
             resolve,
             reject,
           });
@@ -3546,6 +3561,7 @@ module.exports = {
   consumeIsolatedTailChunk,
   flushAgentOutput,
   flushIsolatedOutput,
+  finishHostLogCapture,
   CONTROL_PLANE_OUTPUT_LIMITS: Object.freeze({
     maxBytes: MAX_CONTROL_PLANE_OUTPUT_BYTES,
     maxRecords: MAX_CONTROL_PLANE_OUTPUT_RECORDS,

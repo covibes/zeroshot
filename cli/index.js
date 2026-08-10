@@ -74,6 +74,11 @@ const {
 } = require('../lib/start-cluster');
 const { requirePreflight } = require('../src/preflight');
 const {
+  exitCodeForResult,
+  isForegroundStatusSettled,
+  writeForegroundResult,
+} = require('../src/foreground-benchmark-run');
+const {
   createUnsupportedProviderCapabilityError,
   serializeTaskStartupError,
 } = require('../src/task-startup-error');
@@ -249,6 +254,17 @@ async function runClusterPreflight({
 
 function shouldRunDetached(options) {
   return options.detach && !process.env.ZEROSHOT_DAEMON;
+}
+
+function requireForegroundResultMode(options) {
+  if (!options.resultFile) return;
+  if (shouldRunDetached(options) || process.env.ZEROSHOT_DAEMON) {
+    throw new Error('--result-file requires foreground execution without --detach');
+  }
+  if (options.pr || options.ship) {
+    throw new Error('--result-file is incompatible with --pr and --ship delivery');
+  }
+  process.env.ZEROSHOT_TASK_EXECUTION_CONTEXT = 'benchmark';
 }
 
 function printDetachedClusterStart(plan, clusterId, logPath) {
@@ -605,65 +621,83 @@ function createForegroundCleanup({
   return { stop, stopWithFlush };
 }
 
-function setupForegroundSigintHandler({ orchestrator, clusterId, cleanup, stopChecking }) {
-  const handler = async () => {
+function setupForegroundSignalHandler({ orchestrator, clusterId, cleanup, settle, handleSigterm }) {
+  let handling = false;
+  const handler = async (signal) => {
+    if (handling) return;
+    handling = true;
     cleanup.stop();
-    stopChecking();
-    console.log(chalk.dim('\n\n--- Interrupted ---'));
+    console.log(chalk.dim(`\n\n--- Interrupted (${signal}) ---`));
 
     try {
       console.log(chalk.dim(`Stopping cluster ${clusterId}...`));
       await orchestrator.stop(clusterId);
       console.log(chalk.dim(`Cluster ${clusterId} stopped.`));
+      settle({ cancelled: true });
     } catch (stopErr) {
-      console.error(chalk.red(`Failed to stop cluster: ${stopErr.message}`));
+      settle(null, stopErr);
     }
-
-    process.exit(0);
   };
 
-  process.on('SIGINT', handler);
+  const onSigint = () => handler('SIGINT');
+  const onSigterm = () => handler('SIGTERM');
+  process.on('SIGINT', onSigint);
+  if (handleSigterm) process.on('SIGTERM', onSigterm);
   return () => {
-    process.off('SIGINT', handler);
+    process.off('SIGINT', onSigint);
+    if (handleSigterm) process.off('SIGTERM', onSigterm);
   };
 }
 
-function waitForClusterCompletion(orchestrator, clusterId, cleanup) {
-  return new Promise((resolve) => {
+function waitForClusterCompletion(orchestrator, clusterId, cleanup, handleSigterm) {
+  return new Promise((resolve, reject) => {
     let checkInterval;
+    let settled = false;
+    let terminalObservedAt = null;
+    let removeSignals = () => {};
     const stopChecking = () => {
       if (checkInterval) {
         clearInterval(checkInterval);
       }
     };
-    const removeSigint = setupForegroundSigintHandler({
+    const settle = (result, error) => {
+      if (settled) return;
+      settled = true;
+      stopChecking();
+      removeSignals();
+      if (error) reject(error);
+      else resolve(result);
+    };
+    removeSignals = setupForegroundSignalHandler({
       orchestrator,
       clusterId,
       cleanup,
-      stopChecking,
+      settle,
+      handleSigterm,
     });
-
-    const finish = (finalizer) => {
-      stopChecking();
-      removeSigint();
-      finalizer();
-      resolve();
-    };
 
     checkInterval = setInterval(() => {
       try {
         const status = orchestrator.getStatus(clusterId);
-        if (status.state !== 'running') {
-          finish(cleanup.stopWithFlush);
+        if (isForegroundStatusSettled(status)) {
+          cleanup.stopWithFlush();
+          settle({ cancelled: false });
+        } else if (['stopped', 'killed'].includes(status.state)) {
+          terminalObservedAt ??= Date.now();
+          if (Date.now() - terminalObservedAt > 30_000) {
+            cleanup.stop();
+            settle(null, new Error('foreground agent processes did not settle after terminal'));
+          }
         }
-      } catch {
-        finish(cleanup.stop);
+      } catch (error) {
+        cleanup.stop();
+        settle(null, error);
       }
     }, 500);
   });
 }
 
-async function streamClusterInForeground(cluster, orchestrator, clusterId, plan) {
+async function streamClusterInForeground(cluster, orchestrator, clusterId, plan, handleSigterm) {
   const sendersWithOutput = new Set();
   const processedMessageIds = new Set();
 
@@ -696,8 +730,34 @@ async function streamClusterInForeground(cluster, orchestrator, clusterId, plan)
     sendersWithOutput,
   });
 
-  await waitForClusterCompletion(orchestrator, clusterId, cleanup);
-  console.log(chalk.dim(`\nCluster ${clusterId} completed.`));
+  const result = await waitForClusterCompletion(orchestrator, clusterId, cleanup, handleSigterm);
+  const label = result.cancelled ? 'cancelled' : 'finished';
+  console.log(chalk.dim(`\nCluster ${clusterId} ${label}.`));
+  return result;
+}
+
+async function finishForegroundRun({ cluster, orchestrator, clusterId, plan, resultPath }) {
+  try {
+    const foreground = await streamClusterInForeground(
+      cluster,
+      orchestrator,
+      clusterId,
+      plan,
+      Boolean(resultPath)
+    );
+    if (!resultPath) return;
+    const receipt = writeForegroundResult({
+      orchestrator,
+      cluster,
+      clusterId,
+      resultPath,
+      cancelled: foreground.cancelled,
+    });
+    process.exitCode = exitCodeForResult(receipt);
+    console.log(chalk.dim(`Result ${receipt.outcome} committed to ${resultPath}`));
+  } finally {
+    orchestrator.close();
+  }
 }
 
 function setupDaemonCleanup(orchestrator, clusterId) {
@@ -2662,6 +2722,10 @@ program
     'fast'
   )
   .option('-d, --detach', 'Run in background (default: attach to first agent)')
+  .option(
+    '--result-file <path>',
+    'Atomically write a closed foreground result receipt (incompatible with --detach)'
+  )
   .addHelpText(
     'after',
     `
@@ -2768,6 +2832,7 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       }
 
       const { generateName } = require('../src/name-generator');
+      requireForegroundResultMode(effectiveOptions);
       if (shouldRunDetached(effectiveOptions)) {
         const clusterId = generateName('cluster');
         await spawnDetachedCluster(effectiveOptions, effectiveRunPlan, clusterId, stdinText);
@@ -2811,8 +2876,13 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
       }
 
       if (!process.env.ZEROSHOT_DAEMON) {
-        await streamClusterInForeground(cluster, orchestrator, clusterId, effectiveRunPlan);
-        orchestrator.close();
+        await finishForegroundRun({
+          cluster,
+          orchestrator,
+          clusterId,
+          plan: effectiveRunPlan,
+          resultPath: effectiveOptions.resultFile,
+        });
       }
       setupDaemonCleanup(orchestrator, clusterId);
     } catch (error) {

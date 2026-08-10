@@ -17,7 +17,7 @@ const { executeHook } = require('./agent-hook-executor');
 const IsolationManager = require('../isolation-manager');
 const crypto = require('crypto');
 const { bufferMessage, scheduleDrain, drainBufferedMessages } = require('../message-buffer');
-const { isPlatformSupported } = require('./agent-stuck-detector');
+const { createLivenessPoll } = require('./agent-liveness-poll');
 const { normalizeProviderName, getDefaultProviderId } = require('../../lib/provider-names');
 const { loadSettings } = require('../../lib/settings');
 const { findPlatformMismatchReason } = require('./validation-platform');
@@ -223,7 +223,7 @@ async function stop(agent) {
   stopLivenessCheck(agent);
 
   const hasNestedExecutions = agent.nestedExecutions?.hasActive === true;
-  if (!agent.running && !agent.currentTask && !hasNestedExecutions) {
+  if (!agent.running && !agent.currentTask && !hasNestedExecutions && !agent._currentExecution) {
     return;
   }
 
@@ -242,26 +242,26 @@ async function stop(agent) {
       throw new Error(`Task shutdown could not confirm termination: ${termination.reason}`);
     }
   }
-
-  // Wait for in-flight execution to complete (up to 5 seconds)
-  // This prevents write-after-close race conditions
-  if (agent._currentExecution) {
+  const currentExecution = agent._currentExecution;
+  if (currentExecution) {
     let executionTimeout = null;
     try {
-      await Promise.race([
-        agent._currentExecution,
+      const outcome = await Promise.race([
+        Promise.resolve(currentExecution).then(
+          () => 'settled',
+          () => 'settled'
+        ),
         new Promise((resolve) => {
-          executionTimeout = setTimeout(resolve, 5000);
+          executionTimeout = setTimeout(() => resolve('timeout'), 5000);
         }),
       ]);
-    } catch {
-      // Ignore errors from cancelled execution
-    } finally {
-      if (executionTimeout) {
-        clearTimeout(executionTimeout);
+      if (outcome === 'timeout') {
+        throw new Error(`Agent ${agent.id} execution did not settle after task termination`);
       }
-      agent._currentExecution = null;
+    } finally {
+      if (executionTimeout) clearTimeout(executionTimeout);
     }
+    if (agent._currentExecution === currentExecution) agent._currentExecution = null;
   }
 
   agent._log(`Agent ${agent.id} stopped`);
@@ -1268,67 +1268,16 @@ function startLivenessCheck(agent) {
   agent.livenessTerminationAttempts = 0;
   agent.livenessTerminationRetryAt = 0;
 
-  agent.livenessCheckInterval = setInterval(() => {
-    const hasRecoverableTask =
-      Boolean(agent.currentTask) ||
-      Boolean(agent.isolation?.enabled && agent.currentTaskId) ||
-      agent.nestedExecutions?.hasActive === true;
-    if (!hasRecoverableTask || agent.livenessTerminationStarted) {
-      return;
-    }
-
-    const now = Date.now();
-    if (agent.livenessTerminationContext) {
-      if (now >= agent.livenessTerminationRetryAt) {
-        attemptLivenessTermination(agent, settings);
-      }
-      return;
-    }
-
-    const taskStartedAt = agent.taskStartedAt || agent.lastOutputTime || now;
-    const lastOutputTime = agent.lastOutputTime || taskStartedAt;
-    const taskRuntime = now - taskStartedAt;
-    const timeSinceLastOutput = now - lastOutputTime;
-
-    if (configuredTimeout && taskRuntime >= configuredTimeout) {
-      const reason = `Task timed out after ${configuredTimeout}ms`;
-      beginLivenessTermination(agent, settings, reason, 'AGENT_TASK_TIMEOUT', {
-        taskId: agent.currentTaskId,
-        taskRuntime,
-        timeout: configuredTimeout,
-      });
-      return;
-    }
-
-    if (timeSinceLastOutput < staleDuration) {
-      agent.consecutiveStaleWarnings = 0;
-      return;
-    }
-
-    agent.consecutiveStaleWarnings += 1;
-    agent._publishLifecycle('AGENT_STALE_WARNING', {
-      taskId: agent.currentTaskId,
-      timeSinceLastOutput,
-      staleDuration,
-      lastOutputTime,
-      consecutiveWarnings: agent.consecutiveStaleWarnings,
-      warningsBeforeKill,
-      processDiagnosticsAvailable: isPlatformSupported(),
-      analysis: `Provider produced no output for ${timeSinceLastOutput}ms`,
-    });
-
-    if (agent.consecutiveStaleWarnings < warningsBeforeKill) {
-      return;
-    }
-
-    const reason = `Provider produced no output for ${timeSinceLastOutput}ms`;
-    beginLivenessTermination(agent, settings, reason, 'PROVIDER_INACTIVITY_TIMEOUT', {
-      taskId: agent.currentTaskId,
-      timeSinceLastOutput,
-      staleDuration,
-      consecutiveWarnings: agent.consecutiveStaleWarnings,
-    });
-  }, checkIntervalMs);
+  const poll = createLivenessPoll({
+    agent,
+    settings,
+    configuredTimeout,
+    staleDuration,
+    warningsBeforeKill,
+    attemptTermination: attemptLivenessTermination,
+    beginTermination: beginLivenessTermination,
+  });
+  agent.livenessCheckInterval = setInterval(poll, checkIntervalMs);
 }
 
 const MAX_LIVENESS_TERMINATION_ATTEMPTS = 3;
