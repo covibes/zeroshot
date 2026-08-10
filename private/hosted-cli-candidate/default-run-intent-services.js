@@ -112,6 +112,14 @@ function watchParams(snapshot) {
   };
 }
 
+async function reportCleanupFailure(label, cleanup) {
+  try {
+    await cleanup();
+  } catch {
+    console.log(`Live capsule ${label} failed; RunIntent status remains authoritative.`);
+  }
+}
+
 async function watchCapsule(coordinator, capsuleId, snapshot, signal) {
   const watch = await coordinator.watch({
     params: watchParams(snapshot),
@@ -123,7 +131,7 @@ async function watchCapsule(coordinator, capsuleId, snapshot, signal) {
       if (item.type === 'event' && item.event.type === 'finished') return;
     }
   } finally {
-    await Promise.resolve(watch.cancel()).catch(() => undefined);
+    await reportCleanupFailure('watch cancellation', () => watch.cancel());
   }
 }
 
@@ -146,7 +154,7 @@ async function observeCapsule(service, context, intent, signal) {
       console.log('Live capsule observation disconnected; RunIntent status remains authoritative.');
     }
   } finally {
-    await Promise.resolve(coordinator.close()).catch(() => undefined);
+    await reportCleanupFailure('coordinator cleanup', () => coordinator.close());
   }
 }
 

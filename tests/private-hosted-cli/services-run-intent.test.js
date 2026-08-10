@@ -182,8 +182,10 @@ function registerObservationTests() {
       }
     );
   });
+}
 
-  it('attaches by RunIntent ID using capsule get and cursor watch', async () => {
+function registerAttachmentTests() {
+  it('attaches by RunIntent ID and keeps cleanup failures diagnostic-only', async () => {
     const runCalls = [];
     const states = [intent({ state: 'running', capsule_id: INTENT_CAPSULE_ID }), succeeded()];
     const h = remoteHarness({
@@ -196,6 +198,8 @@ function registerObservationTests() {
         },
         atCursor: 'cursor-8',
       },
+      watchCancelError: new Error('private watch detail'),
+      closeError: new Error('private close detail'),
       createRunIntentClient: () => stateClient(states, runCalls),
       runIntentSleep: () => Promise.resolve(),
     });
@@ -212,6 +216,9 @@ function registerObservationTests() {
       ['get', INTENT_ID],
     ]);
     assert.doesNotMatch(result.lines.join('\n'), /agent.output|agent_output/);
+    assert.match(result.lines.join('\n'), /Live capsule watch cancellation failed/);
+    assert.match(result.lines.join('\n'), /Live capsule coordinator cleanup failed/);
+    assert.doesNotMatch(result.lines.join('\n'), /private (watch|close) detail/);
   });
 }
 
@@ -261,5 +268,6 @@ function registerManagementTests() {
 describe('private RunIntent services', () => {
   registerSubmissionTests();
   registerObservationTests();
+  registerAttachmentTests();
   registerManagementTests();
 });

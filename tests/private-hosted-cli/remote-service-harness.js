@@ -113,13 +113,17 @@ function createHostedSessionCoordinator(context) {
         finishedWatch({
           runId: 'run-3',
           cursor: 'cursor-4',
-          onCancel: () => context.calls.push(['watch-cancel']),
+          onCancel: () => {
+            context.calls.push(['watch-cancel']);
+            if (context.options.watchCancelError) throw context.options.watchCancelError;
+          },
         })
       );
     }
 
     close() {
       context.calls.push(['close']);
+      if (context.options.closeError) throw context.options.closeError;
     }
   };
 }
