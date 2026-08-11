@@ -8,19 +8,30 @@
  *   ~/.zeroshot/settings.json
  */
 
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+import * as childProcess from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 
-function _safeJsonParse(text) {
+const { execSync } = childProcess;
+
+type RepoSettings = object;
+
+interface RepoSettingsResult {
+  repoRoot: string | null;
+  settings: RepoSettings | null;
+  settingsPath: string | null;
+}
+
+function safeJsonParse(text: string): unknown | null {
   try {
-    return JSON.parse(text);
+    const parsed: unknown = JSON.parse(text);
+    return parsed;
   } catch {
     return null;
   }
 }
 
-function _getGitRoot(dir) {
+function getGitRoot(dir: string): string | null {
   try {
     return execSync('git rev-parse --show-toplevel', {
       cwd: dir,
@@ -32,10 +43,10 @@ function _getGitRoot(dir) {
   }
 }
 
-function _readSettingsFile(filePath) {
+function readSettingsFile(filePath: string): RepoSettings | null {
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = _safeJsonParse(raw);
+    const parsed = safeJsonParse(raw);
     if (!parsed || typeof parsed !== 'object') {
       return null;
     }
@@ -47,12 +58,9 @@ function _readSettingsFile(filePath) {
 
 /**
  * Read repo-local settings if present.
- *
- * @param {string} startDir - Directory inside the repo (usually process.cwd()).
- * @returns {{repoRoot: string|null, settings: object|null, settingsPath: string|null}}
  */
-function readRepoSettings(startDir) {
-  const repoRoot = _getGitRoot(startDir);
+function readRepoSettings(startDir: string): RepoSettingsResult {
+  const repoRoot = getGitRoot(startDir);
   if (!repoRoot) {
     return { repoRoot: null, settings: null, settingsPath: null };
   }
@@ -62,22 +70,19 @@ function readRepoSettings(startDir) {
     return { repoRoot, settings: null, settingsPath };
   }
 
-  const settings = _readSettingsFile(settingsPath);
+  const settings = readSettingsFile(settingsPath);
   return { repoRoot, settings, settingsPath };
 }
 
 /**
  * Write repo-local settings.
- *
- * @param {string} repoRoot - Repo root directory (as returned by readRepoSettings).
- * @param {object} settings - Settings object to persist.
- * @returns {string} The path written to.
  */
-function writeRepoSettings(repoRoot, settings) {
+function writeRepoSettings(repoRoot: string, settings: object): string {
   const settingsPath = path.join(repoRoot, '.zeroshot', 'settings.json');
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
+  const serialized = JSON.stringify(settings, null, 2);
+  fs.writeFileSync(settingsPath, serialized, 'utf8');
   return settingsPath;
 }
 
-module.exports = { readRepoSettings, writeRepoSettings };
+export = { readRepoSettings, writeRepoSettings };

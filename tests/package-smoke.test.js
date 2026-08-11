@@ -123,6 +123,17 @@ function assertProviderNamesOutput() {
   assert.strictEqual(names.normalizeProviderName('openai'), 'codex');
 }
 
+function assertRepoSettingsOutput() {
+  const settingsPath = path.join(repoRoot, 'lib/repo-settings.js');
+  assert.ok(fs.existsSync(settingsPath), 'legacy TypeScript build must emit lib/repo-settings.js');
+  const settings = require(settingsPath);
+  assert.deepStrictEqual(Reflect.ownKeys(settings), ['readRepoSettings', 'writeRepoSettings']);
+  assert.deepStrictEqual(
+    Object.values(settings).map((value) => value.length),
+    [1, 2]
+  );
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -203,6 +214,7 @@ describe('npm package smoke', function () {
     assertProviderDetectionOutput();
     assertProviderDefaultsOutput();
     assertProviderNamesOutput();
+    assertRepoSettingsOutput();
     assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
@@ -215,6 +227,7 @@ describe('npm package smoke', function () {
       'lib/provider-detection.js',
       'lib/provider-defaults.js',
       'lib/provider-names.js',
+      'lib/repo-settings.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',

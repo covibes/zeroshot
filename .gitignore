@@ -87,3 +87,5 @@ lib/provider-defaults.js
 lib/provider-defaults.d.ts
 lib/provider-names.js
 lib/provider-names.d.ts
+lib/repo-settings.js
+lib/repo-settings.d.ts
