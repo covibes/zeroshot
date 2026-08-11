@@ -15,7 +15,19 @@ use crate::cluster_ledger::record::CanonicalDigest;
 use crate::cluster_ledger::ReplayState;
 use crate::native_admission::native_worker_protocol::WORKER_REF;
 
+#[path = "program/foreground.rs"]
+mod foreground;
+
 pub(super) const NATIVE_PROCESS_TIMEOUT_MS: u64 = 10_000;
+pub(super) const NATIVE_AGENT_PROCESS_TIMEOUT_MS: u64 = 60 * 60 * 1_000;
+pub(super) const AGENT_WORKER_REF: &str = "native.agent.codex@1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeProgram {
+    WorkerFree,
+    Deterministic,
+    ForegroundAgent,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,12 +51,23 @@ pub(crate) struct NativeExecutionRegistry {
 
 impl NativeExecutionRegistry {
     pub(crate) fn production() -> Self {
-        Self::from_descriptors(Arc::from([deterministic_descriptor()]))
+        Self::from_descriptors(Arc::from([
+            foreground::descriptor(),
+            deterministic_descriptor(),
+        ]))
     }
 
-    pub(crate) fn predecessor_digests() -> (CanonicalDigest, CanonicalDigest) {
+    pub(crate) fn predecessor_digests() -> Vec<(CanonicalDigest, CanonicalDigest, bool)> {
         let empty = Self::from_descriptors(Arc::from([]));
-        (empty.catalog_digest, empty.profile_digest)
+        let deterministic = Self::from_descriptors(Arc::from([deterministic_descriptor()]));
+        vec![
+            (empty.catalog_digest, empty.profile_digest, false),
+            (
+                deterministic.catalog_digest,
+                deterministic.profile_digest,
+                true,
+            ),
+        ]
     }
 
     fn from_descriptors(descriptors: Arc<[WorkerDescriptor]>) -> Self {
@@ -85,10 +108,10 @@ impl NativeExecutionRegistry {
         })
     }
 
-    pub(crate) fn descriptor(&self) -> &WorkerDescriptor {
+    pub(crate) fn descriptor(&self, worker: &str) -> Option<&WorkerDescriptor> {
         self.descriptors
-            .first()
-            .expect("production native registry has one descriptor")
+            .iter()
+            .find(|descriptor| descriptor.worker.as_str() == worker)
     }
 }
 
@@ -121,19 +144,36 @@ impl NativeGraphVerifier {
 impl GraphVerifier for NativeGraphVerifier {
     async fn verify(&self, graph: &GraphSpec) -> Result<VerifiedGraph, VerificationError> {
         let verified = self.inner.verify(graph).await?;
-        if !contains_executable(&graph.root) || is_deterministic_graph(graph) {
-            return Ok(verified);
+        match classify_graph(graph) {
+            Some(_) => Ok(verified),
+            None => Err(VerificationError::Rejected {
+                diagnostics: vec![GraphDiagnostic {
+                    severity: DiagnosticSeverity::Error,
+                    code: GraphDiagnosticCode::InvalidGraphShape,
+                    message: "native execution permits only the fixed foreground programs"
+                        .to_owned(),
+                    path: Vec::new(),
+                    related_nodes: Vec::new(),
+                }],
+            }),
         }
-        Err(VerificationError::Rejected {
-            diagnostics: vec![GraphDiagnostic {
-                severity: DiagnosticSeverity::Error,
-                code: GraphDiagnosticCode::InvalidGraphShape,
-                message: "native execution permits only the fixed one-step graph".to_owned(),
-                path: Vec::new(),
-                related_nodes: Vec::new(),
-            }],
-        })
     }
+}
+
+pub(crate) fn classify_graph(graph: &GraphSpec) -> Option<NativeProgram> {
+    if is_worker_free_graph(graph) {
+        Some(NativeProgram::WorkerFree)
+    } else if is_deterministic_graph(graph) {
+        Some(NativeProgram::Deterministic)
+    } else if *graph == foreground_graph() {
+        Some(NativeProgram::ForegroundAgent)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn foreground_graph() -> GraphSpec {
+    foreground::graph()
 }
 
 pub(crate) fn deterministic_graph() -> GraphSpec {

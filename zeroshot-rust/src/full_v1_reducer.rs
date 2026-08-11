@@ -1,10 +1,6 @@
-//! Pure reduction of verifier-produced full-v1 graphs.
-//!
-//! This module deliberately accepts [`VerifiedGraph`], the result of
-//! [`ProductionGraphVerifier`](openengine_cluster_server::graph_verifier::ProductionGraphVerifier),
-//! rather than graph syntax or a directly constructed compiled value. All shape, type,
-//! binding, guard-domain, and bound proofs remain owned by that verifier. Reduction only applies
-//! those already-proven operations to durable values in authored order.
+//! Pure reduction of verifier-produced full-v1 graphs. It accepts [`VerifiedGraph`] rather than
+//! graph syntax or directly constructed IR; `ProductionGraphVerifier` owns shape, type, binding,
+//! guard-domain, and bound proofs while reduction applies proven operations in authored order.
 //! Reducer-issued mutation authorizations are opaque. Each binds a decision to the verified graph,
 //! canonical input, durable history, and exact snapshot, all revalidated before commit.
 //!
@@ -481,6 +477,10 @@ enum Status {
 }
 
 impl Status {
+    fn continuing(position: Position) -> Self {
+        Self::Continue { position }
+    }
+
     fn position(&self) -> Position {
         match self {
             Self::Pending => Position::MAX,
@@ -795,8 +795,7 @@ impl<'a> Engine<'a> {
             if mode == EvalMode::Probe || cutoff != Position::MAX {
                 return Ok(Status::Pending);
             }
-            let previous = matching.last().copied();
-            let node_instance = if let Some(previous) = previous {
+            let node_instance = if let Some(previous) = matching.last().copied() {
                 previous.node_instance
             } else {
                 let allocated = NodeInstanceId::new(self.next_node_instance)
@@ -837,7 +836,7 @@ impl<'a> Engine<'a> {
         if *position > cutoff {
             return Ok(Status::Pending);
         }
-        match outcome {
+        let promoted_bindings = match outcome {
             WorkerOutcome::Error { code, .. } => {
                 self.set_control(
                     context,
@@ -849,6 +848,7 @@ impl<'a> Engine<'a> {
                         map_indices,
                     },
                 );
+                &[]
             }
             WorkerOutcome::Verified { output, .. } if !verifier => {
                 apply_writes(
@@ -862,6 +862,7 @@ impl<'a> Engine<'a> {
                         map_indices,
                     },
                 )?;
+                write_bindings
             }
             WorkerOutcome::Verifier {
                 output,
@@ -892,11 +893,12 @@ impl<'a> Engine<'a> {
                         map_indices,
                     },
                 )?;
+                write_bindings
             }
             _ => return Err(ReducerError::InconsistentHistory),
-        }
-        if mode == EvalMode::Decide && !write_bindings.is_empty() {
-            let values = write_bindings
+        };
+        if mode == EvalMode::Decide && !promoted_bindings.is_empty() {
+            let values = promoted_bindings
                 .iter()
                 .map(|binding| {
                     Ok(PromotedValue {
@@ -912,9 +914,7 @@ impl<'a> Engine<'a> {
             });
         }
         self.continue_decision(name, mode);
-        Ok(Status::Continue {
-            position: *position,
-        })
+        Ok(Status::continuing(*position))
     }
 
     fn eval_choice(

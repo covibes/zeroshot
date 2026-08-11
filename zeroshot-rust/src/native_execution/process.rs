@@ -17,31 +17,90 @@ use crate::execution::process::{
 };
 use crate::execution::{
     CompletionEvidence, ExecutionCandidate, ExecutionCommand, ExecutionInput, ExecutionResult,
-    ExecutionTargetRef, WorkspaceAccessMode,
+    ExecutionRuntime, ExecutionTargetRef, WorkspaceAccessMode,
 };
 use crate::native_admission::native_worker_protocol::{effect_marker_id, WORKER_MODE};
 
 use super::program::NATIVE_PROCESS_TIMEOUT_MS;
+use super::agent::{AgentWorkspacePreparation, NativeAgent};
+use super::program::AGENT_WORKER_REF;
+use super::{NativeExecutionError, NativeExecutionProcess};
 
-pub(crate) struct NativeExecutionProcess {
-    pub(crate) state_dir: PathBuf,
-    pub(crate) executable: PathBuf,
+#[derive(Clone)]
+pub(super) struct NativeExecutionRuntime {
+    runtime: LocalExecutionRuntime,
+    agent: NativeAgent,
 }
 
-pub(super) fn runtime(process: NativeExecutionProcess) -> LocalExecutionRuntime {
-    let driver = Arc::new(NativeDeterministicDriver {
+impl NativeExecutionRuntime {
+    pub(super) async fn preflight(
+        &self,
+        worker: &str,
+        input: &serde_json::Value,
+    ) -> Result<(), NativeExecutionError> {
+        if worker == AGENT_WORKER_REF {
+            self.agent
+                .preflight(input)
+                .await
+                .map_err(|()| NativeExecutionError::Preflight)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn prepare_workspace(
+        &self,
+        worker: &str,
+        cluster: &crate::cluster_ledger::ResourceId,
+        allocation: &crate::cluster_ledger::DispatchAllocation,
+    ) -> Result<Option<AgentWorkspacePreparation>, NativeExecutionError> {
+        if worker == AGENT_WORKER_REF {
+            return Ok(Some(
+                self.agent.prepare_workspace(cluster, allocation).await,
+            ));
+        }
+        Ok(None)
+    }
+
+    pub(super) async fn dispatch(
+        &self,
+        command: ExecutionCommand,
+    ) -> crate::execution::DispatchObservation {
+        self.runtime.dispatch(command).await
+    }
+
+    pub(super) async fn reverify_agent_terminal(
+        &self,
+        terminal: &openengine_cluster_protocol::TerminalResult,
+    ) -> Result<(), NativeExecutionError> {
+        self.agent
+            .reverify_terminal(terminal)
+            .await
+            .map_err(|()| NativeExecutionError::InvalidState)
+    }
+}
+
+pub(super) fn runtime(
+    process: NativeExecutionProcess,
+) -> Result<NativeExecutionRuntime, NativeExecutionError> {
+    let deterministic = Arc::new(NativeDeterministicDriver {
         runner: LocalProcessRunner::new(),
-        executable: process.executable,
+        executable: process.executable.clone(),
     });
-    LocalExecutionRuntime::new(Arc::new(NativeExecutionResolver {
-        driver,
+    let agent = NativeAgent::new(&process).map_err(|()| NativeExecutionError::Contract)?;
+    let runtime = LocalExecutionRuntime::new(Arc::new(NativeExecutionResolver {
+        deterministic,
+        agent: agent.driver(),
         state_dir: process.state_dir,
-    }))
+        workspace: process.workspace,
+    }));
+    Ok(NativeExecutionRuntime { runtime, agent })
 }
 
 struct NativeExecutionResolver {
-    driver: Arc<NativeDeterministicDriver>,
+    deterministic: Arc<NativeDeterministicDriver>,
+    agent: Arc<dyn BuiltinWorkerDriver>,
     state_dir: PathBuf,
+    workspace: PathBuf,
 }
 
 #[async_trait]
@@ -50,16 +109,24 @@ impl ExecutionSiteResolver for NativeExecutionResolver {
         let ExecutionTargetRef::Builtin(target) = command.target() else {
             return indeterminate_resolution();
         };
-        if target.builtin_id().as_str() != "native.deterministic" || target.version() != 1 {
+        if target.version() != 1 {
             return indeterminate_resolution();
         }
+        let (driver, workspace) = match target.builtin_id().as_str() {
+            "native.deterministic" => (
+                self.deterministic.clone() as Arc<dyn BuiltinWorkerDriver>,
+                self.state_dir.clone(),
+            ),
+            "native.agent.codex" => (self.agent.clone(), self.workspace.clone()),
+            _ => return indeterminate_resolution(),
+        };
         ExecutionSiteResolution::Resolved(Box::new(ResolvedExecutionSite::Builtin {
-            driver: self.driver.clone(),
+            driver,
             request: DriverRequest {
                 control: command.control(),
                 input: command.input().clone(),
                 workspace: WorkspaceCapability {
-                    current_dir: self.state_dir.clone(),
+                    current_dir: workspace,
                     mode: WorkspaceAccessMode::Exclusive,
                 },
                 credentials: Vec::new(),

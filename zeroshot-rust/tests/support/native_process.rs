@@ -23,6 +23,7 @@ impl TempState {
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
         Self { root }
     }
 
@@ -42,6 +43,15 @@ pub struct NativeProcess {
 }
 
 pub fn spawn(state_dir: &Path, cluster_id: &str) -> (NativeProcess, NativeClient) {
+    spawn_with_workspace(state_dir, cluster_id, state_dir, &[])
+}
+
+pub fn spawn_with_workspace(
+    state_dir: &Path,
+    cluster_id: &str,
+    workspace: &Path,
+    environment: &[(&str, &str)],
+) -> (NativeProcess, NativeClient) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_zeroshot-rust"))
         .args([
             "serve-stdio",
@@ -51,7 +61,13 @@ pub fn spawn(state_dir: &Path, cluster_id: &str) -> (NativeProcess, NativeClient
                 .expect("temporary state path must be UTF-8"),
             "--cluster-id",
             cluster_id,
+            "--workspace",
+            workspace
+                .to_str()
+                .expect("temporary workspace path must be UTF-8"),
         ])
+        .env_remove("OPENAI_API_KEY")
+        .envs(environment.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
