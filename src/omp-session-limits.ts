@@ -2,7 +2,19 @@
 // Every value is pinned exactly as specified by issue #866; do not derive these from settings or
 // environment — a configurable ceiling here would let a compromised/misbehaving OMP process (or a
 // hostile resumed partition) negotiate its own verification budget.
-const OMP_SESSION_LIMITS = Object.freeze({
+interface OmpSessionLimits {
+  readonly maxSessionBytes: number;
+  readonly maxSessionRecords: number;
+  readonly maxArtifactEntries: number;
+  readonly maxArtifactDepth: number;
+  readonly maxRelativePathBytes: number;
+  readonly maxArtifactFileBytes: number;
+  readonly maxArtifactAggregateBytes: number;
+  readonly maxBlobReferences: number;
+  readonly maxReferencedBlobBytes: number;
+}
+
+const OMP_SESSION_LIMITS: Readonly<OmpSessionLimits> = Object.freeze({
   maxSessionBytes: 268435456,
   maxSessionRecords: 1000000,
   maxArtifactEntries: 4096,
@@ -38,4 +50,4 @@ const OMP_SESSION_LIMITS = Object.freeze({
  */
 const MAX_SESSION_RECORD_BYTES = OMP_SESSION_LIMITS.maxReferencedBlobBytes;
 
-module.exports = { OMP_SESSION_LIMITS, MAX_SESSION_RECORD_BYTES };
+export = { OMP_SESSION_LIMITS, MAX_SESSION_RECORD_BYTES };

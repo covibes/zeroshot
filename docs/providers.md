@@ -189,7 +189,7 @@ deliberately leaves the claim in place, because the provider may still be writin
 
 `src/omp-session-verifier.js` streams every session and artifact file in fixed-size chunks
 (never proportional to file size) against the fixed `OMP_SESSION_LIMITS` bounds
-(`src/omp-session-limits.js`), checking both the declared and the bytes actually observed while
+(`src/omp-session-limits.ts`, with generated CommonJS at the matching `.js` path), checking both the declared and the bytes actually observed while
 reading. Existing (resume) partitions are fully verified twice — before spawn and again from the
 `ready` hook right before the prompt — and a fresh partition is descriptor/header/tree-verified
 only after terminal materialization, before its evidence may ever be committed. Every check is

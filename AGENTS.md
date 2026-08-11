@@ -620,7 +620,7 @@ writes to or deletes anything under that root**, and `deleteOmpSessionPartition`
 any path that resolves inside it.
 
 `src/omp-session-verifier.js` implements the two-phase lazy-file contract against the fixed
-`OMP_SESSION_LIMITS` (`src/omp-session-limits.js`): existing (resume) partitions are fully verified
+`OMP_SESSION_LIMITS` (`src/omp-session-limits.ts`, with generated CommonJS at the matching `.js` path): existing (resume) partitions are fully verified
 before spawn and again from the `ready` hook right before the prompt; fresh partitions are only
 path-checked at `ready` and are descriptor/header/tree-verified after terminal materialization,
 where the transcript's own session header (`{type:"session", id, cwd, ...}`) must name the session
@@ -733,10 +733,10 @@ cross-checked field-by-field against that persisted row in `task-lib/runner.js`;
 storage-root change, or a workspace that is not the recorded `canonicalWorkspace` fails closed
 before a task row exists. The watcher then compares the **complete** committed tuple — full session
 id, full session file path (never a basename), partition and session-file inode identity, artifact
-manifest digest, and an `executionFingerprint` (`src/omp-execution-fingerprint.js`) binding the
+manifest digest, and an `executionFingerprint` (`src/omp-execution-fingerprint.ts`, with generated CommonJS at the matching `.js` path) binding the
 pinned OMP release, the config-overlay content digest, the requested `--model`/`--thinking`/
 `--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. That
-fingerprint has exactly one implementation, `src/omp-execution-fingerprint.js`; do not add a second
+fingerprint has exactly one implementation, `src/omp-execution-fingerprint.ts`; do not add a second
 digest helper beside the ownership schema, where only its own unit test would exercise it and it
 could silently drift from the contract production uses. Every failed, cancelled, or uncertain
 boundary marks the row `cleanup-required`.
