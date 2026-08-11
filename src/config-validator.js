@@ -2058,9 +2058,7 @@ function validateProviderSettings(provider, providerSettings) {
       providerModule.resolveModelSpec(level, { [level]: override });
     }
     if (override?.reasoningEffort && !providerSupportsCapability(provider, 'reasoningEffort')) {
-      throw new Error(
-        `reasoningEffort overrides are only supported for Claude, Codex, and Opencode`
-      );
+      throw new Error(`Provider "${provider}" does not support reasoningEffort overrides`);
     }
     if (override?.reasoningEffort && !REASONING_EFFORTS.includes(override.reasoningEffort)) {
       throw new Error(

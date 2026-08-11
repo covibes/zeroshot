@@ -347,6 +347,7 @@ function extractClaudeVertexModelError(output, { useVertex = false } = {}) {
  * - Codex:  {type:"turn.failed", error:{message:"msg"}}
  * - Gemini: {type:"result", status:"error", error:{message:"msg"}} or {type:"error", severity:"error"}
  * - Opencode: {type:"session.error", error:{message:"msg"}}
+ * - Pi: latest assistant message_end, finalized only by a later agent_settled
  *
  * @param {string} providerName - Active provider whose terminal errors may be inspected
  * @returns {{error: string, provider: string}|null} Error info or null
@@ -397,6 +398,22 @@ function opencodeFailureFromObject(obj) {
   };
 }
 
+function piFailureFromMessage(message) {
+  const stopReason = message.stopReason;
+  const errorMessage = message.errorMessage;
+  if (stopReason === 'deferred') {
+    return {
+      ...cliErrorDetail('Pi turn deferred without completing.', 'Pi turn deferred'),
+      provider: 'pi',
+    };
+  }
+  if (stopReason !== 'error' && stopReason !== 'aborted' && !errorMessage) return null;
+  return {
+    ...cliErrorDetail(errorMessage || stopReason, 'Pi turn failed'),
+    provider: 'pi',
+  };
+}
+
 function failureFromProviderObject(obj, providerName) {
   if (providerName === 'claude') return claudeFailureFromObject(obj);
   if (providerName === 'codex') return codexFailureFromObject(obj);
@@ -405,7 +422,105 @@ function failureFromProviderObject(obj, providerName) {
   return null;
 }
 
+function piProtocolFailure(message) {
+  return { ...cliErrorDetail(message, message), provider: 'pi' };
+}
+
+const PI_STOP_REASONS = new Set(['stop', 'length', 'toolUse', 'error', 'aborted', 'deferred']);
+const PI_USAGE_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'];
+const PI_COST_FIELDS = ['input', 'output', 'cacheRead', 'cacheWrite', 'total'];
+
+function parsePiProtocolObject(content) {
+  if (!content.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPiRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasPiNumericFields(value, fields) {
+  return isPiRecord(value) && fields.every((field) => typeof value[field] === 'number');
+}
+
+function isValidPiUsage(usage) {
+  if (!hasPiNumericFields(usage, PI_USAGE_FIELDS)) return false;
+  if (!hasPiNumericFields(usage.cost, PI_COST_FIELDS)) return false;
+  return (
+    (usage.cacheWrite1h === undefined || typeof usage.cacheWrite1h === 'number') &&
+    (usage.reasoning === undefined || typeof usage.reasoning === 'number')
+  );
+}
+
+function isValidPiAssistantMessage(message) {
+  return (
+    isPiRecord(message) &&
+    message.role === 'assistant' &&
+    Array.isArray(message.content) &&
+    isValidPiUsage(message.usage) &&
+    PI_STOP_REASONS.has(message.stopReason)
+  );
+}
+
+function piMessageRole(message) {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) return null;
+  return typeof message.role === 'string' ? message.role : null;
+}
+
+function applyPiProtocolLine(content, state) {
+  if (!content) return null;
+  if (
+    content.startsWith('[ZEROSHOT] Earlier provider output omitted') ||
+    content.startsWith('[ZEROSHOT] Provider output record retained') ||
+    content.startsWith('[ZEROSHOT][PROVIDER_STDERR] ')
+  ) {
+    return null;
+  }
+  if (state.settled) return piProtocolFailure('Pi emitted output after agent_settled.');
+  const parsed = parsePiProtocolObject(content);
+  if (parsed === null) return piProtocolFailure('Pi JSON stream contained malformed output.');
+  if (typeof parsed.type !== 'string') {
+    return piProtocolFailure('Pi JSON stream contained an event without a valid type.');
+  }
+  if (parsed.type === 'message_end') {
+    const role = piMessageRole(parsed.message);
+    if (role === null) return piProtocolFailure('Pi message_end did not contain a valid message.');
+    if (role !== 'assistant') return null;
+    if (!isValidPiAssistantMessage(parsed.message)) {
+      return piProtocolFailure('Pi message_end did not contain a valid assistant message.');
+    }
+    state.latestAssistant = parsed.message;
+  } else if (parsed.type === 'agent_settled') {
+    state.settled = true;
+  }
+  return null;
+}
+
+function extractSettledPiFailure(lines) {
+  const state = { latestAssistant: null, settled: false };
+  for (const line of lines) {
+    const content = stripTimestamp(line);
+    const failure = applyPiProtocolLine(content, state);
+    if (failure) return failure;
+  }
+
+  if (!state.settled) return piProtocolFailure('Pi JSON stream ended before agent_settled.');
+  if (state.latestAssistant === null) {
+    return piProtocolFailure('Pi settled without a valid assistant message_end.');
+  }
+  return piFailureFromMessage(state.latestAssistant);
+}
+
 function extractCliFailure(output, providerName = 'claude') {
+  if (providerName === 'pi') {
+    const lines = typeof output === 'string' ? output.split('\n') : [];
+    return extractSettledPiFailure(lines);
+  }
   if (!output || typeof output !== 'string') return null;
 
   const lines = output.split('\n');

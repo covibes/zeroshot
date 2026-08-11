@@ -18,6 +18,7 @@ import {
   OMP_INSTALL_COMMAND,
 } from './omp/release';
 import { OMP_SDK_SETTINGS_DEFAULTS, validateOmpSdkSettings } from './omp/sdk-settings';
+import { PI_INSTALL_COMMAND } from './pi/release';
 import type { OmpSettingsValidationContext } from './omp/sdk-settings';
 import type { ModelLevel, ProviderAdapter, StructuredOutputRecoveryAdapter } from './types';
 
@@ -73,6 +74,9 @@ export interface ProviderDocsMetadata {
 
 export interface ProviderDockerMountPreset {
   readonly host: string;
+  // Optional host-only config-root override. Its value selects the mount source but is never
+  // forwarded into the container, where `container` remains the canonical provider path.
+  readonly hostEnv?: string;
   readonly container: string;
   readonly readonly: boolean;
 }
@@ -130,7 +134,7 @@ interface ProviderRegistryEntryBase {
     settings: Record<string, unknown>,
     context?: OmpSettingsValidationContext
   ) => string | null;
-  readonly availabilityProbe?: 'command' | 'help-or-version';
+  readonly availabilityProbe?: 'command' | 'help-or-version' | 'supported-version';
   readonly docs: ProviderDocsMetadata;
   readonly docker: ProviderDockerMetadata;
   readonly defaultLevels: Readonly<{
@@ -184,6 +188,35 @@ const CLAUDE_DOCKER_ENV_PASSTHROUGH = [
   'AWS_BEARER_TOKEN_BEDROCK',
   'AWS_REGION',
   'CLAUDE_CODE_USE_BEDROCK',
+] as const;
+
+const PI_EXPLICIT_DOCKER_CREDENTIALS = new Set([
+  'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+  'AWS_PROFILE',
+  'AWS_WEB_IDENTITY_TOKEN_FILE',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+]);
+
+const PI_DOCKER_CONFIGURATION_ENV = [
+  'AWS_BEDROCK_FORCE_CACHE',
+  'AWS_BEDROCK_FORCE_HTTP1',
+  'AWS_BEDROCK_SKIP_AUTH',
+  'AWS_DEFAULT_REGION',
+  'AWS_ENDPOINT_URL_BEDROCK_RUNTIME',
+  'AWS_REGION',
+  'AZURE_OPENAI_API_VERSION',
+  'AZURE_OPENAI_BASE_URL',
+  'AZURE_OPENAI_DEPLOYMENT_NAME_MAP',
+  'AZURE_OPENAI_RESOURCE_NAME',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_GATEWAY_ID',
+  'GCLOUD_PROJECT',
+  'GOOGLE_CLOUD_LOCATION',
+  'GOOGLE_CLOUD_PROJECT',
+  'KIMI_CODE_OAUTH_HOST',
+  'KIMI_OAUTH_HOST',
+  'PI_CACHE_RETENTION',
 ] as const;
 
 const SPAWN_INVOKE = Object.freeze({ lane: 'spawn' }) as SpawnProviderInvokeSpec;
@@ -444,17 +477,17 @@ export const providerRegistry = [
     binary: 'pi',
     command: { kind: 'fixed', command: 'pi', args: [] },
     invoke: SPAWN_INVOKE,
-    installInstructions: 'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3',
+    installInstructions: PI_INSTALL_COMMAND,
     authInstructions: 'pi\n/login',
-    credentialPaths: ['~/.pi'],
+    credentialPaths: ['$PI_CODING_AGENT_DIR/auth.json', '~/.pi/agent/auth.json'],
     credentialEnvKeys: piAdapter.credentialEnvKeys,
     settingsFields: [],
-    availabilityProbe: 'help-or-version',
+    availabilityProbe: 'supported-version',
     capabilities: {
       ...STANDARD_CAPABILITIES,
       mcpServers: false,
       jsonSchema: false,
-      reasoningEffort: false,
+      reasoningEffort: true,
     },
     docs: {
       label: 'Pi',
@@ -462,11 +495,17 @@ export const providerRegistry = [
     },
     docker: {
       mount: {
-        host: '~/.pi',
-        container: '$HOME/.pi',
-        readonly: true,
+        host: '~/.pi/agent',
+        hostEnv: 'PI_CODING_AGENT_DIR',
+        container: '$HOME/.pi/agent',
+        readonly: false,
       },
-      envPassthrough: [],
+      install: PI_INSTALL_COMMAND,
+      configRoots: ['$HOME/.pi/agent'],
+      envPassthrough: [
+        ...piAdapter.credentialEnvKeys.filter((name) => !PI_EXPLICIT_DOCKER_CREDENTIALS.has(name)),
+        ...PI_DOCKER_CONFIGURATION_ENV,
+      ],
     },
     defaultLevels: {
       min: piAdapter.defaultMinLevel,

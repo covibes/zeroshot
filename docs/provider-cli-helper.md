@@ -1,7 +1,7 @@
 # Provider CLI Helper Boundary
 
 Zeroshot owns the CLI coding-agent provider helper. The helper is the shared
-provider invocation boundary for Claude, Codex, Gemini, and Opencode CLI calls.
+invocation boundary for every registry-backed CLI coding-agent provider.
 It is not a shared orchestrator.
 
 ## Owned Surface

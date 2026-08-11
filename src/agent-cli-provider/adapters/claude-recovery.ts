@@ -25,8 +25,9 @@ export function detectProviderStreamingModeError(
 }
 
 export function detectProviderFatalError(provider: string, line: unknown): string | null {
-  if (!isClaudeProvider(provider)) return null;
-  return detectClaudeFatalError(line);
+  if (isClaudeProvider(provider)) return detectClaudeFatalError(line);
+  if (provider.toLowerCase() === 'pi') return detectPiFatalError(line);
+  return null;
 }
 
 export function recoverProviderStructuredOutput(
@@ -81,6 +82,18 @@ function detectClaudeFatalError(line: unknown): string | null {
     return `Claude CLI error: ${NO_MESSAGES_RETURNED}`;
   }
 
+  return null;
+}
+
+function detectPiFatalError(line: unknown): string | null {
+  if (typeof line !== 'string') return null;
+  const message = line.trim();
+  if (/\bno api key found\b/i.test(message)) {
+    return 'Pi authentication required: run /login';
+  }
+  if (/\bmodel\b.*\bnot found\b/i.test(message)) {
+    return 'Pi model not found: run pi --list-models';
+  }
   return null;
 }
 

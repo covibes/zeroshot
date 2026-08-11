@@ -130,6 +130,48 @@ function fakePiScript(body) {
   return `#!/usr/bin/env node\n${body}\n`;
 }
 
+function withCurrentPiCli(fn) {
+  return withFakeProviderCli(
+    'pi',
+    fakePiScript(`
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve --model --thinking\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('0.84.1\\n');
+  process.exit(0);
+}
+process.exit(0);
+`),
+    fn
+  );
+}
+
+function withKiroWithoutAcp(fn) {
+  return withFakeProviderCli(
+    'kiro-cli',
+    fakeKiroScript(`
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: kiro-cli --version\\n');
+  process.exit(0);
+}
+process.stderr.write('kiro-cli acp should not execute');
+process.exit(17);
+`),
+    fn
+  );
+}
+
+function assertUnsupportedAcpResponse(response) {
+  const assert = require('node:assert/strict');
+  assert.equal(response.exitCode, 2);
+  assert.equal(response.envelope.ok, false);
+  assert.equal(response.envelope.error.code, 'invalid-field');
+  assert.equal(response.envelope.error.field, 'options.cliFeatures.supportsAcpStdio');
+  assert.match(response.envelope.error.message, /does not advertise ACP stdio support/i);
+}
+
 function fakeKiroScript(body) {
   return `#!/usr/bin/env node\n${body}\n`;
 }
@@ -155,6 +197,7 @@ function invokeCodexSchemaRequest(overrides = {}) {
 
 module.exports = {
   assertNoSecret,
+  assertUnsupportedAcpResponse,
   codexSchemaOptions,
   invokeCodexSchemaRequest,
   fakeCodexScript,
@@ -167,6 +210,8 @@ module.exports = {
   runProviderExecutable,
   runnerResult,
   withFakeProviderCli,
+  withCurrentPiCli,
+  withKiroWithoutAcp,
   withTempEnv,
   withOmpRpcSettings,
 };

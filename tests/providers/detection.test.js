@@ -37,13 +37,19 @@ describe('Provider CLI detection', () => {
 
     fs.writeFileSync(
       cliPath,
-      '#!/usr/bin/env node\nif (process.argv.includes("--help")) process.exit(0);\nif (process.argv.includes("--version")) { process.stdout.write("0.80.3\\n"); process.exit(0); }\nprocess.stderr.write("unknown option -h\\n"); process.exit(1);\n',
+      [
+        '#!/usr/bin/env node',
+        'if (process.argv.includes("--help")) process.exit(0);',
+        'if (process.argv.includes("--version")) { process.stdout.write("0.84.1\\n"); process.exit(0); }',
+        'process.stderr.write("unknown option -h\\n"); process.exit(1);',
+        '',
+      ].join('\n'),
       { mode: 0o755 }
     );
 
     try {
       assert.strictEqual(getHelpOutput(cliPath), '');
-      assert.strictEqual(getVersionOutput(cliPath), '0.80.3');
+      assert.strictEqual(getVersionOutput(cliPath), '0.84.1');
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }

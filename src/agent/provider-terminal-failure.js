@@ -3,12 +3,23 @@
 const { getProvider } = require('../providers');
 const { isCriticalAgent } = require('./critical-agent-policy');
 const { extractCliFailure } = require('./output-extraction');
+const { getPiTokenUsage, redactPiFailureForControlPlane } = require('./pi-terminal-lifecycle');
+const { parseProviderEvent, providerFailureFields } = require('./provider-control-plane');
+
+const AUTHENTICATION_FAILURE_PATTERNS = [
+  /invalid[_ -]?api[_ -]?key/i,
+  /api[_ -]?key.*invalid/i,
+  /(?:missing|no) api key/i,
+  /run\s*\/login/i,
+  /unauthori[sz]ed/i,
+  /forbidden|authentication|permission denied/i,
+];
 
 function categoryForProviderFailure(error, classification) {
   const isPermanent = classification.retryable === false;
-  const authenticationPattern =
-    /(?:invalid[_ -]?api[_ -]?key|api[_ -]?key.*invalid|unauthori[sz]ed|forbidden|authentication|permission denied)/i;
-  if (isPermanent && authenticationPattern.test(error)) return 'authentication';
+  if (isPermanent && AUTHENTICATION_FAILURE_PATTERNS.some((pattern) => pattern.test(error))) {
+    return 'authentication';
+  }
 
   const quotaPattern = /(?:insufficient[_ -]?quota|quota exceeded|resource_exhausted)/i;
   if (isPermanent && quotaPattern.test(error)) return 'quota';
@@ -30,6 +41,12 @@ function classifyProviderFailure(providerName, error) {
   };
 }
 
+function providerFailureEvent(providerName) {
+  if (providerName === 'codex') return 'turn.failed';
+  if (providerName === 'pi') return 'agent_settled';
+  return 'terminal_error';
+}
+
 function extractProviderFailure(output, providerName) {
   const cliError = extractCliFailure(output, providerName);
   if (!cliError) return null;
@@ -39,39 +56,45 @@ function extractProviderFailure(output, providerName) {
   return {
     error: `Provider ${cliError.provider} failed (${category}; ${classification.kind})`,
     provider: cliError.provider,
-    event: cliError.provider === 'codex' ? 'turn.failed' : 'terminal_error',
+    event: providerFailureEvent(cliError.provider),
     category,
     classification,
     diagnostic: cliError.diagnostic,
   };
 }
 
-function redactTerminalFailureForControlPlane(state, providerName, content) {
-  const failure = extractProviderFailure(content, providerName);
-  if (!failure) return content;
-
-  state.providerFailure = failure;
-  let eventType = 'provider.failure';
-  try {
-    const parsed = JSON.parse(content);
-    if (typeof parsed?.type === 'string') eventType = parsed.type;
-  } catch {
-    // extractProviderFailure already proved a supported terminal envelope.
+function extractProviderCompletionFailure(output, providerName, state = {}) {
+  if (providerName !== 'pi') return extractProviderFailure(output, providerName);
+  if (state.providerFailure) return state.providerFailure;
+  if (state.piProtocolPrefixOmitted) return extractProviderFailure('', 'pi');
+  if (!state.piProtocolObserved) return extractProviderFailure(output, 'pi');
+  if (!state.piProtocolSettled || !state.piLatestAssistantObserved) {
+    return extractProviderFailure('', 'pi');
   }
+  return null;
+}
+
+function redactedFailureEnvelope(failure, providerName, eventType) {
   return JSON.stringify({
     type: eventType,
     ...(providerName === 'claude' ? { is_error: true } : {}),
     ...(providerName === 'gemini' ? { status: 'error', severity: 'error' } : {}),
-    error: { message: failure.error },
-    zeroshot_failure: {
-      provider: failure.provider,
-      event: failure.event,
-      category: failure.category,
-      kind: failure.classification.kind,
-      retryable: failure.classification.retryable,
-      diagnostic: failure.diagnostic,
-    },
+    ...providerFailureFields(failure),
   });
+}
+
+function redactTerminalFailureForControlPlane(state, providerName, content) {
+  if (providerName === 'pi') {
+    return redactPiFailureForControlPlane(state, content, extractProviderFailure);
+  }
+
+  const failure = extractProviderFailure(content, providerName);
+  if (!failure) return content;
+
+  state.providerFailure = failure;
+  const parsed = parseProviderEvent(content);
+  const eventType = typeof parsed?.type === 'string' ? parsed.type : 'provider.failure';
+  return redactedFailureEnvelope(failure, providerName, eventType);
 }
 
 function decorateError(error, failure) {
@@ -176,7 +199,9 @@ function buildFinalFailureInfo({
 module.exports = {
   buildFinalFailureInfo,
   decorateError,
+  extractProviderCompletionFailure,
   extractProviderFailure,
+  getPiTokenUsage,
   publishCriticalFailure,
   receiptFields,
   redactTerminalFailureForControlPlane,

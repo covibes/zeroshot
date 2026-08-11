@@ -1,4 +1,11 @@
 {"type":"session","version":3,"id":"pi-command-failure","timestamp":"2026-07-09T00:00:00.000Z","cwd":"/tmp/pi"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":"Run the command."}}
+{"type":"message_end","message":{"role":"user","content":"Run the command."}}
 {"type":"tool_execution_start","toolCallId":"tool-err","toolName":"bash","args":{"command":"pi --bogus"}}
 {"type":"tool_execution_end","toolCallId":"tool-err","toolName":"bash","result":"Unknown option --bogus","isError":true}
-{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"command failed"}],"usage":{"input":3,"output":2,"cacheRead":0,"cacheWrite":0},"stopReason":"error","errorMessage":"Unknown option --bogus"},"toolResults":[]}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"command failed"}],"usage":{"input":3,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":5,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"Unknown option --bogus"}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"command failed"}],"usage":{"input":3,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":5,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"Unknown option --bogus"},"toolResults":[]}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled"}

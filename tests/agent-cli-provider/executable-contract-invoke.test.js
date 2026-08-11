@@ -5,6 +5,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const {
   assertNoSecret,
+  assertUnsupportedAcpResponse,
   fakeCodexScript,
   fakeCopilotScript,
   fakeKiroScript,
@@ -14,7 +15,9 @@ const {
   runExecutable,
   runProviderExecutable,
   runnerResult,
+  withCurrentPiCli,
   withFakeProviderCli,
+  withKiroWithoutAcp,
   withTempEnv,
 } = require('./executable-contract-helpers.cjs');
 
@@ -561,66 +564,34 @@ rl.on('line', (line) => {
 });
 
 test('invoke fails closed when ACP stdio support is not advertised', () => {
-  withFakeProviderCli(
-    'kiro-cli',
-    fakeKiroScript(`
-if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: kiro-cli --version\\n');
-  process.exit(0);
-}
-process.stderr.write('invoke should not execute kiro-cli acp');
-process.exit(17);
-`),
-    () => {
-      const response = runExecutable({
-        schemaVersion: 1,
-        command: 'invoke',
-        provider: 'kiro',
-        context: 'Reply with OK',
-        timeoutMs: 300,
-      });
-
-      assert.equal(response.exitCode, 2);
-      assert.equal(response.envelope.ok, false);
-      assert.equal(response.envelope.error.code, 'invalid-field');
-      assert.equal(response.envelope.error.field, 'options.cliFeatures.supportsAcpStdio');
-      assert.match(response.envelope.error.message, /does not advertise ACP stdio support/i);
-    }
-  );
+  withKiroWithoutAcp(() => {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'invoke',
+      provider: 'kiro',
+      context: 'Reply with OK',
+      timeoutMs: 300,
+    });
+    assertUnsupportedAcpResponse(response);
+  });
 });
 
 test('invoke ignores caller ACP support overrides when runtime probe rejects ACP stdio', () => {
-  withFakeProviderCli(
-    'kiro-cli',
-    fakeKiroScript(`
-if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: kiro-cli --version\\n');
-  process.exit(0);
-}
-process.stderr.write('invoke should not execute kiro-cli acp');
-process.exit(17);
-`),
-    () => {
-      const response = runExecutable({
-        schemaVersion: 1,
-        command: 'invoke',
-        provider: 'kiro',
-        context: 'Reply with OK',
-        timeoutMs: 300,
-        options: {
-          cliFeatures: {
-            supportsAcpStdio: true,
-          },
+  withKiroWithoutAcp(() => {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'invoke',
+      provider: 'kiro',
+      context: 'Reply with OK',
+      timeoutMs: 300,
+      options: {
+        cliFeatures: {
+          supportsAcpStdio: true,
         },
-      });
-
-      assert.equal(response.exitCode, 2);
-      assert.equal(response.envelope.ok, false);
-      assert.equal(response.envelope.error.code, 'invalid-field');
-      assert.equal(response.envelope.error.field, 'options.cliFeatures.supportsAcpStdio');
-      assert.match(response.envelope.error.message, /does not advertise ACP stdio support/i);
-    }
-  );
+      },
+    });
+    assertUnsupportedAcpResponse(response);
+  });
 });
 
 test('invoke runs Pi in the requested worktree cwd and normalizes streamed JSONL', () => {
@@ -637,7 +608,7 @@ if (process.argv.includes('--help')) {
   process.exit(0);
 }
 if (process.argv.includes('--version')) {
-process.stdout.write('0.80.3\\n');
+  process.stdout.write('0.84.1\\n');
   process.exit(0);
 }
 if (fs.realpathSync(process.cwd()) !== process.env.PI_EXPECT_CWD) {
@@ -670,11 +641,10 @@ process.stdout.write(fs.readFileSync(process.env.PI_FIXTURE, 'utf8'));
             assert.equal(response.envelope.ok, true);
             assert.equal(response.envelope.result.exitCode, 0);
             assert.equal(response.envelope.result.commandSpec.cwd, tempDir);
-            assert.deepEqual(response.envelope.result.commandSpec.args.slice(0, 10), [
+            assert.deepEqual(response.envelope.result.commandSpec.args.slice(0, 9), [
               '--mode',
               'json',
               '--no-session',
-              '--no-extensions',
               '--no-skills',
               '--no-prompt-templates',
               '--no-context-files',
@@ -694,30 +664,113 @@ process.stdout.write(fs.readFileSync(process.env.PI_FIXTURE, 'utf8'));
 
 test('invoke classifies Pi in-band turn_end failures even when the process exits 0', async () => {
   const fixturePath = path.join(__dirname, '..', 'fixtures', 'pi', 'auth-failure.jsonl');
-  const response = await runProviderExecutable(
-    {
-      schemaVersion: 1,
-      command: 'invoke',
-      provider: 'pi',
-      context: 'Authenticate.',
-      options: {
-        outputFormat: 'json',
+  const response = await withCurrentPiCli(() =>
+    runProviderExecutable(
+      {
+        schemaVersion: 1,
+        command: 'invoke',
+        provider: 'pi',
+        context: 'Authenticate.',
+        options: { outputFormat: 'json' },
       },
-    },
-    {
-      runner: () =>
-        runnerResult({
-          stdout: fs.readFileSync(fixturePath, 'utf8'),
-          exitCode: 0,
-          signal: null,
-        }),
-    }
+      {
+        runner: () =>
+          runnerResult({
+            stdout: fs.readFileSync(fixturePath, 'utf8'),
+            exitCode: 0,
+            signal: null,
+          }),
+      }
+    )
   );
 
   assert.equal(response.exitCode, 0);
   assert.equal(response.envelope.ok, true);
   assert.equal(response.envelope.result.events.at(-1).type, 'result');
   assert.equal(response.envelope.result.events.at(-1).error, 'authentication required: run /login');
+  assert.equal(response.envelope.result.classification.retryable, false);
+  assert.equal(response.envelope.result.classification.kind, 'permanent-pattern');
+});
+
+test('invoke parses only Pi stdout while preserving ordinary stderr evidence', async () => {
+  const fixturePath = path.join(__dirname, '..', 'fixtures', 'pi', 'text.jsonl');
+  const response = await withCurrentPiCli(() =>
+    runProviderExecutable(
+      {
+        schemaVersion: 1,
+        command: 'invoke',
+        provider: 'pi',
+        context: 'Reply once.',
+      },
+      {
+        runner: () =>
+          runnerResult({
+            stdout: fs.readFileSync(fixturePath, 'utf8'),
+            stderr: 'extension diagnostic: provider initialized',
+          }),
+      }
+    )
+  );
+
+  assert.equal(response.envelope.result.events.at(-1).success, true);
+  assert.equal(
+    response.envelope.result.evidence.stderr,
+    'extension diagnostic: provider initialized'
+  );
+  assert.deepEqual(response.envelope.result.diagnostics, []);
+});
+
+test('invoke classifies a clean Pi exit before agent_settled as an incomplete protocol', async () => {
+  const response = await withCurrentPiCli(() =>
+    runProviderExecutable(
+      {
+        schemaVersion: 1,
+        command: 'invoke',
+        provider: 'pi',
+        context: 'Finish the turn.',
+      },
+      {
+        runner: () =>
+          runnerResult({
+            stdout: '{"type":"session","version":3,"id":"incomplete"}\n',
+            exitCode: 0,
+            signal: null,
+          }),
+      }
+    )
+  );
+
+  assert.equal(response.envelope.result.events.length, 1);
+  assert.equal(response.envelope.result.events[0].success, false);
+  assert.match(response.envelope.result.events[0].error, /before agent_settled/i);
+  assert.equal(response.envelope.result.classification.retryable, true);
+  assert.equal(response.envelope.result.classification.kind, 'unknown-retryable');
+});
+
+test('invoke preserves Pi startup authentication failure over missing settlement', async () => {
+  const response = await withCurrentPiCli(() =>
+    runProviderExecutable(
+      {
+        schemaVersion: 1,
+        command: 'invoke',
+        provider: 'pi',
+        context: 'Start the turn.',
+      },
+      {
+        runner: () =>
+          runnerResult({
+            stdout: '{"type":"session","version":3,"id":"startup"}\n',
+            stderr:
+              'No API key found for the selected model.\nUse /login to log into a provider.\n',
+            exitCode: 1,
+            signal: null,
+          }),
+      }
+    )
+  );
+
+  assert.equal(response.envelope.result.events.length, 1);
+  assert.match(response.envelope.result.events[0].error, /before agent_settled/i);
   assert.equal(response.envelope.result.classification.retryable, false);
   assert.equal(response.envelope.result.classification.kind, 'permanent-pattern');
 });
@@ -791,14 +844,55 @@ process.stdout.write(fs.readFileSync(process.env.COPILOT_FIXTURE, 'utf8'));
   }
 });
 
-test('invoke runs the omp rpc-stdio lane through the shared driver, from a real CLI probe', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-worktree-'));
+function createOmpRpcSettings(tempDir) {
   const settingsFile = path.join(tempDir, 'settings.json');
   fs.writeFileSync(
     settingsFile,
     JSON.stringify({ providerSettings: { omp: { transport: 'rpc' } } }),
     { mode: 0o600 }
   );
+  return settingsFile;
+}
+
+function assertOmpRpcInvokeResponse(response) {
+  assert.equal(response.exitCode, 0);
+  assert.equal(response.envelope.ok, true);
+  assert.equal(response.envelope.result.commandSpec.binary, 'omp');
+  const args = response.envelope.result.commandSpec.args;
+  assert.deepEqual(args.slice(0, 3), ['--mode', 'rpc', '--no-session']);
+  assert.equal(args.includes('--approval-mode'), true);
+  assert.equal(args[args.indexOf('--approval-mode') + 1], 'yolo');
+  assert.equal(args.includes('--no-title'), true);
+  assert.equal(args.includes('--config'), true);
+  assert.deepEqual(response.envelope.result.events, [
+    { type: 'text', text: 'OMP invoke OK' },
+    {
+      type: 'result',
+      success: true,
+      result: 'OMP invoke OK',
+      error: null,
+      inputTokens: 5,
+      outputTokens: 3,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cost: { total: 0.001 },
+      modelUsage: {
+        input: 5,
+        output: 3,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: { total: 0.001 },
+      },
+    },
+  ]);
+  assert.equal(response.envelope.result.cleanup.length, 1);
+  assert.equal(response.envelope.result.cleanup[0].removed, true);
+  assert.equal(fs.existsSync(path.dirname(args[args.indexOf('--config') + 1])), false);
+}
+
+test('invoke runs the omp rpc-stdio lane through the shared driver, from a real CLI probe', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-worktree-'));
+  const settingsFile = createOmpRpcSettings(tempDir);
 
   try {
     withFakeProviderCli(
@@ -887,40 +981,7 @@ rl.on('line', (line) => {
           })
         );
 
-        assert.equal(response.exitCode, 0);
-        assert.equal(response.envelope.ok, true);
-        assert.equal(response.envelope.result.commandSpec.binary, 'omp');
-        const args = response.envelope.result.commandSpec.args;
-        assert.deepEqual(args.slice(0, 3), ['--mode', 'rpc', '--no-session']);
-        assert.equal(args.includes('--approval-mode'), true);
-        assert.equal(args[args.indexOf('--approval-mode') + 1], 'yolo');
-        assert.equal(args.includes('--no-title'), true);
-        assert.equal(args.includes('--config'), true);
-        assert.deepEqual(response.envelope.result.events, [
-          { type: 'text', text: 'OMP invoke OK' },
-          {
-            type: 'result',
-            success: true,
-            result: 'OMP invoke OK',
-            error: null,
-            inputTokens: 5,
-            outputTokens: 3,
-            cacheReadInputTokens: 0,
-            cacheCreationInputTokens: 0,
-            cost: { total: 0.001 },
-            modelUsage: {
-              input: 5,
-              output: 3,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: { total: 0.001 },
-            },
-          },
-        ]);
-        // The config overlay is a real owned temp directory that cleanup must have removed.
-        assert.equal(response.envelope.result.cleanup.length, 1);
-        assert.equal(response.envelope.result.cleanup[0].removed, true);
-        assert.equal(fs.existsSync(path.dirname(args[args.indexOf('--config') + 1])), false);
+        assertOmpRpcInvokeResponse(response);
       }
     );
   } finally {

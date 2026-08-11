@@ -29,6 +29,7 @@ import {
   supportsProviderCapability,
   supportsProviderOutputReformatting,
 } from './provider-registry';
+import { runtimeProbeIsAvailable } from './probe-availability';
 import type {
   BuildProviderCommandOptions,
   CliFeatureOverrides,
@@ -577,6 +578,10 @@ function resolveRuntimeCliFeatures(
       supportsWebSearch: false,
     };
   }
+  if (provider === 'pi') {
+    const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
+    return overrides === undefined ? detected : mergePiFailClosedCliFeatures(detected, overrides);
+  }
   if (getProviderRegistryEntry(provider).invoke.lane === 'acp-stdio') {
     const detected = detectRuntimeProviderCliFeatures(provider, runtimeSettings);
     if (overrides === undefined) return detected;
@@ -593,6 +598,18 @@ function resolveRuntimeCliFeatures(
       overrides.supportsResume !== false,
     supportsWebSearch: detected.supportsWebSearch === true && overrides.supportsWebSearch !== false,
   };
+}
+
+function mergePiFailClosedCliFeatures(
+  detected: ProviderCliFeatures,
+  overrides: CliFeatureOverrides
+): CliFeatureOverrides {
+  return Object.fromEntries(
+    Object.entries(detected).map(([field, value]) => [
+      field,
+      typeof value === 'boolean' ? value && Reflect.get(overrides, field) !== false : value,
+    ])
+  );
 }
 
 function mergeAcpFailClosedCliFeatures(
@@ -679,7 +696,9 @@ export function probeRuntimeProviderCli(
 
   const helpText =
     evidence?.helpText ??
-    stringResult(getHelpOutputFn(helpCommand.command, helpCommand.args)).trim();
+    (adapter.id === 'pi'
+      ? ''
+      : stringResult(getHelpOutputFn(helpCommand.command, helpCommand.args)).trim());
   const versionText =
     evidence?.versionText ??
     stringResult(
@@ -691,11 +710,13 @@ export function probeRuntimeProviderCli(
   const capabilities = attestedCliFeatures(adapter, helpText, versionText);
 
   return {
-    available:
-      evidence?.available ??
-      (registryEntry.availabilityProbe === 'help-or-version'
-        ? Boolean(helpText || versionText)
-        : true),
+    available: runtimeProbeIsAvailable(
+      registryEntry.availabilityProbe,
+      evidence?.available,
+      helpText,
+      versionText,
+      capabilities
+    ),
     helpText,
     versionText,
     capabilities,

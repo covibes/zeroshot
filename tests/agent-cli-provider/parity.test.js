@@ -19,6 +19,7 @@ const {
   normalizeProviderName,
 } = require('../../lib/provider-names');
 const runtimeProviders = require('../../src/providers');
+const { withCurrentPiCli } = require('./executable-contract-helpers.cjs');
 
 const createdTempFiles = new Set();
 const CONTROL_MODEL_IDS = [
@@ -401,21 +402,23 @@ test('runtime Opencode rejects control bytes in configured and direct models bef
 });
 
 test('runtime Pi command facade delegates to helper', () => {
-  assertRuntimeCommandParity('pi', 'pi context', {
-    outputFormat: 'json',
-    jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
-    cwd: '/tmp/project',
-    modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
-    cliFeatures: {
-      supportsJsonMode: true,
-      supportsNoSession: true,
-      supportsNoExtensions: true,
-      supportsNoSkills: true,
-      supportsNoPromptTemplates: true,
-      supportsNoContextFiles: true,
-      supportsNoApprove: true,
-      supportsModel: true,
-    },
+  withCurrentPiCli(() => {
+    assertRuntimeCommandParity('pi', 'pi context', {
+      outputFormat: 'json',
+      jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
+      cwd: '/tmp/project',
+      modelSpec: { level: 'level2', model: 'openai/gpt-5.5' },
+      cliFeatures: {
+        versionMatches: true,
+        supportsJsonMode: true,
+        supportsNoSession: true,
+        supportsNoSkills: true,
+        supportsNoPromptTemplates: true,
+        supportsNoContextFiles: true,
+        supportsNoApprove: true,
+        supportsModel: true,
+      },
+    });
   });
 });
 
@@ -805,12 +808,11 @@ test('feature probing is deterministic from injected help text', () => {
     false
   );
   assert.equal(helper.getProviderAdapter('opencode').detectCliFeatures('').supportsResume, false);
+  const piHelp =
+    'pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates ' +
+    '--no-context-files --no-approve --model';
   assert.equal(
-    helper
-      .getProviderAdapter('pi')
-      .detectCliFeatures(
-        'pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve --model'
-      ).supportsNoApprove,
+    helper.getProviderAdapter('pi').detectCliFeatures(piHelp, 'pi 0.84.1').supportsNoApprove,
     true
   );
   assert.equal(

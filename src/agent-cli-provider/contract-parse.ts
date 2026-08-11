@@ -62,9 +62,16 @@ export function parseOutputEvents(
   }
 ): { readonly events: readonly OutputEvent[]; readonly diagnostics: readonly ContractEvidence[] } {
   const diagnostics = [...collectParseDiagnostics(fragments.sources)];
+  const protocolChunk =
+    adapter.id === 'pi'
+      ? ((
+          fragments.sources.find((source) => source.name === 'stdout') ??
+          fragments.sources.find((source) => source.name === 'jsonl')
+        )?.value ?? '')
+      : fragments.chunk;
   try {
     return {
-      events: parseProviderChunk(adapter.id, fragments.chunk),
+      events: parseProviderChunk(adapter.id, protocolChunk),
       diagnostics,
     };
   } catch (error) {

@@ -15,7 +15,7 @@ Zeroshot supports two provider shapes:
 | Gateway  | Bundled                          | No external CLI required                                                 |
 | Gemini   | Gemini                           | `npm install -g @google/gemini-cli`                                      |
 | Opencode | Opencode                         | See https://opencode.ai                                                  |
-| Pi       | Pi                               | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3` |
+| Pi       | Pi                               | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.1` |
 | OMP      | OMP (Oh My Pi), alias `oh-my-pi` | `bun install -g @oh-my-pi/pi-coding-agent@17.2.1`                        |
 | Kiro     | Kiro                             | See https://kiro.dev/docs/cli/                                           |
 | Copilot  | Copilot                          | `npm install -g @github/copilot`                                         |
@@ -78,6 +78,78 @@ setting it for those providers is rejected. No equally safe, explicit,
 support-detectable additive native-search control is established for them.
 Permission or tool allowlists authorize already-present tools; they must not be
 presented as controls that enable search.
+
+## Pi
+
+Zeroshot integrates the official
+[`@earendil-works/pi-coding-agent`](https://github.com/earendil-works/pi) CLI as the `pi`
+provider. The supported install is pinned to `0.84.1` and requires Node.js 22.19 or newer:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.1
+```
+
+Authenticate interactively by starting `pi` and running `/login`, or use any credential source
+Pi supports. Pi owns its provider registry, model catalogs, OAuth refresh, API compatibility, and
+custom `models.json` definitions; Zeroshot intentionally does not copy those lists. This covers
+Pi's API-key and OAuth providers without duplicating either catalog. Pi 0.84.1 marks Claude
+Pro/Max, ChatGPT Plus/Pro (Codex), GitHub Copilot, Kimi Code, and xAI as subscription flows, and
+also exposes OpenRouter and Radius OAuth. User-global Pi extensions remain enabled so they can
+register additional providers and models.
+
+Select any Pi model with an opaque `provider/model` value in the normal level override:
+
+```json
+{
+  "providerSettings": {
+    "pi": {
+      "levelOverrides": {
+        "level2": {
+          "model": "openai/gpt-5.5",
+          "reasoningEffort": "medium"
+        }
+      }
+    }
+  }
+}
+```
+
+Zeroshot maps `level1`, `level2`, and `level3` to Pi thinking levels `low`, `medium`, and `high`.
+An explicit override may also use `xhigh` or `max`; Pi and the selected model remain authoritative
+about whether a level is available.
+
+Pi uses the ordinary one-process `spawn` lane with `--mode json`. Zeroshot waits for
+`agent_settled`, then derives the one normalized result from the latest authoritative assistant
+message. A process exit of zero is not sufficient: Pi can encode provider failures in-band with
+`stopReason: "error"`, so those records are classified through the normal retry/permanent-failure
+policy. Runs are deliberately `--no-session`; Pi's search/create session flags are not a
+task-owned continuation boundary. RPC would add a long-lived lifecycle without helping
+Zeroshot's one-prompt worker contract.
+
+The child command uses `--no-approve`, `--no-skills`, `--no-prompt-templates`, and
+`--no-context-files`. Project-local Pi settings and executable resources are therefore not loaded
+into the agent run,
+while trusted user-global extensions, credentials, `models.json`, and provider settings remain
+available. Pi itself may still migrate a legacy project `.pi/commands` layout during startup.
+Zeroshot supplies the task context itself. Pi does not expose a provider-native final
+JSON Schema control or a Zeroshot MCP injection flag, so both capabilities remain false.
+
+Docker builds an exact Pi `0.84.1` image variant and mounts `~/.pi/agent` writable. This preserves
+Pi's native shared credential lock and persisted OAuth refresh behavior across concurrent and later
+clusters; it also means a container can update that user-global Pi state. If
+`PI_CODING_AGENT_DIR` selects a custom host config root, Zeroshot mounts that directory at Pi's
+canonical container path without forwarding the host path. Scalar API-key credentials and
+their documented Azure, Bedrock, Cloudflare, and Vertex configuration companions are forwarded
+automatically. Zeroshot also forwards Pi's Kimi OAuth host selectors (`KIMI_CODE_OAUTH_HOST` and
+legacy `KIMI_OAUTH_HOST`) plus `PI_CACHE_RETENTION`, so custom subscription endpoints and cache
+behavior match host runs. Path or metadata credentials such as `GOOGLE_APPLICATION_CREDENTIALS`,
+`AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_PROFILE`, and ECS credential URIs require explicit
+`dockerEnvPassthrough` and the corresponding mount where applicable. Host and worktree runs use
+Pi's same normal writable auth store.
+
+Capabilities: `worktreeIsolation:true`, `dockerIsolation:true`, `streamJson:true`,
+`thinkingMode:true`, `reasoningEffort:true`, `jsonSchema:false`, `mcpServers:false`,
+`sessionResume:false`, `webSearch:false`.
 
 ## OMP (Oh My Pi)
 
@@ -300,6 +372,7 @@ Notes:
 - Claude passes reasoning effort to Claude Code as `--effort`.
 - Codex passes reasoning effort as the `model_reasoning_effort` config override.
 - Opencode passes reasoning effort as `--variant`.
+- Pi passes reasoning effort as `--thinking` and leaves model/provider interpretation to Pi.
 - `model` is still supported as a provider-specific escape hatch.
 
 ### External Opencode models
@@ -346,8 +419,9 @@ and [Anthropic model ID rules](https://platform.claude.com/docs/en/about-claude/
 
 ## Docker Isolation and Credentials
 
-Zeroshot does not inject credentials for external CLIs. When using `--docker`,
-mount your provider config directories explicitly.
+Zeroshot forwards registry-declared credentials for external CLIs. Pi receives its writable
+config-root mount automatically; for provider state not declared by a registry preset, mount the
+required config directories explicitly when using `--docker`.
 
 Examples:
 
@@ -360,7 +434,7 @@ zeroshot run 123 --docker --mount ~/.config/gemini:/home/node/.config/gemini:ro
 zeroshot run 123 --docker --mount ~/.config/gcloud:/home/node/.config/gcloud:ro
 ```
 
-Mount presets in `dockerMounts` include: `codex`, `gemini`, `gcloud`, `claude`, `opencode`.
+Mount presets in `dockerMounts` include: `codex`, `gemini`, `gcloud`, `claude`, `opencode`, `pi`.
 
 Use `--no-mounts` to disable all credential mounts (you will get a warning if
 credentials are missing).

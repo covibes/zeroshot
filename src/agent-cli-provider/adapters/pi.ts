@@ -1,15 +1,9 @@
 import { appendJsonSchemaPrompt } from '../schema';
 import { contractError } from '../contract-errors';
-import {
-  emitAssistantSnapshot,
-  parseAssistantDelta,
-  parseToolExecutionEnd,
-  parseToolExecutionStart,
-  parseToolExecutionUpdate,
-  parseTurnEndResult,
-  resetAssistantSnapshot,
-} from '../assistant-stream';
-import { getRecord, getString, isRecord, tryParseJson, unknownToMessage } from '../json';
+import { unknownToMessage } from '../json';
+import { PI_CREDENTIAL_ENV_KEYS } from '../pi/credentials';
+import { createPiParserState, finishPiParsing, parsePiEvent } from '../pi/events';
+import { PI_SUPPORTED_VERSION } from '../pi/release';
 import {
   type BuildProviderCommandOptions,
   type CommandSpec,
@@ -18,17 +12,15 @@ import {
   type LevelOverrides,
   type ModelCatalogEntry,
   type ModelLevel,
-  type OutputEvent,
   type PiCliFeatures,
   type ProviderAdapter,
-  type ProviderParserState,
   type ResolvedModelSpec,
   type WarningMetadata,
 } from '../types';
 import {
   classifyBaseProviderError,
   commandSpec,
-  createParserState,
+  isCliVersionAtLeast,
   optionFeatures,
   resolveModelSpecWithConfig,
   warning,
@@ -37,45 +29,104 @@ import {
 const MODEL_CATALOG: Readonly<Record<string, ModelCatalogEntry>> = {};
 
 const LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
-  level1: { rank: 1, model: null },
-  level2: { rank: 2, model: null },
-  level3: { rank: 3, model: null },
+  level1: { rank: 1, model: null, reasoningEffort: 'low' },
+  level2: { rank: 2, model: null, reasoningEffort: 'medium' },
+  level3: { rank: 3, model: null, reasoningEffort: 'high' },
 };
 
-const IGNORED_EVENT_TYPES = new Set([
-  'session',
-  'agent_start',
-  'agent_end',
-  'turn_start',
-  'queue_update',
-  'compaction_start',
-  'compaction_end',
-  'auto_retry_start',
-  'auto_retry_end',
-]);
+function supportsFlag(
+  help: string,
+  assumeCurrent: boolean,
+  versionMatches: boolean,
+  pattern: RegExp
+): boolean {
+  return versionMatches && (assumeCurrent || pattern.test(help));
+}
 
-function detectCliFeatures(helpText?: string | null): PiCliFeatures {
+function detectCliFeatures(helpText?: string | null, versionText?: string | null): PiCliFeatures {
   const help = helpText ?? '';
-  const unknown = !help;
+  const versionMatches = isCliVersionAtLeast(versionText, PI_SUPPORTED_VERSION);
+  const assumeCurrent = !help && versionMatches;
   return {
     provider: 'pi',
-    supportsJsonMode: unknown ? true : /--mode\b/.test(help) && /\bjson\b/.test(help),
-    supportsModel: unknown ? true : /--model\b/.test(help),
-    supportsNoSession: unknown ? true : /--no-session\b/.test(help),
-    supportsNoExtensions: unknown ? true : /--no-extensions\b/.test(help),
-    supportsNoSkills: unknown ? true : /--no-skills\b/.test(help),
-    supportsNoPromptTemplates: unknown ? true : /--no-prompt-templates\b/.test(help),
-    supportsNoContextFiles: unknown ? true : /--no-context-files\b/.test(help),
-    supportsNoApprove: unknown ? true : /--no-approve\b/.test(help),
-    unknown,
+    versionMatches,
+    supportsJsonMode:
+      supportsFlag(help, assumeCurrent, versionMatches, /--mode\b/) &&
+      (assumeCurrent || /\bjson\b/.test(help)),
+    supportsModel: supportsFlag(help, assumeCurrent, versionMatches, /--model\b/),
+    supportsThinking: supportsFlag(help, assumeCurrent, versionMatches, /--thinking\b/),
+    supportsNoSession: supportsFlag(help, assumeCurrent, versionMatches, /--no-session\b/),
+    supportsNoExtensions: supportsFlag(help, assumeCurrent, versionMatches, /--no-extensions\b/),
+    supportsNoSkills: supportsFlag(help, assumeCurrent, versionMatches, /--no-skills\b/),
+    supportsNoPromptTemplates: supportsFlag(
+      help,
+      assumeCurrent,
+      versionMatches,
+      /--no-prompt-templates\b/
+    ),
+    supportsNoContextFiles: supportsFlag(
+      help,
+      assumeCurrent,
+      versionMatches,
+      /--no-context-files\b/
+    ),
+    supportsNoApprove: supportsFlag(help, assumeCurrent, versionMatches, /--no-approve\b/),
+    unknown: !help || !(versionText ?? '').trim(),
   };
+}
+
+function assertRequiredControls(options: BuildProviderCommandOptions): void {
+  const features = optionFeatures(options);
+  if (features.versionMatches !== true) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.cliFeatures.versionMatches',
+      exitCode: 2,
+      message:
+        `Pi ${PI_SUPPORTED_VERSION} or newer is required for the agent_settled JSON protocol. ` +
+        `Upgrade with: npm install -g --ignore-scripts ` +
+        `@earendil-works/pi-coding-agent@${PI_SUPPORTED_VERSION}`,
+    });
+  }
+  const required = [
+    ['supportsJsonMode', '--mode json'],
+    ['supportsNoSession', '--no-session'],
+    ['supportsNoSkills', '--no-skills'],
+    ['supportsNoPromptTemplates', '--no-prompt-templates'],
+    ['supportsNoContextFiles', '--no-context-files'],
+    ['supportsNoApprove', '--no-approve'],
+  ] as const;
+  for (const [field, flag] of required) {
+    if (features[field] !== false) continue;
+    throw contractError({
+      code: 'invalid-field',
+      field: `options.cliFeatures.${field}`,
+      exitCode: 2,
+      message: `Pi ${PI_SUPPORTED_VERSION}+ support for ${flag} is required for Zeroshot execution.`,
+    });
+  }
+  if (options.modelSpec?.model && features.supportsModel === false) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.cliFeatures.supportsModel',
+      exitCode: 2,
+      message: `Pi ${PI_SUPPORTED_VERSION}+ support for --model is required for explicit model selection.`,
+    });
+  }
+  if (options.modelSpec?.reasoningEffort && features.supportsThinking === false) {
+    throw contractError({
+      code: 'invalid-field',
+      field: 'options.cliFeatures.supportsThinking',
+      exitCode: 2,
+      message: `Pi ${PI_SUPPORTED_VERSION}+ support for --thinking is required for reasoning effort.`,
+    });
+  }
 }
 
 function addRequiredArgs(args: string[], options: BuildProviderCommandOptions): void {
   const features = optionFeatures(options);
   if (features.supportsJsonMode !== false) args.push('--mode', 'json');
   if (features.supportsNoSession !== false) args.push('--no-session');
-  if (features.supportsNoExtensions !== false) args.push('--no-extensions');
   if (features.supportsNoSkills !== false) args.push('--no-skills');
   if (features.supportsNoPromptTemplates !== false) args.push('--no-prompt-templates');
   if (features.supportsNoContextFiles !== false) args.push('--no-context-files');
@@ -86,6 +137,9 @@ function addOptionalArgs(args: string[], options: BuildProviderCommandOptions): 
   const features = optionFeatures(options);
   if (options.modelSpec?.model && features.supportsModel !== false) {
     args.push('--model', options.modelSpec.model);
+  }
+  if (options.modelSpec?.reasoningEffort && features.supportsThinking !== false) {
+    args.push('--thinking', options.modelSpec.reasoningEffort);
   }
 }
 
@@ -98,12 +152,11 @@ function failClosedUnsupportedSessionControl(options: BuildProviderCommandOption
     field,
     exitCode: 2,
     message:
-      'Pi CLI does not support resume/continue session control; fail closed and start a fresh run instead.',
+      'Pi CLI does not support resume/continue session control with a task-owned identity boundary.',
   });
 }
 
 function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[] {
-  const features = optionFeatures(options);
   const warnings: WarningMetadata[] = [];
 
   if (options.jsonSchema) {
@@ -115,16 +168,12 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
       )
     );
   }
-  if (features.supportsJsonMode === false) {
-    warnings.push(
-      warning('pi', 'pi-json-mode', 'Pi CLI does not advertise --mode json; continuing anyway.')
-    );
-  }
   return warnings;
 }
 
 function buildCommand(context: string, options: BuildProviderCommandOptions = {}): CommandSpec {
   failClosedUnsupportedSessionControl(options);
+  assertRequiredControls(options);
   const finalContext = options.jsonSchema
     ? appendJsonSchemaPrompt(context, options.jsonSchema)
     : context;
@@ -132,7 +181,9 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
 
   addRequiredArgs(args, options);
   addOptionalArgs(args, options);
-  args.push(finalContext);
+  // Pi has no `--` end-of-options sentinel and interprets leading `-`/`@` positional values as
+  // flags or file arguments. A leading space keeps arbitrary Zeroshot context in prompt mode.
+  args.push(` ${finalContext}`);
 
   return commandSpec({
     binary: 'pi',
@@ -141,80 +192,6 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     warnings: collectWarnings(options),
   });
-}
-
-function createPiState(): ProviderParserState {
-  return {
-    ...createParserState('pi'),
-    lastAssistantText: '',
-    lastAssistantThinking: '',
-  };
-}
-
-function parsePiTurnEnd(
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): readonly OutputEvent[] {
-  const message = getRecord(event, 'message');
-  const events = message === null ? [] : [...emitAssistantSnapshot(message, state)];
-  events.push(parseTurnEndResult(event, { failureMessage: 'Pi turn failed' }));
-  return events;
-}
-
-function parseMessageEvent(
-  type: string,
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): readonly OutputEvent[] | OutputEvent | null | undefined {
-  if (type === 'message_start') {
-    resetAssistantSnapshot(getRecord(event, 'message'), state);
-    return null;
-  }
-
-  if (type === 'message_update') {
-    const assistantMessageEvent = getRecord(event, 'assistantMessageEvent');
-    if (assistantMessageEvent !== null) {
-      const assistantEvent = parseAssistantDelta(assistantMessageEvent, state);
-      if (assistantEvent !== null) return assistantEvent;
-    }
-    const message = getRecord(event, 'message');
-    return message === null ? null : emitAssistantSnapshot(message, state);
-  }
-
-  if (type !== 'message_end') return undefined;
-  const message = getRecord(event, 'message');
-  return message === null ? null : emitAssistantSnapshot(message, state);
-}
-
-function parseToolEvent(
-  type: string,
-  event: Record<string, unknown>,
-  state: ProviderParserState
-): OutputEvent | null | undefined {
-  if (type === 'tool_execution_start') return parseToolExecutionStart(event, state);
-  if (type === 'tool_execution_update') return parseToolExecutionUpdate(event, state);
-  if (type === 'tool_execution_end') return parseToolExecutionEnd(event, state);
-  return undefined;
-}
-
-function parseEvent(
-  line: string,
-  state: ProviderParserState
-): readonly OutputEvent[] | OutputEvent | null {
-  const parsed = tryParseJson(line);
-  if (!isRecord(parsed)) return null;
-
-  const type = getString(parsed, 'type');
-  if (type === null || IGNORED_EVENT_TYPES.has(type)) return null;
-
-  const messageEvent = parseMessageEvent(type, parsed, state);
-  if (messageEvent !== undefined) return messageEvent;
-
-  const toolEvent = parseToolEvent(type, parsed, state);
-  if (toolEvent !== undefined) return toolEvent;
-
-  if (type === 'turn_end') return parsePiTurnEnd(parsed, state);
-  return null;
 }
 
 function resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec {
@@ -250,7 +227,9 @@ function classifyError(error: unknown): ErrorClassification {
       /\b(cancelled|canceled|aborted|interrupted)\b/i,
       /\brun\s*\/login\b/i,
       /\bmissing api key\b/i,
+      /\bno api key found\b/i,
       /\bno valid authentication\b/i,
+      /\bmodel\b.*\bnot found\b/i,
       /\bunknown option\b/i,
       /\bfailed to load\b/i,
       /\bcannot find module\b/i,
@@ -263,8 +242,8 @@ export const piAdapter: ProviderAdapter = {
   id: 'pi',
   displayName: 'Pi',
   binary: 'pi',
-  adapterVersion: '1',
-  credentialEnvKeys: [],
+  adapterVersion: '2',
+  credentialEnvKeys: PI_CREDENTIAL_ENV_KEYS,
   modelCatalog: MODEL_CATALOG,
   levelMapping: LEVEL_MAPPING,
   defaultLevel: 'level2',
@@ -272,8 +251,9 @@ export const piAdapter: ProviderAdapter = {
   defaultMinLevel: 'level1',
   detectCliFeatures,
   buildCommand,
-  parseEvent,
-  createParserState: createPiState,
+  parseEvent: parsePiEvent,
+  finishParsing: finishPiParsing,
+  createParserState: createPiParserState,
   resolveModelSpec,
   validateModelId,
   classifyError,

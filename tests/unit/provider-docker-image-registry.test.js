@@ -7,6 +7,7 @@ const {
   findOmpReleaseAsset,
   getProviderMetadata,
 } = require('../helpers/provider-docker-image-harness');
+const { PI_INSTALL_COMMAND } = require('../../lib/agent-cli-provider/pi/release');
 
 describe('IsolationManager: per-provider image selection', function () {
   describe('providerBuildArgs', function () {
@@ -47,6 +48,13 @@ describe('IsolationManager: per-provider image selection', function () {
       assert.ok(args[0].includes('omp --version'));
     });
 
+    it('emits the pinned Pi install plus its private config root', function () {
+      assert.deepStrictEqual(IsolationManager.providerBuildArgs('pi'), [
+        `PROVIDER_INSTALL=${PI_INSTALL_COMMAND}`,
+        'PROVIDER_CONFIG_ROOTS=/home/node/.pi/agent',
+      ]);
+    });
+
     it('honors a custom containerHome for PROVIDER_CONFIG_ROOTS', function () {
       const args = IsolationManager.providerBuildArgs('omp', '/root');
       assert.ok(args.includes('PROVIDER_CONFIG_ROOTS=/root/.omp'));
@@ -61,6 +69,7 @@ describe('IsolationManager: per-provider image selection', function () {
       );
       assert.ok(getProviderMetadata('codex').docker.install, 'codex should have docker.install');
       assert.ok(getProviderMetadata('gemini').docker.install, 'gemini should have docker.install');
+      assert.ok(getProviderMetadata('pi').docker.install, 'pi should have docker.install');
       assert.ok(getProviderMetadata('omp').docker.install, 'omp should have docker.install');
       assert.strictEqual(
         getProviderMetadata('claude').docker.install,
@@ -84,8 +93,9 @@ describe('IsolationManager: per-provider image selection', function () {
   });
 
   describe('registry docker.configRoots', function () {
-    it('is set to $HOME/.omp for omp only', function () {
+    it('is set to provider-owned roots for omp and pi', function () {
       assert.deepStrictEqual(getProviderMetadata('omp').docker.configRoots, ['$HOME/.omp']);
+      assert.deepStrictEqual(getProviderMetadata('pi').docker.configRoots, ['$HOME/.pi/agent']);
       assert.strictEqual(getProviderMetadata('claude').docker.configRoots, undefined);
     });
 
