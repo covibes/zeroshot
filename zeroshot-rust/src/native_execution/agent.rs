@@ -38,7 +38,8 @@ pub(super) struct NativeAgent {
 
 impl NativeAgent {
     pub(super) fn new(process: &NativeExecutionProcess) -> Result<Self, ()> {
-        let workspace = NativeAgentWorkspace::open(&process.state_dir, &process.workspace)?;
+        let workspace =
+            NativeAgentWorkspace::open(&process.state_dir, &process.resource, &process.workspace)?;
         let artifacts = AgentArtifactStore::open(&process.state_dir, &process.resource)?;
         let driver = Arc::new(NativeCodexDriver::new(
             workspace.root(),

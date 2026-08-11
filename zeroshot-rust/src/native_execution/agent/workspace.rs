@@ -80,13 +80,20 @@ impl Clone for NativeAgentWorkspace {
 }
 
 impl NativeAgentWorkspace {
-    pub(super) fn open(state_dir: &Path, workspace: &Path) -> Result<Self, ()> {
+    pub(super) fn open(
+        state_dir: &Path,
+        resource: &ResourceId,
+        workspace: &Path,
+    ) -> Result<Self, ()> {
         let canonical_root = canonical_workspace_root(workspace)?;
         let fingerprints: Arc<dyn BorrowedWorkspaceFingerprintPort> =
             Arc::new(FilesystemBorrowedWorkspaceFingerprint::default());
         let lease_store = Arc::new(
-            SqliteWorkspaceLeaseStore::open(state_dir.join("workspace-leases.sqlite"))
-                .map_err(|_| ())?,
+            SqliteWorkspaceLeaseStore::open(state_dir.join(format!(
+                "workspace-leases-{}.sqlite",
+                workspace_store_id(resource)
+            )))
+            .map_err(|_| ())?,
         );
         let lease_manager = WorkspaceLeaseManager::new(
             lease_store,
@@ -244,6 +251,13 @@ fn workspace_owner(cluster: &ResourceId, allocation: &DispatchAllocation) -> Res
     OwnerId::new(format!("native-agent-{:x}", digest.finalize())).map_err(|_| ())
 }
 
+fn workspace_store_id(resource: &ResourceId) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"zeroshot.native-agent-workspace-store/v1\0");
+    digest.update(resource.as_str().as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
 fn write_marker(
     marker: &Path,
     git_dir: &Path,
@@ -307,12 +321,13 @@ mod tests {
         std::fs::create_dir_all(&state).unwrap();
         std::fs::create_dir_all(workspace.join(".git")).unwrap();
 
-        let authority = NativeAgentWorkspace::open(&state, &workspace).unwrap();
+        let resource = ResourceId::new("changed-after-preflight").unwrap();
+        let authority = NativeAgentWorkspace::open(&state, &resource, &workspace).unwrap();
         let candidate = authority.preflight().unwrap();
         std::fs::write(workspace.join("changed.txt"), b"changed").unwrap();
         let prepared = authority
             .prepare(
-                &ResourceId::new("changed-after-preflight").unwrap(),
+                &resource,
                 &DispatchAllocation {
                     run: RunSequence::new(1).unwrap(),
                     node_instance: NodeInstanceId::new(1).unwrap(),

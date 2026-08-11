@@ -268,6 +268,8 @@ a configurable provider/model/driver surface, general worker registration, sched
 watch, retry, session reuse, or broader lifecycle authority. Secret material crosses only the
 non-cloneable, redacted final-spawn input after child environment clearing; it never enters generic
 runtime commands, debug output, graph/ledger state, or artifacts.
+Foreground lease stores are cluster-scoped; the workspace directory lock and durable marker own
+cross-cluster exclusion.
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
 Mutating source calls carry an exclusively borrowed, non-serializable verified-workspace capability;
 their serializable intent and closed operation-specific receipts contain only canonical workspace,
