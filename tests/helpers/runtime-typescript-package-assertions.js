@@ -4,6 +4,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/guidance-topics.js',
   'src/input-helpers.js',
   'src/ledger-sequence.js',
+  'src/message-buffer.js',
   'src/task-startup-error.js',
   'src/task-runner.js',
   'src/omp-blob-root.js',
@@ -25,6 +26,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/providers/google/index.js',
   'src/providers/openai/index.js',
   'src/providers/opencode/index.js',
+  'src/template-validation/report-formatter.js',
 ]);
 
 function assertRuntimeTypeScriptPackage(files) {

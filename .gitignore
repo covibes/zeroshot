@@ -142,6 +142,7 @@ lib/settings-issue-providers.d.ts
 src/guidance-topics.js
 src/input-helpers.js
 src/ledger-sequence.js
+src/message-buffer.js
 src/task-startup-error.js
 src/task-runner.js
 src/omp-blob-root.js
@@ -163,3 +164,4 @@ src/providers/capabilities.js
 src/providers/google/index.js
 src/providers/openai/index.js
 src/providers/opencode/index.js
+src/template-validation/report-formatter.js
