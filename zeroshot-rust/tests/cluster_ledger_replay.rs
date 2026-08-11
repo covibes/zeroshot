@@ -226,17 +226,17 @@ async fn prepare_void_fixture(ledger: &ClusterLedger) -> VoidFixture {
         canonical_input: b"null".to_vec(),
     };
     let loser_a = ledger
-        .dispatch_reduction(key("void-loser-a"), [62; 32], dispatch("void_loser_a"))
+        .dispatch_reduction_fixture(key("void-loser-a"), [62; 32], dispatch("void_loser_a"))
         .await
         .unwrap()
         .value;
     let loser_b = ledger
-        .dispatch_reduction(key("void-loser-b"), [63; 32], dispatch("void_loser_b"))
+        .dispatch_reduction_fixture(key("void-loser-b"), [63; 32], dispatch("void_loser_b"))
         .await
         .unwrap()
         .value;
     let winner = ledger
-        .dispatch_reduction(key("void-winner"), [64; 32], dispatch("void_winner"))
+        .dispatch_reduction_fixture(key("void-winner"), [64; 32], dispatch("void_winner"))
         .await
         .unwrap()
         .value;
@@ -635,7 +635,7 @@ async fn reducer_execution_context_attempts_replay_exactly() {
         map_indices: vec![3, 1],
     };
     let first = ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("reduce-dispatch-1"),
             [32; 32],
             ReductionDispatchRequest {
@@ -663,7 +663,7 @@ async fn reducer_execution_context_attempts_replay_exactly() {
         .await
         .unwrap();
     let second = ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("reduce-dispatch-2"),
             [34; 32],
             ReductionDispatchRequest {
@@ -726,7 +726,7 @@ async fn replay_rejects_node_instance_aliases_across_distinct_occurrences() {
         map_indices: Vec::new(),
     };
     let first = ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("alias-first"),
             [52; 32],
             ReductionDispatchRequest {
@@ -739,7 +739,7 @@ async fn replay_rejects_node_instance_aliases_across_distinct_occurrences() {
         .unwrap()
         .value;
     let second = ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("alias-second"),
             [53; 32],
             ReductionDispatchRequest {
@@ -861,7 +861,7 @@ async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
         map_indices: Vec::new(),
     };
     let gap = ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("gap"),
             [42; 32],
             ReductionDispatchRequest {
@@ -879,7 +879,7 @@ async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
         map_indices: Vec::new(),
     };
     ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("active-attempt-1"),
             [54; 32],
             ReductionDispatchRequest {
@@ -891,7 +891,7 @@ async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
         .await
         .unwrap();
     let concurrent_attempt = ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("active-attempt-2"),
             [55; 32],
             ReductionDispatchRequest {
@@ -908,7 +908,7 @@ async fn reducer_control_fold_rejects_attempt_gaps_and_unmapped_voids() {
     );
 
     let reducer_owned = ledger
-        .dispatch_reduction(
+        .dispatch_reduction_fixture(
             key("reducer-owned"),
             [45; 32],
             ReductionDispatchRequest {

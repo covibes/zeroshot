@@ -5,7 +5,8 @@ use openengine_cluster_client::{
 };
 use openengine_cluster_protocol::{
     ApplyParams, ClusterStatus, Generation, GetParams, GetResult, IdempotencyKey, InitializeResult,
-    PlanParams, ServerCapabilities, StopMode, StopParams, UpdateParams, PROTOCOL_VERSION,
+    PlanParams, ServerCapabilities, StopMode, StopParams, TerminalResult, UpdateParams,
+    PROTOCOL_VERSION,
 };
 use openengine_cluster_server::admission::AdmissionCoordinator;
 use openengine_cluster_server::{BackendError, ClusterBackend};
@@ -34,6 +35,7 @@ fn canonical_empty_results_have_exact_wire_shape() {
         spec: None,
         status,
         at_cursor: None,
+        terminal_result: None,
     };
 
     assert_eq!(
@@ -61,6 +63,49 @@ fn canonical_empty_results_have_exact_wire_shape() {
             },
             "atCursor": null
         })
+    );
+}
+
+#[test]
+fn terminal_result_has_one_exact_closed_wire_algebra() {
+    let succeeded = TerminalResult::Succeeded {
+        output: serde_json::json!({ "value": 42 }),
+    };
+    assert_eq!(
+        serde_json::to_value(&succeeded).unwrap(),
+        serde_json::json!({ "status": "succeeded", "output": { "value": 42 } })
+    );
+    assert_eq!(
+        serde_json::from_value::<TerminalResult>(serde_json::json!({
+            "status": "succeeded",
+            "output": { "value": 42 }
+        }))
+        .unwrap(),
+        succeeded
+    );
+    assert!(
+        serde_json::from_value::<TerminalResult>(serde_json::json!({
+            "status": "succeeded",
+            "output": null,
+            "unexpected": true
+        }))
+        .is_err()
+    );
+    let failed = serde_json::from_value::<TerminalResult>(serde_json::json!({
+        "status": "failed",
+        "reason": "attempts_exhausted"
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(failed).unwrap(),
+        serde_json::json!({ "status": "failed", "reason": "attempts_exhausted" })
+    );
+    assert!(
+        serde_json::from_value::<TerminalResult>(serde_json::json!({
+            "status": "failed",
+            "reason": "not a bounded enum label"
+        }))
+        .is_err()
     );
 }
 

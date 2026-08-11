@@ -195,7 +195,7 @@ async fn before_terminal_removal(
     fail(FailPoint::BeforeCommit);
     assert!(
         ledger
-            .terminalize(
+            .terminalize_fixture(
                 key("terminal-before"),
                 [14; 32],
                 CanonicalDigest::of(b"done"),
@@ -205,7 +205,7 @@ async fn before_terminal_removal(
     );
     assert_eq!(ledger.state().await.unwrap().position, before);
     ledger
-        .terminalize(key("terminal"), [15; 32], CanonicalDigest::of(b"done"))
+        .terminalize_fixture(key("terminal"), [15; 32], CanonicalDigest::of(b"done"))
         .await
         .unwrap();
 
@@ -313,7 +313,7 @@ async fn after_terminal_cleanup(ledger: &ClusterLedger, fail: &impl Fn(FailPoint
     fail(FailPoint::AfterCommitBeforeResponse);
     assert!(
         ledger
-            .terminalize(key("terminal"), [8; 32], CanonicalDigest::of(b"done"))
+            .terminalize_fixture(key("terminal"), [8; 32], CanonicalDigest::of(b"done"))
             .await
             .unwrap()
             .replayed

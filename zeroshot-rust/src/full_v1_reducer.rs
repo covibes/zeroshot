@@ -5,12 +5,33 @@
 //! rather than graph syntax or a directly constructed compiled value. All shape, type,
 //! binding, guard-domain, and bound proofs remain owned by that verifier. Reduction only applies
 //! those already-proven operations to durable values in authored order.
+//! Reducer-issued mutation authorizations are opaque. Each binds a decision to the verified graph,
+//! canonical input, durable history, and exact snapshot, all revalidated before commit.
+//!
+//! This keeps the reducer pure while preventing callers from manufacturing partial execution
+//! intent. A caller may select only an authorization returned with the current reduction; replay
+//! against a newer prefix fails closed. The authorization records no environment, process,
+//! provider, workspace, or scheduling state.
+//!
+//! Durable execution facts remain the sole input to subsequent reductions. Runtime observations
+//! become reducer-visible only after the ledger accepts their canonical settlement, so process
+//! completion alone cannot advance graph control or terminal state.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod authorization;
+
+pub use authorization::{
+    ExecutionVoidAuthorization, ReductionDispatchAuthorization, ReductionTerminalAuthorization,
+};
+pub(crate) use authorization::{
+    ReductionDispatchAuthorizationParts, ReductionTerminalAuthorizationParts,
+};
+
 use openengine_cluster_protocol::{
     ChoiceNode, ControlSelector, ControlSource, DataSelector, FieldPath, GraphNode, Guard, Join,
-    MapNode, NodeName, NodeOutputChannel, ParNode, PositiveInteger, WorkerOutcome, WorkerRef,
+    EnumLabel, MapNode, NodeName, NodeOutputChannel, ParNode, PositiveInteger, TerminalResult,
+    WorkerOutcome, WorkerRef,
 };
 use openengine_cluster_server::admission::VerifiedGraph;
 use serde::{Deserialize, Serialize};
@@ -105,41 +126,6 @@ pub struct ReductionInput<'a> {
     pub next_execution: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecutionVoidAuthorization {
-    run: RunSequence,
-    execution: ExecutionId,
-    reason: ExecutionVoidReason,
-    graph_digest: CanonicalDigest,
-    input_digest: CanonicalDigest,
-    history_digest: CanonicalDigest,
-    snapshot: ReductionSnapshot,
-}
-
-impl ExecutionVoidAuthorization {
-    pub(crate) fn parts(
-        &self,
-    ) -> (
-        RunSequence,
-        ExecutionId,
-        ExecutionVoidReason,
-        CanonicalDigest,
-        CanonicalDigest,
-        CanonicalDigest,
-        &ReductionSnapshot,
-    ) {
-        (
-            self.run,
-            self.execution,
-            self.reason,
-            self.graph_digest,
-            self.input_digest,
-            self.history_digest,
-            &self.snapshot,
-        )
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PromotedValue {
     pub path: FieldPath,
@@ -172,23 +158,20 @@ pub enum Decision {
         values: Vec<PromotedValue>,
     },
     Terminal {
-        projection: TerminalProjection,
+        projection: TerminalResult,
     },
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum TerminalProjection {
-    Succeeded { output: Value },
-    Failed { reason: String },
-}
+pub type TerminalProjection = TerminalResult;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reduction {
     pub run: RunSequence,
     pub decisions: Vec<Decision>,
-    pub terminal: Option<TerminalProjection>,
+    pub terminal: Option<TerminalResult>,
     void_authorizations: BTreeMap<ExecutionId, ExecutionVoidAuthorization>,
+    dispatch_authorizations: BTreeMap<ExecutionId, ReductionDispatchAuthorization>,
+    terminal_authorization: Option<ReductionTerminalAuthorization>,
 }
 
 impl Reduction {
@@ -199,6 +182,19 @@ impl Reduction {
     #[must_use]
     pub fn void_authorization(&self, execution: ExecutionId) -> Option<ExecutionVoidAuthorization> {
         self.void_authorizations.get(&execution).cloned()
+    }
+
+    #[must_use]
+    pub fn dispatch_authorization(
+        &self,
+        execution: ExecutionId,
+    ) -> Option<ReductionDispatchAuthorization> {
+        self.dispatch_authorizations.get(&execution).cloned()
+    }
+
+    #[must_use]
+    pub fn terminal_authorization(&self) -> Option<ReductionTerminalAuthorization> {
+        self.terminal_authorization.clone()
     }
 
     pub fn control_records(&self) -> Result<Vec<RecordPayload>, ReducerError> {
@@ -245,7 +241,9 @@ impl Reduction {
             }
         }
         if let Some(terminal) = &self.terminal {
-            let bytes = serde_json::to_vec(terminal).map_err(|_| ReducerError::Encoding)?;
+            let value = serde_json::to_value(terminal).map_err(|_| ReducerError::Encoding)?;
+            let bytes = openengine_cluster_protocol::canonical_value_bytes(&value)
+                .map_err(|_| ReducerError::Encoding)?;
             records.push(RecordPayload::Terminal {
                 run: self.run,
                 outcome_digest: CanonicalDigest::of(&bytes),
@@ -295,16 +293,8 @@ impl<'a> FullV1Reducer<'a> {
     }
 
     pub fn reduce(&self, input: ReductionInput<'_>) -> Result<Reduction, ReducerError> {
-        let graph_bytes = self
-            .graph
-            .compiled_ir
-            .canonical_bytes()
-            .map_err(|_| ReducerError::Encoding)?;
-        let graph_digest = CanonicalDigest::of(&graph_bytes);
-        let input_bytes =
-            serde_json::to_vec(input.initial_input).map_err(|_| ReducerError::Encoding)?;
-        let input_digest = CanonicalDigest::of(&input_bytes);
-        let history_digest = durable_execution_history_digest(input.executions)?;
+        let (graph_digest, input_digest, history_digest) =
+            reduction_digests(self.graph, input.initial_input, input.executions)?;
         let reduction_snapshot = input.snapshot.clone();
         let initial_input = input.initial_input.clone();
         let mut engine = Engine::new(input, &self.graph.compiled_ir.root)?;
@@ -328,38 +318,48 @@ impl<'a> FullV1Reducer<'a> {
         if let Some(projection) = terminal.clone() {
             engine.decisions.push(Decision::Terminal { projection });
         }
-        let void_authorizations = engine
-            .decisions
-            .iter()
-            .filter_map(|decision| match decision {
-                Decision::VoidLoser {
-                    run,
-                    execution,
-                    reason,
-                } => reduction_snapshot.as_ref().map(|snapshot| {
-                    (
-                        *execution,
-                        ExecutionVoidAuthorization {
-                            run: *run,
-                            execution: *execution,
-                            reason: *reason,
-                            graph_digest,
-                            input_digest,
-                            history_digest,
-                            snapshot: snapshot.clone(),
-                        },
-                    )
-                }),
-                _ => None,
-            })
-            .collect();
+        let authorizations = authorization::build(
+            &engine.decisions,
+            terminal.as_ref(),
+            authorization::AuthorizationContext {
+                run: engine.run,
+                graph_digest,
+                input_digest,
+                history_digest,
+                snapshot: reduction_snapshot.as_ref(),
+            },
+        )?;
         Ok(Reduction {
             run: engine.run,
             decisions: engine.decisions,
             terminal,
-            void_authorizations,
+            void_authorizations: authorizations.voids,
+            dispatch_authorizations: authorizations.dispatches,
+            terminal_authorization: authorizations.terminal,
         })
     }
+}
+
+fn reduction_digests(
+    graph: &VerifiedGraph,
+    input: &Value,
+    executions: &[DurableExecution],
+) -> Result<(CanonicalDigest, CanonicalDigest, CanonicalDigest), ReducerError> {
+    let graph_bytes = graph
+        .compiled_ir
+        .canonical_bytes()
+        .map_err(|_| ReducerError::Encoding)?;
+    let input_bytes = serde_json::to_vec(input).map_err(|_| ReducerError::Encoding)?;
+    let history_digest = durable_execution_history_digest(executions)?;
+    Ok((
+        CanonicalDigest::of(&graph_bytes),
+        CanonicalDigest::of(&input_bytes),
+        history_digest,
+    ))
+}
+
+fn attempts_exhausted_reason() -> EnumLabel {
+    EnumLabel::new("attempts_exhausted").expect("fixed terminal reason must be a valid enum label")
 }
 
 #[derive(Clone)]
@@ -736,7 +736,7 @@ impl<'a> Engine<'a> {
             GraphNode::Fail(terminal) => Ok(Status::Terminal {
                 position: Position::ZERO,
                 projection: TerminalProjection::Failed {
-                    reason: terminal.reason.as_label().as_str().to_owned(),
+                    reason: terminal.reason.as_label().clone(),
                 },
             }),
         }
@@ -778,7 +778,7 @@ impl<'a> Engine<'a> {
             return Ok(Status::Terminal {
                 position: Position::ZERO,
                 projection: TerminalProjection::Failed {
-                    reason: "attempts_exhausted".to_owned(),
+                    reason: attempts_exhausted_reason(),
                 },
             });
         }

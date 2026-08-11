@@ -74,6 +74,7 @@ impl ClusterBackend for CountingBackend {
             spec: None,
             status: ClusterStatus::empty(),
             at_cursor: None,
+            terminal_result: None,
         })
     }
 }

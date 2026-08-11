@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use openengine_cluster_client::{ClusterClient, NdjsonTransport};
+use openengine_cluster_client::{ClientError, ClusterClient, NdjsonTransport};
+use openengine_cluster_protocol::ApplyResult;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::{timeout, Duration};
 
@@ -63,6 +64,19 @@ pub fn spawn(state_dir: &Path, cluster_id: &str) -> (NativeProcess, NativeClient
         NativeProcess { child },
         ClusterClient::new(NdjsonTransport::new(stdout, stdin)),
     )
+}
+
+pub fn rpc_domain_code(error: &ClientError) -> Option<&str> {
+    let ClientError::Rpc(error) = error else {
+        return None;
+    };
+    error.data.as_ref().map(|data| data.code.as_str())
+}
+
+pub fn assert_one_deduped(first: &ApplyResult, second: &ApplyResult) {
+    assert_ne!(first.deduped, second.deduped);
+    assert_eq!(first.generation, second.generation);
+    assert_eq!(first.run_id, second.run_id);
 }
 
 impl NativeProcess {

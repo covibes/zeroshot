@@ -261,7 +261,11 @@ impl ClusterLedger {
         .await
     }
 
-    pub async fn terminalize(
+    /// Debug-only fixture transition for legacy ledger corruption/race tests. Production reducer
+    /// terminalization requires [`Self::terminalize_reduction`].
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub async fn terminalize_fixture(
         &self,
         key: IdempotencyId,
         fingerprint: [u8; 32],

@@ -16,6 +16,10 @@
     {
       "source": "src/agent-cli-provider/provider-registry.ts",
       "document": "AGENTS.md"
+    },
+    {
+      "source": "src/cluster/generated/protocol.ts",
+      "document": "AGENTS.md"
     }
   ]
 }

@@ -181,7 +181,7 @@ async fn concurrent_terminalizations_cas_against_the_validated_prefix() {
     let first_ledger = ledger.clone();
     let first = tokio::spawn(async move {
         first_ledger
-            .terminalize(
+            .terminalize_fixture(
                 key("terminal-a"),
                 [2; 32],
                 CanonicalDigest::of(b"outcome-a"),
@@ -191,7 +191,7 @@ async fn concurrent_terminalizations_cas_against_the_validated_prefix() {
     let second_ledger = ledger.clone();
     let second = tokio::spawn(async move {
         second_ledger
-            .terminalize(
+            .terminalize_fixture(
                 key("terminal-b"),
                 [3; 32],
                 CanonicalDigest::of(b"outcome-b"),
@@ -355,7 +355,7 @@ async fn concurrent_cleanup_receipts_cas_against_the_validated_prefix() {
         .await
         .unwrap();
     ledger
-        .terminalize(key("terminal"), [2; 32], CanonicalDigest::of(b"outcome"))
+        .terminalize_fixture(key("terminal"), [2; 32], CanonicalDigest::of(b"outcome"))
         .await
         .unwrap();
     store.arm();

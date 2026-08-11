@@ -255,10 +255,11 @@ authorization, and loopback-listener lifecycle. Artifact stages, bytes, roots, f
 locks, and manifests remain product-private; only verified protocol `ArtifactRef` receipts cross
 the engine boundary. `LocalCasArtifactStore` takes an explicit root, is a single-writer local
 filesystem store, and must preserve ref-first release plus synchronized blob-then-ref publication.
-The narrow native stdio admission entrypoint composes one capability-negative verifier registry,
-one SQLite ledger resource, and only initialize/plan/apply/get. It advertises no graph profile,
-renews one process-owned fence while serving, and on graceful EOF stops renewal before exact
-conditional fence release; it must not acquire provider, watch, lifecycle, or execution authority.
+The narrow native stdio entrypoint composes one SQLite ledger resource and only
+initialize/plan/apply/get. It advertises no graph profile, renews one process-owned fence while
+serving, and on graceful EOF stops renewal before exact conditional fence release. It may execute
+only the fixed private deterministic checkpoint; it must not acquire provider/general-worker,
+scheduler, daemon-loop, watch, or broader lifecycle authority.
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
 Mutating source calls carry an exclusively borrowed, non-serializable verified-workspace capability;
 their serializable intent and closed operation-specific receipts contain only canonical workspace,
@@ -400,6 +401,13 @@ tie-break, map indices and positive attempts are part of the central ledger exec
 early-join loser voids are central ledger control records. Keep scheduling capacity, clocks, tasks,
 channels, runtime/provider/artifact concerns, public protocol methods, and automatic retry outside
 the reducer.
+Reducer dispatch and terminal appends require opaque authorizations bound to the exact graph/input/
+history digests, decision fields, and ledger position/hash that produced them; only a newly committed
+dispatch receipt authorizes a physical effect. The native production backend additionally permits
+one private exact `seq(step, succeed)` deterministic process proof while advertising no graph
+profile. It validates and settles that process synchronously, exposes the protocol-owned optional
+`GetResult.terminalResult`, refuses an active dispatch on reopen, and runs bounded settled-prefix
+terminal recovery only after fence renewal starts.
 Graph syntax, payload subtyping, compiled IR, diagnostics, and artifact receipt Rust types remain
 authoritative protocol contracts. `ProductionGraphVerifier` is the one reusable production
 semantic verifier for `openengine.graph.full/v1`; it resolves workers through `WorkerRegistry` and
