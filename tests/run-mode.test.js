@@ -1,5 +1,26 @@
 const assert = require('assert');
-const { describeRunMode, resolveRunMode } = require('../lib/run-mode');
+const runModeModule = require('../lib/run-mode');
+const { describeRunMode, resolveRunMode, runModeFromPlan } = runModeModule;
+
+describe('run-mode CommonJS contract', () => {
+  it('preserves the exact export surface and function arities', () => {
+    assert.deepStrictEqual(Reflect.ownKeys(runModeModule), [
+      'resolveRunMode',
+      'runModeFromPlan',
+      'describeRunMode',
+    ]);
+    assert.deepStrictEqual(
+      Reflect.ownKeys(runModeModule).map((key) => runModeModule[key].length),
+      [1, 1, 1]
+    );
+  });
+
+  it('derives labels directly from canonical plans', () => {
+    assert.strictEqual(runModeFromPlan({ isolation: 'docker', delivery: 'ship' }), 'ship+docker');
+    assert.strictEqual(runModeFromPlan({ isolation: 'worktree', delivery: 'pr' }), 'pr');
+    assert.strictEqual(runModeFromPlan({ isolation: 'none', delivery: 'none' }), null);
+  });
+});
 
 describe('describeRunMode', () => {
   it('describes ship', () => {

@@ -64,6 +64,16 @@ function assertLegacyTypeScriptOutputs() {
     autoMerge: true,
   });
   assert.strictEqual(Object.isFrozen(runPlan.resolveRunPlan({})), true);
+
+  const runModePath = path.join(repoRoot, 'lib/run-mode.js');
+  assert.ok(fs.existsSync(runModePath), 'legacy TypeScript build must emit lib/run-mode.js');
+  const runMode = require(runModePath);
+  assert.deepStrictEqual(Reflect.ownKeys(runMode), [
+    'resolveRunMode',
+    'runModeFromPlan',
+    'describeRunMode',
+  ]);
+  assert.strictEqual(runMode.resolveRunMode({ pr: true, docker: true }), 'pr+docker');
 }
 
 describe('npm package smoke', function () {
@@ -98,6 +108,7 @@ describe('npm package smoke', function () {
       'lib/path-check.js',
       'lib/process-liveness.js',
       'lib/run-plan.js',
+      'lib/run-mode.js',
       'scripts/check-path.js',
       'scripts/postinstall.js',
       'cli/lib/setup-wizard.js',
