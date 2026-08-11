@@ -169,6 +169,30 @@ function assertGitRemoteUtilsOutput() {
   );
 }
 
+function assertDetachedStartupOutput() {
+  const startupPath = path.join(repoRoot, 'lib/detached-startup.js');
+  assert.ok(
+    fs.existsSync(startupPath),
+    'legacy TypeScript build must emit lib/detached-startup.js'
+  );
+  const startup = require(startupPath);
+  assert.deepStrictEqual(Reflect.ownKeys(startup), [
+    'DEFAULT_WAIT_TIMEOUT_SECONDS',
+    'getClustersFilePath',
+    'getRegisteredResumeDaemonPid',
+    'isClusterRegistered',
+    'isProcessAlive',
+    'markDetachedSetupFailed',
+    'patchDetachedResumeCluster',
+    'registerDetachedSetupCluster',
+    'removeDetachedSetupCluster',
+    'resolveWaitTimeoutMs',
+    'revertDetachedResumeCluster',
+    'waitForClusterRegistration',
+    'waitForResumeOwnership',
+  ]);
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -240,6 +264,7 @@ function assertLegacyTypeScriptPackage() {
   assertComposeUtilsOutput();
   assertCompletionOutput();
   assertGitRemoteUtilsOutput();
+  assertDetachedStartupOutput();
   assertSetupOutputs();
   assertLegacyTypeScriptOutputs();
 }
