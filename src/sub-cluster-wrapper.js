@@ -15,6 +15,7 @@
 const LogicEngine = require('./logic-engine');
 const MessageBusBridge = require('./message-bus-bridge');
 const { DEFAULT_MAX_ITERATIONS } = require('./agent/agent-config');
+const { findMatchingTrigger } = require('./agent/agent-trigger-evaluator');
 const { bufferMessage, scheduleDrain, drainBufferedMessages } = require('./message-buffer');
 
 function normalizeParentTopicConfig(entry) {
@@ -217,19 +218,9 @@ class SubClusterWrapper {
    * @private
    */
   _findMatchingTrigger(message) {
-    if (!this.config.triggers) {
-      return null;
-    }
-
-    return this.config.triggers.find((trigger) => {
-      if (trigger.topic === '*' || trigger.topic === message.topic) {
-        return true;
-      }
-      if (trigger.topic.endsWith('*')) {
-        const prefix = trigger.topic.slice(0, -1);
-        return message.topic.startsWith(prefix);
-      }
-      return false;
+    return findMatchingTrigger({
+      triggers: this.config.triggers,
+      message,
     });
   }
 

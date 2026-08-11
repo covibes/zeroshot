@@ -141,6 +141,7 @@ lib/settings-validation.js
 lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
+src/config-router.js
 src/guidance-topics.js
 src/input-helpers.js
 src/ledger-sequence.js
@@ -156,6 +157,7 @@ task-lib/process-termination.js
 task-lib/omp-storage-root.js
 src/omp-execution-fingerprint.js
 src/omp-session-limits.js
+src/agent/agent-trigger-evaluator.js
 src/agent/context-replay-policy.js
 src/agent/critical-agent-policy.js
 src/agent/provider-control-plane.js
