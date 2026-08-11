@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.task-lib.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": false
+  }
+}

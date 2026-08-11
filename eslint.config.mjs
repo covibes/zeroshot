@@ -393,6 +393,8 @@ export default [
       'src/guidance-topics.js',
       'src/omp-blob-root.js',
       'src/omp-config-overlay.js',
+      'task-lib/config.js',
+      'task-lib/omp-storage-root.js',
       'src/omp-execution-fingerprint.js',
       'src/omp-session-limits.js',
       'src/agent/context-replay-policy.js',

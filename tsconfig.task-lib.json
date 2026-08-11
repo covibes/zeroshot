@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.legacy-runtime.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true
+  },
+  "include": ["task-lib/**/*.ts"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}

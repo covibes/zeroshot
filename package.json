@@ -29,7 +29,7 @@
     ]
   },
   "scripts": {
-    "pretest": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime",
+    "pretest": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib",
     "test": "node tests/run-tests.js",
     "test:unit": "node tests/run-tests.js",
     "test:e2e": "mocha 'tests/e2e/**/*.test.js' --timeout 120000",
@@ -40,10 +40,11 @@
     "test:coverage:report": "c8 --reporter=html npm run test:unit && echo 'Coverage report generated at coverage/index.html'",
     "postinstall": "node scripts/postinstall.js",
     "start": "node cli/index.js",
-    "typecheck": "tsc --noEmit && npm run typecheck:legacy-lib && npm run typecheck:legacy-runtime && npm run typecheck:cluster && npm run typecheck:hosted-target && npm run typecheck:hosted-session && npm run typecheck:target",
+    "typecheck": "tsc --noEmit && npm run typecheck:legacy-lib && npm run typecheck:legacy-runtime && npm run typecheck:task-lib && npm run typecheck:cluster && npm run typecheck:hosted-target && npm run typecheck:hosted-session && npm run typecheck:target",
     "typecheck:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.json",
     "typecheck:legacy-lib": "tsc --project tsconfig.legacy-lib.json",
     "typecheck:legacy-runtime": "tsc --project tsconfig.legacy-runtime.json",
+    "typecheck:task-lib": "tsc --project tsconfig.task-lib.json",
     "typecheck:hosted-target": "tsc --project tsconfig.hosted-target.json",
     "typecheck:hosted-session": "tsc --project tsconfig.hosted-session.json",
     "test:hosted": "npm run build:cluster && node --test tests/private-hosted-cli/*.test.js && npm run test:hosted-target",
@@ -55,10 +56,11 @@
     "build:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.build.json",
     "build:legacy-lib": "tsc --project tsconfig.legacy-lib.build.json",
     "build:legacy-runtime": "tsc --project tsconfig.legacy-runtime.build.json",
+    "build:task-lib": "tsc --project tsconfig.task-lib.build.json",
     "build:target": "tsc --project tsconfig.target.build.json",
     "build:cluster": "npm run protocol:generate && tsc --project tsconfig.cluster.cjs.json && tsc --project tsconfig.cluster.esm.json && tsc --project tsconfig.hosted-target.cjs.json && tsc --project tsconfig.hosted-target.esm.json && tsc --project tsconfig.hosted-session.cjs.json && tsc --project tsconfig.hosted-session.esm.json && node scripts/build-cluster.js",
     "test:agent-cli-provider": "node --test tests/agent-cli-provider/*.test.js",
-    "test:omp": "npm run build:agent-cli-provider && node --test tests/agent-cli-provider/omp-*.test.js && node tests/run-tests.js 'tests/omp-rpc-watcher*.test.js' tests/omp-isolation-capability.test.js tests/omp-docker-auth.test.js tests/omp-docker-fresh-only.test.js",
+    "test:omp": "npm run build:agent-cli-provider && npm run build:task-lib && node --test tests/agent-cli-provider/omp-*.test.js && node tests/run-tests.js 'tests/omp-rpc-watcher*.test.js' tests/omp-isolation-capability.test.js tests/omp-docker-auth.test.js tests/omp-docker-fresh-only.test.js",
     "test:providers:live": "npm run build:agent-cli-provider && node scripts/live-provider-smoke.js",
     "check:agent-cli-provider": "npm run check:agent-cli-provider:ci",
     "check:agent-cli-provider:ci": "npm run typecheck:agent-cli-provider && npm run lint:agent-cli-provider && npm run build:agent-cli-provider && npm run test:agent-cli-provider",
@@ -94,9 +96,9 @@
     "release:preflight": "node scripts/release-preflight.js",
     "release:recover": "node scripts/release-recovery.js",
     "release:assert-published": "node scripts/assert-release-published.js",
-    "prepack": "npm run build:cluster && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime",
+    "prepack": "npm run build:cluster && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run check:agent-cli-provider:ci",
-    "prepare": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && husky"
+    "prepare": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib && husky"
   },
   "c8": {
     "reporter": [

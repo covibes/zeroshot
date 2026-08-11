@@ -60,7 +60,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | OMP detached RPC watcher              | `task-lib/rpc-watcher.js`                                                                                                        |
 | Provider detection                    | `lib/provider-detection.js`                                                                                                      |
 | Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
-| Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS: matching `.js` paths via `build:legacy-runtime`)                                       |
+| Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
 | Provider capabilities                 | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
 | Claude settings overlay               | `src/worktree-claude-config.js`                                                                                                  |
 | Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
@@ -593,7 +593,7 @@ OMP session persistence (issue #866): fresh runs pass `--session-dir <partition>
 adds `--resume <partition>/<file>` as the exact absolute path Zeroshot already verified, never a
 bare `--resume`/`--continue` or an ID search; `--no-session` is reserved for the sessionless
 Docker lane, which stays fresh-only. Each session lives in its own random, secret-free UUID
-partition under `<storageRoot>/omp-sessions/<uuid>/` (`task-lib/omp-storage-root.js` resolves
+partition under `<storageRoot>/omp-sessions/<uuid>/` (`task-lib/omp-storage-root.ts` resolves
 `storageRoot` to the owning cluster's `storageDir` or the standalone `TASKS_DIR`, never derived
 from prompt text or cwd). Partition allocation is row-before-directory: `task-lib/runner.js`
 persists the task's provisional `ompSessionOwnership` row before the partition directory is ever
@@ -1265,7 +1265,7 @@ npm run test
 Mocha config: `.mocharc.cjs` applies defaults; passing explicit `*.test.js` files on the CLI skips the default `tests/**/*.test.js` spec.
 The Mocha bootstrap isolates unit tests from live `ZEROSHOT_*` run options and user settings;
 tests must not depend on ambient cluster state or `~/.zeroshot/settings.json`.
-`ZEROSHOT_HOME` is immutable inside a Mocha worker because `task-lib/config.js` caches the task-store
+`ZEROSHOT_HOME` is immutable inside a Mocha worker because `task-lib/config.ts` caches the task-store
 root at module load; alternate-home scenarios must run in an isolated child process.
 
 Workers are now explicitly ordered to treat every `VALIDATION_RESULT` line as non-negotiable law before typing again. Failing to read and address each validator complaint before claiming completion will be rejected automatically.

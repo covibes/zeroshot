@@ -5,7 +5,7 @@ const { isInsideOmpBlobsDir } = require('./omp-blob-root');
 
 // Every OMP session partition lives under <storageRoot>/omp-sessions/<uuid>/. storageRoot is the
 // owning cluster's storageDir for cluster-agent tasks or the standalone TASKS_DIR otherwise (see
-// task-lib/omp-storage-root.js) — never derived from prompt text or cwd. The shared OMP CAS blob
+// task-lib/omp-storage-root.ts) — never derived from prompt text or cwd. The shared OMP CAS blob
 // store is *not* under here at all (it is machine-wide, at pi-utils::getBlobsDir(); see
 // src/omp-blob-root.ts), which is what makes per-task partition deletion safe.
 const OMP_SESSIONS_SUBDIR = 'omp-sessions';
