@@ -123,3 +123,17 @@ lib/start-cluster-environment.js
 lib/start-cluster-environment.d.ts
 lib/start-cluster-run-options.js
 lib/start-cluster-run-options.d.ts
+lib/settings.js
+lib/settings.d.ts
+lib/settings-defaults.js
+lib/settings-defaults.d.ts
+lib/settings-error.js
+lib/settings-error.d.ts
+lib/settings-models.js
+lib/settings-models.d.ts
+lib/settings-storage.js
+lib/settings-storage.d.ts
+lib/settings-validation.js
+lib/settings-validation.d.ts
+lib/settings-issue-providers.js
+lib/settings-issue-providers.d.ts

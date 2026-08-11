@@ -56,9 +56,33 @@ function assertStartClusterOutput() {
   ]);
 }
 
+function assertSettingsOutput() {
+  const settingsPath = path.join(repoRoot, 'lib/settings.js');
+  assert.ok(fs.existsSync(settingsPath), 'legacy TypeScript build must emit lib/settings.js');
+  const settings = require(settingsPath);
+  assert.deepStrictEqual(Reflect.ownKeys(settings), [
+    'loadSettings',
+    'mutateSettings',
+    'validateSetting',
+    'coerceValue',
+    'SettingsValidationError',
+    'DEFAULT_SETTINGS',
+    'getSettingsFile',
+    'settingsFileExists',
+    'getClaudeCommand',
+    'MODEL_HIERARCHY',
+    'VALID_MODELS',
+    'validateModelAgainstMax',
+    'clearProviderDefaultsCache',
+    'mapLegacyModelToLevel',
+    'SETTINGS_FILE',
+  ]);
+}
+
 function assertRuntimeOutputs() {
   assertDockerConfigOutput();
   assertStartClusterOutput();
+  assertSettingsOutput();
 }
 
 module.exports = { assertRuntimeOutputs };
