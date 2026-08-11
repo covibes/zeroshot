@@ -174,7 +174,7 @@ test('build-command preserves Claude resume and continue options through JSON co
   assert.deepEqual(continued.envelope.result.commandSpec.args.slice(-2), ['--continue', 'ctx']);
 });
 
-test('build-command preserves Codex explicit session resume through JSON contract', () => {
+test('build-command places Codex 0.147 exec options before explicit session resume', () => {
   const resumed = runExecutable({
     schemaVersion: 1,
     command: 'build-command',
@@ -183,17 +183,31 @@ test('build-command preserves Codex explicit session resume through JSON contrac
     options: {
       resumeSessionId: 'thread-1',
       cwd: '/tmp/project',
+      autoApprove: true,
+      modelSpec: { model: 'gpt-5.4' },
       cliFeatures: {
         supportsResume: true,
         supportsCwd: true,
+        supportsAutoApprove: true,
       },
     },
   });
 
   assert.equal(resumed.exitCode, 0);
   assert.equal(resumed.envelope.ok, true);
-  assert.deepEqual(resumed.envelope.result.commandSpec.args.slice(0, 2), ['exec', 'resume']);
-  assert.deepEqual(resumed.envelope.result.commandSpec.args.slice(-2), ['thread-1', 'ctx']);
+  assert.deepEqual(resumed.envelope.result.commandSpec.args, [
+    'exec',
+    '--sandbox',
+    'workspace-write',
+    '--config',
+    'approval_policy="never"',
+    'resume',
+    '-m',
+    'gpt-5.4',
+    '--skip-git-repo-check',
+    'thread-1',
+    'ctx',
+  ]);
   assert.equal(resumed.envelope.result.commandSpec.args.includes('-C'), false);
   assert.equal(resumed.envelope.result.commandSpec.cwd, '/tmp/project');
 });
