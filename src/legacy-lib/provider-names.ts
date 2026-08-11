@@ -3,6 +3,9 @@ type ProviderCapabilities = Readonly<Record<string, ProviderCapabilityState>>;
 
 interface ProviderRegistryEntry {
   readonly capabilities: ProviderCapabilities;
+  readonly docker: {
+    readonly envPassthrough: readonly string[];
+  };
   readonly id: string;
   readonly [key: string]: unknown;
 }

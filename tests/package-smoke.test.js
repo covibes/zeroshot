@@ -134,6 +134,22 @@ function assertRepoSettingsOutput() {
   );
 }
 
+function assertClaudeAuthOutput() {
+  const authPath = path.join(repoRoot, 'lib/settings/claude-auth.js');
+  assert.ok(
+    fs.existsSync(authPath),
+    'legacy TypeScript build must emit lib/settings/claude-auth.js'
+  );
+  const auth = require(authPath);
+  assert.deepStrictEqual(Reflect.ownKeys(auth), [
+    'ANTHROPIC_KEY_PREFIX',
+    'CLAUDE_AUTH_ENV_VARS',
+    'isValidAnthropicKey',
+    'isBedrockMode',
+    'resolveClaudeAuth',
+  ]);
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -215,6 +231,7 @@ describe('npm package smoke', function () {
     assertProviderDefaultsOutput();
     assertProviderNamesOutput();
     assertRepoSettingsOutput();
+    assertClaudeAuthOutput();
     assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
@@ -228,6 +245,7 @@ describe('npm package smoke', function () {
       'lib/provider-defaults.js',
       'lib/provider-names.js',
       'lib/repo-settings.js',
+      'lib/settings/claude-auth.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',

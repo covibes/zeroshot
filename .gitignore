@@ -89,3 +89,5 @@ lib/provider-names.js
 lib/provider-names.d.ts
 lib/repo-settings.js
 lib/repo-settings.d.ts
+lib/settings/claude-auth.js
+lib/settings/claude-auth.d.ts
