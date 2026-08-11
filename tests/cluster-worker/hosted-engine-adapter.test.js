@@ -2,9 +2,9 @@
 
 const assert = require('node:assert/strict');
 const {
-  providerInvocation,
+  createHostedClusterEngineAdapter,
   validateRequestAuthority,
-  withoutGitCredential,
+  withholdGitCredentials,
 } = require('../../zeroshot-rust/hosted-node/engine-adapter');
 const { deterministicBranch } = require('../../zeroshot-rust/hosted-node/workspace-ship');
 
@@ -20,11 +20,8 @@ const CONFIG = Object.freeze({
   }),
   executable: 'codex',
   provider: 'azure-openai',
-  model: 'future/model',
-  runtimeEnvironment: Object.freeze({
-    FUTURE_PROVIDER_TOKEN: 'provider-canary',
-  }),
-  settings: Object.freeze({ defaultProvider: 'future-provider' }),
+  runtimeEnvironment: Object.freeze({ FUTURE_PROVIDER_TOKEN: 'provider-canary' }),
+  settings: Object.freeze({ defaultProvider: 'codex' }),
 });
 
 function request() {
@@ -40,71 +37,155 @@ function request() {
   };
 }
 
-describe('hosted direct provider adapter', () => {
-  it('constructs one provider-neutral invocation from the resolved runtime', () => {
-    const invocation = providerInvocation(CONFIG, request());
-    assert.equal(invocation.provider, 'codex');
-    assert.deepEqual(invocation.options, {
-      authEnv: {
-        FUTURE_PROVIDER_TOKEN: 'provider-canary',
-      },
-      autoApprove: true,
-      cwd: '/workspace',
-      executionContext: 'docker',
-      modelSpec: { model: 'future/model' },
-    });
-    assert.equal(Object.hasOwn(invocation, 'env'), false);
-    assert.equal(Object.hasOwn(invocation, 'model'), false);
-    assert.equal(Object.hasOwn(invocation.options.authEnv, 'GH_TOKEN'), false);
-    assert.equal(
-      Object.hasOwn(invocation.options.authEnv, 'ZEROSHOT_HOSTED_CREDENTIALS_JSON'),
-      false
-    );
-    assert.equal(Object.hasOwn(invocation.options.authEnv, 'OPENAI_API_KEY'), false);
+function profile() {
+  return Object.freeze({
+    plan: Object.freeze({ isolation: 'worktree', delivery: 'none', autoMerge: false }),
+    deployment: Object.freeze({ prepared: true }),
+    provider: Object.freeze({
+      config: Object.freeze({ agents: [] }),
+      validateConfig: true,
+      providerOverride: 'codex',
+    }),
+    bounds: Object.freeze({ shutdownMs: 1000 }),
   });
+}
 
-  it('keeps built-in provider and executable selection unchanged', () => {
-    const config = { ...CONFIG, executable: 'claude', provider: 'claude' };
-    assert.equal(
-      providerInvocation(config, { ...request(), provider: 'claude' }).provider,
-      'claude'
-    );
-  });
+function installGitTokens(ghToken, githubToken) {
+  const previous = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
+  process.env.GH_TOKEN = ghToken;
+  process.env.GITHUB_TOKEN = githubToken;
+  return () => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
 
-  it('lets OMP resolve declared auth without passing incompatible authEnv options', () => {
-    const config = { ...CONFIG, executable: 'omp', provider: 'omp' };
-    const invocation = providerInvocation(config, { ...request(), provider: 'omp' });
-    assert.equal(Object.hasOwn(invocation.options, 'authEnv'), false);
-  });
-
-  it('withholds the Git credential from the provider process and restores it for delivery', async () => {
-    const previous = process.env.GH_TOKEN;
-    process.env.GH_TOKEN = 'git-canary';
-    try {
-      assert.equal(await withoutGitCredential(() => process.env.GH_TOKEN), undefined);
+async function runsInnerClusterAndDeliversAfterCleanup() {
+  const restoreTokens = installGitTokens('git-canary', 'github-canary');
+  const events = [];
+  const calls = [];
+  let emit;
+  const inner = {
+    start(options) {
+      calls.push(['start', options]);
+      assert.equal(process.env.GH_TOKEN, undefined);
+      assert.equal(process.env.GITHUB_TOKEN, undefined);
+      emit = options.onEvent;
+      emit({ type: 'running' });
+      return { clusterId: options.clusterId, artifactsStaged: true };
+    },
+    status: () => ({ clusterId: 'cluster-1', state: 'running' }),
+    stop() {
+      calls.push(['stop']);
+      assert.equal(process.env.GH_TOKEN, undefined);
+      return { effective: true };
+    },
+    waitForCleanup() {
+      calls.push(['cleanup']);
+    },
+    close() {},
+  };
+  const adapter = createHostedClusterEngineAdapter(CONFIG, {
+    requireHostedEnvironment() {},
+    createEngine: () => inner,
+    prepareWorkspace() {
+      calls.push(['prepare']);
       assert.equal(process.env.GH_TOKEN, 'git-canary');
-    } finally {
-      if (previous === undefined) delete process.env.GH_TOKEN;
-      else process.env.GH_TOKEN = previous;
-    }
+      return 'zeroshot/hosted-branch';
+    },
+    shipWorkspace(_config, branch) {
+      calls.push(['ship']);
+      assert.equal(branch, 'zeroshot/hosted-branch');
+      assert.equal(process.env.GH_TOKEN, 'git-canary');
+      assert.equal(process.env.GITHUB_TOKEN, 'github-canary');
+      return {
+        disposition: 'pull_request_open',
+        repository: CONFIG.repository,
+        deliveryBranch: branch,
+        headRevision: 'b'.repeat(40),
+        pullRequestUrl: 'https://github.com/the-open-engine/zeroshot/pull/1',
+      };
+    },
   });
+  try {
+    await adapter.start({
+      request: request(),
+      profile: profile(),
+      clusterId: 'cluster-1',
+      onEvent: (event) => events.push(event),
+    });
+    const started = calls.find(([name]) => name === 'start')[1];
+    assert.equal(started.profile.deployment.preparedWorktree.path, '/workspace');
+    assert.equal(started.profile.deployment.preparedWorktree.branch, 'zeroshot/hosted-branch');
+    assert.equal(started.profile.deployment.preparedWorktree.baseSha, CONFIG.baseRevision);
+    assert.equal(started.profile.plan.delivery, 'none');
+    emit({ type: 'complete', summary: 'inner complete' });
+    await adapter.waitForCleanup();
+    assert.deepEqual(
+      calls.map(([name]) => name),
+      ['prepare', 'start', 'stop', 'cleanup', 'ship']
+    );
+    assert.deepEqual(events, [
+      { type: 'running' },
+      {
+        type: 'complete',
+        result: {
+          summary: 'Hosted worker completed pull_request_open',
+          status: 'succeeded',
+          artifacts: [],
+          repository: CONFIG.repository,
+          branch: 'zeroshot/hosted-branch',
+          headRevision: 'b'.repeat(40),
+          pullRequestUrl: 'https://github.com/the-open-engine/zeroshot/pull/1',
+        },
+      },
+    ]);
+  } finally {
+    restoreTokens();
+  }
+}
 
-  it('rejects repository and runtime provider authority mismatches with closed codes', () => {
-    for (const [patch, code] of [
-      [{ repository: 'other/repository' }, 'HOSTED_REPOSITORY_MISMATCH'],
-      [{ provider: 'claude' }, 'HOSTED_PROVIDER_MISMATCH'],
-    ]) {
-      assert.throws(
-        () => validateRequestAuthority(CONFIG, { ...request(), ...patch }),
-        (error) => error.code === code
-      );
-    }
-  });
+function withholdsCredentialsUntilRestored() {
+  const restoreTokens = installGitTokens('gh', 'github');
+  try {
+    const restore = withholdGitCredentials();
+    assert.equal(process.env.GH_TOKEN, undefined);
+    assert.equal(process.env.GITHUB_TOKEN, undefined);
+    restore();
+    assert.equal(process.env.GH_TOKEN, 'gh');
+    assert.equal(process.env.GITHUB_TOKEN, 'github');
+  } finally {
+    restoreTokens();
+  }
+}
 
-  it('derives a stable branch without embedding request or credential material', () => {
-    const branch = deterministicBranch('cluster:hosted-1');
-    assert.equal(branch, deterministicBranch('cluster:hosted-1'));
-    assert.match(branch, /^zeroshot\/hosted-[0-9a-f]{20}$/);
-    assert.doesNotMatch(branch, /canary|cluster/);
-  });
+function rejectsAuthorityMismatches() {
+  for (const [patch, code] of [
+    [{ repository: 'other/repository' }, 'HOSTED_REPOSITORY_MISMATCH'],
+    [{ provider: 'claude' }, 'HOSTED_PROVIDER_MISMATCH'],
+  ]) {
+    assert.throws(
+      () => validateRequestAuthority(CONFIG, { ...request(), ...patch }),
+      (error) => error.code === code
+    );
+  }
+}
+
+function derivesOpaqueStableBranch() {
+  const branch = deterministicBranch('cluster:hosted-1');
+  assert.equal(branch, deterministicBranch('cluster:hosted-1'));
+  assert.match(branch, /^zeroshot\/hosted-[0-9a-f]{20}$/);
+  assert.doesNotMatch(branch, /canary|cluster/);
+}
+
+describe('hosted opaque cluster adapter', () => {
+  it(
+    'runs the current Node engine in the prepared workspace and delivers only after cleanup',
+    runsInnerClusterAndDeliversAfterCleanup
+  );
+  it('withholds both Git credentials until explicitly restored', withholdsCredentialsUntilRestored);
+  it('rejects repository and runtime provider authority mismatches', rejectsAuthorityMismatches);
+  it('derives a stable opaque branch', derivesOpaqueStableBranch);
 });

@@ -16,6 +16,7 @@ function harness() {
     .option('--docker')
     .option('--pr')
     .option('--ship')
+    .option('--config <file>')
     .option('-d, --detach')
     .action((input, options) => {
       calls.push(['local-run', input, options.detach]);
@@ -183,7 +184,7 @@ async function preservesLocalLsAliasAfterGlobalOption() {
 
 async function dispatchesRemoteLifecycleRoutes() {
   const { program, calls } = harness();
-  await parse(program, hostedRun('--pr', '-d'));
+  await parse(program, hostedRun('--pr', '--config', 'cluster.json', '-d'));
   await parse(program, ['list', '--target', 'prod', '--limit', '7', '--json']);
   await parse(program, ['status', 'cap-1', '--target', 'prod', '--json']);
   await parse(program, ['stop', 'cap-1', '--target', 'prod', '--force']);
@@ -194,6 +195,7 @@ async function dispatchesRemoteLifecycleRoutes() {
     ['remoteRun', 'remoteList', 'remoteStatus', 'remoteStop', 'capsuleTerminate', 'remoteAttach']
   );
   assert.equal(calls[3][2].force, true);
+  assert.equal(calls[0][1].config, 'cluster.json');
 }
 
 async function exposesPrivateTargetRunIntentRoutes() {

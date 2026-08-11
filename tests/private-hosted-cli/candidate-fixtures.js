@@ -5,6 +5,8 @@ const path = require('node:path');
 
 const BASE_REVISION = 'b'.repeat(40);
 const RUNTIME_CONFIG_PATH = path.join(__dirname, 'fixtures', 'runtime-config.json');
+const CLUSTER_CONFIG_PATH = path.join(__dirname, 'fixtures', 'cluster.json');
+const CLUSTER_CONFIG_BYTES = fs.readFileSync(CLUSTER_CONFIG_PATH, 'utf8');
 const RUNTIME_CONFIG = Object.freeze(JSON.parse(fs.readFileSync(RUNTIME_CONFIG_PATH, 'utf8')));
 const RUNTIME_BUNDLE = Object.freeze({
   githubToken: 'github-test-token',
@@ -135,6 +137,8 @@ function finishedWatch({ runId, cursor, onCancel }) {
 module.exports = {
   BASE_REVISION,
   captureLogs,
+  CLUSTER_CONFIG_BYTES,
+  CLUSTER_CONFIG_PATH,
   DESCRIPTOR,
   detachedRunOptions,
   finishedWatch,

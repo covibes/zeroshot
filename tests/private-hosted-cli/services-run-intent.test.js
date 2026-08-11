@@ -2,7 +2,13 @@
 
 const assert = require('node:assert/strict');
 const { describe, it } = require('node:test');
-const { captureLogs, DESCRIPTOR, detachedRunOptions } = require('./candidate-fixtures');
+const {
+  captureLogs,
+  CLUSTER_CONFIG_BYTES,
+  CLUSTER_CONFIG_PATH,
+  DESCRIPTOR,
+  detachedRunOptions,
+} = require('./candidate-fixtures');
 const { remoteHarness } = require('./remote-service-harness');
 
 const INTENT_ID = '019fd184-52c3-7e1f-a567-4ecb6fc6a0ec';
@@ -67,6 +73,7 @@ function registerSubmissionTests() {
         detach: false,
         size: 'tiny',
         ship: true,
+        config: CLUSTER_CONFIG_PATH,
       })
     );
     assert.equal(result.value.state, 'succeeded');
@@ -82,6 +89,7 @@ function registerSubmissionTests() {
     assert.equal(submitted.runtime.runtime.provider, 'claude');
     assert.equal(submitted.runtime.delivery.mode, 'ship');
     assert.equal(submitted.runtime.runtime.environment.ANTHROPIC_API_KEY, 'model-test-token');
+    assert.equal(submitted.runtime.runtime.files['cluster.json'], CLUSTER_CONFIG_BYTES);
     assert.deepEqual(submitted.envelope.input, {
       source: 'prompt',
       prompt: 'Ship the change.',

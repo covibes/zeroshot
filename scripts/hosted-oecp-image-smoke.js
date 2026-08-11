@@ -17,6 +17,23 @@ const BASE_REVISION = 'a'.repeat(40);
 const PROMPT_CANARY = 'HOSTED_SMOKE_PROMPT_CANARY';
 const GIT_CANARY = 'HOSTED_SMOKE_GIT_TOKEN_CANARY';
 const PROVIDER_CANARY = 'HOSTED_SMOKE_PROVIDER_TOKEN_CANARY';
+const SMOKE_CLUSTER = JSON.stringify({
+  name: 'Hosted smoke cluster',
+  agents: [
+    {
+      id: 'worker',
+      role: 'implementation',
+      prompt: 'Complete the task.',
+      triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+      hooks: {
+        onComplete: {
+          action: 'publish_message',
+          config: { topic: 'CLUSTER_COMPLETE', content: { text: 'Task completed.' } },
+        },
+      },
+    },
+  ],
+});
 const CREDENTIAL_INSTALL_SCRIPT = `
   const fs = require('node:fs');
   const http = require('node:http');
@@ -45,7 +62,6 @@ const CREDENTIAL_INSTALL_SCRIPT = `
   });
   request.end(body);
 `;
-
 function createCapabilityFile() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-oecp-smoke-'));
   fs.chmodSync(directory, 0o700);
@@ -57,7 +73,6 @@ function createCapabilityFile() {
   });
   return { capabilityFile, directory };
 }
-
 function startSmokeContainer(tag, name) {
   capture('docker', [
     'run',
@@ -99,7 +114,7 @@ function smokeCredentialBundle() {
         OPENAI_API_KEY: PROVIDER_CANARY,
         OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
       },
-      files: {},
+      files: { 'cluster.json': SMOKE_CLUSTER },
       settings: { defaultProvider: 'codex' },
     },
   };
@@ -282,4 +297,4 @@ async function smoke(tag) {
   }
 }
 
-module.exports = { safeApplyFailure, smoke, smokeCredentialBundle };
+module.exports = { safeApplyFailure, smoke, SMOKE_CLUSTER, smokeCredentialBundle };

@@ -158,6 +158,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 
 The unpublished hosted OECP runtime is a one-run compatibility capsule, not native-v2. It advertises
 only `openengine.graph.single-worker/v1` and runs exactly `legacy.zeroshot.ship@1` with one attempt.
+That opaque legacy worker may run the complete Node cluster from a bundled template or one bounded
+declarative `runtime.files["cluster.json"]`; its inner topology never changes the OECP graph.
 Authenticated raw NDJSON uses task-local `8085`; the capsule agent uses `/oecp` WebSocket on
 loopback `8083`, and bounded internal HTTP `PUT`/`GET /internal/run-intents/{id}` uses loopback
 `8084`. All three transports require the same per-task runtime capability.

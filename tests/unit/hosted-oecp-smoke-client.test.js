@@ -12,6 +12,7 @@ const {
 } = require('../../scripts/hosted-oecp-smoke-capability');
 const {
   safeApplyFailure,
+  SMOKE_CLUSTER,
   smokeCredentialBundle,
 } = require('../../scripts/hosted-oecp-image-smoke');
 
@@ -246,7 +247,7 @@ function registerCredentialProvisioningTests() {
           OPENAI_API_KEY: 'HOSTED_SMOKE_PROVIDER_TOKEN_CANARY',
           OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
         },
-        files: {},
+        files: { 'cluster.json': SMOKE_CLUSTER },
         settings: { defaultProvider: 'codex' },
       },
     });

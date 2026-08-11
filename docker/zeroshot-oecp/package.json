@@ -8,7 +8,15 @@
     "@github/copilot": "1.0.78",
     "@google/gemini-cli": "0.53.1",
     "@openai/codex": "0.146.0",
-    "ajv": "8.18.0"
+    "ajv": "8.18.0",
+    "ansi-to-html": "0.7.2",
+    "better-sqlite3": "12.6.2",
+    "chalk": "4.1.2",
+    "commander": "14.0.2",
+    "js-yaml": "4.3.1",
+    "node-pty": "1.1.0",
+    "omelette": "0.4.17",
+    "proper-lockfile": "4.1.2"
   },
   "overrides": {
     "brace-expansion": "5.0.9",

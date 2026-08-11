@@ -19,15 +19,7 @@ const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers
 const BASE_REVISION = 'b'.repeat(40);
 const GRAPH_FIXTURE = path.join(
   __dirname,
-  '..',
-  '..',
-  'protocol',
-  'openengine-cluster',
-  'v1',
-  'fixtures',
-  'graph',
-  'positive',
-  'single-worker.json'
+  '../../protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json'
 );
 
 const roots = [];
@@ -80,6 +72,8 @@ describe('explicit hosted readers', () => {
 it('stores references and resolves one provider-neutral runtime bundle per run', async () => {
   const root = temp();
   const runtimeConfigPath = path.join(root, 'runtime.json');
+  const clusterConfigPath = path.join(root, 'cluster.json');
+  const clusterBytes = '{"name":"custom","agents":[]}\n';
   const directSecret = 'direct-provider-secret';
   const state = {
     _targets: {
@@ -98,6 +92,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
     settings: { providerSettings: { custom: { apiKey: directSecret } } },
   };
   fs.writeFileSync(runtimeConfigPath, JSON.stringify(runtime));
+  fs.writeFileSync(clusterConfigPath, clusterBytes);
   const metadata = await configureTargetSetup({
     targetName: 'prod',
     target: state._targets.prod,
@@ -137,6 +132,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
       );
       return new globalThis.Response(JSON.stringify({ sha: BASE_REVISION }), { status: 200 });
     },
+    clusterConfigPath,
   });
   assert.equal(bundle.githubToken, 'github-test-token');
   assert.equal(bundle.baseRevision, BASE_REVISION);
@@ -152,6 +148,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   assert.equal(bundle.runtime.environment.AWS_ACCESS_KEY_ID, 'aws-local-secret');
   assert.equal(bundle.runtime.environment.AWS_REGION, 'eu-west-1');
   assert.equal(bundle.runtime.settings.providerSettings.custom.apiKey, directSecret);
+  assert.equal(bundle.runtime.files['cluster.json'], clusterBytes);
 });
 
 it('resolves omitted and named bases to one immutable submission revision', async () => {

@@ -23,6 +23,7 @@ const HOSTED_RUN_OPTIONS = new Set([
   'size',
   'pr',
   'ship',
+  'config',
 ]);
 
 function registerTarget(program, service) {

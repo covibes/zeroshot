@@ -8,8 +8,12 @@ RUN cargo build --locked --release -p zeroshot-rust --bin zeroshot-oecp-server
 
 FROM docker.io/library/node:22-bookworm-slim@sha256:f32b81066cde10a75dbac96646099533316d94bac4150c55da1636e1f0ffdc46 AS node-deps
 WORKDIR /opt/node-runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ make python3 \
+    && rm -rf /var/lib/apt/lists/*
 COPY docker/zeroshot-oecp/package.json docker/zeroshot-oecp/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+    && npm rebuild better-sqlite3 node-pty --build-from-source --no-audit --no-fund \
     && npm install brace-expansion@5.0.9 undici@8.9.0 --no-save --ignore-scripts --no-audit --no-fund \
     && cp -r node_modules/brace-expansion/. node_modules/@earendil-works/pi-coding-agent/node_modules/brace-expansion/ \
     && rm -rf node_modules/@earendil-works/pi-coding-agent/node_modules/undici \
@@ -43,16 +47,13 @@ LABEL org.opencontainers.image.title="zeroshot-oecp-private" \
 COPY --from=rust-build /opt/zeroshot/target/release/zeroshot-oecp-server /usr/local/bin/zeroshot-oecp-server
 COPY --from=node-deps /opt/node-runtime/node_modules /opt/zeroshot/node_modules
 COPY --from=tini /tini /usr/bin/tini
-COPY lib/agent-cli-provider /opt/zeroshot/lib/agent-cli-provider
-COPY lib/delivery-contract.js /opt/zeroshot/lib/delivery-contract.js
-COPY lib/provider-detection.js /opt/zeroshot/lib/provider-detection.js
-COPY lib/cluster-worker/contracts.js lib/cluster-worker/engine-adapter-common.js lib/cluster-worker/engine-start.js /opt/zeroshot/lib/cluster-worker/
-COPY lib/cluster-worker/executable.js lib/cluster-worker/index.js /opt/zeroshot/lib/cluster-worker/
-COPY lib/cluster-worker/object-utils.js lib/cluster-worker/profiles.js lib/cluster-worker/runtime-engine.js /opt/zeroshot/lib/cluster-worker/
-COPY lib/cluster-worker/runtime-support.js lib/cluster-worker/state-machine.js /opt/zeroshot/lib/cluster-worker/
-COPY lib/cluster-worker/terminal-normalizer.js lib/cluster-worker/worker-internals.js /opt/zeroshot/lib/cluster-worker/
-COPY lib/cluster-worker/runtime-dependencies.js /opt/zeroshot/lib/cluster-worker/runtime-dependencies.js
-COPY lib/run-plan.js /opt/zeroshot/lib/run-plan.js
+COPY package.json /opt/zeroshot/package.json
+COPY cli /opt/zeroshot/cli
+COPY cluster-hooks /opt/zeroshot/cluster-hooks
+COPY cluster-templates /opt/zeroshot/cluster-templates
+COPY lib /opt/zeroshot/lib
+COPY src /opt/zeroshot/src
+COPY task-lib /opt/zeroshot/task-lib
 COPY scripts/omp/runtime.js scripts/omp/runtime-identities.js scripts/omp/runtime-lock.js scripts/omp/runtime-release.js /opt/zeroshot/scripts/omp/
 COPY src/command-cleanup-ownership.js src/omp-config-overlay.js src/worktree-claude-config.js src/worktree-tooling-env.js /opt/zeroshot/src/
 COPY protocol/openengine-cluster/v1/worker.schema.json /opt/zeroshot/protocol/openengine-cluster/v1/worker.schema.json
@@ -60,7 +61,11 @@ COPY zeroshot-rust/hosted-node /opt/zeroshot/zeroshot-rust/hosted-node
 
 RUN groupadd --gid 10002 zeroshot-worker \
     && useradd --uid 10002 --gid 10002 --home-dir /tmp/zeroshot-oecp --no-create-home --shell /usr/sbin/nologin zeroshot-worker \
-    && chmod -R a+rX /opt/zeroshot/lib /opt/zeroshot/protocol /opt/zeroshot/scripts /opt/zeroshot/zeroshot-rust/hosted-node \
+    && rm -rf /opt/zeroshot/src/target \
+    && chmod -R a+rX /opt/zeroshot/cli /opt/zeroshot/cluster-hooks \
+        /opt/zeroshot/cluster-templates /opt/zeroshot/lib /opt/zeroshot/protocol \
+        /opt/zeroshot/scripts /opt/zeroshot/src /opt/zeroshot/task-lib \
+        /opt/zeroshot/zeroshot-rust/hosted-node \
     && mkdir -p /workspace /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chown 10002:10002 /workspace \
     && chown 0:10002 /run/zeroshot-capsule-agent \
@@ -68,8 +73,11 @@ RUN groupadd --gid 10002 zeroshot-worker \
     && chmod 0770 /workspace \
     && chmod 0700 /tmp/zeroshot-oecp /run/zeroshot-capsule-agent \
     && chmod 0755 /usr/bin/tini \
+    && chmod 0555 /opt/zeroshot/cli/index.js \
     && chmod 0555 /opt/zeroshot/zeroshot-rust/hosted-node/git-askpass.js \
+    && ln -s /opt/zeroshot/cli/index.js /usr/local/bin/zeroshot \
     && test -x /usr/bin/git \
+    && test -x /usr/local/bin/zeroshot \
     && test ! -e /usr/bin/gh
 
 ENV ZEROSHOT_OECP_CAPABILITY_FILE=/run/zeroshot-capsule-agent/capability
