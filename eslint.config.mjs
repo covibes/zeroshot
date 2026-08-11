@@ -221,14 +221,18 @@ export default [
     },
   },
   {
-    files: ['src/agent-cli-provider/**/*.ts', 'tests/agent-cli-provider/**/*.ts'],
+    files: [
+      'src/agent-cli-provider/**/*.ts',
+      'tests/agent-cli-provider/**/*.ts',
+      'src/legacy-lib/**/*.ts',
+    ],
     plugins: {
       '@typescript-eslint': tseslint.plugin,
     },
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
-        project: './tsconfig.agent-cli-provider.json',
+        project: ['./tsconfig.agent-cli-provider.json', './tsconfig.legacy-lib.json'],
         tsconfigRootDir,
       },
       ecmaVersion: 2022,

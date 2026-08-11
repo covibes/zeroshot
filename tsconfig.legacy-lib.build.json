@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.legacy-lib.json",
+  "compilerOptions": {
+    "rootDir": "src/legacy-lib",
+    "outDir": "lib",
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": false,
+    "declarationMap": false
+  },
+  "include": ["src/legacy-lib/**/*.ts"],
+  "exclude": ["node_modules", "dist", "coverage", "lib"]
+}

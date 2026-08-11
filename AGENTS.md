@@ -59,6 +59,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | OMP config safety overlay             | `src/omp-config-overlay.js`                                                                                                      |
 | OMP detached RPC watcher              | `task-lib/rpc-watcher.js`                                                                                                        |
 | Provider detection                    | `lib/provider-detection.js`                                                                                                      |
+| Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
 | Provider capabilities                 | `src/providers/capabilities.js`                                                                                                  |
 | Claude settings overlay               | `src/worktree-claude-config.js`                                                                                                  |
 | Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |

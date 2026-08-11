@@ -44,6 +44,21 @@ describe('npm package smoke', function () {
     );
     assert.strictEqual(pkg.bin['zeroshot-cluster-worker'], './bin/zeroshot-cluster-worker.js');
 
+    const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
+    assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
+    const pathCheck = require(pathCheckPath);
+    assert.deepStrictEqual(Reflect.ownKeys(pathCheck), [
+      'getGlobalBinDir',
+      'isDirOnPath',
+      'getPathExportLine',
+      'checkBinDirOnPath',
+      'printPathWarning',
+    ]);
+    assert.strictEqual(
+      pathCheck.getPathExportLine('/tmp/zeroshot-bin'),
+      'export PATH="/tmp/zeroshot-bin:$PATH"'
+    );
+
     for (const requiredFile of [
       'cli/index.js',
       'bin/zeroshot-cluster-worker.js',

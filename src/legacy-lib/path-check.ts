@@ -5,9 +5,31 @@
  * exported).
  */
 
-const path = require('path');
+import path = require('path');
 
-function getGlobalBinDir(installPrefix) {
+interface PathCheckOptions {
+  readonly installPrefix?: string;
+  readonly pathEnv?: string;
+}
+
+interface UpdateCheckerModule {
+  readonly getInstallPrefix: (options: PathCheckOptions) => string;
+}
+
+type PathCheckResult =
+  | { readonly onPath: true; readonly binDir: null }
+  | { readonly onPath: boolean; readonly binDir: string };
+
+function isUpdateCheckerModule(value: unknown): value is UpdateCheckerModule {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'getInstallPrefix' in value &&
+    typeof value.getInstallPrefix === 'function'
+  );
+}
+
+function getGlobalBinDir(installPrefix: string): string {
   if (process.platform === 'win32') {
     return installPrefix;
   }
@@ -15,7 +37,7 @@ function getGlobalBinDir(installPrefix) {
   return path.join(installPrefix, 'bin');
 }
 
-function isDirOnPath(dir, pathEnv = process.env.PATH || '') {
+function isDirOnPath(dir: string, pathEnv: string = process.env.PATH || ''): boolean {
   const resolvedDir = path.resolve(dir);
 
   return pathEnv
@@ -24,17 +46,21 @@ function isDirOnPath(dir, pathEnv = process.env.PATH || '') {
     .some((entry) => path.resolve(entry) === resolvedDir);
 }
 
-function getPathExportLine(dir) {
+function getPathExportLine(dir: string): string {
   return `export PATH="${dir}:$PATH"`;
 }
 
-function checkBinDirOnPath(options = {}) {
+function checkBinDirOnPath(options: PathCheckOptions = {}): PathCheckResult {
   if (process.platform === 'win32') {
     return { onPath: true, binDir: null };
   }
 
   try {
-    const { getInstallPrefix } = require('../cli/lib/update-checker');
+    const updateChecker: unknown = require('../cli/lib/update-checker');
+    if (!isUpdateCheckerModule(updateChecker)) {
+      throw new TypeError('update-checker must export getInstallPrefix');
+    }
+    const { getInstallPrefix } = updateChecker;
     const installPrefix = options.installPrefix || getInstallPrefix(options);
     const binDir = getGlobalBinDir(installPrefix);
 
@@ -44,7 +70,7 @@ function checkBinDirOnPath(options = {}) {
   }
 }
 
-function printPathWarning(binDir) {
+function printPathWarning(binDir: string): void {
   console.error(
     `[zeroshot] Warning: ${binDir} is not on your PATH — the 'zeroshot' command may not be found.`
   );
@@ -54,7 +80,7 @@ function printPathWarning(binDir) {
   );
 }
 
-module.exports = {
+export = {
   getGlobalBinDir,
   isDirOnPath,
   getPathExportLine,

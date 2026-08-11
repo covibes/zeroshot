@@ -65,3 +65,5 @@ lib/cluster/
 lib/hosted-session/
 lib/hosted-target/
 lib/target/
+lib/path-check.js
+lib/path-check.d.ts
