@@ -355,6 +355,8 @@ export default [
       'lib/cluster/**',
       'lib/hosted-session/**',
       'lib/target/**',
+      'cli/event-copy.js',
+      'cli/message-formatter-utils.js',
       'lib/clusters-registry.js',
       'lib/completion.js',
       'lib/compose-utils.js',
