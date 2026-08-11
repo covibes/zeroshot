@@ -1,25 +1,58 @@
 /**
- * MessageBusBridge - Bridges parent and child message buses
- *
- * Forwards specified topics between parent and child clusters while maintaining
- * isolation and preventing message loops.
- *
- * Features:
- * - Forward specified parent topics to child (contextStrategy.parentTopics)
- * - Forward child completion events to parent
- * - Namespace child topics to avoid collisions
- * - Prevent message loops via forwarding flags
+ * Bridges parent and child message buses while preserving cluster isolation and
+ * preventing forwarding loops.
  */
 
+interface BridgeMetadata extends Record<string, unknown> {
+  forwarded?: unknown;
+}
+
+interface BridgeMessage extends Record<string, unknown> {
+  cluster_id: string;
+  topic: string;
+  metadata?: BridgeMetadata;
+}
+
+interface BridgeMessageBus {
+  subscribe(handler: (message: BridgeMessage) => void): () => void;
+  publish(message: BridgeMessage): unknown;
+}
+
+interface MessageBusBridgeConfig {
+  parentClusterId: string;
+  childClusterId: string;
+  parentTopics?: unknown[];
+}
+
+function parentTopicName(entry: unknown): unknown {
+  if (typeof entry === 'string') return entry;
+  if (typeof entry !== 'object' || entry === null) return undefined;
+  return 'topic' in entry ? entry.topic : undefined;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
 class MessageBusBridge {
-  constructor(parentBus, childBus, config) {
+  parentBus: BridgeMessageBus;
+  childBus: BridgeMessageBus;
+  config: MessageBusBridgeConfig;
+  parentTopicNames: Set<string>;
+  parentUnsubscribe: (() => void) | null;
+  childUnsubscribe: (() => void) | null;
+  active: boolean;
+
+  constructor(
+    parentBus: BridgeMessageBus,
+    childBus: BridgeMessageBus,
+    config: MessageBusBridgeConfig
+  ) {
     this.parentBus = parentBus;
     this.childBus = childBus;
     this.config = config;
     this.parentTopicNames = new Set(
-      (config.parentTopics || [])
-        .map((entry) => (typeof entry === 'string' ? entry : entry?.topic))
-        .filter((topic) => typeof topic === 'string' && topic.length > 0)
+      (config.parentTopics || []).map(parentTopicName).filter(isNonEmptyString)
     );
 
     this.parentUnsubscribe = null;
@@ -29,47 +62,33 @@ class MessageBusBridge {
     this._setupBridge();
   }
 
-  /**
-   * Set up bidirectional message forwarding
-   * @private
-   */
-  _setupBridge() {
-    // Forward specified parent topics to child
+  _setupBridge(): void {
     if (this.parentTopicNames.size > 0) {
-      this.parentUnsubscribe = this.parentBus.subscribe((message) => {
+      this.parentUnsubscribe = this.parentBus.subscribe((message: BridgeMessage) => {
         this._forwardParentToChild(message);
       });
     }
 
-    // Forward child completion/failure events to parent
-    this.childUnsubscribe = this.childBus.subscribe((message) => {
+    this.childUnsubscribe = this.childBus.subscribe((message: BridgeMessage) => {
       this._forwardChildToParent(message);
     });
 
     this.active = true;
   }
 
-  /**
-   * Forward parent message to child cluster
-   * @private
-   */
-  _forwardParentToChild(message) {
-    // Only forward messages from parent cluster
+  _forwardParentToChild(message: BridgeMessage): void {
     if (message.cluster_id !== this.config.parentClusterId) {
       return;
     }
 
-    // Only forward topics specified in config
     if (!this.parentTopicNames.has(message.topic)) {
       return;
     }
 
-    // Skip already-forwarded messages (prevent loops)
     if (message.metadata?.forwarded) {
       return;
     }
 
-    // Forward to child with metadata flag
     this.childBus.publish({
       ...message,
       cluster_id: this.config.childClusterId,
@@ -81,28 +100,20 @@ class MessageBusBridge {
     });
   }
 
-  /**
-   * Forward child message to parent cluster
-   * @private
-   */
-  _forwardChildToParent(message) {
-    // Only forward messages from child cluster
+  _forwardChildToParent(message: BridgeMessage): void {
     if (message.cluster_id !== this.config.childClusterId) {
       return;
     }
 
-    // Only forward completion/failure events
     const forwardTopics = ['CLUSTER_COMPLETE', 'CLUSTER_FAILED', 'AGENT_ERROR'];
     if (!forwardTopics.includes(message.topic)) {
       return;
     }
 
-    // Skip already-forwarded messages (prevent loops)
     if (message.metadata?.forwarded) {
       return;
     }
 
-    // Forward to parent with namespaced topic and metadata flag
     this.parentBus.publish({
       ...message,
       cluster_id: this.config.parentClusterId,
@@ -116,10 +127,7 @@ class MessageBusBridge {
     });
   }
 
-  /**
-   * Close the bridge and stop forwarding
-   */
-  close() {
+  close(): void {
     if (this.parentUnsubscribe) {
       this.parentUnsubscribe();
       this.parentUnsubscribe = null;
@@ -133,12 +141,9 @@ class MessageBusBridge {
     this.active = false;
   }
 
-  /**
-   * Check if bridge is active
-   */
-  isActive() {
+  isActive(): boolean {
     return this.active;
   }
 }
 
-module.exports = MessageBusBridge;
+export = MessageBusBridge;

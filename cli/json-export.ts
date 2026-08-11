@@ -1,6 +1,35 @@
-const fs = require('fs');
+import fs = require('fs');
 
-function indentJson(value, spaces) {
+interface LedgerMessageIterator extends Iterator<unknown> {
+  return?: () => IteratorResult<unknown>;
+}
+
+interface ClusterLedger {
+  iterateAll(clusterId: string): LedgerMessageIterator;
+}
+
+interface ExportStream {
+  readonly fd?: number;
+  write(value: string): unknown;
+}
+
+interface JsonExportOptions {
+  ledger: ClusterLedger;
+  clusterId: string;
+  outputPath?: string | null;
+  stdout?: ExportStream;
+}
+
+interface Destination {
+  close(): void;
+  write(value: string): void;
+}
+
+function isInteger(value: unknown): value is number {
+  return Number.isInteger(value);
+}
+
+function indentJson(value: unknown, spaces: number): string {
   const prefix = ' '.repeat(spaces);
   return JSON.stringify(value, null, 2)
     .split('\n')
@@ -8,7 +37,7 @@ function indentJson(value, spaces) {
     .join('\n');
 }
 
-function writeAll(fd, value) {
+function writeAll(fd: number, value: string): void {
   const bytes = Buffer.from(value);
   let offset = 0;
   while (offset < bytes.length) {
@@ -20,7 +49,10 @@ function writeAll(fd, value) {
   }
 }
 
-function createDestination(outputPath, stdout) {
+function createDestination(
+  outputPath: string | null | undefined,
+  stdout: ExportStream
+): Destination {
   if (outputPath) {
     const fd = fs.openSync(outputPath, 'w');
     return {
@@ -29,16 +61,19 @@ function createDestination(outputPath, stdout) {
     };
   }
 
-  if (Number.isInteger(stdout.fd)) {
+  if (isInteger(stdout.fd)) {
+    const fd = stdout.fd;
     return {
-      close() {},
-      write: (value) => writeAll(stdout.fd, value),
+      close(): void {},
+      write: (value) => writeAll(fd, value),
     };
   }
 
   return {
-    close() {},
-    write: (value) => stdout.write(value),
+    close(): void {},
+    write: (value): void => {
+      stdout.write(value);
+    },
   };
 }
 
@@ -47,7 +82,7 @@ function streamClusterJsonExport({
   clusterId,
   outputPath = null,
   stdout = process.stdout,
-}) {
+}: JsonExportOptions): void {
   const destination = createDestination(outputPath, stdout);
   const iterator = ledger.iterateAll(clusterId);
   try {
@@ -74,4 +109,4 @@ function streamClusterJsonExport({
   }
 }
 
-module.exports = { streamClusterJsonExport };
+export = { streamClusterJsonExport };

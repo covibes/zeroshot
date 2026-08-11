@@ -5,20 +5,62 @@
  * Used by both logic-engine.js (trigger evaluation) and agent-wrapper.js (transform scripts)
  */
 
-const { DEFAULT_MAX_ITERATIONS } = require('./agent/agent-config');
+interface AgentConfigModule {
+  DEFAULT_MAX_ITERATIONS: number;
+}
+
+function isAgentConfigModule(value: unknown): value is AgentConfigModule {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'DEFAULT_MAX_ITERATIONS' in value &&
+    typeof value.DEFAULT_MAX_ITERATIONS === 'number'
+  );
+}
+
+const agentConfig: unknown = require('./agent/agent-config');
+if (!isAgentConfigModule(agentConfig)) {
+  throw new TypeError('agent-config must export a numeric DEFAULT_MAX_ITERATIONS');
+}
+const { DEFAULT_MAX_ITERATIONS } = agentConfig;
+
+type BaseConfigName = 'debug-workflow' | 'full-workflow' | 'single-worker' | 'worker-validator';
+type ModelLevel = 'level1' | 'level2' | 'level3';
+
+interface ConfigOptions {
+  autoPr?: boolean;
+}
+
+interface ConfigParams {
+  task_type: string;
+  complexity: string;
+  max_tokens: number;
+  max_iterations: number;
+  worker_level?: ModelLevel;
+  validator_level?: ModelLevel;
+  investigator_level?: ModelLevel;
+  fixer_level?: ModelLevel;
+  tester_level?: ModelLevel;
+  planner_level?: ModelLevel;
+  validator_count?: number;
+}
+
+interface RoutedConfig {
+  base: BaseConfigName;
+  params: ConfigParams;
+}
 
 /**
  * Get cluster config based on complexity and task type
- * @param {string} complexity - TRIVIAL, SIMPLE, STANDARD, CRITICAL
- * @param {string} taskType - INQUIRY, TASK, DEBUG
- * @param {object} [options]
- * @param {boolean} [options.autoPr] - Whether the cluster will inject git-pusher/PR flow
- * @returns {{ base: string, params: object }}
  */
-function getConfig(complexity, taskType, options = {}) {
+function getConfig(
+  complexity: string,
+  taskType: string,
+  options: ConfigOptions = {}
+): RoutedConfig {
   const isPrMode = options.autoPr === true || process.env.ZEROSHOT_PR === '1';
 
-  const getBase = () => {
+  const getBase = (): BaseConfigName => {
     if (taskType === 'DEBUG' && complexity !== 'TRIVIAL') {
       return 'debug-workflow';
     }
@@ -34,13 +76,13 @@ function getConfig(complexity, taskType, options = {}) {
     return 'full-workflow';
   };
 
-  const getLevel = (role) => {
+  const getLevel = (role: string): ModelLevel => {
     if (complexity === 'CRITICAL' && role === 'planner') return 'level3';
     if (complexity === 'TRIVIAL') return 'level1';
     return 'level2';
   };
 
-  const getValidatorCount = () => {
+  const getValidatorCount = (): number => {
     if (complexity === 'TRIVIAL') return 0;
     if (complexity === 'SIMPLE') return 1;
     if (complexity === 'STANDARD') return 2;
@@ -50,7 +92,7 @@ function getConfig(complexity, taskType, options = {}) {
     return 1;
   };
 
-  const getMaxTokens = () => {
+  const getMaxTokens = (): number => {
     if (complexity === 'TRIVIAL') return 50000;
     if (complexity === 'SIMPLE') return 100000;
     if (complexity === 'STANDARD') return 100000;
@@ -60,7 +102,7 @@ function getConfig(complexity, taskType, options = {}) {
 
   const base = getBase();
 
-  const params = {
+  const params: ConfigParams = {
     task_type: taskType,
     complexity,
     max_tokens: getMaxTokens(),
@@ -86,4 +128,4 @@ function getConfig(complexity, taskType, options = {}) {
   return { base, params };
 }
 
-module.exports = { getConfig };
+export = { getConfig };

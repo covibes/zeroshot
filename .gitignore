@@ -60,6 +60,8 @@ report/
 # Generated/temp files
 cli/event-copy.js
 cli/message-formatter-utils.js
+cli/json-export.js
+cli/message-formatters-watch.js
 test-metadata-manual.sh
 test-isolated-fix.js
 lib/agent-cli-provider/
@@ -139,12 +141,21 @@ lib/settings-validation.js
 lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
+src/config-router.js
+src/claude-credentials.js
+src/copy-worker.js
+src/darwin-keychain-boundary.js
 src/guidance-topics.js
 src/input-helpers.js
 src/ledger-sequence.js
+src/message-bus-bridge.js
 src/message-buffer.js
+src/state-snapshot-normalization.js
+src/state-snapshot.js
+src/state-snapshotter.js
 src/task-startup-error.js
 src/task-runner.js
+src/worktree-tooling-env.js
 src/omp-blob-root.js
 src/omp-config-overlay.js
 task-lib/completion.js
@@ -154,6 +165,7 @@ task-lib/process-termination.js
 task-lib/omp-storage-root.js
 src/omp-execution-fingerprint.js
 src/omp-session-limits.js
+src/agent/agent-trigger-evaluator.js
 src/agent/context-replay-policy.js
 src/agent/critical-agent-policy.js
 src/agent/provider-control-plane.js
@@ -165,4 +177,5 @@ src/providers/capabilities.js
 src/providers/google/index.js
 src/providers/openai/index.js
 src/providers/opencode/index.js
+src/schemas/sub-cluster.js
 src/template-validation/report-formatter.js
