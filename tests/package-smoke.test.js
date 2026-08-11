@@ -74,6 +74,18 @@ function assertLegacyTypeScriptOutputs() {
     'describeRunMode',
   ]);
   assert.strictEqual(runMode.resolveRunMode({ pr: true, docker: true }), 'pr+docker');
+
+  const credentialPath = require(path.join(repoRoot, 'lib/provider-credential-path.js'));
+  assert.deepStrictEqual(Reflect.ownKeys(credentialPath), [
+    'expandProviderCredentialPath',
+    'resolveProviderCredentialPaths',
+  ]);
+  assert.strictEqual(
+    credentialPath.expandProviderCredentialPath('$CREDENTIAL_ROOT/auth.json', {
+      CREDENTIAL_ROOT: '/tmp/provider',
+    }),
+    '/tmp/provider/auth.json'
+  );
 }
 
 describe('npm package smoke', function () {
@@ -109,6 +121,7 @@ describe('npm package smoke', function () {
       'lib/process-liveness.js',
       'lib/run-plan.js',
       'lib/run-mode.js',
+      'lib/provider-credential-path.js',
       'scripts/check-path.js',
       'scripts/postinstall.js',
       'cli/lib/setup-wizard.js',

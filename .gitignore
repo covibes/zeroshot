@@ -73,3 +73,5 @@ lib/run-plan.js
 lib/run-plan.d.ts
 lib/run-mode.js
 lib/run-mode.d.ts
+lib/provider-credential-path.js
+lib/provider-credential-path.d.ts
