@@ -27,6 +27,11 @@ pub(crate) enum AgentWorkspacePreparation {
     Closed(openengine_cluster_protocol::WorkerOutcome),
 }
 
+/// The workspace state observed before the ledger grants effect authority.
+pub(crate) struct AgentWorkspaceCandidate {
+    fingerprint: WorkspaceFingerprint,
+}
+
 pub(crate) struct AgentWorkspaceAuthority {
     lock: Option<File>,
     marker: std::path::PathBuf,
@@ -98,20 +103,22 @@ impl NativeAgentWorkspace {
         self.canonical_root.as_path()
     }
 
-    pub(super) fn preflight(&self) -> Result<(), ()> {
+    pub(super) fn preflight(&self) -> Result<AgentWorkspaceCandidate, ()> {
         let lock = lock_workspace(self.canonical_root.as_path())?;
         require_no_marker(self.canonical_root.as_path())?;
-        self.fingerprints
+        let fingerprint = self
+            .fingerprints
             .fingerprint(self.canonical_root.as_path())
             .map_err(|_| ())?;
         drop(lock);
-        Ok(())
+        Ok(AgentWorkspaceCandidate { fingerprint })
     }
 
     pub(super) async fn prepare(
         &self,
         cluster: &ResourceId,
         allocation: &DispatchAllocation,
+        candidate: AgentWorkspaceCandidate,
     ) -> AgentWorkspacePreparation {
         let lock = match lock_workspace(self.canonical_root.as_path()) {
             Ok(lock) => lock,
@@ -120,15 +127,11 @@ impl NativeAgentWorkspace {
         if require_no_marker(self.canonical_root.as_path()).is_err() {
             return closed_preparation();
         }
-        let fingerprint = match self.fingerprints.fingerprint(self.canonical_root.as_path()) {
-            Ok(fingerprint) => fingerprint,
-            Err(_) => return closed_preparation(),
-        };
         let (request, owner) = match workspace_request(
             cluster,
             allocation,
             self.canonical_root.clone(),
-            fingerprint,
+            candidate.fingerprint,
         ) {
             Ok(requests) => requests,
             Err(()) => return closed_preparation(),
@@ -282,4 +285,46 @@ fn remove_marker(marker: &Path, git_dir: &Path) -> Result<(), ()> {
     File::open(git_dir)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cluster_ledger::{ExecutionId, NodeInstanceId, RunSequence};
+
+    #[tokio::test]
+    async fn prepare_rejects_workspace_changed_after_preflight() {
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let state = std::env::temp_dir().join(format!("zeroshot-agent-state-{suffix}"));
+        let workspace = std::env::temp_dir().join(format!("zeroshot-agent-workspace-{suffix}"));
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(workspace.join(".git")).unwrap();
+
+        let authority = NativeAgentWorkspace::open(&state, &workspace).unwrap();
+        let candidate = authority.preflight().unwrap();
+        std::fs::write(workspace.join("changed.txt"), b"changed").unwrap();
+        let prepared = authority
+            .prepare(
+                &ResourceId::new("changed-after-preflight").unwrap(),
+                &DispatchAllocation {
+                    run: RunSequence::new(1).unwrap(),
+                    node_instance: NodeInstanceId::new(1).unwrap(),
+                    execution: ExecutionId::new(1).unwrap(),
+                },
+                candidate,
+            )
+            .await;
+
+        assert!(matches!(prepared, AgentWorkspacePreparation::Closed(_)));
+        drop(authority);
+        let _ = std::fs::remove_dir_all(state);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
 }

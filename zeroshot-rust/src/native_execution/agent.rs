@@ -6,6 +6,8 @@ mod artifact;
 mod codex;
 #[path = "agent/protocol.rs"]
 mod protocol;
+#[path = "agent/validator.rs"]
+pub(super) mod validator;
 #[path = "agent/workspace.rs"]
 mod workspace;
 
@@ -20,7 +22,9 @@ use crate::execution::driver::BuiltinWorkerDriver;
 use artifact::AgentArtifactStore;
 use codex::NativeCodexDriver;
 pub(super) use protocol::{AgentDispatchInput, AgentTerminalOutput};
-pub(super) use workspace::{AgentWorkspaceAuthority, AgentWorkspacePreparation};
+pub(super) use workspace::{
+    AgentWorkspaceAuthority, AgentWorkspaceCandidate, AgentWorkspacePreparation,
+};
 use workspace::NativeAgentWorkspace;
 
 use super::NativeExecutionProcess;
@@ -52,18 +56,20 @@ impl NativeAgent {
         self.driver.clone()
     }
 
-    pub(super) async fn preflight(&self, input: &Value) -> Result<(), ()> {
+    pub(super) async fn preflight(&self, input: &Value) -> Result<AgentWorkspaceCandidate, ()> {
         protocol::AgentUserInput::parse(input)?;
-        self.workspace.preflight()?;
-        self.driver.preflight().await
+        let candidate = self.workspace.preflight()?;
+        self.driver.preflight().await?;
+        Ok(candidate)
     }
 
     pub(super) async fn prepare_workspace(
         &self,
         cluster: &ResourceId,
         allocation: &DispatchAllocation,
+        candidate: AgentWorkspaceCandidate,
     ) -> AgentWorkspacePreparation {
-        self.workspace.prepare(cluster, allocation).await
+        self.workspace.prepare(cluster, allocation, candidate).await
     }
 
     pub(super) async fn reverify_terminal(&self, terminal: &TerminalResult) -> Result<(), ()> {

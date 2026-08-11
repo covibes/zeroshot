@@ -22,9 +22,11 @@ pub(crate) use program::{
     foreground_graph, is_deterministic_graph, is_worker_free_graph, NativeExecutionRegistry,
     NativeGraphVerifier,
 };
-use agent::{AgentWorkspaceAuthority, AgentWorkspacePreparation};
+#[doc(hidden)]
+pub use agent::validator::{run_greeting_validator, VALIDATOR_MODE as NATIVE_VALIDATOR_MODE};
+use agent::{AgentWorkspaceAuthority, AgentWorkspaceCandidate, AgentWorkspacePreparation};
 use process::NativeExecutionRuntime;
-use program::{classify_graph, NativeProgram};
+use program::{classify_graph, NativeProgram, AGENT_WORKER_REF};
 
 use crate::cluster_ledger::record::CanonicalDigest;
 use crate::cluster_ledger::{ClusterLedger, LedgerError, ReplayState};
@@ -68,6 +70,7 @@ struct CommittedDispatch {
     allocation: crate::cluster_ledger::DispatchAllocation,
     worker: WorkerRef,
     input: Value,
+    workspace_candidate: Option<AgentWorkspaceCandidate>,
     workspace: Option<AgentWorkspaceAuthority>,
 }
 
@@ -176,7 +179,7 @@ impl NativeExecutionCoordinator {
         reduction: &Reduction,
     ) -> Result<Option<CommittedDispatch>, NativeExecutionError> {
         let (execution, worker, input) = one_dispatch(reduction)?;
-        self.runtime.preflight(worker.as_str(), &input).await?;
+        let workspace_candidate = self.runtime.preflight(worker.as_str(), &input).await?;
         let authorization = reduction
             .dispatch_authorization(execution)
             .ok_or(NativeExecutionError::InvalidState)?;
@@ -194,6 +197,7 @@ impl NativeExecutionCoordinator {
             allocation: committed.value,
             worker,
             input,
+            workspace_candidate,
             workspace: None,
         }))
     }
@@ -203,21 +207,21 @@ impl NativeExecutionCoordinator {
         state: &ReplayState,
         dispatch: &mut CommittedDispatch,
     ) -> Result<Option<openengine_cluster_protocol::WorkerOutcome>, NativeExecutionError> {
+        let candidate = match dispatch.workspace_candidate.take() {
+            Some(candidate) if dispatch.worker.as_str() == AGENT_WORKER_REF => candidate,
+            None if dispatch.worker.as_str() != AGENT_WORKER_REF => return Ok(None),
+            Some(_) | None => return Err(NativeExecutionError::InvalidState),
+        };
         let prepared = self
             .runtime
-            .prepare_workspace(
-                dispatch.worker.as_str(),
-                &state.resource,
-                &dispatch.allocation,
-            )
-            .await?;
+            .prepare_workspace(&state.resource, &dispatch.allocation, candidate)
+            .await;
         match prepared {
-            Some(AgentWorkspacePreparation::Closed(outcome)) => Ok(Some(outcome)),
-            Some(AgentWorkspacePreparation::Ready(authority)) => {
+            AgentWorkspacePreparation::Closed(outcome) => Ok(Some(outcome)),
+            AgentWorkspacePreparation::Ready(authority) => {
                 dispatch.workspace = Some(authority);
                 Ok(None)
             }
-            None => Ok(None),
         }
     }
 

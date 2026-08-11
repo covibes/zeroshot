@@ -17,7 +17,6 @@ use crate::execution::process::{
     ProcessRunnerError, ProcessSecretEnvironment,
 };
 use crate::execution::{CompletionEvidence, ExecutionCandidate, ExecutionResult, WorkspaceAccessMode};
-use crate::native_admission::native_agent_protocol::VALIDATOR_MODE;
 use crate::native_credentials::{
     AcquisitionBudget, CancellationSignal, CredentialClock, CredentialRequirementName,
     CredentialSourceKind, CredentialSourcePolicy, CredentialSourceRef, CredentialSourceRegistry,
@@ -28,6 +27,7 @@ use crate::worker_catalog::{worker_catalog, DriverFamily, ProbeStrategy};
 
 use super::artifact::{AgentArtifactStore, ValidatedAgentOutput};
 use super::protocol::{parse_codex_output, validate_validation_output, AgentDispatchInput};
+use super::validator::VALIDATOR_MODE;
 use super::super::program::NATIVE_AGENT_PROCESS_TIMEOUT_MS;
 use super::super::NativeExecutionProcess;
 

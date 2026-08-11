@@ -1,13 +1,11 @@
 //! Direct production composition for one narrow native cluster.
 
-#[path = "native_execution/agent/validator.rs"]
-mod native_agent_protocol;
 #[path = "native_execution.rs"]
 mod native_execution;
 #[path = "native_worker_protocol.rs"]
 mod native_worker_protocol;
 #[doc(hidden)]
-pub use native_agent_protocol::{run_greeting_validator, VALIDATOR_MODE as NATIVE_VALIDATOR_MODE};
+pub use native_execution::{run_greeting_validator, NATIVE_VALIDATOR_MODE};
 #[doc(hidden)]
 pub use native_worker_protocol::{run_deterministic_worker, WORKER_MODE as NATIVE_WORKER_MODE};
 

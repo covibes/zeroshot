@@ -22,7 +22,7 @@ use crate::execution::{
 use crate::native_admission::native_worker_protocol::{effect_marker_id, WORKER_MODE};
 
 use super::program::NATIVE_PROCESS_TIMEOUT_MS;
-use super::agent::{AgentWorkspacePreparation, NativeAgent};
+use super::agent::{AgentWorkspaceCandidate, AgentWorkspacePreparation, NativeAgent};
 use super::program::AGENT_WORKER_REF;
 use super::{NativeExecutionError, NativeExecutionProcess};
 
@@ -37,28 +37,27 @@ impl NativeExecutionRuntime {
         &self,
         worker: &str,
         input: &serde_json::Value,
-    ) -> Result<(), NativeExecutionError> {
+    ) -> Result<Option<AgentWorkspaceCandidate>, NativeExecutionError> {
         if worker == AGENT_WORKER_REF {
-            self.agent
+            let candidate = self
+                .agent
                 .preflight(input)
                 .await
                 .map_err(|()| NativeExecutionError::Preflight)?;
+            return Ok(Some(candidate));
         }
-        Ok(())
+        Ok(None)
     }
 
     pub(super) async fn prepare_workspace(
         &self,
-        worker: &str,
         cluster: &crate::cluster_ledger::ResourceId,
         allocation: &crate::cluster_ledger::DispatchAllocation,
-    ) -> Result<Option<AgentWorkspacePreparation>, NativeExecutionError> {
-        if worker == AGENT_WORKER_REF {
-            return Ok(Some(
-                self.agent.prepare_workspace(cluster, allocation).await,
-            ));
-        }
-        Ok(None)
+        candidate: AgentWorkspaceCandidate,
+    ) -> AgentWorkspacePreparation {
+        self.agent
+            .prepare_workspace(cluster, allocation, candidate)
+            .await
     }
 
     pub(super) async fn dispatch(

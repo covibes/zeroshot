@@ -3,9 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::execution::ExecutionInput;
-use crate::native_admission::native_agent_protocol::MAX_EXPECTED_GREETING_BYTES;
-
 use super::super::program::AGENT_WORKER_REF;
+use super::validator::MAX_EXPECTED_GREETING_BYTES;
 
 pub(super) const VALIDATION_TYPE_ID: &str = "native.agent.validation@1";
 const MAX_PROMPT_BYTES: usize = 16 * 1024;
