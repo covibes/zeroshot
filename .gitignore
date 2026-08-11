@@ -60,6 +60,8 @@ report/
 # Generated/temp files
 cli/event-copy.js
 cli/message-formatter-utils.js
+cli/json-export.js
+cli/message-formatters-watch.js
 test-metadata-manual.sh
 test-isolated-fix.js
 lib/agent-cli-provider/

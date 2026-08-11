@@ -1,6 +1,8 @@
 const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'cli/event-copy.js',
   'cli/message-formatter-utils.js',
+  'cli/json-export.js',
+  'cli/message-formatters-watch.js',
   'src/guidance-topics.js',
   'src/input-helpers.js',
   'src/ledger-sequence.js',

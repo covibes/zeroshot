@@ -357,6 +357,8 @@ export default [
       'lib/target/**',
       'cli/event-copy.js',
       'cli/message-formatter-utils.js',
+      'cli/json-export.js',
+      'cli/message-formatters-watch.js',
       'lib/clusters-registry.js',
       'lib/completion.js',
       'lib/compose-utils.js',
