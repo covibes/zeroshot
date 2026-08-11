@@ -7,7 +7,7 @@ const { isInsideOmpBlobsDir } = require('./omp-blob-root');
 // owning cluster's storageDir for cluster-agent tasks or the standalone TASKS_DIR otherwise (see
 // task-lib/omp-storage-root.js) — never derived from prompt text or cwd. The shared OMP CAS blob
 // store is *not* under here at all (it is machine-wide, at pi-utils::getBlobsDir(); see
-// src/omp-blob-root.js), which is what makes per-task partition deletion safe.
+// src/omp-blob-root.ts), which is what makes per-task partition deletion safe.
 const OMP_SESSIONS_SUBDIR = 'omp-sessions';
 const PARTITION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;

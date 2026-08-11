@@ -391,6 +391,8 @@ export default [
       'lib/start-cluster.js',
       'lib/stream-json-parser.js',
       'src/guidance-topics.js',
+      'src/omp-blob-root.js',
+      'src/omp-config-overlay.js',
       'src/omp-execution-fingerprint.js',
       'src/omp-session-limits.js',
       'src/agent/context-replay-policy.js',

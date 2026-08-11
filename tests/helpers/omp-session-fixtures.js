@@ -36,7 +36,7 @@ function makeStorageRoot(prefix = 'zeroshot-omp-storage-') {
 
 /**
  * Create a shared OMP blob store. Returns `{blobRoot, blobsDir, put, env}` where `env` is the
- * environment overlay that makes src/omp-blob-root.js resolve to it (the same
+ * environment overlay that makes src/omp-blob-root.ts resolve to it (the same
  * `PI_CODING_AGENT_DIR` override OMP itself honours).
  */
 function makeBlobStore(prefix = 'zeroshot-omp-blobs-') {

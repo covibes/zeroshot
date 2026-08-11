@@ -209,7 +209,7 @@ payloads there and leaves a nested `blob:sha256:<64-lower-hex>` reference _insid
 JSONL records (v17.2.1 `session/blob-store.ts`, `session/session-loader.ts`). Verification parses
 the transcript, collects those references, and resolves them at the real root reported by
 `@oh-my-pi/pi-utils::getBlobsDir()` — `~/.omp/agent/blobs`, honouring `PI_CONFIG_DIR`,
-`PI_CODING_AGENT_DIR`, `OMP_PROFILE`/`PI_PROFILE`, and XDG (`src/omp-blob-root.js`). A reference
+`PI_CODING_AGENT_DIR`, `OMP_PROFILE`/`PI_PROFILE`, and XDG (`src/omp-blob-root.ts`). A reference
 that is missing, non-canonical, or whose bytes don't match its digest makes the continuation
 invalid.
 

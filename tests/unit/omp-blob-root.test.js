@@ -1,5 +1,5 @@
 /**
- * src/omp-blob-root.js must resolve the *same* directory OMP v17.2.1's
+ * src/omp-blob-root.ts must resolve the *same* directory OMP v17.2.1's
  * `@oh-my-pi/pi-utils::getBlobsDir()` resolves (packages/utils/src/dirs.ts), because that is where
  * a resumed session's externalized payloads actually live. Getting this wrong in either direction
  * is a correctness bug: too narrow and every resume with an image fails as "blob missing"; too
@@ -19,9 +19,30 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { isInsideOmpBlobsDir, resolveOmpBlobsDir } = require('../../src/omp-blob-root');
+const blobRoot = require('../../src/omp-blob-root');
+const { isInsideOmpBlobsDir, resolveOmpBlobsDir } = blobRoot;
 
-describe('src/omp-blob-root.js (getBlobsDir parity with OMP v17.2.1)', function () {
+describe('src/omp-blob-root.ts runtime surface', function () {
+  it('preserves the exported resolver API', function () {
+    assert.deepStrictEqual(Reflect.ownKeys(blobRoot), [
+      'APP_NAME',
+      'CONFIG_DIR_NAME',
+      'isInsideOmpBlobsDir',
+      'normalizeProfileName',
+      'resolveOmpBlobsDir',
+    ]);
+    assert.deepStrictEqual(
+      [
+        blobRoot.isInsideOmpBlobsDir.length,
+        blobRoot.normalizeProfileName.length,
+        blobRoot.resolveOmpBlobsDir.length,
+      ],
+      [1, 1, 0]
+    );
+  });
+});
+
+describe('src/omp-blob-root.ts (getBlobsDir parity with OMP v17.2.1)', function () {
   let home;
 
   beforeEach(function () {
@@ -45,10 +66,7 @@ describe('src/omp-blob-root.js (getBlobsDir parity with OMP v17.2.1)', function 
 
   it('honours PI_CODING_AGENT_DIR as an absolute agent-dir override', function () {
     const override = path.join(home, 'custom-agent');
-    assert.strictEqual(
-      resolve({ PI_CODING_AGENT_DIR: override }),
-      path.join(override, 'blobs')
-    );
+    assert.strictEqual(resolve({ PI_CODING_AGENT_DIR: override }), path.join(override, 'blobs'));
   });
 
   it('resolves a relative PI_CODING_AGENT_DIR the way path.resolve does', function () {
@@ -87,6 +105,18 @@ describe('src/omp-blob-root.js (getBlobsDir parity with OMP v17.2.1)', function 
       path.join(home, '.omp', 'agent', 'blobs')
     );
   });
+});
+
+describe('src/omp-blob-root.ts XDG and safety parity with OMP v17.2.1', function () {
+  let home;
+
+  beforeEach(function () {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-blob-root-home-'));
+  });
+
+  function resolve(env, platform = 'linux') {
+    return resolveOmpBlobsDir({ env, homedir: home, platform });
+  }
 
   it('redirects to $XDG_DATA_HOME/omp/blobs only when that app root already exists', function () {
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-blob-root-xdg-'));
@@ -138,6 +168,18 @@ describe('src/omp-blob-root.js (getBlobsDir parity with OMP v17.2.1)', function 
       'darwin follows the same XDG rule as linux'
     );
   });
+});
+
+describe('src/omp-blob-root.ts profile and containment safety', function () {
+  let home;
+
+  beforeEach(function () {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'omp-blob-root-home-'));
+  });
+
+  function resolve(env, platform = 'linux') {
+    return resolveOmpBlobsDir({ env, homedir: home, platform });
+  }
 
   it('falls back to the default profile for a syntactically invalid profile name', function () {
     for (const profile of ['..', 'UPPER', 'ends.', 'CON', 'x'.repeat(80)]) {

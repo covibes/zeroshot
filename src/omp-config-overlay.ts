@@ -1,7 +1,12 @@
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { createHash, randomUUID } = require('crypto');
+import { createHash, randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+interface OmpConfigOverlay {
+  readonly dir: string;
+  readonly file: string;
+}
 
 const OVERLAY_PREFIX = 'zeroshot-omp-config-';
 const OMP_CONFIG_OVERLAY_DIR_PATTERN = /^zeroshot-omp-config-[A-Za-z0-9_-]+$/u;
@@ -66,11 +71,12 @@ bash:
 // under whatever workflow-altering defaults this body pinned; if the body changes (a Zeroshot
 // upgrade retunes task.*/memory/advisor/async behaviour), continuing an old transcript under the
 // new rules is execution drift, so this digest is part of the OMP execution fingerprint recorded
-// with every resumable session (src/omp-execution-fingerprint.js).
+// with every resumable session (src/omp-execution-fingerprint.ts).
 const OMP_CONFIG_OVERLAY_DIGEST = `sha256:${createHash('sha256').update(OVERLAY_BODY, 'utf8').digest('hex')}`;
 
-function createOmpConfigOverlay() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), OVERLAY_PREFIX), { mode: 0o700 });
+function createOmpConfigOverlay(): OmpConfigOverlay {
+  const directoryOptions: fs.EncodingOption & { readonly mode: number } = { mode: 0o700 };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), OVERLAY_PREFIX), directoryOptions);
   try {
     const file = path.join(dir, `${randomUUID()}.yml`);
     fs.writeFileSync(file, OVERLAY_BODY, { flag: 'wx', mode: 0o600 });
@@ -85,7 +91,7 @@ function createOmpConfigOverlay() {
   }
 }
 
-function isCanonicalOmpConfigOverlayDirectory(overlayDir) {
+function isCanonicalOmpConfigOverlayDirectory(overlayDir: unknown): boolean {
   if (typeof overlayDir !== 'string' || !overlayDir || path.resolve(overlayDir) !== overlayDir) {
     return false;
   }
@@ -95,7 +101,7 @@ function isCanonicalOmpConfigOverlayDirectory(overlayDir) {
   );
 }
 
-module.exports = {
+export = {
   OMP_CONFIG_OVERLAY_DIGEST,
   OMP_CONFIG_OVERLAY_DIR_PATTERN,
   OMP_CONFIG_OVERLAY_FILE_PATTERN,
