@@ -29,6 +29,32 @@ function runNpmPackDryRun() {
   return parsed[0];
 }
 
+function assertLegacyTypeScriptOutputs() {
+  const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
+  assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
+  const pathCheck = require(pathCheckPath);
+  assert.deepStrictEqual(Reflect.ownKeys(pathCheck), [
+    'getGlobalBinDir',
+    'isDirOnPath',
+    'getPathExportLine',
+    'checkBinDirOnPath',
+    'printPathWarning',
+  ]);
+  assert.strictEqual(
+    pathCheck.getPathExportLine('/tmp/zeroshot-bin'),
+    'export PATH="/tmp/zeroshot-bin:$PATH"'
+  );
+
+  const processLivenessPath = path.join(repoRoot, 'lib/process-liveness.js');
+  assert.ok(
+    fs.existsSync(processLivenessPath),
+    'legacy TypeScript build must emit lib/process-liveness.js'
+  );
+  const processLiveness = require(processLivenessPath);
+  assert.deepStrictEqual(Reflect.ownKeys(processLiveness), ['isProcessRunning']);
+  assert.strictEqual(processLiveness.isProcessRunning(process.pid), true);
+}
+
 describe('npm package smoke', function () {
   this.timeout(60000);
 
@@ -44,20 +70,7 @@ describe('npm package smoke', function () {
     );
     assert.strictEqual(pkg.bin['zeroshot-cluster-worker'], './bin/zeroshot-cluster-worker.js');
 
-    const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
-    assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
-    const pathCheck = require(pathCheckPath);
-    assert.deepStrictEqual(Reflect.ownKeys(pathCheck), [
-      'getGlobalBinDir',
-      'isDirOnPath',
-      'getPathExportLine',
-      'checkBinDirOnPath',
-      'printPathWarning',
-    ]);
-    assert.strictEqual(
-      pathCheck.getPathExportLine('/tmp/zeroshot-bin'),
-      'export PATH="/tmp/zeroshot-bin:$PATH"'
-    );
+    assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
       'cli/index.js',
@@ -72,6 +85,7 @@ describe('npm package smoke', function () {
       'docs/openengine-cluster-protocol/v1/legacy-worker.md',
       'lib/start-cluster.js',
       'lib/path-check.js',
+      'lib/process-liveness.js',
       'scripts/check-path.js',
       'scripts/postinstall.js',
       'cli/lib/setup-wizard.js',

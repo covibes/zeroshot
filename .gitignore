@@ -67,3 +67,5 @@ lib/hosted-target/
 lib/target/
 lib/path-check.js
 lib/path-check.d.ts
+lib/process-liveness.js
+lib/process-liveness.d.ts

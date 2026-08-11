@@ -9,18 +9,28 @@
  * simultaneously reported as "zombie" by status and "still running" by
  * resume. Consolidating avoids a sixth call site reintroducing that split.
  */
-function isProcessRunning(pid) {
-  if (!pid || !Number.isInteger(pid) || pid <= 0) {
+
+function hasErrorCode(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === code
+  );
+}
+
+function isProcessRunning(pid: unknown): boolean {
+  if (!pid || typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
     return false;
   }
   try {
     // Signal 0 doesn't kill, just checks if the process exists.
     process.kill(pid, 0);
     return true;
-  } catch (error) {
+  } catch (error: unknown) {
     // ESRCH = no such process, EPERM = process exists but we lack permission.
-    return Boolean(error && error.code === 'EPERM');
+    return hasErrorCode(error, 'EPERM');
   }
 }
 
-module.exports = { isProcessRunning };
+export = { isProcessRunning };
