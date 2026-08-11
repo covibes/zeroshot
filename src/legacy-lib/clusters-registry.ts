@@ -11,38 +11,30 @@
  * around the whole operation to avoid losing concurrent updates.
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs = require('fs');
+import path = require('path');
 
-function clustersFilePath(storageDir) {
+function clustersFilePath(storageDir: string): string {
   return path.join(storageDir, 'clusters.json');
 }
 
-/**
- * Read clusters.json. Returns {} if missing or unparsable.
- * @param {string} storageDir
- * @returns {Object}
- */
-function readClustersFileSync(storageDir) {
+/** Read clusters.json. Returns an empty registry if the file is missing. */
+function readClustersFileSync(storageDir: string): unknown {
   const clustersFile = clustersFilePath(storageDir);
   if (!fs.existsSync(clustersFile)) {
     return {};
   }
   const raw = fs.readFileSync(clustersFile, 'utf8');
-  return JSON.parse(raw);
+  const parsed: unknown = JSON.parse(raw);
+  return parsed;
 }
 
-/**
- * Write clusters.json atomically (write to a pid-scoped temp file, then rename).
- * rename(2) is atomic on the same filesystem, so no reader can observe a partial file.
- * @param {string} storageDir
- * @param {Object} data
- */
-function writeClustersFileAtomic(storageDir, data) {
+/** Write clusters.json atomically through a process-scoped temporary file. */
+function writeClustersFileAtomic(storageDir: string, data: unknown): void {
   const clustersFile = clustersFilePath(storageDir);
   const tmpPath = `${clustersFile}.tmp-${process.pid}`;
   fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
   fs.renameSync(tmpPath, clustersFile);
 }
 
-module.exports = { clustersFilePath, readClustersFileSync, writeClustersFileAtomic };
+export = { clustersFilePath, readClustersFileSync, writeClustersFileAtomic };

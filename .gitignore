@@ -75,3 +75,5 @@ lib/run-mode.js
 lib/run-mode.d.ts
 lib/provider-credential-path.js
 lib/provider-credential-path.d.ts
+lib/clusters-registry.js
+lib/clusters-registry.d.ts

@@ -29,6 +29,21 @@ function runNpmPackDryRun() {
   return parsed[0];
 }
 
+function assertClustersRegistryOutput() {
+  const registryPath = path.join(repoRoot, 'lib/clusters-registry.js');
+  assert.ok(
+    fs.existsSync(registryPath),
+    'legacy TypeScript build must emit lib/clusters-registry.js'
+  );
+  const registry = require(registryPath);
+  assert.deepStrictEqual(Reflect.ownKeys(registry), [
+    'clustersFilePath',
+    'readClustersFileSync',
+    'writeClustersFileAtomic',
+  ]);
+  assert.strictEqual(registry.clustersFilePath('/tmp/zeroshot'), '/tmp/zeroshot/clusters.json');
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -103,12 +118,14 @@ describe('npm package smoke', function () {
     );
     assert.strictEqual(pkg.bin['zeroshot-cluster-worker'], './bin/zeroshot-cluster-worker.js');
 
+    assertClustersRegistryOutput();
     assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
       'cli/index.js',
       'bin/zeroshot-cluster-worker.js',
       'lib/cluster-worker/index.js',
+      'lib/clusters-registry.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',
