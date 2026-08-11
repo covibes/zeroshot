@@ -1,5 +1,12 @@
 const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
+  'cli/event-copy.js',
+  'cli/message-formatter-utils.js',
   'src/guidance-topics.js',
+  'src/input-helpers.js',
+  'src/ledger-sequence.js',
+  'src/message-buffer.js',
+  'src/task-startup-error.js',
+  'src/task-runner.js',
   'src/omp-blob-root.js',
   'src/omp-config-overlay.js',
   'task-lib/completion.js',
@@ -14,11 +21,13 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/agent/provider-control-plane.js',
   'src/agent/structured-output-error.js',
   'src/agent/validation-platform.js',
+  'src/attach/socket-paths.js',
   'src/providers/anthropic/index.js',
   'src/providers/capabilities.js',
   'src/providers/google/index.js',
   'src/providers/openai/index.js',
   'src/providers/opencode/index.js',
+  'src/template-validation/report-formatter.js',
 ]);
 
 function assertRuntimeTypeScriptPackage(files) {

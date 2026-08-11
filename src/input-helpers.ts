@@ -1,3 +1,16 @@
+import fs = require('fs');
+import path = require('path');
+
+interface ManualInput {
+  number: null;
+  title: string;
+  body: string;
+  labels: unknown[];
+  comments: unknown[];
+  url: null;
+  context: string;
+}
+
 /**
  * Input Helpers - Create input data from text or files
  *
@@ -5,17 +18,8 @@
  * - Plain text input
  * - File input (markdown)
  */
-
-const fs = require('fs');
-const path = require('path');
-
 class InputHelpers {
-  /**
-   * Create a plain text input wrapper
-   * @param {String} text - Plain text input
-   * @returns {Object} Structured context
-   */
-  static createTextInput(text) {
+  static createTextInput(text: string): ManualInput {
     return {
       number: null,
       title: 'Manual Input',
@@ -27,26 +31,15 @@ class InputHelpers {
     };
   }
 
-  /**
-   * Create input from markdown file
-   * @param {String} filePath - Path to markdown file (.md or .markdown)
-   * @returns {Object} Structured context matching issue format
-   */
-  static createFileInput(filePath) {
-    // Resolve relative paths
+  static createFileInput(filePath: string): ManualInput {
     const resolvedPath = path.resolve(filePath);
-
-    // Validate file exists
     if (!fs.existsSync(resolvedPath)) {
       throw new Error(`File not found: ${filePath}`);
     }
 
-    // Read file content
     const fileContent = fs.readFileSync(resolvedPath, 'utf8');
-
-    // Extract title from first header or use filename
-    const headerMatch = fileContent.match(/^#\s+(.+)$/m);
-    const extractedTitle = headerMatch ? headerMatch[1].trim() : null;
+    const headerMatch = /^#\s+(.+)$/m.exec(fileContent);
+    const extractedTitle = headerMatch?.[1]?.trim() ?? null;
     const fallbackTitle = path.basename(filePath, path.extname(filePath));
     const title = extractedTitle || fallbackTitle;
 
@@ -62,4 +55,4 @@ class InputHelpers {
   }
 }
 
-module.exports = InputHelpers;
+export = InputHelpers;

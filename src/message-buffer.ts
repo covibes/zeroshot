@@ -1,11 +1,29 @@
-/**
- * Message buffering helper
- *
- * Ensures trigger-matching messages are never dropped just because an agent/subcluster is busy.
- * Dropped workflow signals (e.g. VALIDATION_RESULT) can wedge clusters in "running" state.
- */
+interface MessageBufferTarget {
+  _bufferedMessages?: unknown[];
+  _bufferDrainScheduled?: boolean;
+  _currentExecution?: Promise<unknown> | null;
+  id?: string;
+  running: boolean;
+  state: string;
+}
 
-function bufferMessage(target, message, options = {}) {
+interface MessageBufferOptions {
+  maxBuffered?: number;
+  label?: string;
+}
+
+type DrainFunction = () => Promise<unknown>;
+type MessageHandler = (message: unknown) => Promise<unknown> | unknown;
+
+/**
+ * Ensures trigger-matching messages are never dropped just because an
+ * agent or subcluster is busy.
+ */
+function bufferMessage(
+  target: MessageBufferTarget,
+  message: unknown,
+  options: MessageBufferOptions = {}
+): void {
   const maxBuffered = options.maxBuffered ?? 200;
 
   if (!target._bufferedMessages) {
@@ -19,7 +37,11 @@ function bufferMessage(target, message, options = {}) {
   target._bufferedMessages.push(message);
 }
 
-function scheduleDrain(target, drainFn, options = {}) {
+function scheduleDrain(
+  target: MessageBufferTarget,
+  drainFn: DrainFunction,
+  options: MessageBufferOptions = {}
+): void {
   if (target._bufferDrainScheduled) {
     return;
   }
@@ -29,9 +51,9 @@ function scheduleDrain(target, drainFn, options = {}) {
   const label = options.label || 'MessageBuffer';
   const id = target.id || 'unknown';
 
-  const run = () => {
+  const run = (): void => {
     target._bufferDrainScheduled = false;
-    drainFn().catch((error) => {
+    drainFn().catch((error: Error) => {
       console.error(`\n${'='.repeat(80)}`);
       console.error(`🔴 FATAL: ${label} drain crashed (${id})`);
       console.error(`${'='.repeat(80)}`);
@@ -53,7 +75,11 @@ function scheduleDrain(target, drainFn, options = {}) {
   setImmediate(run);
 }
 
-async function drainBufferedMessages(target, handleFn, options = {}) {
+async function drainBufferedMessages(
+  target: MessageBufferTarget,
+  handleFn: MessageHandler,
+  options: MessageBufferOptions = {}
+): Promise<void> {
   if (!target.running) {
     return;
   }
@@ -74,7 +100,7 @@ async function drainBufferedMessages(target, handleFn, options = {}) {
   }
 }
 
-module.exports = {
+export = {
   bufferMessage,
   scheduleDrain,
   drainBufferedMessages,

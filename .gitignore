@@ -58,6 +58,8 @@ report/
 .turbo/
 *.cast
 # Generated/temp files
+cli/event-copy.js
+cli/message-formatter-utils.js
 test-metadata-manual.sh
 test-isolated-fix.js
 lib/agent-cli-provider/
@@ -138,6 +140,11 @@ lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
 src/guidance-topics.js
+src/input-helpers.js
+src/ledger-sequence.js
+src/message-buffer.js
+src/task-startup-error.js
+src/task-runner.js
 src/omp-blob-root.js
 src/omp-config-overlay.js
 task-lib/completion.js
@@ -152,8 +159,10 @@ src/agent/critical-agent-policy.js
 src/agent/provider-control-plane.js
 src/agent/structured-output-error.js
 src/agent/validation-platform.js
+src/attach/socket-paths.js
 src/providers/anthropic/index.js
 src/providers/capabilities.js
 src/providers/google/index.js
 src/providers/openai/index.js
 src/providers/opencode/index.js
+src/template-validation/report-formatter.js
