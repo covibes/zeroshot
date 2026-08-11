@@ -331,7 +331,7 @@ export default [
   },
   {
     // Math.random() used for non-security purposes (jitter, distribution)
-    files: ['src/**/*.js', 'lib/**/*.js', 'task-lib/**/*.js'],
+    files: ['src/**/*.js', 'lib/**/*.js', 'task-lib/**/*.{js,ts}'],
     rules: {
       'sonarjs/pseudo-random': 'warn',
     },
@@ -394,7 +394,10 @@ export default [
       'src/guidance-topics.js',
       'src/omp-blob-root.js',
       'src/omp-config-overlay.js',
+      'task-lib/completion.js',
       'task-lib/config.js',
+      'task-lib/name-generator.js',
+      'task-lib/process-termination.js',
       'task-lib/omp-storage-root.js',
       'src/omp-execution-fingerprint.js',
       'src/omp-session-limits.js',

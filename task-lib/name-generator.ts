@@ -213,9 +213,9 @@ const NOUNS = [
  * @param {string} _prefix - DEPRECATED: Ignored for backwards compat, short form always used
  * @returns {string} Human-readable name (e.g., 'wandering-forest-42')
  */
-export function generateName(_prefix = '') {
-  const adjective = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+export function generateName(_prefix = ''): string {
+  const adjective = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)] ?? 'amber';
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)] ?? 'forest';
   const number = Math.floor(Math.random() * 100);
 
   return `${adjective}-${noun}-${number}`;
@@ -225,6 +225,6 @@ export function generateName(_prefix = '') {
  * Generate a short unique suffix (for collision prevention)
  * @returns {string} Short random suffix (e.g., 'a3f9')
  */
-export function generateSuffix() {
+export function generateSuffix(): string {
   return Math.random().toString(36).slice(2, 6);
 }

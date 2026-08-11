@@ -3,7 +3,36 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-export function isProcessRunning(pid) {
+type TerminationStrategy = 'process' | 'process-group' | 'process-tree';
+type TerminationSignal = 'SIGTERM' | 'SIGKILL';
+
+type TerminationOwnership =
+  | { readonly terminationStrategy: 'process-group'; readonly processGroupId: number }
+  | {
+      readonly terminationStrategy: 'process' | 'process-tree';
+      readonly processGroupId: number | null;
+    };
+
+interface TerminationOptions {
+  readonly terminationStrategy?: TerminationStrategy;
+  readonly processGroupId?: number | null;
+  readonly graceMs?: number;
+  readonly hardKillWaitMs?: number;
+  readonly pollMs?: number;
+}
+
+interface TerminationResult {
+  readonly terminated: boolean;
+  readonly alreadyDead: boolean;
+  readonly escalated: boolean;
+  readonly signal: TerminationSignal | null;
+  readonly scope?: TerminationStrategy;
+  readonly degraded?: boolean;
+  readonly degradedReason?: string | null;
+  readonly error?: string | null;
+}
+
+export function isProcessRunning(pid: number | null | undefined): boolean {
   if (!pid) return false;
   try {
     process.kill(pid, 0);
@@ -13,7 +42,7 @@ export function isProcessRunning(pid) {
   }
 }
 
-export function killTask(pid) {
+export function killTask(pid: number | null | undefined): boolean {
   if (!pid) return false;
   try {
     process.kill(pid, 'SIGTERM');
@@ -23,11 +52,14 @@ export function killTask(pid) {
   }
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalizeTerminationOwnership(pid, options) {
+function normalizeTerminationOwnership(
+  pid: number,
+  options: TerminationOptions
+): TerminationOwnership {
   const terminationStrategy = options.terminationStrategy || 'process';
   const processGroupId = Number(options.processGroupId) || null;
 
@@ -42,31 +74,44 @@ function normalizeTerminationOwnership(pid, options) {
         `Refusing process-group termination for PID ${pid}: owned processGroupId must equal the provider root PID`
       );
     }
+    return { terminationStrategy, processGroupId };
   }
 
   if (terminationStrategy === 'process-tree' && process.platform !== 'win32') {
     throw new Error(
-      `Process-tree termination is only supported on Windows; use terminationStrategy "process-group" on ${process.platform}`
+      'Process-tree termination is only supported on Windows; use terminationStrategy ' +
+        `"process-group" on ${process.platform}`
     );
   }
 
-  if (!['process', 'process-group', 'process-tree'].includes(terminationStrategy)) {
+  if (!['process', 'process-tree'].includes(terminationStrategy)) {
     throw new Error(`Unsupported termination strategy: ${terminationStrategy}`);
   }
 
   return { terminationStrategy, processGroupId };
 }
 
-function isProcessGroupRunning(processGroupId) {
+function errorHasCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isProcessGroupRunning(processGroupId: number): boolean {
   try {
     process.kill(-processGroupId, 0);
     return true;
   } catch (error) {
-    return error?.code === 'EPERM';
+    return errorHasCode(error, 'EPERM');
   }
 }
 
-export function isOwnedProcessTreeRunning(pid, options = {}) {
+export function isOwnedProcessTreeRunning(
+  pid: number | null | undefined,
+  options: TerminationOptions = {}
+): boolean {
   if (!pid) return false;
   const ownership = normalizeTerminationOwnership(pid, options);
   if (ownership.terminationStrategy === 'process-group') {
@@ -75,13 +120,17 @@ export function isOwnedProcessTreeRunning(pid, options = {}) {
   return isProcessRunning(pid);
 }
 
-async function signalWindowsProcessTree(pid, force) {
+async function signalWindowsProcessTree(pid: number, force: boolean): Promise<void> {
   const args = ['/PID', String(pid), '/T'];
   if (force) args.push('/F');
   await execFileAsync('taskkill', args, { windowsHide: true });
 }
 
-async function signalOwnedProcessTree(pid, signal, ownership) {
+async function signalOwnedProcessTree(
+  pid: number,
+  signal: TerminationSignal,
+  ownership: TerminationOwnership
+): Promise<void> {
   if (ownership.terminationStrategy === 'process-group') {
     process.kill(-ownership.processGroupId, signal);
     return;
@@ -93,9 +142,14 @@ async function signalOwnedProcessTree(pid, signal, ownership) {
   process.kill(pid, signal);
 }
 
-async function waitForOwnedProcessTreeExit(pid, ownership, timeoutMs, pollMs) {
+async function waitForOwnedProcessTreeExit(
+  pid: number,
+  ownership: TerminationOwnership,
+  timeoutMs: number,
+  pollMs: number
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  const options = {
+  const options: TerminationOptions = {
     terminationStrategy: ownership.terminationStrategy,
     processGroupId: ownership.processGroupId,
   };
@@ -106,7 +160,10 @@ async function waitForOwnedProcessTreeExit(pid, ownership, timeoutMs, pollMs) {
   return !isOwnedProcessTreeRunning(pid, options);
 }
 
-function terminationResult(ownership, overrides = {}) {
+function terminationResult(
+  ownership: TerminationOwnership,
+  overrides: Partial<TerminationResult> = {}
+): TerminationResult {
   const degraded = ownership.terminationStrategy === 'process';
   return {
     terminated: false,
@@ -122,7 +179,13 @@ function terminationResult(ownership, overrides = {}) {
   };
 }
 
-async function signalAndWait(pid, ownership, signal, timeoutMs, pollMs) {
+async function signalAndWait(
+  pid: number,
+  ownership: TerminationOwnership,
+  signal: TerminationSignal,
+  timeoutMs: number,
+  pollMs: number
+): Promise<TerminationResult> {
   const escalated = signal === 'SIGKILL';
   try {
     await signalOwnedProcessTree(pid, signal, ownership);
@@ -143,7 +206,7 @@ async function signalAndWait(pid, ownership, signal, timeoutMs, pollMs) {
     return terminationResult(ownership, {
       escalated,
       signal,
-      error: error.message,
+      error: errorMessage(error),
     });
   }
 
@@ -165,8 +228,11 @@ async function signalAndWait(pid, ownership, signal, timeoutMs, pollMs) {
  * Legacy tasks without ownership metadata fall back to root-only termination
  * and report the degraded scope explicitly.
  */
-export async function terminateProcess(pid, options = {}) {
-  let ownership;
+export async function terminateProcess(
+  pid: number,
+  options: TerminationOptions = {}
+): Promise<TerminationResult> {
+  let ownership: TerminationOwnership;
   try {
     ownership = normalizeTerminationOwnership(pid, options);
   } catch (error) {
@@ -175,7 +241,7 @@ export async function terminateProcess(pid, options = {}) {
       alreadyDead: false,
       escalated: false,
       signal: null,
-      error: error.message,
+      error: errorMessage(error),
     };
   }
 

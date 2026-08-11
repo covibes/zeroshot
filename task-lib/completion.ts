@@ -3,7 +3,7 @@
  * Placeholder - completion not yet implemented
  */
 
-export function setupCompletion() {
+export function setupCompletion(): void {
   // TODO: Implement shell completion
   // For now, this is a no-op
 }
