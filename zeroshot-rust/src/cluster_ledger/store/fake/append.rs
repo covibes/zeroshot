@@ -13,18 +13,46 @@ pub(super) fn take_failpoint(state: &mut FakeState, point: FailPoint) -> bool {
     }
 }
 
-pub(super) fn validate_fence(
+pub(super) fn validate_fence_identity(
     clock: &dyn LedgerClock,
     data: &ResourceData,
     fence: &Fence,
 ) -> Result<(), StoreError> {
     let current = data.fence.as_ref().ok_or(StoreError::StaleFence)?;
-    if current != fence {
+    if current.resource != fence.resource
+        || current.owner != fence.owner
+        || current.epoch != fence.epoch
+    {
         return Err(StoreError::StaleFence);
     }
     if current.expires_at_ms <= clock.now_ms() {
         return Err(StoreError::FenceExpired);
     }
+    Ok(())
+}
+
+pub(super) fn validate_exact_fence(
+    clock: &dyn LedgerClock,
+    data: &ResourceData,
+    fence: &Fence,
+) -> Result<(), StoreError> {
+    validate_fence_identity(clock, data, fence)?;
+    if data.fence.as_ref() != Some(fence) {
+        return Err(StoreError::StaleFence);
+    }
+    Ok(())
+}
+
+pub(super) fn release_exact_fence(
+    clock: &dyn LedgerClock,
+    data: &mut ResourceData,
+    fence: &Fence,
+) -> Result<(), StoreError> {
+    validate_exact_fence(clock, data, fence)?;
+    data.fence = Some(Fence {
+        expires_at_ms: clock.now_ms(),
+        ..fence.clone()
+    });
     Ok(())
 }
 

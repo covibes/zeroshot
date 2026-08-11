@@ -70,6 +70,10 @@ impl LedgerStore for SnapshotRaceStore {
         self.inner.renew_fence(fence, ttl_ms).await
     }
 
+    async fn release_fence(&self, fence: &Fence) -> Result<(), StoreError> {
+        self.inner.release_fence(fence).await
+    }
+
     async fn check_fence(&self, fence: &Fence) -> Result<(), StoreError> {
         self.inner.check_fence(fence).await
     }

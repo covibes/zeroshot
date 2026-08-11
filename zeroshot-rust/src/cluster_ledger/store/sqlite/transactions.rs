@@ -10,6 +10,36 @@ pub(super) struct FenceAcquisition<'a> {
     pub expires_at_ms: u64,
 }
 
+pub(super) fn check_fence_transaction(
+    transaction: &Transaction<'_>,
+    fence: &Fence,
+    now_ms: u64,
+) -> Result<(), StoreError> {
+    let current = query_fence(transaction)?.ok_or(StoreError::StaleFence)?;
+    if current.resource != fence.resource
+        || current.owner != fence.owner
+        || current.epoch != fence.epoch
+    {
+        return Err(StoreError::StaleFence);
+    }
+    if current.expires_at_ms <= now_ms {
+        return Err(StoreError::FenceExpired);
+    }
+    Ok(())
+}
+
+pub(super) fn check_exact_fence_transaction(
+    transaction: &Transaction<'_>,
+    fence: &Fence,
+    now_ms: u64,
+) -> Result<(), StoreError> {
+    check_fence_transaction(transaction, fence, now_ms)?;
+    if query_fence(transaction)?.as_ref() != Some(fence) {
+        return Err(StoreError::StaleFence);
+    }
+    Ok(())
+}
+
 pub(super) fn acquire_fence_transaction(
     transaction: &Transaction<'_>,
     request: FenceAcquisition<'_>,

@@ -85,16 +85,28 @@ function registerNativeMetadataTest() {
       'hosted-node/workspace-ship.js',
       'hosted-node/workspace-tools.js',
     ]);
-    for (const file of relativeFiles(rustRoot)) {
+    const rustFiles = relativeFiles(rustRoot);
+    for (const file of rustFiles) {
       assert(
         file === 'Cargo.toml' || file.endsWith('.rs') || privateHostedAdapterFiles.has(file),
         `unexpected product file outside the private hosted adapter: ${file}`
       );
     }
-    assert.strictEqual(
-      fs.readFileSync(path.join(rustRoot, 'src', 'main.rs'), 'utf8'),
-      'fn main() {}\n'
-    );
+    const nativeRustSource = rustFiles
+      .filter((file) => file.endsWith('.rs'))
+      .map((file) => fs.readFileSync(path.join(rustRoot, file), 'utf8'))
+      .join('\n');
+    for (const forbiddenMetadataToken of [
+      'SHA256SUMS',
+      'npm/zeroshot-rust',
+      'rust-distribution.js',
+      'RELEASE_BASE_URL',
+    ]) {
+      assert(
+        !nativeRustSource.includes(forbiddenMetadataToken),
+        `native product must not own release metadata: ${forbiddenMetadataToken}`
+      );
+    }
 
     const rootPackage = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
     assert.deepStrictEqual(rootPackage.files, [

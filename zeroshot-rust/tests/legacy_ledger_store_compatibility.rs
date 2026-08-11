@@ -58,6 +58,10 @@ impl LedgerStore for LegacyStore {
         LedgerStore::renew_fence(&self.inner, fence, ttl_ms).await
     }
 
+    async fn release_fence(&self, fence: &Fence) -> Result<(), StoreError> {
+        LedgerStore::release_fence(&self.inner, fence).await
+    }
+
     async fn check_fence(&self, fence: &Fence) -> Result<(), StoreError> {
         LedgerStore::check_fence(&self.inner, fence).await
     }

@@ -27,6 +27,7 @@ pub trait LedgerStore: Send + Sync + 'static {
         ttl_ms: u64,
     ) -> Result<Fence, StoreError>;
     async fn renew_fence(&self, fence: &Fence, ttl_ms: u64) -> Result<Fence, StoreError>;
+    async fn release_fence(&self, fence: &Fence) -> Result<(), StoreError>;
     async fn check_fence(&self, fence: &Fence) -> Result<(), StoreError>;
     async fn read_prefix(
         &self,

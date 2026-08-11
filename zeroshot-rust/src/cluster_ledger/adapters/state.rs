@@ -41,7 +41,7 @@ impl FoldedProtocolState {
         Ok(Self {
             admission: AdmissionSnapshot {
                 control,
-                seed: verified_seed(state, admission.run, run_id)?,
+                seed: verified_seed(state, admission.run, run_id, cursor.clone())?,
             },
             lifecycle: lifecycle_snapshot(state, cursor)?,
         })
@@ -70,6 +70,7 @@ fn verified_seed(
     state: &super::super::ReplayState,
     run: super::super::RunSequence,
     run_id: RunId,
+    cursor: Cursor,
 ) -> Result<Option<VerifiedSeed>, ProtocolStoreError> {
     state
         .verified_inputs
@@ -82,7 +83,7 @@ fn verified_seed(
                         "durable verified input encoding is invalid".into(),
                     )
                 })?,
-                cursor: protocol_cursor(verified.position),
+                cursor: cursor.clone(),
             })
         })
         .transpose()

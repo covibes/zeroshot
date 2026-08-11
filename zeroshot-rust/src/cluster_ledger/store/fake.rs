@@ -8,7 +8,10 @@ mod lifecycle;
 use async_trait::async_trait;
 use tokio::sync::Notify;
 
-use append::{apply_append, existing_outcome, take_failpoint, validate_append, validate_fence};
+use append::{
+    apply_append, existing_outcome, release_exact_fence, take_failpoint, validate_append,
+    validate_exact_fence, validate_fence_identity,
+};
 pub use clock::ManualLedgerClock;
 use super::{
     completed_wait_position, fence_expiry, AppendRequest, FailPoint, LedgerClock, WaitProbe,
@@ -110,7 +113,7 @@ impl FakeLedgerStore {
             .resources
             .get_mut(resource)
             .ok_or(StoreError::ResourceNotFound)?;
-        validate_fence(self.clock.as_ref(), data, fence)?;
+        validate_fence_identity(self.clock.as_ref(), data, fence)?;
         if let Some(outcome) = existing_outcome(data, &batch)? {
             return Ok(outcome);
         }
@@ -285,13 +288,25 @@ impl LedgerStore for FakeLedgerStore {
             .resources
             .get_mut(&fence.resource)
             .ok_or(StoreError::ResourceNotFound)?;
-        validate_fence(self.clock.as_ref(), data, fence)?;
+        validate_exact_fence(self.clock.as_ref(), data, fence)?;
         let renewed = Fence {
             expires_at_ms,
             ..fence.clone()
         };
         data.fence = Some(renewed.clone());
         Ok(renewed)
+    }
+
+    async fn release_fence(&self, fence: &Fence) -> Result<(), StoreError> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("fake ledger mutex must not be poisoned");
+        let data = state
+            .resources
+            .get_mut(&fence.resource)
+            .ok_or(StoreError::ResourceNotFound)?;
+        release_exact_fence(self.clock.as_ref(), data, fence)
     }
 
     async fn check_fence(&self, fence: &Fence) -> Result<(), StoreError> {
@@ -303,7 +318,7 @@ impl LedgerStore for FakeLedgerStore {
             .resources
             .get(&fence.resource)
             .ok_or(StoreError::ResourceNotFound)?;
-        validate_fence(self.clock.as_ref(), data, fence)
+        validate_fence_identity(self.clock.as_ref(), data, fence)
     }
 
     async fn read_prefix(
@@ -465,7 +480,7 @@ impl LedgerStore for FakeLedgerStore {
             .resources
             .get(resource)
             .ok_or(StoreError::ResourceNotFound)?;
-        validate_fence(self.clock.as_ref(), data, fence)?;
+        validate_fence_identity(self.clock.as_ref(), data, fence)?;
         let actual = Position::new(
             u64::try_from(data.records.len()).map_err(|_| StoreError::PositionOverflow)?,
         )?;

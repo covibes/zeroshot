@@ -240,6 +240,20 @@ impl ClusterLedger {
         Ok(renewed)
     }
 
+    pub async fn release_fence(&self) -> Result<(), LedgerError> {
+        self.store
+            .release_fence(&self.fence())
+            .await
+            .map_err(|error| self.store_error(FaultContext::Cleanup, error))
+    }
+
+    pub async fn check_fence(&self) -> Result<(), LedgerError> {
+        self.store
+            .check_fence(&self.fence())
+            .await
+            .map_err(|error| self.store_error(FaultContext::Recovery, error))
+    }
+
     pub async fn state(&self) -> Result<ReplayState, LedgerError> {
         self.read_state(FaultContext::Recovery).await
     }
@@ -302,6 +316,7 @@ impl ClusterLedger {
     pub(crate) fn domain_error(&self, context: FaultContext, kind: LedgerErrorKind) -> LedgerError {
         let evidence = match kind {
             LedgerErrorKind::BoundViolation => EvidenceClass::ResourceExhausted,
+            LedgerErrorKind::PositionConflict => EvidenceClass::Unavailable,
             LedgerErrorKind::IdempotencyConflict
             | LedgerErrorKind::InvalidLifecycle
             | LedgerErrorKind::InvalidSettlement

@@ -10,6 +10,7 @@ pub mod execution;
 pub mod full_v1_reducer;
 pub mod hosted_oecp;
 pub mod issue_provider;
+mod native_admission;
 pub mod native_credentials;
 pub mod native_settings;
 pub mod product_errors;
@@ -22,46 +23,16 @@ pub mod worker_bindings;
 pub mod worker_catalog;
 pub mod workspace_lease;
 
-use async_trait::async_trait;
-use openengine_cluster_protocol::{
-    ClusterStatus, GetParams, GetResult, InitializeParams, InitializeResult, ServerCapabilities,
-};
 use openengine_cluster_server::identity::{
     ConnectionBinding, ConnectionIdentity, StaticConnectionIdentityResolver, SystemConnectionTime,
 };
-use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
+use openengine_cluster_server::{ClusterBackend, ConnectionContext, Dispatcher};
 
 pub mod fault;
 pub mod observability;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NativeBackend;
-
-#[async_trait]
-impl ClusterBackend for NativeBackend {
-    async fn initialize(
-        &self,
-        _context: &ConnectionContext,
-        _params: InitializeParams,
-    ) -> Result<InitializeResult, BackendError> {
-        Ok(InitializeResult::new(
-            ServerCapabilities::default(),
-            ClusterStatus::empty(),
-        ))
-    }
-
-    async fn get(
-        &self,
-        _context: &ConnectionContext,
-        _params: GetParams,
-    ) -> Result<GetResult, BackendError> {
-        Ok(GetResult {
-            spec: None,
-            status: ClusterStatus::empty(),
-            at_cursor: None,
-        })
-    }
-}
+pub use native_admission::{
+    NativeAdmissionOpenError, NativeBackend, NATIVE_FENCE_RENEW_INTERVAL_MS, NATIVE_FENCE_TTL_MS,
+};
 
 pub trait NativeBackendFactory {
     type Backend: ClusterBackend;
@@ -69,15 +40,9 @@ pub trait NativeBackendFactory {
     fn create(&self) -> Self::Backend;
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ProductionNativeBackendFactory;
-
-impl NativeBackendFactory for ProductionNativeBackendFactory {
-    type Backend = NativeBackend;
-
-    fn create(&self) -> Self::Backend {
-        NativeBackend
-    }
+#[derive(Clone)]
+pub struct ProductionNativeBackendFactory {
+    backend: NativeBackend,
 }
 
 #[must_use]

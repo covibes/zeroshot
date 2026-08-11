@@ -85,6 +85,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Graph verifier facade                 | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
 | Graph verifier analysis               | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
 | Native product construction           | `zeroshot-rust/`                                                                                                                 |
+| Native admission composition          | `zeroshot-rust/src/native_admission.rs`, `zeroshot-rust/src/main.rs`                                                             |
 | Native release targets                | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                | `npm/zeroshot-rust/`                                                                                                             |
 | Native distribution tooling           | `scripts/rust-distribution.js`                                                                                                   |
@@ -117,8 +118,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native observability                  | `zeroshot-rust/src/observability.rs`                                                                                             |
 | Native daemon discovery               | `zeroshot-rust/src/daemon_discovery.rs`                                                                                          |
 | Native daemon authorization           | `zeroshot-rust/src/daemon_auth.rs`                                                                                               |
-| Native loopback listener              | `zeroshot-rust/src/daemon_listener.rs`                                                                                           |
-| Admission coordinator                 | `crates/openengine-cluster-server/src/admission.rs`                                                                              |
+| Native loopback listener              | `zeroshot-rust/src/daemon_listener.rs`, `zeroshot-rust/src/daemon_listener/`                                                     |
+| Admission coordinator                 | `crates/openengine-cluster-server/src/admission.rs`, `crates/openengine-cluster-server/src/admission/core.rs`                    |
 | Admission durable ports               | `crates/openengine-cluster-server/src/admission/ports.rs`                                                                        |
 | Admission snapshot folding            | `crates/openengine-cluster-server/src/admission/snapshot.rs`                                                                     |
 | Lifecycle state machine               | `crates/openengine-cluster-server/src/lifecycle.rs`                                                                              |
@@ -254,6 +255,10 @@ authorization, and loopback-listener lifecycle. Artifact stages, bytes, roots, f
 locks, and manifests remain product-private; only verified protocol `ArtifactRef` receipts cross
 the engine boundary. `LocalCasArtifactStore` takes an explicit root, is a single-writer local
 filesystem store, and must preserve ref-first release plus synchronized blob-then-ref publication.
+The narrow native stdio admission entrypoint composes one capability-negative verifier registry,
+one SQLite ledger resource, and only initialize/plan/apply/get. It advertises no graph profile,
+renews one process-owned fence while serving, and on graceful EOF stops renewal before exact
+conditional fence release; it must not acquire provider, watch, lifecycle, or execution authority.
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
 Mutating source calls carry an exclusively borrowed, non-serializable verified-workspace capability;
 their serializable intent and closed operation-specific receipts contain only canonical workspace,

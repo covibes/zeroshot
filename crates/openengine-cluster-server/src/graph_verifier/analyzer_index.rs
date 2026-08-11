@@ -71,15 +71,6 @@ impl<'a> Analyzer<'a> {
                 Vec::new(),
             );
         }
-        if self.attempts.is_empty() {
-            emit_diagnostic!(
-                self,
-                GraphDiagnosticCode::InvalidGraphShape,
-                "full-v1 graph must contain at least one step or verifier",
-                vec![field_segment("root")],
-                Vec::new(),
-            );
-        }
         if self.guard_nodes > FULL_V1_MAX_GUARD_NODES {
             emit_diagnostic!(
                 self,
@@ -96,8 +87,8 @@ impl<'a> Analyzer<'a> {
         fold: Fold,
         order: Vec<NodeName>,
     ) -> Option<StructuralBounds> {
-        let max_node_executions = PositiveInteger::new(fold.executions).ok()?;
-        let peak_concurrency = PositiveInteger::new(fold.concurrency).ok()?;
+        let max_node_executions = PositiveInteger::new(fold.executions.max(1)).ok()?;
+        let peak_concurrency = PositiveInteger::new(fold.concurrency.max(1)).ok()?;
         let termination = if self.loops.is_empty() {
             TerminationWitness::Acyclic {
                 order: NonEmptyVec::new(order).ok()?,
