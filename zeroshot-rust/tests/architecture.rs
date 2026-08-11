@@ -32,6 +32,7 @@ fn product_uses_the_root_workspace_and_a_rust_only_layout() {
                     file.as_str(),
                     "hosted-node/capsule-entrypoint.js"
                         | "hosted-node/config-check.js"
+                        | "hosted-node/declarative-cluster.js"
                         | "hosted-node/engine-adapter.js"
                         | "hosted-node/git-askpass.js"
                         | "hosted-node/hosted-config.js"
