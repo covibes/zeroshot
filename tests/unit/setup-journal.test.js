@@ -53,7 +53,9 @@ describe('setup-journal shared mutation semantics', () => {
     assert.deepStrictEqual(settings.providerSettings.claude, {});
     assert.deepStrictEqual(settings.providerSettings.codex, { minLevel: 'level1' });
   });
+});
 
+describe('setup-journal path safety', () => {
   it('rejects prototype-polluting paths without mutating built-in prototypes', () => {
     const pollutedKey = 'zeroshotSetupJournalPolluted';
     const unsafePaths = [
@@ -76,6 +78,19 @@ describe('setup-journal shared mutation semantics', () => {
     assert.strictEqual(Reflect.get(Object.prototype, pollutedKey), undefined);
   });
 
+  it('never traverses inherited objects while mutating nested settings', () => {
+    const inherited = { settings: { untouched: true } };
+    const settings = Object.create(inherited);
+
+    setupJournal.setNestedValue(settings, 'settings.enabled', true);
+
+    assert.strictEqual(Object.hasOwn(settings, 'settings'), true);
+    assert.deepStrictEqual(settings.settings, { enabled: true });
+    assert.deepStrictEqual(inherited.settings, { untouched: true });
+  });
+});
+
+describe('setup-journal value semantics', () => {
   it('keeps the original prior value when a journal entry is reapplied', () => {
     const original = entry();
     const journal = { version: 1, entries: [original] };

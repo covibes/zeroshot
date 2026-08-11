@@ -113,32 +113,46 @@ function safePathSegments(pathStr: string): string[] {
   return keys;
 }
 
+function defineOwnValue(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
 function setNestedValue(target: Record<string, unknown>, pathStr: string, value: unknown): void {
   const keys = safePathSegments(pathStr);
   let node = target;
   for (let index = 0; index < keys.length - 1; index++) {
     const key = keys[index] || '';
-    const child = node[key];
+    const child = Object.hasOwn(node, key) ? node[key] : undefined;
     if (isRecord(child)) {
       node = child;
     } else {
       const replacement: Record<string, unknown> = {};
-      node[key] = replacement;
+      defineOwnValue(node, key, replacement);
       node = replacement;
     }
   }
-  node[keys[keys.length - 1] || ''] = value;
+  defineOwnValue(node, keys[keys.length - 1] || '', value);
 }
 
 function deleteNestedKey(target: Record<string, unknown>, pathStr: string): void {
   const keys = safePathSegments(pathStr);
   let node = target;
   for (let index = 0; index < keys.length - 1; index++) {
-    const child = node[keys[index] || ''];
+    const key = keys[index] || '';
+    if (!Object.hasOwn(node, key)) return;
+    const child = node[key];
     if (!isRecord(child)) return;
     node = child;
   }
-  delete node[keys[keys.length - 1] || ''];
+  const finalKey = keys[keys.length - 1] || '';
+  if (Object.hasOwn(node, finalKey)) {
+    delete node[finalKey];
+  }
 }
 
 function deepEqual(left: unknown, right: unknown): boolean {
