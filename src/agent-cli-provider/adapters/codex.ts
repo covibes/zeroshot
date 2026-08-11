@@ -222,6 +222,8 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
       : null;
   addWebSearchArgs(args, options);
   if (resumeSessionId) {
+    // Codex 0.147 parses --sandbox on `exec`, not on the `resume` subcommand.
+    addAutoApproveArgs(args, options);
     args.push('resume');
   }
 
@@ -229,8 +231,8 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   addModelArgs(args, options);
   if (!resumeSessionId) {
     addCwdArgs(args, options);
+    addAutoApproveArgs(args, options);
   }
-  addAutoApproveArgs(args, options);
   addSkipGitArgs(args, options);
   const finalContext = applySchemaArgs(args, cleanup, context, options);
 
