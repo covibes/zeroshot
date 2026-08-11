@@ -39,7 +39,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Base templates                        | `cluster-templates/base-templates/`                                                                                              |
 | Message bus                           | `src/message-bus.js`                                                                                                             |
 | Ledger (SQLite)                       | `src/ledger.js`                                                                                                                  |
-| Guidance topics                       | `src/guidance-topics.js`                                                                                                         |
+| Guidance topics                       | `src/guidance-topics.ts` (generated CommonJS: `src/guidance-topics.js`)                                                          |
 | Guidance mailbox helper               | `src/ledger.js`                                                                                                                  |
 | Guidance live injection               | `src/orchestrator.js`                                                                                                            |
 | Trigger evaluation                    | `src/logic-engine.js`                                                                                                            |
@@ -59,7 +59,9 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | OMP config safety overlay             | `src/omp-config-overlay.js`                                                                                                      |
 | OMP detached RPC watcher              | `task-lib/rpc-watcher.js`                                                                                                        |
 | Provider detection                    | `lib/provider-detection.js`                                                                                                      |
-| Provider capabilities                 | `src/providers/capabilities.js`                                                                                                  |
+| Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
+| Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS: matching `.js` paths via `build:legacy-runtime`)                                       |
+| Provider capabilities                 | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
 | Claude settings overlay               | `src/worktree-claude-config.js`                                                                                                  |
 | Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
 | Shared watcher output path            | `task-lib/watcher-output-runtime.js`                                                                                             |
@@ -626,7 +628,7 @@ writes to or deletes anything under that root**, and `deleteOmpSessionPartition`
 any path that resolves inside it.
 
 `src/omp-session-verifier.js` implements the two-phase lazy-file contract against the fixed
-`OMP_SESSION_LIMITS` (`src/omp-session-limits.js`): existing (resume) partitions are fully verified
+`OMP_SESSION_LIMITS` (`src/omp-session-limits.ts`, with generated CommonJS at the matching `.js` path): existing (resume) partitions are fully verified
 before spawn and again from the `ready` hook right before the prompt; fresh partitions are only
 path-checked at `ready` and are descriptor/header/tree-verified after terminal materialization,
 where the transcript's own session header (`{type:"session", id, cwd, ...}`) must name the session
@@ -739,10 +741,10 @@ cross-checked field-by-field against that persisted row in `task-lib/runner.js`;
 storage-root change, or a workspace that is not the recorded `canonicalWorkspace` fails closed
 before a task row exists. The watcher then compares the **complete** committed tuple — full session
 id, full session file path (never a basename), partition and session-file inode identity, artifact
-manifest digest, and an `executionFingerprint` (`src/omp-execution-fingerprint.js`) binding the
+manifest digest, and an `executionFingerprint` (`src/omp-execution-fingerprint.ts`, with generated CommonJS at the matching `.js` path) binding the
 pinned OMP release, the config-overlay content digest, the requested `--model`/`--thinking`/
 `--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. That
-fingerprint has exactly one implementation, `src/omp-execution-fingerprint.js`; do not add a second
+fingerprint has exactly one implementation, `src/omp-execution-fingerprint.ts`; do not add a second
 digest helper beside the ownership schema, where only its own unit test would exercise it and it
 could silently drift from the contract production uses. Every failed, cancelled, or uncertain
 boundary marks the row `cleanup-required`.
@@ -863,7 +865,7 @@ second stop after that terminal topic exists in the current run, while prior-run
 suppress terminalization after resume.
 Every named non-validator role is cluster-critical after final task retry exhaustion, including
 planning, conductor, custom, and orchestrator roles; validators alone use their rejection path.
-Keep that rule centralized in `src/agent/critical-agent-policy.js`. Terminal `AGENT_ERROR` records
+Keep that rule centralized in `src/agent/critical-agent-policy.ts` (generated CommonJS at the matching `.js` path). Terminal `AGENT_ERROR` records
 set `retryBudgetExhausted: true`; never infer task exhaustion from `attempts`, because status-poll
 observations use the same counter while the lifecycle still owns a retry.
 The SQLite ledger additionally keeps one cluster-wide newest tail of non-replayable
@@ -923,7 +925,7 @@ fresh.
 
 ### Guidance Messaging
 
-- Topics: `USER_GUIDANCE_CLUSTER`, `USER_GUIDANCE_AGENT` (see `src/guidance-topics.js`).
+- Topics: `USER_GUIDANCE_CLUSTER`, `USER_GUIDANCE_AGENT` (see `src/guidance-topics.ts`; runtime CommonJS is generated at the matching `.js` path).
 - Mailbox helper: `ledger.queryGuidanceMailbox()` with `messageBus.queryGuidanceMailbox()` passthrough.
 - Live injection: `Orchestrator.sendGuidanceToAgent()` uses `agent.injectInput()` to attempt PTY stdin; always persists `USER_GUIDANCE_AGENT` with `metadata.delivery` (`status: injected|unsupported`, `method: pty`, `taskId`, `reason`).
 - Safe-point queue fallback: `AgentWrapper._buildContext()` pulls queued guidance via `collectQueuedGuidance()` and injects a delimited block in `agent-context-builder` between Instructions and Output Schema. Durable sequence: `agent.lastGuidanceAppliedId`.

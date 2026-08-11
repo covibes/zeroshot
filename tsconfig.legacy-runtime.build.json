@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.legacy-runtime.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "declarationMap": false
+  }
+}

@@ -1,7 +1,43 @@
 const assert = require('assert');
-const { parseChunk } = require('../../lib/stream-json-parser');
+const { parseEvent, parseChunk } = require('../../lib/stream-json-parser');
 
 describe('stream-json parser (Codex)', () => {
+  it('preserves the CommonJS API contract', () => {
+    const parser = require('../../lib/stream-json-parser');
+    assert.deepStrictEqual(Reflect.ownKeys(parser), ['parseEvent', 'parseChunk']);
+    assert.deepStrictEqual(
+      Object.values(parser).map((value) => value.length),
+      [1, 1]
+    );
+  });
+
+  it('normalizes prefixes and returns the first provider event', () => {
+    const seen = [];
+    const providerParsers = [
+      { parseEvent: (content) => (seen.push(`first:${content}`), null) },
+      { parseEvent: (content) => (seen.push(`second:${content}`), [{ type: 'one' }]) },
+      { parseEvent: () => assert.fail('later providers must not run') },
+    ];
+
+    assert.deepStrictEqual(parseEvent('[1700000000000] {"type":"sample"}', providerParsers), [
+      { type: 'one' },
+    ]);
+    assert.deepStrictEqual(seen, ['first:{"type":"sample"}', 'second:{"type":"sample"}']);
+  });
+
+  it('accepts pipe-prefixed arrays and ignores empty non-string input', () => {
+    const seen = [];
+    const event = parseEvent('codex |   [1,2]\r', [
+      { parseEvent: (content) => (seen.push(content), { type: 'array' }) },
+    ]);
+    assert.deepStrictEqual(event, { type: 'array' });
+    assert.deepStrictEqual(seen, ['[1,2]']);
+    assert.strictEqual(parseEvent(null, []), null);
+    assert.deepStrictEqual(parseChunk(null), []);
+  });
+});
+
+describe('stream-json parser provider mapping', () => {
   it('maps command_execution start/completed into tool_call/tool_result', () => {
     const chunk = [
       JSON.stringify({

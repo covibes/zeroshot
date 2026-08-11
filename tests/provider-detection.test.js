@@ -35,6 +35,16 @@ describe('provider-detection', () => {
     delete require.cache[require.resolve('../lib/provider-detection.js')];
   });
 
+  it('preserves the CommonJS export surface', () => {
+    expect(Reflect.ownKeys(detection)).to.deep.equal([
+      'commandExists',
+      'getCommandPath',
+      'getHelpOutput',
+      'getVersionOutput',
+    ]);
+    expect(Object.values(detection).map((value) => value.length)).to.deep.equal([1, 1, 1, 1]);
+  });
+
   describe('commandExists', () => {
     it('returns false for empty command without probing', () => {
       expect(detection.commandExists('')).to.equal(false);

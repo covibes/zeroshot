@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/*.ts",
+    "src/agent/**/*.ts",
+    "src/agents/**/*.ts",
+    "src/attach/**/*.ts",
+    "src/issue-providers/**/*.ts",
+    "src/providers/**/*.ts",
+    "src/schemas/**/*.ts",
+    "src/template-validation/**/*.ts",
+    "src/lib/**/*.ts",
+    "task-lib/**/*.ts",
+    "cli/**/*.ts",
+    "bin/**/*.ts",
+    "cluster-scripts/**/*.ts",
+    "scripts/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "coverage"]
+}

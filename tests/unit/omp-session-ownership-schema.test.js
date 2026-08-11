@@ -344,7 +344,7 @@ describe('task-lib/omp-session-ownership-schema.js (closed ownership schema)', f
     );
   });
 
-  // There is exactly one execution-fingerprint implementation, src/omp-execution-fingerprint.js,
+  // There is exactly one execution-fingerprint implementation, src/omp-execution-fingerprint.ts,
   // and it is covered by tests/unit/omp-resume-plan.test.js and tests/omp-rpc-watcher.test.js
   // against the real command spec and OMP-reported evidence. This module used to export a second,
   // generic digest helper that nothing but its own unit test called; a digest contract that only a

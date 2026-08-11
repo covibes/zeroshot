@@ -12,7 +12,8 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { buildSetupPlan, isConsumedPath } = require('../../lib/setup-plan');
+const setupPlan = require('../../lib/setup-plan');
+const { buildSetupPlan, isConsumedPath } = setupPlan;
 const { VALID_PROVIDERS: PROVIDER_NAMES } = require('../../lib/provider-names');
 
 const EXPECTED_DECISION_IDS = new Set([
@@ -114,6 +115,18 @@ function fullyConfiguredPlan() {
 }
 
 describe('buildSetupPlan', function () {
+  it('preserves the CommonJS API contract', function () {
+    assert.deepStrictEqual(Reflect.ownKeys(setupPlan), [
+      'buildSetupPlan',
+      'resolveDecisionPath',
+      'domainFor',
+      'DECISION_PATHS',
+      'getNestedValue',
+      'isConsumedPath',
+      'CONSUMED_PATHS',
+    ]);
+  });
+
   describe('shape', function () {
     it('always returns a typed schemaVersion/facts/decisions/recommended/risk/proposedWrites', function () {
       const plan = freshMachinePlan();

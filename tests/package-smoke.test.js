@@ -8,6 +8,10 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { assertLegacyTypeScriptPackage } = require('./helpers/legacy-typescript-package-assertions');
+const {
+  assertRuntimeTypeScriptPackage,
+} = require('./helpers/runtime-typescript-package-assertions');
 
 const repoRoot = path.join(__dirname, '..');
 
@@ -44,10 +48,30 @@ describe('npm package smoke', function () {
     );
     assert.strictEqual(pkg.bin['zeroshot-cluster-worker'], './bin/zeroshot-cluster-worker.js');
 
+    assertLegacyTypeScriptPackage();
+    assertRuntimeTypeScriptPackage(files);
+
     for (const requiredFile of [
       'cli/index.js',
       'bin/zeroshot-cluster-worker.js',
       'lib/cluster-worker/index.js',
+      'lib/clusters-registry.js',
+      'lib/id-detector.js',
+      'lib/stream-json-parser.js',
+      'lib/provider-detection.js',
+      'lib/provider-defaults.js',
+      'lib/provider-names.js',
+      'lib/repo-settings.js',
+      'lib/settings/claude-auth.js',
+      'lib/compose-utils.js',
+      'lib/completion.js',
+      'lib/git-remote-utils.js',
+      'lib/detached-startup.js',
+      'lib/docker-config.js',
+      'lib/setup-journal.js',
+      'lib/setup-undo.js',
+      'lib/setup-plan.js',
+      'lib/setup-apply.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',
@@ -57,6 +81,10 @@ describe('npm package smoke', function () {
       'docs/openengine-cluster-protocol/v1/legacy-worker.md',
       'lib/start-cluster.js',
       'lib/path-check.js',
+      'lib/process-liveness.js',
+      'lib/run-plan.js',
+      'lib/run-mode.js',
+      'lib/provider-credential-path.js',
       'scripts/check-path.js',
       'scripts/postinstall.js',
       'cli/lib/setup-wizard.js',

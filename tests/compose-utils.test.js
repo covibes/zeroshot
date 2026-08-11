@@ -20,6 +20,20 @@ const {
   normalizeComposeProjectName,
 } = require('../lib/compose-utils');
 
+describe('compose-utils CommonJS API', function () {
+  it('preserves the export surface and function arities', function () {
+    const composeUtils = require('../lib/compose-utils');
+    assert.deepStrictEqual(Reflect.ownKeys(composeUtils), [
+      'resolveWorktreeComposeTeardown',
+      'normalizeComposeProjectName',
+    ]);
+    assert.deepStrictEqual(
+      Object.values(composeUtils).map((value) => value.length),
+      [1, 1]
+    );
+  });
+});
+
 describe('resolveWorktreeComposeTeardown', function () {
   let tmpDir;
   let origComposeProjectName;

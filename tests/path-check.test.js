@@ -6,12 +6,20 @@
 
 const path = require('path');
 const assert = require('assert');
-const {
-  getGlobalBinDir,
-  isDirOnPath,
-  getPathExportLine,
-  checkBinDirOnPath,
-} = require('../lib/path-check');
+const pathCheck = require('../lib/path-check');
+const { getGlobalBinDir, isDirOnPath, getPathExportLine, checkBinDirOnPath } = pathCheck;
+
+describe('path-check exports', function () {
+  it('preserves the exact CommonJS export shape', function () {
+    assert.deepStrictEqual(Reflect.ownKeys(pathCheck), [
+      'getGlobalBinDir',
+      'isDirOnPath',
+      'getPathExportLine',
+      'checkBinDirOnPath',
+      'printPathWarning',
+    ]);
+  });
+});
 
 describe('path-check', function () {
   describe('isDirOnPath', function () {

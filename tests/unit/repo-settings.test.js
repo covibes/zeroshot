@@ -32,10 +32,23 @@ describe('repo-settings', function () {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
+  it('preserves the CommonJS export surface', function () {
+    const repoSettings = require('../../lib/repo-settings');
+    assert.deepStrictEqual(Reflect.ownKeys(repoSettings), [
+      'readRepoSettings',
+      'writeRepoSettings',
+    ]);
+    assert.deepStrictEqual(
+      Object.values(repoSettings).map((value) => value.length),
+      [1, 2]
+    );
+  });
+
   it('writeRepoSettings creates .zeroshot/settings.json', function () {
     const settingsPath = writeRepoSettings(repoRoot, { prBase: 'main' });
     assert.strictEqual(settingsPath, path.join(repoRoot, '.zeroshot', 'settings.json'));
     assert.ok(fs.existsSync(settingsPath));
+    assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), '{\n  "prBase": "main"\n}');
     const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     assert.deepStrictEqual(onDisk, { prBase: 'main' });
   });
@@ -63,5 +76,21 @@ describe('repo-settings', function () {
     const { settings, repoRoot: detectedRoot } = readRepoSettings(repoRoot);
     assert.strictEqual(settings, null);
     assert.ok(detectedRoot);
+  });
+
+  it('returns null settings for malformed or primitive JSON', function () {
+    const settingsPath = path.join(repoRoot, '.zeroshot', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '{broken', 'utf8');
+    assert.strictEqual(readRepoSettings(repoRoot).settings, null);
+    fs.writeFileSync(settingsPath, '42', 'utf8');
+    assert.strictEqual(readRepoSettings(repoRoot).settings, null);
+  });
+
+  it('preserves arrays because JSON arrays are objects at the compatibility boundary', function () {
+    const settingsPath = path.join(repoRoot, '.zeroshot', 'settings.json');
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '["legacy"]', 'utf8');
+    assert.deepStrictEqual(readRepoSettings(repoRoot).settings, ['legacy']);
   });
 });

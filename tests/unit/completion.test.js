@@ -1,6 +1,7 @@
 const assert = require('assert');
 const { Command, Option } = require('commander');
-const { getCompletionCandidates } = require('../../lib/completion');
+const completion = require('../../lib/completion');
+const { getCompletionCandidates } = completion;
 
 function buildProgram() {
   const program = new Command()
@@ -17,6 +18,17 @@ function buildProgram() {
 }
 
 describe('Commander-backed completion', function () {
+  it('preserves the CommonJS API contract', function () {
+    assert.deepStrictEqual(Reflect.ownKeys(completion), [
+      'getCompletionCandidates',
+      'setupCompletion',
+    ]);
+    assert.deepStrictEqual(
+      Object.values(completion).map((value) => value.length),
+      [2, 1]
+    );
+  });
+
   it('derives visible commands, aliases, and options from the command tree', function () {
     const program = buildProgram();
     const root = getCompletionCandidates(program, 'zeroshot ', { listClusterIds: () => [] });
