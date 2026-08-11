@@ -148,6 +148,7 @@ src/darwin-keychain-boundary.js
 src/guidance-topics.js
 src/input-helpers.js
 src/ledger-sequence.js
+src/message-bus-bridge.js
 src/message-buffer.js
 src/state-snapshot-normalization.js
 src/state-snapshot.js
@@ -176,4 +177,5 @@ src/providers/capabilities.js
 src/providers/google/index.js
 src/providers/openai/index.js
 src/providers/opencode/index.js
+src/schemas/sub-cluster.js
 src/template-validation/report-formatter.js
