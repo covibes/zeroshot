@@ -9,6 +9,9 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { assertLegacyTypeScriptPackage } = require('./helpers/legacy-typescript-package-assertions');
+const {
+  assertRuntimeTypeScriptPackage,
+} = require('./helpers/runtime-typescript-package-assertions');
 
 const repoRoot = path.join(__dirname, '..');
 
@@ -46,6 +49,7 @@ describe('npm package smoke', function () {
     assert.strictEqual(pkg.bin['zeroshot-cluster-worker'], './bin/zeroshot-cluster-worker.js');
 
     assertLegacyTypeScriptPackage();
+    assertRuntimeTypeScriptPackage(files);
 
     for (const requiredFile of [
       'cli/index.js',
@@ -97,7 +101,6 @@ describe('npm package smoke', function () {
       'src/worktree-claude-config.js',
       'src/agent/pr-verification.js',
       'src/agents/git-pusher-template.js',
-      'src/guidance-topics.js',
       'cluster-hooks/block-ask-user-question.py',
       'cluster-hooks/block-dangerous-git.py',
     ]) {

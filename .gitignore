@@ -138,3 +138,8 @@ lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
 src/guidance-topics.js
+src/providers/anthropic/index.js
+src/providers/capabilities.js
+src/providers/google/index.js
+src/providers/openai/index.js
+src/providers/opencode/index.js
