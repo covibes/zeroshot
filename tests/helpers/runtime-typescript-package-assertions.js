@@ -1,5 +1,10 @@
 const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/guidance-topics.js',
+  'src/agent/context-replay-policy.js',
+  'src/agent/critical-agent-policy.js',
+  'src/agent/provider-control-plane.js',
+  'src/agent/structured-output-error.js',
+  'src/agent/validation-platform.js',
   'src/providers/anthropic/index.js',
   'src/providers/capabilities.js',
   'src/providers/google/index.js',

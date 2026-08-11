@@ -857,7 +857,7 @@ second stop after that terminal topic exists in the current run, while prior-run
 suppress terminalization after resume.
 Every named non-validator role is cluster-critical after final task retry exhaustion, including
 planning, conductor, custom, and orchestrator roles; validators alone use their rejection path.
-Keep that rule centralized in `src/agent/critical-agent-policy.js`. Terminal `AGENT_ERROR` records
+Keep that rule centralized in `src/agent/critical-agent-policy.ts` (generated CommonJS at the matching `.js` path). Terminal `AGENT_ERROR` records
 set `retryBudgetExhausted: true`; never infer task exhaustion from `attempts`, because status-poll
 observations use the same counter while the lifecycle still owns a retry.
 The SQLite ledger additionally keeps one cluster-wide newest tail of non-replayable

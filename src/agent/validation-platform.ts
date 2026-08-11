@@ -1,16 +1,30 @@
 const PLATFORM_MISMATCH_REGEX =
   /EBADPLATFORM|Unsupported platform|darwin-arm64|linux-x64|@esbuild\/linux-x64/i;
 
-function isPlatformMismatchReason(reason) {
+interface ValidationCriterion {
+  readonly status?: unknown;
+  readonly reason?: unknown;
+}
+
+interface ValidationResult {
+  readonly criteriaResults?: unknown;
+  readonly errors?: unknown;
+}
+
+function isValidationCriterion(value: unknown): value is ValidationCriterion {
+  return (typeof value === 'object' && value !== null) || typeof value === 'function';
+}
+
+function isPlatformMismatchReason(reason: unknown): boolean {
   if (!reason) return false;
   return PLATFORM_MISMATCH_REGEX.test(String(reason));
 }
 
-function findPlatformMismatchReason(result = {}) {
+function findPlatformMismatchReason(result: ValidationResult = {}): string | null {
   const criteriaResults = result.criteriaResults;
   if (Array.isArray(criteriaResults)) {
     for (const criteria of criteriaResults) {
-      if (criteria?.status !== 'CANNOT_VALIDATE') continue;
+      if (!isValidationCriterion(criteria) || criteria.status !== 'CANNOT_VALIDATE') continue;
       if (isPlatformMismatchReason(criteria.reason)) {
         return String(criteria.reason);
       }
@@ -29,7 +43,7 @@ function findPlatformMismatchReason(result = {}) {
   return null;
 }
 
-module.exports = {
+export = {
   isPlatformMismatchReason,
   findPlatformMismatchReason,
 };

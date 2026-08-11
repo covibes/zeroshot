@@ -1,7 +1,27 @@
 const RAW_LOG_ONLY_REPLAY_POLICY = 'raw_log_only';
 const CONTEXT_REPLAY_POLICY = 'context';
 
-function buildRawLogOnlyMetadata(extra = {}) {
+type ReplayMetadata = Record<string, unknown> & {
+  readonly contextSafe?: unknown;
+  readonly replayPolicy?: unknown;
+};
+
+interface ReplayMessage {
+  readonly topic?: unknown;
+  readonly metadata?: ReplayMetadata | null;
+  readonly content?: {
+    readonly data?: {
+      readonly contextSafe?: unknown;
+      readonly replayPolicy?: unknown;
+    } | null;
+  } | null;
+}
+
+function buildRawLogOnlyMetadata(extra: Record<string, unknown> = {}): {
+  contextSafe: false;
+  replayPolicy: typeof RAW_LOG_ONLY_REPLAY_POLICY;
+  [key: string]: unknown;
+} {
   return {
     ...extra,
     contextSafe: false,
@@ -9,11 +29,11 @@ function buildRawLogOnlyMetadata(extra = {}) {
   };
 }
 
-function getReplayPolicy(message) {
+function getReplayPolicy(message: ReplayMessage | null | undefined): unknown {
   return message?.metadata?.replayPolicy ?? message?.content?.data?.replayPolicy;
 }
 
-function getContextSafe(message) {
+function getContextSafe(message: ReplayMessage | null | undefined): boolean | null {
   if (typeof message?.metadata?.contextSafe === 'boolean') {
     return message.metadata.contextSafe;
   }
@@ -25,7 +45,7 @@ function getContextSafe(message) {
   return null;
 }
 
-function isReplayableMessage(message) {
+function isReplayableMessage(message: ReplayMessage | null | undefined): boolean {
   const contextSafe = getContextSafe(message);
   if (contextSafe !== null) {
     return contextSafe;
@@ -43,7 +63,7 @@ function isReplayableMessage(message) {
   return message?.topic !== 'AGENT_OUTPUT';
 }
 
-module.exports = {
+export = {
   RAW_LOG_ONLY_REPLAY_POLICY,
   CONTEXT_REPLAY_POLICY,
   buildRawLogOnlyMetadata,
