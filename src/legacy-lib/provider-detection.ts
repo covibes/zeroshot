@@ -1,8 +1,10 @@
-const { execSync, spawnSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+import * as childProcess from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 
-function commandExists(command) {
+const { execSync, spawnSync } = childProcess;
+
+function commandExists(command: string): boolean {
   if (!command) return false;
   if (command.includes(path.sep)) {
     return fs.existsSync(command);
@@ -16,7 +18,7 @@ function commandExists(command) {
   }
 }
 
-function getCommandPath(command) {
+function getCommandPath(command: string): string | null {
   if (!command) return null;
   if (command.includes(path.sep)) {
     return fs.existsSync(command) ? command : null;
@@ -25,16 +27,17 @@ function getCommandPath(command) {
   try {
     const output = execSync(probe, { encoding: 'utf8', stdio: 'pipe' });
     // `where` can return multiple matches (one per line); take the first.
-    return output.split(/\r?\n/)[0].trim() || null;
+    const [firstMatch = ''] = output.split(/\r?\n/);
+    return firstMatch.trim() || null;
   } catch {
     return null;
   }
 }
 
-function getHelpOutput(command, args = []) {
+function getHelpOutput(command: string, args: string[] = []): string {
   if (!commandExists(command)) return '';
 
-  const attempt = (flag) => {
+  const attempt = (flag: string): string => {
     const result = spawnSync(command, [...args, flag], { encoding: 'utf8' });
     if (result.status !== 0) return '';
     const output = `${result.stdout || ''}${result.stderr || ''}`;
@@ -48,7 +51,7 @@ function getHelpOutput(command, args = []) {
   return alt || '';
 }
 
-function getVersionOutput(command, args = []) {
+function getVersionOutput(command: string, args: string[] = []): string {
   if (!commandExists(command)) return '';
   const result = spawnSync(command, [...args, '--version'], { encoding: 'utf8' });
   if (result.status !== 0) return '';
@@ -56,7 +59,7 @@ function getVersionOutput(command, args = []) {
   return output.trim();
 }
 
-module.exports = {
+export = {
   commandExists,
   getCommandPath,
   getHelpOutput,
