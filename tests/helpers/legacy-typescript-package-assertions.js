@@ -2,6 +2,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { assertSetupOutputs } = require('./legacy-typescript-setup-package-assertions');
+const { assertRuntimeOutputs } = require('./legacy-typescript-runtime-package-assertions');
 
 const repoRoot = path.join(__dirname, '../..');
 
@@ -265,6 +266,7 @@ function assertLegacyTypeScriptPackage() {
   assertCompletionOutput();
   assertGitRemoteUtilsOutput();
   assertDetachedStartupOutput();
+  assertRuntimeOutputs();
   assertSetupOutputs();
   assertLegacyTypeScriptOutputs();
 }

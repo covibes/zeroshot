@@ -81,6 +81,7 @@ function containsForbiddenProviderPolicy(source) {
 test('live runtime paths only import the built provider helper through approved facades', () => {
   const allowedHelperImports = new Set([
     'lib/provider-names.js',
+    'src/legacy-lib/provider-names.ts',
     'src/providers/index.js',
     'task-lib/provider-helper-runtime.js',
     'task-lib/omp-sdk-runtime.js',

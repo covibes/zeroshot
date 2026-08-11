@@ -111,3 +111,7 @@ lib/git-remote-utils.js
 lib/git-remote-utils.d.ts
 lib/detached-startup.js
 lib/detached-startup.d.ts
+lib/docker-config.js
+lib/docker-config.d.ts
+lib/docker-env-auth.js
+lib/docker-env-auth.d.ts

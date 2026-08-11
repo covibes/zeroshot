@@ -63,6 +63,7 @@ describe('npm package smoke', function () {
       'lib/completion.js',
       'lib/git-remote-utils.js',
       'lib/detached-startup.js',
+      'lib/docker-config.js',
       'lib/setup-journal.js',
       'lib/setup-undo.js',
       'lib/setup-plan.js',
