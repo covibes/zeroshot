@@ -102,6 +102,27 @@ function assertProviderDefaultsOutput() {
   );
 }
 
+function assertProviderNamesOutput() {
+  const namesPath = path.join(repoRoot, 'lib/provider-names.js');
+  assert.ok(fs.existsSync(namesPath), 'legacy TypeScript build must emit lib/provider-names.js');
+  const names = require(namesPath);
+  assert.deepStrictEqual(Reflect.ownKeys(names), [
+    'KNOWN_PROVIDER_NAMES',
+    'PROVIDER_ALIASES',
+    'PROVIDER_CAPABILITIES',
+    'VALID_PROVIDERS',
+    'getDefaultProviderId',
+    'getProviderMetadata',
+    'listProviderMetadata',
+    'normalizeProviderName',
+    'normalizeProviderSettings',
+    'providerSupportsCapability',
+    'providerSupportsOutputReformatting',
+    'resolveProviderCommand',
+  ]);
+  assert.strictEqual(names.normalizeProviderName('openai'), 'codex');
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -181,6 +202,7 @@ describe('npm package smoke', function () {
     assertStreamJsonParserOutput();
     assertProviderDetectionOutput();
     assertProviderDefaultsOutput();
+    assertProviderNamesOutput();
     assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
@@ -192,6 +214,7 @@ describe('npm package smoke', function () {
       'lib/stream-json-parser.js',
       'lib/provider-detection.js',
       'lib/provider-defaults.js',
+      'lib/provider-names.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',
