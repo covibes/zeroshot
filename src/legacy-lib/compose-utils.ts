@@ -7,24 +7,29 @@
  * (i.e. nothing pins it to the host's real, possibly-already-running project).
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs = require('fs');
+import path = require('path');
+import yaml = require('js-yaml');
 
 const COMPOSE_FILENAMES = [
   'docker-compose.yml',
   'docker-compose.yaml',
   'compose.yml',
   'compose.yaml',
-];
+] as const;
+
+interface ComposeTeardownResolution {
+  readonly args?: string[];
+  readonly composePath?: string;
+  readonly reason?: string;
+  readonly shouldTeardown: boolean;
+}
 
 /**
  * Reproduce Docker Compose's default project-name normalization
  * (compose-go NormalizeProjectName: lowercase -> keep [a-z0-9_-] -> trim leading '_'/'-').
- *
- * @param {string} name
- * @returns {string}
  */
-function normalizeComposeProjectName(name) {
+function normalizeComposeProjectName(name: string): string {
   return name
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '')
@@ -37,12 +42,9 @@ function normalizeComposeProjectName(name) {
  * Skips teardown entirely when the Compose project name is pinned (top-level `name:`
  * in the compose file, or `COMPOSE_PROJECT_NAME` env var), since that resolves to a
  * shared/host project zeroshot did not create.
- *
- * @param {string} worktreePath - Path to the worktree directory
- * @returns {{ shouldTeardown: boolean, reason?: string, composePath?: string, args?: string[] }}
  */
-function resolveWorktreeComposeTeardown(worktreePath) {
-  let composePath = null;
+function resolveWorktreeComposeTeardown(worktreePath: string): ComposeTeardownResolution {
+  let composePath: string | null = null;
   for (const filename of COMPOSE_FILENAMES) {
     const candidate = path.join(worktreePath, filename);
     if (fs.existsSync(candidate)) {
@@ -67,10 +69,9 @@ function resolveWorktreeComposeTeardown(worktreePath) {
   }
 
   try {
-    const yaml = require('js-yaml');
     const contents = fs.readFileSync(composePath, 'utf8');
     const parsed = yaml.load(contents);
-    if (parsed && typeof parsed === 'object' && parsed.name) {
+    if (parsed && typeof parsed === 'object' && Reflect.get(parsed, 'name')) {
       return {
         shouldTeardown: false,
         reason: 'pinned compose project name (shared host project)',
@@ -98,4 +99,4 @@ function resolveWorktreeComposeTeardown(worktreePath) {
   };
 }
 
-module.exports = { resolveWorktreeComposeTeardown, normalizeComposeProjectName };
+export = { resolveWorktreeComposeTeardown, normalizeComposeProjectName };

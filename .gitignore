@@ -91,3 +91,5 @@ lib/repo-settings.js
 lib/repo-settings.d.ts
 lib/settings/claude-auth.js
 lib/settings/claude-auth.d.ts
+lib/compose-utils.js
+lib/compose-utils.d.ts
