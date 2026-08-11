@@ -93,6 +93,8 @@ lib/settings/claude-auth.js
 lib/settings/claude-auth.d.ts
 lib/compose-utils.js
 lib/compose-utils.d.ts
+lib/completion.js
+lib/completion.d.ts
 lib/setup-journal.js
 lib/setup-journal.d.ts
 lib/setup-undo.js

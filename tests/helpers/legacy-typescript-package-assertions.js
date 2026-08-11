@@ -135,6 +135,20 @@ function assertComposeUtilsOutput() {
   ]);
 }
 
+function assertCompletionOutput() {
+  const completionPath = path.join(repoRoot, 'lib/completion.js');
+  assert.ok(fs.existsSync(completionPath), 'legacy TypeScript build must emit lib/completion.js');
+  const completion = require(completionPath);
+  assert.deepStrictEqual(Reflect.ownKeys(completion), [
+    'getCompletionCandidates',
+    'setupCompletion',
+  ]);
+  assert.deepStrictEqual(
+    Object.values(completion).map((value) => value.length),
+    [2, 1]
+  );
+}
+
 function assertSetupJournalOutput() {
   const journalPath = path.join(repoRoot, 'lib/setup-journal.js');
   assert.ok(fs.existsSync(journalPath), 'legacy TypeScript build must emit lib/setup-journal.js');
@@ -228,6 +242,7 @@ function assertLegacyTypeScriptPackage() {
   assertRepoSettingsOutput();
   assertClaudeAuthOutput();
   assertComposeUtilsOutput();
+  assertCompletionOutput();
   assertSetupJournalOutput();
   assertSetupUndoOutput();
   assertLegacyTypeScriptOutputs();

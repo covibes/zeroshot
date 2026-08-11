@@ -60,6 +60,7 @@ describe('npm package smoke', function () {
       'lib/repo-settings.js',
       'lib/settings/claude-auth.js',
       'lib/compose-utils.js',
+      'lib/completion.js',
       'lib/setup-journal.js',
       'lib/setup-undo.js',
       'lib/cluster-worker/index.d.ts',
