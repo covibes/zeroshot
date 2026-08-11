@@ -1,5 +1,7 @@
 const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/guidance-topics.js',
+  'src/ledger-sequence.js',
+  'src/task-startup-error.js',
   'src/omp-blob-root.js',
   'src/omp-config-overlay.js',
   'task-lib/completion.js',
