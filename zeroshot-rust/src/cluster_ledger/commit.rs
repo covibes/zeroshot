@@ -218,7 +218,12 @@ impl ClusterLedger {
                 Err(self.domain_error(context, LedgerErrorKind::IdempotencyConflict))
             }
             Err(StoreError::PositionConflict { .. }) => {
-                Err(self.domain_error(context, LedgerErrorKind::InvalidLifecycle))
+                let kind = if context == FaultContext::Admission {
+                    LedgerErrorKind::PositionConflict
+                } else {
+                    LedgerErrorKind::InvalidLifecycle
+                };
+                Err(self.domain_error(context, kind))
             }
             Err(error) => Err(self.store_error(context, error)),
         }

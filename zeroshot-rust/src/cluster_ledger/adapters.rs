@@ -1,5 +1,8 @@
 //! Protocol store adapters backed by one coherent ordered-prefix fold.
 
+use std::num::NonZeroU64;
+use std::sync::Arc;
+
 mod apply;
 mod protocol;
 mod state;
@@ -22,8 +25,12 @@ use apply::{
     ensure_change_is_safe, prepare_apply_plan, prepare_changed_apply, prepare_unchanged_apply,
     ApplyPlan, ChangedApply,
 };
-use super::store::IdempotencyId;
-use super::{ClusterLedger, CommitRequest, MutationIdentity, ReceiptExpectation};
+use super::record::CanonicalDigest;
+use super::store::{IdempotencyId, LedgerClock};
+use super::{
+    ClusterLedger, CommitRequest, CommitResult, LedgerError, LedgerErrorKind, MutationIdentity,
+    ReceiptExpectation,
+};
 use protocol::{
     cancellation_guard, fingerprint_bytes, protocol_cursor, protocol_error,
     protocol_idempotency_record, protocol_run_id,
@@ -33,12 +40,61 @@ use state::FoldedProtocolState;
 #[derive(Clone)]
 pub struct ClusterLedgerAdapters {
     ledger: ClusterLedger,
+    admission: AdmissionRecordContext,
+}
+
+#[derive(Clone)]
+pub struct AdmissionRecordContext {
+    catalog_digest: CanonicalDigest,
+    profile_digest: CanonicalDigest,
+    clock: Arc<dyn LedgerClock>,
+    run_timeout_ms: NonZeroU64,
+}
+
+enum ApplyRacePlan {
+    Existing(ApplyResult),
+    Retry(ChangedApply),
+}
+
+impl AdmissionRecordContext {
+    #[must_use]
+    pub fn new(
+        catalog_digest: CanonicalDigest,
+        profile_digest: CanonicalDigest,
+        clock: Arc<dyn LedgerClock>,
+        run_timeout_ms: NonZeroU64,
+    ) -> Self {
+        Self {
+            catalog_digest,
+            profile_digest,
+            clock,
+            run_timeout_ms,
+        }
+    }
+
+    #[must_use]
+    pub fn catalog_digest(&self) -> &CanonicalDigest {
+        &self.catalog_digest
+    }
+
+    #[must_use]
+    pub fn profile_digest(&self) -> &CanonicalDigest {
+        &self.profile_digest
+    }
+
+    fn absolute_deadline_ms(&self) -> Result<u64, ProtocolStoreError> {
+        self.clock
+            .now_ms()
+            .checked_add(self.run_timeout_ms.get())
+            .filter(|deadline| *deadline <= i64::MAX as u64)
+            .ok_or_else(|| ProtocolStoreError::Internal("admission deadline overflow".into()))
+    }
 }
 
 impl ClusterLedgerAdapters {
     #[must_use]
-    pub const fn new(ledger: ClusterLedger) -> Self {
-        Self { ledger }
+    pub fn new(ledger: ClusterLedger, admission: AdmissionRecordContext) -> Self {
+        Self { ledger, admission }
     }
 
     #[must_use]
@@ -47,7 +103,11 @@ impl ClusterLedgerAdapters {
     }
 
     async fn folded(&self) -> Result<FoldedProtocolState, ProtocolStoreError> {
-        let state = self.ledger.state().await.map_err(protocol_error)?;
+        let state = self
+            .ledger
+            .validated_state(crate::fault::FaultContext::Recovery)
+            .await
+            .map_err(protocol_error)?;
         FoldedProtocolState::from_replay(&state)
     }
 
@@ -83,53 +143,140 @@ impl ClusterLedgerAdapters {
         plan: ApplyPlan,
         commit: ApplyCommit<'_>,
     ) -> Result<ApplyResult, ProtocolStoreError> {
-        let changed = match plan {
+        let changed = self.prepare_changed_apply(state, plan)?;
+        if commit.cancellation.is_cancelled() {
+            return Err(ProtocolStoreError::Cancelled);
+        }
+        self.commit_protocol_apply(state, changed, &commit).await
+    }
+
+    fn prepare_changed_apply(
+        &self,
+        state: &mut super::ReplayState,
+        plan: ApplyPlan,
+    ) -> Result<ChangedApply, ProtocolStoreError> {
+        match plan {
             ApplyPlan::Unchanged {
                 proposal,
                 generation,
-            } => prepare_unchanged_apply(state, proposal, generation)?,
+            } => prepare_unchanged_apply(state, proposal, generation),
             ApplyPlan::Changed {
                 proposal,
                 canonical_compiled_ir,
             } => {
                 ensure_change_is_safe(state)?;
-                prepare_changed_apply(state, proposal, canonical_compiled_ir)?
+                prepare_changed_apply(state, proposal, canonical_compiled_ir, &self.admission)
             }
-        };
-        if commit.cancellation.is_cancelled() {
-            return Err(ProtocolStoreError::Cancelled);
         }
-        self.commit_protocol_apply(state, changed, commit).await
     }
 
-    async fn commit_protocol_apply(
+    async fn commit_once(
         &self,
         state: &super::ReplayState,
         changed: ChangedApply,
-        commit: ApplyCommit<'_>,
-    ) -> Result<ApplyResult, ProtocolStoreError> {
+        commit: &ApplyCommit<'_>,
+    ) -> Result<CommitResult<ApplyResult>, LedgerError> {
         let ChangedApply { result, payloads } = changed;
-        let committed = self
-            .ledger
+        self.ledger
             .commit(
                 CommitRequest::new(
                     crate::fault::FaultContext::Admission,
                     state,
-                    MutationIdentity::new(commit.key, "protocol_apply", commit.fingerprint),
+                    MutationIdentity::new(commit.key.clone(), "protocol_apply", commit.fingerprint),
                     &result,
                 )
                 .with_payloads(payloads)
                 .guarded(cancellation_guard(commit.cancellation)),
             )
             .await
-            .map_err(protocol_error)?;
+    }
+
+    fn protocol_commit_result(committed: CommitResult<ApplyResult>) -> ApplyResult {
         let mut value = committed.value;
         value.deduped = committed.replayed;
-        Ok(value)
+        value
+    }
+
+    async fn commit_protocol_apply(
+        &self,
+        state: &super::ReplayState,
+        changed: ChangedApply,
+        commit: &ApplyCommit<'_>,
+    ) -> Result<ApplyResult, ProtocolStoreError> {
+        match self.commit_once(state, changed, commit).await {
+            Ok(committed) => Ok(Self::protocol_commit_result(committed)),
+            Err(error) if error.kind() == &LedgerErrorKind::PositionConflict => {
+                self.reconcile_protocol_apply_race(commit).await
+            }
+            Err(error) => Err(protocol_error(error)),
+        }
+    }
+
+    async fn repeated_position_conflict(
+        &self,
+        commit: &ApplyCommit<'_>,
+    ) -> Result<ApplyResult, ProtocolStoreError> {
+        let latest = self
+            .ledger
+            .validated_state(crate::fault::FaultContext::Admission)
+            .await
+            .map_err(protocol_error)?;
+        if let Some(existing) =
+            self.existing_protocol_apply(&latest, &commit.key, commit.fingerprint)?
+        {
+            return Ok(existing);
+        }
+        // Preserve explicit generation semantics if another distinct mutation won the bounded
+        // retry. Omitted generation remains an upsert, but repeated contention fails closed.
+        prepare_apply_plan(&latest, commit.proposal.clone())?;
+        Err(ProtocolStoreError::Internal(
+            "native admission position changed during bounded reconciliation".into(),
+        ))
+    }
+
+    fn prepare_race_retry(
+        &self,
+        current: &mut super::ReplayState,
+        commit: &ApplyCommit<'_>,
+    ) -> Result<ApplyRacePlan, ProtocolStoreError> {
+        if let Some(existing) =
+            self.existing_protocol_apply(current, &commit.key, commit.fingerprint)?
+        {
+            return Ok(ApplyRacePlan::Existing(existing));
+        }
+        let retry_plan = prepare_apply_plan(current, commit.proposal.clone())?;
+        let retry = self.prepare_changed_apply(current, retry_plan)?;
+        if commit.cancellation.is_cancelled() {
+            return Err(ProtocolStoreError::Cancelled);
+        }
+        Ok(ApplyRacePlan::Retry(retry))
+    }
+
+    async fn reconcile_protocol_apply_race(
+        &self,
+        commit: &ApplyCommit<'_>,
+    ) -> Result<ApplyResult, ProtocolStoreError> {
+        let mut current = self
+            .ledger
+            .validated_state(crate::fault::FaultContext::Admission)
+            .await
+            .map_err(protocol_error)?;
+        let retry = match self.prepare_race_retry(&mut current, commit)? {
+            ApplyRacePlan::Existing(existing) => return Ok(existing),
+            ApplyRacePlan::Retry(retry) => retry,
+        };
+        match self.commit_once(&current, retry, commit).await {
+            Ok(retried) => Ok(Self::protocol_commit_result(retried)),
+            Err(error) if error.kind() == &LedgerErrorKind::PositionConflict => {
+                self.repeated_position_conflict(commit).await
+            }
+            Err(error) => Err(protocol_error(error)),
+        }
     }
 }
 
 struct ApplyCommit<'a> {
+    proposal: CommitProposal,
     key: IdempotencyId,
     fingerprint: [u8; 32],
     cancellation: &'a CancellationSignal,
@@ -199,11 +346,12 @@ impl AdmissionStore for ClusterLedgerAdapters {
         if let Some(existing) = self.existing_protocol_apply(&state, &key, fingerprint)? {
             return Ok(existing);
         }
-        let plan = prepare_apply_plan(&state, proposal)?;
+        let plan = prepare_apply_plan(&state, proposal.clone())?;
         self.commit_plan(
             &mut state,
             plan,
             ApplyCommit {
+                proposal,
                 key,
                 fingerprint,
                 cancellation,

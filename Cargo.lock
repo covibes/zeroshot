@@ -2118,6 +2118,7 @@ dependencies = [
  "getrandom 0.3.4",
  "httparse",
  "libc",
+ "openengine-cluster-client",
  "openengine-cluster-protocol",
  "openengine-cluster-server",
  "rusqlite",

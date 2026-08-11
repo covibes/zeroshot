@@ -15,6 +15,7 @@ pub enum LedgerErrorKind {
     Replay(ReplayError),
     BoundViolation,
     IdempotencyConflict,
+    PositionConflict,
     InvalidLifecycle,
     InvalidSettlement,
     TerminalRequired,

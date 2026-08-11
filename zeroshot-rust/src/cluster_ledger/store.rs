@@ -414,6 +414,15 @@ pub trait LedgerClock: Send + Sync {
     fn now_ms(&self) -> u64;
 }
 
+impl<T> LedgerClock for Arc<T>
+where
+    T: LedgerClock + ?Sized,
+{
+    fn now_ms(&self) -> u64 {
+        (**self).now_ms()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemLedgerClock;
 

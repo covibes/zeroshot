@@ -3,10 +3,12 @@
 
 use openengine_cluster_protocol::{canonical_value_bytes, ApplyResult, Generation, Phase};
 use openengine_cluster_server::admission::{CommitProposal, StoreError as ProtocolStoreError};
+use serde::Serialize;
 
 use super::super::record::{CanonicalDigest, RecordPayload};
 use super::super::ReplayState;
 use super::protocol::protocol_run_id;
+use super::AdmissionRecordContext;
 
 pub(super) enum ApplyPlan {
     Unchanged {
@@ -64,10 +66,29 @@ pub(super) fn ensure_change_is_safe(state: &ReplayState) -> Result<(), ProtocolS
     Ok(())
 }
 
+fn canonical_internal<T: Serialize>(
+    value: &T,
+    encoding_error: &'static str,
+    canonical_error: &'static str,
+) -> Result<Vec<u8>, ProtocolStoreError> {
+    let value = serde_json::to_value(value)
+        .map_err(|_| ProtocolStoreError::Internal(encoding_error.into()))?;
+    canonical_value_bytes(&value).map_err(|_| ProtocolStoreError::Internal(canonical_error.into()))
+}
+
+fn canonical_input(proposal: &CommitProposal) -> Result<Vec<u8>, ProtocolStoreError> {
+    let input = proposal.input.as_ref().ok_or_else(|| {
+        ProtocolStoreError::SchemaViolation("changed admission requires verified input".into())
+    })?;
+    canonical_value_bytes(input)
+        .map_err(|_| ProtocolStoreError::SchemaViolation("input is not canonical".into()))
+}
+
 pub(super) fn prepare_changed_apply(
     state: &mut ReplayState,
     proposal: CommitProposal,
     canonical_compiled_ir: Vec<u8>,
+    admission: &AdmissionRecordContext,
 ) -> Result<ChangedApply, ProtocolStoreError> {
     let generation = state
         .identities
@@ -77,24 +98,30 @@ pub(super) fn prepare_changed_apply(
         .identities
         .allocate_run()
         .map_err(|_| ProtocolStoreError::Internal("run allocation failed".into()))?;
-    let canonical_graph = serde_json::to_vec(&proposal.graph)
-        .map_err(|_| ProtocolStoreError::Internal("graph encoding failed".into()))?;
-    let canonical_input = canonical_value_bytes(proposal.input.as_ref().ok_or_else(|| {
-        ProtocolStoreError::SchemaViolation("changed admission requires verified input".into())
-    })?)
-    .map_err(|_| ProtocolStoreError::SchemaViolation("input is not canonical".into()))?;
+    let canonical_graph = canonical_internal(
+        &proposal.graph,
+        "graph encoding failed",
+        "graph canonicalization failed",
+    )?;
+    let canonical_policy = canonical_internal(
+        &proposal.graph.policy,
+        "graph policy encoding failed",
+        "graph policy is not canonical",
+    )?;
+    let canonical_input = canonical_input(&proposal)?;
     let input_digest = CanonicalDigest::of(&canonical_input);
-    let payloads = changed_apply_payloads(
-        &proposal,
-        ChangedPayloads {
-            generation,
-            run,
-            canonical_graph,
-            canonical_input,
-            input_digest,
-            canonical_compiled_ir,
-        },
-    );
+    let payloads = changed_apply_payloads(ChangedPayloads {
+        generation,
+        run,
+        canonical_graph,
+        canonical_input,
+        input_digest,
+        canonical_compiled_ir,
+        policy_digest: CanonicalDigest::of(&canonical_policy),
+        catalog_digest: *admission.catalog_digest(),
+        profile_digest: *admission.profile_digest(),
+        absolute_deadline_ms: admission.absolute_deadline_ms()?,
+    });
     Ok(ChangedApply {
         result: ApplyResult {
             generation: Some(Generation::new(generation.get()).map_err(|_| {
@@ -116,12 +143,13 @@ struct ChangedPayloads {
     canonical_input: Vec<u8>,
     input_digest: CanonicalDigest,
     canonical_compiled_ir: Vec<u8>,
+    policy_digest: CanonicalDigest,
+    catalog_digest: CanonicalDigest,
+    profile_digest: CanonicalDigest,
+    absolute_deadline_ms: u64,
 }
 
-fn changed_apply_payloads(
-    proposal: &CommitProposal,
-    changed: ChangedPayloads,
-) -> Vec<RecordPayload> {
+fn changed_apply_payloads(changed: ChangedPayloads) -> Vec<RecordPayload> {
     let ChangedPayloads {
         generation,
         run,
@@ -129,6 +157,10 @@ fn changed_apply_payloads(
         canonical_input,
         input_digest,
         canonical_compiled_ir,
+        policy_digest,
+        catalog_digest,
+        profile_digest,
+        absolute_deadline_ms,
     } = changed;
     vec![
         RecordPayload::Admission {
@@ -136,10 +168,10 @@ fn changed_apply_payloads(
             run,
             graph_digest: CanonicalDigest::of(&canonical_graph),
             input_digest,
-            policy_digest: CanonicalDigest::of(&canonical_compiled_ir),
-            catalog_digest: CanonicalDigest::of(b"worker-catalog/v1"),
-            profile_digest: CanonicalDigest::of(proposal.compiled_ir.profile.as_str().as_bytes()),
-            absolute_deadline_ms: u64::MAX,
+            policy_digest,
+            catalog_digest,
+            profile_digest,
+            absolute_deadline_ms,
             canonical_graph,
             canonical_compiled_ir,
         },
@@ -151,7 +183,7 @@ fn changed_apply_payloads(
     ]
 }
 
-fn current_protocol_generation(
+pub(super) fn current_protocol_generation(
     state: &ReplayState,
 ) -> Result<Option<Generation>, ProtocolStoreError> {
     state

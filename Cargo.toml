@@ -46,5 +46,6 @@ windows-sys = "0.61.2"
 
 openengine-cluster-protocol = { path = "crates/openengine-cluster-protocol" }
 openengine-cluster-server = { path = "crates/openengine-cluster-server" }
+openengine_cluster_client = { package = "openengine-cluster-client", path = "crates/openengine-cluster-client" }
 openengine-cluster-client = { path = "crates/openengine-cluster-client" }
 openengine-cluster-testkit = { path = "crates/openengine-cluster-testkit" }

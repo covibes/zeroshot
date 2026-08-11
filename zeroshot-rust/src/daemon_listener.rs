@@ -32,32 +32,10 @@ use crate::daemon_discovery::{
 };
 use crate::{NativeBackendFactory, binding_for_route};
 
-#[derive(Clone, Copy, Debug)]
-pub struct ListenerConfig {
-    pub startup_lock_timeout: Duration,
-    pub liveness_timeout: Duration,
-    pub handshake_timeout: Duration,
-    pub drain_timeout: Duration,
-    pub shutdown_timeout: Duration,
-    pub max_active_connections: usize,
-    pub max_pending_handshakes: usize,
-    pub max_liveness_connections: usize,
-}
-
-impl Default for ListenerConfig {
-    fn default() -> Self {
-        Self {
-            startup_lock_timeout: Duration::from_secs(1),
-            liveness_timeout: Duration::from_millis(500),
-            handshake_timeout: Duration::from_secs(2),
-            drain_timeout: Duration::from_millis(250),
-            shutdown_timeout: Duration::from_secs(1),
-            max_active_connections: 64,
-            max_pending_handshakes: 64,
-            max_liveness_connections: 8,
-        }
-    }
-}
+mod config;
+mod liveness;
+pub use config::ListenerConfig;
+pub use liveness::probe_liveness;
 
 #[derive(Debug, Error)]
 pub enum DaemonListenerError {
@@ -153,50 +131,12 @@ impl DaemonListener {
             rotate_away_from(&mut credentials.capability, &previous_capability);
             rotate_away_from(&mut credentials.daemon_nonce, &previous_nonce);
         }
-        let locator = DaemonLocator {
-            endpoint: format!("ws://{address}{DAEMON_ROUTE}"),
-            cluster_protocol: CLUSTER_PROTOCOL.to_owned(),
-            daemon_protocol: DAEMON_PROTOCOL.to_owned(),
-            profile_digest: credentials.profile_digest.clone(),
-            daemon_nonce: credentials.daemon_nonce.clone(),
-            capability: credentials.capability.clone(),
-        };
+        let locator = locator_for(address, &credentials);
 
-        let shutdown = Arc::new(Notify::new());
-        let pending_handshake_permits = Arc::new(Semaphore::new(config.max_pending_handshakes));
-        let liveness_connection_permits = Arc::new(Semaphore::new(config.max_liveness_connections));
-        let active_session_permits = Arc::new(Semaphore::new(config.max_active_connections));
-        let host = AcceptLoop {
-            acceptor: tcp,
-            factory: Arc::new(factory),
-            credentials,
-            shutdown: Arc::clone(&shutdown),
-            pending_handshake_permits: Arc::clone(&pending_handshake_permits),
-            liveness_connection_permits: Arc::clone(&liveness_connection_permits),
-            active_session_permits: Arc::clone(&active_session_permits),
-            config,
-        };
+        let host = AcceptLoop::new(tcp, Arc::new(factory), credentials, config);
         replace_locator_locked(&profile, &locator)?;
         drop(guard);
-        let accept_task = tokio::spawn(run_owned_accept_loop(
-            host,
-            profile.clone(),
-            locator.clone(),
-        ));
-
-        Ok(Self {
-            profile,
-            locator,
-            shutdown,
-            accept_task: Some(accept_task),
-            shutdown_timeout: config.shutdown_timeout,
-            pending_handshake_limit: config.max_pending_handshakes,
-            pending_handshake_permits,
-            liveness_connection_limit: config.max_liveness_connections,
-            liveness_connection_permits,
-            active_session_limit: config.max_active_connections,
-            active_session_permits,
-        })
+        Ok(spawn_listener_owner(host, profile, locator))
     }
 
     #[must_use]
@@ -267,105 +207,6 @@ impl Drop for DaemonListener {
     }
 }
 
-pub async fn probe_liveness(locator: &DaemonLocator, deadline: Duration) -> LivenessOutcome {
-    timeout(deadline, probe_liveness_inner(locator))
-        .await
-        .unwrap_or(LivenessOutcome::Indeterminate)
-}
-
-async fn probe_liveness_inner(locator: &DaemonLocator) -> LivenessOutcome {
-    if locator.cluster_protocol != CLUSTER_PROTOCOL || locator.daemon_protocol != DAEMON_PROTOCOL {
-        return LivenessOutcome::DefinitelyStale;
-    }
-    let mut request = match locator.endpoint.as_str().into_client_request() {
-        Ok(request) => request,
-        Err(_) => return LivenessOutcome::DefinitelyStale,
-    };
-    let Some(address) = loopback_address(&request) else {
-        return LivenessOutcome::DefinitelyStale;
-    };
-    let expectation = match DaemonCredentials::from_locator(locator)
-        .prepare_request(&mut request, ConnectionPurpose::Liveness)
-    {
-        Ok(expectation) => expectation,
-        Err(_) => return LivenessOutcome::Indeterminate,
-    };
-    let stream = match TcpStream::connect(address).await {
-        Ok(stream) => stream,
-        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-            return LivenessOutcome::DefinitelyStale;
-        }
-        Err(_) => return LivenessOutcome::Indeterminate,
-    };
-    let (mut websocket, response) = match tokio_tungstenite::client_async(request, stream).await {
-        Ok(connected) => connected,
-        Err(WebSocketError::Http(_)) => return LivenessOutcome::DefinitelyStale,
-        Err(_) => return LivenessOutcome::Indeterminate,
-    };
-    if !expectation.verify(&response) {
-        return LivenessOutcome::DefinitelyStale;
-    }
-    let initialize = serde_json::json!({
-        "jsonrpc": JSON_RPC_VERSION,
-        "id": "daemon-liveness",
-        "method": "initialize",
-        "params": { "protocolVersion": PROTOCOL_VERSION }
-    });
-    if websocket
-        .send(Message::Text(initialize.to_string().into()))
-        .await
-        .is_err()
-    {
-        return LivenessOutcome::Indeterminate;
-    }
-    while let Some(message) = websocket.next().await {
-        let message = match message {
-            Ok(message) => message,
-            Err(_) => return LivenessOutcome::Indeterminate,
-        };
-        let Message::Text(text) = message else {
-            if message.is_close() {
-                return LivenessOutcome::Indeterminate;
-            }
-            continue;
-        };
-        let response: Value = match serde_json::from_str(text.as_ref()) {
-            Ok(response) => response,
-            Err(_) => return LivenessOutcome::DefinitelyStale,
-        };
-        return classify_liveness_response(&response);
-    }
-    LivenessOutcome::Indeterminate
-}
-
-fn classify_liveness_response(response: &Value) -> LivenessOutcome {
-    let Some(object) = response.as_object() else {
-        return LivenessOutcome::DefinitelyStale;
-    };
-    if object.len() != 3
-        || object.get("jsonrpc").and_then(Value::as_str) != Some(JSON_RPC_VERSION)
-        || object.get("id").and_then(Value::as_str) != Some("daemon-liveness")
-    {
-        return LivenessOutcome::DefinitelyStale;
-    }
-    if object.contains_key("error") && !object.contains_key("result") {
-        return LivenessOutcome::Indeterminate;
-    }
-    let Some(raw_result) = object.get("result") else {
-        return LivenessOutcome::DefinitelyStale;
-    };
-    let Ok(result) = serde_json::from_value::<InitializeResult>(raw_result.clone()) else {
-        return LivenessOutcome::DefinitelyStale;
-    };
-    if result.validate_protocol_version().is_ok()
-        && serde_json::to_value(result).ok().as_ref() == Some(raw_result)
-    {
-        LivenessOutcome::Alive
-    } else {
-        LivenessOutcome::DefinitelyStale
-    }
-}
-
 fn identity_for_profile(profile_digest: &str) -> ConnectionIdentity {
     ConnectionIdentity::new(ConnectionIdentityConfig {
         principal: PrincipalId::new(profile_digest),
@@ -381,23 +222,6 @@ fn rotate_away_from(value: &mut String, previous: &str) {
         let replacement = if value.starts_with('0') { "1" } else { "0" };
         value.replace_range(..1, replacement);
     }
-}
-
-fn loopback_address(
-    request: &tokio_tungstenite::tungstenite::handshake::client::Request,
-) -> Option<SocketAddr> {
-    let uri = request.uri();
-    if uri.scheme_str() != Some("ws")
-        || uri.path() != DAEMON_ROUTE
-        || uri.query().is_some()
-        || uri.host() != Some("127.0.0.1")
-    {
-        return None;
-    }
-    Some(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        uri.port_u16()?,
-    ))
 }
 
 trait ConnectionAcceptor: Send + Sync + 'static {
@@ -419,6 +243,71 @@ struct AcceptLoop<A, F> {
     pending_handshake_permits: Arc<Semaphore>,
     liveness_connection_permits: Arc<Semaphore>,
     active_session_permits: Arc<Semaphore>,
+}
+
+impl<A, F> AcceptLoop<A, F> {
+    fn new(
+        acceptor: A,
+        factory: Arc<F>,
+        credentials: DaemonCredentials,
+        config: ListenerConfig,
+    ) -> Self {
+        Self {
+            acceptor,
+            factory,
+            credentials,
+            shutdown: Arc::new(Notify::new()),
+            pending_handshake_permits: Arc::new(Semaphore::new(config.max_pending_handshakes)),
+            liveness_connection_permits: Arc::new(Semaphore::new(config.max_liveness_connections)),
+            active_session_permits: Arc::new(Semaphore::new(config.max_active_connections)),
+            config,
+        }
+    }
+}
+
+fn locator_for(address: SocketAddr, credentials: &DaemonCredentials) -> DaemonLocator {
+    DaemonLocator {
+        endpoint: format!("ws://{address}{DAEMON_ROUTE}"),
+        cluster_protocol: CLUSTER_PROTOCOL.to_owned(),
+        daemon_protocol: DAEMON_PROTOCOL.to_owned(),
+        profile_digest: credentials.profile_digest.clone(),
+        daemon_nonce: credentials.daemon_nonce.clone(),
+        capability: credentials.capability.clone(),
+    }
+}
+
+fn spawn_listener_owner<A, F>(
+    host: AcceptLoop<A, F>,
+    profile: NativeProfile,
+    locator: DaemonLocator,
+) -> DaemonListener
+where
+    A: ConnectionAcceptor,
+    F: NativeBackendFactory + Send + Sync + 'static,
+{
+    let config = host.config;
+    let shutdown = Arc::clone(&host.shutdown);
+    let pending_handshake_permits = Arc::clone(&host.pending_handshake_permits);
+    let liveness_connection_permits = Arc::clone(&host.liveness_connection_permits);
+    let active_session_permits = Arc::clone(&host.active_session_permits);
+    let accept_task = tokio::spawn(run_owned_accept_loop(
+        host,
+        profile.clone(),
+        locator.clone(),
+    ));
+    DaemonListener {
+        profile,
+        locator,
+        shutdown,
+        accept_task: Some(accept_task),
+        shutdown_timeout: config.shutdown_timeout,
+        pending_handshake_limit: config.max_pending_handshakes,
+        pending_handshake_permits,
+        liveness_connection_limit: config.max_liveness_connections,
+        liveness_connection_permits,
+        active_session_limit: config.max_active_connections,
+        active_session_permits,
+    }
 }
 
 async fn run_owned_accept_loop<A, F>(
@@ -590,148 +479,4 @@ where
 }
 
 #[cfg(test)]
-mod accept_loop_tests {
-    use std::fs;
-    use std::path::PathBuf;
-
-    use super::*;
-    use crate::ProductionNativeBackendFactory;
-    use crate::daemon_discovery::{random_hex, read_locator, replace_locator};
-
-    #[derive(Clone, Copy)]
-    enum FailureMode {
-        Error,
-        Panic,
-    }
-
-    struct FailingAcceptor {
-        _listener: TcpListener,
-        mode: FailureMode,
-    }
-
-    impl ConnectionAcceptor for FailingAcceptor {
-        fn accept(&self) -> impl Future<Output = io::Result<(TcpStream, SocketAddr)>> + Send {
-            let mode = self.mode;
-            async move {
-                match mode {
-                    FailureMode::Error => Err(io::Error::other("controlled accept failure")),
-                    FailureMode::Panic => panic!("controlled accept loop panic"),
-                }
-            }
-        }
-    }
-
-    struct TestProfile {
-        profile: NativeProfile,
-        root: PathBuf,
-    }
-
-    impl Drop for TestProfile {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
-    }
-
-    async fn failing_owner(
-        mode: FailureMode,
-        label: &str,
-    ) -> (DaemonListener, TestProfile, SocketAddr) {
-        let root = std::env::temp_dir().join(format!(
-            "zeroshot-accept-{label}-{}-{}",
-            std::process::id(),
-            random_hex().expect("temporary profile suffix")
-        ));
-        let profile = NativeProfile::new(&root, format!("native-profile:{label}"));
-        let tcp = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-            .await
-            .expect("bind controlled acceptor");
-        let address = tcp.local_addr().expect("controlled acceptor address");
-        let credentials =
-            DaemonCredentials::generate(profile.digest().to_owned()).expect("credentials");
-        let locator = DaemonLocator {
-            endpoint: format!("ws://{address}{DAEMON_ROUTE}"),
-            cluster_protocol: CLUSTER_PROTOCOL.to_owned(),
-            daemon_protocol: DAEMON_PROTOCOL.to_owned(),
-            profile_digest: credentials.profile_digest.clone(),
-            daemon_nonce: credentials.daemon_nonce.clone(),
-            capability: credentials.capability.clone(),
-        };
-        replace_locator(&profile, &locator).expect("publish controlled locator");
-        let config = ListenerConfig::default();
-        let shutdown = Arc::new(Notify::new());
-        let pending_handshake_permits = Arc::new(Semaphore::new(config.max_pending_handshakes));
-        let liveness_connection_permits = Arc::new(Semaphore::new(config.max_liveness_connections));
-        let active_session_permits = Arc::new(Semaphore::new(config.max_active_connections));
-        let host = AcceptLoop {
-            acceptor: FailingAcceptor {
-                _listener: tcp,
-                mode,
-            },
-            factory: Arc::new(ProductionNativeBackendFactory),
-            credentials,
-            shutdown: Arc::clone(&shutdown),
-            config,
-            pending_handshake_permits: Arc::clone(&pending_handshake_permits),
-            liveness_connection_permits: Arc::clone(&liveness_connection_permits),
-            active_session_permits: Arc::clone(&active_session_permits),
-        };
-        let accept_task = tokio::spawn(run_owned_accept_loop(
-            host,
-            profile.clone(),
-            locator.clone(),
-        ));
-        let owner = DaemonListener {
-            profile: profile.clone(),
-            locator,
-            shutdown,
-            accept_task: Some(accept_task),
-            shutdown_timeout: config.shutdown_timeout,
-            pending_handshake_limit: config.max_pending_handshakes,
-            pending_handshake_permits,
-            liveness_connection_limit: config.max_liveness_connections,
-            liveness_connection_permits,
-            active_session_limit: config.max_active_connections,
-            active_session_permits,
-        };
-        (owner, TestProfile { profile, root }, address)
-    }
-
-    async fn assert_failure_cleanup_before_shutdown(mode: FailureMode, label: &str) {
-        let (owner, profile, address) = failing_owner(mode, label).await;
-        timeout(Duration::from_millis(500), async {
-            loop {
-                let locator_removed = read_locator(&profile.profile)
-                    .expect("automatic failure cleanup state")
-                    .is_none();
-                let socket_released = match TcpListener::bind(address).await {
-                    Ok(rebound) => {
-                        drop(rebound);
-                        true
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::AddrInUse => false,
-                    Err(error) => panic!("unexpected rebind failure: {error}"),
-                };
-                if locator_removed && socket_released {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("owned accept failure released locator and socket");
-        assert!(matches!(
-            owner.shutdown().await,
-            Err(DaemonListenerError::Task)
-        ));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn accept_error_cleans_owner_before_shutdown_and_remains_task_failure() {
-        assert_failure_cleanup_before_shutdown(FailureMode::Error, "accept-error").await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn accept_loop_panic_cleans_owner_before_shutdown_and_remains_task_failure() {
-        assert_failure_cleanup_before_shutdown(FailureMode::Panic, "accept-panic").await;
-    }
-}
+mod accept_loop_tests;

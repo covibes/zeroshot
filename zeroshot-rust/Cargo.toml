@@ -49,3 +49,4 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+openengine_cluster_client.workspace = true

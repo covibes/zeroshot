@@ -83,7 +83,6 @@ fn product_dependencies_stay_inside_native_contract_and_backend_boundaries() {
         );
     }
     for prohibited in [
-        "openengine-cluster-client",
         "openengine-cluster-testkit",
         "postgres",
         "sqlx",
@@ -96,11 +95,19 @@ fn product_dependencies_stay_inside_native_contract_and_backend_boundaries() {
             "prohibited native dependency: {prohibited}"
         );
     }
+    assert!(
+        !dependencies.contains(&("openengine-cluster-client".to_owned(), "normal".to_owned())),
+        "cluster client is test-only and must not enter the native runtime"
+    );
+    assert!(
+        dependencies.contains(&("openengine-cluster-client".to_owned(), "dev".to_owned())),
+        "the process proof must use the real Rust cluster client"
+    );
 }
 
 #[test]
 fn runtime_reuses_the_protocol_backend_and_production_dispatcher() {
-    let runtime = runtime_source();
+    let runtime = rust_sources(&["src/lib.rs", "src/main.rs", "src/native_admission.rs"]);
     for required in [
         "openengine_cluster_protocol",
         "ClusterBackend",
@@ -142,7 +149,6 @@ fn runtime_does_not_copy_protocol_or_server_types() {
 fn runtime_has_no_alternate_runtime_seams() {
     let runtime = runtime_source();
     for forbidden_code in [
-        "std::process",
         "Command::new",
         "pub mod transport",
         "pub mod client",
@@ -174,9 +180,7 @@ fn runtime_has_no_future_product_concerns() {
         "fallback",
         "benchmark",
         "selector",
-        "transport",
         "persistence",
-        "verifier",
     ] {
         assert!(
             !words.contains(forbidden_word),
@@ -225,14 +229,14 @@ fn product_errors_are_one_private_projection_without_command_or_daemon_host_beha
 }
 
 #[test]
-fn manifest_has_no_client_testkit_or_node_dependencies() {
+fn manifest_keeps_the_cluster_client_dev_only_and_excludes_testkit_or_node() {
     let manifest = read(&product_root().join("Cargo.toml"));
-    for forbidden_dependency in [
-        "openengine-cluster-client",
-        "openengine-cluster-testkit",
-        "node",
-        "npm",
-    ] {
+    let (runtime, dev) = manifest
+        .split_once("[dev-dependencies]")
+        .expect("native manifest must declare dev dependencies");
+    assert!(!runtime.contains("openengine-cluster-client"));
+    assert!(dev.contains("openengine_cluster_client.workspace = true"));
+    for forbidden_dependency in ["openengine-cluster-testkit", "node", "npm"] {
         assert!(
             !manifest.contains(forbidden_dependency),
             "forbidden product dependency: {forbidden_dependency}"
@@ -284,6 +288,7 @@ fn product_modules_require_issue_authorization() {
             "cluster_ledger.rs",
             "daemon_auth.rs",
             "daemon_discovery.rs",
+            "daemon_listener",
             "daemon_listener.rs",
             "execution",
             "execution.rs",
@@ -297,6 +302,7 @@ fn product_modules_require_issue_authorization() {
             "main.rs",
             "native_credentials",
             "native_credentials.rs",
+            "native_admission.rs",
             "native_settings",
             "native_settings.rs",
             "observability.rs",

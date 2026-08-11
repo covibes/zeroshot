@@ -1,12 +1,23 @@
 use super::races::assert_protocol_store_adapters;
 use super::snapshot_race_store::race_ledger;
 use super::*;
+use std::num::NonZeroU64;
+use zeroshot_engine::cluster_ledger::adapters::AdmissionRecordContext;
+
+fn admission_context() -> AdmissionRecordContext {
+    AdmissionRecordContext::new(
+        CanonicalDigest::of(b"test-catalog"),
+        CanonicalDigest::of(b"test-profile"),
+        Arc::new(ManualLedgerClock::new(1_000)),
+        NonZeroU64::new(10_000).unwrap(),
+    )
+}
 
 #[tokio::test]
 async fn protocol_adapters_fold_control_and_lifecycle_from_one_empty_prefix() {
     assert_protocol_store_adapters::<ClusterLedgerAdapters>();
     let (_, ledger) = ledger("adapter-prefix").await;
-    let adapters = ClusterLedgerAdapters::new(ledger);
+    let adapters = ClusterLedgerAdapters::new(ledger, admission_context());
     let (admission, lifecycle) = adapters.read_aggregate().await.unwrap();
     assert_eq!(
         admission.control.phase,
@@ -19,11 +30,54 @@ async fn protocol_adapters_fold_control_and_lifecycle_from_one_empty_prefix() {
 #[tokio::test]
 async fn protocol_admission_adapter_commits_control_seed_and_receipt_atomically() {
     let (store, ledger) = race_ledger("adapter-admission").await;
-    let adapters = ClusterLedgerAdapters::new(ledger);
+    let adapters = ClusterLedgerAdapters::new(ledger, admission_context());
     let proposal = admission_proposal();
     let (changed, generation) = exercise_initial_commits(&adapters, proposal).await;
     assert_running_aggregate(&adapters).await;
     exercise_changed_commit(&store, &adapters, changed, generation).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn protocol_admission_adapter_reconciles_a_position_race_as_generation_conflict() {
+    let (store, ledger) = race_ledger("adapter-generation-race").await;
+    let adapters = ClusterLedgerAdapters::new(ledger, admission_context());
+    let first = admission_proposal();
+    let mut second = first.clone();
+    second.idempotency_key =
+        openengine_cluster_protocol::IdempotencyKey::new("adapter-apply-second").unwrap();
+    second.fingerprint = openengine_cluster_protocol::admission_fingerprint(
+        "apply",
+        &serde_json::json!({"fixture": "adapter-second"}),
+    )
+    .unwrap();
+    store.arm();
+
+    let first_adapters = adapters.clone();
+    let first = tokio::spawn(async move {
+        first_adapters
+            .commit(first, &CancellationSignal::default())
+            .await
+    });
+    let second_adapters = adapters.clone();
+    let second = tokio::spawn(async move {
+        second_adapters
+            .commit(second, &CancellationSignal::default())
+            .await
+    });
+    let outcomes = [first.await.unwrap(), second.await.unwrap()];
+    assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(
+                outcome,
+                Err(openengine_cluster_server::admission::StoreError::GenerationConflict {
+                    current: Some(current)
+                }) if current.get() == 1
+            ))
+            .count(),
+        1
+    );
 }
 
 fn fixture<T: serde::de::DeserializeOwned>(relative: &str) -> T {
@@ -116,7 +170,7 @@ async fn assert_running_aggregate(adapters: &ClusterLedgerAdapters) {
     );
     assert!(admission.control.spec.is_some());
     assert!(admission.control.compiled_ir.is_some());
-    assert_eq!(admission.seed.as_ref().unwrap().cursor.as_str(), "ledger:2");
+    assert_eq!(admission.seed.as_ref().unwrap().cursor.as_str(), "ledger:4");
     assert_eq!(
         admission.control.cursor.as_ref().unwrap().as_str(),
         "ledger:4"

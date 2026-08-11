@@ -259,6 +259,33 @@ async fn structural_rejection_precedes_registry_resolution_and_is_stably_sorted(
 }
 
 #[tokio::test]
+async fn terminal_only_full_graph_is_bounded_without_registry_resolution() {
+    let graph: GraphSpec = serde_json::from_value(json!({
+        "profile": "openengine.graph.full/v1",
+        "initialInput": {"kind": "null"},
+        "policy": {"policy": "policy.default@1", "default": "deny"},
+        "root": {
+            "kind": "succeed",
+            "name": "done",
+            "output": {"kind": "null"},
+            "bindings": []
+        }
+    }))
+    .unwrap();
+    let registry = registry();
+    let resolutions = Arc::clone(&registry.resolutions);
+    let verified = ProductionGraphVerifier::new(registry)
+        .verify(&graph)
+        .await
+        .unwrap();
+
+    assert_eq!(resolutions.load(Ordering::Relaxed), 0);
+    assert_eq!(verified.compiled_ir.bounds.max_node_executions.get(), 1);
+    assert_eq!(verified.compiled_ir.bounds.peak_concurrency.get(), 1);
+    assert!(verified.compiled_ir.bounds.attempts_per_node.is_empty());
+}
+
+#[tokio::test]
 async fn single_worker_profile_and_missing_worker_are_rejections() {
     let mut single = valid_graph();
     single["profile"] = json!("openengine.graph.single-worker/v1");

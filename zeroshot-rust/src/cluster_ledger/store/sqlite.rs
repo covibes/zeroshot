@@ -28,12 +28,15 @@ mod transactions;
 pub use operations::database_path;
 pub use schema::{APPLICATION_ID, SCHEMA_VERSION};
 pub use settings::SqliteSettings;
-use queries::{query_fence, query_receipt, query_receipts, query_records, to_sql_i64};
+use queries::{query_receipt, query_receipts, query_records, to_sql_i64};
 use discovery::{
     configure_connection, discover_database, lock_resource_file, remove_database_files,
     validate_schema,
 };
-use transactions::{acquire_fence_transaction, write_removal_tombstone, FenceAcquisition};
+use transactions::{
+    acquire_fence_transaction, check_exact_fence_transaction, check_fence_transaction,
+    write_removal_tombstone, FenceAcquisition,
+};
 
 #[derive(Clone)]
 pub struct SqliteLedgerStore {
@@ -108,21 +111,6 @@ impl SqliteLedgerStore {
             .and_then(Position::new)
     }
 
-    fn check_fence_tx(
-        &self,
-        transaction: &Transaction<'_>,
-        fence: &Fence,
-    ) -> Result<(), StoreError> {
-        let current = query_fence(transaction)?.ok_or(StoreError::StaleFence)?;
-        if current != *fence {
-            return Err(StoreError::StaleFence);
-        }
-        if current.expires_at_ms <= self.clock.now_ms() {
-            return Err(StoreError::FenceExpired);
-        }
-        Ok(())
-    }
-
     fn append(&self, request: AppendRequest<'_>) -> Result<AppendOutcome, StoreError> {
         request.batch.validate()?;
         if self.take_failpoint(FailPoint::BeforeCommit) {
@@ -155,7 +143,7 @@ impl SqliteLedgerStore {
         transaction: &Transaction<'_>,
         request: AppendRequest<'_>,
     ) -> Result<AppendDecision, StoreError> {
-        self.check_fence_tx(transaction, request.fence)?;
+        check_fence_transaction(transaction, request.fence, self.clock.now_ms())?;
         if let Some(outcome) = operations::existing_receipt_outcome(transaction, &request.batch)? {
             return Ok(AppendDecision {
                 outcome,
@@ -185,7 +173,7 @@ impl SqliteLedgerStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| StoreError::Storage)?;
-        self.check_fence_tx(&transaction, request.fence)?;
+        check_fence_transaction(&transaction, request.fence, self.clock.now_ms())?;
         let actual = Self::position(&transaction)?;
         if actual != request.expected {
             return Err(StoreError::PositionConflict {
@@ -309,7 +297,7 @@ impl LedgerStore for SqliteLedgerStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| StoreError::Storage)?;
-        self.check_fence_tx(&transaction, fence)?;
+        check_exact_fence_transaction(&transaction, fence, self.clock.now_ms())?;
         transaction
             .execute(
                 "UPDATE fence SET expires_at_ms = ?1 WHERE singleton = 1",
@@ -323,10 +311,39 @@ impl LedgerStore for SqliteLedgerStore {
         })
     }
 
+    async fn release_fence(&self, fence: &Fence) -> Result<(), StoreError> {
+        let _writer = self
+            .writer
+            .lock()
+            .expect("SQLite writer mutex must not be poisoned");
+        let released_at_ms = self.clock.now_ms();
+        let mut connection = self.connect_existing(&fence.resource)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| StoreError::Storage)?;
+        check_exact_fence_transaction(&transaction, fence, self.clock.now_ms())?;
+        let changed = transaction
+            .execute(
+                "UPDATE fence SET expires_at_ms = ?1
+                 WHERE singleton = 1 AND owner_id = ?2 AND epoch = ?3 AND expires_at_ms = ?4",
+                rusqlite::params![
+                    to_sql_i64(released_at_ms)?,
+                    fence.owner.as_str(),
+                    to_sql_i64(fence.epoch)?,
+                    to_sql_i64(fence.expires_at_ms)?
+                ],
+            )
+            .map_err(|_| StoreError::Storage)?;
+        if changed != 1 {
+            return Err(StoreError::StaleFence);
+        }
+        transaction.commit().map_err(|_| StoreError::Storage)
+    }
+
     async fn check_fence(&self, fence: &Fence) -> Result<(), StoreError> {
         let mut connection = self.connect_existing(&fence.resource)?;
         let transaction = connection.transaction().map_err(|_| StoreError::Storage)?;
-        self.check_fence_tx(&transaction, fence)?;
+        check_fence_transaction(&transaction, fence, self.clock.now_ms())?;
         transaction.commit().map_err(|_| StoreError::Storage)
     }
 
