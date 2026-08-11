@@ -25,6 +25,12 @@ const repoSettingsPath = require.resolve('../../lib/repo-settings');
 describe('setup-undo', function () {
   this.timeout(15000);
 
+  it('preserves the CommonJS API contract', function () {
+    const setupUndo = require('../../lib/setup-undo');
+    assert.deepStrictEqual(Reflect.ownKeys(setupUndo), ['undo']);
+    assert.strictEqual(setupUndo.undo.length, 0);
+  });
+
   let TEST_DIR;
   let TEST_SETTINGS_FILE;
   let repoRoot;

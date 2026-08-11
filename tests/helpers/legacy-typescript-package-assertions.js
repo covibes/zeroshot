@@ -151,6 +151,14 @@ function assertSetupJournalOutput() {
   ]);
 }
 
+function assertSetupUndoOutput() {
+  const undoPath = path.join(repoRoot, 'lib/setup-undo.js');
+  assert.ok(fs.existsSync(undoPath), 'legacy TypeScript build must emit lib/setup-undo.js');
+  const setupUndo = require(undoPath);
+  assert.deepStrictEqual(Reflect.ownKeys(setupUndo), ['undo']);
+  assert.strictEqual(setupUndo.undo.length, 0);
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -221,6 +229,7 @@ function assertLegacyTypeScriptPackage() {
   assertClaudeAuthOutput();
   assertComposeUtilsOutput();
   assertSetupJournalOutput();
+  assertSetupUndoOutput();
   assertLegacyTypeScriptOutputs();
 }
 

@@ -95,3 +95,5 @@ lib/compose-utils.js
 lib/compose-utils.d.ts
 lib/setup-journal.js
 lib/setup-journal.d.ts
+lib/setup-undo.js
+lib/setup-undo.d.ts
