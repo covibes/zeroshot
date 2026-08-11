@@ -250,6 +250,7 @@ export default [
           './tsconfig.agent-cli-provider.json',
           './tsconfig.legacy-lib.json',
           './tsconfig.legacy-runtime.json',
+          './tsconfig.task-lib.json',
         ],
         tsconfigRootDir,
       },
