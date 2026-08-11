@@ -64,6 +64,7 @@ describe('npm package smoke', function () {
       'lib/setup-journal.js',
       'lib/setup-undo.js',
       'lib/setup-plan.js',
+      'lib/setup-apply.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',

@@ -28,6 +28,19 @@ const repoSettingsPath = require.resolve('../../lib/repo-settings');
 describe('setup-apply', function () {
   this.timeout(15000);
 
+  it('preserves the CommonJS API contract', function () {
+    const setupApply = require('../../lib/setup-apply');
+    assert.deepStrictEqual(Reflect.ownKeys(setupApply), [
+      'applyDecisions',
+      'applyDecisionValues',
+      'resolveAndValidateDecisions',
+      'writeResolvedDecisions',
+      'assertSecretSafePath',
+      'isConsumedPath',
+      'CONSUMED_PATHS',
+    ]);
+  });
+
   let TEST_DIR;
   let TEST_SETTINGS_FILE;
   let TEST_JOURNAL_FILE;

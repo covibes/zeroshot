@@ -103,3 +103,7 @@ lib/setup-plan.js
 lib/setup-plan.d.ts
 lib/setup-plan-types.js
 lib/setup-plan-types.d.ts
+lib/setup-apply.js
+lib/setup-apply.d.ts
+lib/setup-apply-types.js
+lib/setup-apply-types.d.ts
