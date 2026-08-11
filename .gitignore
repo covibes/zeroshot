@@ -138,8 +138,10 @@ lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
 src/guidance-topics.js
+src/input-helpers.js
 src/ledger-sequence.js
 src/task-startup-error.js
+src/task-runner.js
 src/omp-blob-root.js
 src/omp-config-overlay.js
 task-lib/completion.js
