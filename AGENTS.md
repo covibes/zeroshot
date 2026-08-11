@@ -39,7 +39,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Base templates                        | `cluster-templates/base-templates/`                                                                                              |
 | Message bus                           | `src/message-bus.js`                                                                                                             |
 | Ledger (SQLite)                       | `src/ledger.js`                                                                                                                  |
-| Guidance topics                       | `src/guidance-topics.js`                                                                                                         |
+| Guidance topics                       | `src/guidance-topics.ts` (generated CommonJS: `src/guidance-topics.js`)                                                          |
 | Guidance mailbox helper               | `src/ledger.js`                                                                                                                  |
 | Guidance live injection               | `src/orchestrator.js`                                                                                                            |
 | Trigger evaluation                    | `src/logic-engine.js`                                                                                                            |
@@ -60,6 +60,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | OMP detached RPC watcher              | `task-lib/rpc-watcher.js`                                                                                                        |
 | Provider detection                    | `lib/provider-detection.js`                                                                                                      |
 | Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
+| Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS: matching `.js` paths via `build:legacy-runtime`)                                       |
 | Provider capabilities                 | `src/providers/capabilities.js`                                                                                                  |
 | Claude settings overlay               | `src/worktree-claude-config.js`                                                                                                  |
 | Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
@@ -916,7 +917,7 @@ fresh.
 
 ### Guidance Messaging
 
-- Topics: `USER_GUIDANCE_CLUSTER`, `USER_GUIDANCE_AGENT` (see `src/guidance-topics.js`).
+- Topics: `USER_GUIDANCE_CLUSTER`, `USER_GUIDANCE_AGENT` (see `src/guidance-topics.ts`; runtime CommonJS is generated at the matching `.js` path).
 - Mailbox helper: `ledger.queryGuidanceMailbox()` with `messageBus.queryGuidanceMailbox()` passthrough.
 - Live injection: `Orchestrator.sendGuidanceToAgent()` uses `agent.injectInput()` to attempt PTY stdin; always persists `USER_GUIDANCE_AGENT` with `metadata.delivery` (`status: injected|unsupported`, `method: pty`, `taskId`, `reason`).
 - Safe-point queue fallback: `AgentWrapper._buildContext()` pulls queued guidance via `collectQueuedGuidance()` and injects a delimited block in `agent-context-builder` between Instructions and Output Schema. Durable sequence: `agent.lastGuidanceAppliedId`.

@@ -97,6 +97,7 @@ describe('npm package smoke', function () {
       'src/worktree-claude-config.js',
       'src/agent/pr-verification.js',
       'src/agents/git-pusher-template.js',
+      'src/guidance-topics.js',
       'cluster-hooks/block-ask-user-question.py',
       'cluster-hooks/block-dangerous-git.py',
     ]) {

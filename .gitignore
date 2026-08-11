@@ -137,3 +137,4 @@ lib/settings-validation.js
 lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
+src/guidance-topics.js
