@@ -199,6 +199,7 @@ async function submitRun(service, options, prepared, signal) {
   }
   const runtime = await service.runtimeBundleFor(prepared.context.target, {
     mode: options.ship ? 'ship' : 'pr',
+    clusterConfigPath: options.config,
   });
   const submissionKey = options.submissionKey ?? service.randomUUID();
   console.log(`Submission key: ${submissionKey}`);

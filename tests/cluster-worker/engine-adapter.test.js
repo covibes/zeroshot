@@ -7,6 +7,15 @@ const {
   terminalEventFromMessage,
 } = require('../../lib/cluster-worker/engine-adapter');
 
+function worktreeProfile(overrides = {}) {
+  return {
+    plan: Object.freeze({ isolation: 'worktree', delivery: 'none', autoMerge: false }),
+    deployment: { worktree: true },
+    provider: { config: { agents: [] }, settings: {} },
+    ...overrides,
+  };
+}
+
 function harness(initialMessages = []) {
   let subscriber;
   const messages = [...initialMessages];
@@ -44,11 +53,7 @@ function harness(initialMessages = []) {
       return { clusterId: value.clusterId, worktree: true };
     },
   };
-  const profile = {
-    plan: Object.freeze({ isolation: 'worktree', delivery: 'none', autoMerge: false }),
-    deployment: { worktree: true },
-    provider: { config: { agents: [] }, settings: {} },
-  };
+  const profile = worktreeProfile();
   return {
     adapter: createCurrentEngineAdapter({ orchestrator, startCluster }),
     cluster,
@@ -71,6 +76,27 @@ function terminalMessage(topic, data = {}) {
   };
 }
 
+function engineStart(profile, clusterId, onEvent = () => {}) {
+  return {
+    request: { source: 'prompt', prompt: 'task' },
+    profile,
+    artifactManifest: { artifacts: [] },
+    clusterId,
+    onEvent,
+  };
+}
+
+function adapterFor(orchestrator) {
+  return createCurrentEngineAdapter({
+    orchestrator,
+    startCluster: {
+      buildTrustedStartOptions(value) {
+        return { clusterId: value.clusterId, worktree: true };
+      },
+    },
+  });
+}
+
 describe('legacy cluster worker engine adapter', () => {
   it('defers production engine allocation until start', () => {
     let allocations = 0;
@@ -82,6 +108,31 @@ describe('legacy cluster worker engine adapter', () => {
     const adapter = createCurrentEngineAdapter({ Orchestrator: DeferredOrchestrator });
     assert.strictEqual(allocations, 0);
     assert.strictEqual(adapter.status(), null);
+  });
+
+  it('validates inline configs when a private provider profile requires it', async () => {
+    let started = false;
+    const adapter = createCurrentEngineAdapter({
+      orchestrator: {
+        validateConfig: () => ({ valid: false, errors: ['closed validation failure'] }),
+        start() {
+          started = true;
+        },
+        close() {},
+      },
+    });
+    await assert.rejects(
+      adapter.start(
+        engineStart(
+          worktreeProfile({
+            provider: { config: { agents: [] }, validateConfig: true, settings: {} },
+          }),
+          'cluster-invalid-inline'
+        )
+      ),
+      /closed validation failure/
+    );
+    assert.strictEqual(started, false);
   });
 
   it('maps closed request sources without adding an interactive input path', () => {
@@ -118,13 +169,9 @@ describe('legacy cluster worker engine adapter', () => {
     const complete = terminalMessage('CLUSTER_COMPLETE', { reason: 'done' });
     const state = harness([complete]);
     const events = [];
-    await state.adapter.start({
-      request: { source: 'prompt', prompt: 'task' },
-      profile: state.profile,
-      artifactManifest: { artifacts: [] },
-      clusterId: 'cluster-1',
-      onEvent: (event) => events.push(event),
-    });
+    await state.adapter.start(
+      engineStart(state.profile, 'cluster-1', (event) => events.push(event))
+    );
     state.emit(complete);
     assert.deepStrictEqual(events, [{ type: 'running' }, { type: 'complete', summary: 'done' }]);
     assert.deepStrictEqual(state.starts[0].options, { clusterId: 'cluster-1', worktree: true });
@@ -133,13 +180,9 @@ describe('legacy cluster worker engine adapter', () => {
   it('uses durable messages and cluster state instead of PID inference for status', async () => {
     const state = harness();
     const events = [];
-    await state.adapter.start({
-      request: { source: 'prompt', prompt: 'task' },
-      profile: state.profile,
-      artifactManifest: { artifacts: [] },
-      clusterId: 'cluster-1',
-      onEvent: (event) => events.push(event),
-    });
+    await state.adapter.start(
+      engineStart(state.profile, 'cluster-1', (event) => events.push(event))
+    );
     state.cluster.state = 'failed';
     assert.strictEqual(state.adapter.status().state, 'failed');
     assert.deepStrictEqual(events.at(-1), {
@@ -167,23 +210,8 @@ describe('legacy cluster worker engine adapter', () => {
       },
       close() {},
     };
-    const startCluster = {
-      buildTrustedStartOptions(value) {
-        return { clusterId: value.clusterId, worktree: true };
-      },
-    };
-    const adapter = createCurrentEngineAdapter({ orchestrator, startCluster });
-    adapter.start({
-      request: { source: 'prompt', prompt: 'task' },
-      profile: {
-        plan: Object.freeze({ isolation: 'worktree', delivery: 'none', autoMerge: false }),
-        deployment: { worktree: true },
-        provider: { config: { agents: [] }, settings: {} },
-      },
-      artifactManifest: { artifacts: [] },
-      clusterId: 'cluster-pending',
-      onEvent() {},
-    });
+    const adapter = adapterFor(orchestrator);
+    adapter.start(engineStart(worktreeProfile(), 'cluster-pending'));
     assert.deepStrictEqual(await adapter.stop(), { effective: true });
     assert.strictEqual(stopCalls, 1);
   });
@@ -207,26 +235,10 @@ describe('legacy cluster worker engine adapter', () => {
       },
       close() {},
     };
-    const adapter = createCurrentEngineAdapter({
-      orchestrator,
-      startCluster: {
-        buildTrustedStartOptions(value) {
-          return { clusterId: value.clusterId, worktree: true };
-        },
-      },
-    });
-    adapter.start({
-      request: { source: 'prompt', prompt: 'task' },
-      profile: {
-        plan: Object.freeze({ isolation: 'worktree', delivery: 'none', autoMerge: false }),
-        deployment: { worktree: true },
-        provider: { config: { agents: [] }, settings: {} },
-        bounds: { shutdownMs: 50 },
-      },
-      artifactManifest: { artifacts: [] },
-      clusterId: 'cluster-late-allocation',
-      onEvent() {},
-    });
+    const adapter = adapterFor(orchestrator);
+    adapter.start(
+      engineStart(worktreeProfile({ bounds: { shutdownMs: 50 } }), 'cluster-late-allocation')
+    );
     assert.deepStrictEqual(await adapter.stop(), { effective: true });
     assert.strictEqual(stopCalls, 1);
   });
@@ -253,26 +265,10 @@ describe('legacy cluster worker engine adapter', () => {
         closeCalls += 1;
       },
     };
-    const adapter = createCurrentEngineAdapter({
-      orchestrator,
-      startCluster: {
-        buildTrustedStartOptions(value) {
-          return { clusterId: value.clusterId, worktree: true };
-        },
-      },
-    });
-    adapter.start({
-      request: { source: 'prompt', prompt: 'task' },
-      profile: {
-        plan: Object.freeze({ isolation: 'worktree', delivery: 'none', autoMerge: false }),
-        deployment: { worktree: true },
-        provider: { config: { agents: [] }, settings: {} },
-        bounds: { shutdownMs: 5 },
-      },
-      artifactManifest: { artifacts: [] },
-      clusterId: 'cluster-later-than-deadline',
-      onEvent() {},
-    });
+    const adapter = adapterFor(orchestrator);
+    adapter.start(
+      engineStart(worktreeProfile({ bounds: { shutdownMs: 5 } }), 'cluster-later-than-deadline')
+    );
     assert.deepStrictEqual(await adapter.stop(), { effective: false });
     await adapter.waitForCleanup();
     assert.strictEqual(stopCalls, 1);

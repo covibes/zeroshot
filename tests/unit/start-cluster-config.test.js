@@ -6,6 +6,7 @@ const {
   buildTrustedStartOptions,
 } = require('../../lib/start-cluster');
 const { resolveRunPlan } = require('../../lib/run-plan');
+const Orchestrator = require('../../src/orchestrator');
 
 function createOrchestrator(config) {
   const calls = { loadConfig: [] };
@@ -153,6 +154,48 @@ describe('buildTrustedStartOptions()', function () {
       if (previous === undefined) delete process.env.ZEROSHOT_RUN_OPTIONS;
       else process.env.ZEROSHOT_RUN_OPTIONS = previous;
     }
+  });
+
+  it('passes a prepared worktree and model only through the trusted builder', function () {
+    const preparedWorktree = Object.freeze({
+      path: '/workspace',
+      repoRoot: '/workspace',
+      branch: 'zeroshot/hosted-test',
+      baseSha: 'a'.repeat(40),
+    });
+    const result = buildTrustedStartOptions({
+      clusterId: 'trusted-hosted',
+      plan: resolveRunPlan({ worktree: true }),
+      options: { cwd: '/workspace', preparedWorktree },
+      modelOverride: 'future/model',
+    });
+    assert.strictEqual(result.preparedWorktree, preparedWorktree);
+    assert.strictEqual(result.modelOverride, 'future/model');
+  });
+
+  it('uses a trusted prepared worktree without allocating a nested worktree', async function () {
+    const result = await Orchestrator.prototype._initializeIsolation.call(
+      { _log() {} },
+      {
+        cwd: '/workspace',
+        worktree: true,
+        preparedWorktree: {
+          path: '/workspace',
+          repoRoot: '/workspace',
+          branch: 'zeroshot/hosted-test',
+          baseSha: 'a'.repeat(40),
+        },
+      },
+      {},
+      'trusted-hosted'
+    );
+    assert.strictEqual(result.isolationManager, null);
+    assert.deepStrictEqual(result.worktreeInfo, {
+      path: '/workspace',
+      repoRoot: '/workspace',
+      branch: 'zeroshot/hosted-test',
+      baseSha: 'a'.repeat(40),
+    });
   });
 
   it('rejects mutable, non-isolated, and non-canonical plans', function () {

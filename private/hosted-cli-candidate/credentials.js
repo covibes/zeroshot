@@ -5,7 +5,12 @@ const {
   DELIVERY_CONTRACT_VERSION,
   normalizeDeliveryRequest,
 } = require('../../lib/delivery-contract');
-const { readRuntimeConfig, resolveHostedRuntime } = require('./runtime-config');
+const {
+  readRuntimeConfig,
+  readRuntimeTextFile,
+  resolveHostedRuntime,
+  withRuntimeFile,
+} = require('./runtime-config');
 
 const MAX_RUNTIME_BUNDLE_BYTES = 4 * 1024 * 1024;
 const BASE_REVISION = /^[0-9a-f]{40}$/;
@@ -209,12 +214,18 @@ async function resolveRuntimeBundle(target, options = {}) {
     repository: setup.repository,
     ...submission,
   });
+  let hostedRuntime = resolveHostedRuntime(runtime, environment);
+  if (options.clusterConfigPath !== undefined) {
+    const clusterBytes = readRuntimeTextFile(options.clusterConfigPath);
+    JSON.parse(clusterBytes);
+    hostedRuntime = withRuntimeFile(hostedRuntime, 'cluster.json', clusterBytes);
+  }
   const bundle = {
     githubToken: token,
     repository: setup.repository,
     baseRevision: delivery.baseRevision,
     delivery,
-    runtime: resolveHostedRuntime(runtime, environment),
+    runtime: hostedRuntime,
   };
   if (Buffer.byteLength(JSON.stringify(bundle)) > MAX_RUNTIME_BUNDLE_BYTES) {
     throw new Error('hosted runtime bundle exceeds 4 MiB');

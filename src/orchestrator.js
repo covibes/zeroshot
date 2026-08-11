@@ -111,6 +111,35 @@ function applyModelOverride(agentConfig, modelOverride) {
  */
 const VALID_OPERATIONS = ['add_agents', 'remove_agents', 'update_agent', 'publish', 'load_config'];
 
+function isValidPreparedWorktreeDescriptor(prepared, cwd) {
+  if (!prepared) return false;
+  if (typeof prepared !== 'object') return false;
+  if (path.resolve(String(prepared.path)) !== cwd) return false;
+  if (path.resolve(String(prepared.repoRoot)) !== cwd) return false;
+  if (typeof prepared.branch !== 'string') return false;
+  if (prepared.branch.length === 0) return false;
+  if (prepared.branch.length > 255) return false;
+  return /^[0-9a-f]{40}$/.test(String(prepared.baseSha));
+}
+
+function resolvePreparedWorktree(options) {
+  const prepared = options.preparedWorktree;
+  if (!prepared) return null;
+  const cwd = path.resolve(options.cwd || process.cwd());
+  if (options.worktree !== true || options.isolation) {
+    throw new Error('Invalid prepared worktree authority');
+  }
+  if (!isValidPreparedWorktreeDescriptor(prepared, cwd)) {
+    throw new Error('Invalid prepared worktree authority');
+  }
+  return Object.freeze({
+    path: cwd,
+    repoRoot: cwd,
+    branch: prepared.branch,
+    baseSha: prepared.baseSha,
+  });
+}
+
 /**
  * Workflow-triggering topics that indicate cluster state progression
  * These are the topics that MATTER for resume - not AGENT_OUTPUT noise
@@ -1854,7 +1883,10 @@ class Orchestrator {
     let worktreeInfo = null;
     let isolationImage = null;
 
-    if (options.isolation) {
+    if (options.preparedWorktree) {
+      worktreeInfo = resolvePreparedWorktree(options);
+      this._log(`[Orchestrator] Using prepared worktree: ${worktreeInfo.path}`);
+    } else if (options.isolation) {
       // Resolve the provider first so the capability gate and the cluster's image variant (which
       // installs the provider CLI as a Docker-cached layer) both see the same provider. Providers
       // baked into the base image (e.g. Claude) resolve back to the base image unchanged.

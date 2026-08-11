@@ -84,7 +84,46 @@ describe('hosted worker runtime boundary', () => {
           'future-provider': { endpoint: 'https://models.example' },
         },
       });
+      assert.deepEqual(config.cluster, { configName: 'conductor-bootstrap' });
       assert.equal(Object.hasOwn(config.runtimeEnvironment, 'GH_TOKEN'), false);
+    } finally {
+      removeTempDirectory(directory);
+    }
+  });
+
+  it('loads only the installed declarative cluster file', () => {
+    const { directory, environment } = fixture();
+    const clusterFile = path.join(directory, 'cluster.json');
+    const config = {
+      agents: [
+        {
+          id: 'worker',
+          role: 'implementation',
+          triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
+          hooks: {
+            onComplete: {
+              action: 'publish_message',
+              config: { topic: 'CLUSTER_COMPLETE' },
+            },
+          },
+        },
+      ],
+    };
+    try {
+      fs.writeFileSync(clusterFile, JSON.stringify(config));
+      const loaded = loadInstalledHostedWorkerConfiguration(environment, {
+        clusterConfigFile: clusterFile,
+      });
+      assert.deepEqual(loaded.cluster, { config });
+
+      fs.writeFileSync(clusterFile, JSON.stringify({ ...config, plugins: ['custom'] }));
+      assert.throws(
+        () =>
+          loadInstalledHostedWorkerConfiguration(environment, {
+            clusterConfigFile: clusterFile,
+          }),
+        /Hosted runtime configuration is invalid/
+      );
     } finally {
       removeTempDirectory(directory);
     }

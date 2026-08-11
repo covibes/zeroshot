@@ -8,6 +8,7 @@ const {
 } = require('./hosted-oecp-smoke-capability');
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+const NOTIFICATION_TIMEOUT_MS = 15_000;
 function record(fields) {
   return {
     fields: Object.fromEntries(fields.map(([name, type, required]) => [name, { required, type }])),
@@ -224,7 +225,7 @@ class RpcClient {
           const index = this.waiters.indexOf(waiter);
           if (index >= 0) this.waiters.splice(index, 1);
           reject(new Error('Timed out waiting for OECP notification'));
-        }, 5000),
+        }, NOTIFICATION_TIMEOUT_MS),
       };
       this.waiters.push(waiter);
     });

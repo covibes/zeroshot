@@ -1,17 +1,15 @@
 'use strict';
 
 const fs = require('node:fs');
-const { runProviderExecutable } = require('../../lib/agent-cli-provider');
+const { createCurrentEngineAdapter } = require('../../lib/cluster-worker/engine-adapter');
 const {
   createAdapterFacade,
   declaredFailureEvent,
   frozenResourceStatus,
-  requestText,
 } = require('../../lib/cluster-worker/engine-adapter-common');
 const { prepareWorkspace, shipWorkspace } = require('./workspace-ship');
 
 const WORKSPACE = '/workspace';
-const PROVIDER_TIMEOUT_MS = 60 * 60 * 1000;
 
 function rejectInheritedSockets() {
   for (const descriptor of fs.readdirSync('/proc/self/fd')) {
@@ -56,107 +54,100 @@ function validateRequestAuthority(config, request) {
   }
 }
 
-function providerPrompt(request) {
-  return [
-    'Complete the requested task by modifying the current Git workspace.',
-    'Do not commit, push, create a pull request, or expose environment credentials.',
-    'The hosted runtime performs and verifies Git delivery after your process exits successfully.',
-    requestText(request, 'Complete the task represented by the prepared artifact inputs.'),
-  ].join('\n\n');
+function withholdGitCredentials() {
+  const values = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
+  delete process.env.GH_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  return () => {
+    for (const [name, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
 }
 
-function providerInvocation(config, request) {
-  const modelSpec = config.model === undefined ? {} : { model: config.model };
+function preparedProfile(profile, config, branch) {
   return Object.freeze({
-    schemaVersion: 1,
-    command: 'invoke',
-    provider: config.executable,
-    context: providerPrompt(request),
-    cwd: WORKSPACE,
-    options: Object.freeze({
-      ...(config.executable === 'omp' ? {} : { authEnv: config.runtimeEnvironment }),
-      autoApprove: true,
-      cwd: WORKSPACE,
-      executionContext: 'docker',
-      ...(config.model === undefined ? {} : { modelSpec: Object.freeze(modelSpec) }),
+    ...profile,
+    deployment: Object.freeze({
+      ...profile.deployment,
+      preparedWorktree: Object.freeze({
+        path: WORKSPACE,
+        repoRoot: WORKSPACE,
+        branch,
+        baseSha: config.baseRevision,
+      }),
     }),
-    timeoutMs: PROVIDER_TIMEOUT_MS,
   });
 }
 
-async function withoutGitCredential(operation) {
-  const gitToken = process.env.GH_TOKEN;
-  const githubToken = process.env.GITHUB_TOKEN;
-  delete process.env.GH_TOKEN;
-  delete process.env.GITHUB_TOKEN;
-  try {
-    return await operation();
-  } finally {
-    if (gitToken === undefined) delete process.env.GH_TOKEN;
-    else process.env.GH_TOKEN = gitToken;
-    if (githubToken === undefined) delete process.env.GITHUB_TOKEN;
-    else process.env.GITHUB_TOKEN = githubToken;
-  }
+function legacyShipResult(deliveryResult) {
+  return {
+    summary: `Hosted worker completed ${deliveryResult.disposition}`,
+    status: 'succeeded',
+    artifacts: [],
+    repository: deliveryResult.repository,
+    branch: deliveryResult.deliveryBranch,
+    headRevision: deliveryResult.headRevision,
+    pullRequestUrl: deliveryResult.pullRequestUrl,
+  };
 }
 
-class HostedProviderEngineAdapter {
+class HostedClusterEngineAdapter {
   constructor(config, dependencies = {}) {
-    requireHostedEnvironment(config);
+    (dependencies.requireHostedEnvironment || requireHostedEnvironment)(config);
     this.config = config;
-    this.invokeProvider = dependencies.invokeProvider || runProviderExecutable;
+    this.createEngine = dependencies.createEngine || (() => createCurrentEngineAdapter());
     this.prepareWorkspace = dependencies.prepareWorkspace || prepareWorkspace;
     this.shipWorkspace = dependencies.shipWorkspace || shipWorkspace;
     this.resource = null;
-    this.execution = null;
+    this.inner = null;
+    this.finalization = null;
+    this.restoreGitCredentials = null;
     this.closed = false;
+    this.innerTerminal = false;
   }
 
-  start({ request, clusterId, onEvent }) {
-    if (this.resource) throw new Error('Hosted provider adapter owns exactly one run');
+  async start({ request, profile, prepareArtifacts, clusterId, onEvent }) {
+    if (this.resource) throw new Error('Hosted cluster adapter owns exactly one run');
     validateRequestAuthority(this.config, request);
     this.resource = { clusterId, onEvent };
-    this.execution = this.execute(request, clusterId);
-    onEvent({ type: 'running' });
-    return Object.freeze({ clusterId, artifactsStaged: true });
+    const branch = await this.prepareWorkspace(this.config, clusterId);
+    this.restoreGitCredentials = withholdGitCredentials();
+    this.inner = this.createEngine();
+    return this.inner.start({
+      request,
+      profile: preparedProfile(profile, this.config, branch),
+      ...(prepareArtifacts ? { prepareArtifacts } : {}),
+      clusterId,
+      onEvent: (event) => this.consumeInnerEvent(event, branch),
+    });
   }
 
-  async execute(request, clusterId) {
+  consumeInnerEvent(event, branch) {
+    if (this.closed || this.innerTerminal) return;
+    if (event.type === 'running') {
+      this.resource.onEvent(event);
+      return;
+    }
+    this.innerTerminal = true;
+    if (event.type === 'complete') {
+      this.finalization = this.finishDelivery(branch);
+      return;
+    }
+    this.resource.onEvent(event.type === 'failed' ? event : declaredFailureEvent());
+  }
+
+  async finishDelivery(branch) {
     try {
-      const branch = await this.prepareWorkspace(this.config, clusterId);
-      const response = await withoutGitCredential(() =>
-        this.invokeProvider(JSON.stringify(providerInvocation(this.config, request)), {
-          runtimeSettings: this.config.settings,
-        })
-      );
-      const result = response?.envelope?.ok === true ? response.envelope.result : null;
-      if (
-        response?.exitCode !== 0 ||
-        !result ||
-        result.exitCode !== 0 ||
-        result.signal !== null ||
-        result.timedOut === true ||
-        result.classification !== null
-      ) {
-        throw new Error('Hosted provider execution failed');
-      }
-      if (this.closed) return;
+      const stopped = await this.inner.stop();
+      if (stopped?.effective === false) throw new Error('Hosted cluster cleanup failed');
+      await this.inner.waitForCleanup();
+      this.restoreGitCredentials();
+      this.restoreGitCredentials = null;
       const deliveryResult = await this.shipWorkspace(this.config, branch);
-      const receipt = {
-        repository: deliveryResult.repository,
-        branch: deliveryResult.deliveryBranch,
-        headRevision: deliveryResult.headRevision,
-        pullRequestUrl: deliveryResult.pullRequestUrl,
-      };
       if (!this.closed) {
-        this.resource.onEvent({
-          type: 'complete',
-          result: {
-            summary: `Hosted worker completed ${deliveryResult.disposition}`,
-            status: 'succeeded',
-            artifacts: [],
-            ...receipt,
-          },
-        });
+        this.resource.onEvent({ type: 'complete', result: legacyShipResult(deliveryResult) });
       }
     } catch {
       if (!this.closed) this.resource.onEvent(declaredFailureEvent());
@@ -165,31 +156,37 @@ class HostedProviderEngineAdapter {
 
   status() {
     if (!this.resource) return null;
-    return frozenResourceStatus(this.resource, this.closed ? 'released' : 'running');
+    if (this.inner) return this.inner.status();
+    return frozenResourceStatus(this.resource, this.closed ? 'released' : 'starting');
   }
 
   stop() {
-    if (!this.resource) throw new Error('Hosted provider adapter has no run');
+    if (!this.resource) throw new Error('Hosted cluster adapter has no run');
     this.closed = true;
-    return Object.freeze({ effective: true });
+    return this.inner ? this.inner.stop() : Object.freeze({ effective: true });
   }
 
   async waitForCleanup() {
-    await this.execution;
+    if (this.finalization) {
+      await this.finalization;
+      return;
+    }
+    await this.inner?.waitForCleanup();
   }
 
   close() {
     this.closed = true;
+    this.inner?.close();
   }
 }
 
-function createHostedProviderEngineAdapter(config, dependencies) {
-  return createAdapterFacade(new HostedProviderEngineAdapter(config, dependencies));
+function createHostedClusterEngineAdapter(config, dependencies) {
+  return createAdapterFacade(new HostedClusterEngineAdapter(config, dependencies));
 }
 
 module.exports = {
-  providerInvocation,
-  createHostedProviderEngineAdapter,
+  createHostedClusterEngineAdapter,
+  preparedProfile,
   validateRequestAuthority,
-  withoutGitCredential,
+  withholdGitCredentials,
 };

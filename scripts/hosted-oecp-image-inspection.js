@@ -7,12 +7,14 @@ const REQUIRED_RUNTIME_MODULES = Object.freeze([
   'commandCleanupOwnership',
   'deliveryContract',
   'engineStart',
+  'legacyEngine',
   'ompConfigOverlay',
   'ompRuntime',
   'ompRuntimeIdentities',
   'ompRuntimeLock',
   'ompRuntimeRelease',
   'runtimeDependencies',
+  'orchestrator',
   'worktreeClaudeConfig',
   'worktreeToolingEnv',
 ]);
@@ -64,9 +66,7 @@ process.stdout.write(JSON.stringify({
   controlRoot: ownership('/run/zeroshot-capsule-agent'),
   forbiddenPresent: [
     '/usr/bin/gh',
-    '/opt/zeroshot/cli',
     '/opt/zeroshot/src/target',
-    '/opt/zeroshot/lib/cluster-worker/engine-adapter.js',
   ].filter((target) => fs.existsSync(target)),
   packageManagerPaths: {
     '/usr/local/bin/npm': present('/usr/local/bin/npm'),
@@ -84,8 +84,10 @@ process.stdout.write(JSON.stringify({
     commandCleanupOwnership: loadable('/opt/zeroshot/src/command-cleanup-ownership.js'),
     deliveryContract: loadable('/opt/zeroshot/lib/delivery-contract.js'),
     engineStart: fs.existsSync('/opt/zeroshot/lib/cluster-worker/engine-start.js'),
+    legacyEngine: loadable('/opt/zeroshot/lib/cluster-worker/engine-adapter.js'),
     ompConfigOverlay: loadable('/opt/zeroshot/src/omp-config-overlay.js'),
     runtimeDependencies: fs.existsSync('/opt/zeroshot/lib/cluster-worker/runtime-dependencies.js'),
+    orchestrator: loadable('/opt/zeroshot/src/orchestrator.js'),
     ompRuntime: loadable('/opt/zeroshot/scripts/omp/runtime.js'),
     ompRuntimeIdentities: loadable('/opt/zeroshot/scripts/omp/runtime-identities.js'),
     ompRuntimeLock: loadable('/opt/zeroshot/scripts/omp/runtime-lock.js'),
@@ -96,6 +98,7 @@ process.stdout.write(JSON.stringify({
   serverExecutable: executable('/usr/local/bin/zeroshot-oecp-server'),
   tiniExecutable: executable('/usr/bin/tini'),
   gitExecutable: executable('/usr/bin/git'),
+  zeroshotExecutable: executable('/usr/local/bin/zeroshot'),
   gitAskpassExecutable: executable(
     '/opt/zeroshot/zeroshot-rust/hosted-node/git-askpass.js'
   ),
@@ -165,6 +168,7 @@ function validateRuntimeExecutables(runtime) {
     runtime.serverExecutable !== true ||
     runtime.tiniExecutable !== true ||
     runtime.gitExecutable !== true ||
+    runtime.zeroshotExecutable !== true ||
     runtime.gitAskpassExecutable !== true ||
     runtime.ajvVersion !== '8.18.0' ||
     runtime.undiciVersion !== '8.9.0'

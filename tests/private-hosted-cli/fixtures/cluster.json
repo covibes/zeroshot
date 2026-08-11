@@ -1,0 +1,14 @@
+{
+  "name": "Hosted custom cluster",
+  "agents": [
+    {
+      "id": "worker",
+      "role": "implementation",
+      "prompt": "Complete the task.",
+      "triggers": [{ "topic": "ISSUE_OPENED", "action": "execute_task" }],
+      "hooks": {
+        "onComplete": { "action": "publish_message", "config": { "topic": "CLUSTER_COMPLETE" } }
+      }
+    }
+  ]
+}

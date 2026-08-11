@@ -73,6 +73,7 @@ function registerNativeMetadataTest() {
     const privateHostedAdapterFiles = new Set([
       'hosted-node/capsule-entrypoint.js',
       'hosted-node/config-check.js',
+      'hosted-node/declarative-cluster.js',
       'hosted-node/engine-adapter.js',
       'hosted-node/git-askpass.js',
       'hosted-node/hosted-config.js',

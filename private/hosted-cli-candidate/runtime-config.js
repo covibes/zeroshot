@@ -195,6 +195,26 @@ function expandSourcePath(filename) {
   return path.resolve(filename);
 }
 
+function readRuntimeTextFile(filename) {
+  const sourcePath = expandSourcePath(filename);
+  const descriptor = fs.openSync(
+    sourcePath,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0)
+  );
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error(`runtime file source is not regular: ${sourcePath}`);
+    if (stat.size > MAX_FILE_BYTES) throw new Error(`runtime file exceeds 512 KiB: ${sourcePath}`);
+    const contents = fs.readFileSync(descriptor, 'utf8');
+    if (Buffer.byteLength(contents) > MAX_FILE_BYTES) {
+      throw new Error(`runtime file exceeds 512 KiB after text decoding: ${sourcePath}`);
+    }
+    return contents;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 function resolveEnvironment(environment, hostEnvironment) {
   const entries = [];
   for (const [name, source] of Object.entries(environment)) {
@@ -222,30 +242,25 @@ function resolveFiles(files) {
     if (typeof source === 'string') {
       contents = source;
     } else {
-      const sourcePath = expandSourcePath(source.from);
-      const descriptor = fs.openSync(
-        sourcePath,
-        fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0)
-      );
-      try {
-        const stat = fs.fstatSync(descriptor);
-        if (!stat.isFile()) throw new Error(`runtime file source is not regular: ${sourcePath}`);
-        if (stat.size > MAX_FILE_BYTES) {
-          throw new Error(`runtime file exceeds 512 KiB: ${sourcePath}`);
-        }
-        contents = fs.readFileSync(descriptor, 'utf8');
-        if (Buffer.byteLength(contents) > MAX_FILE_BYTES) {
-          throw new Error(`runtime file exceeds 512 KiB after text decoding: ${sourcePath}`);
-        }
-      } finally {
-        fs.closeSync(descriptor);
-      }
+      contents = readRuntimeTextFile(source.from);
     }
     total += Buffer.byteLength(contents);
     if (total > MAX_CONFIG_BYTES) throw new Error('runtime files exceed 1 MiB in total');
     entries.push([filename, contents]);
   }
   return Object.fromEntries(entries);
+}
+
+function withRuntimeFile(runtime, filename, contents) {
+  if (!validRuntimePath(filename)) throw new Error(`invalid runtime file path: ${filename}`);
+  if (typeof contents !== 'string' || Buffer.byteLength(contents) > MAX_FILE_BYTES) {
+    throw new Error(`runtime file exceeds 512 KiB: ${filename}`);
+  }
+  const files = { ...runtime.files, [filename]: contents };
+  if (Object.keys(files).length > 128) throw new Error('runtime files exceeds 128 entries');
+  const total = Object.values(files).reduce((bytes, value) => bytes + Buffer.byteLength(value), 0);
+  if (total > MAX_CONFIG_BYTES) throw new Error('runtime files exceed 1 MiB in total');
+  return { ...runtime, files };
 }
 
 function resolveHostedRuntime(targetRuntime, hostEnvironment = process.env) {
@@ -259,6 +274,8 @@ function resolveHostedRuntime(targetRuntime, hostEnvironment = process.env) {
 
 module.exports = {
   normalizeRuntimeConfig,
+  readRuntimeTextFile,
   readRuntimeConfig,
   resolveHostedRuntime,
+  withRuntimeFile,
 };

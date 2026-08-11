@@ -1,8 +1,14 @@
 'use strict';
 
+// stdout is reserved for the legacy worker protocol. The old Node engine still
+// contains informational console output that must not become protocol frames.
+console.log = () => {};
+console.info = () => {};
+console.debug = () => {};
+
 const { runClusterWorkerExecutable } = require('../../lib/cluster-worker/executable');
 const { createLegacyClusterWorker } = require('../../lib/cluster-worker');
-const { createHostedProviderEngineAdapter } = require('./engine-adapter');
+const { createHostedClusterEngineAdapter } = require('./engine-adapter');
 const { loadInstalledHostedWorkerConfiguration } = require('./hosted-config');
 
 const ISOLATION_PROFILE = 'isolation.prepared-worktree@1';
@@ -19,22 +25,30 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function fixedProfile(delivery) {
+function fixedProfile(config) {
   return deepFreeze({
     isolationProfile: ISOLATION_PROFILE,
     providerProfile: PROVIDER_PROFILE,
     plan: {
       isolation: 'worktree',
-      delivery: delivery.mode,
-      autoMerge: delivery.mode === 'ship',
+      delivery: 'none',
+      autoMerge: false,
     },
     deployment: { prepared: true },
-    provider: { hostedDirect: true },
+    provider: {
+      ...config.cluster,
+      validateConfig: config.cluster.config !== undefined,
+      settings: config.settings,
+      providerOverride: config.executable,
+      forceProvider: config.executable,
+      ...(config.model === undefined ? {} : { modelOverride: config.model }),
+    },
     bounds: { ...BOUNDS },
   });
 }
 
 const hostedConfig = loadInstalledHostedWorkerConfiguration();
+process.env.ZEROSHOT_TASK_EXECUTION_CONTEXT = 'docker';
 
 const profileRegistry = Object.freeze({
   bounds: BOUNDS,
@@ -42,7 +56,7 @@ const profileRegistry = Object.freeze({
     if (isolationProfile !== ISOLATION_PROFILE || providerProfile !== PROVIDER_PROFILE) {
       throw new Error('Legacy request does not use the fixed capsule profiles');
     }
-    return fixedProfile(hostedConfig.delivery);
+    return fixedProfile(hostedConfig);
   },
 });
 
@@ -55,7 +69,7 @@ const artifactResolver = Object.freeze({
 const worker = createLegacyClusterWorker({
   profileRegistry,
   artifactResolver,
-  engineAdapter: createHostedProviderEngineAdapter(hostedConfig),
+  engineAdapter: createHostedClusterEngineAdapter(hostedConfig),
   cleanupFailureReporter() {
     process.stderr.write('hosted worker cleanup failed\n');
   },
