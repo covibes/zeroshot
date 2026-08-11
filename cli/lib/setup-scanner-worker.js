@@ -1,9 +1,8 @@
 const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const { parentPort, workerData } = require('worker_threads');
 
 const { commandExists, getCommandPath } = require('../../lib/provider-detection');
+const { resolveProviderCredentialPaths } = require('../../lib/provider-credential-path');
 const { getProviderMetadata, resolveProviderCommand } = require('../../lib/provider-names');
 const { execSync } = require('../../src/lib/safe-exec');
 
@@ -41,19 +40,13 @@ function probeIssue() {
   return checkGhAuth();
 }
 
-function expandCredentialPath(value) {
-  if (value === '~') return os.homedir();
-  if (value.startsWith('~/')) return path.join(os.homedir(), value.slice(2));
-  return value;
-}
-
 function hasCredentialEvidence(metadata) {
   const hasEnvironment = metadata.credentialEnvKeys.some((key) => {
     const value = process.env[key];
     return typeof value === 'string' && value.trim().length > 0;
   });
   if (hasEnvironment) return true;
-  return metadata.credentialPaths.some((item) => fs.existsSync(expandCredentialPath(item)));
+  return resolveProviderCredentialPaths(metadata).some((item) => fs.existsSync(item));
 }
 
 function providerAuthStatus(id, metadata, available) {

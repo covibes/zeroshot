@@ -1,7 +1,6 @@
 const assert = require('node:assert');
 const { createHash } = require('node:crypto');
-const EventEmitter = require('node:events');
-const { PassThrough } = require('node:stream');
+const { isolatedAgent, isolatedTailManager } = require('./helpers/isolated-provider-lifecycle');
 
 const { executeTask } = require('../src/agent/agent-lifecycle');
 const { isCriticalAgent } = require('../src/agent/critical-agent-policy');
@@ -42,14 +41,6 @@ function retryableFailureAgent(messages, lifecycle) {
     _resolveProvider: () => 'codex',
     _log() {},
   };
-}
-
-function isolatedTailProcess() {
-  const processHandle = new EventEmitter();
-  processHandle.stdout = new PassThrough();
-  processHandle.stderr = new PassThrough();
-  processHandle.kill = () => {};
-  return processHandle;
 }
 
 describe('provider terminal failure lifecycle', function () {
@@ -168,42 +159,8 @@ describe('isolated provider terminal failure lifecycle', function () {
       error: { message: rawError },
     })}\n`;
     const published = [];
-    const manager = {
-      spawnInContainer: () => isolatedTailProcess(),
-      execInContainer(_clusterId, command) {
-        const rendered = command.join(' ');
-        if (rendered.includes('get-log-path')) {
-          return Promise.resolve({ code: 0, stdout: '/tmp/final.log\n', stderr: '' });
-        }
-        if (rendered.includes('zeroshot status')) {
-          return Promise.resolve({ code: 0, stdout: 'Status: failed\n', stderr: '' });
-        }
-        if (rendered.includes('wc -c')) {
-          return Promise.resolve({
-            code: 0,
-            stdout: `${Buffer.byteLength(raw)}\n`,
-            stderr: '',
-          });
-        }
-        if (rendered.includes('tail -c')) {
-          return Promise.resolve({ code: 0, stdout: raw, stderr: '' });
-        }
-        return Promise.reject(new Error(`Unexpected isolated command: ${rendered}`));
-      },
-    };
-    const agent = {
-      id: 'isolated-final-worker',
-      role: 'implementation',
-      iteration: 1,
-      running: true,
-      config: { outputFormat: 'text', cwd: process.cwd() },
-      cluster: { id: 'isolated-final' },
-      isolation: { manager, clusterId: 'isolated-final' },
-      messageBus: { publish: (message) => published.push(message) },
-      _resolveProvider: () => 'codex',
-      _log() {},
-      _stopLivenessCheck() {},
-    };
+    const manager = isolatedTailManager(raw, 'failed');
+    const agent = isolatedAgent('codex', manager, published);
 
     const result = await followClaudeTaskLogsIsolated(agent, 'task-final-only', {
       skipStructuredResultCheck: true,

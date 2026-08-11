@@ -373,15 +373,17 @@ describe('Output Reformatter', function () {
     });
   }
 
-  for (const provider of ['gateway', 'pi', 'copilot', 'kiro']) {
+  for (const [provider, expectedError] of [
+    ['gateway', /missing required JSON block/],
+    ['pi', /Pi JSON stream contained malformed output/],
+    ['copilot', /missing required JSON block/],
+    ['kiro', /missing required JSON block/],
+  ]) {
     it(`does not launch recovery for ineligible provider ${provider}`, async function () {
       const runReformat = sinon.spy();
       const agent = recoveryAgent({ provider, runReformat });
 
-      await assert.rejects(
-        parseResultOutput(agent, 'No JSON was emitted'),
-        /missing required JSON block/
-      );
+      await assert.rejects(parseResultOutput(agent, 'No JSON was emitted'), expectedError);
       assert.equal(runReformat.callCount, 0);
     });
   }

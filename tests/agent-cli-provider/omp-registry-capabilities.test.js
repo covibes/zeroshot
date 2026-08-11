@@ -178,7 +178,7 @@ test('omp Docker envPassthrough never automatically forwards non-allowlisted cre
 });
 
 test('every other registry entry keeps its docker metadata byte-identical (mount still present)', () => {
-  for (const id of ['claude', 'codex', 'gateway', 'gemini', 'opencode', 'pi', 'kiro', 'copilot']) {
+  for (const id of ['claude', 'codex', 'gateway', 'gemini', 'opencode', 'kiro', 'copilot']) {
     const entry = getProviderRegistryEntry(id);
     assert.ok(entry.docker.mount, `${id} must keep its docker.mount`);
     assert.equal(entry.docker.platform, undefined, `${id} must not declare docker.platform`);

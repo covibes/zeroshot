@@ -30,6 +30,7 @@ const {
   isUsableEnvValue,
   validateProviderEnvAuth,
 } = require('../lib/docker-config');
+const { resolveProviderCredentialPaths } = require('../lib/provider-credential-path');
 const { getProvider } = require('./providers');
 const { readRepoSettings } = require('../lib/repo-settings');
 const { provisionClaudeCredentials } = require('./claude-credentials');
@@ -149,6 +150,34 @@ function expandHomePath(value) {
   if (!value) return value;
   if (value === '~') return os.homedir();
   return value.replace(/^~(?=\/|$)/, os.homedir());
+}
+
+function appendCredentialMount(plan, mount, explicitContainerPaths, claudeContainerPath) {
+  if (mount.container === claudeContainerPath) {
+    console.warn(
+      `[IsolationManager] Skipping mount for ${mount.host} -> ${mount.container} ` +
+        '(Claude config is managed by zeroshot).'
+    );
+    return;
+  }
+
+  const hostPath = expandHomePath(mount.host);
+  let stat;
+  try {
+    stat = fs.statSync(hostPath);
+  } catch {
+    return;
+  }
+  if (hostPath.endsWith('config') && !stat.isFile()) return;
+
+  plan.mountedHosts.push(hostPath);
+  const mountSpec = mount.readonly
+    ? `${hostPath}:${mount.container}:ro`
+    : `${hostPath}:${mount.container}`;
+  plan.args.push('-v', mountSpec);
+  if (explicitContainerPaths.has(mount.container)) {
+    plan.explicitMountContainerPaths.push(mount.container);
+  }
 }
 
 function pathContains(base, target) {
@@ -325,7 +354,6 @@ class IsolationManager {
     this._removeContainerByName(containerName);
 
     workDir = await this._prepareIsolatedWorkspace(clusterId, workDir, reuseExisting);
-
     // The cluster config dir carries Claude credentials (via provisionClaudeCredentials) and the
     // Claude-specific AskUserQuestion-blocking hook (~/.claude/settings.json PreToolUse), which
     // only the `claude` CLI reads. Creating and mounting it for every provider — regardless of
@@ -534,33 +562,7 @@ class IsolationManager {
     const claudeContainerPath = path.posix.join(containerHome, '.claude');
 
     for (const mount of mounts) {
-      if (mount.container === claudeContainerPath) {
-        console.warn(
-          `[IsolationManager] Skipping mount for ${mount.host} -> ${mount.container} ` +
-            '(Claude config is managed by zeroshot).'
-        );
-        continue;
-      }
-
-      const hostPath = expandHomePath(mount.host);
-
-      try {
-        const stat = fs.statSync(hostPath);
-        if (hostPath.endsWith('config') && !stat.isFile()) {
-          continue;
-        }
-      } catch {
-        continue;
-      }
-
-      const mountSpec = mount.readonly
-        ? `${hostPath}:${mount.container}:ro`
-        : `${hostPath}:${mount.container}`;
-      plan.args.push('-v', mountSpec);
-      plan.mountedHosts.push(hostPath);
-      if (explicitContainerPaths.has(mount.container)) {
-        plan.explicitMountContainerPaths.push(mount.container);
-      }
+      appendCredentialMount(plan, mount, explicitContainerPaths, claudeContainerPath);
     }
 
     const { envToPass, explicitNames } = this._collectDockerEnvVars(
@@ -568,6 +570,16 @@ class IsolationManager {
       userMountConfig,
       settings
     );
+    const hostOnlyEnvs = new Set(
+      mountConfig
+        .filter((preset) => typeof preset === 'string')
+        .map((preset) => MOUNT_PRESETS[preset]?.hostEnv)
+        .filter((name) => typeof name === 'string')
+    );
+    for (const hostOnlyEnv of hostOnlyEnvs) {
+      delete envToPass[hostOnlyEnv];
+      explicitNames.delete(hostOnlyEnv);
+    }
     for (const [key, value] of Object.entries(envToPass)) {
       plan.args.push('-e', `${key}=${value}`);
       plan.forwardedEnv[key] = value;
@@ -680,7 +692,9 @@ class IsolationManager {
 
     // A mount only counts if it carries the secret (credentialInMount !== false).
     const credentialPaths = provider.getCredentialPaths ? provider.getCredentialPaths() : [];
-    const expandedCreds = credentialPaths.map((cred) => expandHomePath(cred));
+    const expandedCreds = resolveProviderCredentialPaths({ ...metadata, credentialPaths }).filter(
+      (credPath) => fs.existsSync(credPath)
+    );
     const hasCredentialMount =
       docker.credentialInMount !== false &&
       mountedHosts.some((hostPath) =>

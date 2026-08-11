@@ -90,6 +90,12 @@ export function parseProviderChunk(
     }
   }
 
+  const finalEvent = adapter.finishParsing?.(state);
+  if (finalEvent) {
+    if (isOutputEventArray(finalEvent)) events.push(...finalEvent);
+    else events.push(finalEvent);
+  }
+
   return events;
 }
 

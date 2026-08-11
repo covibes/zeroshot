@@ -7,6 +7,7 @@ const {
   runExecutable,
   runProviderExecutable,
 } = require('./executable-contract-helpers.cjs');
+const { piBasicSettledEvents, piUsage } = require('../helpers/pi-protocol');
 
 function piFixture(name) {
   return fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'pi', name), 'utf8');
@@ -304,8 +305,8 @@ test('parse-output normalizes Pi JSON fixtures without duplicate snapshot text',
       outputTokens: 3,
       cacheReadInputTokens: 1,
       cacheCreationInputTokens: 0,
-      cost: null,
-      modelUsage: { input: 7, output: 3, cacheRead: 1, cacheWrite: 0 },
+      cost: 0,
+      modelUsage: piUsage(7, 3, 1),
     },
   ]);
 
@@ -328,12 +329,12 @@ test('parse-output normalizes Pi JSON fixtures without duplicate snapshot text',
       success: true,
       result: 'done',
       error: null,
-      inputTokens: 9,
-      outputTokens: 4,
+      inputTokens: 11,
+      outputTokens: 5,
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
-      cost: null,
-      modelUsage: { input: 9, output: 4, cacheRead: 0, cacheWrite: 0 },
+      cost: 0,
+      modelUsage: piUsage(11, 5),
     },
   ]);
 });
@@ -369,7 +370,234 @@ test('parse-output handles Pi failure and empty fixtures', () => {
 
   assert.equal(emptyResponse.exitCode, 0);
   assert.equal(emptyResponse.envelope.ok, true);
-  assert.deepEqual(emptyResponse.envelope.result.events, []);
+  const emptyResult = emptyResponse.envelope.result.events.at(-1);
+  assert.equal(emptyResult.type, 'result');
+  assert.equal(emptyResult.success, false);
+  assert.match(emptyResult.error, /before agent_settled/i);
+});
+
+test('parse-output waits for Pi settlement and uses the final retried turn', () => {
+  const messages = [
+    {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'temporary failure' }],
+      usage: piUsage(1, 1),
+      stopReason: 'error',
+      errorMessage: 'service unavailable',
+    },
+    {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'recovered' }],
+      usage: piUsage(2, 1),
+      stopReason: 'stop',
+    },
+  ];
+  const stdout = [
+    { type: 'message_end', message: messages[0] },
+    { type: 'turn_end', message: messages[0], toolResults: [] },
+    { type: 'agent_end', messages: [], willRetry: true },
+    { type: 'auto_retry_start', attempt: 1 },
+    { type: 'message_end', message: messages[1] },
+    { type: 'turn_end', message: messages[1], toolResults: [] },
+    { type: 'agent_end', messages: [], willRetry: false },
+    { type: 'agent_settled' },
+  ]
+    .map((event) => JSON.stringify(event))
+    .join('\n');
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout,
+  });
+
+  const results = response.envelope.result.events.filter((event) => event.type === 'result');
+  assert.equal(results.length, 1);
+  assert.equal(results[0].success, true);
+  assert.equal(results[0].result, 'recovered');
+  assert.equal(results[0].inputTokens, 3);
+  assert.equal(results[0].outputTokens, 2);
+});
+
+test('parse-output ignores Pi user and tool-result message_end records', () => {
+  const assistant = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'done' }],
+    usage: piUsage(2, 1),
+    stopReason: 'stop',
+  };
+  const stdout = piBasicSettledEvents(assistant)
+    .map((event) => JSON.stringify(event))
+    .join('\n');
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout,
+  });
+
+  const result = response.envelope.result.events.at(-1);
+  assert.equal(result.type, 'result');
+  assert.equal(result.success, true);
+  assert.equal(result.result, 'done');
+});
+
+test('parse-output includes Pi tool, compaction, and branch-summary usage', () => {
+  const assistant = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'done' }],
+    usage: piUsage(2, 1, 0, 0, { cost: { total: 0.01 } }),
+    stopReason: 'stop',
+  };
+  const stdout = [
+    {
+      type: 'message_end',
+      message: {
+        role: 'toolResult',
+        content: [],
+        usage: piUsage(1, 0, 0, 0, { cost: { total: 0.02 } }),
+      },
+    },
+    {
+      type: 'compaction_end',
+      result: { usage: piUsage(2, 1, 0, 0, { reasoning: 1, cost: { total: 0.03 } }) },
+    },
+    {
+      type: 'entry_appended',
+      entry: {
+        type: 'branch_summary',
+        usage: piUsage(1, 1, 0, 0, { cost: { total: 0.04 } }),
+      },
+    },
+    { type: 'message_end', message: assistant },
+    { type: 'agent_settled' },
+  ]
+    .map((event) => JSON.stringify(event))
+    .join('\n');
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout,
+  });
+
+  const result = response.envelope.result.events.at(-1);
+  assert.equal(result.success, true);
+  assert.equal(result.inputTokens, 6);
+  assert.equal(result.outputTokens, 3);
+  assert.equal(result.modelUsage.totalTokens, 9);
+  assert.equal(result.modelUsage.reasoning, 1);
+  assert.ok(Math.abs(result.cost - 0.1) < Number.EPSILON);
+});
+
+test('parse-output treats a settled deferred Pi turn as incomplete', () => {
+  const message = {
+    role: 'assistant',
+    content: [],
+    usage: piUsage(),
+    stopReason: 'deferred',
+    deferred: { provider: 'openai', modelId: 'batch', api: 'responses', id: 'deferred-1' },
+  };
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout: [
+      JSON.stringify({ type: 'message_end', message }),
+      JSON.stringify({ type: 'agent_settled' }),
+    ].join('\n'),
+  });
+
+  const result = response.envelope.result.events.at(-1);
+  assert.equal(result.success, false);
+  assert.match(result.error, /deferred without completing/i);
+});
+
+test('parse-output fails when Pi settles without an assistant message', () => {
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout: '{"type":"session","version":3,"id":"empty"}\n{"type":"agent_settled"}',
+  });
+
+  const result = response.envelope.result.events.at(-1);
+  assert.equal(result.type, 'result');
+  assert.equal(result.success, false);
+  assert.match(result.error, /without an assistant message/i);
+});
+
+test('parse-output poisons malformed Pi stdout even after a valid assistant message', () => {
+  const message = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'looked successful' }],
+    usage: piUsage(2, 1),
+    stopReason: 'stop',
+  };
+  const stdout = [
+    JSON.stringify({ type: 'message_end', message }),
+    'THIS IS NOT JSON',
+    JSON.stringify({ type: 'agent_settled' }),
+  ].join('\n');
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout,
+  });
+
+  const result = response.envelope.result.events.at(-1);
+  assert.equal(result.type, 'result');
+  assert.equal(result.success, false);
+  assert.match(result.error, /malformed JSON/i);
+  assert.equal(result.inputTokens, 2);
+  assert.equal(result.outputTokens, 1);
+});
+
+test('parse-output requires authoritative Pi message_end data before settlement', () => {
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout: [
+      JSON.stringify({
+        type: 'turn_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'not authoritative' }] },
+      }),
+      JSON.stringify({ type: 'agent_settled' }),
+    ].join('\n'),
+  });
+
+  const result = response.envelope.result.events.at(-1);
+  assert.equal(result.type, 'result');
+  assert.equal(result.success, false);
+  assert.match(result.error, /without an assistant message_end/i);
+});
+
+test('parse-output rejects Pi events emitted after settlement', () => {
+  const message = {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'done' }],
+    usage: piUsage(1, 1),
+    stopReason: 'stop',
+  };
+  const response = runExecutable({
+    schemaVersion: 1,
+    command: 'parse-output',
+    provider: 'pi',
+    stdout: [
+      JSON.stringify({ type: 'message_end', message }),
+      JSON.stringify({ type: 'agent_settled' }),
+      JSON.stringify({ type: 'queue_update', action: 'unexpected' }),
+    ].join('\n'),
+  });
+
+  const results = response.envelope.result.events.filter((event) => event.type === 'result');
+  assert.equal(results.length, 2);
+  assert.equal(results.at(-1).success, false);
+  assert.match(results.at(-1).error, /after agent_settled/i);
+  assert.equal(results.at(-1).inputTokens, 1);
+  assert.equal(results.at(-1).outputTokens, 1);
 });
 
 test('parse-output normalizes Kiro ACP fixtures and diagnostics', () => {
@@ -436,7 +664,9 @@ test('parse-output normalizes Kiro ACP fixtures and diagnostics', () => {
       },
     },
   ]);
+});
 
+test('parse-output handles Kiro ACP failures and diagnostics', () => {
   for (const [name, expectedError] of [
     ['auth-failure.jsonl', 'authentication required: run kiro auth login'],
     ['cancelled.jsonl', 'cancelled by user'],
@@ -565,8 +795,10 @@ test('parse-output accumulates ACP delta chunks into the terminal result', () =>
 test('classify-error maps Pi auth, rate-limit, cancellation, and command failures', () => {
   for (const [message, expectedCategory, expectedRetryable] of [
     ['authentication required: run /login', 'auth', false],
+    ['No API key found for the selected model.', 'auth', false],
     ['rate limit exceeded; retry later', 'rate-limit', true],
     ['cancelled by user', 'permanent', false],
+    ['Model "missing-model" not found.', 'permanent', false],
     ['Unknown option --bogus', 'permanent', false],
   ]) {
     const response = runExecutable({

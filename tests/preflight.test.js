@@ -508,7 +508,7 @@ function defineRunPreflightTests() {
           'Command "pi" is installed but did not produce usable --help/--version output'
         );
         expect(result.errors.join('')).to.include(
-          'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.80.3'
+          'npm install -g --ignore-scripts @earendil-works/pi-coding-agent@0.84.1'
         );
       } finally {
         process.env.PATH = originalPath;

@@ -1,10 +1,20 @@
 {"type":"session","version":3,"id":"pi-tool","timestamp":"2026-07-09T00:00:00.000Z","cwd":"/tmp/pi"}
 {"type":"agent_start"}
 {"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":"Print the working directory."}}
+{"type":"message_end","message":{"role":"user","content":"Print the working directory."}}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-1","name":"bash","arguments":{"command":"pwd"}}],"usage":{"input":2,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse"}}
 {"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"pwd"}}
 {"type":"tool_execution_update","toolCallId":"tool-1","toolName":"bash","args":{"command":"pwd"},"partialResult":"line1"}
 {"type":"tool_execution_end","toolCallId":"tool-1","toolName":"bash","result":"line1\n/tmp/pi","isError":false}
+{"type":"message_start","message":{"role":"toolResult","toolCallId":"tool-1","toolName":"bash","content":[{"type":"text","text":"line1\n/tmp/pi"}],"isError":false}}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"tool-1","toolName":"bash","content":[{"type":"text","text":"line1\n/tmp/pi"}],"isError":false}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool-1","name":"bash","arguments":{"command":"pwd"}}],"usage":{"input":2,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse"},"toolResults":[{"role":"toolResult","toolCallId":"tool-1","toolName":"bash","content":[{"type":"text","text":"line1\n/tmp/pi"}],"isError":false}]}
+{"type":"turn_start"}
 {"type":"message_start","message":{"role":"assistant","content":[]}}
-{"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"done"}]},"assistantMessageEvent":{"type":"text_delta","delta":"done"}}
-{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":9,"output":4,"cacheRead":0,"cacheWrite":0},"stopReason":"stop"},"toolResults":[]}
-{"type":"agent_end","messages":[]}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"done"}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":9,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":13,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop"}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":9,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":13,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop"},"toolResults":[]}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled"}

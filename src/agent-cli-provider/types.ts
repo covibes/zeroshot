@@ -158,8 +158,10 @@ export interface OpencodeCliFeatures extends BaseCliFeatures {
 
 export interface PiCliFeatures extends BaseCliFeatures {
   readonly provider: 'pi';
+  readonly versionMatches: boolean;
   readonly supportsJsonMode: boolean;
   readonly supportsModel: boolean;
+  readonly supportsThinking: boolean;
   readonly supportsNoSession: boolean;
   readonly supportsNoExtensions: boolean;
   readonly supportsNoSkills: boolean;
@@ -573,6 +575,7 @@ export interface ProviderAdapter {
   buildCommand(context: string, options?: BuildProviderCommandOptions): CommandSpec;
   extractSessionId?(line: string): string | null;
   parseEvent(line: string, state: ProviderParserState): ProviderParseResult;
+  finishParsing?(state: ProviderParserState): ProviderParseResult;
   createParserState(): ProviderParserState;
   resolveModelSpec(level: ModelLevel, overrides?: LevelOverrides): ResolvedModelSpec;
   validateModelId(modelId: string | null | undefined): string | null | undefined;

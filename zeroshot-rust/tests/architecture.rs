@@ -309,6 +309,7 @@ fn product_modules_require_issue_authorization() {
             "source_code_provider",
             "source_code_provider.rs",
             "worker_bindings.rs",
+            "worker_catalog",
             "worker_catalog.rs",
             "workspace_lease",
             "workspace_lease.rs",

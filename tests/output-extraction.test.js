@@ -8,6 +8,7 @@
 
 const assert = require('assert');
 const { createHash } = require('node:crypto');
+const { piBasicSettledEvents, piUsage } = require('./helpers/pi-protocol');
 const {
   extractJsonFromOutput,
   extractCliError,
@@ -415,6 +416,90 @@ function defineCliErrorExtractionTests() {
         ),
         { error: 'Turn failed', provider: 'codex' }
       );
+    });
+
+    it('extracts Pi in-band failures only after agent settlement', function () {
+      const output = [
+        {
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [],
+            usage: piUsage(),
+            stopReason: 'error',
+            errorMessage: 'authentication required: run /login',
+          },
+        },
+        {
+          type: 'turn_end',
+          message: {
+            role: 'assistant',
+            stopReason: 'error',
+            errorMessage: 'authentication required: run /login',
+          },
+        },
+        { type: 'agent_end', messages: [], willRetry: false },
+        { type: 'agent_settled' },
+      ]
+        .map((event) => JSON.stringify(event))
+        .join('\n');
+
+      assert.deepStrictEqual(extractCliError(output, 'pi'), {
+        error: 'authentication required: run /login',
+        provider: 'pi',
+      });
+    });
+
+    it('uses the newest Pi message_end and ignores an earlier auto-retried failure', function () {
+      const output = [
+        {
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [],
+            usage: piUsage(),
+            stopReason: 'error',
+            errorMessage: 'temporary failure',
+          },
+        },
+        { type: 'agent_end', messages: [], willRetry: true },
+        { type: 'auto_retry_start', attempt: 1 },
+        {
+          type: 'message_end',
+          message: { role: 'assistant', content: [], usage: piUsage(), stopReason: 'stop' },
+        },
+        { type: 'agent_end', messages: [], willRetry: false },
+        { type: 'agent_settled' },
+      ]
+        .map((event) => JSON.stringify(event))
+        .join('\n');
+
+      assert.strictEqual(extractCliError(output, 'pi'), null);
+    });
+
+    it('ignores normal Pi user and tool-result message_end records', function () {
+      const output = piBasicSettledEvents({
+        role: 'assistant',
+        content: [],
+        usage: piUsage(),
+        stopReason: 'stop',
+      })
+        .map((event) => JSON.stringify(event))
+        .join('\n');
+
+      assert.strictEqual(extractCliError(output, 'pi'), null);
+    });
+
+    it('rejects a Pi stream that ends before settlement', function () {
+      const output = JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', content: [], usage: piUsage(), stopReason: 'stop' },
+      });
+
+      assert.deepStrictEqual(extractCliError(output, 'pi'), {
+        error: 'Pi JSON stream ended before agent_settled.',
+        provider: 'pi',
+      });
     });
 
     // Gemini errors

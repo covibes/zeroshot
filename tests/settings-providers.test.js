@@ -96,6 +96,17 @@ describe('Provider settings', function () {
       });
     });
 
+    assert.doesNotThrow(() => {
+      validateProviderSettings('pi', {
+        minLevel: 'level1',
+        maxLevel: 'level3',
+        defaultLevel: 'level2',
+        levelOverrides: {
+          level2: { model: 'openai/gpt-5.5', reasoningEffort: 'high' },
+        },
+      });
+    });
+
     assert.throws(() => {
       validateProviderSettings('gemini', {
         minLevel: 'level1',
@@ -105,7 +116,7 @@ describe('Provider settings', function () {
           level2: { reasoningEffort: 'high' },
         },
       });
-    }, /reasoningEffort overrides are only supported/);
+    }, /does not support reasoningEffort overrides/);
   });
 
   it('declares secure default-off Codex and OpenCode provider features', function () {

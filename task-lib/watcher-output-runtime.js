@@ -103,7 +103,12 @@ function createCodexOutputPassthrough({ log, captureProviderSession }) {
   };
 }
 
-function createBoundedLinePassthrough({ log, handleLine, deferRawUntilOverflow = false }) {
+function createBoundedLinePassthrough({
+  log,
+  handleLine,
+  deferRawUntilOverflow = false,
+  linePrefix = '',
+}) {
   const decoder = new StringDecoder('utf8');
   let atLineStart = true;
   let lineTimestamp = null;
@@ -160,7 +165,7 @@ function createBoundedLinePassthrough({ log, handleLine, deferRawUntilOverflow =
     while (offset < text.length) {
       if (atLineStart) {
         lineTimestamp = Date.now();
-        appendRaw(logged, `[${lineTimestamp}]`);
+        appendRaw(logged, `[${lineTimestamp}]${linePrefix}`);
         atLineStart = false;
       }
       const newline = text.indexOf('\n', offset);
@@ -361,6 +366,10 @@ export function createWatcherOutputRuntime({
       });
   const stderrPassthrough = createBoundedLinePassthrough({
     log,
+    // Pi reserves stdout for its JSON protocol and deliberately routes ordinary writes to
+    // stderr. Keep those diagnostics in the task log with explicit provenance so followers can
+    // exclude them from strict JSON validation.
+    linePrefix: providerName === 'pi' ? '[ZEROSHOT][PROVIDER_STDERR] ' : '',
     handleLine: (line, timestamp) => maybeHandleFatalError(line, timestamp),
   });
 
@@ -370,7 +379,7 @@ export function createWatcherOutputRuntime({
     if (!detected) return false;
     fatalError = detected;
     if (silentJsonMode) log(`[${timestamp}]${line}\n`);
-    log(`[${timestamp}][FATAL] ${detected}\n`);
+    log(`[${timestamp}][ZEROSHOT][FATAL] ${detected}\n`);
     stopProvider(timestamp);
     return true;
   }
@@ -396,13 +405,15 @@ export function createWatcherOutputRuntime({
       fatalError =
         `Provider structured output exceeded the ${MAX_WATCHER_CONTROL_RECORD_BYTES}-byte ` +
         'watcher inspection limit; complete output remains in the task log';
-      log(`[${timestamp}][FATAL] ${fatalError}\n`);
+      log(`[${timestamp}][ZEROSHOT][FATAL] ${fatalError}\n`);
       stopProvider(timestamp);
       return;
     }
     captureProviderSession(line);
     if (silentJsonMode && !line.trim()) return;
-    maybeHandleFatalError(line, timestamp);
+    // Pi reserves stdout for JSON lifecycle events. Error text inside an assistant message may be
+    // followed by an automatic retry, so only Pi stderr can prove a pre-agent startup failure.
+    if (providerName !== 'pi') maybeHandleFatalError(line, timestamp);
     if (captureStreamingError(line, timestamp)) return;
     if (silentJsonMode) {
       maybeCaptureStructuredOutput(line);

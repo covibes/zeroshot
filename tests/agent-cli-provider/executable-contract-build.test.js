@@ -5,15 +5,22 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   assertNoSecret,
+  assertUnsupportedAcpResponse,
   fakeCodexScript,
   fakeCopilotScript,
   fakeKiroScript,
   fakePiScript,
   runExecutable,
+  withCurrentPiCli,
   withFakeProviderCli,
+  withKiroWithoutAcp,
   withTempEnv,
   withOmpRpcSettings,
 } = require('./executable-contract-helpers.cjs');
+
+function runCurrentPiExecutable(request) {
+  return withCurrentPiCli(() => runExecutable(request));
+}
 
 test('build-command returns command spec without executing provider CLI', () => {
   const response = runExecutable({
@@ -626,68 +633,36 @@ test('build-command resolves a fresh gateway key from apiKeyEnv on every prepara
 });
 
 test('build-command fails closed when ACP stdio support is not advertised', () => {
-  withFakeProviderCli(
-    'kiro-cli',
-    fakeKiroScript(`
-if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: kiro-cli --version\\n');
-  process.exit(0);
-}
-process.stderr.write('build-command should not execute kiro-cli acp');
-process.exit(17);
-`),
-    () => {
-      const response = runExecutable({
-        schemaVersion: 1,
-        command: 'build-command',
-        provider: 'kiro',
-        context: 'Reply with OK',
-      });
-
-      assert.equal(response.exitCode, 2);
-      assert.equal(response.envelope.ok, false);
-      assert.equal(response.envelope.error.code, 'invalid-field');
-      assert.equal(response.envelope.error.field, 'options.cliFeatures.supportsAcpStdio');
-      assert.match(response.envelope.error.message, /does not advertise ACP stdio support/i);
-    }
-  );
+  withKiroWithoutAcp(() => {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'build-command',
+      provider: 'kiro',
+      context: 'Reply with OK',
+    });
+    assertUnsupportedAcpResponse(response);
+  });
 });
 
 test('build-command ignores caller ACP support overrides when runtime probe rejects ACP stdio', () => {
-  withFakeProviderCli(
-    'kiro-cli',
-    fakeKiroScript(`
-if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: kiro-cli --version\\n');
-  process.exit(0);
-}
-process.stderr.write('build-command should not execute kiro-cli acp');
-process.exit(17);
-`),
-    () => {
-      const response = runExecutable({
-        schemaVersion: 1,
-        command: 'build-command',
-        provider: 'kiro',
-        context: 'Reply with OK',
-        options: {
-          cliFeatures: {
-            supportsAcpStdio: true,
-          },
+  withKiroWithoutAcp(() => {
+    const response = runExecutable({
+      schemaVersion: 1,
+      command: 'build-command',
+      provider: 'kiro',
+      context: 'Reply with OK',
+      options: {
+        cliFeatures: {
+          supportsAcpStdio: true,
         },
-      });
-
-      assert.equal(response.exitCode, 2);
-      assert.equal(response.envelope.ok, false);
-      assert.equal(response.envelope.error.code, 'invalid-field');
-      assert.equal(response.envelope.error.field, 'options.cliFeatures.supportsAcpStdio');
-      assert.match(response.envelope.error.message, /does not advertise ACP stdio support/i);
-    }
-  );
+      },
+    });
+    assertUnsupportedAcpResponse(response);
+  });
 });
 
-test('build-command uses Pi JSON mode with discovery disabled and schema prompt fallback', () => {
-  const response = runExecutable({
+test('build-command uses Pi JSON mode with global extensions and schema prompt fallback', () => {
+  const response = runCurrentPiExecutable({
     schemaVersion: 1,
     command: 'build-command',
     provider: 'pi',
@@ -696,17 +671,7 @@ test('build-command uses Pi JSON mode with discovery disabled and schema prompt 
       outputFormat: 'json',
       cwd: '/tmp/worktree',
       jsonSchema: { type: 'object', properties: { ok: { type: 'boolean' } } },
-      modelSpec: { model: 'openai/gpt-5.5' },
-      cliFeatures: {
-        supportsJsonMode: true,
-        supportsNoSession: true,
-        supportsNoExtensions: true,
-        supportsNoSkills: true,
-        supportsNoPromptTemplates: true,
-        supportsNoContextFiles: true,
-        supportsNoApprove: true,
-        supportsModel: true,
-      },
+      modelSpec: { model: 'openai/gpt-5.5', reasoningEffort: 'high' },
     },
   });
 
@@ -716,34 +681,33 @@ test('build-command uses Pi JSON mode with discovery disabled and schema prompt 
   assert.equal(response.envelope.result.schemaMode, 'prompt');
   assert.equal(commandSpec.binary, 'pi');
   assert.equal(commandSpec.cwd, '/tmp/worktree');
-  assert.deepEqual(commandSpec.args.slice(0, 11), [
+  assert.deepEqual(commandSpec.args.slice(0, 12), [
     '--mode',
     'json',
     '--no-session',
-    '--no-extensions',
     '--no-skills',
     '--no-prompt-templates',
     '--no-context-files',
     '--no-approve',
     '--model',
     'openai/gpt-5.5',
+    '--thinking',
+    'high',
     commandSpec.args.at(-1),
   ]);
+  assert.equal(commandSpec.args.includes('--no-extensions'), false);
   assert.ok(commandSpec.args.at(-1).includes('## OUTPUT FORMAT (CRITICAL - REQUIRED)'));
   assert.ok(response.envelope.warnings.some((warning) => warning.code === 'pi-jsonschema'));
 });
 
 test('build-command rejects Pi resume/continue session control requests', () => {
-  const resumed = runExecutable({
+  const resumed = runCurrentPiExecutable({
     schemaVersion: 1,
     command: 'build-command',
     provider: 'pi',
     context: 'Return JSON.',
     options: {
       resumeSessionId: 'ignored-session',
-      cliFeatures: {
-        supportsJsonMode: true,
-      },
     },
   });
 
@@ -752,16 +716,13 @@ test('build-command rejects Pi resume/continue session control requests', () => 
   assert.equal(resumed.envelope.error.code, 'invalid-field');
   assert.equal(resumed.envelope.error.field, 'options.resumeSessionId');
 
-  const emptyResumed = runExecutable({
+  const emptyResumed = runCurrentPiExecutable({
     schemaVersion: 1,
     command: 'build-command',
     provider: 'pi',
     context: 'Return JSON.',
     options: {
       resumeSessionId: '',
-      cliFeatures: {
-        supportsJsonMode: true,
-      },
     },
   });
 
@@ -770,16 +731,13 @@ test('build-command rejects Pi resume/continue session control requests', () => 
   assert.equal(emptyResumed.envelope.error.code, 'invalid-field');
   assert.equal(emptyResumed.envelope.error.field, 'options.resumeSessionId');
 
-  const continued = runExecutable({
+  const continued = runCurrentPiExecutable({
     schemaVersion: 1,
     command: 'build-command',
     provider: 'pi',
     context: 'Return JSON.',
     options: {
       continueSession: true,
-      cliFeatures: {
-        supportsJsonMode: true,
-      },
     },
   });
 
@@ -790,23 +748,20 @@ test('build-command rejects Pi resume/continue session control requests', () => 
 });
 
 test('build-command ignores undefined Pi resumeSessionId values', () => {
-  const response = runExecutable({
+  const response = runCurrentPiExecutable({
     schemaVersion: 1,
     command: 'build-command',
     provider: 'pi',
     context: 'Return JSON.',
     options: {
       resumeSessionId: undefined,
-      cliFeatures: {
-        supportsJsonMode: true,
-      },
     },
   });
 
   assert.equal(response.exitCode, 0);
   assert.equal(response.envelope.ok, true);
   assert.equal(response.envelope.result.commandSpec.binary, 'pi');
-  assert.equal(response.envelope.result.commandSpec.args.at(-1), 'Return JSON.');
+  assert.equal(response.envelope.result.commandSpec.args.at(-1), ' Return JSON.');
 });
 
 test('build-command keeps Pi JSON-mode args when only version probe returns output', () => {
@@ -817,7 +772,7 @@ if (process.argv.includes('--help')) {
   process.exit(0);
 }
 if (process.argv.includes('--version')) {
-  process.stdout.write('0.80.3\\n');
+  process.stdout.write('0.84.1\\n');
   process.exit(0);
 }
 process.stderr.write('unknown option -h\\n');
@@ -837,17 +792,58 @@ process.exit(1);
       const args = response.envelope.result.commandSpec.args;
       assert.equal(response.exitCode, 0);
       assert.equal(response.envelope.ok, true);
-      assert.deepEqual(args.slice(0, 8), [
+      assert.deepEqual(args.slice(0, 9), [
         '--mode',
         'json',
         '--no-session',
-        '--no-extensions',
         '--no-skills',
         '--no-prompt-templates',
         '--no-context-files',
         '--no-approve',
+        '--thinking',
+        'medium',
       ]);
-      assert.equal(args.at(-1), 'Return JSON.');
+      assert.equal(args.at(-1), ' Return JSON.');
+    }
+  );
+});
+
+test('build-command cannot forge current Pi features over an old local binary', () => {
+  withFakeProviderCli(
+    'pi',
+    fakePiScript(`
+if (process.argv.includes('--help')) {
+  process.stdout.write('Usage: pi --mode json --no-session --no-skills --no-prompt-templates --no-context-files --no-approve --model --thinking\\n');
+  process.exit(0);
+}
+if (process.argv.includes('--version')) {
+  process.stdout.write('0.80.3\\n');
+  process.exit(0);
+}
+process.exit(0);
+`),
+    () => {
+      const response = runExecutable({
+        schemaVersion: 1,
+        command: 'build-command',
+        provider: 'pi',
+        context: 'Do the task.',
+        options: {
+          cliFeatures: {
+            versionMatches: true,
+            supportsJsonMode: true,
+            supportsNoSession: true,
+            supportsNoSkills: true,
+            supportsNoPromptTemplates: true,
+            supportsNoContextFiles: true,
+            supportsNoApprove: true,
+          },
+        },
+      });
+
+      assert.equal(response.exitCode, 2);
+      assert.equal(response.envelope.ok, false);
+      assert.equal(response.envelope.error.field, 'options.cliFeatures.versionMatches');
     }
   );
 });
@@ -1247,16 +1243,16 @@ process.exit(17);
   );
 });
 
-test('probe requires Pi help or version output when helpText is not supplied', () => {
+test('probe attests Pi from version without running its stateful help path', () => {
   withFakeProviderCli(
     'pi',
     fakePiScript(`
 if (process.argv.includes('--help')) {
-  process.stdout.write('Usage: pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates --no-context-files --no-approve --model\\n');
+  process.stdout.write('UNSAFE HELP PATH SHOULD NOT RUN\\n');
   process.exit(0);
 }
 if (process.argv.includes('--version')) {
-  process.stdout.write('0.80.3\\n');
+  process.stdout.write('0.84.1\\n');
   process.exit(0);
 }
 process.exit(17);
@@ -1272,9 +1268,10 @@ process.exit(17);
       assert.equal(response.envelope.ok, true);
       assert.equal(response.envelope.result.available, true);
       assert.equal(response.envelope.result.provider.id, 'pi');
+      assert.equal(response.envelope.result.helpText, '');
       assert.equal(response.envelope.result.capabilities.supportsJsonMode, true);
       assert.equal(response.envelope.result.capabilities.supportsNoApprove, true);
-      assert.equal(response.envelope.result.versionText, '0.80.3');
+      assert.equal(response.envelope.result.versionText, '0.84.1');
     }
   );
 });

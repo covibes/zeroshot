@@ -100,6 +100,81 @@ describe('bounded generic provider output transport', function () {
     assert.match(inspected[0], /omitted from watcher inspection/);
     assert.match(raw.slice(expected.length), /Finished:.*Exit code: 0, Signal: null/s);
   });
+
+  it('projects Pi pre-agent authentication stderr as a safe fatal diagnostic', async function () {
+    const { createWatcherOutputRuntime } = await import('../task-lib/watcher-output-runtime.js');
+    const logged = [];
+    let stopCalls = 0;
+    const runtime = createWatcherOutputRuntime({
+      config: { outputFormat: 'text' },
+      providerName: 'pi',
+      log: (value) => logged.push(value),
+      stopProvider: () => {
+        stopCalls += 1;
+      },
+    });
+    const stderr = 'No API key found for the selected model.\nUse /login to log into a provider.\n';
+
+    runtime.consumeStderr('', Buffer.from(stderr));
+    const completion = runtime.complete({ code: 1, signal: null, stderrBuffer: '' });
+
+    assert.strictEqual(completion.status, 'failed');
+    assert.strictEqual(completion.error, 'Pi authentication required: run /login');
+    assert.strictEqual(stopCalls, 1);
+    assert.match(logged.join(''), /\[ZEROSHOT\]\[PROVIDER_STDERR\] No API key found/);
+    assert.match(logged.join(''), /\[ZEROSHOT\]\[FATAL\] Pi authentication required/);
+  });
+
+  it('projects Pi pre-agent invalid-model stderr without retaining model text', async function () {
+    const { createWatcherOutputRuntime } = await import('../task-lib/watcher-output-runtime.js');
+    const logged = [];
+    const runtime = createWatcherOutputRuntime({
+      config: { outputFormat: 'text' },
+      providerName: 'pi',
+      log: (value) => logged.push(value),
+      stopProvider() {},
+    });
+
+    runtime.consumeStderr('', Buffer.from('Error: Model "secret-model" not found.\n'));
+    const completion = runtime.complete({ code: 1, signal: null, stderrBuffer: '' });
+
+    assert.strictEqual(completion.status, 'failed');
+    assert.strictEqual(completion.error, 'Pi model not found: run pi --list-models');
+    assert.doesNotMatch(completion.error, /secret-model/);
+  });
+  it('does not treat retryable Pi JSON error text as a startup fatal', async function () {
+    const { createWatcherOutputRuntime } = await import('../task-lib/watcher-output-runtime.js');
+    const logged = [];
+    let stopCalls = 0;
+    const runtime = createWatcherOutputRuntime({
+      config: { outputFormat: 'text' },
+      providerName: 'pi',
+      log: (value) => logged.push(value),
+      stopProvider: () => {
+        stopCalls += 1;
+      },
+    });
+    const events = [
+      {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          stopReason: 'error',
+          errorMessage: 'No API key found during a retryable provider attempt',
+        },
+      },
+      { type: 'agent_end', messages: [], willRetry: true },
+      { type: 'auto_retry_start', attempt: 1 },
+      { type: 'agent_settled' },
+    ];
+
+    runtime.consumeOutput('', Buffer.from(`${events.map(JSON.stringify).join('\n')}\n`));
+    runtime.complete({ code: 0, signal: null, stderrBuffer: '' });
+
+    assert.strictEqual(stopCalls, 0);
+    assert.doesNotMatch(logged.join(''), /\[ZEROSHOT\]\[FATAL\]/);
+  });
 });
 
 describe('bounded silent structured output transport', function () {

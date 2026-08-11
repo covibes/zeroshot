@@ -56,6 +56,8 @@ const {
 const { extractClaudeVertexModelError } = require('./output-extraction');
 const {
   extractProviderFailure,
+  extractProviderCompletionFailure,
+  getPiTokenUsage,
   redactTerminalFailureForControlPlane,
 } = require('./provider-terminal-failure');
 const {
@@ -377,7 +379,9 @@ function extractErrorContext({
     }
   }
 
-  const terminalFailure = providerFailure || extractProviderFailure(output, providerName);
+  const terminalFailure =
+    providerFailure ||
+    (providerName === 'pi' ? null : extractProviderFailure(output, providerName));
   if (terminalFailure) {
     return sanitizeErrorMessage(terminalFailure.error);
   }
@@ -449,8 +453,12 @@ function extractErrorContext({
  * @param {string} output - Full NDJSON output from Claude CLI
  * @returns {Object|null} Token usage data or null if not found
  */
-function extractTokenUsage(output, providerName = getDefaultProviderId()) {
+function extractTokenUsage(output, providerName = getDefaultProviderId(), state = null) {
   if (!output) return null;
+  if (providerName === 'pi') {
+    const retainedUsage = getPiTokenUsage(state);
+    if (retainedUsage !== null) return retainedUsage;
+  }
 
   const events = parseProviderChunk(providerName, output);
   const resultEvent = events.find((event) => event.type === 'result');
@@ -1465,21 +1473,38 @@ function lookupLogFilePath(ctPath, taskId) {
 function parseTimestampedLine(line) {
   let timestamp = Date.now();
   let content = line.replace(/\r$/, '');
+  let timestamped = false;
 
   const timestampMatch = content.match(/^\[(\d{13})\](.*)$/);
   if (timestampMatch) {
     timestamp = parseInt(timestampMatch[1], 10);
     content = timestampMatch[2];
+    timestamped = true;
   }
 
-  return { timestamp, content };
+  return { timestamp, content, timestamped };
 }
 
-function shouldSkipLogLine(content) {
+function shouldSkipLogLine(content, providerName, timestamped) {
+  if (providerName === 'pi') {
+    if (
+      content.startsWith('[ZEROSHOT][PROVIDER_STDERR] ') ||
+      content.startsWith('[ZEROSHOT][FATAL] ')
+    ) {
+      return true;
+    }
+    if (timestamped) return false;
+    return (
+      /^={50}$/.test(content) ||
+      /^Finished: \d{4}-\d{2}-\d{2}T[^\s]+Z$/.test(content) ||
+      /^Exit code: (?:null|-?\d+), Signal: (?:null|[A-Z0-9]+)$/.test(content)
+    );
+  }
   return (
     content.startsWith('===') ||
     content.startsWith('Finished:') ||
     content.startsWith('Exit code:') ||
+    content.startsWith('[ZEROSHOT][PROVIDER_STDERR] ') ||
     (content.includes('"type":"system"') && content.includes('"subtype":"init"'))
   );
 }
@@ -1520,8 +1545,8 @@ function broadcastAgentLine({ agent, providerName, state, line }) {
   const followerState = ensureControlPlaneOutputState(state);
   if (!line.trim()) return;
 
-  const { timestamp, content } = parseTimestampedLine(line);
-  if (shouldSkipLogLine(content)) {
+  const { timestamp, content, timestamped } = parseTimestampedLine(line);
+  if (shouldSkipLogLine(content, providerName, timestamped)) {
     return;
   }
   const controlPlaneContent = redactTerminalFailureForControlPlane(
@@ -1764,7 +1789,8 @@ function buildFailureContext({ agent, taskId, providerName, state, stdout, provi
 function resolveCompletionFailure({ classified, agent, taskId, providerName, state, stdout }) {
   if (classified.success) return { providerFailure: null, errorContext: classified.error };
   const providerFailure =
-    state.providerFailure || extractProviderFailure(state.output, providerName);
+    state.providerFailure ||
+    (providerName === 'pi' ? null : extractProviderFailure(state.output, providerName));
   return {
     providerFailure,
     errorContext:
@@ -1772,6 +1798,14 @@ function resolveCompletionFailure({ classified, agent, taskId, providerName, sta
       classified.error ||
       buildFailureContext({ agent, taskId, providerName, state, stdout, providerFailure }),
   };
+}
+
+function enforceProviderCompletionTruth({ providerName, output, state, success, error }) {
+  if (providerName !== 'pi' || !success) return { success, error };
+  const failure = extractProviderCompletionFailure(output, providerName, state);
+  if (!failure) return { success, error };
+  state.providerFailure = failure;
+  return { success: false, error: failure.error };
 }
 
 async function buildCompletionResult({
@@ -1784,7 +1818,7 @@ async function buildCompletionResult({
   taskInfo = getTask(taskId),
 }) {
   const { isCompleted } = parseStatusFlags(stripAnsiCodes(stdout));
-  const classified = state.skipStructuredResultCheck
+  let classified = state.skipStructuredResultCheck
     ? { success, error: null }
     : await evaluateStructuredSuccess({
         agent,
@@ -1793,6 +1827,12 @@ async function buildCompletionResult({
         success,
         allowRecovery: isCompleted,
       });
+  classified = enforceProviderCompletionTruth({
+    providerName,
+    output: state.output,
+    state,
+    ...classified,
+  });
   const resumeIdentityError = classified.success ? validateCompletedResumeIdentity(taskInfo) : null;
   if (resumeIdentityError) {
     classified.success = false;
@@ -1823,7 +1863,7 @@ async function buildCompletionResult({
     // so downstream hooks and {{result.*}} substitution never re-parse.
     parsedResult: state._cachedParsedResult || null,
     error: errorContext,
-    tokenUsage: extractTokenUsage(state.output, providerName),
+    tokenUsage: extractTokenUsage(state.output, providerName, state),
     providerSession: providerSessionFromCompletedTask({
       agent,
       providerName,
@@ -2060,7 +2100,7 @@ function buildKillHandler({ agent, taskId, state, providerName, resolve }) {
         error: reason,
         code: details.code || null,
         taskId,
-        tokenUsage: extractTokenUsage(state.output, providerName),
+        tokenUsage: extractTokenUsage(state.output, providerName, state),
       });
     },
   };
@@ -2734,6 +2774,7 @@ async function captureIsolatedFinalOutputTail(
     ]);
     if (finalReadResult.code === 0 && finalReadResult.stdout) {
       if (missingBytes > readBytes) {
+        if (providerName === 'pi') state.piProtocolPrefixOmitted = true;
         resetControlPlaneTail(state.controlPlaneOutput, { prefixOmitted: true });
         state.lineBuffer = createLogRecordBuffer();
       }
@@ -2760,19 +2801,21 @@ function resolveIsolatedFailure({
   providerName,
   state,
   status,
+  statusOutput,
   isNotFound,
   clusterId,
   logFilePath,
 }) {
   if (success) return { providerFailure: null, errorContext: structuredError };
   const providerFailure =
-    state.providerFailure || extractProviderFailure(state.fullOutput, providerName);
+    state.providerFailure ||
+    (providerName === 'pi' ? null : extractProviderFailure(state.fullOutput, providerName));
   const errorContext =
     providerFailure?.error ||
     structuredError ||
     extractErrorContext({
       output: state.fullOutput,
-      statusOutput: status ? `Status: ${status}` : '',
+      statusOutput: statusOutput || (status ? `Status: ${status}` : ''),
       taskId,
       isNotFound,
       providerName,
@@ -2797,6 +2840,7 @@ function settleIsolatedTerminalStatus({
   taskId,
   providerName,
   status,
+  statusOutput = '',
   isNotFound = false,
   state,
   cleanup,
@@ -2805,7 +2849,6 @@ function settleIsolatedTerminalStatus({
 }) {
   if (state.resolved) return Promise.resolve();
   if (state.terminalSettlementPromise) return state.terminalSettlementPromise;
-
   state.taskExited = true;
   if (status) {
     state.durableTaskTerminal = true;
@@ -2842,6 +2885,15 @@ function settleIsolatedTerminalStatus({
       success = evaluated.success;
       structuredError = evaluated.error;
     }
+    const completionTruth = enforceProviderCompletionTruth({
+      providerName,
+      output: state.fullOutput,
+      state,
+      success,
+      error: structuredError,
+    });
+    success = completionTruth.success;
+    structuredError = completionTruth.error;
     const { providerFailure, errorContext } = resolveIsolatedFailure({
       success,
       structuredError,
@@ -2850,6 +2902,7 @@ function settleIsolatedTerminalStatus({
       providerName,
       state,
       status,
+      statusOutput,
       isNotFound,
       clusterId,
       logFilePath,
@@ -2860,7 +2913,6 @@ function settleIsolatedTerminalStatus({
         ? state._cachedParsedResult
         : await agent._parseResultOutput(state.fullOutput);
     }
-
     settleIsolatedFollower({
       agent,
       state,
@@ -2872,7 +2924,7 @@ function settleIsolatedTerminalStatus({
         taskId,
         parsedResult,
         error: errorContext,
-        tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+        tokenUsage: extractTokenUsage(state.fullOutput, providerName, state),
         providerFailure,
         vertexModelError,
       },
@@ -2908,7 +2960,7 @@ function buildIsolatedLifecycleHandle({
         error: reason,
         code: details.code || null,
         taskId,
-        tokenUsage: extractTokenUsage(state.fullOutput, providerName),
+        tokenUsage: extractTokenUsage(state.fullOutput, providerName, state),
       },
     });
   };
@@ -2971,10 +3023,14 @@ function buildIsolatedLifecycleHandle({
 }
 
 function parseIsolatedLogLine(line) {
-  const timestampMatch = line.match(/^\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*(.*)$/);
-  const timestamp = timestampMatch ? new Date(timestampMatch[1]).getTime() : Date.now();
+  const timestampMatch = line.match(/^\[(\d{13}|\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*(.*)$/);
+  const timestamp = timestampMatch
+    ? /^\d{13}$/.test(timestampMatch[1])
+      ? Number.parseInt(timestampMatch[1], 10)
+      : new Date(timestampMatch[1]).getTime()
+    : Date.now();
   const content = timestampMatch ? timestampMatch[2] : line;
-  return { timestamp, content };
+  return { timestamp, content, timestamped: timestampMatch !== null };
 }
 
 function publishIsolatedOutputRecord(agent, providerName, taskId, record) {
@@ -2996,7 +3052,8 @@ function publishIsolatedOutputRecord(agent, providerName, taskId, record) {
 }
 
 function retainIsolatedLine(state, providerName, line) {
-  const { timestamp, content } = parseIsolatedLogLine(line);
+  const { timestamp, content, timestamped } = parseIsolatedLogLine(line);
+  if (!content.trim() || shouldSkipLogLine(content, providerName, timestamped)) return null;
   const controlPlaneContent = redactTerminalFailureForControlPlane(state, providerName, content);
   return appendControlPlaneRecord(state.controlPlaneOutput, {
     content: controlPlaneContent,
@@ -3008,6 +3065,7 @@ function retainIsolatedLine(state, providerName, line) {
 function broadcastIsolatedLine({ agent, providerName, taskId, state, line }) {
   const followerState = ensureControlPlaneOutputState(state);
   const record = retainIsolatedLine(followerState, providerName, line);
+  if (record === null) return;
   publishLiveControlPlaneRecord(followerState.controlPlaneOutput, record, (item) =>
     publishIsolatedOutputRecord(agent, providerName, taskId, item)
   );
@@ -3134,6 +3192,7 @@ async function checkIsolatedStatus({
     taskId,
     providerName,
     status,
+    statusOutput,
     isNotFound,
     state,
     cleanup,

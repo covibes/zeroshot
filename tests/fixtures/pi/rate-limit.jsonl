@@ -1,2 +1,9 @@
 {"type":"session","version":3,"id":"pi-rate-limit","timestamp":"2026-07-09T00:00:00.000Z","cwd":"/tmp/pi"}
-{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"slow down"}],"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0},"stopReason":"error","errorMessage":"rate limit exceeded; retry later"},"toolResults":[]}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":"Try the provider."}}
+{"type":"message_end","message":{"role":"user","content":"Try the provider."}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"slow down"}],"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"rate limit exceeded; retry later"}}
+{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"slow down"}],"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"rate limit exceeded; retry later"},"toolResults":[]}
+{"type":"agent_end","messages":[],"willRetry":false}
+{"type":"agent_settled"}
