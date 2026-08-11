@@ -26,8 +26,39 @@ function assertDockerConfigOutput() {
   ]);
 }
 
+function assertStartClusterOutput() {
+  const startClusterPath = path.join(repoRoot, 'lib/start-cluster.js');
+  assert.ok(
+    fs.existsSync(startClusterPath),
+    'legacy TypeScript build must emit lib/start-cluster.js'
+  );
+  const startCluster = require(startClusterPath);
+  assert.deepStrictEqual(Reflect.ownKeys(startCluster), [
+    'buildTextInput',
+    'buildIssueInput',
+    'buildFileInput',
+    'detectRunInput',
+    'isStdinInput',
+    'readStdinText',
+    'encodeStdinEnv',
+    'decodeStdinEnv',
+    'resolveProviderOverride',
+    'resolveConfigPath',
+    'prepareClusterConfig',
+    'loadClusterConfig',
+    'buildStartOptions',
+    'buildTrustedStartOptions',
+    'resolveEffectiveRunPlan',
+    'startClusterFromText',
+    'startClusterFromIssue',
+    'startClusterFromFile',
+    'detectGitRepoRoot',
+  ]);
+}
+
 function assertRuntimeOutputs() {
   assertDockerConfigOutput();
+  assertStartClusterOutput();
 }
 
 module.exports = { assertRuntimeOutputs };

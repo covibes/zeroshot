@@ -115,3 +115,11 @@ lib/docker-config.js
 lib/docker-config.d.ts
 lib/docker-env-auth.js
 lib/docker-env-auth.d.ts
+lib/start-cluster.js
+lib/start-cluster.d.ts
+lib/start-cluster-config.js
+lib/start-cluster-config.d.ts
+lib/start-cluster-environment.js
+lib/start-cluster-environment.d.ts
+lib/start-cluster-run-options.js
+lib/start-cluster-run-options.d.ts
