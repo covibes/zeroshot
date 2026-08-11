@@ -142,12 +142,16 @@ lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
 src/config-router.js
+src/claude-credentials.js
+src/copy-worker.js
+src/darwin-keychain-boundary.js
 src/guidance-topics.js
 src/input-helpers.js
 src/ledger-sequence.js
 src/message-buffer.js
 src/task-startup-error.js
 src/task-runner.js
+src/worktree-tooling-env.js
 src/omp-blob-root.js
 src/omp-config-overlay.js
 task-lib/completion.js
