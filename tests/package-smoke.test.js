@@ -53,6 +53,17 @@ function assertLegacyTypeScriptOutputs() {
   const processLiveness = require(processLivenessPath);
   assert.deepStrictEqual(Reflect.ownKeys(processLiveness), ['isProcessRunning']);
   assert.strictEqual(processLiveness.isProcessRunning(process.pid), true);
+
+  const runPlanPath = path.join(repoRoot, 'lib/run-plan.js');
+  assert.ok(fs.existsSync(runPlanPath), 'legacy TypeScript build must emit lib/run-plan.js');
+  const runPlan = require(runPlanPath);
+  assert.deepStrictEqual(Reflect.ownKeys(runPlan), ['resolveRunPlan']);
+  assert.deepStrictEqual(runPlan.resolveRunPlan({ ship: true }), {
+    isolation: 'worktree',
+    delivery: 'ship',
+    autoMerge: true,
+  });
+  assert.strictEqual(Object.isFrozen(runPlan.resolveRunPlan({})), true);
 }
 
 describe('npm package smoke', function () {
@@ -86,6 +97,7 @@ describe('npm package smoke', function () {
       'lib/start-cluster.js',
       'lib/path-check.js',
       'lib/process-liveness.js',
+      'lib/run-plan.js',
       'scripts/check-path.js',
       'scripts/postinstall.js',
       'cli/lib/setup-wizard.js',

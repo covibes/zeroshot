@@ -7,8 +7,16 @@
  */
 
 const assert = require('assert');
-const { resolveRunPlan } = require('../../lib/run-plan');
+const runPlanModule = require('../../lib/run-plan');
+const { resolveRunPlan } = runPlanModule;
 const { resolveRunMode } = require('../../lib/run-mode');
+
+describe('resolveRunPlan CommonJS contract', function () {
+  it('preserves the CommonJS export contract', function () {
+    assert.deepStrictEqual(Reflect.ownKeys(runPlanModule), ['resolveRunPlan']);
+    assert.strictEqual(resolveRunPlan.length, 0);
+  });
+});
 
 describe('resolveRunPlan', function () {
   it('resolves {} to no isolation, no delivery', function () {

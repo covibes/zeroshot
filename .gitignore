@@ -69,3 +69,5 @@ lib/path-check.js
 lib/path-check.d.ts
 lib/process-liveness.js
 lib/process-liveness.d.ts
+lib/run-plan.js
+lib/run-plan.d.ts
