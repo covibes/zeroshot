@@ -103,8 +103,18 @@ function upsertJournalEntry(journal: SetupJournal, entry: JournalEntry): void {
   };
 }
 
-function setNestedValue(target: Record<string, unknown>, pathStr: string, value: unknown): void {
+function safePathSegments(pathStr: string): string[] {
   const keys = pathStr.split('.');
+  for (const key of keys) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      throw new Error(`Unsafe setup journal path: ${pathStr}`);
+    }
+  }
+  return keys;
+}
+
+function setNestedValue(target: Record<string, unknown>, pathStr: string, value: unknown): void {
+  const keys = safePathSegments(pathStr);
   let node = target;
   for (let index = 0; index < keys.length - 1; index++) {
     const key = keys[index] || '';
@@ -121,7 +131,7 @@ function setNestedValue(target: Record<string, unknown>, pathStr: string, value:
 }
 
 function deleteNestedKey(target: Record<string, unknown>, pathStr: string): void {
-  const keys = pathStr.split('.');
+  const keys = safePathSegments(pathStr);
   let node = target;
   for (let index = 0; index < keys.length - 1; index++) {
     const child = node[keys[index] || ''];

@@ -54,6 +54,28 @@ describe('setup-journal shared mutation semantics', () => {
     assert.deepStrictEqual(settings.providerSettings.codex, { minLevel: 'level1' });
   });
 
+  it('rejects prototype-polluting paths without mutating built-in prototypes', () => {
+    const pollutedKey = 'zeroshotSetupJournalPolluted';
+    const unsafePaths = [
+      `__proto__.${pollutedKey}`,
+      `constructor.prototype.${pollutedKey}`,
+      `prototype.${pollutedKey}`,
+    ];
+
+    for (const unsafePath of unsafePaths) {
+      assert.throws(
+        () => setupJournal.setNestedValue({}, unsafePath, true),
+        /Unsafe setup journal path/
+      );
+      assert.throws(
+        () => setupJournal.deleteNestedKey({}, unsafePath),
+        /Unsafe setup journal path/
+      );
+    }
+
+    assert.strictEqual(Reflect.get(Object.prototype, pollutedKey), undefined);
+  });
+
   it('keeps the original prior value when a journal entry is reapplied', () => {
     const original = entry();
     const journal = { version: 1, entries: [original] };
