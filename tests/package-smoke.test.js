@@ -52,6 +52,20 @@ function assertIdDetectorOutput() {
   assert.strictEqual(detector.detectIdType.length, 1);
 }
 
+function assertStreamJsonParserOutput() {
+  const parserPath = path.join(repoRoot, 'lib/stream-json-parser.js');
+  assert.ok(
+    fs.existsSync(parserPath),
+    'legacy TypeScript build must emit lib/stream-json-parser.js'
+  );
+  const parser = require(parserPath);
+  assert.deepStrictEqual(Reflect.ownKeys(parser), ['parseEvent', 'parseChunk']);
+  assert.deepStrictEqual(
+    Object.values(parser).map((value) => value.length),
+    [1, 1]
+  );
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -128,6 +142,7 @@ describe('npm package smoke', function () {
 
     assertClustersRegistryOutput();
     assertIdDetectorOutput();
+    assertStreamJsonParserOutput();
     assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
@@ -136,6 +151,7 @@ describe('npm package smoke', function () {
       'lib/cluster-worker/index.js',
       'lib/clusters-registry.js',
       'lib/id-detector.js',
+      'lib/stream-json-parser.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',

@@ -79,3 +79,5 @@ lib/clusters-registry.js
 lib/clusters-registry.d.ts
 lib/id-detector.js
 lib/id-detector.d.ts
+lib/stream-json-parser.js
+lib/stream-json-parser.d.ts
