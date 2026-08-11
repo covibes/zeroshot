@@ -263,6 +263,7 @@ where
             spec: snapshot.control.spec,
             status,
             at_cursor: lifecycle.latest_cursor.or(snapshot.control.cursor),
+            terminal_result: None,
         })
     }
 }

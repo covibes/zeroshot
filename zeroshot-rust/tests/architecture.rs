@@ -165,6 +165,23 @@ fn runtime_has_no_alternate_runtime_seams() {
 }
 
 #[test]
+fn production_composition_cannot_call_debug_reducer_fixtures() {
+    let runtime = rust_sources(&[
+        "src/lib.rs",
+        "src/main.rs",
+        "src/native_admission.rs",
+        "src/native_execution.rs",
+        "src/native_execution",
+    ]);
+    for fixture in ["dispatch_reduction_fixture", "terminalize_fixture"] {
+        assert!(
+            !runtime.contains(fixture),
+            "production composition referenced debug fixture: {fixture}"
+        );
+    }
+}
+
+#[test]
 fn runtime_has_no_future_product_concerns() {
     let words = runtime_source()
         .split(|character: char| !character.is_ascii_alphanumeric())
@@ -294,6 +311,7 @@ fn product_modules_require_issue_authorization() {
             "execution.rs",
             "fault",
             "fault.rs",
+            "full_v1_reducer",
             "full_v1_reducer.rs",
             "hosted_oecp",
             "issue_provider",
@@ -303,8 +321,11 @@ fn product_modules_require_issue_authorization() {
             "native_credentials",
             "native_credentials.rs",
             "native_admission.rs",
+            "native_execution",
+            "native_execution.rs",
             "native_settings",
             "native_settings.rs",
+            "native_worker_protocol.rs",
             "observability.rs",
             "product_errors.rs",
             "provider_value",

@@ -31,7 +31,8 @@ use openengine_cluster_server::{ClusterBackend, ConnectionContext, Dispatcher};
 pub mod fault;
 pub mod observability;
 pub use native_admission::{
-    NativeAdmissionOpenError, NativeBackend, NATIVE_FENCE_RENEW_INTERVAL_MS, NATIVE_FENCE_TTL_MS,
+    run_deterministic_worker, NativeAdmissionOpenError, NativeBackend,
+    NATIVE_FENCE_RENEW_INTERVAL_MS, NATIVE_FENCE_TTL_MS, NATIVE_WORKER_MODE,
 };
 
 pub trait NativeBackendFactory {

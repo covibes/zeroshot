@@ -338,7 +338,7 @@ async fn identical_prefix_replays_to_byte_identical_public_state() {
     assert_eq!(late.value.authoritative_digest, output_digest);
 
     let terminal = ledger
-        .terminalize(key("terminal"), [5; 32], output_digest)
+        .terminalize_fixture(key("terminal"), [5; 32], output_digest)
         .await
         .unwrap();
     ledger

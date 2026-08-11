@@ -272,7 +272,7 @@ async fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
     assert_eq!(
         reduce(&graph, &json!({}), &rejected).terminal,
         Some(TerminalProjection::Failed {
-            reason: "verification_rejected".to_owned()
+            reason: "verification_rejected".parse().unwrap()
         })
     );
 

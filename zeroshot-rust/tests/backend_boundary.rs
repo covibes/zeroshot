@@ -44,6 +44,7 @@ impl ClusterBackend for FakeBackend {
             spec: None,
             status: ClusterStatus::empty(),
             at_cursor: Some(Cursor::new(context.identity().tenant().as_str())),
+            terminal_result: None,
         })
     }
 }

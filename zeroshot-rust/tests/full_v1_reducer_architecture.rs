@@ -16,7 +16,11 @@ architecture_boundary_macro::suppress_unused_architecture_exports!(
 
 #[test]
 fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
-    let reducer = read(&product_root().join("src/full_v1_reducer.rs"));
+    let reducer = format!(
+        "{}\n{}",
+        read(&product_root().join("src/full_v1_reducer.rs")),
+        read(&product_root().join("src/full_v1_reducer/authorization.rs"))
+    );
     assert!(reducer.contains("VerifiedGraph"));
     assert!(reducer.contains("ProductionGraphVerifier"));
     assert!(!reducer.contains("GraphSpec"));
@@ -24,50 +28,9 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
     assert!(!reducer.contains("PayloadType"));
     assert!(!reducer.contains("pub prefix_position"));
     assert!(reducer.contains("pub snapshot: Option<ReductionSnapshot>"));
-    let authorization_fields = reducer
-        .split("pub struct ExecutionVoidAuthorization {")
-        .nth(1)
-        .unwrap()
-        .split('}')
-        .next()
-        .unwrap();
-    assert!(!authorization_fields.contains("pub "));
-    let authorization_impl = reducer
-        .split("impl ExecutionVoidAuthorization {")
-        .nth(1)
-        .unwrap()
-        .split("\n}")
-        .next()
-        .unwrap();
-    assert!(
-        !authorization_impl
-            .lines()
-            .any(|line| line.trim_start().starts_with("pub "))
-    );
+    assert_authorization_private(&reducer);
     let ledger = read(&product_root().join("src/cluster_ledger.rs"));
-    let snapshot_fields = ledger
-        .split("pub struct ReductionSnapshot {")
-        .nth(1)
-        .unwrap()
-        .split('}')
-        .next()
-        .unwrap();
-    assert!(!snapshot_fields.contains("pub "));
-    let snapshot_impl = ledger
-        .split("impl ReductionSnapshot {")
-        .nth(1)
-        .unwrap()
-        .split("\n}")
-        .next()
-        .unwrap();
-    assert!(
-        !snapshot_impl
-            .lines()
-            .any(|line| line.trim_start().starts_with("pub "))
-    );
-    assert!(snapshot_impl.contains("self.position == state.position"));
-    assert!(snapshot_impl.contains("self.last_hash == state.last_hash"));
-    assert!(snapshot_impl.contains("Arc::ptr_eq(&self.authority, authority)"));
+    assert_snapshot_private(&ledger);
     for forbidden in [
         "tokio::",
         "async fn",
@@ -94,4 +57,53 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
     let replay = read(&product_root().join("src/cluster_ledger/replay.rs"));
     assert!(replay.contains("fold_execution_context"));
     assert!(replay.contains("fold_execution_void"));
+}
+
+fn assert_authorization_private(reducer: &str) {
+    let fields = reducer
+        .split("pub struct ExecutionVoidAuthorization {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(!fields.contains("pub "));
+    let implementation = reducer
+        .split("impl ExecutionVoidAuthorization {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(
+        !implementation
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub "))
+    );
+}
+
+fn assert_snapshot_private(ledger: &str) {
+    let snapshot_fields = ledger
+        .split("pub struct ReductionSnapshot {")
+        .nth(1)
+        .unwrap()
+        .split('}')
+        .next()
+        .unwrap();
+    assert!(!snapshot_fields.contains("pub "));
+    let snapshot_impl = ledger
+        .split("impl ReductionSnapshot {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(
+        !snapshot_impl
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub "))
+    );
+    assert!(snapshot_impl.contains("self.position == state.position"));
+    assert!(snapshot_impl.contains("self.last_hash == state.last_hash"));
+    assert!(snapshot_impl.contains("Arc::ptr_eq(&self.authority, authority)"));
 }

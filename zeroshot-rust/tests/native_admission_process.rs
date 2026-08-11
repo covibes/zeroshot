@@ -1,10 +1,10 @@
 #[path = "support/native_process.rs"]
-mod native_process;
+pub mod native_process;
 
 use std::sync::Arc;
 
-use native_process::{spawn, NativeClient, TempState};
-use openengine_cluster_client::{ClientError, ClusterClient};
+use native_process::{rpc_domain_code, spawn, NativeClient, TempState};
+use openengine_cluster_client::ClusterClient;
 use openengine_cluster_protocol::{
     canonical_value_bytes, ApplyParams, Generation, GetParams, GetResult, GraphSpec,
     IdempotencyKey, PlanParams, Phase, GENERATION_CONFLICT, GRAPH_INVALID, IDEMPOTENCY_REUSE,
@@ -61,13 +61,6 @@ fn committed_apply(graph: GraphSpec, key: &str, generation: u64) -> ApplyParams 
         if_generation: Some(Generation::new(generation).unwrap()),
         idempotency_key: Some(IdempotencyKey::new(key).unwrap()),
     }
-}
-
-fn rpc_domain_code(error: &ClientError) -> Option<&str> {
-    let ClientError::Rpc(error) = error else {
-        return None;
-    };
-    error.data.as_ref().map(|data| data.code.as_str())
 }
 
 async fn assert_empty_initialize<T>(client: &ClusterClient<T>)
@@ -170,11 +163,11 @@ async fn assert_persisted_admission_facts(state: &TempState, graph: &GraphSpec) 
         admitted.policy_digest,
         CanonicalDigest::of(&canonical_policy)
     );
-    assert_eq!(
+    assert_ne!(
         admitted.catalog_digest,
         CanonicalDigest::of(b"{\"version\":1,\"workers\":[]}")
     );
-    assert_eq!(
+    assert_ne!(
         admitted.profile_digest,
         CanonicalDigest::of(b"{\"descriptors\":[]}")
     );

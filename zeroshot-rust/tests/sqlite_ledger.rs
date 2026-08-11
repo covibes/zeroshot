@@ -367,7 +367,7 @@ async fn coherent_reads_observe_only_committed_prefixes_during_terminal_race() {
         }
     });
     ledger
-        .terminalize(key("terminal"), [2; 32], CanonicalDigest::of(b"terminal"))
+        .terminalize_fixture(key("terminal"), [2; 32], CanonicalDigest::of(b"terminal"))
         .await
         .unwrap();
     read_task.await.unwrap();

@@ -2,12 +2,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 #[path = "support/daemon.rs"]
 mod daemon_support;
-
 use daemon_support::{
     CountingBackend, CountingFactory, TempProfile, authenticated_initialize, locator_credentials,
 };
@@ -107,6 +105,7 @@ impl ClusterBackend for PendingInitializeBackend {
             spec: None,
             status: ClusterStatus::empty(),
             at_cursor: None,
+            terminal_result: None,
         })
     }
 }
@@ -147,6 +146,7 @@ impl ClusterBackend for ErrorInitializeBackend {
             spec: None,
             status: ClusterStatus::empty(),
             at_cursor: None,
+            terminal_result: None,
         })
     }
 }

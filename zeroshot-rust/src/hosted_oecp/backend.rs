@@ -260,6 +260,7 @@ impl ClusterBackend for HostedBackend {
             spec: state.graph.clone(),
             status: status_from(&state),
             at_cursor: state.at_cursor.clone(),
+            terminal_result: None,
         })
     }
 

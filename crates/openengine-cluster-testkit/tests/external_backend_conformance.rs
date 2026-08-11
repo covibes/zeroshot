@@ -80,6 +80,7 @@ impl ClusterBackend for OptionalCapabilityBackend {
             spec: None,
             status: ClusterStatus::empty(),
             at_cursor: None,
+            terminal_result: None,
         })
     }
 

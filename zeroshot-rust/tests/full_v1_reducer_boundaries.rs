@@ -254,7 +254,7 @@ async fn attempt_ceiling_terminalizes_authored_reentry_without_automatic_retry()
     assert_eq!(
         reduction.terminal,
         Some(TerminalProjection::Failed {
-            reason: "attempts_exhausted".to_owned()
+            reason: "attempts_exhausted".parse().unwrap()
         })
     );
     assert!(

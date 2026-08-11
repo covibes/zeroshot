@@ -1,8 +1,7 @@
 #[path = "support/native_process.rs"]
-mod native_process;
+pub mod native_process;
 
-use native_process::{spawn, TempState};
-use openengine_cluster_client::ClientError;
+use native_process::{assert_one_deduped, rpc_domain_code, spawn, TempState};
 use openengine_cluster_protocol::{
     ApplyParams, Generation, GraphSpec, IdempotencyKey, GENERATION_CONFLICT, IDEMPOTENCY_REUSE,
 };
@@ -40,13 +39,6 @@ fn upsert(name: &str, key: &str) -> ApplyParams {
     }
 }
 
-fn code(error: &ClientError) -> Option<&str> {
-    let ClientError::Rpc(error) = error else {
-        return None;
-    };
-    error.data.as_ref().map(|data| data.code.as_str())
-}
-
 async fn assert_distinct_generation_race() {
     let distinct_state = TempState::new("concurrency-distinct");
     let (distinct_process, distinct_client) = spawn(distinct_state.path(), "distinct");
@@ -61,7 +53,7 @@ async fn assert_distinct_generation_race() {
         outcomes
             .iter()
             .filter_map(|outcome| outcome.as_ref().err())
-            .filter(|error| code(error) == Some(GENERATION_CONFLICT))
+            .filter(|error| rpc_domain_code(error) == Some(GENERATION_CONFLICT))
             .count(),
         1
     );
@@ -80,9 +72,7 @@ async fn assert_identical_key_race() {
     );
     let first = first.unwrap();
     let second = second.unwrap();
-    assert_ne!(first.deduped, second.deduped);
-    assert_eq!(first.generation, second.generation);
-    assert_eq!(first.run_id, second.run_id);
+    assert_one_deduped(&first, &second);
     drop(identical_client);
     identical_process.join_success().await;
 }
@@ -101,7 +91,7 @@ async fn assert_conflicting_reuse_race() {
         outcomes
             .iter()
             .filter_map(|outcome| outcome.as_ref().err())
-            .filter(|error| code(error) == Some(IDEMPOTENCY_REUSE))
+            .filter(|error| rpc_domain_code(error) == Some(IDEMPOTENCY_REUSE))
             .count(),
         1
     );

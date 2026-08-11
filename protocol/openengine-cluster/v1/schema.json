@@ -807,6 +807,16 @@
         },
         "status": {
           "$ref": "#/$defs/ClusterStatus"
+        },
+        "terminalResult": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TerminalResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -3325,6 +3335,46 @@
         "reason"
       ],
       "type": "object"
+    },
+    "TerminalResult": {
+      "description": "Authoritative terminal value for backends that can durably reconstruct a completed graph.\n\nThis is additive to [`GetResult`]: backends that do not yet expose terminal values leave the\noptional field absent, including when their status is already `finished`.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "output": true,
+            "status": {
+              "const": "succeeded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+              "type": "string"
+            },
+            "status": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "TerminationWitness": {
       "oneOf": [

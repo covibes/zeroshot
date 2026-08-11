@@ -14,7 +14,7 @@ pub mod store;
 pub use crate::full_v1_reducer::ExecutionVoidAuthorization;
 pub use mutations::{
     AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidRequest, ExecutionVoidResult,
-    ReductionDispatchRequest, SafeFaultConsequence, SafeFaultResult, SettlementResult,
+    SafeFaultConsequence, SafeFaultResult, SettlementResult,
 };
 pub use error::{LedgerError, LedgerErrorKind};
 pub use record::{

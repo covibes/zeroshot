@@ -187,7 +187,7 @@ async fn pending_effects_block_every_terminal_transition() {
     let pending_position = ledger.state().await.unwrap().position;
 
     let terminal_error = ledger
-        .terminalize(key("terminal"), [3; 32], CanonicalDigest::of(b"done"))
+        .terminalize_fixture(key("terminal"), [3; 32], CanonicalDigest::of(b"done"))
         .await
         .unwrap_err();
     assert!(matches!(
@@ -207,7 +207,7 @@ async fn pending_effects_block_every_terminal_transition() {
         .await
         .unwrap();
     ledger
-        .terminalize(key("terminal"), [3; 32], CanonicalDigest::of(b"done"))
+        .terminalize_fixture(key("terminal"), [3; 32], CanonicalDigest::of(b"done"))
         .await
         .unwrap();
 }

@@ -39,7 +39,7 @@ fn receipt_validator(method: &str) -> Result<ReceiptValidator, ReplayError> {
         "settle" => Ok(validate_settlement_receipt),
         "safe_fault" => Ok(validate_safe_fault_receipt),
         "effect_intent" | "effect_receipt" => Ok(validate_effect_receipt),
-        "terminal" => Ok(validate_terminal_receipt),
+        "terminal" | "reducer_terminal" => Ok(validate_terminal_receipt),
         "cleanup_receipt" => Ok(validate_cleanup_receipt),
         "protocol_apply" => Ok(validate_protocol_apply_receipt),
         "required_proof_intent" | "required_proof_receipt" | "required_proof_acceptance" => {

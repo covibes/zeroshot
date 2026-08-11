@@ -9,8 +9,9 @@ use tokio::sync::watch;
 
 use zeroshot_engine::cluster_ledger::{LedgerError, OwnerId, ResourceId};
 use zeroshot_engine::{
-    binding_for_route, NativeAdmissionOpenError, ProductionNativeBackendFactory,
-    NATIVE_FENCE_RENEW_INTERVAL_MS, NATIVE_FENCE_TTL_MS,
+    binding_for_route, run_deterministic_worker, NativeAdmissionOpenError,
+    ProductionNativeBackendFactory, NATIVE_FENCE_RENEW_INTERVAL_MS, NATIVE_FENCE_TTL_MS,
+    NATIVE_WORKER_MODE,
 };
 
 #[derive(Debug, Error)]
@@ -38,9 +39,39 @@ struct ServeArgs {
     cluster_id: ResourceId,
 }
 
-fn parse_args() -> Result<ServeArgs, ProcessError> {
+enum ProcessMode {
+    Serve(ServeArgs),
+    DeterministicWorker { effect_id: String },
+}
+
+fn parse_args() -> Result<ProcessMode, ProcessError> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let [command, state_flag, state_dir, cluster_flag, cluster_id] = args.as_slice() else {
+    if let Some(effect_id) = parse_worker_args(&args)? {
+        return Ok(ProcessMode::DeterministicWorker { effect_id });
+    }
+    parse_serve_args(&args).map(ProcessMode::Serve)
+}
+
+fn parse_worker_args(args: &[std::ffi::OsString]) -> Result<Option<String>, ProcessError> {
+    let [command, effect_flag, effect_id] = args else {
+        return Ok(None);
+    };
+    if command != NATIVE_WORKER_MODE || effect_flag != "--effect-id" {
+        return Ok(None);
+    }
+    let effect_id = effect_id.to_str().ok_or(ProcessError::Usage)?;
+    let valid = effect_id.len() == 64
+        && effect_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !valid {
+        return Err(ProcessError::Usage);
+    }
+    Ok(Some(effect_id.to_owned()))
+}
+
+fn parse_serve_args(args: &[std::ffi::OsString]) -> Result<ServeArgs, ProcessError> {
+    let [command, state_flag, state_dir, cluster_flag, cluster_id] = args else {
         return Err(ProcessError::Usage);
     };
     if command != "serve-stdio" || state_flag != "--state-dir" || cluster_flag != "--cluster-id" {
@@ -71,7 +102,16 @@ fn process_owner() -> Result<OwnerId, ProcessError> {
 }
 
 async fn run() -> Result<(), ProcessError> {
-    let args = parse_args()?;
+    match parse_args()? {
+        ProcessMode::Serve(args) => serve(args).await,
+        ProcessMode::DeterministicWorker { effect_id } => {
+            run_deterministic_worker(&effect_id)?;
+            Ok(())
+        }
+    }
+}
+
+async fn serve(args: ServeArgs) -> Result<(), ProcessError> {
     let factory =
         ProductionNativeBackendFactory::open(&args.state_dir, args.cluster_id, process_owner()?)
             .await?;
@@ -98,6 +138,13 @@ async fn run() -> Result<(), ProcessError> {
             }
         }
     });
+
+    if let Err(error) = factory.recover_pending().await {
+        let _ = stop_renewal.send(true);
+        let _ = renewal_task.await;
+        let _ = factory.ledger().release_fence().await;
+        return Err(error.into());
+    }
 
     let identity = ConnectionIdentity::new(ConnectionIdentityConfig {
         principal: PrincipalId::new("local-native"),

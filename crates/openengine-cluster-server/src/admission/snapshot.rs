@@ -38,10 +38,31 @@ fn lifecycle_is_committed(snapshot: &AdmissionSnapshot, lifecycle: &LifecycleSna
     let Some(latest_cursor) = lifecycle.latest_cursor.as_ref() else {
         return false;
     };
-    latest_cursor_matches(snapshot, lifecycle, latest_cursor)
-        && phase_matches(snapshot.control.phase, lifecycle, operational)
+    if !latest_cursor_matches(snapshot, lifecycle, latest_cursor) {
+        return false;
+    }
+    if natural_terminal_lifecycle(snapshot.control.phase, lifecycle, operational) {
+        return true;
+    }
+    phase_matches(snapshot.control.phase, lifecycle, operational)
         && stop_state_matches(operational)
         && lifecycle_record_fold_is_valid(lifecycle)
+}
+
+fn natural_terminal_lifecycle(
+    phase: Phase,
+    lifecycle: &LifecycleSnapshot,
+    operational: &OperationalStatus,
+) -> bool {
+    phase == Phase::Finished
+        && operational.dispatch_state == DispatchState::Stopped
+        && operational.stop_mode.is_none()
+        && operational.in_flight == 0
+        && lifecycle.records.is_empty()
+        && lifecycle.verified_turns.is_empty()
+        && lifecycle.void_turns.is_empty()
+        && lifecycle.pending_failed_frontier.is_none()
+        && lifecycle.pending_retry_turn.is_none()
 }
 
 fn latest_cursor_matches(

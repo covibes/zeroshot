@@ -203,6 +203,8 @@ pub struct GetResult {
     pub spec: Option<GraphSpec>,
     pub status: ClusterStatus,
     pub at_cursor: Option<Cursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_result: Option<TerminalResult>,
 }
 
 impl GetResult {
@@ -214,8 +216,20 @@ impl GetResult {
             spec: None,
             status: ClusterStatus::empty(),
             at_cursor: None,
+            terminal_result: None,
         }
     }
+}
+
+/// Authoritative terminal value for backends that can durably reconstruct a completed graph.
+///
+/// This is additive to [`GetResult`]: backends that do not yet expose terminal values leave the
+/// optional field absent, including when their status is already `finished`.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "status", rename_all = "snake_case")]
+pub enum TerminalResult {
+    Succeeded { output: serde_json::Value },
+    Failed { reason: EnumLabel },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
