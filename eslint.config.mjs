@@ -413,6 +413,7 @@ export default [
       'src/agent/provider-control-plane.js',
       'src/agent/structured-output-error.js',
       'src/agent/validation-platform.js',
+      'src/attach/socket-paths.js',
       'src/providers/anthropic/index.js',
       'src/providers/capabilities.js',
       'src/providers/google/index.js',
