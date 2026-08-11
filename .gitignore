@@ -83,3 +83,5 @@ lib/stream-json-parser.js
 lib/stream-json-parser.d.ts
 lib/provider-detection.js
 lib/provider-detection.d.ts
+lib/provider-defaults.js
+lib/provider-defaults.d.ts

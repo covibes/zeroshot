@@ -85,6 +85,23 @@ function assertProviderDetectionOutput() {
   );
 }
 
+function assertProviderDefaultsOutput() {
+  const defaultsPath = path.join(repoRoot, 'lib/provider-defaults.js');
+  assert.ok(
+    fs.existsSync(defaultsPath),
+    'legacy TypeScript build must emit lib/provider-defaults.js'
+  );
+  const defaults = require(defaultsPath);
+  assert.deepStrictEqual(Reflect.ownKeys(defaults), [
+    'getProviderDefaults',
+    'clearProviderDefaultsCache',
+  ]);
+  assert.deepStrictEqual(
+    Object.values(defaults).map((value) => value.length),
+    [0, 0]
+  );
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -163,6 +180,7 @@ describe('npm package smoke', function () {
     assertIdDetectorOutput();
     assertStreamJsonParserOutput();
     assertProviderDetectionOutput();
+    assertProviderDefaultsOutput();
     assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
@@ -173,6 +191,7 @@ describe('npm package smoke', function () {
       'lib/id-detector.js',
       'lib/stream-json-parser.js',
       'lib/provider-detection.js',
+      'lib/provider-defaults.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',
