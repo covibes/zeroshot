@@ -44,6 +44,14 @@ function assertClustersRegistryOutput() {
   assert.strictEqual(registry.clustersFilePath('/tmp/zeroshot'), '/tmp/zeroshot/clusters.json');
 }
 
+function assertIdDetectorOutput() {
+  const detectorPath = path.join(repoRoot, 'lib/id-detector.js');
+  assert.ok(fs.existsSync(detectorPath), 'legacy TypeScript build must emit lib/id-detector.js');
+  const detector = require(detectorPath);
+  assert.deepStrictEqual(Reflect.ownKeys(detector), ['detectIdType']);
+  assert.strictEqual(detector.detectIdType.length, 1);
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -119,6 +127,7 @@ describe('npm package smoke', function () {
     assert.strictEqual(pkg.bin['zeroshot-cluster-worker'], './bin/zeroshot-cluster-worker.js');
 
     assertClustersRegistryOutput();
+    assertIdDetectorOutput();
     assertLegacyTypeScriptOutputs();
 
     for (const requiredFile of [
@@ -126,6 +135,7 @@ describe('npm package smoke', function () {
       'bin/zeroshot-cluster-worker.js',
       'lib/cluster-worker/index.js',
       'lib/clusters-registry.js',
+      'lib/id-detector.js',
       'lib/cluster-worker/index.d.ts',
       'lib/cluster-worker/executable.js',
       'lib/cluster-worker/terminal-normalizer.js',
