@@ -1,7 +1,7 @@
 import { join } from 'path';
 import { homedir } from 'os';
 
-const HOME_DIR =
+const HOME_DIR: string =
   process.env.ZEROSHOT_HOME || process.env.HOME || process.env.USERPROFILE || homedir();
 
 export const TASKS_DIR = join(HOME_DIR, '.claude-zeroshot');

@@ -18,9 +18,17 @@
 //   dataBase     = (linux|darwin) && agentDir === defaultAgent && $XDG_DATA_HOME/omp[/profiles/<p>]
 //                  exists ? that : agentDir                      // XDG flattens the agent/ prefix
 //   blobsDir     = <dataBase>/blobs
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+type Environment = Readonly<Record<string, string | undefined>>;
+
+interface OmpBlobsDirOptions {
+  readonly env?: Environment;
+  readonly homedir?: string;
+  readonly platform?: NodeJS.Platform;
+}
 
 const APP_NAME = 'omp';
 const CONFIG_DIR_NAME = '.omp';
@@ -31,7 +39,7 @@ const WINDOWS_RESERVED_BASENAME_PATTERN = /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]
 /** dirs.ts normalizeProfileName, but total: an invalid name resolves to the default profile here
  * instead of throwing. A resume against a profile OMP itself would reject cannot succeed anyway —
  * the verifier will simply not find the referenced blobs and fail the continuation closed. */
-function normalizeProfileName(profile) {
+function normalizeProfileName(profile: unknown): string | undefined {
   const normalized = typeof profile === 'string' ? profile.trim() : '';
   if (!normalized || normalized === 'default') return undefined;
   if (
@@ -46,13 +54,11 @@ function normalizeProfileName(profile) {
   return normalized;
 }
 
-function activeProfile(env) {
-  return normalizeProfileName(
-    env.OMP_PROFILE !== undefined ? env.OMP_PROFILE : env.PI_PROFILE
-  );
+function activeProfile(env: Environment): string | undefined {
+  return normalizeProfileName(env.OMP_PROFILE !== undefined ? env.OMP_PROFILE : env.PI_PROFILE);
 }
 
-function directoryExists(candidate) {
+function directoryExists(candidate: string): boolean {
   try {
     return fs.statSync(candidate).isDirectory();
   } catch {
@@ -68,7 +74,7 @@ function resolveOmpBlobsDir({
   env = process.env,
   homedir = os.homedir(),
   platform = process.platform,
-} = {}) {
+}: OmpBlobsDirOptions = {}): string {
   const profile = activeProfile(env);
   const configDirName = env.PI_CONFIG_DIR || CONFIG_DIR_NAME;
   const baseConfigRoot = path.join(homedir, configDirName);
@@ -95,13 +101,13 @@ function resolveOmpBlobsDir({
 
 /** True when `candidate` is the shared blob root or anything inside it. Cleanup uses this as a
  * hard stop: a Zeroshot partition must never resolve into OMP's shared, cross-session CAS. */
-function isInsideOmpBlobsDir(candidate, options = {}) {
+function isInsideOmpBlobsDir(candidate: string, options: OmpBlobsDirOptions = {}): boolean {
   const blobsDir = resolveOmpBlobsDir(options);
   const resolved = path.resolve(candidate);
   return resolved === blobsDir || resolved.startsWith(blobsDir + path.sep);
 }
 
-module.exports = {
+export = {
   APP_NAME,
   CONFIG_DIR_NAME,
   isInsideOmpBlobsDir,

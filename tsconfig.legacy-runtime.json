@@ -28,7 +28,6 @@
     "src/schemas/**/*.ts",
     "src/template-validation/**/*.ts",
     "src/lib/**/*.ts",
-    "task-lib/**/*.ts",
     "cli/**/*.ts",
     "bin/**/*.ts",
     "cluster-scripts/**/*.ts",

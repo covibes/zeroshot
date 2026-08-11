@@ -3,6 +3,31 @@
 // the standalone TASKS_DIR otherwise. Never derived from prompt text or cwd.
 import { TASKS_DIR } from './config.js';
 
+interface OmpSessionlessOptions {
+  readonly sessionless?: boolean;
+}
+
+interface OmpStorageRootOptions {
+  readonly storageRoot?: string;
+}
+
+interface OmpOwnerOptions {
+  readonly clusterId?: string;
+  readonly agentId?: string;
+}
+
+interface ClusterAgentOwner {
+  readonly kind: 'cluster-agent';
+  readonly clusterId: string;
+  readonly agentId: string;
+}
+
+interface StandaloneOwner {
+  readonly kind: 'standalone';
+  readonly clusterId: null;
+  readonly agentId: null;
+}
+
 export const OMP_STORAGE_ROOT_ENV = 'ZEROSHOT_OMP_STORAGE_ROOT';
 export const OMP_OWNER_CLUSTER_ID_ENV = 'ZEROSHOT_CLUSTER_ID';
 export const OMP_OWNER_AGENT_ID_ENV = 'ZEROSHOT_AGENT_ID';
@@ -16,16 +41,18 @@ export const OMP_OWNER_AGENT_ID_ENV = 'ZEROSHOT_AGENT_ID';
 export const OMP_SESSIONLESS_ENV = 'ZEROSHOT_OMP_SESSIONLESS';
 
 /** True when this task must run without any session partition at all. */
-export function isOmpSessionlessRun(options = {}) {
+export function isOmpSessionlessRun(options: OmpSessionlessOptions = {}): boolean {
   return options.sessionless === true || process.env[OMP_SESSIONLESS_ENV] === '1';
 }
 
-export function resolveOmpStorageRoot(options = {}) {
+export function resolveOmpStorageRoot(options: OmpStorageRootOptions = {}): string {
   return options.storageRoot || process.env[OMP_STORAGE_ROOT_ENV] || TASKS_DIR;
 }
 
 /** cluster-agent when both a cluster and agent id are known, standalone otherwise. */
-export function resolveOmpOwnerKind(options = {}) {
+export function resolveOmpOwnerKind(
+  options: OmpOwnerOptions = {}
+): ClusterAgentOwner | StandaloneOwner {
   const clusterId = options.clusterId || process.env[OMP_OWNER_CLUSTER_ID_ENV] || null;
   const agentId = options.agentId || process.env[OMP_OWNER_AGENT_ID_ENV] || null;
   if (clusterId && agentId) {

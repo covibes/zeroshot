@@ -10,7 +10,7 @@
 // CAS blobs are NOT part of the partition. OMP externalizes large payloads to a *shared*,
 // machine-wide content-addressed store (`blob-store.ts`, rooted at `pi-utils::getBlobsDir()` —
 // `~/.omp/agent/blobs` modulo OMP's config-root/profile/XDG semantics, mirrored in
-// src/omp-blob-root.js) and leaves a *nested* `blob:sha256:<64-lower-hex>` reference string inside
+// src/omp-blob-root.ts) and leaves a *nested* `blob:sha256:<64-lower-hex>` reference string inside
 // the session JSONL records. So verification parses the JSONL, collects canonical nested refs, and
 // checks the referenced blobs at that real shared root. Nothing here ever writes to or deletes
 // from it (see src/omp-session-partition.js, which refuses any path resolving inside it).

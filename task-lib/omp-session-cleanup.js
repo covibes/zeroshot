@@ -12,7 +12,7 @@
 //     fence is therefore over every authoritative row (provisional or committed), never over the
 //     committed rows alone — after a transfer the live owner is `provisional` and no row is
 //     committed at all.
-//   * The shared, machine-wide OMP CAS blob root (src/omp-blob-root.js) is never touched. Blobs
+//   * The shared, machine-wide OMP CAS blob root (src/omp-blob-root.ts) is never touched. Blobs
 //     are addressed from *other* sessions' JSONL too, so deleting one is data loss for unrelated
 //     work; stageOmpSessionPartitionForDeletion refuses any path that resolves inside it.
 //

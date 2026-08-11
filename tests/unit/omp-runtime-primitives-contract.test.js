@@ -3,7 +3,7 @@ const assert = require('assert');
 const fingerprint = require('../../src/omp-execution-fingerprint');
 const sessionLimits = require('../../src/omp-session-limits');
 
-describe('OMP runtime TypeScript primitive contracts', function () {
+describe('OMP session runtime TypeScript primitive contracts', function () {
   it('preserves the pinned session-limit surface', function () {
     assert.deepStrictEqual(Reflect.ownKeys(sessionLimits), [
       'OMP_SESSION_LIMITS',

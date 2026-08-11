@@ -56,11 +56,11 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | OMP RPC lifecycle driver              | `src/agent-cli-provider/omp-rpc-driver.ts`                                                                                       |
 | OMP RPC frame normalization           | `src/agent-cli-provider/omp-rpc-events.ts`                                                                                       |
 | OMP session launch types              | `src/agent-cli-provider/omp-rpc-session.ts`                                                                                      |
-| OMP config safety overlay             | `src/omp-config-overlay.js`                                                                                                      |
+| OMP config safety overlay             | `src/omp-config-overlay.ts`                                                                                                      |
 | OMP detached RPC watcher              | `task-lib/rpc-watcher.js`                                                                                                        |
 | Provider detection                    | `lib/provider-detection.js`                                                                                                      |
 | Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
-| Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS: matching `.js` paths via `build:legacy-runtime`)                                       |
+| Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
 | Provider capabilities                 | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
 | Claude settings overlay               | `src/worktree-claude-config.js`                                                                                                  |
 | Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
@@ -587,13 +587,13 @@ provider-neutral boundary so adapters do not attempt incompatible nested contain
 
 OMP's supported version, package identity, and release asset digests are pinned once in `omp-release.ts`; the RPC codec and any registry/version-probing/Docker-build code import it. Never recopy the version string, asset names, or digests elsewhere.
 
-OMP's `rpc-stdio` invoke lane uses one shared lifecycle driver, `runOmpRpcTask` (`omp-rpc-driver.ts`), for both foreground (`contract-invoke.ts`) and detached (`task-lib/rpc-watcher.js`) execution, so the two paths produce identical result semantics. Spawn evidence is persisted (via the caller's `onSpawn` hook) before the first stdin write, and is reported only once the child process is confirmed spawned (the Node `'spawn'` event) — never synthesized from a pre-spawn/undefined pid, which would let ownership-based termination signal an unrelated process. Output is normalized-events-only: raw RPC frames, prompt text, and control payloads are never logged, only `OutputEvent`s (`omp-rpc-events.ts`). The detached watcher's prompt never enters its argv (`ps` and `/proc/<pid>/cmdline` expose argv to every local user for the watcher's whole lifetime); `task-lib/runner.js` hands it over the private, length-prefixed stdin pipe in `src/watcher-prompt-channel.js`, and the watcher fails closed — no OMP spawn, ownership-aware cleanup still runs — when that channel is absent, truncated, over the pinned 1 MiB frame contract, or closed before a complete payload. The per-task OMP config overlay (`omp-config-overlay.js`) and its cleanup are ownership-checked by the shared `src/command-cleanup-ownership.js` owner used by both cleanup call sites; a failed or unsafe cleanup leaves the task's cleanup receipt intact (durably retryable) instead of silently discarding it. Provider `dockerIsolation`/`worktreeIsolation` capabilities are gated in `orchestrator.js` and `preflight.js` before any container/worktree is created, not after.
+OMP's `rpc-stdio` invoke lane uses one shared lifecycle driver, `runOmpRpcTask` (`omp-rpc-driver.ts`), for both foreground (`contract-invoke.ts`) and detached (`task-lib/rpc-watcher.js`) execution, so the two paths produce identical result semantics. Spawn evidence is persisted (via the caller's `onSpawn` hook) before the first stdin write, and is reported only once the child process is confirmed spawned (the Node `'spawn'` event) — never synthesized from a pre-spawn/undefined pid, which would let ownership-based termination signal an unrelated process. Output is normalized-events-only: raw RPC frames, prompt text, and control payloads are never logged, only `OutputEvent`s (`omp-rpc-events.ts`). The detached watcher's prompt never enters its argv (`ps` and `/proc/<pid>/cmdline` expose argv to every local user for the watcher's whole lifetime); `task-lib/runner.js` hands it over the private, length-prefixed stdin pipe in `src/watcher-prompt-channel.js`, and the watcher fails closed — no OMP spawn, ownership-aware cleanup still runs — when that channel is absent, truncated, over the pinned 1 MiB frame contract, or closed before a complete payload. The per-task OMP config overlay (`omp-config-overlay.ts`) and its cleanup are ownership-checked by the shared `src/command-cleanup-ownership.js` owner used by both cleanup call sites; a failed or unsafe cleanup leaves the task's cleanup receipt intact (durably retryable) instead of silently discarding it. Provider `dockerIsolation`/`worktreeIsolation` capabilities are gated in `orchestrator.js` and `preflight.js` before any container/worktree is created, not after.
 
 OMP session persistence (issue #866): fresh runs pass `--session-dir <partition>`; verified resume
 adds `--resume <partition>/<file>` as the exact absolute path Zeroshot already verified, never a
 bare `--resume`/`--continue` or an ID search; `--no-session` is reserved for the sessionless
 Docker lane, which stays fresh-only. Each session lives in its own random, secret-free UUID
-partition under `<storageRoot>/omp-sessions/<uuid>/` (`task-lib/omp-storage-root.js` resolves
+partition under `<storageRoot>/omp-sessions/<uuid>/` (`task-lib/omp-storage-root.ts` resolves
 `storageRoot` to the owning cluster's `storageDir` or the standalone `TASKS_DIR`, never derived
 from prompt text or cwd). Partition allocation is row-before-directory: `task-lib/runner.js`
 persists the task's provisional `ompSessionOwnership` row before the partition directory is ever
@@ -619,7 +619,7 @@ to a shared, machine-wide content-addressed store and leaves a _nested_ `blob:sh
 reference string inside the session JSONL records (v17.2.1
 `packages/coding-agent/src/session/blob-store.ts`, `session-loader.ts`). That store's root is
 `@oh-my-pi/pi-utils::getBlobsDir()` — `~/.omp/agent/blobs` modulo OMP's `PI_CONFIG_DIR` /
-`PI_CODING_AGENT_DIR` / profile / XDG semantics — mirrored in `src/omp-blob-root.js`. Verification
+`PI_CODING_AGENT_DIR` / profile / XDG semantics — mirrored in `src/omp-blob-root.ts`. Verification
 parses the JSONL, collects canonical nested refs, and checks the referenced blobs _there_; a
 missing, non-canonical, or digest-mismatched reference is an invalid continuation. A blob may
 legitimately carry more than one hard link (`blob-store.ts` hardlinks a typed `<hash>.<ext>`
@@ -1265,7 +1265,7 @@ npm run test
 Mocha config: `.mocharc.cjs` applies defaults; passing explicit `*.test.js` files on the CLI skips the default `tests/**/*.test.js` spec.
 The Mocha bootstrap isolates unit tests from live `ZEROSHOT_*` run options and user settings;
 tests must not depend on ambient cluster state or `~/.zeroshot/settings.json`.
-`ZEROSHOT_HOME` is immutable inside a Mocha worker because `task-lib/config.js` caches the task-store
+`ZEROSHOT_HOME` is immutable inside a Mocha worker because `task-lib/config.ts` caches the task-store
 root at module load; alternate-home scenarios must run in an isolated child process.
 
 Workers are now explicitly ordered to treat every `VALIDATION_RESULT` line as non-negotiable law before typing again. Failing to read and address each validator complaint before claiming completion will be rejected automatically.
