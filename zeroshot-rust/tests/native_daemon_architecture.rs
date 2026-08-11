@@ -21,6 +21,7 @@ fn native_daemon_modules_stay_on_the_discovery_auth_and_loopback_host_boundary()
         "src/daemon_auth.rs",
         "src/daemon_discovery.rs",
         "src/daemon_listener.rs",
+        "src/daemon_listener",
     ]);
     for required in [
         "authorize_request",
