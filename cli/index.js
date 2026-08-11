@@ -35,7 +35,12 @@ const {
   formatClusterFailed,
   formatGenericMessage,
 } = require('./message-formatters-normal');
-const { getColorForSender, buildMessagePrefix } = require('./message-formatter-utils');
+const {
+  getColorForSender,
+  buildMessagePrefix,
+  formatLifecycleEvent,
+  partitionValidationCriteria,
+} = require('./message-formatter-utils');
 const {
   loadSettings,
   mutateSettings,
@@ -5325,34 +5330,6 @@ function flushAllRenderBuffers(lines, buffers) {
   }
 }
 
-function formatLifecycleEvent(data) {
-  const event = data?.event;
-  let icon;
-  let eventText;
-
-  switch (event) {
-    case 'STARTED': {
-      icon = chalk.green('▶');
-      const triggers = data?.triggers?.join(', ') || 'none';
-      eventText = `started (listening for: ${chalk.dim(triggers)})`;
-      break;
-    }
-    case 'TASK_STARTED':
-      icon = chalk.yellow('⚡');
-      eventText = `${chalk.cyan(data.triggeredBy)} → task #${data.iteration} (${chalk.dim(data.model)})`;
-      break;
-    case 'TASK_COMPLETED':
-      icon = chalk.green('✓');
-      eventText = `task #${data.iteration} completed`;
-      break;
-    default:
-      icon = chalk.dim('•');
-      eventText = event || 'unknown event';
-  }
-
-  return { icon, eventText };
-}
-
 function handleLifecycleRender({ msg, prefix, lines }) {
   const data = msg.content?.data;
   const { icon, eventText } = formatLifecycleEvent(data);
@@ -5427,7 +5404,7 @@ function appendCriteriaGroup({ lines, prefix, label, items, color, reasonLabel }
 function appendCriteriaResults(lines, prefix, criteriaResults) {
   if (!Array.isArray(criteriaResults)) return;
 
-  const cannotValidateYet = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE_YET');
+  const { cannotValidateYet, cannotValidate } = partitionValidationCriteria(criteriaResults);
   appendCriteriaGroup({
     lines,
     prefix,
@@ -5437,7 +5414,6 @@ function appendCriteriaResults(lines, prefix, criteriaResults) {
     reasonLabel: 'work incomplete',
   });
 
-  const cannotValidate = criteriaResults.filter((c) => c.status === 'CANNOT_VALIDATE');
   appendCriteriaGroup({
     lines,
     prefix,

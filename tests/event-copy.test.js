@@ -1,5 +1,6 @@
 const assert = require('assert');
 const { EVENT_COPY, formatMergeStatus } = require('../cli/event-copy');
+const { partitionValidationCriteria } = require('../cli/message-formatter-utils');
 const {
   formatImplementationReady: formatImplementationReadyNormal,
   formatPrCreated: formatPrCreatedNormal,
@@ -23,6 +24,19 @@ describe('formatMergeStatus', () => {
   it('returns null for undefined/unknown values', () => {
     assert.strictEqual(formatMergeStatus(undefined), null);
     assert.strictEqual(formatMergeStatus('unknown'), null);
+  });
+});
+
+describe('partitionValidationCriteria', () => {
+  it('classifies temporary and permanent validation limitations in input order', () => {
+    const pending = { id: 'pending', status: 'CANNOT_VALIDATE_YET' };
+    const permanent = { id: 'permanent', status: 'CANNOT_VALIDATE' };
+    const passed = { id: 'passed', status: 'PASS' };
+
+    assert.deepStrictEqual(partitionValidationCriteria([pending, passed, permanent, pending]), {
+      cannotValidateYet: [pending, pending],
+      cannotValidate: [permanent],
+    });
   });
 });
 
