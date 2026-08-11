@@ -99,3 +99,7 @@ lib/setup-journal.js
 lib/setup-journal.d.ts
 lib/setup-undo.js
 lib/setup-undo.d.ts
+lib/setup-plan.js
+lib/setup-plan.d.ts
+lib/setup-plan-types.js
+lib/setup-plan-types.d.ts

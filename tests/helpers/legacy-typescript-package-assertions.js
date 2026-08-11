@@ -173,6 +173,31 @@ function assertSetupUndoOutput() {
   assert.strictEqual(setupUndo.undo.length, 0);
 }
 
+function assertSetupPlanOutput() {
+  const planPath = path.join(repoRoot, 'lib/setup-plan.js');
+  assert.ok(fs.existsSync(planPath), 'legacy TypeScript build must emit lib/setup-plan.js');
+  const setupPlan = require(planPath);
+  assert.deepStrictEqual(Reflect.ownKeys(setupPlan), [
+    'buildSetupPlan',
+    'resolveDecisionPath',
+    'domainFor',
+    'DECISION_PATHS',
+    'getNestedValue',
+    'isConsumedPath',
+    'CONSUMED_PATHS',
+  ]);
+  assert.deepStrictEqual(
+    [
+      setupPlan.buildSetupPlan,
+      setupPlan.resolveDecisionPath,
+      setupPlan.domainFor,
+      setupPlan.getNestedValue,
+      setupPlan.isConsumedPath,
+    ].map((value) => value.length),
+    [0, 1, 1, 2, 2]
+  );
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -245,6 +270,7 @@ function assertLegacyTypeScriptPackage() {
   assertCompletionOutput();
   assertSetupJournalOutput();
   assertSetupUndoOutput();
+  assertSetupPlanOutput();
   assertLegacyTypeScriptOutputs();
 }
 

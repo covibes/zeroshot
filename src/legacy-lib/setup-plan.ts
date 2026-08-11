@@ -9,13 +9,30 @@
  * parallel run-mode field without updating every consumer.
  */
 
-const path = require('path');
+import path = require('path');
+import type {
+  BuildSetupPlanParams,
+  DecisionTarget,
+  ProposedWrite,
+  SetupDecision,
+  SetupEnvironment,
+  SetupFacts,
+  SetupPlan,
+  SetupPlanDependencies,
+} from './setup-plan-types';
 
 const SCHEMA_VERSION = 2;
+type SettingsMap = Record<string, unknown>;
+interface ProviderFact {
+  available: boolean;
+  displayName: string;
+  installInstructions: string;
+  path: string | null;
+}
 
 // Canonical settings keys consumed by resolveEffectiveRunPlan. Never introduce
 // a parallel setting or translate a decision into a differently named key.
-const DECISION_PATHS = {
+const DECISION_PATHS: Record<string, DecisionTarget> = {
   defaultProvider: { scope: 'global', path: 'defaultProvider' },
   defaultIsolation: { scope: 'global', path: 'defaultIsolation' },
   allowLocalNoIsolation: { scope: 'global', path: 'allowLocalNoIsolation' },
@@ -27,13 +44,13 @@ const DECISION_PATHS = {
   updatePolicy: { scope: 'global', path: 'updatePolicy' },
 };
 
-function providerLevelDecisionId(providerName) {
+function providerLevelDecisionId(providerName: string): string {
   return `providerLevel.${providerName}`;
 }
 
 // Settings keys consumed by runtime resolvers. Shared by buildProposedWrites
 // and setup apply so neither surface can advertise dead configuration.
-const CONSUMED_PATHS = new Set([
+const CONSUMED_PATHS = new Set<string>([
   'global:defaultProvider',
   'global:defaultIsolation',
   'global:defaultDelivery',
@@ -45,7 +62,7 @@ const CONSUMED_PATHS = new Set([
   'global:updatePolicy',
 ]);
 
-function isConsumedPath(scope, targetPath) {
+function isConsumedPath(scope: string, targetPath: string): boolean {
   if (scope === 'global' && targetPath.startsWith('providerSettings.')) return true;
   return CONSUMED_PATHS.has(`${scope}:${targetPath}`);
 }
@@ -53,7 +70,7 @@ function isConsumedPath(scope, targetPath) {
 // providerLevel.<provider> decisionIds map to a per-provider settings key
 // (providerSettings.<provider>) not present in DECISION_PATHS above, since
 // the provider name is only known at runtime.
-function resolveDecisionPath(decisionId) {
+function resolveDecisionPath(decisionId: string): DecisionTarget | null {
   if (decisionId.startsWith('providerLevel.')) {
     const providerName = decisionId.slice('providerLevel.'.length);
     return { scope: 'global', path: `providerSettings.${providerName}` };
@@ -61,20 +78,46 @@ function resolveDecisionPath(decisionId) {
   return DECISION_PATHS[decisionId] || null;
 }
 
-function getNestedValue(source, pathStr) {
+function getNestedValue(source: unknown, pathStr: string): unknown {
   return pathStr
     .split('.')
-    .reduce((acc, key) => (acc === null || acc === undefined ? undefined : acc[key]), source);
+    .reduce<unknown>((acc, key) => {
+      if (acc === null || acc === undefined) return undefined;
+      // Property access intentionally retains JavaScript's primitive boxing behavior.
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+      return (acc as SettingsMap)[key];
+    }, source);
 }
 
-function defaultDeps() {
-  const { commandExists, getCommandPath } = require('./provider-detection');
-  const { checkDocker, checkGhAuth } = require('../src/preflight');
-  const { execSync } = require('../src/lib/safe-exec');
-  const { listProviders, getProvider } = require('../src/providers');
-  const { getProviderDefaults } = require('./provider-defaults');
-  const { getDefaultProviderId, getProviderMetadata } = require('./provider-names');
-  const packageJson = require('../package.json');
+function defaultDeps(): SetupPlanDependencies {
+  // These paths intentionally resolve beside the emitted module in lib/.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { commandExists, getCommandPath }: Pick<
+    SetupPlanDependencies,
+    'commandExists' | 'getCommandPath'
+  > = require('./provider-detection');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { checkDocker, checkGhAuth }: Pick<
+    SetupPlanDependencies,
+    'checkDocker' | 'checkGhAuth'
+  > = require('../src/preflight');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { execSync }: Pick<SetupPlanDependencies, 'execSync'> = require('../src/lib/safe-exec');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { listProviders, getProvider }: Pick<
+    SetupPlanDependencies,
+    'listProviders' | 'getProvider'
+  > = require('../src/providers');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { getProviderDefaults }: Pick<SetupPlanDependencies, 'getProviderDefaults'> =
+    require('./provider-defaults');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { getDefaultProviderId, getProviderMetadata }: Pick<
+    SetupPlanDependencies,
+    'getDefaultProviderId' | 'getProviderMetadata'
+  > = require('./provider-names');
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const packageJson: { version: string } = require('../package.json');
 
   return {
     commandExists,
@@ -92,7 +135,7 @@ function defaultDeps() {
   };
 }
 
-function detectInstallSource(cwd, env) {
+function detectInstallSource(cwd: string, env: SetupEnvironment): string {
   if (env.npm_config_global === 'true') return 'npm-global';
   if (env.npm_execpath && /_npx|npx/.test(env.npm_execpath)) return 'npx';
   const ownNodeModules = path.join(__dirname, '..', 'node_modules');
@@ -100,7 +143,15 @@ function detectInstallSource(cwd, env) {
   return 'unknown';
 }
 
-function buildNodeFacts({ cwd, env, deps }) {
+function buildNodeFacts({
+  cwd,
+  env,
+  deps,
+}: {
+  cwd: string;
+  deps: SetupPlanDependencies;
+  env: SetupEnvironment;
+}): SetupFacts['node'] {
   return {
     version: deps.getNodeVersion(),
     packageVersion: deps.getPackageVersion(),
@@ -108,8 +159,8 @@ function buildNodeFacts({ cwd, env, deps }) {
   };
 }
 
-function buildProviderFacts(deps) {
-  const providers = {};
+function buildProviderFacts(deps: SetupPlanDependencies): Record<string, ProviderFact> {
+  const providers: Record<string, ProviderFact> = {};
   for (const name of deps.listProviders()) {
     const metadata = deps.getProviderMetadata(name);
     const provider = deps.getProvider(name);
@@ -130,7 +181,11 @@ function buildProviderFacts(deps) {
   return providers;
 }
 
-function safeExecTrim(deps, command, cwd) {
+function safeExecTrim(
+  deps: SetupPlanDependencies,
+  command: string,
+  cwd: string
+): string | null {
   try {
     return deps.execSync(command, { cwd, stdio: 'pipe', encoding: 'utf8' }).trim();
   } catch {
@@ -138,7 +193,13 @@ function safeExecTrim(deps, command, cwd) {
   }
 }
 
-function buildGitFacts({ cwd, deps }) {
+function buildGitFacts({
+  cwd,
+  deps,
+}: {
+  cwd: string;
+  deps: SetupPlanDependencies;
+}): SetupFacts['git'] {
   const isRepo = safeExecTrim(deps, 'git rev-parse --is-inside-work-tree', cwd) === 'true';
   const ghAvailable = deps.commandExists('gh');
 
@@ -153,32 +214,50 @@ function buildGitFacts({ cwd, deps }) {
   return { isRepo: true, branch, remote, ghAvailable, ghAuthed };
 }
 
-function buildFacts({ cwd, settings, repoSettings, env, deps }) {
+function buildFacts({
+  cwd,
+  settings,
+  repoSettings,
+  env,
+  deps,
+}: {
+  cwd: string;
+  deps: SetupPlanDependencies;
+  env: SetupEnvironment;
+  repoSettings: SettingsMap | null | undefined;
+  settings: SettingsMap;
+}): SetupFacts {
   return {
     node: buildNodeFacts({ cwd, env, deps }),
     providers: buildProviderFacts(deps),
     git: buildGitFacts({ cwd, deps }),
     docker: { available: !!deps.checkDocker().available },
     settings: {
-      hasGlobal: settings?.__meta ? !!settings.__meta.fileExists : true,
+      hasGlobal: settings.__meta ? Boolean(getNestedValue(settings.__meta, 'fileExists')) : true,
       hasRepo: repoSettings !== null && repoSettings !== undefined,
     },
   };
 }
 
-function inferIssueSource(facts) {
-  const { parseGitRemoteUrl } = require('./git-remote-utils');
+function inferIssueSource(facts: SetupFacts): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const { parseGitRemoteUrl }: {
+    parseGitRemoteUrl(remote: string | null): { provider?: string } | null;
+  } = require('./git-remote-utils');
   const parsed = parseGitRemoteUrl(facts.git.remote);
   return parsed?.provider || null;
 }
 
-function inferPrBase(cwd, deps) {
+function inferPrBase(cwd: string, deps: SetupPlanDependencies): string | null {
   const branch = safeExecTrim(deps, 'git rev-parse --abbrev-ref origin/HEAD', cwd);
   if (!branch) return null;
   return branch.replace(/^origin\//, '');
 }
 
-function buildProviderLevelRecommendation(name, deps) {
+function buildProviderLevelRecommendation(
+  name: string,
+  deps: SetupPlanDependencies
+): Record<string, unknown> {
   const providerDefaults = deps.getProviderDefaults()[name] || {};
   return {
     minLevel: providerDefaults.minLevel || 'level1',
@@ -187,9 +266,24 @@ function buildProviderLevelRecommendation(name, deps) {
   };
 }
 
-function buildRecommendedAndRisk({ cwd, facts, env, deps }) {
-  const recommended = {};
-  const risk = {};
+function buildRecommendedAndRisk({
+  cwd,
+  facts,
+  env,
+  deps,
+}: {
+  cwd: string;
+  deps: SetupPlanDependencies;
+  env: SetupEnvironment;
+  facts: SetupFacts;
+}): {
+  inferredIssueSource: string | null;
+  inferredPrBase: string | null;
+  recommended: Record<string, unknown>;
+  risk: Record<string, string>;
+} {
+  const recommended: Record<string, unknown> = {};
+  const risk: Record<string, string> = {};
   const registryDefault = deps.getDefaultProviderId();
   recommended.defaultProvider = registryDefault;
   risk.defaultProvider = facts.providers[registryDefault]?.available ? 'low' : 'medium';
@@ -234,7 +328,11 @@ function buildRecommendedAndRisk({ cwd, facts, env, deps }) {
   return { recommended, risk, inferredIssueSource, inferredPrBase };
 }
 
-function currentValueFor(decisionId, settings, repoSettings) {
+function currentValueFor(
+  decisionId: string,
+  settings: SettingsMap,
+  repoSettings: SettingsMap | null | undefined
+): unknown {
   const target = resolveDecisionPath(decisionId);
   if (!target) return null;
   const source = target.scope === 'repo' ? repoSettings || {} : settings || {};
@@ -242,8 +340,20 @@ function currentValueFor(decisionId, settings, repoSettings) {
   return value === undefined ? null : value;
 }
 
-function buildDecisions({ facts, settings, repoSettings, inferredIssueSource, inferredPrBase }) {
-  const decisions = [];
+function buildDecisions({
+  facts,
+  settings,
+  repoSettings,
+  inferredIssueSource,
+  inferredPrBase,
+}: {
+  facts: SetupFacts;
+  inferredIssueSource: string | null;
+  inferredPrBase: string | null;
+  repoSettings: SettingsMap | null | undefined;
+  settings: SettingsMap;
+}): SetupDecision[] {
+  const decisions: SetupDecision[] = [];
   const hasGlobal = facts.settings.hasGlobal;
   const hasRepo = facts.settings.hasRepo;
 
@@ -281,11 +391,11 @@ function buildDecisions({ facts, settings, repoSettings, inferredIssueSource, in
   return decisions;
 }
 
-function domainFor(decisionId) {
+function domainFor(decisionId: string): string {
   if (decisionId.startsWith('providerLevel.')) {
     return '{ minLevel, defaultLevel, maxLevel } of level1|level2|level3';
   }
-  const domains = {
+  const domains: Record<string, string> = {
     defaultProvider: 'registry provider id',
     defaultIsolation: 'worktree | docker | none',
     allowLocalNoIsolation: 'boolean',
@@ -299,8 +409,14 @@ function domainFor(decisionId) {
   return domains[decisionId] || 'unknown';
 }
 
-function buildProposedWrites({ decisions, recommended }) {
-  const writes = [];
+function buildProposedWrites({
+  decisions,
+  recommended,
+}: {
+  decisions: SetupDecision[];
+  recommended: Record<string, unknown>;
+}): ProposedWrite[] {
+  const writes: ProposedWrite[] = [];
   for (const decision of decisions) {
     const target = resolveDecisionPath(decision.decisionId);
     if (!target) continue;
@@ -325,18 +441,16 @@ function buildProposedWrites({ decisions, recommended }) {
 /**
  * Build the pinned, versioned setup contract. Pure over injected inputs —
  * performs only cheap, read-only detection (no writes, no prompts).
- *
- * @param {Object} params
- * @param {string} params.cwd
- * @param {Object} params.settings - loaded global settings (optionally with __meta.fileExists)
- * @param {Object|null} params.repoSettings - repo-local settings object, or null
- * @param {Object} params.env - caller-provided env (e.g. process.env), plus optional __isTTY
- * @param {Object} [params.deps] - injected dependencies (for testing)
- * @returns {Object} plan
  */
-function buildSetupPlan({ cwd, settings, repoSettings, env, deps } = {}) {
-  const resolvedDeps = { ...defaultDeps(), ...(deps || {}) };
-  const resolvedEnv = env || {};
+function buildSetupPlan({
+  cwd,
+  settings,
+  repoSettings,
+  env,
+  deps,
+}: BuildSetupPlanParams = {}): SetupPlan {
+  const resolvedDeps: SetupPlanDependencies = { ...defaultDeps(), ...(deps || {}) };
+  const resolvedEnv: SetupEnvironment = env || {};
   const resolvedCwd = cwd || '.';
   const resolvedSettings = settings || {};
 
@@ -375,7 +489,7 @@ function buildSetupPlan({ cwd, settings, repoSettings, env, deps } = {}) {
   };
 }
 
-module.exports = {
+export = {
   buildSetupPlan,
   resolveDecisionPath,
   domainFor,
