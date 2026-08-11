@@ -135,6 +135,22 @@ function assertComposeUtilsOutput() {
   ]);
 }
 
+function assertSetupJournalOutput() {
+  const journalPath = path.join(repoRoot, 'lib/setup-journal.js');
+  assert.ok(fs.existsSync(journalPath), 'legacy TypeScript build must emit lib/setup-journal.js');
+  const journal = require(journalPath);
+  assert.deepStrictEqual(Reflect.ownKeys(journal), [
+    'getJournalPath',
+    'loadJournal',
+    'saveJournal',
+    'upsertJournalEntry',
+    'getNestedValue',
+    'setNestedValue',
+    'deleteNestedKey',
+    'deepEqual',
+  ]);
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -204,6 +220,7 @@ function assertLegacyTypeScriptPackage() {
   assertRepoSettingsOutput();
   assertClaudeAuthOutput();
   assertComposeUtilsOutput();
+  assertSetupJournalOutput();
   assertLegacyTypeScriptOutputs();
 }
 
