@@ -107,3 +107,5 @@ lib/setup-apply.js
 lib/setup-apply.d.ts
 lib/setup-apply-types.js
 lib/setup-apply-types.d.ts
+lib/git-remote-utils.js
+lib/git-remote-utils.d.ts

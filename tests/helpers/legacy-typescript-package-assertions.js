@@ -150,6 +150,25 @@ function assertCompletionOutput() {
   );
 }
 
+function assertGitRemoteUtilsOutput() {
+  const remoteUtilsPath = path.join(repoRoot, 'lib/git-remote-utils.js');
+  assert.ok(
+    fs.existsSync(remoteUtilsPath),
+    'legacy TypeScript build must emit lib/git-remote-utils.js'
+  );
+  const remoteUtils = require(remoteUtilsPath);
+  assert.deepStrictEqual(Reflect.ownKeys(remoteUtils), [
+    'normalizeGitRemoteName',
+    'quoteShellArgument',
+    'parseGitRemoteUrl',
+    'detectGitContext',
+  ]);
+  assert.deepStrictEqual(
+    Object.values(remoteUtils).map((value) => value.length),
+    [1, 1, 1, 0]
+  );
+}
+
 function assertLegacyTypeScriptOutputs() {
   const pathCheckPath = path.join(repoRoot, 'lib/path-check.js');
   assert.ok(fs.existsSync(pathCheckPath), 'legacy TypeScript build must emit lib/path-check.js');
@@ -220,6 +239,7 @@ function assertLegacyTypeScriptPackage() {
   assertClaudeAuthOutput();
   assertComposeUtilsOutput();
   assertCompletionOutput();
+  assertGitRemoteUtilsOutput();
   assertSetupOutputs();
   assertLegacyTypeScriptOutputs();
 }

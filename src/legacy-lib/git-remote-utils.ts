@@ -3,12 +3,50 @@
  * Automatically detects issue provider from git remote URL.
  */
 
-const { execSync } = require('../src/lib/safe-exec');
+interface ExecSyncOptions {
+  cwd: string;
+  encoding: 'utf8';
+  stdio: 'pipe';
+}
 
-function hasInvalidGitRefCharacter(value) {
+type ExecSync = (command: string, options: ExecSyncOptions) => string;
+
+interface SafeExecFacade {
+  execSync: ExecSync;
+}
+
+interface HostedGitContext {
+  provider: 'github' | 'gitlab';
+  host: string;
+  org: string;
+  repo: string;
+  fullRepo: string;
+}
+
+interface AzureDevOpsGitContext {
+  provider: 'azure-devops';
+  host: string;
+  azureOrg: string;
+  azureProject: string;
+  repo: string;
+}
+
+type GitContext = HostedGitContext | AzureDevOpsGitContext;
+type GitContextWithRemote = GitContext & { remote: string };
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const safeExec: SafeExecFacade = require('../src/lib/safe-exec');
+const { execSync } = safeExec;
+
+function hasInvalidGitRefCharacter(value: string): boolean {
   for (const character of value) {
     const codePoint = character.codePointAt(0);
-    if (codePoint <= 0x20 || codePoint === 0x7f || '~^:?*[\\'.includes(character)) {
+    if (
+      codePoint === undefined ||
+      codePoint <= 0x20 ||
+      codePoint === 0x7f ||
+      '~^:?*[\\'.includes(character)
+    ) {
       return true;
     }
   }
@@ -19,11 +57,8 @@ function hasInvalidGitRefCharacter(value) {
  * Normalize a Git remote name using the same ref-format rules Git applies to
  * refs/remotes/<name>. Keeping this next to detection prevents a discovered
  * remote from being rejected later by a narrower consumer-specific allowlist.
- *
- * @param {unknown} value - Candidate remote name
- * @returns {string|null} Normalized remote name, or null when invalid
  */
-function normalizeGitRemoteName(value) {
+function normalizeGitRemoteName(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
   }
@@ -52,13 +87,8 @@ function normalizeGitRemoteName(value) {
   return name;
 }
 
-/**
- * Quote one argument for the POSIX shell snippets embedded in agent prompts.
- *
- * @param {string} value - Argument to quote
- * @returns {string} Single-quoted shell argument
- */
-function quoteShellArgument(value) {
+/** Quote one argument for the POSIX shell snippets embedded in agent prompts. */
+function quoteShellArgument(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
@@ -66,23 +96,8 @@ function quoteShellArgument(value) {
  * Parse git remote URL into structured provider context.
  * Supports GitHub, GitLab, and Azure DevOps (cloud + self-hosted).
  * Handles both HTTPS and SSH URL formats.
- *
- * @param {string} remoteUrl - Git remote URL
- * @returns {Object|null} Provider context or null if unparseable
- *
- * @example
- * parseGitRemoteUrl('https://github.com/org/repo.git')
- * // → { provider: 'github', host: 'github.com', org: 'org', repo: 'repo', fullRepo: 'org/repo' }
- *
- * @example
- * parseGitRemoteUrl('git@gitlab.com:org/repo.git')
- * // → { provider: 'gitlab', host: 'gitlab.com', org: 'org', repo: 'repo', fullRepo: 'org/repo' }
- *
- * @example
- * parseGitRemoteUrl('https://dev.azure.com/myorg/myproject/_git/myrepo')
- * // → { provider: 'azure-devops', host: 'dev.azure.com', azureOrg: 'https://dev.azure.com/myorg', azureProject: 'myproject', repo: 'myrepo' }
  */
-function parseGitRemoteUrl(remoteUrl) {
+function parseGitRemoteUrl(remoteUrl: unknown): GitContext | null {
   if (!remoteUrl || typeof remoteUrl !== 'string') {
     return null;
   }
@@ -92,10 +107,13 @@ function parseGitRemoteUrl(remoteUrl) {
   // Normalize SSH URLs to HTTPS format for easier parsing
   // git@host:path → https://host/path
   let normalizedUrl = url;
-  const sshMatch = url.match(/^git@([^:]+):(.+)$/);
+  const sshMatch = /^git@([^:]+):(.+)$/.exec(url);
   if (sshMatch) {
-    const [, host, path] = sshMatch;
-    normalizedUrl = `https://${host}/${path}`;
+    const host = sshMatch[1];
+    const remotePath = sshMatch[2];
+    if (host !== undefined && remotePath !== undefined) {
+      normalizedUrl = `https://${host}/${remotePath}`;
+    }
   }
 
   // Remove .git suffix if present
@@ -105,16 +123,17 @@ function parseGitRemoteUrl(remoteUrl) {
   // Azure Legacy: https://org.visualstudio.com/project/_git/repo
   // Azure SSH: git@ssh.dev.azure.com:v3/org/project/repo
   const azureMatch =
-    normalizedUrl.match(/https:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/]+)/) ||
-    normalizedUrl.match(/https:\/\/([^.]+)\.visualstudio\.com\/([^/]+)\/_git\/([^/]+)/) ||
-    // After normalization, `git@ssh.dev.azure.com:v3/org/project/repo` becomes
-    // `https://ssh.dev.azure.com/v3/org/project/repo`
-    normalizedUrl.match(/https:\/\/ssh\.dev\.azure\.com\/v3\/([^/]+)\/([^/]+)\/([^/]+)/);
+    /https:\/\/dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/]+)/.exec(normalizedUrl) ||
+    /https:\/\/([^.]+)\.visualstudio\.com\/([^/]+)\/_git\/([^/]+)/.exec(normalizedUrl) ||
+    /https:\/\/ssh\.dev\.azure\.com\/v3\/([^/]+)\/([^/]+)\/([^/]+)/.exec(normalizedUrl);
 
   if (azureMatch) {
-    const [, orgPart, project, repo] = azureMatch;
-    // For dev.azure.com, org is the first path segment
-    // For visualstudio.com, org is the subdomain
+    const orgPart = azureMatch[1];
+    const project = azureMatch[2];
+    const repo = azureMatch[3];
+    if (orgPart === undefined || project === undefined || repo === undefined) {
+      return null;
+    }
     const isLegacy = normalizedUrl.includes('visualstudio.com');
     const azureOrg = isLegacy
       ? `https://${orgPart}.visualstudio.com`
@@ -132,19 +151,21 @@ function parseGitRemoteUrl(remoteUrl) {
   // GitHub: https://github.com/org/repo
   // GitLab: https://gitlab.com/org/repo (or self-hosted)
   // Generic: https://host/org/repo
-  const httpsMatch = normalizedUrl.match(/https?:\/\/([^/]+)\/([^/]+)\/([^/]+)/);
+  const httpsMatch = /https?:\/\/([^/]+)\/([^/]+)\/([^/]+)/.exec(normalizedUrl);
   if (httpsMatch) {
-    const [, host, org, repo] = httpsMatch;
+    const host = httpsMatch[1];
+    const org = httpsMatch[2];
+    const repo = httpsMatch[3];
+    if (host === undefined || org === undefined || repo === undefined) {
+      return null;
+    }
 
-    let provider = null;
+    let provider: HostedGitContext['provider'];
     if (host === 'github.com') {
       provider = 'github';
     } else if (host.includes('gitlab')) {
-      // Matches gitlab.com or any gitlab.* subdomain or *gitlab* in hostname
       provider = 'gitlab';
     } else {
-      // Unknown provider - could be self-hosted GitLab or other
-      // Return null to fall back to settings
       return null;
     }
 
@@ -163,36 +184,15 @@ function parseGitRemoteUrl(remoteUrl) {
 /**
  * Detect git repository context from current working directory.
  * Returns provider context extracted from git remote URL.
- *
- * @param {string} [cwd=process.cwd()] - Directory to check
- * @returns {Object|null} Git context or null
- *
- * Gracefully returns null for:
- * - Not in git repository
- * - No remote configured
- * - Remote URL unparseable
- * - Git command fails
- *
- * @example
- * // In a GitHub repo with remote
- * detectGitContext()
- * // → { provider: 'github', host: 'github.com', org: 'myorg', repo: 'myrepo', fullRepo: 'myorg/myrepo' }
- *
- * @example
- * // Not in git repo or no remote
- * detectGitContext()
- * // → null
  */
-function detectGitContext(cwd = process.cwd()) {
+function detectGitContext(cwd = process.cwd()): GitContextWithRemote | null {
   try {
-    // Check if we're in a git repository
     execSync('git rev-parse --git-dir', {
       cwd,
       stdio: 'pipe',
       encoding: 'utf8',
     });
   } catch {
-    // Not a git repository
     return null;
   }
 
@@ -203,16 +203,17 @@ function detectGitContext(cwd = process.cwd()) {
       encoding: 'utf8',
     });
 
-    const supportedRemotes = new Map();
+    const supportedRemotes = new Map<string, GitContextWithRemote>();
     for (const line of remoteOutput.split(/\r?\n/)) {
-      const match = line.match(/^(\S+)\s+(.+)\s+\(fetch\)$/);
+      const match = /^(\S+)\s+(.+)\s+\(fetch\)$/.exec(line);
       if (!match) {
         continue;
       }
 
-      const [, remoteCandidate, remoteUrl] = match;
+      const remoteCandidate = match[1];
+      const remoteUrl = match[2];
       const remote = normalizeGitRemoteName(remoteCandidate);
-      if (!remote) {
+      if (!remote || remoteUrl === undefined) {
         continue;
       }
       const context = parseGitRemoteUrl(remoteUrl);
@@ -221,26 +222,21 @@ function detectGitContext(cwd = process.cwd()) {
       }
     }
 
-    // Preserve existing behavior whenever origin is usable. Without origin,
-    // select a remote only when there is exactly one supported target. Guessing
-    // between multiple repositories could push code or create a PR in the wrong
-    // place, so ambiguous configurations deliberately fail closed.
     if (supportedRemotes.has('origin')) {
-      return supportedRemotes.get('origin');
+      return supportedRemotes.get('origin') ?? null;
     }
 
     if (supportedRemotes.size === 1) {
-      return supportedRemotes.values().next().value;
+      return supportedRemotes.values().next().value ?? null;
     }
 
     return null;
   } catch {
-    // No remote configured or command failed
     return null;
   }
 }
 
-module.exports = {
+export = {
   normalizeGitRemoteName,
   quoteShellArgument,
   parseGitRemoteUrl,
