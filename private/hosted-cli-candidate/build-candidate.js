@@ -26,6 +26,12 @@ const CANDIDATE_FILES = Object.freeze([
   'register.js',
   'register-support.js',
 ]);
+const CANDIDATE_SUPPORT_FILES = Object.freeze([
+  Object.freeze({
+    source: 'zeroshot-rust/hosted-node/declarative-cluster.js',
+    destination: 'declarative-cluster.js',
+  }),
+]);
 const GENERATED_OUTPUT_DIRS = Object.freeze([
   'lib/agent-cli-provider',
   'lib/cluster',
@@ -103,6 +109,9 @@ function writeCandidateFiles(stage) {
   fs.mkdirSync(target, { recursive: true });
   for (const file of CANDIDATE_FILES) {
     fs.copyFileSync(path.join(__dirname, file), path.join(target, file));
+  }
+  for (const file of CANDIDATE_SUPPORT_FILES) {
+    fs.copyFileSync(path.join(ROOT, file.source), path.join(target, file.destination));
   }
   fs.writeFileSync(path.join(stage, 'PRIVATE_HOSTED_CANDIDATE.txt'), `${PRIVATE_MARKER}\n`);
 

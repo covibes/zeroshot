@@ -11,28 +11,25 @@ const {
   resolveSubmissionBase,
   resolveRuntimeBundle,
 } = require('../../private/hosted-cli-candidate/credentials');
+const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers');
 const {
   normalizeRuntimeConfig,
   readRuntimeConfig,
 } = require('../../private/hosted-cli-candidate/runtime-config');
-const { readHostedInputs } = require('../../private/hosted-cli-candidate/readers');
 const BASE_REVISION = 'b'.repeat(40);
 const GRAPH_FIXTURE = path.join(
   __dirname,
   '../../protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json'
 );
-
 const roots = [];
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
-
 function temp() {
   const root = fs.mkdtempSync(path.join(tmpdir(), 'zeroshot-candidate-'));
   roots.push(root);
   return root;
 }
-
 describe('explicit hosted readers', () => {
   it('accepts explicit JSON null input and the exact single-worker graph', async () => {
     const root = temp();
@@ -151,6 +148,40 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   assert.equal(bundle.runtime.files['cluster.json'], clusterBytes);
 });
 
+it('rejects nondeclarative hosted cluster config before resolving the submission base', async () => {
+  const root = temp();
+  const runtimeConfigPath = path.join(root, 'runtime.json');
+  const clusterConfigPath = path.join(root, 'cluster.json');
+  fs.writeFileSync(runtimeConfigPath, JSON.stringify({ provider: 'claude' }));
+  fs.writeFileSync(
+    clusterConfigPath,
+    '{"name":"unsafe","agents":[{"id":"worker","role":"implementation","triggers":[{"topic":"ISSUE_OPENED","action":"execute_task","logic":{"engine":"javascript","script":"return true;"}}]}]}'
+  );
+  const target = {
+    hostedSetup: {
+      kind: 'zeroshot.private-hosted-setup/v3',
+      repository: 'owner/repository',
+      base: { kind: 'branch', branch: 'main' },
+      runtimeConfigPath,
+      configuredAt: '2026-08-03T00:00:00.000Z',
+    },
+  };
+  let fetched = false;
+  await assert.rejects(
+    resolveRuntimeBundle(target, {
+      mode: 'ship',
+      environment: { GH_TOKEN: 'github-test-token' },
+      clusterConfigPath,
+      fetch: () => {
+        fetched = true;
+        throw new Error('unexpected GitHub lookup');
+      },
+    }),
+    /Hosted cluster config.*script.*not allowed/
+  );
+  assert.equal(fetched, false);
+});
+
 it('resolves omitted and named bases to one immutable submission revision', async () => {
   const requests = [];
   const fetch = (url) => {
@@ -180,57 +211,30 @@ it('resolves omitted and named bases to one immutable submission revision', asyn
 });
 
 it('validates generic runtime bounds and anchors mapped files to the config', () => {
-  assert.deepEqual(
-    normalizeRuntimeConfig({
-      provider: 'azure-openai',
-      executable: 'gateway',
-      environment: {},
-      files: {},
-      settings: {},
-    }).executable,
+  const runtime = (overrides) =>
+    normalizeRuntimeConfig({ provider: 'custom', executable: 'claude', ...overrides });
+  assert.equal(
+    normalizeRuntimeConfig({ provider: 'azure-openai', executable: 'gateway' }).executable,
     'gateway'
   );
   assert.throws(
     () => normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }),
     /Unknown provider/
   );
-  const reservedNames = `
-    GH_TOKEN GITHUB_TOKEN GIT_ASKPASS GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
-    GIT_TERMINAL_PROMPT HOME LANG NODE_ENV PATH TMPDIR ZEROSHOT_HOSTED_BASE_REVISION
-    ZEROSHOT_HOSTED_DELIVERY_MODE ZEROSHOT_HOSTED_DELIVERY_TARGET
-    ZEROSHOT_HOSTED_DELIVERY_VERSION ZEROSHOT_HOSTED_EXECUTABLE ZEROSHOT_HOSTED_EXEC_ROOT
-    ZEROSHOT_HOSTED_MODEL ZEROSHOT_HOSTED_PROVIDER ZEROSHOT_HOSTED_REPOSITORY
-    ZEROSHOT_ISOLATION_PROFILE ZEROSHOT_PROVIDER_PROFILE ZEROSHOT_SETTINGS_FILE
-  `
-    .trim()
-    .split(/\s+/);
-  for (const name of reservedNames) {
-    assert.throws(
-      () =>
-        normalizeRuntimeConfig({
-          provider: 'custom',
-          executable: 'claude',
-          environment: { [name]: '/escape' },
-        }),
-      /reserved/
+  const reservedNames =
+    'GH_TOKEN GITHUB_TOKEN GIT_ASKPASS GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM GIT_TERMINAL_PROMPT HOME LANG NODE_ENV PATH TMPDIR ZEROSHOT_HOSTED_BASE_REVISION ZEROSHOT_HOSTED_DELIVERY_MODE ZEROSHOT_HOSTED_DELIVERY_TARGET ZEROSHOT_HOSTED_DELIVERY_VERSION ZEROSHOT_HOSTED_EXECUTABLE ZEROSHOT_HOSTED_EXEC_ROOT ZEROSHOT_HOSTED_MODEL ZEROSHOT_HOSTED_PROVIDER ZEROSHOT_HOSTED_REPOSITORY ZEROSHOT_ISOLATION_PROFILE ZEROSHOT_PROVIDER_PROFILE ZEROSHOT_SETTINGS_FILE'.split(
+      ' '
     );
+  for (const name of reservedNames) {
+    assert.throws(() => runtime({ environment: { [name]: '/escape' } }), /reserved/);
   }
   for (const filename of ['../escape', 'settings.json', 'settings.json/nested']) {
-    assert.throws(
-      () =>
-        normalizeRuntimeConfig({
-          provider: 'custom',
-          executable: 'claude',
-          files: { [filename]: 'secret' },
-        }),
-      /runtime file path/
-    );
+    assert.throws(() => runtime({ files: { [filename]: 'secret' } }), /runtime file path/);
   }
 
   const root = temp();
-  const configDirectory = path.join(root, 'config');
-  const configFile = path.join(configDirectory, 'runtime.json');
-  fs.mkdirSync(configDirectory);
+  const configFile = path.join(root, 'config/runtime.json');
+  fs.mkdirSync(path.dirname(configFile));
   fs.writeFileSync(
     configFile,
     JSON.stringify({
