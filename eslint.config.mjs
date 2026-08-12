@@ -440,6 +440,7 @@ export default [
       'src/attach/attach-server-socket.js',
       'src/attach/attach-server-pty.js',
       'src/attach/attach-server-events.js',
+      'src/attach/index.js',
       'src/providers/anthropic/index.js',
       'src/providers/capabilities.js',
       'src/providers/google/index.js',
