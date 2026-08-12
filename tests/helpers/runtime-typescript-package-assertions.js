@@ -50,6 +50,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/attach/ring-buffer.js',
   'src/attach/protocol.js',
   'src/attach/send-input.js',
+  'src/attach/socket-discovery.js',
   'src/providers/anthropic/index.js',
   'src/providers/capabilities.js',
   'src/providers/google/index.js',

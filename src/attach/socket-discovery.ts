@@ -5,63 +5,61 @@
  * runtime directory so long HOME paths cannot exceed Unix socket limits.
  */
 
-const path = require('path');
-const fs = require('fs');
-const net = require('net');
-const { readClustersFileSync } = require('../../lib/clusters-registry');
-const socketPaths = require('./socket-paths');
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+
+import socketPaths from './socket-paths';
+
+interface ClustersRegistryModule {
+  readClustersFileSync(storageDir: string): unknown;
+}
+
+function isClustersRegistryModule(value: unknown): value is ClustersRegistryModule {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'readClustersFileSync' in value &&
+    typeof value.readClustersFileSync === 'function'
+  );
+}
+
+const clustersRegistryModule: unknown = require('../../lib/clusters-registry');
+if (!isClustersRegistryModule(clustersRegistryModule)) {
+  throw new TypeError('clusters registry must export readClustersFileSync');
+}
+const { readClustersFileSync } = clustersRegistryModule;
 
 const ZEROSHOT_DIR = path.join(socketPaths.resolveHomeDir(), '.zeroshot');
 const SOCKET_DIR = socketPaths.getSocketDir();
 
-/**
- * Check if an ID is a known cluster by looking up clusters.json
- * Cluster IDs don't have prefix (e.g., 'steady-pulse-42'), unlike task IDs ('task-xxx')
- * @param {string} id - ID to check
- * @returns {boolean} True if ID is a cluster
- */
-function isKnownCluster(id) {
+/** Check if an ID is a known cluster by looking up clusters.json. */
+function isKnownCluster(id: string): boolean {
   try {
     const clusters = readClustersFileSync(ZEROSHOT_DIR);
-    return id in clusters;
+    return typeof clusters === 'object' && clusters !== null && id in clusters;
   } catch {
     return false;
   }
 }
 
-/**
- * Ensure socket directory exists
- */
-function ensureSocketDir() {
+/** Ensure socket directory exists. */
+function ensureSocketDir(): void {
   socketPaths.ensureSocketDir();
 }
 
-/**
- * Get socket path for a task
- * @param {string} taskId - Task ID (e.g., 'task-swift-falcon')
- * @returns {string} - Socket path
- */
-function getTaskSocketPath(taskId) {
+/** Get socket path for a task. */
+function getTaskSocketPath(taskId: string): string {
   return socketPaths.getTaskSocketPath(taskId);
 }
 
-/**
- * Get socket path for a cluster agent
- * @param {string} clusterId - Cluster ID (e.g., 'cluster-bold-eagle')
- * @param {string} agentId - Agent ID (e.g., 'worker')
- * @returns {string} - Socket path
- */
-function getAgentSocketPath(clusterId, agentId) {
+/** Get socket path for a cluster agent. */
+function getAgentSocketPath(clusterId: string, agentId: string): string {
   return socketPaths.getAgentSocketPath(clusterId, agentId);
 }
 
-/**
- * Get socket path for any ID (auto-detects task vs cluster)
- * @param {string} id - Task or cluster ID
- * @param {string} [agentId] - Optional agent ID for clusters
- * @returns {string} - Socket path
- */
-function getSocketPath(id, agentId = null) {
+/** Get socket path for any ID, auto-detecting task versus cluster. */
+function getSocketPath(id: string, agentId: string | null = null): string {
   if (id.startsWith('task-')) {
     return getTaskSocketPath(id);
   }
@@ -78,12 +76,8 @@ function getSocketPath(id, agentId = null) {
   return getTaskSocketPath(id);
 }
 
-/**
- * Check if a socket exists and is connectable
- * @param {string} socketPath - Path to socket file
- * @returns {Promise<boolean>} - True if socket is live
- */
-function isSocketAlive(socketPath) {
+/** Check if a socket exists and is connectable. */
+function isSocketAlive(socketPath: string): Promise<boolean> {
   if (!fs.existsSync(socketPath)) {
     return Promise.resolve(false);
   }
@@ -108,12 +102,8 @@ function isSocketAlive(socketPath) {
   });
 }
 
-/**
- * Remove stale socket file if not connectable
- * @param {string} socketPath - Path to socket file
- * @returns {Promise<boolean>} - True if socket was removed (stale)
- */
-async function cleanupStaleSocket(socketPath) {
+/** Remove a stale socket file if it is not connectable. */
+async function cleanupStaleSocket(socketPath: string): Promise<boolean> {
   if (!fs.existsSync(socketPath)) {
     return false;
   }
@@ -130,16 +120,11 @@ async function cleanupStaleSocket(socketPath) {
   return false;
 }
 
-/**
- * List all attachable tasks
- * Task sockets are .sock files directly in SOCKET_DIR (not in subdirectories)
- * Excludes cluster-level sockets (cluster-xxx.sock) since those aren't tasks
- * @returns {Promise<string[]>} - Array of task IDs with live sockets
- */
-async function listAttachableTasks() {
+/** List task IDs with live sockets. */
+async function listAttachableTasks(): Promise<string[]> {
   ensureSocketDir();
   const entries = fs.readdirSync(SOCKET_DIR, { withFileTypes: true });
-  const tasks = [];
+  const tasks: string[] = [];
 
   for (const entry of entries) {
     // Check socket files (Unix sockets report isSocket(), not isFile())
@@ -163,19 +148,15 @@ async function listAttachableTasks() {
   return tasks;
 }
 
-/**
- * List all attachable agents for a cluster
- * @param {string} clusterId - Cluster ID
- * @returns {Promise<string[]>} - Array of agent IDs with live sockets
- */
-async function listAttachableAgents(clusterId) {
+/** List agent IDs with live sockets for a cluster. */
+async function listAttachableAgents(clusterId: string): Promise<string[]> {
   const clusterDir = path.join(SOCKET_DIR, clusterId);
   if (!fs.existsSync(clusterDir)) {
     return [];
   }
 
   const files = fs.readdirSync(clusterDir);
-  const agents = [];
+  const agents: string[] = [];
 
   for (const file of files) {
     if (file.endsWith('.sock')) {
@@ -190,15 +171,11 @@ async function listAttachableAgents(clusterId) {
   return agents;
 }
 
-/**
- * List all attachable clusters
- * Checks both socket directories AND clusters.json for known clusters
- * @returns {Promise<string[]>} - Array of cluster IDs with at least one live agent socket
- */
-async function listAttachableClusters() {
+/** List cluster IDs with at least one live agent socket. */
+async function listAttachableClusters(): Promise<string[]> {
   ensureSocketDir();
   const entries = fs.readdirSync(SOCKET_DIR, { withFileTypes: true });
-  const clusters = [];
+  const clusters: string[] = [];
 
   // Check socket directories (both 'cluster-' prefix and plain cluster IDs)
   for (const entry of entries) {
@@ -216,11 +193,8 @@ async function listAttachableClusters() {
   return clusters;
 }
 
-/**
- * Cleanup all sockets for a cluster (on cluster stop)
- * @param {string} clusterId - Cluster ID
- */
-function cleanupClusterSockets(clusterId) {
+/** Cleanup all sockets for a cluster when it stops. */
+function cleanupClusterSockets(clusterId: string): void {
   const clusterDir = path.join(SOCKET_DIR, clusterId);
   if (fs.existsSync(clusterDir)) {
     const files = fs.readdirSync(clusterDir);
@@ -239,7 +213,7 @@ function cleanupClusterSockets(clusterId) {
   }
 }
 
-module.exports = {
+export = {
   ZEROSHOT_DIR,
   SOCKET_DIR,
   ensureSocketDir,

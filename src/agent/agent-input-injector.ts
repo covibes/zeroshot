@@ -31,10 +31,6 @@ interface TaskStoreModule {
   getTask(taskId: string): TaskInfo | null | undefined;
 }
 
-interface SocketDiscoveryModule {
-  isSocketAlive(socketPath: string): Promise<boolean> | boolean;
-}
-
 interface InjectInputOptions {
   timeoutMs?: number;
 }
@@ -48,15 +44,6 @@ function isTaskStoreModule(value: unknown): value is TaskStoreModule {
   );
 }
 
-function isSocketDiscoveryModule(value: unknown): value is SocketDiscoveryModule {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'isSocketAlive' in value &&
-    typeof value.isSocketAlive === 'function'
-  );
-}
-
 const taskStoreModule: unknown = require('../../task-lib/store.js');
 if (!isTaskStoreModule(taskStoreModule)) {
   throw new TypeError('task store must export getTask');
@@ -67,11 +54,9 @@ import sendInputModule from '../attach/send-input';
 
 const { sendInput } = sendInputModule;
 
-const socketDiscoveryModule: unknown = require('../attach/socket-discovery');
-if (!isSocketDiscoveryModule(socketDiscoveryModule)) {
-  throw new TypeError('socket-discovery must export isSocketAlive');
-}
-const isSocketAlive = socketDiscoveryModule.isSocketAlive;
+import socketDiscovery from '../attach/socket-discovery';
+
+const { isSocketAlive } = socketDiscovery;
 
 const DEFAULT_TIMEOUT_MS = 1500;
 
