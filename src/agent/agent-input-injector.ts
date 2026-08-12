@@ -31,19 +31,6 @@ interface TaskStoreModule {
   getTask(taskId: string): TaskInfo | null | undefined;
 }
 
-interface SendInputResult {
-  ok: boolean;
-  error?: string | null;
-}
-
-interface SendInputModule {
-  sendInput(options: {
-    socketPath: string;
-    data: string;
-    timeoutMs: number;
-  }): Promise<SendInputResult> | SendInputResult;
-}
-
 interface SocketDiscoveryModule {
   isSocketAlive(socketPath: string): Promise<boolean> | boolean;
 }
@@ -58,15 +45,6 @@ function isTaskStoreModule(value: unknown): value is TaskStoreModule {
     value !== null &&
     'getTask' in value &&
     typeof value.getTask === 'function'
-  );
-}
-
-function isSendInputModule(value: unknown): value is SendInputModule {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'sendInput' in value &&
-    typeof value.sendInput === 'function'
   );
 }
 
@@ -85,11 +63,9 @@ if (!isTaskStoreModule(taskStoreModule)) {
 }
 const getTask = taskStoreModule.getTask;
 
-const sendInputModule: unknown = require('../attach/send-input');
-if (!isSendInputModule(sendInputModule)) {
-  throw new TypeError('send-input must export sendInput');
-}
-const sendInput = sendInputModule.sendInput;
+import sendInputModule from '../attach/send-input';
+
+const { sendInput } = sendInputModule;
 
 const socketDiscoveryModule: unknown = require('../attach/socket-discovery');
 if (!isSocketDiscoveryModule(socketDiscoveryModule)) {

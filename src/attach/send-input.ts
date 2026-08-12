@@ -5,21 +5,26 @@
  * Returns { ok, error } instead of throwing on transport failures.
  */
 
-const net = require('net');
-const fs = require('fs');
-const protocol = require('./protocol');
+import fs from 'node:fs';
+import net from 'node:net';
+
+import protocol from './protocol';
 
 const DEFAULT_TIMEOUT_MS = 1500;
 
-/**
- * Send input to an attach socket via STDIN message.
- * @param {object} options
- * @param {string} options.socketPath - Unix socket path
- * @param {Buffer|string} options.data - Data to send
- * @param {number} [options.timeoutMs=1500] - Timeout in ms
- * @returns {Promise<{ok: boolean, error: string|null}>}
- */
-function sendInput(options = {}) {
+interface SendInputOptions {
+  socketPath?: string;
+  data?: Buffer | string | null;
+  timeoutMs?: number;
+}
+
+interface SendInputResult {
+  ok: boolean;
+  error: string | null;
+}
+
+/** Send input to an attach socket via STDIN message. */
+function sendInput(options: SendInputOptions = {}): Promise<SendInputResult> | SendInputResult {
   const { socketPath, data, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
 
   if (!socketPath) {
@@ -40,10 +45,10 @@ function sendInput(options = {}) {
 
   return new Promise((resolve) => {
     let settled = false;
-    let timeout;
+    let timeout: NodeJS.Timeout | undefined;
     const socket = net.createConnection(socketPath);
 
-    const finish = (result) => {
+    const finish = (result: SendInputResult): void => {
       if (settled) return;
       settled = true;
       if (timeout) {
@@ -52,7 +57,7 @@ function sendInput(options = {}) {
       try {
         socket.end();
         socket.destroy();
-      } catch (cleanupError) {
+      } catch (cleanupError: unknown) {
         console.warn('[sendInput] socket cleanup failed:', cleanupError);
       }
       resolve(result);
@@ -65,24 +70,25 @@ function sendInput(options = {}) {
     socket.on('connect', () => {
       try {
         const encoded = protocol.encode(protocol.createStdinMessage(data));
-        socket.write(encoded, (err) => {
-          if (err) {
-            finish({ ok: false, error: err.message });
+        socket.write(encoded, (error?: Error | null) => {
+          if (error) {
+            finish({ ok: false, error: error.message });
           } else {
             finish({ ok: true, error: null });
           }
         });
-      } catch (err) {
-        finish({ ok: false, error: err.message });
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : String(error);
+        finish({ ok: false, error: reason });
       }
     });
 
-    socket.on('error', (err) => {
-      finish({ ok: false, error: err.message });
+    socket.on('error', (error: Error) => {
+      finish({ ok: false, error: error.message });
     });
   });
 }
 
-module.exports = {
+export = {
   sendInput,
 };
