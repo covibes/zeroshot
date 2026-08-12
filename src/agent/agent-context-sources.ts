@@ -1,6 +1,96 @@
-const { isReplayableMessage } = require('./context-replay-policy');
+import replayPolicy = require('./context-replay-policy');
 
-function resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime) {
+type MessageTimestamp = string | number;
+
+interface ReplayFields {
+  readonly contextSafe?: unknown;
+  readonly replayPolicy?: unknown;
+  readonly [key: string]: unknown;
+}
+
+interface ContextMessage {
+  readonly id?: unknown;
+  readonly topic?: unknown;
+  readonly timestamp: MessageTimestamp;
+  readonly sender: string;
+  readonly metadata?: ReplayFields | null;
+  readonly content?: {
+    readonly text?: string | null;
+    readonly data?: ReplayFields | null;
+  } | null;
+}
+
+interface ContextSource {
+  topic: string;
+  sender?: unknown;
+  since?: unknown;
+  amount?: number;
+  limit?: number;
+  strategy?: string;
+  compactAmount?: number;
+  compactStrategy?: string;
+  priority?: string;
+}
+
+interface SourceCluster {
+  id: string;
+  createdAt: number;
+}
+
+interface MessageQuery {
+  cluster_id: string;
+  topic: string;
+  sender?: unknown;
+  since?: unknown;
+  afterId?: unknown;
+  throughId?: unknown;
+}
+
+interface SourceMessageBus {
+  query(criteria: MessageQuery): ContextMessage[];
+}
+
+interface SourceSelectionOptions {
+  compact?: boolean;
+}
+
+interface SourceSelection {
+  amount: number | undefined;
+  strategy: string;
+}
+
+interface SourceMessageParams {
+  source: ContextSource;
+  messageBus: SourceMessageBus;
+  cluster: SourceCluster;
+  lastTaskEndTime?: number | null | undefined;
+  lastAgentStartTime?: number | null | undefined;
+  afterId?: unknown;
+  throughId?: unknown;
+  triggeringMessageId?: unknown;
+  compact?: boolean;
+}
+
+interface SourcePackParams extends Omit<SourceMessageParams, 'compact'> {
+  index: number;
+}
+
+interface SourcePack {
+  id: string;
+  section: 'sources';
+  priority: string;
+  render(): string;
+  compact(): string;
+}
+
+const { isReplayableMessage } = replayPolicy;
+
+function resolveSourceSince(
+  source: ContextSource,
+  cluster: SourceCluster,
+  lastTaskEndTime: number | null | undefined,
+  lastAgentStartTime: number | null | undefined
+): unknown {
   const sinceValue = source.since;
 
   if (sinceValue === 'cluster_start') {
@@ -29,7 +119,7 @@ function resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime
   return sinceValue;
 }
 
-function formatSourceMessagesSection(source, messages) {
+function formatSourceMessagesSection(source: ContextSource, messages: ContextMessage[]): string {
   let context = `\n## Messages from topic: ${source.topic}\n\n`;
 
   for (const msg of messages) {
@@ -46,7 +136,10 @@ function formatSourceMessagesSection(source, messages) {
   return context;
 }
 
-function resolveSourceSelection(source, { compact = false } = {}) {
+function resolveSourceSelection(
+  source: ContextSource,
+  { compact = false }: SourceSelectionOptions = {}
+): SourceSelection {
   const baseAmount = source.amount ?? source.limit;
   const baseStrategy = source.strategy ?? (baseAmount !== undefined ? 'latest' : 'all');
 
@@ -70,13 +163,8 @@ function resolveSourceMessages({
   throughId,
   triggeringMessageId,
   compact = false,
-}) {
-  const sinceTimestamp = resolveSourceSince(
-    source,
-    cluster,
-    lastTaskEndTime,
-    lastAgentStartTime
-  );
+}: SourceMessageParams): ContextMessage[] {
+  const sinceTimestamp = resolveSourceSince(source, cluster, lastTaskEndTime, lastAgentStartTime);
   const { amount, strategy } = resolveSourceSelection(source, { compact });
   const messages = messageBus.query({
     cluster_id: cluster.id,
@@ -104,7 +192,7 @@ function resolveSourceMessages({
 const REQUIRED_TOPICS = new Set(['STATE_SNAPSHOT', 'ISSUE_OPENED', 'PLAN_READY']);
 const HIGH_PRIORITY_TOPICS = new Set(['VALIDATION_RESULT', 'IMPLEMENTATION_READY']);
 
-function resolveSourcePriority(source) {
+function resolveSourcePriority(source: ContextSource): string {
   if (source.priority) {
     return source.priority;
   }
@@ -130,8 +218,8 @@ function buildSourcePack({
   afterId,
   throughId,
   triggeringMessageId,
-}) {
-  const render = (compact) => {
+}: SourcePackParams): SourcePack {
+  const render = (compact: boolean): string => {
     const messages = resolveSourceMessages({
       source,
       messageBus,
@@ -160,6 +248,6 @@ function buildSourcePack({
   };
 }
 
-module.exports = {
+export = {
   buildSourcePack,
 };
