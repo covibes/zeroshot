@@ -11,8 +11,13 @@
  */
 
 class RingBuffer {
+  buffer: Buffer;
+  maxSize: number;
+  writePos: number;
+  size: number;
+
   /**
-   * @param {number} maxSize - Maximum buffer size in bytes (default 1MB)
+   * @param maxSize - Maximum buffer size in bytes (default 1MB)
    */
   constructor(maxSize = 1024 * 1024) {
     if (maxSize <= 0) {
@@ -24,11 +29,8 @@ class RingBuffer {
     this.size = 0; // Current data size (0 to maxSize)
   }
 
-  /**
-   * Write data to the buffer
-   * @param {Buffer|string} data - Data to write
-   */
-  write(data) {
+  /** Write data to the buffer. */
+  write(data: Buffer | string): void {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
 
     if (buf.length === 0) return;
@@ -59,11 +61,8 @@ class RingBuffer {
     this.size = Math.min(this.size + buf.length, this.maxSize);
   }
 
-  /**
-   * Read all buffered data
-   * @returns {Buffer} - All data currently in buffer
-   */
-  read() {
+  /** Read all buffered data. */
+  read(): Buffer {
     if (this.size === 0) {
       return Buffer.alloc(0);
     }
@@ -85,37 +84,26 @@ class RingBuffer {
     return result;
   }
 
-  /**
-   * Clear the buffer
-   */
-  clear() {
+  /** Clear the buffer. */
+  clear(): void {
     this.writePos = 0;
     this.size = 0;
   }
 
-  /**
-   * Get current data size
-   * @returns {number}
-   */
-  getSize() {
+  /** Get current data size. */
+  getSize(): number {
     return this.size;
   }
 
-  /**
-   * Check if buffer is empty
-   * @returns {boolean}
-   */
-  isEmpty() {
+  /** Check if buffer is empty. */
+  isEmpty(): boolean {
     return this.size === 0;
   }
 
-  /**
-   * Check if buffer is full
-   * @returns {boolean}
-   */
-  isFull() {
+  /** Check if buffer is full. */
+  isFull(): boolean {
     return this.size === this.maxSize;
   }
 }
 
-module.exports = RingBuffer;
+export = RingBuffer;
