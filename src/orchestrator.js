@@ -262,6 +262,7 @@ function buildPrOptions(options, requiredQualityGates) {
     prBase: options.prBase || null,
     mergeQueue: options.mergeQueue || false,
     closeIssue: options.closeIssue || null,
+    prBody: typeof options.prBody === 'string' ? options.prBody : null,
     gitRemote: options.gitRemote || null,
     autoMerge,
     ...(requiredQualityGates.length > 0 ? { requiredQualityGates } : {}),
@@ -2038,6 +2039,7 @@ class Orchestrator {
       prBase: options.prBase,
       mergeQueue: options.mergeQueue,
       closeIssue: options.closeIssue,
+      prBody: options.prBody,
       requiredQualityGates: options.requiredQualityGates,
       autoMerge: resolveRunPlan(options).autoMerge,
       gitRemote: gitContext?.remote || options.gitRemote,
@@ -4217,7 +4219,7 @@ Continue from where you left off. Review your previous output to understand what
 
       // Get issue context from ledger
       const issueMsg = cluster.messageBus.ledger.findLast({ topic: 'ISSUE_OPENED' });
-      const issueNumber = issueMsg?.content?.data?.number || 'unknown';
+      const issueNumber = issueMsg?.content?.data?.issue_number || 'unknown';
       const issueTitle = issueMsg?.content?.data?.title || 'Implementation';
 
       // Generate the final prompt in one typed assembly pass. Issue values are

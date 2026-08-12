@@ -107,6 +107,8 @@ const {
   runLegacyUpdateIfRequested,
 } = require('./lib/update-checker');
 const { checkBinDirOnPath, printPathWarning } = require('../lib/path-check');
+const { quoteShellArgument } = require('../lib/git-remote-utils');
+const { renderPullRequestBody, resolveIssueContext } = require('../src/pr-body-template');
 const { StatusFooter, AGENT_STATE, ACTIVE_STATES } = require('../src/status-footer');
 const { EVENT_COPY, formatMergeStatus } = require('./event-copy');
 
@@ -2012,9 +2014,25 @@ function buildContextSummary({
   return contextSummary;
 }
 
-function buildCompletionPrompt({ contextSummary, taskText, issueNumber, issueTitle }) {
-  const mergeGoal = 'CREATE PR AND MERGE IT';
-  const mergeStep = `
+function buildDefaultFinishPrBody({ taskText, issueNumber, issueTitle }) {
+  const issueReference = renderPullRequestBody(undefined, { issueNumber, issueTitle });
+  return [
+    issueReference,
+    issueReference ? '' : null,
+    '## Summary',
+    `${String(taskText || 'Unknown task').slice(0, 200)}...`,
+    '',
+    '## Changes',
+    '- Implementation complete',
+    '- All validations addressed',
+    '',
+    '🤖 Generated with zeroshot finish',
+  ]
+    .filter((line) => line !== null)
+    .join('\n');
+}
+
+const FINISH_MERGE_STEP = `
 8. MERGE THE PR - THIS IS MANDATORY:
    \`\`\`bash
    gh pr merge --merge --auto
@@ -2029,7 +2047,29 @@ function buildCompletionPrompt({ contextSummary, taskText, issueNumber, issueTit
 
    REPEAT UNTIL MERGED. DO NOT GIVE UP.`;
 
-  return `# YOUR MISSION: ${mergeGoal}
+function buildFinishCommandArguments({ taskText, issueNumber, issueTitle, prBody }) {
+  const issueContext = resolveIssueContext({ issueNumber, issueTitle });
+  const resolvedTitle = issueContext.issueTitle;
+  const resolvedBody =
+    typeof prBody === 'string'
+      ? renderPullRequestBody(prBody, { issueNumber, issueTitle: resolvedTitle })
+      : buildDefaultFinishPrBody({ taskText, issueNumber, issueTitle: resolvedTitle });
+  return {
+    commitMessage: quoteShellArgument(resolvedTitle || 'feat: implement task'),
+    branch: quoteShellArgument(
+      issueContext.issueNumber !== 'unknown'
+        ? `issue-${issueContext.issueNumber}`
+        : 'feature/implementation'
+    ),
+    prTitle: quoteShellArgument(resolvedTitle),
+    prBody: quoteShellArgument(resolvedBody),
+  };
+}
+
+function buildCompletionPrompt({ contextSummary, taskText, issueNumber, issueTitle, prBody }) {
+  const args = buildFinishCommandArguments({ taskText, issueNumber, issueTitle, prBody });
+
+  return `# YOUR MISSION: CREATE PR AND MERGE IT
 
 ${contextSummary}
 
@@ -2050,12 +2090,12 @@ You are the FINISHER. Your ONLY job is to take this cluster's work and push it a
 2. COMMIT ALL CHANGES - Stage and commit everything:
    \`\`\`bash
    git add .
-   git commit -m "${issueTitle || 'feat: implement task'}"
+   git commit -m ${args.commitMessage}
    \`\`\`
 
 3. CREATE BRANCH - Use issue number if available:
    \`\`\`bash
-   ${issueNumber ? `git checkout -b issue-${issueNumber}` : 'git checkout -b feature/implementation'}
+   git checkout -b ${args.branch}
    \`\`\`
 
 4. PUSH TO REMOTE:
@@ -2065,16 +2105,7 @@ You are the FINISHER. Your ONLY job is to take this cluster's work and push it a
 
 5. CREATE PULL REQUEST:
    \`\`\`bash
-   gh pr create --title "${issueTitle || 'Implementation'}" --body "Closes #${issueNumber || 'N/A'}
-
-## Summary
-${taskText.slice(0, 200)}...
-
-## Changes
-- Implementation complete
-- All validations addressed
-
-🤖 Generated with zeroshot finish"
+   gh pr create --title ${args.prTitle} --body ${args.prBody}
    \`\`\`
 
 6. GET PR URL:
@@ -2083,7 +2114,7 @@ ${taskText.slice(0, 200)}...
    \`\`\`
 
 7. OUTPUT THE PR URL - Print it clearly so user can see it
-${mergeStep}
+${FINISH_MERGE_STEP}
 
 ## RULES
 
@@ -2707,6 +2738,10 @@ program
     'Full automation: worktree isolation + PR + auto-merge (use --docker for Docker)'
   )
   .option('--pr-base <branch>', 'Target branch for PRs (default: repo default branch)')
+  .option(
+    '--pr-body <template>',
+    'PR body template; supports {{issue_number}}, {{issue_title}}, and {{issue_reference}}'
+  )
   .option('--merge-queue', 'Use GitHub merge queue instead of direct merge')
   .option(
     '--close-issue <mode>',
@@ -3714,6 +3749,10 @@ program
   .helpGroup('Control:')
   .description('Take existing cluster and create completion-focused task (creates PR and merges)')
   .option('-y, --yes', 'Skip confirmation if cluster is running')
+  .option(
+    '--pr-body <template>',
+    'PR body template; supports {{issue_number}}, {{issue_title}}, and {{issue_reference}}'
+  )
   .action(async (id, options) => {
     try {
       const orchestrator = await getOrchestrator();
@@ -3732,6 +3771,7 @@ program
         taskText: context.taskText,
         issueNumber: context.issueNumber,
         issueTitle: context.issueTitle,
+        prBody: options.prBody ?? cluster.prOptions?.prBody,
       });
       printCompletionPromptPreview(completionPrompt);
 
@@ -6190,6 +6230,9 @@ module.exports = {
   isStartupUpdateEligible,
   handleNoArgumentInvocation,
   shouldRunInitialSetup,
+  extractFinishContext,
+  buildDefaultFinishPrBody,
+  buildCompletionPrompt,
   resolveRunMode,
   killRunningClusters,
 };

@@ -106,6 +106,7 @@ zeroshot run <input>             # issue, URL, markdown file, or inline text
 zeroshot run 123 --docker        # container isolation
 zeroshot run 123 --pr            # worktree + pull request
 zeroshot run 123 --ship          # worktree + PR + merge after approval
+zeroshot run 123 --pr --pr-body $'## Summary\n\nCustom text\n\n{{issue_reference}}'
 zeroshot run 123 -d              # background run
 
 zeroshot list                    # tasks and clusters (--json)
@@ -119,6 +120,11 @@ zeroshot providers               # provider availability and defaults
 zeroshot settings                # effective settings
 zeroshot agents list             # available agents
 ```
+
+`--pr-body` supplies a deterministic pull-request body for `--pr` and `--ship` runs. The
+template supports `{{issue_number}}`, `{{issue_title}}`, and `{{issue_reference}}`; all three
+expand to empty text for tasks without an issue, so manual runs never emit `Closes #unknown`.
+The unrendered template is retained for detached and resumed runs.
 
 </details>
 

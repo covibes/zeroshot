@@ -86,6 +86,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Hosted capsule image                  | `docker/zeroshot-oecp/`, `scripts/hosted-oecp-image.js`                                                                          |
 | Docker mounts/env                     | `lib/docker-config.js`                                                                                                           |
 | Container lifecycle                   | `src/isolation-manager.js`                                                                                                       |
+| Pull-request body templates           | `src/pr-body-template.js`, `src/agents/git-pusher-template.js`                                                                   |
 | Settings                              | `lib/settings.js`                                                                                                                |
 | Legacy settings property selection    | `src/repo-settings-access.ts`                                                                                                    |
 | Cluster wire/domain types             | `crates/openengine-cluster-protocol/`                                                                                            |

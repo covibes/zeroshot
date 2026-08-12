@@ -72,6 +72,7 @@ describe('curated CLI help', function () {
       assert.ok(index > previousIndex, `missing or out-of-order run option group ${heading}`);
       previousIndex = index;
     }
+    assert.match(runHelp.stdout, /--pr-body <template>/);
 
     const rootHelp = runCli(['--help']);
     assert.strictEqual(rootHelp.status, 0, rootHelp.stderr);
@@ -232,6 +233,7 @@ describe('CLI completion snapshots', function () {
       '--pr',
       '--ship',
       '--pr-base',
+      '--pr-body',
       '--merge-queue',
       '--close-issue',
       '--provider',

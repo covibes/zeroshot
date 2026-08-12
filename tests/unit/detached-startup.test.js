@@ -92,7 +92,7 @@ describe('detached-startup helpers', function () {
       pid: 12345,
       storageDir,
       logPath: path.join(storageDir, 'setup-cluster-daemon.log'),
-      runOptions: { pr: true, prBase: 'dev' },
+      runOptions: { pr: true, prBase: 'dev', prBody: 'Issue {{issue_number}}' },
       cwd: '/repo',
     });
 
@@ -100,6 +100,7 @@ describe('detached-startup helpers', function () {
     assert.strictEqual(clusters['setup-cluster'].state, 'setup');
     assert.strictEqual(clusters['setup-cluster'].pid, 12345);
     assert.strictEqual(clusters['setup-cluster'].prOptions.prBase, 'dev');
+    assert.strictEqual(clusters['setup-cluster'].prOptions.prBody, 'Issue {{issue_number}}');
     assert.strictEqual(isClusterRegistered('setup-cluster', storageDir), true);
   });
 
