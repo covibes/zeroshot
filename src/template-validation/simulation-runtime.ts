@@ -4,6 +4,7 @@ interface SimulationLedger {
 
 interface SimulationMessageBus {
   publish(message: unknown): unknown;
+  findLast(criteria: unknown): unknown;
 }
 
 interface SimulationLogicEngine {

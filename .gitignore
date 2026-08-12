@@ -188,4 +188,11 @@ src/template-validation/consensus-gate-contracts.js
 src/template-validation/consensus-gate-stage.js
 src/template-validation/consensus-gate-scenarios.js
 src/template-validation/simulate-consensus-gates.js
+src/template-validation/simulate-two-stage-validation.js
 src/template-validation/simulation-runtime.js
+src/template-validation/two-stage-agent.js
+src/template-validation/two-stage-contracts.js
+src/template-validation/two-stage-inputs.js
+src/template-validation/two-stage-results.js
+src/template-validation/two-stage-runtime.js
+src/template-validation/two-stage-scenario.js
