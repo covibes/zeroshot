@@ -41,6 +41,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/agent/agent-liveness-poll.js',
   'src/agent/context-replay-policy.js',
   'src/agent/agent-context-sources.js',
+  'src/agent/agent-context-sections.js',
   'src/agent/agent-input-injector.js',
   'src/agent/agent-config.js',
   'src/agent/agent-config-settings.js',

@@ -437,6 +437,7 @@ export default [
       'src/agent/output-extraction-pi.js',
       'src/agent/output-extraction-failures.js',
       'src/agent/agent-trigger-evaluator.js',
+      'src/agent/agent-context-sections.js',
       'src/agent/context-replay-policy.js',
       'src/agent/critical-agent-policy.js',
       'src/agent/provider-control-plane.js',

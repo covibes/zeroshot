@@ -1,15 +1,124 @@
-const { readFileSync } = require('fs');
-const { join, resolve } = require('path');
+import fs = require('fs');
+import path = require('path');
 
-const { isPlatformMismatchReason } = require('./validation-platform');
+import validationPlatform = require('./validation-platform');
 
-const EXAMPLE_PRIMITIVE_VALUES = {
+interface JsonSchema {
+  readonly type?: string;
+  readonly description?: string;
+  readonly enum?: readonly unknown[];
+  readonly properties?: Readonly<Record<string, JsonSchema | null | undefined>>;
+}
+
+interface LegacyOutputFormat {
+  readonly rules?: readonly string[];
+  readonly example?: unknown;
+}
+
+interface PromptObject {
+  readonly system?: string | null;
+  readonly outputFormat?: LegacyOutputFormat | null;
+}
+
+interface AgentContextConfig {
+  readonly prompt?: string | PromptObject | null;
+  readonly cwd?: string | null;
+  readonly jsonSchema?: JsonSchema | null;
+  readonly outputFormat?: string | null;
+}
+
+interface WorktreeContext {
+  readonly enabled?: boolean;
+  readonly path?: string | null;
+}
+
+interface IsolationContext {
+  readonly enabled?: boolean;
+}
+
+interface HeaderContextParams {
+  id: string;
+  role: string;
+  iteration: number;
+  isIsolated: boolean;
+}
+
+interface InstructionsSectionParams {
+  config: AgentContextConfig;
+  selectedPrompt?: string | null;
+  id: string;
+}
+
+interface RepoToolingParams {
+  config?: AgentContextConfig | null | undefined;
+  worktree?: WorktreeContext | null | undefined;
+}
+
+interface ValidationCriterion {
+  readonly status?: string;
+  readonly id?: string;
+  readonly reason?: string;
+}
+
+interface ValidationMessage {
+  readonly content?: {
+    readonly data?: {
+      readonly criteriaResults?: readonly ValidationCriterion[] | null;
+    } | null;
+  } | null;
+}
+
+interface ValidationQuery {
+  cluster_id: string;
+  topic: 'VALIDATION_RESULT';
+  since: number;
+  limit: number;
+}
+
+interface ValidationMessageBus {
+  query(criteria: ValidationQuery): readonly ValidationMessage[];
+}
+
+interface ValidationCluster {
+  id: string;
+  createdAt: number;
+}
+
+interface CannotValidateCriterion {
+  id: string;
+  reason: string;
+}
+
+interface CannotValidateOptions {
+  ignoreReason?: ((reason: string | undefined) => boolean) | null;
+}
+
+interface ValidatorSkipParams {
+  role: string;
+  messageBus: ValidationMessageBus;
+  cluster: ValidationCluster;
+  isolation?: IsolationContext | null;
+}
+
+interface TriggeringMessage {
+  topic: string;
+  sender: string;
+  content?: {
+    text?: string | null;
+  } | null;
+}
+
+const { readFileSync } = fs;
+const { join, resolve } = path;
+const { isPlatformMismatchReason } = validationPlatform;
+
+const EXAMPLE_PRIMITIVE_VALUES: Readonly<Record<string, boolean | number>> = {
   boolean: true,
   number: 0,
   integer: 0,
 };
 
-function generateExampleValue(propSchema, key) {
+function generateExampleValue(propSchema: JsonSchema | null | undefined, key: string): unknown {
   if (!propSchema) {
     return undefined;
   }
@@ -30,15 +139,17 @@ function generateExampleValue(propSchema, key) {
     return generateExampleFromSchema(propSchema) || {};
   }
 
-  return EXAMPLE_PRIMITIVE_VALUES[propSchema.type];
+  return propSchema.type === undefined ? undefined : EXAMPLE_PRIMITIVE_VALUES[propSchema.type];
 }
 
-function generateExampleFromSchema(schema) {
+function generateExampleFromSchema(
+  schema: JsonSchema | null | undefined
+): Record<string, unknown> | null {
   if (!schema || schema.type !== 'object' || !schema.properties) {
     return null;
   }
 
-  const example = {};
+  const example: Record<string, unknown> = {};
 
   for (const [key, propSchema] of Object.entries(schema.properties)) {
     const value = generateExampleValue(propSchema, key);
@@ -50,7 +161,7 @@ function generateExampleFromSchema(schema) {
   return example;
 }
 
-function buildAutonomousSection() {
+function buildAutonomousSection(): string {
   return [
     '## 🔴 CRITICAL: AUTONOMOUS EXECUTION REQUIRED',
     '',
@@ -68,7 +179,7 @@ function buildAutonomousSection() {
   ].join('\n');
 }
 
-function buildOutputStyleSection() {
+function buildOutputStyleSection(): string {
   return [
     '## 🔴 OUTPUT STYLE - NON-NEGOTIABLE',
     '',
@@ -93,7 +204,7 @@ function buildOutputStyleSection() {
   ].join('\n');
 }
 
-function buildGitOperationsSection() {
+function buildGitOperationsSection(): string {
   return [
     '## 🚫 GIT OPERATIONS - FORBIDDEN',
     '',
@@ -107,7 +218,7 @@ function buildGitOperationsSection() {
   ].join('\n');
 }
 
-function buildHeaderContext({ id, role, iteration, isIsolated }) {
+function buildHeaderContext({ id, role, iteration, isIsolated }: HeaderContextParams): string {
   return [
     `You are agent "${id}" with role "${role}".`,
     '',
@@ -121,7 +232,11 @@ function buildHeaderContext({ id, role, iteration, isIsolated }) {
     .join('\n');
 }
 
-function buildInstructionsSection({ config, selectedPrompt, id }) {
+function buildInstructionsSection({
+  config,
+  selectedPrompt,
+  id,
+}: InstructionsSectionParams): string {
   const promptText =
     selectedPrompt || (typeof config.prompt === 'string' ? config.prompt : config.prompt?.system);
 
@@ -129,36 +244,38 @@ function buildInstructionsSection({ config, selectedPrompt, id }) {
     return `## Instructions\n\n${promptText}\n\n`;
   }
 
-  if (config.prompt && typeof config.prompt !== 'string' && !config.prompt?.system) {
+  if (config.prompt && typeof config.prompt !== 'string' && !config.prompt.system) {
+    const serializedPrompt = JSON.stringify(config.prompt);
     throw new Error(
       `Agent "${id}" has invalid prompt format. ` +
-        `Expected string or object with .system property, got: ${JSON.stringify(config.prompt).slice(0, 100)}...`
+        `Expected string or object with .system property, got: ${serializedPrompt.slice(0, 100)}...`
     );
   }
 
   return '';
 }
 
-function hasIgnoredRepoToolingError(error) {
+function hasIgnoredRepoToolingError(error: unknown): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&
     'code' in error &&
+    typeof error.code === 'string' &&
     ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM'].includes(error.code)
   );
 }
 
-function resolveRepoToolingRoots({ config, worktree }) {
+function resolveRepoToolingRoots({ config, worktree }: RepoToolingParams): string[] {
   return Array.from(
     new Set(
       [worktree?.path, config?.cwd, process.cwd()]
-        .filter((value) => typeof value === 'string' && value.trim() !== '')
+        .filter((value): value is string => typeof value === 'string' && value.trim() !== '')
         .map((value) => resolve(value))
     )
   );
 }
 
-function buildRepoToolingSection({ config, worktree }) {
+function buildRepoToolingSection({ config, worktree }: RepoToolingParams): string {
   for (const root of resolveRepoToolingRoots({ config, worktree })) {
     const skillPath = join(root, '.claude', 'skills', 'repo-tooling', 'SKILL.md');
 
@@ -177,18 +294,25 @@ function buildRepoToolingSection({ config, worktree }) {
   return '';
 }
 
-function buildLegacyOutputSchemaSection(config) {
-  if (!config.prompt?.outputFormat) {
+function resolveLegacyOutputFormat(
+  config: AgentContextConfig
+): LegacyOutputFormat | null | undefined {
+  return typeof config.prompt === 'string' ? undefined : config.prompt?.outputFormat;
+}
+
+function buildLegacyOutputSchemaSection(config: AgentContextConfig): string {
+  const outputFormat = resolveLegacyOutputFormat(config);
+  if (!outputFormat) {
     return '';
   }
 
-  const rules = (config.prompt.outputFormat.rules || []).map((rule) => `- ${rule}`).join('\n');
+  const rules = (outputFormat.rules || []).map((rule) => `- ${rule}`).join('\n');
 
   return [
     '## Output Schema (REQUIRED)',
     '',
     '```json',
-    JSON.stringify(config.prompt.outputFormat.example, null, 2),
+    JSON.stringify(outputFormat.example, null, 2),
     '```',
     '',
     'STRING VALUES IN THIS SCHEMA: Dense. Factual. No filler words. No pleasantries.',
@@ -199,7 +323,7 @@ function buildLegacyOutputSchemaSection(config) {
     .join('\n');
 }
 
-function buildJsonSchemaSection(config) {
+function buildJsonSchemaSection(config: AgentContextConfig): string {
   if (!config.jsonSchema || config.outputFormat !== 'json') {
     return '';
   }
@@ -233,7 +357,11 @@ function buildJsonSchemaSection(config) {
   return lines.join('\n');
 }
 
-function shouldKeepCannotValidate(criteria, ignoreReason, seenIds) {
+function shouldKeepCannotValidate(
+  criteria: ValidationCriterion,
+  ignoreReason: CannotValidateOptions['ignoreReason'],
+  seenIds: ReadonlySet<string>
+): criteria is ValidationCriterion & { id: string } {
   if (criteria.status !== 'CANNOT_VALIDATE' || !criteria.id) {
     return false;
   }
@@ -249,14 +377,23 @@ function shouldKeepCannotValidate(criteria, ignoreReason, seenIds) {
   return true;
 }
 
-function collectCannotValidateCriteria(prevValidations, options = {}) {
-  const cannotValidateCriteria = [];
-  const seenIds = new Set();
+function isValidationCriteria(
+  value: readonly ValidationCriterion[] | null | undefined
+): value is readonly ValidationCriterion[] {
+  return Array.isArray(value);
+}
+
+function collectCannotValidateCriteria(
+  prevValidations: readonly ValidationMessage[],
+  options: CannotValidateOptions = {}
+): CannotValidateCriterion[] {
+  const cannotValidateCriteria: CannotValidateCriterion[] = [];
+  const seenIds = new Set<string>();
   const ignoreReason = options.ignoreReason;
 
   for (const msg of prevValidations) {
     const criteriaResults = msg.content?.data?.criteriaResults;
-    if (!Array.isArray(criteriaResults)) {
+    if (!isValidationCriteria(criteriaResults)) {
       continue;
     }
 
@@ -276,7 +413,9 @@ function collectCannotValidateCriteria(prevValidations, options = {}) {
   return cannotValidateCriteria;
 }
 
-function buildCannotValidateSection(cannotValidateCriteria) {
+function buildCannotValidateSection(
+  cannotValidateCriteria: readonly CannotValidateCriterion[]
+): string {
   if (cannotValidateCriteria.length === 0) {
     return '';
   }
@@ -294,7 +433,12 @@ function buildCannotValidateSection(cannotValidateCriteria) {
   ].join('\n');
 }
 
-function buildValidatorSkipSection({ role, messageBus, cluster, isolation }) {
+function buildValidatorSkipSection({
+  role,
+  messageBus,
+  cluster,
+  isolation,
+}: ValidatorSkipParams): string {
   if (role !== 'validator') {
     return '';
   }
@@ -311,7 +455,7 @@ function buildValidatorSkipSection({ role, messageBus, cluster, isolation }) {
   return buildCannotValidateSection(cannotValidateCriteria);
 }
 
-function buildTriggeringMessageSection(triggeringMessage) {
+function buildTriggeringMessageSection(triggeringMessage: TriggeringMessage): string {
   const lines = [
     '',
     '## Triggering Message',
@@ -327,7 +471,7 @@ function buildTriggeringMessageSection(triggeringMessage) {
   return `${lines.join('\n')}\n`;
 }
 
-module.exports = {
+export = {
   buildHeaderContext,
   buildInstructionsSection,
   buildJsonSchemaSection,
