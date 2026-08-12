@@ -184,3 +184,8 @@ src/providers/openai/index.js
 src/providers/opencode/index.js
 src/schemas/sub-cluster.js
 src/template-validation/report-formatter.js
+src/template-validation/consensus-gate-contracts.js
+src/template-validation/consensus-gate-stage.js
+src/template-validation/consensus-gate-scenarios.js
+src/template-validation/simulate-consensus-gates.js
+src/template-validation/simulation-runtime.js
