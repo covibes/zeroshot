@@ -44,7 +44,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Guidance live injection               | `src/orchestrator.js`                                                                                                            |
 | Trigger evaluation                    | `src/logic-engine.js`                                                                                                            |
 | Agent wrapper                         | `src/agent-wrapper.js`                                                                                                           |
-| Agent context assembly                | `src/agent/agent-context-{builder,sections}.ts`                                                                                  |
+| Agent context assembly                | `src/agent/{agent-context-builder,agent-context-sections,context-pack-*}.ts`                                                     |
 | Providers registry                    | `src/providers/index.js`                                                                                                         |
 | Provider implementations              | `src/providers/`                                                                                                                 |
 | Provider engine registry              | `src/agent-cli-provider/provider-registry.ts`                                                                                    |
