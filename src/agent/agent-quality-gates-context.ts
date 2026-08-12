@@ -1,6 +1,39 @@
-const { normalizeRequiredQualityGates } = require('../quality-gates');
+type StringList = string[];
 
-function appendGateDetails(lines, gate, index) {
+interface RequiredQualityGate {
+  id: string;
+  scope?: string;
+  description?: string;
+  command?: string;
+  profile?: string;
+  proofProfile?: string;
+}
+
+interface AgentQualityGateConfig {
+  role?: string;
+  requiredQualityGates?: unknown;
+}
+
+interface QualityGatesModule {
+  normalizeRequiredQualityGates(value: unknown): RequiredQualityGate[];
+}
+
+function isQualityGatesModule(value: unknown): value is QualityGatesModule {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'normalizeRequiredQualityGates' in value &&
+    typeof value.normalizeRequiredQualityGates === 'function'
+  );
+}
+
+const qualityGatesModule: unknown = require('../quality-gates');
+if (!isQualityGatesModule(qualityGatesModule)) {
+  throw new TypeError('quality-gates must export normalizeRequiredQualityGates');
+}
+const normalizeRequiredQualityGates = qualityGatesModule.normalizeRequiredQualityGates;
+
+function appendGateDetails(lines: StringList, gate: RequiredQualityGate, index: number): void {
   lines.push(`${index + 1}. id: ${gate.id}${gate.scope ? `, scope: ${gate.scope}` : ''}`);
   if (gate.description) {
     lines.push(`   description: ${gate.description}`);
@@ -14,7 +47,7 @@ function appendGateDetails(lines, gate, index) {
   }
 }
 
-function buildRequiredQualityGatesSection(config) {
+function buildRequiredQualityGatesSection(config: AgentQualityGateConfig): string {
   if (config.role !== 'validator') {
     return '';
   }
@@ -43,14 +76,16 @@ function buildRequiredQualityGatesSection(config) {
     '- Put the command, numeric exit code, and string output in `evidence`.',
     '- Set `status` to `PASS` only when the gate completes successfully.',
     '- If a required gate fails, set `approved` to false and publish status `FAIL`.',
-    '- If a required gate cannot run because its command, tool, or service is unavailable, set `approved` to false and publish status `UNAVAILABLE`.',
-    '- Use `completedAt` or `timestamp` from the current validation run; stale evidence must be marked with `stale: true`.',
+    '- If a required gate cannot run because its command, tool, or service is unavailable, ' +
+      'set `approved` to false and publish status `UNAVAILABLE`.',
+    '- Use `completedAt` or `timestamp` from the current validation run; ' +
+      'stale evidence must be marked with `stale: true`.',
     ''
   );
 
   return lines.join('\n');
 }
 
-module.exports = {
+export = {
   buildRequiredQualityGatesSection,
 };

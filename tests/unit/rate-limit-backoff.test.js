@@ -1,4 +1,5 @@
 const assert = require('assert');
+const crypto = require('node:crypto');
 const {
   calculateRateLimitDelay,
   isRateLimitError,
@@ -57,13 +58,13 @@ describe('rate-limit-backoff', () => {
   });
 
   describe('calculateRateLimitDelay', () => {
-    let originalRandom;
+    let originalRandomInt;
     beforeEach(() => {
-      originalRandom = Math.random;
-      Math.random = () => 0.5; // Neutralizes jitter
+      originalRandomInt = crypto.randomInt;
+      crypto.randomInt = () => 0x80000000; // Neutralizes jitter
     });
     afterEach(() => {
-      Math.random = originalRandom;
+      crypto.randomInt = originalRandomInt;
     });
 
     it('uses 30s base for rate limit errors', () => {
