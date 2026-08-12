@@ -1847,16 +1847,31 @@ class Orchestrator {
             },
           },
         });
+        const boundary = this._clusterRunBoundaries.get(clusterId);
+        const complete = messageBus.query({
+          cluster_id: clusterId,
+          topic: 'CLUSTER_COMPLETE',
+          limit: 1,
+          ...(boundary === null || boundary === undefined ? {} : { afterId: boundary }),
+        })[0];
+        const failed = this._findCurrentRunClusterFailure(messageBus, clusterId);
+        if (!complete && !failed) {
+          messageBus.publish({
+            cluster_id: clusterId,
+            topic: 'CLUSTER_FAILED',
+            sender: 'orchestrator',
+            content: {
+              text: `Operation chain failed: ${err.message}`,
+              data: { reason: 'cluster_operations_failed' },
+            },
+          });
+        }
 
         this._log(`\n${'='.repeat(80)}`);
         this._log(`❌ CLUSTER_OPERATIONS FAILED - STOPPING CLUSTER`);
         this._log(`${'='.repeat(80)}`);
         this._log(`Error: ${err.message}`);
         this._log(`${'='.repeat(80)}\n`);
-
-        this.stop(clusterId).catch((stopErr) => {
-          console.error(`Failed to stop cluster after operation failure:`, stopErr.message);
-        });
       });
     });
   }
