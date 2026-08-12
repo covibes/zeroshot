@@ -89,6 +89,32 @@ describe('Rust product distribution', function () {
   });
 });
 
+describe('Rust release executable smoke', function () {
+  it('uses the valid greeting-validator protocol', function () {
+    if (process.platform === 'win32') this.skip();
+    const directory = temporaryDirectory();
+    const binaryPath = path.join(directory, 'fixture-binary');
+    fs.writeFileSync(
+      binaryPath,
+      `#!/bin/sh
+[ "$1" = "--native-validate-greeting" ] || exit 2
+cat > actual-stdin
+cat > expected <<'EOF'
+zeroshot release smoke
+EOF
+cmp -s actual-stdin expected || exit 3
+cmp -s greeting.txt expected || exit 4
+`,
+      { mode: 0o755 }
+    );
+    try {
+      distribution.smokeExecutable(binaryPath, 'RUST_BINARY_SMOKE_FAILED');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 function registerVersionCouplingTests() {
   it('fails a release version mismatch with the named error and both versions', function () {
     const cargoToml = '[package]\nname = "zeroshot-rust"\nversion = "1.2.2"\n';

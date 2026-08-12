@@ -849,13 +849,7 @@ function run() {
   }
   if (command === 'smoke') {
     const binaryPath = path.resolve(argument('binary'));
-    const result = childProcess.spawnSync(binaryPath, [], { stdio: 'inherit' });
-    if (result.error) throw result.error;
-    if (result.signal || result.status !== 0) {
-      throw new Error(
-        `RUST_BINARY_SMOKE_FAILED: status=${result.status} signal=${result.signal || 'none'}`
-      );
-    }
+    smokeExecutable(binaryPath, 'RUST_BINARY_SMOKE_FAILED');
     process.stdout.write(`Rust release executable exited 0: ${binaryPath}\n`);
     return;
   }
@@ -871,13 +865,7 @@ function run() {
         declaration.executable
       );
       fs.writeFileSync(binaryPath, executable, { mode: 0o755 });
-      const result = childProcess.spawnSync(binaryPath, [], { stdio: 'inherit' });
-      if (result.error) throw result.error;
-      if (result.signal || result.status !== 0) {
-        throw new Error(
-          `RUST_ARCHIVE_SMOKE_FAILED: status=${result.status} signal=${result.signal || 'none'}`
-        );
-      }
+      smokeExecutable(binaryPath, 'RUST_ARCHIVE_SMOKE_FAILED');
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
@@ -903,6 +891,26 @@ function run() {
   );
 }
 
+const SMOKE_GREETING = Buffer.from('zeroshot release smoke\n');
+
+function smokeExecutable(binaryPath, failureCode) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-rust-executable-smoke-'));
+  try {
+    fs.writeFileSync(path.join(directory, 'greeting.txt'), SMOKE_GREETING);
+    const result = childProcess.spawnSync(binaryPath, ['--native-validate-greeting'], {
+      cwd: directory,
+      input: SMOKE_GREETING,
+      stdio: ['pipe', 'inherit', 'inherit'],
+    });
+    if (result.error) throw result.error;
+    if (result.signal || result.status !== 0) {
+      throw new Error(`${failureCode}: status=${result.status} signal=${result.signal || 'none'}`);
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 if (require.main === module) {
   try {
     run();
@@ -926,6 +934,7 @@ module.exports = {
   packageTarget,
   parseChecksumManifest,
   sha256,
+  smokeExecutable,
   targetForHost,
   stageVersion,
   targets,
