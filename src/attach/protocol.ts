@@ -36,7 +36,11 @@ type ResizeMessage = { type: typeof MessageType.RESIZE; cols: number; rows: numb
 type SignalMessage = { type: typeof MessageType.SIGNAL; signal: string };
 type DataMessage<T extends string> = { type: T; data: string };
 type OutputMessage = DataMessage<typeof MessageType.OUTPUT> & { timestamp: number };
-type ExitMessage = { type: typeof MessageType.EXIT; code: number | null; signal: string | null };
+type ExitMessage = {
+  type: typeof MessageType.EXIT;
+  code: number | null;
+  signal: string | number | undefined | null;
+};
 type ErrorMessage = { type: typeof MessageType.ERROR; message: string };
 
 /** Encode a message for transmission. */
@@ -139,7 +143,10 @@ function createStateMessage(state: Record<string, unknown>): Record<string, unkn
   return { type: MessageType.STATE, ...state };
 }
 
-function createExitMessage(code: number | null, signal: string | null): ExitMessage {
+function createExitMessage(
+  code: number | null,
+  signal: string | number | undefined | null
+): ExitMessage {
   return { type: MessageType.EXIT, code, signal };
 }
 
