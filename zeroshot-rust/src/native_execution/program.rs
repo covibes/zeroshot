@@ -20,13 +20,51 @@ mod foreground;
 
 pub(super) const NATIVE_PROCESS_TIMEOUT_MS: u64 = 10_000;
 pub(super) const NATIVE_AGENT_PROCESS_TIMEOUT_MS: u64 = 60 * 60 * 1_000;
-pub(super) const AGENT_WORKER_REF: &str = "native.agent.codex@1";
+pub(super) const CODEX_AGENT_WORKER_REF: &str = "native.agent.codex@1";
+pub(super) const PI_AGENT_WORKER_REF: &str = "native.agent.pi@1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AgentKind {
+    CodexV1,
+    PiV1,
+}
+
+impl AgentKind {
+    pub(super) const fn worker_ref(self) -> &'static str {
+        match self {
+            Self::CodexV1 => CODEX_AGENT_WORKER_REF,
+            Self::PiV1 => PI_AGENT_WORKER_REF,
+        }
+    }
+
+    pub(super) const fn target_id(self) -> &'static str {
+        match self {
+            Self::CodexV1 => "native.agent.codex",
+            Self::PiV1 => "native.agent.pi",
+        }
+    }
+
+    pub(super) fn from_worker(worker: &str) -> Option<Self> {
+        match worker {
+            CODEX_AGENT_WORKER_REF => Some(Self::CodexV1),
+            PI_AGENT_WORKER_REF => Some(Self::PiV1),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NativeProgram {
     WorkerFree,
     Deterministic,
-    ForegroundAgent,
+    ForegroundAgent(AgentKind),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PredecessorProgram {
+    WorkerFree,
+    Deterministic,
+    CodexForeground,
 }
 
 #[derive(Serialize)]
@@ -52,20 +90,35 @@ pub(crate) struct NativeExecutionRegistry {
 impl NativeExecutionRegistry {
     pub(crate) fn production() -> Self {
         Self::from_descriptors(Arc::from([
-            foreground::descriptor(),
+            foreground::descriptor(AgentKind::CodexV1),
             deterministic_descriptor(),
+            foreground::descriptor(AgentKind::PiV1),
         ]))
     }
 
-    pub(crate) fn predecessor_digests() -> Vec<(CanonicalDigest, CanonicalDigest, bool)> {
+    pub(crate) fn predecessor_digests()
+    -> Vec<(CanonicalDigest, CanonicalDigest, PredecessorProgram)> {
         let empty = Self::from_descriptors(Arc::from([]));
         let deterministic = Self::from_descriptors(Arc::from([deterministic_descriptor()]));
+        let codex = Self::from_descriptors(Arc::from([
+            foreground::descriptor(AgentKind::CodexV1),
+            deterministic_descriptor(),
+        ]));
         vec![
-            (empty.catalog_digest, empty.profile_digest, false),
+            (
+                empty.catalog_digest,
+                empty.profile_digest,
+                PredecessorProgram::WorkerFree,
+            ),
             (
                 deterministic.catalog_digest,
                 deterministic.profile_digest,
-                true,
+                PredecessorProgram::Deterministic,
+            ),
+            (
+                codex.catalog_digest,
+                codex.profile_digest,
+                PredecessorProgram::CodexForeground,
             ),
         ]
     }
@@ -165,15 +218,17 @@ pub(crate) fn classify_graph(graph: &GraphSpec) -> Option<NativeProgram> {
         Some(NativeProgram::WorkerFree)
     } else if is_deterministic_graph(graph) {
         Some(NativeProgram::Deterministic)
-    } else if *graph == foreground_graph() {
-        Some(NativeProgram::ForegroundAgent)
+    } else if *graph == foreground_graph(AgentKind::CodexV1) {
+        Some(NativeProgram::ForegroundAgent(AgentKind::CodexV1))
+    } else if *graph == foreground_graph(AgentKind::PiV1) {
+        Some(NativeProgram::ForegroundAgent(AgentKind::PiV1))
     } else {
         None
     }
 }
 
-pub(crate) fn foreground_graph() -> GraphSpec {
-    foreground::graph()
+pub(crate) fn foreground_graph(kind: AgentKind) -> GraphSpec {
+    foreground::graph(kind)
 }
 
 pub(crate) fn deterministic_graph() -> GraphSpec {

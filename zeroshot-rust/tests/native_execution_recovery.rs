@@ -6,7 +6,7 @@ pub mod native_process;
 pub mod native_recovery;
 
 use native_execution::{deterministic_graph, effect_count};
-use native_process::{spawn, TempState};
+use native_process::{initialize_and_get_finished, spawn, TempState};
 use native_recovery::{
     descriptor, predecessor_graph, reduce, seed_admission, seed_dispatch, SeedAdmission,
 };
@@ -28,7 +28,7 @@ async fn settled_prefix_terminalizes_after_renewal_without_execution() {
         SeedAdmission {
             graph: deterministic_graph(),
             input: json!({ "value": 0 }),
-            descriptor: Some(descriptor()),
+            descriptors: vec![descriptor()],
             corrupt_compiled_ir: false,
         },
     )
@@ -53,9 +53,7 @@ async fn settled_prefix_terminalizes_after_renewal_without_execution() {
     ledger.release_fence().await.unwrap();
 
     let (process, client) = spawn(state.path(), "settled-recovery");
-    let initialized = client.initialize().await.unwrap();
-    assert_eq!(initialized.status.phase, Phase::Finished);
-    let result = client.get(GetParams::default()).await.unwrap();
+    let result = initialize_and_get_finished(&client).await;
     assert_eq!(
         result.terminal_result,
         Some(TerminalResult::Succeeded {
@@ -76,7 +74,7 @@ async fn active_dispatch_refuses_startup_and_never_redispatches() {
         SeedAdmission {
             graph: deterministic_graph(),
             input: json!({ "value": 0 }),
-            descriptor: Some(descriptor()),
+            descriptors: vec![descriptor()],
             corrupt_compiled_ir: false,
         },
     )
@@ -101,7 +99,7 @@ async fn corrupt_terminal_digest_refuses_startup_without_an_effect() {
         SeedAdmission {
             graph: deterministic_graph(),
             input: json!({ "value": 0 }),
-            descriptor: Some(descriptor()),
+            descriptors: vec![descriptor()],
             corrupt_compiled_ir: false,
         },
     )
@@ -151,7 +149,7 @@ async fn exact_worker_free_predecessor_state_reopens_after_upgrade() {
         SeedAdmission {
             graph: graph.clone(),
             input: Value::Null,
-            descriptor: None,
+            descriptors: Vec::new(),
             corrupt_compiled_ir: false,
         },
     )
@@ -178,7 +176,7 @@ async fn reducer_dispatch_and_terminal_authorizations_are_prefix_bound() {
         SeedAdmission {
             graph: deterministic_graph(),
             input: json!({ "value": 0 }),
-            descriptor: Some(descriptor()),
+            descriptors: vec![descriptor()],
             corrupt_compiled_ir: false,
         },
     )

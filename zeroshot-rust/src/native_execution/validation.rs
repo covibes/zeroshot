@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::cluster_ledger::DispatchAllocation;
 use crate::execution::{CompletionEvidence, DispatchFence, DispatchObservation};
 
-use super::program::{AGENT_WORKER_REF, NativeExecutionRegistry};
+use super::program::{AgentKind, NativeExecutionRegistry};
 use super::NativeExecutionError;
 use crate::native_admission::native_worker_protocol::OUTPUT_VALUE;
 use super::agent::AgentTerminalOutput;
@@ -108,9 +108,22 @@ fn validate_verified(
         crate::native_admission::native_worker_protocol::WORKER_REF => {
             validate_deterministic(output, artifacts)
         }
-        AGENT_WORKER_REF => validate_agent(output, artifacts),
-        _ => Err(NativeExecutionError::InvalidState),
+        value => match AgentKind::from_worker(value) {
+            Some(AgentKind::CodexV1) => validate_agent(output, artifacts),
+            Some(AgentKind::PiV1) => validate_pi(output, artifacts),
+            None => Err(NativeExecutionError::InvalidState),
+        },
     }
+}
+
+fn validate_pi(
+    output: &serde_json::Value,
+    artifacts: &[ArtifactRef],
+) -> Result<(), NativeExecutionError> {
+    if !artifacts.is_empty() {
+        return Err(NativeExecutionError::InvalidState);
+    }
+    super::pi::validate_terminal_output(output).map_err(|()| NativeExecutionError::InvalidState)
 }
 
 fn validate_deterministic(

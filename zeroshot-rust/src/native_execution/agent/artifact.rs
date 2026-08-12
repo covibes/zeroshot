@@ -14,7 +14,7 @@ use crate::artifact_store::{ArtifactIntent, ArtifactStore};
 use crate::cluster_ledger::ResourceId;
 use crate::execution::driver::DriverRequest;
 
-use super::super::program::AGENT_WORKER_REF;
+use super::super::program::CODEX_AGENT_WORKER_REF;
 use super::protocol::{
     validate_validation_output, AgentDispatchInput, AgentTerminalOutput, VALIDATION_TYPE_ID,
 };
@@ -105,7 +105,7 @@ fn artifact_intent(
         type_id: TypeId::new(VALIDATION_TYPE_ID).map_err(|_| ())?,
         producer: ArtifactProducer {
             node: NodeName::new("codex").map_err(|_| ())?,
-            worker: WorkerRef::new(AGENT_WORKER_REF).map_err(|_| ())?,
+            worker: WorkerRef::new(CODEX_AGENT_WORKER_REF).map_err(|_| ())?,
         },
         lineage: ArtifactLineage {
             generation: Generation::new(generation).map_err(|_| ())?,

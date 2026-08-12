@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::execution::ExecutionInput;
-use super::super::program::AGENT_WORKER_REF;
+use super::super::program::CODEX_AGENT_WORKER_REF;
+use super::super::worker_process::{decode_inline, validate_bounded_text};
 use super::validator::MAX_EXPECTED_GREETING_BYTES;
 
 pub(super) const VALIDATION_TYPE_ID: &str = "native.agent.validation@1";
@@ -48,10 +49,7 @@ impl AgentDispatchInput {
     }
 
     pub(super) fn from_execution_input(input: ExecutionInput) -> Result<Self, ()> {
-        let ExecutionInput::Inline(input) = input else {
-            return Err(());
-        };
-        let value: Self = serde_json::from_str(input.as_str()).map_err(|_| ())?;
+        let value: Self = decode_inline(input)?;
         validate_bounded_text(&value.prompt, MAX_PROMPT_BYTES)?;
         validate_bounded_text(&value.expected_greeting, MAX_EXPECTED_GREETING_BYTES)?;
         Generation::new(value.generation).map_err(|_| ())?;
@@ -86,7 +84,7 @@ impl AgentTerminalOutput {
         if self.validation_artifact.type_id.as_str() != VALIDATION_TYPE_ID
             || self.validation_artifact.media_type.as_str() != "application/json"
             || self.validation_artifact.redaction != RedactionClass::Internal
-            || self.validation_artifact.producer.worker.as_str() != AGENT_WORKER_REF
+            || self.validation_artifact.producer.worker.as_str() != CODEX_AGENT_WORKER_REF
         {
             return Err(());
         }
@@ -198,12 +196,4 @@ pub(super) fn validate_validation_output(bytes: &[u8]) -> Result<(), ()> {
         return Err(());
     }
     Ok(())
-}
-
-fn validate_bounded_text(value: &str, maximum: usize) -> Result<(), ()> {
-    if value.is_empty() || value.len() > maximum || value.contains('\0') {
-        Err(())
-    } else {
-        Ok(())
-    }
 }

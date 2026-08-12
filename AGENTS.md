@@ -98,7 +98,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Graph verifier facade                 | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
 | Graph verifier analysis               | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
 | Native product construction           | `zeroshot-rust/`                                                                                                                 |
-| Native foreground agent               | `zeroshot-rust/src/native_execution/agent/`, `zeroshot-rust/src/native_execution/program/foreground.rs`                          |
+| Native foreground agents              | `zeroshot-rust/src/native_execution/{agent,pi}/`, `native_execution/program/foreground.rs`                                       |
 | Native admission composition          | `zeroshot-rust/src/native_admission.rs`, `zeroshot-rust/src/main.rs`                                                             |
 | Native release targets                | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                | `npm/zeroshot-rust/`                                                                                                             |
@@ -272,13 +272,20 @@ filesystem store, and must preserve ref-first release plus synchronized blob-the
 The narrow native stdio entrypoint composes one SQLite ledger resource and only
 initialize/plan/apply/get. It advertises no graph profile, renews one process-owned fence while
 serving, and on graceful EOF stops renewal before exact conditional fence release. It may execute
-only the fixed private deterministic checkpoint and the fixed attempts-1 foreground Codex program.
-The latter owns one canonical borrowed workspace, one startup credential snapshot, one private
-Codex process driver, one fixed greeting validator, and one product-local CAS. It must not acquire
+only the fixed private deterministic checkpoint and the two fixed attempts-1 foreground programs.
+Codex owns one canonical borrowed workspace, one startup credential snapshot, one private process
+driver, one fixed greeting validator, and one product-local CAS. Pi v1 is a separate prompt-only
+driver with no tools or borrowed-workspace access and no artifact claim. Neither program may create
 a configurable provider/model/driver surface, general worker registration, scheduler, daemon-loop,
 watch, retry, session reuse, or broader lifecycle authority. Secret material crosses only the
 non-cloneable, redacted final-spawn input after child environment clearing; it never enters generic
 runtime commands, debug output, graph/ledger state, or artifacts.
+Native-v2 checkpoints remain isolated from the live Node execution path. Do not wire native-v2 into
+the default or production path merely because an individual foreground checkpoint passes. Cutover
+requires an explicit parity/readiness decision backed by fresh-main process evidence for the real
+user journey: required Codex and Pi modes, contained workspace mutation and validation, foreground
+and detached restart recovery, the two required constrained branch shapes, user-required
+provider/config selection, delivery/result semantics, failure handling, and a rollback path.
 Foreground lease stores are cluster-scoped; the workspace directory lock and durable marker own
 cross-cluster exclusion.
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
@@ -425,8 +432,9 @@ the reducer.
 Reducer dispatch and terminal appends require opaque authorizations bound to the exact graph/input/
 history digests, decision fields, and ledger position/hash that produced them; only a newly committed
 dispatch receipt authorizes a physical effect. The native production backend additionally permits
-one private exact `seq(step, succeed)` deterministic process proof and one exact foreground Codex
-program whose authored error choice closes declared worker failures. It advertises no graph profile.
+one private exact `seq(step, succeed)` deterministic process proof plus exact foreground Codex and
+prompt-only Pi programs whose authored error choices close declared worker failures. It advertises
+no graph profile.
 The same coordinator validates and settles both programs synchronously, exposes the protocol-owned
 optional `GetResult.terminalResult`, refuses an active dispatch on reopen, and runs bounded
 settled-prefix terminal recovery only after fence renewal starts. The foreground program publishes
@@ -836,6 +844,20 @@ copies, because Pi's shared credential lock and persisted OAuth rotation must sp
 later clusters. `PI_CODING_AGENT_DIR` may select the host source without leaking that host path into
 the container. Forward scalar built-in credentials/config companions automatically, and require
 explicit passthrough plus a matching mount for path/metadata credentials.
+
+The native Pi v1 checkpoint is intentionally narrower than the legacy Node adapter above. It binds
+`native.agent.pi@1` to Pi `>=0.84.1`, provider `openai`, model `gpt-5.4`, medium thinking, one stdin prompt, JSON mode,
+and `--no-session --no-extensions --no-skills --no-prompt-templates --no-context-files
+--no-approve --no-tools`. It runs in product-owned empty cwd/config directories after `env_clear`
+with only captured `PATH`, fixed offline/update/telemetry controls, and a borrowed
+`OPENAI_API_KEY`. Preflight validates the credential without exposing it and uses only a fixed dummy
+key for the offline model-list probe; real material enters only the post-dispatch provider spawn.
+Accept output only after exactly one `agent_settled`, using the latest bounded assistant
+`message_end`; require one session header and at least one agent run, allow only known event kinds,
+and reject tools, malformed/trailing/incomplete streams, and non-success stops. Pi owns its internal
+retry, compaction, and queue state machines; the adapter does not reproduce them.
+Changing the model or these authority-bearing flags requires a new native worker version. Do not
+add a Pi SDK/RPC layer until a later session-bearing capability actually requires one.
 
 Model gateways stay behind the single bundled `gateway` engine. Do not add `openrouter`, `ollama`, `vllm`, `hermes`, or similar model-only targets as standalone provider ids.
 

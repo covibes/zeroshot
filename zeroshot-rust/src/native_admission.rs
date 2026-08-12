@@ -31,7 +31,7 @@ use crate::cluster_ledger::store::{LedgerClock, StoreError, SystemLedgerClock};
 use crate::cluster_ledger::{ClusterLedger, LedgerError, LedgerErrorKind, OwnerId, ResourceId};
 use self::native_execution::{
     is_deterministic_graph, is_worker_free_graph, NativeExecutionCoordinator, NativeExecutionError,
-    NativeExecutionProcess, NativeExecutionRegistry, NativeGraphVerifier,
+    NativeExecutionProcess, NativeExecutionRegistry, NativeGraphVerifier, PredecessorProgram,
 };
 use crate::{NativeBackendFactory, ProductionNativeBackendFactory};
 
@@ -43,7 +43,14 @@ const NATIVE_RUN_TIMEOUT_MS: u64 = 60 * 60 * 1_000;
 #[doc(hidden)]
 #[must_use]
 pub fn native_foreground_graph() -> GraphSpec {
-    native_execution::foreground_graph()
+    native_execution::codex_foreground_graph()
+}
+
+/// Returns the one graph accepted by the private prompt-only Pi profile.
+#[doc(hidden)]
+#[must_use]
+pub fn native_pi_foreground_graph() -> GraphSpec {
+    native_execution::pi_foreground_graph()
 }
 
 type NativeAdmissionCoordinator = AdmissionCoordinator<NativeGraphVerifier, ClusterLedgerAdapters>;
@@ -185,19 +192,19 @@ async fn validate_predecessor_state(
     let Some(admission) = state.admission.as_ref() else {
         return Ok(true);
     };
-    let allows_deterministic = NativeExecutionRegistry::predecessor_digests()
+    let predecessor = NativeExecutionRegistry::predecessor_digests()
         .into_iter()
-        .find_map(|(catalog, profile, allows_deterministic)| {
+        .find_map(|(catalog, profile, predecessor)| {
             (admission.catalog_digest == catalog && admission.profile_digest == profile)
-                .then_some(allows_deterministic)
+                .then_some(predecessor)
         });
-    let Some(allows_deterministic) = allows_deterministic else {
+    let Some(predecessor) = predecessor else {
         return Ok(false);
     };
     let (graph, compiled, graph_bytes) = reverify_predecessor(admission, verifier)
         .await
         .map_err(|_| NativeAdmissionOpenError::Execution)?;
-    if !is_worker_free_graph(&graph) && !(allows_deterministic && is_deterministic_graph(&graph)) {
+    if !predecessor_allows(predecessor, &graph) {
         return Err(NativeAdmissionOpenError::Execution);
     }
     let Some(verified_input) = state.verified_inputs.get(&admission.run) else {
@@ -216,6 +223,19 @@ async fn validate_predecessor_state(
         Ok(true)
     } else {
         Err(NativeAdmissionOpenError::Execution)
+    }
+}
+
+fn predecessor_allows(predecessor: PredecessorProgram, graph: &GraphSpec) -> bool {
+    if is_worker_free_graph(graph) {
+        return true;
+    }
+    match predecessor {
+        PredecessorProgram::WorkerFree => false,
+        PredecessorProgram::Deterministic => is_deterministic_graph(graph),
+        PredecessorProgram::CodexForeground => {
+            is_deterministic_graph(graph) || graph == &native_execution::codex_foreground_graph()
+        }
     }
 }
 

@@ -20,14 +20,14 @@ use super::native_execution::deterministic_graph;
 use super::native_process::TempState;
 
 #[derive(Clone)]
-struct Registry(Option<WorkerDescriptor>);
+struct Registry(Vec<WorkerDescriptor>);
 
 #[async_trait]
 impl WorkerRegistry for Registry {
     async fn resolve(&self, worker: &WorkerRef) -> Result<WorkerDescriptor, WorkerRegistryError> {
         self.0
-            .as_ref()
-            .filter(|descriptor| descriptor.worker == *worker)
+            .iter()
+            .find(|descriptor| descriptor.worker == *worker)
             .cloned()
             .ok_or_else(|| WorkerRegistryError::NotFound {
                 worker: worker.clone(),
@@ -82,6 +82,13 @@ pub fn descriptor() -> WorkerDescriptor {
     .unwrap()
 }
 
+pub fn codex_descriptor() -> WorkerDescriptor {
+    serde_json::from_str(include_str!(
+        "../../../tests/fixtures/native-codex-worker-v1.json"
+    ))
+    .unwrap()
+}
+
 pub fn predecessor_graph() -> GraphSpec {
     serde_json::from_value(json!({
         "profile": "openengine.graph.full/v1",
@@ -122,7 +129,7 @@ async fn verify(graph: &GraphSpec, registry: Registry) -> VerifiedGraph {
 pub struct SeedAdmission {
     pub graph: GraphSpec,
     pub input: Value,
-    pub descriptor: Option<WorkerDescriptor>,
+    pub descriptors: Vec<WorkerDescriptor>,
     pub corrupt_compiled_ir: bool,
 }
 
@@ -141,9 +148,8 @@ pub async fn seed_admission(
     )
     .await
     .unwrap();
-    let descriptors = seed.descriptor.clone().into_iter().collect::<Vec<_>>();
-    let (catalog_digest, profile_digest) = identity_digests(&descriptors);
-    let verified = verify(&seed.graph, Registry(seed.descriptor)).await;
+    let (catalog_digest, profile_digest) = identity_digests(&seed.descriptors);
+    let verified = verify(&seed.graph, Registry(seed.descriptors.clone())).await;
     let canonical_graph =
         canonical_value_bytes(&serde_json::to_value(&seed.graph).unwrap()).unwrap();
     let verified_input = canonical_value_bytes(&seed.input).unwrap();
@@ -195,10 +201,17 @@ pub async fn seed_dispatch(
 }
 
 pub async fn reduce(ledger: &ClusterLedger) -> Reduction {
+    reduce_with(ledger, &deterministic_graph(), vec![descriptor()]).await
+}
+
+pub async fn reduce_with(
+    ledger: &ClusterLedger,
+    graph: &GraphSpec,
+    descriptors: Vec<WorkerDescriptor>,
+) -> Reduction {
     let state = ledger.state().await.unwrap();
     let admission = state.admission.as_ref().unwrap();
-    let graph = deterministic_graph();
-    let verified = verify(&graph, Registry(Some(descriptor()))).await;
+    let verified = verify(graph, Registry(descriptors)).await;
     let input: Value = serde_json::from_slice(
         &state
             .verified_inputs

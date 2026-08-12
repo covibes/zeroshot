@@ -34,7 +34,7 @@ async fn corrupt_compiled_reconstruction_refuses_startup() {
         SeedAdmission {
             graph: deterministic_graph(),
             input: json!({ "value": 0 }),
-            descriptor: Some(descriptor()),
+            descriptors: vec![descriptor()],
             corrupt_compiled_ir: true,
         },
     )
@@ -53,7 +53,7 @@ async fn malformed_verified_output_refuses_recovery() {
         SeedAdmission {
             graph: deterministic_graph(),
             input: json!({ "value": 0 }),
-            descriptor: Some(descriptor()),
+            descriptors: vec![descriptor()],
             corrupt_compiled_ir: false,
         },
     )
@@ -85,7 +85,7 @@ async fn settlement_without_verified_output_refuses_recovery() {
         SeedAdmission {
             graph: deterministic_graph(),
             input: json!({ "value": 0 }),
-            descriptor: Some(descriptor()),
+            descriptors: vec![descriptor()],
             corrupt_compiled_ir: false,
         },
     )
