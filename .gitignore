@@ -61,6 +61,7 @@ report/
 cli/event-copy.js
 cli/message-formatter-utils.js
 cli/json-export.js
+cli/message-formatters-normal.js
 cli/message-formatters-watch.js
 test-metadata-manual.sh
 test-isolated-fix.js
@@ -150,11 +151,15 @@ src/input-helpers.js
 src/ledger-sequence.js
 src/message-bus-bridge.js
 src/message-buffer.js
+src/name-generator.js
+src/name-generator-shared.js
 src/state-snapshot-normalization.js
 src/state-snapshot.js
 src/state-snapshotter.js
+src/task-run-model-args.js
 src/task-startup-error.js
 src/task-runner.js
+src/worktree-claude-config.js
 src/worktree-tooling-env.js
 src/omp-blob-root.js
 src/omp-config-overlay.js
