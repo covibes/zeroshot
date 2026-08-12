@@ -194,6 +194,16 @@ src/attach/ring-buffer.js
 src/attach/protocol.js
 src/attach/send-input.js
 src/attach/socket-discovery.js
+src/attach/attach-client.js
+src/attach/attach-server.js
+src/attach/attach-server-types.js
+src/attach/attach-server-runtime.js
+src/attach/attach-server-clients.js
+src/attach/attach-server-cleanup.js
+src/attach/attach-server-socket.js
+src/attach/attach-server-pty.js
+src/attach/attach-server-events.js
+src/attach/index.js
 src/providers/anthropic/index.js
 src/providers/capabilities.js
 src/providers/google/index.js

@@ -61,6 +61,9 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Provider detection                    | `lib/provider-detection.js`                                                                                                      |
 | Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
 | Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
+| Attach session facade/client/server   | `src/attach/{index,attach-client,attach-server}.ts`                                                                              |
+| Attach server lifecycle and PTY       | `src/attach/attach-server-{runtime,pty,socket}.ts`                                                                               |
+| Attach server clients and cleanup     | `src/attach/attach-server-{clients,events,cleanup,types}.ts`                                                                     |
 | Template validation entrypoint        | `src/template-validation/index.js`                                                                                               |
 | Shared template simulation seam       | `src/template-validation/{simulation-runtime,simulation-agent,simulation-agent-runtime}.ts`                                      |
 | Random topology simulation pipeline   | `src/template-validation/random-topology-*.ts`, `simulate-random-topology.ts`                                                    |
