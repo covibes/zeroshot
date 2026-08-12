@@ -28,6 +28,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/omp-execution-fingerprint.js',
   'src/omp-session-limits.js',
   'src/agent/agent-trigger-evaluator.js',
+  'src/agent/agent-command-proofs-context.js',
   'src/agent/context-replay-policy.js',
   'src/agent/critical-agent-policy.js',
   'src/agent/provider-control-plane.js',

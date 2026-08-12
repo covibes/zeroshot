@@ -1,6 +1,38 @@
-const { normalizeCommandProofs } = require('../command-proofs');
+type StringList = string[];
 
-function appendProofDetails(lines, proof, index) {
+interface CommandProof {
+  id: string;
+  profile: string;
+  command: string;
+  scope?: string;
+  description?: string;
+}
+
+interface AgentCommandProofConfig {
+  role?: string;
+  commandProofs?: unknown;
+}
+
+interface CommandProofsModule {
+  normalizeCommandProofs(value: unknown): CommandProof[];
+}
+
+function isCommandProofsModule(value: unknown): value is CommandProofsModule {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'normalizeCommandProofs' in value &&
+    typeof value.normalizeCommandProofs === 'function'
+  );
+}
+
+const commandProofsModule: unknown = require('../command-proofs');
+if (!isCommandProofsModule(commandProofsModule)) {
+  throw new TypeError('command-proofs must export normalizeCommandProofs');
+}
+const normalizeCommandProofs = commandProofsModule.normalizeCommandProofs;
+
+function appendProofDetails(lines: StringList, proof: CommandProof, index: number): void {
   const scope = proof.scope ? `, scope: ${proof.scope}` : '';
   lines.push(`${index + 1}. id: ${proof.id}, profile: ${proof.profile}${scope}`);
   if (proof.description) {
@@ -10,7 +42,7 @@ function appendProofDetails(lines, proof, index) {
   lines.push(`   helper: zeroshot cmdproof check ${proof.id}`);
 }
 
-function buildWorkerInstructions(lines) {
+function buildWorkerInstructions(lines: StringList): void {
   lines.push(
     '',
     'For these exact commands:',
@@ -21,7 +53,7 @@ function buildWorkerInstructions(lines) {
   );
 }
 
-function buildValidatorInstructions(lines) {
+function buildValidatorInstructions(lines: StringList): void {
   lines.push(
     '',
     'For proof-backed validation:',
@@ -32,7 +64,7 @@ function buildValidatorInstructions(lines) {
   );
 }
 
-function buildCommandProofsSection(config) {
+function buildCommandProofsSection(config: AgentCommandProofConfig): string {
   const proofs = normalizeCommandProofs(config.commandProofs);
   if (proofs.length === 0) {
     return '';
@@ -50,6 +82,6 @@ function buildCommandProofsSection(config) {
   return lines.join('\n');
 }
 
-module.exports = {
+export = {
   buildCommandProofsSection,
 };
