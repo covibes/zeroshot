@@ -2415,8 +2415,15 @@ class IsolationManager {
     // NEVER pass --volumes (irreversible data loss) and NEVER tear down a pinned/shared
     // Compose project — only a project scoped to the worktree directory basename, which is
     // the only kind zeroshot could itself have created, is touched.
-    const { resolveWorktreeComposeTeardown } = require('../lib/compose-utils');
-    const teardown = resolveWorktreeComposeTeardown(worktreeInfo.path);
+    let teardown = { shouldTeardown: false };
+    try {
+      const { resolveWorktreeComposeTeardown } = require('../lib/compose-utils');
+      teardown = resolveWorktreeComposeTeardown(worktreeInfo.path);
+    } catch (error) {
+      console.warn(
+        `[IsolationManager] Skipping Docker Compose teardown in ${worktreeInfo.path}: ${error.message}`
+      );
+    }
     if (teardown.shouldTeardown) {
       try {
         runSync('docker', teardown.args, {

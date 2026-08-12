@@ -174,7 +174,7 @@ function assertPackageLockEntries(workflow, packageManifest, mutatePackageLock) 
         undefined,
         packageManifest,
         mutatePackageLock((candidate) => {
-          delete candidate.packages[''].devDependencies['js-yaml'];
+          delete candidate.packages[''].dependencies['js-yaml'];
         })
       ),
     /package-lock root js-yaml spec must match/
@@ -186,7 +186,7 @@ function assertPackageLockEntries(workflow, packageManifest, mutatePackageLock) 
         undefined,
         packageManifest,
         mutatePackageLock((candidate) => {
-          candidate.packages[''].devDependencies['js-yaml'] = '^9.0.0';
+          candidate.packages[''].dependencies['js-yaml'] = '^9.0.0';
         })
       ),
     /package-lock root js-yaml spec must match/
@@ -273,10 +273,10 @@ describe('Rust release workflow dependency integrity', function () {
       fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')
     );
     const packageWithoutYaml = JSON.parse(JSON.stringify(packageManifest));
-    delete packageWithoutYaml.devDependencies['js-yaml'];
+    delete packageWithoutYaml.dependencies['js-yaml'];
     assert.throws(
       () => distribution.checkRepository(workflow, undefined, packageWithoutYaml),
-      /direct js-yaml devDependency/
+      /direct js-yaml dependency/
     );
 
     const packageLock = JSON.parse(

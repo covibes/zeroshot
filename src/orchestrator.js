@@ -2155,8 +2155,16 @@ class Orchestrator {
     // NEVER pass --volumes (irreversible data loss) and NEVER tear down a pinned/shared
     // Compose project — only a project scoped to the worktree directory basename, which is
     // the only kind zeroshot could itself have created, is touched.
-    const { resolveWorktreeComposeTeardown } = require('../lib/compose-utils');
-    const teardown = resolveWorktreeComposeTeardown(worktreePath);
+    let teardown;
+    try {
+      const { resolveWorktreeComposeTeardown } = require('../lib/compose-utils');
+      teardown = resolveWorktreeComposeTeardown(worktreePath);
+    } catch (error) {
+      this._log(
+        `[Orchestrator] Skipping Docker Compose teardown in ${worktreePath}: ${error.message}`
+      );
+      return;
+    }
     if (!teardown.shouldTeardown) {
       if (teardown.composePath) {
         this._log(
