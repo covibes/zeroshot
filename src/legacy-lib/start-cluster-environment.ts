@@ -10,6 +10,7 @@ interface RunOptions extends Record<string, unknown> {
   mount?: readonly string[] | null;
   noIsolation?: unknown;
   prBase?: unknown;
+  prBody?: unknown;
 }
 
 interface MountSpec {

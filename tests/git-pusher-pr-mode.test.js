@@ -217,6 +217,13 @@ describe('git-pusher --pr vs --ship (autoMerge)', function () {
     assert.strictEqual(prOptions.gitRemote, 'upstream');
   });
 
+  it('buildPrOptions persists the unrendered PR body template for resume', function () {
+    const prBody = '## Summary\n\n{{issue_title}}\n\n{{issue_reference}}';
+    const prOptions = Orchestrator.buildPrOptions({ pr: true, prBody }, []);
+
+    assert.strictEqual(prOptions.prBody, prBody);
+  });
+
   it('resolveRunPlan is the single source for the autoMerge decision', function () {
     assert.strictEqual(Orchestrator.resolveRunPlan({ ship: true }).autoMerge, true);
     assert.strictEqual(Orchestrator.resolveRunPlan({ pr: true }).autoMerge, false);

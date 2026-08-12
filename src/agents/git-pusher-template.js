@@ -277,6 +277,7 @@ return hasSufficientEvidence;`;
 const { readRepoSettings } = require('../../lib/repo-settings');
 const { normalizeGitRemoteName, quoteShellArgument } = require('../../lib/git-remote-utils');
 const { resolveRequiredQualityGates } = require('../quality-gates');
+const { renderPullRequestBody, resolveIssueContext } = require('../pr-body-template');
 
 function getSafeBranchName(value) {
   if (typeof value !== 'string') {
@@ -314,35 +315,6 @@ function normalizeCloseIssueMode(value) {
   return null;
 }
 
-function normalizeIssueNumber(value) {
-  const candidate = typeof value === 'number' ? String(value) : value;
-  if (typeof candidate !== 'string') return 'unknown';
-  const trimmed = candidate.trim();
-  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed) ? trimmed : 'unknown';
-}
-
-function normalizeIssueTitle(value) {
-  if (typeof value !== 'string' || value.trim() === '') return 'Implementation';
-  const normalized = [...value]
-    .map((character) => {
-      const codePoint = character.codePointAt(0);
-      return codePoint < 0x20 || codePoint === 0x7f ? ' ' : character;
-    })
-    .join('')
-    .trim();
-  return normalized || 'Implementation';
-}
-
-function resolveIssueContext(options) {
-  const issueNumber = normalizeIssueNumber(options.issueNumber);
-  const issueTitle = normalizeIssueTitle(options.issueTitle);
-  const issueReference =
-    options.includeIssueReference === false || issueNumber === 'unknown'
-      ? ''
-      : `Closes #${issueNumber}`;
-  return { issueNumber, issueTitle, issueReference };
-}
-
 /**
  * Resolve GitHub configuration from CLI options and repo settings.
  * Priority: CLI options > repo settings (.zeroshot/settings.json) > defaults
@@ -355,6 +327,7 @@ function resolveIssueContext(options) {
  * @param {string|number} [options.issueNumber] - Typed issue identifier for prompt commands
  * @param {string} [options.issueTitle] - Typed issue title for prompt commands
  * @param {boolean} [options.includeIssueReference] - Include the closing reference in PR text
+ * @param {string} [options.prBody] - Literal PR body template with supported issue tokens
  * @returns {Object} Resolved configuration
  */
 function resolveGitHubConfig(options = {}) {
@@ -385,14 +358,21 @@ function resolveGitHubConfig(options = {}) {
     options.autoMerge === true ||
     (options.autoMerge !== false && parseBool(repoGithub.autoMerge) === true);
 
+  const issueContext = resolveIssueContext(options);
+
   return {
     prBase,
     useMergeQueue,
     closeIssueMode,
     autoMerge,
     gitRemote,
-    issueContext: resolveIssueContext(options),
+    issueContext,
+    prBody: renderPullRequestBody(options.prBody, options),
   };
+}
+
+function resolvedPrBody(config, issueContext) {
+  return typeof config.prBody === 'string' ? config.prBody : issueContext.issueReference;
 }
 
 /**
@@ -406,13 +386,15 @@ function getPlatformConfig(platform, config = {}) {
   const { prBase, useMergeQueue, closeIssueMode, autoMerge, gitRemote } = config;
   const issueContext = config.issueContext || resolveIssueContext({});
   const issueTitleArgument = quoteShellArgument(`feat: ${issueContext.issueTitle}`);
-  const issueReferenceArgument = quoteShellArgument(issueContext.issueReference);
+  const prBodyArgument = quoteShellArgument(resolvedPrBody(config, issueContext));
 
   const PLATFORM_CONFIGS = {
     github: {
       prName: 'PR',
       prNameLower: 'pull request',
-      createCmd: `gh pr create${prBase ? ` --base ${prBase}` : ''} --title ${issueTitleArgument} --body ${issueReferenceArgument}`,
+      createCmd:
+        `gh pr create${prBase ? ` --base ${prBase}` : ''} ` +
+        `--title ${issueTitleArgument} --body ${prBodyArgument}`,
       mergeCmd: useMergeQueue
         ? `PR_ID="$(timeout 30 gh pr view --json id --jq .id)"
 gh api graphql -f query='mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{state}}}' -f id="$PR_ID"
@@ -434,7 +416,7 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
     gitlab: {
       prName: 'MR',
       prNameLower: 'merge request',
-      createCmd: `glab mr create --title ${issueTitleArgument} --description ${issueReferenceArgument}`,
+      createCmd: `glab mr create --title ${issueTitleArgument} --description ${prBodyArgument}`,
       mergeCmd: 'glab mr merge --auto-merge',
       mergeFallbackCmd: 'glab mr merge',
       prUrlExample: 'https://gitlab.com/owner/repo/-/merge_requests/123',
@@ -447,7 +429,7 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
     'azure-devops': {
       prName: 'PR',
       prNameLower: 'pull request',
-      createCmd: `az repos pr create --title ${issueTitleArgument} --description ${issueReferenceArgument}`,
+      createCmd: `az repos pr create --title ${issueTitleArgument} --description ${prBodyArgument}`,
       mergeCmd: 'az repos pr update --id <PR_ID> --auto-complete true',
       mergeFallbackCmd: 'az repos pr update --id <PR_ID> --status completed',
       prUrlExample: 'https://dev.azure.com/org/project/_git/repo/pullrequest/123',
@@ -803,6 +785,7 @@ If blocked before creating a ${prName}, output:
  * @param {string|number} [options.issueNumber] - Typed issue identifier for prompt commands
  * @param {string} [options.issueTitle] - Typed issue title for prompt commands
  * @param {boolean} [options.includeIssueReference] - Include the closing reference in PR text
+ * @param {string} [options.prBody] - Literal PR body template with supported issue tokens
  * @param {Array} [options.requiredQualityGates] - Required handoff quality gates
  * @param {boolean} [options.autoMerge] - Merge the PR (--ship). False stops after PR creation (--pr).
  * @returns {Object} Agent configuration object

@@ -28,6 +28,7 @@ interface RunOptions extends Record<string, unknown> {
   noMounts?: unknown;
   pr?: unknown;
   prBase?: unknown;
+  prBody?: unknown;
   preparedWorktree?: unknown;
   requiredQualityGates?: unknown;
   ship?: unknown;
@@ -201,6 +202,7 @@ function buildStartOptionsFromPlan({
     containerHome: optionalValue(options.containerHome),
     forceProvider: optionalValue(forceProvider),
     prBase: environment ? resolvePrBase(options) : optionalValue(options.prBase),
+    prBody: typeof options.prBody === 'string' ? options.prBody : undefined,
     mergeQueue: environment ? resolveMergeQueue(options) : optionalValue(options.mergeQueue),
     closeIssue: environment ? resolveCloseIssue(options) : optionalValue(options.closeIssue),
     ship: plan.delivery === 'ship',
