@@ -1,5 +1,4 @@
-import twoStageRuntime = require('./two-stage-runtime');
-import type { ValidationAgentConfig, ValidationCluster } from './two-stage-contracts';
+import simulationAgentRuntime = require('./simulation-agent-runtime');
 
 interface SimulationMessageBus {
   publish(message: unknown): unknown;
@@ -7,13 +6,23 @@ interface SimulationMessageBus {
 
 type PublishMessage = Record<string, unknown> & { receiver?: unknown };
 
+export interface SimulationAgentConfig {
+  id: string;
+  role?: string;
+}
+
+export interface SimulationCluster {
+  id: string;
+  agents: Array<{ id: string; role: string | undefined }>;
+}
+
 interface SimulationAgent {
   id: string;
   role: string | undefined;
   iteration: number;
-  cluster: ValidationCluster;
+  cluster: SimulationCluster;
   messageBus: SimulationMessageBus;
-  config: ValidationAgentConfig;
+  config: SimulationAgentConfig;
   currentTaskId: string;
   workingDirectory: string;
   _log(...arguments_: unknown[]): void;
@@ -23,28 +32,33 @@ interface SimulationAgent {
 }
 
 interface CreateSimulationAgentOptions {
-  agentConfig: ValidationAgentConfig;
-  cluster: ValidationCluster;
+  agentConfig: SimulationAgentConfig;
+  cluster: SimulationCluster;
   messageBus: SimulationMessageBus;
+  iteration?: number;
+  currentTaskId?: string;
 }
 
 export function createSimulationAgent({
   agentConfig,
   cluster,
   messageBus,
+  iteration = 1,
+  currentTaskId = 'sim-task',
 }: CreateSimulationAgentOptions): SimulationAgent {
   const simulationAgent: SimulationAgent = {
     id: agentConfig.id,
     role: agentConfig.role,
-    iteration: 1,
+    iteration,
     cluster,
     messageBus,
     config: agentConfig,
-    currentTaskId: 'sim-task',
+    currentTaskId,
     workingDirectory: process.cwd(),
     _log: () => {},
     _resolveProvider: () => 'claude',
-    _parseResultOutput: (output) => twoStageRuntime.parseResultOutput(simulationAgent, output),
+    _parseResultOutput: (output) =>
+      simulationAgentRuntime.parseResultOutput(simulationAgent, output),
     _publish: (message) => {
       const receiver = message.receiver || 'broadcast';
       return messageBus.publish({

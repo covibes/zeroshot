@@ -1,7 +1,7 @@
 import assert = require('node:assert');
 import simulationRuntime = require('./simulation-runtime');
-import twoStageRuntime = require('./two-stage-runtime');
-import { createSimulationAgent } from './two-stage-agent';
+import simulationAgentRuntime = require('./simulation-agent-runtime');
+import { createSimulationAgent } from './simulation-agent';
 import { publishScenarioInputs } from './two-stage-inputs';
 import { evaluateScenarioMessages } from './two-stage-results';
 import type {
@@ -68,7 +68,7 @@ async function runScenario(
   });
 
   try {
-    await twoStageRuntime.executeHook({
+    await simulationAgentRuntime.executeHook({
       hook: context.hook,
       agent: simulationAgent,
       message: triggeringMessage,
