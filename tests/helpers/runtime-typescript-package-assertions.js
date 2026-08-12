@@ -48,6 +48,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/agent/validation-platform.js',
   'src/attach/socket-paths.js',
   'src/attach/ring-buffer.js',
+  'src/attach/protocol.js',
   'src/providers/anthropic/index.js',
   'src/providers/capabilities.js',
   'src/providers/google/index.js',
