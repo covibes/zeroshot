@@ -1,4 +1,37 @@
-function buildQualityGateSchema() {
+type JsonSchemaType = 'array' | 'boolean' | 'integer' | 'number' | 'object' | 'string';
+
+interface JsonSchema {
+  type?: JsonSchemaType;
+  description?: string;
+  enum?: string[];
+  items?: JsonSchema;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  anyOf?: JsonSchema[];
+}
+
+interface QualityGatePublishData {
+  qualityGates?: unknown;
+  [key: string]: unknown;
+}
+
+interface AgentQualityGateConfig {
+  role?: string;
+  outputFormat?: string;
+  requiredQualityGates?: unknown;
+  jsonSchema?: JsonSchema;
+  hooks?: {
+    onComplete?: {
+      config?: {
+        content?: {
+          data?: QualityGatePublishData;
+        };
+      };
+    };
+  };
+}
+
+function buildQualityGateSchema(): JsonSchema {
   return {
     type: 'array',
     description: 'Tool-neutral ship handoff quality gate evidence for configured required gates.',
@@ -59,17 +92,17 @@ function buildQualityGateSchema() {
   };
 }
 
-function hasRequiredQualityGates(config) {
+function hasRequiredQualityGates(config: AgentQualityGateConfig): boolean {
   return Array.isArray(config.requiredQualityGates) && config.requiredQualityGates.length > 0;
 }
 
-function shouldApplyValidatorQualityGateDefaults(config) {
+function shouldApplyValidatorQualityGateDefaults(config: AgentQualityGateConfig): boolean {
   return (
     config.role === 'validator' && config.outputFormat === 'json' && hasRequiredQualityGates(config)
   );
 }
 
-function applyValidatorQualityGateSchema(config) {
+function applyValidatorQualityGateSchema(config: AgentQualityGateConfig): void {
   if (!shouldApplyValidatorQualityGateDefaults(config)) {
     return;
   }
@@ -80,7 +113,7 @@ function applyValidatorQualityGateSchema(config) {
   }
 }
 
-function applyValidatorQualityGatePublishMapping(config) {
+function applyValidatorQualityGatePublishMapping(config: AgentQualityGateConfig): void {
   if (!shouldApplyValidatorQualityGateDefaults(config)) {
     return;
   }
@@ -91,12 +124,12 @@ function applyValidatorQualityGatePublishMapping(config) {
   }
 }
 
-function applyValidatorQualityGateDefaults(config) {
+function applyValidatorQualityGateDefaults(config: AgentQualityGateConfig): void {
   applyValidatorQualityGateSchema(config);
   applyValidatorQualityGatePublishMapping(config);
 }
 
-module.exports = {
+export = {
   applyValidatorQualityGateDefaults,
   buildQualityGateSchema,
 };
