@@ -29,6 +29,28 @@ function isComposeDownCall(call) {
   );
 }
 
+/**
+ * Simulates lib/compose-utils failing to load — the shape a published install takes when one of
+ * its runtime dependencies is missing from the installed tree.
+ */
+function withUnloadableComposeUtils(run) {
+  const Module = require('module');
+  const origLoad = Module._load;
+  Module._load = function (request, ...rest) {
+    if (request.endsWith('lib/compose-utils')) {
+      const error = new Error("Cannot find module 'js-yaml'");
+      error.code = 'MODULE_NOT_FOUND';
+      throw error;
+    }
+    return origLoad.call(this, request, ...rest);
+  };
+  try {
+    run();
+  } finally {
+    Module._load = origLoad;
+  }
+}
+
 describe('Worktree Docker Compose Cleanup', function () {
   this.timeout(10000);
 
@@ -117,6 +139,57 @@ describe('Worktree Docker Compose Cleanup', function () {
         assert.ok(
           composeIdx < gitIdx,
           `docker compose down (idx ${composeIdx}) should run before git worktree remove (idx ${gitIdx})`
+        );
+      } finally {
+        childProcess.spawnSync = origSpawnSync;
+        delete require.cache[require.resolve('../src/isolation-manager')];
+      }
+    });
+
+    it('should still remove the worktree when lib/compose-utils cannot be loaded', function () {
+      const origSpawnSync = childProcess.spawnSync;
+      const calls = [];
+
+      childProcess.spawnSync = function (command, args, opts) {
+        calls.push({ command, args, cwd: opts?.cwd });
+        if (command === 'git' && args[0] === 'worktree') {
+          return { status: 1, stdout: '', stderr: 'not a git repo' };
+        }
+        return { status: 0, stdout: '', stderr: '' };
+      };
+
+      try {
+        delete require.cache[require.resolve('../src/isolation-manager')];
+        const IsolationManager = require('../src/isolation-manager');
+        const manager = new IsolationManager();
+
+        const fakeWorktreePath = path.join(tmpDir, 'unloadable-compose-worktree');
+        fs.mkdirSync(fakeWorktreePath, { recursive: true });
+        fs.writeFileSync(path.join(fakeWorktreePath, 'docker-compose.yml'), 'version: "3"');
+
+        manager.worktrees.set('test-cluster', {
+          path: fakeWorktreePath,
+          branch: 'zeroshot/test-cluster',
+          repoRoot: tmpDir,
+        });
+
+        withUnloadableComposeUtils(() => {
+          assert.doesNotThrow(() => {
+            manager.cleanupWorktreeIsolation('test-cluster');
+          });
+        });
+
+        assert.ok(
+          !calls.some(isComposeDownCall),
+          'teardown must be skipped when compose support cannot be loaded'
+        );
+        assert.ok(
+          calls.some(
+            (call) =>
+              call.command === 'git' &&
+              call.args.join(' ') === `worktree remove --force ${fakeWorktreePath}`
+          ),
+          'worktree removal should still proceed'
         );
       } finally {
         childProcess.spawnSync = origSpawnSync;
@@ -440,6 +513,32 @@ describe('Worktree Docker Compose Cleanup', function () {
       assert.doesNotThrow(() => {
         orchestrator._teardownWorktreeCompose(fakeWorktreePath);
       });
+    });
+
+    it('should not throw when lib/compose-utils cannot be loaded', function () {
+      const Orchestrator = require('../src/orchestrator');
+      const orchestrator = new Orchestrator({ dataDir: tmpDir });
+
+      const fakeWorktreePath = path.join(tmpDir, 'unloadable-compose-worktree');
+      fs.mkdirSync(fakeWorktreePath, { recursive: true });
+      fs.writeFileSync(path.join(fakeWorktreePath, 'docker-compose.yml'), 'version: "3"');
+
+      const calls = [];
+      childProcess.spawnSync = function (command, args, opts) {
+        calls.push({ command, args, cwd: opts?.cwd });
+        return { status: 0, stdout: '', stderr: '' };
+      };
+
+      withUnloadableComposeUtils(() => {
+        assert.doesNotThrow(() => {
+          orchestrator._teardownWorktreeCompose(fakeWorktreePath);
+        });
+      });
+
+      assert.ok(
+        !calls.some(isComposeDownCall),
+        'teardown must be skipped when compose support cannot be loaded'
+      );
     });
   });
 });

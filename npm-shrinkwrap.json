@@ -17,6 +17,7 @@
         "bun": "1.3.14",
         "chalk": "^4.1.2",
         "commander": "^14.0.2",
+        "js-yaml": "^4.2.0",
         "node-pty": "^1.1.0",
         "omelette": "^0.4.17",
         "open": "^10.1.0",
@@ -43,7 +44,6 @@
         "eslint-plugin-sonarjs": "^3.0.5",
         "eslint-plugin-unused-imports": "^4.3.0",
         "husky": "^9.1.7",
-        "js-yaml": "^4.2.0",
         "jscpd": "^3.5.10",
         "lint-staged": "^16.2.7",
         "mocha": "^11.7.5",
@@ -5155,7 +5155,6 @@
       "version": "2.0.1",
       "resolved": "https://registry.npmjs.org/argparse/-/argparse-2.0.1.tgz",
       "integrity": "sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==",
-      "dev": true,
       "license": "Python-2.0"
     },
     "node_modules/argv-formatter": {
@@ -9180,7 +9179,6 @@
       "version": "4.2.0",
       "resolved": "https://registry.npmjs.org/js-yaml/-/js-yaml-4.2.0.tgz",
       "integrity": "sha512-ePWsvanv0DWuDRsW8dnt+R4jQ31SCRCQ7hhNcPXZPsoBZiemuZNYGf7adZdqX2D86j6rvKp3RpCxVTSb8WQlOw==",
-      "dev": true,
       "funding": [
         {
           "type": "github",

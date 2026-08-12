@@ -325,10 +325,7 @@ function stagedLockDependencies(cargoLock, workspaceCargoToml) {
 
 function stageCargoLock(cargoLock, version, workspaceCargoToml) {
   const targetPackage = workspaceLockPackage(cargoLock);
-  let stagedPackage = targetPackage.text.replace(
-    /^(version = ")[^"]+(")$/m,
-    `$1${version}$2`
-  );
+  let stagedPackage = targetPackage.text.replace(/^(version = ")[^"]+(")$/m, `$1${version}$2`);
   for (const dependency of stagedLockDependencies(cargoLock, workspaceCargoToml)) {
     const dependencyPattern = new RegExp(
       `^(\\s*")${escapeRegExp(dependency.name)}(?: [^"]+)?(",\\r?)$`,
@@ -339,10 +336,7 @@ function stageCargoLock(cargoLock, version, workspaceCargoToml) {
         `RUST_VERSION_STAGE_FAILED: Cargo.lock zeroshot-rust entry has no ${dependency.name} dependency`
       );
     }
-    stagedPackage = stagedPackage.replace(
-      dependencyPattern,
-      `$1${dependency.reference}$2`
-    );
+    stagedPackage = stagedPackage.replace(dependencyPattern, `$1${dependency.reference}$2`);
   }
   return (
     cargoLock.slice(0, targetPackage.start) +
@@ -359,10 +353,7 @@ function verifyStagedCargoLock(cargoLock, version, workspaceCargoToml) {
     );
   }
   for (const dependency of stagedLockDependencies(cargoLock, workspaceCargoToml)) {
-    const dependencyPattern = new RegExp(
-      `^\\s*"${escapeRegExp(dependency.reference)}",\\r?$`,
-      'm'
-    );
+    const dependencyPattern = new RegExp(`^\\s*"${escapeRegExp(dependency.reference)}",\\r?$`, 'm');
     if (!dependencyPattern.test(targetPackage.text)) {
       throw new Error(
         `${VERSION_ERROR}: Cargo.lock zeroshot-rust dependency ${dependency.name} is not coupled to ${dependency.version}`
@@ -400,8 +391,7 @@ function stageVersion(
 function checkVersionCoupling(tag, cargoToml, cargoLock, workspaceCargoToml) {
   const useRepositoryFiles = cargoToml === undefined;
   const manifest =
-    cargoToml ??
-    fs.readFileSync(path.join(repositoryRoot, 'zeroshot-rust', 'Cargo.toml'), 'utf8');
+    cargoToml ?? fs.readFileSync(path.join(repositoryRoot, 'zeroshot-rust', 'Cargo.toml'), 'utf8');
   const releaseVersion = normalizeVersion(tag);
   const manifestVersion = cargoVersion(manifest);
   if (releaseVersion !== manifestVersion) {
@@ -416,8 +406,7 @@ function checkVersionCoupling(tag, cargoToml, cargoLock, workspaceCargoToml) {
       : undefined);
   if (lock !== undefined) {
     const workspace =
-      workspaceCargoToml ??
-      fs.readFileSync(path.join(repositoryRoot, 'Cargo.toml'), 'utf8');
+      workspaceCargoToml ?? fs.readFileSync(path.join(repositoryRoot, 'Cargo.toml'), 'utf8');
     verifyStagedCargoLock(lock, releaseVersion, workspace);
   }
   return releaseVersion;
@@ -483,9 +472,7 @@ const SCRIPT_INSTALL_CONTRACTS = Object.freeze([
 ]);
 
 function invokesRustDistribution(step) {
-  return (
-    typeof step.run === 'string' && RUST_DISTRIBUTION_INVOCATION.test(step.run)
-  );
+  return typeof step.run === 'string' && RUST_DISTRIBUTION_INVOCATION.test(step.run);
 }
 
 function checkScriptInstall(job, { jobName, installName, command, checkoutRef }) {
@@ -507,9 +494,7 @@ function checkScriptInstall(job, { jobName, installName, command, checkoutRef })
       checkout.with.repository !== '${{ github.repository }}') ||
     checkout.with?.ref !== checkoutRef
   ) {
-    failIntegrity(
-      `${jobName} must checkout expected current repository source at workspace root`
-    );
+    failIntegrity(`${jobName} must checkout expected current repository source at workspace root`);
   }
   const installIndex = job.steps.indexOf(install);
   const checkoutIndex = job.steps.indexOf(checkout);
@@ -745,11 +730,12 @@ function hasValidSri(integrity) {
 }
 
 function checkScriptDependencies(packageManifest, packageLock) {
-  const directSpec = packageManifest.devDependencies?.['js-yaml'];
+  // js-yaml is a runtime dependency: lib/compose-utils.js requires it from the published package.
+  const directSpec = packageManifest.dependencies?.['js-yaml'];
   if (typeof directSpec !== 'string' || directSpec.length === 0) {
-    failIntegrity('rust-distribution.js requires a direct js-yaml devDependency');
+    failIntegrity('rust-distribution.js requires a direct js-yaml dependency');
   }
-  const lockSpec = packageLock.packages?.['']?.devDependencies?.['js-yaml'];
+  const lockSpec = packageLock.packages?.['']?.dependencies?.['js-yaml'];
   if (lockSpec !== directSpec) {
     failIntegrity('package-lock root js-yaml spec must match package.json');
   }
@@ -773,12 +759,8 @@ function checkRepository(
   shimTargets = JSON.parse(
     fs.readFileSync(path.join(repositoryRoot, 'npm', 'zeroshot-rust', 'targets.json'), 'utf8')
   ),
-  packageManifest = JSON.parse(
-    fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8')
-  ),
-  packageLock = JSON.parse(
-    fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8')
-  )
+  packageManifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package.json'), 'utf8')),
+  packageLock = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'package-lock.json'), 'utf8'))
 ) {
   let document;
   try {
