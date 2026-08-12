@@ -423,6 +423,8 @@ export default [
       'src/agent/agent-config.js',
       'src/agent/agent-config-settings.js',
       'src/agent/agent-stuck-detector.js',
+      'src/agent/pi-terminal-lifecycle.js',
+      'src/agent/pi-terminal-lifecycle-types.js',
       'src/agent/agent-trigger-evaluator.js',
       'src/agent/context-replay-policy.js',
       'src/agent/critical-agent-policy.js',

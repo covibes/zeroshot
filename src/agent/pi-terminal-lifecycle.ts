@@ -1,6 +1,13 @@
-// @ts-nocheck
+import providerControlPlane = require('./provider-control-plane');
+import type {
+  ExtractProviderFailure,
+  JsonRecord,
+  PiLifecycleState,
+  PiTokenUsage,
+  ProviderFailure,
+} from './pi-terminal-lifecycle-types';
 
-const { parseProviderEvent, providerFailureFields } = require('./provider-control-plane');
+const { parseProviderEvent, providerFailureFields } = providerControlPlane;
 
 const ZEROSHOT_PI_METADATA_PREFIXES = [
   '[ZEROSHOT] Earlier provider output omitted',
@@ -20,7 +27,11 @@ const PI_PENDING_EVENT_TYPES = new Set([
   'auto_retry_end',
 ]);
 
-function pendingFailureMetadata(failure) {
+function isRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function pendingFailureMetadata(failure: ProviderFailure): JsonRecord {
   return {
     zeroshot_pending_failure: {
       provider: failure.provider,
@@ -32,14 +43,14 @@ function pendingFailureMetadata(failure) {
   };
 }
 
-function numericFields(fields, source) {
+function numericFields(fields: readonly string[], source: JsonRecord): Record<string, number> {
   return Object.fromEntries(
     fields.map((field) => [field, typeof source[field] === 'number' ? source[field] : 0])
   );
 }
 
-function redactedUsage(usage) {
-  const value = usage && typeof usage === 'object' && !Array.isArray(usage) ? usage : {};
+function redactedUsage(usage: unknown): JsonRecord {
+  const value = isRecord(usage) ? usage : {};
   return {
     ...numericFields(PI_REQUIRED_TOKEN_FIELDS, value),
     ...(typeof value.cacheWrite1h === 'number' ? { cacheWrite1h: value.cacheWrite1h } : {}),
@@ -48,21 +59,21 @@ function redactedUsage(usage) {
   };
 }
 
-function isRecord(value) {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function hasNumericFields(value, fields) {
+function hasNumericFields(value: unknown, fields: readonly string[]): value is JsonRecord {
   return isRecord(value) && fields.every((field) => typeof value[field] === 'number');
 }
 
-function addNumericFields(target, source, fields) {
+function addNumericFields(
+  target: Record<string, number>,
+  source: JsonRecord,
+  fields: readonly string[]
+): void {
   for (const field of fields) {
     if (typeof source[field] === 'number') target[field] = (target[field] || 0) + source[field];
   }
 }
 
-function rememberTokenUsage(state, usage) {
+function rememberTokenUsage(state: PiLifecycleState, usage: unknown): boolean {
   if (!hasNumericFields(usage, PI_REQUIRED_TOKEN_FIELDS)) return false;
   if (!hasNumericFields(usage.cost, PI_COST_FIELDS)) return false;
   if (
@@ -78,7 +89,7 @@ function rememberTokenUsage(state, usage) {
   return true;
 }
 
-function getPiTokenUsage(state) {
+function getPiTokenUsage(state: PiLifecycleState | null | undefined): PiTokenUsage | null {
   if (!state?.piUsage) return null;
   const { tokens, cost } = state.piUsage;
   return {
@@ -92,11 +103,28 @@ function getPiTokenUsage(state) {
   };
 }
 
-function isValidAssistantMessage(message) {
-  return Array.isArray(message?.content) && PI_STOP_REASONS.has(message.stopReason);
+function hasValidMessageUsage(
+  state: PiLifecycleState,
+  role: string,
+  message: JsonRecord
+): boolean {
+  const hasCountedUsage = role === 'assistant' || message.usage !== undefined;
+  return (
+    !(['assistant', 'toolResult'].includes(role) && hasCountedUsage) ||
+    rememberTokenUsage(state, message.usage)
+  );
 }
 
-function redactPendingFailure(failure, parsed) {
+function isValidAssistantMessage(message: unknown): boolean {
+  return (
+    isRecord(message) &&
+    Array.isArray(message.content) &&
+    typeof message.stopReason === 'string' &&
+    PI_STOP_REASONS.has(message.stopReason)
+  );
+}
+
+function redactPendingFailure(failure: ProviderFailure, parsed: JsonRecord): string {
   const pending = pendingFailureMetadata(failure);
   if (parsed.type === 'agent_end') {
     return JSON.stringify({
@@ -113,18 +141,21 @@ function redactPendingFailure(failure, parsed) {
     return JSON.stringify({
       type: parsed.type,
       ...numericFields(
-        ['attempt', 'maxAttempts', 'delayMs'].filter((field) => typeof parsed[field] === 'number'),
+        ['attempt', 'maxAttempts', 'delayMs'].filter(
+          (field) => typeof parsed[field] === 'number'
+        ),
         parsed
       ),
       ...pending,
     });
   }
+  const message = isRecord(parsed.message) ? parsed.message : {};
   return JSON.stringify({
     type: parsed.type,
     message: {
       role: 'assistant',
       content: [],
-      usage: redactedUsage(parsed.message?.usage),
+      usage: redactedUsage(message.usage),
       stopReason: 'error',
       errorMessage: 'Pi provider turn failed; awaiting agent settlement.',
     },
@@ -133,14 +164,15 @@ function redactPendingFailure(failure, parsed) {
   });
 }
 
-function finalFailureEnvelope(failure) {
-  return JSON.stringify({
-    type: 'agent_settled',
-    ...providerFailureFields(failure),
-  });
+function finalFailureEnvelope(failure: ProviderFailure): string {
+  return JSON.stringify({ type: 'agent_settled', ...providerFailureFields(failure) });
 }
 
-function rememberProtocolFailure(state, content, extractProviderFailure) {
+function rememberProtocolFailure(
+  state: PiLifecycleState,
+  content: string,
+  extractProviderFailure: ExtractProviderFailure
+): ProviderFailure | null {
   const failure = extractProviderFailure(content, 'pi');
   if (failure) {
     state.piProtocolFailure = failure;
@@ -149,24 +181,29 @@ function rememberProtocolFailure(state, content, extractProviderFailure) {
   return failure;
 }
 
-function failProtocolLine(state, content, extractProviderFailure) {
+function failProtocolLine(
+  state: PiLifecycleState,
+  content: string,
+  extractProviderFailure: ExtractProviderFailure
+): string {
   const failure = rememberProtocolFailure(state, content, extractProviderFailure);
   return failure ? finalFailureEnvelope(failure) : content;
 }
 
-function handleMessageEnd(state, content, parsed, extractProviderFailure) {
-  const role = parsed.message?.role;
+function handleMessageEnd(
+  state: PiLifecycleState,
+  content: string,
+  parsed: JsonRecord,
+  extractProviderFailure: ExtractProviderFailure
+): string {
+  const message = isRecord(parsed.message) ? parsed.message : null;
+  const role = message?.role;
   if (typeof role !== 'string') return failProtocolLine(state, content, extractProviderFailure);
-  const hasCountedUsage = role === 'assistant' || parsed.message?.usage !== undefined;
-  if (
-    ['assistant', 'toolResult'].includes(role) &&
-    hasCountedUsage &&
-    !rememberTokenUsage(state, parsed.message?.usage)
-  ) {
+  if (!hasValidMessageUsage(state, role, message ?? {})) {
     return failProtocolLine(state, 'invalid Pi usage', extractProviderFailure);
   }
   if (role !== 'assistant') return content;
-  if (!isValidAssistantMessage(parsed.message)) {
+  if (!isValidAssistantMessage(message)) {
     return failProtocolLine(state, content, extractProviderFailure);
   }
   const failure = extractProviderFailure(
@@ -180,21 +217,25 @@ function handleMessageEnd(state, content, parsed, extractProviderFailure) {
   return content;
 }
 
-function usageForEvent(parsed) {
-  if (parsed.type === 'compaction_end' && parsed.result?.usage !== undefined) {
-    return parsed.result.usage;
-  }
+function usageForEvent(parsed: JsonRecord): unknown {
+  const result = isRecord(parsed.result) ? parsed.result : null;
+  if (parsed.type === 'compaction_end' && result?.usage !== undefined) return result.usage;
+  const entry = isRecord(parsed.entry) ? parsed.entry : null;
   if (
     parsed.type === 'entry_appended' &&
-    parsed.entry?.type === 'branch_summary' &&
-    parsed.entry.usage !== undefined
+    entry?.type === 'branch_summary' &&
+    entry.usage !== undefined
   ) {
-    return parsed.entry.usage;
+    return entry.usage;
   }
   return undefined;
 }
 
-function handleSettlement(state, content, extractProviderFailure) {
+function handleSettlement(
+  state: PiLifecycleState,
+  content: string,
+  extractProviderFailure: ExtractProviderFailure
+): string {
   state.piProtocolSettled = true;
   const missingAssistantFailure = state.piLatestAssistantObserved
     ? null
@@ -205,7 +246,34 @@ function handleSettlement(state, content, extractProviderFailure) {
   return failure ? finalFailureEnvelope(failure) : content;
 }
 
-function redactPiFailureForControlPlane(state, content, extractProviderFailure) {
+function handleProtocolEvent(
+  state: PiLifecycleState,
+  content: string,
+  parsed: JsonRecord,
+  extractProviderFailure: ExtractProviderFailure
+): string {
+  const eventType = parsed.type;
+  if (typeof eventType !== 'string') return content;
+  if (eventType === 'message_end') {
+    return handleMessageEnd(state, content, parsed, extractProviderFailure);
+  }
+  const usage = usageForEvent(parsed);
+  if (usage !== undefined && !rememberTokenUsage(state, usage)) {
+    return failProtocolLine(state, 'invalid Pi usage', extractProviderFailure);
+  }
+  if (state.pendingPiFailure && PI_PENDING_EVENT_TYPES.has(eventType)) {
+    return redactPendingFailure(state.pendingPiFailure, parsed);
+  }
+  return eventType === 'agent_settled'
+    ? handleSettlement(state, content, extractProviderFailure)
+    : content;
+}
+
+function redactPiFailureForControlPlane(
+  state: PiLifecycleState,
+  content: string,
+  extractProviderFailure: ExtractProviderFailure
+): string {
   if (content.startsWith(ZEROSHOT_RETAINED_RECORD_PREFIX)) {
     state.piProtocolPrefixOmitted = true;
     return content;
@@ -223,20 +291,7 @@ function redactPiFailureForControlPlane(state, content, extractProviderFailure) 
     );
   }
   state.piProtocolObserved = true;
-
-  if (parsed.type === 'message_end') {
-    return handleMessageEnd(state, content, parsed, extractProviderFailure);
-  }
-  const usage = usageForEvent(parsed);
-  if (usage !== undefined && !rememberTokenUsage(state, usage)) {
-    return failProtocolLine(state, 'invalid Pi usage', extractProviderFailure);
-  }
-  if (state.pendingPiFailure && PI_PENDING_EVENT_TYPES.has(parsed.type)) {
-    return redactPendingFailure(state.pendingPiFailure, parsed);
-  }
-  return parsed.type === 'agent_settled'
-    ? handleSettlement(state, content, extractProviderFailure)
-    : content;
+  return handleProtocolEvent(state, content, parsed, extractProviderFailure);
 }
 
-module.exports = { getPiTokenUsage, redactPiFailureForControlPlane };
+export = { getPiTokenUsage, redactPiFailureForControlPlane };
