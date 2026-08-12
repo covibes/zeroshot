@@ -1,10 +1,3 @@
-/**
- * Human-readable name generator (like Weights & Biases)
- * Generates names like "wandering-forest-42" or "bright-star-17"
- *
- * No prefix - short forms used everywhere for simplicity
- */
-
 const ADJECTIVES = [
   // Colors
   'amber',
@@ -99,7 +92,7 @@ const ADJECTIVES = [
   'falling',
   'spinning',
   'dancing',
-];
+] as const;
 
 const NOUNS = [
   // Nature
@@ -204,29 +197,35 @@ const NOUNS = [
   'drift',
   'shift',
   'core',
-];
+] as const;
 
-// 96 adjectives × 96 nouns × 100 numbers = 921,600 combinations
+interface NameRandomSource {
+  (): number;
+}
 
-/**
- * Generate a human-readable name
- * @param {string} _prefix - DEPRECATED: Ignored for backwards compat, short form always used
- * @returns {string} Human-readable name (e.g., 'wandering-forest-42')
- */
-function generateName(_prefix = '') {
-  const adjective = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  const number = Math.floor(Math.random() * 100);
+function isNameRandomSource(value: unknown): value is NameRandomSource {
+  return typeof value === 'function';
+}
+
+function nextNameRandomValue(): number {
+  const randomSource: unknown = Reflect.get(Math, 'random');
+  if (!isNameRandomSource(randomSource)) {
+    throw new TypeError('Math.random must be a function');
+  }
+  return randomSource.call(Math);
+}
+
+function generateReadableName(adjectiveFallback?: string, nounFallback?: string): string {
+  const adjective =
+    ADJECTIVES[Math.floor(nextNameRandomValue() * ADJECTIVES.length)] ?? adjectiveFallback;
+  const noun = NOUNS[Math.floor(nextNameRandomValue() * NOUNS.length)] ?? nounFallback;
+  const number = Math.floor(nextNameRandomValue() * 100);
 
   return `${adjective}-${noun}-${number}`;
 }
 
-/**
- * Generate a short unique suffix (for collision prevention)
- * @returns {string} Short random suffix (e.g., 'a3f9')
- */
-function generateSuffix() {
-  return Math.random().toString(36).slice(2, 6);
+function generateNameSuffix(): string {
+  return nextNameRandomValue().toString(36).slice(2, 6);
 }
 
-module.exports = { generateName, generateSuffix };
+export = { generateReadableName, generateNameSuffix };
