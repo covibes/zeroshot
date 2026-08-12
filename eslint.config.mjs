@@ -438,6 +438,8 @@ export default [
       'src/agent/output-extraction-failures.js',
       'src/agent/agent-trigger-evaluator.js',
       'src/agent/agent-context-sections.js',
+      'src/agent/agent-context-builder.js',
+      'src/agent/agent-context-packs.js',
       'src/agent/agent-context-types.js',
       'src/agent/agent-context-environment-sections.js',
       'src/agent/agent-context-prompt-sections.js',

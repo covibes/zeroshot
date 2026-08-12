@@ -2,7 +2,7 @@ import type { AgentContextConfig, JsonSchema, LegacyOutputFormat } from './agent
 
 interface InstructionsSectionParams {
   config: AgentContextConfig;
-  selectedPrompt?: string | null;
+  selectedPrompt?: string | null | undefined;
   id: string;
 }
 

@@ -15,14 +15,36 @@ export interface PromptObject {
   readonly outputFormat?: LegacyOutputFormat | null;
 }
 
+export interface ContextSource {
+  topic: string;
+  sender?: unknown;
+  since?: unknown;
+  amount?: number;
+  limit?: number;
+  strategy?: string;
+  compactAmount?: number;
+  compactStrategy?: string;
+  priority?: string;
+}
+
+export interface ContextStrategy {
+  maxTokens?: number;
+  sources?: ContextSource[];
+  readonly [key: string]: unknown;
+}
+
 export interface AgentContextConfig {
   readonly prompt?: string | PromptObject | null;
+  readonly promptConfig?: {
+    readonly type?: string | null;
+  } | null;
   readonly cwd?: string | null;
   readonly jsonSchema?: JsonSchema | null;
   readonly outputFormat?: string | null;
   readonly role?: string;
   readonly requiredQualityGates?: unknown;
   readonly commandProofs?: unknown;
+  readonly contextStrategy?: ContextStrategy | null;
 }
 
 export interface WorktreeContext {
@@ -86,4 +108,25 @@ export interface TriggeringMessage {
   content?: {
     text?: string | null;
   } | null;
+}
+
+export interface BuildContextParams {
+  id: string;
+  role: string;
+  iteration: number;
+  config: AgentContextConfig;
+  messageBus: ContextMessageBus;
+  cluster: ContextCluster;
+  triggeringMessage: TriggeringMessage;
+  lastTaskEndTime?: number | null | undefined;
+  lastAgentStartTime?: number | null | undefined;
+  selectedPrompt?: string | null | undefined;
+  queuedGuidance?: string | null | undefined;
+  worktree?: WorktreeContext | null | undefined;
+  isolation?: IsolationContext | null | undefined;
+  mode?: string | undefined;
+  continuationSequence?: unknown;
+  contextThroughId?: unknown;
+  previousPromptIdentity?: unknown;
+  currentPromptIdentity?: unknown;
 }

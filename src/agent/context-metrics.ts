@@ -9,10 +9,9 @@ type SectionMetrics = Record<string, SectionMetric>;
 
 interface ContextPackMetric {
   id?: string;
-  section?: string;
+  section?: string | null;
   status?: string;
   chars?: unknown;
-  [key: string]: unknown;
 }
 
 interface ContextStrategy {
@@ -27,7 +26,7 @@ interface TriggeringMessage {
 }
 
 interface ContextBudgetInput {
-  maxTokens?: number;
+  maxTokens?: number | undefined;
   remainingTokens?: number | null;
   overBudgetTokens?: number;
   finalTokens?: number;

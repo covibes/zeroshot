@@ -21,7 +21,7 @@ interface ValidatorSkipParams {
   role: string;
   messageBus: ContextMessageBus;
   cluster: ContextCluster;
-  isolation?: IsolationContext | null;
+  isolation?: IsolationContext | null | undefined;
 }
 
 const { isPlatformMismatchReason } = validationPlatform;
