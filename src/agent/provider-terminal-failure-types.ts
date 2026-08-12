@@ -15,16 +15,6 @@ export interface ProvidersBoundary {
   getProvider(name: string): RuntimeProviderBoundary;
 }
 
-export interface CliFailure {
-  error: string;
-  provider: string;
-  diagnostic: unknown;
-}
-
-export interface OutputExtractionBoundary {
-  extractCliFailure(output: string, providerName: string): CliFailure | null;
-}
-
 export interface FailureMetadata {
   provider?: string | null;
   providerEvent?: string | null;

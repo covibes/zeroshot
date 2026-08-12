@@ -2,9 +2,9 @@ import criticalAgentPolicy = require('./critical-agent-policy');
 import piTerminalLifecycle = require('./pi-terminal-lifecycle');
 import providerControlPlane = require('./provider-control-plane');
 import type { PiLifecycleState, ProviderFailure } from './pi-terminal-lifecycle-types';
+import type { FailureOutputExtractionBoundary as OutputExtractionBoundary } from './output-extraction-types';
 import type {
   FailureMetadata,
-  OutputExtractionBoundary,
   ProviderClassification,
   ProvidersBoundary,
   TerminalFailureArguments,

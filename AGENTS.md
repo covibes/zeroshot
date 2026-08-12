@@ -51,6 +51,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Pi watcher lifecycle                  | `src/agent/pi-terminal-lifecycle.ts`                                                                                             |
 | Provider terminal failure             | `src/agent/provider-terminal-failure.ts`                                                                                         |
 | Structured-output recovery            | `src/agent/output-reformatter.ts`                                                                                                |
+| Provider output extraction            | `src/agent/output-extraction.ts`                                                                                                 |
 | Gateway runner                        | `src/agent-cli-provider/gateway-runner.ts`                                                                                       |
 | Gateway tools/policy                  | `src/agent-cli-provider/gateway-tools.ts`                                                                                        |
 | OMP release/version pinning           | `src/agent-cli-provider/omp-release.ts`                                                                                          |

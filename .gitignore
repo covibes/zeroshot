@@ -195,6 +195,12 @@ src/agent/provider-terminal-failure-types.js
 src/agent/output-reformatter.js
 src/agent/output-reformatter-types.js
 src/agent/output-reformatter-errors.js
+src/agent/output-extraction.js
+src/agent/output-extraction-types.js
+src/agent/output-extraction-json.js
+src/agent/output-extraction-error-detail.js
+src/agent/output-extraction-pi.js
+src/agent/output-extraction-failures.js
 src/agent/critical-agent-policy.js
 src/agent/provider-control-plane.js
 src/agent/structured-output-error.js

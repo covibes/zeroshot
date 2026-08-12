@@ -12,16 +12,6 @@ export interface SchemaUtilsBoundary {
   normalizeEnumValues(result: unknown, schema: unknown): unknown;
 }
 
-export interface CliError {
-  error: string;
-  provider: string;
-}
-
-export interface OutputExtractionBoundary {
-  extractCliError(output: string, providerName: string): CliError | null;
-  extractJsonFromOutput(output: string, providerName: string): unknown | null;
-}
-
 export interface RecoveryError extends Error {
   code?: unknown;
   permanent?: unknown;

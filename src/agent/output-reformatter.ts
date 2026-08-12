@@ -1,8 +1,8 @@
 import Ajv from 'ajv';
 import outputReformatterErrors = require('./output-reformatter-errors');
 import type { ErrorObject, Schema } from 'ajv';
+import type { StructuredOutputExtractionBoundary as OutputExtractionBoundary } from './output-extraction-types';
 import type {
-  OutputExtractionBoundary,
   RecoveryAttemptArguments,
   RecoveryAttemptOutcome,
   RecoveryError,
