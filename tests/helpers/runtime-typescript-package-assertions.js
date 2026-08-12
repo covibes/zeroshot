@@ -5,6 +5,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'cli/message-formatters-watch.js',
   'src/claude-credentials.js',
   'src/config-router.js',
+  'src/quality-gates.js',
   'src/copy-worker.js',
   'src/darwin-keychain-boundary.js',
   'src/guidance-topics.js',
