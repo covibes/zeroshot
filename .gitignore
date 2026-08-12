@@ -185,6 +185,10 @@ src/agent/agent-liveness-poll.js
 src/agent/context-replay-policy.js
 src/agent/agent-context-sources.js
 src/agent/agent-context-sections.js
+src/agent/agent-context-types.js
+src/agent/agent-context-environment-sections.js
+src/agent/agent-context-prompt-sections.js
+src/agent/agent-context-validation-sections.js
 src/agent/context-pack-builder.js
 src/agent/context-pack-core.js
 src/agent/context-pack-selection.js
