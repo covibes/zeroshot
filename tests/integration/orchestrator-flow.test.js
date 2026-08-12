@@ -1117,10 +1117,10 @@ function defineClusterOperationsFailureTests() {
      * Test for the bug where CLUSTER_OPERATIONS failure didn't stop the cluster.
      *
      * Root cause (fixed): When CLUSTER_OPERATIONS failed (e.g., agent model > maxModel),
-     * the .catch() handler published CLUSTER_OPERATIONS_FAILED but never called stop().
-     * The cluster remained running with no working agents.
+     * the .catch() handler published a nonterminal CLUSTER_OPERATIONS_FAILED event and
+     * stopped directly, leaving foreground result writers without a terminal event.
      *
-     * Fix: Added this.stop(clusterId) in the catch handler after publishing the failure message.
+     * Fix: Publish one CLUSTER_FAILED event and let the terminal subscription stop the cluster.
      */
     it('should stop cluster when CLUSTER_OPERATIONS fails due to model validation', async function () {
       await runClusterOperationsModelFailureTest();
@@ -1204,6 +1204,11 @@ async function runClusterOperationsModelFailureTest() {
       failedMessages[0].content.text.includes('Operation chain failed'),
       'Failure message: should indicate operation failure'
     );
+    assert.strictEqual(
+      cluster.messageBus.query({ cluster_id: clusterId, topic: 'CLUSTER_FAILED' }).length,
+      1,
+      'CLUSTER_FAILED: should contain exactly one terminal event'
+    );
 
     // Verify the cluster state is stopped (not running)
     const finalStatus = orchestrator.getStatus(clusterId);
@@ -1268,6 +1273,12 @@ async function runClusterOperationsValidationFailureTest() {
 
   // Wait for cluster to stop
   await waitForClusterState(orchestrator, clusterId, 'stopped', 10000);
+
+  assert.strictEqual(
+    cluster.messageBus.query({ cluster_id: clusterId, topic: 'CLUSTER_FAILED' }).length,
+    1,
+    'CLUSTER_FAILED: should contain exactly one terminal event'
+  );
 
   // Verify the cluster stopped due to the operation failure
   const finalStatus = orchestrator.getStatus(clusterId);
