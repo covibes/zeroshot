@@ -60,6 +60,15 @@ test('Claude catalog accepts current canonical ids, aliases, and limited-access 
   }
 });
 
+test('OMP accepts stable model aliases emitted by its catalog', () => {
+  const adapter = helper.getProviderAdapter('omp');
+  const alias = 'openrouter/~anthropic/claude-sonnet-latest';
+
+  assert.equal(adapter.validateModelId(alias), alias);
+  assert.throws(() => adapter.validateModelId('openrouter/foo~bar'), /Invalid model/);
+  assert.throws(() => adapter.validateModelId(`openrouter/~${'x'.repeat(119)}`), /Invalid model/);
+});
+
 test('Codex sends Bedrock-namespaced GPT-5.6 models through its command path', () => {
   for (const [model] of BEDROCK_NAMESPACED_CODEX_MODELS) {
     const spec = helper.buildProviderCommand('codex', 'test context', {

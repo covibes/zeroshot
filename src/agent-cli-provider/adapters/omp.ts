@@ -73,7 +73,8 @@ const LEVEL_MAPPING: Readonly<Record<ModelLevel, LevelModelSpec>> = {
 const CREDENTIAL_ENV_KEYS = OMP_CREDENTIAL_ENV_KEYS;
 
 const VERSION_TOKEN_PATTERN = /(?<![\w.])17\.2\.1(?![\w.])/;
-const MODEL_ID_PATTERN = /^@?[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
+const MODEL_ID_PATTERN =
+  /^(?=.{1,128}$)(?:@?[A-Za-z0-9][A-Za-z0-9._:/-]*|[a-z0-9][a-z0-9._-]*\/~[A-Za-z0-9][A-Za-z0-9._:/-]*)$/u;
 
 function detectCliFeatures(helpText?: string | null, versionText?: string | null): OmpCliFeatures {
   const help = helpText ?? '';

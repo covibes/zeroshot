@@ -97,6 +97,10 @@ try {
   vm.runInNewContext(markdownLineCode, sandbox);
   extractedFunctions.formatMarkdownLine = sandbox.formatMarkdownLine;
 
+  const toolResultCode = extractFunction(cliCode, 'formatToolResult');
+  vm.runInNewContext(toolResultCode, sandbox);
+  extractedFunctions.formatToolResult = sandbox.formatToolResult;
+
   // Extract other functions
   for (const funcName of functionsToExtract.slice(2)) {
     const funcCode = extractFunction(cliCode, funcName);
@@ -315,6 +319,24 @@ describe('CLI Rendering (Pre-Refactor Baseline - Tools)', () => {
       assert(typeof result === 'string');
       // Should be truncated (likely < 1000 chars)
       assert(result.length < longContent.length || result.length <= 500);
+    });
+
+    it('should format structured tool results', function () {
+      if (!formatToolResult) return this.skip();
+
+      const result = formatToolResult({ path: 'src/webhooks.js', lines: 42 }, false, 'Read', {});
+
+      assert(typeof result === 'string');
+      assert(result.includes('src/webhooks.js'));
+    });
+
+    it('should format structured error results', function () {
+      if (!formatToolResult) return this.skip();
+
+      const result = formatToolResult([{ text: 'permission denied' }], true, 'Read', {});
+
+      assert(typeof result === 'string');
+      assert(result.includes('permission denied'));
     });
   });
 });

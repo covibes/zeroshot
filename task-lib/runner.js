@@ -1,5 +1,5 @@
-import { fork } from 'child_process';
-import { join, dirname, resolve as resolvePath } from 'path';
+import { execFileSync, fork } from 'child_process';
+import { isAbsolute, join, dirname, relative, resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 import { LOGS_DIR } from './config.js';
@@ -401,8 +401,22 @@ function resolveOutputFormat(options) {
 }
 
 function resolveJsonSchema(options, outputFormat) {
-  let jsonSchema = options.jsonSchema || null;
-  if (jsonSchema && outputFormat !== 'json') {
+  let jsonSchema = options.jsonSchema ?? null;
+  if (typeof jsonSchema === 'string') {
+    try {
+      jsonSchema = JSON.parse(jsonSchema);
+    } catch (error) {
+      throw new Error(`--json-schema must be valid JSON: ${error.message}`);
+    }
+  }
+  if (
+    jsonSchema !== null &&
+    typeof jsonSchema !== 'boolean' &&
+    (typeof jsonSchema !== 'object' || Array.isArray(jsonSchema))
+  ) {
+    throw new Error('--json-schema must be a boolean or JSON Schema object.');
+  }
+  if (jsonSchema !== null && outputFormat !== 'json') {
     console.warn('Warning: --json-schema requires --output-format json, ignoring schema');
     jsonSchema = null;
   }
@@ -411,11 +425,13 @@ function resolveJsonSchema(options, outputFormat) {
 
 function buildProviderOptions(options, runtime, modelSelection) {
   const structuredOutputRecovery = options.structuredOutputRecovery === true;
+  const executionContext = resolveTaskExecutionContext();
   return {
     outputFormat: runtime.outputFormat,
     jsonSchema: runtime.jsonSchema,
     cwd: runtime.cwd,
-    executionContext: resolveTaskExecutionContext(),
+    ...codexGitMetadataOption(options, runtime.cwd, executionContext),
+    executionContext,
     autoApprove: !structuredOutputRecovery,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
@@ -428,6 +444,37 @@ function buildProviderOptions(options, runtime, modelSelection) {
     ...(!structuredOutputRecovery && options.continue ? { continueSession: true } : {}),
     ...(structuredOutputRecovery ? { structuredOutputRecovery: true } : {}),
   };
+}
+
+function codexGitMetadataOption(options, cwd, executionContext) {
+  const settings = loadSettings();
+  const providerName = normalizeProviderName(
+    options.provider || settings.defaultProvider || getDefaultProviderId()
+  );
+  if (providerName !== 'codex') return {};
+  if (executionContext === 'docker' || executionContext === 'benchmark') return {};
+  const directories = resolveCodexGitMetadataDirectories(cwd);
+  return directories.length === 0 ? {} : { additionalWritableDirectories: directories };
+}
+
+export function resolveCodexGitMetadataDirectories(cwd, runGit = execFileSync) {
+  try {
+    const raw = runGit('git', ['rev-parse', '--git-common-dir'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const commonDirectory = resolvePath(cwd, raw.trim());
+    const fromWorkspace = relative(resolvePath(cwd), commonDirectory);
+    const outsideWorkspace =
+      isAbsolute(fromWorkspace) ||
+      fromWorkspace === '..' ||
+      fromWorkspace.startsWith('../') ||
+      fromWorkspace.startsWith('..\\');
+    return outsideWorkspace ? [commonDirectory] : [];
+  } catch {
+    return [];
+  }
 }
 
 export function resolveTaskExecutionContext(environment = process.env) {

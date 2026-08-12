@@ -777,7 +777,9 @@ before a task row exists. The watcher then compares the **complete** committed t
 id, full session file path (never a basename), partition and session-file inode identity, artifact
 manifest digest, and an `executionFingerprint` (`src/omp-execution-fingerprint.ts`, with generated CommonJS at the matching `.js` path) binding the
 pinned OMP release, the config-overlay content digest, the requested `--model`/`--thinking`/
-`--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. That
+`--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. OMP
+catalog aliases such as `openrouter/~anthropic/claude-sonnet-latest` are valid exact selectors;
+the `~` prefix is accepted only at the start of the model portion. That
 fingerprint has exactly one implementation, `src/omp-execution-fingerprint.ts`; do not add a second
 digest helper beside the ownership schema, where only its own unit test would exercise it and it
 could silently drift from the contract production uses. Every failed, cancelled, or uncertain
@@ -912,6 +914,28 @@ isolated followers retain a bounded complete-record tail for parsing and diagnos
 terminal settlement. Isolated settlement re-reads only a fixed-size file tail; the raw task log is
 the sole complete-output authority. Never restore whole-record watcher buffering, cumulative output
 strings, whole-log terminal reads, or unbounded provider records/events in control-plane state.
+Normal host/detached Codex tasks stay in `workspace-write`. When `cwd` is a linked Git worktree,
+task preparation may set `additionalWritableDirectories` to the one resolved external Git common
+directory and the adapter maps it to deduplicated `--add-dir` arguments only when Codex advertises
+that flag. Host/detached runs enable Codex's explicit workspace-write network capability so normal
+API, dependency, and Git journeys work without widening filesystem access. GitHub delivery rewrites
+GitHub SSH remotes to HTTPS for the push command and delegates credentials to `gh auth
+git-credential`; never embed a token in the prompt or remote. Hosted capsules declare the `docker`
+execution context and benchmark containers declare
+`benchmark`; both use `danger-full-access` because the container is the security boundary, and they
+must not receive redundant host Git-directory grants. Do not enable `danger-full-access` for host or
+detached execution, do not add unrelated cache or socket paths, and never carry either permission
+into read-only structured-output recovery.
+Successful `--pr`/`--ship` auto-cleanup may close and remove the live cluster before a foreground
+caller emits its result. The orchestrator must retain a bounded in-process final-run handoff
+(settled status, ledger snapshot, and terminal messages) until `close()`; foreground reporting must
+consume that handoff rather than reopening or querying the closed ledger.
+Claude gateway authentication may use `ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_BASE_URL` and an
+explicitly empty `ANTHROPIC_API_KEY`; keep the token, endpoint, and Claude role-model selectors in
+the provider's declared isolation passthrough rather than persisting gateway secrets in settings.
+When both gateway token and endpoint are explicit, the Zeroshot-owned per-run `--settings` safety
+overlay must set the Bedrock, Vertex, and Foundry backend selectors to `0`; this overrides stale
+ambient user backend choices while preserving the user's other settings and repository context.
 Provider terminal failures are parsed from the newest typed terminal event before generic status
 text. Raw provider diagnostics remain task-log-only; `AGENT_OUTPUT`, `failureInfo`, `AGENT_ERROR`,
 and `CLUSTER_FAILED` retain only a synthesized error plus provider/event/category/retryability and

@@ -73,6 +73,7 @@ function detectCliFeatures(
     supportsIgnoreUserConfig: !unknown && /--ignore-user-config\b/.test(help),
     supportsIgnoreRules: !unknown && /--ignore-rules\b/.test(help),
     supportsStrictConfig: !unknown && /--strict-config\b/.test(help),
+    supportsAddDir: !unknown && /--add-dir\b/.test(help),
     unknown,
   };
 }
@@ -119,6 +120,14 @@ function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions
         ? 'danger-full-access'
         : 'workspace-write';
     args.push('--sandbox', sandboxMode, '--config', 'approval_policy="never"');
+    if (sandboxMode === 'workspace-write') {
+      args.push('--config', 'sandbox_workspace_write.network_access=true');
+    }
+    if (features.supportsAddDir) {
+      for (const directory of new Set(options.additionalWritableDirectories ?? [])) {
+        args.push('--add-dir', directory);
+      }
+    }
   }
 }
 
@@ -172,6 +181,19 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
         'codex',
         'codex-auto-approve',
         'Codex CLI does not support unattended workspace-write mode; continuing without it.'
+      )
+    );
+  }
+  if (
+    options.autoApprove &&
+    (options.additionalWritableDirectories?.length ?? 0) > 0 &&
+    features.supportsAddDir === false
+  ) {
+    warnings.push(
+      warning(
+        'codex',
+        'codex-add-dir',
+        'Codex CLI does not support --add-dir; Git worktree metadata outside cwd may be read-only.'
       )
     );
   }

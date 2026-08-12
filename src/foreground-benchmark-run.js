@@ -4,6 +4,7 @@ const { writeBenchmarkResultBundle } = require('./foreground-benchmark-files');
 const TERMINAL_TOPICS = ['CLUSTER_COMPLETE', 'CLUSTER_FAILED'];
 const VERIFIER_ELIGIBLE = new Set(['completed', 'task_failure']);
 const EXIT_CODES = Object.freeze({
+  task_failure: 23,
   provider_failure: 20,
   engine_failure: 21,
   cancelled: 22,
@@ -40,20 +41,24 @@ function requireSettledStatus(orchestrator, clusterId) {
   return status;
 }
 
-function writeForegroundResult({ orchestrator, cluster, clusterId, resultPath, cancelled }) {
-  const status = requireSettledStatus(orchestrator, clusterId);
-  const terminals = terminalMessages(cluster, clusterId);
-  let result;
+function buildForegroundResult({ orchestrator, cluster, clusterId, cancelled }) {
+  const finalRun = orchestrator.getFinalRun?.(clusterId);
+  const status = finalRun?.status || requireSettledStatus(orchestrator, clusterId);
+  const terminals = finalRun?.terminalMessages || terminalMessages(cluster, clusterId);
   if (cancelled && terminals.length === 0) {
-    result = buildCancelledResult({ runId: clusterId, agents: status.agents });
-  } else {
-    result = buildBenchmarkResult({
-      runId: clusterId,
-      terminalMessages: terminals,
-      agents: status.agents,
-    });
+    return buildCancelledResult({ runId: clusterId, agents: status.agents });
   }
-  const snapshot = cluster.messageBus.readSnapshot(clusterId);
+  return buildBenchmarkResult({
+    runId: clusterId,
+    terminalMessages: terminals,
+    agents: status.agents,
+  });
+}
+
+function writeForegroundResult({ orchestrator, cluster, clusterId, resultPath, cancelled }) {
+  const result = buildForegroundResult({ orchestrator, cluster, clusterId, cancelled });
+  const snapshot =
+    orchestrator.getFinalRun?.(clusterId)?.snapshot || cluster.messageBus.readSnapshot(clusterId);
   return writeBenchmarkResultBundle(resultPath, result, snapshot);
 }
 
@@ -64,8 +69,15 @@ function exitCodeForResult(result) {
   return exitCode;
 }
 
+function exitCodeForForegroundResult(result) {
+  if (result.outcome === 'completed') return 0;
+  return EXIT_CODES[result.outcome] ?? exitCodeForResult(result);
+}
+
 module.exports = {
+  buildForegroundResult,
   exitCodeForResult,
+  exitCodeForForegroundResult,
   isForegroundStatusSettled,
   terminalMessages,
   writeForegroundResult,

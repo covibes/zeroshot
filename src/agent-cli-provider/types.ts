@@ -131,6 +131,7 @@ export interface CodexCliFeatures extends BaseCliFeatures {
   readonly supportsIgnoreUserConfig: boolean;
   readonly supportsIgnoreRules: boolean;
   readonly supportsStrictConfig: boolean;
+  readonly supportsAddDir: boolean;
 }
 
 export interface GeminiCliFeatures extends BaseCliFeatures {
@@ -447,6 +448,8 @@ export interface BuildProviderCommandOptions {
   readonly outputFormat?: OutputFormat;
   readonly jsonSchema?: unknown;
   readonly cwd?: string;
+  /** Host paths Codex must be able to write in addition to cwd during normal unattended runs. */
+  readonly additionalWritableDirectories?: readonly string[];
   readonly agentName?: string;
   readonly autoApprove?: boolean;
   readonly resumeSessionId?: string;

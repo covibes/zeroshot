@@ -164,6 +164,13 @@ function checkClaudeAuth() {
     ...(method && { method }),
   });
 
+  // Claude Code supports gateway bearer authentication independently of Anthropic API keys.
+  // This is the documented path for OpenRouter and enterprise LLM gateways, where
+  // ANTHROPIC_API_KEY is intentionally present but empty to avoid credential conflicts.
+  if (process.env.ANTHROPIC_AUTH_TOKEN) {
+    return authResult(true, null, 'auth_token');
+  }
+
   // Check for Bedrock bearer token (highest priority)
   if (process.env.AWS_BEARER_TOKEN_BEDROCK) {
     if (!process.env.AWS_REGION) {

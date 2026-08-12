@@ -399,7 +399,10 @@ function streamSessionJsonl(fd, describePath, limits) {
         `${describePath} record ${records} is not valid JSON: ${error.message}`
       );
     }
-    if (header === null) header = parsed;
+    // OMP 17.2.1 may reserve its first JSONL record for mutable title metadata before writing the
+    // authoritative session record. Accept exactly that one known preamble position; every other
+    // ordering still fails closed in parseSessionHeader below.
+    if (header === null && !(records === 1 && parsed?.type === 'title')) header = parsed;
     collectCanonicalBlobRefs(parsed, blobRefs, limits);
   }
 
@@ -430,9 +433,9 @@ function streamSessionJsonl(fd, describePath, limits) {
   };
 }
 
-/** The session's first record is OMP's session header (`{type:"session", version, id, cwd, ...}` —
- * session-manager.ts `#resetToNewSession`). Its `id` is the authoritative session identity written
- * to disk and its `cwd` is the workspace the session belongs to. */
+/** The session header (`{type:"session", version, id, cwd, ...}`) is either the first record or
+ * follows OMP 17.2.1's single leading title-metadata record. Its `id` is the authoritative session
+ * identity written to disk and its `cwd` is the workspace the session belongs to. */
 function parseSessionHeader(header, describePath) {
   if (!header || typeof header !== 'object' || Array.isArray(header)) {
     fail('session-header-missing', `${describePath} has no session header record.`);
@@ -440,7 +443,7 @@ function parseSessionHeader(header, describePath) {
   if (header.type !== 'session') {
     fail(
       'session-header-invalid',
-      `${describePath} first record is type ${JSON.stringify(header.type)}, not "session".`
+      `${describePath} first non-title-preamble record is type ${JSON.stringify(header.type)}, not "session".`
     );
   }
   if (typeof header.id !== 'string' || header.id.length === 0) {
