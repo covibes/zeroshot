@@ -127,6 +127,21 @@ impl<'a> NativeCredentialResolver<'a> {
         Ok(set)
     }
 
+    /// Product-private narrow acquisition for a catalog-declared requirement that does not use
+    /// the general admission manifest composition. Material remains borrowed for the callback
+    /// and the temporary lease is released immediately afterward.
+    pub(crate) fn with_requirement_material<R>(
+        &self,
+        requirement: &CredentialRequirementName,
+        budget: &AcquisitionBudget<'_>,
+        use_material: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, CredentialFault> {
+        self.validate_budget(requirement, budget)?;
+        let lease = self.resolve_one(requirement, budget)?;
+        super::CredentialCapability::from_lease(&lease, self.clock, self.observations)
+            .with_material(use_material)
+    }
+
     fn fault(
         &self,
         kind: CredentialFaultKind,

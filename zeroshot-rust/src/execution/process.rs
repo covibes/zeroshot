@@ -9,6 +9,8 @@ mod session_runtime;
 mod spawn_recovery;
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::atomic::{compiler_fence, Ordering};
 
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -48,6 +50,61 @@ pub struct ProcessCommand {
     pub workspace: WorkspaceCapability,
     pub stdin: ProcessInput,
     pub deadline: Instant,
+}
+
+/// One consumed environment value for a process launch. The value is never cloneable or
+/// included in command debug output and is zeroed when the launch attempt has consumed it.
+pub(crate) struct ProcessSecretEnvironment {
+    name: &'static str,
+    value: Vec<u8>,
+}
+
+impl ProcessSecretEnvironment {
+    pub(crate) fn single(name: &'static str, value: &[u8]) -> Result<Self, ProcessRunnerError> {
+        if name.is_empty()
+            || value.is_empty()
+            || name.as_bytes().contains(&0)
+            || value.contains(&0)
+            || std::str::from_utf8(value).is_err()
+            || name.len().saturating_add(value.len()) > MAX_PROCESS_ENV_BYTES
+        {
+            return Err(ProcessRunnerError::InvalidCommand(
+                "secret process environment is invalid".to_owned(),
+            ));
+        }
+        Ok(Self {
+            name,
+            value: value.to_vec(),
+        })
+    }
+
+    fn apply(&self, command: &mut tokio::process::Command) {
+        let value = std::str::from_utf8(&self.value)
+            .expect("validated secret process environment is UTF-8");
+        command.env(self.name, value);
+    }
+}
+
+impl fmt::Debug for ProcessSecretEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessSecretEnvironment")
+            .field("name", &self.name)
+            .field("value", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Drop for ProcessSecretEnvironment {
+    fn drop(&mut self) {
+        for byte in &mut self.value {
+            // SAFETY: `byte` is a valid mutable pointer into the exclusively owned value.
+            unsafe {
+                std::ptr::write_volatile(byte, 0);
+            }
+        }
+        compiler_fence(Ordering::SeqCst);
+    }
 }
 
 impl ProcessCommand {
@@ -164,8 +221,28 @@ impl LocalProcessRunner {
         command: ProcessCommand,
         cancellation: DriverCancellation,
     ) -> Result<ProcessRunOutput, ProcessRunnerError> {
+        self.run_inner(command, None, cancellation).await
+    }
+
+    pub(crate) async fn run_with_secrets(
+        &self,
+        command: ProcessCommand,
+        secrets: ProcessSecretEnvironment,
+        cancellation: DriverCancellation,
+    ) -> Result<ProcessRunOutput, ProcessRunnerError> {
+        self.run_inner(command, Some(secrets), cancellation).await
+    }
+
+    async fn run_inner(
+        &self,
+        command: ProcessCommand,
+        secrets: Option<ProcessSecretEnvironment>,
+        cancellation: DriverCancellation,
+    ) -> Result<ProcessRunOutput, ProcessRunnerError> {
         command.validate()?;
-        let (process_tree, mut child) = launch_contained_child(&command, self.containment).await?;
+        let launched = launch_contained_child(&command, secrets.as_ref(), self.containment).await;
+        drop(secrets);
+        let (process_tree, mut child) = launched?;
         let mut event_rx = spawn_process_io(&mut child, command.stdin.into_inner());
         let state = drive_run(
             &process_tree,
@@ -295,12 +372,13 @@ fn inspect_process_tree(
 }
 async fn launch_contained_child(
     command: &ProcessCommand,
+    secrets: Option<&ProcessSecretEnvironment>,
     containment: ProcessContainment,
 ) -> Result<(platform::ProcessTreeHandle, tokio::process::Child), ProcessRunnerError> {
     let process_tree_registration = register_process_tree_for(containment).map_err(|_| {
         ProcessRunnerError::Launch("process containment registration failed".to_owned())
     })?;
-    let mut child = build_child_command(
+    let mut child_command = build_child_command(
         ChildCommandSpec {
             program: &command.program,
             argv: &command.argv,
@@ -308,9 +386,13 @@ async fn launch_contained_child(
             workspace: &command.workspace,
         },
         containment,
-    )
-    .spawn()
-    .map_err(|error| ProcessRunnerError::Launch(error.to_string()))?;
+    );
+    if let Some(secrets) = secrets {
+        secrets.apply(&mut child_command);
+    }
+    let mut child = child_command
+        .spawn()
+        .map_err(|error| ProcessRunnerError::Launch(error.to_string()))?;
     match capture_process_tree(process_tree_registration, &mut child) {
         Ok(process_tree) => Ok((process_tree, child)),
         Err(_) => {
@@ -396,3 +478,16 @@ async fn apply_termination(
 }
 
 pub use platform::ProcessCleanupEvidence;
+
+#[cfg(test)]
+mod secret_environment_tests {
+    use super::ProcessSecretEnvironment;
+
+    #[test]
+    fn debug_output_redacts_secret_material() {
+        let secret = ProcessSecretEnvironment::single("TOKEN", b"sensitive-value").unwrap();
+        let debug = format!("{secret:?}");
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("sensitive-value"));
+    }
+}

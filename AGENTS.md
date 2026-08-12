@@ -94,6 +94,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Graph verifier facade                 | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
 | Graph verifier analysis               | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
 | Native product construction           | `zeroshot-rust/`                                                                                                                 |
+| Native foreground agent               | `zeroshot-rust/src/native_execution/agent/`, `zeroshot-rust/src/native_execution/program/foreground.rs`                          |
 | Native admission composition          | `zeroshot-rust/src/native_admission.rs`, `zeroshot-rust/src/main.rs`                                                             |
 | Native release targets                | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                | `npm/zeroshot-rust/`                                                                                                             |
@@ -267,8 +268,15 @@ filesystem store, and must preserve ref-first release plus synchronized blob-the
 The narrow native stdio entrypoint composes one SQLite ledger resource and only
 initialize/plan/apply/get. It advertises no graph profile, renews one process-owned fence while
 serving, and on graceful EOF stops renewal before exact conditional fence release. It may execute
-only the fixed private deterministic checkpoint; it must not acquire provider/general-worker,
-scheduler, daemon-loop, watch, or broader lifecycle authority.
+only the fixed private deterministic checkpoint and the fixed attempts-1 foreground Codex program.
+The latter owns one canonical borrowed workspace, one startup credential snapshot, one private
+Codex process driver, one fixed greeting validator, and one product-local CAS. It must not acquire
+a configurable provider/model/driver surface, general worker registration, scheduler, daemon-loop,
+watch, retry, session reuse, or broader lifecycle authority. Secret material crosses only the
+non-cloneable, redacted final-spawn input after child environment clearing; it never enters generic
+runtime commands, debug output, graph/ledger state, or artifacts.
+Foreground lease stores are cluster-scoped; the workspace directory lock and durable marker own
+cross-cluster exclusion.
 Issue and source registries and identifiers remain independent; neither is a worker/model provider.
 Mutating source calls carry an exclusively borrowed, non-serializable verified-workspace capability;
 their serializable intent and closed operation-specific receipts contain only canonical workspace,
@@ -413,10 +421,13 @@ the reducer.
 Reducer dispatch and terminal appends require opaque authorizations bound to the exact graph/input/
 history digests, decision fields, and ledger position/hash that produced them; only a newly committed
 dispatch receipt authorizes a physical effect. The native production backend additionally permits
-one private exact `seq(step, succeed)` deterministic process proof while advertising no graph
-profile. It validates and settles that process synchronously, exposes the protocol-owned optional
-`GetResult.terminalResult`, refuses an active dispatch on reopen, and runs bounded settled-prefix
-terminal recovery only after fence renewal starts.
+one private exact `seq(step, succeed)` deterministic process proof and one exact foreground Codex
+program whose authored error choice closes declared worker failures. It advertises no graph profile.
+The same coordinator validates and settles both programs synchronously, exposes the protocol-owned
+optional `GetResult.terminalResult`, refuses an active dispatch on reopen, and runs bounded
+settled-prefix terminal recovery only after fence renewal starts. The foreground program publishes
+only trusted-validator output to its cluster-scoped local CAS; terminal reopen revalidates that
+exact `ArtifactRef` and its bytes before service.
 Graph syntax, payload subtyping, compiled IR, diagnostics, and artifact receipt Rust types remain
 authoritative protocol contracts. `ProductionGraphVerifier` is the one reusable production
 semantic verifier for `openengine.graph.full/v1`; it resolves workers through `WorkerRegistry` and

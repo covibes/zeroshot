@@ -85,7 +85,7 @@ pub struct ProfileFile {
 }
 
 /// Validated, cycle-free named-profile set: no duplicate ids, no unknown `extends` targets, and
-/// every inheritance chain within [`MAX_PROFILE_INHERITANCE_DEPTH`].
+/// every inheritance chain within `MAX_PROFILE_INHERITANCE_DEPTH`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProfileRegistry(BTreeMap<ProfileId, Profile>);
 

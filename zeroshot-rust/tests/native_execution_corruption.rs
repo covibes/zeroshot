@@ -18,7 +18,10 @@ async fn assert_startup_fails_without_effect(state: &TempState, cluster: &str) {
     assert!(client.initialize().await.is_err());
     drop(client);
     let diagnostics = process.join_failure().await;
-    assert!(diagnostics.contains("execution state is invalid"));
+    assert!(
+        diagnostics.contains("execution state is invalid"),
+        "unexpected native diagnostics: {diagnostics}"
+    );
     assert_eq!(effect_count(state), 0);
 }
 

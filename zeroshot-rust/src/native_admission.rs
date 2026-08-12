@@ -5,6 +5,8 @@ mod native_execution;
 #[path = "native_worker_protocol.rs"]
 mod native_worker_protocol;
 #[doc(hidden)]
+pub use native_execution::{run_greeting_validator, NATIVE_VALIDATOR_MODE};
+#[doc(hidden)]
 pub use native_worker_protocol::{run_deterministic_worker, WORKER_MODE as NATIVE_WORKER_MODE};
 
 use std::num::NonZeroU64;
@@ -28,14 +30,21 @@ use crate::cluster_ledger::store::sqlite::SqliteLedgerStore;
 use crate::cluster_ledger::store::{LedgerClock, StoreError, SystemLedgerClock};
 use crate::cluster_ledger::{ClusterLedger, LedgerError, LedgerErrorKind, OwnerId, ResourceId};
 use self::native_execution::{
-    is_worker_free_graph, NativeExecutionCoordinator, NativeExecutionError, NativeExecutionProcess,
-    NativeExecutionRegistry, NativeGraphVerifier,
+    is_deterministic_graph, is_worker_free_graph, NativeExecutionCoordinator, NativeExecutionError,
+    NativeExecutionProcess, NativeExecutionRegistry, NativeGraphVerifier,
 };
 use crate::{NativeBackendFactory, ProductionNativeBackendFactory};
 
 pub const NATIVE_FENCE_TTL_MS: u64 = 2_000;
 pub const NATIVE_FENCE_RENEW_INTERVAL_MS: u64 = 500;
 const NATIVE_RUN_TIMEOUT_MS: u64 = 60 * 60 * 1_000;
+
+/// Returns the one graph accepted by the private foreground-agent profile.
+#[doc(hidden)]
+#[must_use]
+pub fn native_foreground_graph() -> GraphSpec {
+    native_execution::foreground_graph()
+}
 
 type NativeAdmissionCoordinator = AdmissionCoordinator<NativeGraphVerifier, ClusterLedgerAdapters>;
 
@@ -176,18 +185,25 @@ async fn validate_predecessor_state(
     let Some(admission) = state.admission.as_ref() else {
         return Ok(true);
     };
-    let (catalog, profile) = NativeExecutionRegistry::predecessor_digests();
-    if admission.catalog_digest != catalog || admission.profile_digest != profile {
-        return Ok(false);
-    }
-    let (graph, compiled, graph_bytes) = reverify_predecessor(admission, verifier).await?;
-    if !is_worker_free_graph(&graph) {
-        return Ok(false);
-    }
-    let Some(verified_input) = state.verified_inputs.get(&admission.run) else {
+    let allows_deterministic = NativeExecutionRegistry::predecessor_digests()
+        .into_iter()
+        .find_map(|(catalog, profile, allows_deterministic)| {
+            (admission.catalog_digest == catalog && admission.profile_digest == profile)
+                .then_some(allows_deterministic)
+        });
+    let Some(allows_deterministic) = allows_deterministic else {
         return Ok(false);
     };
-    Ok([
+    let (graph, compiled, graph_bytes) = reverify_predecessor(admission, verifier)
+        .await
+        .map_err(|_| NativeAdmissionOpenError::Execution)?;
+    if !is_worker_free_graph(&graph) && !(allows_deterministic && is_deterministic_graph(&graph)) {
+        return Err(NativeAdmissionOpenError::Execution);
+    }
+    let Some(verified_input) = state.verified_inputs.get(&admission.run) else {
+        return Err(NativeAdmissionOpenError::Execution);
+    };
+    if [
         compiled == admission.canonical_compiled_ir,
         graph_bytes == admission.canonical_graph,
         CanonicalDigest::of(&graph_bytes) == admission.graph_digest,
@@ -195,7 +211,12 @@ async fn validate_predecessor_state(
         CanonicalDigest::of(&verified_input.canonical_bytes) == admission.input_digest,
     ]
     .into_iter()
-    .all(|matches| matches))
+    .all(|matches| matches)
+    {
+        Ok(true)
+    } else {
+        Err(NativeAdmissionOpenError::Execution)
+    }
 }
 
 async fn reverify_predecessor(
@@ -271,27 +292,48 @@ async fn open_or_create_ledger(
     }
 }
 
+struct NativeOpenConfig<'a> {
+    state_dir: &'a Path,
+    resource: ResourceId,
+    owner: OwnerId,
+    workspace: &'a Path,
+    clock: Arc<dyn LedgerClock>,
+}
+
 impl ProductionNativeBackendFactory {
     pub async fn open(
         state_dir: &Path,
         resource: ResourceId,
         owner: OwnerId,
+        workspace: &Path,
     ) -> Result<Self, NativeAdmissionOpenError> {
         let clock: Arc<dyn LedgerClock> = Arc::new(SystemLedgerClock);
-        Self::open_with_clock(state_dir, resource, owner, clock).await
+        Self::open_with_clock(NativeOpenConfig {
+            state_dir,
+            resource,
+            owner,
+            workspace,
+            clock,
+        })
+        .await
     }
 
     async fn open_with_clock(
-        state_dir: &Path,
-        resource: ResourceId,
-        owner: OwnerId,
-        clock: Arc<dyn LedgerClock>,
+        config: NativeOpenConfig<'_>,
     ) -> Result<Self, NativeAdmissionOpenError> {
+        let NativeOpenConfig {
+            state_dir,
+            resource,
+            owner,
+            workspace,
+            clock,
+        } = config;
         let store = Arc::new(SqliteLedgerStore::with_clock(
             state_dir,
             Arc::clone(&clock),
         )?);
         let store_port: Arc<dyn crate::cluster_ledger::LedgerStore> = store;
+        let native_resource = resource.clone();
         let ledger = open_or_create_ledger(store_port, resource, owner).await?;
 
         let registry = NativeExecutionRegistry::production();
@@ -317,10 +359,16 @@ impl ProductionNativeBackendFactory {
             verifier,
             registry,
             NativeExecutionProcess {
+                resource: native_resource,
                 state_dir: state_dir.to_path_buf(),
+                workspace: workspace.to_path_buf(),
                 executable,
+                path_snapshot: std::env::var_os("PATH"),
+                api_key_snapshot: std::env::var_os("OPENAI_API_KEY")
+                    .and_then(|value| value.into_string().ok()),
             },
-        );
+        )
+        .map_err(|_| NativeAdmissionOpenError::Execution)?;
         execution
             .validate_open_state()
             .await
@@ -372,14 +420,16 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).unwrap();
         let clock = Arc::new(ManualLedgerClock::new(1_000));
         let ledger_clock: Arc<dyn LedgerClock> = clock.clone();
-        let factory = ProductionNativeBackendFactory::open_with_clock(
-            &root,
-            ResourceId::new("expired-plan").unwrap(),
-            OwnerId::new("expired-plan-owner").unwrap(),
-            ledger_clock,
-        )
+        let factory = ProductionNativeBackendFactory::open_with_clock(NativeOpenConfig {
+            state_dir: &root,
+            resource: ResourceId::new("expired-plan").unwrap(),
+            owner: OwnerId::new("expired-plan-owner").unwrap(),
+            workspace: &root,
+            clock: ledger_clock,
+        })
         .await
         .unwrap();
         let backend = factory.create();
