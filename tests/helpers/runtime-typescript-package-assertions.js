@@ -47,6 +47,8 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/agent/agent-stuck-detector.js',
   'src/agent/pi-terminal-lifecycle.js',
   'src/agent/pi-terminal-lifecycle-types.js',
+  'src/agent/provider-terminal-failure.js',
+  'src/agent/provider-terminal-failure-types.js',
   'src/agent/critical-agent-policy.js',
   'src/agent/provider-control-plane.js',
   'src/agent/structured-output-error.js',
