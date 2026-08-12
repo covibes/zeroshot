@@ -397,6 +397,7 @@ export default [
       'lib/stream-json-parser.js',
       'src/claude-credentials.js',
       'src/config-router.js',
+      'src/copy-containment.js',
       'src/copy-worker.js',
       'src/darwin-keychain-boundary.js',
       'src/guidance-topics.js',

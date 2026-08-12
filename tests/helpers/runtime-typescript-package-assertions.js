@@ -8,6 +8,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/quality-gates.js',
   'src/command-proofs.js',
   'src/repo-settings-access.js',
+  'src/copy-containment.js',
   'src/copy-worker.js',
   'src/darwin-keychain-boundary.js',
   'src/guidance-topics.js',

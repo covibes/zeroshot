@@ -6,13 +6,14 @@ Message-passing primitives for multi-agent workflows. **Install:** `npm i -g @th
 
 ## 🔴 CRITICAL RULES
 
-| Rule                               | Why                          | Forbidden                                    | Required                                         |
-| ---------------------------------- | ---------------------------- | -------------------------------------------- | ------------------------------------------------ |
-| **GENERAL PURPOSE ONLY**           | Zeroshot runs on ANY repo    | Hardcoded paths, scripts, languages, domains | Discover from target repo's CLAUDE.md/README     |
-| **Never spawn without permission** | Consumes API credits         | "I'll run zeroshot on 123"                   | User says "run zeroshot"                         |
-| **Never use git in validators**    | Git state unreliable         | `git diff`, `git status` in prompts          | Validate files directly                          |
-| **Never ask questions**            | Agents run non-interactively | `AskUserQuestion`, waiting for confirmation  | Make autonomous decisions                        |
-| **Never edit CLAUDE.md**           | Context file for Claude Code | Editing this file                            | Read-only unless explicitly asked to update docs |
+| Rule                               | Why                               | Forbidden                                    | Required                                                                                 |
+| ---------------------------------- | --------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **GENERAL PURPOSE ONLY**           | Zeroshot runs on ANY repo         | Hardcoded paths, scripts, languages, domains | Discover from target repo's CLAUDE.md/README                                             |
+| **Never spawn without permission** | Consumes API credits              | "I'll run zeroshot on 123"                   | User says "run zeroshot"                                                                 |
+| **Never use git in validators**    | Git state unreliable              | `git diff`, `git status` in prompts          | Validate files directly                                                                  |
+| **Never ask questions**            | Agents run non-interactively      | `AskUserQuestion`, waiting for confirmation  | Make autonomous decisions                                                                |
+| **Never edit CLAUDE.md**           | Context file for Claude Code      | Editing this file                            | Read-only unless explicitly asked to update docs                                         |
+| **Preserve copy containment**      | Copy paths cross trust boundaries | Independent path joins or one-time checks    | Reuse the pinned-root boundary and revalidate immediately before every filesystem effect |
 
 ### 🔴 GENERAL PURPOSE REQUIREMENT (CRITICAL)
 
