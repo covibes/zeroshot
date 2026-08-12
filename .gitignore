@@ -195,4 +195,15 @@ src/template-validation/two-stage-contracts.js
 src/template-validation/two-stage-inputs.js
 src/template-validation/two-stage-results.js
 src/template-validation/simulation-agent-runtime.js
+src/template-validation/random-topology-contracts.js
+src/template-validation/random-topology-schema.js
+src/template-validation/random-topology-runtime.js
+src/template-validation/random-topology-operations.js
+src/template-validation/random-topology-dispatch.js
+src/template-validation/random-topology-trigger-evaluation.js
+src/template-validation/random-topology-trigger.js
+src/template-validation/random-topology-state.js
+src/template-validation/random-topology-message-loop.js
+src/template-validation/random-topology-scenario.js
+src/template-validation/simulate-random-topology.js
 src/template-validation/two-stage-scenario.js

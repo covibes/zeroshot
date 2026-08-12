@@ -4,6 +4,7 @@ interface SimulationLedger {
 
 interface SimulationMessageBus {
   publish(message: unknown): unknown;
+  subscribe(listener: (message: unknown) => void): () => void;
   findLast(criteria: unknown): unknown;
 }
 
