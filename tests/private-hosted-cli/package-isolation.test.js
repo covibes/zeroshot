@@ -77,7 +77,7 @@ function installCandidate(temporaryRoot, tarballPath) {
 
 function assertCandidateLaunches(temporaryRoot, installation) {
   const executable = path.join(installation, CANDIDATE_PACKAGE_PATH, 'cli', 'index.js');
-  const launched = run(process.execPath, [executable, '--help'], {
+  const launchOptions = {
     cwd: installation,
     env: {
       ...process.env,
@@ -86,10 +86,15 @@ function assertCandidateLaunches(temporaryRoot, installation) {
       NO_UPDATE_NOTIFIER: '1',
       USERPROFILE: temporaryRoot,
     },
-  });
+  };
+  const launched = run(process.execPath, [executable, '--help'], launchOptions);
   assert.equal(launched.status, 0, launched.stderr || launched.stdout);
   assert.match(launched.stdout, /\btarget\b/);
   assert.match(launched.stdout, /\bcapsule\b/);
+
+  const target = run(process.execPath, [executable, 'target', 'add', '--help'], launchOptions);
+  assert.equal(target.status, 0, target.stderr || target.stdout);
+  assert.match(target.stdout, /Register a named remote target/);
 }
 
 function assertPackedCandidateBuildsInstallsAndLaunches() {

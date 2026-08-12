@@ -156,6 +156,9 @@ function main() {
   run('npm', ['run', 'build:agent-cli-provider']);
   run('npm', ['run', 'build:cluster']);
   run('npm', ['run', 'build:target']);
+  run('npm', ['run', 'build:legacy-lib']);
+  run('npm', ['run', 'build:legacy-runtime']);
+  run('npm', ['run', 'build:task-lib']);
 
   const output =
     args.output === undefined
