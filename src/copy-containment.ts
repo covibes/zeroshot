@@ -21,6 +21,13 @@ interface PathIdentity {
   directory: boolean;
 }
 
+interface CopyPathApi {
+  isAbsolute(targetPath: string): boolean;
+  normalize(targetPath: string): string;
+  parse(targetPath: string): { root: string };
+  readonly sep: string;
+}
+
 export class CopyContainmentError extends Error {
   readonly code = CONTAINMENT_ERROR_CODE;
   readonly relativePath: unknown;
@@ -68,11 +75,7 @@ function statIdentity(targetPath: string): PathIdentity {
   };
 }
 
-function pinRoot(
-  rootPath: string,
-  label: string,
-  expectedRoot?: PinnedCopyRoot
-): PinnedCopyRoot {
+function pinRoot(rootPath: string, label: string, expectedRoot?: PinnedCopyRoot): PinnedCopyRoot {
   const requestedPath = path.resolve(rootPath);
   const canonicalPath = fs.realpathSync.native(requestedPath);
   const identity = statIdentity(canonicalPath);
@@ -113,10 +116,7 @@ function assertPinnedRoot(root: PinnedCopyRoot, label: string, relativePath: str
   }
 }
 
-export function validateRelativePath(
-  relativePath: unknown,
-  pathApi: path.PlatformPath = path
-): string {
+export function validateRelativePath(relativePath: unknown, pathApi: CopyPathApi = path): string {
   if (typeof relativePath !== 'string' || relativePath.length === 0) {
     throw containmentError(relativePath, 'path must be a non-empty relative string');
   }

@@ -6,12 +6,8 @@
  */
 import fs = require('fs');
 import { parentPort, workerData } from 'worker_threads';
-import {
-  CopyBoundary,
-  createCopyBoundary,
-  isCopyContainmentError,
-  resolveCopyPath,
-} from './copy-containment';
+import { createCopyBoundary, isCopyContainmentError, resolveCopyPath } from './copy-containment';
+import type { CopyBoundary } from './copy-containment';
 interface CopyWorkerData {
   files: string[];
   sourceBase: string;
@@ -82,9 +78,7 @@ for (const relativePath of files) {
       code,
       message: errorMessage(caughtError),
       relativePath:
-        typeof caughtError === 'object' &&
-        caughtError !== null &&
-        'relativePath' in caughtError
+        typeof caughtError === 'object' && caughtError !== null && 'relativePath' in caughtError
           ? caughtError.relativePath
           : relativePath,
     };
