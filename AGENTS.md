@@ -62,7 +62,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
 | Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
 | Provider capabilities                 | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
-| Claude settings overlay               | `src/worktree-claude-config.js`                                                                                                  |
+| Claude settings overlay               | `src/worktree-claude-config.ts`                                                                                                  |
 | Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
 | Shared watcher output path            | `task-lib/watcher-output-runtime.js`                                                                                             |
 | Provider session reuse                | `src/agent/provider-session.js`                                                                                                  |
