@@ -77,6 +77,7 @@ function registerNativeMetadataTest() {
       'hosted-node/engine-adapter.js',
       'hosted-node/git-askpass.js',
       'hosted-node/hosted-config.js',
+      'hosted-node/issue-hydration.js',
       'hosted-node/runtime-capability.js',
       'hosted-node/worker-launcher.js',
       'hosted-node/worker.js',

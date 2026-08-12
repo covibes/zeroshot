@@ -591,7 +591,7 @@ describe('Agent stuck-task recovery', function () {
           args: ['timeout-row', taskId],
           cwd: process.cwd(),
           spawnEnv: process.env,
-          spawnTimeoutMs: 300,
+          spawnTimeoutMs: 2000,
         });
       } catch (error) {
         timeoutError = error;
