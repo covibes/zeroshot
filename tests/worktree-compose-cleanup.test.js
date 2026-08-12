@@ -148,7 +148,9 @@ describe('Worktree Docker Compose Cleanup', function () {
 
     it('should still remove the worktree when lib/compose-utils cannot be loaded', function () {
       const origSpawnSync = childProcess.spawnSync;
+      const origWarn = console.warn;
       const calls = [];
+      const warnings = [];
 
       childProcess.spawnSync = function (command, args, opts) {
         calls.push({ command, args, cwd: opts?.cwd });
@@ -157,6 +159,7 @@ describe('Worktree Docker Compose Cleanup', function () {
         }
         return { status: 0, stdout: '', stderr: '' };
       };
+      console.warn = (message) => warnings.push(message);
 
       try {
         delete require.cache[require.resolve('../src/isolation-manager')];
@@ -191,8 +194,12 @@ describe('Worktree Docker Compose Cleanup', function () {
           ),
           'worktree removal should still proceed'
         );
+        assert.deepStrictEqual(warnings, [
+          `[IsolationManager] Skipping Docker Compose teardown in ${fakeWorktreePath}: Cannot find module 'js-yaml'`,
+        ]);
       } finally {
         childProcess.spawnSync = origSpawnSync;
+        console.warn = origWarn;
         delete require.cache[require.resolve('../src/isolation-manager')];
       }
     });

@@ -2387,8 +2387,10 @@ class IsolationManager {
     try {
       const { resolveWorktreeComposeTeardown } = require('../lib/compose-utils');
       teardown = resolveWorktreeComposeTeardown(worktreeInfo.path);
-    } catch {
-      // Best-effort: compose teardown support may be unavailable
+    } catch (error) {
+      console.warn(
+        `[IsolationManager] Skipping Docker Compose teardown in ${worktreeInfo.path}: ${error.message}`
+      );
     }
     if (teardown.shouldTeardown) {
       try {
