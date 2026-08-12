@@ -6,7 +6,13 @@
  */
 import fs = require('fs');
 import { parentPort, workerData } from 'worker_threads';
-import { createCopyBoundary, isCopyContainmentError, resolveCopyPath } from './copy-containment';
+import {
+  copyErrorCode,
+  createCopyBoundary,
+  isCopyContainmentError,
+  isCopyRecord,
+  resolveCopyPath,
+} from './copy-containment';
 import type { CopyBoundary } from './copy-containment';
 interface CopyWorkerData {
   files: string[];
@@ -22,26 +28,16 @@ interface CopyError {
   relativePath: unknown;
 }
 function isCopyWorkerData(value: unknown): value is CopyWorkerData {
+  if (!isCopyRecord(value)) {
+    return false;
+  }
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    'files' in value &&
     Array.isArray(value.files) &&
     value.files.every((entry: unknown) => typeof entry === 'string') &&
-    'sourceBase' in value &&
     typeof value.sourceBase === 'string' &&
-    'destBase' in value &&
     typeof value.destBase === 'string' &&
-    'expectedBoundary' in value &&
-    typeof value.expectedBoundary === 'object' &&
-    value.expectedBoundary !== null
+    isCopyRecord(value.expectedBoundary)
   );
-}
-function errorCode(error: unknown): string | null {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    return typeof error.code === 'string' ? error.code : null;
-  }
-  return null;
 }
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -64,7 +60,7 @@ for (const relativePath of files) {
     copied++;
   } catch (caughtError: unknown) {
     // Skip files we can't copy (permission denied, broken symlinks, etc.)
-    const code = errorCode(caughtError);
+    const code = copyErrorCode(caughtError);
     if (
       !isCopyContainmentError(caughtError) &&
       (code === 'EACCES' || code === 'EPERM' || code === 'ENOENT')
@@ -78,7 +74,7 @@ for (const relativePath of files) {
       code,
       message: errorMessage(caughtError),
       relativePath:
-        typeof caughtError === 'object' && caughtError !== null && 'relativePath' in caughtError
+        isCopyRecord(caughtError) && 'relativePath' in caughtError
           ? caughtError.relativePath
           : relativePath,
     };

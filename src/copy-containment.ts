@@ -59,8 +59,12 @@ function containmentError(
   return error;
 }
 
-function errorCode(error: unknown): string | null {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
+export function isCopyRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function copyErrorCode(error: unknown): string | null {
+  if (isCopyRecord(error) && 'code' in error) {
     return typeof error.code === 'string' ? error.code : null;
   }
   return null;
@@ -153,7 +157,7 @@ export function resolveSourcePath(boundary: CopyBoundary, relativePath: string):
   try {
     canonicalPath = fs.realpathSync.native(candidatePath);
   } catch (error: unknown) {
-    if (errorCode(error) === 'ELOOP') {
+    if (copyErrorCode(error) === 'ELOOP') {
       throw containmentError(relativePath, 'source path contains a symlink cycle', error);
     }
     throw error;
@@ -180,7 +184,7 @@ function resolveDestinationPath(boundary: CopyBoundary, relativePath: string): s
     fs.lstatSync(candidatePath);
     existingPath = candidatePath;
   } catch (error: unknown) {
-    if (errorCode(error) !== 'ENOENT') {
+    if (copyErrorCode(error) !== 'ENOENT') {
       throw error;
     }
     // The copy pipeline creates directories parent-first in phase two, so the
@@ -231,12 +235,7 @@ export function resolveCopyPath(
 }
 
 export function isCopyContainmentError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    error.code === CONTAINMENT_ERROR_CODE
-  );
+  return isCopyRecord(error) && error.code === CONTAINMENT_ERROR_CODE;
 }
 
 interface CopyErrorPayload {
