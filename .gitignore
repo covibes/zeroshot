@@ -144,6 +144,8 @@ lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
 src/config-router.js
 src/quality-gates.js
+src/command-proofs.js
+src/repo-settings-access.js
 src/claude-credentials.js
 src/copy-worker.js
 src/darwin-keychain-boundary.js

@@ -77,6 +77,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Docker mounts/env                     | `lib/docker-config.js`                                                                                                           |
 | Container lifecycle                   | `src/isolation-manager.js`                                                                                                       |
 | Settings                              | `lib/settings.js`                                                                                                                |
+| Legacy settings property selection    | `src/repo-settings-access.ts`                                                                                                    |
 | Cluster wire/domain types             | `crates/openengine-cluster-protocol/`                                                                                            |
 | Admission wire semantics              | `crates/openengine-cluster-protocol/src/admission.rs`                                                                            |
 | Graph AST/bindings/guards             | `crates/openengine-cluster-protocol/src/graph.rs`                                                                                |

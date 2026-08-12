@@ -1,3 +1,5 @@
+import repoSettingsAccess = require('./repo-settings-access');
+
 type StringGateField = 'scope' | 'description' | 'command' | 'profile' | 'proofProfile';
 
 interface RequiredQualityGate {
@@ -23,44 +25,7 @@ interface QualityGateConfig {
   [key: string]: unknown;
 }
 
-interface RepoSettingsResult {
-  settings?: unknown;
-}
-
-interface RepoSettingsModule {
-  readRepoSettings(startDir: string): RepoSettingsResult;
-}
-
-function isRepoSettingsModule(value: unknown): value is RepoSettingsModule {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'readRepoSettings' in value &&
-    typeof value.readRepoSettings === 'function'
-  );
-}
-
-const repoSettingsModule: unknown = require('../lib/repo-settings');
-if (!isRepoSettingsModule(repoSettingsModule)) {
-  throw new TypeError('repo-settings must export readRepoSettings');
-}
-const readRepoSettings = repoSettingsModule.readRepoSettings;
-
-function hasOwn(value: unknown, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value || {}, key);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function propertyValue(value: unknown, key: string): unknown {
-  return isRecord(value) ? value[key] : undefined;
-}
-
-function hasDefinedOwn(value: unknown, key: string): boolean {
-  return hasOwn(value, key) && propertyValue(value, key) !== undefined;
-}
+const { isRecord, propertyValue, readRepoSettingsValue, selectOwnProperty } = repoSettingsAccess;
 
 function getGateId(gate: Record<string, unknown>): string | null {
   if (typeof gate.id === 'string' && gate.id.trim()) {
@@ -132,29 +97,24 @@ function normalizeRequiredQualityGates(value: unknown): RequiredQualityGate[] {
 }
 
 function getRequiredQualityGateSource(options: QualityGateOptions, repoSettings: unknown): unknown {
-  if (hasDefinedOwn(options, 'requiredQualityGates')) {
-    return options.requiredQualityGates;
+  const explicitSource = selectOwnProperty(
+    'requiredQualityGates',
+    [options, propertyValue(options, 'ship')],
+    { skipUndefined: true }
+  );
+  if (explicitSource !== undefined) {
+    return explicitSource;
   }
 
-  if (isRecord(options.ship) && hasDefinedOwn(options.ship, 'requiredQualityGates')) {
-    return options.ship.requiredQualityGates;
-  }
-
-  const settingsShip = propertyValue(repoSettings, 'ship');
-  if (isRecord(settingsShip) && hasOwn(settingsShip, 'requiredQualityGates')) {
-    return settingsShip.requiredQualityGates;
-  }
-
-  if (hasOwn(repoSettings, 'requiredQualityGates')) {
-    return propertyValue(repoSettings, 'requiredQualityGates');
-  }
-
-  return [];
+  const repoSource = selectOwnProperty('requiredQualityGates', [
+    propertyValue(repoSettings, 'ship'),
+    repoSettings,
+  ]);
+  return repoSource === undefined ? [] : repoSource;
 }
 
 function resolveRequiredQualityGates(options: QualityGateOptions = {}): RequiredQualityGate[] {
-  const repoSettingsResult = readRepoSettings(options.cwd || process.cwd());
-  const repoSettings = repoSettingsResult.settings || {};
+  const repoSettings = readRepoSettingsValue(options.cwd || process.cwd());
   const source = getRequiredQualityGateSource(options, repoSettings);
   return normalizeRequiredQualityGates(source);
 }
@@ -163,23 +123,11 @@ function getClusterRequiredQualityGateSource(
   config: QualityGateConfig,
   options: QualityGateOptions
 ): unknown {
-  if (hasDefinedOwn(options, 'requiredQualityGates')) {
-    return options.requiredQualityGates;
-  }
-
-  if (isRecord(options.ship) && hasDefinedOwn(options.ship, 'requiredQualityGates')) {
-    return options.ship.requiredQualityGates;
-  }
-
-  if (isRecord(config.ship) && hasDefinedOwn(config.ship, 'requiredQualityGates')) {
-    return config.ship.requiredQualityGates;
-  }
-
-  if (hasDefinedOwn(config, 'requiredQualityGates')) {
-    return config.requiredQualityGates;
-  }
-
-  return undefined;
+  return selectOwnProperty(
+    'requiredQualityGates',
+    [options, propertyValue(options, 'ship'), propertyValue(config, 'ship'), config],
+    { skipUndefined: true }
+  );
 }
 
 function resolveClusterRequiredQualityGates(
