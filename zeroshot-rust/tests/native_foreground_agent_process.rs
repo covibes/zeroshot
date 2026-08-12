@@ -1,13 +1,16 @@
 #[path = "support/native_process.rs"]
 pub mod native_process;
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use native_process::{rpc_domain_code, spawn_with_workspace, NativeClient, NativeProcess, TempState};
+use native_process::{
+    apply_params, assert_finished_failure, assert_one_deduped, assert_running, concurrent_apply,
+    install_test_executable, provider_environment, rpc_domain_code, NativeClient, NativeProcess,
+    ProviderProcess, TempState,
+};
 use openengine_cluster_protocol::{
-    ApplyParams, ArtifactRef, Generation, GetParams, IdempotencyKey, Phase, PlanParams,
-    TerminalResult, GENERATION_CONFLICT, IDEMPOTENCY_REUSE,
+    ApplyParams, ArtifactRef, GetParams, Phase, PlanParams, TerminalResult, GENERATION_CONFLICT,
+    IDEMPOTENCY_REUSE,
 };
 use serde_json::json;
 use tokio::io::AsyncReadExt;
@@ -39,23 +42,18 @@ impl ForegroundFixture {
             state,
             workspace,
             counter,
-            environment: environment(&bin),
+            environment: provider_environment(&bin, API_KEY),
         }
     }
 
     fn spawn(&self, cluster: &str, include_credential: bool) -> (NativeProcess, NativeClient) {
-        let environment = self
-            .environment
-            .iter()
-            .filter(|(name, _)| include_credential || name != "OPENAI_API_KEY")
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect::<Vec<_>>();
-        spawn_with_workspace(
+        ProviderProcess::new(
             self.state.path(),
             cluster,
             self.workspace.path(),
-            &environment,
+            &self.environment,
         )
+        .spawn(include_credential)
     }
 
     fn invocation_count(&self) -> u64 {
@@ -64,16 +62,14 @@ impl ForegroundFixture {
 }
 
 fn apply_request(key: &str) -> ApplyParams {
-    ApplyParams {
-        graph: zeroshot_engine::native_foreground_graph(),
-        input: Some(json!({
+    apply_params(
+        zeroshot_engine::native_foreground_graph(),
+        json!({
             "prompt": "Make the requested deterministic greeting change.",
             "expectedGreeting": GREETING
-        })),
-        dry_run: false,
-        if_generation: Some(Generation::new(0).unwrap()),
-        idempotency_key: Some(IdempotencyKey::new(key).unwrap()),
-    }
+        }),
+        key,
+    )
 }
 
 fn prepare_workspace(label: &str) -> TempState {
@@ -88,9 +84,6 @@ fn prepare_workspace(label: &str) -> TempState {
 }
 
 fn install_fake_codex(state: &TempState, workspace: &Path, mode: FakeMode) -> (PathBuf, PathBuf) {
-    let bin = state.path().join("fake-bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    let executable = bin.join("codex");
     let counter = state.path().join("codex-invocations");
     let expected_args = [
         "exec",
@@ -152,26 +145,8 @@ fn install_fake_codex(state: &TempState, workspace: &Path, mode: FakeMode) -> (P
         workspace = workspace.to_str().unwrap(),
         emitted = emitted,
     );
-    std::fs::write(&executable, script).unwrap();
-    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o700);
-    std::fs::set_permissions(&executable, permissions).unwrap();
+    let (bin, _) = install_test_executable(state.path(), "codex", script.as_bytes());
     (bin, counter)
-}
-
-fn environment(bin: &Path) -> Vec<(String, String)> {
-    let inherited = std::env::var("PATH").unwrap();
-    vec![
-        (
-            "PATH".to_owned(),
-            format!("{}:{inherited}", bin.to_str().unwrap()),
-        ),
-        ("OPENAI_API_KEY".to_owned(), API_KEY.to_owned()),
-        (
-            "ZEROSHOT_SECRET_SENTINEL".to_owned(),
-            "must-not-reach-provider".to_owned(),
-        ),
-    ]
 }
 
 fn invocation_count(counter: &Path) -> u64 {
@@ -301,10 +276,7 @@ async fn missing_credential_rejects_before_dispatch_or_provider_effect() {
             .await
             .is_err()
     );
-    assert_eq!(
-        client.get(GetParams::default()).await.unwrap().status.phase,
-        Phase::Running
-    );
+    assert_running(&client).await;
     assert_eq!(fixture.invocation_count(), 0);
     assert!(!fixture.workspace.path().join("greeting.txt").exists());
     drop(client);
@@ -317,12 +289,8 @@ async fn malformed_provider_output_settles_failure_without_relaunch() {
     let (process, client) = fixture.spawn("foreground-malformed", true);
     client.initialize().await.unwrap();
     client.apply(apply_request("malformed-once")).await.unwrap();
+    assert_finished_failure(&client).await;
     let result = client.get(GetParams::default()).await.unwrap();
-    assert_eq!(result.status.phase, Phase::Finished);
-    assert!(matches!(
-        result.terminal_result,
-        Some(TerminalResult::Failed { .. })
-    ));
     assert_eq!(fixture.invocation_count(), 1);
     drop(client);
     process.join_success().await;
@@ -343,9 +311,8 @@ async fn concurrent_applies_share_one_provider_authority() {
     let fixture = ForegroundFixture::new("foreground-concurrent", FakeMode::Success);
     let (process, client) = fixture.spawn("foreground-concurrent", true);
     client.initialize().await.unwrap();
-    let same = apply_request("same-key");
-    let (first, second) = tokio::join!(client.apply(same.clone()), client.apply(same));
-    assert_ne!(first.unwrap().deduped, second.unwrap().deduped);
+    let (first, second) = concurrent_apply(&client, apply_request("same-key")).await;
+    assert_one_deduped(&first, &second);
     assert_eq!(fixture.invocation_count(), 1);
 
     let mut mismatched = apply_request("same-key");

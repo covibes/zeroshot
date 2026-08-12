@@ -3,7 +3,11 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use openengine_cluster_client::{ClientError, ClusterClient, NdjsonTransport};
-use openengine_cluster_protocol::ApplyResult;
+use openengine_cluster_protocol::{
+    ApplyParams, ApplyResult, Generation, GetParams, GetResult, GraphSpec, IdempotencyKey, Phase,
+    TerminalResult,
+};
+use serde_json::Value;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::{timeout, Duration};
 
@@ -80,6 +84,107 @@ pub fn spawn_with_workspace(
         NativeProcess { child },
         ClusterClient::new(NdjsonTransport::new(stdout, stdin)),
     )
+}
+
+pub struct ProviderProcess<'a> {
+    state_dir: &'a Path,
+    cluster_id: &'a str,
+    workspace: &'a Path,
+    environment: &'a [(String, String)],
+}
+
+impl<'a> ProviderProcess<'a> {
+    pub fn new(
+        state_dir: &'a Path,
+        cluster_id: &'a str,
+        workspace: &'a Path,
+        environment: &'a [(String, String)],
+    ) -> Self {
+        Self {
+            state_dir,
+            cluster_id,
+            workspace,
+            environment,
+        }
+    }
+
+    pub fn spawn(self, include_credential: bool) -> (NativeProcess, NativeClient) {
+        let selected = self
+            .environment
+            .iter()
+            .filter(|(name, _)| include_credential || name != "OPENAI_API_KEY")
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        spawn_with_workspace(self.state_dir, self.cluster_id, self.workspace, &selected)
+    }
+}
+
+pub fn provider_environment(bin: &Path, credential: &str) -> Vec<(String, String)> {
+    let inherited = std::env::var("PATH").unwrap();
+    vec![
+        (
+            "PATH".to_owned(),
+            format!("{}:{inherited}", bin.to_str().unwrap()),
+        ),
+        ("OPENAI_API_KEY".to_owned(), credential.to_owned()),
+        (
+            "ZEROSHOT_SECRET_SENTINEL".to_owned(),
+            "must-not-reach-provider".to_owned(),
+        ),
+    ]
+}
+
+pub fn install_test_executable(root: &Path, name: &str, contents: &[u8]) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = root.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let executable = bin.join(name);
+    std::fs::write(&executable, contents).unwrap();
+    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&executable, permissions).unwrap();
+    (bin, executable)
+}
+
+pub fn apply_params(graph: GraphSpec, input: Value, key: &str) -> ApplyParams {
+    ApplyParams {
+        graph,
+        input: Some(input),
+        dry_run: false,
+        if_generation: Some(Generation::new(0).unwrap()),
+        idempotency_key: Some(IdempotencyKey::new(key).unwrap()),
+    }
+}
+
+pub async fn initialize_and_get_finished(client: &NativeClient) -> GetResult {
+    let initialized = client.initialize().await.unwrap();
+    assert_eq!(initialized.status.phase, Phase::Finished);
+    client.get(GetParams::default()).await.unwrap()
+}
+
+pub async fn assert_running(client: &NativeClient) {
+    assert_eq!(
+        client.get(GetParams::default()).await.unwrap().status.phase,
+        Phase::Running
+    );
+}
+
+pub async fn assert_finished_failure(client: &NativeClient) {
+    let result = client.get(GetParams::default()).await.unwrap();
+    assert_eq!(result.status.phase, Phase::Finished);
+    assert!(matches!(
+        result.terminal_result,
+        Some(TerminalResult::Failed { .. })
+    ));
+}
+
+pub async fn concurrent_apply(
+    client: &NativeClient,
+    request: ApplyParams,
+) -> (ApplyResult, ApplyResult) {
+    let (first, second) = tokio::join!(client.apply(request.clone()), client.apply(request));
+    (first.unwrap(), second.unwrap())
 }
 
 pub fn rpc_domain_code(error: &ClientError) -> Option<&str> {

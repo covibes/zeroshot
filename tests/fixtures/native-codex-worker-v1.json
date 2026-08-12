@@ -1,0 +1,77 @@
+{
+  "worker": "native.agent.codex@1",
+  "graphProfiles": ["openengine.graph.full/v1"],
+  "binding": {
+    "protocol": "builtin",
+    "version": "1",
+    "profile": "openengine.worker.builtin/v1"
+  },
+  "contract": {
+    "input": {
+      "kind": "record",
+      "fields": {
+        "prompt": { "type": { "kind": "string" }, "required": true },
+        "expectedGreeting": { "type": { "kind": "string" }, "required": true }
+      }
+    },
+    "output": {
+      "kind": "record",
+      "fields": {
+        "summary": { "type": { "kind": "string" }, "required": true },
+        "validationArtifact": {
+          "type": {
+            "kind": "record",
+            "fields": {
+              "artifactId": { "type": { "kind": "string" }, "required": true },
+              "sha256": { "type": { "kind": "string" }, "required": true },
+              "byteLength": { "type": { "kind": "integer" }, "required": true },
+              "mediaType": { "type": { "kind": "string" }, "required": true },
+              "typeId": { "type": { "kind": "string" }, "required": true },
+              "producer": {
+                "type": {
+                  "kind": "record",
+                  "fields": {
+                    "node": { "type": { "kind": "string" }, "required": true },
+                    "worker": { "type": { "kind": "string" }, "required": true }
+                  }
+                },
+                "required": true
+              },
+              "lineage": {
+                "type": {
+                  "kind": "record",
+                  "fields": {
+                    "generation": { "type": { "kind": "integer" }, "required": true },
+                    "runId": { "type": { "kind": "string" }, "required": true },
+                    "attempt": { "type": { "kind": "integer" }, "required": true }
+                  }
+                },
+                "required": true
+              },
+              "redaction": {
+                "type": {
+                  "kind": "enum",
+                  "values": ["public", "internal", "confidential", "restricted"]
+                },
+                "required": true
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "verifier": null,
+    "errors": ["timeout", "crash", "malformed", "refusal"]
+  },
+  "capabilityPolicy": {
+    "autonomy": "strict",
+    "permissionPolicy": "policy.default@1"
+  },
+  "artifactProfile": {
+    "allowedTypeIds": ["native.agent.validation@1"],
+    "allowedMediaTypes": ["application/json"],
+    "minimumRedaction": "internal"
+  },
+  "credentialRequirements": []
+}

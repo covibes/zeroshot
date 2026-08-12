@@ -11,7 +11,7 @@ use crate::execution::{
 use crate::native_admission::native_worker_protocol::{digest_hex, WORKER_REF};
 
 use super::agent::AgentDispatchInput;
-use super::program::{NativeExecutionRegistry, AGENT_WORKER_REF};
+use super::program::{AgentKind, NativeExecutionRegistry};
 use super::{admission, NativeExecutionError};
 
 pub(super) fn dispatch_key(
@@ -70,7 +70,7 @@ pub(super) fn build(
         catalog_digest,
         profile_digest,
         registry_digest,
-        workspace: WorkspaceAccessRef::new(state.resource.clone(), WorkspaceAccessMode::Exclusive)
+        workspace: WorkspaceAccessRef::new(state.resource.clone(), workspace_mode(worker))
             .map_err(|_| NativeExecutionError::Contract)?,
         input: execution_input(input, admission.generation.get(), worker)?,
         session_scope: SessionScope::Execution,
@@ -97,8 +97,9 @@ fn control_refs(
 fn target(worker: &WorkerRef) -> Result<ExecutionTargetRef, NativeExecutionError> {
     let worker = match worker.as_str() {
         WORKER_REF => "native.deterministic",
-        AGENT_WORKER_REF => "native.agent.codex",
-        _ => return Err(NativeExecutionError::InvalidState),
+        value => AgentKind::from_worker(value)
+            .map(AgentKind::target_id)
+            .ok_or(NativeExecutionError::InvalidState)?,
     };
     let worker = BuiltinWorkerId::new(worker).map_err(|_| NativeExecutionError::Contract)?;
     let target = BuiltinWorkerRef::new(worker, 1).map_err(|_| NativeExecutionError::Contract)?;
@@ -123,7 +124,7 @@ fn execution_input(
     generation: u64,
     worker: &WorkerRef,
 ) -> Result<ExecutionInput, NativeExecutionError> {
-    let value = if worker.as_str() == AGENT_WORKER_REF {
+    let value = if AgentKind::from_worker(worker.as_str()) == Some(AgentKind::CodexV1) {
         serde_json::to_value(
             AgentDispatchInput::new(generation, input)
                 .map_err(|()| NativeExecutionError::InvalidState)?,
@@ -136,4 +137,11 @@ fn execution_input(
         canonical_value_bytes(&value).map_err(|_| NativeExecutionError::InvalidState)?;
     let inline = String::from_utf8(canonical).map_err(|_| NativeExecutionError::InvalidState)?;
     ExecutionInput::inline(inline).map_err(|_| NativeExecutionError::Contract)
+}
+
+fn workspace_mode(worker: &WorkerRef) -> WorkspaceAccessMode {
+    match AgentKind::from_worker(worker.as_str()) {
+        Some(AgentKind::PiV1) => WorkspaceAccessMode::ReadOnly,
+        Some(AgentKind::CodexV1) | None => WorkspaceAccessMode::Exclusive,
+    }
 }

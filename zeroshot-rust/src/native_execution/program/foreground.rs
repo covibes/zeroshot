@@ -1,95 +1,27 @@
 use openengine_cluster_protocol::{GraphSpec, WorkerDescriptor};
-use serde_json::json;
+use serde_json::{json, Value};
 
-use super::AGENT_WORKER_REF;
+use super::AgentKind;
 
-pub(super) fn graph() -> GraphSpec {
+pub(super) fn graph(kind: AgentKind) -> GraphSpec {
     serde_json::from_value(json!({
         "profile": "openengine.graph.full/v1",
-        "initialInput": input_type(),
+        "initialInput": input_type(kind),
         "policy": { "policy": "policy.default@1", "default": "deny" },
         "root": {
             "kind": "seq",
             "name": "root",
-            "state": state_type(),
-            "children": [agent_step(), terminal_choice()],
+            "state": state_type(kind),
+            "children": [step(kind), terminal_choice(kind)],
             "promotedStatePaths": []
         }
     }))
-    .expect("fixed native foreground agent graph must decode")
+    .expect("fixed native foreground graph must decode")
 }
 
-fn agent_step() -> serde_json::Value {
-    json!({
-        "kind": "step",
-        "name": "codex",
-        "worker": AGENT_WORKER_REF,
-        "input": input_type(),
-        "output": output_type(),
-        "inputBindings": [
-            {
-                "target": ["prompt"],
-                "value": { "source": "state", "path": ["prompt"] }
-            },
-            {
-                "target": ["expectedGreeting"],
-                "value": { "source": "state", "path": ["expectedGreeting"] }
-            }
-        ],
-        "writeBindings": [
-            {
-                "value": { "node": "codex", "channel": "out", "path": ["summary"] },
-                "target": ["summary"]
-            },
-            {
-                "value": {
-                    "node": "codex",
-                    "channel": "out",
-                    "path": ["validationArtifact"]
-                },
-                "target": ["validationArtifact"]
-            }
-        ],
-        "timeoutMs": 3_600_000,
-        "attempts": 1
-    })
-}
-
-fn terminal_choice() -> serde_json::Value {
-    json!({
-        "kind": "choice",
-        "name": "finish",
-        "state": state_type(),
-        "branches": [{
-            "when": {
-                "kind": "in",
-                "value": { "name": "codex", "source": "error", "field": null },
-                "labels": ["timeout", "crash", "malformed", "refusal"]
-            },
-            "node": { "kind": "fail", "name": "failed", "reason": "worker_failed" }
-        }],
-        "otherwise": {
-            "kind": "succeed",
-            "name": "done",
-            "output": output_type(),
-            "bindings": [
-                {
-                    "target": ["summary"],
-                    "value": { "source": "state", "path": ["summary"] }
-                },
-                {
-                    "target": ["validationArtifact"],
-                    "value": { "source": "state", "path": ["validationArtifact"] }
-                }
-            ]
-        },
-        "promotedStatePaths": []
-    })
-}
-
-pub(super) fn descriptor() -> WorkerDescriptor {
+pub(super) fn descriptor(kind: AgentKind) -> WorkerDescriptor {
     serde_json::from_value(json!({
-        "worker": AGENT_WORKER_REF,
+        "worker": kind.worker_ref(),
         "graphProfiles": ["openengine.graph.full/v1"],
         "binding": {
             "protocol": "builtin",
@@ -97,8 +29,8 @@ pub(super) fn descriptor() -> WorkerDescriptor {
             "profile": "openengine.worker.builtin/v1"
         },
         "contract": {
-            "input": input_type(),
-            "output": output_type(),
+            "input": input_type(kind),
+            "output": output_type(kind),
             "verifier": null,
             "errors": ["timeout", "crash", "malformed", "refusal"]
         },
@@ -106,49 +38,177 @@ pub(super) fn descriptor() -> WorkerDescriptor {
             "autonomy": "strict",
             "permissionPolicy": "policy.default@1"
         },
-        "artifactProfile": {
+        "artifactProfile": artifact_profile(kind),
+        "credentialRequirements": []
+    }))
+    .expect("fixed native foreground descriptor must decode")
+}
+
+fn step(kind: AgentKind) -> Value {
+    json!({
+        "kind": "step",
+        "name": node_name(kind),
+        "worker": kind.worker_ref(),
+        "input": input_type(kind),
+        "output": output_type(kind),
+        "inputBindings": input_bindings(kind),
+        "writeBindings": write_bindings(kind),
+        "timeoutMs": 3_600_000,
+        "attempts": 1
+    })
+}
+
+fn terminal_choice(kind: AgentKind) -> Value {
+    json!({
+        "kind": "choice",
+        "name": "finish",
+        "state": state_type(kind),
+        "branches": [{
+            "when": {
+                "kind": "in",
+                "value": { "name": node_name(kind), "source": "error", "field": null },
+                "labels": ["timeout", "crash", "malformed", "refusal"]
+            },
+            "node": { "kind": "fail", "name": "failed", "reason": "worker_failed" }
+        }],
+        "otherwise": {
+            "kind": "succeed",
+            "name": "done",
+            "output": output_type(kind),
+            "bindings": output_bindings(kind)
+        },
+        "promotedStatePaths": []
+    })
+}
+
+fn node_name(kind: AgentKind) -> &'static str {
+    match kind {
+        AgentKind::CodexV1 => "codex",
+        AgentKind::PiV1 => "pi",
+    }
+}
+
+fn input_type(kind: AgentKind) -> Value {
+    let mut fields = serde_json::Map::from_iter([(
+        "prompt".to_owned(),
+        json!({ "type": { "kind": "string" }, "required": true }),
+    )]);
+    if kind == AgentKind::CodexV1 {
+        fields.insert(
+            "expectedGreeting".to_owned(),
+            json!({ "type": { "kind": "string" }, "required": true }),
+        );
+    }
+    json!({ "kind": "record", "fields": fields })
+}
+
+fn state_type(kind: AgentKind) -> Value {
+    let mut fields = input_type(kind)["fields"]
+        .as_object()
+        .expect("fixed input is a record")
+        .clone();
+    match kind {
+        AgentKind::CodexV1 => {
+            fields.insert(
+                "summary".to_owned(),
+                json!({ "type": { "kind": "string" }, "required": false }),
+            );
+            fields.insert(
+                "validationArtifact".to_owned(),
+                json!({ "type": artifact_type(), "required": false }),
+            );
+        }
+        AgentKind::PiV1 => {
+            fields.insert(
+                "response".to_owned(),
+                json!({ "type": { "kind": "string" }, "required": false }),
+            );
+        }
+    }
+    json!({ "kind": "record", "fields": fields })
+}
+
+fn output_type(kind: AgentKind) -> Value {
+    match kind {
+        AgentKind::CodexV1 => json!({
+            "kind": "record",
+            "fields": {
+                "summary": { "type": { "kind": "string" }, "required": true },
+                "validationArtifact": { "type": artifact_type(), "required": true }
+            }
+        }),
+        AgentKind::PiV1 => json!({
+            "kind": "record",
+            "fields": {
+                "response": { "type": { "kind": "string" }, "required": true }
+            }
+        }),
+    }
+}
+
+fn input_bindings(kind: AgentKind) -> Vec<Value> {
+    let mut bindings = vec![json!({
+        "target": ["prompt"],
+        "value": { "source": "state", "path": ["prompt"] }
+    })];
+    if kind == AgentKind::CodexV1 {
+        bindings.push(json!({
+            "target": ["expectedGreeting"],
+            "value": { "source": "state", "path": ["expectedGreeting"] }
+        }));
+    }
+    bindings
+}
+
+fn write_bindings(kind: AgentKind) -> Vec<Value> {
+    output_fields(kind)
+        .iter()
+        .copied()
+        .map(|field| {
+            json!({
+                "value": { "node": node_name(kind), "channel": "out", "path": [field] },
+                "target": [field]
+            })
+        })
+        .collect()
+}
+
+fn output_bindings(kind: AgentKind) -> Vec<Value> {
+    output_fields(kind)
+        .iter()
+        .copied()
+        .map(|field| {
+            json!({
+                "target": [field],
+                "value": { "source": "state", "path": [field] }
+            })
+        })
+        .collect()
+}
+
+fn output_fields(kind: AgentKind) -> &'static [&'static str] {
+    match kind {
+        AgentKind::CodexV1 => &["summary", "validationArtifact"],
+        AgentKind::PiV1 => &["response"],
+    }
+}
+
+fn artifact_profile(kind: AgentKind) -> Value {
+    match kind {
+        AgentKind::CodexV1 => json!({
             "allowedTypeIds": ["native.agent.validation@1"],
             "allowedMediaTypes": ["application/json"],
             "minimumRedaction": "internal"
-        },
-        "credentialRequirements": []
-    }))
-    .expect("fixed native foreground agent descriptor must decode")
+        }),
+        AgentKind::PiV1 => json!({
+            "allowedTypeIds": ["native.agent.pi.response@1"],
+            "allowedMediaTypes": ["application/json"],
+            "minimumRedaction": "internal"
+        }),
+    }
 }
 
-fn input_type() -> serde_json::Value {
-    json!({
-        "kind": "record",
-        "fields": {
-            "prompt": { "type": { "kind": "string" }, "required": true },
-            "expectedGreeting": { "type": { "kind": "string" }, "required": true }
-        }
-    })
-}
-
-fn state_type() -> serde_json::Value {
-    json!({
-        "kind": "record",
-        "fields": {
-            "prompt": { "type": { "kind": "string" }, "required": true },
-            "expectedGreeting": { "type": { "kind": "string" }, "required": true },
-            "summary": { "type": { "kind": "string" }, "required": false },
-            "validationArtifact": { "type": artifact_type(), "required": false }
-        }
-    })
-}
-
-fn output_type() -> serde_json::Value {
-    json!({
-        "kind": "record",
-        "fields": {
-            "summary": { "type": { "kind": "string" }, "required": true },
-            "validationArtifact": { "type": artifact_type(), "required": true }
-        }
-    })
-}
-
-fn artifact_type() -> serde_json::Value {
+fn artifact_type() -> Value {
     json!({
         "kind": "record",
         "fields": {

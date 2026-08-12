@@ -1,5 +1,3 @@
-//! Product-private composition for the single deterministic native execution checkpoint.
-
 use std::sync::Arc;
 
 use openengine_cluster_protocol::{canonical_value_bytes, GraphSpec, TerminalResult, WorkerRef};
@@ -11,22 +9,28 @@ use thiserror::Error;
 mod agent;
 #[path = "native_execution/command.rs"]
 mod command;
+#[path = "native_execution/credential.rs"]
+mod credential;
+#[path = "native_execution/pi.rs"]
+mod pi;
 #[path = "native_execution/process.rs"]
 mod process;
 #[path = "native_execution/program.rs"]
 mod program;
 #[path = "native_execution/validation.rs"]
 mod validation;
+#[path = "native_execution/worker_process.rs"]
+mod worker_process;
 
 pub(crate) use program::{
-    foreground_graph, is_deterministic_graph, is_worker_free_graph, NativeExecutionRegistry,
-    NativeGraphVerifier,
+    is_deterministic_graph, is_worker_free_graph, NativeExecutionRegistry, NativeGraphVerifier,
+    PredecessorProgram,
 };
 #[doc(hidden)]
 pub use agent::validator::{run_greeting_validator, VALIDATOR_MODE as NATIVE_VALIDATOR_MODE};
 use agent::{AgentWorkspaceAuthority, AgentWorkspaceCandidate, AgentWorkspacePreparation};
 use process::NativeExecutionRuntime;
-use program::{classify_graph, NativeProgram, AGENT_WORKER_REF};
+use program::{classify_graph, AgentKind, NativeProgram, CODEX_AGENT_WORKER_REF};
 
 use crate::cluster_ledger::record::CanonicalDigest;
 use crate::cluster_ledger::{ClusterLedger, LedgerError, ReplayState};
@@ -135,7 +139,7 @@ impl NativeExecutionCoordinator {
             .map_err(|_| NativeExecutionError::InvalidState)?;
         if !matches!(
             classify_graph(&graph),
-            Some(NativeProgram::Deterministic | NativeProgram::ForegroundAgent)
+            Some(NativeProgram::Deterministic | NativeProgram::ForegroundAgent(_))
         ) {
             return Ok(None);
         }
@@ -208,8 +212,8 @@ impl NativeExecutionCoordinator {
         dispatch: &mut CommittedDispatch,
     ) -> Result<Option<openengine_cluster_protocol::WorkerOutcome>, NativeExecutionError> {
         let candidate = match dispatch.workspace_candidate.take() {
-            Some(candidate) if dispatch.worker.as_str() == AGENT_WORKER_REF => candidate,
-            None if dispatch.worker.as_str() != AGENT_WORKER_REF => return Ok(None),
+            Some(candidate) if dispatch.worker.as_str() == CODEX_AGENT_WORKER_REF => candidate,
+            None if dispatch.worker.as_str() != CODEX_AGENT_WORKER_REF => return Ok(None),
             Some(_) | None => return Err(NativeExecutionError::InvalidState),
         };
         let prepared = self
@@ -431,9 +435,18 @@ fn quarantine(authority: Option<AgentWorkspaceAuthority>) {
 fn terminal_program(graph: &GraphSpec) -> Result<bool, NativeExecutionError> {
     match classify_graph(graph) {
         Some(NativeProgram::Deterministic) => Ok(false),
-        Some(NativeProgram::ForegroundAgent) => Ok(true),
+        Some(NativeProgram::ForegroundAgent(AgentKind::CodexV1)) => Ok(true),
+        Some(NativeProgram::ForegroundAgent(AgentKind::PiV1)) => Ok(false),
         Some(NativeProgram::WorkerFree) | None => Err(NativeExecutionError::InvalidState),
     }
+}
+
+pub(crate) fn codex_foreground_graph() -> GraphSpec {
+    program::foreground_graph(AgentKind::CodexV1)
+}
+
+pub(crate) fn pi_foreground_graph() -> GraphSpec {
+    program::foreground_graph(AgentKind::PiV1)
 }
 
 fn admission(

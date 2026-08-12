@@ -23,13 +23,15 @@ use crate::native_admission::native_worker_protocol::{effect_marker_id, WORKER_M
 
 use super::program::NATIVE_PROCESS_TIMEOUT_MS;
 use super::agent::{AgentWorkspaceCandidate, AgentWorkspacePreparation, NativeAgent};
-use super::program::AGENT_WORKER_REF;
+use super::pi::NativePiDriver;
+use super::program::AgentKind;
 use super::{NativeExecutionError, NativeExecutionProcess};
 
 #[derive(Clone)]
 pub(super) struct NativeExecutionRuntime {
     runtime: LocalExecutionRuntime,
-    agent: NativeAgent,
+    codex: NativeAgent,
+    pi: Arc<NativePiDriver>,
 }
 
 impl NativeExecutionRuntime {
@@ -38,15 +40,24 @@ impl NativeExecutionRuntime {
         worker: &str,
         input: &serde_json::Value,
     ) -> Result<Option<AgentWorkspaceCandidate>, NativeExecutionError> {
-        if worker == AGENT_WORKER_REF {
-            let candidate = self
-                .agent
-                .preflight(input)
-                .await
-                .map_err(|()| NativeExecutionError::Preflight)?;
-            return Ok(Some(candidate));
+        match AgentKind::from_worker(worker) {
+            Some(AgentKind::CodexV1) => {
+                let candidate = self
+                    .codex
+                    .preflight(input)
+                    .await
+                    .map_err(|()| NativeExecutionError::Preflight)?;
+                Ok(Some(candidate))
+            }
+            Some(AgentKind::PiV1) => {
+                self.pi
+                    .preflight(input)
+                    .await
+                    .map_err(|()| NativeExecutionError::Preflight)?;
+                Ok(None)
+            }
+            None => Ok(None),
         }
-        Ok(None)
     }
 
     pub(super) async fn prepare_workspace(
@@ -55,7 +66,7 @@ impl NativeExecutionRuntime {
         allocation: &crate::cluster_ledger::DispatchAllocation,
         candidate: AgentWorkspaceCandidate,
     ) -> AgentWorkspacePreparation {
-        self.agent
+        self.codex
             .prepare_workspace(cluster, allocation, candidate)
             .await
     }
@@ -71,7 +82,7 @@ impl NativeExecutionRuntime {
         &self,
         terminal: &openengine_cluster_protocol::TerminalResult,
     ) -> Result<(), NativeExecutionError> {
-        self.agent
+        self.codex
             .reverify_terminal(terminal)
             .await
             .map_err(|()| NativeExecutionError::InvalidState)
@@ -85,19 +96,24 @@ pub(super) fn runtime(
         runner: LocalProcessRunner::new(),
         executable: process.executable.clone(),
     });
-    let agent = NativeAgent::new(&process).map_err(|()| NativeExecutionError::Contract)?;
+    let codex = NativeAgent::new(&process).map_err(|()| NativeExecutionError::Contract)?;
+    let pi = Arc::new(NativePiDriver::new(&process).map_err(|()| NativeExecutionError::Contract)?);
     let runtime = LocalExecutionRuntime::new(Arc::new(NativeExecutionResolver {
         deterministic,
-        agent: agent.driver(),
+        codex: codex.driver(),
+        pi: pi.clone(),
+        pi_workspace: pi.workspace().to_path_buf(),
         state_dir: process.state_dir,
         workspace: process.workspace,
     }));
-    Ok(NativeExecutionRuntime { runtime, agent })
+    Ok(NativeExecutionRuntime { runtime, codex, pi })
 }
 
 struct NativeExecutionResolver {
     deterministic: Arc<NativeDeterministicDriver>,
-    agent: Arc<dyn BuiltinWorkerDriver>,
+    codex: Arc<dyn BuiltinWorkerDriver>,
+    pi: Arc<dyn BuiltinWorkerDriver>,
+    pi_workspace: PathBuf,
     state_dir: PathBuf,
     workspace: PathBuf,
 }
@@ -111,12 +127,22 @@ impl ExecutionSiteResolver for NativeExecutionResolver {
         if target.version() != 1 {
             return indeterminate_resolution();
         }
-        let (driver, workspace) = match target.builtin_id().as_str() {
+        let (driver, workspace, mode) = match target.builtin_id().as_str() {
             "native.deterministic" => (
                 self.deterministic.clone() as Arc<dyn BuiltinWorkerDriver>,
                 self.state_dir.clone(),
+                WorkspaceAccessMode::Exclusive,
             ),
-            "native.agent.codex" => (self.agent.clone(), self.workspace.clone()),
+            "native.agent.codex" => (
+                self.codex.clone(),
+                self.workspace.clone(),
+                WorkspaceAccessMode::Exclusive,
+            ),
+            "native.agent.pi" => (
+                self.pi.clone(),
+                self.pi_workspace.clone(),
+                WorkspaceAccessMode::ReadOnly,
+            ),
             _ => return indeterminate_resolution(),
         };
         ExecutionSiteResolution::Resolved(Box::new(ResolvedExecutionSite::Builtin {
@@ -126,7 +152,7 @@ impl ExecutionSiteResolver for NativeExecutionResolver {
                 input: command.input().clone(),
                 workspace: WorkspaceCapability {
                     current_dir: workspace,
-                    mode: WorkspaceAccessMode::Exclusive,
+                    mode,
                 },
                 credentials: Vec::new(),
                 provider: None,
