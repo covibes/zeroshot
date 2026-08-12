@@ -61,6 +61,9 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Provider detection                    | `lib/provider-detection.js`                                                                                                      |
 | Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
 | Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
+| Template validation entrypoint        | `src/template-validation/index.js`                                                                                               |
+| Shared template simulation seam       | `src/template-validation/{simulation-runtime,simulation-agent,simulation-agent-runtime}.ts`                                      |
+| Random topology simulation pipeline   | `src/template-validation/random-topology-*.ts`, `simulate-random-topology.ts`                                                    |
 | Provider capabilities                 | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
 | Claude settings overlay               | `src/worktree-claude-config.ts`                                                                                                  |
 | Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
@@ -829,6 +832,14 @@ Pub/sub message bus + SQLite ledger. Agents subscribe to topics, execute on trig
 ```
 Agent A -> publish() -> SQLite Ledger -> LogicEngine -> trigger match -> Agent B executes
 ```
+
+Template simulations preserve their CommonJS require paths while `build:legacy-runtime` emits
+matching JavaScript from strict TypeScript. `simulation-runtime.ts` alone constructs the production
+ledger, message bus, and logic engine; `simulation-agent.ts` plus `simulation-agent-runtime.ts` is
+the shared agent/hook facade. Random topology processing stays staged: scenario lifecycle flows
+through the message loop, operations mutate guarded state, dispatch selects triggers, and trigger
+evaluation/execution publishes the next message. Keep those boundaries and their runtime guards
+when adding dynamic simulation actions.
 
 ### Core Primitives
 
