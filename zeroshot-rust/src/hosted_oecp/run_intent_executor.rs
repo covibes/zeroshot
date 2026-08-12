@@ -105,6 +105,9 @@ impl HostedRunIntentExecutor {
             .begin_reserved_run(params, CancellationSignal::default())
             .await;
         let status = match started {
+            Err(_) if self.backend.run_intent_failed_after_commit().await => {
+                Some(RunIntentStatus::Failed("worker_start_failed"))
+            }
             Err(_) => None,
             Ok(_) => terminal_status(&self.backend, &mut stream).await,
         };
@@ -244,7 +247,7 @@ async fn completed_status(
     outcome: Option<&WorkerOutcome>,
 ) -> Option<RunIntentStatus> {
     if backend.run_intent_platform_failure().await {
-        None
+        Some(RunIntentStatus::Failed("finalization_failed"))
     } else {
         finished_terminal_status(outcome)
     }
@@ -294,7 +297,7 @@ mod tests {
     use super::finished_terminal_status;
 
     #[test]
-    fn finished_without_node_outcome_is_retryable_platform_failure() {
+    fn finished_without_node_outcome_is_not_a_worker_terminal() {
         assert_eq!(finished_terminal_status(None), None);
     }
 }
