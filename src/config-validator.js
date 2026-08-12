@@ -883,6 +883,7 @@ const VALIDATOR_GIT_POSTFIX_PARTICIPLES = new Set([
   'inspected',
   'checked',
 ]);
+const VALIDATOR_GIT_COREFERENCE_DEMONSTRATIVES = new Set(['this', 'that', 'these', 'those']);
 function validatorGitWordSet(words) {
   return new Set(words.split(' '));
 }
@@ -1529,6 +1530,72 @@ function findProhibitedGitCommands(atoms) {
   return prohibited;
 }
 
+function coreferentialActionObject(atoms, index) {
+  const action = atoms[index]?.value;
+  let objectIndex = skipGitInspectionAction(atoms, index);
+  if (objectIndex < 0 && action === 'do') objectIndex = index + 1;
+  if (objectIndex < 0) return -1;
+
+  const object = atoms[objectIndex]?.value;
+  if (object === 'it' || object === 'them' || (action === 'do' && object === 'so')) {
+    return objectIndex + 1;
+  }
+  if (!VALIDATOR_GIT_COREFERENCE_DEMONSTRATIVES.has(object)) return -1;
+
+  const label = atoms[objectIndex + 1]?.value;
+  if (['command', 'commands', 'instruction', 'instructions'].includes(label)) {
+    return objectIndex + 2;
+  }
+  return action === 'do' && (object === 'this' || object === 'that') ? objectIndex + 1 : -1;
+}
+
+function isDirectlyNegatedCoreferentialAction(atoms, index, clauseStart) {
+  let cursor = index - 1;
+  if (atoms[cursor]?.value === 'ever') cursor -= 1;
+  if (cursor < clauseStart) return false;
+  if (VALIDATOR_GIT_NEGATED_WORDS.has(atoms[cursor]?.value)) return true;
+  return (
+    atoms[cursor]?.value === 'not' &&
+    cursor - 1 >= clauseStart &&
+    VALIDATOR_GIT_NEGATABLE_MODALS.has(atoms[cursor - 1]?.value)
+  );
+}
+
+function findCoreferentialGitOverrides(atoms, prohibitedCommands) {
+  const unsafeCommands = new Set();
+  let priorCommands = new Set();
+  let clauseCommands = new Set();
+  let clauseStart = 0;
+
+  for (let index = 0; index < atoms.length; index += 1) {
+    const atom = atoms[index];
+    const atBoundary = atom.type === 'boundary' || VALIDATOR_GIT_CLAUSE_BOUNDARIES.has(atom.value);
+    if (atBoundary) {
+      priorCommands = new Set(clauseCommands);
+      clauseCommands = new Set();
+      clauseStart = index + 1;
+      continue;
+    }
+
+    if (atom.type === 'command' && prohibitedCommands.has(index)) {
+      clauseCommands.add(atom.value);
+      continue;
+    }
+    const objectEnd = coreferentialActionObject(atoms, index);
+    if (objectEnd < 0 || isDirectlyNegatedCoreferentialAction(atoms, index, clauseStart)) {
+      continue;
+    }
+
+    const referencedCommands = clauseCommands.size > 0 ? clauseCommands : priorCommands;
+    if (atoms[objectEnd - 1]?.value === 'them' && referencedCommands.size < 2) {
+      continue;
+    }
+    for (const command of referencedCommands) unsafeCommands.add(command);
+  }
+
+  return unsafeCommands;
+}
+
 function validateValidatorGitUsage(agent, errors) {
   if (agent.role !== 'validator') {
     return;
@@ -1541,7 +1608,7 @@ function validateValidatorGitUsage(agent, errors) {
 
   const atoms = tokenizeValidatorGitPrompt(prompt);
   const prohibitedCommands = findProhibitedGitCommands(atoms);
-  const unsafeCommands = new Set();
+  const unsafeCommands = findCoreferentialGitOverrides(atoms, prohibitedCommands);
 
   for (let index = 0; index < atoms.length; index += 1) {
     if (atoms[index].type === 'command' && !prohibitedCommands.has(index)) {

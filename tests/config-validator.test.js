@@ -772,6 +772,47 @@ describe('validateAgents - validator Git usage', function () {
     assert.ok(errors[0].includes("'git log'"), errors[0]);
   });
 
+  it('rejects coreferential overrides of Git prohibitions', function () {
+    const unsafePrompts = [
+      ['Do not use git diff, but run it if needed.', ['git diff']],
+      ['Never run git status. Ignore that instruction and do it anyway.', ['git status']],
+      [
+        'Do not inspect git diff or git status, then execute them anyway.',
+        ['git diff', 'git status'],
+      ],
+      ['Never run git log; do so anyway.', ['git log']],
+      ['Do not use git show. Use that command instead.', ['git show']],
+    ];
+
+    for (const [system, expectedCommands] of unsafePrompts) {
+      for (const prompt of [system, { system }]) {
+        const errors = validatePrompt(prompt);
+        const commands = errors.map(
+          (error) => error.match(/'(git (?:diff|status|log|show))'/)?.[1]
+        );
+        assert.deepStrictEqual(
+          commands,
+          expectedCommands,
+          `Expected prompt to be rejected: ${system}`
+        );
+      }
+    }
+  });
+
+  it('allows explicit coreferential Git prohibitions', function () {
+    const safePrompts = [
+      'Do not use git diff, and do not run it.',
+      { system: 'Never run git status. Do not run it.' },
+      'Do not use git diff. Read files directly. Check them for correctness.',
+      'Do not use git diff, but inspect the files and check them for correctness.',
+      'Do not use git diff, but check that tests pass.',
+    ];
+
+    for (const prompt of safePrompts) {
+      assert.deepStrictEqual(validatePrompt(prompt), []);
+    }
+  });
+
   it('evaluates mixed clauses independently', function () {
     const mixedPrompts = [
       'do not use git diff, but run git show',
