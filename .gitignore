@@ -143,6 +143,9 @@ lib/settings-validation.d.ts
 lib/settings-issue-providers.js
 lib/settings-issue-providers.d.ts
 src/config-router.js
+src/quality-gates.js
+src/command-proofs.js
+src/repo-settings-access.js
 src/claude-credentials.js
 src/copy-worker.js
 src/darwin-keychain-boundary.js
@@ -180,6 +183,8 @@ src/agent/schema-utils.js
 src/agent/context-metrics.js
 src/agent/agent-liveness-poll.js
 src/agent/context-replay-policy.js
+src/agent/agent-context-sources.js
+src/agent/agent-input-injector.js
 src/agent/critical-agent-policy.js
 src/agent/provider-control-plane.js
 src/agent/structured-output-error.js
