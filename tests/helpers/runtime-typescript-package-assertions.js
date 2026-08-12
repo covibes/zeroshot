@@ -33,6 +33,7 @@ const RUNTIME_TYPESCRIPT_OUTPUTS = Object.freeze([
   'src/agent/agent-quality-gate-schema.js',
   'src/agent/rate-limit-backoff.js',
   'src/agent/guidance-queue.js',
+  'src/agent/schema-utils.js',
   'src/agent/context-replay-policy.js',
   'src/agent/critical-agent-policy.js',
   'src/agent/provider-control-plane.js',
