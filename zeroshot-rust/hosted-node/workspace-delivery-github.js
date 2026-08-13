@@ -1,6 +1,8 @@
 'use strict';
 
 const MAX_GITHUB_RESPONSE_BYTES = 64 * 1024;
+const AUTO_MERGE_POLL_ATTEMPTS = 90;
+const AUTO_MERGE_POLL_INTERVAL_MS = 20 * 1000;
 
 class GitHubRequestError extends Error {
   constructor(status) {
@@ -107,16 +109,25 @@ async function createPullRequest(config, branch, headRevision, request = github)
   return created;
 }
 
-function validMergedReview({ config, review, branch, headRevision, mergeRevision }) {
+function validReviewAuthority({ config, created, review, branch }) {
   return (
+    review.number === created.number &&
+    review.head?.ref === branch &&
+    /^[0-9a-f]{40}$/.test(review.head?.sha) &&
+    review.head?.repo?.full_name === config.repository &&
+    review.base?.ref === config.delivery.targetBranch &&
+    review.base?.repo?.full_name === config.repository
+  );
+}
+
+function validMergedReview({ config, created, review, branch, mergeRevision }) {
+  return (
+    validReviewAuthority({ config, created, review, branch }) &&
     review.state === 'closed' &&
     review.merged === true &&
     review.merged_at &&
     review.merge_commit_sha === mergeRevision &&
-    review.head?.ref === branch &&
-    review.head?.sha === headRevision &&
-    review.base?.ref === config.delivery.targetBranch &&
-    review.base?.repo?.full_name === config.repository
+    /^[0-9a-f]{40}$/.test(mergeRevision)
   );
 }
 
@@ -142,7 +153,8 @@ async function mergePullRequest(options) {
   } catch (error) {
     if (!(error instanceof GitHubRequestError) || error.status !== 405) throw error;
   }
-  return enableAutoMerge(options);
+  await enableAutoMerge(options);
+  return waitForAutoMerge(options);
 }
 
 async function enableAutoMerge({ config, created, branch, headRevision, graphql }) {
@@ -168,7 +180,70 @@ async function enableAutoMerge({ config, created, branch, headRevision, graphql 
   ) {
     throw new Error('GitHub auto-merge verification failed');
   }
-  return { disposition: 'auto_merge_enabled' };
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function mergedAutoMergeOutcome(options, review) {
+  if (review.merged !== true) return null;
+  const mergeRevision = review.merge_commit_sha;
+  if (!validMergedReview({ ...options, review, mergeRevision })) {
+    throw new Error('GitHub auto-merge verification failed');
+  }
+  return { disposition: 'merged', mergeRevision };
+}
+
+function requireOpenAutoMergeReview(options, review) {
+  if (!validReviewAuthority({ ...options, review })) {
+    throw new Error('GitHub auto-merge authority changed');
+  }
+  if (review.state !== 'open') {
+    throw new Error('GitHub closed the hosted pull request without merging it');
+  }
+  if (review.mergeable_state === 'dirty') {
+    throw new Error('GitHub reported a hosted delivery merge conflict');
+  }
+}
+
+async function updateBehindBranch(options, review, updateRequestedFor) {
+  if (review.mergeable_state !== 'behind' || updateRequestedFor === review.head.sha) {
+    return updateRequestedFor;
+  }
+  try {
+    await options.request(
+      options.config.repository,
+      `/pulls/${options.created.number}/update-branch`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ expected_head_sha: review.head.sha }),
+      }
+    );
+    return review.head.sha;
+  } catch (error) {
+    if (!(error instanceof GitHubRequestError) || error.status !== 422) throw error;
+    return updateRequestedFor;
+  }
+}
+
+async function waitForAutoMerge(options) {
+  const { config, created, branch, headRevision, request } = options;
+  const wait = options.wait || delay;
+  const attempts = options.pollAttempts || AUTO_MERGE_POLL_ATTEMPTS;
+  let updateRequestedFor = null;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const review = await request(config.repository, `/pulls/${created.number}`);
+    const merged = mergedAutoMergeOutcome({ config, created, branch }, review);
+    if (merged) return merged;
+    requireOpenAutoMergeReview({ config, created, branch }, review);
+    updateRequestedFor = await updateBehindBranch(options, review, updateRequestedFor);
+    if (attempt + 1 < attempts) await wait(AUTO_MERGE_POLL_INTERVAL_MS);
+  }
+  throw new Error(
+    `GitHub did not merge hosted revision ${headRevision} before the delivery timeout`
+  );
 }
 
 module.exports = {
