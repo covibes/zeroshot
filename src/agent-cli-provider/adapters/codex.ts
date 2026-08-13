@@ -138,6 +138,18 @@ function addSkipGitArgs(args: string[], options: BuildProviderCommandOptions): v
   }
 }
 
+function codexExecAuthEnv(
+  authEnv: Readonly<Record<string, string>>
+): Readonly<Record<string, string>> {
+  const openAiApiKey = authEnv.OPENAI_API_KEY;
+  if (openAiApiKey === undefined) return authEnv;
+  const { OPENAI_API_KEY: _openAiApiKey, ...rest } = authEnv;
+  return {
+    ...rest,
+    CODEX_API_KEY: rest.CODEX_API_KEY ?? openAiApiKey,
+  };
+}
+
 function applySchemaArgs(
   args: string[],
   cleanup: string[],
@@ -267,7 +279,7 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   return commandSpec({
     binary: 'codex',
     args,
-    env: authEnv,
+    env: codexExecAuthEnv(authEnv),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     cleanup,
     cleanupMetadata: cleanup.map((schemaFile) => ({

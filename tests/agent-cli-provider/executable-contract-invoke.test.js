@@ -267,7 +267,8 @@ test('invoke forwards and redacts Codex credentials inherited from process env',
       },
       {
         runner: (commandSpec) => {
-          assert.equal(commandSpec.env.OPENAI_API_KEY, secret);
+          assert.equal(commandSpec.env.OPENAI_API_KEY, undefined);
+          assert.equal(commandSpec.env.CODEX_API_KEY, secret);
           return runnerResult({
             stdout: `leak ${secret}`,
             stderr: `auth failed for ${secret}`,
