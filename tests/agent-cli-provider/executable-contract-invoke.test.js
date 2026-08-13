@@ -245,7 +245,7 @@ test('invoke exposes timeout evidence and cleanup when provider times out', asyn
   assert.equal(fs.existsSync(cleanupPath), false);
 });
 
-test('invoke redacts provider credentials inherited from process env', async () => {
+test('invoke forwards and redacts Codex credentials inherited from process env', async () => {
   const secret = 'plain-provider-secret';
   const previous = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = secret;
@@ -266,18 +266,18 @@ test('invoke redacts provider credentials inherited from process env', async () 
         },
       },
       {
-        runner: () =>
-          runnerResult({
+        runner: (commandSpec) => {
+          assert.equal(commandSpec.env.OPENAI_API_KEY, secret);
+          return runnerResult({
             stdout: `leak ${secret}`,
             stderr: `auth failed for ${secret}`,
-          }),
+          });
+        },
       }
     );
 
     assert.equal(response.exitCode, 0);
     assert.equal(response.envelope.ok, true);
-    assert.equal(response.envelope.result.evidence.stdout.includes(secret), false);
-    assert.equal(response.envelope.result.evidence.stderr.includes(secret), false);
     assertNoSecret(response.envelope, secret);
   } finally {
     if (previous === undefined) {

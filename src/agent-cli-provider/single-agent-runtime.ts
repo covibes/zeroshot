@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { getProviderAdapter } from './adapters';
+import { providerCredentialEnv } from './contract-env';
 import { UnsupportedProviderCapabilityError } from './errors';
 import { normalizeGatewayBuildOptions, resolveGatewayConfiguration } from './gateway-tools';
 import { isRecord } from './json';
@@ -881,6 +882,7 @@ function resolveRuntimeAuthEnv(
   provider: ProviderId,
   settings: Record<string, unknown>
 ): Readonly<Record<string, string>> {
+  if (provider === 'codex') return providerCredentialEnv(provider);
   if (provider !== 'claude') return {};
   const claudeAuthModule: unknown = require('../../lib/settings/claude-auth');
   const resolveClaudeAuth = moduleFunction(claudeAuthModule, 'resolveClaudeAuth');
