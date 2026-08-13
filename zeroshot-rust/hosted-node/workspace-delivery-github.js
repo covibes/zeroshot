@@ -1,5 +1,5 @@
 'use strict';
-
+const { runBoundedReconciledOperation } = require('./workspace-delivery-retry');
 const MAX_GITHUB_RESPONSE_BYTES = 64 * 1024;
 const AUTO_MERGE_POLL_ATTEMPTS = 90;
 const AUTO_MERGE_POLL_INTERVAL_MS = 20 * 1000;
@@ -11,6 +11,8 @@ class GitHubRequestError extends Error {
     this.status = status;
   }
 }
+
+class GitHubGraphqlError extends Error {}
 
 async function boundedJson(response) {
   const bytes = Buffer.from(await response.arrayBuffer());
@@ -58,7 +60,7 @@ async function githubGraphql(query, variables) {
   if (!response.ok) throw new GitHubRequestError(response.status);
   const document = await boundedJson(response);
   if (Array.isArray(document.errors) && document.errors.length > 0) {
-    throw new Error('GitHub rejected hosted auto-merge');
+    throw new GitHubGraphqlError('GitHub rejected hosted auto-merge');
   }
   return document.data;
 }
@@ -153,8 +155,50 @@ async function mergePullRequest(options) {
   } catch (error) {
     if (!(error instanceof GitHubRequestError) || error.status !== 405) throw error;
   }
-  await enableAutoMerge(options);
+  const reconciled = await enableAutoMergeWithRetry(options);
+  if (reconciled) return reconciled;
   return waitForAutoMerge(options);
+}
+
+function retryableAutoMergeEnableError(error) {
+  return (
+    error instanceof GitHubGraphqlError ||
+    error instanceof TypeError ||
+    (error instanceof GitHubRequestError && (error.status === 429 || error.status >= 500))
+  );
+}
+
+function autoMergeIsEnabled({ config, created, branch, headRevision }, review) {
+  return (
+    validReviewAuthority({ config, created, branch, review }) &&
+    review.state === 'open' &&
+    review.head.sha === headRevision &&
+    review.auto_merge?.merge_method === 'merge'
+  );
+}
+
+async function reconcileAutoMergeEnable(options) {
+  const review = await options.request(
+    options.config.repository,
+    `/pulls/${options.created.number}`
+  );
+  const merged = mergedAutoMergeOutcome(options, review);
+  if (merged) return { done: true, value: merged };
+  if (autoMergeIsEnabled(options, review)) return { done: true, value: null };
+  requireOpenAutoMergeReview(options, review);
+  return { done: false };
+}
+
+function enableAutoMergeWithRetry(options) {
+  return runBoundedReconciledOperation({
+    operation: () => enableAutoMerge(options),
+    reconcile: () => reconcileAutoMergeEnable(options),
+    retryable: retryableAutoMergeEnableError,
+    attempts: options.enableAttempts || 6,
+    intervalMs: 2 * 1000,
+    wait: options.wait,
+    exhaustedMessage: 'GitHub did not enable hosted auto-merge after bounded retries',
+  });
 }
 
 async function enableAutoMerge({ config, created, branch, headRevision, graphql }) {
@@ -250,6 +294,7 @@ module.exports = {
   createPullRequest,
   github,
   githubGraphql,
+  GitHubGraphqlError,
   GitHubRequestError,
   mergePullRequest,
 };

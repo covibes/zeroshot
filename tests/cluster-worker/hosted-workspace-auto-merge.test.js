@@ -2,12 +2,14 @@
 
 const assert = require('node:assert/strict');
 const {
+  GitHubGraphqlError,
   GitHubRequestError,
   mergePullRequest,
 } = require('../../zeroshot-rust/hosted-node/workspace-delivery-github');
 
 const HEAD = 'b'.repeat(40);
 const MERGE = 'd'.repeat(40);
+const MERGED_RECEIPT = Object.freeze({ disposition: 'merged', mergeRevision: MERGE });
 const UPDATED_HEAD = 'e'.repeat(40);
 const REPOSITORY = 'the-open-engine/zeroshot';
 const CONFIG = Object.freeze({
@@ -40,6 +42,27 @@ function autoMergeGraphql(branch) {
   });
 }
 
+function mergedReview(branch, overrides = {}) {
+  return review(branch, {
+    state: 'closed',
+    merged: true,
+    merged_at: '2026-08-08T00:00:00Z',
+    merge_commit_sha: MERGE,
+    ...overrides,
+  });
+}
+
+function deliveryOptions(branch, overrides) {
+  return {
+    config: CONFIG,
+    created: { ...review(branch), node_id: 'PR_node_123' },
+    branch,
+    headRevision: HEAD,
+    wait: () => Promise.resolve(),
+    ...overrides,
+  };
+}
+
 describe('private hosted auto-merge delivery', () => {
   it('updates a concurrently-behind branch and succeeds only after authoritative merge', async () => {
     const branch = 'zeroshot/hosted-auto-merge';
@@ -51,11 +74,7 @@ describe('private hosted auto-merge delivery', () => {
         head: { ref: branch, sha: UPDATED_HEAD, repo: { full_name: REPOSITORY } },
         mergeable_state: 'clean',
       }),
-      review(branch, {
-        state: 'closed',
-        merged: true,
-        merged_at: '2026-08-08T00:00:00Z',
-        merge_commit_sha: MERGE,
+      mergedReview(branch, {
         head: { ref: branch, sha: UPDATED_HEAD, repo: { full_name: REPOSITORY } },
       }),
     ];
@@ -70,17 +89,14 @@ describe('private hosted auto-merge delivery', () => {
       return reviews.shift();
     };
 
-    const receipt = await mergePullRequest({
-      config: CONFIG,
-      created: { ...review(branch), node_id: 'PR_node_123' },
-      branch,
-      headRevision: HEAD,
-      request,
-      graphql: autoMergeGraphql(branch),
-      wait: () => Promise.resolve(),
-    });
+    const receipt = await mergePullRequest(
+      deliveryOptions(branch, {
+        request,
+        graphql: autoMergeGraphql(branch),
+      })
+    );
 
-    assert.deepEqual(receipt, { disposition: 'merged', mergeRevision: MERGE });
+    assert.deepEqual(receipt, MERGED_RECEIPT);
     const updates = requests.filter(({ route }) => route.endsWith('/update-branch'));
     assert.equal(updates.length, 2, 'a stale guarded update is retried');
     assert.deepEqual(JSON.parse(updates[0].init.body), { expected_head_sha: HEAD });
@@ -89,17 +105,106 @@ describe('private hosted auto-merge delivery', () => {
   it('never accepts an open PR alone', async () => {
     const branch = 'zeroshot/hosted-open-only';
     await assert.rejects(
-      mergePullRequest({
-        config: CONFIG,
-        created: { ...review(branch), node_id: 'PR_node_123' },
-        branch,
-        headRevision: HEAD,
-        request: () => {
-          throw new GitHubRequestError(401);
-        },
-        graphql: autoMergeGraphql(branch),
-      }),
+      mergePullRequest(
+        deliveryOptions(branch, {
+          request: () => {
+            throw new GitHubRequestError(401);
+          },
+          graphql: autoMergeGraphql(branch),
+        })
+      ),
       /GitHub rejected hosted delivery/
     );
+  });
+});
+
+describe('private hosted auto-merge resilience', () => {
+  it('retries a transient auto-merge mutation only after reconciling GitHub state', async () => {
+    const branch = 'zeroshot/hosted-retry-auto-merge';
+    let graphqlAttempts = 0;
+    const reviews = [
+      review(branch, { mergeable_state: 'blocked', auto_merge: null }),
+      review(branch, { mergeable_state: 'blocked' }),
+      mergedReview(branch),
+    ];
+    const request = (_repository, route) => {
+      if (route.endsWith('/merge')) throw new GitHubRequestError(405);
+      return reviews.shift();
+    };
+    const graphql = () => {
+      graphqlAttempts += 1;
+      if (graphqlAttempts === 1) throw new GitHubGraphqlError();
+      return autoMergeGraphql(branch)();
+    };
+
+    const receipt = await mergePullRequest(
+      deliveryOptions(branch, {
+        request,
+        graphql,
+      })
+    );
+
+    assert.equal(graphqlAttempts, 2);
+    assert.deepEqual(receipt, MERGED_RECEIPT);
+  });
+
+  it('accepts reconciled auto-merge authority after a lost mutation response', async () => {
+    const branch = 'zeroshot/hosted-reconciled-auto-merge';
+    let graphqlAttempts = 0;
+    const reviews = [
+      review(branch, {
+        mergeable_state: 'blocked',
+        auto_merge: { merge_method: 'merge' },
+      }),
+      mergedReview(branch),
+    ];
+    const request = (_repository, route) => {
+      if (route.endsWith('/merge')) throw new GitHubRequestError(405);
+      return reviews.shift();
+    };
+
+    const receipt = await mergePullRequest(
+      deliveryOptions(branch, {
+        request,
+        graphql: () => {
+          graphqlAttempts += 1;
+          throw new TypeError('response lost');
+        },
+      })
+    );
+
+    assert.equal(graphqlAttempts, 1);
+    assert.deepEqual(receipt, MERGED_RECEIPT);
+  });
+});
+
+describe('private hosted auto-merge paired failures', () => {
+  it('bounds transient mutation and reconciliation failures together', async () => {
+    const branch = 'zeroshot/hosted-retry-reconciliation';
+    let graphqlAttempts = 0;
+    let reviewAttempts = 0;
+    const request = (_repository, route) => {
+      if (route.endsWith('/merge')) throw new GitHubRequestError(405);
+      reviewAttempts += 1;
+      if (reviewAttempts === 1) throw new GitHubRequestError(502);
+      return review(branch, { mergeable_state: 'blocked', auto_merge: null });
+    };
+
+    await assert.rejects(
+      mergePullRequest(
+        deliveryOptions(branch, {
+          request,
+          graphql: () => {
+            graphqlAttempts += 1;
+            throw new GitHubGraphqlError();
+          },
+          enableAttempts: 2,
+        })
+      ),
+      /did not enable hosted auto-merge after bounded retries/
+    );
+
+    assert.equal(graphqlAttempts, 2);
+    assert.equal(reviewAttempts, 2);
   });
 });

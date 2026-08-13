@@ -213,7 +213,9 @@ cannot succeed. After provider success, trusted Git delivery verifies the mutati
 configuration, and that the retained revision remains an ancestor of the current target before
 pushing one deterministic-branch commit. Review delivery succeeds only with a verified open pull
 request. Ship delivery succeeds only after an authoritative merge receipt or GitHub acceptance of
-merge-method auto-merge; an open pull request alone never succeeds. The backend validates the
+merge-method auto-merge; an open pull request alone never succeeds. Transient auto-merge
+enablement failures use one bounded retry policy and re-read the exact pull-request authority
+before retrying or accepting a lost response. The backend validates the
 secret-free, versioned result, and any execution, cleanup, or delivery defect produces a closed
 failure. Keep the runtime, binary, image, and manifest private. Provider and harness interpretation
 belongs only in the Zeroshot runtime bundle and worker, never in hosting, IaC, or the run-intent
