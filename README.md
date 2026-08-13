@@ -74,6 +74,36 @@ Every step is written to a crash-safe SQLite ledger. Bring your own provider and
   <em>One run: classify, execute, verify, and repeat when evidence fails.</em>
 </div>
 
+## Classification and routing
+
+The conductor scores every task on complexity (TRIVIAL, SIMPLE, STANDARD, CRITICAL) and type (INQUIRY, TASK, DEBUG) before any code is written, and that score picks the workflow. A junior model runs the pass; when it can't call it, it answers UNCERTAIN and a senior model decides instead.
+
+Rules are evaluated top down, first match wins:
+
+| Classification                         | Workflow           | Agents                                                        |
+| -------------------------------------- | ------------------ | ------------------------------------------------------------- |
+| DEBUG above TRIVIAL, any complexity    | `debug-workflow`   | investigator, fixer, tester, completion-detector              |
+| TRIVIAL TASK or DEBUG, `--pr`/`--ship` | `worker-validator` | worker, 1 validator                                           |
+| TRIVIAL                                | `single-worker`    | worker only, **no validator**                                 |
+| SIMPLE                                 | `worker-validator` | worker, 1 validator                                           |
+| STANDARD                               | `full-workflow`    | planner, worker, 2 validators                                 |
+| CRITICAL                               | `full-workflow`    | planner, worker, meta-coordinator, 4 validators in two stages |
+
+TRIVIAL is the row worth knowing about: one worker, no verifier, so the executor–verifier split doesn't apply on that path. CRITICAL is meant to be rare in the other direction, and the conductor is instructed to pick STANDARD whenever it's torn, since CRITICAL spends a senior model and four validators.
+
+## Custom workflows
+
+Each workflow above is a JSON file in [`cluster-templates/base-templates/`](cluster-templates/base-templates/), and none of them is privileged. Underneath is a message bus: agents subscribe to topics, publish to topics, and the graph is that wiring.
+
+```bash
+zeroshot config list                   # available workflows
+zeroshot config show full-workflow     # read one
+zeroshot config validate ./mine.json   # check yours
+zeroshot run 123 --config ./mine.json  # run it
+```
+
+Agent ids, roles, and topic names are free strings, and a trigger can carry a JavaScript predicate deciding whether a message wakes its agent. Cycles are legal, reject-and-retry being one, though `zeroshot config validate` fails a ring of three or more unless something in it carries escape logic. Sub-clusters nest five deep.
+
 ## Providers and issue sources
 
 Provider engines come from the registry: **Claude, Codex, bundled Gateway, Gemini, OpenCode, Pi, OMP, Kiro, and Copilot**. Model gateways stay behind the single Gateway provider.
@@ -108,6 +138,7 @@ zeroshot run 123 --pr            # worktree + pull request
 zeroshot run 123 --ship          # worktree + PR + merge after approval
 zeroshot run 123 --pr --pr-body $'## Summary\n\nCustom text\n\n{{issue_reference}}'
 zeroshot run 123 -d              # background run
+zeroshot run 123 --config ./mine.json  # custom workflow graph
 
 zeroshot list                    # tasks and clusters (--json)
 zeroshot status <id>             # detailed status (--json)
@@ -119,6 +150,7 @@ zeroshot kill <id>               # force stop
 zeroshot providers               # provider availability and defaults
 zeroshot settings                # effective settings
 zeroshot agents list             # available agents
+zeroshot config list             # workflow graphs (config show / config validate)
 ```
 
 `--pr-body` supplies a deterministic pull-request body for `--pr` and `--ship` runs. The
@@ -181,7 +213,7 @@ Zeroshot is **Layer 01 · Verification** of [The Open Engine](https://theopeneng
 | 02     | Constraints: **Opcore**    | Sibling · alpha             |
 | 03-05  | Intent · Context · Runtime | In development              |
 
-Zeroshot runs the loop: an agent writes the change, and an **independent** verifier decides whether it holds: approve, or a reproducible failure. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents. Zeroshot packages Opcore `0.2.1` and uses introduced-change validation so existing repository debt never blocks an otherwise clean change. Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
+Zeroshot runs the loop: an agent writes the change, and **independent** verifiers decide whether it holds, approving it or rejecting it with the specific objections that blocked it. **Opcore** is the sibling layer, a deterministic, local, read-only **constraints** gate for coding agents. Zeroshot packages Opcore `0.2.1` and uses introduced-change validation so existing repository debt never blocks an otherwise clean change. Verification asks _"does this meet the goal?"_; constraints ask _"is this within tolerance?"_
 
 Each layer ships the same way: extracted from the platform we run, then opened. **Trust nothing. Verify everything.**
 
