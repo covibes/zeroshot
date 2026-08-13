@@ -226,6 +226,9 @@ Structured-output recovery eligibility is also registry-derived: every engine wh
 capability is `true` or `experimental` must implement its provider-owned, fail-closed recovery
 adapter. Recovery always runs as a fresh nested turn with provider sessions, MCP, approval bypass,
 write-capable tools, network tools, and user-defined agents/configuration disabled.
+OMP SDK children inherit only the registry-declared non-secret configuration environment plus the
+fixed minimal process environment. Credentials remain on the private credential channel; never add
+arbitrary ambient passthrough or duplicate provider configuration lists beside the registry.
 
 Cluster Protocol Rust types are the source of truth. Files under
 `protocol/openengine-cluster/v1/` are generated projections; update them with

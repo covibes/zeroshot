@@ -22,6 +22,7 @@ import {
   parseExactOmpModelSelector,
   resolveOmpSdkSettings,
 } from './omp/sdk-settings';
+import { ompSdkEnvironmentPolicy } from './omp/sdk-environment-policy';
 import type { ConfiguredOmpSdkSettings } from './omp/sdk-settings';
 import {
   getDefaultProviderId,
@@ -357,10 +358,7 @@ function prepareOmpProviderCommand(
         webSearch: { requested: false, effective: false },
       },
       invoke,
-      environmentPolicy: {
-        inherit: 'minimal',
-        values: Object.freeze({}),
-      },
+      environmentPolicy: ompSdkEnvironmentPolicy(),
       credentialNames,
       privateArtifacts: {
         root: privateRoot,

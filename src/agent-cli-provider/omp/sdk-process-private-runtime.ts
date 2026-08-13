@@ -19,6 +19,7 @@ import type {
   PreparedProviderInvoke,
 } from '../types';
 import type { ProcessResult, ProcessRunnerOptions } from '../process-runner';
+import { isOmpSdkEnvironmentName } from './sdk-environment-policy';
 import { OmpSdkProcessRunnerError } from './sdk-process-error';
 
 export { credentialPayload, redactDiagnostic } from './sdk-process-credentials';
@@ -33,19 +34,6 @@ const PRIVATE_ENV_NAMES = new Set([
   'XDG_STATE_HOME',
   'PI_CODING_AGENT_DIR',
 ]);
-const MINIMAL_ENV_NAMES = new Set([
-  'ALL_PROXY',
-  'HTTP_PROXY',
-  'HTTPS_PROXY',
-  'LANG',
-  'LC_ALL',
-  'NO_PROXY',
-  'PATH',
-  'SSL_CERT_DIR',
-  'SSL_CERT_FILE',
-  'TZ',
-]);
-
 export interface OmpSdkPreparedInvocation extends PreparedSingleAgentProviderCommand {
   readonly invoke: PreparedProviderInvoke & {
     readonly lane: 'spawn';
@@ -228,7 +216,7 @@ export function childEnvironment(
   for (const [name, value] of Object.entries(policy.values)) {
     const normalized = name.toUpperCase();
     if (
-      !MINIMAL_ENV_NAMES.has(normalized) ||
+      !isOmpSdkEnvironmentName(normalized) ||
       PRIVATE_ENV_NAMES.has(normalized) ||
       /(?:^|_)(?:AUTH|CREDENTIAL|KEY|PASSWORD|SECRET|TOKEN)(?:_|$)/i.test(name)
     ) {
