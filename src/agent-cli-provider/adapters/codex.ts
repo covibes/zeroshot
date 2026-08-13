@@ -238,6 +238,7 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   }
   const args: string[] = ['exec'];
   const cleanup: string[] = [];
+  const authEnv = options.authEnv ?? {};
   const resumeSessionId =
     options.resumeSessionId && optionFeatures(options).supportsResume !== false
       ? options.resumeSessionId
@@ -266,7 +267,7 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   return commandSpec({
     binary: 'codex',
     args,
-    env: {},
+    env: authEnv,
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     cleanup,
     cleanupMetadata: cleanup.map((schemaFile) => ({
