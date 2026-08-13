@@ -1045,12 +1045,18 @@ iteration start for the executing agent. Acceptable values: `cluster_start`, `la
 
 Classifies tasks on Complexity x TaskType, routes to parameterized templates.
 
-| Complexity | Description            | Validators |
-| ---------- | ---------------------- | ---------- |
-| TRIVIAL    | 1 file, mechanical     | 0          |
-| SIMPLE     | 1 concern              | 1          |
-| STANDARD   | Multi-file             | 3          |
-| CRITICAL   | Auth/payments/security | 5          |
+| Complexity | Description            | Validators           |
+| ---------- | ---------------------- | -------------------- |
+| TRIVIAL    | 1 file, mechanical     | 0                    |
+| SIMPLE     | 1 concern              | 1                    |
+| STANDARD   | Multi-file             | 2, inline            |
+| CRITICAL   | Auth/payments/security | 4, across two stages |
+
+Counts come from `getValidatorCount()` in `src/config-router.ts`. CRITICAL returns
+`validator_count: 0`, which skips the inline validators and activates the `meta-coordinator`:
+`quick-validation` then `heavy-validation`, 2 each.
+
+`UNCERTAIN` exists only in the junior conductor's schema and means escalate, not a workload.
 
 | TaskType | Action                |
 | -------- | --------------------- |
@@ -1058,7 +1064,8 @@ Classifies tasks on Complexity x TaskType, routes to parameterized templates.
 | TASK     | Implement new feature |
 | DEBUG    | Fix broken code       |
 
-Base templates: `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`.
+Base templates: `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`, plus
+`quick-validation` and `heavy-validation` for the CRITICAL two-stage pipeline.
 An exact whole-value `{{param}}` placeholder preserves the parameter's JSON type; placeholders
 embedded in surrounding text stringify their values. Keep numeric workflow controls typed through
 dynamic template loading.
