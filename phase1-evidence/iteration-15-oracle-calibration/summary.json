@@ -1,0 +1,38 @@
+{
+  "cohort": "holdout",
+  "generatedAt": "2026-08-01T09:16:35.101Z",
+  "provider": "default",
+  "seedSha256": "cf76e086696f9918b5bec85712a74a94b720faad09620a9db20a55fcaafca45f",
+  "passed": 4,
+  "total": 4,
+  "results": [
+    {
+      "id": "h06-printable-bracket",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-15-oracle-calibration/h06-printable-bracket"
+    },
+    {
+      "id": "h07-vat-return",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-15-oracle-calibration/h07-vat-return"
+    },
+    {
+      "id": "h08-original-jingle",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-15-oracle-calibration/h08-original-jingle"
+    },
+    {
+      "id": "h09-cold-room-monitor",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-15-oracle-calibration/h09-cold-room-monitor"
+    }
+  ]
+}

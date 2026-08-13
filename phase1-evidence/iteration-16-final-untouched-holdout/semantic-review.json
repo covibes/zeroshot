@@ -1,0 +1,153 @@
+{
+  "reviewedAt": "2026-08-01",
+  "promptRevision": "b9443cf2d2e03e378fe122cd7ada1648b55676e8b98d6eeae18297ae9101171d",
+  "cohortUse": "untouched-final-holdout",
+  "coldAdmission": {
+    "passed": 18,
+    "total": 18
+  },
+  "shapeDistribution": {
+    "validatorCounts": {
+      "2": 3,
+      "3": 12,
+      "4": 3
+    },
+    "stageCounts": {
+      "1": 3,
+      "2": 15
+    },
+    "meaningfullyVaried": true
+  },
+  "semanticPasses": 13,
+  "semanticTotal": 18,
+  "claimPassed": false,
+  "reviews": [
+    {
+      "id": "f01-triage-queue",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Uses the complete queue and supplied protocol as authorities, separates rule application from fact grounding, and refuses to infer no-contact from current state when attributable outbound records are unavailable."
+    },
+    {
+      "id": "f02-experiment-ship-decision",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Recomputes every task-named statistic from raw assignments and outcomes, applies only the preregistered decision rule, and keeps causal claims separate from statistical evidence."
+    },
+    {
+      "id": "f03-acrostic-poem",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Form is checked deterministically and tone is judged only against the requested brief. The compact originality validator overclaims a bounded search, but the generated topology's final controlling calibration override correctly converts the required global originality claim to approved:false/EVIDENCE GAP unless sufficient provenance exists."
+    },
+    {
+      "id": "f04-cloud-key-rotation",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Distinguishes terminal rotation state, live service adoption, exact overlap, and report disclosure using platform records and the running service; queued revocation and missing ordering evidence cannot pass."
+    },
+    {
+      "id": "f05-auction-bid",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "approvability", "scopeCalibration"],
+      "notes": "The retry validator counts bid-log entries attributable to the account rather than attributable submission attempts. A single compliant proxy/max bid can generate multiple automatic platform increments and be falsely rejected as a retry."
+    },
+    {
+      "id": "f06-claim-coverage-decision",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Grounds clauses and facts in the supplied materials, independently re-derives the determination, distinguishes analysis from an operative live decision, and preserves an evidence gap for unattributable claims-system side effects."
+    },
+    {
+      "id": "f07-tournament-schedule",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Exhaustively recomputes the pair, round, blackout, and venue-use constraints without imposing a reference solution, venue exclusivity, home/away balance, or other unstated scheduling preferences."
+    },
+    {
+      "id": "f08-pronunciation-feedback",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Uses the actual learner and target recordings for timing and pronunciation claims, the supplied dialect notes for acceptable variants, and the delivered text itself for prohibited personal attribution; it does not invent an exhaustiveness requirement."
+    },
+    {
+      "id": "f09-research-dataset-anonymization",
+      "passed": false,
+      "failedCriteria": ["approvability", "scopeCalibration"],
+      "notes": "The derivation-fidelity validator invents a row-level preservation contract and treats shuffled, synthesized, or perturbed records as gaming. The task requires identifier removal, k>=5, and three aggregate bounds but does not prohibit legitimate data swapping, microaggregation, noise, or synthetic transformation."
+    },
+    {
+      "id": "f10-systematic-review",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "epistemicHonesty"],
+      "notes": "A separately formulated search with complete pagination can find an omitted trial, but a null result does not certify that every matching trial was found in an open semantic search space. Full approval requires an authoritative enumerable universe or an explicit coverage-bounded claim."
+    },
+    {
+      "id": "f11-weld-photo-inspection",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Checks the full image-by-visible-criterion matrix against the supplied standard, grounds verdicts in pixels, and explicitly prevents visible photographs from certifying hidden penetration, strength, or the assembly as a whole."
+    },
+    {
+      "id": "f12-thermostat-control-window",
+      "passed": false,
+      "failedCriteria": ["defectSensitivity", "approvability"],
+      "notes": "Both compact validator prompts say an honestly reported failure to keep the room in 19-21 C is compliant. Honesty is required, but an observed out-of-band room still means the requested postcondition was not achieved; it must be an explicit non-success."
+    },
+    {
+      "id": "f13-content-moderation-batch",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Enumerates every attached post, verifies exact policy and text citations, independently applies the policy without inferred traits or intent, and refuses to certify no enforcement action without attributable platform records."
+    },
+    {
+      "id": "f14-purchase-order",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Checks terminal acknowledgement, exact quote fidelity, validity timing, and duplicate-sensitive issuance from platform state and receipts without replaying the irreversible order action."
+    },
+    {
+      "id": "f15-handwritten-transcription",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Uses the notation guide and every page image, separates cheap notation/coverage gates from exhaustive text and apparatus collation, and permits defensible ambiguous readings while rejecting modernization or invention."
+    },
+    {
+      "id": "f16-evacuation-route-plan",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Anchors facts to the original request time, checks authoritative shelter and hazard sources independently, and treats missing historical or accessibility data as an evidence gap rather than inventing a safe route."
+    },
+    {
+      "id": "f17-asynchronous-export",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "epistemicHonesty"],
+      "notes": "The reconciliation validator accepts an export operation's own count as the request-time population without first proving that the operation snapshot is anchored to the original request time. A later terminal export can therefore have the right operation count but the wrong historical record set."
+    },
+    {
+      "id": "f18-live-mediation",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Recognizes that the real-world interaction is impossible with the stated capabilities, forbids substitution or fabrication, and the deterministic worker hook routes completed:false directly to CLUSTER_FAILED before any validator can convert candor into success."
+    }
+  ],
+  "crossCuttingRuntimeFailure": {
+    "description": "Generated validation currently represents both correctable artifact defects and uncorrectable evidence gaps as approved:false on the same feedback topic. The worker retries both, so an unavailable oracle can cause futile repair cycles and can prevent later independent checks from reporting the observable remainder.",
+    "affectedExamples": [
+      "f01-triage-queue",
+      "f03-acrostic-poem",
+      "f06-claim-coverage-decision",
+      "f13-content-moderation-batch",
+      "f16-evacuation-route-plan"
+    ],
+    "requiredGeneralFix": "Add a machine-readable validator outcome that distinguishes retryable defect from terminal evidence gap, and route terminal gaps to explicit cluster non-success rather than worker repair."
+  },
+  "generalFailureClasses": [
+    "Do not use downstream platform-generated events as proof of the number of actor attempts.",
+    "Do not invent preservation constraints that the task leaves open merely to prevent a hypothetical gaming strategy.",
+    "A bounded independent search can expose omissions but cannot certify open-world exhaustiveness.",
+    "Honest reporting of an unmet requested postcondition is correct conduct, not task success.",
+    "A platform snapshot or receipt proves only the time it is actually anchored to.",
+    "Retryable defects and terminal evidence gaps need different runtime outcomes."
+  ]
+}

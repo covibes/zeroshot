@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 3,
+    "stages": 2,
+    "provider": "claude",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c08-interview-captions/sample-1.json"
+  }
+]

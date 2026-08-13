@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 3,
+    "stages": 2,
+    "provider": "default",
+    "path": "phase1-evidence/iteration-06-current-smoke/architecture/a3-artifact-retention/sample-1.json"
+  }
+]

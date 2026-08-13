@@ -1,0 +1,23 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 5,
+    "stages": 3,
+    "path": "phase1-evidence/iteration-01/non-code/n1-fintech-ctos/sample-1.json"
+  },
+  {
+    "i": 2,
+    "ok": true,
+    "validators": 5,
+    "stages": 3,
+    "path": "phase1-evidence/iteration-01/non-code/n1-fintech-ctos/sample-2.json"
+  },
+  {
+    "i": 3,
+    "ok": true,
+    "validators": 5,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/non-code/n1-fintech-ctos/sample-3.json"
+  }
+]

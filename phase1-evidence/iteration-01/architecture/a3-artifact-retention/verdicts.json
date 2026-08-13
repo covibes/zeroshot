@@ -1,0 +1,16 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 5,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/architecture/a3-artifact-retention/sample-1.json"
+  },
+  {
+    "i": 2,
+    "ok": true,
+    "validators": 5,
+    "stages": 3,
+    "path": "phase1-evidence/iteration-01/architecture/a3-artifact-retention/sample-2.json"
+  }
+]

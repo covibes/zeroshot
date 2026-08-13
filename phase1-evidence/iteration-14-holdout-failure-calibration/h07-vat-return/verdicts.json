@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 2,
+    "stages": 2,
+    "provider": "default",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-14-holdout-failure-calibration/h07-vat-return/sample-1.json"
+  }
+]

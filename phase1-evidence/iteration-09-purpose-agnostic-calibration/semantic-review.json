@@ -1,0 +1,101 @@
+{
+  "reviewedAt": "2026-08-01",
+  "promptRevision": "pre-evidence-boundary-refinement",
+  "coldAdmission": {
+    "passed": 12,
+    "total": 12
+  },
+  "shapeDistribution": {
+    "validatorCounts": {
+      "3": 7,
+      "4": 5
+    },
+    "stageCounts": {
+      "2": 12
+    },
+    "meaningfullyVaried": false
+  },
+  "semanticPasses": 3,
+  "semanticTotal": 12,
+  "reviews": [
+    {
+      "id": "c01-cli-behavior",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Uses real process execution, scoped tests, and observed-payload/document comparison; historical byte-for-byte preservation is not invented."
+    },
+    {
+      "id": "c02-customer-dedup",
+      "passed": false,
+      "failedCriteria": ["scopeCalibration", "approvability"],
+      "notes": "Reconciliation and identity checks are strong, but output-record-fidelity makes the input schema and source-value-only fields mandatory although the task does not forbid a useful derived column or a different cleaned schema."
+    },
+    {
+      "id": "c03-board-forecast",
+      "passed": false,
+      "failedCriteria": ["scopeCalibration", "approvability", "taskPurity"],
+      "notes": "Mixed formulas/constants are made an instant reject and the worker is told to clear errors/placeholders anywhere in the workbook. Both are artifact heuristics broader than the task and can reject or expand correct work."
+    },
+    {
+      "id": "c04-dpa-redline",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Reconciles clean/redline artifacts, protects exactly named terms, traces mandatory policy clauses, and limits coherence findings to concrete internal contradictions."
+    },
+    {
+      "id": "c05-medical-localization",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "capabilityHonesty"],
+      "notes": "The glossary is required by the task, but the validator says missing glossary access is non-blocking. That can approve a required terminology claim without evidence."
+    },
+    {
+      "id": "c06-museum-itinerary",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "capabilityHonesty"],
+      "notes": "The sampled task accidentally omitted the museum names and must be resampled. The design also treats an unreachable official page as non-blocking even though current official facts are required."
+    },
+    {
+      "id": "c07-event-poster",
+      "passed": false,
+      "failedCriteria": ["scopeCalibration", "approvability"],
+      "notes": "The visual checks are artifact-native, but they invent blocking physical-size and contrast thresholds and assume all non-kit colors are invalid. Those rules must come from the brief/brand kit or a demonstrated unreadable result."
+    },
+    {
+      "id": "c08-interview-captions",
+      "passed": false,
+      "failedCriteria": ["capabilityHonesty"],
+      "notes": "The audio and timing oracles are correct, but the prompts say neither approve nor reject if the audio cannot be examined while the schema only supports approved true/false. Required evidence gaps need an unambiguous approved:false outcome."
+    },
+    {
+      "id": "c09-assay-protocol",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Separates inventory/equipment feasibility, bench readiness, exact quantitative recomputation, and SOP safety without claiming the experiment ran."
+    },
+    {
+      "id": "c10-calendar-schedule",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "capabilityHonesty"],
+      "notes": "If agenda/link source or attendee free/busy is unavailable, validators substitute generic non-placeholder content or partial availability and can approve the wrong event/slot."
+    },
+    {
+      "id": "c11-crm-batch-update",
+      "passed": false,
+      "failedCriteria": ["defectSensitivity", "capabilityHonesty"],
+      "notes": "The complete post-state query is strong, but exact time-boundary records and no-collateral-change evidence are made non-blocking when unavailable, so planted boundary and collateral defects can escape."
+    },
+    {
+      "id": "c12-integer-proof",
+      "passed": false,
+      "failedCriteria": ["shapeFit"],
+      "notes": "The exact computation and proof referee are strong, but the third arithmetic checker substantially duplicates defects already caught by full-set computation and proof review."
+    }
+  ],
+  "generalFailureClasses": [
+    "Artifact heuristics and whole-artifact cleanliness were promoted into acceptance rules.",
+    "Missing required evidence was sometimes converted into a weaker proxy or a non-blocking check.",
+    "Relative-time and external-state claims lacked an operation-time evidence boundary.",
+    "The designer reflexively emitted 3-4 validators in exactly two stages.",
+    "The transform discarded structured ISSUE_OPENED content before generated agents ran."
+  ]
+}

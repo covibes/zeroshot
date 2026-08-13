@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 4,
+    "stages": 2,
+    "provider": "default",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p03-literary-translation/sample-1.json"
+  }
+]

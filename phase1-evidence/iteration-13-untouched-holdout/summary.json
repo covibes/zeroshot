@@ -1,0 +1,94 @@
+{
+  "cohort": "holdout",
+  "generatedAt": "2026-08-01T08:45:33.335Z",
+  "provider": "claude",
+  "seedSha256": "eea50d087250b895ea82842ec811ae1605e843a5fc8ed920fd1b7016f14072cb",
+  "passed": 12,
+  "total": 12,
+  "results": [
+    {
+      "id": "h01-incident-timeline",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h01-incident-timeline"
+    },
+    {
+      "id": "h02-cold-chain-procedure",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h02-cold-chain-procedure"
+    },
+    {
+      "id": "h03-chess-analysis",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h03-chess-analysis"
+    },
+    {
+      "id": "h04-curriculum-lesson",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h04-curriculum-lesson"
+    },
+    {
+      "id": "h05-account-deletion",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h05-account-deletion"
+    },
+    {
+      "id": "h06-printable-bracket",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h06-printable-bracket"
+    },
+    {
+      "id": "h07-vat-return",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h07-vat-return"
+    },
+    {
+      "id": "h08-original-jingle",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h08-original-jingle"
+    },
+    {
+      "id": "h09-cold-room-monitor",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h09-cold-room-monitor"
+    },
+    {
+      "id": "h10-genealogy-link",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h10-genealogy-link"
+    },
+    {
+      "id": "h11-press-release-send",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h11-press-release-send"
+    },
+    {
+      "id": "h12-unrecorded-phone-call",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h12-unrecorded-phone-call"
+    }
+  ]
+}

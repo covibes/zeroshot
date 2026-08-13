@@ -1,0 +1,16 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 5,
+    "stages": 3,
+    "path": "phase1-evidence/iteration-01/non-code/n4-pricing-discrepancies/sample-1.json"
+  },
+  {
+    "i": 2,
+    "ok": true,
+    "validators": 5,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/non-code/n4-pricing-discrepancies/sample-2.json"
+  }
+]

@@ -9,10 +9,11 @@
  * Provides CLEAR, ACTIONABLE error messages with recovery instructions.
  */
 
-const { execSync } = require('./lib/safe-exec'); // Enforces timeouts
+const { execSync, execFileSync } = require('./lib/safe-exec'); // Enforces timeouts
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const packageMetadata = require('../package.json');
 const {
   isValidAnthropicKey,
   ANTHROPIC_KEY_PREFIX,
@@ -53,6 +54,198 @@ function formatError(title, detail, recovery) {
     });
   }
   return msg;
+}
+
+const PACKAGE_ROOT = path.resolve(__dirname, '..');
+const ZEROSHOT_PACKAGE_NAME = '@the-open-engine/zeroshot';
+
+function realpathOrResolve(targetPath) {
+  try {
+    return fs.realpathSync(targetPath);
+  } catch {
+    return path.resolve(targetPath);
+  }
+}
+
+function readZeroshotPackageRoot(startPath) {
+  let current = realpathOrResolve(startPath);
+  try {
+    if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+  } catch {
+    current = path.dirname(current);
+  }
+
+  while (true) {
+    const packagePath = path.join(current, 'package.json');
+    try {
+      const metadata = JSON.parse(fs.readFileSync(packagePath, 'utf8'));
+      if (metadata.name === ZEROSHOT_PACKAGE_NAME) {
+        return { root: realpathOrResolve(current), version: String(metadata.version || 'unknown') };
+      }
+    } catch {
+      // Keep walking. Most PATH entries are not package roots.
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function findExecutableOnPath(command, env = process.env, cwd = process.cwd()) {
+  const pathValue = env.PATH || '';
+  for (const entry of pathValue.split(path.delimiter)) {
+    const directory = entry ? path.resolve(cwd, entry) : cwd;
+    const candidate = path.join(directory, command);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Try the next PATH entry.
+    }
+  }
+  return null;
+}
+
+function parseZeroshotVersion(output) {
+  for (const token of String(output || '')
+    .trim()
+    .split(/\s+/)) {
+    const candidate = token.startsWith('v') ? token.slice(1) : token;
+    const core = candidate.split('-', 1)[0];
+    const parts = core.split('.');
+    const isNumericTriplet =
+      parts.length === 3 &&
+      parts.every(
+        (part) =>
+          part.length > 0 && [...part].every((character) => character >= '0' && character <= '9')
+      );
+    if (isNumericTriplet) return candidate;
+  }
+  return null;
+}
+
+function inspectPathZeroshot(options = {}) {
+  const executable = findExecutableOnPath(
+    'zeroshot',
+    options.env || process.env,
+    options.cwd || process.cwd()
+  );
+  if (!executable) {
+    return { executable: null, version: null, packageRoot: null, error: 'not found on PATH' };
+  }
+
+  try {
+    const output = execFileSync(executable, ['--version'], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      env: options.env || process.env,
+      cwd: options.cwd || process.cwd(),
+      timeout: 10000,
+    });
+    const version = parseZeroshotVersion(output);
+    if (!version) {
+      return {
+        executable,
+        version: null,
+        packageRoot: readZeroshotPackageRoot(executable)?.root || null,
+        error: '--version returned no semantic version',
+      };
+    }
+    return {
+      executable,
+      version,
+      packageRoot: readZeroshotPackageRoot(executable)?.root || null,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      executable,
+      version: null,
+      packageRoot: readZeroshotPackageRoot(executable)?.root || null,
+      error: error.message,
+    };
+  }
+}
+
+function coreOwnedConfigPackage(configPath) {
+  if (!configPath) return null;
+  const owner = readZeroshotPackageRoot(configPath);
+  if (!owner) return null;
+
+  const resolvedConfig = realpathOrResolve(configPath);
+  const relative = path.relative(owner.root, resolvedConfig);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  if (relative !== 'cluster-templates' && !relative.startsWith(`cluster-templates${path.sep}`)) {
+    return null;
+  }
+  return owner;
+}
+
+function runtimeAlignmentRecovery(expectedRoot, expectedVersion) {
+  const cliEntry = path.join(expectedRoot, 'cli', 'index.js');
+  return [
+    `Create an executable named zeroshot that runs: exec node "${cliEntry}" "$@"`,
+    'Put that shim directory first on PATH before starting the cluster',
+    `Verify zeroshot --version prints ${expectedVersion}, then rerun the cluster`,
+  ];
+}
+
+/**
+ * Verify that the parent CLI, core-owned config, and the `zeroshot` executable
+ * agents resolve through PATH belong to one runtime. Dynamic agents self-spawn
+ * through PATH, so merely launching the parent with `node cli/index.js` is not
+ * enough to guarantee version parity.
+ */
+function validateZeroshotRuntimeAlignment(options = {}) {
+  const currentRoot = realpathOrResolve(options.currentRoot || PACKAGE_ROOT);
+  const currentVersion = String(options.currentVersion || packageMetadata.version);
+  const configOwner = coreOwnedConfigPackage(options.configPath);
+  const runtime = options.runtimeIdentity || inspectPathZeroshot(options);
+  const errors = [];
+
+  if (configOwner && configOwner.root !== currentRoot) {
+    errors.push(
+      formatError(
+        'Zeroshot config/runtime skew',
+        `Active core is ${currentVersion} at ${currentRoot}, but the selected core-owned config ` +
+          `belongs to ${configOwner.version} at ${configOwner.root}.`,
+        runtimeAlignmentRecovery(configOwner.root, configOwner.version)
+      )
+    );
+    return errors;
+  }
+
+  if (!runtime.executable || !runtime.version) {
+    const detail = runtime.executable
+      ? `Active core is ${currentVersion} at ${currentRoot}, but ${runtime.executable} ` +
+        `could not report its version (${runtime.error || 'unknown error'}).`
+      : `Active core is ${currentVersion} at ${currentRoot}, but agents cannot resolve ` +
+        '`zeroshot` on PATH.';
+    errors.push(
+      formatError(
+        'Zeroshot agent runtime unavailable',
+        detail,
+        runtimeAlignmentRecovery(currentRoot, currentVersion)
+      )
+    );
+    return errors;
+  }
+
+  const runtimeRoot = runtime.packageRoot ? realpathOrResolve(runtime.packageRoot) : null;
+  if (runtime.version !== currentVersion || (runtimeRoot && runtimeRoot !== currentRoot)) {
+    const runtimeLocation = runtimeRoot || runtime.executable;
+    errors.push(
+      formatError(
+        'Zeroshot runtime version skew',
+        `Parent is ${currentVersion} at ${currentRoot}, but agent subprocesses resolve ` +
+          `${runtime.executable} as ${runtime.version} at ${runtimeLocation}.`,
+        runtimeAlignmentRecovery(currentRoot, currentVersion)
+      )
+    );
+  }
+
+  return errors;
 }
 
 /**
@@ -568,6 +761,8 @@ function validateGitRequirement() {
  * @param {boolean} options.requireGh - Whether gh CLI is required (true if using issue number)
  * @param {boolean} options.requireDocker - Whether Docker is required (true if using --docker)
  * @param {boolean} options.requireGit - Whether git repo is required (true if using --worktree)
+ * @param {boolean} options.requireRuntimeAlignment - Whether parent/config/PATH runtimes must match
+ * @param {string} options.configPath - Resolved cluster config path for runtime alignment
  * @param {boolean} options.quiet - Suppress success messages
  * @param {string} options.claudeCommand - Custom Claude command (from settings)
  * @param {string} options.provider - Provider override
@@ -596,6 +791,11 @@ async function runPreflight(options = {}) {
       warnings: [],
     };
   }
+
+  if (options.requireRuntimeAlignment) {
+    errors.push(...validateZeroshotRuntimeAlignment(options));
+  }
+
   const providerName = normalizeProviderName(
     options.provider || settings.defaultProvider || 'claude'
   );
@@ -720,6 +920,8 @@ async function runPreflight(options = {}) {
  * @param {boolean} options.requireGh - Whether gh CLI is required
  * @param {boolean} options.requireDocker - Whether Docker is required
  * @param {boolean} options.requireGit - Whether git repo is required
+ * @param {boolean} options.requireRuntimeAlignment - Whether parent/config/PATH runtimes must match
+ * @param {string} options.configPath - Resolved cluster config path for runtime alignment
  * @param {boolean} options.quiet - Suppress success messages
  * @param {string} options.provider - Provider override
  */
@@ -759,4 +961,6 @@ module.exports = {
   checkGhAuth,
   checkDocker,
   formatError,
+  inspectPathZeroshot,
+  validateZeroshotRuntimeAlignment,
 };

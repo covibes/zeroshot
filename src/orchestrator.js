@@ -81,6 +81,19 @@ class DuplicateClusterError extends Error {
   }
 }
 
+/**
+ * A conductor proposal that is structurally readable but fails merged-config
+ * admission. The orchestrator has already published the precise validation
+ * findings, so this is repair feedback, not a fatal operation-chain failure.
+ */
+class ProposedConfigValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ProposedConfigValidationError';
+    this.code = 'CLUSTER_OPERATIONS_REPAIR_REQUIRED';
+  }
+}
+
 function applyModelOverride(agentConfig, modelOverride) {
   if (!modelOverride) return;
 
@@ -1666,11 +1679,24 @@ class Orchestrator {
         );
 
         watchdogTimer = setTimeout(() => {
-          const clusterOps = messageBus.query({
-            cluster_id: clusterId,
-            topic: 'CLUSTER_OPERATIONS',
-            limit: 1,
-          });
+          // A cluster that finishes inside the watchdog window closes its ledger
+          // while this timer is still pending. Reading it then throws
+          // "The database connection is not open" as an uncaught exception, which
+          // marks an already-successful cluster as failed. Nothing is worth
+          // watching once the ledger is gone.
+          let clusterOps;
+          try {
+            clusterOps = messageBus.query({
+              cluster_id: clusterId,
+              topic: 'CLUSTER_OPERATIONS',
+              limit: 1,
+            });
+          } catch (error) {
+            this._log(
+              `Conductor watchdog: ledger unavailable (${error.message}) - cluster already finished, skipping`
+            );
+            return;
+          }
           if (clusterOps.length === 0) {
             console.error(`\n${'='.repeat(80)}`);
             console.error(`🔴 CONDUCTOR WATCHDOG TRIGGERED - CLUSTER_OPERATIONS NEVER RECEIVED`);
@@ -1753,6 +1779,13 @@ class Orchestrator {
         isolationManager,
         containerId,
       }).catch((err) => {
+        if (err?.code === 'CLUSTER_OPERATIONS_REPAIR_REQUIRED') {
+          this._log(
+            `[Orchestrator] Topology proposal rejected; cluster remains running for conductor repair`
+          );
+          return;
+        }
+
         console.error(`Failed to execute CLUSTER_OPERATIONS:`, err.message);
         messageBus.publish({
           cluster_id: clusterId,
@@ -3770,7 +3803,7 @@ Continue from where you left off. Review your previous output to understand what
         },
       });
 
-      throw new Error(errorMsg);
+      throw new ProposedConfigValidationError(errorMsg);
     }
 
     return validation;

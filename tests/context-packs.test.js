@@ -67,10 +67,12 @@ describe('context packs', () => {
 
   function buildTriggeringMessage(timestamp, text = 'triggered') {
     return {
+      id: 'msg_triggering_context',
       topic: 'WORKER_PROGRESS',
       sender: 'system',
       timestamp,
-      content: { text },
+      content: { text, data: { attachmentRef: 'attachment://input', recordCount: 17 } },
+      metadata: { source: 'connector', _originalTimestamp: timestamp - 1000 },
     };
   }
 
@@ -95,6 +97,14 @@ describe('context packs', () => {
 
     assert(context.includes('## Triggering Message'), 'Triggering message section must exist');
     assert(context.includes('kickoff'), 'Triggering message content must be preserved');
+    assert(context.includes('msg_triggering_context'), 'Triggering message id must be visible');
+    assert(context.includes('attachment://input'), 'Structured triggering data must be visible');
+    assert(context.includes('"recordCount": 17'), 'Structured values must be visible');
+    assert(context.includes('"source": "connector"'), 'Triggering metadata must be visible');
+    assert(
+      context.includes('"_originalTimestamp"'),
+      'Original request-time provenance must be visible'
+    );
     assert(context.includes('Messages from topic: ISSUE_OPENED'), 'Issue anchor must be preserved');
     assert(context.includes('Messages from topic: PLAN_READY'), 'Plan anchor must be preserved');
     assert(!context.includes('optional-detail'), 'Low-priority context should be dropped');

@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 3,
+    "stages": 2,
+    "provider": "default",
+    "path": "phase1-evidence/iteration-07-baseline-smoke/coding/c1-json-list/sample-1.json"
+  }
+]

@@ -320,8 +320,21 @@ function buildTriggeringMessageSection(triggeringMessage) {
     `Sender: ${triggeringMessage.sender}`,
   ];
 
+  if (triggeringMessage.id) {
+    lines.push(`Message ID: ${triggeringMessage.id}`);
+  }
+  if (typeof triggeringMessage.timestamp === 'number') {
+    lines.push(`Timestamp: ${new Date(triggeringMessage.timestamp).toISOString()}`);
+  }
+  if (triggeringMessage.metadata && typeof triggeringMessage.metadata === 'object') {
+    lines.push(`Metadata: ${JSON.stringify(triggeringMessage.metadata, null, 2)}`);
+  }
+
   if (triggeringMessage.content?.text) {
     lines.push('', triggeringMessage.content.text);
+  }
+  if (triggeringMessage.content?.data !== undefined) {
+    lines.push('', `Data: ${JSON.stringify(triggeringMessage.content.data, null, 2)}`);
   }
 
   return `${lines.join('\n')}\n`;

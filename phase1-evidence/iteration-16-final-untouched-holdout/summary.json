@@ -1,0 +1,136 @@
+{
+  "cohort": "final-holdout",
+  "generatedAt": "2026-08-01T09:43:09.259Z",
+  "provider": "default",
+  "seedSha256": "b9443cf2d2e03e378fe122cd7ada1648b55676e8b98d6eeae18297ae9101171d",
+  "passed": 18,
+  "total": 18,
+  "results": [
+    {
+      "id": "f01-triage-queue",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f01-triage-queue"
+    },
+    {
+      "id": "f02-experiment-ship-decision",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f02-experiment-ship-decision"
+    },
+    {
+      "id": "f03-acrostic-poem",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f03-acrostic-poem"
+    },
+    {
+      "id": "f04-cloud-key-rotation",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f04-cloud-key-rotation"
+    },
+    {
+      "id": "f05-auction-bid",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f05-auction-bid"
+    },
+    {
+      "id": "f06-claim-coverage-decision",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f06-claim-coverage-decision"
+    },
+    {
+      "id": "f07-tournament-schedule",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f07-tournament-schedule"
+    },
+    {
+      "id": "f08-pronunciation-feedback",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f08-pronunciation-feedback"
+    },
+    {
+      "id": "f09-research-dataset-anonymization",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f09-research-dataset-anonymization"
+    },
+    {
+      "id": "f10-systematic-review",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f10-systematic-review"
+    },
+    {
+      "id": "f11-weld-photo-inspection",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f11-weld-photo-inspection"
+    },
+    {
+      "id": "f12-thermostat-control-window",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f12-thermostat-control-window"
+    },
+    {
+      "id": "f13-content-moderation-batch",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f13-content-moderation-batch"
+    },
+    {
+      "id": "f14-purchase-order",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f14-purchase-order"
+    },
+    {
+      "id": "f15-handwritten-transcription",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f15-handwritten-transcription"
+    },
+    {
+      "id": "f16-evacuation-route-plan",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f16-evacuation-route-plan"
+    },
+    {
+      "id": "f17-asynchronous-export",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f17-asynchronous-export"
+    },
+    {
+      "id": "f18-live-mediation",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-16-final-untouched-holdout/f18-live-mediation"
+    }
+  ]
+}

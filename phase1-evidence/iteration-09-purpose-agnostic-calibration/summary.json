@@ -1,0 +1,93 @@
+{
+  "cohort": "calibration",
+  "generatedAt": "2026-08-01T07:59:58.226Z",
+  "provider": "claude",
+  "passed": 12,
+  "total": 12,
+  "results": [
+    {
+      "id": "c01-cli-behavior",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c01-cli-behavior"
+    },
+    {
+      "id": "c02-customer-dedup",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c02-customer-dedup"
+    },
+    {
+      "id": "c03-board-forecast",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c03-board-forecast"
+    },
+    {
+      "id": "c04-dpa-redline",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c04-dpa-redline"
+    },
+    {
+      "id": "c05-medical-localization",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c05-medical-localization"
+    },
+    {
+      "id": "c06-museum-itinerary",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c06-museum-itinerary"
+    },
+    {
+      "id": "c07-event-poster",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c07-event-poster"
+    },
+    {
+      "id": "c08-interview-captions",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c08-interview-captions"
+    },
+    {
+      "id": "c09-assay-protocol",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c09-assay-protocol"
+    },
+    {
+      "id": "c10-calendar-schedule",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c10-calendar-schedule"
+    },
+    {
+      "id": "c11-crm-batch-update",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c11-crm-batch-update"
+    },
+    {
+      "id": "c12-integer-proof",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-09-purpose-agnostic-calibration/c12-integer-proof"
+    }
+  ]
+}

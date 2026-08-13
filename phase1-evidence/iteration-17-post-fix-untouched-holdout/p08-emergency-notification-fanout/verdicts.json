@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 3,
+    "stages": 2,
+    "provider": "default",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p08-emergency-notification-fanout/sample-1.json"
+  }
+]

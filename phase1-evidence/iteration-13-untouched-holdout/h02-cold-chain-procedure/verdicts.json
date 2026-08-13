@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 3,
+    "stages": 2,
+    "provider": "claude",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h02-cold-chain-procedure/sample-1.json"
+  }
+]

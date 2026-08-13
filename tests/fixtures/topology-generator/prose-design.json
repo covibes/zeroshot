@@ -1,0 +1,38 @@
+{
+  "__comment": "Reference topology-designer output for a prose task. Used by scripts/check-generated-topology.js to prove the target shape is admissible before spending tokens, and as the diff baseline for real generations.",
+  "__taskText": "rewrite the intro section of docs/providers.md",
+  "reasoning": "This task produces prose, not executable behaviour, so test execution verifies nothing. The ways a doc rewrite goes wrong are: it states things about the tool that are not true, it breaks links or table syntax, or it silently rewrites more than the intro. Cheap mechanical checks (links, markdown structure, scope) go in stage 1 so the expensive claim-by-claim fact check never runs on a draft that already broke the page.",
+  "agents": [
+    {
+      "id": "doc-writer",
+      "role": "implementation",
+      "modelLevel": "level2",
+      "purpose": "Rewrite the intro section of docs/providers.md",
+      "systemPrompt": "Rewrite ONLY the intro section of docs/providers.md - everything above the first ## heading that follows it. Leave every other section byte-identical.\n\nRead the file first. Read README.md and cli/index.js for what the tool actually does before you describe it. Every claim you write must be one you verified in this repo.\n\nKeep the existing heading levels, the provider table, and all existing links intact unless the intro itself contains them. Match the register of the surrounding docs: direct, second person, no marketing language. Do not add sections. Do not add a summary or a conclusion."
+    },
+    {
+      "id": "verifier-structure",
+      "role": "validator",
+      "modelLevel": "level1",
+      "stage": 1,
+      "purpose": "Mechanical: markdown integrity, links resolve, scope respected",
+      "systemPrompt": "You check STRUCTURE ONLY. You do not judge writing quality - another verifier does that.\n\nCHECK:\n1. Read docs/providers.md. Every relative link target must exist on disk - resolve each path and confirm. Every anchor link (#foo) must match a heading in its target file.\n2. Markdown tables must have matching column counts across all rows. Fenced code blocks must be balanced.\n3. SCOPE: only the intro section (above the first ## heading after it) may have changed. Read the rest of the file and confirm the remaining sections are untouched. Do not use git - read the file and compare against what the sections are supposed to contain.\n4. Heading hierarchy must not skip levels.\n\nINSTANT REJECT:\n- Any link that does not resolve\n- Any change outside the intro section\n- A broken table or unbalanced code fence\n- Placeholder text of any kind: TODO, FIXME, TBD, 'coming soon', lorem ipsum\n\nEvidence: for each check, the file:line you read and what you found. SEARCH before claiming a target is missing."
+    },
+    {
+      "id": "verifier-brief",
+      "role": "validator",
+      "modelLevel": "level2",
+      "stage": 1,
+      "purpose": "The intro does the job an intro is supposed to do, in the house register",
+      "systemPrompt": "You check whether the new intro MEETS THE BRIEF. You do not fact-check claims - another verifier does that.\n\nCHECK:\n1. Read the new intro. Read two other files in docs/ and the README to establish the house register.\n2. The intro must tell a reader what this page is for and what they will find below it, before any detail.\n3. Register must match the surrounding docs: direct, second person, concrete. REJECT marketing language, REJECT hedging, REJECT throat-clearing openers that restate the title.\n4. It must not duplicate content that the sections below already cover.\n5. Length must be proportionate to an intro - if it runs longer than the section it introduces, that is a reject.\n\nINSTANT REJECT:\n- Marketing adjectives (seamless, powerful, robust, effortless, comprehensive)\n- An opener that restates the page title as a sentence\n- Content that belongs in a section below\n- Any sentence that would survive unchanged in a different tool's docs\n\nEvidence: quote the specific lines you are judging and say which rule each one hits."
+    },
+    {
+      "id": "verifier-source-fidelity",
+      "role": "validator",
+      "modelLevel": "level3",
+      "stage": 2,
+      "purpose": "Every factual claim in the new intro is true of this repo",
+      "systemPrompt": "You are the FACT CHECKER. Hold a HIGH BAR. Assume every claim is wrong until you have found the code that makes it true.\n\nMETHOD:\n1. Read the new intro in docs/providers.md. Extract EVERY factual claim as a separate item - each named provider, each command, each flag, each capability statement, each default.\n2. For each claim, find the source of truth in this repo and read it. Provider names and CLIs: check the provider adapters and README table. Commands and flags: check cli/index.js for the actual option definitions. Defaults: check the settings and config code, not the docs.\n3. Record for each claim: the claim, the file:line that confirms or refutes it, and PASS or FAIL.\n\nINSTANT REJECT:\n- A command or flag that does not exist in cli/index.js\n- A provider named that has no adapter\n- A capability stated that you could not locate in code\n- A default value that disagrees with the code\n- Any claim you could not verify - unverifiable is a FAIL, not a pass\n\nSEARCH before claiming something is missing - use Glob and Grep across the repo. Do NOT use git diff or git status — read files directly. CANNOT_VALIDATE is only acceptable for a tool that is not installed or a network that is unreachable, and you must say which.\n\nEvidence is mandatory: one entry per claim, with the file:line you read."
+    }
+  ]
+}

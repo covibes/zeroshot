@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 2,
+    "stages": 1,
+    "provider": "default",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-18-final-proof-holdout/r02-allergen-recipe/sample-1.json"
+  }
+]

@@ -216,7 +216,14 @@ function normalizeRunOptions(options) {
   // explicit autoMerge intent (e.g. a future `--auto-merge` flag) back to false.
 }
 
-async function runClusterPreflight({ input, options, providerOverride, settings, forceProvider }) {
+async function runClusterPreflight({
+  input,
+  options,
+  providerOverride,
+  settings,
+  forceProvider,
+  configPath,
+}) {
   // Detect which issue provider tool is needed
   let issueProvider = null;
   let targetHost = null;
@@ -244,6 +251,10 @@ async function runClusterPreflight({ input, options, providerOverride, settings,
     requireGh: issueProvider === 'github', // gh CLI required for GitHub
     requireDocker: options.docker,
     requireGit: options.worktree,
+    requireRuntimeAlignment: true,
+    currentRoot: PACKAGE_ROOT,
+    currentVersion: require('../package.json').version,
+    configPath,
     quiet: process.env.ZEROSHOT_DAEMON === '1',
     provider: providerOverride,
     issueProvider, // Pass detected issue provider for tool checking
@@ -2682,8 +2693,20 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
           : detectRunInput(inputArg, settings, forceProvider);
       const providerOverride = resolveProviderOverride(options);
 
+      // Resolve the selected config before preflight so a core-owned config from
+      // another checkout cannot silently run against this package's engine.
+      const configName = resolveConfigName(options, settings);
+      const configPath = resolveConfigPath(configName);
+
       // Preflight checks
-      await runClusterPreflight({ input, options, providerOverride, settings, forceProvider });
+      await runClusterPreflight({
+        input,
+        options,
+        providerOverride,
+        settings,
+        forceProvider,
+        configPath,
+      });
 
       // Secondary preflight: token-free template simulation/validation
       const simMode = String(options.sim || 'fast').toLowerCase();
@@ -2721,8 +2744,6 @@ Force provider flags: -G (GitHub), -L (GitLab), -J (Jira), -D (DevOps), -N (Line
 
       // === LOAD CONFIG ===
       // Priority: CLI --config > settings.defaultConfig
-      const configName = resolveConfigName(options, settings);
-      const configPath = resolveConfigPath(configName);
       const orchestrator = await getOrchestrator();
       const config = loadClusterConfig(orchestrator, configPath, settings, providerOverride);
       trackActiveCluster(clusterId, orchestrator);
@@ -2845,11 +2866,7 @@ for (const mode of ['prove', 'verify', 'check']) {
     });
 }
 
-function assertRequestedWebSearchCliAvailable(
-  provider,
-  settings,
-  exists = commandExists
-) {
+function assertRequestedWebSearchCliAvailable(provider, settings, exists = commandExists) {
   const metadata = getProviderMetadata(provider);
   if (!metadata.settingsFields.includes('webSearch')) return;
   if (settings.providerSettings?.[provider]?.webSearch !== true) return;
@@ -2878,10 +2895,7 @@ taskCmd
     '-r, --resume <sessionId>',
     'Resume a specific provider session (Claude, Codex, or OpenCode)'
   )
-  .option(
-    '-c, --continue',
-    'Continue the most recent provider session (Claude or OpenCode)'
-  )
+  .option('-c, --continue', 'Continue the most recent provider session (Claude or OpenCode)')
   .option(
     '-o, --output-format <format>',
     'Output format: stream-json (default), text, json',
@@ -3858,9 +3872,8 @@ program
   .description('Output task ID for an internal spawn ownership token (machine-readable)')
   .action(async (token) => {
     try {
-      const { getTaskIdBySpawnToken } = await import(
-        '../task-lib/commands/get-task-id-by-spawn-token.js'
-      );
+      const { getTaskIdBySpawnToken } =
+        await import('../task-lib/commands/get-task-id-by-spawn-token.js');
       getTaskIdBySpawnToken(token);
     } catch (error) {
       console.error('Error resolving task spawn ownership:', error.message);

@@ -65,6 +65,19 @@ function loadScenario(context) {
   return JSON.parse(raw);
 }
 
+function assertContext(scenario, context) {
+  for (const expected of scenario.contextIncludes || []) {
+    if (!context.includes(expected)) {
+      throw new Error(`fake-agent: context missing required text: ${expected}`);
+    }
+  }
+  for (const forbidden of scenario.contextExcludes || []) {
+    if (context.includes(forbidden)) {
+      throw new Error(`fake-agent: context unexpectedly contains text: ${forbidden}`);
+    }
+  }
+}
+
 function applyFiles(scenario) {
   for (const file of scenario.files || []) {
     const target = path.resolve(process.cwd(), file.path);
@@ -157,6 +170,7 @@ function main() {
 
   const { outputFormat, model, context } = parseArgv(argv);
   const scenario = loadScenario(context);
+  assertContext(scenario, context);
   process.stderr.write(
     `fake-agent: output-format=${outputFormat} model=${model} cwd=${process.cwd()}\n`
   );

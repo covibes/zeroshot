@@ -1,0 +1,102 @@
+{
+  "reviewedAt": "2026-08-01",
+  "promptRevision": "ae8345d25feba5645eb393ef562442a33735de4ce5abf40783049f31773dc6d7",
+  "cohortUse": "untouched-final-proof-holdout",
+  "coldAdmission": {
+    "passed": 12,
+    "total": 12
+  },
+  "shapeDistribution": {
+    "validatorCounts": {
+      "2": 6,
+      "3": 5,
+      "4": 1
+    },
+    "stageCounts": {
+      "1": 3,
+      "2": 9
+    },
+    "meaningfullyVaried": true
+  },
+  "semanticPasses": 12,
+  "semanticTotal": 12,
+  "claimPassed": true,
+  "reviews": [
+    {
+      "id": "r01-medication-schedule",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Carries the complete schedule as userDeliverable, recomputes every time and amount from supplied authorities, preserves missing/conflicting inputs, and does not import clinical judgement or infer administration."
+    },
+    {
+      "id": "r02-allergen-recipe",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Checks every ingredient and quantity against the source, allergy list, and closed substitution guide; treats actual cooked texture and medical safety as outside what the recipe artifact can prove."
+    },
+    {
+      "id": "r03-microfiction",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Deterministically checks exact form, grounds narrative constraints in quoted story text, and fails closed on global originality. The compact worker mentioned an unrequested optional writing skill, but the later deterministic task-scope override makes any non-task skill optional and non-blocking."
+    },
+    {
+      "id": "r04-grant-eligibility",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Enumerates all applications, independently re-derives each status from supplied rules and facts, uses pending for missing evidence, and requires attributable records before certifying prohibited live actions."
+    },
+    {
+      "id": "r05-concurrent-cache",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Runs controlled real-module concurrency probes, checks failure recovery and shared outcomes, audits test sensitivity on a scratch copy, and preserves public API only where a provenance-bearing contract supports the claim."
+    },
+    {
+      "id": "r06-accessible-svg-map",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Separates SVG capability, complete room/route coverage, geometry, and non-color accessibility. The compact prompt preferred text nodes, but the controlling calibration override forbids strengthening editability into a favorite internal representation, so correct editable vector outlines remain approvable."
+    },
+    {
+      "id": "r07-invoice-payment",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Compares invoice and approval fields before action, requires terminal settlement and a resolving receipt, counts attributable payment submissions rather than downstream bank events, and handles the task-authorized no-payment branch."
+    },
+    {
+      "id": "r08-scheduled-email",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Anchors tomorrow and DST to original request provenance, verifies exact recipient/content/platform state, enumerates scheduled records for duplicates, and never sends a probe."
+    },
+    {
+      "id": "r09-water-sensor-window",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Replays the complete platform history for the exact elapsed request-time window and allows continuous coverage language only when authoritative interval semantics entail it."
+    },
+    {
+      "id": "r10-prior-art-search",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Resolves every positive citation and claim-element mapping, audits all named database coverage, and uses independent search only to expose positive misses rather than certify the global negative that no prior art exists."
+    },
+    {
+      "id": "r11-physical-odor",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Recognizes the physical sensory observation is unavailable, rejects name-based or invented odor claims and procedure substitution, preserves the useful inability result through userDeliverable, and terminates completed:false."
+    },
+    {
+      "id": "r12-survey-summary",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Recomputes the complete question-subgroup grid, supplied weights, threshold, and overall total while enforcing the requested aggregate-only surface without inventing respondent lineage."
+    }
+  ],
+  "effectivePromptCaveats": [
+    "Some compact model prompts still contain optional mechanism preferences. The deterministic TASK SCOPE OVERRIDE is later in every generated worker/validator system prompt, explicitly controls conflicts, and makes non-task skills, representations, filenames, layouts, and mechanisms non-blocking.",
+    "A required negative side effect or global historical negative can make full approval impossible when no attributable oracle exists. That is an intentional evidence_gap terminal outcome, not a semantic pass-through."
+  ]
+}

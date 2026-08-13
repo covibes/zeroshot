@@ -1,0 +1,9 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 4,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/coding/c1-json-list/sample-1.json"
+  }
+]

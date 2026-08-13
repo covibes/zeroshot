@@ -1109,14 +1109,16 @@ function defineClusterOperationsFailureTests() {
     /**
      * Test for the bug where CLUSTER_OPERATIONS failure didn't stop the cluster.
      *
-     * Root cause (fixed): When CLUSTER_OPERATIONS failed (e.g., agent model > maxModel),
+     * Root cause (fixed): When a non-repairable CLUSTER_OPERATIONS failure occurred,
      * the .catch() handler published CLUSTER_OPERATIONS_FAILED but never called stop().
      * The cluster remained running with no working agents.
      *
-     * Fix: Added this.stop(clusterId) in the catch handler after publishing the failure message.
+     * Fatal structural/resolution/effect errors still stop. Merged-config admission failures
+     * instead publish CLUSTER_OPERATIONS_VALIDATION_FAILED and leave the cluster alive so the
+     * conductor can repair its proposal.
      */
-    it('should stop cluster when CLUSTER_OPERATIONS fails due to model validation', async function () {
-      await runClusterOperationsModelFailureTest();
+    it('should stop cluster when CLUSTER_OPERATIONS fails before admission feedback is possible', async function () {
+      await runClusterOperationsRuntimeFailureTest();
     });
 
     it('should stop cluster when CLUSTER_OPERATIONS validation fails', async function () {
@@ -1125,7 +1127,7 @@ function defineClusterOperationsFailureTests() {
   });
 }
 
-async function runClusterOperationsModelFailureTest() {
+async function runClusterOperationsRuntimeFailureTest() {
   // Simple config with just a conductor that will publish CLUSTER_OPERATIONS
   const config = {
     agents: [
@@ -1141,78 +1143,53 @@ async function runClusterOperationsModelFailureTest() {
 
   mockRunner.when('bootstrap-agent').returns('{"acknowledged": true}');
 
-  // Override maxModel setting to 'sonnet' for this test
-  const originalEnv = process.env.ZEROSHOT_MAX_MODEL;
-  process.env.ZEROSHOT_MAX_MODEL = 'sonnet';
+  createOrchestrator();
 
-  try {
-    createOrchestrator();
+  const result = await orchestrator.start(config, {
+    text: 'Test CLUSTER_OPERATIONS failure',
+  });
+  const clusterId = result.id;
 
-    const result = await orchestrator.start(config, {
-      text: 'Test CLUSTER_OPERATIONS failure',
-    });
-    const clusterId = result.id;
+  // Give bootstrap agent time to start
+  await new Promise((r) => setTimeout(r, 500));
 
-    // Give bootstrap agent time to start
-    await new Promise((r) => setTimeout(r, 500));
-
-    // Publish CLUSTER_OPERATIONS with an agent requesting 'opus' model
-    // This should fail because maxModel is 'sonnet'
-    const cluster = orchestrator.getCluster(clusterId);
-    cluster.messageBus.publish({
-      cluster_id: clusterId,
-      topic: 'CLUSTER_OPERATIONS',
-      sender: 'test',
-      content: {
-        data: {
-          operations: [
-            {
-              action: 'add_agents',
-              agents: [
-                {
-                  id: 'planner',
-                  role: 'planner',
-                  modelLevel: 'level3', // This exceeds maxModel='sonnet'
-                  timeout: 0,
-                  triggers: [{ topic: 'ISSUE_OPENED', action: 'execute_task' }],
-                  prompt: 'Plan the task',
-                },
-              ],
-            },
-          ],
-        },
+  // A missing load_config cannot be repaired through merged-config admission:
+  // the operation cannot even be resolved into a proposed configuration.
+  const cluster = orchestrator.getCluster(clusterId);
+  cluster.messageBus.publish({
+    cluster_id: clusterId,
+    topic: 'CLUSTER_OPERATIONS',
+    sender: 'test',
+    content: {
+      data: {
+        operations: [
+          {
+            action: 'load_config',
+            config: 'definitely-missing-cluster-template',
+          },
+        ],
       },
-    });
+    },
+  });
 
-    // Wait for cluster to stop (the fix ensures this happens after operation failure)
-    await waitForClusterState(orchestrator, clusterId, 'stopped', 10000);
+  await waitForClusterState(orchestrator, clusterId, 'stopped', 10000);
 
-    // Verify CLUSTER_OPERATIONS_FAILED was published
-    const failedMessages = cluster.messageBus.query({
-      cluster_id: clusterId,
-      topic: 'CLUSTER_OPERATIONS_FAILED',
-    });
-    assert(failedMessages.length > 0, 'CLUSTER_OPERATIONS_FAILED: should be published');
-    assert(
-      failedMessages[0].content.text.includes('Operation chain failed'),
-      'Failure message: should indicate operation failure'
-    );
+  const failedMessages = cluster.messageBus.query({
+    cluster_id: clusterId,
+    topic: 'CLUSTER_OPERATIONS_FAILED',
+  });
+  assert(failedMessages.length > 0, 'CLUSTER_OPERATIONS_FAILED: should be published');
+  assert(
+    failedMessages[0].content.text.includes('Operation chain failed'),
+    'Failure message: should indicate operation failure'
+  );
 
-    // Verify the cluster state is stopped (not running)
-    const finalStatus = orchestrator.getStatus(clusterId);
-    assert.strictEqual(
-      finalStatus.state,
-      'stopped',
-      `Cluster: should be stopped after CLUSTER_OPERATIONS failure, but is ${finalStatus.state}`
-    );
-  } finally {
-    // Restore original env
-    if (originalEnv !== undefined) {
-      process.env.ZEROSHOT_MAX_MODEL = originalEnv;
-    } else {
-      delete process.env.ZEROSHOT_MAX_MODEL;
-    }
-  }
+  const finalStatus = orchestrator.getStatus(clusterId);
+  assert.strictEqual(
+    finalStatus.state,
+    'stopped',
+    `Cluster: should be stopped after CLUSTER_OPERATIONS failure, but is ${finalStatus.state}`
+  );
 }
 
 async function runClusterOperationsValidationFailureTest() {

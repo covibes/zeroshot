@@ -1,0 +1,29 @@
+{
+  "__comment": "Minimal two-stage design used by tests/e2e/topology-generator.test.js. Each systemPrompt carries the FAKE_AGENT_ID marker so the fake provider can route a distinct scenario per generated agent (tests/fixtures/fake-agent/index.js).",
+  "reasoning": "Two stages so the e2e exercises the stage gate as well as plain add_agents wiring.",
+  "agents": [
+    {
+      "id": "doc-writer",
+      "role": "implementation",
+      "modelLevel": "level2",
+      "purpose": "Write the doc",
+      "systemPrompt": "FAKE_AGENT_ID=doc-writer Write the requested documentation change."
+    },
+    {
+      "id": "verifier-structure",
+      "role": "validator",
+      "modelLevel": "level1",
+      "stage": 1,
+      "purpose": "Cheap structural check",
+      "systemPrompt": "FAKE_AGENT_ID=verifier-structure Check markdown structure and that links resolve."
+    },
+    {
+      "id": "verifier-source-fidelity",
+      "role": "validator",
+      "modelLevel": "level3",
+      "stage": 2,
+      "purpose": "Expensive claim check",
+      "systemPrompt": "FAKE_AGENT_ID=verifier-source-fidelity Check every factual claim against the repository."
+    }
+  ]
+}

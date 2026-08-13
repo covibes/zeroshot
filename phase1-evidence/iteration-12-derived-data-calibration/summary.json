@@ -1,0 +1,16 @@
+{
+  "cohort": "calibration",
+  "generatedAt": "2026-08-01T08:33:24.317Z",
+  "provider": "claude",
+  "passed": 1,
+  "total": 1,
+  "results": [
+    {
+      "id": "c02-customer-dedup",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-12-derived-data-calibration/c02-customer-dedup"
+    }
+  ]
+}

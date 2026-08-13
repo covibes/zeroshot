@@ -1,0 +1,9 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 3,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-03-smoke/non-code/n2-pricing-inbox/sample-1.json"
+  }
+]

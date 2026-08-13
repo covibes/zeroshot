@@ -834,16 +834,107 @@ function validateOrchestratorTriggers(agent, warnings) {
   }
 }
 
+const VALIDATOR_GIT_COMMANDS = ['git diff', 'git status', 'git log', 'git show'];
+const GIT_PROHIBITION_BOUNDARY = /[\n.!?;—]/;
+const GIT_PROHIBITION_CONTRAST = /\b(?:but|however|yet)\b/gi;
+const GIT_NEGATIVE_DIRECTIVES = [
+  /\b(?:do|does|did)\s+not\b/gi,
+  /\bdon['’]t\b/gi,
+  /\bnever\b/gi,
+  /\b(?:must|should|may)\s+not\b/gi,
+  /\b(?:cannot|can['’]t)\b/gi,
+  /\b(?:avoid|without)\b/gi,
+  /\bforbid(?:s|den)?\b/gi,
+  /\bprohibit(?:s|ed)?\b/gi,
+  /\bdisallow(?:s|ed)?\b/gi,
+  /\b(?:instead\s+of|rather\s+than)\b/gi,
+];
+const GIT_USAGE_VERB =
+  /\b(?:use|using|run|running|invoke|invoking|execute|executing|call|calling|inspect|inspecting|check|checking|read|reading|mention|mentioning|rely|relying|shell)\b/i;
+
+function clauseSlice(prompt, index, commandLength) {
+  let start = index;
+  while (start > 0 && !GIT_PROHIBITION_BOUNDARY.test(prompt[start - 1])) start--;
+
+  let end = index + commandLength;
+  while (end < prompt.length && !GIT_PROHIBITION_BOUNDARY.test(prompt[end])) end++;
+
+  return {
+    before: prompt.slice(start, index),
+    after: prompt.slice(index + commandLength, end),
+    clause: prompt.slice(start, end).trim(),
+  };
+}
+
+function lastRegexMatch(input, regex) {
+  regex.lastIndex = 0;
+  let last = null;
+  let match;
+  while ((match = regex.exec(input)) !== null) last = match;
+  return last;
+}
+
+function lastRegexMatchAny(input, regexes) {
+  let last = null;
+  for (const regex of regexes) {
+    const match = lastRegexMatch(input, regex);
+    if (match && (!last || match.index > last.index)) last = match;
+  }
+  return last;
+}
+
+function isPostCommandProhibition(after) {
+  const normalized = after.trimStart().toLowerCase();
+  const prefixes = ['is ', 'are ', 'must be ', 'should be '];
+  const prefix = prefixes.find((candidate) => normalized.startsWith(candidate));
+  if (!prefix) return false;
+
+  let description = normalized.slice(prefix.length);
+  if (description.startsWith('strictly ')) description = description.slice('strictly '.length);
+
+  const prohibited = ['forbidden', 'prohibited', 'disallowed', 'not allowed'];
+  if (prohibited.some((word) => description.startsWith(word))) return true;
+
+  return /^unreliable\s+and\s+(?:must|should)\s+not\s+be\s+used\b/i.test(description);
+}
+
+function isExplicitGitProhibition(prompt, index, commandLength) {
+  const { before, after } = clauseSlice(prompt, index, commandLength);
+  const contrast = lastRegexMatch(before, GIT_PROHIBITION_CONTRAST);
+  const scopedBefore = contrast ? before.slice(contrast.index + contrast[0].length) : before;
+  const directive = lastRegexMatchAny(scopedBefore, GIT_NEGATIVE_DIRECTIVES);
+
+  if (directive) {
+    const scope = scopedBefore.slice(directive.index + directive[0].length);
+    const reversesNegation = /^\s*(?:forget|fail|neglect|omit)\s+to\b/i.test(scope);
+    if (!reversesNegation && (scope.trim() === '' || GIT_USAGE_VERB.test(scope))) return true;
+  }
+
+  return isPostCommandProhibition(after);
+}
+
 function validateValidatorGitUsage(agent, errors) {
   if (agent.role !== 'validator') {
     return;
   }
 
   const prompt = typeof agent.prompt === 'string' ? agent.prompt : agent.prompt?.system;
-  const gitPatterns = ['git diff', 'git status', 'git log', 'git show'];
-  for (const pattern of gitPatterns) {
-    if (prompt?.includes(pattern)) {
-      errors.push(`Validator '${agent.id}' uses '${pattern}' - git state is unreliable in agents`);
+  if (typeof prompt !== 'string') return;
+
+  const lowerPrompt = prompt.toLowerCase();
+  for (const command of VALIDATOR_GIT_COMMANDS) {
+    let index = lowerPrompt.indexOf(command);
+    while (index !== -1) {
+      if (!isExplicitGitProhibition(prompt, index, command.length)) {
+        const { clause } = clauseSlice(prompt, index, command.length);
+        const excerpt = clause.length > 120 ? `${clause.slice(0, 117)}...` : clause;
+        errors.push(
+          `Validator '${agent.id}' instructs use of '${command}' (${JSON.stringify(excerpt)}). ` +
+            `Remove the git command instruction and read files directly; explicit prohibitions ` +
+            `like "do not use ${command}" are allowed.`
+        );
+      }
+      index = lowerPrompt.indexOf(command, index + command.length);
     }
   }
 }

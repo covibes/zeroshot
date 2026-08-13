@@ -1,0 +1,37 @@
+{
+  "cohort": "calibration",
+  "generatedAt": "2026-08-01T08:29:39.116Z",
+  "provider": "claude",
+  "passed": 4,
+  "total": 4,
+  "results": [
+    {
+      "id": "c01-cli-behavior",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-11-targeted-calibration/c01-cli-behavior"
+    },
+    {
+      "id": "c02-customer-dedup",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-11-targeted-calibration/c02-customer-dedup"
+    },
+    {
+      "id": "c03-board-forecast",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-11-targeted-calibration/c03-board-forecast"
+    },
+    {
+      "id": "c11-crm-batch-update",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-11-targeted-calibration/c11-crm-batch-update"
+    }
+  ]
+}

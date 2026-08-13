@@ -5,7 +5,11 @@
  * These wrappers enforce timeouts to prevent infinite hangs.
  */
 
-const { exec: nodeExec, execSync: nodeExecSync } = require('child_process');
+const {
+  exec: nodeExec,
+  execSync: nodeExecSync,
+  execFileSync: nodeExecFileSync,
+} = require('child_process');
 
 /** Default timeout: 30 seconds */
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -85,4 +89,22 @@ function execSync(command, options = {}) {
   return nodeExecSync(command, { ...options, timeout });
 }
 
-module.exports = { exec, execSync, DEFAULT_TIMEOUT_MS };
+/**
+ * Execute a binary directly with a mandatory timeout. Prefer this over a shell
+ * command when the executable path has already been resolved.
+ * @param {string} file - Executable path
+ * @param {string[]} [args] - Argument vector
+ * @param {object} [options] - Options (timeout required or uses default)
+ * @returns {string|Buffer} stdout
+ */
+function execFileSync(file, args = [], options = {}) {
+  const timeout = options.timeout ?? DEFAULT_TIMEOUT_MS;
+
+  if (timeout <= 0) {
+    throw new Error('execFileSync() timeout must be > 0. Infinite waits are forbidden.');
+  }
+
+  return nodeExecFileSync(file, args, { ...options, timeout });
+}
+
+module.exports = { exec, execSync, execFileSync, DEFAULT_TIMEOUT_MS };

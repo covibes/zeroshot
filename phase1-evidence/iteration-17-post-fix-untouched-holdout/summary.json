@@ -1,0 +1,136 @@
+{
+  "cohort": "post-fix-holdout",
+  "generatedAt": "2026-08-01T10:20:28.682Z",
+  "provider": "default",
+  "seedSha256": "0462211632f03515d34c9cde9ff429741b8c279617933c26d7b99b860d8959e6",
+  "passed": 18,
+  "total": 18,
+  "results": [
+    {
+      "id": "p01-streaming-parser",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p01-streaming-parser"
+    },
+    {
+      "id": "p02-divisibility-proof",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p02-divisibility-proof"
+    },
+    {
+      "id": "p03-literary-translation",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p03-literary-translation"
+    },
+    {
+      "id": "p04-photo-restoration",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p04-photo-restoration"
+    },
+    {
+      "id": "p05-string-quartet-midi",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p05-string-quartet-midi"
+    },
+    {
+      "id": "p06-quarterly-tax-estimate",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p06-quarterly-tax-estimate"
+    },
+    {
+      "id": "p07-robot-freezer-transfer",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p07-robot-freezer-transfer"
+    },
+    {
+      "id": "p08-emergency-notification-fanout",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p08-emergency-notification-fanout"
+    },
+    {
+      "id": "p09-hotel-reservation",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p09-hotel-reservation"
+    },
+    {
+      "id": "p10-account-erasure",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p10-account-erasure"
+    },
+    {
+      "id": "p11-biodiversity-catalog",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p11-biodiversity-catalog"
+    },
+    {
+      "id": "p12-election-forecast",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p12-election-forecast"
+    },
+    {
+      "id": "p13-live-language-tutoring",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p13-live-language-tutoring"
+    },
+    {
+      "id": "p14-cad-enclosure",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p14-cad-enclosure"
+    },
+    {
+      "id": "p15-meeting-minutes",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p15-meeting-minutes"
+    },
+    {
+      "id": "p16-event-log-aggregation",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p16-event-log-aggregation"
+    },
+    {
+      "id": "p17-inventory-reconciliation",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p17-inventory-reconciliation"
+    },
+    {
+      "id": "p18-dst-calendar-event",
+      "ok": true,
+      "code": 0,
+      "signal": null,
+      "outDir": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-17-post-fix-untouched-holdout/p18-dst-calendar-event"
+    }
+  ]
+}

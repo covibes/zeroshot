@@ -652,6 +652,48 @@ describe('validateAgents', function () {
     assert.ok(result.warnings.some((w) => w.includes('maxIterations') && w.includes('100')));
   });
 
+  it('should allow validator prompts that explicitly prohibit unreliable git commands', function () {
+    const result = validateAgents({
+      agents: [
+        {
+          id: 'direct-file-validator',
+          role: 'validator',
+          triggers: [{ topic: 'IMPLEMENTATION_READY' }],
+          prompt: {
+            system:
+              'Do NOT use git diff or git status. Never run git log or git show; read files directly. ' +
+              'Git diff is forbidden.',
+          },
+        },
+      ],
+    });
+
+    assert.deepStrictEqual(result.errors, []);
+  });
+
+  it('should reject validator prompts that instruct git usage with an actionable repair', function () {
+    const result = validateAgents({
+      agents: [
+        {
+          id: 'git-validator',
+          role: 'validator',
+          triggers: [{ topic: 'IMPLEMENTATION_READY' }],
+          prompt: {
+            system:
+              'Run Git diff and inspect GIT STATUS before approving. ' +
+              'Do not forget to run git log. Do not use git diff, but run git show.',
+          },
+        },
+      ],
+    });
+
+    assert.ok(result.errors.some((error) => error.includes("instructs use of 'git diff'")));
+    assert.ok(result.errors.some((error) => error.includes("instructs use of 'git status'")));
+    assert.ok(result.errors.some((error) => error.includes("instructs use of 'git log'")));
+    assert.ok(result.errors.some((error) => error.includes("instructs use of 'git show'")));
+    assert.ok(result.errors.every((error) => error.includes('read files directly')));
+  });
+
   it('should error when logic references non-existent role', function () {
     const result = validateAgents({
       agents: [

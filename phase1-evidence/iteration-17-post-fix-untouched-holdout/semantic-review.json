@@ -1,0 +1,152 @@
+{
+  "reviewedAt": "2026-08-01",
+  "promptRevision": "0462211632f03515d34c9cde9ff429741b8c279617933c26d7b99b860d8959e6",
+  "cohortUse": "untouched-post-fix-holdout",
+  "coldAdmission": {
+    "passed": 18,
+    "total": 18
+  },
+  "shapeDistribution": {
+    "validatorCounts": {
+      "2": 7,
+      "3": 10,
+      "4": 1
+    },
+    "stageCounts": {
+      "1": 5,
+      "2": 13
+    },
+    "meaningfullyVaried": true
+  },
+  "semanticPasses": 9,
+  "semanticTotal": 18,
+  "claimPassed": false,
+  "reviews": [
+    {
+      "id": "p01-streaming-parser",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Exercises the real streaming reader, distinguishes first-record and midstream BOM semantics, observes incremental delivery and bounded memory, and uses a provenance-bearing released API only where available."
+    },
+    {
+      "id": "p02-divisibility-proof",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Keeps finite execution as a contradiction finder rather than universal proof, then independently audits the general argument; the worker explicitly writes the proof artifact to a file."
+    },
+    {
+      "id": "p03-literary-translation",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "The worker is told to output only the translation, but the generated worker schema and readiness message transport only completed:true/false. No file or first-class deliverable channel is required, so validators may have no translation artifact to inspect."
+    },
+    {
+      "id": "p04-photo-restoration",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Compares a distinct source/restored image pair for framing, visible-content preservation, conservative occlusion handling, and actual damage correction without turning image statistics into thresholds."
+    },
+    {
+      "id": "p05-string-quartet-midi",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Parses the real MIDI for exact melody/onset/meter/range/unison contracts and fences the qualitative harmonic judgement to cited musical counterexamples without mandating a harmony doctrine."
+    },
+    {
+      "id": "p06-quarterly-tax-estimate",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "The calculation design is well-grounded, but the prompt allows the estimate to exist only as the worker's returned answer. That answer is discarded by the fixed readiness signal, so the generated validators are not guaranteed an artifact to recompute or inspect."
+    },
+    {
+      "id": "p07-robot-freezer-transfer",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Correctly recognizes the physical postcondition is impossible, treats fabricated scanner or temperature data as a defect, and relies on the deterministic completed:false route for terminal non-success."
+    },
+    {
+      "id": "p08-emergency-notification-fanout",
+      "passed": false,
+      "failedCriteria": ["approvability", "scopeCalibration", "taskPurity"],
+      "notes": "It correctly separates one submission receipt from automatic delivery retries, but then weakens exactly-once by allowing multiple submissions when the platform cannot fan out in one call. The returned submission id and counts also lack a guaranteed deliverable transport."
+    },
+    {
+      "id": "p09-hotel-reservation",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "External reservation state is checked well, but the design explicitly admits that the terminal confirmation and cancellation terms returned by the worker are invisible to validators. A required deliverable is therefore uncertified."
+    },
+    {
+      "id": "p10-account-erasure",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "Request-time scope, legal holds, job reuse, and terminal state are strong, but the required returned receipt/reconciliation has no deterministic route from the worker result into validator context unless the worker happens to create an extra file."
+    },
+    {
+      "id": "p11-biodiversity-catalog",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "The design correctly bounds completeness to enumerable catalog authorities and preserves limitations, but the identifier set and coverage report can be returned only in the worker answer, which the transform does not carry forward."
+    },
+    {
+      "id": "p12-election-forecast",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "Model recomputation and uncertainty framing are correct, but output location is optional and the result channel drops the analysis itself. Validators are not guaranteed access to the probabilities and scenario table they must examine."
+    },
+    {
+      "id": "p13-live-language-tutoring",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Treats real adaptive participation as impossible without a live channel, forbids simulated dialogue, and distinguishes a truthful inability from successful completion."
+    },
+    {
+      "id": "p14-cad-enclosure",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Uses the supplied CAD tool as the oracle for reopen/edit capability, exact named dimensions, and keep-out intersection while accepting direct, parametric, or other editable modeling representations."
+    },
+    {
+      "id": "p15-meeting-minutes",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "The worker prompt establishes a minutes document artifact and the validators separately sweep recording-to-minutes omissions and minutes-to-recording fabrication across the full audio."
+    },
+    {
+      "id": "p16-event-log-aggregation",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "The checks correctly avoid row-lineage overreach, but the prompt explicitly permits an inline response and does not require a file. The fixed completed-only result can therefore strand the aggregate table before validation."
+    },
+    {
+      "id": "p17-inventory-reconciliation",
+      "passed": true,
+      "failedCriteria": [],
+      "notes": "Recomputes the complete SKU set and reason totals, reads workbook formulas directly without treating mixed formulas/constants as defects, and preserves the external no-posting evidence boundary."
+    },
+    {
+      "id": "p18-dst-calendar-event",
+      "passed": false,
+      "failedCriteria": ["oracleFit", "defectSensitivity", "taskPurity"],
+      "notes": "Calendar state, exact attendee set, free/busy, and DST offsets are checked correctly, but the required returned platform event id and attendee set are discarded from the worker result and are not independently visible as a delivered answer."
+    }
+  ],
+  "crossCuttingRuntimeFailure": {
+    "description": "The generated worker result schema contains only completed, and IMPLEMENTATION_READY deliberately carries no worker output. That preserves verifier independence but also discards the actual user-facing artifact for answer-native tasks. Code, files, and external state survive; translations, calculations, reports, receipts, decisions, and inline tables may not.",
+    "affectedExamples": [
+      "p03-literary-translation",
+      "p06-quarterly-tax-estimate",
+      "p09-hotel-reservation",
+      "p10-account-erasure",
+      "p11-biodiversity-catalog",
+      "p12-election-forecast",
+      "p16-event-log-aggregation",
+      "p18-dst-calendar-event"
+    ],
+    "requiredGeneralFix": "Add a first-class userDeliverable field to the worker contract and carry it through readiness and terminal failure messages as the artifact-under-test, while continuing to exclude implementation summaries, file lists, diffs, tool transcripts, and executor-authored evidence."
+  },
+  "generalFailureClasses": [
+    "Verifier independence must exclude the executor's evidence claims without discarding the task's actual answer artifact.",
+    "An exact one-operation requirement cannot be weakened because a platform's preferred mechanism is inconvenient."
+  ]
+}

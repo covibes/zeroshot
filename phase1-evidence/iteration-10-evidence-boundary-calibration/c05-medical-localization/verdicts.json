@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 4,
+    "stages": 1,
+    "provider": "claude",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-10-evidence-boundary-calibration/c05-medical-localization/sample-1.json"
+  }
+]

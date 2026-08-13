@@ -1,0 +1,23 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 4,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/coding/c2-iso-ledger/sample-1.json"
+  },
+  {
+    "i": 2,
+    "ok": true,
+    "validators": 4,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/coding/c2-iso-ledger/sample-2.json"
+  },
+  {
+    "i": 3,
+    "ok": true,
+    "validators": 5,
+    "stages": 3,
+    "path": "phase1-evidence/iteration-01/coding/c2-iso-ledger/sample-3.json"
+  }
+]

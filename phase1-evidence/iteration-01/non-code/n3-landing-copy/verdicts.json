@@ -1,0 +1,16 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 4,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/non-code/n3-landing-copy/sample-1.json"
+  },
+  {
+    "i": 2,
+    "ok": true,
+    "validators": 4,
+    "stages": 2,
+    "path": "phase1-evidence/iteration-01/non-code/n3-landing-copy/sample-2.json"
+  }
+]

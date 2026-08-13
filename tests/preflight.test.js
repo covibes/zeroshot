@@ -24,6 +24,8 @@ const {
   checkGhAuth,
   checkDocker,
   formatError,
+  inspectPathZeroshot,
+  validateZeroshotRuntimeAlignment,
 } = require('../src/preflight');
 
 // Cross-platform helper for checking if command exists
@@ -38,6 +40,7 @@ describe('Preflight Validation', function () {
   defineClaudeAuthTests();
   defineGhAuthTests();
   defineDockerTests();
+  defineRuntimeAlignmentTests();
   defineRunPreflightTests();
   defineCliIntegrationTests();
 });
@@ -62,6 +65,107 @@ function defineFormatErrorTests() {
       expect(result).to.include('❌ Error');
       expect(result).to.include('Detail');
       expect(result).to.not.include('To fix:');
+    });
+  });
+}
+
+function defineRuntimeAlignmentTests() {
+  describe('validateZeroshotRuntimeAlignment()', () => {
+    it('rejects a different PATH runtime and names both versions', () => {
+      const errors = validateZeroshotRuntimeAlignment({
+        currentRoot: '/checkout/zeroshot',
+        currentVersion: '0.0.0-development',
+        runtimeIdentity: {
+          executable: '/opt/homebrew/bin/zeroshot',
+          version: '6.18.0',
+          packageRoot: '/opt/homebrew/lib/node_modules/@the-open-engine/zeroshot',
+          error: null,
+        },
+      });
+
+      expect(errors).to.have.length(1);
+      expect(errors[0]).to.include('Zeroshot runtime version skew');
+      expect(errors[0]).to.include('0.0.0-development');
+      expect(errors[0]).to.include('6.18.0');
+      expect(errors[0]).to.include('/opt/homebrew/bin/zeroshot');
+    });
+
+    it('rejects a core-owned config from a different checkout', () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-config-skew-'));
+      const activeRoot = path.join(tempRoot, 'active');
+      const configRoot = path.join(tempRoot, 'config-owner');
+      const configPath = path.join(configRoot, 'cluster-templates', 'topology-generator.json');
+      for (const [root, version] of [
+        [activeRoot, '6.18.0'],
+        [configRoot, '0.0.0-development'],
+      ]) {
+        fs.mkdirSync(path.join(root, 'cluster-templates'), { recursive: true });
+        fs.writeFileSync(
+          path.join(root, 'package.json'),
+          JSON.stringify({ name: '@the-open-engine/zeroshot', version })
+        );
+      }
+      fs.writeFileSync(configPath, '{}');
+
+      try {
+        const errors = validateZeroshotRuntimeAlignment({
+          currentRoot: activeRoot,
+          currentVersion: '6.18.0',
+          configPath,
+          runtimeIdentity: {
+            executable: path.join(activeRoot, 'cli', 'index.js'),
+            version: '6.18.0',
+            packageRoot: activeRoot,
+            error: null,
+          },
+        });
+
+        expect(errors).to.have.length(1);
+        expect(errors[0]).to.include('Zeroshot config/runtime skew');
+        expect(errors[0]).to.include('6.18.0');
+        expect(errors[0]).to.include('0.0.0-development');
+        expect(errors[0]).to.include(configRoot);
+      } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('accepts one checkout for parent, config, and PATH runtime', () => {
+      const repoRoot = path.resolve(__dirname, '..');
+      const version = require('../package.json').version;
+      const errors = validateZeroshotRuntimeAlignment({
+        currentRoot: repoRoot,
+        currentVersion: version,
+        configPath: path.join(repoRoot, 'cluster-templates', 'topology-generator.json'),
+        runtimeIdentity: {
+          executable: path.join(repoRoot, 'cli', 'index.js'),
+          version,
+          packageRoot: repoRoot,
+          error: null,
+        },
+      });
+
+      expect(errors).to.deep.equal([]);
+    });
+
+    it('probes the executable agents will actually resolve through PATH', function () {
+      if (process.platform === 'win32') this.skip();
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-runtime-probe-'));
+      const executable = path.join(binDir, 'zeroshot');
+      fs.writeFileSync(executable, '#!/bin/sh\nprintf "0.0.0-development\\n"\n', {
+        mode: 0o755,
+      });
+
+      try {
+        const identity = inspectPathZeroshot({
+          env: { ...process.env, PATH: binDir },
+        });
+        expect(identity.executable).to.equal(executable);
+        expect(identity.version).to.equal('0.0.0-development');
+        expect(identity.error).to.equal(null);
+      } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
     });
   });
 }

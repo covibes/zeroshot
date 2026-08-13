@@ -1,0 +1,10 @@
+[
+  {
+    "i": 1,
+    "ok": true,
+    "validators": 2,
+    "stages": 1,
+    "provider": "claude",
+    "path": "/Users/eivindcovibes.ai/repos/zeroshot-topogen/phase1-evidence/iteration-13-untouched-holdout/h05-account-deletion/sample-1.json"
+  }
+]
