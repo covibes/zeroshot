@@ -188,12 +188,18 @@ helpers.hasConsensus(topic, since);
 
 Classifies tasks on **Complexity × TaskType**, routes to parameterized templates.
 
-| Complexity | Description            | Validators |
-| ---------- | ---------------------- | ---------- |
-| TRIVIAL    | 1 file, mechanical     | 0          |
-| SIMPLE     | 1 concern              | 1          |
-| STANDARD   | Multi-file             | 3          |
-| CRITICAL   | Auth/payments/security | 5          |
+| Complexity | Description            | Validators           |
+| ---------- | ---------------------- | -------------------- |
+| TRIVIAL    | 1 file, mechanical     | 0                    |
+| SIMPLE     | 1 concern              | 1                    |
+| STANDARD   | Multi-file             | 2, inline            |
+| CRITICAL   | Auth/payments/security | 4, across two stages |
+
+Counts come from `getValidatorCount()` in `src/config-router.ts`. CRITICAL returns
+`validator_count: 0`, which skips the inline validators and activates the `meta-coordinator`:
+`quick-validation` then `heavy-validation`, 2 each.
+
+`UNCERTAIN` exists only in the junior conductor's schema and means escalate, not a workload.
 
 | TaskType | Action                |
 | -------- | --------------------- |
@@ -201,7 +207,8 @@ Classifies tasks on **Complexity × TaskType**, routes to parameterized template
 | TASK     | Implement new feature |
 | DEBUG    | Fix broken code       |
 
-**Base templates:** `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`
+**Base templates:** `single-worker`, `worker-validator`, `debug-workflow`, `full-workflow`, plus
+`quick-validation` and `heavy-validation` for the CRITICAL two-stage pipeline
 
 ## Isolation Modes
 
