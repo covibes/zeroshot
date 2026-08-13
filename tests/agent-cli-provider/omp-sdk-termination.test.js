@@ -14,7 +14,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const BUN = path.join(ROOT, 'node_modules', 'bun', 'bin', 'bun.exe');
 const CREDENTIAL = 'AWS_BEARER_TOKEN_BEDROCK';
 
-function createFixture(t, name) {
+function createFixture(t, name, containmentMode = 'host-process-tree') {
   const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), `zeroshot-omp-sdk-${name}-`));
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), `zeroshot-omp-workspace-${name}-`));
   fs.chmodSync(privateRoot, 0o700);
@@ -25,7 +25,7 @@ function createFixture(t, name) {
     protocolVersion: 1,
     runId: `termination-${name}`,
     cwd,
-    executionContext: 'host',
+    executionContext: containmentMode === 'container' ? 'docker' : 'host',
     prompt: 'wait until cancelled',
     modelSelector: MODEL,
     reasoningEffort: 'max',
@@ -112,7 +112,7 @@ function createFixture(t, name) {
         reasoningEffort: 'max',
         provider: 'amazon-bedrock',
       },
-      containmentRequirement: { mode: 'host-process-tree', required: true },
+      containmentRequirement: { mode: containmentMode, required: true },
     },
   };
 }
@@ -136,16 +136,33 @@ function assertDead(pid) {
   );
 }
 
-function assertCancelled(result, timedOut) {
+function assertCancelled(result, timedOut, containmentMode = 'host-process-tree') {
   assert.equal(result.timedOut, timedOut);
   assert.equal(result.terminal.type, 'error');
   assert.equal(result.terminal.frame.error.code, 'cancelled');
   assert.deepEqual(result.cleanupAttestation, {
-    mode: 'host-process-tree',
+    mode: containmentMode,
     terminalBuffered: true,
     descendantsReaped: true,
     clean: true,
   });
+}
+
+async function assertAbortCleanup(t, name, containmentMode = 'host-process-tree') {
+  const fixture = createFixture(t, name, containmentMode);
+  const controller = new AbortController();
+  const running = await spawnOmpSdkProcess(fixture.prepared, {
+    signal: controller.signal,
+    timeoutKillGraceMs: 25,
+  });
+  const pids = await waitForPids(fixture.capturePath);
+  controller.abort();
+  const result = await running.result;
+
+  assertCancelled(result, false, containmentMode);
+  assertDead(running.pid);
+  assertDead(pids.sidecarPid);
+  assertDead(pids.childPid);
 }
 
 test('timeout terminates the SDK sidecar and all descendants', async (t) => {
@@ -163,18 +180,19 @@ test('timeout terminates the SDK sidecar and all descendants', async (t) => {
 });
 
 test('AbortSignal terminates the SDK sidecar and all descendants', async (t) => {
-  const fixture = createFixture(t, 'abort');
-  const controller = new AbortController();
-  const running = await spawnOmpSdkProcess(fixture.prepared, {
-    signal: controller.signal,
-    timeoutKillGraceMs: 25,
-  });
-  const pids = await waitForPids(fixture.capturePath);
-  controller.abort();
-  const result = await running.result;
+  await assertAbortCleanup(t, 'abort');
+});
 
-  assertCancelled(result, false);
-  assertDead(running.pid);
-  assertDead(pids.sidecarPid);
-  assertDead(pids.childPid);
+test('container execution retains supervisor cleanup and reports its outer boundary', async (t) => {
+  await assertAbortCleanup(t, 'container-abort', 'container');
+});
+
+test('prepared containment must match the authoritative private request', async (t) => {
+  const fixture = createFixture(t, 'containment-mismatch');
+  fixture.prepared.containmentRequirement = { mode: 'container', required: true };
+
+  await assert.rejects(
+    runOmpSdkProcess(fixture.prepared),
+    /command metadata does not match its authoritative private request/
+  );
 });

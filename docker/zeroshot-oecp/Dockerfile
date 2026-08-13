@@ -25,6 +25,23 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && node -e "const pkg = require( \
       './node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json'); \
       if (pkg.version !== '8.9.0') throw new Error('expected undici@8.9.0, got ' + pkg.version)"
+COPY scripts/omp/runtime-identities.js ./omp-runtime-identities.js
+RUN node -e "const fs = require('fs'); const path = require('path'); \
+      const { execFileSync } = require('child_process'); \
+      const ids = require('./omp-runtime-identities'); \
+      const platformPackage = ids.BUN_PLATFORM_PACKAGES[process.platform + ':' + process.arch]; \
+      if (!platformPackage) throw new Error('unsupported hosted Bun platform'); \
+      const platformManifestPath = require.resolve(platformPackage + '/package.json'); \
+      ids.assertPackageIdentity(platformPackage, ids.BUN_RUNTIME_VERSION, { \
+        packageJsonPath: platformManifestPath, manifest: require(platformManifestPath) }); \
+      const bunManifestPath = require.resolve(ids.BUN_PACKAGE_NAME + '/package.json'); \
+      ids.assertPackageIdentity(ids.BUN_PACKAGE_NAME, ids.BUN_RUNTIME_VERSION, { \
+        packageJsonPath: bunManifestPath, manifest: require(bunManifestPath) }); \
+      const source = path.join(path.dirname(platformManifestPath), 'bin', 'bun'); \
+      const target = path.join(path.dirname(bunManifestPath), 'bin', 'bun.exe'); \
+      fs.copyFileSync(source, target); fs.chmodSync(target, 0o755); \
+      if (execFileSync(target, ['--version'], { encoding: 'utf8' }).trim() \
+        !== ids.BUN_RUNTIME_VERSION) throw new Error('hosted Bun version drift');"
 
 FROM docker.io/instructure/tini:v0.19.0@sha256:0f9ccf2e54d010735ad691ebe670e256a3820fe8b92c28101194c68ee1216092 AS tini
 
@@ -54,7 +71,7 @@ COPY cluster-templates /opt/zeroshot/cluster-templates
 COPY lib /opt/zeroshot/lib
 COPY src /opt/zeroshot/src
 COPY task-lib /opt/zeroshot/task-lib
-COPY scripts/omp/runtime.js scripts/omp/runtime-identities.js scripts/omp/runtime-lock.js scripts/omp/runtime-release.js /opt/zeroshot/scripts/omp/
+COPY scripts/omp /opt/zeroshot/scripts/omp
 COPY src/command-cleanup-ownership.js src/omp-config-overlay.js src/worktree-claude-config.js src/worktree-tooling-env.js /opt/zeroshot/src/
 COPY protocol/openengine-cluster/v1/worker.schema.json /opt/zeroshot/protocol/openengine-cluster/v1/worker.schema.json
 COPY zeroshot-rust/hosted-node /opt/zeroshot/zeroshot-rust/hosted-node

@@ -126,6 +126,10 @@ const commandExistsFn = moduleFunction(providerDetectionModule, 'commandExists')
 const getHelpOutputFn = moduleFunction(providerDetectionModule, 'getHelpOutput');
 const getVersionOutputFn = moduleFunction(providerDetectionModule, 'getVersionOutput');
 const resolveOmpSdkRuntimeFn = moduleFunction(ompSdkRuntimeModule, 'resolveOmpSdkRuntime');
+const resolveOmpSdkContainerRuntimeFn = moduleFunction(
+  ompSdkRuntimeModule,
+  'resolveOmpSdkContainerRuntime'
+);
 
 export const resolveOmpTransport = (runtimeSettings?: Record<string, unknown>): 'sdk' | 'rpc' => {
   const settings = runtimeSettings ?? loadRuntimeSettings();
@@ -327,14 +331,7 @@ function prepareOmpProviderCommand(
   }
 
   const usesContainerRuntime = executionContext === 'docker' || executionContext === 'benchmark';
-  const runtime = usesContainerRuntime
-    ? {
-        bunExecutable: '/opt/zeroshot/node_modules/bun/bin/bun.exe',
-        bunVersion: OMP_SDK_BUN_VERSION,
-        ompVersion: OMP_SDK_BACKEND_VERSION,
-        sidecarPath: '/opt/zeroshot/scripts/omp/sidecar.ts',
-      }
-    : ompSdkRuntimeAssets();
+  const runtime = usesContainerRuntime ? ompSdkContainerRuntimeAssets() : ompSdkRuntimeAssets();
   let privateRoot: string | undefined;
   try {
     privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-sdk-request-'));
@@ -482,7 +479,14 @@ function requiredStringValue(value: unknown, field: string): string {
 }
 
 function ompSdkRuntimeAssets(): OmpSdkRuntimeAssets {
-  const value = resolveOmpSdkRuntimeFn();
+  return validatedOmpSdkRuntime(resolveOmpSdkRuntimeFn());
+}
+
+function ompSdkContainerRuntimeAssets(): OmpSdkRuntimeAssets {
+  return validatedOmpSdkRuntime(resolveOmpSdkContainerRuntimeFn());
+}
+
+function validatedOmpSdkRuntime(value: unknown): OmpSdkRuntimeAssets {
   if (!isRecord(value))
     throw new Error('Pinned OMP SDK runtime resolver returned invalid evidence.');
   const runtime = {
@@ -639,7 +643,8 @@ function mergeAcpFailClosedCliFeatures(
 export function probeRuntimeProviderCli(
   provider: string,
   evidence?: RuntimeProbeEvidence,
-  runtimeSettings?: Record<string, unknown>
+  runtimeSettings?: Record<string, unknown>,
+  context: { readonly executionContext?: OmpSdkExecutionContext } = {}
 ): RuntimeProviderProbe {
   const adapter = getProviderAdapter(provider);
   if (adapter.id === 'gateway') {
@@ -650,7 +655,11 @@ export function probeRuntimeProviderCli(
   if (adapter.id === 'omp' && resolveOmpTransport(settings) === 'sdk') {
     const capabilities = adapter.detectCliFeatures('', '');
     try {
-      const runtime = ompSdkRuntimeAssets();
+      const executionContext = ompExecutionContext(context.executionContext);
+      const runtime =
+        executionContext === 'docker' || executionContext === 'benchmark'
+          ? ompSdkContainerRuntimeAssets()
+          : ompSdkRuntimeAssets();
       return {
         available: true,
         helpText: 'Pinned bundled OMP SDK sidecar',

@@ -16,6 +16,7 @@ const {
   OMP_NATIVE_PLATFORM_PACKAGES,
   OMP_PACKAGE_NAME,
   OMP_SDK_VERSION,
+  resolveOmpSdkContainerRuntime,
   resolveOmpSdkRuntime,
 } = require('../../scripts/omp/runtime');
 
@@ -112,6 +113,7 @@ module.exports = {
   maxReleaseType,
   metadataReader,
   releaseTypeForMessages,
+  resolveOmpSdkContainerRuntime,
   resolveOmpSdkRuntime,
   runtimeMetadata,
   path,

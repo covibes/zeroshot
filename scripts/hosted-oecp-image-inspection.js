@@ -58,6 +58,7 @@ const loadable = (target) => {
 };
 const worker = fs.readFileSync('/etc/passwd', 'utf8').split('\\n')
   .find((line) => line.startsWith('zeroshot-worker:')).split(':');
+const providerRuntime = require('/opt/zeroshot/lib/agent-cli-provider');
 process.stdout.write(JSON.stringify({
   uid: process.getuid(),
   gid: process.getgid(),
@@ -95,6 +96,9 @@ process.stdout.write(JSON.stringify({
     worktreeClaudeConfig: loadable('/opt/zeroshot/src/worktree-claude-config.js'),
     worktreeToolingEnv: loadable('/opt/zeroshot/src/worktree-tooling-env.js'),
   },
+  ompProviderAvailable: providerRuntime.probeRuntimeProviderCli('omp', undefined, undefined, {
+    executionContext: 'docker',
+  }).available,
   serverExecutable: executable('/usr/local/bin/zeroshot-oecp-server'),
   tiniExecutable: executable('/usr/bin/tini'),
   gitExecutable: executable('/usr/bin/git'),
@@ -170,6 +174,7 @@ function validateRuntimeExecutables(runtime) {
     runtime.gitExecutable !== true ||
     runtime.zeroshotExecutable !== true ||
     runtime.gitAskpassExecutable !== true ||
+    runtime.ompProviderAvailable !== true ||
     runtime.ajvVersion !== '8.18.0' ||
     runtime.undiciVersion !== '8.9.0'
   ) {

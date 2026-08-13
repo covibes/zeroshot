@@ -12,6 +12,7 @@ const {
   REQUIRED_OMP_SDK_SOURCES,
   SIDECAR_RELATIVE_PATH,
   assertPackageIdentity,
+  resolveOmpSdkContainerRuntime,
   resolveOmpSdkRuntime,
 } = require('./runtime-identities');
 const { validateOmpSdkReleaseAssets } = require('./runtime-release');
@@ -28,6 +29,7 @@ module.exports = {
   REQUIRED_OMP_SDK_SOURCES,
   SIDECAR_RELATIVE_PATH,
   assertPackageIdentity,
+  resolveOmpSdkContainerRuntime,
   resolveOmpSdkRuntime,
   validateOmpSdkReleaseAssets,
 };

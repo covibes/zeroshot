@@ -107,13 +107,13 @@ export function assertPrepared(
 }
 export function assertHostContainment(requirement: OmpSdkContainmentRequirement): void {
   if (
-    requirement.mode !== 'host-process-tree' ||
+    (requirement.mode !== 'host-process-tree' && requirement.mode !== 'container') ||
     process.platform !== 'linux' ||
     (process.arch !== 'x64' && process.arch !== 'arm64')
   ) {
     throw new OmpSdkProcessRunnerError(
       'containment-error',
-      'OMP SDK host spawn requires the packaged Linux subreaper/pidfd supervisor; container invocations require the container spawn owner.'
+      'OMP SDK spawn requires the packaged Linux subreaper/pidfd supervisor.'
     );
   }
 }

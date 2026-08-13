@@ -7,6 +7,7 @@ const {
   fakePackageRoot,
   metadataReader,
   path,
+  resolveOmpSdkContainerRuntime,
   resolveOmpSdkRuntime,
 } = require('./helpers/release-preflight-harness');
 
@@ -43,6 +44,18 @@ describe('OMP SDK runtime resolver', () => {
     );
     assert.strictEqual(runtime.bunPlatformPackage, '@oven/bun-linux-x64');
     assert.strictEqual(runtime.ompNativePlatformPackage, '@oh-my-pi/pi-natives-linux-x64');
+    assert.strictEqual(runtime.ompVersion, '17.2.1');
+    assert.strictEqual(runtime.bunVersion, '1.3.14');
+  });
+
+  it('defers containment proof to the active invocation inside a container', () => {
+    const runtime = resolveOmpSdkContainerRuntime({
+      ...exactRuntimeOptions,
+      readContainmentProbe() {
+        throw new Error('the image inspection process is not an active provider invocation');
+      },
+    });
+
     assert.strictEqual(runtime.ompVersion, '17.2.1');
     assert.strictEqual(runtime.bunVersion, '1.3.14');
   });
