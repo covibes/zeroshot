@@ -7,6 +7,7 @@ import { createRequire } from 'module';
 // Import cluster's stream parser (shared between task and cluster)
 const require = createRequire(import.meta.url);
 const { parseChunk } = require('../../lib/stream-json-parser');
+const { decodeTaskLogLine } = require('../../src/task-log-line');
 
 // Tool icons for different tool types
 const TOOL_ICONS = {
@@ -271,15 +272,11 @@ function handleMulti(event) {
 }
 
 // Parse a raw log line (may have timestamp prefix)
-function parseLogLine(line) {
-  let trimmed = line.trim();
+export function parseLogLine(line) {
+  const decoded = decodeTaskLogLine(line);
+  if (!decoded.providerOutput) return [];
+  const trimmed = decoded.content.trim();
   if (!trimmed) return [];
-
-  // Strip timestamp prefix if present: [1234567890]{...} -> {...}
-  const timestampMatch = trimmed.match(/^\[\d+\](.*)$/);
-  if (timestampMatch) {
-    trimmed = timestampMatch[1];
-  }
 
   // Non-JSON lines output as-is
   if (!trimmed.startsWith('{')) {

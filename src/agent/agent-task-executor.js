@@ -18,6 +18,7 @@ const { StringDecoder } = require('string_decoder');
 const { getNestedExecutionRegistry, TaskExecutionHandle } = require('./task-execution-handle');
 const os = require('os');
 const { parseProviderChunk, getProvider } = require('../providers');
+const { decodeTaskLogLine } = require('../task-log-line');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../../task-lib/store.js');
 const { OMP_SESSIONLESS_ENV } = require('../../task-lib/omp-storage-root.js');
 const { loadSettings } = require('../../lib/settings.js');
@@ -1268,9 +1269,10 @@ async function waitForTaskReady(agent, taskId, maxRetries = 10, delayMs = 200) {
 
 const MAX_STATUS_FAILURES = 30;
 
-function createLogFollowState() {
+function createLogFollowState(taskId = null) {
   const state = {
     controlPlaneOutput: createControlPlaneOutputState(),
+    taskId,
     logFilePath: null,
     lastSize: 0,
     pollInterval: null,
@@ -1471,28 +1473,26 @@ function lookupLogFilePath(ctPath, taskId) {
 }
 
 function parseTimestampedLine(line) {
-  let timestamp = Date.now();
-  let content = line.replace(/\r$/, '');
-  let timestamped = false;
-
-  const timestampMatch = content.match(/^\[(\d{13})\](.*)$/);
-  if (timestampMatch) {
-    timestamp = parseInt(timestampMatch[1], 10);
-    content = timestampMatch[2];
-    timestamped = true;
-  }
-
-  return { timestamp, content, timestamped };
+  const decoded = decodeTaskLogLine(line);
+  return {
+    timestamp: decoded.timestamp ?? Date.now(),
+    content: decoded.content,
+    timestamped: decoded.timestamped,
+    providerOutput: decoded.providerOutput,
+    providerStdoutFramed: decoded.channel === 'provider_stdout',
+  };
 }
 
-function shouldSkipLogLine(content, providerName, timestamped) {
+function shouldSkipLogLine(
+  content,
+  providerName,
+  timestamped,
+  providerOutput,
+  providerStdoutFramed = false
+) {
+  if (!providerOutput) return true;
+  if (providerStdoutFramed) return false;
   if (providerName === 'pi') {
-    if (
-      content.startsWith('[ZEROSHOT][PROVIDER_STDERR] ') ||
-      content.startsWith('[ZEROSHOT][FATAL] ')
-    ) {
-      return true;
-    }
     if (timestamped) return false;
     return (
       /^={50}$/.test(content) ||
@@ -1504,7 +1504,6 @@ function shouldSkipLogLine(content, providerName, timestamped) {
     content.startsWith('===') ||
     content.startsWith('Finished:') ||
     content.startsWith('Exit code:') ||
-    content.startsWith('[ZEROSHOT][PROVIDER_STDERR] ') ||
     (content.includes('"type":"system"') && content.includes('"subtype":"init"'))
   );
 }
@@ -1522,7 +1521,7 @@ function isValidJsonLine(content) {
   }
 }
 
-function publishAgentOutputRecord(agent, providerName, record) {
+function publishAgentOutputRecord(agent, providerName, taskId, record) {
   agent._publish({
     topic: 'AGENT_OUTPUT',
     receiver: 'broadcast',
@@ -1536,6 +1535,7 @@ function publishAgentOutputRecord(agent, providerName, record) {
         role: agent.role,
         iteration: agent.iteration,
         provider: providerName,
+        ...(taskId ? { taskId } : {}),
       },
     },
   });
@@ -1545,8 +1545,9 @@ function broadcastAgentLine({ agent, providerName, state, line }) {
   const followerState = ensureControlPlaneOutputState(state);
   if (!line.trim()) return;
 
-  const { timestamp, content, timestamped } = parseTimestampedLine(line);
-  if (shouldSkipLogLine(content, providerName, timestamped)) {
+  const { timestamp, content, timestamped, providerOutput, providerStdoutFramed } =
+    parseTimestampedLine(line);
+  if (shouldSkipLogLine(content, providerName, timestamped, providerOutput, providerStdoutFramed)) {
     return;
   }
   const controlPlaneContent = redactTerminalFailureForControlPlane(
@@ -1567,14 +1568,14 @@ function broadcastAgentLine({ agent, providerName, state, line }) {
   }
 
   publishLiveControlPlaneRecord(followerState.controlPlaneOutput, record, (item) =>
-    publishAgentOutputRecord(agent, providerName, item)
+    publishAgentOutputRecord(agent, providerName, followerState.taskId, item)
   );
 }
 
 function flushAgentOutput(agent, providerName, state) {
   const followerState = ensureControlPlaneOutputState(state);
   flushTerminalControlPlaneOutput(followerState.controlPlaneOutput, (record) =>
-    publishAgentOutputRecord(agent, providerName, record)
+    publishAgentOutputRecord(agent, providerName, followerState.taskId, record)
   );
 }
 
@@ -2117,7 +2118,7 @@ function createLogFollower({
   executionHandle = null,
 }) {
   return new Promise((resolve, reject) => {
-    const state = createLogFollowState();
+    const state = createLogFollowState(taskId);
     state.skipStructuredResultCheck = skipStructuredResultCheck;
     state.nested = nested;
     state.logFilePath = lookupLogFilePath(ctPath, taskId);
@@ -3022,17 +3023,6 @@ function buildIsolatedLifecycleHandle({
   };
 }
 
-function parseIsolatedLogLine(line) {
-  const timestampMatch = line.match(/^\[(\d{13}|\d{4}-\d{2}-\d{2}T[^\]]+)\]\s*(.*)$/);
-  const timestamp = timestampMatch
-    ? /^\d{13}$/.test(timestampMatch[1])
-      ? Number.parseInt(timestampMatch[1], 10)
-      : new Date(timestampMatch[1]).getTime()
-    : Date.now();
-  const content = timestampMatch ? timestampMatch[2] : line;
-  return { timestamp, content, timestamped: timestampMatch !== null };
-}
-
 function publishIsolatedOutputRecord(agent, providerName, taskId, record) {
   agent.messageBus.publish({
     cluster_id: agent.cluster.id,
@@ -3052,8 +3042,14 @@ function publishIsolatedOutputRecord(agent, providerName, taskId, record) {
 }
 
 function retainIsolatedLine(state, providerName, line) {
-  const { timestamp, content, timestamped } = parseIsolatedLogLine(line);
-  if (!content.trim() || shouldSkipLogLine(content, providerName, timestamped)) return null;
+  const { timestamp, content, timestamped, providerOutput, providerStdoutFramed } =
+    parseTimestampedLine(line);
+  if (
+    !content.trim() ||
+    shouldSkipLogLine(content, providerName, timestamped, providerOutput, providerStdoutFramed)
+  ) {
+    return null;
+  }
   const controlPlaneContent = redactTerminalFailureForControlPlane(state, providerName, content);
   return appendControlPlaneRecord(state.controlPlaneOutput, {
     content: controlPlaneContent,

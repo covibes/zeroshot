@@ -16,9 +16,16 @@ interface ProviderFacade {
   listProviders(): string[];
 }
 
+interface TaskLogDecoder {
+  decodeTaskLogLine(line: string): { content: string; providerOutput: boolean };
+}
+
 // The runtime facade is maintained JavaScript; keep its original emitted require path.
 // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
 const { getProvider, listProviders }: ProviderFacade = require('../src/providers');
+// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+const taskLogDecoder: TaskLogDecoder = require('../src/task-log-line');
+const { decodeTaskLogLine } = taskLogDecoder;
 
 function createProviderParsers(): ProviderParser[] {
   return listProviders().map((name) => getProvider(name));
@@ -26,11 +33,9 @@ function createProviderParsers(): ProviderParser[] {
 
 function stripTimestampPrefix(line: unknown): string {
   if (!line || typeof line !== 'string') return '';
-  let trimmed = line.trim().replace(/\r$/, '');
-  if (!trimmed) return '';
-
-  const tsMatch = /^\[(\d{13})\](.*)$/.exec(trimmed);
-  if (tsMatch) trimmed = (tsMatch[2] || '').trimStart();
+  const decoded = decodeTaskLogLine(line.trim());
+  if (!decoded.providerOutput) return '';
+  const trimmed = decoded.content;
 
   if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
     const pipeMatch = /^[^|]{1,40}\|\s*(.*)$/.exec(trimmed);

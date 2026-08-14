@@ -7,6 +7,7 @@
 import { appendFileSync } from 'fs';
 import { getTask, updateTask } from './store.js';
 import { createCommandSpecCleanup } from './command-spec-cleanup.js';
+import { logSdkTerminal, markSdkTaskLog } from './sdk-watcher-output.js';
 import {
   completePendingWatcherCancellation,
   completeWatcherFailure,
@@ -72,16 +73,6 @@ function completionFor(result) {
   };
 }
 
-function logTerminal(result) {
-  for (const frame of result.progress) log(`[${Date.now()}]${JSON.stringify(frame)}\n`);
-  const terminal =
-    result.terminal.type === 'result' ? result.terminal.event : result.terminal.frame;
-  log(`[${Date.now()}]${JSON.stringify(terminal)}\n`);
-  if (result.diagnosticStderr) {
-    log(`[${Date.now()}][SDK-DIAGNOSTIC] ${result.diagnosticStderr}\n`);
-  }
-}
-
 async function terminateOwnedProviderBoundary() {
   if (terminalResult) return terminalResult.cleanupAttestation.clean === true;
   if (!running) return true;
@@ -116,6 +107,8 @@ process.on('unhandledRejection', (reason) => {
   void crashWithError(reason, 'unhandledRejection');
 });
 
+markSdkTaskLog(log);
+
 if (
   await completePendingWatcherCancellation({
     taskId,
@@ -139,7 +132,7 @@ try {
   if (getTask(taskId)?.cancelRequested) running.cancel();
 
   terminalResult = await running.result;
-  logTerminal(terminalResult);
+  logSdkTerminal(log, terminalResult);
   await completeWatcherTask({
     taskId,
     completion: completionFor(terminalResult),

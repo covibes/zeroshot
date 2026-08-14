@@ -603,7 +603,9 @@ zeroshot stop <id>                # Graceful stop
 zeroshot kill <id>                # Force kill
 
 # Utilities
-zeroshot export <id>              # Export conversation
+zeroshot export <id>              # Export rendered conversation
+zeroshot export <id> -f trace -o run.trace.jsonl # Export native research evidence
+zeroshot export <id> -f semantic -o run.semantic.jsonl # Project provider-neutral events
 zeroshot agents list              # Available agents
 zeroshot settings                 # View/modify settings
 zeroshot providers                # Provider status and defaults
@@ -965,6 +967,27 @@ bounded repair attempts. A persisted high-water allocator assigns explicit messa
 deleting compacted output can never reuse a sequence already returned to a caller; later readonly
 exports and cursors remain bounded and monotonic. JSON export must iterate ledger rows directly to
 its destination instead of materializing the whole ledger or pretty-printed document in memory.
+The `zeroshot.trace.v1` JSONL export is the provider-neutral native evidence boundary for research.
+It streams the ordered ledger, exact selected task prompts, and fixed-size base64 chunks of exact
+task-log bytes into one deterministic source bundle. Task IDs must come from causal ledger fields,
+limited to `AGENT_OUTPUT` and explicit task lifecycle records, never arbitrary topics or log-directory
+timestamps; host and isolated `AGENT_OUTPUT` records both carry that task ID. References inside the
+bundle are logical `zeroshot-trace://` identifiers only, never host paths. File destinations are
+create-only and never follow or replace an existing path. Missing or changing task evidence is an
+explicit sorted issue and makes the footer incomplete. A nonterminal task may be captured as a
+snapshot, but its output and bundle must remain incomplete.
+The separate `zeroshot.semantic.v1` JSONL export may project those same task logs only through the
+registered provider's existing stateful adapter lifecycle. It preserves the provider-neutral
+`OutputEvent` union, references native prompt/output identities and the raw-output digest, and keeps
+source completeness distinct from semantic completeness. Structurally identified Zeroshot wrapper
+footers and stderr records remain in native evidence but never enter a provider stdout parser.
+New watcher logs start with the exact `channel-framed-v2` format marker and frame provider stdout
+and stderr explicitly; `src/task-log-line.js` is the sole framing encoder/decoder for regular and
+OMP SDK writers and every consumer. OMP SDK errors become one failed terminal `result` event, and
+its diagnostics use the stderr frame. Consumers unwrap only the outer stdout frame. Legacy v1
+evidence remains readable without heuristic channel classification.
+Parser diagnostics never affect execution, scoring, or `zeroshot.trace.v1`. ATIF and viewer-specific
+projection still belongs downstream.
 POSIX providers run in a dedicated process group; Windows providers use the exact root PID with
 `taskkill /T`. Recovery must terminate that recorded boundary before retrying work. Command cleanup
 ownership is persisted with the task and may run only after that boundary is confirmed terminal.
