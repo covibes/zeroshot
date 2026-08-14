@@ -12,6 +12,21 @@ const { MAX_CLI_ERROR_BYTES, cliErrorDetail } = errorDetail;
 const { isObjectRecord, parseJsonRecordLine } = jsonExtraction;
 const { extractSettledPiFailure } = piExtraction;
 
+const OMP_SDK_ERROR_CODES = new Map([
+  ['invalid-request', 'request'],
+  ['model-resolution', 'model'],
+  ['model-fallback', 'model'],
+  ['provider-auth', 'auth'],
+  ['provider-rate-limit', 'rate-limit'],
+  ['provider-timeout', 'timeout'],
+  ['provider-error', 'provider'],
+  ['schema-violation', 'schema'],
+  ['cancelled', 'cancelled'],
+  ['sdk-error', 'sdk'],
+  ['cleanup-error', 'cleanup'],
+  ['internal-error', 'internal'],
+]);
+
 function firstTruthyValue(...values: readonly unknown[]): unknown {
   for (const value of values) {
     if (value) return value;
@@ -71,12 +86,97 @@ function opencodeFailureFromObject(value: JsonRecord): CliFailure | null {
   return { ...cliErrorDetail(source, 'Session error'), provider: 'opencode' };
 }
 
+function hasExactKeys(value: JsonRecord, expected: readonly string[]): boolean {
+  return (
+    Object.keys(value).length === expected.length &&
+    expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  );
+}
+
+function isOmpSdkIdentity(
+  value: unknown,
+  nameField: 'id' | 'name',
+  expectedName: string,
+  expectedVersion: string
+): boolean {
+  return (
+    isObjectRecord(value) &&
+    value[nameField] === expectedName &&
+    value.version === expectedVersion &&
+    hasExactKeys(value, [nameField, 'version'])
+  );
+}
+
+interface OmpSdkErrorMetadata {
+  readonly category: string;
+  readonly code: string;
+  readonly retryable: boolean;
+}
+
+function ompSdkErrorMetadata(value: unknown): OmpSdkErrorMetadata | null {
+  if (!isObjectRecord(value)) return null;
+  const { category, code, redacted, retryable } = value;
+  if (
+    typeof code !== 'string' ||
+    typeof category !== 'string' ||
+    OMP_SDK_ERROR_CODES.get(code) !== category ||
+    typeof retryable !== 'boolean' ||
+    redacted !== true ||
+    !hasExactKeys(value, ['category', 'code', 'redacted', 'retryable'])
+  ) {
+    return null;
+  }
+  return { category, code, retryable };
+}
+
+function ompProviderCategory(
+  error: OmpSdkErrorMetadata
+): NonNullable<CliFailure['providerCategory']> {
+  if (error.category === 'auth') return 'authentication';
+  return error.retryable ? 'transient' : 'permanent';
+}
+
+function isOmpSdkRunId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= 128 &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
+}
+
+function isOmpSdkErrorEnvelope(value: JsonRecord): boolean {
+  return (
+    value.protocolVersion === 1 &&
+    value.type === 'error' &&
+    isOmpSdkRunId(value.runId) &&
+    hasExactKeys(value, ['backend', 'error', 'protocolVersion', 'runId', 'runtime', 'type']) &&
+    isOmpSdkIdentity(value.backend, 'id', 'omp-sdk', '17.2.1') &&
+    isOmpSdkIdentity(value.runtime, 'name', 'bun', '1.3.14')
+  );
+}
+
+function ompSdkFailureFromObject(value: JsonRecord): CliFailure | null {
+  const error = ompSdkErrorMetadata(value.error);
+  if (error === null || !isOmpSdkErrorEnvelope(value)) return null;
+  const detail = `OMP SDK ${error.code} (${error.category})`;
+  return {
+    ...cliErrorDetail(detail, 'OMP SDK turn failed'),
+    provider: 'omp',
+    providerCategory: ompProviderCategory(error),
+    providerClassification: {
+      retryable: error.retryable,
+      kind: error.retryable ? 'unknown-retryable' : 'permanent-pattern',
+    },
+  };
+}
+
 function failureFromProviderObject(value: unknown, providerName: string): CliFailure | null {
   if (!isObjectRecord(value)) return null;
   if (providerName === 'claude') return claudeFailureFromObject(value);
   if (providerName === 'codex') return codexFailureFromObject(value);
   if (providerName === 'gemini') return geminiFailureFromObject(value);
   if (providerName === 'opencode') return opencodeFailureFromObject(value);
+  if (providerName === 'omp') return ompSdkFailureFromObject(value);
   return null;
 }
 

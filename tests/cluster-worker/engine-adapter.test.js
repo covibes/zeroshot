@@ -6,6 +6,7 @@ const {
   inputFromRequest,
   terminalEventFromMessage,
 } = require('../../lib/cluster-worker/engine-adapter');
+const { MAX_SUMMARY_BYTES } = require('../../lib/cluster-worker/contracts');
 
 function worktreeProfile(overrides = {}) {
   return {
@@ -163,6 +164,20 @@ describe('legacy cluster worker engine adapter', () => {
       ),
       { type: 'failed', summary: undefined, code: 'refusal', reason: 'policy_denied' }
     );
+  });
+
+  it('bounds model-authored completion text without splitting Unicode', () => {
+    const message = terminalMessage('CLUSTER_COMPLETE');
+    message.content.text = `${'a'.repeat(MAX_SUMMARY_BYTES - 2)}🙂tail`;
+    const event = terminalEventFromMessage(message);
+    assert.strictEqual(event.type, 'complete');
+    assert.strictEqual(event.summary, 'a'.repeat(MAX_SUMMARY_BYTES - 2));
+    assert.strictEqual(Buffer.byteLength(event.summary, 'utf8'), MAX_SUMMARY_BYTES - 2);
+
+    assert.deepStrictEqual(terminalEventFromMessage(terminalMessage('CLUSTER_COMPLETE')), {
+      type: 'complete',
+      summary: 'Cluster completed',
+    });
   });
 
   it('subscribes before folding durable history and de-duplicates terminal truth', async () => {

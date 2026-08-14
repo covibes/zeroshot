@@ -9,7 +9,11 @@ const { loadInstalledHostedWorkerConfiguration } = require('./hosted-config');
 
 try {
   const config = loadInstalledHostedWorkerConfiguration();
-  if (!probeRuntimeProviderCli(config.executable, undefined, config.settings).available) {
+  if (
+    !probeRuntimeProviderCli(config.executable, undefined, config.settings, {
+      executionContext: 'docker',
+    }).available
+  ) {
     throw new Error('hosted executable is unavailable');
   }
   const prepared = prepareSingleAgentProviderCommand(

@@ -10,6 +10,7 @@ const BUN_PACKAGE_NAME = 'bun';
 const BUN_RUNTIME_VERSION = '1.3.14';
 const SIDECAR_RELATIVE_PATH = path.join('scripts', 'omp', 'sidecar.ts');
 const HOST_SUPERVISOR_RELATIVE_PATH = path.join('scripts', 'omp', 'host-supervisor.ts');
+const ACTIVE_CONTAINER_INVOCATION = Symbol('active-container-invocation');
 const HOST_SDK_PLATFORM_KEYS = Object.freeze(['linux:arm64', 'linux:x64']);
 
 const BUN_PLATFORM_PACKAGES = Object.freeze({
@@ -227,24 +228,26 @@ function resolveOmpSdkRuntime(options = {}) {
   if (!fileExists(hostSupervisorPath)) {
     throw new Error(`OMP SDK host supervisor is missing: ${hostSupervisorPath}`);
   }
-  let containmentProbe;
-  try {
-    containmentProbe = JSON.parse(
-      String(readContainmentProbe(bunExecutable, hostSupervisorPath)).trim()
-    );
-  } catch (error) {
-    throw new Error(`Unable to attest Linux subreaper/pidfd containment: ${error.message}`);
-  }
-  if (
-    containmentProbe?.protocolVersion !== 1 ||
-    containmentProbe?.type !== 'cleanup-attestation' ||
-    containmentProbe?.status !== 'clean' ||
-    containmentProbe?.mode !== 'linux-subreaper-pidfd' ||
-    containmentProbe?.subreaper !== true ||
-    containmentProbe?.pidfd !== true ||
-    containmentProbe?.ownedProcessCount !== 0
-  ) {
-    throw new Error('Linux subreaper/pidfd containment probe returned invalid evidence');
+  if (runtimeOptions.activeInvocation !== ACTIVE_CONTAINER_INVOCATION) {
+    let containmentProbe;
+    try {
+      containmentProbe = JSON.parse(
+        String(readContainmentProbe(bunExecutable, hostSupervisorPath)).trim()
+      );
+    } catch (error) {
+      throw new Error(`Unable to attest Linux subreaper/pidfd containment: ${error.message}`);
+    }
+    if (
+      containmentProbe?.protocolVersion !== 1 ||
+      containmentProbe?.type !== 'cleanup-attestation' ||
+      containmentProbe?.status !== 'clean' ||
+      containmentProbe?.mode !== 'linux-subreaper-pidfd' ||
+      containmentProbe?.subreaper !== true ||
+      containmentProbe?.pidfd !== true ||
+      containmentProbe?.ownedProcessCount !== 0
+    ) {
+      throw new Error('Linux subreaper/pidfd containment probe returned invalid evidence');
+    }
   }
   return Object.freeze({
     bunExecutable,
@@ -259,6 +262,15 @@ function resolveOmpSdkRuntime(options = {}) {
     ompVersion: OMP_SDK_VERSION,
     hostSupervisorPath,
     sidecarPath,
+  });
+}
+
+function resolveOmpSdkContainerRuntime(options = {}) {
+  // Image inspection may run as PID 1, where no parent process exists to supervise. The actual
+  // provider invocation still starts the supervisor and requires its final cleanup attestation.
+  return resolveOmpSdkRuntime({
+    ...options,
+    activeInvocation: ACTIVE_CONTAINER_INVOCATION,
   });
 }
 module.exports = {
@@ -279,5 +291,6 @@ module.exports = {
   REQUIRED_OMP_SDK_SOURCES,
   SIDECAR_RELATIVE_PATH,
   assertPackageIdentity,
+  resolveOmpSdkContainerRuntime,
   resolveOmpSdkRuntime,
 };

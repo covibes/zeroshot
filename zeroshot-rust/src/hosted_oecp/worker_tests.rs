@@ -30,7 +30,7 @@ async fn failed_worker_receipt_is_redacted_and_reaps_process_tree() {
         .wait_terminal()
         .await
         .expect("worker terminal failure response");
-    assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Crash));
+    assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Malformed));
     assert!(
         !serde_json::to_string(&outcome)
             .expect("closed outcome serializes")
@@ -55,6 +55,42 @@ fn timed_out_worker_receipt_preserves_timeout_error_code() {
         Some("hosted-timeout"),
     );
     assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Timeout));
+}
+
+#[test]
+fn failed_worker_receipt_preserves_authentication_refusal() {
+    let outcome = normalize_terminal_receipt(
+        json!({
+            "state": "failed",
+            "clusterId": "hosted-authentication",
+            "finishedAt": 1,
+            "outcome": {
+                "status": "error",
+                "code": "refusal",
+                "reason": "authentication_required"
+            }
+        }),
+        Some("hosted-authentication"),
+    );
+    assert_eq!(outcome, WorkerOutcome::authentication_refusal());
+}
+
+#[test]
+fn worker_receipt_rejects_mismatched_state_and_error_code() {
+    let outcome = normalize_terminal_receipt(
+        json!({
+            "state": "timed_out",
+            "clusterId": "hosted-mismatched-outcome",
+            "finishedAt": 1,
+            "outcome": {
+                "status": "error",
+                "code": "refusal",
+                "reason": "authentication_required"
+            }
+        }),
+        Some("hosted-mismatched-outcome"),
+    );
+    assert_eq!(outcome, WorkerOutcome::malformed());
 }
 
 #[test]

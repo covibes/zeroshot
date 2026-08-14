@@ -19,6 +19,7 @@ interface HookEntry {
 
 interface OverlayOptions {
   includeDangerousGit?: boolean;
+  environment?: NodeJS.ProcessEnv;
 }
 
 interface WorktreeOptions {
@@ -34,6 +35,11 @@ const CLAUDE_SETTINGS_ENV = 'ZEROSHOT_CLAUDE_SETTINGS_FILE';
 const CLAUDE_MCP_CONFIG_ENV = 'ZEROSHOT_CLAUDE_MCP_CONFIG_FILE';
 const ASK_USER_HOOK = 'block-ask-user-question.py';
 const DANGEROUS_GIT_HOOK = 'block-dangerous-git.py';
+const ALTERNATE_BACKEND_ENV = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+] as const;
 
 function isMutableRecord(value: unknown): value is MutableRecord {
   return typeof value === 'object' && value !== null;
@@ -155,12 +161,34 @@ function ensureDangerousGitHook(targetClaudeDir: unknown): void {
   }
 }
 
+function ensureExplicitGatewayBackend(
+  targetClaudeDir: unknown,
+  environment: NodeJS.ProcessEnv
+): void {
+  if (!environment.ANTHROPIC_AUTH_TOKEN?.trim() || !environment.ANTHROPIC_BASE_URL?.trim()) return;
+  const overlayDir = requireTargetClaudeDir(targetClaudeDir);
+  const settingsPath = path.join(overlayDir, SETTINGS_BASENAME);
+  const settings = readSettings(settingsPath);
+  const existingEnv = settings.env;
+  let env: MutableRecord = {};
+  if (existingEnv !== undefined) {
+    if (!isMutableRecord(existingEnv)) {
+      throw new TypeError('Claude settings env must be an object.');
+    }
+    env = { ...existingEnv };
+  }
+  for (const name of ALTERNATE_BACKEND_ENV) env[name] = '0';
+  settings.env = env;
+  writeSettings(settingsPath, settings);
+}
+
 function prepareClaudeSettingsOverlay(options: OverlayOptions = {}): string {
   const overlayDir = fs.mkdtempSync(path.join(os.tmpdir(), OVERLAY_PREFIX));
   fs.chmodSync(overlayDir, 0o700);
   try {
     ensureAskUserQuestionHook(overlayDir);
     if (options.includeDangerousGit) ensureDangerousGitHook(overlayDir);
+    ensureExplicitGatewayBackend(overlayDir, options.environment || process.env);
     return path.join(overlayDir, SETTINGS_BASENAME);
   } catch (error) {
     fs.rmSync(overlayDir, { recursive: true, force: true });

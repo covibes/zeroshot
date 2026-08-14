@@ -298,9 +298,9 @@ fn normalize_terminal_receipt(value: Value, expected_cluster_id: Option<&str>) -
         TerminalReceipt::Completed { .. } => {
             WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
         }
-        TerminalReceipt::Failed(_) => WorkerOutcome::declared_failure(WorkerErrorCode::Crash),
-        TerminalReceipt::TimedOut(_) => WorkerOutcome::declared_failure(WorkerErrorCode::Timeout),
-        TerminalReceipt::Malformed(_) => WorkerOutcome::malformed(),
+        TerminalReceipt::Failed { outcome, .. }
+        | TerminalReceipt::TimedOut { outcome, .. }
+        | TerminalReceipt::Malformed { outcome, .. } => outcome,
         TerminalReceipt::Stopped(_) => WorkerOutcome::declared_failure(WorkerErrorCode::Refusal),
     }
 }
@@ -378,10 +378,19 @@ enum TerminalReceipt {
         metadata: TerminalMetadata,
         result: LegacyShipResult,
     },
-    Failed(TerminalMetadata),
-    TimedOut(TerminalMetadata),
+    Failed {
+        metadata: TerminalMetadata,
+        outcome: WorkerOutcome,
+    },
+    TimedOut {
+        metadata: TerminalMetadata,
+        outcome: WorkerOutcome,
+    },
     Stopped(TerminalMetadata),
-    Malformed(TerminalMetadata),
+    Malformed {
+        metadata: TerminalMetadata,
+        outcome: WorkerOutcome,
+    },
 }
 
 impl TerminalReceiptWire {
@@ -394,10 +403,25 @@ impl TerminalReceiptWire {
             ("completed", Some(result), None, None) => {
                 Some(TerminalReceipt::Completed { metadata, result })
             }
-            ("failed", None, Some(_), None) => Some(TerminalReceipt::Failed(metadata)),
-            ("timed_out", None, Some(_), None) => Some(TerminalReceipt::TimedOut(metadata)),
+            ("failed", None, Some(outcome), None)
+                if matches!(
+                    outcome.error_code(),
+                    Some(WorkerErrorCode::Crash | WorkerErrorCode::Refusal)
+                ) =>
+            {
+                Some(TerminalReceipt::Failed { metadata, outcome })
+            }
+            ("timed_out", None, Some(outcome), None)
+                if outcome.error_code() == Some(WorkerErrorCode::Timeout) =>
+            {
+                Some(TerminalReceipt::TimedOut { metadata, outcome })
+            }
             ("stopped", None, None, Some(_)) => Some(TerminalReceipt::Stopped(metadata)),
-            ("malformed", None, Some(_), None) => Some(TerminalReceipt::Malformed(metadata)),
+            ("malformed", None, Some(outcome), None)
+                if outcome.error_code() == Some(WorkerErrorCode::Malformed) =>
+            {
+                Some(TerminalReceipt::Malformed { metadata, outcome })
+            }
             _ => None,
         }
     }
@@ -407,10 +431,10 @@ impl TerminalReceipt {
     fn cluster_id(&self) -> &str {
         let metadata = match self {
             Self::Completed { metadata, .. }
-            | Self::Failed(metadata)
-            | Self::TimedOut(metadata)
+            | Self::Failed { metadata, .. }
+            | Self::TimedOut { metadata, .. }
             | Self::Stopped(metadata)
-            | Self::Malformed(metadata) => metadata,
+            | Self::Malformed { metadata, .. } => metadata,
         };
         &metadata.cluster_id
     }

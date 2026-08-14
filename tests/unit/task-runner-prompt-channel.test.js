@@ -22,7 +22,9 @@ describe('detached watcher prompt channel (task-lib/runner.js)', function () {
       'prompt bytes must never be serialized into watcher argv'
     );
     expect(JSON.parse(watcher.argv[4])).to.not.have.property('prompt');
-    expect(watcher.options.stdio[0]).to.equal('pipe');
+    expect(watcher.executable).to.equal(process.execPath);
+    expect(watcher.options.stdio).to.deep.equal(['pipe', 'ignore', 'ignore']);
+    expect(watcher.options.stdio).to.not.include('ipc');
     expect(watcher.stdinChunks).to.have.lengthOf(1);
 
     expect(
@@ -42,6 +44,7 @@ describe('detached watcher prompt channel (task-lib/runner.js)', function () {
     const [watcher] = forks;
 
     expect(watcher.script).to.not.match(/rpc-watcher\.js$/);
+    expect(watcher.executable).to.equal(process.execPath);
     expect(watcher.options.stdio).to.equal('ignore');
     expect(watcher.stdinChunks).to.have.lengthOf(0);
   });

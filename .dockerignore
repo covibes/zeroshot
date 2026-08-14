@@ -1,0 +1,7 @@
+.git
+.cache
+node_modules
+**/node_modules
+target
+zeroshot-rust/target
+*.log

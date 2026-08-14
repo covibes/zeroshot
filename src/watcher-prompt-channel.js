@@ -4,7 +4,7 @@
  * The OMP prompt is task content (repository text, instructions, whatever a caller pasted in), so
  * it must never travel in the watcher's argv: `ps` and /proc/<pid>/cmdline expose argv to every
  * local user for the entire lifetime of a long-lived watcher. task-lib/runner.js therefore hands
- * the prompt to task-lib/rpc-watcher.js over the anonymous stdin pipe fork() creates for it. The
+ * the prompt to task-lib/rpc-watcher.js over its anonymous stdin pipe. The
  * pipe has exactly two ends and no name, so nothing is written to the filesystem, the task log, or
  * the ledger while the prompt is in transit.
  *

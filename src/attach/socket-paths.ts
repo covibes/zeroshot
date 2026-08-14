@@ -3,7 +3,7 @@ import fs = require('fs');
 import os = require('os');
 import path = require('path');
 
-const SOCKET_ROOT = process.platform === 'win32' ? null : '/tmp';
+const SOCKET_ROOT = process.platform === 'win32' ? null : path.resolve(os.tmpdir());
 const SOCKET_DIR_MODE = 0o700;
 
 function shortHash(value: string): string {

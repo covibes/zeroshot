@@ -307,6 +307,9 @@ class Orchestrator {
     this.closed = false;
     this._conductorWatchdogs = new Set();
     this._clusterRunBoundaries = new Map();
+    // Successful auto-cleanup closes and removes the live cluster before a foreground caller can
+    // build its authoritative result. Preserve only the bounded terminal handoff for this process.
+    this._finalRuns = new Map();
 
     // Track if clusters are loaded (for lazy loading pattern)
     this._clustersLoaded = options.skipLoad === true;
@@ -2430,6 +2433,7 @@ class Orchestrator {
     cluster.pid = null; // Clear PID - cluster is no longer running
 
     if (shouldAutoCleanWorktree) {
+      this._captureFinalRun(clusterId, cluster);
       // Close message bus and ledger (same as kill() path)
       cluster.messageBus.close();
     }
@@ -2562,6 +2566,35 @@ class Orchestrator {
         cluster.messageBus.close();
       }
     }
+    this._finalRuns.clear();
+  }
+
+  _captureFinalRun(clusterId, cluster) {
+    const snapshot = cluster.messageBus.readSnapshot(clusterId);
+    const terminalMessages = ['CLUSTER_COMPLETE', 'CLUSTER_FAILED']
+      .flatMap((topic) => cluster.messageBus.query({ cluster_id: clusterId, topic }))
+      .sort((left, right) => {
+        const a = BigInt(left.sequence);
+        const b = BigInt(right.sequence);
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+    this._finalRuns.set(clusterId, {
+      snapshot,
+      terminalMessages,
+      status: {
+        id: clusterId,
+        state: cluster.state,
+        isZombie: false,
+        pid: null,
+        createdAt: cluster.createdAt,
+        agents: cluster.agents.map((agent) => agent.getState()),
+        messageCount: snapshot.messageCount,
+        setupLogPath: cluster.setupLogPath || null,
+        setupStage: cluster.setupStage || null,
+        failureInfo: cluster.failureInfo || null,
+        runMode: cluster.runMode || null,
+      },
+    });
   }
 
   /**
@@ -4300,11 +4333,16 @@ Continue from where you left off. Review your previous output to understand what
    * @returns {Object} Cluster status
    */
   getStatus(clusterId) {
+    const finalRun = this._finalRuns.get(clusterId);
+    if (finalRun) return finalRun.status;
     const cluster = this.clusters.get(clusterId);
     if (!cluster) {
       throw new Error(`Cluster ${clusterId} not found`);
     }
+    return this._getLiveStatus(clusterId, cluster);
+  }
 
+  _getLiveStatus(clusterId, cluster) {
     // Detect zombie clusters: state=running but no backing process
     let state = cluster.state;
     let isZombie = false;
@@ -4386,6 +4424,10 @@ Continue from where you left off. Review your previous output to understand what
    */
   getCluster(clusterId) {
     return this.clusters.get(clusterId);
+  }
+
+  getFinalRun(clusterId) {
+    return this._finalRuns.get(clusterId) || null;
   }
 
   /**

@@ -147,6 +147,60 @@ async function runsInnerClusterAndDeliversAfterCleanup() {
   }
 }
 
+async function hydratesPrivateIssueBeforeWithholdingCredentials() {
+  const restoreTokens = installGitTokens('git-canary', 'github-canary');
+  const calls = [];
+  const issueRequest = {
+    ...request(),
+    source: 'issue',
+    issue: 'https://github.com/the-open-engine/zeroshot/issues/42',
+    prompt: null,
+  };
+  const hydrated = { ...issueRequest, source: 'prompt', issue: null, prompt: '# Issue 42' };
+  const inner = {
+    start(options) {
+      calls.push(['start', options.request]);
+      assert.equal(process.env.GH_TOKEN, undefined);
+      assert.deepEqual(options.request, hydrated);
+      return { clusterId: options.clusterId, artifactsStaged: true };
+    },
+    status: () => ({ clusterId: 'cluster-issue', state: 'running' }),
+    stop: () => ({ effective: true }),
+    waitForCleanup() {},
+    close() {},
+  };
+  const adapter = createHostedClusterEngineAdapter(CONFIG, {
+    requireHostedEnvironment() {},
+    createEngine: () => inner,
+    hydrateIssueRequest(config, incoming) {
+      calls.push(['hydrate']);
+      assert.equal(config, CONFIG);
+      assert.equal(incoming, issueRequest);
+      assert.equal(process.env.GH_TOKEN, 'git-canary');
+      return hydrated;
+    },
+    prepareWorkspace() {
+      calls.push(['prepare']);
+      assert.equal(process.env.GH_TOKEN, 'git-canary');
+      return 'zeroshot/hosted-issue';
+    },
+  });
+  try {
+    await adapter.start({
+      request: issueRequest,
+      profile: profile(),
+      clusterId: 'cluster-issue',
+      onEvent() {},
+    });
+    assert.deepEqual(
+      calls.map(([name]) => name),
+      ['hydrate', 'prepare', 'start']
+    );
+  } finally {
+    restoreTokens();
+  }
+}
+
 function withholdsCredentialsUntilRestored() {
   const restoreTokens = installGitTokens('gh', 'github');
   try {
@@ -186,6 +240,10 @@ describe('hosted opaque cluster adapter', () => {
     runsInnerClusterAndDeliversAfterCleanup
   );
   it('withholds both Git credentials until explicitly restored', withholdsCredentialsUntilRestored);
+  it(
+    'hydrates private issue input before withholding Git credentials from providers',
+    hydratesPrivateIssueBeforeWithholdingCredentials
+  );
   it('rejects repository and runtime provider authority mismatches', rejectsAuthorityMismatches);
   it('derives a stable opaque branch', derivesOpaqueStableBranch);
 });

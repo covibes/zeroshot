@@ -1,7 +1,7 @@
 /**
  * Detached OMP rpc-stdio watcher (task-lib/rpc-watcher.js) end-to-end.
  *
- * Forks the real watcher against the fake `omp --mode rpc` executable
+ * Spawns the real watcher against the fake `omp --mode rpc` executable
  * (tests/helpers/fake-omp-rpc.js), the same fixture the foreground driver tests use, so
  * foreground (contract-invoke.ts) and detached (this file) exercise identical result
  * semantics per issue #900. Covers: spawn-evidence persistence, pre-spawn cancellation,
@@ -119,19 +119,22 @@ describe('OMP RPC watcher: prompt transport', function () {
     fs.writeFileSync(logFile, '');
     const argv = [id, commandSpec.cwd, logFile, '[]', JSON.stringify({ commandSpec })];
 
-    // A standalone parent that mirrors spawnWatcher(): fork detached, hand over the prompt, unref,
-    // disconnect, and return. It must exit on its own rather than being killed here.
+    // A standalone parent that mirrors spawnWatcher(): spawn a detached Node child with only the
+    // private stdin pipe, hand over the prompt, unref, and return. It must exit on its own rather
+    // than being killed here.
     const spawnerPath = path.join(zeroshotHome, `${id}-spawner.cjs`);
     fs.writeFileSync(
       spawnerPath,
       `const fs = require('fs');
-const { fork } = require('child_process');
+const { spawn } = require('child_process');
 const { sendWatcherPrompt } = require(${JSON.stringify(
         require.resolve('../src/watcher-prompt-channel')
       )});
-const watcher = fork(${JSON.stringify(RPC_WATCHER_PATH)}, ${JSON.stringify(argv)}, {
+const watcher = spawn(process.execPath, [${JSON.stringify(RPC_WATCHER_PATH)}, ...${JSON.stringify(
+        argv
+      )}], {
   detached: true,
-  stdio: ['pipe', 'ignore', 'ignore', 'ipc'],
+  stdio: ['pipe', 'ignore', 'ignore'],
   env: {
     ...process.env,
     ZEROSHOT_HOME: ${JSON.stringify(zeroshotHome)},
@@ -141,7 +144,6 @@ const watcher = fork(${JSON.stringify(RPC_WATCHER_PATH)}, ${JSON.stringify(argv)
 });
 sendWatcherPrompt(watcher.stdin, fs.readFileSync(${JSON.stringify(promptFile)}, 'utf8'));
 watcher.unref();
-watcher.disconnect();
 `
     );
 

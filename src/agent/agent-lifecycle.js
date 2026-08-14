@@ -221,6 +221,7 @@ function start(agent) {
  */
 async function stop(agent) {
   stopLivenessCheck(agent);
+  agent._cancelStartDelay?.();
 
   const hasNestedExecutions = agent.nestedExecutions?.hasActive === true;
   if (!agent.running && !agent.currentTask && !hasNestedExecutions && !agent._currentExecution) {
@@ -440,7 +441,21 @@ async function applyValidatorJitter(agent) {
       `[Agent ${agent.id}] Adding ${Math.round(jitterMs / 1000)}s jitter to prevent lock contention`
     );
   }
-  await new Promise((resolve) => setTimeout(resolve, jitterMs));
+  await new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    let cancel;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (agent._cancelStartDelay === cancel) agent._cancelStartDelay = null;
+      resolve();
+    };
+    cancel = finish;
+    timer = setTimeout(finish, jitterMs);
+    agent._cancelStartDelay = cancel;
+  });
 }
 
 function publishTaskStarted(agent, triggeringMessage) {
@@ -641,6 +656,7 @@ async function runTaskAttempt(agent, triggeringMessage) {
   // Spawn provider task
   agent.state = 'executing_task';
   await applyValidatorJitter(agent);
+  if (!agent.running) return;
   publishTaskStarted(agent, triggeringMessage);
 
   let result;

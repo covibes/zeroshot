@@ -516,6 +516,39 @@ function defineRunPreflightTests() {
       }
     });
 
+    it('should probe the provider in the task execution boundary', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-omp-context-'));
+      const originalPath = process.env.PATH;
+      const ompPath = path.join(tempDir, 'omp');
+      const runtime = require('../lib/agent-cli-provider/single-agent-runtime');
+      const originalProbe = runtime.probeRuntimeProviderCli;
+      let receivedContext;
+
+      fs.writeFileSync(ompPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      process.env.PATH = `${tempDir}${path.delimiter}${originalPath || ''}`;
+      runtime.probeRuntimeProviderCli = (provider, evidence, settings, context) => {
+        if (provider === 'omp') receivedContext = context;
+        return { available: true };
+      };
+
+      try {
+        const result = await runPreflight({
+          requireGh: false,
+          requireDocker: false,
+          quiet: true,
+          provider: 'omp',
+          executionContext: 'docker',
+        });
+
+        expect(result.valid).to.be.true;
+        expect(receivedContext).to.deep.equal({ executionContext: 'docker' });
+      } finally {
+        runtime.probeRuntimeProviderCli = originalProbe;
+        process.env.PATH = originalPath;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
     it('should fail Copilot preflight when the command exists but help/version probing fails', async () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'preflight-copilot-'));
       const originalPath = process.env.PATH;

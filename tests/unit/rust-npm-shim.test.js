@@ -77,11 +77,13 @@ function registerNativeMetadataTest() {
       'hosted-node/engine-adapter.js',
       'hosted-node/git-askpass.js',
       'hosted-node/hosted-config.js',
+      'hosted-node/issue-hydration.js',
       'hosted-node/runtime-capability.js',
       'hosted-node/worker-launcher.js',
       'hosted-node/worker.js',
       'hosted-node/workspace-bootstrap.js',
       'hosted-node/workspace-delivery-github.js',
+      'hosted-node/workspace-delivery-retry.js',
       'hosted-node/workspace-ship.js',
       'hosted-node/workspace-tools.js',
     ]);

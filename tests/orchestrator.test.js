@@ -917,6 +917,10 @@ function defineLifecycleStopTests() {
         undefined,
         'Cluster should be removed from memory after auto-cleanup'
       );
+      const finalStatus = lifecycleOrchestrator.getStatus(clusterId);
+      assert.strictEqual(finalStatus.state, 'killed');
+      assert.ok(finalStatus.messageCount > 0, 'Final status should survive ledger cleanup');
+      assert.ok(lifecycleOrchestrator.getFinalRun(clusterId)?.snapshot);
 
       // Verify: Cluster deleted from disk (not persisted as stopped)
       const clustersFile = path.join(lifecycleStorageDir, 'clusters.json');

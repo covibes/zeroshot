@@ -181,6 +181,7 @@ test('runtime Codex command facade delegates to helper', () => {
   assert.ok(command.args.includes('--sandbox'));
   assert.ok(command.args.includes('workspace-write'));
   assert.ok(command.args.includes('approval_policy="never"'));
+  assert.ok(command.args.includes('sandbox_workspace_write.network_access=true'));
   assert.equal(command.args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
 });
 
@@ -808,6 +809,9 @@ test('feature probing is deterministic from injected help text', () => {
     false
   );
   assert.equal(helper.getProviderAdapter('opencode').detectCliFeatures('').supportsResume, false);
+});
+
+test('provider-specific feature probes remain deterministic', () => {
   const piHelp =
     'pi --mode json --no-session --no-extensions --no-skills --no-prompt-templates ' +
     '--no-context-files --no-approve --model';
@@ -969,101 +973,101 @@ test('structured-output registry entries require recovery adapters', () => {
   }
 });
 
-test('eligible adapters build restricted provider-owned recovery commands', () => {
-  const cases = [
-    {
-      provider: 'claude',
-      cliFeatures: {
-        supportsTools: true,
-        supportsStrictMcpConfig: true,
-        supportsNoSessionPersistence: true,
-      },
-      assertCommand(command) {
-        assert.ok(command.args.includes('--tools'));
-        assert.ok(command.args.includes('--strict-mcp-config'));
-        assert.ok(command.args.includes('--no-session-persistence'));
-        assert.equal(command.args.includes('--dangerously-skip-permissions'), false);
-        assert.equal(command.args.includes('--mcp-config'), false);
-        assert.equal(command.args.includes('--resume'), false);
-      },
+const restrictedRecoveryCases = [
+  {
+    provider: 'claude',
+    cliFeatures: {
+      supportsTools: true,
+      supportsStrictMcpConfig: true,
+      supportsNoSessionPersistence: true,
     },
-    {
-      provider: 'codex',
-      cliFeatures: {
-        supportsSandbox: true,
-        supportsEphemeral: true,
-        supportsIgnoreUserConfig: true,
-        supportsIgnoreRules: true,
-        supportsStrictConfig: true,
-        supportsConfigOverride: true,
-        supportsOutputSchema: true,
-      },
-      assertCommand(command) {
-        assert.ok(command.args.includes('--sandbox'));
-        assert.ok(command.args.includes('read-only'));
-        assert.ok(command.args.includes('--ephemeral'));
-        assert.ok(command.args.includes('--ignore-user-config'));
-        assert.ok(command.args.includes('--ignore-rules'));
-        assert.ok(command.args.includes('--strict-config'));
-        assert.ok(command.args.includes('web_search="disabled"'));
-        assert.equal(command.args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
-        assert.equal(command.args.includes('resume'), false);
-      },
+    assertCommand(command) {
+      assert.ok(command.args.includes('--tools'));
+      assert.ok(command.args.includes('--strict-mcp-config'));
+      assert.ok(command.args.includes('--no-session-persistence'));
+      assert.equal(command.args.includes('--dangerously-skip-permissions'), false);
+      assert.equal(command.args.includes('--mcp-config'), false);
+      assert.equal(command.args.includes('--resume'), false);
     },
-    {
-      provider: 'gemini',
-      cliFeatures: { supportsAdminPolicy: true },
-      assertCommand(command) {
-        const policyPath = command.args[command.args.indexOf('--admin-policy') + 1];
-        assert.ok(command.args.includes('--admin-policy'));
-        assert.match(
-          fs.readFileSync(policyPath, 'utf8'),
-          /toolName = "\*"[\s\S]*decision = "deny"[\s\S]*priority = 999/
-        );
-        assert.equal(command.args.includes('--yolo'), false);
-        assert.deepEqual(command.cleanupMetadata.at(-1), {
-          kind: 'temp-file',
-          provider: 'gemini',
-          path: policyPath,
-          reason: 'admin-policy',
-        });
-      },
+  },
+  {
+    provider: 'codex',
+    cliFeatures: {
+      supportsSandbox: true,
+      supportsEphemeral: true,
+      supportsIgnoreUserConfig: true,
+      supportsIgnoreRules: true,
+      supportsStrictConfig: true,
+      supportsConfigOverride: true,
+      supportsOutputSchema: true,
     },
-    {
-      provider: 'opencode',
-      cliFeatures: { supportsAgent: true, supportsRecoveryIsolation: true },
-      assertCommand(command) {
-        const agentIndex = command.args.indexOf('--agent');
-        assert.match(command.args[agentIndex + 1], /^zeroshot-output-reformatter-/);
-        const config = JSON.parse(command.env.OPENCODE_CONFIG_CONTENT);
-        assert.equal(config.default_agent, command.args[agentIndex + 1]);
-        assert.deepEqual(config.permission, { '*': 'deny' });
-        assert.deepEqual(config.tools, { '*': false });
-        assert.deepEqual(config.agent[config.default_agent].permission, { '*': 'deny' });
-        assert.deepEqual(config.mcp, {});
-        assert.deepEqual(config.instructions, []);
-        assert.deepEqual(config.plugin, []);
-        assert.deepEqual(config.command, {});
-        assert.equal(command.env.OPENCODE_DISABLE_PROJECT_CONFIG, '1');
-        assert.equal(command.env.OPENCODE_PURE, '1');
-        assert.equal(command.env.OPENCODE_DISABLE_DEFAULT_PLUGINS, '1');
-        assert.equal(command.env.OPENCODE_DISABLE_EXTERNAL_SKILLS, '1');
-        assert.equal(command.env.OPENCODE_DISABLE_CLAUDE_CODE, '1');
-        assert.equal(command.env.OPENCODE_PERMISSION, '{"*":"deny"}');
-        assert.equal(command.env.XDG_CONFIG_HOME, command.env.OPENCODE_CONFIG_DIR);
-        assert.equal(command.env.OPENCODE_DB, ':memory:');
-        assert.equal(command.cleanup.at(-1), command.env.XDG_CONFIG_HOME);
-        assert.deepEqual(command.cleanupMetadata.at(-1), {
-          kind: 'temp-directory',
-          provider: 'opencode',
-          path: command.env.XDG_CONFIG_HOME,
-          reason: 'isolated-config',
-        });
-      },
+    assertCommand(command) {
+      assert.ok(command.args.includes('--sandbox'));
+      assert.ok(command.args.includes('read-only'));
+      assert.ok(command.args.includes('--ephemeral'));
+      assert.ok(command.args.includes('--ignore-user-config'));
+      assert.ok(command.args.includes('--ignore-rules'));
+      assert.ok(command.args.includes('--strict-config'));
+      assert.ok(command.args.includes('web_search="disabled"'));
+      assert.equal(command.args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
+      assert.equal(command.args.includes('resume'), false);
     },
-  ];
+  },
+  {
+    provider: 'gemini',
+    cliFeatures: { supportsAdminPolicy: true },
+    assertCommand(command) {
+      const policyPath = command.args[command.args.indexOf('--admin-policy') + 1];
+      assert.ok(command.args.includes('--admin-policy'));
+      assert.match(
+        fs.readFileSync(policyPath, 'utf8'),
+        /toolName = "\*"[\s\S]*decision = "deny"[\s\S]*priority = 999/
+      );
+      assert.equal(command.args.includes('--yolo'), false);
+      assert.deepEqual(command.cleanupMetadata.at(-1), {
+        kind: 'temp-file',
+        provider: 'gemini',
+        path: policyPath,
+        reason: 'admin-policy',
+      });
+    },
+  },
+  {
+    provider: 'opencode',
+    cliFeatures: { supportsAgent: true, supportsRecoveryIsolation: true },
+    assertCommand(command) {
+      const agentIndex = command.args.indexOf('--agent');
+      assert.match(command.args[agentIndex + 1], /^zeroshot-output-reformatter-/);
+      const config = JSON.parse(command.env.OPENCODE_CONFIG_CONTENT);
+      assert.equal(config.default_agent, command.args[agentIndex + 1]);
+      assert.deepEqual(config.permission, { '*': 'deny' });
+      assert.deepEqual(config.tools, { '*': false });
+      assert.deepEqual(config.agent[config.default_agent].permission, { '*': 'deny' });
+      assert.deepEqual(config.mcp, {});
+      assert.deepEqual(config.instructions, []);
+      assert.deepEqual(config.plugin, []);
+      assert.deepEqual(config.command, {});
+      assert.equal(command.env.OPENCODE_DISABLE_PROJECT_CONFIG, '1');
+      assert.equal(command.env.OPENCODE_PURE, '1');
+      assert.equal(command.env.OPENCODE_DISABLE_DEFAULT_PLUGINS, '1');
+      assert.equal(command.env.OPENCODE_DISABLE_EXTERNAL_SKILLS, '1');
+      assert.equal(command.env.OPENCODE_DISABLE_CLAUDE_CODE, '1');
+      assert.equal(command.env.OPENCODE_PERMISSION, '{"*":"deny"}');
+      assert.equal(command.env.XDG_CONFIG_HOME, command.env.OPENCODE_CONFIG_DIR);
+      assert.equal(command.env.OPENCODE_DB, ':memory:');
+      assert.equal(command.cleanup.at(-1), command.env.XDG_CONFIG_HOME);
+      assert.deepEqual(command.cleanupMetadata.at(-1), {
+        kind: 'temp-directory',
+        provider: 'opencode',
+        path: command.env.XDG_CONFIG_HOME,
+        reason: 'isolated-config',
+      });
+    },
+  },
+];
 
-  for (const { provider, cliFeatures, assertCommand } of cases) {
+test('eligible adapters build restricted provider-owned recovery commands', () => {
+  for (const { provider, cliFeatures, assertCommand } of restrictedRecoveryCases) {
     const prepared = helper.prepareSingleAgentProviderCommand({
       provider,
       context: 'repair this output',

@@ -100,8 +100,11 @@ describe('git-pusher --pr vs --ship (autoMerge)', function () {
         cwd,
       });
 
-      assert.match(agentConfig.prompt, /git push -u -- 'upstream' HEAD/);
-      assert.doesNotMatch(agentConfig.prompt, /git push -u -- 'origin' HEAD/);
+      assert.match(agentConfig.prompt, /push -u -- 'upstream' HEAD/);
+      assert.doesNotMatch(agentConfig.prompt, /push -u -- 'origin' HEAD/);
+      assert.match(agentConfig.prompt, /credential\.helper=!gh auth git-credential/);
+      assert.match(agentConfig.prompt, /url\.https:\/\/github\.com\/\.insteadOf=git@github\.com:/);
+      assert.doesNotMatch(agentConfig.prompt, /x-access-token/);
     });
   });
 
@@ -130,7 +133,7 @@ describe('git-pusher --pr vs --ship (autoMerge)', function () {
 
         const gitPusher = config.agents.find((agent) => agent.id === 'git-pusher');
         assert.ok(gitPusher);
-        assert.match(gitPusher.prompt, /git push -u -- 'upstream' HEAD/);
+        assert.match(gitPusher.prompt, /push -u -- 'upstream' HEAD/);
       } finally {
         orchestrator.close();
       }
@@ -164,7 +167,7 @@ describe('git-pusher --pr vs --ship (autoMerge)', function () {
         assert.ok(gitPusher);
         assert.match(gitPusher.prompt, /Push to my@remote's/);
         assert.ok(
-          gitPusher.prompt.includes(`git push -u -- 'my@remote'"'"'s' HEAD`),
+          gitPusher.prompt.includes(`push -u -- 'my@remote'"'"'s' HEAD`),
           'remote must be passed as one shell-quoted argument'
         );
       } finally {

@@ -181,6 +181,25 @@ function parseGitRemoteUrl(remoteUrl: unknown): GitContext | null {
   return null;
 }
 
+function parseFetchRemoteLine(line: string): readonly [string, string] | null {
+  // Partial clones append their filter after the fetch marker, for example
+  // `origin https://github.com/org/repo.git (fetch) [blob:none]`.
+  const fetchMarker = ' (fetch)';
+  const fetchMarkerIndex = line.lastIndexOf(fetchMarker);
+  if (fetchMarkerIndex < 1) return null;
+  const suffix = line.slice(fetchMarkerIndex + fetchMarker.length);
+  if (suffix.length > 0 && !(suffix.startsWith(' [') && suffix.endsWith(']'))) return null;
+
+  const remoteLine = line.slice(0, fetchMarkerIndex);
+  const separatorIndex = remoteLine.search(/\s/);
+  if (separatorIndex < 1) {
+    return null;
+  }
+
+  const remoteUrl = remoteLine.slice(separatorIndex).trim();
+  return remoteUrl.length > 0 ? [remoteLine.slice(0, separatorIndex), remoteUrl] : null;
+}
+
 /**
  * Detect git repository context from current working directory.
  * Returns provider context extracted from git remote URL.
@@ -205,15 +224,14 @@ function detectGitContext(cwd = process.cwd()): GitContextWithRemote | null {
 
     const supportedRemotes = new Map<string, GitContextWithRemote>();
     for (const line of remoteOutput.split(/\r?\n/)) {
-      const match = /^(\S+)\s+(.+)\s+\(fetch\)$/.exec(line);
-      if (!match) {
+      const remoteParts = parseFetchRemoteLine(line);
+      if (!remoteParts) {
         continue;
       }
 
-      const remoteCandidate = match[1];
-      const remoteUrl = match[2];
+      const [remoteCandidate, remoteUrl] = remoteParts;
       const remote = normalizeGitRemoteName(remoteCandidate);
-      if (!remote || remoteUrl === undefined) {
+      if (!remote) {
         continue;
       }
       const context = parseGitRemoteUrl(remoteUrl);

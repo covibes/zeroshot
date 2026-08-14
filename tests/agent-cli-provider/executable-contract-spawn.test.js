@@ -177,3 +177,38 @@ test('spawnProcessRunner closes provider stdin for noninteractive invocations', 
   assert.equal(result.timedOut, false);
   assert.equal(result.stdout, 'stdin closed');
 });
+
+test('Codex adapter auth survives inherited-provider-env stripping', async () => {
+  const { getProviderAdapter, spawnProcessRunner } = require('../../lib/agent-cli-provider');
+  const secret = 'codex-spawn-secret';
+  const commandSpec = getProviderAdapter('codex').buildCommand('Authenticate.', {
+    authEnv: { OPENAI_API_KEY: secret },
+  });
+
+  assert.equal(commandSpec.env.OPENAI_API_KEY, undefined);
+  assert.equal(commandSpec.env.CODEX_API_KEY, secret);
+  const result = await spawnProcessRunner()({
+    ...commandSpec,
+    binary: process.execPath,
+    args: [
+      '-e',
+      `process.stdout.write(process.env.CODEX_API_KEY === ${JSON.stringify(secret)} ? "AUTH_OK" : "AUTH_MISSING")`,
+    ],
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, 'AUTH_OK');
+});
+
+test('Codex adapter prefers an explicit per-exec credential', () => {
+  const { getProviderAdapter } = require('../../lib/agent-cli-provider');
+  const commandSpec = getProviderAdapter('codex').buildCommand('Authenticate.', {
+    authEnv: {
+      OPENAI_API_KEY: 'fallback-secret',
+      CODEX_API_KEY: 'explicit-secret',
+    },
+  });
+
+  assert.equal(commandSpec.env.OPENAI_API_KEY, undefined);
+  assert.equal(commandSpec.env.CODEX_API_KEY, 'explicit-secret');
+});

@@ -10,6 +10,12 @@ const {
   validateImageMetadata,
   validateRuntimeInspection,
 } = require('../../scripts/hosted-oecp-image-commands');
+const {
+  BUN_PACKAGE_NAME,
+  BUN_RUNTIME_VERSION,
+  OMP_PACKAGE_NAME,
+  OMP_SDK_VERSION,
+} = require('../../scripts/omp/runtime-identities');
 
 const packageManagerPaths = [
   '/usr/local/bin/npm',
@@ -67,6 +73,7 @@ function runtimeInspection() {
       worktreeClaudeConfig: true,
       worktreeToolingEnv: true,
     },
+    ompProviderAvailable: true,
     serverExecutable: true,
     tiniExecutable: true,
     gitExecutable: true,
@@ -150,6 +157,13 @@ function registerRuntimeInspectionTests() {
     missingOmpRuntime.runtimeModules.ompRuntimeRelease = false;
     assert.throws(() => validateRuntimeInspection(missingOmpRuntime), /required runtime module/);
 
+    const unavailableOmpProvider = runtimeInspection();
+    unavailableOmpProvider.ompProviderAvailable = false;
+    assert.throws(
+      () => validateRuntimeInspection(unavailableOmpProvider),
+      /runtime contents are invalid/
+    );
+
     const missingProviderDependency = runtimeInspection();
     missingProviderDependency.runtimeModules.commandCleanupOwnership = false;
     assert.throws(
@@ -202,6 +216,26 @@ function registerBuildInputTests() {
       'utf8'
     );
     assert.match(dockerfile, /apt-get install -y --no-install-recommends ca-certificates git/);
+  });
+
+  it('installs the complete pinned OMP SDK runtime', function () {
+    const dockerfile = fs.readFileSync(
+      nodePath.join(__dirname, '..', '..', 'docker', 'zeroshot-oecp', 'Dockerfile'),
+      'utf8'
+    );
+    assert.match(dockerfile, /COPY scripts\/omp \/opt\/zeroshot\/scripts\/omp/);
+    assert.match(dockerfile, /COPY scripts\/omp\/runtime-identities\.js/);
+    assert.match(dockerfile, /ids\.assertPackageIdentity/);
+    assert.doesNotMatch(dockerfile, /node_modules\/bun\/install\.js/);
+
+    const runtimePackage = JSON.parse(
+      fs.readFileSync(
+        nodePath.join(__dirname, '..', '..', 'docker', 'zeroshot-oecp', 'package.json'),
+        'utf8'
+      )
+    );
+    assert.strictEqual(runtimePackage.dependencies[OMP_PACKAGE_NAME], OMP_SDK_VERSION);
+    assert.strictEqual(runtimePackage.dependencies[BUN_PACKAGE_NAME], BUN_RUNTIME_VERSION);
   });
 }
 

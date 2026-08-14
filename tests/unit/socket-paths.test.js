@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -97,5 +98,32 @@ describe('attach socket paths', function () {
       () => socketPaths.getAgentSocketPath('symlink-cluster', 'worker', homeDir),
       /not a directory|symbolic link/
     );
+  });
+});
+
+describe('attach socket temporary root', function () {
+  it('allocates Unix sockets under the configured writable temporary directory', function () {
+    if (process.platform === 'win32') this.skip();
+
+    const writableTemp = fs.mkdtempSync(path.join('/tmp', 'zeroshot-socket-root-'));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `const socketPaths = require(${JSON.stringify(require.resolve('../../src/attach/socket-paths'))});` +
+            `process.stdout.write(socketPaths.getTaskSocketPath('hosted-task', '/runtime/home'));`,
+        ],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, TMPDIR: writableTemp },
+        }
+      );
+
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.strictEqual(path.dirname(path.dirname(result.stdout)), writableTemp);
+    } finally {
+      fs.rmSync(writableTemp, { recursive: true, force: true });
+    }
   });
 });

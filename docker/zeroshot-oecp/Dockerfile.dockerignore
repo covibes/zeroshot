@@ -42,10 +42,7 @@
 !lib/cluster-worker/worker-internals.js
 !scripts/
 !scripts/omp/
-!scripts/omp/runtime.js
-!scripts/omp/runtime-identities.js
-!scripts/omp/runtime-lock.js
-!scripts/omp/runtime-release.js
+!scripts/omp/**
 !src/
 !src/**
 src/target/

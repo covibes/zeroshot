@@ -47,6 +47,7 @@
     "typecheck:task-lib": "tsc --project tsconfig.task-lib.json",
     "typecheck:hosted-target": "tsc --project tsconfig.hosted-target.json",
     "typecheck:hosted-session": "tsc --project tsconfig.hosted-session.json",
+    "pretest:hosted": "npm run build:legacy-runtime",
     "test:hosted": "npm run build:cluster && node --test tests/private-hosted-cli/*.test.js && npm run test:hosted-target",
     "test:hosted-target": "npm run build:cluster && npm run build:target && node --test tests/hosted-target/*.test.ts",
     "test:target": "npm run build:agent-cli-provider && npm run build:target && node --test tests/target/*.test.ts",
