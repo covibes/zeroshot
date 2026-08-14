@@ -146,6 +146,8 @@ zeroshot logs <id> -f            # stream logs
 zeroshot resume <id> [prompt]    # resume a stopped or failed run
 zeroshot stop <id>               # graceful stop
 zeroshot kill <id>               # force stop
+zeroshot export <id> --format trace --output run.trace.jsonl
+zeroshot export <id> --format semantic --output run.semantic.jsonl
 
 zeroshot providers               # provider availability and defaults
 zeroshot settings                # effective settings
@@ -157,6 +159,16 @@ zeroshot config list             # workflow graphs (config show / config validat
 template supports `{{issue_number}}`, `{{issue_title}}`, and `{{issue_reference}}`; all three
 expand to empty text for tasks without an issue, so manual runs never emit `Closes #unknown`.
 The unrendered template is retained for detached and resumed runs.
+
+The `trace` export is a deterministic, provider-neutral research bundle. It preserves the ordered
+cluster ledger, exact selected prompts, and exact raw task-log bytes without interpreting a Claude,
+Codex, Pi, or other provider protocol. Missing evidence is recorded explicitly in its footer. File
+exports are create-only: choose a new output path rather than replacing an existing bundle. Live
+tasks are exported only as explicitly incomplete snapshots.
+The separate `semantic` export runs those task bytes through Zeroshot's existing stateful provider
+adapters and emits bounded `text`, `thinking`, `tool_call`, `tool_result`, and `result` events.
+Zeroshot-owned wrapper and stderr records remain native-only. Parser diagnostics affect only
+semantic completeness; they do not alter the native trace or run.
 
 </details>
 

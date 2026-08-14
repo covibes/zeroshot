@@ -61,6 +61,25 @@ function assertControlPlaneIsBounded(messages, output) {
   );
 }
 
+describe('host-mode output task identity', function () {
+  it('causally links host-mode output records to their provider task', function () {
+    const messages = [];
+    const agent = makeAgent(messages);
+    const state = createLogFollowState('host-output-task');
+
+    broadcastAgentLine({
+      agent,
+      providerName: 'pi',
+      state,
+      line: '[1777777777777]{"type":"agent_settled"}',
+    });
+    flushAgentOutput(agent, 'pi', state);
+
+    assert.ok(messages.length > 0);
+    assert.ok(messages.every((message) => message.content.data.taskId === 'host-output-task'));
+  });
+});
+
 describe('bounded cumulative provider output', function () {
   it('retains the terminal structured result after many small records', async function () {
     const messages = [];

@@ -5,6 +5,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 
 const { setupE2ERepo, cleanupE2ERepo, runZeroshot } = require('./helpers/e2e-harness');
+const { extractTaskLogProviderOutput } = require('./helpers/task-log');
 
 const CONFIG_PATH = path.join(__dirname, 'fixtures', 'codex-terminal-stress-config.json');
 const FAKE_CODEX_PATH = path.resolve(__dirname, '..', 'fixtures', 'fake-codex-terminal-stress.js');
@@ -65,18 +66,6 @@ function readTaskLog(homeDir) {
   }
 }
 
-function extractProviderOutput(rawLog) {
-  const lines = rawLog.replaceAll('\r\n', '\n').split('\n');
-  const normalized = lines.map((line) => line.replace(/^\[\d{13}\]/, ''));
-  const start = normalized.findIndex((line) => line.includes('"type":"thread.started"'));
-  const end = normalized.findIndex(
-    (line, index) => index >= start && line.includes('"type":"turn.completed"')
-  );
-  assert.ok(start >= 0, 'raw task log must contain the first provider record');
-  assert.ok(end >= start, 'raw task log must contain the terminal provider record');
-  return `${normalized.slice(start, end + 1).join('\n')}\n`;
-}
-
 describe('e2e: Codex compressed terminal stress', function () {
   this.timeout(90000);
 
@@ -128,7 +117,7 @@ describe('e2e: Codex compressed terminal stress', function () {
     const rawLog = readTaskLog(env.homeDir);
     const expectedOutput = fs.readFileSync(expectedOutputPath, 'utf8');
     assert.ok(Buffer.byteLength(expectedOutput) > STRESS_BYTES);
-    assert.strictEqual(extractProviderOutput(rawLog), expectedOutput);
+    assert.strictEqual(extractTaskLogProviderOutput(rawLog, 'turn.completed'), expectedOutput);
 
     const statusResult = runZeroshot(env, ['status', clusterId, '--json']);
     assert.strictEqual(

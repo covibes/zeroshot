@@ -110,6 +110,11 @@ describe('OMP SDK detached task runner', function () {
       );
 
       const log = fs.readFileSync(spawned.logFile, 'utf8');
+      assert.match(
+        log,
+        /^\[\d{13}\]\[ZEROSHOT\]\[LOG_FORMAT\] channel-framed-v2\n/,
+        'the SDK watcher must mark even startup-failure logs'
+      );
       assert.equal(log.includes(PROMPT), false, 'prompt bytes must not enter watcher diagnostics');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });

@@ -29,7 +29,7 @@
     ]
   },
   "scripts": {
-    "pretest": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib",
+    "pretest": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib && npm run build:cli-runtime",
     "test": "node tests/run-tests.js",
     "test:unit": "node tests/run-tests.js",
     "test:e2e": "mocha 'tests/e2e/**/*.test.js' --timeout 120000",
@@ -55,6 +55,7 @@
     "typecheck:cluster": "tsc --project tsconfig.cluster.json",
     "lint:agent-cli-provider": "eslint \"src/agent-cli-provider/**/*.ts\" \"tests/agent-cli-provider/**/*.ts\"",
     "build:agent-cli-provider": "tsc --project tsconfig.agent-cli-provider.build.json",
+    "build:cli-runtime": "node scripts/build-cli-runtime.js",
     "build:legacy-lib": "tsc --project tsconfig.legacy-lib.build.json",
     "build:legacy-runtime": "tsc --project tsconfig.legacy-runtime.build.json",
     "build:task-lib": "tsc --project tsconfig.task-lib.build.json",
@@ -97,9 +98,9 @@
     "release:preflight": "node scripts/release-preflight.js",
     "release:recover": "node scripts/release-recovery.js",
     "release:assert-published": "node scripts/assert-release-published.js",
-    "prepack": "npm run build:cluster && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib",
+    "prepack": "npm run build:cluster && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib && npm run build:cli-runtime",
     "prepublishOnly": "npm run lint && npm run typecheck && npm run check:agent-cli-provider:ci",
-    "prepare": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib && husky"
+    "prepare": "npm run build:agent-cli-provider && npm run build:target && npm run build:legacy-lib && npm run build:legacy-runtime && npm run build:task-lib && npm run build:cli-runtime && husky"
   },
   "c8": {
     "reporter": [
@@ -181,6 +182,7 @@
     "docker/",
     "!docker/zeroshot-oecp/",
     "scripts/",
+    "!scripts/build-cli-runtime.js",
     "!scripts/hosted-oecp-ci-relevance.js",
     "!scripts/hosted-oecp-image.js",
     "!scripts/hosted-oecp-image-commands.js",

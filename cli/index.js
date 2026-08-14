@@ -59,6 +59,7 @@ const {
 } = require('../lib/provider-names');
 const { commandExists } = require('../lib/provider-detection');
 const { getProvider, parseProviderChunk } = require('../src/providers');
+const { decodeTaskLogLine } = require('../src/task-log-line');
 const { readClustersFileSync } = require('../lib/clusters-registry');
 const { MOUNT_PRESETS, resolveEnvs } = require('../lib/docker-config');
 const {
@@ -1430,19 +1431,10 @@ function startClusterDbPolling(cluster, clusterId, isActive, options) {
 }
 
 function parseIncrementalTaskLogLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('{')) {
-    return null;
-  }
-
-  let timestamp = Date.now();
-  let jsonContent = trimmed;
-
-  const timestampMatch = jsonContent.match(/^\[(\d{13})\](.*)$/);
-  if (timestampMatch) {
-    timestamp = parseInt(timestampMatch[1], 10);
-    jsonContent = timestampMatch[2];
-  }
+  const decoded = decodeTaskLogLine(line.trim());
+  if (!decoded.providerOutput) return null;
+  const timestamp = decoded.timestamp ?? Date.now();
+  const jsonContent = decoded.content.trim();
 
   if (!jsonContent.startsWith('{')) {
     return null;
@@ -2619,37 +2611,7 @@ function findAgentFromLifecycle(agents, taskId, lifecycleMessages) {
 }
 
 function parseTaskLogLine(line) {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith('[')) {
-    return null;
-  }
-
-  const parsed = parseTimestampedLine(trimmed);
-  if (!parsed.jsonContent.startsWith('{')) {
-    return null;
-  }
-
-  try {
-    const json = JSON.parse(parsed.jsonContent);
-    if (json.type === 'system' && json.subtype === 'init') {
-      return null;
-    }
-  } catch {
-    return null;
-  }
-
-  return parsed;
-}
-
-function parseTimestampedLine(line) {
-  const timestampMatch = line.match(/^\[(\d{13})\](.*)$/);
-  if (!timestampMatch) {
-    return { timestamp: Date.now(), jsonContent: line };
-  }
-  return {
-    timestamp: parseInt(timestampMatch[1], 10),
-    jsonContent: timestampMatch[2],
-  };
+  return parseIncrementalTaskLogLine(line);
 }
 
 function buildTaskLogMessage({ taskId, timestamp, jsonContent, cluster, agent, iteration }) {
@@ -3405,9 +3367,9 @@ program
   .command('export <cluster-id>')
   .helpGroup('Maintenance:')
   .description('Export cluster conversation')
-  .option('-f, --format <format>', 'Export format: json, markdown, html', 'html')
+  .option('-f, --format <format>', 'Export format: json, trace, semantic, markdown, html', 'html')
   .option('-o, --output <file>', 'Output file (auto-generated for html)')
-  .action((clusterId, options) => {
+  .action(async (clusterId, options) => {
     try {
       // Get messages from DB
       const Ledger = require('../src/ledger');
@@ -3418,14 +3380,7 @@ program
         throw new Error(`Cluster ${clusterId} not found (no DB file)`);
       }
 
-      // JSON export
-      if (options.format === 'json') {
-        exportClusterJson(dbPath, clusterId, options.output || null);
-        if (options.output) {
-          console.log(`Exported to ${options.output}`);
-        }
-        return;
-      }
+      if (await exportClusterDataFormat(dbPath, clusterId, options)) return;
 
       const ledger = new Ledger(dbPath);
       const messages = ledger.getAll(clusterId);
@@ -6202,6 +6157,98 @@ function exportClusterJson(dbPath, clusterId, outputPath) {
   );
 }
 
+function tryExportClusterTraceSnapshot(dbPath, clusterId, outputPath, readTask, allowedLogRoot) {
+  const Ledger = require('../src/ledger');
+  const { streamClusterTraceExport } = require('./trace-export');
+  const ledger = new Ledger(dbPath, { readonly: true });
+  try {
+    return ledger.withReadSnapshot(() => {
+      if (ledger.needsAgentOutputReconciliation(clusterId)) return false;
+      streamClusterTraceExport({
+        ledger,
+        clusterId,
+        readTask,
+        allowedLogRoot,
+        outputPath,
+      });
+      return true;
+    });
+  } finally {
+    ledger.close();
+  }
+}
+
+function exportClusterTrace(dbPath, clusterId, outputPath, readTask, allowedLogRoot) {
+  const Ledger = require('../src/ledger');
+  const maxReconciliationAttempts = 3;
+  for (let attempt = 0; attempt <= maxReconciliationAttempts; attempt += 1) {
+    if (tryExportClusterTraceSnapshot(dbPath, clusterId, outputPath, readTask, allowedLogRoot)) {
+      return;
+    }
+    if (attempt === maxReconciliationAttempts) break;
+    const reconciliationLedger = new Ledger(dbPath);
+    reconciliationLedger.close();
+  }
+  throw new Error(
+    `Cluster ${clusterId} output changed during ${maxReconciliationAttempts} reconciliation attempts`
+  );
+}
+
+function tryExportClusterSemanticSnapshot(dbPath, clusterId, outputPath, readTask, allowedLogRoot) {
+  const Ledger = require('../src/ledger');
+  const { streamClusterSemanticExport } = require('./semantic-export');
+  const ledger = new Ledger(dbPath, { readonly: true });
+  try {
+    return ledger.withReadSnapshot(() => {
+      if (ledger.needsAgentOutputReconciliation(clusterId)) return false;
+      streamClusterSemanticExport({
+        ledger,
+        clusterId,
+        readTask,
+        allowedLogRoot,
+        outputPath,
+      });
+      return true;
+    });
+  } finally {
+    ledger.close();
+  }
+}
+
+function exportClusterSemantic(dbPath, clusterId, outputPath, readTask, allowedLogRoot) {
+  const Ledger = require('../src/ledger');
+  const maxReconciliationAttempts = 3;
+  for (let attempt = 0; attempt <= maxReconciliationAttempts; attempt += 1) {
+    if (tryExportClusterSemanticSnapshot(dbPath, clusterId, outputPath, readTask, allowedLogRoot)) {
+      return;
+    }
+    if (attempt === maxReconciliationAttempts) break;
+    const reconciliationLedger = new Ledger(dbPath);
+    reconciliationLedger.close();
+  }
+  throw new Error(
+    `Cluster ${clusterId} output changed during ${maxReconciliationAttempts} reconciliation attempts`
+  );
+}
+
+async function exportClusterDataFormat(dbPath, clusterId, options) {
+  if (options.format === 'json') {
+    exportClusterJson(dbPath, clusterId, options.output || null);
+    if (options.output) console.log(`Exported to ${options.output}`);
+    return true;
+  }
+  if (options.format !== 'trace' && options.format !== 'semantic') return false;
+
+  const [{ getTask }, { LOGS_DIR }] = await Promise.all([
+    import('../task-lib/store.js'),
+    import('../task-lib/config.js'),
+  ]);
+  const exporter = options.format === 'trace' ? exportClusterTrace : exportClusterSemantic;
+  exporter(dbPath, clusterId, options.output || null, getTask, LOGS_DIR);
+  if (options.output) console.log(`Exported ${options.format} to ${options.output}`);
+  return true;
+}
+
 // Main entry point
 async function main() {
   printLegacyDistroNotice();
@@ -6258,4 +6305,5 @@ module.exports = {
   buildCompletionPrompt,
   resolveRunMode,
   killRunningClusters,
+  parseTaskLogLine,
 };

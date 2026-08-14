@@ -38,6 +38,6 @@ describe('export command has no puppeteer footprint', () => {
 
   it('defaults the export format to html', () => {
     const cli = fs.readFileSync(path.join(repoRoot, 'cli', 'index.js'), 'utf8');
-    expect(cli).to.match(/Export format: json, markdown, html/);
+    expect(cli).to.match(/Export format: json, trace, semantic, markdown, html/);
   });
 });

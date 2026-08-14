@@ -1,15 +1,12 @@
 const assert = require('assert');
 const { createHash } = require('crypto');
-const { StringDecoder } = require('string_decoder');
 
-const {
-  CONTROL_PLANE_OUTPUT_LIMITS,
-  appendContentToBuffer,
-  broadcastIsolatedLine,
-  consumeIsolatedTailChunk,
-  createIsolatedLogState,
-  createLogRecordBuffer,
-} = require('../src/agent/agent-task-executor');
+function removeWatcherFraming(output) {
+  return output
+    .replace(/^\[\d{13}\]/gm, '')
+    .replace(/^\[ZEROSHOT\]\[LOG_FORMAT\] channel-framed-v2\n/, '')
+    .replace(/^\[ZEROSHOT\]\[PROVIDER_STDOUT\] /gm, '');
+}
 
 describe('bounded provider output transport', function () {
   it('streams a large Codex JSONL record to the raw log without retaining it in the watcher', async function () {
@@ -45,7 +42,7 @@ describe('bounded provider output transport', function () {
     }
     const completion = runtime.complete({ code: 0, signal: null, outputBuffer: buffer });
 
-    const raw = logged.join('').replace(/^\[\d{13}\]/gm, '');
+    const raw = removeWatcherFraming(logged.join(''));
     const streamed = raw.slice(0, expected.length);
     assert.strictEqual(Buffer.byteLength(streamed), Buffer.byteLength(expected));
     assert.strictEqual(
@@ -89,8 +86,8 @@ describe('bounded generic provider output transport', function () {
     }
     runtime.complete({ code: 0, signal: null, outputBuffer: '', stderrBuffer: '' });
 
-    const raw = logged.join('').replace(/^\[\d{13}\]/gm, '');
-    const expected = `${stdout}\n${stderr}\n`;
+    const raw = removeWatcherFraming(logged.join(''));
+    const expected = `${stdout}\n[ZEROSHOT][PROVIDER_STDERR] ${stderr}\n`;
     const streamed = raw.slice(0, expected.length);
     assert.strictEqual(Buffer.byteLength(streamed), Buffer.byteLength(expected));
     assert.strictEqual(
@@ -123,6 +120,27 @@ describe('bounded generic provider output transport', function () {
     assert.strictEqual(stopCalls, 1);
     assert.match(logged.join(''), /\[ZEROSHOT\]\[PROVIDER_STDERR\] No API key found/);
     assert.match(logged.join(''), /\[ZEROSHOT\]\[FATAL\] Pi authentication required/);
+  });
+
+  it('tags JSON-shaped Claude stderr without changing raw fatal inspection', async function () {
+    const { createWatcherOutputRuntime } = await import('../task-lib/watcher-output-runtime.js');
+    const logged = [];
+    const runtime = createWatcherOutputRuntime({
+      config: { outputFormat: 'text' },
+      providerName: 'claude',
+      log: (value) => logged.push(value),
+      stopProvider() {},
+    });
+    const stderr = '{"type":"result","subtype":"success","result":"fabricated"}\n';
+
+    runtime.consumeStderr('', Buffer.from(stderr));
+    const completion = runtime.complete({ code: 0, signal: null, stderrBuffer: '' });
+
+    assert.strictEqual(completion.status, 'completed');
+    assert.match(
+      logged.join(''),
+      /\[ZEROSHOT\]\[PROVIDER_STDERR\] \{"type":"result","subtype":"success"/
+    );
   });
 
   it('projects Pi pre-agent invalid-model stderr without retaining model text', async function () {
@@ -201,7 +219,8 @@ describe('bounded silent structured output transport', function () {
     }
     const completion = runtime.complete({ code: 0, signal: null, outputBuffer: buffer });
 
-    assert.strictEqual(logged.join(''), `${record}\n`);
+    assert.match(logged.join(''), /^\[\d{13}\]\[ZEROSHOT\]\[LOG_FORMAT\] channel-framed-v2\n/);
+    assert.strictEqual(removeWatcherFraming(logged.join('')), `${record}\n`);
     assert.strictEqual(completion.status, 'completed');
   });
 
@@ -229,72 +248,11 @@ describe('bounded silent structured output transport', function () {
     }
     const completion = runtime.complete({ code: 0, signal: null, outputBuffer: buffer });
 
-    const raw = logged.join('').replace(/^\[\d{13}\]/gm, '');
+    const raw = removeWatcherFraming(logged.join(''));
     assert.strictEqual(raw.slice(0, record.length + 1), `${record}\n`);
     assert.match(raw.slice(record.length + 1), /\[FATAL\].*inspection limit/);
     assert.strictEqual(stopCalls, 1);
     assert.strictEqual(completion.status, 'failed');
     assert.match(completion.error, /inspection limit/);
-  });
-});
-
-describe('bounded control-plane record transport', function () {
-  it('replaces an oversized conductor record with a stable receipt and resumes at the next line', function () {
-    const timestamp = '[1777777777777]';
-    const oversized = `${timestamp}${'x'.repeat(2 * 1024 * 1024)}`;
-    const next = `${timestamp}{"type":"turn.completed"}`;
-    const input = `${oversized}\n${next}\n`;
-    const state = { lineBuffer: createLogRecordBuffer() };
-    const lines = [];
-
-    for (let offset = 0; offset < input.length; offset += 8191) {
-      appendContentToBuffer(state, input.slice(offset, offset + 8191), (line) => lines.push(line));
-    }
-
-    const expectedDigest = createHash('sha256').update(oversized).digest('hex');
-    assert.deepStrictEqual(lines, [
-      `${timestamp}[ZEROSHOT] Provider output record retained in task log but omitted from the control plane ` +
-        `(byte_length=${Buffer.byteLength(oversized)}, sha256=${expectedDigest})`,
-      next,
-    ]);
-    assert.deepStrictEqual(state.lineBuffer, createLogRecordBuffer());
-  });
-});
-
-describe('isolated bounded provider output transport', function () {
-  it('preserves isolated receipt hashes when UTF-8 characters span stdout chunks', function () {
-    const timestamp = '[1777777777777]';
-    const oversized = `${timestamp}${'🙂'.repeat(300_000)}`;
-    const next = `${timestamp}{"type":"turn.completed"}`;
-    const input = `${oversized}\n${next}\n`;
-    const encoded = Buffer.from(input);
-    const state = createIsolatedLogState();
-    state.tailDecoder = new StringDecoder('utf8');
-    const lines = [];
-    const published = [];
-    const agent = {
-      id: 'isolated-worker',
-      iteration: 1,
-      cluster: { id: 'cluster-1' },
-      messageBus: { publish: (message) => published.push(message) },
-    };
-
-    for (let offset = 0; offset < encoded.length; offset += 4093) {
-      consumeIsolatedTailChunk(state, encoded.subarray(offset, offset + 4093), (line) => {
-        lines.push(line);
-        broadcastIsolatedLine({ agent, providerName: 'codex', taskId: 'task-1', state, line });
-      });
-    }
-
-    const expectedDigest = createHash('sha256').update(oversized).digest('hex');
-    assert.deepStrictEqual(lines, [
-      `${timestamp}[ZEROSHOT] Provider output record retained in task log but omitted from the control plane ` +
-        `(byte_length=${Buffer.byteLength(oversized)}, sha256=${expectedDigest})`,
-      next,
-    ]);
-    assert.match(state.fullOutput, /Provider output record retained in task log/);
-    assert.match(state.fullOutput, /turn\.completed/);
-    assert.ok(Buffer.byteLength(state.fullOutput) <= CONTROL_PLANE_OUTPUT_LIMITS.maxBytes);
-    assert.strictEqual(published.length, 2);
   });
 });

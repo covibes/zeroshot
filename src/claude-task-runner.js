@@ -11,6 +11,7 @@ const TaskRunner = require('./task-runner');
 const { loadSettings } = require('../lib/settings');
 const { normalizeProviderName, getDefaultProviderId } = require('../lib/provider-names');
 const { getProvider } = require('./providers');
+const { decodeTaskLogLine } = require('./task-log-line');
 const { prependWorktreeToolBinToEnv } = require('./worktree-tooling-env');
 const { applyDarwinKeychainBoundaryToEnv } = require('./darwin-keychain-boundary');
 const { getTask, getTaskBySpawnOwnershipToken } = require('../task-lib/store.js');
@@ -556,18 +557,17 @@ class ClaudeTaskRunner extends TaskRunner {
       const broadcastLine = (line) => {
         if (!line.trim()) return;
 
-        let content = line;
-        const timestampMatch = line.match(/^\[(\d{13})\](.*)$/);
-        if (timestampMatch) {
-          content = timestampMatch[2];
-        }
+        const decoded = decodeTaskLogLine(line);
+        if (!decoded.providerOutput) return;
+        const content = decoded.content;
 
         // Skip non-JSON patterns
         if (
-          content.startsWith('===') ||
-          content.startsWith('Finished:') ||
-          content.startsWith('Exit code:') ||
-          (content.includes('"type":"system"') && content.includes('"subtype":"init"'))
+          decoded.channel !== 'provider_stdout' &&
+          (content.startsWith('===') ||
+            content.startsWith('Finished:') ||
+            content.startsWith('Exit code:') ||
+            (content.includes('"type":"system"') && content.includes('"subtype":"init"')))
         ) {
           return;
         }

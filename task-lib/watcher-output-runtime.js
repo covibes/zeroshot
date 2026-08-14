@@ -8,6 +8,14 @@ import {
   supportsProviderStructuredOutputRecovery,
 } from './provider-helper-runtime.js';
 import { terminateProcess } from './process-termination.js';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const {
+  TASK_LOG_STDOUT_PREFIX,
+  formatTaskLogMarker,
+  formatTaskLogStdout,
+} = require('../src/task-log-line.js');
 
 export const COMMAND_CLEANUP_UNINITIALIZED = Symbol('command-cleanup-uninitialized');
 
@@ -69,7 +77,7 @@ function createCodexOutputPassthrough({ log, captureProviderSession }) {
     let offset = 0;
     while (offset < text.length) {
       if (atLineStart) {
-        logged.push(`[${timestamp}]`);
+        logged.push(`[${timestamp}]${TASK_LOG_STDOUT_PREFIX}`);
         atLineStart = false;
       }
       const newline = text.indexOf('\n', offset);
@@ -128,7 +136,7 @@ function createBoundedLinePassthrough({
     }
     if (byteLength > MAX_WATCHER_CONTROL_RECORD_BYTES) {
       if (deferRawUntilOverflow && log) {
-        log(`[${lineTimestamp}]${inspectionParts.join('')}${part}`);
+        log(`[${lineTimestamp}]${linePrefix}${inspectionParts.join('')}${part}`);
         rawOverflowStreaming = true;
       }
       inspectable = false;
@@ -310,8 +318,10 @@ export function completeWatcherFailure({ error, source, ...completionOptions }) 
  * frames, prompt text, or control payloads.
  */
 export function createRpcWatcherOutputRuntime({ log }) {
+  log(formatTaskLogMarker(Date.now()));
+
   function logEvent(event) {
-    log(`[${Date.now()}]${JSON.stringify(event)}\n`);
+    log(formatTaskLogStdout(Date.now(), JSON.stringify(event)));
   }
 
   function complete(result) {
@@ -350,6 +360,7 @@ export function createWatcherOutputRuntime({
   let finalResultJson = null;
   let streamingModeError = null;
   let fatalError = null;
+  log(formatTaskLogMarker(Date.now()));
   const captureProviderSession = providerSessionCapture?.captureLine || (() => {});
   const codexOutputPassthrough =
     providerName === 'codex' ? createCodexOutputPassthrough({ log, captureProviderSession }) : null;
@@ -358,6 +369,7 @@ export function createWatcherOutputRuntime({
     : createBoundedLinePassthrough({
         log,
         deferRawUntilOverflow: silentJsonMode,
+        linePrefix: TASK_LOG_STDOUT_PREFIX,
         handleLine: (line, timestamp, { oversized }) =>
           handleOutputLine(line, timestamp, {
             alreadyLogged: !silentJsonMode,
@@ -366,19 +378,20 @@ export function createWatcherOutputRuntime({
       });
   const stderrPassthrough = createBoundedLinePassthrough({
     log,
-    // Pi reserves stdout for its JSON protocol and deliberately routes ordinary writes to
-    // stderr. Keep those diagnostics in the task log with explicit provenance so followers can
-    // exclude them from strict JSON validation.
-    linePrefix: providerName === 'pi' ? '[ZEROSHOT][PROVIDER_STDERR] ' : '',
-    handleLine: (line, timestamp) => maybeHandleFatalError(line, timestamp),
+    // Stderr must never be mistaken for provider protocol output. Fatal detection still receives
+    // the raw line through handleLine; only the persisted task-log representation is tagged.
+    linePrefix: '[ZEROSHOT][PROVIDER_STDERR] ',
+    handleLine: (line, timestamp) => maybeHandleFatalError(line, timestamp, true),
   });
 
-  function maybeHandleFatalError(line, timestamp) {
+  function maybeHandleFatalError(line, timestamp, rawPersisted = false) {
     if (fatalError) return false;
     const detected = detectProviderFatalError(providerName, line);
     if (!detected) return false;
     fatalError = detected;
-    if (silentJsonMode) log(`[${timestamp}]${line}\n`);
+    if (silentJsonMode && !rawPersisted) {
+      log(formatTaskLogStdout(timestamp, line));
+    }
     log(`[${timestamp}][ZEROSHOT][FATAL] ${detected}\n`);
     stopProvider(timestamp);
     return true;
@@ -413,12 +426,12 @@ export function createWatcherOutputRuntime({
     if (silentJsonMode && !line.trim()) return;
     // Pi reserves stdout for JSON lifecycle events. Error text inside an assistant message may be
     // followed by an automatic retry, so only Pi stderr can prove a pre-agent startup failure.
-    if (providerName !== 'pi') maybeHandleFatalError(line, timestamp);
+    if (providerName !== 'pi') maybeHandleFatalError(line, timestamp, alreadyLogged);
     if (captureStreamingError(line, timestamp)) return;
     if (silentJsonMode) {
       maybeCaptureStructuredOutput(line);
     } else if (!alreadyLogged) {
-      log(`[${timestamp}]${line}\n`);
+      log(formatTaskLogStdout(timestamp, line));
     }
   }
 
@@ -444,11 +457,10 @@ export function createWatcherOutputRuntime({
       if (silentJsonMode) {
         finalResultJson = recoveredLine;
       } else {
-        log(`[${timestamp}]${recoveredLine}\n`);
+        log(formatTaskLogStdout(timestamp, recoveredLine));
       }
     } else if (streamingModeError.line) {
-      const prefix = silentJsonMode ? '' : `[${streamingModeError.timestamp}]`;
-      log(`${prefix}${streamingModeError.line}\n`);
+      log(formatTaskLogStdout(streamingModeError.timestamp, streamingModeError.line));
     }
     return recovered;
   }
@@ -463,7 +475,9 @@ export function createWatcherOutputRuntime({
     if (stderrBuffer !== null) stderrPassthrough.flush();
     const recovered = attemptRecovery(code, timestamp);
     const sessionIdentityError = providerSessionCapture?.getCompletionError() || null;
-    if (silentJsonMode && finalResultJson) log(`${finalResultJson}\n`);
+    if (silentJsonMode && finalResultJson) {
+      log(formatTaskLogStdout(timestamp, finalResultJson));
+    }
     if (config.outputFormat !== 'json') {
       log(`\n${'='.repeat(50)}\n`);
       log(`Finished: ${new Date().toISOString()}\n`);

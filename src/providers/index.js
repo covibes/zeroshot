@@ -6,6 +6,7 @@ const {
 } = require('../../lib/provider-names');
 const { commandExists, getCommandPath } = require('../../lib/provider-detection');
 const helper = require('../../lib/agent-cli-provider');
+const { stripTimestampPrefix } = require('../../lib/agent-cli-provider/log-prefix');
 
 const warned = new Set();
 
@@ -216,25 +217,6 @@ async function detectProviders() {
 
 function listProviders() {
   return helper.listProviderAdapters();
-}
-
-function stripTimestampPrefix(line) {
-  if (!line || typeof line !== 'string') return '';
-  let trimmed = line.trim().replace(/\r$/, '');
-  if (!trimmed) return '';
-
-  const tsMatch = trimmed.match(/^\[(\d{13})\](.*)$/);
-  if (tsMatch) trimmed = (tsMatch[2] || '').trimStart();
-
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
-    const pipeMatch = trimmed.match(/^[^|]{1,40}\|\s*(.*)$/);
-    if (pipeMatch) {
-      const afterPipe = (pipeMatch[1] || '').trimStart();
-      if (afterPipe.startsWith('{') || afterPipe.startsWith('[')) return afterPipe;
-    }
-  }
-
-  return trimmed;
 }
 
 function collectEvents(events, event) {

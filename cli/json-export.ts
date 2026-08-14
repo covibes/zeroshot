@@ -1,4 +1,4 @@
-import fs = require('fs');
+import { createReplacingDestination, type ExportStream } from './export-stream';
 
 interface LedgerMessageIterator extends Iterator<unknown> {
   return?: () => IteratorResult<unknown>;
@@ -8,25 +8,11 @@ interface ClusterLedger {
   iterateAll(clusterId: string): LedgerMessageIterator;
 }
 
-interface ExportStream {
-  readonly fd?: number;
-  write(value: string): unknown;
-}
-
 interface JsonExportOptions {
   ledger: ClusterLedger;
   clusterId: string;
   outputPath?: string | null;
   stdout?: ExportStream;
-}
-
-interface Destination {
-  close(): void;
-  write(value: string): void;
-}
-
-function isInteger(value: unknown): value is number {
-  return Number.isInteger(value);
 }
 
 function indentJson(value: unknown, spaces: number): string {
@@ -37,53 +23,13 @@ function indentJson(value: unknown, spaces: number): string {
     .join('\n');
 }
 
-function writeAll(fd: number, value: string): void {
-  const bytes = Buffer.from(value);
-  let offset = 0;
-  while (offset < bytes.length) {
-    const written = fs.writeSync(fd, bytes, offset, bytes.length - offset);
-    if (!Number.isInteger(written) || written <= 0) {
-      throw new Error('JSON export destination stopped accepting bytes');
-    }
-    offset += written;
-  }
-}
-
-function createDestination(
-  outputPath: string | null | undefined,
-  stdout: ExportStream
-): Destination {
-  if (outputPath) {
-    const fd = fs.openSync(outputPath, 'w');
-    return {
-      close: () => fs.closeSync(fd),
-      write: (value) => writeAll(fd, value),
-    };
-  }
-
-  if (isInteger(stdout.fd)) {
-    const fd = stdout.fd;
-    return {
-      close(): void {},
-      write: (value) => writeAll(fd, value),
-    };
-  }
-
-  return {
-    close(): void {},
-    write: (value): void => {
-      stdout.write(value);
-    },
-  };
-}
-
 function streamClusterJsonExport({
   ledger,
   clusterId,
   outputPath = null,
   stdout = process.stdout,
 }: JsonExportOptions): void {
-  const destination = createDestination(outputPath, stdout);
+  const destination = createReplacingDestination(outputPath, stdout);
   const iterator = ledger.iterateAll(clusterId);
   try {
     destination.write(`{\n  "cluster_id": ${JSON.stringify(clusterId)},\n  "messages": `);

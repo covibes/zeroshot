@@ -1,4 +1,5 @@
 import type { JsonRecord, ProvidersParserBoundary } from './output-extraction-types';
+import { decodeTaskLogLine } from '../task-log-line';
 
 function isObjectRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -20,11 +21,6 @@ if (!isProvidersParserBoundary(rawProviders)) {
 }
 const { parseProviderChunk } = rawProviders;
 
-function timestampBody(text: string): string | null {
-  const match = /^\[(\d{13})\](.*)$/.exec(text);
-  return match ? (match[2] || '').trimStart() : null;
-}
-
 function prefixedJsonBody(text: string): string | null {
   if (text.startsWith('{') || text.startsWith('[')) return null;
   const separatorIndex = text.indexOf('|');
@@ -38,8 +34,9 @@ function stripTimestamp(line: unknown): string {
   const normalized = line.trim().replace(/\r$/, '');
   if (!normalized) return '';
 
-  const withoutTimestamp = timestampBody(normalized) ?? normalized;
-  return prefixedJsonBody(withoutTimestamp) ?? withoutTimestamp;
+  const decoded = decodeTaskLogLine(normalized);
+  if (!decoded.providerOutput) return '';
+  return prefixedJsonBody(decoded.content) ?? decoded.content;
 }
 
 function parseJsonRecordLine(line: string): JsonRecord | null {

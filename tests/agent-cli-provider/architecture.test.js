@@ -80,6 +80,8 @@ function containsForbiddenProviderPolicy(source) {
 
 test('live runtime paths only import the built provider helper through approved facades', () => {
   const allowedHelperImports = new Set([
+    'cli/agent-provider-boundary.js',
+    'cli/agent-provider-boundary.ts',
     'lib/provider-names.js',
     'src/legacy-lib/provider-names.ts',
     'src/providers/index.js',
