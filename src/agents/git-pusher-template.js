@@ -216,14 +216,19 @@ function assertRequiredQualityGatesPass(messages) {
 const requiredQualityGatesForHandoff = getRequiredQualityGates();
 if (validators.length === 0 && requiredQualityGatesForHandoff.length === 0) return true;
 
-// A generated topology validates in stages, and every stage but the last
-// publishes STAGE_<n>_VALIDATION_RESULT rather than VALIDATION_RESULT. Counting
-// only the plain topic misses every earlier-stage validator, so
-// latestByValidator can never reach validators.length and the handoff never
-// fires: the work is built, approved by all of them, and then never shipped.
+// A staged topology has every stage but the last publish
+// STAGE_<n>_VALIDATION_RESULT, so counting only the plain topic misses those
+// validators, latestByValidator never reaches validators.length, and the
+// handoff never fires: the work is built, approved by all of them, and never
+// shipped.
+//
+// Matched exactly, not by suffix. QUICK_VALIDATION_RESULT and
+// HEAVY_VALIDATION_RESULT are tiers of the same check, and letting a cheap
+// pre-check satisfy the ship gate would be worse than not shipping at all.
+const STAGED_VALIDATION_TOPIC = /^(?:STAGE_[0-9]+_)?VALIDATION_RESULT$/;
 const results = ledger
   .query({ since: lastPush.timestamp })
-  .filter((msg) => typeof msg.topic === 'string' && /(?:^|_)VALIDATION_RESULT$/.test(msg.topic));
+  .filter((msg) => typeof msg.topic === 'string' && STAGED_VALIDATION_TOPIC.test(msg.topic));
 if (results.length === 0) return false;
 
 const validatorIds = new Set(validators.map((v) => v.id));

@@ -114,6 +114,25 @@ describe('git-pusher handoff across validation stages', function () {
     assert.strictEqual(ready, false, 'counting staged results must not weaken the gate');
   });
 
+  it('does not let a cheap pre-check tier satisfy the ship gate', function () {
+    // QUICK_ and HEAVY_VALIDATION_RESULT are tiers of the same check. Matching
+    // validation topics by suffix would count the quick pass as approval and
+    // ship on a pre-check, which is worse than not shipping.
+    for (const tier of ['QUICK_VALIDATION_RESULT', 'HEAVY_VALIDATION_RESULT']) {
+      const ready = evaluateTrigger({
+        cluster: makeCluster(VALIDATORS),
+        ledger: makeLedger([
+          IMPLEMENTATION_READY,
+          approval('toolchain-gate', tier, true),
+          approval('cancel-behaviour-audit', 'VALIDATION_RESULT', true),
+        ]),
+        agent: { id: 'git-pusher' },
+      });
+
+      assert.strictEqual(ready, false, tier + ' must not count as a validator approval');
+    }
+  });
+
   it('blocks when a validator has not reported at all', function () {
     const ready = evaluateTrigger({
       cluster: makeCluster(VALIDATORS),
