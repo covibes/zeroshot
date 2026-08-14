@@ -29,6 +29,10 @@ const {
 } = require('../lib/provider-names');
 const { detectGitContext } = require('../lib/git-remote-utils');
 const { readKeychainCredentials } = require('./claude-credentials');
+const {
+  TASK_EXECUTION_CONTEXT_ENV,
+  resolveTaskExecutionContext,
+} = require('./task-execution-context');
 
 /**
  * Validation result
@@ -163,6 +167,13 @@ function checkClaudeAuth() {
     configDir,
     ...(method && { method }),
   });
+
+  // Claude Code supports gateway bearer authentication independently of Anthropic API keys.
+  // This is the documented path for OpenRouter and enterprise LLM gateways, where
+  // ANTHROPIC_API_KEY is intentionally present but empty to avoid credential conflicts.
+  if (process.env.ANTHROPIC_AUTH_TOKEN) {
+    return authResult(true, null, 'auth_token');
+  }
 
   // Check for Bedrock bearer token (highest priority)
   if (process.env.AWS_BEARER_TOKEN_BEDROCK) {
@@ -481,7 +492,7 @@ function validateProviderExecutionSettings(providerName, settings, options) {
     return [];
   }
 
-  const executionContext = options.requireDocker ? 'docker' : 'detached';
+  const executionContext = resolvePreflightExecutionContext(options);
   const error = metadata.settingsValidator(providerSettings, { executionContext });
   if (!error) return [];
 
@@ -519,11 +530,20 @@ function validateProvider(providerName, options) {
     return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
   }
 
-  const result = validateRegistryCliProvider(providerName);
+  const result = validateRegistryCliProvider(
+    providerName,
+    resolvePreflightExecutionContext(options)
+  );
   return { errors: [...isolationErrors, ...result.errors], warnings: result.warnings };
 }
 
-function validateRegistryCliProvider(providerName) {
+function resolvePreflightExecutionContext(options) {
+  const executionContext =
+    options.executionContext ?? (options.requireDocker ? 'docker' : 'detached');
+  return resolveTaskExecutionContext({ [TASK_EXECUTION_CONTEXT_ENV]: executionContext });
+}
+
+function validateRegistryCliProvider(providerName, executionContext) {
   const metadata = getProviderMetadata(providerName);
   const { command } = resolveProviderCommand(providerName);
   const installSteps = metadata.installInstructions.split('\n').filter(Boolean);
@@ -537,7 +557,7 @@ function validateRegistryCliProvider(providerName) {
   }
 
   const { getProvider } = require('./providers');
-  if (getProvider(providerName).isAvailable()) {
+  if (getProvider(providerName).isAvailable({ executionContext })) {
     return { errors: [], warnings: [] };
   }
 
@@ -642,6 +662,7 @@ function validateGitRequirement() {
  * @param {boolean} options.quiet - Suppress success messages
  * @param {string} options.claudeCommand - Custom Claude command (from settings)
  * @param {string} options.provider - Provider override
+ * @param {'host'|'detached'|'docker'|'benchmark'} options.executionContext - Provider execution boundary
  * @returns {ValidationResult}
  */
 async function runPreflight(options = {}) {
@@ -670,10 +691,14 @@ async function runPreflight(options = {}) {
   const providerName = normalizeProviderName(
     options.provider || settings.defaultProvider || getDefaultProviderId()
   );
+  const providerOptions = {
+    ...options,
+    executionContext: resolvePreflightExecutionContext(options),
+  };
 
-  const providerResult = validateProvider(providerName, options);
+  const providerResult = validateProvider(providerName, providerOptions);
   errors.push(...providerResult.errors);
-  errors.push(...validateProviderExecutionSettings(providerName, settings, options));
+  errors.push(...validateProviderExecutionSettings(providerName, settings, providerOptions));
   warnings.push(...providerResult.warnings);
 
   // 4. Check issue provider CLI (if required)

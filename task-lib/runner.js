@@ -1,5 +1,5 @@
-import { fork } from 'child_process';
-import { join, dirname, resolve as resolvePath } from 'path';
+import { execFileSync, spawn } from 'child_process';
+import { isAbsolute, join, dirname, relative, resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import { mkdirSync } from 'fs';
 import { LOGS_DIR } from './config.js';
@@ -17,6 +17,8 @@ import {
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
+const { resolveTaskExecutionContext } = require('../src/task-execution-context.js');
+export { resolveTaskExecutionContext };
 const {
   buildOmpPrompt,
   getProviderRegistryEntry,
@@ -43,8 +45,6 @@ const {
   partitionPathFor,
   createOmpSessionPartitionDirectory,
 } = require('../src/omp-session-partition');
-const TASK_EXECUTION_CONTEXT_ENV = 'ZEROSHOT_TASK_EXECUTION_CONTEXT';
-const TASK_EXECUTION_CONTEXTS = new Set(['host', 'detached', 'docker', 'benchmark']);
 export {
   isOwnedProcessTreeRunning,
   isProcessRunning,
@@ -401,8 +401,22 @@ function resolveOutputFormat(options) {
 }
 
 function resolveJsonSchema(options, outputFormat) {
-  let jsonSchema = options.jsonSchema || null;
-  if (jsonSchema && outputFormat !== 'json') {
+  let jsonSchema = options.jsonSchema ?? null;
+  if (typeof jsonSchema === 'string') {
+    try {
+      jsonSchema = JSON.parse(jsonSchema);
+    } catch (error) {
+      throw new Error(`--json-schema must be valid JSON: ${error.message}`);
+    }
+  }
+  if (
+    jsonSchema !== null &&
+    typeof jsonSchema !== 'boolean' &&
+    (typeof jsonSchema !== 'object' || Array.isArray(jsonSchema))
+  ) {
+    throw new Error('--json-schema must be a boolean or JSON Schema object.');
+  }
+  if (jsonSchema !== null && outputFormat !== 'json') {
     console.warn('Warning: --json-schema requires --output-format json, ignoring schema');
     jsonSchema = null;
   }
@@ -411,11 +425,13 @@ function resolveJsonSchema(options, outputFormat) {
 
 function buildProviderOptions(options, runtime, modelSelection) {
   const structuredOutputRecovery = options.structuredOutputRecovery === true;
+  const executionContext = resolveTaskExecutionContext();
   return {
     outputFormat: runtime.outputFormat,
     jsonSchema: runtime.jsonSchema,
     cwd: runtime.cwd,
-    executionContext: resolveTaskExecutionContext(),
+    ...codexGitMetadataOption(options, runtime.cwd, executionContext),
+    executionContext,
     autoApprove: !structuredOutputRecovery,
     ...(modelSelection === undefined ? {} : { modelSpec: modelSelection.modelSpec }),
     ...(structuredOutputRecovery ? {} : mcpConfigOption(options)),
@@ -430,15 +446,35 @@ function buildProviderOptions(options, runtime, modelSelection) {
   };
 }
 
-export function resolveTaskExecutionContext(environment = process.env) {
-  const context = environment[TASK_EXECUTION_CONTEXT_ENV];
-  if (context === undefined) return 'detached';
-  if (!TASK_EXECUTION_CONTEXTS.has(context)) {
-    throw new Error(
-      `${TASK_EXECUTION_CONTEXT_ENV} must be one of: ${[...TASK_EXECUTION_CONTEXTS].join(', ')}.`
-    );
+function codexGitMetadataOption(options, cwd, executionContext) {
+  const settings = loadSettings();
+  const providerName = normalizeProviderName(
+    options.provider || settings.defaultProvider || getDefaultProviderId()
+  );
+  if (providerName !== 'codex') return {};
+  if (executionContext === 'docker' || executionContext === 'benchmark') return {};
+  const directories = resolveCodexGitMetadataDirectories(cwd);
+  return directories.length === 0 ? {} : { additionalWritableDirectories: directories };
+}
+
+export function resolveCodexGitMetadataDirectories(cwd, runGit = execFileSync) {
+  try {
+    const raw = runGit('git', ['rev-parse', '--git-common-dir'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const commonDirectory = resolvePath(cwd, raw.trim());
+    const fromWorkspace = relative(resolvePath(cwd), commonDirectory);
+    const outsideWorkspace =
+      isAbsolute(fromWorkspace) ||
+      fromWorkspace === '..' ||
+      fromWorkspace.startsWith('../') ||
+      fromWorkspace.startsWith('..\\');
+    return outsideWorkspace ? [commonDirectory] : [];
+  } catch {
+    return [];
   }
-  return context;
 }
 
 function claudeSettingsFileOption() {
@@ -655,14 +691,14 @@ function resolveWatcherScript(options, providerName, invoke) {
 function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfig, rpcPrompt }) {
   const sendsPrompt = typeof rpcPrompt === 'string';
   const watcherEnv = buildWatcherEnv();
-  const watcher = fork(
-    watcherScript,
-    [id, cwd, logFile, JSON.stringify(finalArgs), JSON.stringify(watcherConfig)],
+  const watcher = spawn(
+    process.execPath,
+    [watcherScript, id, cwd, logFile, JSON.stringify(finalArgs), JSON.stringify(watcherConfig)],
     {
       detached: true,
-      // A prompt-carrying lane needs a real pipe on fd 0 to receive it; every other lane keeps
-      // stdio fully ignored. fork() requires an explicit 'ipc' slot once stdio is an array.
-      stdio: sendsPrompt ? ['pipe', 'ignore', 'ignore', 'ipc'] : 'ignore',
+      // A prompt-carrying lane needs only a private stdin pipe; detached watchers have no parent
+      // messaging contract, so an IPC channel would add a second, racy wrapper-lifetime owner.
+      stdio: sendsPrompt ? ['pipe', 'ignore', 'ignore'] : 'ignore',
       windowsHide: true,
       env: watcherEnv,
     }
@@ -673,7 +709,6 @@ function spawnWatcher({ watcherScript, id, cwd, logFile, finalArgs, watcherConfi
   if (sendsPrompt) sendWatcherPrompt(watcher.stdin, rpcPrompt);
 
   watcher.unref();
-  watcher.disconnect(); // Close IPC channel so parent can exit
 }
 
 export function buildWatcherEnv(sourceEnv = process.env) {

@@ -7,6 +7,7 @@ const {
   declaredFailureEvent,
   frozenResourceStatus,
 } = require('../../lib/cluster-worker/engine-adapter-common');
+const { hydrateIssueRequest } = require('./issue-hydration');
 const { prepareWorkspace, shipWorkspace } = require('./workspace-ship');
 
 const WORKSPACE = '/workspace';
@@ -98,6 +99,7 @@ class HostedClusterEngineAdapter {
     (dependencies.requireHostedEnvironment || requireHostedEnvironment)(config);
     this.config = config;
     this.createEngine = dependencies.createEngine || (() => createCurrentEngineAdapter());
+    this.hydrateIssueRequest = dependencies.hydrateIssueRequest || hydrateIssueRequest;
     this.prepareWorkspace = dependencies.prepareWorkspace || prepareWorkspace;
     this.shipWorkspace = dependencies.shipWorkspace || shipWorkspace;
     this.resource = null;
@@ -112,11 +114,12 @@ class HostedClusterEngineAdapter {
     if (this.resource) throw new Error('Hosted cluster adapter owns exactly one run');
     validateRequestAuthority(this.config, request);
     this.resource = { clusterId, onEvent };
+    const engineRequest = await this.hydrateIssueRequest(this.config, request);
     const branch = await this.prepareWorkspace(this.config, clusterId);
     this.restoreGitCredentials = withholdGitCredentials();
     this.inner = this.createEngine();
     return this.inner.start({
-      request,
+      request: engineRequest,
       profile: preparedProfile(profile, this.config, branch),
       ...(prepareArtifacts ? { prepareArtifacts } : {}),
       clusterId,

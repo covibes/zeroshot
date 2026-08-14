@@ -56,7 +56,7 @@ describe('git-pusher typed prompt assembly', function () {
       const prompt = config.agents.find((agent) => agent.id === 'git-pusher').prompt;
       const commands = [
         findPromptCommand(prompt, 'git commit -m '),
-        findPromptCommand(prompt, 'git push -u -- '),
+        findPromptCommand(prompt, 'git -c '),
         findPromptCommand(prompt, 'gh pr create'),
       ];
       assert(commands.every(Boolean), 'expected commit, push, and PR creation commands');

@@ -11,6 +11,7 @@ const {
   resolveHostedRuntime,
   withRuntimeFile,
 } = require('./runtime-config');
+const { assertDeclarativeClusterConfig } = require('./declarative-cluster');
 
 const MAX_RUNTIME_BUNDLE_BYTES = 4 * 1024 * 1024;
 const BASE_REVISION = /^[0-9a-f]{40}$/;
@@ -207,6 +208,17 @@ async function resolveRuntimeBundle(target, options = {}) {
   const runtime = readRuntimeConfig(setup.runtimeConfigPath);
   const environment = options.environment ?? process.env;
   const token = githubToken(environment);
+  let clusterBytes;
+  if (options.clusterConfigPath !== undefined) {
+    clusterBytes = readRuntimeTextFile(options.clusterConfigPath);
+    let cluster;
+    try {
+      cluster = JSON.parse(clusterBytes);
+    } catch {
+      throw new Error('hosted cluster config must be valid JSON');
+    }
+    assertDeclarativeClusterConfig(cluster);
+  }
   const submission = await resolveSubmissionBase(setup, token, options.fetch);
   const delivery = normalizeDeliveryRequest({
     version: DELIVERY_CONTRACT_VERSION,
@@ -215,9 +227,7 @@ async function resolveRuntimeBundle(target, options = {}) {
     ...submission,
   });
   let hostedRuntime = resolveHostedRuntime(runtime, environment);
-  if (options.clusterConfigPath !== undefined) {
-    const clusterBytes = readRuntimeTextFile(options.clusterConfigPath);
-    JSON.parse(clusterBytes);
+  if (clusterBytes !== undefined) {
     hostedRuntime = withRuntimeFile(hostedRuntime, 'cluster.json', clusterBytes);
   }
   const bundle = {

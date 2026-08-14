@@ -43,4 +43,9 @@ impl HostedBackend {
             || state.shutdown_forced_run
             || (state.terminal_failure && state.terminal_failure_retryable)
     }
+
+    pub(super) async fn run_intent_failed_after_commit(&self) -> bool {
+        let state = self.state.lock().await;
+        state.committed.is_some() && state.terminal_failure
+    }
 }

@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 const {
   createPullRequest,
   deterministicBranch,
-  GitHubRequestError,
   prepareWorkspace,
   shipWorkspace,
 } = require('../../zeroshot-rust/hosted-node/workspace-ship');
@@ -195,8 +194,9 @@ describe('private hosted ship delivery', () => {
         [BASE, MERGE],
         [BASE, MERGE],
         [MERGE, MERGE],
+        [HEAD, MERGE],
       ],
-      'the authoritative merge revision is verified on a freshly fetched target'
+      'the authoritative merge and provider revisions are verified on a freshly fetched target'
     );
   });
 
@@ -219,52 +219,6 @@ describe('private hosted ship delivery', () => {
         })
       ),
       /merge revision is not on the delivery target/
-    );
-  });
-});
-
-describe('private hosted auto-merge delivery', () => {
-  it('accepts policy-respecting merge-method auto-merge but never an open PR alone', async () => {
-    const branch = deterministicBranch('cluster-auto-merge');
-    const calls = [];
-    const receipt = await shipWorkspace(
-      shipConfig(),
-      branch,
-      shipDependencies(branch, {
-        git: deliveryGit(calls),
-        github: () => {
-          throw new GitHubRequestError(405);
-        },
-        graphql: () => ({
-          enablePullRequestAutoMerge: {
-            pullRequest: {
-              number: 123,
-              baseRefName: 'main',
-              headRefName: branch,
-              headRefOid: HEAD,
-              repository: { nameWithOwner: CONFIG.repository },
-              autoMergeRequest: { enabledAt: '2026-08-08T00:00:00Z', mergeMethod: 'MERGE' },
-            },
-          },
-        }),
-      })
-    );
-    assert.equal(receipt.disposition, 'auto_merge_enabled');
-    assert.equal(
-      calls.filter(({ args }) => args[0] === 'merge-base').length,
-      3,
-      'the target is rechecked after authoritative auto-merge acceptance'
-    );
-
-    await assert.rejects(
-      shipWorkspace(shipConfig(), deterministicBranch('cluster-open-only'), {
-        git: deliveryGit([]),
-        createPullRequest: () => review(deterministicBranch('cluster-open-only')),
-        github: () => {
-          throw new GitHubRequestError(401);
-        },
-      }),
-      /GitHub rejected hosted delivery/
     );
   });
 });

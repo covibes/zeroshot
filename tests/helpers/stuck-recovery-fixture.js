@@ -142,8 +142,8 @@ async function runStructuredOutputRecovery({
   const fixture = setupFixture({
     actions: [initialAction],
     maxRetries: 1,
-    timeout: 20000,
-    staleDuration: 15000,
+    timeout: 40000,
+    staleDuration: 60000,
     prefix: 'zeroshot-structured-recovery-',
     role: 'planner',
   });

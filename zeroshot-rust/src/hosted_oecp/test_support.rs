@@ -191,6 +191,7 @@ if (JSON.stringify(Object.keys(process.env).sort()) !== JSON.stringify(expectedE
 if (process.cwd() !== require('path').dirname(pids)) {
   throw new Error('worker cwd escaped prepared workspace');
 }
+if (mode === 'exit-before-start') process.exit(1);
 for (const fd of fs.readdirSync('/proc/self/fd')) {
   if (Number(fd) <= 2) continue;
   let target;

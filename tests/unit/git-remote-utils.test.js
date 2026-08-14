@@ -263,7 +263,15 @@ function registerDetectGitContextTests() {
         }
       );
     });
-
+    it('should detect a partial-clone remote with fetch filter metadata', function () {
+      withGitRemotes({ origin: 'https://github.com/example/partial-clone.git' }, (cwd) => {
+        execFileSync('git', ['config', 'remote.origin.promisor', 'true'], { cwd });
+        execFileSync('git', ['config', 'remote.origin.partialclonefilter', 'blob:none'], { cwd });
+        const output = execFileSync('git', ['remote', '-v'], { cwd, encoding: 'utf8' });
+        assert.match(output, /\(fetch\) \[blob:none\]/);
+        assert.strictEqual(detectGitContext(cwd)?.fullRepo, 'example/partial-clone');
+      });
+    });
     it('should fail closed when multiple supported non-origin remotes are ambiguous', function () {
       withGitRemotes(
         {

@@ -26,6 +26,7 @@ const {
 } = require('./helpers/e2e-harness');
 
 const CONFIG_PATH = path.join(__dirname, 'fixtures', 'single-worker-config.json');
+const PROVIDER_FAILURE_EXIT_CODE = 20;
 
 function pollUntil(predicate, timeoutMs, intervalMs = 200) {
   const start = Date.now();
@@ -68,7 +69,7 @@ describe('e2e: failing agent + resume', function () {
 
     assert.strictEqual(
       firstRun.status,
-      0,
+      PROVIDER_FAILURE_EXIT_CODE,
       `zeroshot run exited ${firstRun.status}\nSTDOUT:\n${firstRun.stdout}\nSTDERR:\n${firstRun.stderr}`
     );
 

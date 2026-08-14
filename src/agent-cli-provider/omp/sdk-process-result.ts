@@ -4,7 +4,7 @@ import type {
   OmpSdkProtocolCollector,
   OmpSdkSidecarRequest,
 } from './sdk-protocol';
-import type { OmpSdkCleanupAttestation } from '../types';
+import type { OmpSdkCleanupAttestation, OmpSdkContainmentRequirement } from '../types';
 import { cancelledTerminal, type ChildOutcome } from './sdk-process-io';
 import {
   OmpSdkProcessRunnerError,
@@ -35,6 +35,7 @@ interface OmpSdkResultContext {
   readonly secretValues: readonly string[];
   readonly startedAt: number;
   readonly externalAbort: () => void;
+  readonly containmentMode: OmpSdkContainmentRequirement['mode'];
 }
 
 export async function collectOmpSdkProcessResult(
@@ -52,6 +53,7 @@ export async function collectOmpSdkProcessResult(
     secretValues,
     startedAt,
     externalAbort,
+    containmentMode,
   } = context;
   let rootRemoved = false;
   try {
@@ -113,7 +115,7 @@ export async function collectOmpSdkProcessResult(
     await removePrivateRoot(privateRuntime);
     rootRemoved = true;
     const cleanupAttestation: OmpSdkCleanupAttestation = {
-      mode: 'host-process-tree',
+      mode: containmentMode,
       terminalBuffered: true,
       descendantsReaped: true,
       clean: true,

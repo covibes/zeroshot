@@ -73,6 +73,7 @@ function detectCliFeatures(
     supportsIgnoreUserConfig: !unknown && /--ignore-user-config\b/.test(help),
     supportsIgnoreRules: !unknown && /--ignore-rules\b/.test(help),
     supportsStrictConfig: !unknown && /--strict-config\b/.test(help),
+    supportsAddDir: !unknown && /--add-dir\b/.test(help),
     unknown,
   };
 }
@@ -119,6 +120,14 @@ function addAutoApproveArgs(args: string[], options: BuildProviderCommandOptions
         ? 'danger-full-access'
         : 'workspace-write';
     args.push('--sandbox', sandboxMode, '--config', 'approval_policy="never"');
+    if (sandboxMode === 'workspace-write') {
+      args.push('--config', 'sandbox_workspace_write.network_access=true');
+    }
+    if (features.supportsAddDir) {
+      for (const directory of new Set(options.additionalWritableDirectories ?? [])) {
+        args.push('--add-dir', directory);
+      }
+    }
   }
 }
 
@@ -127,6 +136,18 @@ function addSkipGitArgs(args: string[], options: BuildProviderCommandOptions): v
   if (features.supportsSkipGitRepoCheck !== false) {
     args.push('--skip-git-repo-check');
   }
+}
+
+function codexExecAuthEnv(
+  authEnv: Readonly<Record<string, string>>
+): Readonly<Record<string, string>> {
+  const openAiApiKey = authEnv.OPENAI_API_KEY;
+  if (openAiApiKey === undefined) return authEnv;
+  const { OPENAI_API_KEY: _openAiApiKey, ...rest } = authEnv;
+  return {
+    ...rest,
+    CODEX_API_KEY: rest.CODEX_API_KEY ?? openAiApiKey,
+  };
 }
 
 function applySchemaArgs(
@@ -175,6 +196,19 @@ function collectWarnings(options: BuildProviderCommandOptions): WarningMetadata[
       )
     );
   }
+  if (
+    options.autoApprove &&
+    (options.additionalWritableDirectories?.length ?? 0) > 0 &&
+    features.supportsAddDir === false
+  ) {
+    warnings.push(
+      warning(
+        'codex',
+        'codex-add-dir',
+        'Codex CLI does not support --add-dir; Git worktree metadata outside cwd may be read-only.'
+      )
+    );
+  }
   if (options.jsonSchema && features.supportsOutputSchema === false) {
     warnings.push(
       warning(
@@ -216,6 +250,7 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   }
   const args: string[] = ['exec'];
   const cleanup: string[] = [];
+  const authEnv = options.authEnv ?? {};
   const resumeSessionId =
     options.resumeSessionId && optionFeatures(options).supportsResume !== false
       ? options.resumeSessionId
@@ -244,7 +279,7 @@ function buildCommand(context: string, options: BuildProviderCommandOptions = {}
   return commandSpec({
     binary: 'codex',
     args,
-    env: {},
+    env: codexExecAuthEnv(authEnv),
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     cleanup,
     cleanupMetadata: cleanup.map((schemaFile) => ({

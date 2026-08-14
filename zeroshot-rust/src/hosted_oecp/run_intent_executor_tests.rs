@@ -181,9 +181,8 @@ async fn queue_retries_after_transient_precommit_readiness_failure() {
     harness.shutdown().await;
 }
 
-#[tokio::test]
-async fn deterministic_worker_failure_is_terminal_and_not_retryable() {
-    let harness = HostedServerHarness::start_with_worker("bad-result").await;
+async fn assert_worker_failure_is_terminal(mode: &str, error_code: &str) {
+    let harness = HostedServerHarness::start_with_worker(mode).await;
     let body = encoded_envelope();
     let digest = digest_bytes(&body);
     let accepted = tcp_http_exchange(
@@ -197,7 +196,7 @@ async fn deterministic_worker_failure_is_terminal_and_not_retryable() {
     assert_eq!(response_status(&terminal), 422);
     assert_eq!(
         response_json(&terminal),
-        json!({"state": "failed", "error_code": "malformed"})
+        json!({"state": "failed", "error_code": error_code})
     );
     assert_eq!(harness.services.delivery_calls(), 0);
 
@@ -208,4 +207,14 @@ async fn deterministic_worker_failure_is_terminal_and_not_retryable() {
     .await;
     assert_eq!(response_status(&replay), 422);
     harness.shutdown_after_runtime_failure().await;
+}
+
+#[tokio::test]
+async fn deterministic_worker_failure_is_terminal_and_not_retryable() {
+    assert_worker_failure_is_terminal("bad-result", "malformed").await;
+}
+
+#[tokio::test]
+async fn committed_worker_start_failure_is_terminal_and_not_retried_forever() {
+    assert_worker_failure_is_terminal("exit-before-start", "worker_start_failed").await;
 }

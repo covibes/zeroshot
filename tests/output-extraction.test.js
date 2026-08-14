@@ -8,6 +8,7 @@
 
 const assert = require('assert');
 const { createHash } = require('node:crypto');
+const { ompSdkErrorFrame } = require('./helpers/omp-sdk-protocol');
 const { piBasicSettledEvents, piUsage } = require('./helpers/pi-protocol');
 const {
   extractJsonFromOutput,
@@ -28,6 +29,7 @@ describe('Output Extraction Module', function () {
   defineMarkdownExtractionTests();
   defineDirectJsonExtractionTests();
   defineCliErrorExtractionTests();
+  defineOmpSdkFailureExtractionTests();
   defineFullPipelineTests();
   defineRegressionTests();
 });
@@ -591,6 +593,29 @@ function defineCliErrorExtractionTests() {
         error: 'Task failed',
         provider: 'claude',
       });
+    });
+  });
+}
+
+function defineOmpSdkFailureExtractionTests() {
+  describe('OMP SDK failure extraction', function () {
+    it('extracts closed failures without exposing provider diagnostics', function () {
+      const frame = ompSdkErrorFrame();
+
+      assert.deepStrictEqual(extractCliFailure(JSON.stringify(frame), 'omp'), {
+        error: 'OMP SDK provider-auth (auth)',
+        diagnostic: {
+          byteLength: Buffer.byteLength('OMP SDK provider-auth (auth)'),
+          sha256: createHash('sha256').update('OMP SDK provider-auth (auth)').digest('hex'),
+        },
+        provider: 'omp',
+        providerCategory: 'authentication',
+        providerClassification: { retryable: false, kind: 'permanent-pattern' },
+      });
+      assert.strictEqual(
+        extractCliFailure(JSON.stringify({ ...frame, unexpected: 'untrusted' }), 'omp'),
+        null
+      );
     });
   });
 }

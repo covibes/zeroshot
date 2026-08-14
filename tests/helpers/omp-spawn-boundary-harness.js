@@ -23,10 +23,10 @@ if (process.argv.includes('--help')) {
 process.exit(0);
 `;
 
-const FORK_STUB = `const forks = [];
-childProcess.fork = (script, argv, options) => {
+const WATCHER_SPAWN_STUB = `const forks = [];
+childProcess.spawn = (executable, [script, ...argv], options) => {
   const stdinChunks = [];
-  forks.push({ script, argv, options, stdinChunks });
+  forks.push({ executable, script, argv, options, stdinChunks });
   return {
     stdin: {
       on() {},
@@ -35,16 +35,15 @@ childProcess.fork = (script, argv, options) => {
       },
     },
     unref() {},
-    disconnect() {},
   };
 };`;
 
-/** Run the real spawnTask with fork stubbed so no watcher process is created. */
+/** Run the real spawnTask with watcher spawn stubbed so no watcher process is created. */
 const SPAWN_HARNESS = `import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const childProcess = require('child_process');
-${FORK_STUB}
+${WATCHER_SPAWN_STUB}
 
 const { spawnTask } = await import(${JSON.stringify(runnerUrl)});
 const { loadTasks } = await import(${JSON.stringify(storeUrl)});
@@ -76,7 +75,7 @@ const PROMPT_HARNESS = `import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const childProcess = require('child_process');
-${FORK_STUB}
+${WATCHER_SPAWN_STUB}
 
 const { spawnTask } = await import(${JSON.stringify(runnerUrl)});
 spawnTask(process.env.HARNESS_PROMPT, {

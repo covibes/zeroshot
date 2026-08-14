@@ -1,10 +1,12 @@
 const assert = require('node:assert');
 const { createHash } = require('node:crypto');
 const { isolatedAgent, isolatedTailManager } = require('./helpers/isolated-provider-lifecycle');
+const { ompSdkErrorFrame } = require('./helpers/omp-sdk-protocol');
 
 const { executeTask } = require('../src/agent/agent-lifecycle');
 const { isCriticalAgent } = require('../src/agent/critical-agent-policy');
 const { followClaudeTaskLogsIsolated } = require('../src/agent/agent-task-executor');
+const { extractProviderFailure } = require('../src/agent/provider-terminal-failure');
 
 const SAFE_RETRYABLE_ERROR = 'Provider codex failed (unknown; unknown-retryable)';
 
@@ -91,6 +93,18 @@ describe('provider terminal failure lifecycle', function () {
     assert.strictEqual(failureInfoAtPublish.error, 'onComplete hook failed');
     assert.strictEqual(failureInfoAtPublish.attempts, 1);
     assert.strictEqual(failureInfoAtPublish.agentId, 'worker');
+  });
+
+  it('preserves the closed OMP SDK authentication classification', function () {
+    const frame = JSON.stringify(ompSdkErrorFrame());
+
+    const failure = extractProviderFailure(frame, 'omp');
+    assert.strictEqual(failure.error, 'Provider omp failed (authentication; permanent-pattern)');
+    assert.strictEqual(failure.category, 'authentication');
+    assert.deepStrictEqual(failure.classification, {
+      retryable: false,
+      kind: 'permanent-pattern',
+    });
   });
 });
 

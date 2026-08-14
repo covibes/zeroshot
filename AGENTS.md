@@ -213,7 +213,9 @@ cannot succeed. After provider success, trusted Git delivery verifies the mutati
 configuration, and that the retained revision remains an ancestor of the current target before
 pushing one deterministic-branch commit. Review delivery succeeds only with a verified open pull
 request. Ship delivery succeeds only after an authoritative merge receipt or GitHub acceptance of
-merge-method auto-merge; an open pull request alone never succeeds. The backend validates the
+merge-method auto-merge; an open pull request alone never succeeds. Transient auto-merge
+enablement failures use one bounded retry policy and re-read the exact pull-request authority
+before retrying or accepting a lost response. The backend validates the
 secret-free, versioned result, and any execution, cleanup, or delivery defect produces a closed
 failure. Keep the runtime, binary, image, and manifest private. Provider and harness interpretation
 belongs only in the Zeroshot runtime bundle and worker, never in hosting, IaC, or the run-intent
@@ -226,6 +228,9 @@ Structured-output recovery eligibility is also registry-derived: every engine wh
 capability is `true` or `experimental` must implement its provider-owned, fail-closed recovery
 adapter. Recovery always runs as a fresh nested turn with provider sessions, MCP, approval bypass,
 write-capable tools, network tools, and user-defined agents/configuration disabled.
+OMP SDK children inherit only the registry-declared non-secret configuration environment plus the
+fixed minimal process environment. Credentials remain on the private credential channel; never add
+arbitrary ambient passthrough or duplicate provider configuration lists beside the registry.
 
 Cluster Protocol Rust types are the source of truth. Files under
 `protocol/openengine-cluster/v1/` are generated projections; update them with
@@ -617,11 +622,13 @@ Cluster preflight validates the selected registry entry's `settingsValidator` wi
 Detached provider tasks default to the `detached` execution boundary. Embedding runtimes that
 already own process, filesystem, and network isolation must set
 `ZEROSHOT_TASK_EXECUTION_CONTEXT=benchmark`; the task runner validates and propagates this
-provider-neutral boundary so adapters do not attempt incompatible nested containment.
+provider-neutral boundary so adapters do not attempt incompatible nested containment. Task
+preflight and provider command preparation must share `src/task-execution-context.js`; availability
+probes must receive the same validated boundary that command preparation will use.
 
 OMP's supported version, package identity, and release asset digests are pinned once in `omp-release.ts`; the RPC codec and any registry/version-probing/Docker-build code import it. Never recopy the version string, asset names, or digests elsewhere.
 
-OMP's `rpc-stdio` invoke lane uses one shared lifecycle driver, `runOmpRpcTask` (`omp-rpc-driver.ts`), for both foreground (`contract-invoke.ts`) and detached (`task-lib/rpc-watcher.js`) execution, so the two paths produce identical result semantics. Spawn evidence is persisted (via the caller's `onSpawn` hook) before the first stdin write, and is reported only once the child process is confirmed spawned (the Node `'spawn'` event) — never synthesized from a pre-spawn/undefined pid, which would let ownership-based termination signal an unrelated process. Output is normalized-events-only: raw RPC frames, prompt text, and control payloads are never logged, only `OutputEvent`s (`omp-rpc-events.ts`). The detached watcher's prompt never enters its argv (`ps` and `/proc/<pid>/cmdline` expose argv to every local user for the watcher's whole lifetime); `task-lib/runner.js` hands it over the private, length-prefixed stdin pipe in `src/watcher-prompt-channel.js`, and the watcher fails closed — no OMP spawn, ownership-aware cleanup still runs — when that channel is absent, truncated, over the pinned 1 MiB frame contract, or closed before a complete payload. The per-task OMP config overlay (`omp-config-overlay.ts`) and its cleanup are ownership-checked by the shared `src/command-cleanup-ownership.js` owner used by both cleanup call sites; a failed or unsafe cleanup leaves the task's cleanup receipt intact (durably retryable) instead of silently discarding it. Provider `dockerIsolation`/`worktreeIsolation` capabilities are gated in `orchestrator.js` and `preflight.js` before any container/worktree is created, not after.
+OMP's `rpc-stdio` invoke lane uses one shared lifecycle driver, `runOmpRpcTask` (`omp-rpc-driver.ts`), for both foreground (`contract-invoke.ts`) and detached (`task-lib/rpc-watcher.js`) execution, so the two paths produce identical result semantics. Spawn evidence is persisted (via the caller's `onSpawn` hook) before the first stdin write, and is reported only once the child process is confirmed spawned (the Node `'spawn'` event) — never synthesized from a pre-spawn/undefined pid, which would let ownership-based termination signal an unrelated process. Output is normalized-events-only: raw RPC frames, prompt text, and control payloads are never logged, only `OutputEvent`s (`omp-rpc-events.ts`). The detached watcher's prompt never enters its argv (`ps` and `/proc/<pid>/cmdline` expose argv to every local user for the watcher's whole lifetime); `task-lib/runner.js` hands it over the private, length-prefixed stdin pipe in `src/watcher-prompt-channel.js`. Watchers are plain detached Node children with no IPC channel, so wrapper completion has exactly one lifetime owner. The watcher fails closed — no OMP spawn, ownership-aware cleanup still runs — when the prompt channel is absent, truncated, over the pinned 1 MiB frame contract, or closed before a complete payload. The per-task OMP config overlay (`omp-config-overlay.ts`) and its cleanup are ownership-checked by the shared `src/command-cleanup-ownership.js` owner used by both cleanup call sites; a failed or unsafe cleanup leaves the task's cleanup receipt intact (durably retryable) instead of silently discarding it. Provider `dockerIsolation`/`worktreeIsolation` capabilities are gated in `orchestrator.js` and `preflight.js` before any container/worktree is created, not after.
 
 OMP session persistence (issue #866): fresh runs pass `--session-dir <partition>`; verified resume
 adds `--resume <partition>/<file>` as the exact absolute path Zeroshot already verified, never a
@@ -777,7 +784,9 @@ before a task row exists. The watcher then compares the **complete** committed t
 id, full session file path (never a basename), partition and session-file inode identity, artifact
 manifest digest, and an `executionFingerprint` (`src/omp-execution-fingerprint.ts`, with generated CommonJS at the matching `.js` path) binding the
 pinned OMP release, the config-overlay content digest, the requested `--model`/`--thinking`/
-`--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. That
+`--approval-mode` selectors, and the concrete provider/model/thinking level OMP reported. OMP
+catalog aliases such as `openrouter/~anthropic/claude-sonnet-latest` are valid exact selectors;
+the `~` prefix is accepted only at the start of the model portion. That
 fingerprint has exactly one implementation, `src/omp-execution-fingerprint.ts`; do not add a second
 digest helper beside the ownership schema, where only its own unit test would exercise it and it
 could silently drift from the contract production uses. Every failed, cancelled, or uncertain
@@ -912,6 +921,28 @@ isolated followers retain a bounded complete-record tail for parsing and diagnos
 terminal settlement. Isolated settlement re-reads only a fixed-size file tail; the raw task log is
 the sole complete-output authority. Never restore whole-record watcher buffering, cumulative output
 strings, whole-log terminal reads, or unbounded provider records/events in control-plane state.
+Normal host/detached Codex tasks stay in `workspace-write`. When `cwd` is a linked Git worktree,
+task preparation may set `additionalWritableDirectories` to the one resolved external Git common
+directory and the adapter maps it to deduplicated `--add-dir` arguments only when Codex advertises
+that flag. Host/detached runs enable Codex's explicit workspace-write network capability so normal
+API, dependency, and Git journeys work without widening filesystem access. GitHub delivery rewrites
+GitHub SSH remotes to HTTPS for the push command and delegates credentials to `gh auth
+git-credential`; never embed a token in the prompt or remote. Hosted capsules declare the `docker`
+execution context and benchmark containers declare
+`benchmark`; both use `danger-full-access` because the container is the security boundary, and they
+must not receive redundant host Git-directory grants. Do not enable `danger-full-access` for host or
+detached execution, do not add unrelated cache or socket paths, and never carry either permission
+into read-only structured-output recovery.
+Successful `--pr`/`--ship` auto-cleanup may close and remove the live cluster before a foreground
+caller emits its result. The orchestrator must retain a bounded in-process final-run handoff
+(settled status, ledger snapshot, and terminal messages) until `close()`; foreground reporting must
+consume that handoff rather than reopening or querying the closed ledger.
+Claude gateway authentication may use `ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_BASE_URL` and an
+explicitly empty `ANTHROPIC_API_KEY`; keep the token, endpoint, and Claude role-model selectors in
+the provider's declared isolation passthrough rather than persisting gateway secrets in settings.
+When both gateway token and endpoint are explicit, the Zeroshot-owned per-run `--settings` safety
+overlay must set the Bedrock, Vertex, and Foundry backend selectors to `0`; this overrides stale
+ambient user backend choices while preserving the user's other settings and repository context.
 Provider terminal failures are parsed from the newest typed terminal event before generic status
 text. Raw provider diagnostics remain task-log-only; `AGENT_OUTPUT`, `failureInfo`, `AGENT_ERROR`,
 and `CLUSTER_FAILED` retain only a synthesized error plus provider/event/category/retryability and

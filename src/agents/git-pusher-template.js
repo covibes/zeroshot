@@ -457,18 +457,27 @@ for i in $(seq 1 90); do if timeout 30 gh pr view --json mergedAt --jq .mergedAt
  */
 const SUPPORTED_PLATFORMS = ['github', 'gitlab', 'azure-devops'];
 
-/**
- * Generate the review-mode prompt (--pr without --ship): create the PR/MR and STOP.
- * No merge step, no issue-closing - the PR is left open for human review.
- * @param {Object} config - Platform configuration from PLATFORM_CONFIGS
- * @returns {string} The complete review-mode prompt
- */
-function generateReviewModePrompt(config) {
+function buildPushCommand(config, gitRemoteArgument) {
+  if (config.prName !== 'PR' || !config.createCmd.startsWith('gh pr create')) {
+    return `git push -u -- ${gitRemoteArgument} HEAD`;
+  }
+
+  const gitConfig = [
+    'url.https://github.com/.insteadOf=git@github.com:',
+    'url.https://github.com/.insteadOf=ssh://git@github.com/',
+    'credential.helper=',
+    'credential.helper=!gh auth git-credential',
+  ]
+    .map((value) => `-c ${quoteShellArgument(value)}`)
+    .join(' ');
+  return `git ${gitConfig} push -u -- ${gitRemoteArgument} HEAD`;
+}
+
+function generateDeliverySteps(config, createNote = '') {
   const {
     prName,
     prNameLower,
     createCmd,
-    prUrlExample,
     outputFields,
     requiresPrIdExtraction,
     gitRemote,
@@ -478,6 +487,56 @@ function generateReviewModePrompt(config) {
   const commitMessageArgument = quoteShellArgument(
     `feat: implement #${issueContext.issueNumber} - ${issueContext.issueTitle}`
   );
+  const pushCommand = buildPushCommand(config, gitRemoteArgument);
+  const createCommandName = createCmd.split(' ').slice(0, 3).join(' ');
+  const prUrlInstruction = requiresPrIdExtraction
+    ? ''
+    : ` Save the actual ${prName} URL from the output.`;
+
+  return `### STEP 1: Stage ALL changes (MANDATORY)
+\`\`\`bash
+git add -A
+\`\`\`
+Run this command. Do not skip it. If commit fails because hooks/checks fail, do not edit files. Output blocked JSON with the failure summary.
+
+### STEP 2: Check what's staged
+\`\`\`bash
+git status
+\`\`\`
+Run this. If nothing to commit, output JSON with ${outputFields.urlField}: null and stop.
+
+### STEP 3: Commit the changes (MANDATORY if there are changes)
+\`\`\`bash
+git commit -m ${commitMessageArgument}
+\`\`\`
+Run this command. Do not skip it.
+
+### STEP 4: Push to ${gitRemote} (MANDATORY)
+\`\`\`bash
+${pushCommand}
+\`\`\`
+Run this. If it fails, do not edit files, rebase, or resolve conflicts. Output blocked JSON with the failure summary.
+
+⚠️ AFTER PUSH YOU ARE NOT DONE! CONTINUE TO STEP 5! ⚠️
+
+### STEP 5: CREATE THE ${prName.toUpperCase()} (MANDATORY - YOU MUST RUN THIS COMMAND)
+\`\`\`bash
+${createCmd}
+\`\`\`
+🚨 YOU MUST RUN \`${createCommandName}\`! Outputting a link is NOT creating a ${prName}! 🚨
+The push output shows a "Create a ${prNameLower}" link - IGNORE IT.
+You MUST run the \`${createCommandName}\` command above.${prUrlInstruction}${createNote}`;
+}
+
+/**
+ * Generate the review-mode prompt (--pr without --ship): create the PR/MR and STOP.
+ * No merge step, no issue-closing - the PR is left open for human review.
+ * @param {Object} config - Platform configuration from PLATFORM_CONFIGS
+ * @returns {string} The complete review-mode prompt
+ */
+function generateReviewModePrompt(config) {
+  const { prName, createCmd, prUrlExample, outputFields } = config;
+  const deliverySteps = generateDeliverySteps(config);
 
   return `CRITICAL: ALL VALIDATORS APPROVED. YOU ARE A TRANSPORT-ONLY GIT PUSHER.
 
@@ -499,39 +558,7 @@ If commit hooks, push, ${prName} creation, or conflict handling requires code ch
 
 ## MANDATORY STEPS - EXECUTE EACH ONE IN ORDER - DO NOT SKIP ANY STEP
 
-### STEP 1: Stage ALL changes (MANDATORY)
-\`\`\`bash
-git add -A
-\`\`\`
-Run this command. Do not skip it. If commit fails because hooks/checks fail, do not edit files. Output blocked JSON with the failure summary.
-
-### STEP 2: Check what's staged
-\`\`\`bash
-git status
-\`\`\`
-Run this. If nothing to commit, output JSON with ${outputFields.urlField}: null and stop.
-
-### STEP 3: Commit the changes (MANDATORY if there are changes)
-\`\`\`bash
-git commit -m ${commitMessageArgument}
-\`\`\`
-Run this command. Do not skip it.
-
-### STEP 4: Push to ${gitRemote} (MANDATORY)
-\`\`\`bash
-git push -u -- ${gitRemoteArgument} HEAD
-\`\`\`
-Run this. If it fails, do not edit files, rebase, or resolve conflicts. Output blocked JSON with the failure summary.
-
-⚠️ AFTER PUSH YOU ARE NOT DONE! CONTINUE TO STEP 5! ⚠️
-
-### STEP 5: CREATE THE ${prName.toUpperCase()} (MANDATORY - YOU MUST RUN THIS COMMAND)
-\`\`\`bash
-${createCmd}
-\`\`\`
-🚨 YOU MUST RUN \`${createCmd.split(' ').slice(0, 3).join(' ')}\`! Outputting a link is NOT creating a ${prName}! 🚨
-The push output shows a "Create a ${prNameLower}" link - IGNORE IT.
-You MUST run the \`${createCmd.split(' ').slice(0, 3).join(' ')}\` command above.${requiresPrIdExtraction ? '' : ` Save the actual ${prName} URL from the output.`}
+${deliverySteps}
 
 ⚠️ AFTER THE ${prName} IS CREATED, YOU ARE DONE. DO NOT MERGE. DO NOT CLOSE THE ISSUE. ⚠️
 
@@ -578,7 +605,6 @@ If blocked before creating a ${prName}, output:
 function generatePrompt(config) {
   const {
     prName,
-    prNameLower,
     createCmd,
     mergeCmd,
     mergeFallbackCmd,
@@ -589,14 +615,9 @@ function generatePrompt(config) {
     usesMergeQueue,
     closeIssueMode,
     autoMerge,
-    gitRemote,
     issueContext,
   } = config;
-  const gitRemoteArgument = quoteShellArgument(gitRemote);
   const issueNumberArgument = quoteShellArgument(issueContext.issueNumber);
-  const commitMessageArgument = quoteShellArgument(
-    `feat: implement #${issueContext.issueNumber} - ${issueContext.issueTitle}`
-  );
 
   if (!autoMerge) {
     return generateReviewModePrompt(config);
@@ -608,6 +629,7 @@ function generatePrompt(config) {
 Look for output like: "Created PR 123" or parse the URL for the PR number.
 Save the PR ID to a variable for step 6.`
     : '';
+  const deliverySteps = generateDeliverySteps(config, azurePrIdNote);
 
   // Azure uses different merge terminology
   const mergeDescription = requiresPrIdExtraction
@@ -666,39 +688,7 @@ If commit hooks, push, ${prName} creation, merge, CI, or conflict handling requi
 
 ## MANDATORY STEPS - EXECUTE EACH ONE IN ORDER - DO NOT SKIP ANY STEP
 
-### STEP 1: Stage ALL changes (MANDATORY)
-\`\`\`bash
-git add -A
-\`\`\`
-Run this command. Do not skip it. If commit fails because hooks/checks fail, do not edit files. Output blocked JSON with the failure summary.
-
-### STEP 2: Check what's staged
-\`\`\`bash
-git status
-\`\`\`
-Run this. If nothing to commit, output JSON with ${outputFields.urlField}: null and stop.
-
-### STEP 3: Commit the changes (MANDATORY if there are changes)
-\`\`\`bash
-git commit -m ${commitMessageArgument}
-\`\`\`
-Run this command. Do not skip it.
-
-### STEP 4: Push to ${gitRemote} (MANDATORY)
-\`\`\`bash
-git push -u -- ${gitRemoteArgument} HEAD
-\`\`\`
-Run this. If it fails, do not edit files, rebase, or resolve conflicts. Output blocked JSON with the failure summary.
-
-⚠️ AFTER PUSH YOU ARE NOT DONE! CONTINUE TO STEP 5! ⚠️
-
-### STEP 5: CREATE THE ${prName.toUpperCase()} (MANDATORY - YOU MUST RUN THIS COMMAND)
-\`\`\`bash
-${createCmd}
-\`\`\`
-🚨 YOU MUST RUN \`${createCmd.split(' ').slice(0, 3).join(' ')}\`! Outputting a link is NOT creating a ${prName}! 🚨
-The push output shows a "Create a ${prNameLower}" link - IGNORE IT.
-You MUST run the \`${createCmd.split(' ').slice(0, 3).join(' ')}\` command above.${requiresPrIdExtraction ? '' : ` Save the actual ${prName} URL from the output.`}${azurePrIdNote}
+${deliverySteps}
 
 ⚠️ AFTER ${prName} CREATION YOU ARE NOT DONE! CONTINUE TO STEP 6! ⚠️
 

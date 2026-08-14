@@ -315,7 +315,7 @@ export const claudeAdapter: StructuredOutputRecoveryAdapter = {
   displayName: 'Claude',
   binary: 'claude',
   adapterVersion: '1',
-  credentialEnvKeys: ['ANTHROPIC_API_KEY', 'CLAUDE_API_KEY'],
+  credentialEnvKeys: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_API_KEY'],
   modelCatalog: MODEL_CATALOG,
   levelMapping: LEVEL_MAPPING,
   defaultLevel: 'level2',

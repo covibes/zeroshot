@@ -190,11 +190,21 @@ async function shipWorkspace(config, branch, dependencies = {}) {
   const outcome =
     config.delivery.mode === 'pr'
       ? { disposition: 'pull_request_open' }
-      : await mergePullRequest({ config, created, branch, headRevision, request, graphql });
+      : await mergePullRequest({
+          config,
+          created,
+          branch,
+          headRevision,
+          request,
+          graphql,
+          wait: dependencies.wait,
+          pollAttempts: dependencies.pollAttempts,
+        });
   if (config.delivery.mode === 'ship') {
     const targetRevision = await requireBaseAncestor(config, gitCommand, expectedRemote);
     if (outcome.disposition === 'merged') {
       await requireDeliveredRevision(targetRevision, outcome.mergeRevision, gitCommand);
+      await requireDeliveredRevision(targetRevision, headRevision, gitCommand);
     }
   }
   return normalizeDeliveryResult({

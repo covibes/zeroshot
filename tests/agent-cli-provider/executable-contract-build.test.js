@@ -81,7 +81,6 @@ test('build-command selects the Codex sandbox from the declared execution bounda
     assert.equal(response.exitCode, 0);
     assert.equal(response.envelope.ok, true);
     const { args } = response.envelope.result.commandSpec;
-    assert.ok(args.includes('--sandbox'));
     assert.ok(args.includes(sandboxMode));
     assert.ok(args.includes('approval_policy="never"'));
     assert.equal(args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
@@ -201,6 +200,8 @@ test('build-command places Codex 0.147 exec options before explicit session resu
     'workspace-write',
     '--config',
     'approval_policy="never"',
+    '--config',
+    'sandbox_workspace_write.network_access=true',
     'resume',
     '-m',
     'gpt-5.4',

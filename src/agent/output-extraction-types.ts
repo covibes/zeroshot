@@ -16,6 +16,11 @@ export interface CliErrorDetail {
 
 export interface CliFailure extends CliErrorDetail {
   provider: string;
+  providerCategory?: 'authentication' | 'permanent' | 'transient';
+  providerClassification?: {
+    retryable: boolean;
+    kind: 'permanent-pattern' | 'unknown-retryable';
+  };
 }
 
 export interface CliError {

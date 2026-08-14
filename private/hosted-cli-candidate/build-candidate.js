@@ -26,6 +26,12 @@ const CANDIDATE_FILES = Object.freeze([
   'register.js',
   'register-support.js',
 ]);
+const CANDIDATE_SUPPORT_FILES = Object.freeze([
+  Object.freeze({
+    source: 'zeroshot-rust/hosted-node/declarative-cluster.js',
+    destination: 'declarative-cluster.js',
+  }),
+]);
 const GENERATED_OUTPUT_DIRS = Object.freeze([
   'lib/agent-cli-provider',
   'lib/cluster',
@@ -104,6 +110,9 @@ function writeCandidateFiles(stage) {
   for (const file of CANDIDATE_FILES) {
     fs.copyFileSync(path.join(__dirname, file), path.join(target, file));
   }
+  for (const file of CANDIDATE_SUPPORT_FILES) {
+    fs.copyFileSync(path.join(ROOT, file.source), path.join(target, file.destination));
+  }
   fs.writeFileSync(path.join(stage, 'PRIVATE_HOSTED_CANDIDATE.txt'), `${PRIVATE_MARKER}\n`);
 
   const cliPath = path.join(stage, 'cli/index.js');
@@ -147,6 +156,9 @@ function main() {
   run('npm', ['run', 'build:agent-cli-provider']);
   run('npm', ['run', 'build:cluster']);
   run('npm', ['run', 'build:target']);
+  run('npm', ['run', 'build:legacy-lib']);
+  run('npm', ['run', 'build:legacy-runtime']);
+  run('npm', ['run', 'build:task-lib']);
 
   const output =
     args.output === undefined

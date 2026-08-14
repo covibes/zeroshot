@@ -1,6 +1,7 @@
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 
-const { stop } = require('../../src/agent/agent-lifecycle');
+const { executeTask, stop } = require('../../src/agent/agent-lifecycle');
 
 describe('Agent lifecycle stop', function () {
   it('clears liveness monitoring even when the agent is already not running', async function () {
@@ -73,6 +74,52 @@ describe('Agent lifecycle stop', function () {
     } finally {
       global.setTimeout = originalSetTimeout;
       global.clearTimeout = originalClearTimeout;
+    }
+  });
+});
+
+describe('Validator startup stop', function () {
+  it('cancels validator startup jitter without launching a task after stop', async function () {
+    const originalRandomInt = crypto.randomInt;
+    let spawned = false;
+    crypto.randomInt = () => 15_000;
+
+    const agent = {
+      id: 'validator',
+      role: 'validator',
+      running: true,
+      state: 'idle',
+      iteration: 0,
+      maxIterations: 2,
+      testMode: false,
+      config: { maxRetries: 1 },
+      cluster: { id: 'cluster' },
+      currentTask: null,
+      unsubscribe: null,
+      _buildContext() {
+        return 'context';
+      },
+      _spawnClaudeTask() {
+        spawned = true;
+        throw new Error('task must not launch');
+      },
+      _log() {},
+    };
+
+    try {
+      const execution = executeTask(agent, { topic: 'VALIDATE', sender: 'test' });
+      agent._currentExecution = execution;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      await stop(agent);
+      await execution;
+
+      assert.strictEqual(spawned, false);
+      assert.strictEqual(agent.state, 'stopped');
+      assert.strictEqual(agent._currentExecution, null);
+      assert.strictEqual(agent._cancelStartDelay, null);
+    } finally {
+      crypto.randomInt = originalRandomInt;
     }
   });
 });

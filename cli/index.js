@@ -78,7 +78,10 @@ const {
   resolveEffectiveRunPlan,
 } = require('../lib/start-cluster');
 const { requirePreflight } = require('../src/preflight');
+const { resolveTaskExecutionContext } = require('../src/task-execution-context');
 const {
+  buildForegroundResult,
+  exitCodeForForegroundResult,
   exitCodeForResult,
   isForegroundStatusSettled,
   writeForegroundResult,
@@ -752,16 +755,25 @@ async function finishForegroundRun({ cluster, orchestrator, clusterId, plan, res
       plan,
       Boolean(resultPath)
     );
-    if (!resultPath) return;
-    const receipt = writeForegroundResult({
+    if (resultPath) {
+      const receipt = writeForegroundResult({
+        orchestrator,
+        cluster,
+        clusterId,
+        resultPath,
+        cancelled: foreground.cancelled,
+      });
+      process.exitCode = exitCodeForResult(receipt);
+      console.log(chalk.dim(`Result ${receipt.outcome} committed to ${resultPath}`));
+      return;
+    }
+    const result = buildForegroundResult({
       orchestrator,
       cluster,
       clusterId,
-      resultPath,
       cancelled: foreground.cancelled,
     });
-    process.exitCode = exitCodeForResult(receipt);
-    console.log(chalk.dim(`Result ${receipt.outcome} committed to ${resultPath}`));
+    process.exitCode = exitCodeForForegroundResult(result);
   } finally {
     orchestrator.close();
   }
@@ -3053,6 +3065,7 @@ taskCmd
         requireDocker: false, // Docker not needed for plain tasks
         quiet: false,
         provider: providerOverride,
+        executionContext: resolveTaskExecutionContext(),
       });
 
       // Dynamically import task command (ESM module)
@@ -3727,6 +3740,7 @@ program
           requireDocker: false,
           quiet: false,
           provider: providerName,
+          executionContext: resolveTaskExecutionContext(),
         });
 
         // Try resuming as task
@@ -5092,9 +5106,18 @@ function formatToolCall(toolName, input) {
 function formatToolResult(content, isError, toolName, toolInput) {
   if (!content) return isError ? 'error' : 'done';
 
+  let normalizedContent = content;
+  if (typeof content !== 'string') {
+    try {
+      normalizedContent = JSON.stringify(content) ?? String(content);
+    } catch {
+      normalizedContent = String(content);
+    }
+  }
+
   // For errors, show full message
   if (isError) {
-    const firstLine = content.split('\n')[0].substring(0, 80);
+    const firstLine = normalizedContent.split('\n')[0].substring(0, 80);
     return chalk.red(firstLine);
   }
 
@@ -5123,7 +5146,7 @@ function formatToolResult(content, isError, toolName, toolInput) {
   }
 
   // For success, show summary
-  const lines = content.split('\n').filter((l) => l.trim());
+  const lines = normalizedContent.split('\n').filter((l) => l.trim());
   if (lines.length === 0) return 'done';
   if (lines.length === 1) {
     const line = lines[0].substring(0, 60);

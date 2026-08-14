@@ -60,6 +60,10 @@ export async function spawnOmpSdkProcess(
     const environment = childEnvironment(prepared.environmentPolicy, privateRuntime);
     const { payload, secretValues } = credentialPayload(prepared.credentialNames, process.env);
     const requestProvider = request.modelSelector.slice(0, request.modelSelector.indexOf('/'));
+    const requestContainmentMode =
+      request.executionContext === 'docker' || request.executionContext === 'benchmark'
+        ? 'container'
+        : 'host-process-tree';
     const sidecarPath = prepared.commandSpec.args[0] ?? '';
     if (
       !isAbsolute(prepared.commandSpec.binary) ||
@@ -70,7 +74,8 @@ export async function spawnOmpSdkProcess(
       Object.keys(prepared.commandSpec.env).length !== 0 ||
       prepared.semanticIdentity.requestedModelSelector !== request.modelSelector ||
       prepared.semanticIdentity.reasoningEffort !== request.reasoningEffort ||
-      prepared.semanticIdentity.provider !== requestProvider
+      prepared.semanticIdentity.provider !== requestProvider ||
+      prepared.containmentRequirement.mode !== requestContainmentMode
     ) {
       payload.fill(0);
       throw new OmpSdkProcessRunnerError(
@@ -258,6 +263,7 @@ export async function spawnOmpSdkProcess(
       secretValues,
       startedAt,
       externalAbort,
+      containmentMode: prepared.containmentRequirement.mode,
     });
 
     return {

@@ -32,13 +32,13 @@ class RuntimeProvider extends BaseProvider {
     return this._adapter;
   }
 
-  isAvailable() {
+  isAvailable(context = {}) {
     if (this._usesBundledRunner()) {
-      return helper.probeRuntimeProviderCli(this.name).available;
+      return helper.probeRuntimeProviderCli(this.name, undefined, undefined, context).available;
     }
     const { command } = resolveProviderCommand(this.name);
     if (!commandExists(command)) return false;
-    return helper.probeRuntimeProviderCli(this.name).available;
+    return helper.probeRuntimeProviderCli(this.name, undefined, undefined, context).available;
   }
 
   getCliPath() {

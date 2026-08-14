@@ -30,6 +30,7 @@ const {
 } = require('./helpers/e2e-harness');
 
 const CONFIG_PATH = path.join(__dirname, 'fixtures', 'single-worker-config.json');
+const PROVIDER_FAILURE_EXIT_CODE = 20;
 const PARTIAL_VALIDATION_CONFIG_PATH = path.join(
   __dirname,
   'fixtures',
@@ -332,7 +333,7 @@ describe('e2e: resume --detach daemon handoff', function () {
     });
     assert.strictEqual(
       firstRun.status,
-      0,
+      PROVIDER_FAILURE_EXIT_CODE,
       `zeroshot run exited ${firstRun.status}\nSTDOUT:\n${firstRun.stdout}\nSTDERR:\n${firstRun.stderr}`
     );
 
@@ -434,7 +435,7 @@ describe('e2e: resume --detach daemon handoff', function () {
       ZEROSHOT_CLUSTER_ID: clusterId,
       FAKE_AGENT_SCENARIO: scenarioPath('failing-agent'),
     });
-    assert.strictEqual(firstRun.status, 0, firstRun.stderr);
+    assert.strictEqual(firstRun.status, PROVIDER_FAILURE_EXIT_CODE, firstRun.stderr);
 
     await pollUntil(() => {
       const cluster = readCluster(env, clusterId);

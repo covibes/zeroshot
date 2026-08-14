@@ -47,15 +47,15 @@ describe('windowsHide spawn options (Windows console window fix)', function () {
     }
   });
 
-  it('adds windowsHide: true to fork() options in spawnWatcher (task-lib/runner.js)', function () {
+  it('adds windowsHide: true to spawn() options in spawnWatcher (task-lib/runner.js)', function () {
     const source = readSource('task-lib/runner.js');
     const match = source.match(/function spawnWatcher\([\s\S]*?\n\}/);
     assert(match, 'spawnWatcher() not found in task-lib/runner.js');
-    assert.match(match[0], /fork\(/);
+    assert.match(match[0], /spawn\(/);
     assert.match(
       match[0],
       /windowsHide:\s*true/,
-      'spawnWatcher() must pass windowsHide: true to fork()'
+      'spawnWatcher() must pass windowsHide: true to spawn()'
     );
   });
 

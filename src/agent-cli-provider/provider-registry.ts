@@ -128,6 +128,7 @@ interface ProviderRegistryEntryBase {
   readonly authInstructions: string;
   readonly credentialPaths: readonly string[];
   readonly credentialEnvKeys: readonly string[];
+  readonly configurationEnvKeys?: readonly string[];
   readonly settingsFields: readonly string[];
   readonly settingsDefaults?: Readonly<Record<string, unknown>>;
   readonly settingsValidator?: (
@@ -185,6 +186,12 @@ const STANDARD_CAPABILITIES: Readonly<
 
 const CLAUDE_DOCKER_ENV_PASSTHROUGH = [
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'CLAUDE_CODE_SUBAGENT_MODEL',
   'AWS_BEARER_TOKEN_BEDROCK',
   'AWS_REGION',
   'CLAUDE_CODE_USE_BEDROCK',
@@ -198,7 +205,7 @@ const PI_EXPLICIT_DOCKER_CREDENTIALS = new Set([
   'GOOGLE_APPLICATION_CREDENTIALS',
 ]);
 
-const PI_DOCKER_CONFIGURATION_ENV = [
+const PI_AGENT_CONFIGURATION_ENV = [
   'AWS_BEDROCK_FORCE_CACHE',
   'AWS_BEDROCK_FORCE_HTTP1',
   'AWS_BEDROCK_SKIP_AUTH',
@@ -504,7 +511,7 @@ export const providerRegistry = [
       configRoots: ['$HOME/.pi/agent'],
       envPassthrough: [
         ...piAdapter.credentialEnvKeys.filter((name) => !PI_EXPLICIT_DOCKER_CREDENTIALS.has(name)),
-        ...PI_DOCKER_CONFIGURATION_ENV,
+        ...PI_AGENT_CONFIGURATION_ENV,
       ],
     },
     defaultLevels: {
@@ -527,6 +534,7 @@ export const providerRegistry = [
       'Manually edit providerSettings.omp in ZEROSHOT_SETTINGS_FILE or $HOME/.zeroshot/settings.json (file 0600, parent directory 0700). Use declared environment or broker variables, an explicit host-only OMP agent directory containing agent.db, or keyless mode; Zeroshot never logs in or stores credential values.',
     credentialPaths: ['~/.omp'],
     credentialEnvKeys: ompAdapter.credentialEnvKeys,
+    configurationEnvKeys: PI_AGENT_CONFIGURATION_ENV,
     settingsFields: [
       'transport',
       'minLevel',

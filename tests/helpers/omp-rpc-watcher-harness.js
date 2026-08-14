@@ -1,5 +1,5 @@
 const assert = require('assert');
-const { fork } = require('child_process');
+const { spawn } = require('child_process');
 const { execFileAsync, fs, os, path, pathToFileURL, runNodeModule } = require('./test-runtime');
 
 const zeroshotHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zeroshot-omp-rpc-watcher-home-'));
@@ -132,7 +132,7 @@ function buildCommandSpec(overlay, overrides = {}) {
 }
 
 /**
- * Fork the real watcher exactly the way task-lib/runner.js#spawnWatcher does: the prompt travels
+ * Spawn the real watcher exactly the way task-lib/runner.js#spawnWatcher does: the prompt travels
  * over the private stdin pipe, and argv carries only the id/cwd/logFile/args/config quintuple.
  *
  * `promptFrame` overrides the framed bytes written to that pipe (used to prove the fail-closed
@@ -163,17 +163,17 @@ function runWatcher({
     }),
   ];
   return new Promise((resolve, reject) => {
-    const child = fork(RPC_WATCHER_PATH, argv, {
+    const child = spawn(process.execPath, [RPC_WATCHER_PATH, ...argv], {
       env: {
         ...process.env,
         ZEROSHOT_HOME: zeroshotHome,
         OMP_FAKE_RPC_SCENARIO: scenario,
         ...env,
       },
-      stdio: sendPrompt ? ['pipe', 'ignore', 'ignore', 'ipc'] : 'ignore',
+      stdio: sendPrompt ? ['pipe', 'ignore', 'ignore'] : 'ignore',
     });
 
-    // Sampled synchronously here because uv_spawn has already fork+exec'd by the time fork()
+    // Sampled synchronously here because uv_spawn has already fork+exec'd by the time spawn()
     // returns, so /proc/<pid>/cmdline is populated and the watcher cannot yet have exited.
     const cmdline = readProcessCommandLine(child.pid);
 

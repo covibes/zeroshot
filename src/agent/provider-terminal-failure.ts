@@ -89,8 +89,10 @@ function extractProviderFailure(output: string, providerName: string): ProviderF
   const cliError = extractCliFailure(output, providerName);
   if (!cliError) return null;
 
-  const classification = classifyProviderFailure(providerName, cliError.error);
-  const category = categoryForProviderFailure(cliError.error, classification);
+  const classification =
+    cliError.providerClassification ?? classifyProviderFailure(providerName, cliError.error);
+  const category =
+    cliError.providerCategory ?? categoryForProviderFailure(cliError.error, classification);
   return {
     error: `Provider ${cliError.provider} failed (${category}; ${classification.kind})`,
     provider: cliError.provider,
