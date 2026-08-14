@@ -216,7 +216,14 @@ function assertRequiredQualityGatesPass(messages) {
 const requiredQualityGatesForHandoff = getRequiredQualityGates();
 if (validators.length === 0 && requiredQualityGatesForHandoff.length === 0) return true;
 
-const results = ledger.query({ topic: 'VALIDATION_RESULT', since: lastPush.timestamp });
+// A generated topology validates in stages, and every stage but the last
+// publishes STAGE_<n>_VALIDATION_RESULT rather than VALIDATION_RESULT. Counting
+// only the plain topic misses every earlier-stage validator, so
+// latestByValidator can never reach validators.length and the handoff never
+// fires: the work is built, approved by all of them, and then never shipped.
+const results = ledger
+  .query({ since: lastPush.timestamp })
+  .filter((msg) => typeof msg.topic === 'string' && /(?:^|_)VALIDATION_RESULT$/.test(msg.topic));
 if (results.length === 0) return false;
 
 const validatorIds = new Set(validators.map((v) => v.id));
