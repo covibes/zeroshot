@@ -1,0 +1,18 @@
+{
+  "name": "Remote implementation cluster",
+  "agents": [
+    {
+      "id": "worker",
+      "role": "implementation",
+      "maxIterations": 30,
+      "prompt": "Complete the requested repository change and verify the result.",
+      "triggers": [{ "topic": "ISSUE_OPENED", "action": "execute_task" }],
+      "hooks": {
+        "onComplete": {
+          "action": "publish_message",
+          "config": { "topic": "CLUSTER_COMPLETE" }
+        }
+      }
+    }
+  ]
+}

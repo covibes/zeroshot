@@ -185,6 +185,8 @@ function registerObservationTests() {
       captureLogs(() => h.services.remoteRun(detachedRunOptions(SUBMISSION_KEY))),
       (error) => {
         assert.match(error.message, new RegExp(`--submission-key ${SUBMISSION_KEY}`));
+        assert.match(error.message, /fully resolved|resolved repository revision/);
+        assert.match(error.message, /changed payload is rejected/);
         assert.doesNotMatch(error.message, /peer-secret-detail/);
         return true;
       }

@@ -1,0 +1,5 @@
+{
+  "artifacts": [],
+  "prompt": "Create a file named hosted-run-proof.txt at the repository root containing a concise summary of the repository's purpose followed by one newline. Make no other changes. Perform the edit; do not merely describe it.",
+  "source": "prompt"
+}

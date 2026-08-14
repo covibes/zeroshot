@@ -1,6 +1,6 @@
 {
   "provider": "claude",
-  "executable": "claude",
+  "harness": "claude",
   "model": "claude-sonnet-4-5",
   "environment": {
     "ANTHROPIC_API_KEY": {

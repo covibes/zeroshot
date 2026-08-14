@@ -1,6 +1,7 @@
 'use strict';
 
 const { createDefaultServices } = require('./default-services');
+const { HOSTED_RUN_HELP, TARGET_HELP, TARGET_SETUP_HELP } = require('./help-text');
 const { COMMAND_MANIFEST } = require('./manifest');
 const {
   assertOnlyOptions,
@@ -27,7 +28,10 @@ const HOSTED_RUN_OPTIONS = new Set([
 ]);
 
 function registerTarget(program, service) {
-  const target = program.command('target').description('Manage named private hosted targets');
+  const target = program
+    .command('target')
+    .description('Manage named private hosted targets')
+    .addHelpText('after', TARGET_HELP);
   target
     .command('add <name>')
     .description('Register a named remote target')
@@ -47,14 +51,15 @@ function registerTarget(program, service) {
     .description('Revoke and remove a target')
     .option('--force', 'Remove even if remote revocation fails')
     .action((name, options) => failClosed(() => service().targetRemove(name, options)));
-  target
+  const setup = target
     .command('setup <name>')
     .description('Bind a repository and local hosted runtime configuration')
-    .requiredOption('--repository <owner/name>', 'Exact GitHub owner/name')
-    .option('--base <branch-or-sha>', 'Branch or exact lowercase 40-character commit')
-    .option('--target-branch <branch>', 'Delivery target required with an exact commit')
-    .requiredOption('--runtime-config <file>', 'Generic hosted runtime JSON')
+    .requiredOption('--repository <owner/name>', 'GitHub repository to clone and deliver to')
+    .option('--base <branch-or-sha>', 'Base branch or exact lowercase 40-character commit')
+    .option('--target-branch <branch>', 'Delivery branch required with an exact commit base')
+    .requiredOption('--runtime-config <file>', 'Zeroshot provider, harness, and model JSON')
     .action((name, options) => failClosed(() => service().targetSetup(name, options)));
+  setup.addHelpText('after', TARGET_SETUP_HELP);
   target
     .command('status <name> <intent-id>')
     .description('Inspect a private hosted run')
@@ -113,11 +118,16 @@ function registerHostedRun(program, service) {
   if (!positional) throw new Error('stable run argument is unavailable');
   positional.required = false;
   run
-    .option('--graph <file>', 'Explicit hosted GraphSpec JSON')
+    .option('--graph <file>', 'Candidate delivery GraphSpec JSON')
     .option('--input <file>', 'Explicit hosted JSON input')
     .option('--target <name>', 'Named private hosted target')
     .option('--size <size>', 'Advertised capsule size')
-    .option('--submission-key <uuid>', 'Retry-stable RunIntent submission key', canonicalUuid);
+    .option(
+      '--submission-key <uuid>',
+      'Idempotency key; retry payload must match exactly',
+      canonicalUuid
+    );
+  run.addHelpText('after', HOSTED_RUN_HELP);
   wrapExisting(run, ({ args, options, command, invokeLocal }) => {
     const inputArg = args[0];
     if (options.target === undefined) {

@@ -36,7 +36,7 @@ const MAX_CONFIG_BYTES = 1024 * 1024;
 const MAX_FILE_BYTES = 512 * 1024;
 const RUNTIME_FIELDS = new Set([
   'provider',
-  'executable',
+  'harness',
   'model',
   'command',
   'setupCommand',
@@ -142,10 +142,10 @@ function normalizeRuntimeConfig(value) {
   if (unknown.length) throw new Error(`unknown runtime config field: ${unknown.join(', ')}`);
 
   const provider = boundedIdentifier(input.provider, 'runtime provider', 64);
-  const requestedExecutable =
-    boundedIdentifier(input.executable, 'runtime executable', 128, true) ?? provider;
+  const requestedHarness =
+    boundedIdentifier(input.harness, 'runtime harness', 128, true) ?? provider;
   const { getProviderRegistryEntry } = require('../../lib/agent-cli-provider');
-  const executable = getProviderRegistryEntry(requestedExecutable).id;
+  const harness = getProviderRegistryEntry(requestedHarness).id;
   const model = boundedString(input.model, 'runtime model', 512, true);
   const command = boundedString(input.command, 'runtime command', 4096, true);
   const setupCommand = boundedString(input.setupCommand, 'runtime setupCommand', 16 * 1024, true);
@@ -155,7 +155,7 @@ function normalizeRuntimeConfig(value) {
       : JSON.parse(JSON.stringify(record(input.settings, 'runtime settings')));
   return {
     provider,
-    executable,
+    harness,
     ...(model === undefined ? {} : { model }),
     ...(command === undefined ? {} : { command }),
     ...(setupCommand === undefined ? {} : { setupCommand }),
@@ -265,8 +265,10 @@ function withRuntimeFile(runtime, filename, contents) {
 
 function resolveHostedRuntime(targetRuntime, hostEnvironment = process.env) {
   const runtime = normalizeRuntimeConfig(targetRuntime);
+  const { harness, ...resolved } = runtime;
   return {
-    ...runtime,
+    ...resolved,
+    executable: harness,
     environment: resolveEnvironment(runtime.environment, hostEnvironment),
     files: resolveFiles(runtime.files),
   };

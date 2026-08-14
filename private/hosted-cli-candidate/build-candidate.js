@@ -8,7 +8,17 @@ const { spawnSync } = require('node:child_process');
 const { PRIVATE_MARKER } = require('./manifest');
 
 const ROOT = path.resolve(__dirname, '../..');
+const CANDIDATE_GUIDANCE_FILES = Object.freeze([
+  'README.md',
+  'examples/cluster.json',
+  'examples/graph.json',
+  'examples/input.json',
+  'examples/runtime-azure-openai-omp.json',
+  'examples/runtime-openai-codex.json',
+  'examples/runtime-openrouter-claude.json',
+]);
 const CANDIDATE_FILES = Object.freeze([
+  ...CANDIDATE_GUIDANCE_FILES,
   'manifest.js',
   'readers.js',
   'credentials.js',
@@ -25,6 +35,7 @@ const CANDIDATE_FILES = Object.freeze([
   'target-services.js',
   'register.js',
   'register-support.js',
+  'help-text.js',
 ]);
 const CANDIDATE_SUPPORT_FILES = Object.freeze([
   Object.freeze({
@@ -108,7 +119,9 @@ function writeCandidateFiles(stage) {
   const target = path.join(stage, 'lib/private-hosted-cli');
   fs.mkdirSync(target, { recursive: true });
   for (const file of CANDIDATE_FILES) {
-    fs.copyFileSync(path.join(__dirname, file), path.join(target, file));
+    const destination = path.join(target, file);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, file), destination);
   }
   for (const file of CANDIDATE_SUPPORT_FILES) {
     fs.copyFileSync(path.join(ROOT, file.source), path.join(target, file.destination));
@@ -201,4 +214,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseArgs };
+module.exports = { CANDIDATE_GUIDANCE_FILES, parseArgs };

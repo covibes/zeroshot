@@ -80,7 +80,7 @@ it('stores references and resolves one provider-neutral runtime bundle per run',
   };
   const runtime = {
     provider: 'bedrock-runner',
-    executable: 'claude',
+    harness: 'claude',
     model: 'anthropic.claude-sonnet-4-5',
     environment: {
       AWS_ACCESS_KEY_ID: { from: 'LOCAL_AWS_ACCESS_KEY_ID' },
@@ -210,14 +210,18 @@ it('resolves omitted and named bases to one immutable submission revision', asyn
 
 it('validates generic runtime bounds and anchors mapped files to the config', () => {
   const runtime = (overrides) =>
-    normalizeRuntimeConfig({ provider: 'custom', executable: 'claude', ...overrides });
+    normalizeRuntimeConfig({ provider: 'custom', harness: 'claude', ...overrides });
   assert.equal(
-    normalizeRuntimeConfig({ provider: 'azure-openai', executable: 'gateway' }).executable,
+    normalizeRuntimeConfig({ provider: 'azure-openai', harness: 'gateway' }).harness,
     'gateway'
   );
   assert.throws(
-    () => normalizeRuntimeConfig({ provider: 'future-provider', executable: 'future-cli' }),
+    () => normalizeRuntimeConfig({ provider: 'future-provider', harness: 'future-cli' }),
     /Unknown provider/
+  );
+  assert.throws(
+    () => normalizeRuntimeConfig({ provider: 'claude', executable: 'claude' }),
+    /unknown runtime config field: executable/
   );
   for (const name of RESERVED_RUNTIME_NAMES) {
     assert.throws(() => runtime({ environment: { [name]: '/escape' } }), /reserved/);
@@ -233,7 +237,7 @@ it('validates generic runtime bounds and anchors mapped files to the config', ()
     configFile,
     JSON.stringify({
       provider: 'custom',
-      executable: 'claude',
+      harness: 'claude',
       files: { '.config/harness.json': { from: '../credentials/harness.json' } },
     })
   );
