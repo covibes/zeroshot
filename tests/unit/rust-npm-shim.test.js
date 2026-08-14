@@ -109,7 +109,6 @@ function registerNativeMetadataTest() {
         `native product must not own release metadata: ${forbiddenMetadataToken}`
       );
     }
-
     const rootPackage = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'));
     assert.deepStrictEqual(rootPackage.files, [
       'src/',
@@ -122,6 +121,7 @@ function registerNativeMetadataTest() {
       'docker/',
       '!docker/zeroshot-oecp/',
       'scripts/',
+      '!scripts/build-cli-runtime.js',
       '!scripts/hosted-oecp-ci-relevance.js',
       '!scripts/hosted-oecp-image.js',
       '!scripts/hosted-oecp-image-commands.js',

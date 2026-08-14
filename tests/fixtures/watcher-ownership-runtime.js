@@ -2,6 +2,7 @@ const { spawn } = require('child_process');
 const { existsSync, mkdirSync, readFileSync } = require('fs');
 const { dirname, resolve } = require('path');
 const { pathToFileURL } = require('url');
+const { decodeTaskLogLine } = require('../../src/task-log-line');
 const {
   forceKill,
   forceKillOwnedGroup,
@@ -140,8 +141,12 @@ function assertOwnedMetadata(task) {
 
 function readDescendantPid(path) {
   if (!existsSync(path)) return null;
-  const match = readFileSync(path, 'utf8').match(/\](\d+)\r?\n/);
-  return match ? Number(match[1]) : null;
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+    const decoded = decodeTaskLogLine(line);
+    const content = decoded.content.trim();
+    if (decoded.providerOutput && /^\d+$/.test(content)) return Number(content);
+  }
+  return null;
 }
 
 main().catch((error) => {

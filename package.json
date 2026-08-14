@@ -182,6 +182,7 @@
     "docker/",
     "!docker/zeroshot-oecp/",
     "scripts/",
+    "!scripts/build-cli-runtime.js",
     "!scripts/hosted-oecp-ci-relevance.js",
     "!scripts/hosted-oecp-image.js",
     "!scripts/hosted-oecp-image-commands.js",
