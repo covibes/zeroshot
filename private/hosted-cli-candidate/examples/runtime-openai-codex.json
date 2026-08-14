@@ -1,0 +1,22 @@
+{
+  "provider": "openai",
+  "harness": "codex",
+  "model": "gpt-5.4",
+  "environment": {
+    "OPENAI_API_KEY": { "from": "OPENAI_API_KEY" }
+  },
+  "files": {},
+  "settings": {
+    "defaultProvider": "codex",
+    "providerSettings": {
+      "codex": {
+        "minLevel": "level1",
+        "defaultLevel": "level1",
+        "maxLevel": "level1",
+        "levelOverrides": {
+          "level1": { "model": "gpt-5.4", "reasoningEffort": "medium" }
+        }
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { resolveHostedRuntime } = require('../../private/hosted-cli-candidate/runtime-config');
 
 const BASE_REVISION = 'b'.repeat(40);
 const RUNTIME_CONFIG_PATH = path.join(__dirname, 'fixtures', 'runtime-config.json');
@@ -19,10 +20,7 @@ const RUNTIME_BUNDLE = Object.freeze({
     targetBranch: 'main',
     baseRevision: BASE_REVISION,
   },
-  runtime: {
-    ...RUNTIME_CONFIG,
-    environment: { ANTHROPIC_API_KEY: 'model-test-token' },
-  },
+  runtime: resolveHostedRuntime(RUNTIME_CONFIG, { LOCAL_MODEL_KEY: 'model-test-token' }),
 });
 const RUN_INTENT_ID = '019fd17e-71f3-7cf5-a57b-b8f1845c140c';
 const RUN_INTENT_NOW = '2026-08-05T10:00:00.000Z';

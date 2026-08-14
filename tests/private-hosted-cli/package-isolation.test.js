@@ -7,10 +7,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const { describe, it } = require('node:test');
 const { COMMAND_MANIFEST, PRIVATE_MARKER } = require('../../private/hosted-cli-candidate/manifest');
-const { parseArgs } = require('../../private/hosted-cli-candidate/build-candidate');
+const {
+  CANDIDATE_GUIDANCE_FILES,
+  parseArgs,
+} = require('../../private/hosted-cli-candidate/build-candidate');
 
 const ROOT = path.resolve(__dirname, '../..');
-const CANDIDATE_PACKAGE_PATH = 'node_modules/@the-open-engine/zeroshot-private-hosted-candidate';
+const CANDIDATE_PACKAGE_PATH =
+  'lib/node_modules/@the-open-engine/zeroshot-private-hosted-candidate';
 
 function run(command, args, options = {}) {
   return spawnSync(command, args, {
@@ -32,6 +36,12 @@ function buildCandidate(output) {
   return JSON.parse(built.stdout);
 }
 
+function assertCandidateGuidance(root, label) {
+  for (const relative of CANDIDATE_GUIDANCE_FILES) {
+    assert.equal(fs.existsSync(path.join(root, relative)), true, `${label} omitted ${relative}`);
+  }
+}
+
 function assertCandidateOutput(candidate, output) {
   assert.deepEqual(candidate, {
     tarballPath: path.join(
@@ -45,6 +55,8 @@ function assertCandidateOutput(candidate, output) {
     fs.existsSync(path.join(candidate.stage, 'lib', 'private-hosted-cli', 'candidate-build.json')),
     false
   );
+  const guideRoot = path.join(candidate.stage, 'lib', 'private-hosted-cli');
+  assertCandidateGuidance(guideRoot, 'candidate');
 }
 
 function installCandidate(temporaryRoot, tarballPath) {
@@ -53,6 +65,7 @@ function installCandidate(temporaryRoot, tarballPath) {
     'npm',
     [
       'install',
+      '--global',
       '--no-audit',
       '--no-fund',
       '--no-package-lock',
@@ -76,7 +89,9 @@ function installCandidate(temporaryRoot, tarballPath) {
 }
 
 function assertCandidateLaunches(temporaryRoot, installation) {
-  const executable = path.join(installation, CANDIDATE_PACKAGE_PATH, 'cli', 'index.js');
+  const packageRoot = path.join(installation, CANDIDATE_PACKAGE_PATH);
+  const guideRoot = path.join(packageRoot, 'lib', 'private-hosted-cli');
+  const executable = path.join(packageRoot, 'cli', 'index.js');
   const launchOptions = {
     cwd: installation,
     env: {
@@ -95,6 +110,30 @@ function assertCandidateLaunches(temporaryRoot, installation) {
   const target = run(process.execPath, [executable, 'target', 'add', '--help'], launchOptions);
   assert.equal(target.status, 0, target.stderr || target.stdout);
   assert.match(target.stdout, /Register a named remote target/);
+
+  const targetRoot = run(process.execPath, [executable, 'target', '--help'], launchOptions);
+  assert.equal(targetRoot.status, 0, targetRoot.stderr || targetRoot.stdout);
+  assert.match(targetRoot.stdout, /Workflow:/);
+  assert.match(targetRoot.stdout, /target setup/);
+
+  const setup = run(process.execPath, [executable, 'target', 'setup', '--help'], launchOptions);
+  assert.equal(setup.status, 0, setup.stderr || setup.stdout);
+  assert.match(setup.stdout, /provider, harness, and model/);
+  assert.match(setup.stdout, /stores its path, not resolved secrets/);
+
+  const hostedRun = run(process.execPath, [executable, 'run', '--help'], launchOptions);
+  assert.equal(hostedRun.status, 0, hostedRun.stderr || hostedRun.stdout);
+  assert.match(hostedRun.stdout, /Omit --config to use Zeroshot's built-in coordinator/);
+  assert.match(hostedRun.stdout, /Ctrl\+C detach without cancelling/);
+  assert.match(hostedRun.stdout, /unchanged, fully resolved request/);
+
+  const workingDirectory = path.join(temporaryRoot, 'documented-working-directory');
+  fs.mkdirSync(workingDirectory);
+  fs.cpSync(path.join(guideRoot, 'examples'), path.join(workingDirectory, 'examples'), {
+    recursive: true,
+  });
+  assertCandidateGuidance(guideRoot, 'installed candidate');
+  assert.equal(fs.existsSync(path.join(workingDirectory, 'examples', 'cluster.json')), true);
 }
 
 function assertPackedCandidateBuildsInstallsAndLaunches() {

@@ -1,0 +1,197 @@
+{
+  "initialInput": {
+    "fields": {
+      "artifacts": {
+        "required": true,
+        "type": {
+          "items": {
+            "fields": {
+              "artifactId": { "required": true, "type": { "kind": "string" } },
+              "byteLength": { "required": true, "type": { "kind": "integer" } },
+              "lineage": {
+                "required": true,
+                "type": {
+                  "fields": {
+                    "attempt": { "required": true, "type": { "kind": "integer" } },
+                    "generation": { "required": true, "type": { "kind": "integer" } },
+                    "runId": { "required": true, "type": { "kind": "string" } }
+                  },
+                  "kind": "record"
+                }
+              },
+              "mediaType": { "required": true, "type": { "kind": "string" } },
+              "producer": {
+                "required": true,
+                "type": {
+                  "fields": {
+                    "node": { "required": true, "type": { "kind": "string" } },
+                    "worker": { "required": true, "type": { "kind": "string" } }
+                  },
+                  "kind": "record"
+                }
+              },
+              "redaction": {
+                "required": true,
+                "type": {
+                  "kind": "enum",
+                  "values": ["confidential", "internal", "public", "restricted"]
+                }
+              },
+              "sha256": { "required": true, "type": { "kind": "string" } },
+              "typeId": { "required": true, "type": { "kind": "string" } }
+            },
+            "kind": "record"
+          },
+          "kind": "array"
+        }
+      },
+      "isolationProfile": { "required": true, "type": { "kind": "string" } },
+      "issue": { "required": false, "type": { "kind": "string" } },
+      "modelLevel": {
+        "required": true,
+        "type": { "kind": "enum", "values": ["level1", "level2", "level3"] }
+      },
+      "prompt": { "required": false, "type": { "kind": "string" } },
+      "provider": { "required": true, "type": { "kind": "string" } },
+      "providerProfile": { "required": true, "type": { "kind": "string" } },
+      "repository": { "required": true, "type": { "kind": "string" } },
+      "source": {
+        "required": true,
+        "type": { "kind": "enum", "values": ["artifact", "issue", "prompt"] }
+      }
+    },
+    "kind": "record"
+  },
+  "policy": { "default": "deny", "policy": "policy.strict@1" },
+  "profile": "openengine.graph.single-worker/v1",
+  "root": {
+    "attempts": 1,
+    "input": {
+      "fields": {
+        "artifacts": {
+          "required": true,
+          "type": {
+            "items": {
+              "fields": {
+                "artifactId": { "required": true, "type": { "kind": "string" } },
+                "byteLength": { "required": true, "type": { "kind": "integer" } },
+                "lineage": {
+                  "required": true,
+                  "type": {
+                    "fields": {
+                      "attempt": { "required": true, "type": { "kind": "integer" } },
+                      "generation": { "required": true, "type": { "kind": "integer" } },
+                      "runId": { "required": true, "type": { "kind": "string" } }
+                    },
+                    "kind": "record"
+                  }
+                },
+                "mediaType": { "required": true, "type": { "kind": "string" } },
+                "producer": {
+                  "required": true,
+                  "type": {
+                    "fields": {
+                      "node": { "required": true, "type": { "kind": "string" } },
+                      "worker": { "required": true, "type": { "kind": "string" } }
+                    },
+                    "kind": "record"
+                  }
+                },
+                "redaction": {
+                  "required": true,
+                  "type": {
+                    "kind": "enum",
+                    "values": ["confidential", "internal", "public", "restricted"]
+                  }
+                },
+                "sha256": { "required": true, "type": { "kind": "string" } },
+                "typeId": { "required": true, "type": { "kind": "string" } }
+              },
+              "kind": "record"
+            },
+            "kind": "array"
+          }
+        },
+        "isolationProfile": { "required": true, "type": { "kind": "string" } },
+        "issue": { "required": false, "type": { "kind": "string" } },
+        "modelLevel": {
+          "required": true,
+          "type": { "kind": "enum", "values": ["level1", "level2", "level3"] }
+        },
+        "prompt": { "required": false, "type": { "kind": "string" } },
+        "provider": { "required": true, "type": { "kind": "string" } },
+        "providerProfile": { "required": true, "type": { "kind": "string" } },
+        "repository": { "required": true, "type": { "kind": "string" } },
+        "source": {
+          "required": true,
+          "type": { "kind": "enum", "values": ["artifact", "issue", "prompt"] }
+        }
+      },
+      "kind": "record"
+    },
+    "inputBindings": [],
+    "kind": "step",
+    "name": "worker",
+    "output": {
+      "fields": {
+        "artifacts": {
+          "required": true,
+          "type": {
+            "items": {
+              "fields": {
+                "artifactId": { "required": true, "type": { "kind": "string" } },
+                "byteLength": { "required": true, "type": { "kind": "integer" } },
+                "lineage": {
+                  "required": true,
+                  "type": {
+                    "fields": {
+                      "attempt": { "required": true, "type": { "kind": "integer" } },
+                      "generation": { "required": true, "type": { "kind": "integer" } },
+                      "runId": { "required": true, "type": { "kind": "string" } }
+                    },
+                    "kind": "record"
+                  }
+                },
+                "mediaType": { "required": true, "type": { "kind": "string" } },
+                "producer": {
+                  "required": true,
+                  "type": {
+                    "fields": {
+                      "node": { "required": true, "type": { "kind": "string" } },
+                      "worker": { "required": true, "type": { "kind": "string" } }
+                    },
+                    "kind": "record"
+                  }
+                },
+                "redaction": {
+                  "required": true,
+                  "type": {
+                    "kind": "enum",
+                    "values": ["confidential", "internal", "public", "restricted"]
+                  }
+                },
+                "sha256": { "required": true, "type": { "kind": "string" } },
+                "typeId": { "required": true, "type": { "kind": "string" } }
+              },
+              "kind": "record"
+            },
+            "kind": "array"
+          }
+        },
+        "branch": { "required": false, "type": { "kind": "string" } },
+        "headRevision": { "required": false, "type": { "kind": "string" } },
+        "pullRequestUrl": { "required": false, "type": { "kind": "string" } },
+        "repository": { "required": false, "type": { "kind": "string" } },
+        "status": {
+          "required": true,
+          "type": { "kind": "enum", "values": ["failed", "succeeded"] }
+        },
+        "summary": { "required": true, "type": { "kind": "string" } }
+      },
+      "kind": "record"
+    },
+    "timeoutMs": 3600000,
+    "worker": "legacy.zeroshot.ship@1",
+    "writeBindings": []
+  }
+}

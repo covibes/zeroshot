@@ -34,7 +34,9 @@ function isDeterministicSubmissionError(error) {
 function submissionUncertain(submissionKey, cause) {
   return new Error(
     'RunIntent submission outcome is uncertain. Do not create a replacement. ' +
-      `Recover by rerunning the same command with --submission-key ${submissionKey}.`,
+      'Retry only if the graph, input, cluster config, runtime references, credentials, size, ' +
+      'delivery mode, and resolved repository revision are unchanged. ' +
+      `Then rerun with --submission-key ${submissionKey}; a changed payload is rejected.`,
     { cause }
   );
 }
