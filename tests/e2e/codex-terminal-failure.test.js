@@ -3,6 +3,7 @@ const { createHash } = require('node:crypto');
 const Database = require('better-sqlite3');
 
 const { setupE2ERepo, cleanupE2ERepo, runZeroshot } = require('./helpers/e2e-harness');
+const { extractTaskLogProviderOutput } = require('./helpers/task-log');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -35,19 +36,6 @@ function readFailedTaskLog(homeDir) {
   assert.strictEqual(tasks[0].status, 'failed', tasks[0].error || 'task did not fail');
   assertRedacted(String(tasks[0].error || ''));
   return fs.readFileSync(tasks[0].log_file, 'utf8');
-}
-
-function extractProviderOutput(rawLog) {
-  const normalized = rawLog
-    .replaceAll('\r\n', '\n')
-    .split('\n')
-    .map((line) => line.replace(/^\[\d{13}\]/, ''));
-  const start = normalized.findIndex((line) => line.includes('"type":"thread.started"'));
-  const end = normalized.findIndex(
-    (line, index) => index >= start && line.includes('"type":"turn.failed"')
-  );
-  assert.ok(start >= 0 && end >= start, 'raw task log must preserve the complete failed turn');
-  return `${normalized.slice(start, end + 1).join('\n')}\n`;
 }
 
 function isPidAlive(pid) {
@@ -185,7 +173,10 @@ describe('e2e: detached Codex terminal failure', function () {
       assert.ok(Buffer.byteLength(expectedOutput) > STRESS_BYTES);
       assert.match(expectedOutput, /const Authorization = benignSource;/);
       assert.match(expectedOutput, new RegExp(TERMINAL_SECRET));
-      assert.strictEqual(extractProviderOutput(readFailedTaskLog(env.homeDir)), expectedOutput);
+      assert.strictEqual(
+        extractTaskLogProviderOutput(readFailedTaskLog(env.homeDir), 'turn.failed'),
+        expectedOutput
+      );
 
       const statusResult = runZeroshot(env, ['status', started.clusterId, '--json']);
       assert.strictEqual(statusResult.status, 0, statusResult.stderr);
