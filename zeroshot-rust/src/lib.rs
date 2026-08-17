@@ -17,6 +17,7 @@ pub mod native_v2_admission;
 pub mod native_v2_claude;
 pub mod native_v2_codex;
 pub mod native_v2_contract;
+pub mod native_v2_delivery;
 pub mod native_v2_observability;
 pub mod native_v2_runner;
 pub mod native_v2_supervisor;
