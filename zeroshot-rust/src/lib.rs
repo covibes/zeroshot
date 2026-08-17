@@ -20,6 +20,7 @@ pub mod required_proof;
 pub mod role_contract;
 pub mod scheduler;
 pub mod source_code_provider;
+pub mod v2_run_ledger;
 pub mod worker_bindings;
 pub mod worker_catalog;
 pub mod workspace_lease;
