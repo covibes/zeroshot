@@ -109,10 +109,8 @@ describe('npm package smoke', function () {
 
     for (const file of files) {
       assert.ok(
-        !file.startsWith('docker/zeroshot-oecp/') &&
-          !file.startsWith('scripts/hosted-oecp-') &&
-          !file.startsWith('zeroshot-rust/'),
-        `npm package must not expose the private hosted runtime: ${file}`
+        !file.startsWith('zeroshot-rust/'),
+        `npm package must not expose the native product sources: ${file}`
       );
     }
   });

@@ -1,10 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fmt::Write as _;
-use std::num::NonZeroU32;
 
 use serde::{de, Deserialize, Deserializer, Serialize};
-use sha2::{Digest as _, Sha256};
 
 pub(crate) const MAX_COLLECTION_ENTRIES: usize = 64;
 pub(crate) const MAX_SERIALIZED_BYTES: usize = 65_536;
@@ -29,7 +26,6 @@ pub(crate) enum ValueError {
         actual: usize,
     },
     Serialization(String),
-    ZeroVersion,
 }
 
 impl fmt::Display for ValueError {
@@ -58,36 +54,11 @@ impl fmt::Display for ValueError {
                 )
             }
             Self::Serialization(message) => write!(formatter, "serialization failed: {message}"),
-            Self::ZeroVersion => formatter.write_str("version must be greater than zero"),
         }
     }
 }
 
 impl std::error::Error for ValueError {}
-
-pub(crate) fn parse_version(value: u32) -> Result<NonZeroU32, ValueError> {
-    NonZeroU32::new(value).ok_or(ValueError::ZeroVersion)
-}
-
-/// Serializes `value` to canonical JSON bytes, bounds them, and returns their SHA-256 hex digest
-/// alongside the bytes.
-pub(crate) fn canonicalize<T: Serialize + ?Sized>(
-    value: &T,
-) -> Result<(Vec<u8>, String), ValueError> {
-    let bytes =
-        serde_json::to_vec(value).map_err(|error| ValueError::Serialization(error.to_string()))?;
-    if bytes.len() > MAX_SERIALIZED_BYTES {
-        return Err(ValueError::SerializedTooLarge {
-            max: MAX_SERIALIZED_BYTES,
-            actual: bytes.len(),
-        });
-    }
-    let mut digest_hex = String::with_capacity(64);
-    for byte in Sha256::digest(&bytes) {
-        write!(&mut digest_hex, "{byte:02x}").expect("writing to a string cannot fail");
-    }
-    Ok((bytes, digest_hex))
-}
 
 mod macros;
 

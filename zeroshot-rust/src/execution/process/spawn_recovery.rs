@@ -8,7 +8,7 @@ use crate::execution::driver::WorkspaceCapability;
 use super::platform::{self, ProcessContainment, ProcessTreeHandle, terminate_process_tree};
 use super::{
     MAX_PROCESS_ARGV_BYTES, MAX_PROCESS_ARGV_ITEMS, MAX_PROCESS_ENV_BYTES, MAX_PROCESS_ENV_ITEMS,
-    MAX_PROCESS_STDIN_BYTES, ProcessRunnerError,
+    ProcessRunnerError,
 };
 
 pub(super) struct SpawnRecovery {
@@ -156,17 +156,6 @@ fn validate_collection(
         return Err(ProcessRunnerError::InvalidCommand(format!(
             "{} is {} bytes; maximum is {}",
             limit.label, bytes, limit.max_bytes
-        )));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_stdin(stdin: &[u8]) -> Result<(), ProcessRunnerError> {
-    if stdin.len() > MAX_PROCESS_STDIN_BYTES {
-        return Err(ProcessRunnerError::InvalidCommand(format!(
-            "stdin is {} bytes; maximum is {}",
-            stdin.len(),
-            MAX_PROCESS_STDIN_BYTES
         )));
     }
     Ok(())

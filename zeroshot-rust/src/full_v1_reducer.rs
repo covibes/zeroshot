@@ -1352,10 +1352,6 @@ fn collect_executable_depths(
     }
 }
 
-pub(crate) fn validate_history(executions: &[DurableExecution]) -> Result<(), ReducerError> {
-    validate_history_for_mode(executions, ExecutionMode::LegacyAttempts)
-}
-
 fn validate_history_for_mode(
     executions: &[DurableExecution],
     execution_mode: ExecutionMode,

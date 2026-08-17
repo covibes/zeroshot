@@ -1,0 +1,301 @@
+//! Native-v2 named-target connector.
+//!
+//! The CLI owns only a small local name-to-origin registry. A target control authority owns
+//! discovery, device login, atomic repository/runtime installation, and issuance of one
+//! authenticated target-scoped OECP session. The runtime plan contains environment names only;
+//! environment values remain cloud-owned and never cross this connector.
+
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+use zeroshot_engine::native_v2_cli::oecp::TargetConnector;
+use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetSetup};
+use zeroshot_engine::native_v2_contract::RuntimePlan;
+
+mod contract;
+mod oecp;
+mod registry;
+
+use contract::{prepare_setup, prepare_target, validate_target_name};
+pub use oecp::{AuthenticatedOecpWebSocketDialer, TargetOecpDialer};
+pub use registry::{FileTargetRegistry, TargetRegistry, default_target_registry_path};
+
+#[cfg(test)]
+use contract::{normalize_base, normalize_origin, validate_bearer_token};
+#[cfg(test)]
+use registry::encode_hex;
+
+#[cfg(test)]
+#[path = "native_v2_target/tests.rs"]
+mod tests;
+
+/// The external contract which hosting must implement before the native-v2 CLI can reach cloud.
+///
+/// `install` is one atomic target-side operation: either both repository selection and the
+/// companion runtime plan become current, or neither does. `oecp_session` returns an access token
+/// and endpoint scoped to the selected target's public `run/*` surface.
+#[async_trait]
+pub trait TargetControlAuthority: Send + Sync {
+    async fn discover(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError>;
+    async fn login(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError>;
+    async fn install(
+        &self,
+        target: &TargetRecord,
+        setup: &TargetSetupDocument,
+    ) -> Result<(), TargetAuthorityError>;
+    async fn oecp_session(
+        &self,
+        target: &TargetRecord,
+    ) -> Result<AuthenticatedTargetOecp, TargetAuthorityError>;
+}
+
+#[derive(Debug, Error)]
+#[error("{message}")]
+pub struct TargetAuthorityError {
+    message: String,
+}
+
+impl TargetAuthorityError {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Explicit production placeholder until hosting advertises the target-wide authority contract.
+/// It prevents the shipped Rust CLI from silently falling back to the Node/capsule path or
+/// guessing a cloud route.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UndefinedTargetControlAuthority;
+
+pub const UNDEFINED_TARGET_AUTHORITY: &str = concat!(
+    "native-v2 target authority is not advertised: the current hosted discovery defines only ",
+    "capsule-scoped OAuth and WebSockets; target discovery, device login, atomic setup, and ",
+    "target-scoped run/* OECP endpoints are required"
+);
+pub const UNDEFINED_TARGET_AUTHORITY_HELP: &str = concat!(
+    "\nCloud target availability:\n",
+    "  This build requires a target-wide native-v2 authority contract. ",
+    "Current hosted discovery is capsule-scoped and cannot serve run/*.\n"
+);
+
+#[async_trait]
+impl TargetControlAuthority for UndefinedTargetControlAuthority {
+    async fn discover(&self, _target: &TargetRecord) -> Result<(), TargetAuthorityError> {
+        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
+    }
+
+    async fn login(&self, _target: &TargetRecord) -> Result<(), TargetAuthorityError> {
+        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
+    }
+
+    async fn install(
+        &self,
+        _target: &TargetRecord,
+        _setup: &TargetSetupDocument,
+    ) -> Result<(), TargetAuthorityError> {
+        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
+    }
+
+    async fn oecp_session(
+        &self,
+        _target: &TargetRecord,
+    ) -> Result<AuthenticatedTargetOecp, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TargetRecord {
+    pub name: String,
+    pub origin: String,
+}
+
+/// Secret-free setup installed on a target as one unit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TargetSetupDocument {
+    pub repository: String,
+    pub base: TargetBase,
+    pub runtime: RuntimePlan,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum TargetBase {
+    Default,
+    Branch {
+        branch: String,
+    },
+    Revision {
+        revision: String,
+        target_branch: String,
+    },
+}
+
+/// Opaque authenticated session minted by the control authority. Debug output never includes the
+/// bearer token.
+pub struct AuthenticatedTargetOecp {
+    endpoint: String,
+    bearer_token: String,
+}
+
+impl AuthenticatedTargetOecp {
+    #[cfg(test)]
+    fn new(
+        endpoint: impl Into<String>,
+        bearer_token: impl Into<String>,
+    ) -> Result<Self, TargetConnectorError> {
+        let session = Self {
+            endpoint: endpoint.into(),
+            bearer_token: bearer_token.into(),
+        };
+        validate_bearer_token(&session.bearer_token)?;
+        Ok(session)
+    }
+
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    fn bearer_token(&self) -> &str {
+        &self.bearer_token
+    }
+}
+
+impl fmt::Debug for AuthenticatedTargetOecp {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedTargetOecp")
+            .field("endpoint", &self.endpoint)
+            .field("bearer_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum TargetConnectorError {
+    #[error("target name must be 1-64 ASCII alphanumeric/hyphen characters")]
+    InvalidName,
+    #[error("target URL must be an HTTPS origin (literal loopback HTTP is allowed)")]
+    InvalidOrigin,
+    #[error("target {0:?} already exists")]
+    AlreadyExists(String),
+    #[error("target {0:?} not found")]
+    NotFound(String),
+    #[error("target registry path cannot be resolved: {0}")]
+    RegistryPath(&'static str),
+    #[error("target registry I/O failed: {0}")]
+    RegistryIo(#[source] std::io::Error),
+    #[error("target registry is malformed: {0}")]
+    RegistryJson(#[source] serde_json::Error),
+    #[error("target registry exceeds 1 MiB")]
+    RegistryTooLarge,
+    #[error("runtime plan file {path} could not be read: {source}")]
+    RuntimeRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("runtime plan file {path} is invalid: {source}")]
+    RuntimeJson {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("runtime plan exceeds 1 MiB")]
+    RuntimeTooLarge,
+    #[error("repository must have the form owner/name")]
+    InvalidRepository,
+    #[error("base must be a bounded Git branch or a lowercase 40-character revision")]
+    InvalidBase,
+    #[error("--target-branch is required with an exact revision and forbidden otherwise")]
+    TargetBranchMismatch,
+    #[error("target control authority failed: {0}")]
+    Authority(#[from] TargetAuthorityError),
+    #[error("target OECP endpoint is invalid")]
+    InvalidOecpEndpoint,
+    #[error("target OECP bearer token is invalid")]
+    InvalidBearerToken,
+    #[error("target OECP connection failed: {0}")]
+    OecpConnection(String),
+}
+
+pub struct NativeV2TargetConnector<R, A, D> {
+    registry: R,
+    authority: A,
+    dialer: D,
+}
+
+impl<R, A, D> NativeV2TargetConnector<R, A, D> {
+    #[must_use]
+    pub const fn new(registry: R, authority: A, dialer: D) -> Self {
+        Self {
+            registry,
+            authority,
+            dialer,
+        }
+    }
+}
+
+#[async_trait]
+impl<R, A, D> TargetConnector for NativeV2TargetConnector<R, A, D>
+where
+    R: TargetRegistry,
+    A: TargetControlAuthority,
+    D: TargetOecpDialer,
+{
+    type Transport = D::Transport;
+
+    async fn add(&self, request: TargetAdd) -> Result<(), NativeV2CliError> {
+        let target = prepare_target(request).map_err(cli_target_error)?;
+        self.authority
+            .discover(&target)
+            .await
+            .map_err(cli_target_error)?;
+        self.registry.insert(target).map_err(cli_target_error)
+    }
+
+    async fn login(&self, name: &str) -> Result<(), NativeV2CliError> {
+        validate_target_name(name).map_err(cli_target_error)?;
+        let target = self.registry.get(name).map_err(cli_target_error)?;
+        self.authority
+            .login(&target)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError> {
+        let document = prepare_setup(&request).map_err(cli_target_error)?;
+        validate_target_name(&request.name).map_err(cli_target_error)?;
+        let target = self.registry.get(&request.name).map_err(cli_target_error)?;
+        self.authority
+            .install(&target, &document)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn connect(&self, name: &str) -> Result<Arc<Self::Transport>, NativeV2CliError> {
+        validate_target_name(name).map_err(cli_target_error)?;
+        let target = self.registry.get(name).map_err(cli_target_error)?;
+        let session = self
+            .authority
+            .oecp_session(&target)
+            .await
+            .map_err(cli_target_error)?;
+        self.dialer
+            .dial(&target, session)
+            .await
+            .map_err(cli_target_error)
+    }
+}
+
+fn cli_target_error(error: impl fmt::Display) -> NativeV2CliError {
+    NativeV2CliError::Target(error.to_string())
+}

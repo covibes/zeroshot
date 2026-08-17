@@ -38,6 +38,19 @@ fn command(program: &str, argv: Vec<&str>) -> ProcessSessionCommand {
     }
 }
 
+#[test]
+fn process_command_debug_exposes_environment_names_but_not_values() {
+    let mut command = command("provider", vec![]);
+    command.environment.insert(
+        "OPENAI_API_KEY".to_owned(),
+        "sensitive-provider-secret".to_owned(),
+    );
+
+    let debug = format!("{command:?}");
+    assert!(debug.contains("OPENAI_API_KEY"));
+    assert!(!debug.contains("sensitive-provider-secret"));
+}
+
 #[cfg(unix)]
 async fn open(program: &str, argv: Vec<&str>) -> (watch::Sender<bool>, ProcessSession) {
     let (cancel, cancellation) = cancellation_pair();

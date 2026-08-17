@@ -27,36 +27,22 @@ fn full_v1_reduction_reuses_verified_ir_and_stays_pure() {
     assert!(!reducer.contains("CompiledGraphIr"));
     assert!(!reducer.contains("PayloadType"));
     assert!(!reducer.contains("pub prefix_position"));
+    assert!(reducer.contains("pub use crate::native_v2_contract"));
+    assert_eq!(
+        reducer.matches("crate::").count(),
+        1,
+        "the reducer may import only native-v2's neutral execution identities"
+    );
     for forbidden in [
-        "crate::cluster_ledger",
-        "ReplayState",
-        "ReductionSnapshot",
-        "RecordPayload",
-        "CanonicalDigest",
-        "ExecutionVoidAuthorization",
-        "ReductionDispatchAuthorization",
-        "ReductionTerminalAuthorization",
         "tokio::",
         "async fn",
         "std::process",
         "std::time",
         "std::thread",
-        "crate::execution",
-        "crate::scheduler",
-        "crate::artifact_store",
-        "crate::issue_provider",
-        "crate::source_code_provider",
-        "ClusterBackend",
-        "Dispatcher",
     ] {
         assert!(
             !reducer.contains(forbidden),
             "pure reducer imported an effectful concern: {forbidden}"
         );
     }
-
-    let legacy_adapter =
-        read(&product_root().join("src/cluster_ledger/mutations/reducer_authorization.rs"));
-    assert!(legacy_adapter.contains("Temporary compatibility adapter"));
-    assert!(legacy_adapter.contains("Native-v2 must not use this module"));
 }

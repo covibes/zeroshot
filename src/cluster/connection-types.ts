@@ -1,12 +1,12 @@
 import type { FrameRecord } from './frames.js';
 import type { BoundedQueue } from './queue.js';
-import type { ClusterMethod } from './generated/protocol.js';
+import type { ClusterMethod, SubscriptionMethod } from './generated/protocol.js';
 
 export interface CallOptions {
   readonly signal?: AbortSignal;
   readonly requestTimeoutMs?: number;
 }
-export type SubscriptionKind = 'watch' | 'logs' | 'agent/attach';
+export type SubscriptionKind = SubscriptionMethod;
 export type SubscriptionRegistration = {
   readonly id: string;
   readonly kind: SubscriptionKind;

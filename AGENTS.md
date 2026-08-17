@@ -36,197 +36,136 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 
 ## Where to Look
 
-| Concept                               | File                                                                                                                             |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Conductor classification              | `src/conductor-bootstrap.js`                                                                                                     |
-| Base templates                        | `cluster-templates/base-templates/`                                                                                              |
-| Message bus                           | `src/message-bus.js`                                                                                                             |
-| Ledger (SQLite)                       | `src/ledger.js`                                                                                                                  |
-| Guidance topics                       | `src/guidance-topics.ts` (generated CommonJS: `src/guidance-topics.js`)                                                          |
-| Guidance mailbox helper               | `src/ledger.js`                                                                                                                  |
-| Guidance live injection               | `src/orchestrator.js`                                                                                                            |
-| Trigger evaluation                    | `src/logic-engine.js`                                                                                                            |
-| Agent wrapper                         | `src/agent-wrapper.js`                                                                                                           |
-| Agent context assembly                | `src/agent/agent-context-*.ts`, `src/agent/context-pack-*.ts`                                                                    |
-| Providers registry                    | `src/providers/index.js`                                                                                                         |
-| Provider implementations              | `src/providers/`                                                                                                                 |
-| Provider engine registry              | `src/agent-cli-provider/provider-registry.ts`                                                                                    |
-| Pi JSON protocol                      | `src/agent-cli-provider/pi/`                                                                                                     |
-| Pi watcher lifecycle                  | `src/agent/pi-terminal-lifecycle.ts`                                                                                             |
-| Provider terminal failure             | `src/agent/provider-terminal-failure.ts`                                                                                         |
-| Structured-output recovery            | `src/agent/output-reformatter.ts`                                                                                                |
-| Provider output extraction            | `src/agent/output-extraction.ts`                                                                                                 |
-| Gateway runner                        | `src/agent-cli-provider/gateway-runner.ts`                                                                                       |
-| Gateway tools/policy                  | `src/agent-cli-provider/gateway-tools.ts`                                                                                        |
-| OMP release/version pinning           | `src/agent-cli-provider/omp-release.ts`                                                                                          |
-| OMP RPC codec (JSONL/chunking)        | `src/agent-cli-provider/omp-rpc-protocol.ts`                                                                                     |
-| OMP RPC lifecycle driver              | `src/agent-cli-provider/omp-rpc-driver.ts`                                                                                       |
-| OMP RPC frame normalization           | `src/agent-cli-provider/omp-rpc-events.ts`                                                                                       |
-| OMP session launch types              | `src/agent-cli-provider/omp-rpc-session.ts`                                                                                      |
-| OMP config safety overlay             | `src/omp-config-overlay.ts`                                                                                                      |
-| OMP detached RPC watcher              | `task-lib/rpc-watcher.js`                                                                                                        |
-| Provider detection                    | `lib/provider-detection.js`                                                                                                      |
-| Maintained legacy TypeScript leaves   | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
-| Maintained runtime TypeScript leaves  | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
-| Attach session facade/client/server   | `src/attach/{index,attach-client,attach-server}.ts`                                                                              |
-| Attach server lifecycle and PTY       | `src/attach/attach-server-{runtime,pty,socket}.ts`                                                                               |
-| Attach server clients and cleanup     | `src/attach/attach-server-{clients,events,cleanup,types}.ts`                                                                     |
-| Template validation entrypoint        | `src/template-validation/index.js`                                                                                               |
-| Shared template simulation seam       | `src/template-validation/{simulation-runtime,simulation-agent,simulation-agent-runtime}.ts`                                      |
-| Random topology simulation pipeline   | `src/template-validation/random-topology-*.ts`, `simulate-random-topology.ts`                                                    |
-| Provider capabilities                 | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
-| Claude settings overlay               | `src/worktree-claude-config.ts`                                                                                                  |
-| Detached/foreground cleanup ownership | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
-| Shared watcher output path            | `task-lib/watcher-output-runtime.js`                                                                                             |
-| Provider session reuse                | `src/agent/provider-session.js`                                                                                                  |
-| Start-cluster helper                  | `lib/start-cluster.js`                                                                                                           |
-| Legacy worker facade                  | `lib/cluster-worker/`                                                                                                            |
-| Legacy worker executable              | `bin/zeroshot-cluster-worker.js`                                                                                                 |
-| Private hosted capsule runtime        | `zeroshot-rust/src/hosted_oecp/`, `zeroshot-rust/hosted-node/`                                                                   |
-| Hosted capsule image                  | `docker/zeroshot-oecp/`, `scripts/hosted-oecp-image.js`                                                                          |
-| Docker mounts/env                     | `lib/docker-config.js`                                                                                                           |
-| Container lifecycle                   | `src/isolation-manager.js`                                                                                                       |
-| Pull-request body templates           | `src/pr-body-template.js`, `src/agents/git-pusher-template.js`                                                                   |
-| Settings                              | `lib/settings.js`                                                                                                                |
-| Legacy settings property selection    | `src/repo-settings-access.ts`                                                                                                    |
-| Cluster wire/domain types             | `crates/openengine-cluster-protocol/`                                                                                            |
-| Admission wire semantics              | `crates/openengine-cluster-protocol/src/admission.rs`                                                                            |
-| Graph AST/bindings/guards             | `crates/openengine-cluster-protocol/src/graph.rs`                                                                                |
-| Closed payload algebra                | `crates/openengine-cluster-protocol/src/payload.rs`                                                                              |
-| Closed payload validation             | `crates/openengine-cluster-protocol/src/payload_value.rs`                                                                        |
-| Compiled IR/identity                  | `crates/openengine-cluster-protocol/src/canonical.rs`                                                                            |
-| Artifact receipts                     | `crates/openengine-cluster-protocol/src/artifact.rs`                                                                             |
-| Graph diagnostics/bounds              | `crates/openengine-cluster-protocol/src/diagnostic.rs`                                                                           |
-| Shared wire-value bounds              | `crates/openengine-cluster-protocol/src/value.rs`                                                                                |
-| Cluster server crate                  | `crates/openengine-cluster-server/`                                                                                              |
-| Graph verifier facade                 | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
-| Graph verifier analysis               | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
-| Native product construction           | `zeroshot-rust/`                                                                                                                 |
-| Native foreground agents              | `zeroshot-rust/src/native_execution/{agent,pi}/`, `native_execution/program/foreground.rs`                                       |
-| Native admission composition          | `zeroshot-rust/src/native_admission.rs`, `zeroshot-rust/src/main.rs`                                                             |
-| Native v2 cloud controller/OECP backend | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                      |
-| Native v2 private capsule runner       | `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`                                                                  |
-| Native v2 capsule composition root     | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                              |
-| Native v2 CLI and OECP adapter         | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                          |
-| Native release targets                | `distribution/zeroshot-rust-targets.json`                                                                                        |
-| Native npm binary shim                | `npm/zeroshot-rust/`                                                                                                             |
-| Native distribution tooling           | `scripts/rust-distribution.js`                                                                                                   |
-| Native distribution decision          | `docs/zeroshot-rust-distribution.md`                                                                                             |
-| Native cluster ledger                 | `zeroshot-rust/src/cluster_ledger.rs`                                                                                            |
-| Ledger store port/fake                | `zeroshot-rust/src/cluster_ledger/store.rs`, `store/fake.rs`                                                                     |
-| SQLite ledger store                   | `zeroshot-rust/src/cluster_ledger/store/sqlite.rs`, `store/sqlite/`                                                              |
-| SQLite append/query helpers           | `zeroshot-rust/src/cluster_ledger/store/sqlite/{operations,queries}.rs`                                                          |
-| Ledger records/replay                 | `zeroshot-rust/src/cluster_ledger/record.rs`, `replay.rs`                                                                        |
-| Full-v1 pure graph reducer            | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |
-| Protocol ledger adapters              | `zeroshot-rust/src/cluster_ledger/adapters.rs`                                                                                   |
-| Artifact store port/fake              | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`                                                                  |
-| Product-local artifact CAS            | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`                                                                    |
-| Required-proof contracts              | `zeroshot-rust/src/required_proof.rs`                                                                                            |
-| Issue provider contracts              | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                                                                         |
-| Source provider contracts             | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`                                                             |
-| Provider value bounds                 | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                                                                         |
-| Native worker catalog                 | `zeroshot-rust/src/worker_catalog.rs`, `zeroshot-rust/src/worker_catalog/`                                                       |
-| Execution runtime seam                | `zeroshot-rust/src/execution.rs`, `execution/types.rs`                                                                           |
-| Local runtime + drivers               | `zeroshot-rust/src/execution/{local,driver}.rs`                                                                                  |
-| Local process runner                  | `zeroshot-rust/src/execution/process.rs`                                                                                         |
-| Fair scheduler                        | `zeroshot-rust/src/scheduler.rs`                                                                                                 |
-| Durable workspace leases              | `zeroshot-rust/src/workspace_lease.rs`, `workspace_lease/`                                                                       |
-| Workspace lease stores                | `zeroshot-rust/src/workspace_lease/store/{fake,sqlite}.rs`                                                                       |
-| Workspace resource adapters           | `zeroshot-rust/src/workspace_lease/{resource,adapters,borrowed}.rs`                                                              |
-| Native safe faults                    | `zeroshot-rust/src/fault.rs`                                                                                                     |
-| Native fault taxonomy                 | `zeroshot-rust/src/fault/taxonomy.rs`                                                                                            |
-| Native diagnostic redaction           | `zeroshot-rust/src/fault/redaction.rs`                                                                                           |
-| Native product error projection       | `zeroshot-rust/src/product_errors.rs`                                                                                            |
-| Native observability                  | `zeroshot-rust/src/observability.rs`                                                                                             |
-| Native daemon discovery               | `zeroshot-rust/src/daemon_discovery.rs`                                                                                          |
-| Native daemon authorization           | `zeroshot-rust/src/daemon_auth.rs`                                                                                               |
-| Native loopback listener              | `zeroshot-rust/src/daemon_listener.rs`, `zeroshot-rust/src/daemon_listener/`                                                     |
-| Admission coordinator                 | `crates/openengine-cluster-server/src/admission.rs`, `crates/openengine-cluster-server/src/admission/core.rs`                    |
-| Admission durable ports               | `crates/openengine-cluster-server/src/admission/ports.rs`                                                                        |
-| Admission snapshot folding            | `crates/openengine-cluster-server/src/admission/snapshot.rs`                                                                     |
-| Lifecycle state machine               | `crates/openengine-cluster-server/src/lifecycle.rs`                                                                              |
-| Lifecycle durable ports               | `crates/openengine-cluster-server/src/lifecycle/ports.rs`                                                                        |
-| Watch event stream/handle             | `crates/openengine-cluster-server/src/watch.rs`                                                                                  |
-| Watch observation port                | `crates/openengine-cluster-server/src/watch/ports.rs`                                                                            |
-| Watch minimal test fixture            | `crates/openengine-cluster-server/src/watch/fixtures.rs`                                                                         |
-| Watch wire types/framing              | `crates/openengine-cluster-protocol/src/watch.rs`                                                                                |
-| Native v2 run method wire values      | `crates/openengine-cluster-protocol/src/native_v2_{run,observation}.rs`                                                          |
-| Native v2 server routes/stream seam    | `crates/openengine-cluster-server/src/native_v2.rs`, `connection/native_v2.rs`                                                   |
-| Native v2 typed protocol client        | `crates/openengine-cluster-client/src/native_v2.rs`                                                                              |
-| Client watch/reconnect                | `crates/openengine-cluster-client/src/watch.rs`                                                                                  |
-| NDJSON stdio binding                  | `crates/openengine-cluster-server/src/stdio.rs`                                                                                  |
-| NDJSON watch client                   | `crates/openengine-cluster-client/src/ndjson_watch.rs`                                                                           |
-| Connection core/admission             | `crates/openengine-cluster-server/src/connection.rs`, `connection/`                                                              |
-| JSON-RPC envelope/routing             | `crates/openengine-cluster-server/src/dispatch.rs`                                                                               |
-| Protocol method registry              | `crates/openengine-cluster-server/src/method_registry.rs`                                                                        |
-| NDJSON response pump                  | `crates/openengine-cluster-client/src/ndjson_pump.rs`                                                                            |
-| Cluster typed transports              | `crates/openengine-cluster-client/`                                                                                              |
-| TypeScript cluster client             | `src/cluster/`                                                                                                                   |
-| Hosted session coordinator            | `src/hosted-session/`                                                                                                            |
-| Hosted target capsule adapter         | `src/hosted-target/`                                                                                                             |
-| Named target registry and sessions    | `src/target/`                                                                                                                    |
-| TypeScript protocol emitter           | `scripts/generate-cluster-types.js`                                                                                              |
-| Cluster fixtures/artifacts            | `crates/openengine-cluster-testkit/`                                                                                             |
-| Portable backend conformance          | `crates/openengine-cluster-testkit/src/conformance.rs`                                                                           |
-| Scripted admission fixtures           | `crates/openengine-cluster-testkit/src/admission.rs`                                                                             |
-| Fixture inspection controls           | `crates/openengine-cluster-testkit/src/admission/inspection.rs`                                                                  |
-| Scripted lifecycle helpers            | `crates/openengine-cluster-testkit/src/lifecycle.rs`                                                                             |
-| Lifecycle fixture params              | `crates/openengine-cluster-testkit/src/lifecycle/params.rs`                                                                      |
-| In-memory observation store           | `crates/openengine-cluster-testkit/src/watch.rs`                                                                                 |
-| Admission transcript output           | `crates/openengine-cluster-testkit/src/admission_artifacts.rs`                                                                   |
-| Watch/subscription artifacts          | `crates/openengine-cluster-testkit/src/watch_artifacts.rs`                                                                       |
-| Negative graph vectors                | `crates/openengine-cluster-testkit/src/negative_graph_fixtures.rs`                                                               |
-| Verifier vectors                      | `crates/openengine-cluster-testkit/src/graph_verifier_artifacts.rs`                                                              |
-| Graph contract prose                  | `docs/openengine-cluster-protocol/v1/graph-contract.md`                                                                          |
-| Admission contract prose              | `docs/openengine-cluster-protocol/v1/admission.md`                                                                               |
-| Lifecycle contract prose              | `docs/openengine-cluster-protocol/v1/lifecycle.md`                                                                               |
-| Watch contract prose                  | `docs/openengine-cluster-protocol/v1/watch.md`                                                                                   |
-| Generated graph fixtures              | `protocol/openengine-cluster/v1/fixtures/graph/`                                                                                 |
-| Generated watch fixtures              | `protocol/openengine-cluster/v1/fixtures/watch/`                                                                                 |
-
-The unpublished hosted OECP runtime is a one-run compatibility capsule, not native-v2. It advertises
-only `openengine.graph.single-worker/v1` and runs exactly `legacy.zeroshot.ship@1` with one attempt.
-That opaque legacy worker may run the complete Node cluster from a bundled template or one bounded
-declarative `runtime.files["cluster.json"]`; its inner topology never changes the OECP graph.
-Authenticated raw NDJSON uses task-local `8085`; the capsule agent uses `/oecp` WebSocket on
-loopback `8083`, and bounded internal HTTP `PUT`/`GET /internal/run-intents/{id}` uses loopback
-`8084`. All three transports require the same per-task runtime capability.
-All three listeners share the same `HostedBackend`. The HTTP adapter accepts only digest-verified
-`zeroshot.run-intent/v2` envelopes containing `GraphSpec` plus closed source/issue/prompt/artifact
-job input. Run-intent envelopes remain credential- and runtime-free. The capsule process starts
-with an empty credential store and only its per-task transport capability; after allocation,
-hosting forwards one bounded opaque, provider-neutral runtime bundle directly to authenticated
-`PUT /internal/credentials` without interpreting provider or harness fields. The capsule validates
-and installs that bundle before plan/apply, accepts exact-byte retries as idempotent, and derives
-repository, revision, provider, model, executable, settings, files, and environment from it.
-Each submission resolves its base selector to one immutable revision and includes a closed
-`zeroshot.delivery/v1` request. An omitted selector resolves the repository default branch, a named
-branch remains the delivery target, and an exact revision requires an explicit target branch.
-Every hosted CLI run submits this RunIntent request. An explicit size must be advertised, while an
-omitted size preserves the target default. Runs follow by default; detach and Ctrl+C leave the
-RunIntent active, and later attachment uses the RunIntent ID plus capsule `get`/cursor `watch`.
-The adapter retains one bounded in-memory intent identity/status, treats matching retries as replays
-and all second identities as conflicts, and leaves queue cancellation to capsule termination.
-Its fixed `/workspace` starts empty and receives the exact installed checkout. Runtime settings and
-files are materialized under the private runtime home, executable wrappers and setup output use the
-private `.git/zeroshot-runtime` executable root, and the workspace is reverified clean before worker
-launch. After bounded setup, the configured provider engine must pass the registry-owned runtime
-availability probe before apply can commit a run. The worker inherits no trusted service sockets. It
-receives the installed runtime environment and settings, then uses Zeroshot's existing provider
-runner to launch the configured executable with the subprocess and network behavior owned by that
-harness; Git delivery credentials are withheld from the provider invocation. A text-only response
-with no real workspace mutation
-cannot succeed. After provider success, trusted Git delivery verifies the mutation, history, remote,
-configuration, and that the retained revision remains an ancestor of the current target before
-pushing one deterministic-branch commit. Review delivery succeeds only with a verified open pull
-request. Ship delivery succeeds only after an authoritative merge receipt or GitHub acceptance of
-merge-method auto-merge; an open pull request alone never succeeds. Transient auto-merge
-enablement failures use one bounded retry policy and re-read the exact pull-request authority
-before retrying or accepting a lost response. The backend validates the
-secret-free, versioned result, and any execution, cleanup, or delivery defect produces a closed
-failure. Keep the runtime, binary, image, and manifest private. Provider and harness interpretation
-belongs only in the Zeroshot runtime bundle and worker, never in hosting, IaC, or the run-intent
-schema; never add npm/public CLI exports, full-v1 claims, or a local fallback.
+| Concept                                 | File                                                                                                                             |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Conductor classification                | `src/conductor-bootstrap.js`                                                                                                     |
+| Base templates                          | `cluster-templates/base-templates/`                                                                                              |
+| Message bus                             | `src/message-bus.js`                                                                                                             |
+| Ledger (SQLite)                         | `src/ledger.js`                                                                                                                  |
+| Guidance topics                         | `src/guidance-topics.ts` (generated CommonJS: `src/guidance-topics.js`)                                                          |
+| Guidance mailbox helper                 | `src/ledger.js`                                                                                                                  |
+| Guidance live injection                 | `src/orchestrator.js`                                                                                                            |
+| Trigger evaluation                      | `src/logic-engine.js`                                                                                                            |
+| Agent wrapper                           | `src/agent-wrapper.js`                                                                                                           |
+| Agent context assembly                  | `src/agent/agent-context-*.ts`, `src/agent/context-pack-*.ts`                                                                    |
+| Providers registry                      | `src/providers/index.js`                                                                                                         |
+| Provider implementations                | `src/providers/`                                                                                                                 |
+| Provider engine registry                | `src/agent-cli-provider/provider-registry.ts`                                                                                    |
+| Pi JSON protocol                        | `src/agent-cli-provider/pi/`                                                                                                     |
+| Pi watcher lifecycle                    | `src/agent/pi-terminal-lifecycle.ts`                                                                                             |
+| Provider terminal failure               | `src/agent/provider-terminal-failure.ts`                                                                                         |
+| Structured-output recovery              | `src/agent/output-reformatter.ts`                                                                                                |
+| Provider output extraction              | `src/agent/output-extraction.ts`                                                                                                 |
+| Gateway runner                          | `src/agent-cli-provider/gateway-runner.ts`                                                                                       |
+| Gateway tools/policy                    | `src/agent-cli-provider/gateway-tools.ts`                                                                                        |
+| OMP release/version pinning             | `src/agent-cli-provider/omp-release.ts`                                                                                          |
+| OMP RPC codec (JSONL/chunking)          | `src/agent-cli-provider/omp-rpc-protocol.ts`                                                                                     |
+| OMP RPC lifecycle driver                | `src/agent-cli-provider/omp-rpc-driver.ts`                                                                                       |
+| OMP RPC frame normalization             | `src/agent-cli-provider/omp-rpc-events.ts`                                                                                       |
+| OMP session launch types                | `src/agent-cli-provider/omp-rpc-session.ts`                                                                                      |
+| OMP config safety overlay               | `src/omp-config-overlay.ts`                                                                                                      |
+| OMP detached RPC watcher                | `task-lib/rpc-watcher.js`                                                                                                        |
+| Provider detection                      | `lib/provider-detection.js`                                                                                                      |
+| Maintained legacy TypeScript leaves     | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
+| Maintained runtime TypeScript leaves    | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
+| Attach session facade/client/server     | `src/attach/{index,attach-client,attach-server}.ts`                                                                              |
+| Attach server lifecycle and PTY         | `src/attach/attach-server-{runtime,pty,socket}.ts`                                                                               |
+| Attach server clients and cleanup       | `src/attach/attach-server-{clients,events,cleanup,types}.ts`                                                                     |
+| Template validation entrypoint          | `src/template-validation/index.js`                                                                                               |
+| Shared template simulation seam         | `src/template-validation/{simulation-runtime,simulation-agent,simulation-agent-runtime}.ts`                                      |
+| Random topology simulation pipeline     | `src/template-validation/random-topology-*.ts`, `simulate-random-topology.ts`                                                    |
+| Provider capabilities                   | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
+| Claude settings overlay                 | `src/worktree-claude-config.ts`                                                                                                  |
+| Detached/foreground cleanup ownership   | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
+| Shared watcher output path              | `task-lib/watcher-output-runtime.js`                                                                                             |
+| Provider session reuse                  | `src/agent/provider-session.js`                                                                                                  |
+| Start-cluster helper                    | `lib/start-cluster.js`                                                                                                           |
+| Legacy worker facade                    | `lib/cluster-worker/`                                                                                                            |
+| Legacy worker executable                | `bin/zeroshot-cluster-worker.js`                                                                                                 |
+| Docker mounts/env                       | `lib/docker-config.js`                                                                                                           |
+| Container lifecycle                     | `src/isolation-manager.js`                                                                                                       |
+| Pull-request body templates             | `src/pr-body-template.js`, `src/agents/git-pusher-template.js`                                                                   |
+| Settings                                | `lib/settings.js`                                                                                                                |
+| Legacy settings property selection      | `src/repo-settings-access.ts`                                                                                                    |
+| Cluster wire/domain types               | `crates/openengine-cluster-protocol/`                                                                                            |
+| Admission wire semantics                | `crates/openengine-cluster-protocol/src/admission.rs`                                                                            |
+| Graph AST/bindings/guards               | `crates/openengine-cluster-protocol/src/graph.rs`                                                                                |
+| Closed payload algebra                  | `crates/openengine-cluster-protocol/src/payload.rs`                                                                              |
+| Closed payload validation               | `crates/openengine-cluster-protocol/src/payload_value.rs`                                                                        |
+| Compiled IR/identity                    | `crates/openengine-cluster-protocol/src/canonical.rs`                                                                            |
+| Artifact receipts                       | `crates/openengine-cluster-protocol/src/artifact.rs`                                                                             |
+| Graph diagnostics/bounds                | `crates/openengine-cluster-protocol/src/diagnostic.rs`                                                                           |
+| Shared wire-value bounds                | `crates/openengine-cluster-protocol/src/value.rs`                                                                                |
+| Cluster server crate                    | `crates/openengine-cluster-server/`                                                                                              |
+| Graph verifier facade                   | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
+| Graph verifier analysis                 | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
+| Native product construction             | `zeroshot-rust/`                                                                                                                 |
+| Native v2 cloud controller/OECP backend | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                       |
+| Native v2 private capsule runner        | `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`                                                                   |
+| Native v2 capsule composition root      | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
+| Native v2 CLI and OECP adapter          | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
+| Native v2 target connector              | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
+| Native release targets                  | `distribution/zeroshot-rust-targets.json`                                                                                        |
+| Native npm binary shim                  | `npm/zeroshot-rust/`                                                                                                             |
+| Native distribution tooling             | `scripts/rust-distribution.js`                                                                                                   |
+| Native distribution decision            | `docs/zeroshot-rust-distribution.md`                                                                                             |
+| Full-v1 pure graph reducer              | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |
+| Lean native v2 run ledger               | `zeroshot-rust/src/v2_run_ledger.rs`, `v2_run_ledger/`                                                                           |
+| Artifact store port/fake                | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`                                                                  |
+| Product-local artifact CAS              | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`                                                                    |
+| Issue provider contracts                | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                                                                         |
+| Source provider contracts               | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`                                                             |
+| Provider value bounds                   | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                                                                         |
+| Native v2 model values                  | `zeroshot-rust/src/worker_catalog.rs`                                                                                            |
+| Native v2 execution primitives          | `zeroshot-rust/src/execution.rs`, `execution/driver.rs`                                                                          |
+| Contained provider sessions             | `zeroshot-rust/src/execution/process.rs`, `execution/process/`                                                                   |
+| Native safe faults                      | `zeroshot-rust/src/fault.rs`                                                                                                     |
+| Native fault taxonomy                   | `zeroshot-rust/src/fault/taxonomy.rs`                                                                                            |
+| Native diagnostic redaction             | `zeroshot-rust/src/fault/redaction.rs`                                                                                           |
+| Native product error projection         | `zeroshot-rust/src/product_errors.rs`                                                                                            |
+| Native observability                    | `zeroshot-rust/src/observability.rs`                                                                                             |
+| Admission coordinator                   | `crates/openengine-cluster-server/src/admission.rs`, `crates/openengine-cluster-server/src/admission/core.rs`                    |
+| Admission durable ports                 | `crates/openengine-cluster-server/src/admission/ports.rs`                                                                        |
+| Admission snapshot folding              | `crates/openengine-cluster-server/src/admission/snapshot.rs`                                                                     |
+| Lifecycle state machine                 | `crates/openengine-cluster-server/src/lifecycle.rs`                                                                              |
+| Lifecycle durable ports                 | `crates/openengine-cluster-server/src/lifecycle/ports.rs`                                                                        |
+| Watch event stream/handle               | `crates/openengine-cluster-server/src/watch.rs`                                                                                  |
+| Watch observation port                  | `crates/openengine-cluster-server/src/watch/ports.rs`                                                                            |
+| Watch minimal test fixture              | `crates/openengine-cluster-server/src/watch/fixtures.rs`                                                                         |
+| Watch wire types/framing                | `crates/openengine-cluster-protocol/src/watch.rs`                                                                                |
+| Native v2 run method wire values        | `crates/openengine-cluster-protocol/src/native_v2_{run,observation}.rs`                                                          |
+| Native v2 server routes/stream seam     | `crates/openengine-cluster-server/src/native_v2.rs`, `connection/native_v2.rs`                                                   |
+| Native v2 typed protocol client         | `crates/openengine-cluster-client/src/native_v2.rs`                                                                              |
+| Client watch/reconnect                  | `crates/openengine-cluster-client/src/watch.rs`                                                                                  |
+| NDJSON stdio binding                    | `crates/openengine-cluster-server/src/stdio.rs`                                                                                  |
+| NDJSON watch client                     | `crates/openengine-cluster-client/src/ndjson_watch.rs`                                                                           |
+| Connection core/admission               | `crates/openengine-cluster-server/src/connection.rs`, `connection/`                                                              |
+| JSON-RPC envelope/routing               | `crates/openengine-cluster-server/src/dispatch.rs`                                                                               |
+| Protocol method registry                | `crates/openengine-cluster-server/src/method_registry.rs`                                                                        |
+| NDJSON response pump                    | `crates/openengine-cluster-client/src/ndjson_pump.rs`                                                                            |
+| Cluster typed transports                | `crates/openengine-cluster-client/`                                                                                              |
+| TypeScript cluster client               | `src/cluster/`                                                                                                                   |
+| Hosted session coordinator              | `src/hosted-session/`                                                                                                            |
+| Hosted target capsule adapter           | `src/hosted-target/`                                                                                                             |
+| Named target registry and sessions      | `src/target/`                                                                                                                    |
+| TypeScript protocol emitter             | `scripts/generate-cluster-types.js`                                                                                              |
+| Cluster fixtures/artifacts              | `crates/openengine-cluster-testkit/`                                                                                             |
+| Portable backend conformance            | `crates/openengine-cluster-testkit/src/conformance.rs`                                                                           |
+| Scripted admission fixtures             | `crates/openengine-cluster-testkit/src/admission.rs`                                                                             |
+| Fixture inspection controls             | `crates/openengine-cluster-testkit/src/admission/inspection.rs`                                                                  |
+| Scripted lifecycle helpers              | `crates/openengine-cluster-testkit/src/lifecycle.rs`                                                                             |
+| Lifecycle fixture params                | `crates/openengine-cluster-testkit/src/lifecycle/params.rs`                                                                      |
+| In-memory observation store             | `crates/openengine-cluster-testkit/src/watch.rs`                                                                                 |
+| Admission transcript output             | `crates/openengine-cluster-testkit/src/admission_artifacts.rs`                                                                   |
+| Watch/subscription artifacts            | `crates/openengine-cluster-testkit/src/watch_artifacts.rs`                                                                       |
+| Negative graph vectors                  | `crates/openengine-cluster-testkit/src/negative_graph_fixtures.rs`                                                               |
+| Verifier vectors                        | `crates/openengine-cluster-testkit/src/graph_verifier_artifacts.rs`                                                              |
+| Graph contract prose                    | `docs/openengine-cluster-protocol/v1/graph-contract.md`                                                                          |
+| Admission contract prose                | `docs/openengine-cluster-protocol/v1/admission.md`                                                                               |
+| Lifecycle contract prose                | `docs/openengine-cluster-protocol/v1/lifecycle.md`                                                                               |
+| Watch contract prose                    | `docs/openengine-cluster-protocol/v1/watch.md`                                                                                   |
+| Generated graph fixtures                | `protocol/openengine-cluster/v1/fixtures/graph/`                                                                                 |
+| Generated watch fixtures                | `protocol/openengine-cluster/v1/fixtures/watch/`                                                                                 |
 
 Provider-specific settings, defaults, validation, and static capabilities derive from the provider
 registry; do not add parallel provider lists. Opt-in native CLI capabilities must keep requested
@@ -278,126 +217,33 @@ Portable external conformance is the immutable public catalog in the testkit and
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
 The existing integration binaries remain the richer reference regression suite; their
 implementation-specific vectors are not represented as portable external certification.
-`zeroshot-rust/` owns the concrete `NativeBackend`, product-local `NativeBackendFactory`
-construction root, product-private artifact byte-store port/local CAS, product-private,
-secret-free issue/source provider contracts, and native-profile daemon discovery,
-authorization, and loopback-listener lifecycle. Artifact stages, bytes, roots, filesystem paths,
-locks, and manifests remain product-private; only verified protocol `ArtifactRef` receipts cross
-the engine boundary. `LocalCasArtifactStore` takes an explicit root, is a single-writer local
-filesystem store, and must preserve ref-first release plus synchronized blob-then-ref publication.
-The narrow native stdio entrypoint composes one SQLite ledger resource and only
-initialize/plan/apply/get. It advertises no graph profile, renews one process-owned fence while
-serving, and on graceful EOF stops renewal before exact conditional fence release. It may execute
-only the fixed private deterministic checkpoint and the two fixed attempts-1 foreground programs.
-Codex owns one canonical borrowed workspace, one startup credential snapshot, one private process
-driver, one fixed greeting validator, and one product-local CAS. Pi v1 is a separate prompt-only
-driver with no tools or borrowed-workspace access and no artifact claim. Neither program may create
-a configurable provider/model/driver surface, general worker registration, scheduler, daemon-loop,
-watch, retry, session reuse, or broader lifecycle authority. Secret material crosses only the
-non-cloneable, redacted final-spawn input after child environment clearing; it never enters generic
-runtime commands, debug output, graph/ledger state, or artifacts.
-Native-v2 checkpoints remain isolated from the live Node execution path. Do not wire native-v2 into
-the default or production path merely because an individual foreground checkpoint passes. Cutover
-requires an explicit parity/readiness decision backed by fresh-main process evidence for the real
-user journey: required Codex and Pi modes, contained workspace mutation and validation, foreground
-and detached restart recovery, the two required constrained branch shapes, user-required
-provider/config selection, delivery/result semantics, failure handling, and a rollback path.
-Foreground lease stores are cluster-scoped; the workspace directory lock and durable marker own
-cross-cluster exclusion.
-Issue and source registries and identifiers remain independent; neither is a worker/model provider.
-Mutating source calls carry an exclusively borrowed, non-serializable verified-workspace capability;
-their serializable intent and closed operation-specific receipts contain only canonical workspace,
-pre-effect, branch/revision, review, policy/conclusion, and idempotency identities. Successful or
-uncertain effects reconcile only through exact authoritative post-effect inspection.
-Required-command proof gates, immutable attempt intents/receipts, acceptance references, and
-artifact re-verification remain product-private in `required_proof.rs`. Graph-visible selection is
-limited to an admitted gate ID and repository/base/head revision bindings. Explicit environment
-entries use the fixed non-secret name/value set, and proof output artifact lineage must match the
-native `run:<sequence>` and attempt. Proof persistence uses the existing `ClusterLedger`
-record/fold and mutation-receipt path, while output bytes, paths, environment credentials, and
-command execution remain outside both ledger and protocol.
-Keep protocol, transport, daemon, compatibility, adapter, credential resolution, ledger, and
-workspace behavior outside it.
-`worker_catalog` is the native product's sole hand-authored, versioned worker-provider inventory.
-It owns bounded provider policy and deterministic identity only; keep role contracts, registries,
-configuration, credential acquisition, executable codecs, concrete drivers, protocol descriptors,
-and Node registry synchronization outside it.
-Daemon locators are owner-only connection hints, never liveness evidence. Startup holds the
-profile lock only through stale authenticated-initialize probing and atomic bind/publication.
-Unix locator reads open `O_NOFOLLOW` first and enforce owner UID, mode 0600, and link count.
-Windows uses reparse-point-safe handles, a protected current-user-only DACL, handle link counts,
-and write-through atomic replacement. On either platform, extra links are insecure while an opened
-locator concurrently unlinked to zero links may yield its complete prior value; never reclassify
-that proven unlink-after-open race as corruption.
-Upgrade authorization uses domain-separated client/server challenge proofs: capability and daemon
-nonce are never transmitted, the server proof is verified before initialize, and the exact route,
-profile digest, nonce, and rotating 256-bit capability must be proven before backend construction.
-Probe results are closed: authenticated initialize is `Alive`, connection refusal or conclusive
-invalid-owner/protocol proof is `DefinitelyStale`, and capacity/reset/timeout ambiguity is
-`Indeterminate`; only `DefinitelyStale` authorizes locator removal and handoff. The response
-envelope is exactly correlated and its result is decoded and canonicalized through the
-authoritative protocol `InitializeResult`; partial or unknown result fields are not liveness.
-Pre-auth handshake task/FD ownership, authenticated liveness, and ordinary active sessions each
-have independent finite capacity. Full ordinary capacity cannot consume reserved liveness.
-These are resource bounds, not an availability claim against unbounded sustained unauthenticated
-arrivals on the single endpoint, which cannot be classified before reading the upgrade. Graceful
-shutdown uses one absolute deadline across acceptance stop, abort/reap, and matching locator
-cleanup; timeout paths still attempt cleanup and report the defined failure. Every accepted daemon
-session and liveness handshake enters through the server crate's `ConnectionBinding`, with an
-immutable profile-digest principal and tenant identity resolved before backend access; the daemon
-host never constructs `ConnectionContext` directly and reuses the server WebSocket dispatcher.
-Keep protocol definitions, compatibility,
-credential resolution, ledger/catalog/recovery, runtime/scheduler/pools, exporter, CLI,
-hosted/cloud control-plane, Node-daemon, and workspace behavior outside these modules.
-`ExecutionRuntime`, `LocalExecutionRuntime`, `LocalProcessRunner`, and the daemon-scoped fair
-scheduler are engine-private seams. They own local dispatch placement, fencing, deadlines,
-workspace conflict arbitration, cancellation, and local-process containment only. They do not own
-ledger mutation, durable attempt state, protocol methods, provider catalog/configuration,
-credential resolution, workspace lifecycle, real CLI/ACP/Gateway drivers, built-in registration,
-or `NativeBackend` composition. Runtime command/control values remain serializable, secret-free,
-and input-free after control reconstruction.
-`LocalProcessRunner` is also the sole contained stdio-session seam: recovery is registered before
-spawn, stdout and diagnostics stay bounded, and close/release owns termination and reaping exactly
-once. Provider framing and candidate decoding remain in the provider drivers.
-Windows children stay suspended until assignment to their kill-on-close Job Object; never reopen
-the pre-assignment execution window.
-`WorkspaceLeaseManager` is the engine-private durable authority for borrowed, worktree, and Docker
-workspace preparation and cleanup. It persists the deterministic `WorkspaceLeaseId`, owner fence,
-stable mode inputs, and `CreatePending` before effects; uncertain create/cleanup advances only from
-authoritative `WorkspaceResourcePort` inspection through owner-fenced store CAS. A matching owned
-resource may move directly from `CreatePending` to `CleanupRequired`, allowing correct-owner cleanup
-to remain retryable without a separate restart call. Production lease state uses the Linux-only
-`SqliteWorkspaceLeaseStore`; other targets fail closed before opening or creating a database. The
-store canonicalizes relative/symlink spellings to one database, rejects multiple hard links, and
-revalidates both the pinned file and canonical pathname identity. Its operation fence is a global
-OS lock on an independently opened, identity-checked descriptor for that sole database inode;
-replaceable companion pathnames are never lock authority. Every rusqlite connection opens through
-the retained `/proc/self/fd` path for that verified database descriptor, then revalidates both the
-descriptor and canonical pathname before any application pragma/query; path races may fail closed
-before rows or effects and must be cleanly retryable. The fence serializes authoritative absence
-through the following effect across store instances and processes. Lease IDs reuse `ResourceId`;
-execution isolation adds the already-committed `ExecutionId` and never creates a second scheduling
-identity. Borrowed roots are never owned or deleted. Fingerprinting opens the canonical root once
-with no-follow semantics, traverses descendants descriptor-relatively, hashes collision-free
-platform path bytes, and revalidates every named descriptor identity. Owned roots require Linux
-descriptor-relative filesystem support, are fixed beneath a canonical private
-`<product-root>/zeroshot/workspaces` base, and must already satisfy owner-only permissions; never
-chmod an arbitrary supplied root. Each worktree creates a complete, synced lease/owner marker in a
-private staging container before atomically publishing its inner source directory. Abandoned
-staging and deterministic inner/public/staging cleanup quarantines are authoritative recovery
-states: restart finishes correct-owner scaffolding removal through identity-checked quarantine
-names, while conflicting names, content, or identities are preserved as mismatches. Linux has no
-identity-conditional directory unlink, so the final name-based `unlinkat` relies on the private
-0700 product root and lease operation fence for supported manager writers; uncooperative
-same-UID namespace mutation is outside the local adapter trust boundary and requires process/UID
-isolation or a broker. Keep the immediate name/inode recheck so cooperative and recovery races fail
-closed. Worktree effects receive non-cloneable, non-serializable scoped operations backed by pinned
-directory descriptors; never expose a host pathname, descriptor number, or retained handle to
-source materialization. Docker effects receive pinned mount descriptors rather than mutable host
-pathnames. Docker mount handles are atomically created/opened relative to that pinned base with
-no-follow semantics. Docker socket handles and socket/symlink targets are denied.
-Persisted lease values contain no credentials, runtime IDs, arbitrary handles,
-or host paths. Cleanup state never mutates graph outcomes.
+`zeroshot-rust/` now ships only the native-v2 path. `native_v2_candidate` composes full-v1
+admission and reduction, the lean controller-owned run ledger, one capsule/workspace, the graph
+supervisor, provider sessions, observation, and trusted Git delivery. The old `ClusterLedger`,
+fixed-program execution, native daemon, compatibility capsule, and Node fallback are deleted and
+must not be reintroduced.
+
+The shipped CLI uses one local named-target registry and delegates discovery, login, atomic
+repository/runtime setup, and authenticated target-scoped `run/*` OECP session creation to
+`TargetControlAuthority`. Current hosted discovery has no such target-wide native-v2 authority;
+`UndefinedTargetControlAuthority` therefore fails closed instead of guessing a route or falling
+back. The first production authority must implement that port without moving provider or harness
+interpretation into hosting.
+
+`GraphSpec` remains the control-flow source of truth. Provider, harness, model, effort, session
+scope, and required environment names are resolved through its companion runtime plan at admission.
+One run owns one workspace: ordinary verifiers are read-only and may overlap, while workers and Git
+delivery are exclusive writers. Capsule/session loss and force-stop are terminal; there is no
+workspace replacement or replay engine.
+
+`execution/process` is the contained streaming-session seam. Recovery is registered before spawn,
+stdout and diagnostics remain bounded, and close/release owns termination and reaping exactly once.
+Provider framing and response decoding remain in the Codex and Claude adapters.
+
+Artifact stages, bytes, roots, filesystem paths, locks, and manifests remain product-private; only
+verified protocol `ArtifactRef` receipts cross the engine boundary. `LocalCasArtifactStore` takes
+an explicit root, is a single-writer local filesystem store, and must preserve ref-first release
+plus synchronized blob-then-ref publication.
 Native engine faults must be constructed only by `FaultFactory` from closed `ModuleEvidence`.
 Decoded faults must match the canonical semantics derived from their required primary source frame.
 Raw diagnostic values are replaced wholesale with typed markers and remain ephemeral; never put
@@ -414,48 +260,18 @@ commands, stderr, session identities, or credentials. Keep routing, CLI parsing,
 telemetry, and retry authorization outside this module.
 A lost node-instance session terminates the affected execution; its descriptive fault disposition
 must never authorize retry or replacement-session recovery.
-`ClusterLedger` is the only native durable domain authority. Its closed/versioned record algebra,
-identity allocation, replay, lifecycle/CAS/idempotency rules, and safe-fault consequences stay
-above the backend-neutral `LedgerStore` port. Control and verified I/O share one ordered hash
-chain and transaction. Semantic validation and append CAS use the same folded position/hash; never
-reread a newer prefix while committing payloads derived from an older one.
-Reducer-owned loser voids require an opaque authorization bound to the admitted compiled IR,
-verified input, durable execution history, execution, reason, and a folded position/hash capability
-issued only by that `ClusterLedger`; caller-selected positions, identities, or reasons cannot
-authorize an `ExecutionVoid` append.
-Process-local authority identity participates only in ledger mutation validation; semantic
-`Reduction` equality remains deterministic across equivalent ledgers and process reopen.
-Every committed mutation ends in a hash-chained `MutationReceipt` record that exactly
-matches its atomic idempotency projection, so missing or forged projection rows fail replay. Matching
-receipt retries return an explicit replay outcome; receipt equality cannot distinguish a new commit from a concurrent
-identical retry. `SqliteLedgerStore` is the sole v1 production store. SQLite creation initializes
-a private same-directory database and atomically publishes the digest-named path, so losing
-creators never remove the winning resource. Projections are
-rebuildable and may not become a second journal. Persist only canonical engine records, verified
-I/O, safe faults, effect intent/reconciliation, and cleanup receipts—never provider sessions,
-reasoning, tools, raw diagnostics, stdout, or stderr.
-Initial resource creation and its owner fence are one store operation. Guarded appends check
-cancellation inside the store transaction immediately before their first write, after idempotent
-receipt lookup. SQLite removal leaves an explicit empty tombstone until file unlink; missing live
-metadata without that tombstone is corruption and must never authorize replacement.
+`v2_run_ledger` is the only native-v2 durable run authority. It stores submission identity,
+ordered run/node events with stable cursors, current projections, normalized outputs, safe logs,
+force intent, and one terminal result. Keep provider sessions, credentials, runtime handles, raw
+diagnostics, and workspace recovery outside it. It intentionally has no old-ledger hash chain,
+mutation receipts, proof capabilities, or replay engine.
 Full-v1 reduction accepts only verifier-produced `VerifiedGraph` values containing authoritative
 `CompiledGraphIr` and durable ordered outcomes. It never accepts compiled IR directly.
 It is a pure authored-order fold: ledger position is the only concurrent
-tie-break, map indices and positive attempts are part of the central ledger execution context, and
-early-join loser voids are central ledger control records. Keep scheduling capacity, clocks, tasks,
+tie-break, map indices and positive attempts are part of durable execution history, and early-join
+loser voids are reducer decisions. Keep scheduling capacity, clocks, tasks,
 channels, runtime/provider/artifact concerns, public protocol methods, and automatic retry outside
 the reducer.
-Reducer dispatch and terminal appends require opaque authorizations bound to the exact graph/input/
-history digests, decision fields, and ledger position/hash that produced them; only a newly committed
-dispatch receipt authorizes a physical effect. The native production backend additionally permits
-one private exact `seq(step, succeed)` deterministic process proof plus exact foreground Codex and
-prompt-only Pi programs whose authored error choices close declared worker failures. It advertises
-no graph profile.
-The same coordinator validates and settles both programs synchronously, exposes the protocol-owned
-optional `GetResult.terminalResult`, refuses an active dispatch on reopen, and runs bounded
-settled-prefix terminal recovery only after fence renewal starts. The foreground program publishes
-only trusted-validator output to its cluster-scoped local CAS; terminal reopen revalidates that
-exact `ArtifactRef` and its bytes before service.
 Graph syntax, payload subtyping, compiled IR, diagnostics, and artifact receipt Rust types remain
 authoritative protocol contracts. `ProductionGraphVerifier` is the one reusable production
 semantic verifier for `openengine.graph.full/v1`; it resolves workers through `WorkerRegistry` and
@@ -852,7 +668,7 @@ OMP's Docker isolation is env/broker-only, zero-automatic-mount, and sessionless
 
 Pi is a normal `spawn`-lane JSON provider, not a second RPC/SDK vertical. Pin its official
 `@earendil-works/pi-coding-agent` release once in `src/agent-cli-provider/pi/release.ts`, and keep
-the private hosted dependency and live-smoke install synchronized by tests. Pi owns its dynamic
+the Docker installation synchronized by tests. Pi owns its dynamic
 provider/model/subscription registry; Zeroshot passes opaque `provider/model` selectors and must
 not add a parallel catalog. Keep user-global extensions enabled for custom providers, but pass
 `--no-approve`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files` so project-local
@@ -866,20 +682,6 @@ copies, because Pi's shared credential lock and persisted OAuth rotation must sp
 later clusters. `PI_CODING_AGENT_DIR` may select the host source without leaking that host path into
 the container. Forward scalar built-in credentials/config companions automatically, and require
 explicit passthrough plus a matching mount for path/metadata credentials.
-
-The native Pi v1 checkpoint is intentionally narrower than the legacy Node adapter above. It binds
-`native.agent.pi@1` to Pi `>=0.84.1`, provider `openai`, model `gpt-5.4`, medium thinking, one stdin prompt, JSON mode,
-and `--no-session --no-extensions --no-skills --no-prompt-templates --no-context-files
---no-approve --no-tools`. It runs in product-owned empty cwd/config directories after `env_clear`
-with only captured `PATH`, fixed offline/update/telemetry controls, and a borrowed
-`OPENAI_API_KEY`. Preflight validates the credential without exposing it and uses only a fixed dummy
-key for the offline model-list probe; real material enters only the post-dispatch provider spawn.
-Accept output only after exactly one `agent_settled`, using the latest bounded assistant
-`message_end`; require one session header and at least one agent run, allow only known event kinds,
-and reject tools, malformed/trailing/incomplete streams, and non-success stops. Pi owns its internal
-retry, compaction, and queue state machines; the adapter does not reproduce them.
-Changing the model or these authority-bearing flags requires a new native worker version. Do not
-add a Pi SDK/RPC layer until a later session-bearing capability actually requires one.
 
 Model gateways stay behind the single bundled `gateway` engine. Do not add `openrouter`, `ollama`, `vllm`, `hermes`, or similar model-only targets as standalone provider ids.
 
@@ -1034,8 +836,8 @@ Provider session reuse is explicit-ID and agent-owned. Watcher-observed IDs are 
 requested resume IDs. Commit continuation only after logical/structured success and bind it to the
 completed task, agent, generation, provider, cwd, and worktree. A resumed turn sends only new
 trigger/guidance context; it never replays static prompts or ISSUE_OPENED/PLAN_READY packs already in
-the provider session. Persist continuation in that agent's `agentStates` entry, never in native
-`ClusterLedger`, never select a cwd-wide "latest" session, and never share across agents. Durable
+the provider session. Persist continuation in that agent's `agentStates` entry, never in the
+native-v2 run ledger, never select a cwd-wide "latest" session, and never share across agents. Durable
 restore fails closed unless the last lifecycle boundary is the exact matching `TASK_COMPLETED`;
 live, failed, retry/backoff, provider-switch, unsupported, Docker, and workspace-drift states start
 fresh.

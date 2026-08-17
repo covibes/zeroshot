@@ -70,28 +70,11 @@ function registerShimInstallTests() {
 function registerNativeMetadataTest() {
   it('keeps native metadata outside the Rust-only product and the Node package', function () {
     const rustRoot = path.join(projectRoot, 'zeroshot-rust');
-    const privateHostedAdapterFiles = new Set([
-      'hosted-node/capsule-entrypoint.js',
-      'hosted-node/config-check.js',
-      'hosted-node/declarative-cluster.js',
-      'hosted-node/engine-adapter.js',
-      'hosted-node/git-askpass.js',
-      'hosted-node/hosted-config.js',
-      'hosted-node/issue-hydration.js',
-      'hosted-node/runtime-capability.js',
-      'hosted-node/worker-launcher.js',
-      'hosted-node/worker.js',
-      'hosted-node/workspace-bootstrap.js',
-      'hosted-node/workspace-delivery-github.js',
-      'hosted-node/workspace-delivery-retry.js',
-      'hosted-node/workspace-ship.js',
-      'hosted-node/workspace-tools.js',
-    ]);
     const rustFiles = relativeFiles(rustRoot);
     for (const file of rustFiles) {
       assert(
-        file === 'Cargo.toml' || file.endsWith('.rs') || privateHostedAdapterFiles.has(file),
-        `unexpected product file outside the private hosted adapter: ${file}`
+        file === 'Cargo.toml' || file.endsWith('.rs'),
+        `unexpected non-Rust native product file: ${file}`
       );
     }
     const nativeRustSource = rustFiles
@@ -119,18 +102,8 @@ function registerNativeMetadataTest() {
       'cluster-templates/',
       'cluster-hooks/',
       'docker/',
-      '!docker/zeroshot-oecp/',
       'scripts/',
       '!scripts/build-cli-runtime.js',
-      '!scripts/hosted-oecp-ci-relevance.js',
-      '!scripts/hosted-oecp-image.js',
-      '!scripts/hosted-oecp-image-commands.js',
-      '!scripts/hosted-oecp-image-inspection.js',
-      '!scripts/hosted-oecp-image-smoke.js',
-      '!scripts/hosted-oecp-smoke-capability.js',
-      '!scripts/hosted-oecp-smoke-client.js',
-      '!scripts/hosted-oecp-smoke-codex.mjs',
-      '!scripts/hosted-oecp-smoke-fixture.js',
       'protocol/openengine-cluster/v1/worker.schema.json',
       'docs/openengine-cluster-protocol/v1/legacy-worker.md',
       'README.md',

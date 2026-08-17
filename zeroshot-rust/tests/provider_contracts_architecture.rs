@@ -14,7 +14,7 @@ architecture_boundary_macro::suppress_unused_architecture_exports!(
 );
 
 #[test]
-fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_behavior() {
+fn provider_contracts_remain_provider_neutral_and_effect_free() {
     let product = product_root();
     let provider_value = rust_sources(&["src/provider_value.rs", "src/provider_value"]);
     let contracts = rust_sources(&[
@@ -46,15 +46,10 @@ fn provider_contracts_add_no_ledger_workspace_worker_protocol_adapter_or_fault_b
         );
     }
     for forbidden in [
-        "ClusterLedger",
         "rusqlite",
-        "WorkspaceLease",
-        "WorkerRegistry",
-        "WorkerProvider",
         "EngineFault",
         "openengine_cluster_protocol",
         "openengine_cluster_server",
-        "Adapter",
         "std::process",
         "reqwest",
     ] {

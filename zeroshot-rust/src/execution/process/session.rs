@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, oneshot, watch};
@@ -24,13 +25,29 @@ pub const MAX_PROCESS_FRAME_BYTES: usize =
 
 pub const PROCESS_STDIN_CAPACITY: usize = 64;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ProcessSessionCommand {
     pub program: String,
     pub argv: Vec<String>,
     pub environment: BTreeMap<String, String>,
     pub workspace: WorkspaceCapability,
     pub deadline: Instant,
+}
+
+impl fmt::Debug for ProcessSessionCommand {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessSessionCommand")
+            .field("program", &self.program)
+            .field("argv", &self.argv)
+            .field(
+                "environment_names",
+                &self.environment.keys().collect::<Vec<_>>(),
+            )
+            .field("workspace", &self.workspace)
+            .field("deadline", &self.deadline)
+            .finish()
+    }
 }
 
 impl ProcessSessionCommand {

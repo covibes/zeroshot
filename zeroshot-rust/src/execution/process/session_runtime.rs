@@ -157,9 +157,13 @@ async fn finish_supervision(request: &mut SupervisorRequest, state: &mut Session
         cancelled: state.cancelled,
         timed_out: state.timed_out,
         cleanup: state.cleanup,
-        post_launch_error: super::io::join_errors(std::mem::take(&mut state.errors)),
+        post_launch_error: join_errors(std::mem::take(&mut state.errors)),
     };
     request.completion.send_replace(Some(Arc::new(output)));
+}
+
+fn join_errors(errors: Vec<String>) -> Option<String> {
+    (!errors.is_empty()).then(|| errors.join("; "))
 }
 
 async fn ensure_containment(
