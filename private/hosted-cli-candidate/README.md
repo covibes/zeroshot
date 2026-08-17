@@ -3,9 +3,10 @@
 This guide applies only to the unpublished private candidate. The public Zeroshot package does not
 contain these commands, this guide, or the accompanying examples.
 
-A remote run has four inputs:
+A remote run has five inputs:
 
 - A **target** names the remote Zeroshot service and holds your authenticated session.
+- A **title** of 1 to 100 Unicode characters identifies the run in Zeroshot Cloud.
 - A **runtime config** selects the model API, Zeroshot harness, model, credentials, and normal
   Zeroshot settings.
 - The supplied **graph** is the candidate's fixed delivery contract. The **input** contains the work
@@ -69,6 +70,7 @@ Start a run with Zeroshot's built-in coordinator by omitting `--config`:
 ```bash
 zeroshot run \
   --target team \
+  --title 'Review checkout flow' \
   --graph examples/graph.json \
   --input examples/input.json \
   --ship
@@ -153,6 +155,7 @@ control the agent topology, pass a declarative Zeroshot cluster config:
 ```bash
 zeroshot run \
   --target team \
+  --title 'Review checkout flow' \
   --graph examples/graph.json \
   --input examples/input.json \
   --config examples/cluster.json \
@@ -182,10 +185,10 @@ zeroshot list --target team
 
 If submission ended without a definite response, the error includes the submission key that was
 printed before the request. The key is an idempotency key, not a lookup: retry only when the fully
-resolved request is unchanged. That means the graph, input, custom cluster, runtime file and its
-referenced environment values and files, GitHub token, size, delivery mode, and resolved repository
-revision must all match the first request. A changed request with the same key is rejected rather
-than creating a second run.
+resolved request is unchanged. That means the title, graph, input, custom cluster, runtime file and
+its referenced environment values and files, GitHub token, size, delivery mode, and resolved
+repository revision must all match the first request. A changed request with the same key is
+rejected rather than creating a second run.
 
 For a recoverable run, configure an exact commit base and keep all referenced inputs unchanged
 until submission is confirmed. Then repeat the exact run with the canonical UUID as
@@ -195,6 +198,7 @@ ask the target operator to determine whether the original request was accepted.
 ```bash
 zeroshot run \
   --target team \
+  --title 'Review checkout flow' \
   --graph examples/graph.json \
   --input examples/input.json \
   --ship \
@@ -205,6 +209,7 @@ zeroshot run \
 
 - Remote runs accept explicit JSON graph and input files; general text or issue positionals remain
   local-only.
+- Remote runs require `--title`; Zeroshot Cloud displays the value without rewriting it.
 - The remote graph is the included single-worker delivery graph with one attempt; keep it unchanged.
 - Remote delivery always uses `--pr` or `--ship`; there is no delivery-free remote run.
 - `logs --target`, the `ls` alias with `--target`, and cross-target listing are not available.

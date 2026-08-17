@@ -34,6 +34,14 @@ function serializeOpaqueJson(value, maximum, label) {
   return bytes;
 }
 
+function validatedRunTitle(value) {
+  const characters = typeof value === 'string' ? Array.from(value).length : 0;
+  if (characters < 1 || characters > 100) {
+    throw new RunIntentRequestError('RunIntent title must be between 1 and 100 characters');
+  }
+  return value;
+}
+
 class RunIntentHttpError extends Error {
   constructor(status) {
     super(`RunIntent request failed with HTTP ${status}`);
@@ -145,8 +153,9 @@ class RunIntentClient {
     this.#fetch = options.fetch;
   }
 
-  submit({ envelope, runtime, submissionKey, size, signal }) {
+  submit({ envelope, runtime, submissionKey, size, title, signal }) {
     assertUuid(submissionKey, 'submission key');
+    const label = validatedRunTitle(title);
     if (size !== undefined && !['tiny', 'small', 'standard', 'large'].includes(size)) {
       throw new RunIntentRequestError('RunIntent size is invalid');
     }
@@ -162,7 +171,7 @@ class RunIntentClient {
       throw new RunIntentRequestError('RunIntent payloads exceed the decoded dispatch size bound');
     }
     const body = encodeBoundedJson({
-      label: 'zeroshot-cli',
+      label,
       ...(size === undefined ? {} : { size }),
       intent: intentBytes.toString('base64url'),
       runtime: runtimeBytes.toString('base64url'),

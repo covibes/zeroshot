@@ -22,6 +22,7 @@ const HOSTED_RUN_OPTIONS = new Set([
   'detach',
   'submissionKey',
   'size',
+  'title',
   'pr',
   'ship',
   'config',
@@ -121,6 +122,7 @@ function registerHostedRun(program, service) {
     .option('--graph <file>', 'Candidate delivery GraphSpec JSON')
     .option('--input <file>', 'Explicit hosted JSON input')
     .option('--target <name>', 'Named private hosted target')
+    .option('--title <title>', 'Run title shown in Zeroshot Cloud')
     .option('--size <size>', 'Advertised capsule size')
     .option(
       '--submission-key <uuid>',
@@ -135,11 +137,12 @@ function registerHostedRun(program, service) {
         options.graph !== undefined ||
         options.input !== undefined ||
         options.size !== undefined ||
-        options.submissionKey !== undefined
+        options.submissionKey !== undefined ||
+        options.title !== undefined
       ) {
         return failClosed(() =>
           Promise.reject(
-            new Error('--graph, --input, --size, and --submission-key require --target')
+            new Error('--graph, --input, --size, --submission-key, and --title require --target')
           )
         );
       }
@@ -177,6 +180,10 @@ function validateHostedRunTarget(options, inputArg) {
 function validateHostedRunInput(options) {
   if (!options.graph || !options.input) {
     throw new Error('hosted run requires both --graph and --input');
+  }
+  const characters = typeof options.title === 'string' ? Array.from(options.title).length : 0;
+  if (characters < 1 || characters > 100) {
+    throw new Error('hosted run title must be between 1 and 100 characters');
   }
 }
 

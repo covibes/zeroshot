@@ -34,8 +34,8 @@ function isDeterministicSubmissionError(error) {
 function submissionUncertain(submissionKey, cause) {
   return new Error(
     'RunIntent submission outcome is uncertain. Do not create a replacement. ' +
-      'Retry only if the graph, input, cluster config, runtime references, credentials, size, ' +
-      'delivery mode, and resolved repository revision are unchanged. ' +
+      'Retry only if the title, graph, input, cluster config, runtime references, credentials, ' +
+      'size, delivery mode, and resolved repository revision are unchanged. ' +
       `Then rerun with --submission-key ${submissionKey}; a changed payload is rejected.`,
     { cause }
   );
@@ -211,6 +211,7 @@ async function submitRun(service, options, prepared, signal) {
       envelope: buildRunIntentEnvelope(execution.graph, execution.input),
       runtime,
       submissionKey,
+      title: options.title,
       ...(options.size === undefined ? {} : { size: options.size }),
       signal,
     });

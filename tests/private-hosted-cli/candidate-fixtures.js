@@ -83,6 +83,7 @@ function detachedRunOptions(submissionKey, overrides = {}) {
     target: 'prod',
     graph: 'graph.json',
     input: 'input.json',
+    title: 'Review checkout flow',
     submissionKey,
     detach: true,
     ...overrides,
