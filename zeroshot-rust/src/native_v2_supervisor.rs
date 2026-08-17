@@ -6,6 +6,7 @@
 //! values remain behind the injected environment and runner ports.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,6 +76,27 @@ pub trait LiveOutputRegistration: Send {
 #[error("live output registration is unavailable")]
 pub struct LiveOutputUnavailable;
 
+/// Why the run-local runtime is being destroyed before durable terminal truth is written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RunRuntimeExit {
+    Completed,
+    ForceStopped,
+    RuntimeLost,
+}
+
+/// Optional runtime cleanup seam used by the cloud controller.
+///
+/// Returning success is an acknowledgement that the disposable runtime is gone. The supervisor
+/// never appends a terminal event before this acknowledgement.
+#[async_trait]
+pub trait RunRuntimeCleanup: Send + Sync {
+    async fn cleanup(&self, exit: RunRuntimeExit) -> Result<(), RuntimeCleanupUnavailable>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("run runtime cleanup could not be confirmed")]
+pub struct RuntimeCleanupUnavailable;
+
 #[derive(Debug, Error)]
 pub enum NativeV2SupervisorError {
     #[error("run was not found")]
@@ -83,6 +105,8 @@ pub enum NativeV2SupervisorError {
     InvalidState,
     #[error("a supervisor task failed")]
     Task,
+    #[error(transparent)]
+    RuntimeCleanup(#[from] RuntimeCleanupUnavailable),
     #[error(transparent)]
     Ledger(#[from] RunLedgerError),
     #[error(transparent)]
@@ -98,6 +122,8 @@ pub struct NativeV2Supervisor {
     runner: Arc<dyn NodeRunner>,
     environments: Arc<dyn NodeEnvironmentResolver>,
     live_output: Option<Arc<dyn LiveOutputRegistrar>>,
+    runtime_cleanup: Option<Arc<dyn RunRuntimeCleanup>>,
+    runtime_lost: Arc<AtomicBool>,
     drive_turn: Arc<Mutex<()>>,
 }
 
@@ -115,6 +141,8 @@ impl NativeV2Supervisor {
             runner,
             environments,
             live_output: None,
+            runtime_cleanup: None,
+            runtime_lost: Arc::new(AtomicBool::new(false)),
             drive_turn: Arc::new(Mutex::new(())),
         }
     }
@@ -122,6 +150,12 @@ impl NativeV2Supervisor {
     #[must_use]
     pub fn with_live_output(mut self, registrar: Arc<dyn LiveOutputRegistrar>) -> Self {
         self.live_output = Some(registrar);
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_cleanup(mut self, cleanup: Arc<dyn RunRuntimeCleanup>) -> Self {
+        self.runtime_cleanup = Some(cleanup);
         self
     }
 
@@ -147,7 +181,7 @@ impl NativeV2Supervisor {
         }
         if stored.snapshot.active_executions().next().is_some() {
             return self
-                .terminalize_lost(&stored.snapshot)
+                .terminalize_lost(&mut JoinSet::new())
                 .await
                 .map(Initialization::Terminal);
         }
@@ -177,6 +211,9 @@ impl NativeV2Supervisor {
             if let Some(terminal) = snapshot.terminal {
                 self.runner.close_run(&self.run_id).await;
                 return Ok(terminal);
+            }
+            if self.runtime_lost.load(Ordering::Acquire) {
+                return self.terminalize_lost(&mut active.tasks).await;
             }
             if snapshot.force_stop_requested {
                 return self.terminalize_force(&mut active.tasks).await;
@@ -223,8 +260,9 @@ impl NativeV2Supervisor {
         if snapshot.active_executions().next().is_some() || !active.tasks.is_empty() {
             return Err(NativeV2SupervisorError::InvalidState);
         }
-        let terminal = self.append_terminal(terminal).await?;
         self.runner.close_run(&self.run_id).await;
+        self.cleanup_runtime(RunRuntimeExit::Completed).await?;
+        let terminal = self.append_terminal(terminal).await?;
         Ok(terminal)
     }
 
@@ -255,6 +293,20 @@ impl NativeV2Supervisor {
         self.ledger.request_force_stop(&self.run_id).await?;
         self.runner.close_run(&self.run_id).await;
         Ok(())
+    }
+
+    /// Declares the one disposable runtime lost and wakes any in-flight node through runner
+    /// closure. The driving turn owns durable crash settlement and terminalization.
+    pub async fn runtime_lost(&self) {
+        self.runtime_lost.store(true, Ordering::Release);
+        self.runner.close_run(&self.run_id).await;
+    }
+
+    async fn cleanup_runtime(&self, exit: RunRuntimeExit) -> Result<(), RuntimeCleanupUnavailable> {
+        match &self.runtime_cleanup {
+            Some(cleanup) => cleanup.cleanup(exit).await,
+            None => Ok(()),
+        }
     }
 
     async fn load(&self) -> Result<StoredRun, NativeV2SupervisorError> {
@@ -520,16 +572,7 @@ impl NativeV2Supervisor {
         tasks: &mut JoinSet<FinishedDispatch>,
     ) -> Result<TerminalResult, NativeV2SupervisorError> {
         self.runner.close_run(&self.run_id).await;
-        while let Some(finished) = tasks.join_next().await {
-            let finished = finished.map_err(|_| NativeV2SupervisorError::Task)?;
-            match finished.result {
-                DispatchResult::LogFailure(error) => return Err(error.into()),
-                DispatchResult::LogTaskFailed => return Err(NativeV2SupervisorError::Task),
-                DispatchResult::Completed(_)
-                | DispatchResult::TimedOut
-                | DispatchResult::Interrupted => {}
-            }
-        }
+        drain_terminalizing_tasks(tasks).await?;
         let snapshot = self.snapshot().await?;
         if let Some(terminal) = snapshot.terminal {
             return Ok(terminal);
@@ -538,6 +581,7 @@ impl NativeV2Supervisor {
             reason: EnumLabel::new("force_stopped")
                 .map_err(|_| NativeV2SupervisorError::InvalidState)?,
         };
+        self.cleanup_runtime(RunRuntimeExit::ForceStopped).await?;
         let mut events = refusal_completions(&snapshot);
         events.push(RunEvent::Terminal {
             result: terminal.clone(),
@@ -548,13 +592,19 @@ impl NativeV2Supervisor {
 
     async fn terminalize_lost(
         &self,
-        snapshot: &RunSnapshot,
+        tasks: &mut JoinSet<FinishedDispatch>,
     ) -> Result<TerminalResult, NativeV2SupervisorError> {
         self.runner.close_run(&self.run_id).await;
+        drain_terminalizing_tasks(tasks).await?;
+        let snapshot = self.snapshot().await?;
+        if let Some(terminal) = snapshot.terminal {
+            return Ok(terminal);
+        }
         let terminal = TerminalResult::Failed {
             reason: EnumLabel::new("runtime_lost")
                 .map_err(|_| NativeV2SupervisorError::InvalidState)?,
         };
+        self.cleanup_runtime(RunRuntimeExit::RuntimeLost).await?;
         let mut events = snapshot
             .active_executions()
             .map(|node| RunEvent::NodeCompleted {
@@ -570,6 +620,22 @@ impl NativeV2Supervisor {
         self.ledger.append(&self.run_id, events).await?;
         Ok(terminal)
     }
+}
+
+async fn drain_terminalizing_tasks(
+    tasks: &mut JoinSet<FinishedDispatch>,
+) -> Result<(), NativeV2SupervisorError> {
+    while let Some(finished) = tasks.join_next().await {
+        let finished = finished.map_err(|_| NativeV2SupervisorError::Task)?;
+        match finished.result {
+            DispatchResult::LogFailure(error) => return Err(error.into()),
+            DispatchResult::LogTaskFailed => return Err(NativeV2SupervisorError::Task),
+            DispatchResult::Completed(_)
+            | DispatchResult::TimedOut
+            | DispatchResult::Interrupted => {}
+        }
+    }
+    Ok(())
 }
 
 enum StartNode {
@@ -875,6 +941,7 @@ fn runner_failure(error: NodeRunnerError) -> WorkerOutcome {
         | NodeRunnerError::SessionOpen
         | NodeRunnerError::SessionLost
         | NodeRunnerError::Driver
+        | NodeRunnerError::ConnectionLost
         | NodeRunnerError::UnsafeOutput
         | NodeRunnerError::DurableOutputClosed
         | NodeRunnerError::CompletionClosed

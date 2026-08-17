@@ -6,6 +6,7 @@ mod ndjson_subscription;
 
 pub mod agent_attach;
 pub mod logs;
+pub mod native_v2;
 pub mod ndjson_agent_attach;
 pub mod ndjson_logs;
 pub mod ndjson_watch;
@@ -16,6 +17,7 @@ pub use logs::*;
 pub use ndjson_agent_attach::*;
 pub use ndjson_logs::*;
 pub use ndjson_watch::*;
+pub use native_v2::*;
 pub use watch::*;
 pub use websocket::*;
 
@@ -29,8 +31,10 @@ use openengine_cluster_protocol::{
     ApplyParams, ApplyResult, DeleteParams, DeleteResult, GetParams, GetResult, InitializeParams,
     InitializeResult, JsonRpcError, JsonRpcErrorResponse, JsonRpcRequest, JsonRpcSuccess,
     PlanParams, PlanResult, RequestId, ResubmitParams, ResubmitResult, RetryParams, RetryResult,
-    StopParams, StopResult, SubscriptionId, UpdateParams, UpdateResult, JSON_RPC_VERSION,
-    PROTOCOL_VERSION,
+    RunForceParams, RunForceResult, RunListParams, RunListResult, RunStatusParams, RunStatusResult,
+    RunSubmitParams, RunSubmitResult, StopParams, StopResult, SubscriptionId, UpdateParams,
+    UpdateResult, JSON_RPC_VERSION, PROTOCOL_VERSION, RUN_FORCE_METHOD, RUN_LIST_METHOD,
+    RUN_STATUS_METHOD, RUN_SUBMIT_METHOD,
 };
 use openengine_cluster_server::{ClusterBackend, Dispatcher};
 use serde::de::DeserializeOwned;
@@ -335,6 +339,28 @@ where
 
     pub async fn delete(&self, params: DeleteParams) -> Result<DeleteResult, ClientError> {
         self.call("delete", params).await
+    }
+
+    pub async fn run_submit(
+        &self,
+        params: RunSubmitParams,
+    ) -> Result<RunSubmitResult, ClientError> {
+        self.call(RUN_SUBMIT_METHOD, params).await
+    }
+
+    pub async fn run_list(&self, params: RunListParams) -> Result<RunListResult, ClientError> {
+        self.call(RUN_LIST_METHOD, params).await
+    }
+
+    pub async fn run_status(
+        &self,
+        params: RunStatusParams,
+    ) -> Result<RunStatusResult, ClientError> {
+        self.call(RUN_STATUS_METHOD, params).await
+    }
+
+    pub async fn run_force(&self, params: RunForceParams) -> Result<RunForceResult, ClientError> {
+        self.call(RUN_FORCE_METHOD, params).await
     }
 
     async fn call<P, R>(&self, method: &str, params: P) -> Result<R, ClientError>

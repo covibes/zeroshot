@@ -5,14 +5,14 @@ export const JSON_RPC_VERSION = "2.0" as const;
 export const PROTOCOL_VERSION = "openengine.cluster/v1" as const;
 export const SUBSCRIPTION_QUEUE_CAPACITY = 1024 as const;
 export const MAX_FRAME_BYTES = 1048576 as const;
-export const CLUSTER_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get","watch","logs","agent/attach"] as const;
+export const CLUSTER_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get","watch","logs","agent/attach","run/submit","run/list","run/status","run/watch","run/logs","run/attach","run/force"] as const;
 export type ClusterMethod = (typeof CLUSTER_METHODS)[number];
 
-export const UNARY_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get"] as const;
+export const UNARY_METHODS = ["initialize","plan","apply","update","stop","retry","resubmit","delete","get","run/submit","run/list","run/status","run/force"] as const;
 export type UnaryClusterMethod = (typeof UNARY_METHODS)[number];
-export const SUBSCRIPTION_METHODS = ["watch","logs","agent/attach"] as const;
+export const SUBSCRIPTION_METHODS = ["watch","logs","agent/attach","run/watch","run/logs","run/attach"] as const;
 export type SubscriptionMethod = (typeof SUBSCRIPTION_METHODS)[number];
-export const METHOD_RESULT_DEFINITIONS = {"initialize":"InitializeResult","plan":"PlanResult","apply":"ApplyResult","update":"UpdateResult","stop":"StopResult","retry":"RetryResult","resubmit":"ResubmitResult","delete":"DeleteResult","get":"GetResult","watch":"WatchResult","logs":"LogsResult","agent/attach":"AgentAttachResult"} as const;
+export const METHOD_RESULT_DEFINITIONS = {"initialize":"InitializeResult","plan":"PlanResult","apply":"ApplyResult","update":"UpdateResult","stop":"StopResult","retry":"RetryResult","resubmit":"ResubmitResult","delete":"DeleteResult","get":"GetResult","watch":"WatchResult","logs":"LogsResult","agent/attach":"AgentAttachResult","run/submit":"RunSubmitResult","run/list":"RunListResult","run/status":"RunStatusResult","run/watch":"RunWatchResult","run/logs":"RunLogsResult","run/attach":"RunAttachResult","run/force":"RunForceResult"} as const;
 
 export const JSON_RPC_ERROR_CODES = {
   PARSE_ERROR: -32700,
@@ -25,6 +25,7 @@ export const JSON_RPC_ERROR_CODES = {
 
 export const DOMAIN_ERROR_CODES = ["NOT_FOUND","GONE","SLOW_CONSUMER","UNSUPPORTED_PROTOCOL_VERSION","INTERNAL_ERROR"] as const;
 
+export type ActiveExecution = { readonly "execution": string; readonly "node": string; };
 export type AdmissionTransition = { readonly "runId": string; readonly "seedInput": unknown; readonly "spec": GraphSpec; };
 export type AgentAttachClosedNotification = { readonly "reason": SubscriptionCloseReason; readonly "subscriptionId": string; };
 export type AgentAttachEvent = { readonly "type": "working"; } | { readonly "text": string; readonly "type": "output"; } | { readonly "type": "settled"; };
@@ -74,6 +75,8 @@ export type Join = { readonly "kind": "all"; } | { readonly "kind": "any"; } | {
 export type JsonRpcError = { readonly "code": number; readonly "data"?: DomainErrorData | null; readonly "message": string; };
 export type JsonRpcErrorResponse = { readonly "error": JsonRpcError; readonly "id"?: RequestId | null; readonly "jsonrpc": string; };
 export type JsonRpcNotification = { readonly "jsonrpc": string; readonly "method": string; readonly "params": EventNotification; };
+export type JsonRpcNotification10 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": RunLogEventNotification; };
+export type JsonRpcNotification11 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": RunAttachEventNotification; };
 export type JsonRpcNotification2 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": SubscriptionCancelParams; };
 export type JsonRpcNotification3 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": SubscriptionClosedNotification; };
 export type JsonRpcNotification4 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": CancelRequestParams; };
@@ -81,10 +84,18 @@ export type JsonRpcNotification5 = { readonly "jsonrpc": string; readonly "metho
 export type JsonRpcNotification6 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": LogsClosedNotification; };
 export type JsonRpcNotification7 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": AgentAttachEventNotification; };
 export type JsonRpcNotification8 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": AgentAttachClosedNotification; };
+export type JsonRpcNotification9 = { readonly "jsonrpc": string; readonly "method": string; readonly "params": RunWatchEventNotification; };
 export type JsonRpcRequest = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": InitializeParams; };
 export type JsonRpcRequest10 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": WatchParams; };
 export type JsonRpcRequest11 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": LogsParams; };
 export type JsonRpcRequest12 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": AgentAttachParams; };
+export type JsonRpcRequest13 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunSubmitParams; };
+export type JsonRpcRequest14 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunListParams; };
+export type JsonRpcRequest15 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunStatusParams; };
+export type JsonRpcRequest16 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunWatchParams; };
+export type JsonRpcRequest17 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunLogsParams; };
+export type JsonRpcRequest18 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunAttachParams; };
+export type JsonRpcRequest19 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": RunForceParams; };
 export type JsonRpcRequest2 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": PlanParams; };
 export type JsonRpcRequest3 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": ApplyParams; };
 export type JsonRpcRequest4 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "method": string; readonly "params": GetParams; };
@@ -97,6 +108,13 @@ export type JsonRpcResponse = JsonRpcSuccess | JsonRpcErrorResponse;
 export type JsonRpcResponse10 = JsonRpcSuccess10 | JsonRpcErrorResponse;
 export type JsonRpcResponse11 = JsonRpcSuccess11 | JsonRpcErrorResponse;
 export type JsonRpcResponse12 = JsonRpcSuccess12 | JsonRpcErrorResponse;
+export type JsonRpcResponse13 = JsonRpcSuccess13 | JsonRpcErrorResponse;
+export type JsonRpcResponse14 = JsonRpcSuccess14 | JsonRpcErrorResponse;
+export type JsonRpcResponse15 = JsonRpcSuccess15 | JsonRpcErrorResponse;
+export type JsonRpcResponse16 = JsonRpcSuccess16 | JsonRpcErrorResponse;
+export type JsonRpcResponse17 = JsonRpcSuccess17 | JsonRpcErrorResponse;
+export type JsonRpcResponse18 = JsonRpcSuccess18 | JsonRpcErrorResponse;
+export type JsonRpcResponse19 = JsonRpcSuccess19 | JsonRpcErrorResponse;
 export type JsonRpcResponse2 = JsonRpcSuccess2 | JsonRpcErrorResponse;
 export type JsonRpcResponse3 = JsonRpcSuccess3 | JsonRpcErrorResponse;
 export type JsonRpcResponse4 = JsonRpcSuccess4 | JsonRpcErrorResponse;
@@ -109,6 +127,13 @@ export type JsonRpcSuccess = { readonly "id": RequestId; readonly "jsonrpc": str
 export type JsonRpcSuccess10 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": WatchResult; };
 export type JsonRpcSuccess11 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": LogsResult; };
 export type JsonRpcSuccess12 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": AgentAttachResult; };
+export type JsonRpcSuccess13 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunSubmitResult; };
+export type JsonRpcSuccess14 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunListResult; };
+export type JsonRpcSuccess15 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunStatusResult; };
+export type JsonRpcSuccess16 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunWatchResult; };
+export type JsonRpcSuccess17 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunLogsResult; };
+export type JsonRpcSuccess18 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunAttachResult; };
+export type JsonRpcSuccess19 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": RunForceResult; };
 export type JsonRpcSuccess2 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": PlanResult; };
 export type JsonRpcSuccess3 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": ApplyResult; };
 export type JsonRpcSuccess4 = { readonly "id": RequestId; readonly "jsonrpc": string; readonly "result": GetResult; };
@@ -148,6 +173,24 @@ export type ResubmitParams = { readonly "idempotencyKey": string; readonly "ifGe
 export type ResubmitResult = { readonly "atCursor": string; readonly "deduped": boolean; readonly "generation": number; readonly "operational": OperationalStatus; readonly "phase": Phase; readonly "priorRunId": string; readonly "runId": string; };
 export type RetryParams = { readonly "idempotencyKey": string; readonly "ifGeneration": number; };
 export type RetryResult = { readonly "atCursor": string; readonly "deduped": boolean; readonly "generation": number; readonly "operational": OperationalStatus; readonly "phase": Phase; readonly "retriedTurnId": string; readonly "retryTurnId": string; readonly "runId": string; };
+export type RunAttachEventNotification = { readonly "event": AgentAttachEvent; readonly "execution": string; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunAttachParams = { readonly "execution": string; readonly "runId": string; };
+export type RunAttachResult = { readonly "execution": string; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunForceParams = { readonly "runId": string; };
+export type RunForceResult = { readonly "atCursor": string; readonly "runId": string; readonly "status": RunStatus; };
+export type RunListParams = Record<string, never>;
+export type RunListResult = { readonly "runs": ReadonlyArray<RunStatusResult>; };
+export type RunLogEventNotification = { readonly "cursor": string; readonly "execution"?: string | null; readonly "record": LogRecord; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunLogsParams = { readonly "execution"?: string | null; readonly "fromCursor"?: string | null; readonly "runId": string; };
+export type RunLogsResult = { readonly "atCursor": string; readonly "runId": string; readonly "subscriptionId": string; };
+export type RunStatus = { readonly "phase": "admitted"; } | { readonly "activeExecutions": ReadonlyArray<ActiveExecution>; readonly "phase": "running"; } | { readonly "activeExecutions": ReadonlyArray<ActiveExecution>; readonly "phase": "stopping"; } | { readonly "phase": "finished"; readonly "terminalResult": TerminalResult; };
+export type RunStatusParams = { readonly "runId": string; };
+export type RunStatusResult = { readonly "atCursor": string; readonly "runId": string; readonly "status": RunStatus; };
+export type RunSubmitParams = { readonly "graph": GraphSpec; readonly "initialInput": unknown; readonly "ship"?: boolean; readonly "submissionKey": string; };
+export type RunSubmitResult = { readonly "runId": string; };
+export type RunWatchEventNotification = { readonly "cursor": string; readonly "runId": string; readonly "status": RunStatus; readonly "subscriptionId": string; };
+export type RunWatchParams = { readonly "fromCursor"?: string | null; readonly "runId": string; };
+export type RunWatchResult = { readonly "atCursor": string; readonly "runId": string; readonly "subscriptionId": string; };
 export type ServerCapabilities = { readonly "agentAttach"?: boolean; readonly "graphProfiles"?: ReadonlyArray<GraphProfile>; readonly "logs"?: boolean; };
 export type StopMode = "drain" | "force";
 export type StopParams = { readonly "idempotencyKey": string; readonly "ifGeneration": number; readonly "mode": StopMode; };
@@ -174,6 +217,10 @@ export interface ClusterMethodParams {
   readonly update: UpdateParams; readonly stop: StopParams; readonly retry: RetryParams;
   readonly resubmit: ResubmitParams; readonly delete: DeleteParams; readonly get: GetParams;
   readonly watch: WatchParams; readonly logs: LogsParams; readonly 'agent/attach': AgentAttachParams;
+  readonly 'run/submit': RunSubmitParams; readonly 'run/list': RunListParams;
+  readonly 'run/status': RunStatusParams; readonly 'run/watch': RunWatchParams;
+  readonly 'run/logs': RunLogsParams; readonly 'run/attach': RunAttachParams;
+  readonly 'run/force': RunForceParams;
 }
 
 export interface ClusterMethodResults {
@@ -181,4 +228,8 @@ export interface ClusterMethodResults {
   readonly update: UpdateResult; readonly stop: StopResult; readonly retry: RetryResult;
   readonly resubmit: ResubmitResult; readonly delete: DeleteResult; readonly get: GetResult;
   readonly watch: WatchResult; readonly logs: LogsResult; readonly 'agent/attach': AgentAttachResult;
+  readonly 'run/submit': RunSubmitResult; readonly 'run/list': RunListResult;
+  readonly 'run/status': RunStatusResult; readonly 'run/watch': RunWatchResult;
+  readonly 'run/logs': RunLogsResult; readonly 'run/attach': RunAttachResult;
+  readonly 'run/force': RunForceResult;
 }

@@ -13,6 +13,9 @@ pub enum SubscriptionKind {
     Watch,
     Logs,
     AgentAttach,
+    RunWatch,
+    RunLogs,
+    RunAttach,
 }
 
 /// Transport capabilities a method requires in addition to request/response exchange.
@@ -53,6 +56,22 @@ pub static METHOD_REGISTRY: &[MethodDescriptor] = &[
     subscription("watch", SubscriptionKind::Watch),
     subscription("logs", SubscriptionKind::Logs),
     subscription("agent/attach", SubscriptionKind::AgentAttach),
+    unary(openengine_cluster_protocol::RUN_SUBMIT_METHOD),
+    unary(openengine_cluster_protocol::RUN_LIST_METHOD),
+    unary(openengine_cluster_protocol::RUN_STATUS_METHOD),
+    subscription(
+        openengine_cluster_protocol::RUN_WATCH_METHOD,
+        SubscriptionKind::RunWatch,
+    ),
+    subscription(
+        openengine_cluster_protocol::RUN_LOGS_METHOD,
+        SubscriptionKind::RunLogs,
+    ),
+    subscription(
+        openengine_cluster_protocol::RUN_ATTACH_METHOD,
+        SubscriptionKind::RunAttach,
+    ),
+    unary(openengine_cluster_protocol::RUN_FORCE_METHOD),
 ];
 
 const fn unary(name: &'static str) -> MethodDescriptor {

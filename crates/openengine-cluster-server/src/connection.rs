@@ -6,6 +6,7 @@ pub(crate) mod agent_attach;
 pub(crate) mod dispatch;
 mod frame;
 pub(crate) mod logs;
+pub(crate) mod native_v2;
 pub(crate) mod subscription;
 
 pub(crate) use dispatch::{

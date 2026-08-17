@@ -26,9 +26,11 @@ use crate::native_v2_contract::{
 const LIVE_OUTPUT_CAPACITY: usize = 256;
 const MAX_LIVE_OUTPUT_BYTES: usize = 16 * 1024;
 
+mod remote;
 mod response;
 
 pub use response::{render_agent_prompt, NodeResponseContract};
+pub(crate) use remote::{RemoteNodeHandleBridge, remote_node_handle};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NodeRole {
@@ -325,6 +327,8 @@ pub enum NodeRunnerError {
     SessionLost,
     #[error("node execution failed")]
     Driver,
+    #[error("the remote node runtime connection was lost")]
+    ConnectionLost,
     #[error("node execution was cancelled")]
     Cancelled,
     #[error("live output was not safe to publish")]

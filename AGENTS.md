@@ -104,6 +104,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native product construction           | `zeroshot-rust/`                                                                                                                 |
 | Native foreground agents              | `zeroshot-rust/src/native_execution/{agent,pi}/`, `native_execution/program/foreground.rs`                                       |
 | Native admission composition          | `zeroshot-rust/src/native_admission.rs`, `zeroshot-rust/src/main.rs`                                                             |
+| Native v2 cloud controller/OECP backend | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                      |
+| Native v2 private capsule runner       | `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`                                                                  |
 | Native release targets                | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                | `npm/zeroshot-rust/`                                                                                                             |
 | Native distribution tooling           | `scripts/rust-distribution.js`                                                                                                   |
@@ -146,6 +148,9 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Watch observation port                | `crates/openengine-cluster-server/src/watch/ports.rs`                                                                            |
 | Watch minimal test fixture            | `crates/openengine-cluster-server/src/watch/fixtures.rs`                                                                         |
 | Watch wire types/framing              | `crates/openengine-cluster-protocol/src/watch.rs`                                                                                |
+| Native v2 run method wire values      | `crates/openengine-cluster-protocol/src/native_v2_{run,observation}.rs`                                                          |
+| Native v2 server routes/stream seam    | `crates/openengine-cluster-server/src/native_v2.rs`, `connection/native_v2.rs`                                                   |
+| Native v2 typed protocol client        | `crates/openengine-cluster-client/src/native_v2.rs`                                                                              |
 | Client watch/reconnect                | `crates/openengine-cluster-client/src/watch.rs`                                                                                  |
 | NDJSON stdio binding                  | `crates/openengine-cluster-server/src/stdio.rs`                                                                                  |
 | NDJSON watch client                   | `crates/openengine-cluster-client/src/ndjson_watch.rs`                                                                           |

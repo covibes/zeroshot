@@ -1,6 +1,8 @@
 use openengine_cluster_protocol::{
-    AgentAttachParams, ApplyParams, DeleteParams, ResubmitParams, RetryParams, StopParams,
-    UpdateParams,
+    AgentAttachParams, ApplyParams, DeleteParams, ResubmitParams, RetryParams, RunAttachParams,
+    RunForceParams, RunLogsParams, RunStatusParams, RunSubmitParams, RunWatchParams, StopParams,
+    UpdateParams, RUN_ATTACH_METHOD, RUN_FORCE_METHOD, RUN_LIST_METHOD, RUN_LOGS_METHOD,
+    RUN_STATUS_METHOD, RUN_SUBMIT_METHOD, RUN_WATCH_METHOD,
 };
 use openengine_cluster_server::method_registry::{MethodDescriptor, MethodKind, METHOD_REGISTRY};
 use schemars::schema_for;
@@ -28,9 +30,10 @@ pub(super) fn document() -> Value {
             }
         },
         "x-generic-subscription-framing": {
-            "description": "watch, logs, and agent/attach each establish a subscription via one \
-                normal JSON-RPC result; subsequent delivery uses the generic notification methods \
-                below, shared by every subscription-based method. watch, logs, and agent/attach \
+                "description": "watch, logs, and agent/attach each establish a subscription via one \
+                normal JSON-RPC result; native-v2 run/watch, run/logs, and run/attach use the same \
+                framing. Subsequent delivery uses the generic notification methods \
+                below, shared by every subscription-based method. All six subscription methods \
                 are established through the connection layer and are not answerable by \
                 Dispatcher::dispatch alone. There is no watch/event, watch/cancel, watch/closed, \
                 logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or \
@@ -61,6 +64,13 @@ fn method_document(descriptor: &MethodDescriptor) -> Value {
         "watch" => watch_method(),
         "logs" => logs_method(),
         "agent/attach" => agent_attach_method(),
+        RUN_SUBMIT_METHOD => run_submit_method(),
+        RUN_LIST_METHOD => run_list_method(),
+        RUN_STATUS_METHOD => run_status_method(),
+        RUN_WATCH_METHOD => run_watch_method(),
+        RUN_LOGS_METHOD => run_logs_method(),
+        RUN_ATTACH_METHOD => run_attach_method(),
+        RUN_FORCE_METHOD => run_force_method(),
         name => panic!("METHOD_REGISTRY method has no OpenRPC schema: {name}"),
     };
     let object = method
@@ -309,6 +319,108 @@ fn agent_attach_method() -> Value {
         "result": {
             "name": "agentAttachResult",
             "schema": { "$ref": "schema.json#/$defs/AgentAttachResult" }
+        }
+    })
+}
+
+fn run_submit_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(RunSubmitParams))
+        .expect("run submit parameter JSON Schema serialization must succeed");
+    json!({
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "graph", "required": true, "schema": { "$ref": "schema.json#/$defs/GraphSpec" } },
+            { "name": "initialInput", "required": true, "schema": true },
+            { "name": "ship", "required": false, "schema": property_schema(&schema, "ship") },
+            { "name": "submissionKey", "required": true, "schema": property_schema(&schema, "submissionKey") }
+        ],
+        "result": {
+            "name": "runSubmitResult",
+            "schema": { "$ref": "schema.json#/$defs/RunSubmitResult" }
+        }
+    })
+}
+
+fn run_list_method() -> Value {
+    json!({
+        "paramStructure": "by-name",
+        "params": [],
+        "result": {
+            "name": "runListResult",
+            "schema": { "$ref": "schema.json#/$defs/RunListResult" }
+        }
+    })
+}
+
+fn run_status_method() -> Value {
+    run_id_method::<RunStatusParams>("runStatusResult", "RunStatusResult")
+}
+
+fn run_force_method() -> Value {
+    run_id_method::<RunForceParams>("runForceResult", "RunForceResult")
+}
+
+fn run_id_method<P: schemars::JsonSchema>(result_name: &str, result_type: &str) -> Value {
+    let schema = serde_json::to_value(schema_for!(P))
+        .expect("native-v2 run parameter JSON Schema serialization must succeed");
+    json!({
+        "paramStructure": "by-name",
+        "params": [{
+            "name": "runId", "required": true,
+            "schema": property_schema(&schema, "runId")
+        }],
+        "result": {
+            "name": result_name,
+            "schema": { "$ref": format!("schema.json#/$defs/{result_type}") }
+        }
+    })
+}
+
+fn run_watch_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(RunWatchParams))
+        .expect("run watch parameter JSON Schema serialization must succeed");
+    json!({
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "runId", "required": true, "schema": property_schema(&schema, "runId") },
+            { "name": "fromCursor", "required": false, "schema": property_schema(&schema, "fromCursor") }
+        ],
+        "result": {
+            "name": "runWatchResult",
+            "schema": { "$ref": "schema.json#/$defs/RunWatchResult" }
+        }
+    })
+}
+
+fn run_logs_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(RunLogsParams))
+        .expect("run logs parameter JSON Schema serialization must succeed");
+    json!({
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "runId", "required": true, "schema": property_schema(&schema, "runId") },
+            { "name": "fromCursor", "required": false, "schema": property_schema(&schema, "fromCursor") },
+            { "name": "execution", "required": false, "schema": property_schema(&schema, "execution") }
+        ],
+        "result": {
+            "name": "runLogsResult",
+            "schema": { "$ref": "schema.json#/$defs/RunLogsResult" }
+        }
+    })
+}
+
+fn run_attach_method() -> Value {
+    let schema = serde_json::to_value(schema_for!(RunAttachParams))
+        .expect("run attach parameter JSON Schema serialization must succeed");
+    json!({
+        "paramStructure": "by-name",
+        "params": [
+            { "name": "runId", "required": true, "schema": property_schema(&schema, "runId") },
+            { "name": "execution", "required": true, "schema": property_schema(&schema, "execution") }
+        ],
+        "result": {
+            "name": "runAttachResult",
+            "schema": { "$ref": "schema.json#/$defs/RunAttachResult" }
         }
     })
 }

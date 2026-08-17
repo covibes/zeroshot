@@ -14,8 +14,8 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use super::admission::{acquire_task_slot, reject_duplicate, InFlightIds, MAX_CONNECTION_TASKS};
 use super::{
-    agent_attach, logs, run_watch_subscription, ConnectionState, DecodedOutcome, RequestKind,
-    SubscriptionMap,
+    agent_attach, logs, native_v2, run_watch_subscription, ConnectionState, DecodedOutcome,
+    RequestKind, SubscriptionMap,
 };
 use crate::method_registry::SubscriptionKind;
 use crate::{ClusterBackend, Dispatcher};
@@ -109,6 +109,23 @@ where
                         id,
                         params,
                         agent_attach::run_agent_attach_subscription,
+                    )
+                    .await;
+                }
+                SubscriptionKind::RunWatch => {
+                    spawn_subscription_task(ctx, id, params, native_v2::run_run_watch_subscription)
+                        .await;
+                }
+                SubscriptionKind::RunLogs => {
+                    spawn_subscription_task(ctx, id, params, native_v2::run_run_logs_subscription)
+                        .await;
+                }
+                SubscriptionKind::RunAttach => {
+                    spawn_subscription_task(
+                        ctx,
+                        id,
+                        params,
+                        native_v2::run_run_attach_subscription,
                     )
                     .await;
                 }

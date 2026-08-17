@@ -8,8 +8,11 @@ use openengine_cluster_protocol::{
     GraphSpec, InitializeParams, InitializeResult, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, LogEventNotification, LogsClosedNotification, LogsParams, LogsResult,
     PlanParams, PlanResult, ResubmitParams, ResubmitResult, RetryParams, RetryResult, StopParams,
-    StopResult, StructuralBounds, SubscriptionCancelParams, SubscriptionClosedNotification,
-    UpdateParams, UpdateResult, WatchParams, WatchResult,
+    RunAttachEventNotification, RunAttachParams, RunAttachResult, RunForceParams, RunForceResult,
+    RunListParams, RunListResult, RunLogEventNotification, RunLogsParams, RunLogsResult,
+    RunStatusParams, RunStatusResult, RunSubmitParams, RunSubmitResult, RunWatchEventNotification,
+    RunWatchParams, RunWatchResult, StopResult, StructuralBounds, SubscriptionCancelParams,
+    SubscriptionClosedNotification, UpdateParams, UpdateResult, WatchParams, WatchResult,
 };
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 use schemars::{schema_for, JsonSchema};
@@ -78,6 +81,23 @@ pub struct ImplementedProtocolSchema {
     pub agent_attach_response: JsonRpcResponse<AgentAttachResult>,
     pub agent_attach_event_notification: JsonRpcNotification<AgentAttachEventNotification>,
     pub agent_attach_closed_notification: JsonRpcNotification<AgentAttachClosedNotification>,
+    pub run_submit_request: JsonRpcRequest<RunSubmitParams>,
+    pub run_submit_response: JsonRpcResponse<RunSubmitResult>,
+    pub run_list_request: JsonRpcRequest<RunListParams>,
+    pub run_list_response: JsonRpcResponse<RunListResult>,
+    pub run_status_request: JsonRpcRequest<RunStatusParams>,
+    pub run_status_response: JsonRpcResponse<RunStatusResult>,
+    pub run_watch_request: JsonRpcRequest<RunWatchParams>,
+    pub run_watch_response: JsonRpcResponse<RunWatchResult>,
+    pub run_watch_event_notification: JsonRpcNotification<RunWatchEventNotification>,
+    pub run_logs_request: JsonRpcRequest<RunLogsParams>,
+    pub run_logs_response: JsonRpcResponse<RunLogsResult>,
+    pub run_log_event_notification: JsonRpcNotification<RunLogEventNotification>,
+    pub run_attach_request: JsonRpcRequest<RunAttachParams>,
+    pub run_attach_response: JsonRpcResponse<RunAttachResult>,
+    pub run_attach_event_notification: JsonRpcNotification<RunAttachEventNotification>,
+    pub run_force_request: JsonRpcRequest<RunForceParams>,
+    pub run_force_response: JsonRpcResponse<RunForceResult>,
 }
 
 pub async fn generate_artifacts() -> Vec<Artifact> {

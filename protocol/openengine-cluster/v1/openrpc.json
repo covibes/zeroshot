@@ -553,11 +553,237 @@
         "inboundNotifications": true,
         "serverPush": true
       }
+    },
+    {
+      "name": "run/submit",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "graph",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/GraphSpec"
+          }
+        },
+        {
+          "name": "initialInput",
+          "required": true,
+          "schema": true
+        },
+        {
+          "name": "ship",
+          "required": false,
+          "schema": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        {
+          "name": "submissionKey",
+          "required": true,
+          "schema": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "runSubmitResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RunSubmitResult"
+        }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
+      }
+    },
+    {
+      "name": "run/list",
+      "paramStructure": "by-name",
+      "params": [],
+      "result": {
+        "name": "runListResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RunListResult"
+        }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
+      }
+    },
+    {
+      "name": "run/status",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "runId",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "runStatusResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RunStatusResult"
+        }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
+      }
+    },
+    {
+      "name": "run/watch",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "runId",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "fromCursor",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "runWatchResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RunWatchResult"
+        }
+      },
+      "x-subscription": true,
+      "x-transport-requirements": {
+        "inboundNotifications": true,
+        "serverPush": true
+      }
+    },
+    {
+      "name": "run/logs",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "runId",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "fromCursor",
+          "required": false,
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        {
+          "name": "execution",
+          "required": false,
+          "schema": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      ],
+      "result": {
+        "name": "runLogsResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RunLogsResult"
+        }
+      },
+      "x-subscription": true,
+      "x-transport-requirements": {
+        "inboundNotifications": true,
+        "serverPush": true
+      }
+    },
+    {
+      "name": "run/attach",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "runId",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "execution",
+          "required": true,
+          "schema": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "runAttachResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RunAttachResult"
+        }
+      },
+      "x-subscription": true,
+      "x-transport-requirements": {
+        "inboundNotifications": true,
+        "serverPush": true
+      }
+    },
+    {
+      "name": "run/force",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "runId",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "result": {
+        "name": "runForceResult",
+        "schema": {
+          "$ref": "schema.json#/$defs/RunForceResult"
+        }
+      },
+      "x-subscription": false,
+      "x-transport-requirements": {
+        "inboundNotifications": false,
+        "serverPush": false
+      }
     }
   ],
   "openrpc": "1.3.2",
   "x-generic-subscription-framing": {
-    "description": "watch, logs, and agent/attach each establish a subscription via one normal JSON-RPC result; subsequent delivery uses the generic notification methods below, shared by every subscription-based method. watch, logs, and agent/attach are established through the connection layer and are not answerable by Dispatcher::dispatch alone. There is no watch/event, watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the wire. `$/cancelRequest` is a transport-level best-effort cancellation of any in-flight unary request by its RequestId; it is silently a no-op for an unknown or already-completed id and carries no rollback claim after backend commit.",
+    "description": "watch, logs, and agent/attach each establish a subscription via one normal JSON-RPC result; native-v2 run/watch, run/logs, and run/attach use the same framing. Subsequent delivery uses the generic notification methods below, shared by every subscription-based method. All six subscription methods are established through the connection layer and are not answerable by Dispatcher::dispatch alone. There is no watch/event, watch/cancel, watch/closed, logs/event, logs/cancel, logs/closed, agent/attach/event, agent/attach/cancel, or agent/attach/closed method on the wire. `$/cancelRequest` is a transport-level best-effort cancellation of any in-flight unary request by its RequestId; it is silently a no-op for an unknown or already-completed id and carries no rollback claim after backend commit.",
     "notifications": {
       "$/cancelRequest": {
         "$ref": "schema.json#/$defs/CancelRequestParams"
