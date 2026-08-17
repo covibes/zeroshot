@@ -106,6 +106,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native admission composition          | `zeroshot-rust/src/native_admission.rs`, `zeroshot-rust/src/main.rs`                                                             |
 | Native v2 cloud controller/OECP backend | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                      |
 | Native v2 private capsule runner       | `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`                                                                  |
+| Native v2 CLI and OECP adapter         | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                          |
 | Native release targets                | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                | `npm/zeroshot-rust/`                                                                                                             |
 | Native distribution tooling           | `scripts/rust-distribution.js`                                                                                                   |

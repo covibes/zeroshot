@@ -26,6 +26,7 @@ getrandom.workspace = true
 httparse.workspace = true
 libc.workspace = true
 openengine-cluster-protocol.workspace = true
+openengine_cluster_client.workspace = true
 openengine-cluster-server.workspace = true
 rust_decimal.workspace = true
 rusqlite.workspace = true
@@ -47,6 +48,3 @@ windows-sys = { workspace = true, features = [
   "Win32_System_JobObjects",
   "Win32_System_Threading",
 ] }
-
-[dev-dependencies]
-openengine_cluster_client.workspace = true

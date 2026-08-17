@@ -16,6 +16,7 @@ pub mod native_settings;
 pub mod native_v2_admission;
 pub mod native_v2_capsule;
 pub mod native_v2_claude;
+pub mod native_v2_cli;
 pub mod native_v2_cloud;
 pub mod native_v2_codex;
 pub mod native_v2_contract;
