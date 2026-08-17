@@ -15,6 +15,7 @@ const INTENT_ID = '019fd184-52c3-7e1f-a567-4ecb6fc6a0ec';
 const INTENT_CAPSULE_ID = '019fd184-58d2-7db4-a878-5bd495c986a4';
 const SUBMISSION_KEY = '019fd184-637d-4f26-af31-5ec3b3ef1dd6';
 const NOW = '2026-08-05T10:00:00.000Z';
+const RUN_TITLE = 'Review checkout flow';
 
 function intent(overrides = {}) {
   return {
@@ -65,16 +66,14 @@ function registerSubmissionTests() {
       runIntentSleep: () => Promise.resolve(),
     });
     const result = await captureLogs(() =>
-      h.services.remoteRun({
-        target: 'prod',
-        graph: 'graph.json',
-        input: 'input.json',
-        submissionKey: SUBMISSION_KEY,
-        detach: false,
-        size: 'tiny',
-        ship: true,
-        config: CLUSTER_CONFIG_PATH,
-      })
+      h.services.remoteRun(
+        detachedRunOptions(SUBMISSION_KEY, {
+          detach: false,
+          size: 'tiny',
+          ship: true,
+          config: CLUSTER_CONFIG_PATH,
+        })
+      )
     );
     assert.equal(result.value.state, 'succeeded');
     assert.deepEqual(
@@ -83,6 +82,7 @@ function registerSubmissionTests() {
     );
     const submitted = runCalls[0][1];
     assert.equal(submitted.submissionKey, SUBMISSION_KEY);
+    assert.equal(submitted.title, RUN_TITLE);
     assert.equal(submitted.size, 'tiny');
     assert.deepEqual(Object.keys(submitted.envelope), ['version', 'graph', 'input']);
     assert.equal(submitted.envelope.version, 'zeroshot.run-intent/v2');
@@ -108,13 +108,7 @@ function registerSubmissionTests() {
   it('fails closed when the target does not advertise RunIntent v2', async () => {
     const h = remoteHarness({ descriptor: { ...DESCRIPTOR, runIntent: null } });
     await assert.rejects(
-      h.services.remoteRun({
-        target: 'prod',
-        graph: 'graph.json',
-        input: 'input.json',
-        submissionKey: SUBMISSION_KEY,
-        detach: true,
-      }),
+      h.services.remoteRun(detachedRunOptions(SUBMISSION_KEY)),
       /does not advertise RunIntent v2/
     );
   });
@@ -160,6 +154,7 @@ function registerObservationTests() {
         target: 'prod',
         graph: 'graph.json',
         input: 'input.json',
+        title: RUN_TITLE,
         submissionKey: SUBMISSION_KEY,
         detach: false,
       })
@@ -186,6 +181,7 @@ function registerObservationTests() {
       (error) => {
         assert.match(error.message, new RegExp(`--submission-key ${SUBMISSION_KEY}`));
         assert.match(error.message, /fully resolved|resolved repository revision/);
+        assert.match(error.message, /title/);
         assert.match(error.message, /changed payload is rejected/);
         assert.doesNotMatch(error.message, /peer-secret-detail/);
         return true;

@@ -25,6 +25,7 @@ const ORGANIZATION_ID = '019fd17e-5e50-7c66-a68c-3fcf4d8f06c0';
 const SUBMISSION_KEY = '019fd17e-8406-41b4-8730-1c54fd44c70e';
 const CAPSULE_ID = '019fd17e-b9c4-7ef1-99da-cc0ef3905402';
 const OTHER_INTENT_ID = '019fd184-52c3-7e1f-a567-4ecb6fc6a0ec';
+const RUN_TITLE = 'Review checkout flow';
 
 function jsonResponse(value, status = 200) {
   return new globalThis.Response(JSON.stringify(value), {
@@ -85,6 +86,7 @@ describe('bounded authenticated RunIntent client', () => {
       runtime: RUNTIME_BUNDLE,
       submissionKey: SUBMISSION_KEY,
       size: 'standard',
+      title: RUN_TITLE,
     });
     assert.equal(result.intent_id, INTENT_ID);
     assert.equal(h.requests.length, 1);
@@ -95,7 +97,7 @@ describe('bounded authenticated RunIntent client', () => {
     assert.equal(request.init.headers['idempotency-key'], SUBMISSION_KEY);
     const wrapper = JSON.parse(request.init.body);
     assert.deepEqual(Object.keys(wrapper), ['label', 'size', 'intent', 'runtime']);
-    assert.equal(wrapper.label, 'zeroshot-cli');
+    assert.equal(wrapper.label, RUN_TITLE);
     assert.equal(wrapper.size, 'standard');
     for (const field of ['intent', 'runtime']) {
       assert.match(wrapper[field], /^[A-Za-z0-9_-]+$/);
@@ -170,14 +172,39 @@ describe('bounded RunIntent authentication and bodies', () => {
 });
 
 describe('opaque RunIntent submit serialization', () => {
+  it('requires a title of at most 100 Unicode characters before sending', async () => {
+    for (const title of [undefined, '', 'x'.repeat(101), '🚀'.repeat(101)]) {
+      const rejected = clientHarness([]);
+      assert.throws(
+        () =>
+          rejected.client.submit({
+            envelope: {},
+            runtime: {},
+            submissionKey: SUBMISSION_KEY,
+            title,
+          }),
+        /title must be between 1 and 100 characters/
+      );
+      assert.equal(rejected.requests.length, 0);
+    }
+    const accepted = clientHarness([jsonResponse(runIntent(), 202)]);
+    const title = '🚀'.repeat(100);
+    await accepted.client.submit({
+      envelope: {},
+      runtime: {},
+      submissionKey: SUBMISSION_KEY,
+      title,
+    });
+    assert.equal(JSON.parse(accepted.requests[0].init.body).label, title);
+  });
   it('omits capsule size when the caller preserves the target default', async () => {
     const h = clientHarness([jsonResponse(runIntent(), 202)]);
     await h.client.submit({
       envelope: buildRunIntentEnvelope(GRAPH, { source: 'prompt' }),
       runtime: RUNTIME_BUNDLE,
       submissionKey: SUBMISSION_KEY,
+      title: RUN_TITLE,
     });
-
     assert.equal(Object.hasOwn(JSON.parse(h.requests[0].init.body), 'size'), false);
   });
 
@@ -199,6 +226,7 @@ describe('opaque RunIntent submit serialization', () => {
         },
       },
       submissionKey: SUBMISSION_KEY,
+      title: RUN_TITLE,
     });
     assert.equal(intentSerializations, 1);
     assert.equal(runtimeSerializations, 1);
@@ -216,6 +244,7 @@ describe('bounded RunIntent submit bodies', () => {
       envelope: intentAtCombinedLimit,
       runtime: runtimeAtLimit,
       submissionKey: SUBMISSION_KEY,
+      title: RUN_TITLE,
     });
     assert.ok(Buffer.byteLength(boundary.requests[0].init.body) <= MAX_RUN_INTENT_REQUEST_BYTES);
 
@@ -226,6 +255,7 @@ describe('bounded RunIntent submit bodies', () => {
           envelope: exactJsonObject(MAX_RUN_INTENT_DISPATCH_BYTES - MAX_RUNTIME_BUNDLE_BYTES - 3),
           runtime: runtimeAtLimit,
           submissionKey: SUBMISSION_KEY,
+          title: RUN_TITLE,
         }),
       /payloads exceed the decoded dispatch size bound/
     );
@@ -239,6 +269,7 @@ describe('bounded RunIntent submit bodies', () => {
           runtime: RUNTIME_BUNDLE,
           submissionKey: SUBMISSION_KEY,
           size: 'standard',
+          title: RUN_TITLE,
         }),
       /intent exceeds the decoded size bound/
     );
@@ -252,6 +283,7 @@ describe('bounded RunIntent submit bodies', () => {
           runtime: exactJsonObject(MAX_RUNTIME_BUNDLE_BYTES + 1),
           submissionKey: SUBMISSION_KEY,
           size: 'standard',
+          title: RUN_TITLE,
         }),
       /runtime bundle exceeds the decoded size bound/
     );

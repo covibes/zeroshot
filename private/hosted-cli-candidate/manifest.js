@@ -12,7 +12,7 @@ const COMMAND_MANIFEST = Object.freeze([
   'target cancel <name> <intent-id>',
   'capsule create --target <name> [--label <label>] [--size <size>]',
   'capsule terminate <capsule-id> --target <name>',
-  'run --graph <graph.json> --input <input.json> --target <name> (--pr|--ship) ' +
+  'run --title <title> --graph <graph.json> --input <input.json> --target <name> (--pr|--ship) ' +
     '[--config <cluster.json>] [--size <size>] [--submission-key <uuid>] [-d]',
   'attach <intent-id> --target <name>',
   'list --target <name> [--limit <n>] [--json]',

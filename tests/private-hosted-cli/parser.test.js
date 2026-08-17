@@ -6,6 +6,8 @@ const { afterEach, describe, it } = require('node:test');
 const { COMMAND_MANIFEST } = require('../../private/hosted-cli-candidate/manifest');
 const { registerPrivateHostedCandidate } = require('../../private/hosted-cli-candidate/register');
 
+const RUN_TITLE = 'Review checkout flow';
+
 function harness() {
   const calls = [];
   const program = new Command();
@@ -76,7 +78,18 @@ async function parse(program, argv) {
 }
 
 function hostedRun(...options) {
-  return ['run', '--target', 'prod', '--graph', 'g.json', '--input', 'i.json', ...options];
+  return [
+    'run',
+    '--target',
+    'prod',
+    '--graph',
+    'g.json',
+    '--input',
+    'i.json',
+    '--title',
+    RUN_TITLE,
+    ...options,
+  ];
 }
 
 afterEach(() => {
@@ -122,10 +135,33 @@ async function rejectsGeneralTextRunWithTarget() {
     'g.json',
     '--input',
     'i.json',
+    '--title',
+    RUN_TITLE,
     '--pr',
   ]);
   assert.deepEqual(calls, []);
   assert.equal(process.exitCode, 1);
+}
+
+async function requiresBoundedHostedRunTitles() {
+  for (const argv of [
+    ['run', '--target', 'prod', '--graph', 'g.json', '--input', 'i.json', '--ship'],
+    hostedRun('--title', '', '--ship'),
+    hostedRun('--title', '🚀'.repeat(101), '--ship'),
+    ['run', 'local-task', '--title', RUN_TITLE],
+  ]) {
+    const rejected = harness();
+    await parse(rejected.program, argv);
+    assert.deepEqual(rejected.calls, []);
+    assert.equal(process.exitCode, 1);
+    process.exitCode = 0;
+  }
+
+  const accepted = harness();
+  const title = '🚀'.repeat(100);
+  await parse(accepted.program, hostedRun('--title', title, '--ship'));
+  assert.equal(accepted.calls[0][0], 'remoteRun');
+  assert.equal(accepted.calls[0][1].title, title);
 }
 
 async function usesOnlyRunIntentAndKeepsRecoverySyntax() {
@@ -196,6 +232,7 @@ async function dispatchesRemoteLifecycleRoutes() {
   );
   assert.equal(calls[3][2].force, true);
   assert.equal(calls[0][1].config, 'cluster.json');
+  assert.equal(calls[0][1].title, RUN_TITLE);
 }
 
 async function exposesPrivateTargetRunIntentRoutes() {
@@ -238,6 +275,7 @@ function registerPrivateCandidateParserTests() {
     ],
     ['rejects incompatible hosted run syntax', rejectsIncompatibleHostedRunSyntax],
     ['rejects general text run with a target', rejectsGeneralTextRunWithTarget],
+    ['requires bounded hosted run titles', requiresBoundedHostedRunTitles],
     ['uses only RunIntent and keeps recovery syntax', usesOnlyRunIntentAndKeepsRecoverySyntax],
     ['rejects empty targets and hosted ls aliases', rejectsEmptyTargetsAndHostedLsAliases],
     ['preserves local ls after a global option', preservesLocalLsAliasAfterGlobalOption],

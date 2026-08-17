@@ -158,6 +158,7 @@ it('rejects forbidden hosted input before the RunIntent client can submit', asyn
       target: 'prod',
       graph: 'graph.json',
       input: 'input.json',
+      title: 'Review checkout flow',
       submissionKey: SUBMISSION_KEY,
       detach: true,
     })
