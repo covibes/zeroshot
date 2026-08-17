@@ -6,13 +6,10 @@ use openengine_cluster_server::admission::{GraphVerifier, VerifiedGraph};
 use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
 use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryError};
 use serde_json::{json, Value};
-use zeroshot_engine::cluster_ledger::store::Position;
-use zeroshot_engine::cluster_ledger::{
-    ExecutionId, ExecutionVoidReason, NodeInstanceId, RunSequence, StructuralOccurrence,
-};
 use zeroshot_engine::full_v1_reducer::{
-    Decision, DurableExecution, DurableExecutionState, FullV1Reducer, ReducerError, Reduction,
-    ReductionInput, TerminalProjection,
+    Decision, DurableExecution, DurableExecutionState, ExecutionId, ExecutionVoidReason,
+    FullV1Reducer, HistoryPosition, NodeInstanceId, ReducerError, Reduction, ReductionInput,
+    StructuralOccurrence, TerminalProjection,
 };
 
 struct TestWorkers;
@@ -147,8 +144,7 @@ impl<'a> SettledSpec<'a> {
 
 fn settled(spec: SettledSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
     DurableExecution {
-        run: RunSequence::new(1).unwrap(),
-        dispatch_position: Position::new(spec.position.saturating_sub(1)).unwrap(),
+        dispatch_position: HistoryPosition::new(spec.position.saturating_sub(1)).unwrap(),
         node_instance: NodeInstanceId::new(spec.node_instance).unwrap(),
         execution: ExecutionId::new(spec.execution).unwrap(),
         occurrence: StructuralOccurrence {
@@ -158,7 +154,7 @@ fn settled(spec: SettledSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
         attempt: PositiveInteger::new(spec.attempt).unwrap(),
         input: Value::Null,
         state: DurableExecutionState::Settled {
-            position: Position::new(spec.position).unwrap(),
+            position: HistoryPosition::new(spec.position).unwrap(),
             outcome,
         },
     }
@@ -166,8 +162,7 @@ fn settled(spec: SettledSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
 
 fn active(execution: u64, node_instance: u64, node: &str, position: u64) -> DurableExecution {
     DurableExecution {
-        run: RunSequence::new(1).unwrap(),
-        dispatch_position: Position::new(position).unwrap(),
+        dispatch_position: HistoryPosition::new(position).unwrap(),
         node_instance: NodeInstanceId::new(node_instance).unwrap(),
         execution: ExecutionId::new(execution).unwrap(),
         occurrence: StructuralOccurrence {
@@ -201,8 +196,6 @@ fn verdict(label: &str) -> WorkerOutcome {
 fn reduce(graph: &VerifiedGraph, input: &Value, executions: &[DurableExecution]) -> Reduction {
     FullV1Reducer::new(graph)
         .reduce(ReductionInput {
-            run: RunSequence::new(1).unwrap(),
-            snapshot: None,
             initial_input: input,
             executions,
             next_node_instance: executions
@@ -299,7 +292,7 @@ async fn step_verifier_seq_choice_succeed_and_fail_follow_authored_control() {
 }
 
 #[tokio::test]
-async fn parallel_any_uses_ledger_position_and_voids_only_active_losers() {
+async fn parallel_any_uses_history_position_and_voids_only_active_losers() {
     let graph = verified(sequence(
         "root",
         vec![
@@ -388,18 +381,23 @@ async fn all_any_quorum_and_first_use_exact_authored_join_rules() {
 
 #[tokio::test]
 async fn bounded_do_while_reuses_occurrence_and_advances_positive_attempts() {
-    let graph = verified(sequence(
-        "root",
-        vec![
-            json!({
-                "kind":"loop", "name":"retry_loop", "state":{"kind":"record","fields":{}},
-                "body":verifier("check",2),
-                "until":{"kind":"in","value":{"name":"check","source":"signal","field":"verdict"},"labels":["accepted"]},
-                "maxIterations":2,"promotedStatePaths":[]
-            }),
-            succeed("done"),
-        ],
-    ), json!({"check":2})).await;
+    let graph = verified(
+        sequence(
+            "root",
+            vec![
+                json!({
+                    "kind":"loop", "name":"retry_loop", "state":{"kind":"record","fields":{}},
+                    "body":verifier("check",2),
+                    "until":{"kind":"in","value":{"name":"check","source":"signal",
+                        "field":"verdict"},"labels":["accepted"]},
+                    "maxIterations":2,"promotedStatePaths":[]
+                }),
+                succeed("done"),
+            ],
+        ),
+        json!({"check":2}),
+    )
+    .await;
     let first = settled(
         SettledSpec::new(1, 1, "check").position(3),
         verdict("rejected"),
@@ -416,6 +414,56 @@ async fn bounded_do_while_reuses_occurrence_and_advances_positive_attempts() {
     );
     assert!(
         reduce(&graph, &json!({}), &[first, second])
+            .terminal
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn native_v2_loop_reuses_node_instance_with_fresh_attempt_one_executions() {
+    let graph = verified(sequence(
+        "root",
+        vec![
+            json!({
+                "kind":"loop", "name":"native_loop", "state":{"kind":"record","fields":{}},
+                "body":verifier("check",1),
+                "until":{"kind":"in","value":{"name":"check","source":"signal","field":"verdict"},"labels":["accepted"]},
+                "maxIterations":3,"promotedStatePaths":[]
+            }),
+            succeed("done"),
+        ],
+    ), json!({"check":1})).await;
+    let first = settled(
+        SettledSpec::new(1, 1, "check").position(3),
+        verdict("rejected"),
+    );
+    let reduction = FullV1Reducer::native_v2(&graph)
+        .reduce(ReductionInput {
+            initial_input: &json!({}),
+            executions: std::slice::from_ref(&first),
+            next_node_instance: 2,
+            next_execution: 2,
+        })
+        .unwrap();
+    assert!(reduction.decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::Dispatch { node_instance, execution, attempt, .. }
+            if node_instance.get() == 1 && execution.get() == 2 && attempt.get() == 1
+    )));
+
+    let second = settled(
+        SettledSpec::new(2, 1, "check").position(6),
+        verdict("accepted"),
+    );
+    assert!(
+        FullV1Reducer::native_v2(&graph)
+            .reduce(ReductionInput {
+                initial_input: &json!({}),
+                executions: &[first, second],
+                next_node_instance: 2,
+                next_execution: 3,
+            })
+            .unwrap()
             .terminal
             .is_some()
     );
@@ -489,8 +537,8 @@ async fn authored_frontier_and_bytes_ignore_history_container_order() {
         second.canonical_decision_bytes().unwrap()
     );
     assert_eq!(
-        first.canonical_control_record_bytes().unwrap(),
-        second.canonical_control_record_bytes().unwrap()
+        first.canonical_decision_bytes().unwrap(),
+        second.canonical_decision_bytes().unwrap()
     );
 }
 
@@ -650,8 +698,6 @@ async fn late_parallel_losers_are_voided_in_canonical_dispatch_order() {
     assert_eq!(
         FullV1Reducer::new(&frontier_graph)
             .reduce(ReductionInput {
-                run: RunSequence::new(1).unwrap(),
-                snapshot: None,
                 initial_input: &json!({}),
                 executions: &invalid_history,
                 next_node_instance: 3,
@@ -895,7 +941,7 @@ async fn exhaustive_determinism_across_inputs_positions_permutations_and_environ
                             );
                             let bytes = (
                                 reduction.canonical_decision_bytes().unwrap(),
-                                reduction.canonical_control_record_bytes().unwrap(),
+                                reduction.canonical_decision_bytes().unwrap(),
                             );
                             if let Some(expected_bytes) = &baseline {
                                 assert_eq!(&bytes, expected_bytes);

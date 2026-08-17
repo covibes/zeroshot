@@ -33,10 +33,12 @@ use process::NativeExecutionRuntime;
 use program::{classify_graph, AgentKind, NativeProgram, CODEX_AGENT_WORKER_REF};
 
 use crate::cluster_ledger::record::CanonicalDigest;
-use crate::cluster_ledger::{ClusterLedger, LedgerError, ReplayState};
-use crate::full_v1_reducer::{
-    durable_executions_from_replay, Decision, FullV1Reducer, Reduction, ReductionInput,
+use crate::cluster_ledger::mutations::{
+    authorize_legacy_reduction, durable_execution_history_digest, durable_executions_from_replay,
+    LegacyAuthorizationContext, LegacyReduction,
 };
+use crate::cluster_ledger::{ClusterLedger, LedgerError, ReplayState};
+use crate::full_v1_reducer::{Decision, FullV1Reducer, ReductionInput};
 
 #[derive(Clone)]
 pub(crate) struct NativeExecutionCoordinator {
@@ -150,7 +152,7 @@ impl NativeExecutionCoordinator {
         &self,
         state: ReplayState,
         graph: GraphSpec,
-        reduction: Reduction,
+        reduction: LegacyReduction,
     ) -> Result<Option<TerminalResult>, NativeExecutionError> {
         if let Some(terminal) = reduction.terminal.clone() {
             self.commit_terminal(&reduction).await?;
@@ -163,7 +165,7 @@ impl NativeExecutionCoordinator {
         &self,
         state: &ReplayState,
         graph: &GraphSpec,
-        reduction: &Reduction,
+        reduction: &LegacyReduction,
     ) -> Result<Option<TerminalResult>, NativeExecutionError> {
         let Some(mut dispatch) = self.commit_new_dispatch(reduction).await? else {
             return Ok(None);
@@ -180,7 +182,7 @@ impl NativeExecutionCoordinator {
 
     async fn commit_new_dispatch(
         &self,
-        reduction: &Reduction,
+        reduction: &LegacyReduction,
     ) -> Result<Option<CommittedDispatch>, NativeExecutionError> {
         let (execution, worker, input) = one_dispatch(reduction)?;
         let workspace_candidate = self.runtime.preflight(worker.as_str(), &input).await?;
@@ -190,7 +192,12 @@ impl NativeExecutionCoordinator {
         let committed = self
             .ledger
             .dispatch_reduction(
-                command::dispatch_key(reduction.run, execution)?,
+                command::dispatch_key(
+                    reduction.run(),
+                    reduction
+                        .ledger_execution(execution)
+                        .map_err(|_| NativeExecutionError::InvalidState)?,
+                )?,
                 authorization,
             )
             .await?;
@@ -314,12 +321,15 @@ impl NativeExecutionCoordinator {
         Ok(terminal)
     }
 
-    async fn commit_terminal(&self, reduction: &Reduction) -> Result<(), NativeExecutionError> {
+    async fn commit_terminal(
+        &self,
+        reduction: &LegacyReduction,
+    ) -> Result<(), NativeExecutionError> {
         let authorization = reduction
             .terminal_authorization()
             .ok_or(NativeExecutionError::InvalidState)?;
         self.ledger
-            .terminalize_reduction(command::terminal_key(reduction.run)?, authorization)
+            .terminalize_reduction(command::terminal_key(reduction.run())?, authorization)
             .await?;
         Ok(())
     }
@@ -348,6 +358,7 @@ impl NativeExecutionCoordinator {
         let reduction = self.reduce(state, &graph).await?;
         let terminal = reduction
             .terminal
+            .clone()
             .ok_or(NativeExecutionError::InvalidState)?;
         let bytes = validation::canonical_terminal_bytes(&terminal)?;
         if state.terminal_outcome != Some(CanonicalDigest::of(&bytes)) {
@@ -363,22 +374,34 @@ impl NativeExecutionCoordinator {
         &self,
         state: &ReplayState,
         graph: &GraphSpec,
-    ) -> Result<Reduction, NativeExecutionError> {
+    ) -> Result<LegacyReduction, NativeExecutionError> {
         let admission = admission(state)?;
         let verified = self.reverify_graph(graph, admission).await?;
         let input = verified_initial_input(state, admission)?;
         let executions = durable_executions_from_replay(state, admission.run)
             .map_err(|_| NativeExecutionError::InvalidState)?;
-        FullV1Reducer::new(&verified)
+        let reduction = FullV1Reducer::new(&verified)
             .reduce(ReductionInput {
-                run: admission.run,
-                snapshot: state.reduction_snapshot(),
                 initial_input: &input,
                 executions: &executions,
                 next_node_instance: state.identities.next_node_instance,
                 next_execution: state.identities.next_execution,
             })
-            .map_err(|_| NativeExecutionError::InvalidState)
+            .map_err(|_| NativeExecutionError::InvalidState)?;
+        let history_digest = durable_execution_history_digest(&executions)
+            .map_err(|_| NativeExecutionError::InvalidState)?;
+        let snapshot = state.reduction_snapshot();
+        authorize_legacy_reduction(
+            reduction,
+            LegacyAuthorizationContext {
+                run: admission.run,
+                graph_digest: CanonicalDigest::of(&admission.canonical_compiled_ir),
+                input_digest: admission.input_digest,
+                history_digest,
+                snapshot: snapshot.as_ref(),
+            },
+        )
+        .map_err(|_| NativeExecutionError::InvalidState)
     }
 
     async fn reverify_graph(
@@ -476,8 +499,8 @@ fn verified_initial_input(
 }
 
 fn one_dispatch(
-    reduction: &Reduction,
-) -> Result<(crate::cluster_ledger::ExecutionId, WorkerRef, Value), NativeExecutionError> {
+    reduction: &LegacyReduction,
+) -> Result<(crate::native_v2_contract::ExecutionId, WorkerRef, Value), NativeExecutionError> {
     let mut dispatches = reduction
         .decisions
         .iter()

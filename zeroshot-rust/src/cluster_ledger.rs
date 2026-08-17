@@ -11,10 +11,10 @@ pub mod record;
 pub mod replay;
 pub mod store;
 
-pub use crate::full_v1_reducer::ExecutionVoidAuthorization;
 pub use mutations::{
-    AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidRequest, ExecutionVoidResult,
-    SafeFaultConsequence, SafeFaultResult, SettlementResult,
+    AdmissionRequest, CommitResult, DispatchAllocation, ExecutionVoidAuthorization,
+    ExecutionVoidRequest, ExecutionVoidResult, SafeFaultConsequence, SafeFaultResult,
+    SettlementResult,
 };
 pub use error::{LedgerError, LedgerErrorKind};
 pub use record::{

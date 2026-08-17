@@ -6,10 +6,9 @@ use openengine_cluster_server::admission::{GraphVerifier, VerifiedGraph};
 use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
 use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryError};
 use serde_json::json;
-use zeroshot_engine::cluster_ledger::store::Position;
-use zeroshot_engine::cluster_ledger::{ExecutionId, NodeInstanceId, RunSequence, StructuralOccurrence};
 use zeroshot_engine::full_v1_reducer::{
-    DurableExecution, DurableExecutionState, FullV1Reducer, ReductionInput, TerminalProjection,
+    DurableExecution, DurableExecutionState, ExecutionId, FullV1Reducer, HistoryPosition,
+    NodeInstanceId, ReductionInput, StructuralOccurrence, TerminalProjection,
 };
 
 struct TestWorker;
@@ -107,8 +106,7 @@ async fn verified_graph() -> VerifiedGraph {
 #[tokio::test]
 async fn failed_step_does_not_promote_success_only_writes_before_error_routing() {
     let execution = DurableExecution {
-        run: RunSequence::new(1).unwrap(),
-        dispatch_position: Position::new(2).unwrap(),
+        dispatch_position: HistoryPosition::new(2).unwrap(),
         node_instance: NodeInstanceId::new(1).unwrap(),
         execution: ExecutionId::new(1).unwrap(),
         occurrence: StructuralOccurrence {
@@ -118,14 +116,12 @@ async fn failed_step_does_not_promote_success_only_writes_before_error_routing()
         attempt: PositiveInteger::new(1).unwrap(),
         input: serde_json::Value::Null,
         state: DurableExecutionState::Settled {
-            position: Position::new(3).unwrap(),
+            position: HistoryPosition::new(3).unwrap(),
             outcome: WorkerOutcome::declared_failure(WorkerErrorCode::Crash),
         },
     };
     let reduction = FullV1Reducer::new(&verified_graph().await)
         .reduce(ReductionInput {
-            run: RunSequence::new(1).unwrap(),
-            snapshot: None,
             initial_input: &json!({}),
             executions: &[execution],
             next_node_instance: 2,

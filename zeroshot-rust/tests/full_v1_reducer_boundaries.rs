@@ -6,13 +6,10 @@ use openengine_cluster_server::admission::{GraphVerifier, VerifiedGraph};
 use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
 use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryError};
 use serde_json::{json, Value};
-use zeroshot_engine::cluster_ledger::store::Position;
-use zeroshot_engine::cluster_ledger::{
-    ExecutionId, ExecutionVoidReason, NodeInstanceId, RunSequence, StructuralOccurrence,
-};
 use zeroshot_engine::full_v1_reducer::{
-    Decision, DurableExecution, DurableExecutionState, FullV1Reducer, ReducerError, ReductionInput,
-    TerminalProjection,
+    Decision, DurableExecution, DurableExecutionState, ExecutionId, ExecutionVoidReason,
+    FullV1Reducer, HistoryPosition, NodeInstanceId, ReducerError, ReductionInput,
+    StructuralOccurrence, TerminalProjection,
 };
 
 struct TestWorkers;
@@ -104,7 +101,6 @@ fn seq(children: Vec<Value>) -> Value {
 
 struct ExecutionSpec<'a> {
     id: u64,
-    run: u64,
     node_instance: u64,
     node: &'a str,
     indices: Vec<u64>,
@@ -116,18 +112,12 @@ impl<'a> ExecutionSpec<'a> {
     fn new(id: u64, node_instance: u64, node: &'a str) -> Self {
         Self {
             id,
-            run: 1,
             node_instance,
             node,
             indices: Vec::new(),
             attempt: 1,
             settled_at: 1,
         }
-    }
-
-    fn run(mut self, run: u64) -> Self {
-        self.run = run;
-        self
     }
 
     fn indices(mut self, indices: Vec<u64>) -> Self {
@@ -148,8 +138,7 @@ impl<'a> ExecutionSpec<'a> {
 
 fn execution(spec: ExecutionSpec<'_>, outcome: WorkerOutcome) -> DurableExecution {
     DurableExecution {
-        run: RunSequence::new(spec.run).unwrap(),
-        dispatch_position: Position::new(spec.settled_at - 1).unwrap(),
+        dispatch_position: HistoryPosition::new(spec.settled_at - 1).unwrap(),
         node_instance: NodeInstanceId::new(spec.node_instance).unwrap(),
         execution: ExecutionId::new(spec.id).unwrap(),
         occurrence: StructuralOccurrence {
@@ -159,7 +148,7 @@ fn execution(spec: ExecutionSpec<'_>, outcome: WorkerOutcome) -> DurableExecutio
         attempt: PositiveInteger::new(spec.attempt).unwrap(),
         input: Value::Null,
         state: DurableExecutionState::Settled {
-            position: Position::new(spec.settled_at).unwrap(),
+            position: HistoryPosition::new(spec.settled_at).unwrap(),
             outcome,
         },
     }
@@ -185,8 +174,6 @@ fn verdict(label: &str) -> WorkerOutcome {
 
 fn input<'a>(initial: &'a Value, executions: &'a [DurableExecution]) -> ReductionInput<'a> {
     ReductionInput {
-        run: RunSequence::new(1).unwrap(),
-        snapshot: None,
         initial_input: initial,
         executions,
         next_node_instance: executions
@@ -329,7 +316,7 @@ async fn equal_position_parallel_ties_are_broken_by_authored_branch_position() {
 }
 
 #[tokio::test]
-async fn earlier_ledger_position_wins_first_independent_of_authored_and_history_order() {
+async fn earlier_history_position_wins_first_independent_of_authored_and_history_order() {
     let first = json!({
         "kind":"par","name":"position_first","state":boundary_state(),
         "branches":[verifier("authored_first",1),verifier("settled_first",1)],
@@ -388,7 +375,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
         success(),
     );
     unowned.state = DurableExecutionState::Voided {
-        position: Position::new(5).unwrap(),
+        position: HistoryPosition::new(5).unwrap(),
         reason: ExecutionVoidReason::ParallelJoin,
     };
     assert_eq!(
@@ -415,7 +402,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
         success(),
     );
     premature_parallel.state = DurableExecutionState::Voided {
-        position: Position::new(2).unwrap(),
+        position: HistoryPosition::new(2).unwrap(),
         reason: ExecutionVoidReason::ParallelJoin,
     };
     let later_parallel_winner = execution(
@@ -460,7 +447,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
         success(),
     );
     premature_map_void.state = DurableExecutionState::Voided {
-        position: Position::new(2).unwrap(),
+        position: HistoryPosition::new(2).unwrap(),
         reason: ExecutionVoidReason::MapTerminal,
     };
     assert_eq!(
@@ -480,7 +467,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
         success(),
     );
     wrong_map_reason.state = DurableExecutionState::Voided {
-        position: Position::new(6).unwrap(),
+        position: HistoryPosition::new(6).unwrap(),
         reason: ExecutionVoidReason::ParallelJoin,
     };
     assert_eq!(
@@ -499,7 +486,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
         success(),
     );
     correct_map_reason.state = DurableExecutionState::Voided {
-        position: Position::new(6).unwrap(),
+        position: HistoryPosition::new(6).unwrap(),
         reason: ExecutionVoidReason::MapTerminal,
     };
     assert!(
@@ -518,7 +505,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
         success(),
     );
     owned.state = DurableExecutionState::Voided {
-        position: Position::new(5).unwrap(),
+        position: HistoryPosition::new(5).unwrap(),
         reason: ExecutionVoidReason::ParallelJoin,
     };
     let winner = execution(
@@ -527,7 +514,7 @@ async fn voided_executions_require_authored_parallel_or_map_loser_ownership() {
     );
     let mut wrong_parallel_reason = owned.clone();
     wrong_parallel_reason.state = DurableExecutionState::Voided {
-        position: Position::new(5).unwrap(),
+        position: HistoryPosition::new(5).unwrap(),
         reason: ExecutionVoidReason::MapTerminal,
     };
     assert_eq!(
@@ -582,7 +569,7 @@ async fn nested_parallel_void_provenance_is_owned_during_outer_map_probing() {
         success(),
     );
     inner_loser.state = DurableExecutionState::Voided {
-        position: Position::new(4).unwrap(),
+        position: HistoryPosition::new(4).unwrap(),
         reason: ExecutionVoidReason::ParallelJoin,
     };
     let item_zero_inner_winner = execution(
@@ -622,7 +609,7 @@ async fn nested_parallel_void_provenance_is_owned_during_outer_map_probing() {
 
     let mut wrong_reason = inner_loser;
     wrong_reason.state = DurableExecutionState::Voided {
-        position: Position::new(4).unwrap(),
+        position: HistoryPosition::new(4).unwrap(),
         reason: ExecutionVoidReason::MapTerminal,
     };
     assert_eq!(
@@ -647,7 +634,7 @@ async fn nested_parallel_void_provenance_is_owned_during_outer_map_probing() {
         success(),
     );
     post_prune_inner_loser.state = DurableExecutionState::Voided {
-        position: Position::new(22).unwrap(),
+        position: HistoryPosition::new(22).unwrap(),
         reason: ExecutionVoidReason::ParallelJoin,
     };
     let late_item_zero_inner_winner = execution(
@@ -684,7 +671,7 @@ async fn nested_parallel_void_provenance_is_owned_during_outer_map_probing() {
     );
 
     post_prune_inner_loser.state = DurableExecutionState::Voided {
-        position: Position::new(22).unwrap(),
+        position: HistoryPosition::new(22).unwrap(),
         reason: ExecutionVoidReason::MapTerminal,
     };
     let post_prune_execution = post_prune_inner_loser.execution;
@@ -757,10 +744,6 @@ async fn duplicate_gap_and_cross_occurrence_identity_histories_fail_closed() {
             ExecutionSpec::new(1, 1, "work")
                 .indices(vec![0])
                 .settled_at(2),
-            success(),
-        ),
-        execution(
-            ExecutionSpec::new(1, 1, "work").run(2).settled_at(2),
             success(),
         ),
     ] {

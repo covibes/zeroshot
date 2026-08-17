@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::fault::FaultContext;
-use crate::full_v1_reducer::{
+use super::reducer_authorization::{
     durable_execution_history_digest, durable_executions_from_replay,
     ReductionDispatchAuthorization, ReductionDispatchAuthorizationParts,
     ReductionTerminalAuthorization, ReductionTerminalAuthorizationParts,

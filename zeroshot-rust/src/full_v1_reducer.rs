@@ -1,27 +1,18 @@
 //! Pure reduction of verifier-produced full-v1 graphs. It accepts [`VerifiedGraph`] rather than
 //! graph syntax or directly constructed IR; `ProductionGraphVerifier` owns shape, type, binding,
 //! guard-domain, and bound proofs while reduction applies proven operations in authored order.
-//! Reducer-issued mutation authorizations are opaque. Each binds a decision to the verified graph,
-//! canonical input, durable history, and exact snapshot, all revalidated before commit.
 //!
-//! This keeps the reducer pure while preventing callers from manufacturing partial execution
-//! intent. A caller may select only an authorization returned with the current reduction; replay
-//! against a newer prefix fails closed. The authorization records no environment, process,
-//! provider, workspace, or scheduling state.
-//!
-//! Durable execution facts remain the sole input to subsequent reductions. Runtime observations
-//! become reducer-visible only after the ledger accepts their canonical settlement, so process
-//! completion alone cannot advance graph control or terminal state.
+//! The supervisor supplies a normalized, run-local execution history. Storage cursors, replay
+//! records, mutation authorization, provider processes, workspaces, and scheduling stay outside
+//! this module. This makes the same graph algorithm usable by the lean native-v2 run ledger.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-mod authorization;
+mod history;
 
-pub use authorization::{
-    ExecutionVoidAuthorization, ReductionDispatchAuthorization, ReductionTerminalAuthorization,
-};
-pub(crate) use authorization::{
-    ReductionDispatchAuthorizationParts, ReductionTerminalAuthorizationParts,
+pub use history::{
+    DurableExecution, DurableExecutionState, ExecutionId, ExecutionVoidReason, HistoryPosition,
+    HistoryPositionError, NodeInstanceId, StructuralOccurrence,
 };
 
 use openengine_cluster_protocol::{
@@ -34,88 +25,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-use crate::cluster_ledger::record::{
-    CanonicalDigest, ExecutionVoidReason, RecordPayload, StructuralOccurrence,
-};
-use crate::cluster_ledger::store::Position;
-use crate::cluster_ledger::{ExecutionId, NodeInstanceId, ReductionSnapshot, ReplayState, RunSequence};
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub enum DurableExecutionState {
-    Active,
-    Settled {
-        position: Position,
-        outcome: WorkerOutcome,
-    },
-    Voided {
-        position: Position,
-        reason: ExecutionVoidReason,
-    },
-}
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct DurableExecution {
-    pub run: RunSequence,
-    pub dispatch_position: Position,
-    pub node_instance: NodeInstanceId,
-    pub execution: ExecutionId,
-    pub occurrence: StructuralOccurrence,
-    pub attempt: PositiveInteger,
-    pub input: Value,
-    pub state: DurableExecutionState,
-}
-
-pub fn durable_executions_from_replay(
-    state: &ReplayState,
-    run: RunSequence,
-) -> Result<Vec<DurableExecution>, ReducerError> {
-    let mut executions = Vec::with_capacity(state.execution_contexts.len());
-    for context in state
-        .execution_contexts
-        .values()
-        .filter(|context| context.run == run)
-    {
-        let input: Value = serde_json::from_slice(&context.canonical_input)
-            .map_err(|_| ReducerError::InconsistentHistory)?;
-        let execution_state = if let Some(voided) = state.execution_voids.get(&context.execution) {
-            DurableExecutionState::Voided {
-                position: voided.position,
-                reason: voided.reason,
-            }
-        } else if state.settlements.contains_key(&context.execution) {
-            let output = state
-                .verified_outputs
-                .get(&context.execution)
-                .ok_or(ReducerError::InconsistentHistory)?;
-            let outcome: WorkerOutcome = serde_json::from_slice(&output.canonical_bytes)
-                .map_err(|_| ReducerError::InconsistentHistory)?;
-            DurableExecutionState::Settled {
-                position: output.position,
-                outcome,
-            }
-        } else if state.active_dispatches.contains_key(&context.execution) {
-            DurableExecutionState::Active
-        } else {
-            return Err(ReducerError::InconsistentHistory);
-        };
-        executions.push(DurableExecution {
-            run: context.run,
-            dispatch_position: context.position,
-            node_instance: context.node_instance,
-            execution: context.execution,
-            occurrence: context.occurrence.clone(),
-            attempt: context.attempt,
-            input,
-            state: execution_state,
-        });
-    }
-    executions.sort_by_key(|execution| execution.dispatch_position);
-    validate_history(&executions)?;
-    Ok(executions)
-}
 #[derive(Clone, Debug)]
 pub struct ReductionInput<'a> {
-    pub run: RunSequence,
-    pub snapshot: Option<ReductionSnapshot>,
     pub initial_input: &'a Value,
     pub executions: &'a [DurableExecution],
     pub next_node_instance: u64,
@@ -132,7 +43,6 @@ pub struct PromotedValue {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Decision {
     Dispatch {
-        run: RunSequence,
         node_instance: NodeInstanceId,
         execution: ExecutionId,
         occurrence: StructuralOccurrence,
@@ -141,7 +51,6 @@ pub enum Decision {
         input: Value,
     },
     VoidLoser {
-        run: RunSequence,
         execution: ExecutionId,
         reason: ExecutionVoidReason,
     },
@@ -162,94 +71,13 @@ pub type TerminalProjection = TerminalResult;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reduction {
-    pub run: RunSequence,
     pub decisions: Vec<Decision>,
     pub terminal: Option<TerminalResult>,
-    void_authorizations: BTreeMap<ExecutionId, ExecutionVoidAuthorization>,
-    dispatch_authorizations: BTreeMap<ExecutionId, ReductionDispatchAuthorization>,
-    terminal_authorization: Option<ReductionTerminalAuthorization>,
 }
 
 impl Reduction {
     pub fn canonical_decision_bytes(&self) -> Result<Vec<u8>, ReducerError> {
         serde_json::to_vec(&self.decisions).map_err(|_| ReducerError::Encoding)
-    }
-
-    #[must_use]
-    pub fn void_authorization(&self, execution: ExecutionId) -> Option<ExecutionVoidAuthorization> {
-        self.void_authorizations.get(&execution).cloned()
-    }
-
-    #[must_use]
-    pub fn dispatch_authorization(
-        &self,
-        execution: ExecutionId,
-    ) -> Option<ReductionDispatchAuthorization> {
-        self.dispatch_authorizations.get(&execution).cloned()
-    }
-
-    #[must_use]
-    pub fn terminal_authorization(&self) -> Option<ReductionTerminalAuthorization> {
-        self.terminal_authorization.clone()
-    }
-
-    pub fn control_records(&self) -> Result<Vec<RecordPayload>, ReducerError> {
-        let mut records = Vec::new();
-        for decision in &self.decisions {
-            match decision {
-                Decision::Dispatch {
-                    run,
-                    node_instance,
-                    execution,
-                    occurrence,
-                    attempt,
-                    input,
-                    ..
-                } => {
-                    let canonical_input =
-                        serde_json::to_vec(input).map_err(|_| ReducerError::Encoding)?;
-                    records.push(RecordPayload::Dispatch {
-                        run: *run,
-                        node_instance: *node_instance,
-                        execution: *execution,
-                    });
-                    records.push(RecordPayload::ExecutionContext {
-                        run: *run,
-                        node_instance: *node_instance,
-                        execution: *execution,
-                        occurrence: occurrence.clone(),
-                        attempt: *attempt,
-                        canonical_input,
-                    });
-                }
-                Decision::VoidLoser {
-                    run,
-                    execution,
-                    reason,
-                } => records.push(RecordPayload::ExecutionVoid {
-                    run: *run,
-                    execution: *execution,
-                    reason: *reason,
-                }),
-                Decision::Continue { .. }
-                | Decision::Promote { .. }
-                | Decision::Terminal { .. } => {}
-            }
-        }
-        if let Some(terminal) = &self.terminal {
-            let value = serde_json::to_value(terminal).map_err(|_| ReducerError::Encoding)?;
-            let bytes = openengine_cluster_protocol::canonical_value_bytes(&value)
-                .map_err(|_| ReducerError::Encoding)?;
-            records.push(RecordPayload::Terminal {
-                run: self.run,
-                outcome_digest: CanonicalDigest::of(&bytes),
-            });
-        }
-        Ok(records)
-    }
-
-    pub fn canonical_control_record_bytes(&self) -> Result<Vec<u8>, ReducerError> {
-        serde_json::to_vec(&self.control_records()?).map_err(|_| ReducerError::Encoding)
     }
 }
 
@@ -269,31 +97,38 @@ pub enum ReducerError {
     Encoding,
 }
 
-pub(crate) fn durable_execution_history_digest(
-    executions: &[DurableExecution],
-) -> Result<CanonicalDigest, ReducerError> {
-    let mut ordered = executions.iter().collect::<Vec<_>>();
-    ordered.sort_by_key(|execution| execution.execution);
-    let bytes = serde_json::to_vec(&ordered).map_err(|_| ReducerError::Encoding)?;
-    Ok(CanonicalDigest::of(&bytes))
-}
-
 pub struct FullV1Reducer<'a> {
     graph: &'a VerifiedGraph,
+    execution_mode: ExecutionMode,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ExecutionMode {
+    LegacyAttempts,
+    NativeV2NoRetry,
 }
 
 impl<'a> FullV1Reducer<'a> {
     #[must_use]
     pub const fn new(graph: &'a VerifiedGraph) -> Self {
-        Self { graph }
+        Self {
+            graph,
+            execution_mode: ExecutionMode::LegacyAttempts,
+        }
+    }
+
+    /// Native-v2 execution: every structural revisit is a fresh execution with attempt one.
+    #[must_use]
+    pub const fn native_v2(graph: &'a VerifiedGraph) -> Self {
+        Self {
+            graph,
+            execution_mode: ExecutionMode::NativeV2NoRetry,
+        }
     }
 
     pub fn reduce(&self, input: ReductionInput<'_>) -> Result<Reduction, ReducerError> {
-        let (graph_digest, input_digest, history_digest) =
-            reduction_digests(self.graph, input.initial_input, input.executions)?;
-        let reduction_snapshot = input.snapshot.clone();
         let initial_input = input.initial_input.clone();
-        let mut engine = Engine::new(input, &self.graph.compiled_ir.root)?;
+        let mut engine = Engine::new(input, &self.graph.compiled_ir.root, self.execution_mode)?;
         let mut context = Context::new(initial_input);
         let status = engine.eval(
             &self.graph.compiled_ir.root,
@@ -302,7 +137,7 @@ impl<'a> FullV1Reducer<'a> {
                 map_indices: &[],
                 item: None,
                 mode: EvalMode::Decide,
-                cutoff: Position::MAX,
+                cutoff: HistoryPosition::MAX,
             },
         )?;
         engine.ensure_history_consumed()?;
@@ -314,44 +149,11 @@ impl<'a> FullV1Reducer<'a> {
         if let Some(projection) = terminal.clone() {
             engine.decisions.push(Decision::Terminal { projection });
         }
-        let authorizations = authorization::build(
-            &engine.decisions,
-            terminal.as_ref(),
-            authorization::AuthorizationContext {
-                run: engine.run,
-                graph_digest,
-                input_digest,
-                history_digest,
-                snapshot: reduction_snapshot.as_ref(),
-            },
-        )?;
         Ok(Reduction {
-            run: engine.run,
             decisions: engine.decisions,
             terminal,
-            void_authorizations: authorizations.voids,
-            dispatch_authorizations: authorizations.dispatches,
-            terminal_authorization: authorizations.terminal,
         })
     }
-}
-
-fn reduction_digests(
-    graph: &VerifiedGraph,
-    input: &Value,
-    executions: &[DurableExecution],
-) -> Result<(CanonicalDigest, CanonicalDigest, CanonicalDigest), ReducerError> {
-    let graph_bytes = graph
-        .compiled_ir
-        .canonical_bytes()
-        .map_err(|_| ReducerError::Encoding)?;
-    let input_bytes = serde_json::to_vec(input).map_err(|_| ReducerError::Encoding)?;
-    let history_digest = durable_execution_history_digest(executions)?;
-    Ok((
-        CanonicalDigest::of(&graph_bytes),
-        CanonicalDigest::of(&input_bytes),
-        history_digest,
-    ))
 }
 
 fn attempts_exhausted_reason() -> EnumLabel {
@@ -401,7 +203,7 @@ struct Traversal<'a> {
     map_indices: &'a [u64],
     item: Option<&'a Value>,
     mode: EvalMode,
-    cutoff: Position,
+    cutoff: HistoryPosition,
 }
 
 struct ExecutableSpec<'a> {
@@ -435,7 +237,7 @@ struct MapVoidScope<'a> {
 
 struct VoidScope<'a> {
     map_indices: &'a [u64],
-    authorization: Position,
+    cutoff: HistoryPosition,
     reason: ExecutionVoidReason,
     emit_decisions: bool,
 }
@@ -468,27 +270,27 @@ struct PromotionRequest<'a> {
 enum Status {
     Pending,
     Continue {
-        position: Position,
+        position: HistoryPosition,
     },
     Terminal {
-        position: Position,
+        position: HistoryPosition,
         projection: TerminalProjection,
     },
 }
 
 impl Status {
-    fn continuing(position: Position) -> Self {
+    fn continuing(position: HistoryPosition) -> Self {
         Self::Continue { position }
     }
 
-    fn position(&self) -> Position {
+    fn position(&self) -> HistoryPosition {
         match self {
-            Self::Pending => Position::MAX,
+            Self::Pending => HistoryPosition::MAX,
             Self::Continue { position } | Self::Terminal { position, .. } => *position,
         }
     }
 
-    fn after(self, prior: Position) -> Self {
+    fn after(self, prior: HistoryPosition) -> Self {
         match self {
             Self::Terminal {
                 position,
@@ -503,32 +305,35 @@ impl Status {
 }
 
 #[derive(Clone, Copy)]
-struct VoidAuthorization {
-    position: Position,
+struct VoidCutoff {
+    position: HistoryPosition,
     reason: ExecutionVoidReason,
 }
 
 struct Engine<'a> {
-    run: RunSequence,
     executions: &'a [DurableExecution],
     next_node_instance: u64,
     next_execution: u64,
     decisions: Vec<Decision>,
     map_depths: BTreeMap<NodeName, usize>,
     consumed_executions: BTreeSet<ExecutionId>,
-    void_authorizations: BTreeMap<ExecutionId, VoidAuthorization>,
+    void_cutoffs: BTreeMap<ExecutionId, VoidCutoff>,
+    execution_mode: ExecutionMode,
 }
 
 impl<'a> Engine<'a> {
-    fn new(input: ReductionInput<'a>, root: &GraphNode) -> Result<Self, ReducerError> {
-        validate_history(input.executions)?;
+    fn new(
+        input: ReductionInput<'a>,
+        root: &GraphNode,
+        execution_mode: ExecutionMode,
+    ) -> Result<Self, ReducerError> {
+        validate_history_for_mode(input.executions, execution_mode)?;
         let mut map_depths = BTreeMap::new();
         collect_map_depths(root, 0, &mut map_depths);
         let mut executable_depths = BTreeMap::new();
         collect_executable_depths(root, 0, &mut executable_depths);
         if input.executions.iter().any(|execution| {
-            execution.run != input.run
-                || execution.execution.get() >= input.next_execution
+            execution.execution.get() >= input.next_execution
                 || execution.node_instance.get() >= input.next_node_instance
                 || executable_depths
                     .get(&execution.occurrence.node)
@@ -537,14 +342,14 @@ impl<'a> Engine<'a> {
             return Err(ReducerError::InconsistentHistory);
         }
         Ok(Self {
-            run: input.run,
             executions: input.executions,
             next_node_instance: input.next_node_instance,
             next_execution: input.next_execution,
             decisions: Vec::new(),
             map_depths,
             consumed_executions: BTreeSet::new(),
-            void_authorizations: BTreeMap::new(),
+            void_cutoffs: BTreeMap::new(),
+            execution_mode,
         })
     }
 
@@ -553,10 +358,10 @@ impl<'a> Engine<'a> {
             self.consumed_executions.contains(&execution.execution)
                 && match &execution.state {
                     DurableExecutionState::Voided { position, reason } => self
-                        .void_authorizations
+                        .void_cutoffs
                         .get(&execution.execution)
-                        .is_some_and(|authorization| {
-                            *position > authorization.position && *reason == authorization.reason
+                        .is_some_and(|cutoff| {
+                            *position > cutoff.position && *reason == cutoff.reason
                         }),
                     DurableExecutionState::Active | DurableExecutionState::Settled { .. } => true,
                 }
@@ -572,17 +377,13 @@ impl<'a> Engine<'a> {
             matches!(
                 decision,
                 Decision::VoidLoser {
-                    run,
                     execution: existing,
                     ..
-                } if *run == self.run && *existing == execution
+                } if *existing == execution
             )
         }) {
-            self.decisions.push(Decision::VoidLoser {
-                run: self.run,
-                execution,
-                reason,
-            });
+            self.decisions
+                .push(Decision::VoidLoser { execution, reason });
         }
     }
 
@@ -600,7 +401,9 @@ impl<'a> Engine<'a> {
                     .executions
                     .iter()
                     .find(|candidate| candidate.execution == *execution)
-                    .map_or(Position::MAX, |candidate| candidate.dispatch_position);
+                    .map_or(HistoryPosition::MAX, |candidate| {
+                        candidate.dispatch_position
+                    });
                 slots.push(index);
                 voids.push((position, *execution, decision.clone()));
             }
@@ -644,7 +447,7 @@ impl<'a> Engine<'a> {
             ),
             GraphNode::Seq(group) => {
                 let mut local = context.clone();
-                let mut position = Position::ZERO;
+                let mut position = HistoryPosition::ZERO;
                 for child in group.children.as_slice() {
                     match self.eval(child, &mut local, traversal)? {
                         Status::Continue {
@@ -671,7 +474,7 @@ impl<'a> Engine<'a> {
             GraphNode::Par(group) => self.eval_parallel(group, context, traversal),
             GraphNode::Loop(group) => {
                 let mut local = context.clone();
-                let mut position = Position::ZERO;
+                let mut position = HistoryPosition::ZERO;
                 for _iteration in 1..=group.max_iterations.get() {
                     match self.eval(&group.body, &mut local, traversal)? {
                         Status::Continue {
@@ -729,12 +532,12 @@ impl<'a> Engine<'a> {
             GraphNode::Succeed(terminal) => {
                 let output = bind_payload(&terminal.bindings, &context.state, traversal.item)?;
                 Ok(Status::Terminal {
-                    position: Position::ZERO,
+                    position: HistoryPosition::ZERO,
                     projection: TerminalProjection::Succeeded { output },
                 })
             }
             GraphNode::Fail(terminal) => Ok(Status::Terminal {
-                position: Position::ZERO,
+                position: HistoryPosition::ZERO,
                 projection: TerminalProjection::Failed {
                     reason: terminal.reason.as_label().clone(),
                 },
@@ -769,30 +572,44 @@ impl<'a> Engine<'a> {
         let mut matching = self
             .executions
             .iter()
-            .filter(|execution| execution.run == self.run && execution.occurrence == occurrence)
+            .filter(|execution| execution.occurrence == occurrence)
             .collect::<Vec<_>>();
-        matching.sort_by_key(|execution| execution.attempt);
         let visit = next_visit(name, map_indices, &context.controls);
-        let attempt = PositiveInteger::new(visit).map_err(|_| ReducerError::InconsistentHistory)?;
-        if attempt.get() > attempt_ceiling.get() {
-            return Ok(Status::Terminal {
-                position: Position::ZERO,
-                projection: TerminalProjection::Failed {
-                    reason: attempts_exhausted_reason(),
-                },
-            });
-        }
+        let (attempt, existing) = match self.execution_mode {
+            ExecutionMode::LegacyAttempts => {
+                matching.sort_by_key(|execution| execution.attempt);
+                let attempt =
+                    PositiveInteger::new(visit).map_err(|_| ReducerError::InconsistentHistory)?;
+                if attempt.get() > attempt_ceiling.get() {
+                    return Ok(Status::Terminal {
+                        position: HistoryPosition::ZERO,
+                        projection: TerminalProjection::Failed {
+                            reason: attempts_exhausted_reason(),
+                        },
+                    });
+                }
+                let existing = matching
+                    .iter()
+                    .find(|execution| execution.attempt == attempt)
+                    .copied();
+                (attempt, existing)
+            }
+            ExecutionMode::NativeV2NoRetry => {
+                matching.sort_by_key(|execution| execution.dispatch_position);
+                let attempt =
+                    PositiveInteger::new(1).map_err(|_| ReducerError::InconsistentHistory)?;
+                let index =
+                    usize::try_from(visit - 1).map_err(|_| ReducerError::IdentityOutOfRange)?;
+                (attempt, matching.get(index).copied())
+            }
+        };
         let input = bind_payload(input_bindings, &context.state, item)?;
-        let existing = matching
-            .iter()
-            .find(|execution| execution.attempt == attempt)
-            .copied();
         if let Some(execution) = existing {
             self.consumed_executions.insert(execution.execution);
         }
         mark_visit(name, map_indices, &mut context.controls, visit);
         let Some(execution) = existing else {
-            if mode == EvalMode::Probe || cutoff != Position::MAX {
+            if mode == EvalMode::Probe || cutoff != HistoryPosition::MAX {
                 return Ok(Status::Pending);
             }
             let node_instance = if let Some(previous) = matching.last().copied() {
@@ -813,7 +630,6 @@ impl<'a> Engine<'a> {
                 .checked_add(1)
                 .ok_or(ReducerError::IdentityOutOfRange)?;
             self.decisions.push(Decision::Dispatch {
-                run: self.run,
                 node_instance,
                 execution,
                 occurrence,
@@ -1031,9 +847,9 @@ impl<'a> Engine<'a> {
                 position: probes
                     .iter()
                     .map(|(status, _)| status.position())
-                    .filter(|position| *position != Position::MAX)
+                    .filter(|position| *position != HistoryPosition::MAX)
                     .max()
-                    .unwrap_or(Position::ZERO),
+                    .unwrap_or(HistoryPosition::ZERO),
             });
         }
         let winners = ordered.into_iter().take(required).collect::<Vec<_>>();
@@ -1041,7 +857,7 @@ impl<'a> Engine<'a> {
             .iter()
             .map(|(_, position)| *position)
             .max()
-            .unwrap_or(Position::ZERO);
+            .unwrap_or(HistoryPosition::ZERO);
         let winner_set = winners
             .iter()
             .map(|(index, _)| *index)
@@ -1105,7 +921,7 @@ impl<'a> Engine<'a> {
                         branch,
                         VoidScope {
                             map_indices: traversal.map_indices,
-                            authorization: join_position,
+                            cutoff: join_position,
                             reason: ExecutionVoidReason::ParallelJoin,
                             emit_decisions: traversal.mode == EvalMode::Decide,
                         },
@@ -1141,7 +957,7 @@ impl<'a> Engine<'a> {
             );
             self.continue_decision(&group.name, traversal.mode);
             return Ok(Status::Continue {
-                position: Position::ZERO,
+                position: HistoryPosition::ZERO,
             });
         }
 
@@ -1190,7 +1006,7 @@ impl<'a> Engine<'a> {
                     MapVoidScope {
                         common: VoidScope {
                             map_indices: traversal.map_indices,
-                            authorization: terminal.position(),
+                            cutoff: terminal.position(),
                             reason: ExecutionVoidReason::MapTerminal,
                             emit_decisions: true,
                         },
@@ -1204,7 +1020,7 @@ impl<'a> Engine<'a> {
                 MapVoidScope {
                     common: VoidScope {
                         map_indices: traversal.map_indices,
-                        authorization: terminal.position(),
+                        cutoff: terminal.position(),
                         reason: ExecutionVoidReason::MapTerminal,
                         emit_decisions: false,
                     },
@@ -1277,7 +1093,7 @@ impl<'a> Engine<'a> {
                 .iter()
                 .map(|(status, _, _)| status.position())
                 .max()
-                .unwrap_or(Position::ZERO),
+                .unwrap_or(HistoryPosition::ZERO),
         })
     }
 
@@ -1389,20 +1205,20 @@ impl<'a> Engine<'a> {
         }
     }
 
-    fn record_void_authorization(
+    fn record_void_cutoff(
         &mut self,
         execution: ExecutionId,
-        position: Position,
+        position: HistoryPosition,
         reason: ExecutionVoidReason,
     ) -> ExecutionVoidReason {
-        let authorization = self
-            .void_authorizations
+        let cutoff = self
+            .void_cutoffs
             .entry(execution)
-            .or_insert(VoidAuthorization { position, reason });
-        if position < authorization.position {
-            *authorization = VoidAuthorization { position, reason };
+            .or_insert(VoidCutoff { position, reason });
+        if position < cutoff.position {
+            *cutoff = VoidCutoff { position, reason };
         }
-        authorization.reason
+        cutoff.reason
     }
 
     fn void_active_descendants(&mut self, node: &GraphNode, scope: VoidScope<'_>) {
@@ -1411,8 +1227,7 @@ impl<'a> Engine<'a> {
             .executions
             .iter()
             .filter(|execution| {
-                execution.run == self.run
-                    && self.consumed_executions.contains(&execution.execution)
+                self.consumed_executions.contains(&execution.execution)
                     && descendants.contains(&execution.occurrence.node)
                     && execution
                         .occurrence
@@ -1430,8 +1245,7 @@ impl<'a> Engine<'a> {
             .collect::<Vec<_>>();
         losers.sort_unstable();
         for (_, execution, active) in losers {
-            let reason =
-                self.record_void_authorization(execution, scope.authorization, scope.reason);
+            let reason = self.record_void_cutoff(execution, scope.cutoff, scope.reason);
             if active && scope.emit_decisions {
                 self.push_void_decision(execution, reason);
             }
@@ -1444,8 +1258,7 @@ impl<'a> Engine<'a> {
             .executions
             .iter()
             .filter(|execution| {
-                execution.run == self.run
-                    && self.consumed_executions.contains(&execution.execution)
+                self.consumed_executions.contains(&execution.execution)
                     && descendants.contains(&execution.occurrence.node)
                     && execution
                         .occurrence
@@ -1467,11 +1280,8 @@ impl<'a> Engine<'a> {
             .collect::<Vec<_>>();
         losers.sort_unstable();
         for (_, execution, active) in losers {
-            let reason = self.record_void_authorization(
-                execution,
-                scope.common.authorization,
-                scope.common.reason,
-            );
+            let reason =
+                self.record_void_cutoff(execution, scope.common.cutoff, scope.common.reason);
             if active && scope.common.emit_decisions {
                 self.push_void_decision(execution, reason);
             }
@@ -1542,55 +1352,82 @@ fn collect_executable_depths(
     }
 }
 
-fn validate_history(executions: &[DurableExecution]) -> Result<(), ReducerError> {
-    let mut ids = BTreeSet::new();
-    let mut attempts = BTreeSet::new();
+pub(crate) fn validate_history(executions: &[DurableExecution]) -> Result<(), ReducerError> {
+    validate_history_for_mode(executions, ExecutionMode::LegacyAttempts)
+}
+
+fn validate_history_for_mode(
+    executions: &[DurableExecution],
+    execution_mode: ExecutionMode,
+) -> Result<(), ReducerError> {
+    let mut visit_identities = HistoryVisitIdentities::default();
     let mut instances = BTreeMap::new();
     let mut inverse_instances = BTreeMap::new();
     for execution in executions {
-        if !ids.insert(execution.execution)
-            || !attempts.insert((
-                execution.run,
-                execution.occurrence.clone(),
-                execution.attempt,
-            ))
-        {
-            return Err(ReducerError::InconsistentHistory);
-        }
-        let lineage = (execution.run, execution.occurrence.clone());
-        match instances.entry(lineage.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(execution.node_instance);
-            }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if *entry.get() != execution.node_instance =>
-            {
+        visit_identities.validate(execution, execution_mode)?;
+        validate_instance_lineage(execution, &mut instances, &mut inverse_instances)?;
+    }
+    if execution_mode == ExecutionMode::LegacyAttempts {
+        for occurrence in instances.keys() {
+            let mut values = executions
+                .iter()
+                .filter(|execution| &execution.occurrence == occurrence)
+                .map(|execution| execution.attempt.get())
+                .collect::<Vec<_>>();
+            values.sort_unstable();
+            if values.iter().copied().ne(1..=values.len() as u64) {
                 return Err(ReducerError::InconsistentHistory);
             }
-            std::collections::btree_map::Entry::Occupied(_) => {}
-        }
-        match inverse_instances.entry((execution.run, execution.node_instance)) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(execution.occurrence.clone());
-            }
-            std::collections::btree_map::Entry::Occupied(entry)
-                if entry.get() != &execution.occurrence =>
-            {
-                return Err(ReducerError::InconsistentHistory);
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
         }
     }
-    for (run, occurrence) in instances.keys() {
-        let mut values = executions
-            .iter()
-            .filter(|execution| execution.run == *run && &execution.occurrence == occurrence)
-            .map(|execution| execution.attempt.get())
-            .collect::<Vec<_>>();
-        values.sort_unstable();
-        if values.iter().copied().ne(1..=values.len() as u64) {
-            return Err(ReducerError::InconsistentHistory);
+    Ok(())
+}
+
+#[derive(Default)]
+struct HistoryVisitIdentities {
+    ids: BTreeSet<ExecutionId>,
+    attempts: BTreeSet<(StructuralOccurrence, PositiveInteger)>,
+    visits: BTreeSet<(StructuralOccurrence, HistoryPosition)>,
+}
+
+impl HistoryVisitIdentities {
+    fn validate(
+        &mut self,
+        execution: &DurableExecution,
+        execution_mode: ExecutionMode,
+    ) -> Result<(), ReducerError> {
+        let valid_visit = match execution_mode {
+            ExecutionMode::LegacyAttempts => self
+                .attempts
+                .insert((execution.occurrence.clone(), execution.attempt)),
+            ExecutionMode::NativeV2NoRetry => {
+                execution.attempt.get() == 1
+                    && self
+                        .visits
+                        .insert((execution.occurrence.clone(), execution.dispatch_position))
+            }
+        };
+        if self.ids.insert(execution.execution) && valid_visit {
+            Ok(())
+        } else {
+            Err(ReducerError::InconsistentHistory)
         }
+    }
+}
+
+fn validate_instance_lineage(
+    execution: &DurableExecution,
+    instances: &mut BTreeMap<StructuralOccurrence, NodeInstanceId>,
+    inverse_instances: &mut BTreeMap<NodeInstanceId, StructuralOccurrence>,
+) -> Result<(), ReducerError> {
+    if instances
+        .insert(execution.occurrence.clone(), execution.node_instance)
+        .is_some_and(|existing| existing != execution.node_instance)
+        || inverse_instances
+            .insert(execution.node_instance, execution.occurrence.clone())
+            .is_some_and(|existing| existing != execution.occurrence)
+    {
+        return Err(ReducerError::InconsistentHistory);
     }
     Ok(())
 }

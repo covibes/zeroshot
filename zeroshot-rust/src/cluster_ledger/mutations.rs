@@ -3,14 +3,18 @@ use serde::{Deserialize, Serialize};
 mod admission;
 mod effects;
 mod reducer;
+mod reducer_authorization;
 
 pub use admission::{AdmissionAllocation, AdmissionRequest};
-
-use crate::fault::{EngineFault, FaultContext};
-use crate::full_v1_reducer::{
-    durable_execution_history_digest, durable_executions_from_replay, ExecutionVoidAuthorization,
+pub use reducer_authorization::{
+    ExecutionVoidAuthorization, ReductionDispatchAuthorization, ReductionTerminalAuthorization,
+};
+pub(crate) use reducer_authorization::{
+    authorize_legacy_reduction, durable_execution_history_digest, durable_executions_from_replay,
+    LegacyAuthorizationContext, LegacyReduction,
 };
 
+use crate::fault::{EngineFault, FaultContext};
 use super::record::{
     CanonicalDigest, EffectId, ExecutionId, ExecutionVoidReason, NodeInstanceId, RecordPayload,
     RunSequence,
