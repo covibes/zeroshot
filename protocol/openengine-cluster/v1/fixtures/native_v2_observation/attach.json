@@ -1,0 +1,20 @@
+{
+  "event": {
+    "event": {
+      "text": "live output",
+      "type": "output"
+    },
+    "execution": "opaque-verifier-b",
+    "runId": "run-1",
+    "subscriptionId": "attach-1"
+  },
+  "params": {
+    "execution": "opaque-verifier-b",
+    "runId": "run-1"
+  },
+  "result": {
+    "execution": "opaque-verifier-b",
+    "runId": "run-1",
+    "subscriptionId": "attach-1"
+  }
+}

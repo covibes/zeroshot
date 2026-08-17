@@ -13,6 +13,7 @@ pub mod lifecycle;
 mod lifecycle_artifacts;
 pub mod logs;
 mod logs_artifacts;
+mod native_v2_observation_artifacts;
 mod negative_graph_fixtures;
 mod schema_helpers;
 pub mod watch;

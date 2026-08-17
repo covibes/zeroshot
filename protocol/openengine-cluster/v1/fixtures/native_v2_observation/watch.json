@@ -1,0 +1,29 @@
+{
+  "event": {
+    "cursor": "v2:8",
+    "runId": "run-1",
+    "status": {
+      "activeExecutions": [
+        {
+          "execution": "opaque-verifier-a",
+          "node": "verify-a"
+        },
+        {
+          "execution": "opaque-verifier-b",
+          "node": "verify-b"
+        }
+      ],
+      "phase": "running"
+    },
+    "subscriptionId": "watch-1"
+  },
+  "params": {
+    "fromCursor": "v2:7",
+    "runId": "run-1"
+  },
+  "result": {
+    "atCursor": "v2:7",
+    "runId": "run-1",
+    "subscriptionId": "watch-1"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "params": {
+    "runId": "run-1"
+  },
+  "result": {
+    "atCursor": "v2:10",
+    "runId": "run-1",
+    "status": {
+      "activeExecutions": [
+        {
+          "execution": "opaque-verifier-a",
+          "node": "verify-a"
+        },
+        {
+          "execution": "opaque-verifier-b",
+          "node": "verify-b"
+        }
+      ],
+      "phase": "stopping"
+    }
+  }
+}
