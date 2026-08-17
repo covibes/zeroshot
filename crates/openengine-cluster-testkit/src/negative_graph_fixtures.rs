@@ -1,3 +1,5 @@
+use crate::fixture::*;
+
 use serde_json::{json, Value};
 
 pub(crate) fn diagnostic_fixture() -> Value {
@@ -20,7 +22,9 @@ pub(crate) fn negative_graph_fixtures(
     artifact: Value,
 ) -> Vec<NegativeFixture> {
     let mut zero_bound = compiled.clone();
-    zero_bound["bounds"]["peakConcurrency"] = json!(0);
+    *zero_bound
+        .assert_key_mut("bounds")
+        .assert_key_mut("peakConcurrency") = json!(0);
     let mut fixtures = payload_fixtures(&full);
     fixtures.extend(reference_fixtures(&full, &artifact));
     fixtures.extend(identifier_key_fixtures(&full, &compiled));
@@ -33,7 +37,9 @@ pub(crate) fn negative_graph_fixtures(
 
 fn mutated(full: &Value, pointer: &str, value: Value) -> Value {
     let mut graph = full.clone();
-    *graph.pointer_mut(pointer).expect("fixture pointer exists") = value;
+    *graph
+        .pointer_mut(pointer)
+        .assert_value_with("fixture pointer exists") = value;
     graph
 }
 
@@ -41,9 +47,9 @@ fn extended(full: &Value, pointer: &str, key: &str, value: Value) -> Value {
     let mut graph = full.clone();
     graph
         .pointer_mut(pointer)
-        .expect("fixture pointer exists")
+        .assert_value_with("fixture pointer exists")
         .as_object_mut()
-        .expect("fixture target is an object")
+        .assert_value_with("fixture target is an object")
         .insert(key.to_owned(), value);
     graph
 }
@@ -242,7 +248,10 @@ fn artifact_fixtures(artifact: &Value) -> Vec<NegativeFixture> {
     .into_iter()
     .map(|(name, field)| {
         let mut document = artifact.clone();
-        document[field] = json!("forbidden");
+        document
+            .as_object_mut()
+            .assert_value_with("artifact fixture must be an object")
+            .insert(field.to_owned(), json!("forbidden"));
         (name, "FORBIDDEN_ARTIFACT_FIELD", "artifact", document)
     })
     .collect::<Vec<_>>();

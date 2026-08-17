@@ -1,3 +1,16 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+#[path = "support/json_insert.rs"]
+mod json_insert;
+
+#[path = "support/json_mut.rs"]
+mod json_mut;
+
+#[path = "support/json_read.rs"]
+mod json_read;
+
+use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     legacy_ship_request_payload_type, legacy_ship_result_payload_type, GraphProfile,
     LegacyShipRequest, WorkerDescriptor, WorkerFailureReason, WorkerOutcome, WorkerProtocolBinding,
@@ -30,12 +43,51 @@ fn descriptor() -> serde_json::Value {
     })
 }
 
+fn descriptor_validator() -> jsonschema::Validator {
+    let schema = serde_json::to_value(schemars::schema_for!(WorkerDescriptor)).assert_value();
+    jsonschema::validator_for(&schema).assert_value()
+}
+
+fn assert_valid_descriptor(value: &serde_json::Value, validator: &jsonschema::Validator) {
+    assert!(serde_json::from_value::<WorkerDescriptor>(value.clone()).is_ok());
+    assert!(validator.is_valid(value));
+}
+
+fn assert_invalid_descriptor(value: &serde_json::Value, validator: &jsonschema::Validator) {
+    assert!(serde_json::from_value::<WorkerDescriptor>(value.clone()).is_err());
+    assert!(!validator.is_valid(value));
+}
+
+fn assert_descriptor_mutations_rejected(
+    base: &serde_json::Value,
+    validator: &jsonschema::Validator,
+    mutations: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
+) {
+    for (pointer, replacement) in mutations {
+        let mut invalid = base.clone();
+        *json_mut::json_at_mut(&mut invalid, pointer) = replacement;
+        assert_invalid_descriptor(&invalid, validator);
+    }
+}
+
+fn legacy_descriptor() -> serde_json::Value {
+    let mut legacy = descriptor();
+    *json_mut::json_at_mut(&mut legacy, "/worker") = json!(LEGACY_ZEROSHOT_WORKER);
+    *json_mut::json_at_mut(&mut legacy, "/graphProfiles") =
+        json!([GraphProfile::SingleWorker.as_str()]);
+    *json_mut::json_at_mut(&mut legacy, "/binding") =
+        serde_json::to_value(WorkerProtocolBinding::legacy_zeroshot_ship_v1()).assert_value();
+    *json_mut::json_at_mut(&mut legacy, "/contract/input") =
+        serde_json::to_value(legacy_ship_request_payload_type().assert_value()).assert_value();
+    *json_mut::json_at_mut(&mut legacy, "/contract/output") =
+        serde_json::to_value(legacy_ship_result_payload_type().assert_value()).assert_value();
+    legacy
+}
+
 #[test]
 fn bindings_are_exact_and_descriptor_fields_are_closed() {
-    assert!(serde_json::from_value::<WorkerDescriptor>(descriptor()).is_ok());
-    let schema = serde_json::to_value(schemars::schema_for!(WorkerDescriptor)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    assert!(validator.is_valid(&descriptor()));
+    let validator = descriptor_validator();
+    assert_valid_descriptor(&descriptor(), &validator);
 
     for (field, value) in [
         ("command", json!("curl example")),
@@ -46,124 +98,96 @@ fn bindings_are_exact_and_descriptor_fields_are_closed() {
         ("path", json!("/tmp/secret")),
     ] {
         let mut rejected = descriptor();
-        rejected[field] = value;
-        assert!(serde_json::from_value::<WorkerDescriptor>(rejected.clone()).is_err());
-        assert!(!validator.is_valid(&rejected));
+        json_insert::json_insert(&mut rejected, "", field, value);
+        assert_invalid_descriptor(&rejected, &validator);
     }
 
     let mut unsupported = descriptor();
-    unsupported["binding"]["version"] = json!("2");
-    assert!(serde_json::from_value::<WorkerDescriptor>(unsupported.clone()).is_err());
-    assert!(!validator.is_valid(&unsupported));
+    *json_mut::json_at_mut(&mut unsupported, "/binding/version") = json!("2");
+    assert_invalid_descriptor(&unsupported, &validator);
     assert_eq!(WorkerProtocolBinding::acp_v1().version, ACP_VERSION);
 }
 
 #[test]
 fn descriptor_rejects_empty_duplicate_sets_and_nonopaque_handles() {
-    for pointer in [
-        "/graphProfiles",
-        "/contract/errors",
-        "/artifactProfile/allowedTypeIds",
-    ] {
-        let mut rejected = descriptor();
-        *rejected.pointer_mut(pointer).unwrap() = json!([]);
-        assert!(serde_json::from_value::<WorkerDescriptor>(rejected).is_err());
-    }
+    let validator = descriptor_validator();
+    assert_descriptor_mutations_rejected(
+        &descriptor(),
+        &validator,
+        [
+            ("/graphProfiles", json!([])),
+            ("/contract/errors", json!([])),
+            ("/artifactProfile/allowedTypeIds", json!([])),
+        ],
+    );
     let mut duplicate = descriptor();
-    duplicate["graphProfiles"] = json!(["openengine.graph.full/v1", "openengine.graph.full/v1"]);
-    assert!(serde_json::from_value::<WorkerDescriptor>(duplicate).is_err());
+    *json_mut::json_at_mut(&mut duplicate, "/graphProfiles") =
+        json!(["openengine.graph.full/v1", "openengine.graph.full/v1"]);
+    assert_invalid_descriptor(&duplicate, &validator);
 
     let mut duplicate_credentials = descriptor();
-    duplicate_credentials["credentialRequirements"] =
+    *json_mut::json_at_mut(&mut duplicate_credentials, "/credentialRequirements") =
         json!(["credential.mock@1", "credential.mock@1"]);
-    assert!(serde_json::from_value::<WorkerDescriptor>(duplicate_credentials.clone()).is_err());
-    let schema = serde_json::to_value(schemars::schema_for!(WorkerDescriptor)).unwrap();
-    assert!(
-        !jsonschema::validator_for(&schema)
-            .unwrap()
-            .is_valid(&duplicate_credentials)
-    );
+    assert_invalid_descriptor(&duplicate_credentials, &validator);
 
     let mut incomplete_errors = descriptor();
-    incomplete_errors["contract"]["errors"] = json!(["timeout", "crash", "malformed"]);
-    assert!(serde_json::from_value::<WorkerDescriptor>(incomplete_errors.clone()).is_err());
-    let schema = serde_json::to_value(schemars::schema_for!(WorkerDescriptor)).unwrap();
-    assert!(
-        !jsonschema::validator_for(&schema)
-            .unwrap()
-            .is_valid(&incomplete_errors)
-    );
+    *json_mut::json_at_mut(&mut incomplete_errors, "/contract/errors") =
+        json!(["timeout", "crash", "malformed"]);
+    assert_invalid_descriptor(&incomplete_errors, &validator);
 
     for handle in ["raw-token", "env/API_TOKEN", "https://credentials.invalid"] {
         let mut rejected = descriptor();
-        rejected["credentialRequirements"] = json!([handle]);
-        assert!(serde_json::from_value::<WorkerDescriptor>(rejected).is_err());
+        *json_mut::json_at_mut(&mut rejected, "/credentialRequirements") = json!([handle]);
+        assert_invalid_descriptor(&rejected, &validator);
     }
 }
 
 #[test]
 fn descriptor_schema_matches_legacy_cross_field_validation() {
-    let schema = serde_json::to_value(schemars::schema_for!(WorkerDescriptor)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    let mut legacy = descriptor();
-    legacy["worker"] = json!(LEGACY_ZEROSHOT_WORKER);
-    legacy["graphProfiles"] = json!([GraphProfile::SingleWorker.as_str()]);
-    legacy["binding"] =
-        serde_json::to_value(WorkerProtocolBinding::legacy_zeroshot_ship_v1()).unwrap();
-    legacy["contract"]["input"] = serde_json::to_value(legacy_ship_request_payload_type()).unwrap();
-    legacy["contract"]["output"] = serde_json::to_value(legacy_ship_result_payload_type()).unwrap();
-    assert!(validator.is_valid(&legacy));
+    let validator = descriptor_validator();
+    let legacy = legacy_descriptor();
+    assert_valid_descriptor(&legacy, &validator);
 
-    for (pointer, replacement) in [
-        ("/worker", json!("wrong.legacy@1")),
-        ("/graphProfiles", json!([GraphProfile::Full.as_str()])),
-        ("/contract/input", json!({ "kind": "string" })),
-        ("/contract/output", json!({ "kind": "string" })),
-        (
-            "/contract/errors",
-            json!(["crash", "timeout", "malformed", "refusal"]),
-        ),
-    ] {
-        let mut invalid = legacy.clone();
-        *invalid.pointer_mut(pointer).unwrap() = replacement;
-        assert!(serde_json::from_value::<WorkerDescriptor>(invalid.clone()).is_err());
-        assert!(
-            !validator.is_valid(&invalid),
-            "schema accepted invalid legacy descriptor mutation at {pointer}"
-        );
-    }
+    assert_descriptor_mutations_rejected(
+        &legacy,
+        &validator,
+        [
+            ("/worker", json!("wrong.legacy@1")),
+            ("/graphProfiles", json!([GraphProfile::Full.as_str()])),
+            ("/contract/input", json!({ "kind": "string" })),
+            ("/contract/output", json!({ "kind": "string" })),
+            (
+                "/contract/errors",
+                json!(["crash", "timeout", "malformed", "refusal"]),
+            ),
+        ],
+    );
 
     let mut mismatched_identity = descriptor();
-    mismatched_identity["worker"] = json!(LEGACY_ZEROSHOT_WORKER);
-    assert!(serde_json::from_value::<WorkerDescriptor>(mismatched_identity.clone()).is_err());
-    assert!(!validator.is_valid(&mismatched_identity));
+    *json_mut::json_at_mut(&mut mismatched_identity, "/worker") = json!(LEGACY_ZEROSHOT_WORKER);
+    assert_invalid_descriptor(&mismatched_identity, &validator);
 }
 
 #[test]
 fn builtin_binding_round_trips_and_rejects_invalid_variants() {
     let mut builtin = descriptor();
-    builtin["worker"] = json!("mock.builtin@1");
-    builtin["binding"] = serde_json::to_value(WorkerProtocolBinding::builtin_v1()).unwrap();
-    builtin["credentialRequirements"] = json!([]);
+    *json_mut::json_at_mut(&mut builtin, "/worker") = json!("mock.builtin@1");
+    *json_mut::json_at_mut(&mut builtin, "/binding") =
+        serde_json::to_value(WorkerProtocolBinding::builtin_v1()).assert_value();
+    *json_mut::json_at_mut(&mut builtin, "/credentialRequirements") = json!([]);
 
-    assert!(serde_json::from_value::<WorkerDescriptor>(builtin.clone()).is_ok());
-    let schema = serde_json::to_value(schemars::schema_for!(WorkerDescriptor)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    assert!(validator.is_valid(&builtin));
+    let validator = descriptor_validator();
+    assert_valid_descriptor(&builtin, &validator);
 
-    for (pointer, replacement) in [
-        ("/binding/version", json!("2")),
-        ("/binding/profile", json!("openengine.worker.builtin/v2")),
-        ("/credentialRequirements", json!(["credential.mock@1"])),
-    ] {
-        let mut invalid = builtin.clone();
-        *invalid.pointer_mut(pointer).unwrap() = replacement;
-        assert!(serde_json::from_value::<WorkerDescriptor>(invalid.clone()).is_err());
-        assert!(
-            !validator.is_valid(&invalid),
-            "schema accepted invalid builtin descriptor mutation at {pointer}"
-        );
-    }
+    assert_descriptor_mutations_rejected(
+        &builtin,
+        &validator,
+        [
+            ("/binding/version", json!("2")),
+            ("/binding/profile", json!("openengine.worker.builtin/v2")),
+            ("/credentialRequirements", json!(["credential.mock@1"])),
+        ],
+    );
 
     assert_eq!(WorkerProtocolBinding::builtin_v1().version, BUILTIN_VERSION);
     assert_eq!(WorkerProtocolBinding::builtin_v1().profile, BUILTIN_PROFILE);
@@ -182,25 +206,41 @@ fn strict_autonomy_has_only_typed_fail_closed_outcomes() {
             "authentication_required",
         ),
     ] {
-        let value = serde_json::to_value(outcome).unwrap();
-        assert_eq!(value["status"], "error");
-        assert_eq!(value["code"], "refusal");
-        assert_eq!(value["reason"], reason);
+        let value = serde_json::to_value(outcome).assert_value();
+        assert_eq!(
+            json_read::json_at(&value, "/status")
+                .as_str()
+                .assert_value(),
+            "error"
+        );
+        assert_eq!(
+            json_read::json_at(&value, "/code").as_str().assert_value(),
+            "refusal"
+        );
+        assert_eq!(
+            json_read::json_at(&value, "/reason")
+                .as_str()
+                .assert_value(),
+            reason
+        );
         assert!(value.get("callback").is_none());
     }
+    let malformed = serde_json::to_value(WorkerOutcome::malformed()).assert_value();
     assert_eq!(
-        serde_json::to_value(WorkerOutcome::malformed()).unwrap()["code"],
+        json_read::json_at(&malformed, "/code")
+            .as_str()
+            .assert_value(),
         "malformed"
     );
 
-    let schema = serde_json::to_value(schemars::schema_for!(WorkerOutcome)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(WorkerOutcome)).assert_value();
+    let validator = jsonschema::validator_for(&schema).assert_value();
     for code in RUNTIME_WORKER_ERRORS {
         let outcome = WorkerOutcome::declared_failure(code);
-        let value = serde_json::to_value(&outcome).unwrap();
+        let value = serde_json::to_value(&outcome).assert_value();
         assert!(validator.is_valid(&value));
         assert_eq!(
-            serde_json::from_value::<WorkerOutcome>(value).unwrap(),
+            serde_json::from_value::<WorkerOutcome>(value).assert_value(),
             outcome
         );
     }
@@ -222,25 +262,22 @@ fn strict_autonomy_has_only_typed_fail_closed_outcomes() {
 
 #[test]
 fn legacy_ship_contract_is_single_worker_and_source_consistent() {
-    let mut legacy = descriptor();
-    legacy["worker"] = json!(LEGACY_ZEROSHOT_WORKER);
-    legacy["graphProfiles"] = json!([GraphProfile::SingleWorker.as_str()]);
-    legacy["binding"] =
-        serde_json::to_value(WorkerProtocolBinding::legacy_zeroshot_ship_v1()).unwrap();
-    legacy["contract"]["input"] = serde_json::to_value(legacy_ship_request_payload_type()).unwrap();
-    legacy["contract"]["output"] = serde_json::to_value(legacy_ship_result_payload_type()).unwrap();
-    assert!(serde_json::from_value::<WorkerDescriptor>(legacy.clone()).is_ok());
-    for pointer in ["/contract/input", "/contract/output"] {
-        let mut invalid = legacy.clone();
-        *invalid.pointer_mut(pointer).unwrap() = json!({ "kind": "string" });
-        assert!(serde_json::from_value::<WorkerDescriptor>(invalid).is_err());
-    }
-    let mut invalid = legacy.clone();
-    invalid["contract"]["errors"] = json!(["crash", "timeout", "malformed", "refusal"]);
-    assert!(serde_json::from_value::<WorkerDescriptor>(invalid).is_err());
-    let mut invalid = legacy;
-    invalid["graphProfiles"] = json!([GraphProfile::Full.as_str()]);
-    assert!(serde_json::from_value::<WorkerDescriptor>(invalid).is_err());
+    let legacy = legacy_descriptor();
+    let validator = descriptor_validator();
+    assert_valid_descriptor(&legacy, &validator);
+    assert_descriptor_mutations_rejected(
+        &legacy,
+        &validator,
+        [
+            ("/contract/input", json!({ "kind": "string" })),
+            ("/contract/output", json!({ "kind": "string" })),
+            (
+                "/contract/errors",
+                json!(["crash", "timeout", "malformed", "refusal"]),
+            ),
+            ("/graphProfiles", json!([GraphProfile::Full.as_str()])),
+        ],
+    );
 
     let base = json!({
         "source": "issue",
@@ -255,17 +292,17 @@ fn legacy_ship_contract_is_single_worker_and_source_consistent() {
     });
     assert!(serde_json::from_value::<LegacyShipRequest>(base.clone()).is_ok());
     let mut inconsistent = base;
-    inconsistent["prompt"] = json!("also prompt");
+    *json_mut::json_at_mut(&mut inconsistent, "/prompt") = json!("also prompt");
     assert!(serde_json::from_value::<LegacyShipRequest>(inconsistent.clone()).is_err());
-    let schema = serde_json::to_value(schemars::schema_for!(LegacyShipRequest)).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(LegacyShipRequest)).assert_value();
     assert!(
         !jsonschema::validator_for(&schema)
-            .unwrap()
+            .assert_value()
             .is_valid(&inconsistent)
     );
 
     let errors = serde_json::from_value::<WorkerDescriptor>(descriptor())
-        .unwrap()
+        .assert_value()
         .contract
         .errors;
     assert_eq!(errors, RUNTIME_WORKER_ERRORS);

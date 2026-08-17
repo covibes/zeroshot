@@ -56,7 +56,7 @@ fn status(phase: RunStatus, at: u64) -> RunStatusResult {
 }
 
 fn execution() -> ExecutionRef {
-    ExecutionRef::new("execution-1").unwrap()
+    ExecutionRef::new("execution-1").assert_value()
 }
 
 #[async_trait]
@@ -168,8 +168,8 @@ impl ClusterBackend for FakeBackend {
                 execution: Some(execution()),
                 record: LogRecord {
                     level: LogLevel::Info,
-                    target: BoundedLogTarget::new("agent").unwrap(),
-                    message: BoundedLogMessage::new("safe output").unwrap(),
+                    target: BoundedLogTarget::new("agent").assert_value(),
+                    message: BoundedLogMessage::new("safe output").assert_value(),
                 },
             })]),
         ))
@@ -193,7 +193,7 @@ impl ClusterBackend for FakeBackend {
                     run_id: run_id(),
                     execution: execution(),
                     event: AgentAttachEvent::Output {
-                        text: BoundedAssistantOutput::new("live").unwrap(),
+                        text: BoundedAssistantOutput::new("live").assert_value(),
                     },
                 },
             )]),
@@ -252,7 +252,7 @@ async fn unary_run_methods_route_through_the_typed_backend() {
                     .to_string(),
             )
             .await;
-        let response: Value = serde_json::from_str(&response).unwrap();
+        let response: Value = serde_json::from_str(&response).assert_value();
         assert!(response.get("result").is_some(), "{method}: {response}");
     }
 }
@@ -266,7 +266,7 @@ async fn typed_direct_subscription_surface_reuses_run_observation_values() {
             from_cursor: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     assert!(matches!(
         watch.next().await,
         Some(RunSubscriptionItem::Event(RunWatchEventNotification { .. }))
@@ -284,7 +284,7 @@ async fn typed_direct_subscription_surface_reuses_run_observation_values() {
             execution: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     assert!(matches!(
         logs.next().await,
         Some(RunSubscriptionItem::Event(RunLogEventNotification { .. }))
@@ -296,7 +296,7 @@ async fn typed_direct_subscription_surface_reuses_run_observation_values() {
             execution: execution(),
         })
         .await
-        .unwrap();
+        .assert_value();
     assert!(matches!(
         attach.next().await,
         Some(RunSubscriptionItem::Event(
@@ -310,15 +310,15 @@ async fn write_request(writer: &mut DuplexStream, method: &str, params: Value) {
     writer
         .write_all(request.to_string().as_bytes())
         .await
-        .unwrap();
-    writer.write_all(b"\n").await.unwrap();
-    writer.flush().await.unwrap();
+        .assert_value();
+    writer.write_all(b"\n").await.assert_value();
+    writer.flush().await.assert_value();
 }
 
 async fn read_value(reader: &mut BufReader<DuplexStream>) -> Value {
     let mut line = String::new();
-    assert!(reader.read_line(&mut line).await.unwrap() > 0);
-    serde_json::from_str(&line).unwrap()
+    assert!(reader.read_line(&mut line).await.assert_value() > 0);
+    serde_json::from_str(&line).assert_value()
 }
 
 #[tokio::test]
@@ -328,14 +328,26 @@ async fn ndjson_routes_run_watch_and_emits_resume_cursor_on_close() {
     write_request(&mut writer, "run/watch", json!({ "runId": "run-1" })).await;
 
     let response = read_value(&mut reader).await;
-    assert_eq!(response["result"]["subscriptionId"], "watch-1");
+    assert_eq!(
+        response.assert_at("result").assert_at("subscriptionId"),
+        "watch-1"
+    );
     let event = read_value(&mut reader).await;
-    assert_eq!(event["method"], "event");
-    assert_eq!(event["params"]["cursor"], "v2:3");
+    assert_eq!(event.assert_at("method"), "event");
+    assert_eq!(event.assert_at("params").assert_at("cursor"), "v2:3");
     let closed = read_value(&mut reader).await;
-    assert_eq!(closed["method"], "subscription/closed");
-    assert_eq!(closed["params"]["lastDeliveredCursor"], "v2:3");
+    assert_eq!(closed.assert_at("method"), "subscription/closed");
+    assert_eq!(
+        closed.assert_at("params").assert_at("lastDeliveredCursor"),
+        "v2:3"
+    );
 
     drop(writer);
     await_ndjson_shutdown(server).await;
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_at.rs"]
+mod assert_at;
+use assert_at::AssertAt;

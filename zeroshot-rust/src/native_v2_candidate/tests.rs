@@ -3,16 +3,15 @@
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    GraphSpec, IdempotencyKey, NodeName, RunAttachEventNotification, RunAttachParams,
-    RunForceParams, RunForceResult, RunId, RunListParams, RunListResult, RunLogEventNotification,
-    RunLogsParams, RunStatus, RunStatusParams, RunStatusResult, RunSubmitParams, RunSubmitResult,
+    IdempotencyKey, NodeName, RunAttachEventNotification, RunAttachParams, RunForceParams,
+    RunForceResult, RunId, RunListParams, RunListResult, RunLogEventNotification, RunLogsParams,
+    RunStatus, RunStatusParams, RunStatusResult, RunSubmitParams, RunSubmitResult,
     RunWatchEventNotification, RunWatchParams, TerminalResult, WorkerOutcome,
 };
 use openengine_cluster_server::{ClusterBackend, ConnectionContext};
@@ -21,6 +20,7 @@ use serde_json::{json, Value};
 use super::*;
 use crate::execution::process::HostedProcessPool;
 use crate::execution::SessionScope;
+use crate::native_v2_candidate::test_support::{TestGitRepository, git_output};
 use crate::native_v2_admission::NativeV2Admission;
 use crate::native_v2_capsule::{NativeCapsuleNodeEndpoint, RemoteCapsuleNodeRunner};
 use crate::native_v2_claude::ClaudeProcessEnvironment;
@@ -42,64 +42,9 @@ use crate::native_v2_delivery::{
 use crate::native_v2_runner::NodeRole;
 use crate::native_v2_supervisor::RunRuntimeExit;
 use crate::v2_run_ledger::fake::FakeRunLedger;
-use crate::worker_catalog::{ModelId, ReasoningEffort};
+use crate::worker_catalog::{self, ReasoningEffort};
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
-
-struct TempRepository {
-    root: PathBuf,
-    remote: PathBuf,
-    workspace: PathBuf,
-    base: String,
-}
-
-impl TempRepository {
-    fn new() -> Self {
-        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "zeroshot-v2-candidate-{}-{serial}",
-            std::process::id()
-        ));
-        let remote = root.join("remote.git");
-        let seed = root.join("seed");
-        let workspace = root.join("workspace");
-        fs::create_dir_all(&root).expect("create test root");
-        git(&root, &["init", "--bare", text(&remote)]);
-        git(&root, &["init", text(&seed)]);
-        fs::write(seed.join("README.md"), "base\n").expect("seed file");
-        git(&seed, &["add", "README.md"]);
-        git(
-            &seed,
-            &[
-                "-c",
-                "user.name=Candidate Test",
-                "-c",
-                "user.email=candidate@example.invalid",
-                "commit",
-                "-m",
-                "base",
-            ],
-        );
-        git(&seed, &["branch", "-M", "main"]);
-        git(&seed, &["remote", "add", "origin", text(&remote)]);
-        git(&seed, &["push", "origin", "main"]);
-        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-        git(&root, &["clone", text(&remote), text(&workspace)]);
-        let base = git_output(&workspace, &["rev-parse", "HEAD"]);
-        Self {
-            root,
-            remote,
-            workspace,
-            base,
-        }
-    }
-}
-
-impl Drop for TempRepository {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
+type TempRepository = TestGitRepository;
 
 struct ScriptedGitHub {
     remote: PathBuf,
@@ -177,14 +122,7 @@ impl GitHubDeliveryAuthority for ScriptedGitHub {
                 checks: GitHubChecks::NotRequired,
             }
         };
-        Ok(GitHubReviewObservation {
-            review_id: review.review_id.clone(),
-            repository: review.repository.clone(),
-            target_branch: review.target_branch.clone(),
-            head_branch: review.head_branch.clone(),
-            head_revision: review.head_revision.clone(),
-            state,
-        })
+        Ok(review.observation(state))
     }
 
     async fn request_merge(
@@ -292,130 +230,9 @@ struct CandidateAllocator {
     cleanup: Arc<ConfirmCleanup>,
 }
 
-struct EmptySubscription<E>(std::marker::PhantomData<E>);
-
-#[async_trait]
-impl<E> CliSubscription<E> for EmptySubscription<E>
-where
-    E: Send,
-{
-    async fn next(&mut self) -> Result<Option<CliSubscriptionItem<E>>, NativeV2CliError> {
-        Ok(None)
-    }
-}
-
-struct InProcessCliBackend {
-    controller: Arc<NativeV2CloudController>,
-}
-
-impl InProcessCliBackend {
-    fn target(&self, target: &str) -> Result<(), NativeV2CliError> {
-        if target == "candidate-cloud" {
-            Ok(())
-        } else {
-            Err(NativeV2CliError::Target("unknown test target".to_owned()))
-        }
-    }
-}
-
-#[async_trait]
-impl NativeV2CliBackend for InProcessCliBackend {
-    type Watch = EmptySubscription<RunWatchEventNotification>;
-    type Logs = EmptySubscription<RunLogEventNotification>;
-    type Attach = EmptySubscription<RunAttachEventNotification>;
-
-    async fn target_add(&self, _request: TargetAdd) -> Result<(), NativeV2CliError> {
-        Err(NativeV2CliError::Target(
-            "test backend has no target registry".to_owned(),
-        ))
-    }
-
-    async fn target_login(&self, _name: &str) -> Result<(), NativeV2CliError> {
-        Err(NativeV2CliError::Target(
-            "test backend has no login authority".to_owned(),
-        ))
-    }
-
-    async fn target_setup(&self, _request: TargetSetup) -> Result<(), NativeV2CliError> {
-        Err(NativeV2CliError::Target(
-            "test backend has no setup authority".to_owned(),
-        ))
-    }
-
-    async fn run_submit(
-        &self,
-        target: &str,
-        params: RunSubmitParams,
-    ) -> Result<RunSubmitResult, NativeV2CliError> {
-        self.target(target)?;
-        ClusterBackend::run_submit(&*self.controller, &ConnectionContext::default(), params)
-            .await
-            .map_err(cli_protocol_error)
-    }
-
-    async fn run_list(
-        &self,
-        target: &str,
-        params: RunListParams,
-    ) -> Result<RunListResult, NativeV2CliError> {
-        self.target(target)?;
-        ClusterBackend::run_list(&*self.controller, &ConnectionContext::default(), params)
-            .await
-            .map_err(cli_protocol_error)
-    }
-
-    async fn run_status(
-        &self,
-        target: &str,
-        params: RunStatusParams,
-    ) -> Result<RunStatusResult, NativeV2CliError> {
-        self.target(target)?;
-        ClusterBackend::run_status(&*self.controller, &ConnectionContext::default(), params)
-            .await
-            .map_err(cli_protocol_error)
-    }
-
-    async fn run_watch(
-        &self,
-        _target: &str,
-        _params: RunWatchParams,
-    ) -> Result<Self::Watch, NativeV2CliError> {
-        Err(NativeV2CliError::Target(
-            "detached test run does not open watch".to_owned(),
-        ))
-    }
-
-    async fn run_logs(
-        &self,
-        _target: &str,
-        _params: RunLogsParams,
-    ) -> Result<Self::Logs, NativeV2CliError> {
-        Err(NativeV2CliError::Target(
-            "test backend does not open logs".to_owned(),
-        ))
-    }
-
-    async fn run_attach(
-        &self,
-        _target: &str,
-        _params: RunAttachParams,
-    ) -> Result<Self::Attach, NativeV2CliError> {
-        Err(NativeV2CliError::Target(
-            "test backend does not open attach".to_owned(),
-        ))
-    }
-
-    async fn run_force(
-        &self,
-        target: &str,
-        params: RunForceParams,
-    ) -> Result<RunForceResult, NativeV2CliError> {
-        self.target(target)?;
-        ClusterBackend::run_force(&*self.controller, &ConnectionContext::default(), params)
-            .await
-            .map_err(cli_protocol_error)
-    }
-}
+#[path = "tests/cli_backend.rs"]
+mod cli_backend;
+use cli_backend::InProcessCliBackend;
 
 #[async_trait]
 impl CapsuleAllocator for CandidateAllocator {
@@ -466,9 +283,9 @@ impl CapsuleAllocator for CandidateAllocator {
 
 #[tokio::test]
 async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2() {
-    let repository = TempRepository::new();
+    let repository = TempRepository::candidate();
     let target = DeliveryTarget::new("acme/project", "main", repository.base.clone())
-        .expect("delivery target");
+        .assert_value_with("delivery target");
     let github = Arc::new(ScriptedGitHub::new(repository.remote.clone()));
     let agent = Arc::new(ScriptedAgent {
         workspace: repository.workspace.clone(),
@@ -484,7 +301,7 @@ async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2(
         cleanup: cleanup.clone(),
     });
     let ledger = Arc::new(FakeRunLedger::new());
-    let token = EnvironmentVariableName::new(GITHUB_TOKEN_ENV).expect("token name");
+    let token = EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value_with("token name");
     let controller = Arc::new(
         NativeV2CloudController::new(
             ledger,
@@ -493,37 +310,9 @@ async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2(
             allocator,
         )
         .await
-        .expect("controller"),
+        .assert_value_with("controller"),
     );
-    let graph_path = repository.root.join("graph.json");
-    let input_path = repository.root.join("input.json");
-    fs::write(
-        &graph_path,
-        serde_json::to_vec(&shipping_graph()).expect("encode graph"),
-    )
-    .expect("write graph");
-    fs::write(&input_path, b"null\n").expect("write input");
-    let backend = InProcessCliBackend {
-        controller: controller.clone(),
-    };
-    let mut output = Vec::new();
-    let outcome = execute_native_v2_cli(
-        NativeV2CliCommand::Run(RunCommand {
-            target: "candidate-cloud".to_owned(),
-            graph: graph_path,
-            input: input_path,
-            ship: true,
-            detach: true,
-            submission_key: Some(IdempotencyKey::new("candidate-e2e").expect("submission key")),
-        }),
-        &backend,
-        &mut NeverDetach,
-        &mut output,
-    )
-    .await
-    .expect("CLI run");
-    assert_eq!(outcome, CliOutcome::Detached);
-    let submitted: RunSubmitResult = serde_json::from_slice(&output).expect("CLI receipt");
+    let submitted = submit_through_cli(&repository, controller.clone()).await;
     let direct_status = ClusterBackend::run_status(
         &*controller,
         &ConnectionContext::default(),
@@ -532,7 +321,7 @@ async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2(
         },
     )
     .await
-    .expect("direct OECP status");
+    .assert_value_with("direct OECP status");
     assert_eq!(direct_status.run_id, submitted.run_id);
     let terminal = wait_for_terminal(&controller, &submitted.run_id).await;
 
@@ -550,9 +339,44 @@ async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2(
     assert!(!git_output(&repository.remote, &["show-ref", "--heads"]).is_empty());
 }
 
+async fn submit_through_cli(
+    repository: &TempRepository,
+    controller: Arc<NativeV2CloudController>,
+) -> RunSubmitResult {
+    let graph_path = repository.root.child("graph.json");
+    let input_path = repository.root.child("input.json");
+    fs::write(
+        &graph_path,
+        serde_json::to_vec(&shipping_graph()).assert_value_with("encode graph"),
+    )
+    .assert_value_with("write graph");
+    fs::write(&input_path, b"null\n").assert_value_with("write input");
+    let backend = InProcessCliBackend { controller };
+    let mut output = Vec::new();
+    let outcome = execute_native_v2_cli(
+        NativeV2CliCommand::Run(RunCommand {
+            target: "candidate-cloud".to_owned(),
+            graph: graph_path,
+            input: input_path,
+            ship: true,
+            detach: true,
+            submission_key: Some(
+                IdempotencyKey::new("candidate-e2e").assert_value_with("submission key"),
+            ),
+        }),
+        &backend,
+        &mut NeverDetach,
+        &mut output,
+    )
+    .await
+    .assert_value_with("CLI run");
+    assert_eq!(outcome, CliOutcome::Detached);
+    serde_json::from_slice(&output).assert_value_with("CLI receipt")
+}
+
 #[tokio::test]
 async fn concrete_codex_and_claude_configs_bind_only_to_their_admitted_lane() {
-    let repository = TempRepository::new();
+    let repository = TempRepository::candidate();
     let github = Arc::new(ScriptedGitHub::new(repository.remote.clone()));
     let codex = admitted(RuntimePlanKind::Codex).await;
     let codex_config = candidate_config(
@@ -561,7 +385,7 @@ async fn concrete_codex_and_claude_configs_bind_only_to_their_admitted_lane() {
         github.clone(),
         codex.ship,
     );
-    build_native_v2_candidate(&codex, codex_config).expect("Codex candidate");
+    build_native_v2_candidate(&codex, codex_config).assert_value_with("Codex candidate");
 
     let claude = admitted(RuntimePlanKind::Claude).await;
     let claude_config = candidate_config(
@@ -570,13 +394,12 @@ async fn concrete_codex_and_claude_configs_bind_only_to_their_admitted_lane() {
         github.clone(),
         claude.ship,
     );
-    build_native_v2_candidate(&claude, claude_config).expect("Claude candidate");
+    build_native_v2_candidate(&claude, claude_config).assert_value_with("Claude candidate");
 
     let mismatch = candidate_config(RuntimePlanKind::Claude, &repository, github, codex.ship);
-    match build_native_v2_candidate(&codex, mismatch) {
-        Err(error) => assert_eq!(error, NativeV2CandidateError::RuntimeMismatch),
-        Ok(_) => panic!("mismatched candidate must fail"),
-    }
+    let error = build_native_v2_candidate(&codex, mismatch)
+        .assert_error_with("mismatched candidate must fail");
+    assert_eq!(error, NativeV2CandidateError::RuntimeMismatch);
 }
 
 #[test]
@@ -600,182 +423,10 @@ fn candidate_source_has_no_route_to_the_replaced_runtime_paths() {
     }
 }
 
-#[derive(Clone, Copy)]
-enum RuntimePlanKind {
-    Codex,
-    Claude,
-}
+#[path = "tests/fixtures.rs"]
+mod fixtures;
+use fixtures::{
+    RuntimePlanKind, admitted, candidate_config, runtime, shipping_graph, wait_for_terminal,
+};
 
-fn runtime(kind: RuntimePlanKind) -> RuntimePlan {
-    let agent = NodeRuntimeBinding::Agent {
-        model: ModelId::new(match kind {
-            RuntimePlanKind::Codex => "gpt-5.6-sol",
-            RuntimePlanKind::Claude => "claude-sonnet-5",
-        })
-        .expect("model"),
-        effort: Some(ReasoningEffort::Max),
-        session_scope: SessionScope::Execution,
-        env: BTreeSet::new(),
-    };
-    let delivery = NodeRuntimeBinding::GitDelivery {
-        env: BTreeSet::from([EnvironmentVariableName::new(GITHUB_TOKEN_ENV).expect("token name")]),
-    };
-    let nodes = BTreeMap::from([
-        (NodeName::new("worker").expect("worker name"), agent),
-        (NodeName::new("deliver").expect("delivery name"), delivery),
-    ]);
-    match kind {
-        RuntimePlanKind::Codex => RuntimePlan::Codex {
-            provider: CodexProvider::OpenAi,
-            nodes,
-        },
-        RuntimePlanKind::Claude => RuntimePlan::Claude {
-            provider: crate::native_v2_contract::ClaudeProvider::Anthropic,
-            nodes,
-        },
-    }
-}
-
-fn shipping_graph() -> GraphSpec {
-    serde_json::from_value(json!({
-        "profile":"openengine.graph.full/v1",
-        "initialInput":{"kind":"null"},
-        "policy":{"policy":"policy.native-v2@1","default":"deny"},
-        "root":{
-            "kind":"seq","name":"root","state":{"kind":"null"},
-            "children":[
-                {
-                    "kind":"step","name":"worker","worker":"agent.worker@1",
-                    "input":{"kind":"null"},"output":{"kind":"null"},
-                    "inputBindings":[],"writeBindings":[],"timeoutMs":10000,"attempts":1
-                },
-                {
-                    "kind":"verifier","name":"deliver","worker":"builtin.git-delivery@1",
-                    "input":{"kind":"null"},"output":{"kind":"null"},
-                    "inputBindings":[],"writeBindings":[],"timeoutMs":10000,"attempts":1,
-                    "signals":{"delivery":["merged","ci_failed"]},
-                    "diagnostic":{"kind":"string"}
-                },
-                {"kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]}
-            ],
-            "promotedStatePaths":[]
-        }
-    }))
-    .expect("shipping graph")
-}
-
-async fn admitted(kind: RuntimePlanKind) -> AdmittedRun {
-    NativeV2Admission
-        .admit(RunSubmission {
-            graph: shipping_graph(),
-            initial_input: Value::Null,
-            runtime: runtime(kind),
-            ship: true,
-            submission_key: IdempotencyKey::new("candidate-config").expect("key"),
-        })
-        .await
-        .expect("admitted")
-}
-
-fn candidate_config(
-    kind: RuntimePlanKind,
-    repository: &TempRepository,
-    github: Arc<ScriptedGitHub>,
-    ship: bool,
-) -> NativeV2CandidateConfig {
-    let pool = HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).expect("pool");
-    let harness = match kind {
-        RuntimePlanKind::Codex => NativeV2HarnessConfig::Codex(NativeV2CodexConfig {
-            provider: CodexProvider::OpenAi,
-            executable: PathBuf::from("/usr/bin/false"),
-            workspace: repository.workspace.clone(),
-            runtime_home: repository.root.join("codex-home"),
-            search_path: "/usr/bin:/bin".to_owned(),
-            process_pool: pool,
-        }),
-        RuntimePlanKind::Claude => NativeV2HarnessConfig::Claude(ClaudeAdapterConfig {
-            provider: crate::native_v2_contract::ClaudeProvider::Anthropic,
-            executable: "/usr/bin/false".to_owned(),
-            prefix_arguments: Vec::new(),
-            workspace: repository.workspace.clone(),
-            base_environment: ClaudeProcessEnvironment::new(BTreeMap::from([
-                (
-                    "HOME".to_owned(),
-                    repository.root.to_string_lossy().into_owned(),
-                ),
-                ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
-            ]))
-            .expect("Claude environment"),
-            turn_timeout: Duration::from_secs(1),
-            process_pool: pool,
-        }),
-    };
-    NativeV2CandidateConfig {
-        harness,
-        delivery: NativeV2DeliveryConfig {
-            workspace: repository.workspace.clone(),
-            git_program: PathBuf::from("/usr/bin/git"),
-            target: DeliveryTarget::new("acme/project", "main", repository.base.clone())
-                .expect("target"),
-            ship_authorized: ship,
-            poll: DeliveryPollPolicy::new(2, Duration::ZERO).expect("poll"),
-        },
-        github,
-    }
-}
-
-async fn wait_for_terminal(controller: &NativeV2CloudController, run_id: &RunId) -> TerminalResult {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let status = ClusterBackend::run_status(
-                controller,
-                &ConnectionContext::default(),
-                RunStatusParams {
-                    run_id: run_id.clone(),
-                },
-            )
-            .await
-            .expect("OECP status");
-            if let RunStatus::Finished { terminal_result } = status.status {
-                return terminal_result;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("candidate became terminal")
-}
-
-fn cli_protocol_error(error: impl std::fmt::Display) -> NativeV2CliError {
-    NativeV2CliError::Protocol(error.to_string())
-}
-
-fn git(directory: &Path, arguments: &[&str]) {
-    assert!(
-        Command::new("/usr/bin/git")
-            .arg("-C")
-            .arg(directory)
-            .args(arguments)
-            .status()
-            .expect("run Git")
-            .success()
-    );
-}
-
-fn git_output(directory: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("/usr/bin/git")
-        .arg("-C")
-        .arg(directory)
-        .args(arguments)
-        .output()
-        .expect("run Git");
-    assert!(output.status.success());
-    String::from_utf8(output.stdout)
-        .expect("Git output is UTF-8")
-        .trim()
-        .to_owned()
-}
-
-fn text(path: &Path) -> &str {
-    path.to_str().expect("test path is UTF-8")
-}
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};

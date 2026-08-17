@@ -1,5 +1,7 @@
 //! Small graph, compiled-IR, and diagnostic admission fixtures.
 
+use crate::fixture::*;
+
 use std::collections::BTreeMap;
 
 use openengine_cluster_protocol::{
@@ -20,7 +22,7 @@ pub fn graph_fixture(name: &str, initial_input: Value) -> GraphSpec {
             "inputBindings": [], "writeBindings": [], "timeoutMs": 1000, "attempts": 1
         }
     }))
-    .expect("test fixture graph must be valid contract syntax")
+    .assert_value_with("test fixture graph must be valid contract syntax")
 }
 
 #[must_use]
@@ -33,13 +35,14 @@ pub fn compiled_from_graph_fixture(graph: &GraphSpec) -> CompiledGraphIr {
         root: graph.root.clone(),
         bounds: StructuralBounds {
             termination: TerminationWitness::Acyclic {
-                order: NonEmptyVec::new(vec![node.clone()]).expect("fixture has one named node"),
+                order: NonEmptyVec::new(vec![node.clone()])
+                    .assert_value_with("fixture has one named node"),
             },
-            max_node_executions: PositiveInteger::new(1).expect("one is positive"),
-            peak_concurrency: PositiveInteger::new(1).expect("one is positive"),
+            max_node_executions: PositiveInteger::new(1).assert_value_with("one is positive"),
+            peak_concurrency: PositiveInteger::new(1).assert_value_with("one is positive"),
             attempts_per_node: BTreeMap::from([(
                 node,
-                PositiveInteger::new(1).expect("one is positive"),
+                PositiveInteger::new(1).assert_value_with("one is positive"),
             )]),
         },
     }

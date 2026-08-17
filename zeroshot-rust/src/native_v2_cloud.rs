@@ -17,7 +17,7 @@ use openengine_cluster_protocol::{
     RunStatusResult, RunSubmitParams, RunSubmitResult, RunWatchEventNotification, RunWatchParams,
     RunWatchResult, ServerCapabilities, Sha256Digest, SubscriptionCloseReason, TerminalResult,
     WorkerErrorCode, WorkerOutcome, GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE,
-    NOT_FOUND,
+    NOT_FOUND, RUN_CONFLICT,
 };
 use openengine_cluster_server::native_v2::{
     RunAttachEventStream, RunLogEventStream, RunSubscriptionItem, RunSubscriptionSource,
@@ -52,148 +52,12 @@ use crate::v2_run_ledger::{
 #[path = "native_v2_cloud/tests.rs"]
 mod tests;
 
-/// Public, provider-neutral submission accepted by a selected cloud target.
-///
-/// The target-owned runtime plan is deliberately absent and is attached by the controller before
-/// pure admission.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct CloudRunSubmission {
-    pub graph: GraphSpec,
-    pub initial_input: Value,
-    #[serde(default)]
-    pub ship: bool,
-    pub submission_key: IdempotencyKey,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CloudRunReceipt {
-    pub run_id: RunId,
-    pub deduped: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("capsule allocation is unavailable")]
-pub struct CapsuleAllocationUnavailable;
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("exclusive controller authority is unavailable")]
-pub struct ControllerClaimUnavailable;
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("capsule destruction could not be confirmed")]
-pub struct CapsuleCleanupUnavailable;
-
-/// Opaque acknowledgement from allocator authority that the disposable runtime no longer exists.
-///
-/// For a live capsule this follows successful destruction. After an observed connection loss the
-/// same receipt confirms that allocator authority observes the capsule absent; loss therefore
-/// cannot strand an otherwise terminalizable run.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CapsuleDestroyed {
-    _closed: (),
-}
-
-impl CapsuleDestroyed {
-    #[must_use]
-    pub const fn confirmed() -> Self {
-        Self { _closed: () }
-    }
-}
-
-#[async_trait]
-pub trait CapsuleCleanup: Send + Sync {
-    async fn destroy_or_confirm_absent(
-        &self,
-        exit: RunRuntimeExit,
-    ) -> Result<CapsuleDestroyed, CapsuleCleanupUnavailable>;
-}
-
-pub struct AllocatedCapsule {
-    pub runner: Arc<dyn NodeRunner>,
-    pub loss: watch::Receiver<bool>,
-    pub cleanup: Arc<dyn CapsuleCleanup>,
-}
-
-/// Allocator-owned proof that this is the only active controller for the target.
-///
-/// The allocator must keep the claim exclusive until the last reference is dropped. This is a
-/// hosting authority contract, not a product-local distributed lease implementation.
-pub trait ExclusiveControllerClaim: Send + Sync {}
-
-#[async_trait]
-pub trait CapsuleAllocator: Send + Sync {
-    /// Acquires exclusive controller authority before any startup reconciliation or OECP serving.
-    async fn claim_controller(
-        &self,
-    ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable>;
-
-    /// An error guarantees that allocation left no surviving capsule. Once allocation succeeds,
-    /// cleanup authority is carried by [`AllocatedCapsule`].
-    async fn allocate(
-        &self,
-        run_id: &RunId,
-        admitted: &AdmittedRun,
-    ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable>;
-
-    /// Destroys an allocator-known capsule for a controller-reconstructed run, or confirms that
-    /// it is already absent. This operation never allocates a replacement.
-    async fn destroy_or_confirm_absent(
-        &self,
-        run_id: &RunId,
-        exit: RunRuntimeExit,
-    ) -> Result<CapsuleDestroyed, CapsuleCleanupUnavailable>;
-}
-
-/// Exact target-owned environment available for node declaration resolution.
-///
-/// Debug output contains names only. Values are never part of an admitted run or ledger event.
-#[derive(Clone, Default)]
-pub struct ControllerEnvironment {
-    values: Arc<BTreeMap<EnvironmentVariableName, String>>,
-}
-
-impl ControllerEnvironment {
-    #[must_use]
-    pub fn new(values: BTreeMap<EnvironmentVariableName, String>) -> Self {
-        Self {
-            values: Arc::new(values),
-        }
-    }
-}
-
-impl fmt::Debug for ControllerEnvironment {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ControllerEnvironment")
-            .field("names", &self.values.keys().collect::<Vec<_>>())
-            .field("values", &"[REDACTED]")
-            .finish()
-    }
-}
-
-#[async_trait]
-impl NodeEnvironmentResolver for ControllerEnvironment {
-    async fn resolve(
-        &self,
-        _node: &NodeName,
-        binding: &NodeRuntimeBinding,
-    ) -> Result<ResolvedEnvironment, EnvironmentUnavailable> {
-        let values = binding
-            .declared_environment()
-            .iter()
-            .map(|name| {
-                self.values
-                    .get(name)
-                    .cloned()
-                    .map(|value| (name.clone(), value))
-                    .ok_or(EnvironmentUnavailable)
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        ResolvedEnvironment::exact(binding, values).map_err(|_| EnvironmentUnavailable)
-    }
-}
-
+mod contracts;
+pub use contracts::{
+    AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanup,
+    CapsuleCleanupUnavailable, CapsuleDestroyed, CloudRunReceipt, CloudRunSubmission,
+    ControllerClaimUnavailable, ControllerEnvironment, ExclusiveControllerClaim,
+};
 #[derive(Debug, Error)]
 pub enum NativeV2CloudError {
     #[error(transparent)]
@@ -210,6 +74,8 @@ pub enum NativeV2CloudError {
     Supervisor(#[from] NativeV2SupervisorError),
     #[error("submission identity could not be constructed")]
     SubmissionIdentity,
+    #[error("target already has nonterminal run {run_id:?}")]
+    RunActive { run_id: RunId },
 }
 
 #[derive(Clone)]
@@ -286,9 +152,10 @@ impl NativeV2CloudController {
         Ok(())
     }
 
-    /// Admits before every durable or allocation effect, then allocates only for a newly created
-    /// run. The submission turn closes the tiny create-to-runtime-slot race for concurrent exact
-    /// resubmissions without introducing a scheduler.
+    /// Admits before every durable or allocation effect, then permits at most one nonterminal run
+    /// for this target. Exact resubmissions retain their existing identity; a distinct submission
+    /// is rejected before ledger creation or capsule/workspace allocation. The submission turn
+    /// makes that check and creation one controller-local critical section without a scheduler.
     pub async fn submit(
         &self,
         request: CloudRunSubmission,
@@ -304,6 +171,11 @@ impl NativeV2CloudController {
         let digest = submission_digest(&submission)?;
         let submission_key = submission.submission_key.clone();
         let admitted = NativeV2Admission.admit(submission).await?;
+        if let Some(active) = self.active_run().await? {
+            return self
+                .resolve_active_submission(active, submission_key, digest)
+                .await;
+        }
         let run_id = fresh_run_id()?;
         let created = self
             .ledger
@@ -325,6 +197,71 @@ impl NativeV2CloudController {
             }
             CreateRunOutcome::Created(stored) => self.start_created(stored, admitted).await,
         }
+    }
+
+    async fn resolve_active_submission(
+        &self,
+        active: StoredRun,
+        submission_key: IdempotencyKey,
+        digest: Sha256Digest,
+    ) -> Result<CloudRunReceipt, NativeV2CloudError> {
+        if active.submission_key != submission_key {
+            return Err(NativeV2CloudError::RunActive {
+                run_id: active.snapshot.run_id,
+            });
+        }
+        if active.submission_digest != digest {
+            return Err(RunLedgerError::SubmissionConflict {
+                existing_run_id: active.snapshot.run_id,
+            }
+            .into());
+        }
+        self.reconcile_exact_resubmission(&active).await?;
+        Ok(CloudRunReceipt {
+            run_id: active.snapshot.run_id,
+            deduped: true,
+        })
+    }
+
+    async fn active_run(&self) -> Result<Option<StoredRun>, RunLedgerError> {
+        let mut active = self
+            .ledger
+            .list()
+            .await?
+            .into_iter()
+            .filter(|summary| summary.phase != crate::v2_run_ledger::RunPhase::Finished);
+        let Some(summary) = active.next() else {
+            self.runtimes.lock().await.clear();
+            return Ok(None);
+        };
+        if active.next().is_some() {
+            return Err(RunLedgerError::Corrupt);
+        }
+        let stored = self
+            .ledger
+            .get(&summary.run_id)
+            .await?
+            .ok_or(RunLedgerError::RunNotFound)?;
+        if stored.snapshot.terminal.is_some() {
+            self.runtimes.lock().await.remove(&summary.run_id);
+            return Ok(None);
+        }
+        Ok(Some(stored))
+    }
+
+    async fn reconcile_exact_resubmission(
+        &self,
+        stored: &StoredRun,
+    ) -> Result<(), NativeV2CloudError> {
+        let mut runtimes = self.runtimes.lock().await;
+        if matches!(
+            runtimes.get(&stored.snapshot.run_id),
+            Some(RuntimeSlot::Starting)
+        ) {
+            runtimes.remove(&stored.snapshot.run_id);
+        }
+        drop(runtimes);
+        self.fail_orphaned_runtime(stored).await
     }
 
     async fn start_created(
@@ -549,259 +486,5 @@ impl NativeV2CloudController {
     }
 }
 
-#[async_trait]
-impl ClusterBackend for NativeV2CloudController {
-    async fn initialize(
-        &self,
-        _context: &ConnectionContext,
-        _params: InitializeParams,
-    ) -> Result<InitializeResult, BackendError> {
-        let graph_profiles = GraphProfileSet::new(vec![GraphProfile::Full])
-            .map_err(|_| BackendError::new(INTERNAL_ERROR_CODE, "invalid capability set"))?;
-        Ok(InitializeResult::new(
-            ServerCapabilities {
-                graph_profiles,
-                logs: true,
-                agent_attach: true,
-            },
-            ClusterStatus::empty(),
-        ))
-    }
-
-    async fn get(
-        &self,
-        _context: &ConnectionContext,
-        _params: GetParams,
-    ) -> Result<GetResult, BackendError> {
-        Ok(GetResult::empty())
-    }
-
-    async fn run_submit(
-        &self,
-        _context: &ConnectionContext,
-        params: RunSubmitParams,
-    ) -> Result<RunSubmitResult, BackendError> {
-        let receipt = self
-            .submit(CloudRunSubmission {
-                graph: params.graph,
-                initial_input: params.initial_input,
-                ship: params.ship,
-                submission_key: params.submission_key,
-            })
-            .await
-            .map_err(cloud_backend_error)?;
-        Ok(RunSubmitResult {
-            run_id: receipt.run_id,
-        })
-    }
-
-    async fn run_list(
-        &self,
-        _context: &ConnectionContext,
-        _params: RunListParams,
-    ) -> Result<RunListResult, BackendError> {
-        let summaries = self.list().await.map_err(cloud_backend_error)?;
-        let mut runs = Vec::with_capacity(summaries.len());
-        for summary in summaries {
-            runs.push(
-                self.status(RunStatusParams {
-                    run_id: summary.run_id,
-                })
-                .await
-                .map_err(cloud_backend_error)?,
-            );
-        }
-        Ok(RunListResult { runs })
-    }
-
-    async fn run_status(
-        &self,
-        _context: &ConnectionContext,
-        params: RunStatusParams,
-    ) -> Result<RunStatusResult, BackendError> {
-        self.status(params).await.map_err(cloud_backend_error)
-    }
-
-    async fn run_watch(
-        &self,
-        _context: &ConnectionContext,
-        params: RunWatchParams,
-    ) -> Result<(RunWatchResult, RunWatchEventStream), BackendError> {
-        let (result, source) = self.watch(params).await.map_err(cloud_backend_error)?;
-        Ok((result, RunSubscriptionStream::new(WatchSource(source))))
-    }
-
-    async fn run_logs(
-        &self,
-        _context: &ConnectionContext,
-        params: RunLogsParams,
-    ) -> Result<(RunLogsResult, RunLogEventStream), BackendError> {
-        let (result, source) = self.logs(params).await.map_err(cloud_backend_error)?;
-        Ok((result, RunSubscriptionStream::new(LogsSource(source))))
-    }
-
-    async fn run_attach(
-        &self,
-        _context: &ConnectionContext,
-        params: RunAttachParams,
-    ) -> Result<(RunAttachResult, RunAttachEventStream), BackendError> {
-        let (result, source) = self.attach(params).await.map_err(cloud_backend_error)?;
-        Ok((result, RunSubscriptionStream::new(AttachSource(source))))
-    }
-
-    async fn run_force(
-        &self,
-        _context: &ConnectionContext,
-        params: RunForceParams,
-    ) -> Result<RunForceResult, BackendError> {
-        self.force(params).await.map_err(cloud_backend_error)
-    }
-}
-
-struct WatchSource(RunWatchSubscription);
-
-#[async_trait]
-impl RunSubscriptionSource<RunWatchEventNotification> for WatchSource {
-    async fn next(&mut self) -> Option<RunSubscriptionItem<RunWatchEventNotification>> {
-        match self.0.recv().await {
-            Ok(Some(event)) => Some(RunSubscriptionItem::Event(event)),
-            Ok(None) | Err(_) => Some(RunSubscriptionItem::Closed {
-                reason: SubscriptionCloseReason::Done,
-            }),
-        }
-    }
-}
-
-struct LogsSource(RunLogsSubscription);
-
-#[async_trait]
-impl RunSubscriptionSource<RunLogEventNotification> for LogsSource {
-    async fn next(&mut self) -> Option<RunSubscriptionItem<RunLogEventNotification>> {
-        match self.0.recv().await {
-            Ok(Some(event)) => Some(RunSubscriptionItem::Event(event)),
-            Ok(None) | Err(_) => Some(RunSubscriptionItem::Closed {
-                reason: SubscriptionCloseReason::Done,
-            }),
-        }
-    }
-}
-
-struct AttachSource(RunAttachSubscription);
-
-#[async_trait]
-impl RunSubscriptionSource<RunAttachEventNotification> for AttachSource {
-    async fn next(&mut self) -> Option<RunSubscriptionItem<RunAttachEventNotification>> {
-        match self.0.recv().await {
-            Ok(event) => Some(RunSubscriptionItem::Event(event)),
-            Err(NativeV2ObservationError::AttachLagged) => Some(RunSubscriptionItem::Closed {
-                reason: SubscriptionCloseReason::SlowConsumer,
-            }),
-            Err(_) => Some(RunSubscriptionItem::Closed {
-                reason: SubscriptionCloseReason::Done,
-            }),
-        }
-    }
-}
-
-fn cloud_backend_error(error: NativeV2CloudError) -> BackendError {
-    match error {
-        NativeV2CloudError::Admission(error) => {
-            BackendError::invalid_params(GRAPH_INVALID, error.to_string(), None)
-        }
-        NativeV2CloudError::Ledger(RunLedgerError::SubmissionConflict { existing_run_id }) => {
-            BackendError::application(
-                IDEMPOTENCY_REUSE,
-                "submission key identifies another run",
-                Some(serde_json::json!({ "runId": existing_run_id })),
-            )
-        }
-        NativeV2CloudError::Ledger(RunLedgerError::RunNotFound)
-        | NativeV2CloudError::Observation(NativeV2ObservationError::RunNotFound) => {
-            BackendError::application(NOT_FOUND, "run was not found", None)
-        }
-        _ => BackendError::new(INTERNAL_ERROR_CODE, "native-v2 operation failed"),
-    }
-}
-
-struct CapsuleRuntimeCleanup {
-    cleanup: Arc<dyn CapsuleCleanup>,
-}
-
-#[async_trait]
-impl RunRuntimeCleanup for CapsuleRuntimeCleanup {
-    async fn cleanup(&self, exit: RunRuntimeExit) -> Result<(), RuntimeCleanupUnavailable> {
-        self.cleanup
-            .destroy_or_confirm_absent(exit)
-            .await
-            .map(|_| ())
-            .map_err(|_| RuntimeCleanupUnavailable)
-    }
-}
-
-async fn wait_for_capsule_loss(loss: &mut watch::Receiver<bool>) {
-    loop {
-        if *loss.borrow_and_update() {
-            return;
-        }
-        if loss.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
-fn submission_digest(submission: &RunSubmission) -> Result<Sha256Digest, NativeV2CloudError> {
-    let bytes =
-        serde_json::to_vec(submission).map_err(|_| NativeV2CloudError::SubmissionIdentity)?;
-    Sha256Digest::new(format!("{:x}", Sha256::digest(bytes)))
-        .map_err(|_| NativeV2CloudError::SubmissionIdentity)
-}
-
-fn fresh_run_id() -> Result<RunId, NativeV2CloudError> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random).map_err(|_| NativeV2CloudError::SubmissionIdentity)?;
-    Ok(RunId::new(format!("run-{}", hex(&random))))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    output
-}
-
-async fn append_runtime_lost(
-    ledger: &dyn RunLedger,
-    stored: &StoredRun,
-) -> Result<(), RunLedgerError> {
-    append_terminal_failure(ledger, stored, "runtime_lost").await
-}
-
-async fn append_terminal_failure(
-    ledger: &dyn RunLedger,
-    stored: &StoredRun,
-    reason: &str,
-) -> Result<(), RunLedgerError> {
-    if stored.snapshot.terminal.is_some() {
-        return Ok(());
-    }
-    let mut events = stored
-        .snapshot
-        .active_executions()
-        .map(|node| RunEvent::NodeCompleted {
-            completion: NodeCompletion {
-                reference: node.reference.clone(),
-                outcome: WorkerOutcome::declared_failure(WorkerErrorCode::Crash),
-            },
-        })
-        .collect::<Vec<_>>();
-    events.push(RunEvent::Terminal {
-        result: TerminalResult::Failed {
-            reason: EnumLabel::new(reason).map_err(|_| RunLedgerError::Corrupt)?,
-        },
-    });
-    ledger.append(&stored.snapshot.run_id, events).await?;
-    Ok(())
-}
+mod backend;
+use backend::*;

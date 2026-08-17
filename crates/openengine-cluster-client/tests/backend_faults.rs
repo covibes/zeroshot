@@ -6,7 +6,9 @@
 use std::io;
 use std::sync::Arc;
 
-use openengine_cluster_client::{EventOrClosed, NdjsonTransport, NdjsonWatchClient};
+use openengine_cluster_client::{
+    EventOrClosed, NdjsonReconnectingEventStream, NdjsonTransport, NdjsonWatchClient,
+};
 use openengine_cluster_protocol::{
     BackendFault, BoundedString256, ClusterStatus, Cursor, FaultAction, FaultCode,
     FaultConsequence, FaultRetryDisposition, FaultSeverity, FaultSourceFrame, RunId, StopMode,
@@ -15,8 +17,13 @@ use openengine_cluster_protocol::{
 use openengine_cluster_server::watch::fixtures::{
     await_ndjson_shutdown, spawn_ndjson, FixtureBackend, FixtureStore,
 };
+use openengine_cluster_server::watch::PublicEventRecord;
 use tokio::io::DuplexStream;
 use tokio::task::JoinHandle;
+
+#[path = "support/mod.rs"]
+pub mod support;
+use support::AssertValue;
 
 #[path = "reconnect_support/mod.rs"]
 mod reconnect_support;
@@ -31,7 +38,8 @@ use ndjson_scenario::ndjson_overflow_and_reconnect_scenario;
 
 fn sample_fault(event_id: &str) -> BackendFault {
     BackendFault {
-        event_id: BoundedString256::new(event_id).expect("fixture event id must be valid"),
+        event_id: BoundedString256::new(event_id)
+            .assert_value_with("fixture event id must be valid"),
         execution_ref: None,
         code: FaultCode::DeadlineExceeded,
         consequence: FaultConsequence::RunDegraded,
@@ -39,10 +47,10 @@ fn sample_fault(event_id: &str) -> BackendFault {
         action: FaultAction::Wait,
         severity: FaultSeverity::Warning,
         summary: BoundedString256::new("downstream node deadline exceeded")
-            .expect("fixture summary must be valid"),
+            .assert_value_with("fixture summary must be valid"),
         source: vec![FaultSourceFrame {
             component: BoundedString256::new("node-runtime")
-                .expect("fixture component must be valid"),
+                .assert_value_with("fixture component must be valid"),
         }],
     }
 }
@@ -66,12 +74,26 @@ async fn connect(
     )
 }
 
+async fn next_record(
+    stream: &mut NdjsonReconnectingEventStream<'_, DuplexStream, DuplexStream>,
+    context: &str,
+) -> PublicEventRecord {
+    match stream.next().await.assert_value() {
+        EventOrClosed::Event(record) => Some(record),
+        EventOrClosed::Closed { .. } => None,
+    }
+    .assert_value_with(context)
+}
+
 #[tokio::test]
 async fn fault_events_decode_over_ndjson_and_dedup_a_physical_duplicate() {
     let run_id = RunId::new("run-1");
     let (store, transport, server) = connect(&run_id, 8).await;
     let watch_client = NdjsonWatchClient::new(&transport);
-    let (result, mut stream) = watch_client.watch(WatchParams::default()).await.unwrap();
+    let (result, mut stream) = watch_client
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
     assert_eq!(result.run_id, Some(run_id));
 
     store
@@ -79,18 +101,14 @@ async fn fault_events_decode_over_ndjson_and_dedup_a_physical_duplicate() {
             fault: sample_fault("evt-1"),
         })
         .await;
-    match stream.next().await.unwrap() {
-        EventOrClosed::Event(record) => {
-            assert_eq!(record.cursor, Cursor::new("cursor-1"));
-            assert_eq!(
-                record.event,
-                WatchEvent::Fault {
-                    fault: sample_fault("evt-1")
-                }
-            );
+    let record = next_record(&mut stream, "expected a fault event").await;
+    assert_eq!(record.cursor, Cursor::new("cursor-1"));
+    assert_eq!(
+        record.event,
+        WatchEvent::Fault {
+            fault: sample_fault("evt-1")
         }
-        other => panic!("expected a fault event, got {other:?}"),
-    }
+    );
 
     // A legal at-least-once physical duplicate of the fault event must be silently dropped: the
     // next `next()` call must skip straight past it to the next distinct event with no
@@ -102,13 +120,9 @@ async fn fault_events_decode_over_ndjson_and_dedup_a_physical_duplicate() {
             stop_mode: Some(StopMode::Drain),
         })
         .await;
-    match stream.next().await.unwrap() {
-        EventOrClosed::Event(record) => {
-            assert_eq!(record.cursor, Cursor::new("cursor-2"));
-            assert!(matches!(record.event, WatchEvent::Finished { .. }));
-        }
-        other => panic!("expected the Finished event, got {other:?}"),
-    }
+    let record = next_record(&mut stream, "expected the Finished event").await;
+    assert_eq!(record.cursor, Cursor::new("cursor-2"));
+    assert!(matches!(record.event, WatchEvent::Finished { .. }));
 
     drop(stream);
     drop(transport);

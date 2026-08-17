@@ -56,10 +56,8 @@ fn get_request(id: i64) -> DecodedRequest {
     }
 }
 
-fn test_permit(task_slots: &Arc<Semaphore>) -> OwnedSemaphorePermit {
-    Arc::clone(task_slots)
-        .try_acquire_owned()
-        .expect("fresh semaphore must have a free permit")
+fn test_permit(task_slots: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+    Arc::clone(task_slots).try_acquire_owned().ok()
 }
 
 /// Regression test for race 2 (spawn-before-register): the old code called `tasks.spawn(...)`
@@ -87,6 +85,10 @@ async fn spawn_passthrough_registers_cancellation_before_the_task_can_run() {
     };
     let dispatcher = Dispatcher::new(backend, ConnectionContext::default());
     let permit = test_permit(&task_slots);
+    assert!(permit.is_some(), "fresh semaphore must have a free permit");
+    let Some(permit) = permit else {
+        return;
+    };
     let id = RequestId::Integer(1);
 
     {
@@ -154,10 +156,14 @@ async fn run_passthrough_request_on_instant_completion_leaves_registry_empty() {
         state.in_flight_ids.lock().is_empty(),
         "a completed request must leave no in-flight id"
     );
-    let response = outbound_rx
-        .recv()
-        .await
-        .expect("a completed (non-cancelled) request must still enqueue exactly one response");
+    let response = outbound_rx.recv().await;
+    assert!(
+        response.is_some(),
+        "a completed (non-cancelled) request must still enqueue exactly one response"
+    );
+    let Some(response) = response else {
+        return;
+    };
     assert!(response.contains("\"result\""), "{response}");
 }
 
@@ -187,9 +193,14 @@ fn release_owned_cancel_entry_never_removes_a_newer_registration() {
     release_owned_cancel_entry(&cancel_registry, &id, &old_notify);
 
     let registry = cancel_registry.lock();
-    let current = registry
-        .get(&id)
-        .expect("the newer registration must survive the older request's cleanup");
+    let current = registry.get(&id);
+    assert!(
+        current.is_some(),
+        "the newer registration must survive the older request's cleanup"
+    );
+    let Some(current) = current else {
+        return;
+    };
     assert!(
         Arc::ptr_eq(current, &new_notify),
         "cleanup must leave the newer registration untouched, not just non-empty"

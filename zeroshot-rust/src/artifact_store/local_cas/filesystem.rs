@@ -317,9 +317,8 @@ async fn read_bounded_file(
         .open(path)
         .await
         .map_err(|error| failure_from_io(error, operation))?;
-    let mut bytes = Vec::with_capacity(
-        usize::try_from(capacity).expect("artifact and manifest limits fit usize"),
-    );
+    let capacity = usize::try_from(capacity).map_err(|_| corrupt_content())?;
+    let mut bytes = Vec::with_capacity(capacity);
     file.take(limit + 1)
         .read_to_end(&mut bytes)
         .await

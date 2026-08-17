@@ -96,7 +96,7 @@ fn graph(children: Vec<Value>) -> GraphSpec {
         "policy":{"policy":"policy.strict@1","default":"deny"},
         "root":{"kind":"seq","name":"root","state":state(),"children":children,"promotedStatePaths":[]}
     }))
-    .unwrap()
+    .assert_value()
 }
 
 async fn verify(
@@ -108,19 +108,28 @@ async fn verify(
 }
 
 fn diagnostics(error: VerificationError) -> Vec<GraphDiagnostic> {
-    let VerificationError::Rejected { diagnostics } = error else {
-        panic!("boundary violation must be a graph rejection")
-    };
-    diagnostics
+    match error {
+        VerificationError::Rejected { diagnostics } => Some(diagnostics),
+        _ => None,
+    }
+    .assert_value()
 }
 
 fn has_ceiling(error: VerificationError, field: &str) -> bool {
     diagnostics(error).iter().any(|diagnostic| {
         diagnostic.code == GraphDiagnosticCode::CeilingExceeded
             && serde_json::to_string(&diagnostic.path)
-                .unwrap()
+                .assert_value()
                 .contains(&format!("\"name\":\"{field}\""))
     })
+}
+
+fn assert_ceiling(error: VerificationError) {
+    assert!(
+        diagnostics(error)
+            .iter()
+            .any(|diagnostic| diagnostic.code == GraphDiagnosticCode::CeilingExceeded)
+    );
 }
 
 #[tokio::test]
@@ -129,14 +138,14 @@ async fn attempts_accept_exact_limit_and_reject_plus_one() {
         null_step("work", FULL_V1_MAX_ATTEMPTS_PER_NODE),
         succeed("done"),
     ]);
-    verify(&exact).await.unwrap();
+    verify(&exact).await.assert_value();
 
     let plus_one = graph(vec![
         null_step("work", FULL_V1_MAX_ATTEMPTS_PER_NODE + 1),
         succeed("done"),
     ]);
     assert!(has_ceiling(
-        verify(&plus_one).await.unwrap_err(),
+        verify(&plus_one).await.assert_error(),
         "attempts"
     ));
 }
@@ -156,14 +165,14 @@ async fn loop_and_map_authored_bounds_accept_exact_limits_and_reject_plus_one() 
         succeed("done"),
     ]))
     .await
-    .unwrap();
+    .assert_value();
     assert!(has_ceiling(
         verify(&graph(vec![
             loop_node(FULL_V1_MAX_LOOP_ITERATIONS + 1),
             succeed("done"),
         ]))
         .await
-        .unwrap_err(),
+        .assert_error(),
         "maxIterations"
     ));
 
@@ -178,14 +187,14 @@ async fn loop_and_map_authored_bounds_accept_exact_limits_and_reject_plus_one() 
         succeed("done"),
     ]))
     .await
-    .unwrap();
+    .assert_value();
     assert!(has_ceiling(
         verify(&graph(vec![
             map_node(FULL_V1_MAX_MAP_ITEMS + 1),
             succeed("done"),
         ]))
         .await
-        .unwrap_err(),
+        .assert_error(),
         "maxItems"
     ));
 }
@@ -208,18 +217,14 @@ async fn graph_depth_accepts_exact_limit_and_rejects_plus_one_at_node_path() {
         succeed("done"),
     ]))
     .await
-    .unwrap();
+    .assert_value();
     let error = verify(&graph(vec![
         nested_node(FULL_V1_MAX_GRAPH_DEPTH + 1),
         succeed("done"),
     ]))
     .await
-    .unwrap_err();
-    assert!(
-        diagnostics(error)
-            .iter()
-            .any(|diagnostic| diagnostic.code == GraphDiagnosticCode::CeilingExceeded)
-    );
+    .assert_error();
+    assert_ceiling(error);
 }
 
 #[tokio::test]
@@ -233,15 +238,11 @@ async fn graph_node_count_accepts_exact_limit_and_rejects_plus_one() {
     };
     verify(&graph(children(FULL_V1_MAX_GRAPH_NODES)))
         .await
-        .unwrap();
+        .assert_value();
     let error = verify(&graph(children(FULL_V1_MAX_GRAPH_NODES + 1)))
         .await
-        .unwrap_err();
-    assert!(
-        diagnostics(error)
-            .iter()
-            .any(|diagnostic| diagnostic.code == GraphDiagnosticCode::CeilingExceeded)
-    );
+        .assert_error();
+    assert_ceiling(error);
 }
 
 fn signal_guard() -> Value {
@@ -274,18 +275,14 @@ async fn guard_node_count_accepts_exact_limit_and_rejects_plus_one() {
         choice_with_guard(guard(FULL_V1_MAX_GUARD_NODES - 1)),
     ]))
     .await
-    .unwrap();
+    .assert_value();
     let error = verify(&graph(vec![
         null_verifier("verify"),
         choice_with_guard(guard(FULL_V1_MAX_GUARD_NODES)),
     ]))
     .await
-    .unwrap_err();
-    assert!(
-        diagnostics(error)
-            .iter()
-            .any(|diagnostic| diagnostic.code == GraphDiagnosticCode::CeilingExceeded)
-    );
+    .assert_error();
+    assert_ceiling(error);
 }
 
 fn joined_group(index: u64) -> Value {
@@ -324,13 +321,9 @@ async fn finite_guard_space_accepts_exact_assignment_limit_and_rejects_next_dime
         children.push(group_assignment_choice(groups));
         graph(children)
     };
-    verify(&graph_with_groups(16)).await.unwrap();
-    let error = verify(&graph_with_groups(17)).await.unwrap_err();
-    assert!(
-        diagnostics(error)
-            .iter()
-            .any(|diagnostic| diagnostic.code == GraphDiagnosticCode::CeilingExceeded)
-    );
+    verify(&graph_with_groups(16)).await.assert_value();
+    let error = verify(&graph_with_groups(17)).await.assert_error();
+    assert_ceiling(error);
 }
 
 #[tokio::test]
@@ -373,7 +366,7 @@ async fn ceiling_compliant_map_aggregate_does_not_exhaust_the_call_stack() {
         })),
     ]);
 
-    verify(&graph).await.unwrap();
+    verify(&graph).await.assert_value();
 }
 
 #[tokio::test]
@@ -413,12 +406,8 @@ async fn signal_product_is_rejected_before_materializing_over_limit_assignments(
         })),
     ]);
 
-    let error = verify(&graph).await.unwrap_err();
-    assert!(
-        diagnostics(error)
-            .iter()
-            .any(|diagnostic| diagnostic.code == GraphDiagnosticCode::CeilingExceeded)
-    );
+    let error = verify(&graph).await.assert_error();
+    assert_ceiling(error);
 }
 
 fn exact_fold_map() -> Value {
@@ -439,7 +428,7 @@ fn exact_fold_map() -> Value {
 async fn checked_folds_accept_exact_execution_loop_entry_and_concurrency_limits() {
     let verified = verify(&graph(vec![exact_fold_map(), succeed("done")]))
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(
         verified.compiled_ir.bounds.max_node_executions.get(),
         FULL_V1_MAX_NODE_EXECUTIONS
@@ -448,11 +437,13 @@ async fn checked_folds_accept_exact_execution_loop_entry_and_concurrency_limits(
         verified.compiled_ir.bounds.peak_concurrency.get(),
         FULL_V1_MAX_PEAK_CONCURRENCY
     );
-    let openengine_cluster_protocol::TerminationWitness::Bounded { max_iterations, .. } =
-        verified.compiled_ir.bounds.termination
-    else {
-        panic!("nested loop must produce a bounded witness")
-    };
+    let max_iterations = match verified.compiled_ir.bounds.termination {
+        openengine_cluster_protocol::TerminationWitness::Bounded { max_iterations, .. } => {
+            Some(max_iterations)
+        }
+        openengine_cluster_protocol::TerminationWitness::Acyclic { .. } => None,
+    }
+    .assert_value();
     assert_eq!(max_iterations.get(), FULL_V1_MAX_LOOP_ENTRIES);
 }
 
@@ -464,7 +455,7 @@ async fn checked_execution_and_loop_entry_additions_reject_limit_plus_one() {
         succeed("done"),
     ]))
     .await
-    .unwrap_err();
+    .assert_error();
     assert!(has_ceiling(execution_error, "children"));
 
     let extra_loop = json!({
@@ -475,7 +466,7 @@ async fn checked_execution_and_loop_entry_additions_reject_limit_plus_one() {
     });
     let loop_error = verify(&graph(vec![exact_fold_map(), extra_loop, succeed("done")]))
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(has_ceiling(loop_error, "children"));
 }
 
@@ -493,6 +484,12 @@ async fn parallel_concurrency_rejects_limit_plus_one_at_combining_branches() {
     });
     let error = verify(&graph(vec![parallel, succeed("done")]))
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(has_ceiling(error, "branches"));
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_error.rs"]
+mod assert_error;
+use assert_error::AssertError;

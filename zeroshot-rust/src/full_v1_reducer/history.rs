@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-pub use crate::native_v2_contract::{ExecutionId, NodeInstanceId};
+pub use crate::native_v2_contract as identity_contract;
+pub type ExecutionId = identity_contract::ExecutionId;
+pub type NodeInstanceId = identity_contract::NodeInstanceId;
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum HistoryPositionError {

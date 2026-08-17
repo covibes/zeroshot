@@ -6,10 +6,7 @@ async fn map_promotes_indexed_results_and_defines_empty_results() {
         true,
     );
 
-    ProductionGraphVerifier::new(registry())
-        .verify(&graph)
-        .await
-        .unwrap();
+    assert_graph_accepted(&graph).await;
 }
 
 #[tokio::test]
@@ -19,24 +16,21 @@ async fn map_indexed_promotions_reject_invalid_element_sources_and_targets() {
         json!({"kind":"array","items":{"kind":"integer"}}),
         true,
     );
-    let mismatch = ProductionGraphVerifier::new(registry())
-        .verify(&mismatch)
-        .await
-        .unwrap_err();
+    let mismatch = assert_graph_rejected(&mismatch).await;
     let mismatch_codes = rejection_codes(mismatch);
     assert!(mismatch_codes.contains(&GraphDiagnosticCode::SchemaSafety));
     assert!(!mismatch_codes.contains(&GraphDiagnosticCode::UndefinedRead));
 
     let scalar_target =
         indexed_map_graph(json!({"kind":"integer"}), json!({"kind":"integer"}), true);
-    let mut scalar_target = serde_json::to_value(scalar_target).unwrap();
-    scalar_target["root"]["children"][1] =
+    let mut scalar_target = serde_json::to_value(scalar_target).assert_value();
+    *scalar_target
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(1) =
         json!({"kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]});
-    let scalar_target = serde_json::from_value(scalar_target).unwrap();
-    let scalar_target = ProductionGraphVerifier::new(registry())
-        .verify(&scalar_target)
-        .await
-        .unwrap_err();
+    let scalar_target = serde_json::from_value(scalar_target).assert_value();
+    let scalar_target = assert_graph_rejected(&scalar_target).await;
     let scalar_codes = rejection_codes(scalar_target);
     assert!(scalar_codes.contains(&GraphDiagnosticCode::SchemaSafety));
     assert!(!scalar_codes.contains(&GraphDiagnosticCode::UndefinedRead));
@@ -46,10 +40,7 @@ async fn map_indexed_promotions_reject_invalid_element_sources_and_targets() {
         json!({"kind":"array","items":{"kind":"integer"}}),
         false,
     );
-    let missing_writer = ProductionGraphVerifier::new(registry())
-        .verify(&missing_writer)
-        .await
-        .unwrap_err();
+    let missing_writer = assert_graph_rejected(&missing_writer).await;
     assert!(rejection_codes(missing_writer).contains(&GraphDiagnosticCode::UndefinedRead));
 }
 
@@ -60,24 +51,39 @@ async fn map_indexed_reads_do_not_reuse_the_outer_array_definition() {
         json!({"kind":"array","items":{"kind":"integer"}}),
         true,
     ))
-    .unwrap();
-    value["initialInput"]["fields"]["results"]["required"] = json!(true);
-    value["root"]["children"][0]["body"]["input"]["fields"]["prior"] =
-        json!({"type":{"kind":"integer"},"required":true});
-    value["root"]["children"][0]["body"]["inputBindings"]
+    .assert_value();
+    *value
+        .assert_at_mut("initialInput")
+        .assert_at_mut("fields")
+        .assert_at_mut("results")
+        .assert_at_mut("required") = json!(true);
+    value
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("body")
+        .assert_at_mut("input")
+        .assert_at_mut("fields")
+        .as_object_mut()
+        .assert_value()
+        .insert(
+            "prior".to_owned(),
+            json!({"type":{"kind":"integer"},"required":true}),
+        );
+    value
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("body")
+        .assert_at_mut("inputBindings")
         .as_array_mut()
-        .unwrap()
+        .assert_value()
         .push(json!({
             "target":["prior"],
             "value":{"source":"state","path":["results"]}
         }));
-    let error = ProductionGraphVerifier::new(registry())
-        .verify(&serde_json::from_value(value).unwrap())
-        .await
-        .unwrap_err();
-    let codes = rejection_codes(error);
-    assert!(codes.contains(&GraphDiagnosticCode::UndefinedRead));
-    assert!(!codes.contains(&GraphDiagnosticCode::SchemaSafety));
+    let graph = serde_json::from_value(value).assert_value();
+    assert_undefined_read_without_schema_error(&graph).await;
 }
 use super::map_fixture::indexed_map_graph;
 use super::*;

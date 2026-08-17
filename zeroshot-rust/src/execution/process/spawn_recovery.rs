@@ -32,8 +32,8 @@ impl SpawnRecovery {
         self.process_tree = Some(process_tree);
     }
 
-    pub(super) fn child_mut(&mut self) -> &mut Child {
-        self.child.as_mut().expect("spawn recovery owns child")
+    pub(super) fn child_mut(&mut self) -> Option<&mut Child> {
+        self.child.as_mut()
     }
 
     pub(super) async fn recover(mut self) {
@@ -48,13 +48,8 @@ impl SpawnRecovery {
         }
     }
 
-    pub(super) fn disarm(mut self) -> (Child, ProcessTreeHandle) {
-        (
-            self.child.take().expect("spawn recovery owns child"),
-            self.process_tree
-                .take()
-                .expect("spawn recovery captured tree"),
-        )
+    pub(super) fn disarm(mut self) -> Option<(Child, ProcessTreeHandle)> {
+        Some((self.child.take()?, self.process_tree.take()?))
     }
 }
 

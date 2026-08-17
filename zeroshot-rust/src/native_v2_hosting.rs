@@ -1,0 +1,229 @@
+//! Production composition for one native-v2 target.
+//!
+//! The target authority owns one SQLite ledger and one controller. Each admitted run receives one
+//! disposable directory containing its repository checkout and provider-private runtime homes.
+//! The allocator constructs only the existing native candidate and private capsule boundary; it
+//! has no retry, credential-store, or Node compatibility path.
+
+mod allocator;
+mod repository;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use thiserror::Error;
+
+use crate::execution::process::HostedProcessPool;
+use crate::native_v2_claude::ClaudeProcessEnvironment;
+use crate::native_v2_cloud::{ControllerEnvironment, NativeV2CloudController};
+use crate::native_v2_contract::{EnvironmentVariableName, RuntimePlan};
+use crate::native_v2_target_authority::{
+    FileTargetSetupStore, NativeV2TargetAuthority, TargetAuthorityError, TargetControllerFactory,
+    TargetSetupDocument,
+};
+use crate::v2_run_ledger::RunLedger;
+use crate::v2_run_ledger::sqlite::SqliteRunLedger;
+
+use allocator::{ProductionCapsuleAllocator, ProductionCapsuleConfig};
+
+const DEFAULT_CLAUDE_TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+const TARGET_SETUP_FILE: &str = "target-setup.json";
+
+/// Composes the production controller factory with the target's one durable setup document.
+/// Every process restart restores setup before it can mint an OECP session.
+pub async fn build_production_target_authority(
+    config: ProductionHostingConfig,
+) -> Result<NativeV2TargetAuthority, ProductionHostingError> {
+    let root = prepare_storage_root(&config.storage_root)?;
+    let setup_store = Arc::new(FileTargetSetupStore::new(root.join(TARGET_SETUP_FILE)));
+    NativeV2TargetAuthority::with_setup_store(
+        Arc::new(ProductionTargetControllerFactory::new(config)),
+        setup_store,
+    )
+    .await
+    .map_err(|_| ProductionHostingError::SetupStore)
+}
+
+/// Host-owned capabilities used to compose one installed target.
+///
+/// `controller_environment` is the target's available environment, not a process environment.
+/// Before controller construction it is reduced to names declared by the installed runtime plan.
+#[derive(Clone)]
+pub struct ProductionHostingConfig {
+    pub storage_root: PathBuf,
+    pub controller_environment: BTreeMap<EnvironmentVariableName, String>,
+    pub codex_executable: PathBuf,
+    pub claude_executable: String,
+    pub claude_prefix_arguments: Vec<String>,
+    pub claude_process_environment: ClaudeProcessEnvironment,
+    pub executable_search_path: String,
+    pub git_program: PathBuf,
+    pub gh_program: PathBuf,
+    pub process_pool: HostedProcessPool,
+    pub claude_turn_timeout: Duration,
+}
+
+impl fmt::Debug for ProductionHostingConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProductionHostingConfig")
+            .field("storage_root", &self.storage_root)
+            .field(
+                "controller_environment_names",
+                &self.controller_environment.keys().collect::<Vec<_>>(),
+            )
+            .field("controller_environment_values", &"[REDACTED]")
+            .field("codex_executable", &self.codex_executable)
+            .field("claude_executable", &self.claude_executable)
+            .field("git_program", &self.git_program)
+            .field("gh_program", &self.gh_program)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Factory installed behind [`crate::native_v2_target_authority::NativeV2TargetAuthority`].
+#[derive(Clone, Debug)]
+pub struct ProductionTargetControllerFactory {
+    config: Arc<ProductionHostingConfig>,
+}
+
+impl ProductionTargetControllerFactory {
+    #[must_use]
+    pub fn new(config: ProductionHostingConfig) -> Self {
+        Self {
+            config: Arc::new(config),
+        }
+    }
+
+    pub async fn create_controller(
+        &self,
+        setup: &TargetSetupDocument,
+    ) -> Result<Arc<NativeV2CloudController>, ProductionHostingError> {
+        setup
+            .validate()
+            .map_err(|_| ProductionHostingError::InvalidSetup)?;
+        let root = prepare_storage_root(&self.config.storage_root)?;
+        let environment = declared_environment(&setup.runtime, &self.config.controller_environment);
+        let ledger: Arc<dyn RunLedger> = Arc::new(
+            SqliteRunLedger::open(root.join("runs.sqlite3"))
+                .map_err(|_| ProductionHostingError::Ledger)?,
+        );
+        let allocator = Arc::new(ProductionCapsuleAllocator::new(ProductionCapsuleConfig {
+            storage_root: root,
+            repository: setup.repository.clone(),
+            base: setup.base.clone(),
+            environment: environment.clone(),
+            codex_executable: self.config.codex_executable.clone(),
+            claude_executable: self.config.claude_executable.clone(),
+            claude_prefix_arguments: self.config.claude_prefix_arguments.clone(),
+            claude_process_environment: self.config.claude_process_environment.clone(),
+            executable_search_path: self.config.executable_search_path.clone(),
+            git_program: self.config.git_program.clone(),
+            gh_program: self.config.gh_program.clone(),
+            process_pool: self.config.process_pool,
+            claude_turn_timeout: self.config.claude_turn_timeout,
+        })?);
+        let controller = NativeV2CloudController::new(
+            ledger,
+            setup.runtime.clone(),
+            ControllerEnvironment::new(environment),
+            allocator,
+        )
+        .await
+        .map_err(|_| ProductionHostingError::Controller)?;
+        Ok(Arc::new(controller))
+    }
+}
+
+#[async_trait]
+impl TargetControllerFactory for ProductionTargetControllerFactory {
+    async fn create(
+        &self,
+        setup: &TargetSetupDocument,
+    ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
+        self.create_controller(setup)
+            .await
+            .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+    }
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum ProductionHostingError {
+    #[error("native-v2 target setup is invalid")]
+    InvalidSetup,
+    #[error("native-v2 target storage could not be prepared")]
+    Storage,
+    #[error("native-v2 target setup store could not be opened")]
+    SetupStore,
+    #[error("native-v2 target ledger could not be opened")]
+    Ledger,
+    #[error("native-v2 capsule configuration is invalid")]
+    CapsuleConfiguration,
+    #[error("native-v2 target controller could not be started")]
+    Controller,
+}
+
+fn prepare_storage_root(path: &PathBuf) -> Result<PathBuf, ProductionHostingError> {
+    std::fs::create_dir_all(path).map_err(|_| ProductionHostingError::Storage)?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ProductionHostingError::Storage)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(ProductionHostingError::Storage);
+    }
+    let root = std::fs::canonicalize(path).map_err(|_| ProductionHostingError::Storage)?;
+    let runs = root.join("runs");
+    std::fs::create_dir(&runs)
+        .or_else(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|_| ProductionHostingError::Storage)?;
+    let runs_metadata =
+        std::fs::symlink_metadata(&runs).map_err(|_| ProductionHostingError::Storage)?;
+    if !runs_metadata.is_dir() || runs_metadata.file_type().is_symlink() {
+        return Err(ProductionHostingError::Storage);
+    }
+    Ok(root)
+}
+
+fn declared_environment(
+    runtime: &RuntimePlan,
+    available: &BTreeMap<EnvironmentVariableName, String>,
+) -> BTreeMap<EnvironmentVariableName, String> {
+    let names = runtime
+        .nodes()
+        .values()
+        .flat_map(|binding| binding.declared_environment().iter().cloned())
+        .collect::<BTreeSet<_>>();
+    names
+        .into_iter()
+        .filter_map(|name| available.get(&name).cloned().map(|value| (name, value)))
+        .collect()
+}
+
+impl Default for ProductionHostingConfig {
+    fn default() -> Self {
+        Self {
+            storage_root: PathBuf::from("/var/lib/zeroshot/native-v2"),
+            controller_environment: BTreeMap::new(),
+            codex_executable: PathBuf::from("/usr/bin/codex"),
+            claude_executable: "/usr/bin/claude".to_owned(),
+            claude_prefix_arguments: Vec::new(),
+            claude_process_environment: ClaudeProcessEnvironment::default(),
+            executable_search_path: "/usr/local/bin:/usr/bin:/bin".to_owned(),
+            git_program: PathBuf::from("/usr/bin/git"),
+            gh_program: PathBuf::from("/usr/bin/gh"),
+            process_pool: HostedProcessPool::hosted_default(),
+            claude_turn_timeout: DEFAULT_CLAUDE_TURN_TIMEOUT,
+        }
+    }
+}

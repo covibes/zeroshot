@@ -23,7 +23,7 @@ fn admitted_run() -> AdmittedRun {
     let graph: CompiledGraphIr = serde_json::from_str(include_str!(
         "../../../protocol/openengine-cluster/v1/fixtures/graph/canonical/base.json"
     ))
-    .unwrap();
+    .assert_value();
     AdmittedRun {
         graph,
         initial_input: Value::Null,
@@ -38,8 +38,8 @@ fn admitted_run() -> AdmittedRun {
 fn create(run: &str, key: &str, digest_byte: char) -> CreateRun {
     CreateRun {
         run_id: RunId::new(run),
-        submission_key: IdempotencyKey::new(key).unwrap(),
-        submission_digest: Sha256Digest::new(digest_byte.to_string().repeat(64)).unwrap(),
+        submission_key: IdempotencyKey::new(key).assert_value(),
+        submission_digest: Sha256Digest::new(digest_byte.to_string().repeat(64)).assert_value(),
         admitted: admitted_run(),
     }
 }
@@ -47,9 +47,9 @@ fn create(run: &str, key: &str, digest_byte: char) -> CreateRun {
 fn reference(run: &RunId, execution: u64) -> ExecutionRef {
     ExecutionRef {
         run_id: run.clone(),
-        node: NodeName::new("worker").unwrap(),
-        node_instance: NodeInstanceId::new(execution).unwrap(),
-        execution: ExecutionId::new(execution).unwrap(),
+        node: NodeName::new("worker").assert_value(),
+        node_instance: NodeInstanceId::new(execution).assert_value(),
+        execution: ExecutionId::new(execution).assert_value(),
     }
 }
 
@@ -57,10 +57,10 @@ fn started(reference: ExecutionRef) -> RunEvent {
     RunEvent::NodeStarted {
         reference,
         occurrence: StructuralOccurrence {
-            node: NodeName::new("worker").unwrap(),
+            node: NodeName::new("worker").assert_value(),
             map_indices: Vec::new(),
         },
-        attempt: PositiveInteger::new(1).unwrap(),
+        attempt: PositiveInteger::new(1).assert_value(),
         input: json!({ "request": "edit" }),
     }
 }
@@ -83,7 +83,7 @@ async fn fake_create_is_exactly_idempotent_and_conflicts_fail_closed() {
     let request = create("run-1", "submission-1", 'a');
 
     assert!(matches!(
-        ledger.create_or_get(request.clone()).await.unwrap(),
+        ledger.create_or_get(request.clone()).await.assert_value(),
         CreateRunOutcome::Created(_)
     ));
     let existing = ledger
@@ -92,17 +92,17 @@ async fn fake_create_is_exactly_idempotent_and_conflicts_fail_closed() {
             ..request.clone()
         })
         .await
-        .unwrap();
+        .assert_value();
     assert!(matches!(existing, CreateRunOutcome::Existing(_)));
     assert_eq!(existing.stored().snapshot.run_id, request.run_id);
 
     let conflict = ledger
         .create_or_get(CreateRun {
-            submission_digest: Sha256Digest::new("b".repeat(64)).unwrap(),
+            submission_digest: Sha256Digest::new("b".repeat(64)).assert_value(),
             ..request.clone()
         })
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(matches!(
         conflict,
         RunLedgerError::SubmissionConflict { .. }
@@ -111,7 +111,7 @@ async fn fake_create_is_exactly_idempotent_and_conflicts_fail_closed() {
     let run_id_conflict = ledger
         .create_or_get(create("run-1", "submission-2", 'c'))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(run_id_conflict, RunLedgerError::RunIdConflict);
 }
 
@@ -120,7 +120,7 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
     let ledger = FakeRunLedger::new();
     let request = create("run-events", "submission-events", 'd');
     let run_id = request.run_id.clone();
-    ledger.create_or_get(request).await.unwrap();
+    ledger.create_or_get(request).await.assert_value();
     let first = reference(&run_id, 1);
     let second = reference(&run_id, 2);
 
@@ -134,7 +134,7 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
                 RunEvent::SafeLog {
                     execution: Some(first.execution),
                     stream: SafeLogStream::Output,
-                    line: SafeLogLine::new("working").unwrap(),
+                    line: SafeLogLine::new("working").assert_value(),
                 },
                 completed(first.clone(), json!({ "changed": true })),
                 RunEvent::ExecutionVoided {
@@ -149,17 +149,27 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
             ],
         )
         .await
-        .unwrap();
+        .assert_value();
 
     assert_eq!(appended.events.len(), 7);
     assert_eq!(appended.snapshot.cursor, cursor_for(7));
     assert_eq!(appended.snapshot.phase, RunPhase::Finished);
     assert!(matches!(
-        appended.snapshot.executions[&first.execution].state,
+        appended
+            .snapshot
+            .executions
+            .get(&first.execution)
+            .assert_value()
+            .state,
         NodeState::Completed { .. }
     ));
     assert!(matches!(
-        appended.snapshot.executions[&second.execution].state,
+        appended
+            .snapshot
+            .executions
+            .get(&second.execution)
+            .assert_value()
+            .state,
         NodeState::Voided {
             reason: ExecutionVoidReason::ParallelJoin,
             ..
@@ -169,12 +179,12 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
     let observation = ledger
         .snapshot_and_tail(&run_id, Some(&cursor_for(3)))
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(observation.snapshot.cursor, cursor_for(7));
     assert_eq!(observation.events.len(), 4);
-    assert_eq!(observation.events[0].cursor, cursor_for(4));
+    assert_eq!(observation.events.assert_at(0).cursor, cursor_for(4));
     assert!(matches!(
-        observation.events[0].event,
+        observation.events.assert_at(0).event,
         RunEvent::SafeLog { .. }
     ));
 
@@ -182,7 +192,7 @@ async fn fake_projects_outputs_voids_safe_logs_and_terminal_in_order() {
         ledger
             .append(&run_id, vec![RunEvent::RunStarted])
             .await
-            .unwrap_err(),
+            .assert_error(),
         RunLedgerError::InvalidEvent("run is already terminal")
     );
 }
@@ -192,17 +202,17 @@ async fn force_stop_is_idempotent_and_prevents_new_dispatches() {
     let ledger = FakeRunLedger::new();
     let request = create("run-stop", "submission-stop", 'e');
     let run_id = request.run_id.clone();
-    ledger.create_or_get(request).await.unwrap();
+    ledger.create_or_get(request).await.assert_value();
     ledger
         .append(&run_id, vec![RunEvent::RunStarted])
         .await
-        .unwrap();
+        .assert_value();
 
-    let first = ledger.request_force_stop(&run_id).await.unwrap();
+    let first = ledger.request_force_stop(&run_id).await.assert_value();
     assert_eq!(first.events.len(), 1);
     assert!(first.snapshot.force_stop_requested);
     assert_eq!(first.snapshot.phase, RunPhase::Stopping);
-    let second = ledger.request_force_stop(&run_id).await.unwrap();
+    let second = ledger.request_force_stop(&run_id).await.assert_value();
     assert!(second.events.is_empty());
     assert_eq!(second.snapshot.cursor, first.snapshot.cursor);
 
@@ -210,7 +220,7 @@ async fn force_stop_is_idempotent_and_prevents_new_dispatches() {
         ledger
             .append(&run_id, vec![started(reference(&run_id, 1))])
             .await
-            .unwrap_err(),
+            .assert_error(),
         RunLedgerError::InvalidEvent("run is not dispatchable")
     );
 }
@@ -222,7 +232,7 @@ async fn parallel_completions_receive_one_durable_order() {
     let run_id = request.run_id.clone();
     let first = reference(&run_id, 1);
     let second = reference(&run_id, 2);
-    ledger.create_or_get(request).await.unwrap();
+    ledger.create_or_get(request).await.assert_value();
     ledger
         .append(
             &run_id,
@@ -233,7 +243,7 @@ async fn parallel_completions_receive_one_durable_order() {
             ],
         )
         .await
-        .unwrap();
+        .assert_value();
 
     let first_completion = vec![completed(first.clone(), json!("first"))];
     let second_completion = vec![completed(second.clone(), json!("second"))];
@@ -241,11 +251,11 @@ async fn parallel_completions_receive_one_durable_order() {
         ledger.append(&run_id, first_completion),
         ledger.append(&run_id, second_completion),
     );
-    let first_result = first_result.unwrap();
-    let second_result = second_result.unwrap();
+    let first_result = first_result.assert_value();
+    let second_result = second_result.assert_value();
     let mut completion_cursors = [
-        first_result.events[0].cursor.clone(),
-        second_result.events[0].cursor.clone(),
+        first_result.events.assert_at(0).cursor.clone(),
+        second_result.events.assert_at(0).cursor.clone(),
     ];
     completion_cursors.sort();
     assert_eq!(completion_cursors, [cursor_for(4), cursor_for(5)]);
@@ -253,15 +263,25 @@ async fn parallel_completions_receive_one_durable_order() {
     let observation = ledger
         .snapshot_and_tail(&run_id, Some(&cursor_for(3)))
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(observation.snapshot.cursor, cursor_for(5));
     assert_eq!(observation.events.len(), 2);
     assert!(matches!(
-        observation.snapshot.executions[&first.execution].state,
+        observation
+            .snapshot
+            .executions
+            .get(&first.execution)
+            .assert_value()
+            .state,
         NodeState::Completed { .. }
     ));
     assert!(matches!(
-        observation.snapshot.executions[&second.execution].state,
+        observation
+            .snapshot
+            .executions
+            .get(&second.execution)
+            .assert_value()
+            .state,
         NodeState::Completed { .. }
     ));
 }
@@ -272,8 +292,8 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
     let request = create("run-sqlite", "submission-sqlite", 'f');
     let run_id = request.run_id.clone();
     {
-        let ledger = SqliteRunLedger::open(&path).unwrap();
-        ledger.create_or_get(request.clone()).await.unwrap();
+        let ledger = SqliteRunLedger::open(&path).assert_value();
+        ledger.create_or_get(request.clone()).await.assert_value();
         ledger
             .append(
                 &run_id,
@@ -284,34 +304,36 @@ async fn sqlite_survives_reopen_and_preserves_cursor_tail_and_identity() {
                 ],
             )
             .await
-            .unwrap();
+            .assert_value();
     }
 
-    let reopened = SqliteRunLedger::open(&path).unwrap();
-    let stored = reopened.get(&run_id).await.unwrap().unwrap();
+    let reopened = SqliteRunLedger::open(&path).assert_value();
+    let stored = reopened.get(&run_id).await.assert_value().assert_value();
     assert_eq!(stored.snapshot.cursor, cursor_for(3));
     assert!(matches!(
-        reopened.create_or_get(request).await.unwrap(),
+        reopened.create_or_get(request).await.assert_value(),
         CreateRunOutcome::Existing(_)
     ));
     let observation = reopened
         .snapshot_and_tail(&run_id, Some(&cursor_for(1)))
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(observation.events.len(), 2);
-    assert_eq!(observation.events[0].cursor, cursor_for(2));
+    assert_eq!(observation.events.assert_at(0).cursor, cursor_for(2));
 
     drop(reopened);
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(&path).assert_value();
 }
 
 fn unique_database_path() -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .assert_value()
         .as_nanos();
     std::env::temp_dir().join(format!(
         "zeroshot-v2-run-ledger-{}-{nonce}.sqlite",
         std::process::id()
     ))
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertValue};

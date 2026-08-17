@@ -2,28 +2,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use openengine_cluster_protocol::{
-    GraphSpec, IdempotencyKey, NodeName, RunId, WorkerOutcome, WorkerRef,
-};
+use openengine_cluster_protocol::{IdempotencyKey, NodeName, WorkerOutcome};
 use serde_json::{json, Value};
 
 use super::*;
 use crate::execution::SessionScope;
-use crate::native_v2_admission::NativeV2Admission;
+use crate::native_v2_candidate::test_support::{
+    NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,
+};
 use crate::native_v2_contract::{
-    AdmittedRun, ExecutionId, ExecutionRef, EnvironmentVariableName, NodeInstanceId,
-    NodeRuntimeBinding, RunSubmission, RuntimePlan,
+    AdmittedRun, EnvironmentVariableName, NodeRuntimeBinding, RunSubmission, RuntimePlan,
 };
 use crate::native_v2_runner::{NativeNodeRunner, NodeHandle, NodeRunRequest, NodeRunner};
-use crate::worker_catalog::{ModelId, ReasoningEffort};
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(1);
+use crate::worker_catalog::{self, ReasoningEffort};
 
 const SCRIPT: &str = r#"#!/bin/sh
 set -eu
@@ -69,60 +64,32 @@ fi
 /usr/bin/printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
 "#;
 
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(label: &str) -> Self {
-        let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "zeroshot-v2-codex-{label}-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn join(&self, path: impl AsRef<Path>) -> PathBuf {
-        self.0.join(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn scripted_adapter(directory: &TempDir, provider: CodexProvider) -> Arc<NativeV2CodexAdapter> {
-    let executable = directory.join("codex-script");
-    fs::write(&executable, SCRIPT).unwrap();
-    let mut permissions = fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&executable, permissions).unwrap();
-    let runtime_home = directory.join("runtime-home");
-    let workspace = directory.join("workspace");
-    fs::create_dir_all(&runtime_home).unwrap();
-    fs::create_dir_all(&workspace).unwrap();
+fn scripted_adapter(
+    directory: &TestDirectory,
+    provider: CodexProvider,
+) -> Arc<NativeV2CodexAdapter> {
+    let executable = directory.write_executable("codex-script", SCRIPT);
+    let runtime_home = directory.child("runtime-home");
+    let workspace = directory.child("workspace");
+    fs::create_dir_all(&runtime_home).assert_value();
+    fs::create_dir_all(&workspace).assert_value();
     Arc::new(NativeV2CodexAdapter::new_for_test(NativeV2CodexConfig {
         provider,
         executable,
         workspace,
         runtime_home,
         search_path: "/usr/bin:/bin".to_owned(),
-        process_pool: HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).unwrap(),
+        process_pool: HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value(),
     }))
 }
 
 fn environment_names(names: &[&str]) -> BTreeSet<EnvironmentVariableName> {
-    names
-        .iter()
-        .map(|name| EnvironmentVariableName::new(*name).unwrap())
-        .collect()
+    names.iter().map(|name| environment_name(name)).collect()
 }
 
 fn binding(scope: SessionScope, environment: &[&str]) -> NodeRuntimeBinding {
     NodeRuntimeBinding::Agent {
-        model: ModelId::new("gpt-5.6-sol").unwrap(),
+        model: worker_catalog::ModelId::new("gpt-5.6-sol").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: scope,
         env: environment_names(environment),
@@ -130,71 +97,56 @@ fn binding(scope: SessionScope, environment: &[&str]) -> NodeRuntimeBinding {
 }
 
 async fn admitted(binding: NodeRuntimeBinding, provider: CodexProvider) -> AdmittedRun {
-    let graph: GraphSpec = serde_json::from_value(json!({
-        "profile":"openengine.graph.full/v1",
-        "initialInput":{"kind":"null"},
-        "policy":{"policy":"policy.native-v2@1","default":"deny"},
-        "root":{
-            "kind":"seq","name":"root","state":{"kind":"null"},
-            "children":[
-                {
-                    "kind":"step","name":"work","worker":"agent.work@1",
-                    "input":{"kind":"null"},
-                    "output":{"kind":"record","fields":{
-                        "answer":{"type":{"kind":"integer"},"required":true}
-                    }},
-                    "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1
-                },
-                {"kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]}
-            ],
-            "promotedStatePaths":[]
-        }
-    }))
-    .unwrap();
-    NativeV2Admission
-        .admit(RunSubmission {
-            graph,
-            initial_input: Value::Null,
-            runtime: RuntimePlan::Codex {
-                provider,
-                nodes: BTreeMap::from([(NodeName::new("work").unwrap(), binding)]),
-            },
-            ship: false,
-            submission_key: IdempotencyKey::new("codex-adapter-test").unwrap(),
-        })
-        .await
-        .unwrap()
+    let graph = full_graph(vec![
+        json!({
+            "kind":"step","name":"work","worker":"agent.work@1",
+            "input":{"kind":"null"},
+            "output":{"kind":"record","fields":{
+                "answer":{"type":{"kind":"integer"},"required":true}
+            }},
+            "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1
+        }),
+        success_node(),
+    ]);
+    admit(RunSubmission {
+        graph,
+        initial_input: Value::Null,
+        runtime: RuntimePlan::Codex {
+            provider,
+            nodes: BTreeMap::from([(NodeName::new("work").assert_value(), binding)]),
+        },
+        ship: false,
+        submission_key: IdempotencyKey::new("codex-adapter-test").assert_value(),
+    })
+    .await
 }
 
 fn request(admitted: &AdmittedRun, execution: u64, values: &[(&str, String)]) -> NodeRunRequest {
     let binding = admitted
         .runtime
         .nodes()
-        .get(&NodeName::new("work").unwrap())
-        .unwrap()
+        .get(&NodeName::new("work").assert_value())
+        .assert_value()
         .clone();
     let values = values
         .iter()
-        .map(|(name, value)| (EnvironmentVariableName::new(*name).unwrap(), value.clone()))
+        .map(|(name, value)| (environment_name(name), value.clone()))
         .collect();
-    NodeRunRequest {
-        invocation: NodeInvocation {
-            reference: ExecutionRef {
-                run_id: RunId::new("run-codex"),
-                node: NodeName::new("work").unwrap(),
-                node_instance: NodeInstanceId::new(1).unwrap(),
-                execution: ExecutionId::new(execution).unwrap(),
-            },
-            worker: WorkerRef::new("agent.work@1").unwrap(),
-            input: json!({"task":"change the workspace"}),
-            binding: binding.clone(),
-        },
-        environment: ResolvedEnvironment::exact(&binding, values).unwrap(),
+    NodeRequestFixture {
+        run_id: "run-codex",
+        node: "work",
+        node_instance: 1,
+        execution,
+        worker: "agent.work@1",
+        input: json!({"task":"change the workspace"}),
+        binding,
+        environment: values,
     }
+    .into_request()
 }
 
 fn runner(admitted: &AdmittedRun, adapter: Arc<NativeV2CodexAdapter>) -> NativeNodeRunner {
-    NativeNodeRunner::new(admitted, adapter.clone(), adapter).unwrap()
+    NativeNodeRunner::new(admitted, adapter.clone(), adapter).assert_value()
 }
 
 async fn start(
@@ -206,13 +158,13 @@ async fn start(
     runtime
         .start(request(admitted, execution, values))
         .await
-        .unwrap()
+        .assert_value()
 }
 
 #[tokio::test]
 async fn openrouter_script_observes_exact_configuration_environment_output_and_attach() {
-    let directory = TempDir::new("openrouter");
-    let capture = directory.join("capture");
+    let directory = TestDirectory::new("codex-openrouter");
+    let capture = directory.child("capture");
     let adapter = scripted_adapter(&directory, CodexProvider::OpenRouter);
     let admitted = admitted(
         binding(
@@ -233,15 +185,15 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
         ],
     )
     .await;
-    let mut attach = handle.take_initial_output().unwrap();
-    let progress = attach.recv().await.unwrap();
+    let mut attach = handle.take_initial_output().assert_value();
+    let progress = attach.recv().await.assert_value();
     assert_eq!(progress.stream, LiveOutputStream::System);
     assert_eq!(progress.text, "Codex turn started");
-    let attached = attach.recv().await.unwrap();
+    let attached = attach.recv().await.assert_value();
     assert_eq!(attached.stream, LiveOutputStream::Output);
     assert_eq!(attached.text, "visible [REDACTED]");
-    assert_eq!(attach.recv().await.unwrap().text, r#"{"answer":42}"#);
-    let completion = handle.completion().await.unwrap();
+    assert_eq!(attach.recv().await.assert_value().text, r#"{"answer":42}"#);
+    let completion = handle.completion().await.assert_value();
     assert_eq!(
         completion.outcome,
         WorkerOutcome::Verified {
@@ -250,7 +202,7 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
         }
     );
 
-    let capture = fs::read_to_string(capture).unwrap();
+    let capture = fs::read_to_string(capture).assert_value();
     for expected in [
         "arg=model_provider=\"openrouter\"",
         "arg=model_providers.openrouter.base_url=\"https://openrouter.ai/api/v1\"",
@@ -280,8 +232,8 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
 
 #[tokio::test]
 async fn openai_node_instance_session_resumes_the_exact_thread() {
-    let directory = TempDir::new("resume");
-    let capture = directory.join("capture");
+    let directory = TestDirectory::new("codex-resume");
+    let capture = directory.child("capture");
     let adapter = scripted_adapter(&directory, CodexProvider::OpenAi);
     let admitted = admitted(
         binding(
@@ -297,9 +249,9 @@ async fn openai_node_instance_session_resumes_the_exact_thread() {
         ("OPENAI_API_KEY", "fake-openai-key".to_owned()),
     ];
     let mut first_handle = start(&runtime, &admitted, 1, &values).await;
-    let first = first_handle.completion().await.unwrap();
+    let first = first_handle.completion().await.assert_value();
     let mut second_handle = start(&runtime, &admitted, 2, &values).await;
-    let second = second_handle.completion().await.unwrap();
+    let second = second_handle.completion().await.assert_value();
     assert!(matches!(
         first.outcome,
         WorkerOutcome::Verified { output, .. } if output == json!({"answer":42})
@@ -308,7 +260,7 @@ async fn openai_node_instance_session_resumes_the_exact_thread() {
         second.outcome,
         WorkerOutcome::Verified { output, .. } if output == json!({"answer":43})
     ));
-    let capture = fs::read_to_string(capture).unwrap();
+    let capture = fs::read_to_string(capture).assert_value();
     assert!(capture.contains("arg=model_provider=\"openai\""));
     assert_eq!(capture.matches("arg=resume").count(), 1);
     assert_eq!(capture.matches("arg=thread-123").count(), 1);
@@ -328,9 +280,9 @@ async fn openai_node_instance_session_resumes_the_exact_thread() {
 
 #[tokio::test]
 async fn cancellation_waits_for_contained_child_cleanup() {
-    let directory = TempDir::new("cancel");
-    let capture = directory.join("capture");
-    let pid_path = directory.join("pid");
+    let directory = TestDirectory::new("codex-cancel");
+    let capture = directory.child("capture");
+    let pid_path = directory.child("pid");
     let adapter = scripted_adapter(&directory, CodexProvider::OpenAi);
     let admitted = admitted(
         binding(
@@ -353,9 +305,12 @@ async fn cancellation_waits_for_contained_child_cleanup() {
         ],
     )
     .await;
-    let mut attach = handle.take_initial_output().unwrap();
-    assert_eq!(attach.recv().await.unwrap().text, "Codex turn started");
-    assert_eq!(attach.recv().await.unwrap().text, r#"{"answer":42}"#);
+    let mut attach = handle.take_initial_output().assert_value();
+    assert_eq!(
+        attach.recv().await.assert_value().text,
+        "Codex turn started"
+    );
+    assert_eq!(attach.recv().await.assert_value().text, r#"{"answer":42}"#);
     let pid = wait_for_pid(&pid_path).await;
     handle.cancel();
     assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
@@ -374,7 +329,7 @@ async fn wait_for_pid(path: &Path) -> u32 {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("script did not publish its pid");
+    None::<u32>.assert_value_with("script did not publish its pid")
 }
 
 fn process_is_live(pid: u32) -> bool {
@@ -387,17 +342,17 @@ fn command_environment_is_exact_and_rejects_adapter_owned_collisions() {
     let resolved = ResolvedEnvironment::exact(
         &declared,
         BTreeMap::from([(
-            EnvironmentVariableName::new("DECLARED").unwrap(),
+            EnvironmentVariableName::new("DECLARED").assert_value(),
             "resolved-value".to_owned(),
         )]),
     )
-    .unwrap();
+    .assert_value();
     let environment = process_environment(
         &resolved,
         "/private/runtime".to_owned(),
         "/usr/bin:/bin".to_owned(),
     )
-    .unwrap();
+    .assert_value();
     assert_eq!(
         environment,
         BTreeMap::from([
@@ -412,11 +367,11 @@ fn command_environment_is_exact_and_rejects_adapter_owned_collisions() {
     let environment = ResolvedEnvironment::exact(
         &binding,
         BTreeMap::from([(
-            EnvironmentVariableName::new("CODEX_HOME").unwrap(),
+            EnvironmentVariableName::new("CODEX_HOME").assert_value(),
             "node-owned".to_owned(),
         )]),
     )
-    .unwrap();
+    .assert_value();
     assert_eq!(
         process_environment(
             &environment,
@@ -434,20 +389,22 @@ fn log_redactions_are_longest_first_and_do_not_leave_overlapping_suffixes() {
         &binding,
         BTreeMap::from([
             (
-                EnvironmentVariableName::new("LONG_SECRET").unwrap(),
+                EnvironmentVariableName::new("LONG_SECRET").assert_value(),
                 "secret-tail".to_owned(),
             ),
             (
-                EnvironmentVariableName::new("SHORT_SECRET").unwrap(),
+                EnvironmentVariableName::new("SHORT_SECRET").assert_value(),
                 "secret".to_owned(),
             ),
         ]),
     )
-    .unwrap();
-    let redactions = redaction_values(&environment);
+    .assert_value();
+    let redactions = redaction_values(environment.iter().map(|(_, value)| value));
     assert_eq!(redactions, vec!["secret-tail", "secret"]);
     assert_eq!(
         redact_text("value=secret-tail", &redactions),
         "value=[REDACTED]"
     );
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue};

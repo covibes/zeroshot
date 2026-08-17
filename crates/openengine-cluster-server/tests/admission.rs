@@ -83,8 +83,11 @@ async fn admission_dispatch_routes_typed_plan_and_apply() {
             )
             .await,
     )
-    .unwrap();
-    assert_eq!(plan["result"], json!({"ok":false,"diagnostics":[]}));
+    .assert_value();
+    assert_eq!(
+        plan.assert_at("result"),
+        &json!({"ok":false,"diagnostics":[]})
+    );
 
     let apply: serde_json::Value = serde_json::from_str(
         &dispatcher
@@ -97,10 +100,26 @@ async fn admission_dispatch_routes_typed_plan_and_apply() {
             )
             .await,
     )
-    .unwrap();
-    assert_eq!(apply["error"]["code"], -32602);
-    assert_eq!(apply["error"]["data"]["code"], SCHEMA_VIOLATION);
-    assert_eq!(apply["error"]["data"]["details"]["reason"], "fixture");
+    .assert_value();
+    assert_eq!(apply.assert_at("error").assert_at("code"), -32602);
+    assert_eq!(
+        apply.assert_at("error").assert_at("data").assert_at("code"),
+        SCHEMA_VIOLATION
+    );
+    assert_eq!(
+        apply
+            .assert_at("error")
+            .assert_at("data")
+            .assert_at("details")
+            .assert_at("reason"),
+        "fixture"
+    );
     assert!(apply.get("result").is_none());
     assert_ne!(Phase::Admitting, Phase::Running);
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_at.rs"]
+mod assert_at;
+use assert_at::AssertAt;

@@ -139,7 +139,7 @@ fn registry_is_the_exact_protocol_method_surface() {
 fn bindings_do_not_classify_subscriptions_with_method_name_literals() {
     let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     for relative in ["stdio.rs", "connection/frame.rs"] {
-        let source = fs::read_to_string(source_root.join(relative)).unwrap();
+        let source = fs::read_to_string(source_root.join(relative)).assert_value();
         for method in [
             "watch",
             "logs",
@@ -175,9 +175,21 @@ async fn subscription_methods_remain_unavailable_to_unary_dispatch() {
         let response = dispatcher
             .dispatch_decoded(id.clone(), method, Value::Array(Vec::new()))
             .await;
-        let response: Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(response["id"], serde_json::to_value(id).unwrap());
-        assert_eq!(response["error"]["code"], -32601);
-        assert_eq!(response["error"]["message"], "Method not found");
+        let response: Value = serde_json::from_str(&response).assert_value();
+        assert_eq!(
+            response.assert_at("id"),
+            &serde_json::to_value(id).assert_value()
+        );
+        assert_eq!(response.assert_at("error").assert_at("code"), -32601);
+        assert_eq!(
+            response.assert_at("error").assert_at("message"),
+            "Method not found"
+        );
     }
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_at.rs"]
+mod assert_at;
+use assert_at::AssertAt;

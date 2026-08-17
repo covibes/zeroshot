@@ -8,11 +8,19 @@ use super::filesystem::{
     BoundedReadOptions, open_new_owner_file, prepare_owned_directory, read_regular_bounded,
     remove_regular_if_present, set_owner_file_permissions, sync_directory,
 };
-use super::{LocalCasArtifactStore, LocalStage, LocalStageStatus, MAX_MANIFEST_BYTES, missing_content};
+use super::{
+    LocalCasArtifactStore, LocalStage, LocalStageStatus, MAX_MANIFEST_BYTES, invalid_stage,
+    missing_content,
+};
 use crate::artifact_store::{
     ArtifactByteStream, ArtifactIntent, ArtifactStoreFailure, ArtifactStoreFailureKind,
     ArtifactStoreOperation, DiscardResult, MAX_ARTIFACT_BYTES, ReleaseResult, derive_artifact_id,
-    failure_from_io, verify_bytes,
+    encode_hex, failure_from_io, verify_bytes,
+};
+
+mod errors;
+use errors::{
+    corrupt_content, identity_conflict, manifest_encoding_failure, publish_io, release_io, stage_io,
 };
 
 impl LocalCasArtifactStore {
@@ -75,7 +83,7 @@ impl LocalCasArtifactStore {
         self.commit_manifest(stage_key, &stage.artifact_ref).await?;
         self.stages()
             .get_mut(&stage_key)
-            .expect("stage remains registered during serialized publish")
+            .ok_or_else(invalid_stage)?
             .status = LocalStageStatus::Published;
         Ok(stage.artifact_ref)
     }
@@ -94,9 +102,7 @@ impl LocalCasArtifactStore {
 
     async fn ensure_blob(&self, stage: &LocalStage) -> Result<(), ArtifactStoreFailure> {
         let blob_path = self.blob_path(&stage.artifact_ref);
-        let blob_directory = blob_path
-            .parent()
-            .expect("content-addressed blob always has a parent");
+        let blob_directory = blob_path.parent().ok_or_else(corrupt_content)?;
         prepare_owned_directory(
             &self.inner.root,
             blob_directory,
@@ -104,9 +110,7 @@ impl LocalCasArtifactStore {
         )?;
         sync_directory(
             &self.inner.root,
-            blob_directory
-                .parent()
-                .expect("blob prefix always has an owned parent"),
+            blob_directory.parent().ok_or_else(corrupt_content)?,
             ArtifactStoreOperation::Publish,
         )?;
         let staged = self.read_staged_bytes(stage).await?;
@@ -253,7 +257,7 @@ impl LocalCasArtifactStore {
         )?;
         self.stages()
             .get_mut(&stage_key)
-            .expect("stage remains registered during serialized discard")
+            .ok_or_else(invalid_stage)?
             .status = LocalStageStatus::Discarded;
         Ok(DiscardResult::Discarded)
     }
@@ -307,8 +311,7 @@ impl LocalCasArtifactStore {
         remove_regular_if_present(&self.inner.root, &path, ArtifactStoreOperation::Release).await?;
         sync_directory(
             &self.inner.root,
-            path.parent()
-                .expect("content-addressed blob always has a parent"),
+            path.parent().ok_or_else(corrupt_content)?,
             ArtifactStoreOperation::Release,
         )
     }
@@ -327,8 +330,7 @@ pub(super) async fn write_verified_stage(
         remove_regular_if_present(root, path, ArtifactStoreOperation::Stage).await?;
         sync_directory(
             root,
-            path.parent()
-                .expect("artifact stage always has a parent directory"),
+            path.parent().ok_or_else(corrupt_content)?,
             ArtifactStoreOperation::Stage,
         )?;
         return Err(failure);
@@ -345,26 +347,51 @@ async fn copy_and_verify(
     let mut hasher = Sha256::new();
     let mut total = 0_u64;
     let mut buffer = [0_u8; 16 * 1024];
-    loop {
+    while total <= declared {
         let remaining = declared.saturating_add(1).saturating_sub(total);
-        if remaining == 0 {
-            break;
-        }
-        let limit = usize::try_from(remaining.min(buffer.len() as u64))
-            .expect("bounded read length fits usize");
-        let read = bytes.read(&mut buffer[..limit]).await.map_err(stage_io)?;
+        let read = copy_next_chunk(file, &mut bytes, (&mut buffer, &mut hasher), remaining).await?;
         if read == 0 {
             break;
         }
-        total += read as u64;
-        if total > declared {
-            return Err(ArtifactStoreFailure::new(
-                ArtifactStoreFailureKind::Oversize,
-            ));
-        }
-        hasher.update(&buffer[..read]);
-        file.write_all(&buffer[..read]).await.map_err(stage_io)?;
+        total = checked_total(total, read, declared)?;
     }
+    finish_stage(file, intent, total, hasher).await
+}
+
+async fn copy_next_chunk(
+    file: &mut tokio::fs::File,
+    bytes: &mut ArtifactByteStream,
+    state: (&mut [u8], &mut Sha256),
+    remaining: u64,
+) -> Result<usize, ArtifactStoreFailure> {
+    let (buffer, hasher) = state;
+    let buffer_length = u64::try_from(buffer.len()).map_err(|_| corrupt_content())?;
+    let limit = usize::try_from(remaining.min(buffer_length)).map_err(|_| corrupt_content())?;
+    let target = buffer.get_mut(..limit).ok_or_else(corrupt_content)?;
+    let read = bytes.read(target).await.map_err(stage_io)?;
+    let chunk = target.get(..read).ok_or_else(corrupt_content)?;
+    hasher.update(chunk);
+    file.write_all(chunk).await.map_err(stage_io)?;
+    Ok(read)
+}
+
+fn checked_total(total: u64, read: usize, declared: u64) -> Result<u64, ArtifactStoreFailure> {
+    let read = u64::try_from(read).map_err(|_| corrupt_content())?;
+    let total = total.checked_add(read).ok_or_else(corrupt_content)?;
+    if total > declared {
+        return Err(ArtifactStoreFailure::new(
+            ArtifactStoreFailureKind::Oversize,
+        ));
+    }
+    Ok(total)
+}
+
+async fn finish_stage(
+    file: &mut tokio::fs::File,
+    intent: &ArtifactIntent,
+    total: u64,
+    hasher: Sha256,
+) -> Result<(), ArtifactStoreFailure> {
     verify_staged_digest(intent, total, hasher.finalize())?;
     file.flush().await.map_err(stage_io)?;
     file.sync_all().await.map_err(stage_io)
@@ -409,7 +436,7 @@ fn validate_manifest_identity(
     expected_id: &ArtifactId,
 ) -> Result<(), ArtifactStoreFailure> {
     if artifact_ref.artifact_id != *expected_id
-        || derive_artifact_id(&intent_from_ref(artifact_ref)) != *expected_id
+        || derive_artifact_id(&intent_from_ref(artifact_ref))? != *expected_id
     {
         return Err(identity_conflict());
     }
@@ -451,38 +478,5 @@ fn artifact_id_from_entry(entry: std::fs::DirEntry) -> Result<ArtifactId, Artifa
 }
 
 fn digest_to_hex(digest: impl AsRef<[u8]>) -> String {
-    let bytes = digest.as_ref();
-    let mut output = String::with_capacity(bytes.len() * 2);
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    for &byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
-}
-
-fn stage_io(error: std::io::Error) -> ArtifactStoreFailure {
-    failure_from_io(error, ArtifactStoreOperation::Stage)
-}
-
-fn publish_io(error: std::io::Error) -> ArtifactStoreFailure {
-    failure_from_io(error, ArtifactStoreOperation::Publish)
-}
-
-fn release_io(error: std::io::Error) -> ArtifactStoreFailure {
-    failure_from_io(error, ArtifactStoreOperation::Release)
-}
-
-fn manifest_encoding_failure(_: serde_json::Error) -> ArtifactStoreFailure {
-    ArtifactStoreFailure::new(ArtifactStoreFailureKind::Io(
-        ArtifactStoreOperation::Publish,
-    ))
-}
-
-fn corrupt_content() -> ArtifactStoreFailure {
-    ArtifactStoreFailure::new(ArtifactStoreFailureKind::CorruptContent)
-}
-
-fn identity_conflict() -> ArtifactStoreFailure {
-    ArtifactStoreFailure::new(ArtifactStoreFailureKind::IdentityConflict)
+    encode_hex(digest.as_ref())
 }

@@ -3,6 +3,8 @@
 //! hook and recording every event an actual subscriber receives; the remaining fixtures document
 //! standalone wire shapes for request/close framing that no single session exercises.
 
+use crate::fixture::*;
+
 use openengine_cluster_protocol::{
     BackendFault, Cursor, EventNotification, FaultAction, FaultCode, FaultConsequence,
     FaultRetryDisposition, FaultSeverity, NodeAddress, NodeName, PositiveInteger, RunId,
@@ -102,15 +104,15 @@ async fn watch_session() -> Vec<EventNotification> {
     let (result, mut stream, _handle) = dispatcher
         .watch(WatchParams::default())
         .await
-        .expect("the admission backend must support watch");
+        .assert_value_with("the admission backend must support watch");
     let run_id = result
         .run_id
         .clone()
-        .expect("the seeded apply must have committed a run before watch attaches");
+        .assert_value_with("the seeded apply must have committed a run before watch attaches");
 
     let node = NodeAddress {
-        node: NodeName::new("worker").expect("fixture node name must be valid"),
-        attempt: PositiveInteger::new(1).expect("fixture attempt must be positive"),
+        node: NodeName::new("worker").assert_value_with("fixture node name must be valid"),
+        attempt: PositiveInteger::new(1).assert_value_with("fixture attempt must be positive"),
     };
     store
         .emit_node_event(

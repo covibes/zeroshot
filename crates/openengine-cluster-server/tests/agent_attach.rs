@@ -41,42 +41,48 @@ use oversized_id_backend_support::oversized_id_backend;
 /// overflow point.
 const AMPLE_CAPACITY: usize = 8;
 
-fn sample_execution_ref() -> ExecutionRef {
-    ExecutionRef::new("execution-1").expect("fixture execution ref must be valid")
-}
-
 fn agent_attach_params() -> AgentAttachParams {
     AgentAttachParams {
-        execution: sample_execution_ref(),
+        execution: ExecutionRef::new("execution-1").assert_value(),
     }
 }
 
 fn sample_output_event(text: &str) -> AgentAttachEvent {
     AgentAttachEvent::Output {
-        text: BoundedAssistantOutput::new(text).expect("fixture output must be valid"),
+        text: BoundedAssistantOutput::new(text).assert_value(),
     }
+}
+
+async fn rejected_attach(store: Arc<AgentAttachFixtureStore>) -> BackendError {
+    Dispatcher::new(
+        AgentAttachFixtureBackend::new(store),
+        ConnectionContext::default(),
+    )
+    .agent_attach(agent_attach_params())
+    .await
+    .assert_error()
+}
+
+async fn active_store() -> (Arc<AgentAttachFixtureStore>, ExecutionRef) {
+    let store = Arc::new(AgentAttachFixtureStore::new());
+    let execution = agent_attach_params().execution;
+    store.register_active(execution.clone()).await;
+    (store, execution)
 }
 
 #[tokio::test]
 async fn default_agent_attach_is_unsupported_unless_backend_overrides_it() {
     let dispatcher = bare_watch_dispatcher(AMPLE_CAPACITY);
-    let Err(error) = dispatcher.agent_attach(agent_attach_params()).await else {
-        panic!("expected the default agent_attach implementation to be unsupported");
-    };
+    let error = dispatcher
+        .agent_attach(agent_attach_params())
+        .await
+        .assert_error();
     assert_eq!(error.code, INVALID_PHASE);
 }
 
 #[tokio::test]
 async fn unknown_execution_ref_returns_not_found_with_no_private_id_in_details() {
-    let store = Arc::new(AgentAttachFixtureStore::new());
-    let dispatcher = Dispatcher::new(
-        AgentAttachFixtureBackend::new(store),
-        ConnectionContext::default(),
-    );
-
-    let Err(error) = dispatcher.agent_attach(agent_attach_params()).await else {
-        panic!("expected an unknown execution ref to be rejected");
-    };
+    let error = rejected_attach(Arc::new(AgentAttachFixtureStore::new())).await;
     assert_eq!(error.code, NOT_FOUND);
     assert!(error.details.is_none());
 }
@@ -87,41 +93,27 @@ async fn wrong_cluster_execution_ref_returns_not_found_indistinguishable_from_un
     let store_b = Arc::new(AgentAttachFixtureStore::new());
     // Minted against store_a's cluster, then resolved against store_b's: a per-cluster-scoped
     // store cannot and must not distinguish this from a truly unknown ref.
-    store_a.register_active(sample_execution_ref()).await;
+    store_a
+        .register_active(agent_attach_params().execution)
+        .await;
 
-    let dispatcher_b = Dispatcher::new(
-        AgentAttachFixtureBackend::new(store_b),
-        ConnectionContext::default(),
-    );
-    let Err(error) = dispatcher_b.agent_attach(agent_attach_params()).await else {
-        panic!("expected a wrong-cluster execution ref to be rejected");
-    };
+    let error = rejected_attach(store_b).await;
     assert_eq!(error.code, NOT_FOUND);
     assert!(error.details.is_none());
 }
 
 #[tokio::test]
 async fn inactive_execution_ref_returns_gone() {
-    let store = Arc::new(AgentAttachFixtureStore::new());
-    let execution = sample_execution_ref();
-    store.register_active(execution.clone()).await;
+    let (store, execution) = active_store().await;
     store.mark_inactive(&execution).await;
 
-    let dispatcher = Dispatcher::new(
-        AgentAttachFixtureBackend::new(store),
-        ConnectionContext::default(),
-    );
-    let Err(error) = dispatcher.agent_attach(agent_attach_params()).await else {
-        panic!("expected an inactive execution ref to be rejected");
-    };
+    let error = rejected_attach(store).await;
     assert_eq!(error.code, GONE);
 }
 
 #[tokio::test]
 async fn agent_attach_streams_only_future_events_no_replay() {
-    let store = Arc::new(AgentAttachFixtureStore::new());
-    let execution = sample_execution_ref();
-    store.register_active(execution.clone()).await;
+    let (store, execution) = active_store().await;
     let dispatcher = Dispatcher::new(
         AgentAttachFixtureBackend::new(Arc::clone(&store)),
         ConnectionContext::default(),
@@ -136,15 +128,17 @@ async fn agent_attach_streams_only_future_events_no_replay() {
     let (_result, mut stream, _handle) = dispatcher
         .agent_attach(agent_attach_params())
         .await
-        .unwrap();
+        .assert_value();
 
     store
         .publish(&execution, sample_output_event("after subscribing"))
         .await;
-    let item = stream.next().await.unwrap();
-    let AgentAttachStreamItem::Event(AgentAttachEvent::Output { text }) = item else {
-        panic!("expected a live output event");
-    };
+    let item = stream.next().await.assert_value();
+    let text = match item {
+        AgentAttachStreamItem::Event(AgentAttachEvent::Output { text }) => Some(text),
+        _ => None,
+    }
+    .assert_value();
     assert_eq!(text.as_str(), "after subscribing");
 }
 
@@ -188,9 +182,7 @@ oversized_id_backend! {
 
 #[tokio::test]
 async fn oversized_event_encoding_ends_only_that_subscription_without_panicking() {
-    let store = Arc::new(AgentAttachFixtureStore::new());
-    let execution = sample_execution_ref();
-    store.register_active(execution.clone()).await;
+    let (store, execution) = active_store().await;
     let (mut write, read, server) = spawn_ndjson(OversizedIdAgentAttachBackend {
         inner: AgentAttachFixtureBackend::new(Arc::clone(&store)),
     });
@@ -226,7 +218,7 @@ async fn agent_attach_capability_toggle_does_not_alter_durable_fold_or_execution
             },
         )
         .await
-        .unwrap();
+        .assert_value();
     assert!(enabled.capabilities.agent_attach);
     assert_eq!(
         enabled.status,
@@ -263,7 +255,7 @@ async fn agent_attach_capability_toggle_does_not_alter_durable_fold_or_execution
             },
         )
         .await
-        .unwrap();
+        .assert_value();
     assert!(!disabled.capabilities.agent_attach);
     // Toggling agent_attach changes only the advertised capability flag; both backends report the
     // exact same empty cluster status/lifecycle for identical get() requests.
@@ -272,9 +264,7 @@ async fn agent_attach_capability_toggle_does_not_alter_durable_fold_or_execution
 
 #[tokio::test]
 async fn subscription_cancel_is_sole_post_establishment_operation() {
-    let store = Arc::new(AgentAttachFixtureStore::new());
-    let execution = sample_execution_ref();
-    store.register_active(execution.clone()).await;
+    let (store, execution) = active_store().await;
     let (mut write, read, server) =
         spawn_ndjson(AgentAttachFixtureBackend::new(Arc::clone(&store)));
     let mut read = BufReader::new(read);
@@ -285,16 +275,18 @@ async fn subscription_cancel_is_sole_post_establishment_operation() {
     )
     .await;
     let established = read_value(&mut read).await;
-    let subscription_id = established["result"]["subscriptionId"]
+    let subscription_id = established
+        .assert_at("result")
+        .assert_at("subscriptionId")
         .as_str()
-        .expect("agent/attach must establish a subscription")
+        .assert_value()
         .to_owned();
 
     store
         .publish(&execution, sample_output_event("hello"))
         .await;
     let event = read_value(&mut read).await;
-    assert_eq!(event["method"], "event");
+    assert_eq!(event.assert_at("method"), "event");
 
     write_line(
         &mut write,
@@ -310,8 +302,17 @@ async fn subscription_cancel_is_sole_post_establishment_operation() {
     // A synchronous round trip proves the cancel notification was already processed.
     write_line(&mut write, &request_line(2, "get", json!({}))).await;
     let get_response = read_value(&mut read).await;
-    assert_eq!(get_response["id"], 2);
+    assert_eq!(get_response.assert_at("id"), 2);
 
     drop(write);
     await_ndjson_shutdown(server).await;
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_at.rs"]
+mod assert_at;
+use assert_at::AssertAt;
+#[path = "support/assert_error.rs"]
+mod assert_error;
+use assert_error::AssertError;

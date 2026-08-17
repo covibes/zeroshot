@@ -177,7 +177,7 @@ impl ArtifactStore for LocalCasArtifactStore {
             &self.staging_directory(),
             ArtifactStoreOperation::Stage,
         )?;
-        Ok(self.register_stage(stage_key, path, intent.artifact_ref()))
+        Ok(self.register_stage(stage_key, path, intent.artifact_ref()?))
     }
 
     async fn publish(&self, staged: &StagedArtifact) -> Result<ArtifactRef, ArtifactStoreFailure> {
@@ -245,9 +245,7 @@ fn prepare_store_directories(root: &Path) -> Result<(), ArtifactStoreFailure> {
         prepare_owned_directory(root, &directory, ArtifactStoreOperation::Configuration)?;
         sync_directory(
             root,
-            directory
-                .parent()
-                .expect("store directory always has an owned parent"),
+            directory.parent().ok_or_else(invalid_stage)?,
             ArtifactStoreOperation::Configuration,
         )?;
     }
@@ -263,7 +261,7 @@ fn validate_declared_length(intent: &ArtifactIntent) -> Result<(), ArtifactStore
     Ok(())
 }
 
-fn invalid_stage() -> ArtifactStoreFailure {
+pub(super) fn invalid_stage() -> ArtifactStoreFailure {
     ArtifactStoreFailure::new(ArtifactStoreFailureKind::InvalidStage)
 }
 

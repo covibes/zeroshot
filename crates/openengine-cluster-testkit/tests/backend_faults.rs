@@ -27,8 +27,8 @@ async fn synthetic_fault_event_round_trips_through_replay_and_a_from_cursor_reco
     let apply_result = client
         .apply(committed(graph, Value::Null, 0, "create"))
         .await
-        .unwrap();
-    let run_id = apply_result.run_id.unwrap();
+        .assert_value();
+    let run_id = apply_result.run_id.assert_value();
 
     let fault_cursor = store
         .emit_fault_event(&run_id, sample_backend_fault("evt-1"))
@@ -40,14 +40,16 @@ async fn synthetic_fault_event_round_trips_through_replay_and_a_from_cursor_reco
             from_cursor: None,
         })
         .await
-        .unwrap();
+        .assert_value();
     let admission = expect_record(stream.next().await);
     assert!(matches!(admission.event, WatchEvent::Phase { .. }));
     let replayed = expect_record(stream.next().await);
     assert_eq!(replayed.cursor, fault_cursor);
-    let WatchEvent::Fault { fault } = replayed.event else {
-        panic!("expected a fault event");
-    };
+    let fault = match replayed.event {
+        WatchEvent::Fault { fault } => Some(fault),
+        _ => None,
+    }
+    .assert_value_with("expected a fault event");
     assert_eq!(fault, sample_backend_fault("evt-1"));
 
     let (reconnected, mut reconnect_stream, _handle) = dispatcher
@@ -56,9 +58,11 @@ async fn synthetic_fault_event_round_trips_through_replay_and_a_from_cursor_reco
             from_cursor: Some(admission.cursor.clone()),
         })
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(reconnected.run_id, Some(replayed.run_id.clone()));
     let after_reconnect = expect_record(reconnect_stream.next().await);
     assert_eq!(after_reconnect.cursor, fault_cursor);
     assert!(matches!(after_reconnect.event, WatchEvent::Fault { .. }));
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

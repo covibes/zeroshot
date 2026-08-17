@@ -1,5 +1,7 @@
 //! Per-turn dispatch lease lifecycle: acquire, verified/void/failed completion, and retry.
 
+use crate::fixture::*;
+
 use openengine_cluster_protocol::{
     Cursor, DispatchState, NoRetryableFrontierReason, Phase, RetryResult, StopMode,
 };
@@ -55,7 +57,7 @@ impl StoreState {
         self.lifecycle
             .operational
             .as_mut()
-            .expect("active lifecycle metadata exists")
+            .assert_value_with("active lifecycle metadata exists")
             .in_flight = u32::try_from(self.leases.len())
             .map_err(|_| StoreError::Internal("in-flight count exceeds u32".into()))?;
         if self.lifecycle.pending_retry_turn.as_ref() == Some(&turn_id) {
@@ -239,7 +241,7 @@ impl StoreState {
                 .lifecycle
                 .operational
                 .clone()
-                .expect("active lifecycle metadata exists"),
+                .assert_value_with("active lifecycle metadata exists"),
             at_cursor,
             deduped: false,
         })
@@ -265,7 +267,7 @@ impl StoreState {
         let lease = self
             .leases
             .remove(&completion.lease_id)
-            .expect("dispatch lease was validated under the aggregate lock");
+            .assert_value_with("dispatch lease was validated under the aggregate lock");
         let cursor = self.append_lifecycle(LifecycleEvent::Verified {
             turn_id: lease.turn_id.clone(),
         });
@@ -297,7 +299,7 @@ impl StoreState {
                 .lifecycle
                 .latest_cursor
                 .clone()
-                .expect("completion allocates a cursor"),
+                .assert_value_with("completion allocates a cursor"),
             terminalized,
         })
     }
@@ -306,7 +308,7 @@ impl StoreState {
         let lease = self
             .leases
             .remove(lease_id)
-            .expect("cancelled dispatch lease was validated under the aggregate lock");
+            .assert_value_with("cancelled dispatch lease was validated under the aggregate lock");
         self.cancelled_leases.insert(lease_id.clone());
         let cursor = self.append_lifecycle(LifecycleEvent::Void {
             turn_id: lease.turn_id.clone(),

@@ -5,16 +5,18 @@ fn mismatched_receipt(
     receipt_base: SourceRevisionId,
     receipt_head: SourceRevisionId,
 ) -> SourceOperationReceipt {
-    let SourceOperation::Merge {
-        review,
-        checked_revision,
-        policy,
-        integrated_revision,
-        ..
-    } = request.operation()
-    else {
-        panic!("test request must be a merge")
+    let merge = match request.operation() {
+        SourceOperation::Merge {
+            review,
+            checked_revision,
+            policy,
+            integrated_revision,
+            ..
+        } => Some((review, checked_revision, policy, integrated_revision)),
+        _ => None,
     };
+    let (review, checked_revision, policy, integrated_revision) =
+        merge.assert_value_with("test request must be a merge");
     let mismatched_request = SourceOperationRequest::new(
         request.repository().clone(),
         request.credential_handle().clone(),
@@ -28,9 +30,9 @@ fn mismatched_receipt(
             integrated_revision: integrated_revision.clone(),
         },
     )
-    .unwrap();
+    .assert_value();
     SourceOperationReceipt::Merge(
-        SourceMergeReceipt::new(mismatched_request, integrated_revision.clone()).unwrap(),
+        SourceMergeReceipt::new(mismatched_request, integrated_revision.clone()).assert_value(),
     )
 }
 
@@ -45,7 +47,9 @@ async fn assert_mismatch_rejected(
         SourceOperationInspection::Applied(Box::new(mismatched.clone())),
     ));
     let mut inspection_registry = SourceCodeProviderRegistry::new();
-    inspection_registry.register(inspected.clone()).unwrap();
+    inspection_registry
+        .register(inspected.clone())
+        .assert_value();
     let mut workspace = verified_workspace(request);
     assert!(
         matches!(
@@ -64,7 +68,7 @@ async fn assert_mismatch_rejected(
     ));
     invoked.set_operation_result(mismatched);
     let mut invocation_registry = SourceCodeProviderRegistry::new();
-    invocation_registry.register(invoked.clone()).unwrap();
+    invocation_registry.register(invoked.clone()).assert_value();
     assert!(
         matches!(
             invocation_registry
@@ -81,25 +85,26 @@ async fn assert_mismatch_rejected(
 async fn merge_evidence_must_match_requested_base_and_head() {
     let reference = source_ref("source.github", 1);
     let request = source_operation(canonical_repository(reference.clone()));
-    let SourceOperation::Merge {
-        expected_base,
-        expected_head,
-        ..
-    } = request.operation()
-    else {
-        panic!("test request must be a merge")
+    let merge = match request.operation() {
+        SourceOperation::Merge {
+            expected_base,
+            expected_head,
+            ..
+        } => Some((expected_base, expected_head)),
+        _ => None,
     };
+    let (expected_base, expected_head) = merge.assert_value_with("test request must be a merge");
 
     for (field, receipt_base, receipt_head) in [
         (
             "base",
-            SourceRevisionId::new("different-base").unwrap(),
+            SourceRevisionId::new("different-base").assert_value(),
             expected_head.clone(),
         ),
         (
             "head",
             expected_base.clone(),
-            SourceRevisionId::new("different-head").unwrap(),
+            SourceRevisionId::new("different-head").assert_value(),
         ),
     ] {
         assert_mismatch_rejected(
@@ -111,3 +116,5 @@ async fn merge_evidence_must_match_requested_base_and_head() {
         .await;
     }
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue};

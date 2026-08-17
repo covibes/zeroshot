@@ -79,8 +79,10 @@ impl StoreState {
                     deduped: false,
                 }
             }
-            Phase::Finished => self.finalize_delete(),
-            _ => unreachable!("phase gate above admits only Empty or Finished"),
+            phase => {
+                assert_eq!(phase, Phase::Finished, "delete phase gate invariant");
+                self.finalize_delete()
+            }
         }
     }
 

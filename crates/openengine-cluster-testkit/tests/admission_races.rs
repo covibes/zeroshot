@@ -27,7 +27,7 @@ async fn concurrent_first_use_and_stale_cas_have_one_winner() {
     let left_params = committed(graph.clone(), json!(null), 0, "race");
     let right_params = left_params.clone();
     let (left, right) = tokio::join!(left.apply(left_params), right.apply(right_params));
-    let receipts = [left.unwrap(), right.unwrap()];
+    let receipts = [left.assert_value(), right.assert_value()];
     assert_eq!(receipts.iter().filter(|receipt| receipt.deduped).count(), 1);
     assert_eq!(store.inspect().await.control_journal.len(), 1);
 
@@ -52,7 +52,9 @@ async fn concurrent_first_use_and_stale_cas_have_one_winner() {
         .flatten()
         .count();
     assert_eq!(successes, 1);
-    let failure = a.err().or_else(|| b.err()).unwrap();
+    let failure = a.err().or_else(|| b.err()).assert_value();
     assert_eq!(rpc_code(failure), GENERATION_CONFLICT);
     assert_eq!(store.inspect().await.control_journal.len(), 2);
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

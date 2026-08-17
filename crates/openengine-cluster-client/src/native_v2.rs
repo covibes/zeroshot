@@ -1,23 +1,18 @@
 //! Transport-generic native-v2 run subscription client.
 
-use std::sync::atomic::Ordering;
-
 use openengine_cluster_protocol::{
-    Cursor, JsonRpcErrorResponse, JsonRpcNotification, JsonRpcRequest, JsonRpcSuccess, RequestId,
-    RunAttachEventNotification, RunAttachParams, RunAttachResult, RunLogEventNotification,
-    RunLogsParams, RunLogsResult, RunWatchEventNotification, RunWatchParams, RunWatchResult,
-    SubscriptionCloseReason, SubscriptionClosedNotification, SubscriptionId, JSON_RPC_VERSION,
-    RUN_ATTACH_METHOD, RUN_LOGS_METHOD, RUN_WATCH_METHOD,
+    Cursor, JsonRpcNotification, RunAttachEventNotification, RunAttachParams, RunAttachResult,
+    RunLogEventNotification, RunLogsParams, RunLogsResult, RunWatchEventNotification,
+    RunWatchParams, RunWatchResult, SubscriptionCloseReason, SubscriptionId, RUN_ATTACH_METHOD,
+    RUN_LOGS_METHOD, RUN_WATCH_METHOD,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use serde_json::Value;
-use tokio::sync::mpsc;
-
-use crate::{
-    validate_response_identity, ClientError, NdjsonTransport, PumpedSubscription,
-    SubscriptionTransport,
+use crate::ndjson_subscription::{
+    impl_cursor_subscription_controls, open_subscription, parse_subscription_close,
+    parse_subscription_notification, PumpedLine, SubscriptionClientCore, SubscriptionStreamCore,
 };
+use crate::{ClientError, NdjsonTransport, SubscriptionTransport};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunSubscriptionEvent<E> {
@@ -29,7 +24,7 @@ pub enum RunSubscriptionEvent<E> {
 }
 
 pub struct RunSubscriptionClient<'a, T> {
-    transport: &'a T,
+    core: SubscriptionClientCore<'a, T>,
 }
 
 pub type NdjsonRunSubscriptionClient<'a, R, W> = RunSubscriptionClient<'a, NdjsonTransport<R, W>>;
@@ -46,7 +41,9 @@ where
 {
     #[must_use]
     pub const fn new(transport: &'a T) -> Self {
-        Self { transport }
+        Self {
+            core: SubscriptionClientCore::new(transport),
+        }
     }
 
     pub async fn run_watch(
@@ -126,23 +123,10 @@ where
         R: DeserializeOwned,
         E: DeserializeOwned,
     {
-        let id = self.transport.next_watch_request_id();
-        let request = serde_json::to_string(&JsonRpcRequest {
-            jsonrpc: JSON_RPC_VERSION.to_owned(),
-            id: id.clone(),
-            method: method.to_owned(),
-            params,
-        })?;
-        let (line, subscription) = self
-            .transport
-            .open_subscription(request, id.clone())
-            .await?;
-        let result = parse_response::<R>(&line, &id)?;
+        let (result, subscription) =
+            open_subscription(self.core.transport(), method, params).await?;
         let subscription_id = (shape.result_subscription_id)(&result).clone();
-        let PumpedSubscription {
-            receiver,
-            overflowed,
-        } = subscription.ok_or_else(|| {
+        let subscription = subscription.ok_or_else(|| {
             ClientError::InvalidResponse(
                 "successful native-v2 subscription response had no notification stream".to_owned(),
             )
@@ -150,45 +134,23 @@ where
         Ok((
             result,
             RunSubscriptionEventStream {
-                transport: self.transport,
-                receiver,
-                overflowed,
-                subscription_id,
+                core: SubscriptionStreamCore::new(
+                    self.core.transport(),
+                    subscription,
+                    subscription_id,
+                ),
                 event_subscription_id: shape.event_subscription_id,
                 event_cursor: shape.event_cursor,
-                last_delivered_cursor: None,
                 closed: false,
             },
         ))
     }
 }
 
-fn parse_response<R: DeserializeOwned>(
-    line: &str,
-    expected_id: &RequestId,
-) -> Result<R, ClientError> {
-    let value: Value = serde_json::from_str(line)
-        .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
-    if value.get("error").is_some() {
-        let response: JsonRpcErrorResponse = serde_json::from_value(value)
-            .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
-        validate_response_identity(&response.jsonrpc, response.id.as_ref(), expected_id)?;
-        return Err(ClientError::Rpc(response.error));
-    }
-    let response: JsonRpcSuccess<R> = serde_json::from_value(value)
-        .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
-    validate_response_identity(&response.jsonrpc, Some(&response.id), expected_id)?;
-    Ok(response.result)
-}
-
 pub struct RunSubscriptionEventStream<'a, T, E> {
-    transport: &'a T,
-    receiver: mpsc::Receiver<String>,
-    overflowed: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    subscription_id: SubscriptionId,
+    core: SubscriptionStreamCore<'a, T>,
     event_subscription_id: fn(&E) -> &SubscriptionId,
     event_cursor: fn(&E) -> Option<&Cursor>,
-    last_delivered_cursor: Option<Cursor>,
     closed: bool,
 }
 
@@ -201,55 +163,48 @@ where
         if self.closed {
             return None;
         }
-        let line = match self.receiver.recv().await {
-            Some(line) => line,
-            None if self.overflowed.swap(false, Ordering::AcqRel) => {
+        let line = match self.core.next_line().await {
+            PumpedLine::Frame(line) => line,
+            PumpedLine::SlowConsumer => {
                 self.closed = true;
                 return Some(Ok(RunSubscriptionEvent::Closed {
                     reason: SubscriptionCloseReason::SlowConsumer,
-                    last_delivered_cursor: self.last_delivered_cursor.clone(),
+                    last_delivered_cursor: self.core.last_delivered_cursor().cloned(),
                 }));
             }
-            None => return None,
+            PumpedLine::End => return None,
         };
         Some(self.parse_notification(&line))
     }
 
     fn parse_notification(&mut self, line: &str) -> Result<RunSubscriptionEvent<E>, ClientError> {
-        let value: Value = serde_json::from_str(line)
-            .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
-        match value.get("method").and_then(Value::as_str) {
+        let (method, value) = parse_subscription_notification(line)?;
+        match method.as_deref() {
             Some("event") => {
                 let notification: JsonRpcNotification<E> = serde_json::from_value(value)
                     .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
                 let event = notification.params;
-                if (self.event_subscription_id)(&event) != &self.subscription_id {
+                if (self.event_subscription_id)(&event) != self.core.subscription_id() {
                     return Err(ClientError::InvalidResponse(
                         "native-v2 event subscription id mismatch".to_owned(),
                     ));
                 }
                 if let Some(cursor) = (self.event_cursor)(&event) {
-                    self.last_delivered_cursor = Some(cursor.clone());
+                    self.core.record_delivered_cursor(cursor.clone());
                 }
                 Ok(RunSubscriptionEvent::Event(event))
             }
             Some("subscription/closed") => {
-                let notification: JsonRpcNotification<SubscriptionClosedNotification> =
-                    serde_json::from_value(value)
-                        .map_err(|error| ClientError::InvalidResponse(error.to_string()))?;
-                if notification.params.subscription_id != self.subscription_id {
-                    return Err(ClientError::InvalidResponse(
-                        "native-v2 close subscription id mismatch".to_owned(),
-                    ));
+                let (reason, observed_cursor) =
+                    parse_subscription_close(value, self.core.subscription_id())?;
+                let last_delivered_cursor =
+                    observed_cursor.or_else(|| self.core.last_delivered_cursor().cloned());
+                if let Some(cursor) = &last_delivered_cursor {
+                    self.core.record_delivered_cursor(cursor.clone());
                 }
-                let last_delivered_cursor = notification
-                    .params
-                    .last_delivered_cursor
-                    .or_else(|| self.last_delivered_cursor.clone());
-                self.last_delivered_cursor = last_delivered_cursor.clone();
                 self.closed = true;
                 Ok(RunSubscriptionEvent::Closed {
-                    reason: notification.params.reason,
+                    reason,
                     last_delivered_cursor,
                 })
             }
@@ -259,17 +214,7 @@ where
         }
     }
 
-    pub async fn cancel(&self) -> Result<(), ClientError> {
-        self.transport
-            .cancel_subscription(self.subscription_id.clone())
-            .await?;
-        Ok(())
-    }
-
-    #[must_use]
-    pub fn last_delivered_cursor(&self) -> Option<&Cursor> {
-        self.last_delivered_cursor.as_ref()
-    }
+    impl_cursor_subscription_controls!();
 }
 
 fn watch_subscription_id(result: &RunWatchResult) -> &SubscriptionId {
@@ -310,6 +255,7 @@ fn no_event_cursor(_event: &RunAttachEventNotification) -> Option<&Cursor> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
     use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Arc;
 
@@ -322,6 +268,24 @@ mod tests {
 
     use super::*;
     use crate::{JsonRpcTransport, PumpedSubscription, TransportError};
+
+    fn checked_result<T, E: Debug>(result: Result<T, E>) -> T {
+        let mut values = result.into_iter().collect::<Vec<_>>();
+        assert_eq!(values.len(), 1, "expected a successful result");
+        values.swap_remove(0)
+    }
+
+    fn checked_option<T>(value: Option<T>) -> T {
+        let mut values = value.into_iter().collect::<Vec<_>>();
+        assert_eq!(values.len(), 1, "expected a value");
+        values.swap_remove(0)
+    }
+
+    fn checked_error<T, E>(result: Result<T, E>) -> E {
+        assert!(result.is_err(), "expected an error");
+        let mut errors = result.err().into_iter().collect::<Vec<_>>();
+        errors.swap_remove(0)
+    }
 
     struct ScriptedSubscriptionTransport {
         result: Value,
@@ -354,7 +318,9 @@ mod tests {
     #[async_trait]
     impl JsonRpcTransport for ScriptedSubscriptionTransport {
         async fn request(&self, _request: String) -> Result<String, TransportError> {
-            unreachable!("subscription tests use open_subscription")
+            Err(TransportError::Protocol(
+                "subscription tests use open_subscription".to_owned(),
+            ))
         }
     }
 
@@ -365,7 +331,7 @@ mod tests {
             request: String,
             id: RequestId,
         ) -> Result<(String, Option<PumpedSubscription>), TransportError> {
-            let request: JsonRpcRequest<Value> = serde_json::from_str(&request).unwrap();
+            let request: JsonRpcRequest<Value> = checked_result(serde_json::from_str(&request));
             assert_eq!(request.id, id);
             assert_eq!(request.method, self.expected_method);
             let response = json!({"jsonrpc":"2.0","id":id,"result":self.result}).to_string();
@@ -374,7 +340,7 @@ mod tests {
             }
             let (sender, receiver) = mpsc::channel(self.notifications.len().max(1));
             for notification in &self.notifications {
-                sender.try_send(notification.clone()).unwrap();
+                checked_result(sender.try_send(notification.clone()));
             }
             drop(sender);
             Ok((
@@ -407,14 +373,14 @@ mod tests {
     async fn successful_subscription_without_a_stream_is_an_invalid_response() {
         let transport =
             ScriptedSubscriptionTransport::new(RUN_WATCH_METHOD, watch_result(), vec![], false);
-        let error = RunSubscriptionClient::new(&transport)
-            .run_watch(RunWatchParams {
-                run_id: RunId::new("run-1"),
-                from_cursor: None,
-            })
-            .await
-            .err()
-            .expect("missing stream must fail");
+        let error = checked_error(
+            RunSubscriptionClient::new(&transport)
+                .run_watch(RunWatchParams {
+                    run_id: RunId::new("run-1"),
+                    from_cursor: None,
+                })
+                .await,
+        );
         assert!(matches!(error, ClientError::InvalidResponse(_)));
     }
 
@@ -444,20 +410,21 @@ mod tests {
             ],
             true,
         );
-        let (_, mut stream) = RunSubscriptionClient::new(&transport)
-            .run_watch(RunWatchParams {
-                run_id: RunId::new("run-1"),
-                from_cursor: None,
-            })
-            .await
-            .unwrap();
+        let (_, mut stream) = checked_result(
+            RunSubscriptionClient::new(&transport)
+                .run_watch(RunWatchParams {
+                    run_id: RunId::new("run-1"),
+                    from_cursor: None,
+                })
+                .await,
+        );
 
         assert!(matches!(
-            stream.next().await.unwrap().unwrap(),
+            checked_result(checked_option(stream.next().await)),
             RunSubscriptionEvent::Event(_)
         ));
         assert_eq!(
-            stream.next().await.unwrap().unwrap(),
+            checked_result(checked_option(stream.next().await)),
             RunSubscriptionEvent::Closed {
                 reason: SubscriptionCloseReason::Done,
                 last_delivered_cursor: Some(Cursor::new("v2:8")),
@@ -475,14 +442,15 @@ mod tests {
             vec![],
             true,
         );
-        RunSubscriptionClient::new(&logs)
-            .run_logs(RunLogsParams {
-                run_id: RunId::new("run-1"),
-                from_cursor: None,
-                execution: None,
-            })
-            .await
-            .unwrap();
+        checked_result(
+            RunSubscriptionClient::new(&logs)
+                .run_logs(RunLogsParams {
+                    run_id: RunId::new("run-1"),
+                    from_cursor: None,
+                    execution: None,
+                })
+                .await,
+        );
 
         let attach = ScriptedSubscriptionTransport::new(
             RUN_ATTACH_METHOD,
@@ -492,12 +460,15 @@ mod tests {
             vec![],
             true,
         );
-        RunSubscriptionClient::new(&attach)
-            .run_attach(RunAttachParams {
-                run_id: RunId::new("run-1"),
-                execution: openengine_cluster_protocol::ExecutionRef::new("execution-1").unwrap(),
-            })
-            .await
-            .unwrap();
+        checked_result(
+            RunSubscriptionClient::new(&attach)
+                .run_attach(RunAttachParams {
+                    run_id: RunId::new("run-1"),
+                    execution: checked_result(openengine_cluster_protocol::ExecutionRef::new(
+                        "execution-1",
+                    )),
+                })
+                .await,
+        );
     }
 }

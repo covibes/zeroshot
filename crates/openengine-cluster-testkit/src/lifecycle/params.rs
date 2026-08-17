@@ -1,5 +1,7 @@
 //! Typed lifecycle parameter constructors for deterministic fixtures.
 
+use crate::fixture::*;
+
 use openengine_cluster_protocol::{
     DeleteParams, Generation, IdempotencyKey, ResubmitParams, RetryParams, RunId, StopMode,
     StopParams, TurnFailureKind, UpdateParams,
@@ -91,9 +93,9 @@ fn failed_completion(
 }
 
 fn fixture_generation(value: u64) -> Generation {
-    Generation::new(value).expect("fixture generation is in range")
+    Generation::new(value).assert_value_with("fixture generation is in range")
 }
 
 fn fixture_key(value: &str) -> IdempotencyKey {
-    IdempotencyKey::new(value).expect("fixture key is valid")
+    IdempotencyKey::new(value).assert_value_with("fixture key is valid")
 }

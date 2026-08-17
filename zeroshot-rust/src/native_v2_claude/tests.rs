@@ -1,63 +1,21 @@
 #![cfg(unix)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 use std::sync::Arc;
 
 use openengine_cluster_protocol::{
-    EnumLabel, FieldName, GraphSpec, IdempotencyKey, NodeName, RunId, WorkerOutcome, WorkerRef,
+    EnumLabel, FieldName, GraphSpec, IdempotencyKey, NodeName, WorkerOutcome,
 };
 use serde_json::{json, Value};
 
 use super::*;
-use crate::native_v2_admission::NativeV2Admission;
-use crate::native_v2_contract::{
-    EnvironmentVariableName, ExecutionId, ExecutionRef, NodeInstanceId, RunSubmission, RuntimePlan,
+use crate::native_v2_candidate::test_support::{
+    NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,
 };
+use crate::native_v2_contract::{RunSubmission, RuntimePlan};
 use crate::native_v2_runner::{NativeNodeRunner, NodeRunRequest, NodeRunner};
-use crate::worker_catalog::ModelId;
-
-static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(1);
-
-struct TestWorkspace(PathBuf);
-
-impl TestWorkspace {
-    fn new() -> Self {
-        let serial = NEXT_WORKSPACE.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!(
-            "zeroshot-native-v2-claude-{}-{serial}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-
-    fn write_script(&self, contents: &str) -> PathBuf {
-        let path = self.0.join("fake-claude.sh");
-        fs::write(&path, contents).unwrap();
-        path
-    }
-
-    fn read(&self, name: &str) -> String {
-        fs::read_to_string(self.0.join(name)).unwrap()
-    }
-}
-
-impl Drop for TestWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn environment_name(value: &str) -> EnvironmentVariableName {
-    EnvironmentVariableName::new(value).unwrap()
-}
+use crate::worker_catalog;
 
 fn agent_binding(
     model: &str,
@@ -66,7 +24,7 @@ fn agent_binding(
     environment: &[&str],
 ) -> NodeRuntimeBinding {
     NodeRuntimeBinding::Agent {
-        model: ModelId::new(model).unwrap(),
+        model: worker_catalog::ModelId::new(model).assert_value(),
         effort,
         session_scope: scope,
         env: environment
@@ -91,41 +49,27 @@ fn graph(verifier: bool) -> GraphSpec {
             "inputBindings":[], "writeBindings":[], "timeoutMs":60000, "attempts":1
         })
     };
-    serde_json::from_value(json!({
-        "profile":"openengine.graph.full/v1",
-        "initialInput":{"kind":"null"},
-        "policy":{"policy":"policy.native-v2@1","default":"deny"},
-        "root":{
-            "kind":"seq", "name":"root", "state":{"kind":"null"},
-            "children":[executable, {
-                "kind":"succeed", "name":"done", "output":{"kind":"null"}, "bindings":[]
-            }],
-            "promotedStatePaths":[]
-        }
-    }))
-    .unwrap()
+    full_graph(vec![executable, success_node()])
 }
 
 async fn runner(
-    workspace: &TestWorkspace,
+    workspace: &TestDirectory,
     provider: ClaudeProvider,
     binding: NodeRuntimeBinding,
     verifier: bool,
 ) -> NativeNodeRunner {
     let runtime = RuntimePlan::Claude {
         provider,
-        nodes: BTreeMap::from([(NodeName::new("agent").unwrap(), binding)]),
+        nodes: BTreeMap::from([(NodeName::new("agent").assert_value(), binding)]),
     };
-    let admitted = NativeV2Admission
-        .admit(RunSubmission {
-            graph: graph(verifier),
-            initial_input: Value::Null,
-            runtime,
-            ship: false,
-            submission_key: IdempotencyKey::new("claude-test").unwrap(),
-        })
-        .await
-        .unwrap();
+    let admitted = admit(RunSubmission {
+        graph: graph(verifier),
+        initial_input: Value::Null,
+        runtime,
+        ship: false,
+        submission_key: IdempotencyKey::new("claude-test").assert_value(),
+    })
+    .await;
     let base_environment = ClaudeProcessEnvironment::new(BTreeMap::from([
         (
             "HOME".to_owned(),
@@ -133,7 +77,7 @@ async fn runner(
         ),
         ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
     ]))
-    .unwrap();
+    .assert_value();
     let adapter = Arc::new(
         ClaudeAdapter::new_for_test(ClaudeAdapterConfig {
             provider,
@@ -148,11 +92,11 @@ async fn runner(
             workspace: workspace.path().to_owned(),
             base_environment,
             turn_timeout: Duration::from_secs(10),
-            process_pool: HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).unwrap(),
+            process_pool: HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value(),
         })
-        .unwrap(),
+        .assert_value(),
     );
-    NativeNodeRunner::new(&admitted, adapter.clone(), adapter).unwrap()
+    NativeNodeRunner::new(&admitted, adapter.clone(), adapter).assert_value()
 }
 
 fn request(binding: NodeRuntimeBinding, execution: u64, values: &[(&str, &str)]) -> NodeRunRequest {
@@ -160,20 +104,17 @@ fn request(binding: NodeRuntimeBinding, execution: u64, values: &[(&str, &str)])
         .iter()
         .map(|(name, value)| (environment_name(name), (*value).to_owned()))
         .collect::<BTreeMap<_, _>>();
-    NodeRunRequest {
-        invocation: NodeInvocation {
-            reference: ExecutionRef {
-                run_id: RunId::new("claude-run"),
-                node: NodeName::new("agent").unwrap(),
-                node_instance: NodeInstanceId::new(1).unwrap(),
-                execution: ExecutionId::new(execution).unwrap(),
-            },
-            worker: WorkerRef::new("agent.claude@1").unwrap(),
-            input: Value::String("perform the node task".to_owned()),
-            binding: binding.clone(),
-        },
-        environment: ResolvedEnvironment::exact(&binding, environment).unwrap(),
+    NodeRequestFixture {
+        run_id: "claude-run",
+        node: "agent",
+        node_instance: 1,
+        execution,
+        worker: "agent.claude@1",
+        input: Value::String("perform the node task".to_owned()),
+        binding,
+        environment,
     }
+    .into_request()
 }
 
 async fn complete_two_turns(runner: &NativeNodeRunner, binding: &NodeRuntimeBinding) {
@@ -185,11 +126,31 @@ async fn complete_two_turns(runner: &NativeNodeRunner, binding: &NodeRuntimeBind
                 &[(ANTHROPIC_KEY, "anthropic-fake")],
             ))
             .await
-            .unwrap()
+            .assert_value()
             .completion()
             .await
-            .unwrap();
+            .assert_value();
     }
+}
+
+async fn two_turn_workspace(
+    label: &str,
+    model: &str,
+    effort: ReasoningEffort,
+    scope: SessionScope,
+) -> TestDirectory {
+    let workspace = TestDirectory::new(label);
+    workspace.write("fake-claude.sh", SUCCESS_SCRIPT);
+    let binding = agent_binding(model, Some(effort), scope, &[ANTHROPIC_KEY]);
+    let runner = runner(
+        &workspace,
+        ClaudeProvider::Anthropic,
+        binding.clone(),
+        false,
+    )
+    .await;
+    complete_two_turns(&runner, &binding).await;
+    workspace
 }
 
 const SUCCESS_SCRIPT: &str = r#"
@@ -218,8 +179,8 @@ printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"d
 #[tokio::test]
 async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free() {
     for provider in [ClaudeProvider::Anthropic, ClaudeProvider::OpenRouter] {
-        let workspace = TestWorkspace::new();
-        workspace.write_script(SUCCESS_SCRIPT);
+        let workspace = TestDirectory::new("claude-command");
+        workspace.write("fake-claude.sh", SUCCESS_SCRIPT);
         let (provider_name, provider_value) = match provider {
             ClaudeProvider::Anthropic => (ANTHROPIC_KEY, "anthropic-fake"),
             ClaudeProvider::OpenRouter => (OPENROUTER_KEY, "openrouter-fake"),
@@ -241,12 +202,12 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
                 ],
             ))
             .await
-            .unwrap();
-        let mut attach = handle.take_initial_output().unwrap();
+            .assert_value();
+        let mut attach = handle.take_initial_output().assert_value();
         let (live, completion) = tokio::join!(attach.recv(), handle.completion());
-        assert_eq!(live.unwrap().text, "visible [REDACTED]");
+        assert_eq!(live.assert_value().text, "visible [REDACTED]");
         assert_eq!(
-            completion.unwrap().outcome,
+            completion.assert_value().outcome,
             WorkerOutcome::Verified {
                 output: json!("done"),
                 artifacts: Vec::new(),
@@ -283,23 +244,14 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
 
 #[tokio::test]
 async fn node_instance_scope_resumes_the_exact_claude_session() {
-    let workspace = TestWorkspace::new();
-    workspace.write_script(SUCCESS_SCRIPT);
-    let binding = agent_binding(
+    let workspace = two_turn_workspace(
+        "claude-resume",
         "claude-opus-5",
-        Some(ReasoningEffort::High),
+        ReasoningEffort::High,
         SessionScope::NodeInstance,
-        &[ANTHROPIC_KEY],
-    );
-    let runner = runner(
-        &workspace,
-        ClaudeProvider::Anthropic,
-        binding.clone(),
-        false,
     )
     .await;
-    complete_two_turns(&runner, &binding).await;
-    assert!(workspace.0.join("initial.args").exists());
+    assert!(workspace.child("initial.args").exists());
     let resumed = workspace.read("resumed.args");
     assert!(resumed.lines().any(|line| line == "--resume"));
     assert!(resumed.lines().any(|line| line == "session-1"));
@@ -319,24 +271,15 @@ async fn node_instance_scope_resumes_the_exact_claude_session() {
 
 #[tokio::test]
 async fn execution_scope_never_resumes_a_prior_turn() {
-    let workspace = TestWorkspace::new();
-    workspace.write_script(SUCCESS_SCRIPT);
-    let binding = agent_binding(
+    let workspace = two_turn_workspace(
+        "claude-execution",
         "claude-sonnet-5",
-        Some(ReasoningEffort::Max),
+        ReasoningEffort::Max,
         SessionScope::Execution,
-        &[ANTHROPIC_KEY],
-    );
-    let runner = runner(
-        &workspace,
-        ClaudeProvider::Anthropic,
-        binding.clone(),
-        false,
     )
     .await;
-    complete_two_turns(&runner, &binding).await;
-    assert!(workspace.0.join("initial.args").exists());
-    assert!(!workspace.0.join("resumed.args").exists());
+    assert!(workspace.child("initial.args").exists());
+    assert!(!workspace.child("resumed.args").exists());
     let homes = workspace
         .read("homes.txt")
         .lines()
@@ -357,8 +300,9 @@ async fn execution_scope_never_resumes_a_prior_turn() {
 
 #[tokio::test]
 async fn verifier_result_is_normalized_to_the_closed_worker_outcome() {
-    let workspace = TestWorkspace::new();
-    workspace.write_script(
+    let workspace = TestDirectory::new("claude-verifier");
+    workspace.write(
+        "fake-claude.sh",
         r#"
 set -eu
 printf '%s\n' "$@" > verifier.args
@@ -380,17 +324,17 @@ printf '%s%s%s%s\n' \
     let completion = runner
         .start(request(binding, 1, &[(ANTHROPIC_KEY, "anthropic-fake")]))
         .await
-        .unwrap()
+        .assert_value()
         .completion()
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(
         completion.outcome,
         WorkerOutcome::Verifier {
             output: Value::Null,
             signals: BTreeMap::from([(
-                FieldName::new("verdict").unwrap(),
-                EnumLabel::new("accepted").unwrap(),
+                FieldName::new("verdict").assert_value(),
+                EnumLabel::new("accepted").assert_value(),
             )]),
             diagnostic: Value::Null,
             artifacts: Vec::new(),
@@ -405,8 +349,9 @@ printf '%s%s%s%s\n' \
 
 #[tokio::test]
 async fn cancellation_reaps_the_script_and_its_child_before_completion() {
-    let workspace = TestWorkspace::new();
-    workspace.write_script(
+    let workspace = TestDirectory::new("claude-cancel");
+    workspace.write(
+        "fake-claude.sh",
         r#"
 set -eu
 (sleep 30; printf survived > survivor.txt) &
@@ -433,14 +378,14 @@ wait
     let mut handle = runner
         .start(request(binding, 1, &[(ANTHROPIC_KEY, "anthropic-fake")]))
         .await
-        .unwrap();
-    let mut attach = handle.take_initial_output().unwrap();
-    assert_eq!(attach.recv().await.unwrap().text, "started");
-    let child_pid: u32 = workspace.read("child.pid").parse().unwrap();
+        .assert_value();
+    let mut attach = handle.take_initial_output().assert_value();
+    assert_eq!(attach.recv().await.assert_value().text, "started");
+    let child_pid: u32 = workspace.read("child.pid").parse().assert_value();
     handle.cancel();
     assert_eq!(handle.completion().await, Err(NodeRunnerError::Cancelled));
     assert!(!Path::new(&format!("/proc/{child_pid}")).exists());
-    assert!(!workspace.0.join("survivor.txt").exists());
+    assert!(!workspace.child("survivor.txt").exists());
 }
 
 #[test]
@@ -472,3 +417,41 @@ fn base_environment_is_explicit_bounded_and_non_secret_by_name() {
         .is_err()
     );
 }
+
+#[test]
+fn capsule_environment_roots_home_defaults_path_and_preserves_minimal_values() {
+    let base = ClaudeProcessEnvironment::new(BTreeMap::from([
+        ("HOME".to_owned(), "/host/home".to_owned()),
+        ("LANG".to_owned(), "C.UTF-8".to_owned()),
+    ]))
+    .assert_value();
+    let derived = base
+        .for_capsule(Path::new("/capsule/runtime"), "/configured/bin")
+        .assert_value();
+    assert_eq!(
+        derived.clone_values(),
+        BTreeMap::from([
+            ("HOME".to_owned(), "/capsule/runtime".to_owned()),
+            ("LANG".to_owned(), "C.UTF-8".to_owned()),
+            ("PATH".to_owned(), "/configured/bin".to_owned()),
+        ])
+    );
+
+    let explicit_path = ClaudeProcessEnvironment::new(BTreeMap::from([(
+        "PATH".to_owned(),
+        "/explicit/bin".to_owned(),
+    )]))
+    .assert_value();
+    assert_eq!(
+        explicit_path
+            .for_capsule(Path::new("/next/runtime"), "/configured/bin")
+            .assert_value()
+            .clone_values(),
+        BTreeMap::from([
+            ("HOME".to_owned(), "/next/runtime".to_owned()),
+            ("PATH".to_owned(), "/explicit/bin".to_owned()),
+        ])
+    );
+}
+
+use openengine_cluster_testkit::assertions::{AssertValue};

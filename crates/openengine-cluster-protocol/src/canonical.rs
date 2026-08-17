@@ -41,14 +41,7 @@ impl CompiledGraphIr {
 
     pub fn identity(&self) -> Result<GraphIdentity, CanonicalError> {
         let digest = Sha256::digest(self.canonical_bytes()?);
-        let mut encoded = String::with_capacity(64);
-        for byte in digest {
-            use fmt::Write as _;
-            write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
-        }
-        Ok(GraphIdentity(
-            Sha256Digest::new(encoded).expect("SHA-256 encoder always emits a valid digest"),
-        ))
+        Ok(GraphIdentity(Sha256Digest::from_digest(digest.as_ref())))
     }
 }
 
@@ -60,6 +53,8 @@ pub enum CanonicalError {
     FloatingPoint,
     #[error("compiled graph contains duplicate node name {0}")]
     DuplicateNodeName(NodeName),
+    #[error("canonical normalization violated the non-empty graph invariant")]
+    EmptyAfterNormalization,
 }
 
 #[derive(
@@ -121,10 +116,9 @@ pub fn admission_fingerprint(
 ) -> Result<RequestFingerprint, CanonicalError> {
     let envelope = serde_json::json!({ "method": method, "params": parameters });
     let digest = Sha256::digest(canonical_value_bytes(&envelope)?);
-    Ok(RequestFingerprint(
-        Sha256Digest::new(format!("{digest:x}"))
-            .expect("SHA-256 encoder always emits a valid digest"),
-    ))
+    Ok(RequestFingerprint(Sha256Digest::from_digest(
+        digest.as_ref(),
+    )))
 }
 
 /// Canonical JSON bytes for validated request values.
@@ -264,8 +258,7 @@ fn normalize_guard(guard: &mut Guard) -> Result<(), CanonicalError> {
 fn normalize_selectors(values: &mut NonEmptyVec<ControlSelector>) -> Result<(), CanonicalError> {
     let mut selectors = values.clone().into_vec();
     sort_by_canonical_json(&mut selectors)?;
-    *values = NonEmptyVec::new(selectors)
-        .expect("normalizing non-empty selectors cannot produce an empty collection");
+    *values = NonEmptyVec::new(selectors).map_err(|_| CanonicalError::EmptyAfterNormalization)?;
     Ok(())
 }
 
@@ -289,8 +282,7 @@ fn normalize_commutative_guards(
         }
     }
     sort_and_deduplicate_by_canonical_json(&mut flattened)?;
-    *guards = NonEmptyVec::new(flattened)
-        .expect("normalizing a non-empty guard cannot produce an empty guard");
+    *guards = NonEmptyVec::new(flattened).map_err(|_| CanonicalError::EmptyAfterNormalization)?;
     Ok(())
 }
 
@@ -316,34 +308,22 @@ fn write_canonical_json(
         serde_json::Value::Object(values) => {
             write_canonical_object(values, output, allow_floating_point)
         }
-        value => write_canonical_scalar(value, output, allow_floating_point),
+        serde_json::Value::Number(number) => {
+            write_canonical_number(number, output, allow_floating_point)
+        }
+        value => serde_json::to_writer(output, value).map_err(CanonicalError::Serialize),
     }
 }
 
-fn write_canonical_scalar(
-    value: &serde_json::Value,
+fn write_canonical_number(
+    number: &serde_json::Number,
     output: &mut Vec<u8>,
     allow_floating_point: bool,
 ) -> Result<(), CanonicalError> {
-    match value {
-        serde_json::Value::Null => output.extend_from_slice(b"null"),
-        serde_json::Value::Bool(value) => {
-            output.extend_from_slice(if *value { b"true" } else { b"false" });
-        }
-        serde_json::Value::Number(number) => {
-            if number.is_f64() && !allow_floating_point {
-                return Err(CanonicalError::FloatingPoint);
-            }
-            serde_json::to_writer(output, number).map_err(CanonicalError::Serialize)?;
-        }
-        serde_json::Value::String(value) => {
-            serde_json::to_writer(output, value).map_err(CanonicalError::Serialize)?;
-        }
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-            unreachable!("arrays and objects are handled by write_canonical_json")
-        }
+    if number.is_f64() && !allow_floating_point {
+        return Err(CanonicalError::FloatingPoint);
     }
-    Ok(())
+    serde_json::to_writer(output, number).map_err(CanonicalError::Serialize)
 }
 
 fn write_canonical_array(
@@ -413,7 +393,8 @@ fn normalize_sequence(node: &mut SeqNode) -> Result<(), CanonicalError> {
     for child in &mut children {
         normalize_node(child)?;
     }
-    node.children = NonEmptyVec::new(children).expect("sequence stays non-empty");
+    node.children =
+        NonEmptyVec::new(children).map_err(|_| CanonicalError::EmptyAfterNormalization)?;
     sort_and_deduplicate_by_canonical_json(&mut node.promoted_state_paths)
 }
 
@@ -423,7 +404,8 @@ fn normalize_choice(node: &mut ChoiceNode) -> Result<(), CanonicalError> {
         normalize_guard(when)?;
         normalize_node(node)?;
     }
-    node.branches = NonEmptyVec::new(branches).expect("choice stays non-empty");
+    node.branches =
+        NonEmptyVec::new(branches).map_err(|_| CanonicalError::EmptyAfterNormalization)?;
     if let Some(otherwise) = &mut node.otherwise {
         normalize_node(otherwise)?;
     }
@@ -436,7 +418,8 @@ fn normalize_parallel(node: &mut ParNode) -> Result<(), CanonicalError> {
         normalize_node(branch)?;
     }
     branches.sort_by(|left, right| left.name().cmp(right.name()));
-    node.branches = NonEmptyVec::new(branches).expect("parallel stays non-empty");
+    node.branches =
+        NonEmptyVec::new(branches).map_err(|_| CanonicalError::EmptyAfterNormalization)?;
     sort_and_deduplicate_by_canonical_json(&mut node.promoted_state_paths)?;
     if let Join::First { when } = &mut node.join {
         normalize_guard(when)?;

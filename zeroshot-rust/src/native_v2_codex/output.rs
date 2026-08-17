@@ -219,6 +219,7 @@ struct VerifierMessage {
 
 #[cfg(test)]
 mod tests {
+    use openengine_cluster_testkit::assertions::AssertValue;
     use serde_json::json;
 
     use super::*;
@@ -231,9 +232,9 @@ mod tests {
 {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}
 "#,
         )
-        .unwrap()
+        .assert_value()
         .outcome(NodeRole::Worker)
-        .unwrap();
+        .assert_value();
         assert_eq!(
             worker,
             WorkerOutcome::Verified {
@@ -251,18 +252,20 @@ mod tests {
             "{\"type\":\"turn.completed\"}\n",
         );
         let verifier = CodexOutput::parse(verifier_events.as_bytes())
-            .unwrap()
+            .assert_value()
             .outcome(NodeRole::Verifier)
-            .unwrap();
-        let WorkerOutcome::Verifier {
-            output,
-            signals,
-            diagnostic,
-            artifacts,
-        } = verifier
-        else {
-            panic!("expected verifier outcome");
+            .assert_value();
+        let extracted = match verifier {
+            WorkerOutcome::Verifier {
+                output,
+                signals,
+                diagnostic,
+                artifacts,
+            } => Some((output, signals, diagnostic, artifacts)),
+            _ => None,
         };
+        let (output, signals, diagnostic, artifacts) =
+            extracted.assert_value_with("expected verifier outcome");
         assert_eq!(output, json!({ "ok": true }));
         assert_eq!(diagnostic, Value::Null);
         assert!(artifacts.is_empty());

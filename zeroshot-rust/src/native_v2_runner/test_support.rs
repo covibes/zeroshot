@@ -5,19 +5,20 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    CompiledGraphIr, GraphSpec, NodeName, NonEmptyVec, PositiveInteger, RunId, StructuralBounds,
+    CompiledGraphIr, NodeName, NonEmptyVec, PositiveInteger, RunId, StructuralBounds,
     TerminationWitness, WorkerRef,
 };
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use super::*;
+use crate::native_v2_candidate::test_support::full_graph;
 use crate::native_v2_contract::{CodexProvider, RuntimePlan};
-use crate::worker_catalog::{ModelId, ReasoningEffort};
+use crate::worker_catalog::ReasoningEffort;
 
-pub(super) fn binding(scope: SessionScope) -> NodeRuntimeBinding {
+pub(crate) fn binding(scope: SessionScope) -> NodeRuntimeBinding {
     NodeRuntimeBinding::Agent {
-        model: ModelId::new("gpt-5.6").unwrap(),
+        model: crate::worker_catalog::ModelId::new("gpt-5.6").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: scope,
         env: BTreeSet::new(),
@@ -54,7 +55,7 @@ fn executable(name: &str, verifier: bool) -> Value {
     }
 }
 
-pub(super) fn admitted() -> AdmittedRun {
+pub(crate) fn admitted() -> AdmittedRun {
     let verifier_names = ["left", "right", "verify", "slow_reuse", "fast_reuse"];
     let worker_names = ["worker1", "worker2", "looped", "fresh", "worker"];
     let mut children = verifier_names
@@ -68,19 +69,7 @@ pub(super) fn admitted() -> AdmittedRun {
         "output": { "kind": "null" },
         "bindings": []
     }));
-    let graph: GraphSpec = serde_json::from_value(json!({
-        "profile": "openengine.graph.full/v1",
-        "initialInput": { "kind": "null" },
-        "policy": { "policy": "policy.native-v2@1", "default": "deny" },
-        "root": {
-            "kind": "seq",
-            "name": "root",
-            "state": { "kind": "null" },
-            "children": children,
-            "promotedStatePaths": []
-        }
-    }))
-    .unwrap();
+    let graph = full_graph(children);
     let root_name = graph.root.name().clone();
     let runtime_nodes = verifier_names
         .iter()
@@ -91,7 +80,7 @@ pub(super) fn admitted() -> AdmittedRun {
             } else {
                 SessionScope::Execution
             };
-            (NodeName::new(*name).unwrap(), binding(scope))
+            (NodeName::new(*name).assert_value(), binding(scope))
         })
         .collect();
     AdmittedRun {
@@ -102,11 +91,14 @@ pub(super) fn admitted() -> AdmittedRun {
             root: graph.root,
             bounds: StructuralBounds {
                 termination: TerminationWitness::Acyclic {
-                    order: NonEmptyVec::new(vec![root_name.clone()]).unwrap(),
+                    order: NonEmptyVec::new(vec![root_name.clone()]).assert_value(),
                 },
-                max_node_executions: PositiveInteger::new(100).unwrap(),
-                peak_concurrency: PositiveInteger::new(5).unwrap(),
-                attempts_per_node: BTreeMap::from([(root_name, PositiveInteger::new(1).unwrap())]),
+                max_node_executions: PositiveInteger::new(100).assert_value(),
+                peak_concurrency: PositiveInteger::new(5).assert_value(),
+                attempts_per_node: BTreeMap::from([(
+                    root_name,
+                    PositiveInteger::new(1).assert_value(),
+                )]),
             },
         },
         initial_input: Value::Null,
@@ -124,22 +116,22 @@ pub(super) fn request(run: &str, node: &str, identity: (u64, u64)) -> NodeRunReq
     let binding = admitted
         .runtime
         .nodes()
-        .get(&NodeName::new(node).unwrap())
-        .unwrap()
+        .get(&NodeName::new(node).assert_value())
+        .assert_value()
         .clone();
     NodeRunRequest {
         invocation: NodeInvocation {
             reference: ExecutionRef {
                 run_id: RunId::new(run),
-                node: NodeName::new(node).unwrap(),
-                node_instance: NodeInstanceId::new(node_instance).unwrap(),
-                execution: ExecutionId::new(execution).unwrap(),
+                node: NodeName::new(node).assert_value(),
+                node_instance: NodeInstanceId::new(node_instance).assert_value(),
+                execution: ExecutionId::new(execution).assert_value(),
             },
-            worker: WorkerRef::new(format!("agent.{node}@1")).unwrap(),
+            worker: WorkerRef::new(format!("agent.{node}@1")).assert_value(),
             input: Value::Null,
             binding: binding.clone(),
         },
-        environment: ResolvedEnvironment::exact(&binding, BTreeMap::new()).unwrap(),
+        environment: ResolvedEnvironment::exact(&binding, BTreeMap::new()).assert_value(),
     }
 }
 
@@ -189,7 +181,7 @@ impl SessionFactory for FakeFactory {
     ) -> Result<Arc<dyn NodeSession>, NodeRunnerError> {
         self.opened.fetch_add(1, Ordering::SeqCst);
         let session = Arc::new(FakeSession::live());
-        self.sessions.lock().unwrap().push(session.clone());
+        self.sessions.lock().assert_value().push(session.clone());
         Ok(session)
     }
 }
@@ -296,7 +288,7 @@ impl NodeDriver for FakeDriver {
             concurrency: &self.concurrency,
             reader,
         };
-        control.emit(LiveOutput::new(LiveOutputStream::Output, "working").unwrap())?;
+        control.emit(LiveOutput::new(LiveOutputStream::Output, "working").assert_value())?;
         let mut cancellation = control.cancellation();
         tokio::select! {
             _ = cancellation.cancelled() => Err(NodeRunnerError::Cancelled),
@@ -323,8 +315,10 @@ pub(super) fn runner() -> (NativeNodeRunner, Arc<FakeDriver>, Arc<FakeFactory>) 
     let factory = Arc::new(FakeFactory::default());
     let admitted = admitted();
     (
-        NativeNodeRunner::new(&admitted, driver.clone(), factory.clone()).unwrap(),
+        NativeNodeRunner::new(&admitted, driver.clone(), factory.clone()).assert_value(),
         driver,
         factory,
     )
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue};

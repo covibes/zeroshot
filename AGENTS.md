@@ -101,6 +101,8 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Graph verifier analysis                 | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
 | Native product construction             | `zeroshot-rust/`                                                                                                                 |
 | Native v2 cloud controller/OECP backend | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                       |
+| Native v2 target authority/routes       | `zeroshot-rust/src/native_v2_target_authority.rs`, `native_v2_target_authority/`                                                  |
+| Native v2 production hosting composition | `zeroshot-rust/src/native_v2_hosting.rs`, `native_v2_hosting/`                                                                  |
 | Native v2 private capsule runner        | `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`                                                                   |
 | Native v2 capsule composition root      | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
 | Native v2 CLI and OECP adapter          | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
@@ -225,16 +227,18 @@ must not be reintroduced.
 
 The shipped CLI uses one local named-target registry and delegates discovery, login, atomic
 repository/runtime setup, and authenticated target-scoped `run/*` OECP session creation to
-`TargetControlAuthority`. Current hosted discovery has no such target-wide native-v2 authority;
-`UndefinedTargetControlAuthority` therefore fails closed instead of guessing a route or falling
-back. The first production authority must implement that port without moving provider or harness
-interpretation into hosting.
+`TargetControlAuthority`. It reuses hosted OAuth device/session discovery, stores only the refresh
+family in the OS credential store, and uses the native-v2 target discovery for atomic setup and a
+target-wide controller WebSocket. Access/OECP tokens remain memory-only; provider and harness
+interpretation never moves into hosting.
 
 `GraphSpec` remains the control-flow source of truth. Provider, harness, model, effort, session
 scope, and required environment names are resolved through its companion runtime plan at admission.
-One run owns one workspace: ordinary verifiers are read-only and may overlap, while workers and Git
-delivery are exclusive writers. Capsule/session loss and force-stop are terminal; there is no
-workspace replacement or replay engine.
+One target admits at most one nonterminal run; exact resubmission dedupes, distinct submission
+conflicts, and retained terminal runs remain observable. One run owns one workspace: ordinary
+verifiers are read-only and may overlap, while workers and Git delivery are exclusive writers.
+Capsule/session loss and force-stop are terminal; there is no workspace replacement or replay
+engine.
 
 `execution/process` is the contained streaming-session seam. Recovery is registered before spawn,
 stdout and diagnostics remain bounded, and close/release owns termination and reaping exactly once.

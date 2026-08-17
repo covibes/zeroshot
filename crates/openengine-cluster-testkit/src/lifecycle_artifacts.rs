@@ -1,5 +1,7 @@
 //! Generated operational lifecycle transcript fixtures.
 
+use crate::fixture::*;
+
 use openengine_cluster_protocol::TurnFailureKind;
 use openengine_cluster_server::lifecycle::{FailedCompletion, TurnId};
 use serde_json::json;
@@ -22,7 +24,7 @@ pub(crate) async fn generate_lifecycle_goldens() -> Vec<Artifact> {
     let permit = store
         .acquire_dispatch(TurnId::new("lifecycle-turn"))
         .await
-        .expect("golden dispatch succeeds");
+        .assert_value_with("golden dispatch succeeds");
     store
         .fail_dispatch(FailedCompletion {
             lease_id: permit.lease_id,
@@ -30,7 +32,7 @@ pub(crate) async fn generate_lifecycle_goldens() -> Vec<Artifact> {
             retryability: openengine_cluster_server::lifecycle::FailureRetryability::Retryable,
         })
         .await
-        .expect("golden dispatch failure succeeds");
+        .assert_value_with("golden dispatch failure succeeds");
 
     let remainder = transcript(
         "lifecycle-controls.ndjson",

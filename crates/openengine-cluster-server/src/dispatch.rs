@@ -74,16 +74,36 @@ where
             "plan" => self.dispatch_plan(id, params).await,
             "apply" => self.dispatch_apply(id, params).await,
             "get" => self.dispatch_get(id, params).await,
+            _ => {
+                self.route_lifecycle_or_native(descriptor.name, id, params)
+                    .await
+            }
+        }
+    }
+
+    async fn route_lifecycle_or_native(
+        &self,
+        method: &str,
+        id: RequestId,
+        params: Value,
+    ) -> String {
+        match method {
             "update" => self.dispatch_update(id, params).await,
             "stop" => self.dispatch_stop(id, params).await,
             "retry" => self.dispatch_retry(id, params).await,
             "resubmit" => self.dispatch_resubmit(id, params).await,
             "delete" => self.dispatch_delete(id, params).await,
+            _ => self.route_native_v2(method, id, params).await,
+        }
+    }
+
+    async fn route_native_v2(&self, method: &str, id: RequestId, params: Value) -> String {
+        match method {
             RUN_SUBMIT_METHOD => self.dispatch_run_submit(id, params).await,
             RUN_LIST_METHOD => self.dispatch_run_list(id, params).await,
             RUN_STATUS_METHOD => self.dispatch_run_status(id, params).await,
             RUN_FORCE_METHOD => self.dispatch_run_force(id, params).await,
-            name => unreachable!("unrouted unary method in METHOD_REGISTRY: {name}"),
+            _ => serialize_error(Some(id), METHOD_NOT_FOUND, "Method not found", None),
         }
     }
 

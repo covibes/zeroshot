@@ -96,27 +96,27 @@ async fn verified_graph() -> VerifiedGraph {
             "promotedStatePaths":[]
         }
     }))
-    .unwrap();
+    .assert_value();
     ProductionGraphVerifier::new(TestWorker)
         .verify(&graph)
         .await
-        .unwrap()
+        .assert_value()
 }
 
 #[tokio::test]
 async fn failed_step_does_not_promote_success_only_writes_before_error_routing() {
     let execution = DurableExecution {
-        dispatch_position: HistoryPosition::new(2).unwrap(),
-        node_instance: NodeInstanceId::new(1).unwrap(),
-        execution: ExecutionId::new(1).unwrap(),
+        dispatch_position: HistoryPosition::new(2).assert_value(),
+        node_instance: NodeInstanceId::new(1).assert_value(),
+        execution: ExecutionId::new(1).assert_value(),
         occurrence: StructuralOccurrence {
-            node: "work".parse().unwrap(),
+            node: "work".parse().assert_value(),
             map_indices: Vec::new(),
         },
-        attempt: PositiveInteger::new(1).unwrap(),
+        attempt: PositiveInteger::new(1).assert_value(),
         input: serde_json::Value::Null,
         state: DurableExecutionState::Settled {
-            position: HistoryPosition::new(3).unwrap(),
+            position: HistoryPosition::new(3).assert_value(),
             outcome: WorkerOutcome::declared_failure(WorkerErrorCode::Crash),
         },
     };
@@ -127,11 +127,13 @@ async fn failed_step_does_not_promote_success_only_writes_before_error_routing()
             next_node_instance: 2,
             next_execution: 2,
         })
-        .unwrap();
+        .assert_value();
     assert_eq!(
         reduction.terminal,
         Some(TerminalProjection::Failed {
-            reason: "worker_failed".parse().unwrap()
+            reason: "worker_failed".parse().assert_value()
         })
     );
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue};

@@ -259,8 +259,12 @@ pub(super) fn spawn_stdout_pump(
             match stdout.read(&mut chunk).await {
                 Ok(0) => return,
                 Ok(read) => {
+                    let Some(bytes) = chunk.get(..read) else {
+                        let _ = failures.send(IoFailure::Stdout);
+                        return;
+                    };
                     if output
-                        .send(ProcessOutputChunk::from_bytes(chunk[..read].to_vec()))
+                        .send(ProcessOutputChunk::from_bytes(bytes.to_vec()))
                         .await
                         .is_err()
                     {
@@ -305,7 +309,7 @@ where
         }
         tail.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .append(&chunk[..read]);
+            .append(chunk.get(..read).ok_or(())?);
     }
 }
 
@@ -395,8 +399,9 @@ impl TailBuffer {
     fn append(&mut self, value: &[u8]) {
         if value.len() >= self.capacity {
             self.bytes.clear();
-            self.bytes
-                .extend_from_slice(&value[value.len() - self.capacity..]);
+            if let Some(tail) = value.get(value.len() - self.capacity..) {
+                self.bytes.extend_from_slice(tail);
+            }
             return;
         }
         let required = self.bytes.len() + value.len();

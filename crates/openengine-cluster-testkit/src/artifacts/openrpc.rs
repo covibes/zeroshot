@@ -1,3 +1,5 @@
+use crate::fixture::*;
+
 use openengine_cluster_protocol::{
     AgentAttachParams, ApplyParams, DeleteParams, ResubmitParams, RetryParams, RunAttachParams,
     RunForceParams, RunLogsParams, RunStatusParams, RunSubmitParams, RunWatchParams, StopParams,
@@ -51,31 +53,14 @@ pub(super) fn document() -> Value {
     })
 }
 fn method_document(descriptor: &MethodDescriptor) -> Value {
-    let mut method = match descriptor.name {
-        "initialize" => initialize_method(),
-        "plan" => plan_method(),
-        "apply" => apply_method(),
-        "update" => update_method(),
-        "stop" => stop_method(),
-        "retry" => retry_method(),
-        "resubmit" => resubmit_method(),
-        "delete" => delete_method(),
-        "get" => get_method(),
-        "watch" => watch_method(),
-        "logs" => logs_method(),
-        "agent/attach" => agent_attach_method(),
-        RUN_SUBMIT_METHOD => run_submit_method(),
-        RUN_LIST_METHOD => run_list_method(),
-        RUN_STATUS_METHOD => run_status_method(),
-        RUN_WATCH_METHOD => run_watch_method(),
-        RUN_LOGS_METHOD => run_logs_method(),
-        RUN_ATTACH_METHOD => run_attach_method(),
-        RUN_FORCE_METHOD => run_force_method(),
-        name => panic!("METHOD_REGISTRY method has no OpenRPC schema: {name}"),
-    };
+    let mut method = standard_method(descriptor.name)
+        .or_else(|| lifecycle_method(descriptor.name))
+        .or_else(|| observation_method(descriptor.name))
+        .or_else(|| native_v2_method(descriptor.name))
+        .assert_value_with("METHOD_REGISTRY method must have an OpenRPC schema");
     let object = method
         .as_object_mut()
-        .expect("OpenRPC method builders must return objects");
+        .assert_value_with("OpenRPC method builders must return objects");
     object.insert("name".to_owned(), json!(descriptor.name));
     object.insert(
         "x-subscription".to_owned(),
@@ -89,6 +74,53 @@ fn method_document(descriptor: &MethodDescriptor) -> Value {
         }),
     );
     method
+}
+
+fn standard_method(name: &str) -> Option<Value> {
+    match name {
+        "initialize" => initialize_method(),
+        "plan" => plan_method(),
+        "apply" => apply_method(),
+        "get" => get_method(),
+        _ => return None,
+    }
+    .into()
+}
+
+fn lifecycle_method(name: &str) -> Option<Value> {
+    match name {
+        "update" => update_method(),
+        "stop" => stop_method(),
+        "retry" => retry_method(),
+        "resubmit" => resubmit_method(),
+        "delete" => delete_method(),
+        _ => return None,
+    }
+    .into()
+}
+
+fn observation_method(name: &str) -> Option<Value> {
+    match name {
+        "watch" => watch_method(),
+        "logs" => logs_method(),
+        "agent/attach" => agent_attach_method(),
+        _ => return None,
+    }
+    .into()
+}
+
+fn native_v2_method(name: &str) -> Option<Value> {
+    match name {
+        RUN_SUBMIT_METHOD => run_submit_method(),
+        RUN_LIST_METHOD => run_list_method(),
+        RUN_STATUS_METHOD => run_status_method(),
+        RUN_WATCH_METHOD => run_watch_method(),
+        RUN_LOGS_METHOD => run_logs_method(),
+        RUN_ATTACH_METHOD => run_attach_method(),
+        RUN_FORCE_METHOD => run_force_method(),
+        _ => return None,
+    }
+    .into()
 }
 
 fn initialize_method() -> Value {
@@ -126,7 +158,7 @@ fn plan_method() -> Value {
 
 fn apply_method() -> Value {
     let apply_schema = serde_json::to_value(schema_for!(ApplyParams))
-        .expect("apply parameter JSON Schema serialization must succeed");
+        .assert_value_with("apply parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -156,15 +188,16 @@ fn apply_method() -> Value {
 }
 
 fn apply_property_schema(apply_schema: &Value, property: &str) -> Value {
-    apply_schema["properties"]
+    apply_schema
+        .assert_key("properties")
         .get(property)
-        .unwrap_or_else(|| panic!("ApplyParams schema is missing {property}"))
+        .assert_value_with("ApplyParams schema must contain every documented property")
         .clone()
 }
 
 fn update_method() -> Value {
     let schema = serde_json::to_value(schema_for!(UpdateParams))
-        .expect("update parameter JSON Schema serialization must succeed");
+        .assert_value_with("update parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "x-params-schema": schema,
@@ -184,7 +217,7 @@ fn update_method() -> Value {
 
 fn stop_method() -> Value {
     let schema = serde_json::to_value(schema_for!(StopParams))
-        .expect("stop parameter JSON Schema serialization must succeed");
+        .assert_value_with("stop parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -201,7 +234,7 @@ fn stop_method() -> Value {
 
 fn retry_method() -> Value {
     let schema = serde_json::to_value(schema_for!(RetryParams))
-        .expect("retry parameter JSON Schema serialization must succeed");
+        .assert_value_with("retry parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -217,7 +250,7 @@ fn retry_method() -> Value {
 
 fn resubmit_method() -> Value {
     let schema = serde_json::to_value(schema_for!(ResubmitParams))
-        .expect("resubmit parameter JSON Schema serialization must succeed");
+        .assert_value_with("resubmit parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -235,7 +268,7 @@ fn resubmit_method() -> Value {
 
 fn delete_method() -> Value {
     let schema = serde_json::to_value(schema_for!(DeleteParams))
-        .expect("delete parameter JSON Schema serialization must succeed");
+        .assert_value_with("delete parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -251,9 +284,10 @@ fn delete_method() -> Value {
 }
 
 fn property_schema(schema: &Value, property: &str) -> Value {
-    schema["properties"]
+    schema
+        .assert_key("properties")
         .get(property)
-        .unwrap_or_else(|| panic!("parameter schema is missing {property}"))
+        .assert_value_with("parameter schema must contain every documented property")
         .clone()
 }
 
@@ -308,7 +342,7 @@ fn agent_attach_method() -> Value {
     // has no standalone `$defs` entry to `$ref` -- extract its actual inline schema from a
     // generated `AgentAttachParams` schema instead of hand-authoring a `$ref` that would dangle.
     let schema = serde_json::to_value(schema_for!(AgentAttachParams))
-        .expect("agent_attach parameter JSON Schema serialization must succeed");
+        .assert_value_with("agent_attach parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [{
@@ -325,7 +359,7 @@ fn agent_attach_method() -> Value {
 
 fn run_submit_method() -> Value {
     let schema = serde_json::to_value(schema_for!(RunSubmitParams))
-        .expect("run submit parameter JSON Schema serialization must succeed");
+        .assert_value_with("run submit parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -362,7 +396,7 @@ fn run_force_method() -> Value {
 
 fn run_id_method<P: schemars::JsonSchema>(result_name: &str, result_type: &str) -> Value {
     let schema = serde_json::to_value(schema_for!(P))
-        .expect("native-v2 run parameter JSON Schema serialization must succeed");
+        .assert_value_with("native-v2 run parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [{
@@ -378,7 +412,7 @@ fn run_id_method<P: schemars::JsonSchema>(result_name: &str, result_type: &str) 
 
 fn run_watch_method() -> Value {
     let schema = serde_json::to_value(schema_for!(RunWatchParams))
-        .expect("run watch parameter JSON Schema serialization must succeed");
+        .assert_value_with("run watch parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -394,7 +428,7 @@ fn run_watch_method() -> Value {
 
 fn run_logs_method() -> Value {
     let schema = serde_json::to_value(schema_for!(RunLogsParams))
-        .expect("run logs parameter JSON Schema serialization must succeed");
+        .assert_value_with("run logs parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [
@@ -411,7 +445,7 @@ fn run_logs_method() -> Value {
 
 fn run_attach_method() -> Value {
     let schema = serde_json::to_value(schema_for!(RunAttachParams))
-        .expect("run attach parameter JSON Schema serialization must succeed");
+        .assert_value_with("run attach parameter JSON Schema serialization must succeed");
     json!({
         "paramStructure": "by-name",
         "params": [

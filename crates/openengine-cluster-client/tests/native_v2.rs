@@ -1,38 +1,34 @@
-use std::sync::Arc;
+#[path = "support/mod.rs"]
+pub mod support;
 
-use async_trait::async_trait;
-use openengine_cluster_client::{ClusterClient, JsonRpcTransport, TransportError};
+use openengine_cluster_client::ClusterClient;
 use openengine_cluster_protocol::{
     RunForceParams, RunId, RunListParams, RunStatusParams, RunSubmitParams,
 };
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
+use support::{AssertValue, RecordingTransport};
 
-#[derive(Clone, Default)]
-struct RecordingTransport {
-    methods: Arc<Mutex<Vec<String>>>,
-}
-
-#[async_trait]
-impl JsonRpcTransport for RecordingTransport {
-    async fn request(&self, request: String) -> Result<String, TransportError> {
-        let request: Value = serde_json::from_str(&request).unwrap();
-        let method = request["method"].as_str().unwrap().to_owned();
-        self.methods.lock().await.push(method.clone());
-        let result = match method.as_str() {
-            "run/submit" => json!({"runId":"run-1"}),
-            "run/list" => json!({"runs":[]}),
-            "run/status" => json!({
+fn response(method: &str) -> Value {
+    [
+        ("run/submit", json!({"runId":"run-1"})),
+        ("run/list", json!({"runs":[]})),
+        (
+            "run/status",
+            json!({
                 "runId":"run-1","atCursor":"v2:1","status":{"phase":"admitted"}
             }),
-            "run/force" => json!({
+        ),
+        (
+            "run/force",
+            json!({
                 "runId":"run-1","atCursor":"v2:2",
                 "status":{"phase":"stopping","activeExecutions":[]}
             }),
-            _ => unreachable!(),
-        };
-        Ok(json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string())
-    }
+        ),
+    ]
+    .into_iter()
+    .find_map(|(candidate, value)| (candidate == method).then_some(value))
+    .assert_value_with("expected a known native v2 client method")
 }
 
 fn submit() -> RunSubmitParams {
@@ -49,22 +45,22 @@ fn submit() -> RunSubmitParams {
         "ship":false,
         "submissionKey":"submission-1"
     }))
-    .unwrap()
+    .assert_value()
 }
 
 #[tokio::test]
 async fn typed_run_calls_use_the_public_native_v2_method_names() {
-    let transport = RecordingTransport::default();
+    let transport = RecordingTransport::new(response);
     let client = ClusterClient::new(transport.clone());
     assert_eq!(
-        client.run_submit(submit()).await.unwrap().run_id,
+        client.run_submit(submit()).await.assert_value().run_id,
         RunId::new("run-1")
     );
     assert!(
         client
             .run_list(RunListParams::default())
             .await
-            .unwrap()
+            .assert_value()
             .runs
             .is_empty()
     );
@@ -73,15 +69,15 @@ async fn typed_run_calls_use_the_public_native_v2_method_names() {
             run_id: RunId::new("run-1"),
         })
         .await
-        .unwrap();
+        .assert_value();
     client
         .run_force(RunForceParams {
             run_id: RunId::new("run-1"),
         })
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(
-        *transport.methods.lock().await,
+        transport.methods().await,
         ["run/submit", "run/list", "run/status", "run/force"]
     );
 }

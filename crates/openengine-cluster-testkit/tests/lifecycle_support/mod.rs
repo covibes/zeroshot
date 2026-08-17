@@ -13,6 +13,8 @@ pub async fn running() -> (FixtureClient, Arc<InMemoryAdmissionStore>) {
     client
         .apply(committed(graph, serde_json::Value::Null, 0, "create"))
         .await
-        .expect("fixture admission succeeds");
+        .assert_value_with("fixture admission succeeds");
     (client, store)
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

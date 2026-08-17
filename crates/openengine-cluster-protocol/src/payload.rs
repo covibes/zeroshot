@@ -30,9 +30,6 @@ pub enum ContractValueError {
 }
 
 fn validate_identifier(value: &str, kind: &'static str) -> Result<(), ContractValueError> {
-    if value.is_empty() {
-        return Err(ContractValueError::Empty { kind });
-    }
     if value.len() > MAX_IDENTIFIER_LENGTH {
         return Err(ContractValueError::TooLong {
             kind,
@@ -40,7 +37,9 @@ fn validate_identifier(value: &str, kind: &'static str) -> Result<(), ContractVa
         });
     }
     let mut characters = value.chars();
-    let first = characters.next().expect("empty identifier handled above");
+    let Some(first) = characters.next() else {
+        return Err(ContractValueError::Empty { kind });
+    };
     if !(first.is_ascii_alphabetic() || first == '_')
         || !characters.all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')

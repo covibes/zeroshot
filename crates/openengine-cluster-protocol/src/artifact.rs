@@ -90,6 +90,10 @@ impl Sha256Digest {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
+
+    pub(crate) fn from_digest(bytes: &[u8]) -> Self {
+        Self(Sha256String::from_digest(bytes))
+    }
 }
 
 impl fmt::Display for Sha256Digest {

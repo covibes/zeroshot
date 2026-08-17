@@ -1,3 +1,5 @@
+use crate::fixture::*;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +23,9 @@ use thiserror::Error;
 
 use crate::EmptyBackend;
 use crate::negative_graph_fixtures::{diagnostic_fixture, negative_graph_fixtures};
+
+mod fixture_values;
+use fixture_values::artifact_ref_fixture;
 use crate::schema_helpers::merge_schema;
 use crate::worker_artifacts::{with_worker_components, worker_fixture_artifacts, worker_schema};
 
@@ -102,11 +107,11 @@ pub struct ImplementedProtocolSchema {
 
 pub async fn generate_artifacts() -> Vec<Artifact> {
     let schema = serde_json::to_value(schema_for!(ImplementedProtocolSchema))
-        .expect("JSON Schema serialization must succeed");
+        .assert_value_with("JSON Schema serialization must succeed");
     let worker_schema = worker_schema();
     let graph_schema = graph_schema();
     let compiled_ir_schema = serde_json::to_value(schema_for!(CompiledGraphIr))
-        .expect("compiled IR JSON Schema serialization must succeed");
+        .assert_value_with("compiled IR JSON Schema serialization must succeed");
     let openrpc = openrpc::document();
     let dispatcher = Dispatcher::new(EmptyBackend, ConnectionContext::default());
 
@@ -194,7 +199,7 @@ pub async fn write_artifacts(workspace: &Path) -> Result<(), ArtifactError> {
         let path = workspace.join(&artifact.relative_path);
         let parent = path
             .parent()
-            .expect("every generated artifact must have a parent directory");
+            .assert_value_with("every generated artifact must have a parent directory");
         fs::create_dir_all(parent).map_err(|source| ArtifactError::Io {
             path: parent.to_path_buf(),
             source,
@@ -209,12 +214,13 @@ pub fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
-        .expect("testkit crate must be two directories below the workspace")
+        .assert_value_with("testkit crate must be two directories below the workspace")
         .to_path_buf()
 }
 
 pub(crate) fn json_artifact(relative_path: String, value: Value) -> Artifact {
-    let mut bytes = serde_json::to_vec_pretty(&value).expect("artifact serialization must succeed");
+    let mut bytes =
+        serde_json::to_vec_pretty(&value).assert_value_with("artifact serialization must succeed");
     bytes.push(b'\n');
     Artifact {
         relative_path,
@@ -224,22 +230,22 @@ pub(crate) fn json_artifact(relative_path: String, value: Value) -> Artifact {
 
 fn graph_schema() -> Value {
     let mut root = serde_json::to_value(schema_for!(GraphSpec))
-        .expect("graph JSON Schema serialization must succeed");
+        .assert_value_with("graph JSON Schema serialization must succeed");
     for (name, schema) in [
         (
             "GraphDiagnostic",
             serde_json::to_value(schema_for!(GraphDiagnostic))
-                .expect("diagnostic schema serialization must succeed"),
+                .assert_value_with("diagnostic schema serialization must succeed"),
         ),
         (
             "StructuralBounds",
             serde_json::to_value(schema_for!(StructuralBounds))
-                .expect("bounds schema serialization must succeed"),
+                .assert_value_with("bounds schema serialization must succeed"),
         ),
         (
             "ArtifactRef",
             serde_json::to_value(schema_for!(ArtifactRef))
-                .expect("artifact schema serialization must succeed"),
+                .assert_value_with("artifact schema serialization must succeed"),
         ),
     ] {
         merge_schema(&mut root, name, schema);
@@ -254,13 +260,13 @@ fn graph_fixture_artifacts() -> Vec<Artifact> {
     let reordered = compiled_fixture(&["left", "right"], &["first", "second"]);
     let mutated = compiled_fixture(&["left", "right"], &["second", "first"]);
     let compiled_ir: CompiledGraphIr = serde_json::from_value(compiled.clone())
-        .expect("generated compiled fixture must deserialize");
+        .assert_value_with("generated compiled fixture must deserialize");
     let canonical_bytes = compiled_ir
         .canonical_bytes()
-        .expect("generated compiled fixture must canonicalize");
+        .assert_value_with("generated compiled fixture must canonicalize");
     let digest = compiled_ir
         .identity()
-        .expect("generated compiled fixture must hash")
+        .assert_value_with("generated compiled fixture must hash")
         .to_string();
 
     let mut artifacts = vec![
@@ -341,6 +347,10 @@ fn control_selector(source: &str) -> Value {
 }
 
 fn guard_fixture(kind: &str) -> Value {
+    assert!(
+        matches!(kind, "in" | "all" | "any" | "not" | "k_of_n" | "k_of_map"),
+        "fixture guard kind is closed"
+    );
     match kind {
         "in" => {
             json!({ "kind": "in", "value": control_selector("signal"), "labels": ["accepted"] })
@@ -357,7 +367,7 @@ fn guard_fixture(kind: &str) -> Value {
             "kind": "k_of_map", "count": 1, "value": control_selector("group"),
             "labels": ["accepted"]
         }),
-        _ => unreachable!("fixture guard kind is closed"),
+        _ => Value::Null,
     }
 }
 
@@ -480,15 +490,5 @@ fn compiled_fixture(par_order: &[&str], sequence_order: &[&str]) -> Value {
             "maxNodeExecutions": 12, "peakConcurrency": 2,
             "attemptsPerNode": { "parallel": 1, "ordered": 1 }
         }
-    })
-}
-
-fn artifact_ref_fixture() -> Value {
-    json!({
-        "artifactId": "artifact-123", "sha256": "a".repeat(64), "byteLength": 42,
-        "mediaType": "application/json", "typeId": "openengine.result@1",
-        "producer": { "node": "work", "worker": "legacy.zeroshot.ship@1" },
-        "lineage": { "generation": 7, "runId": "run-9", "attempt": 1 },
-        "redaction": "internal"
     })
 }

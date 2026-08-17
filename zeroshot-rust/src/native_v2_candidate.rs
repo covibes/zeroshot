@@ -24,6 +24,9 @@ use crate::native_v2_runner::{
 #[path = "native_v2_candidate/tests.rs"]
 mod tests;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// The one harness/provider lane selected for the entire graph.
 pub enum NativeV2HarnessConfig {
     Codex(NativeV2CodexConfig),

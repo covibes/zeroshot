@@ -17,6 +17,14 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncWriteExt, BufReader, DuplexStream};
 use tokio::task::JoinHandle;
 
+#[path = "support/assert_at.rs"]
+mod assert_at;
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+use assert_at::AssertAt;
+use assert_value::AssertValue;
+
 #[path = "ndjson_test_support/mod.rs"]
 mod ndjson_test_support;
 use ndjson_test_support::{read_line, read_value, request_line, write_line};
@@ -41,6 +49,24 @@ use admission_bound_support::{
 /// internal `serve_ndjson` implementation detail, not part of the public contract.
 const OVERSIZED_LINE_BYTES: usize = 1024 * 1024 + 16;
 
+fn field<'a>(value: &'a Value, path: &[&str]) -> &'a Value {
+    path.iter()
+        .fold(value, |current, name| current.assert_at(*name))
+}
+
+fn string_field<'a>(value: &'a Value, path: &[&str]) -> &'a str {
+    field(value, path).as_str().assert_value()
+}
+
+fn response_subscription_id(value: &Value) -> String {
+    string_field(value, &["result", "subscriptionId"]).to_owned()
+}
+
+async fn open_watch(harness: &mut Harness, id: i64) -> String {
+    write_line(&mut harness.write, &request_line(id, "watch", json!({}))).await;
+    response_subscription_id(&read_value(&mut harness.read).await)
+}
+
 struct Harness {
     write: DuplexStream,
     read: BufReader<DuplexStream>,
@@ -57,6 +83,12 @@ where
         read: BufReader::new(read),
         server,
     }
+}
+
+fn empty_watch_harness(capacity: usize) -> (Arc<FixtureStore>, Harness) {
+    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), capacity));
+    let harness = spawn_server(FixtureBackend::new(Arc::clone(&store)));
+    (store, harness)
 }
 
 impl RequestChannel for Harness {
@@ -105,16 +137,11 @@ impl DuplicateCancellationChannel for NdjsonDuplicateCancellation<'_> {
             .send_raw(&request_line(1, "watch", json!({})))
             .await;
         let established = self.harness.recv_value().await;
-        self.subscription_id = Some(
-            established["result"]["subscriptionId"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        );
+        self.subscription_id = Some(response_subscription_id(&established));
     }
 
     async fn send_duplicate_cancellation(&mut self) {
-        let subscription_id = self.subscription_id.as_deref().unwrap();
+        let subscription_id = self.subscription_id.as_deref().assert_value();
         self.harness
             .send_raw(&format!(
                 r#"{{"jsonrpc":"2.0","method":"subscription/cancel","params":{{"subscriptionId":"other","subscriptionId":"{subscription_id}"}}}}"#
@@ -129,15 +156,15 @@ impl DuplicateCancellationChannel for NdjsonDuplicateCancellation<'_> {
     async fn assert_targets_remain_active(&mut self) {
         self.store.publish(WatchEvent::Bookmark).await;
         let event = self.harness.recv_value().await;
-        assert_eq!(event["method"], "event");
+        assert_eq!(event.assert_at("method"), "event");
         assert_eq!(
-            event["params"]["subscriptionId"],
-            self.subscription_id.as_deref().unwrap()
+            field(&event, &["params", "subscriptionId"]),
+            self.subscription_id.as_deref().assert_value()
         );
     }
 
     async fn assert_unknown_member_cancellation_is_accepted(&mut self) {
-        let subscription_id = self.subscription_id.as_deref().unwrap();
+        let subscription_id = self.subscription_id.as_deref().assert_value();
         self.harness
             .send_raw(&format!(
                 r#"{{"jsonrpc":"2.0","method":"subscription/cancel","params":{{"subscriptionId":"{subscription_id}"}},"extension":true}}"#
@@ -145,7 +172,7 @@ impl DuplicateCancellationChannel for NdjsonDuplicateCancellation<'_> {
             .await;
         self.harness.send_get(99).await;
         let sync = self.harness.recv_value().await;
-        assert_eq!(sync["id"], 99);
+        assert_eq!(sync.assert_at("id"), 99);
         assert!(sync.get("result").is_some(), "{sync}");
 
         self.store.publish(WatchEvent::Bookmark).await;
@@ -175,16 +202,9 @@ async fn shut_down(harness: Harness) {
 
 #[tokio::test]
 async fn unary_and_subscription_share_connection() {
-    let run_id = RunId::new("run-1");
-    let store = Arc::new(FixtureStore::new(run_id, Vec::new(), 8));
-    let mut harness = spawn_server(FixtureBackend::new(Arc::clone(&store)));
+    let (store, mut harness) = empty_watch_harness(8);
 
-    write_line(&mut harness.write, &request_line(1, "watch", json!({}))).await;
-    let watch_response = read_value(&mut harness.read).await;
-    let subscription_id = watch_response["result"]["subscriptionId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let subscription_id = open_watch(&mut harness, 1).await;
 
     // Put a live event notification in flight before the unary request is even sent, then
     // interleave the unary request: both must resolve, correctly correlated, on one connection.
@@ -196,11 +216,14 @@ async fn unary_and_subscription_share_connection() {
     for _ in 0..2 {
         let value = read_value(&mut harness.read).await;
         if value.get("method").is_some() {
-            assert_eq!(value["method"], "event");
-            assert_eq!(value["params"]["subscriptionId"], subscription_id);
+            assert_eq!(value.assert_at("method"), "event");
+            assert_eq!(
+                string_field(&value, &["params", "subscriptionId"]),
+                subscription_id
+            );
             saw_event = true;
         } else {
-            assert_eq!(value["id"], 2);
+            assert_eq!(value.assert_at("id"), 2);
             assert!(value.get("result").is_some(), "{value}");
             saw_get_response = true;
         }
@@ -212,13 +235,16 @@ async fn unary_and_subscription_share_connection() {
 
 #[tokio::test]
 async fn oversized_and_malformed_frames_are_deterministic() {
-    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
-    let mut harness = spawn_server(FixtureBackend::new(store));
+    let (_store, mut harness) = empty_watch_harness(8);
 
     let oversized = "a".repeat(OVERSIZED_LINE_BYTES);
-    harness.write.write_all(oversized.as_bytes()).await.unwrap();
-    harness.write.write_all(b"\n").await.unwrap();
-    harness.write.flush().await.unwrap();
+    harness
+        .write
+        .write_all(oversized.as_bytes())
+        .await
+        .assert_value();
+    harness.write.write_all(b"\n").await.assert_value();
+    harness.write.flush().await.assert_value();
     write_line(&mut harness.write, "not valid json").await;
     write_line(&mut harness.write, &request_line(9, "get", json!({}))).await;
 
@@ -226,11 +252,11 @@ async fn oversized_and_malformed_frames_are_deterministic() {
     let mut saw_get_response = false;
     while !saw_get_response {
         let value = read_value(&mut harness.read).await;
-        if value["id"] == 9 {
+        if value.assert_at("id") == 9 {
             assert!(value.get("result").is_some(), "{value}");
             saw_get_response = true;
         } else {
-            assert_eq!(value["error"]["code"], -32700, "{value}");
+            assert_eq!(field(&value, &["error", "code"]), -32700, "{value}");
             parse_errors += 1;
         }
     }
@@ -304,15 +330,18 @@ async fn assert_shared_bookmark_delivered(
     let mut by_sub: HashMap<String, Vec<String>> = HashMap::new();
     for _ in 0..2 {
         let value = read_value(&mut harness.read).await;
-        let sub = value["params"]["subscriptionId"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let cursor = value["params"]["cursor"].as_str().unwrap().to_owned();
+        let sub = string_field(&value, &["params", "subscriptionId"]).to_owned();
+        let cursor = string_field(&value, &["params", "cursor"]).to_owned();
         by_sub.entry(sub).or_default().push(cursor);
     }
-    assert_eq!(by_sub[sub_a], vec!["cursor-1".to_owned()]);
-    assert_eq!(by_sub[sub_b], vec!["cursor-1".to_owned()]);
+    assert_eq!(
+        by_sub.get(sub_a).assert_value(),
+        &vec!["cursor-1".to_owned()]
+    );
+    assert_eq!(
+        by_sub.get(sub_b).assert_value(),
+        &vec!["cursor-1".to_owned()]
+    );
 }
 
 /// Cancels `sub_a`, confirms cancellation was synchronously applied via a subsequent unary `get`,
@@ -330,7 +359,7 @@ async fn assert_cancel_stops_only_selected_subscription(
     // already processed (and synchronously applied) the preceding cancel line.
     write_line(&mut harness.write, &request_line(100, "get", json!({}))).await;
     let sync_response = read_value(&mut harness.read).await;
-    assert_eq!(sync_response["id"], 100);
+    assert_eq!(sync_response.assert_at("id"), 100);
     assert!(sync_response.get("result").is_some(), "{sync_response}");
 
     store.publish(WatchEvent::Bookmark).await; // cursor-2
@@ -343,7 +372,7 @@ async fn assert_cancel_stops_only_selected_subscription(
     let mut frames = Vec::new();
     for _ in 0..4 {
         match tokio::time::timeout(Duration::from_millis(300), read_line(&mut harness.read)).await {
-            Ok(line) => frames.push(serde_json::from_str::<Value>(&line).unwrap()),
+            Ok(line) => frames.push(serde_json::from_str::<Value>(&line).assert_value()),
             Err(_) => break,
         }
     }
@@ -355,15 +384,17 @@ async fn assert_cancel_stops_only_selected_subscription(
     let mut sub_a_cursors = Vec::new();
     let mut sub_b_cursors = Vec::new();
     for value in &frames {
-        let sub = value["params"]["subscriptionId"].as_str().unwrap();
-        let cursor = value["params"]["cursor"].as_str().unwrap().to_owned();
+        let sub = string_field(value, &["params", "subscriptionId"]);
+        let cursor = string_field(value, &["params", "cursor"]).to_owned();
         if sub == sub_a {
             sub_a_cursors.push(cursor);
         } else if sub == sub_b {
             sub_b_cursors.push(cursor);
-        } else {
-            panic!("unexpected subscriptionId {sub}");
         }
+        assert!(
+            sub == sub_a || sub == sub_b,
+            "unexpected subscriptionId {sub}"
+        );
     }
     assert_eq!(
         sub_b_cursors,
@@ -386,19 +417,9 @@ async fn cancel_releases_only_the_selected_subscription() {
     let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
     let mut harness = spawn_server(FixtureBackend::new(Arc::clone(&store)));
 
-    write_line(&mut harness.write, &request_line(1, "watch", json!({}))).await;
-    let response_a = read_value(&mut harness.read).await;
-    let sub_a = response_a["result"]["subscriptionId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let sub_a = open_watch(&mut harness, 1).await;
 
-    write_line(&mut harness.write, &request_line(2, "watch", json!({}))).await;
-    let response_b = read_value(&mut harness.read).await;
-    let sub_b = response_b["result"]["subscriptionId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let sub_b = open_watch(&mut harness, 2).await;
     assert_ne!(sub_a, sub_b);
 
     assert_shared_bookmark_delivered(&mut harness, &store, &sub_a, &sub_b).await;
@@ -410,19 +431,9 @@ async fn cancel_releases_only_the_selected_subscription() {
 #[tokio::test]
 async fn slow_consumer_closes_with_the_last_delivered_cursor() {
     const FIXTURE_QUEUE_CAPACITY: usize = 2;
-    let store = Arc::new(FixtureStore::new(
-        RunId::new("run-1"),
-        Vec::new(),
-        FIXTURE_QUEUE_CAPACITY,
-    ));
-    let mut harness = spawn_server(FixtureBackend::new(Arc::clone(&store)));
+    let (store, mut harness) = empty_watch_harness(FIXTURE_QUEUE_CAPACITY);
 
-    write_line(&mut harness.write, &request_line(1, "watch", json!({}))).await;
-    let response = read_value(&mut harness.read).await;
-    let subscription_id = response["result"]["subscriptionId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let subscription_id = open_watch(&mut harness, 1).await;
 
     // The bounded queue holds two entries; the third publish overflows it.
     store.publish(WatchEvent::Bookmark).await;
@@ -432,63 +443,32 @@ async fn slow_consumer_closes_with_the_last_delivered_cursor() {
     let mut closed = None;
     while closed.is_none() {
         let value = read_value(&mut harness.read).await;
-        assert_eq!(value["params"]["subscriptionId"], subscription_id);
-        match value["method"].as_str().unwrap() {
-            "event" => {}
-            "subscription/closed" => closed = Some(value),
-            other => panic!("unexpected notification method {other}"),
+        assert_eq!(
+            string_field(&value, &["params", "subscriptionId"]),
+            subscription_id
+        );
+        let method = string_field(&value, &["method"]);
+        if method == "subscription/closed" {
+            closed = Some(value);
+        } else {
+            assert_eq!(method, "event", "unexpected notification method {method}");
         }
     }
-    let closed = closed.unwrap();
-    assert_eq!(closed["params"]["reason"], "SLOW_CONSUMER");
-    assert_eq!(closed["params"]["lastDeliveredCursor"], "cursor-2");
+    let closed = closed.assert_value();
+    assert_eq!(field(&closed, &["params", "reason"]), "SLOW_CONSUMER");
+    assert_eq!(
+        field(&closed, &["params", "lastDeliveredCursor"]),
+        "cursor-2"
+    );
 
     shut_down(harness).await;
 }
 
 #[tokio::test]
 async fn eof_terminates_deterministically() {
-    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
-    let harness = spawn_server(FixtureBackend::new(store));
+    let (_store, harness) = empty_watch_harness(8);
     shut_down(harness).await;
 }
 
-/// Regression test: cancelling a subscription on a run that never publishes again used to leak
-/// its streaming task and channel forever. The task is parked inside `next_live`'s
-/// `receiver.recv().await` whenever it is idle, and dropping the old `WatchHandle` on cancel never
-/// woke it -- nothing rechecks `WatchEventStream`'s cancelled flag until the stream's next poll,
-/// which never comes for an idle run. A leaked task only surfaces at shutdown: `serve_ndjson`
-/// waits out the full `SHUTDOWN_GRACE_PERIOD` before force-aborting whatever tasks remain, so
-/// shutdown taking close to that grace period (rather than resolving promptly) is the symptom.
-#[tokio::test]
-async fn cancelling_an_idle_subscription_releases_its_task_promptly() {
-    let store = Arc::new(FixtureStore::new(RunId::new("run-1"), Vec::new(), 8));
-    let mut harness = spawn_server(FixtureBackend::new(store));
-
-    write_line(&mut harness.write, &request_line(1, "watch", json!({}))).await;
-    let response = read_value(&mut harness.read).await;
-    let subscription_id = response["result"]["subscriptionId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    // Cancel while idle: no event is ever published on this run, so the streaming task is parked
-    // awaiting the next live event with nothing left to ever wake it via the old flag-only design.
-    write_line(&mut harness.write, &cancel_line(&subscription_id)).await;
-    // A subsequent unary request on the same connection only answers after the read loop has
-    // already processed (and synchronously applied) the preceding cancel line.
-    write_line(&mut harness.write, &request_line(2, "get", json!({}))).await;
-    let sync_response = read_value(&mut harness.read).await;
-    assert_eq!(sync_response["id"], 2);
-    assert!(sync_response.get("result").is_some(), "{sync_response}");
-
-    let started = tokio::time::Instant::now();
-    shut_down(harness).await;
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_millis(150),
-        "shutdown took {elapsed:?}, close to or exceeding SHUTDOWN_GRACE_PERIOD -- the cancelled \
-         idle subscription's task was likely never woken and had to be force-aborted instead of \
-         exiting on its own"
-    );
-}
+#[path = "subscription_ndjson/idle_cancel.rs"]
+mod idle_cancel;

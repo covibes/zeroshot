@@ -66,7 +66,7 @@ pub(crate) async fn request<F: FrameSink>(
     pending: &PendingMap,
     request: String,
 ) -> Result<String, TransportError> {
-    let id = extract_request_id(&request);
+    let id = extract_request_id(&request)?;
     Ok(send_request(sink, pending, request, id).await?.line)
 }
 
@@ -91,7 +91,7 @@ pub(crate) async fn cancel_subscription<F: FrameSink>(
         method: "subscription/cancel".to_owned(),
         params: SubscriptionCancelParams { subscription_id },
     })
-    .expect("subscription cancel notification serialization must succeed");
+    .map_err(|error| TransportError::Protocol(error.to_string()))?;
     sink.send_frame(notification).await
 }
 
@@ -105,7 +105,7 @@ pub(crate) async fn cancel_request<F: FrameSink>(
         method: "$/cancelRequest".to_owned(),
         params: CancelRequestParams { id },
     })
-    .expect("cancel request notification serialization must succeed");
+    .map_err(|error| TransportError::Protocol(error.to_string()))?;
     sink.send_frame(notification).await
 }
 

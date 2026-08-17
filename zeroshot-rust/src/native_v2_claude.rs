@@ -10,7 +10,6 @@ mod transcript;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,10 +18,12 @@ use openengine_cluster_protocol::WorkerOutcome;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::execution::process::{
-    HostedProcessPool, HostedProcessScope, LocalProcessRunner, ProcessSessionCommand,
-};
+use crate::execution::process::{HostedProcessPool, LocalProcessRunner, ProcessSessionCommand};
 use crate::execution::{SessionScope, WorkspaceAccessMode};
+use crate::native_v2_capsule::provider_process::{
+    ClosedSessionFailure, ProviderProcessRunners, ProviderSessionCore, effort_token,
+    impl_provider_node_session, process_scope, redaction_values, validate_process_output,
+};
 use crate::native_v2_contract::{ClaudeProvider, NodeInvocation, NodeRuntimeBinding};
 use crate::native_v2_runner::{
     render_agent_prompt, DriverControl, DriverInvocation, NodeDriver, NodeRole, NodeRunnerError,
@@ -74,6 +75,23 @@ impl ClaudeProcessEnvironment {
     fn clone_values(&self) -> BTreeMap<String, String> {
         self.0.clone()
     }
+
+    pub(crate) fn for_capsule(
+        &self,
+        runtime_home: &Path,
+        default_path: &str,
+    ) -> Result<Self, ClaudeAdapterConfigError> {
+        let runtime_home = runtime_home
+            .to_str()
+            .filter(|value| !value.is_empty())
+            .ok_or(ClaudeAdapterConfigError::InvalidEnvironment)?;
+        let mut values = self.clone_values();
+        values.insert("HOME".to_owned(), runtime_home.to_owned());
+        values
+            .entry("PATH".to_owned())
+            .or_insert_with(|| default_path.to_owned());
+        Self::new(values)
+    }
 }
 
 impl std::fmt::Debug for ClaudeProcessEnvironment {
@@ -93,13 +111,7 @@ pub struct ClaudeAdapter {
     workspace: PathBuf,
     base_environment: ClaudeProcessEnvironment,
     turn_timeout: Duration,
-    runners: ClaudeProcessRunners,
-}
-
-enum ClaudeProcessRunners {
-    Hosted(HostedProcessPool),
-    #[cfg(test)]
-    Local,
+    runners: ProviderProcessRunners,
 }
 
 pub struct ClaudeAdapterConfig {
@@ -125,14 +137,14 @@ impl ClaudeAdapter {
             workspace: configuration.workspace,
             base_environment: configuration.base_environment,
             turn_timeout: configuration.turn_timeout,
-            runners: ClaudeProcessRunners::Hosted(process_pool),
+            runners: ProviderProcessRunners::hosted(process_pool),
         })
     }
 
     #[cfg(test)]
     fn new_for_test(configuration: ClaudeAdapterConfig) -> Result<Self, ClaudeAdapterConfigError> {
         let mut adapter = Self::new(configuration)?;
-        adapter.runners = ClaudeProcessRunners::Local;
+        adapter.runners = ProviderProcessRunners::local();
         Ok(adapter)
     }
 
@@ -147,21 +159,7 @@ impl ClaudeAdapter {
             .get("HOME")
             .map(PathBuf::from)
             .ok_or(NodeRunnerError::Driver)?;
-        match self.runners {
-            ClaudeProcessRunners::Hosted(pool) => {
-                let identity = pool.identity(scope).map_err(|_| NodeRunnerError::Driver)?;
-                let home = identity
-                    .prepare_private_home(&root)
-                    .map_err(|_| NodeRunnerError::Driver)?;
-                Ok((identity.runner(), home))
-            }
-            #[cfg(test)]
-            ClaudeProcessRunners::Local => {
-                let home = crate::execution::process::prepare_local_private_home(&root, scope)
-                    .map_err(|_| NodeRunnerError::Driver)?;
-                Ok((LocalProcessRunner::new(), home))
-            }
-        }
+        self.runners.turn_process(&root, scope)
     }
 
     fn command(
@@ -219,35 +217,20 @@ impl ClaudeAdapter {
 }
 
 struct ClaudeSession {
-    live: AtomicBool,
+    core: ProviderSessionCore,
     resume_id: Mutex<Option<String>>,
-    turn: Mutex<()>,
 }
 
 impl ClaudeSession {
     fn new() -> Self {
         Self {
-            live: AtomicBool::new(true),
+            core: ProviderSessionCore::new(),
             resume_id: Mutex::new(None),
-            turn: Mutex::new(()),
         }
     }
 }
 
-#[async_trait]
-impl NodeSession for ClaudeSession {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    async fn is_live(&self) -> bool {
-        self.live.load(Ordering::SeqCst)
-    }
-
-    async fn close(&self) {
-        self.live.store(false, Ordering::SeqCst);
-    }
-}
+impl_provider_node_session!(ClaudeSession);
 
 #[async_trait]
 impl SessionFactory for ClaudeAdapter {
@@ -276,10 +259,10 @@ impl NodeDriver for ClaudeAdapter {
             .as_any()
             .downcast_ref::<ClaudeSession>()
             .ok_or(NodeRunnerError::Driver)?;
-        let _turn = session.turn.lock().await;
-        if !session.is_live().await {
-            return Err(NodeRunnerError::SessionLost);
-        }
+        let _turn = session.core.turn.lock().await;
+        session
+            .core
+            .ensure_live(ClosedSessionFailure::SessionLost)?;
         let result = self.execute_turn(&invocation, session, &control).await?;
         retain_session(&invocation.node, session, result.session_id.as_deref()).await?;
         Ok(result.outcome)
@@ -297,7 +280,9 @@ impl ClaudeAdapter {
         let mut process = self
             .open_turn_process(invocation, resume_id.as_deref(), control)
             .await?;
-        let mut transcript = ClaudeTranscript::new(redaction_values(&invocation.environment));
+        let mut transcript = ClaudeTranscript::new(redaction_values(
+            invocation.environment.iter().map(|(_, value)| value),
+        ));
         let collected = collect_transcript(&mut process, &mut transcript, control).await;
         let process_output = if collected.is_ok() {
             process.wait().await
@@ -431,14 +416,6 @@ fn configure_openrouter(environment: &mut BTreeMap<String, String>) -> Result<()
     Ok(())
 }
 
-fn redaction_values(environment: &ResolvedEnvironment) -> Vec<String> {
-    environment
-        .iter()
-        .filter(|(_, value)| !value.is_empty())
-        .map(|(_, value)| value.to_owned())
-        .collect()
-}
-
 async fn collect_transcript(
     process: &mut crate::execution::process::ProcessSession,
     transcript: &mut ClaudeTranscript,
@@ -448,23 +425,6 @@ async fn collect_transcript(
         transcript.push(chunk.as_slice(), control)?;
     }
     transcript.finish_stream()
-}
-
-fn validate_process_output(
-    output: &crate::execution::process::ProcessSessionOutput,
-    control: &DriverControl,
-) -> Result<(), NodeRunnerError> {
-    if output.cancelled || control.is_cancelled() {
-        return Err(NodeRunnerError::Cancelled);
-    }
-    if output.timed_out
-        || output.exit_code != Some(0)
-        || !output.cleanup.proves_tree_empty()
-        || output.post_launch_error.is_some()
-    {
-        return Err(NodeRunnerError::Driver);
-    }
-    Ok(())
 }
 
 async fn retain_session(
@@ -501,29 +461,6 @@ fn prompt(invocation: &DriverInvocation) -> Result<String, NodeRunnerError> {
     Ok(value)
 }
 
-fn process_scope(invocation: &DriverInvocation) -> Result<HostedProcessScope, NodeRunnerError> {
-    let NodeRuntimeBinding::Agent { session_scope, .. } = &invocation.node.binding else {
-        return Err(NodeRunnerError::Driver);
-    };
-    let node_instance = invocation.node.reference.node_instance.get();
-    let execution = invocation.node.reference.execution.get();
-    match (invocation.role, *session_scope) {
-        (NodeRole::Worker, SessionScope::NodeInstance) => {
-            Ok(HostedProcessScope::WriterNodeInstance(node_instance))
-        }
-        (NodeRole::Worker, SessionScope::Execution) => {
-            Ok(HostedProcessScope::WriterExecution(execution))
-        }
-        (NodeRole::Verifier, SessionScope::NodeInstance) => {
-            Ok(HostedProcessScope::VerifierNodeInstance(node_instance))
-        }
-        (NodeRole::Verifier, SessionScope::Execution) => {
-            Ok(HostedProcessScope::VerifierExecution(execution))
-        }
-        (NodeRole::GitDelivery, _) => Err(NodeRunnerError::Driver),
-    }
-}
-
 fn validate_model_effort(
     model: &str,
     effort: Option<ReasoningEffort>,
@@ -541,16 +478,6 @@ fn validate_model_effort(
             ),
         ) => Ok(()),
         _ => Err(NodeRunnerError::Driver),
-    }
-}
-
-const fn effort_token(effort: ReasoningEffort) -> &'static str {
-    match effort {
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-        ReasoningEffort::Xhigh => "xhigh",
-        ReasoningEffort::Max => "max",
     }
 }
 

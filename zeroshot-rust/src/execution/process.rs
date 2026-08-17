@@ -126,6 +126,15 @@ impl HostedProcessIdentity {
 }
 
 impl HostedProcessPool {
+    pub(crate) const fn hosted_default() -> Self {
+        Self {
+            writer_uid: HOSTED_WORKER_UID,
+            writer_gid: HOSTED_WORKER_GID,
+            verifier_uid_base: 20_000,
+            verifier_gid: 20_000,
+        }
+    }
+
     pub fn new(
         writer_uid: u32,
         writer_gid: u32,
@@ -380,21 +389,26 @@ pub use platform::ProcessCleanupEvidence;
 mod hosted_identity_tests {
     use std::path::Path;
 
+    use openengine_cluster_testkit::assertions::AssertValue;
+
     use super::{HostedProcessPool, HostedProcessScope};
 
     #[test]
     fn hosted_scopes_keep_loop_sessions_stable_and_executions_disjoint() {
-        let pool = HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).unwrap();
+        let pool = HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value();
         let loop_scope = HostedProcessScope::VerifierNodeInstance(7);
-        let repeated = pool.identity(loop_scope).unwrap();
+        let repeated = pool.identity(loop_scope).assert_value();
         let first_execution = pool
             .identity(HostedProcessScope::VerifierExecution(7))
-            .unwrap();
+            .assert_value();
         let second_execution = pool
             .identity(HostedProcessScope::VerifierExecution(8))
-            .unwrap();
+            .assert_value();
 
-        assert_eq!(pool.identity(loop_scope).unwrap().uid(), repeated.uid());
+        assert_eq!(
+            pool.identity(loop_scope).assert_value().uid(),
+            repeated.uid()
+        );
         assert_ne!(repeated.uid(), first_execution.uid());
         assert_ne!(first_execution.uid(), second_execution.uid());
         assert_eq!(

@@ -28,6 +28,7 @@ tokio-util.workspace = true
 webpki-roots = { workspace = true, optional = true }
 
 [dev-dependencies]
+openengine-cluster-testkit.workspace = true
 rcgen.workspace = true
 tokio-rustls.workspace = true
 time.workspace = true

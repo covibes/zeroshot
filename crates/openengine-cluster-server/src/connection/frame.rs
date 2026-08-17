@@ -176,18 +176,24 @@ impl DecodedFrame {
 
     pub(crate) fn cancel_request_id(&self) -> Option<RequestId> {
         let entries = self.notification_params("$/cancelRequest")?;
-        if entries.len() != 1 || entries[0].0 != "id" {
+        let [entry] = entries else {
+            return None;
+        };
+        if entry.0 != "id" {
             return None;
         }
-        entries[0].1.request_id()
+        entry.1.request_id()
     }
 
     fn subscription_cancel_id(&self) -> Option<SubscriptionId> {
         let entries = self.notification_params("subscription/cancel")?;
-        if entries.len() != 1 || entries[0].0 != "subscriptionId" {
+        let [entry] = entries else {
+            return None;
+        };
+        if entry.0 != "subscriptionId" {
             return None;
         }
-        Some(SubscriptionId::new(entries[0].1.as_string()?))
+        Some(SubscriptionId::new(entry.1.as_string()?))
     }
 
     pub(crate) fn into_request_kind(self) -> RequestKind {

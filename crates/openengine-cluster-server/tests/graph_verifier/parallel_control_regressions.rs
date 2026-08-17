@@ -2,8 +2,16 @@ use super::*;
 
 #[tokio::test]
 async fn first_join_rejects_a_dead_satisfied_control_for_an_unsatisfiable_predicate() {
-    let verify = valid_graph()["root"]["children"][1].clone();
-    let work = valid_graph()["root"]["children"][0].clone();
+    let verify = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(1)
+        .clone();
+    let work = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(0)
+        .clone();
     let graph = graph_with_root_child(json!({
         "kind":"seq","name":"root","state":record(),
         "children":[
@@ -65,23 +73,28 @@ async fn first_join_rejects_a_dead_satisfied_control_for_an_unsatisfiable_predic
         "promotedStatePaths":[]
     }));
 
-    let error = ProductionGraphVerifier::new(registry())
-        .verify(&graph)
-        .await
-        .unwrap_err();
+    let error = assert_graph_rejected(&graph).await;
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::ChoiceExhaustiveness));
 }
 
 fn renamed_verifier(name: &str) -> Value {
-    let mut verifier = valid_graph()["root"]["children"][1].clone();
-    verifier["name"] = json!(name);
+    let mut verifier = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(1)
+        .clone();
+    *verifier.assert_at_mut("name") = json!(name);
     verifier
 }
 
 fn right_completion_branch() -> Value {
-    let mut right_work = valid_graph()["root"]["children"][0].clone();
-    right_work["name"] = json!("rightWork");
-    right_work["writeBindings"] = json!([]);
+    let mut right_work = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(0)
+        .clone();
+    *right_work.assert_at_mut("name") = json!("rightWork");
+    *right_work.assert_at_mut("writeBindings") = json!([]);
     json!({
         "kind":"choice","name":"rightCompletion","state":record(),
         "branches":[{
@@ -145,7 +158,11 @@ fn no_satisfier_route() -> Value {
 }
 
 fn first_no_satisfier_graph() -> GraphSpec {
-    let verify = valid_graph()["root"]["children"][1].clone();
+    let verify = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(1)
+        .clone();
     json_graph(json!({
         "kind":"seq","name":"root","state":record(),
         "children":[
@@ -182,14 +199,18 @@ async fn first_join_rejects_no_satisfier_until_every_branch_completes() {
     let error = ProductionGraphVerifier::new(registry())
         .verify(&first_no_satisfier_graph())
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::ChoiceExhaustiveness));
 }
 
 fn controlled_signal_branch() -> Value {
-    let mut branch_work = valid_graph()["root"]["children"][0].clone();
-    branch_work["name"] = json!("branchWork");
-    branch_work["writeBindings"] = json!([]);
+    let mut branch_work = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(0)
+        .clone();
+    *branch_work.assert_at_mut("name") = json!("branchWork");
+    *branch_work.assert_at_mut("writeBindings") = json!([]);
     json!({
         "kind":"seq","name":"controlledBranch","state":record(),
         "children":[
@@ -264,10 +285,14 @@ fn joined_control_with_branch_signal_graph(
     joined_label: &str,
     signal_label: &str,
 ) -> GraphSpec {
-    let other_branch = if join["kind"] == "all" {
-        let mut work = valid_graph()["root"]["children"][0].clone();
-        work["name"] = json!("alwaysWork");
-        work["writeBindings"] = json!([]);
+    let other_branch = if join.assert_at("kind") == "all" {
+        let mut work = valid_graph()
+            .assert_at("root")
+            .assert_at("children")
+            .assert_at(0)
+            .clone();
+        *work.assert_at_mut("name") = json!("alwaysWork");
+        *work.assert_at_mut("writeBindings") = json!([]);
         work
     } else {
         json!({
@@ -307,7 +332,7 @@ async fn joined_control_is_correlated_with_all_any_and_quorum_branch_completion(
                     signal_label,
                 ))
                 .await
-                .unwrap_err();
+                .assert_error();
             assert!(
                 rejection_codes(error).contains(&GraphDiagnosticCode::ChoiceExhaustiveness),
                 "{name} admitted impossible joined={joined_label} with branch signal={signal_label}"

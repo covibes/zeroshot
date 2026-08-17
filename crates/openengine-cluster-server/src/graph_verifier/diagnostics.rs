@@ -89,26 +89,60 @@ pub(super) fn path_segment_key(segment: &DiagnosticPathSegment) -> (u8, String, 
 }
 
 const fn diagnostic_code_rank(code: GraphDiagnosticCode) -> u8 {
-    code as u8
+    match code {
+        GraphDiagnosticCode::SchemaSafety
+        | GraphDiagnosticCode::Reachability
+        | GraphDiagnosticCode::ChoiceExhaustiveness
+        | GraphDiagnosticCode::LoopExitSatisfiability
+        | GraphDiagnosticCode::MissingBound => structural_diagnostic_rank(code),
+        GraphDiagnosticCode::WriteConflict
+        | GraphDiagnosticCode::CeilingExceeded
+        | GraphDiagnosticCode::CyclicReference
+        | GraphDiagnosticCode::UndefinedRead
+        | GraphDiagnosticCode::InvalidGraphShape => semantic_diagnostic_rank(code),
+    }
 }
 
-pub(super) fn field_name(value: &str) -> FieldName {
-    FieldName::new(value).expect("static diagnostic field name must be valid")
+const fn structural_diagnostic_rank(code: GraphDiagnosticCode) -> u8 {
+    match code {
+        GraphDiagnosticCode::SchemaSafety => 0,
+        GraphDiagnosticCode::Reachability => 1,
+        GraphDiagnosticCode::ChoiceExhaustiveness => 2,
+        GraphDiagnosticCode::LoopExitSatisfiability => 3,
+        GraphDiagnosticCode::MissingBound => 4,
+        _ => 9,
+    }
 }
 
-pub(super) fn enum_label(value: &str) -> EnumLabel {
-    EnumLabel::new(value).expect("static control label must be valid")
+const fn semantic_diagnostic_rank(code: GraphDiagnosticCode) -> u8 {
+    match code {
+        GraphDiagnosticCode::WriteConflict => 5,
+        GraphDiagnosticCode::CeilingExceeded => 6,
+        GraphDiagnosticCode::CyclicReference => 7,
+        GraphDiagnosticCode::UndefinedRead => 8,
+        GraphDiagnosticCode::InvalidGraphShape => 9,
+        _ => 9,
+    }
+}
+
+pub(super) fn field_name(value: &str) -> Option<FieldName> {
+    FieldName::new(value).ok()
+}
+
+pub(super) fn enum_label(value: &str) -> Option<EnumLabel> {
+    EnumLabel::new(value).ok()
 }
 
 pub(super) fn field_segment(value: &str) -> DiagnosticPathSegment {
-    DiagnosticPathSegment::Field {
-        name: field_name(value),
+    match field_name(value) {
+        Some(name) => DiagnosticPathSegment::Field { name },
+        None => DiagnosticPathSegment::Index { index: u32::MAX },
     }
 }
 
 pub(super) fn index_segment(value: usize) -> DiagnosticPathSegment {
     DiagnosticPathSegment::Index {
-        index: u32::try_from(value).expect("graph collection index is wire-bounded"),
+        index: u32::try_from(value).unwrap_or(u32::MAX),
     }
 }
 

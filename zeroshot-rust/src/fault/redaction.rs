@@ -35,8 +35,11 @@ const SANITIZED_MARKERS: [&str; 12] = [
 ];
 
 impl RedactionMarker {
-    const fn sanitized(self) -> &'static str {
-        SANITIZED_MARKERS[self as usize]
+    fn sanitized(self) -> &'static str {
+        SANITIZED_MARKERS
+            .get(self as usize)
+            .copied()
+            .unwrap_or("[unknown text redacted]")
     }
 }
 
@@ -92,7 +95,7 @@ impl RawDiagnostic {
                 marker,
                 sanitized,
                 original_bytes: u16::try_from(raw_bytes)
-                    .expect("bounded diagnostic byte count must fit in u16"),
+                    .map_err(|_| FaultError::DiagnosticTooLong)?,
             },
         })
     }

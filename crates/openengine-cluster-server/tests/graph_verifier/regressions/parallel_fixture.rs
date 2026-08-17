@@ -2,24 +2,11 @@ pub(crate) fn routed_writer(name: &str) -> Value {
     let route = format!("{name}Route");
     let failed = format!("{name}Failed");
     let continued = format!("{name}Continued");
+    let writer = crate::test_support::integer_step(name, true);
     json!({
         "kind":"seq","name":format!("{name}Branch"),"state":record(),
         "children":[
-            {
-                "kind":"step","name":name,"worker":"worker.main@1",
-                "input":record(),
-                "output":{"kind":"record","fields":{
-                    "result":{"type":{"kind":"integer"},"required":true}
-                }},
-                "inputBindings":[
-                    {"target":["value"],"value":{"source":"state","path":["value"]}}
-                ],
-                "writeBindings":[{
-                    "value":{"node":name,"channel":"out","path":["result"]},
-                    "target":["result"]
-                }],
-                "timeoutMs":1,"attempts":1
-            },
+            writer,
             {
                 "kind":"choice","name":route,"state":record(),
                 "branches":[{
@@ -50,8 +37,11 @@ pub(crate) fn routed_writer(name: &str) -> Value {
 
 fn routed_non_writer(name: &str) -> Value {
     let mut branch = routed_writer(name);
-    branch["children"][0]["writeBindings"] = json!([]);
-    branch["promotedStatePaths"] = json!([]);
+    *branch
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("writeBindings") = json!([]);
+    *branch.assert_at_mut("promotedStatePaths") = json!([]);
     branch
 }
 
@@ -60,15 +50,7 @@ fn first_satisfier_branch() -> Value {
         "kind":"seq","name":"firstSatisfier","state":record(),
         "children":[
             routed_writer("firstWork"),
-            {
-                "kind":"verifier","name":"leftVerify","worker":"worker.verify@1",
-                "input":{"kind":"null"},
-                "output":{"kind":"record","fields":{}},
-                "inputBindings":[],"writeBindings":[],
-                "timeoutMs":1,"attempts":1,
-                "signals":{"verdict":["accepted","rejected"]},
-                "diagnostic":{"kind":"record","fields":{}}
-            },
+            crate::test_support::verifier_node("leftVerify"),
             {
                 "kind":"choice","name":"leftVerifyRoute","state":record(),
                 "branches":[{
@@ -115,7 +97,7 @@ struct ParallelJoinCase {
 
 fn parallel_join_case(join_kind: &str) -> ParallelJoinCase {
     match join_kind {
-        "all" => ParallelJoinCase {
+        "all" => Some(ParallelJoinCase {
             branches: vec![routed_writer("left"), routed_non_writer("right")],
             join: json!({"kind":"all"}),
             control: JoinControl {
@@ -123,8 +105,8 @@ fn parallel_join_case(join_kind: &str) -> ParallelJoinCase {
                 success: "reached",
                 failure: "quorum_unreachable",
             },
-        },
-        "any" => ParallelJoinCase {
+        }),
+        "any" => Some(ParallelJoinCase {
             branches: vec![routed_writer("left"), routed_writer("right")],
             join: json!({"kind":"any"}),
             control: JoinControl {
@@ -132,8 +114,8 @@ fn parallel_join_case(join_kind: &str) -> ParallelJoinCase {
                 success: "reached",
                 failure: "quorum_unreachable",
             },
-        },
-        "quorum" => ParallelJoinCase {
+        }),
+        "quorum" => Some(ParallelJoinCase {
             branches: vec![routed_writer("left"), routed_writer("right")],
             join: json!({"kind":"quorum","count":1}),
             control: JoinControl {
@@ -141,8 +123,8 @@ fn parallel_join_case(join_kind: &str) -> ParallelJoinCase {
                 success: "reached",
                 failure: "quorum_unreachable",
             },
-        },
-        "first" => ParallelJoinCase {
+        }),
+        "first" => Some(ParallelJoinCase {
             branches: vec![first_satisfier_branch(), routed_non_writer("right")],
             join: json!({
                 "kind":"first",
@@ -157,9 +139,10 @@ fn parallel_join_case(join_kind: &str) -> ParallelJoinCase {
                 success: "satisfied",
                 failure: "no_satisfier",
             },
-        },
-        _ => unreachable!("parallel join domain is closed"),
+        }),
+        _ => None,
     }
+    .assert_value()
 }
 
 fn parallel_result_route(routed_label: Option<&str>, control: JoinControl) -> Value {
@@ -291,7 +274,7 @@ fn parallel_output_graph(join_kind: &str, routed_label: &str) -> GraphSpec {
         "left"
     };
     if matches!(join_kind, "any" | "quorum") {
-        branches[1] = json!({
+        *branches.assert_at_mut(1) = json!({
             "kind":"fail","name":"nonCompletingBranch","reason":"does_not_complete"
         });
     }
@@ -317,12 +300,12 @@ async fn every_parallel_join_refines_promotions_for_success_and_failure_controls
         ProductionGraphVerifier::new(registry())
             .verify(&parallel_promotion_graph(join, Some("success")))
             .await
-            .unwrap_or_else(|error| panic!("{join} success control rejected: {error:?}"));
+            .assert_value();
 
         let failure = ProductionGraphVerifier::new(registry())
             .verify(&parallel_promotion_graph(join, Some("failure")))
             .await
-            .unwrap_err();
+            .assert_error();
         assert!(
             rejection_codes(failure).contains(&GraphDiagnosticCode::UndefinedRead),
             "{join} failure control exposed a success-only promotion"
@@ -331,19 +314,24 @@ async fn every_parallel_join_refines_promotions_for_success_and_failure_controls
         let unguarded = ProductionGraphVerifier::new(registry())
             .verify(&parallel_promotion_graph(join, None))
             .await
-            .unwrap_err();
+            .assert_error();
         assert!(
             rejection_codes(unguarded).contains(&GraphDiagnosticCode::UndefinedRead),
             "{join} unguarded continuation exposed a success-only promotion"
         );
     }
 
-    let mut prior = serde_json::to_value(parallel_promotion_graph("any", Some("failure"))).unwrap();
-    prior["initialInput"]["fields"]["result"]["required"] = json!(true);
+    let mut prior =
+        serde_json::to_value(parallel_promotion_graph("any", Some("failure"))).assert_value();
+    *prior
+        .assert_at_mut("initialInput")
+        .assert_at_mut("fields")
+        .assert_at_mut("result")
+        .assert_at_mut("required") = json!(true);
     ProductionGraphVerifier::new(registry())
-        .verify(&serde_json::from_value(prior).unwrap())
+        .verify(&serde_json::from_value(prior).assert_value())
         .await
-        .expect("parallel failure control must restore the preexisting definition");
+        .assert_value();
 }
 
 #[tokio::test]
@@ -352,12 +340,12 @@ async fn every_parallel_failure_control_hides_success_only_branch_outputs() {
         ProductionGraphVerifier::new(registry())
             .verify(&parallel_output_graph(join, "success"))
             .await
-            .unwrap_or_else(|error| panic!("{join} success control rejected: {error:?}"));
+            .assert_value();
 
         let failure = ProductionGraphVerifier::new(registry())
             .verify(&parallel_output_graph(join, "failure"))
             .await
-            .unwrap_err();
+            .assert_error();
         assert!(
             rejection_codes(failure).contains(&GraphDiagnosticCode::UndefinedRead),
             "{join} failure control exposed a success-only branch output"

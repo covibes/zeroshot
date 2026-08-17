@@ -19,9 +19,11 @@ use openengine_cluster_server::websocket::{serve_websocket, websocket_config};
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
 fn identity(expires_at_ms: u64) -> ConnectionIdentity {
     let mut attributes = BTreeMap::new();
@@ -105,6 +107,24 @@ impl ClusterBackend for RecordingBackend {
     }
 }
 
+type TestBinding = ConnectionBinding<RecordingBackend, CountingResolver, FixedTime>;
+type TestSocket = WebSocketStream<DuplexStream>;
+
+async fn connect_websocket(binding: TestBinding) -> (TestSocket, JoinHandle<std::io::Result<()>>) {
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let server = tokio::spawn(async move {
+        let socket =
+            tokio_tungstenite::accept_async_with_config(server_io, Some(websocket_config()))
+                .await
+                .assert_value();
+        serve_websocket(binding, socket).await
+    });
+    let (client, _) = tokio_tungstenite::client_async("ws://localhost/identity", client_io)
+        .await
+        .assert_value();
+    (client, server)
+}
+
 #[test]
 fn connection_identity_has_typed_read_only_shape() {
     let identity = identity(50);
@@ -135,16 +155,7 @@ async fn websocket_resolves_once_before_frames_and_keeps_identity_stable() {
         FixedTime::new(99),
         cancellation.clone(),
     );
-    let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let server = tokio::spawn(async move {
-        let ws = tokio_tungstenite::accept_async_with_config(server_io, Some(websocket_config()))
-            .await
-            .unwrap();
-        serve_websocket(binding, ws).await
-    });
-    let (mut client, _) = tokio_tungstenite::client_async("ws://localhost/identity", client_io)
-        .await
-        .unwrap();
+    let (mut client, server) = connect_websocket(binding).await;
 
     for id in [1, 2] {
         client
@@ -154,8 +165,8 @@ async fn websocket_resolves_once_before_frames_and_keeps_identity_stable() {
                     .into(),
             ))
             .await
-            .unwrap();
-        let response = client.next().await.unwrap().unwrap();
+            .assert_value();
+        let response = client.next().await.assert_value().assert_value();
         assert!(response.is_text());
         if id == 1 {
             cancellation.cancel();
@@ -169,8 +180,8 @@ async fn websocket_resolves_once_before_frames_and_keeps_identity_stable() {
     );
     assert_eq!(backend.cancellations.lock().as_slice(), &[false, true]);
 
-    client.close(None).await.unwrap();
-    server.await.unwrap().unwrap();
+    client.close(None).await.assert_value();
+    server.await.assert_value().assert_value();
 }
 
 #[tokio::test]
@@ -186,16 +197,7 @@ async fn websocket_expiry_at_boundary_closes_4401_without_backend_calls() {
         FixedTime::new(50),
         Default::default(),
     );
-    let (client_io, server_io) = tokio::io::duplex(1 << 16);
-    let server = tokio::spawn(async move {
-        let ws = tokio_tungstenite::accept_async_with_config(server_io, Some(websocket_config()))
-            .await
-            .unwrap();
-        serve_websocket(binding, ws).await
-    });
-    let (mut client, _) = tokio_tungstenite::client_async("ws://localhost/identity", client_io)
-        .await
-        .unwrap();
+    let (mut client, server) = connect_websocket(binding).await;
     client
         .send(Message::Text(
             json!({"jsonrpc":"2.0","id":1,"method":"get","params":{}})
@@ -203,16 +205,18 @@ async fn websocket_expiry_at_boundary_closes_4401_without_backend_calls() {
                 .into(),
         ))
         .await
-        .unwrap();
+        .assert_value();
 
-    let close = client.next().await.unwrap().unwrap();
-    let Message::Close(Some(frame)) = close else {
-        panic!("expired connection must receive a close frame");
-    };
+    let close = client.next().await.assert_value().assert_value();
+    let frame = match close {
+        Message::Close(Some(frame)) => Some(frame),
+        _ => None,
+    }
+    .assert_value();
     assert_eq!(frame.code, CloseCode::Library(4401));
     assert_eq!(resolver_calls.load(Ordering::SeqCst), 1);
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
-    server.await.unwrap().unwrap();
+    server.await.assert_value().assert_value();
 }
 
 #[tokio::test]
@@ -237,20 +241,23 @@ async fn ndjson_expiry_emits_one_terminal_diagnostic_and_closes() {
     client_input
         .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get\",\"params\":{}}\n")
         .await
-        .unwrap();
-    server.await.unwrap().unwrap();
+        .assert_value();
+    server.await.assert_value().assert_value();
 
     let mut diagnostics = String::new();
     client_diagnostics
         .read_to_string(&mut diagnostics)
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(
         diagnostics,
         "cluster protocol connection identity expired\n"
     );
     let mut output = String::new();
-    client_output.read_to_string(&mut output).await.unwrap();
+    client_output
+        .read_to_string(&mut output)
+        .await
+        .assert_value();
     assert!(output.is_empty());
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
 }
@@ -285,8 +292,17 @@ async fn identity_shaped_params_are_invalid_and_cannot_change_context() {
                 )
                 .await,
         )
-        .unwrap();
-        assert_eq!(response["error"]["code"], INVALID_PARAMS);
+        .assert_value();
+        assert_eq!(
+            response.assert_at("error").assert_at("code"),
+            INVALID_PARAMS
+        );
     }
     assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_at.rs"]
+mod assert_at;
+use assert_at::AssertAt;

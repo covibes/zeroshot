@@ -1,95 +1,140 @@
-#[tokio::test]
-async fn required_empty_record_input_must_be_bound() {
-    let mut value = valid_graph();
-    value["root"]["children"][0]["input"] = required_empty_record_payload();
-    value["root"]["children"][0]["inputBindings"] = json!([]);
-    let graph: GraphSpec = serde_json::from_value(value).unwrap();
-
-    let error = ProductionGraphVerifier::new(registry())
-        .verify(&graph)
-        .await
-        .unwrap_err();
-
-    assert!(rejection_codes(error).contains(&GraphDiagnosticCode::UndefinedRead));
+#[derive(Clone, Copy)]
+enum EmptyRecordSite {
+    WorkerInput,
+    TerminalOutput,
 }
 
 #[tokio::test]
-async fn required_empty_record_succeed_output_must_be_bound() {
-    let mut value = valid_graph();
-    value["root"]["children"][2]["branches"][0]["node"]["output"] = required_empty_record_payload();
-    value["root"]["children"][2]["branches"][0]["node"]["bindings"] = json!([]);
-    let graph: GraphSpec = serde_json::from_value(value).unwrap();
-
-    let error = ProductionGraphVerifier::new(registry())
-        .verify(&graph)
-        .await
-        .unwrap_err();
-
-    assert!(rejection_codes(error).contains(&GraphDiagnosticCode::UndefinedRead));
+async fn required_empty_record_inputs_and_outputs_must_be_bound() {
+    for site in [
+        EmptyRecordSite::WorkerInput,
+        EmptyRecordSite::TerminalOutput,
+    ] {
+        let mut value = valid_graph();
+        let node = match site {
+            EmptyRecordSite::WorkerInput => value
+                .assert_at_mut("root")
+                .assert_at_mut("children")
+                .assert_at_mut(0),
+            EmptyRecordSite::TerminalOutput => value
+                .assert_at_mut("root")
+                .assert_at_mut("children")
+                .assert_at_mut(2)
+                .assert_at_mut("branches")
+                .assert_at_mut(0)
+                .assert_at_mut("node"),
+        };
+        let (payload_field, bindings_field) = match site {
+            EmptyRecordSite::WorkerInput => ("input", "inputBindings"),
+            EmptyRecordSite::TerminalOutput => ("output", "bindings"),
+        };
+        *node.assert_at_mut(payload_field) = required_empty_record_payload();
+        *node.assert_at_mut(bindings_field) = json!([]);
+        let graph: GraphSpec = serde_json::from_value(value).assert_value();
+        assert_graph_rejected_with(&graph, GraphDiagnosticCode::UndefinedRead).await;
+    }
 }
 
 #[tokio::test]
-async fn negative_semantic_matrix_rejects_undefined_reads_types_choices_and_quorum() {
+async fn negative_semantic_matrix_rejects_undefined_reads_and_types() {
     let mut undefined = valid_graph();
-    undefined["root"]["children"][0]["inputBindings"][0]["value"]["path"] = json!(["result"]);
-    let undefined: GraphSpec = serde_json::from_value(undefined).unwrap();
+    *undefined
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("inputBindings")
+        .assert_at_mut(0)
+        .assert_at_mut("value")
+        .assert_at_mut("path") = json!(["result"]);
+    let undefined: GraphSpec = serde_json::from_value(undefined).assert_value();
     assert!(
         rejection_codes(
             ProductionGraphVerifier::new(registry())
                 .verify(&undefined)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::UndefinedRead)
     );
 
     let mut mismatch = valid_graph();
-    mismatch["root"]["children"][0]["input"]["fields"]["value"]["type"] = json!({"kind":"string"});
-    let mismatch: GraphSpec = serde_json::from_value(mismatch).unwrap();
+    *mismatch
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("input")
+        .assert_at_mut("fields")
+        .assert_at_mut("value")
+        .assert_at_mut("type") = json!({"kind":"string"});
+    let mismatch: GraphSpec = serde_json::from_value(mismatch).assert_value();
     assert!(
         rejection_codes(
             ProductionGraphVerifier::new(registry())
                 .verify(&mismatch)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::SchemaSafety)
     );
+}
 
+#[tokio::test]
+async fn negative_semantic_matrix_rejects_choices_and_quorum() {
     let mut non_exhaustive = valid_graph();
-    non_exhaustive["root"]["children"][2]["otherwise"] = Value::Null;
-    let non_exhaustive: GraphSpec = serde_json::from_value(non_exhaustive).unwrap();
+    *non_exhaustive
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(2)
+        .assert_at_mut("otherwise") = Value::Null;
+    let non_exhaustive: GraphSpec = serde_json::from_value(non_exhaustive).assert_value();
     assert!(
         rejection_codes(
             ProductionGraphVerifier::new(registry())
                 .verify(&non_exhaustive)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::ChoiceExhaustiveness)
     );
 
     let mut dead = valid_graph();
-    let first = dead["root"]["children"][2]["branches"][0].clone();
+    let first = dead
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(2)
+        .assert_at("branches")
+        .assert_at(0)
+        .clone();
     let mut second = first.clone();
-    second["node"]["name"] = json!("deadBranch");
-    dead["root"]["children"][2]["branches"] = json!([first, second]);
-    let dead: GraphSpec = serde_json::from_value(dead).unwrap();
+    *second.assert_at_mut("node").assert_at_mut("name") = json!("deadBranch");
+    *dead
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(2)
+        .assert_at_mut("branches") = json!([first, second]);
+    let dead: GraphSpec = serde_json::from_value(dead).assert_value();
     assert!(
         rejection_codes(
             ProductionGraphVerifier::new(registry())
                 .verify(&dead)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::ChoiceExhaustiveness)
     );
 
     let mut invalid_quorum = valid_graph();
-    let branch = invalid_quorum["root"]["children"][0].clone();
+    let branch = invalid_quorum
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(0)
+        .clone();
     let mut other = branch.clone();
-    other["name"] = json!("otherWork");
-    invalid_quorum["root"]["children"][2] = json!({
+    *other.assert_at_mut("name") = json!("otherWork");
+    *invalid_quorum
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(2) = json!({
         "kind":"seq","name":"tail","state":record(),
         "children":[
             {"kind":"par","name":"parallel","state":record(),"branches":[branch,other],
@@ -98,21 +143,25 @@ async fn negative_semantic_matrix_rejects_undefined_reads_types_choices_and_quor
         ],
         "promotedStatePaths":[]
     });
-    let invalid_quorum: GraphSpec = serde_json::from_value(invalid_quorum).unwrap();
+    let invalid_quorum: GraphSpec = serde_json::from_value(invalid_quorum).assert_value();
     assert!(
         rejection_codes(
             ProductionGraphVerifier::new(registry())
                 .verify(&invalid_quorum)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::InvalidGraphShape)
     );
 }
 
 #[tokio::test]
-async fn loop_exit_parallel_write_and_promotion_safety_fail_closed() {
-    let verifier = valid_graph()["root"]["children"][1].clone();
+async fn unsatisfiable_loop_exit_fails_closed() {
+    let verifier = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(1)
+        .clone();
     let contradictory = json!({
         "kind":"all","guards":[
             {"kind":"in","value":{"name":"verify","source":"signal","field":"verdict"},"labels":["accepted"]},
@@ -131,17 +180,16 @@ async fn loop_exit_parallel_write_and_promotion_safety_fail_closed() {
             ProductionGraphVerifier::new(registry())
                 .verify(&loop_graph)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::LoopExitSatisfiability)
     );
+}
 
-    let mut left = valid_graph()["root"]["children"][0].clone();
-    left["name"] = json!("left");
-    left["writeBindings"][0]["value"]["node"] = json!("left");
-    let mut right = left.clone();
-    right["name"] = json!("right");
-    right["writeBindings"][0]["value"]["node"] = json!("right");
+#[tokio::test]
+async fn conflicting_parallel_writes_fail_closed() {
+    let left = work_node("left", "left");
+    let right = work_node("right", "right");
     let conflict = graph_with_root_child(json!({
         "kind":"seq","name":"parallelTail","state":record(),"children":[
             {"kind":"par","name":"parallel","state":record(),"branches":[left,right],
@@ -154,12 +202,19 @@ async fn loop_exit_parallel_write_and_promotion_safety_fail_closed() {
             ProductionGraphVerifier::new(registry())
                 .verify(&conflict)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::WriteConflict)
     );
+}
 
-    let work = valid_graph()["root"]["children"][0].clone();
+#[tokio::test]
+async fn unsafe_choice_promotion_fails_closed() {
+    let work = valid_graph()
+        .assert_at("root")
+        .assert_at("children")
+        .assert_at(0)
+        .clone();
     let unsafe_promotion = graph_with_root_child(json!({
         "kind":"seq","name":"choiceTail","state":record(),"children":[
             {"kind":"verifier","name":"verify","worker":"worker.verify@1",
@@ -179,7 +234,7 @@ async fn loop_exit_parallel_write_and_promotion_safety_fail_closed() {
             ProductionGraphVerifier::new(registry())
                 .verify(&unsafe_promotion)
                 .await
-                .unwrap_err()
+                .assert_error()
         )
         .contains(&GraphDiagnosticCode::UndefinedRead)
     );
@@ -187,12 +242,8 @@ async fn loop_exit_parallel_write_and_promotion_safety_fail_closed() {
 
 #[tokio::test]
 async fn cyclic_node_output_references_are_rejected() {
-    let mut left = valid_graph()["root"]["children"][0].clone();
-    left["name"] = json!("left");
-    left["writeBindings"][0]["value"]["node"] = json!("right");
-    let mut right = valid_graph()["root"]["children"][0].clone();
-    right["name"] = json!("right");
-    right["writeBindings"][0]["value"]["node"] = json!("left");
+    let left = work_node("left", "right");
+    let right = work_node("right", "left");
     let graph = graph_with_root_child(json!({
         "kind":"seq","name":"root","state":record(),
         "children":[left,right,{"kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]}],
@@ -202,7 +253,7 @@ async fn cyclic_node_output_references_are_rejected() {
         ProductionGraphVerifier::new(registry())
             .verify(&graph)
             .await
-            .unwrap_err(),
+            .assert_error(),
     );
     assert!(codes.contains(&GraphDiagnosticCode::CyclicReference));
     assert!(codes.contains(&GraphDiagnosticCode::UndefinedRead));

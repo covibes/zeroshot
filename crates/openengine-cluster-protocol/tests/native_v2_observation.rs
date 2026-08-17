@@ -1,3 +1,10 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+#[path = "support/json_read.rs"]
+mod json_read;
+
+use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     ActiveExecution, Cursor, ExecutionRef, NodeName, RunAttachEventNotification, RunAttachParams,
     RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunStatus,
@@ -6,13 +13,13 @@ use openengine_cluster_protocol::{
 use serde_json::json;
 
 fn execution(value: &str) -> ExecutionRef {
-    ExecutionRef::new(value).unwrap()
+    ExecutionRef::new(value).assert_value()
 }
 
 fn active(execution_ref: &str, node: &str) -> ActiveExecution {
     ActiveExecution {
         execution: execution(execution_ref),
-        node: NodeName::new(node).unwrap(),
+        node: NodeName::new(node).assert_value(),
     }
 }
 
@@ -32,7 +39,7 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
         at_cursor: Cursor::new("v2:7"),
         status: running_status(),
     };
-    let value = serde_json::to_value(&result).unwrap();
+    let value = serde_json::to_value(&result).assert_value();
 
     assert_eq!(
         value,
@@ -48,7 +55,7 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
             }
         })
     );
-    let encoded = serde_json::to_string(&value).unwrap();
+    let encoded = serde_json::to_string(&value).assert_value();
     for private_name in ["capsule", "session", "provider", "executionId"] {
         assert!(!encoded.contains(private_name));
     }
@@ -73,7 +80,7 @@ fn watch_and_logs_use_required_run_id_and_exclusive_resume_cursor() {
         from_cursor: Some(Cursor::new("v2:7")),
     };
     assert_eq!(
-        serde_json::to_value(&watch).unwrap(),
+        serde_json::to_value(&watch).assert_value(),
         json!({ "runId": "run-1", "fromCursor": "v2:7" })
     );
 
@@ -83,7 +90,7 @@ fn watch_and_logs_use_required_run_id_and_exclusive_resume_cursor() {
         execution: Some(execution("opaque-verifier-b")),
     };
     assert_eq!(
-        serde_json::to_value(&logs).unwrap(),
+        serde_json::to_value(&logs).assert_value(),
         json!({
             "runId": "run-1",
             "fromCursor": "v2:7",
@@ -103,10 +110,8 @@ fn durable_events_carry_run_and_stable_cursor() {
         cursor: Cursor::new("v2:8"),
         status: running_status(),
     };
-    assert_eq!(
-        serde_json::to_value(&watch).unwrap()["cursor"],
-        json!("v2:8")
-    );
+    let value = serde_json::to_value(&watch).assert_value();
+    assert_eq!(json_read::json_at(&value, "/cursor"), &json!("v2:8"));
 
     let value = json!({
         "subscriptionId": "logs-1",
@@ -119,11 +124,14 @@ fn durable_events_carry_run_and_stable_cursor() {
             "message": "historical output"
         }
     });
-    let log: RunLogEventNotification = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(serde_json::to_value(log).unwrap(), value);
-    assert_eq!(value["runId"], json!("run-1"));
-    assert_eq!(value["cursor"], json!("v2:9"));
-    assert_eq!(value["execution"], json!("opaque-verifier-b"));
+    let log: RunLogEventNotification = serde_json::from_value(value.clone()).assert_value();
+    assert_eq!(serde_json::to_value(log).assert_value(), value);
+    assert_eq!(json_read::json_at(&value, "/runId"), &json!("run-1"));
+    assert_eq!(json_read::json_at(&value, "/cursor"), &json!("v2:9"));
+    assert_eq!(
+        json_read::json_at(&value, "/execution"),
+        &json!("opaque-verifier-b")
+    );
 }
 
 #[test]
@@ -133,7 +141,7 @@ fn attach_is_live_read_only_and_explicitly_selects_one_execution() {
         execution: execution("opaque-verifier-b"),
     };
     assert_eq!(
-        serde_json::to_value(&params).unwrap(),
+        serde_json::to_value(&params).assert_value(),
         json!({ "runId": "run-1", "execution": "opaque-verifier-b" })
     );
     assert!(
@@ -151,10 +159,13 @@ fn attach_is_live_read_only_and_explicitly_selects_one_execution() {
         "execution": "opaque-verifier-b",
         "event": { "type": "output", "text": "live output" }
     });
-    let event: RunAttachEventNotification = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(serde_json::to_value(event).unwrap(), value);
-    assert_eq!(value["runId"], json!("run-1"));
-    assert_eq!(value["execution"], json!("opaque-verifier-b"));
+    let event: RunAttachEventNotification = serde_json::from_value(value.clone()).assert_value();
+    assert_eq!(serde_json::to_value(event).assert_value(), value);
+    assert_eq!(json_read::json_at(&value, "/runId"), &json!("run-1"));
+    assert_eq!(
+        json_read::json_at(&value, "/execution"),
+        &json!("opaque-verifier-b")
+    );
     assert!(value.get("cursor").is_none());
 }
 
@@ -164,7 +175,7 @@ fn force_is_the_only_stop_shape_and_returns_durable_status() {
         run_id: RunId::new("run-1"),
     };
     assert_eq!(
-        serde_json::to_value(&params).unwrap(),
+        serde_json::to_value(&params).assert_value(),
         json!({ "runId": "run-1" })
     );
     assert!(
@@ -182,9 +193,10 @@ fn force_is_the_only_stop_shape_and_returns_durable_status() {
             active_executions: vec![active("opaque-verifier-b", "verify-b")],
         },
     };
+    let value = serde_json::to_value(result).assert_value();
     assert_eq!(
-        serde_json::to_value(result).unwrap()["status"]["phase"],
-        json!("stopping")
+        json_read::json_at(&value, "/status/phase"),
+        &json!("stopping")
     );
 }
 

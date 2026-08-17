@@ -18,11 +18,14 @@ path = "src/main.rs"
 async-trait.workspace = true
 fs2.workspace = true
 getrandom.workspace = true
+httparse.workspace = true
 libc.workspace = true
+keyring = { workspace = true, features = ["apple-native", "sync-secret-service", "windows-native"] }
 openengine-cluster-protocol.workspace = true
 openengine_cluster_client.workspace = true
 openengine-cluster-server.workspace = true
 rusqlite.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
@@ -41,3 +44,9 @@ windows-sys = { workspace = true, features = [
   "Win32_System_JobObjects",
   "Win32_System_Threading",
 ] }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+dbus.workspace = true
+
+[dev-dependencies]
+openengine-cluster-testkit.workspace = true

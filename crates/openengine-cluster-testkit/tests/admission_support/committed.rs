@@ -10,7 +10,9 @@ pub fn committed(
         graph,
         input: Some(input),
         dry_run: false,
-        if_generation: Some(Generation::new(generation).unwrap()),
-        idempotency_key: Some(IdempotencyKey::new(key).unwrap()),
+        if_generation: Some(Generation::new(generation).assert_value()),
+        idempotency_key: Some(IdempotencyKey::new(key).assert_value()),
     }
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;

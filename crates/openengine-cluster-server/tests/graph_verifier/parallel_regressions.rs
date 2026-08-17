@@ -2,7 +2,13 @@ use super::*;
 
 fn typed_routed_writer(name: &str, result_type: Value) -> Value {
     let mut branch = super::regressions::routed_writer(name);
-    branch["children"][0]["output"]["fields"]["result"]["type"] = result_type;
+    *branch
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("output")
+        .assert_at_mut("fields")
+        .assert_at_mut("result")
+        .assert_at_mut("type") = result_type;
     branch
 }
 
@@ -50,9 +56,13 @@ fn sequential_parallel_graph(
         ],
         "promotedStatePaths":[]
     }));
-    let mut graph = serde_json::to_value(graph).unwrap();
-    graph["initialInput"]["fields"]["result"]["required"] = json!(initial_required);
-    serde_json::from_value(graph).unwrap()
+    let mut graph = serde_json::to_value(graph).assert_value();
+    *graph
+        .assert_at_mut("initialInput")
+        .assert_at_mut("fields")
+        .assert_at_mut("result")
+        .assert_at_mut("required") = json!(initial_required);
+    serde_json::from_value(graph).assert_value()
 }
 
 fn failed(name: &str) -> Value {
@@ -77,21 +87,38 @@ fn multi_result_state() -> Value {
 fn routed_target_writer(name: &str, target: &str) -> Value {
     let state = multi_result_state();
     let mut writer = super::regressions::routed_writer(name);
-    writer["state"] = state.clone();
-    writer["children"][0]["writeBindings"][0]["target"] = json!([target]);
-    writer["children"][1]["state"] = state;
-    writer["promotedStatePaths"] = json!([[target]]);
+    *writer.assert_at_mut("state") = state.clone();
+    *writer
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("writeBindings")
+        .assert_at_mut(0)
+        .assert_at_mut("target") = json!([target]);
+    *writer
+        .assert_at_mut("children")
+        .assert_at_mut(1)
+        .assert_at_mut("state") = state;
+    *writer.assert_at_mut("promotedStatePaths") = json!([[target]]);
+    writer
+}
+
+fn number_target_writer(name: &str, target: &str) -> Value {
+    let mut writer = routed_target_writer(name, target);
+    *writer
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("output")
+        .assert_at_mut("fields")
+        .assert_at_mut("result")
+        .assert_at_mut("type") = json!({"kind":"number"});
     writer
 }
 
 fn target_granular_dominance_graph(read_target: &str) -> GraphSpec {
     let state = multi_result_state();
-    let mut first_left = routed_target_writer("firstLeft", "left");
-    first_left["children"][0]["output"]["fields"]["result"]["type"] = json!({"kind":"number"});
-    let mut first_right = routed_target_writer("firstRight", "right");
-    first_right["children"][0]["output"]["fields"]["result"]["type"] = json!({"kind":"number"});
-    let mut later_writer = routed_target_writer("laterWriter", "left");
-    later_writer["children"][0]["output"]["fields"]["result"]["type"] = json!({"kind":"number"});
+    let first_left = number_target_writer("firstLeft", "left");
+    let first_right = number_target_writer("firstRight", "right");
+    let later_writer = number_target_writer("laterWriter", "left");
     let read = json!({
         "kind":"succeed","name":"readAfterFailure",
         "output":{
@@ -131,15 +158,8 @@ fn target_granular_dominance_graph(read_target: &str) -> GraphSpec {
     )
 }
 
-fn choice_dominance_graph(read_target: &str) -> GraphSpec {
-    let state = multi_result_state();
-    let mut first_left = routed_target_writer("firstLeft", "left");
-    first_left["children"][0]["output"]["fields"]["result"]["type"] = json!({"kind":"number"});
-    let mut first_right = routed_target_writer("firstRight", "right");
-    first_right["children"][0]["output"]["fields"]["result"]["type"] = json!({"kind":"number"});
-    let accepted = routed_target_writer("acceptedWriter", "left");
-    let rejected = routed_target_writer("rejectedWriter", "left");
-    let read = json!({
+fn dominance_read(read_target: &str) -> Value {
+    json!({
         "kind":"succeed","name":"readAfterChoice",
         "output":{
             "kind":"record",
@@ -149,7 +169,16 @@ fn choice_dominance_graph(read_target: &str) -> GraphSpec {
             "target":["result"],
             "value":{"source":"state","path":[read_target]}
         }]
-    });
+    })
+}
+
+fn choice_dominance_graph(read_target: &str) -> GraphSpec {
+    let state = multi_result_state();
+    let first_left = number_target_writer("firstLeft", "left");
+    let first_right = number_target_writer("firstRight", "right");
+    let accepted = routed_target_writer("acceptedWriter", "left");
+    let rejected = routed_target_writer("rejectedWriter", "left");
+    let read = dominance_read(read_target);
     graph_with_state_children(
         state.clone(),
         json!([
@@ -293,10 +322,7 @@ async fn sequential_parallel_restoration_uses_authored_order_not_node_name_order
         json!({"kind":"number"}),
         false,
     );
-    ProductionGraphVerifier::new(registry())
-        .verify(&graph)
-        .await
-        .unwrap();
+    assert_graph_accepted(&graph).await;
 }
 
 #[tokio::test]
@@ -306,10 +332,7 @@ async fn multiple_parallel_failures_restore_the_original_definition() {
         json!({"kind":"integer"}),
         true,
     );
-    let error = ProductionGraphVerifier::new(registry())
-        .verify(&graph)
-        .await
-        .unwrap_err();
+    let error = assert_graph_rejected(&graph).await;
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::SchemaSafety));
 }
 
@@ -318,12 +341,12 @@ async fn later_writer_dominates_only_its_target_from_a_conditional_parallel_writ
     ProductionGraphVerifier::new(registry())
         .verify(&target_granular_dominance_graph("left"))
         .await
-        .expect("later writer must dominate the overwritten left target");
+        .assert_value();
 
     let error = ProductionGraphVerifier::new(registry())
         .verify(&target_granular_dominance_graph("right"))
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::UndefinedRead));
 }
 
@@ -332,12 +355,12 @@ async fn choice_merged_writers_dominate_only_their_common_target() {
     ProductionGraphVerifier::new(registry())
         .verify(&choice_dominance_graph("left"))
         .await
-        .expect("both choice alternatives define the overwritten left target");
+        .assert_value();
 
     let error = ProductionGraphVerifier::new(registry())
         .verify(&choice_dominance_graph("right"))
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::UndefinedRead));
 }
 
@@ -346,11 +369,11 @@ async fn nested_parallel_merges_preserve_inner_conditional_ownership() {
     ProductionGraphVerifier::new(registry())
         .verify(&nested_parallel_graph(false))
         .await
-        .expect("joint inner and outer success must expose the nested promotion");
+        .assert_value();
 
     let error = ProductionGraphVerifier::new(registry())
         .verify(&nested_parallel_graph(true))
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::ChoiceExhaustiveness));
 }

@@ -3,6 +3,8 @@
 //! recording every event an actual subscriber receives; the remaining fixtures document standalone
 //! wire shapes for request/close framing that no single session exercises.
 
+use crate::fixture::*;
+
 use std::sync::Arc;
 
 use openengine_cluster_protocol::{
@@ -10,6 +12,7 @@ use openengine_cluster_protocol::{
     LogsClosedNotification, LogsParams, SubscriptionCloseReason, SubscriptionId,
 };
 use openengine_cluster_server::admission::AdmissionCoordinator;
+use openengine_cluster_server::logs::fixtures::fixture_log_record;
 use openengine_cluster_server::logs::{LogStore, LogStreamItem};
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 use serde_json::json;
@@ -46,29 +49,22 @@ pub(crate) async fn generate_logs_goldens() -> Vec<Artifact> {
         json_artifact(
             format!("{ROOT}/fixtures/logs/log-record.json"),
             json!([
-                sample_log_record(LogLevel::Trace, "trace record"),
-                sample_log_record(LogLevel::Debug, "debug record"),
-                sample_log_record(LogLevel::Info, "info record"),
-                sample_log_record(LogLevel::Warn, "warn record"),
-                sample_log_record(LogLevel::Error, "error record"),
+                fixture_log_record(LogLevel::Trace, "trace record").assert_value(),
+                fixture_log_record(LogLevel::Debug, "debug record").assert_value(),
+                fixture_log_record(LogLevel::Info, "info record").assert_value(),
+                fixture_log_record(LogLevel::Warn, "warn record").assert_value(),
+                fixture_log_record(LogLevel::Error, "error record").assert_value(),
                 redacted_log_record(),
             ]),
         ),
     ]
 }
 
-fn sample_log_record(level: LogLevel, message: &str) -> LogRecord {
-    LogRecord {
-        level,
-        target: BoundedLogTarget::new("worker-dispatch").expect("fixture target must be valid"),
-        message: BoundedLogMessage::new(message).expect("fixture message must be valid"),
-    }
-}
-
 fn redacted_log_record() -> LogRecord {
     LogRecord {
         level: LogLevel::Error,
-        target: BoundedLogTarget::new("worker-dispatch").expect("fixture target must be valid"),
+        target: BoundedLogTarget::new("worker-dispatch")
+            .assert_value_with("fixture target must be valid"),
         message: BoundedLogMessage::redacted(),
     }
 }
@@ -89,13 +85,13 @@ async fn logs_session() -> Vec<LogEventNotification> {
     let (result, mut stream, _handle) = dispatcher
         .logs(LogsParams::default())
         .await
-        .expect("a backend configured with a log store must support logs");
+        .assert_value_with("a backend configured with a log store must support logs");
 
     store
-        .publish(sample_log_record(LogLevel::Info, "worker dispatch started"))
+        .publish(fixture_log_record(LogLevel::Info, "worker dispatch started").assert_value())
         .await;
     store
-        .publish(sample_log_record(LogLevel::Warn, "retrying after backoff"))
+        .publish(fixture_log_record(LogLevel::Warn, "retrying after backoff").assert_value())
         .await;
     store.publish(redacted_log_record()).await;
 

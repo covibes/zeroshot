@@ -11,21 +11,24 @@ use zeroshot_engine::fault::{EvidenceClass, FaultContext, FaultModule};
 
 #[path = "support/artifacts.rs"]
 mod artifacts;
+#[path = "support/assert_value.rs"]
+mod assert_value;
 
 use artifacts::{byte_stream as stream, test_intent as intent};
+use assert_value::{AssertError, AssertValue};
 
 #[tokio::test]
 async fn store_is_object_safe_and_accepts_the_exact_limit() {
     let store: Arc<dyn ArtifactStore> = Arc::new(FakeArtifactStore::new());
-    let bytes = vec![0x5a; MAX_ARTIFACT_BYTES as usize];
+    let bytes = vec![0x5a; usize::try_from(MAX_ARTIFACT_BYTES).assert_value()];
     let staged = store
         .stage(intent(&bytes, "exact-limit"), stream(bytes))
         .await
-        .expect("the exact artifact limit must stage");
+        .assert_value_with("the exact artifact limit must stage");
     let artifact_ref = store
         .publish(&staged)
         .await
-        .expect("the exact artifact limit must publish");
+        .assert_value_with("the exact artifact limit must publish");
     assert_eq!(artifact_ref.byte_length.get(), MAX_ARTIFACT_BYTES);
 }
 
@@ -34,13 +37,13 @@ async fn stage_rejects_declared_and_streamed_overflow_short_input_and_hash_misma
     let store = FakeArtifactStore::new();
     let one = vec![1];
     let mut oversized = intent(&one, "declared-overflow");
-    oversized.expected_byte_length =
-        ByteLength::new(MAX_ARTIFACT_BYTES + 1).expect("protocol length permits store overflow");
+    oversized.expected_byte_length = ByteLength::new(MAX_ARTIFACT_BYTES + 1)
+        .assert_value_with("protocol length permits store overflow");
     assert_eq!(
         store
             .stage(oversized, stream(Vec::new()))
             .await
-            .expect_err("oversized declaration must fail")
+            .assert_error_with("oversized declaration must fail")
             .kind(),
         ArtifactStoreFailureKind::Oversize
     );
@@ -50,7 +53,7 @@ async fn stage_rejects_declared_and_streamed_overflow_short_input_and_hash_misma
         store
             .stage(intent(&expected, "stream-overflow"), stream(vec![1, 2, 3]))
             .await
-            .expect_err("sentinel byte must detect streamed overflow")
+            .assert_error_with("sentinel byte must detect streamed overflow")
             .kind(),
         ArtifactStoreFailureKind::Oversize
     );
@@ -58,7 +61,7 @@ async fn stage_rejects_declared_and_streamed_overflow_short_input_and_hash_misma
         store
             .stage(intent(&expected, "short"), stream(vec![1]))
             .await
-            .expect_err("short input must fail")
+            .assert_error_with("short input must fail")
             .kind(),
         ArtifactStoreFailureKind::LengthMismatch
     );
@@ -66,7 +69,7 @@ async fn stage_rejects_declared_and_streamed_overflow_short_input_and_hash_misma
         store
             .stage(intent(&expected, "hash"), stream(vec![2, 1]))
             .await
-            .expect_err("digest mismatch must fail")
+            .assert_error_with("digest mismatch must fail")
             .kind(),
         ArtifactStoreFailureKind::HashMismatch
     );
@@ -76,14 +79,14 @@ async fn stage_rejects_declared_and_streamed_overflow_short_input_and_hash_misma
 fn artifact_identity_has_a_golden_domain_separated_projection() {
     let artifact_intent = intent(b"golden artifact", "run-golden");
     assert_eq!(
-        derive_artifact_id(&artifact_intent).as_str(),
+        derive_artifact_id(&artifact_intent).assert_value().as_str(),
         "cas-v1-ffa3f25c49fda68dbd65543d55d83861ff6b28e8e8f647e57662af90b0ab653b"
     );
     let mut other_lineage = artifact_intent.clone();
     other_lineage.lineage.run_id = RunId::new("run-other");
     assert_ne!(
-        derive_artifact_id(&artifact_intent),
-        derive_artifact_id(&other_lineage)
+        derive_artifact_id(&artifact_intent).assert_value(),
+        derive_artifact_id(&other_lineage).assert_value()
     );
 }
 
@@ -94,33 +97,39 @@ async fn publish_is_idempotent_and_lineage_refs_share_content() {
     let first = store
         .stage(intent(&bytes, "run-one"), stream(bytes.clone()))
         .await
-        .expect("first stage succeeds");
-    let first_ref = store.publish(&first).await.expect("first publish succeeds");
+        .assert_value_with("first stage succeeds");
+    let first_ref = store
+        .publish(&first)
+        .await
+        .assert_value_with("first publish succeeds");
     assert_eq!(
-        store.publish(&first).await.expect("retry is idempotent"),
+        store
+            .publish(&first)
+            .await
+            .assert_value_with("retry is idempotent"),
         first_ref
     );
 
     let duplicate = store
         .stage(intent(&bytes, "run-one"), stream(bytes.clone()))
         .await
-        .expect("duplicate stage succeeds");
+        .assert_value_with("duplicate stage succeeds");
     assert_eq!(
         store
             .publish(&duplicate)
             .await
-            .expect("duplicate intent publishes"),
+            .assert_value_with("duplicate intent publishes"),
         first_ref
     );
 
     let second = store
         .stage(intent(&bytes, "run-two"), stream(bytes))
         .await
-        .expect("second lineage stages");
+        .assert_value_with("second lineage stages");
     let second_ref = store
         .publish(&second)
         .await
-        .expect("second lineage publishes");
+        .assert_value_with("second lineage publishes");
     assert_ne!(first_ref.artifact_id, second_ref.artifact_id);
     assert_eq!(store.blob_count(), 1);
     assert_eq!(store.committed_ref_count(), 2);
@@ -129,7 +138,7 @@ async fn publish_is_idempotent_and_lineage_refs_share_content() {
         store
             .release(&first_ref.artifact_id)
             .await
-            .expect("first release succeeds"),
+            .assert_value_with("first release succeeds"),
         ReleaseResult::Released
     );
     assert_eq!(store.blob_count(), 1);
@@ -137,14 +146,14 @@ async fn publish_is_idempotent_and_lineage_refs_share_content() {
         store
             .inspect(&second_ref.artifact_id)
             .await
-            .expect("inspect succeeds")
+            .assert_value_with("inspect succeeds")
             .is_some()
     );
     assert_eq!(
         store
             .release(&second_ref.artifact_id)
             .await
-            .expect("last release succeeds"),
+            .assert_value_with("last release succeeds"),
         ReleaseResult::Released
     );
     assert_eq!(store.blob_count(), 0);
@@ -152,7 +161,7 @@ async fn publish_is_idempotent_and_lineage_refs_share_content() {
         store
             .release(&second_ref.artifact_id)
             .await
-            .expect("release retry succeeds"),
+            .assert_value_with("release retry succeeds"),
         ReleaseResult::NotFound
     );
 }
@@ -164,7 +173,7 @@ async fn response_loss_recovers_through_inspect_and_open_yields_verified_bytes()
     let staged = store
         .stage(intent(&bytes, "response-loss"), stream(bytes.clone()))
         .await
-        .expect("stage succeeds");
+        .assert_value_with("stage succeeds");
     store.script_failure(
         FakeFailurePoint::AfterPublishCommit,
         ArtifactStoreFailureKind::Io(ArtifactStoreOperation::Publish),
@@ -173,25 +182,25 @@ async fn response_loss_recovers_through_inspect_and_open_yields_verified_bytes()
         store
             .publish(&staged)
             .await
-            .expect_err("script loses publish response")
+            .assert_error_with("script loses publish response")
             .kind(),
         ArtifactStoreFailureKind::Io(ArtifactStoreOperation::Publish)
     );
     let recovered = store
         .inspect(staged.artifact_id())
         .await
-        .expect("inspect succeeds")
-        .expect("commit is authoritative");
+        .assert_value_with("inspect succeeds")
+        .assert_value_with("commit is authoritative");
     assert_eq!(&recovered.artifact_id, staged.artifact_id());
     let mut opened = store
         .open(staged.artifact_id())
         .await
-        .expect("open succeeds");
+        .assert_value_with("open succeeds");
     let mut actual = Vec::new();
     opened
         .read_to_end(&mut actual)
         .await
-        .expect("verified stream reads");
+        .assert_value_with("verified stream reads");
     assert_eq!(actual, bytes);
 }
 
@@ -204,7 +213,7 @@ async fn fake_scripts_every_boundary_in_fifo_order() {
         stage_store
             .stage(intent(b"x", "stage-fail"), stream(b"x".to_vec()))
             .await
-            .expect_err("stage boundary fails")
+            .assert_error_with("stage boundary fails")
             .kind(),
         failure
     );
@@ -213,7 +222,7 @@ async fn fake_scripts_every_boundary_in_fifo_order() {
     let staged = store
         .stage(intent(b"x", "boundaries"), stream(b"x".to_vec()))
         .await
-        .expect("stage succeeds");
+        .assert_value_with("stage succeeds");
     store.script_failure(
         FakeFailurePoint::BeforePublishCommit,
         ArtifactStoreFailureKind::Io(ArtifactStoreOperation::Publish),
@@ -222,7 +231,7 @@ async fn fake_scripts_every_boundary_in_fifo_order() {
     let artifact_ref = store
         .publish(&staged)
         .await
-        .expect("publish retry succeeds");
+        .assert_value_with("publish retry succeeds");
 
     for (point, operation) in [
         (FakeFailurePoint::Inspect, ArtifactStoreOperation::Inspect),
@@ -234,10 +243,10 @@ async fn fake_scripts_every_boundary_in_fifo_order() {
             FakeFailurePoint::Inspect => store.inspect(&artifact_ref.artifact_id).await.map(|_| ()),
             FakeFailurePoint::Open => store.open(&artifact_ref.artifact_id).await.map(|_| ()),
             FakeFailurePoint::Release => store.release(&artifact_ref.artifact_id).await.map(|_| ()),
-            _ => unreachable!("only direct operation boundaries are listed"),
+            _ => None.assert_value_with("only direct operation boundaries are listed"),
         };
         assert_eq!(
-            result.expect_err("scripted boundary fails").kind(),
+            result.assert_error_with("scripted boundary fails").kind(),
             ArtifactStoreFailureKind::Io(operation)
         );
     }
@@ -245,7 +254,7 @@ async fn fake_scripts_every_boundary_in_fifo_order() {
     let pending = store
         .stage(intent(b"y", "discard"), stream(b"y".to_vec()))
         .await
-        .expect("pending stage succeeds");
+        .assert_value_with("pending stage succeeds");
     store.script_failure(
         FakeFailurePoint::Discard,
         ArtifactStoreFailureKind::Io(ArtifactStoreOperation::Discard),
@@ -255,14 +264,14 @@ async fn fake_scripts_every_boundary_in_fifo_order() {
         store
             .discard(&pending)
             .await
-            .expect("discard retry succeeds"),
+            .assert_value_with("discard retry succeeds"),
         DiscardResult::Discarded
     );
     assert_eq!(
         store
             .discard(&pending)
             .await
-            .expect("discard is idempotent"),
+            .assert_value_with("discard is idempotent"),
         DiscardResult::AlreadyDiscarded
     );
 }
@@ -276,12 +285,15 @@ async fn restart_discards_only_uncommitted_stages() {
             stream(b"committed".to_vec()),
         )
         .await
-        .expect("committed stage succeeds");
-    let committed_ref = store.publish(&committed).await.expect("publish succeeds");
+        .assert_value_with("committed stage succeeds");
+    let committed_ref = store
+        .publish(&committed)
+        .await
+        .assert_value_with("publish succeeds");
     let _pending = store
         .stage(intent(b"pending", "restart"), stream(b"pending".to_vec()))
         .await
-        .expect("pending stage succeeds");
+        .assert_value_with("pending stage succeeds");
     assert_eq!(store.staged_count(), 2);
     store.restart();
     assert_eq!(store.staged_count(), 0);
@@ -289,7 +301,7 @@ async fn restart_discards_only_uncommitted_stages() {
         store
             .inspect(&committed_ref.artifact_id)
             .await
-            .expect("inspect succeeds after restart")
+            .assert_value_with("inspect succeeds after restart")
             .is_some()
     );
 }

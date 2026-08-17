@@ -21,8 +21,8 @@ use mutation_fixture::terminal_run;
 
 #[test]
 fn resubmit_wire_types_expose_no_provider_or_config_field_names() {
-    let params_schema = serde_json::to_value(schemars::schema_for!(ResubmitParams)).unwrap();
-    let result_schema = serde_json::to_value(schemars::schema_for!(ResubmitResult)).unwrap();
+    let params_schema = serde_json::to_value(schemars::schema_for!(ResubmitParams)).assert_value();
+    let result_schema = serde_json::to_value(schemars::schema_for!(ResubmitResult)).assert_value();
     for forbidden in [
         "provider",
         "config",
@@ -32,15 +32,17 @@ fn resubmit_wire_types_expose_no_provider_or_config_field_names() {
         "workspacePath",
     ] {
         assert!(
-            !params_schema["properties"]
+            !params_schema
+                .assert_key("properties")
                 .as_object()
-                .unwrap()
+                .assert_value()
                 .contains_key(forbidden)
         );
         assert!(
-            !result_schema["properties"]
+            !result_schema
+                .assert_key("properties")
                 .as_object()
-                .unwrap()
+                .assert_value()
                 .contains_key(forbidden)
         );
     }
@@ -52,7 +54,7 @@ async fn resubmit_before_terminal_is_denied_invalid_phase() {
     let error = client
         .resubmit(resubmit(1, "run-1", "not-terminal", None))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(error), INVALID_PHASE);
 }
 
@@ -62,7 +64,7 @@ async fn resubmit_stale_generation_is_denied_generation_conflict() {
     let error = client
         .resubmit(resubmit(2, "run-1", "stale-generation", None))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(error), GENERATION_CONFLICT);
 }
 
@@ -72,7 +74,7 @@ async fn resubmit_stale_run_is_denied_run_conflict() {
     let error = client
         .resubmit(resubmit(1, "run-99", "stale-run", None))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(error), RUN_CONFLICT);
 }
 
@@ -87,7 +89,7 @@ async fn resubmit_malformed_replacement_input_is_denied_schema_violation() {
             Some(json!({"unexpected": "value"})),
         ))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(error), SCHEMA_VIOLATION);
 }
 
@@ -97,12 +99,12 @@ async fn resubmit_repeated_idempotency_key_conflict_is_denied() {
     client
         .resubmit(resubmit(1, "run-1", "shared-key", None))
         .await
-        .unwrap();
+        .assert_value();
 
     let changed_params = client
         .resubmit(resubmit(1, "run-1", "shared-key", Some(json!(null))))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(changed_params), IDEMPOTENCY_REUSE);
 
     let cross_method = client
@@ -112,7 +114,7 @@ async fn resubmit_repeated_idempotency_key_conflict_is_denied() {
             "shared-key",
         ))
         .await
-        .unwrap_err();
+        .assert_error();
     assert_eq!(rpc_code(cross_method), IDEMPOTENCY_REUSE);
 }
 
@@ -124,13 +126,13 @@ async fn resubmit_idempotent_replay_returns_original_receipt_no_second_run() {
     let first = client
         .resubmit(resubmit(1, "run-1", "replay-key", None))
         .await
-        .unwrap();
+        .assert_value();
     assert!(!first.deduped);
 
     let replay = client
         .resubmit(resubmit(1, "run-1", "replay-key", None))
         .await
-        .unwrap();
+        .assert_value();
     assert!(replay.deduped);
     assert_eq!(replay.run_id, first.run_id);
     assert_eq!(replay.at_cursor, first.at_cursor);
@@ -154,21 +156,21 @@ async fn resubmit_replay_precedes_current_graph_schema_validation() {
     client
         .apply(committed(first_graph, json!(null), 0, "create-first"))
         .await
-        .unwrap();
+        .assert_value();
     client
         .stop(stop(StopMode::Force, 1, "finish-first"))
         .await
-        .unwrap();
+        .assert_value();
 
     let params = resubmit(1, "run-1", "replay-across-generation", Some(json!(null)));
-    let first = client.resubmit(params.clone()).await.unwrap();
+    let first = client.resubmit(params.clone()).await.assert_value();
     client
         .apply(committed(second_graph, json!(1), 1, "create-second"))
         .await
-        .unwrap();
+        .assert_value();
     let before_replay = store.inspect().await;
 
-    let replay = client.resubmit(params).await.unwrap();
+    let replay = client.resubmit(params).await.assert_value();
     assert!(replay.deduped);
     assert_eq!(replay.run_id, first.run_id);
     assert_eq!(replay.at_cursor, first.at_cursor);
@@ -179,12 +181,12 @@ async fn resubmit_replay_precedes_current_graph_schema_validation() {
 async fn resubmit_allocates_new_run_id_and_cursor() {
     let (client, store) = terminal_run().await;
     let before = store.inspect().await;
-    let prior_run_id = before.control.run_id.clone().unwrap();
+    let prior_run_id = before.control.run_id.clone().assert_value();
 
     let result = client
         .resubmit(resubmit(1, "run-1", "new-run", None))
         .await
-        .unwrap();
+        .assert_value();
 
     assert_eq!(result.prior_run_id, prior_run_id);
     assert_ne!(result.run_id, prior_run_id);
@@ -200,8 +202,8 @@ async fn resubmit_preserves_generation_and_admitted_graph() {
     let result = client
         .resubmit(resubmit(1, "run-1", "preserve", None))
         .await
-        .unwrap();
-    assert_eq!(result.generation, before.control.generation.unwrap());
+        .assert_value();
+    assert_eq!(result.generation, before.control.generation.assert_value());
 
     let after = store.inspect().await;
     assert_eq!(after.control.generation, before.control.generation);
@@ -213,7 +215,7 @@ async fn resubmit_preserves_generation_and_admitted_graph() {
 async fn resubmit_prior_run_history_remains_watchable_and_immutable() {
     let (client, store) = terminal_run().await;
     let before = store.inspect().await;
-    let prior_run_id = before.control.run_id.clone().unwrap();
+    let prior_run_id = before.control.run_id.clone().assert_value();
 
     let before_subscription = store
         .subscribe(
@@ -224,13 +226,13 @@ async fn resubmit_prior_run_history_remains_watchable_and_immutable() {
             16,
         )
         .await
-        .expect("prior run is watchable before resubmit");
+        .assert_value_with("prior run is watchable before resubmit");
     let before_tail = before_subscription.replay_through;
 
     let result = client
         .resubmit(resubmit(1, "run-1", "watch-immutable", None))
         .await
-        .unwrap();
+        .assert_value();
     assert_ne!(result.run_id, prior_run_id);
 
     let after_subscription = store
@@ -242,7 +244,7 @@ async fn resubmit_prior_run_history_remains_watchable_and_immutable() {
             16,
         )
         .await
-        .expect("prior run remains watchable after resubmit");
+        .assert_value_with("prior run remains watchable after resubmit");
     assert_eq!(after_subscription.replay_through, before_tail);
 
     let after = store.inspect().await;
@@ -271,7 +273,7 @@ async fn resubmit_exact_seed_reuse_when_no_replacement_given() {
     let result = client
         .resubmit(resubmit(1, "run-1", "exact-seed", None))
         .await
-        .unwrap();
+        .assert_value();
 
     let inspected = store.inspect().await;
     let new_seed = inspected
@@ -279,7 +281,7 @@ async fn resubmit_exact_seed_reuse_when_no_replacement_given() {
         .iter()
         .rev()
         .find(|seed| seed.run_id == result.run_id)
-        .expect("resubmit records a new verified seed");
+        .assert_value_with("resubmit records a new verified seed");
     assert_eq!(new_seed.input, serde_json::Value::Null);
 }
 
@@ -294,7 +296,7 @@ async fn resubmit_accepts_a_schema_valid_explicit_replacement_input() {
             Some(json!(null)),
         ))
         .await
-        .unwrap();
+        .assert_value();
 
     let inspected = store.inspect().await;
     let new_seed = inspected
@@ -302,6 +304,10 @@ async fn resubmit_accepts_a_schema_valid_explicit_replacement_input() {
         .iter()
         .rev()
         .find(|seed| seed.run_id == result.run_id)
-        .expect("resubmit records a new verified seed");
+        .assert_value_with("resubmit records a new verified seed");
     assert_eq!(new_seed.input, serde_json::Value::Null);
 }
+
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};
+
+use openengine_cluster_testkit::assertions::JsonAt;

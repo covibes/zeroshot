@@ -38,16 +38,22 @@ async fn ndjson_watch_transcript_matches_in_process_and_shares_its_connection() 
     let (subprocess, stdin, stdout) = stdio_subprocess_support::spawn();
     let transport = NdjsonTransport::new(stdout, stdin);
     let ndjson_client = ClusterClient::new(&transport);
-    ndjson_client.initialize().await.unwrap();
+    ndjson_client.initialize().await.assert_value();
     let ndjson_watch = NdjsonWatchClient::new(&transport);
 
-    let (_parked, mut ndjson_stream) = ndjson_watch.watch(WatchParams::default()).await.unwrap();
+    let (_parked, mut ndjson_stream) = ndjson_watch
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
 
     // AC: `subscription/cancel` releases only the cancelled subscription. A second, still-parked
     // subscription is cancelled immediately; it must observe nothing further even though it would
     // otherwise park-attach to the very run committed below.
-    let (_parked, cancel_probe) = ndjson_watch.watch(WatchParams::default()).await.unwrap();
-    cancel_probe.cancel().await.unwrap();
+    let (_parked, cancel_probe) = ndjson_watch
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
+    cancel_probe.cancel().await.assert_value();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let apply_result = ndjson_client
@@ -58,22 +64,24 @@ async fn ndjson_watch_transcript_matches_in_process_and_shares_its_connection() 
             "ndjson-wire-create",
         ))
         .await
-        .unwrap();
-    let generation = apply_result.generation.unwrap().get();
+        .assert_value();
+    let generation = apply_result.generation.assert_value().get();
     // AC: a unary request completes correctly while the watch subscription is actively
     // streaming on the same connection.
-    let get_result = ndjson_client.get(GetParams::default()).await.unwrap();
+    let get_result = ndjson_client.get(GetParams::default()).await.assert_value();
     assert_eq!(get_result.spec, Some(graph.clone()));
     ndjson_client
         .stop(stop(StopMode::Drain, generation, "ndjson-wire-stop"))
         .await
-        .unwrap();
+        .assert_value();
     let ndjson_events = collect_transcript!(ndjson_stream);
 
     assert_transcripts_match(&in_process_events, &ndjson_events);
-    assert_cancel_probe_leak_model(cancel_probe, &ndjson_events[0].cursor).await;
+    assert_cancel_probe_leak_model(cancel_probe, &ndjson_events.assert_at(0).cursor).await;
 
     drop(ndjson_stream);
     drop(transport);
     subprocess.join().await;
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertValue};

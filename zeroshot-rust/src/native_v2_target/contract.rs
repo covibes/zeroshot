@@ -5,25 +5,44 @@ use std::path::Path;
 use tokio_tungstenite::tungstenite::http::Uri;
 use zeroshot_engine::native_v2_cli::{TargetAdd, TargetSetup};
 use zeroshot_engine::native_v2_contract::RuntimePlan;
+use zeroshot_engine::native_v2_target_authority::{
+    is_exact_target_revision, valid_cli_target_branch, valid_target_repository,
+};
 
 use super::{TargetBase, TargetConnectorError, TargetRecord, TargetSetupDocument};
 
 const MAX_RUNTIME_PLAN_BYTES: u64 = 1024 * 1024;
-#[cfg(test)]
 const MAX_BEARER_TOKEN_BYTES: usize = 16 * 1024;
 
 pub(super) fn prepare_target(request: TargetAdd) -> Result<TargetRecord, TargetConnectorError> {
     validate_target_name(&request.name)?;
     Ok(TargetRecord {
+        id: fresh_uuid()?,
         name: request.name,
         origin: normalize_origin(&request.url)?,
+        device_token: fresh_uuid()?,
     })
+}
+
+fn fresh_uuid() -> Result<String, TargetConnectorError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| TargetConnectorError::Randomness)?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        encode_hex(&bytes[..4]),
+        encode_hex(&bytes[4..6]),
+        encode_hex(&bytes[6..8]),
+        encode_hex(&bytes[8..10]),
+        encode_hex(&bytes[10..])
+    ))
 }
 
 pub(super) fn prepare_setup(
     request: &TargetSetup,
 ) -> Result<TargetSetupDocument, TargetConnectorError> {
-    if !valid_repository(&request.repository) {
+    if !valid_target_repository(&request.repository) {
         return Err(TargetConnectorError::InvalidRepository);
     }
     let base = normalize_base(request.base.as_deref(), request.target_branch.as_deref())?;
@@ -55,7 +74,9 @@ fn read_runtime_plan(path: &Path) -> Result<RuntimePlan, TargetConnectorError> {
     if metadata.len() > MAX_RUNTIME_PLAN_BYTES {
         return Err(TargetConnectorError::RuntimeTooLarge);
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let capacity =
+        usize::try_from(metadata.len()).map_err(|_| TargetConnectorError::RuntimeTooLarge)?;
+    let mut bytes = Vec::with_capacity(capacity);
     file.read_to_end(&mut bytes)
         .map_err(|source| TargetConnectorError::RuntimeRead {
             path: path.to_owned(),
@@ -69,10 +90,9 @@ fn read_runtime_plan(path: &Path) -> Result<RuntimePlan, TargetConnectorError> {
 
 pub(super) fn validate_target_name(name: &str) -> Result<(), TargetConnectorError> {
     let bytes = name.as_bytes();
-    if bytes.is_empty()
-        || bytes.len() > 64
-        || !bytes[0].is_ascii_alphanumeric()
-        || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+    if bytes.len() > 64
+        || !bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
         || !bytes
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
@@ -114,7 +134,7 @@ pub(super) fn normalize_base(
     match base {
         None if target_branch.is_none() => Ok(TargetBase::Default),
         None => Err(TargetConnectorError::TargetBranchMismatch),
-        Some(revision) if valid_revision(revision) => {
+        Some(revision) if is_exact_target_revision(revision) => {
             normalize_revision_base(revision, target_branch)
         }
         Some(branch) => normalize_branch_base(branch, target_branch),
@@ -126,7 +146,7 @@ fn normalize_revision_base(
     target_branch: Option<&str>,
 ) -> Result<TargetBase, TargetConnectorError> {
     let branch = target_branch.ok_or(TargetConnectorError::TargetBranchMismatch)?;
-    if !valid_branch(branch) {
+    if !valid_cli_target_branch(branch) {
         return Err(TargetConnectorError::TargetBranchMismatch);
     }
     Ok(TargetBase::Revision {
@@ -142,7 +162,7 @@ fn normalize_branch_base(
     if target_branch.is_some() {
         return Err(TargetConnectorError::TargetBranchMismatch);
     }
-    if !valid_branch(branch) {
+    if !valid_cli_target_branch(branch) {
         return Err(TargetConnectorError::InvalidBase);
     }
     Ok(TargetBase::Branch {
@@ -150,41 +170,6 @@ fn normalize_branch_base(
     })
 }
 
-fn valid_repository(value: &str) -> bool {
-    let Some((owner, name)) = value.split_once('/') else {
-        return false;
-    };
-    !owner.is_empty()
-        && !name.is_empty()
-        && !name.contains('/')
-        && value.len() <= 256
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'))
-}
-
-fn valid_branch(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 256
-        && !value.starts_with('-')
-        && !value.contains("..")
-        && !value.ends_with('.')
-        && !value.ends_with('/')
-        && !value.bytes().any(|byte| {
-            byte.is_ascii_control()
-                || byte.is_ascii_whitespace()
-                || matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
-        })
-}
-
-fn valid_revision(value: &str) -> bool {
-    value.len() == 40
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-#[cfg(test)]
 pub(super) fn validate_bearer_token(token: &str) -> Result<(), TargetConnectorError> {
     if token.is_empty()
         || token.len() > MAX_BEARER_TOKEN_BYTES
@@ -193,6 +178,15 @@ pub(super) fn validate_bearer_token(token: &str) -> Result<(), TargetConnectorEr
         return Err(TargetConnectorError::InvalidBearerToken);
     }
     Ok(())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut value = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(&mut value, "{byte:02x}");
+    }
+    value
 }
 
 pub(super) fn uri_text_is_invalid(value: &str) -> bool {

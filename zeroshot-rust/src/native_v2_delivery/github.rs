@@ -9,6 +9,8 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::native_v2_delivery::git_auth::encode_basic_credential;
+
 use super::{
     GitHubAuthorityError, GitHubChecks, GitHubCredential, GitHubDeliveryAuthority,
     GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt, GitHubReviewRequest,
@@ -258,14 +260,7 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         } else {
             return Err(GitHubAuthorityError::Rejected);
         };
-        Ok(GitHubReviewObservation {
-            review_id: review.review_id.clone(),
-            repository: review.repository.clone(),
-            target_branch: review.target_branch.clone(),
-            head_branch: review.head_branch.clone(),
-            head_revision: review.head_revision.clone(),
-            state,
-        })
+        Ok(review.observation(state))
     }
 
     async fn request_merge(
@@ -302,163 +297,8 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
     }
 }
 
-#[derive(Deserialize)]
-struct PullRequestWire {
-    number: u64,
-    state: String,
-    merged: Option<bool>,
-    merge_commit_sha: Option<String>,
-    base: ReviewBranchWire,
-    head: ReviewBranchWire,
-}
-
-#[derive(Deserialize)]
-struct ReviewBranchWire {
-    #[serde(rename = "ref")]
-    branch: String,
-    sha: String,
-    repo: ReviewRepositoryWire,
-}
-
-#[derive(Deserialize)]
-struct ReviewRepositoryWire {
-    full_name: String,
-}
-
-#[derive(Deserialize)]
-struct MergeWire {
-    merged: bool,
-    sha: String,
-}
-
-#[derive(Deserialize)]
-struct CheckRunsWire {
-    total_count: u64,
-    check_runs: Vec<CheckRunWire>,
-}
-
-#[derive(Deserialize)]
-struct CheckRunWire {
-    status: String,
-    conclusion: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CombinedStatusWire {
-    state: String,
-    statuses: Vec<Value>,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CheckComponent {
-    Absent,
-    Pending,
-    Passed,
-    Failed,
-}
-
-fn review_receipt(
-    wire: PullRequestWire,
-    request: &GitHubReviewRequest,
-) -> Result<GitHubReviewReceipt, GitHubAuthorityError> {
-    let review_id = wire.number.to_string();
-    let receipt = GitHubReviewReceipt {
-        review_id,
-        repository: wire.base.repo.full_name,
-        target_branch: wire.base.branch,
-        head_branch: wire.head.branch,
-        head_revision: wire.head.sha,
-    };
-    if receipt.repository == request.target.repository
-        && receipt.target_branch == request.target.target_branch
-        && receipt.head_branch == request.head_branch
-        && receipt.head_revision == request.head_revision
-        && wire.head.repo.full_name == request.target.repository
-    {
-        Ok(receipt)
-    } else {
-        Err(GitHubAuthorityError::Rejected)
-    }
-}
-
-fn require_review_identity(
-    wire: &PullRequestWire,
-    review: &GitHubReviewReceipt,
-) -> Result<(), GitHubAuthorityError> {
-    let valid = wire.number.to_string() == review.review_id
-        && wire.base.repo.full_name == review.repository
-        && wire.base.branch == review.target_branch
-        && wire.head.repo.full_name == review.repository
-        && wire.head.branch == review.head_branch
-        && wire.head.sha == review.head_revision;
-    valid.then_some(()).ok_or(GitHubAuthorityError::Rejected)
-}
-
-fn classify_checks(
-    check_runs: Value,
-    statuses: Value,
-) -> Result<GitHubChecks, GitHubAuthorityError> {
-    let check_runs: CheckRunsWire =
-        serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
-    if check_runs.total_count != check_runs.check_runs.len() as u64 {
-        return Err(GitHubAuthorityError::Rejected);
-    }
-    let statuses: CombinedStatusWire =
-        serde_json::from_value(statuses).map_err(|_| GitHubAuthorityError::Rejected)?;
-    let check_runs = classify_check_runs(&check_runs.check_runs)?;
-    let statuses = classify_statuses(&statuses)?;
-    Ok(combine_checks(check_runs, statuses))
-}
-
-fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAuthorityError> {
-    let mut component = CheckComponent::Absent;
-    for run in runs {
-        if run.status != "completed" || run.conclusion.is_none() {
-            component = CheckComponent::Pending;
-            continue;
-        }
-        let conclusion = run.conclusion.as_deref().unwrap_or_default();
-        if matches!(conclusion, "success" | "neutral" | "skipped") {
-            if component == CheckComponent::Absent {
-                component = CheckComponent::Passed;
-            }
-        } else if matches!(
-            conclusion,
-            "failure" | "cancelled" | "timed_out" | "action_required" | "stale"
-        ) {
-            return Ok(CheckComponent::Failed);
-        } else {
-            return Err(GitHubAuthorityError::Rejected);
-        }
-    }
-    Ok(component)
-}
-
-fn classify_statuses(
-    statuses: &CombinedStatusWire,
-) -> Result<CheckComponent, GitHubAuthorityError> {
-    if statuses.statuses.is_empty() {
-        return Ok(CheckComponent::Absent);
-    }
-    match statuses.state.as_str() {
-        "success" => Ok(CheckComponent::Passed),
-        "pending" => Ok(CheckComponent::Pending),
-        "failure" | "error" => Ok(CheckComponent::Failed),
-        _ => Err(GitHubAuthorityError::Rejected),
-    }
-}
-
-fn combine_checks(left: CheckComponent, right: CheckComponent) -> GitHubChecks {
-    if left == CheckComponent::Failed || right == CheckComponent::Failed {
-        GitHubChecks::Failed
-    } else if left == CheckComponent::Pending || right == CheckComponent::Pending {
-        GitHubChecks::Pending
-    } else if left == CheckComponent::Passed || right == CheckComponent::Passed {
-        GitHubChecks::Passed
-    } else {
-        GitHubChecks::NotRequired
-    }
-}
+mod wire;
+use wire::{MergeWire, PullRequestWire, classify_checks, require_review_identity, review_receipt};
 
 fn clean_command(program: &PathBuf, credential: GitHubCredential<'_>) -> Command {
     let mut command = Command::new(program);
@@ -520,37 +360,9 @@ async fn bounded_output(
     Ok(output)
 }
 
-fn encode_basic_credential(token: &str) -> String {
-    encode_base64(format!("x-access-token:{token}").as_bytes())
-}
-
-fn encode_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        output.push(char::from(ALPHABET[(first >> 2) as usize]));
-        output.push(char::from(
-            ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize],
-        ));
-        output.push(if chunk.len() > 1 {
-            char::from(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize])
-        } else {
-            '='
-        });
-        output.push(if chunk.len() > 2 {
-            char::from(ALPHABET[(third & 0x3f) as usize])
-        } else {
-            '='
-        });
-    }
-    output
-}
-
 #[cfg(test)]
 mod unit {
+    use openengine_cluster_testkit::assertions::AssertValue;
     use super::*;
     use crate::native_v2_delivery::DeliveryTarget;
     use serde_json::json;
@@ -570,7 +382,7 @@ mod unit {
                 json!({"total_count":0,"check_runs":[]}),
                 json!({"state":"pending","statuses":[]})
             )
-            .unwrap(),
+            .assert_value(),
             GitHubChecks::NotRequired
         );
         assert_eq!(
@@ -578,7 +390,7 @@ mod unit {
                 json!({"total_count":1,"check_runs":[{"status":"completed","conclusion":"failure"}]}),
                 json!({"state":"success","statuses":[]})
             )
-            .unwrap(),
+            .assert_value(),
             GitHubChecks::Failed
         );
         assert!(
@@ -598,7 +410,7 @@ mod unit {
                 "main",
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             )
-            .unwrap(),
+            .assert_value(),
             head_branch: "zeroshot/v2-run".to_owned(),
             head_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
         };
@@ -613,7 +425,7 @@ mod unit {
                 "repo":{"full_name":"acme/project"}
             }
         }))
-        .unwrap();
+        .assert_value();
         assert!(review_receipt(changed, &request).is_err());
     }
 }

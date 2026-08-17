@@ -12,6 +12,17 @@ use openengine_cluster_server::watch::fixtures::{FixtureBackend, FixtureStore};
 use openengine_cluster_server::watch::WatchStreamItem;
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
 
+#[path = "support/assert_error.rs"]
+mod assert_error;
+#[path = "support/assert_value.rs"]
+mod assert_value;
+#[path = "support/watch_record.rs"]
+mod watch_record;
+
+use assert_error::AssertError;
+use assert_value::AssertValue;
+use watch_record::next_record;
+
 /// Every test below either doesn't care about the exact overflow point or drives it through this
 /// fixed capacity directly against the backend; only [`queue_overflow_closes_with_slow_consumer_and_the_last_delivered_cursor`]
 /// needs a capacity of exactly `1`, which it selects at [`FixtureStore::new`].
@@ -49,9 +60,10 @@ impl ClusterBackend for BareBackend {
 #[tokio::test]
 async fn default_watch_is_unsupported_unless_the_backend_overrides_it() {
     let dispatcher = Dispatcher::new(BareBackend, ConnectionContext::default());
-    let Err(error) = dispatcher.watch(WatchParams::default()).await else {
-        panic!("expected the default watch implementation to be unsupported");
-    };
+    let error = dispatcher
+        .watch(WatchParams::default())
+        .await
+        .assert_error();
     assert_eq!(error.code, INVALID_PHASE);
 }
 
@@ -68,27 +80,21 @@ async fn watch_replays_seeded_history_then_switches_to_live_delivery() {
         ConnectionContext::default(),
     );
 
-    let (result, mut stream, _handle) = dispatcher.watch(WatchParams::default()).await.unwrap();
+    let (result, mut stream, _handle) = dispatcher
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
     assert_eq!(result.run_id, Some(run_id.clone()));
     assert_eq!(result.at_cursor, Some(Cursor::new("cursor-2")));
 
-    let first = stream.next().await.unwrap();
-    let WatchStreamItem::Record(record) = first else {
-        panic!("expected a replayed record");
-    };
+    let record = next_record(&mut stream).await;
     assert_eq!(record.cursor, Cursor::new("cursor-1"));
 
-    let second = stream.next().await.unwrap();
-    let WatchStreamItem::Record(record) = second else {
-        panic!("expected a replayed record");
-    };
+    let record = next_record(&mut stream).await;
     assert_eq!(record.cursor, Cursor::new("cursor-2"));
 
     store.publish(WatchEvent::Bookmark).await;
-    let live = stream.next().await.unwrap();
-    let WatchStreamItem::Record(record) = live else {
-        panic!("expected a live record");
-    };
+    let record = next_record(&mut stream).await;
     assert_eq!(record.cursor, Cursor::new("cursor-3"));
 }
 
@@ -105,7 +111,10 @@ async fn dropping_the_handle_cancels_without_delivering_more_events() {
         ConnectionContext::default(),
     );
 
-    let (_result, mut stream, handle) = dispatcher.watch(WatchParams::default()).await.unwrap();
+    let (_result, mut stream, handle) = dispatcher
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
     drop(handle);
     assert!(stream.next().await.is_none());
 }
@@ -119,20 +128,17 @@ async fn queue_overflow_closes_with_slow_consumer_and_the_last_delivered_cursor(
     let (result, mut stream, _handle) = backend
         .watch(&context, WatchParams::default(), AMPLE_CAPACITY)
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(result.run_id, Some(run_id));
     assert_eq!(result.at_cursor, None);
 
     store.publish(WatchEvent::Bookmark).await;
     store.publish(WatchEvent::Bookmark).await;
 
-    let first = stream.next().await.unwrap();
-    let WatchStreamItem::Record(record) = first else {
-        panic!("expected the first buffered record");
-    };
+    let record = next_record(&mut stream).await;
     assert_eq!(record.cursor, Cursor::new("cursor-1"));
 
-    let closed = stream.next().await.unwrap();
+    let closed = stream.next().await.assert_value();
     assert_eq!(
         closed,
         WatchStreamItem::Closed {

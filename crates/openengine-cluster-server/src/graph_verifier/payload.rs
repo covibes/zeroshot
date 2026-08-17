@@ -34,10 +34,9 @@ pub(super) fn required_leaf_paths(payload: &PayloadType) -> Vec<FieldPath> {
         }
         let PayloadType::Record { fields } = payload else {
             if !prefix.is_empty() {
-                paths.push(
-                    FieldPath::new(prefix.clone())
-                        .expect("non-empty payload traversal path is valid"),
-                );
+                if let Ok(path) = FieldPath::new(prefix.clone()) {
+                    paths.push(path);
+                }
                 return true;
             }
             return false;
@@ -49,9 +48,9 @@ pub(super) fn required_leaf_paths(payload: &PayloadType) -> Vec<FieldPath> {
             prefix.pop();
         }
         if !has_required_descendant && !prefix.is_empty() {
-            paths.push(
-                FieldPath::new(prefix.clone()).expect("non-empty payload traversal path is valid"),
-            );
+            if let Ok(path) = FieldPath::new(prefix.clone()) {
+                paths.push(path);
+            }
             return true;
         }
         has_required_descendant

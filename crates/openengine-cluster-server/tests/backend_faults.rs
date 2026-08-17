@@ -10,27 +10,23 @@ use openengine_cluster_protocol::{
     WatchResult,
 };
 use openengine_cluster_server::watch::fixtures::{FixtureBackend, FixtureStore};
-use openengine_cluster_server::watch::{WatchEventStream, WatchHandle, WatchStreamItem};
+use openengine_cluster_server::watch::{WatchEventStream, WatchHandle};
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 
 const AMPLE_CAPACITY: usize = 8;
 
 fn sample_fault() -> BackendFault {
     BackendFault {
-        event_id: BoundedString256::new("evt-1").expect("fixture event id must be valid"),
-        execution_ref: Some(
-            BoundedString256::new("exec-1").expect("fixture execution ref must be valid"),
-        ),
+        event_id: BoundedString256::new("evt-1").assert_value(),
+        execution_ref: Some(BoundedString256::new("exec-1").assert_value()),
         code: FaultCode::ResourceExhausted,
         consequence: FaultConsequence::RunDegraded,
         retry: FaultRetryDisposition::NotRetryable,
         action: FaultAction::Escalate,
         severity: FaultSeverity::Critical,
-        summary: BoundedString256::new("admission queue capacity exhausted")
-            .expect("fixture summary must be valid"),
+        summary: BoundedString256::new("admission queue capacity exhausted").assert_value(),
         source: vec![FaultSourceFrame {
-            component: BoundedString256::new("admission-queue")
-                .expect("fixture component must be valid"),
+            component: BoundedString256::new("admission-queue").assert_value(),
         }],
     }
 }
@@ -51,7 +47,10 @@ async fn watch_seeded_history(
         FixtureBackend::new(Arc::clone(&store)),
         ConnectionContext::default(),
     );
-    let (result, stream, handle) = dispatcher.watch(WatchParams::default()).await.unwrap();
+    let (result, stream, handle) = dispatcher
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
     (store, result, stream, handle)
 }
 
@@ -68,10 +67,7 @@ async fn seeded_fault_history_replays_unchanged_then_a_live_fault_delivers_uncha
     assert_eq!(result.run_id, Some(run_id));
     assert_eq!(result.at_cursor, Some(Cursor::new("cursor-1")));
 
-    let replayed = stream.next().await.unwrap();
-    let WatchStreamItem::Record(record) = replayed else {
-        panic!("expected a replayed record");
-    };
+    let record = next_record(&mut stream).await;
     assert_eq!(record.cursor, Cursor::new("cursor-1"));
     assert_eq!(
         record.event,
@@ -85,10 +81,7 @@ async fn seeded_fault_history_replays_unchanged_then_a_live_fault_delivers_uncha
             fault: sample_fault(),
         })
         .await;
-    let live = stream.next().await.unwrap();
-    let WatchStreamItem::Record(record) = live else {
-        panic!("expected a live record");
-    };
+    let record = next_record(&mut stream).await;
     assert_eq!(record.cursor, Cursor::new("cursor-2"));
     assert_eq!(
         record.event,
@@ -97,3 +90,9 @@ async fn seeded_fault_history_replays_unchanged_then_a_live_fault_delivers_uncha
         }
     );
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+#[path = "support/watch_record.rs"]
+mod watch_record;
+use assert_value::AssertValue;
+use watch_record::next_record;

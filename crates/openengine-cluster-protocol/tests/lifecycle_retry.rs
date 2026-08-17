@@ -1,3 +1,13 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+#[path = "support/schema.rs"]
+mod schema;
+
+#[path = "support/json_read.rs"]
+mod json_read;
+
+use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     Generation, IdempotencyKey, NoRetryableFrontierReason, RetryParams, TurnFailureKind,
 };
@@ -9,9 +19,9 @@ fn retry_wire_is_closed_and_carries_no_execution_selector() {
         "ifGeneration":7,
         "idempotencyKey":"retry-1"
     }))
-    .unwrap();
+    .assert_value();
     assert_eq!(
-        serde_json::to_value(retry).unwrap(),
+        serde_json::to_value(retry).assert_value(),
         json!({
             "ifGeneration":7,
             "idempotencyKey":"retry-1"
@@ -45,9 +55,9 @@ fn no_retryable_frontier_reasons_are_closed_wire_values() {
         (NoRetryableFrontierReason::Active, "active"),
         (NoRetryableFrontierReason::Consumed, "consumed"),
     ] {
-        assert_eq!(serde_json::to_value(reason).unwrap(), json!(wire));
+        assert_eq!(serde_json::to_value(reason).assert_value(), json!(wire));
         assert_eq!(
-            serde_json::from_value::<NoRetryableFrontierReason>(json!(wire)).unwrap(),
+            serde_json::from_value::<NoRetryableFrontierReason>(json!(wire)).assert_value(),
             reason
         );
     }
@@ -57,36 +67,22 @@ fn no_retryable_frontier_reasons_are_closed_wire_values() {
 #[test]
 fn retry_constructors_remain_typed() {
     let retry = RetryParams {
-        if_generation: Generation::new(1).unwrap(),
-        idempotency_key: IdempotencyKey::new("retry").unwrap(),
+        if_generation: Generation::new(1).assert_value(),
+        idempotency_key: IdempotencyKey::new("retry").assert_value(),
     };
-    assert_eq!(retry.if_generation, Generation::new(1).unwrap());
+    assert_eq!(retry.if_generation, Generation::new(1).assert_value());
     assert_eq!(TurnFailureKind::Timeout, TurnFailureKind::Timeout);
     assert_ne!(TurnFailureKind::Timeout, TurnFailureKind::Crash);
 }
 
 #[test]
 fn retry_schema_field_names_are_closed() {
-    let params_schema = serde_json::to_value(schemars::schema_for!(RetryParams)).unwrap();
-    let properties = params_schema["properties"].as_object().unwrap();
-    for forbidden in ["executionId", "session", "workspacePath", "provider"] {
-        assert!(
-            !properties.contains_key(forbidden),
-            "RetryParams schema unexpectedly exposes {forbidden}"
-        );
-    }
-
-    let result_schema = serde_json::to_value(schemars::schema_for!(
-        openengine_cluster_protocol::RetryResult
-    ))
-    .unwrap();
-    let properties = result_schema["properties"].as_object().unwrap();
-    for forbidden in ["executionId", "session", "workspacePath", "provider"] {
-        assert!(
-            !properties.contains_key(forbidden),
-            "RetryResult schema unexpectedly exposes {forbidden}"
-        );
-    }
+    const PRIVATE_FIELDS: &[&str] = &["executionId", "session", "workspacePath", "provider"];
+    schema::assert_schema_omits::<RetryParams>("RetryParams", PRIVATE_FIELDS);
+    schema::assert_schema_omits::<openengine_cluster_protocol::RetryResult>(
+        "RetryResult",
+        PRIVATE_FIELDS,
+    );
 }
 
 #[test]
@@ -104,6 +100,6 @@ fn retry_result_round_trips() {
         "deduped":false
     });
     let result: openengine_cluster_protocol::RetryResult =
-        serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(serde_json::to_value(result).unwrap(), value);
+        serde_json::from_value(value.clone()).assert_value();
+    assert_eq!(serde_json::to_value(result).assert_value(), value);
 }

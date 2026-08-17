@@ -12,6 +12,9 @@ use serde_json::{json, Value};
 
 use super::*;
 
+#[path = "tests/parser.rs"]
+mod parser_tests;
+
 #[derive(Clone, Debug, PartialEq)]
 enum Call {
     TargetAdd {
@@ -102,7 +105,7 @@ impl FakeBackend {
     }
 
     fn calls(&self) -> Vec<Call> {
-        self.calls.lock().unwrap().clone()
+        self.calls.lock().assert_value().clone()
     }
 }
 
@@ -113,7 +116,7 @@ impl NativeV2CliBackend for FakeBackend {
     type Attach = FakeSubscription<RunAttachEventNotification>;
 
     async fn target_add(&self, request: TargetAdd) -> Result<(), NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::TargetAdd {
+        self.calls.lock().assert_value().push(Call::TargetAdd {
             name: request.name,
             url: request.url,
         });
@@ -121,14 +124,14 @@ impl NativeV2CliBackend for FakeBackend {
     }
 
     async fn target_login(&self, name: &str) -> Result<(), NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::TargetLogin {
+        self.calls.lock().assert_value().push(Call::TargetLogin {
             name: name.to_owned(),
         });
         Ok(())
     }
 
     async fn target_setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::TargetSetup {
+        self.calls.lock().assert_value().push(Call::TargetSetup {
             name: request.name,
             repository: request.repository,
             runtime_config: request.runtime_config,
@@ -141,7 +144,7 @@ impl NativeV2CliBackend for FakeBackend {
         target: &str,
         params: RunSubmitParams,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::Submit {
+        self.calls.lock().assert_value().push(Call::Submit {
             target: target.to_owned(),
             ship: params.ship,
             input: params.initial_input,
@@ -157,7 +160,7 @@ impl NativeV2CliBackend for FakeBackend {
         target: &str,
         _params: RunListParams,
     ) -> Result<RunListResult, NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::List {
+        self.calls.lock().assert_value().push(Call::List {
             target: target.to_owned(),
         });
         Ok(RunListResult { runs: Vec::new() })
@@ -168,7 +171,7 @@ impl NativeV2CliBackend for FakeBackend {
         target: &str,
         params: RunStatusParams,
     ) -> Result<RunStatusResult, NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::Status {
+        self.calls.lock().assert_value().push(Call::Status {
             target: target.to_owned(),
             run_id: params.run_id.as_str().to_owned(),
         });
@@ -180,7 +183,7 @@ impl NativeV2CliBackend for FakeBackend {
         target: &str,
         params: RunWatchParams,
     ) -> Result<Self::Watch, NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::Watch {
+        self.calls.lock().assert_value().push(Call::Watch {
             target: target.to_owned(),
             run_id: params.run_id.as_str().to_owned(),
         });
@@ -194,7 +197,7 @@ impl NativeV2CliBackend for FakeBackend {
                 "cursor":"v2:2",
                 "status":{"phase":"finished","terminalResult":{"status":"succeeded","output":null}}
             }))
-            .unwrap(),
+            .assert_value(),
         )]))
     }
 
@@ -203,7 +206,7 @@ impl NativeV2CliBackend for FakeBackend {
         target: &str,
         params: RunLogsParams,
     ) -> Result<Self::Logs, NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::Logs {
+        self.calls.lock().assert_value().push(Call::Logs {
             target: target.to_owned(),
             run_id: params.run_id.as_str().to_owned(),
         });
@@ -215,7 +218,7 @@ impl NativeV2CliBackend for FakeBackend {
         target: &str,
         params: RunAttachParams,
     ) -> Result<Self::Attach, NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::Attach {
+        self.calls.lock().assert_value().push(Call::Attach {
             target: target.to_owned(),
             run_id: params.run_id.as_str().to_owned(),
             execution: params.execution.as_str().to_owned(),
@@ -228,7 +231,7 @@ impl NativeV2CliBackend for FakeBackend {
         target: &str,
         params: RunForceParams,
     ) -> Result<RunForceResult, NativeV2CliError> {
-        self.calls.lock().unwrap().push(Call::Force {
+        self.calls.lock().assert_value().push(Call::Force {
             target: target.to_owned(),
             run_id: params.run_id.as_str().to_owned(),
         });
@@ -275,17 +278,17 @@ struct FixtureFiles {
 impl FixtureFiles {
     fn new(graph: Value, input: Value) -> Self {
         let mut random = [0_u8; 8];
-        getrandom::fill(&mut random).unwrap();
+        getrandom::fill(&mut random).assert_value();
         let suffix = random
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let directory = std::env::temp_dir().join(format!("zeroshot-v2-cli-{suffix}"));
-        std::fs::create_dir(&directory).unwrap();
+        std::fs::create_dir(&directory).assert_value();
         let graph_path = directory.join("graph.json");
         let input_path = directory.join("input.json");
-        std::fs::write(&graph_path, serde_json::to_vec(&graph).unwrap()).unwrap();
-        std::fs::write(&input_path, serde_json::to_vec(&input).unwrap()).unwrap();
+        std::fs::write(&graph_path, serde_json::to_vec(&graph).assert_value()).assert_value();
+        std::fs::write(&input_path, serde_json::to_vec(&input).assert_value()).assert_value();
         Self {
             directory,
             graph: graph_path,
@@ -320,172 +323,7 @@ fn status(run_id: &str, phase: &str) -> RunStatusResult {
         "atCursor":"v2:1",
         "status":{"phase":phase}
     }))
-    .unwrap()
-}
-
-#[test]
-fn parser_is_the_agreed_lean_hosted_surface() {
-    let run = parse_native_v2_args(args(&[
-        "run",
-        "--target",
-        "prod",
-        "--graph",
-        "graph.json",
-        "--input",
-        "input.json",
-        "--ship",
-        "-d",
-        "--submission-key",
-        "retry-1",
-    ]))
-    .unwrap();
-    let NativeV2CliCommand::Run(run) = run else {
-        panic!("run command");
-    };
-    assert_eq!(run.target, "prod");
-    assert!(run.ship);
-    assert!(run.detach);
-    assert_eq!(run.submission_key.unwrap().as_str(), "retry-1");
-
-    for unsupported in ["--provider", "--model", "--effort", "--session", "--env"] {
-        let error = parse_native_v2_args(args(&[
-            "run",
-            "--target",
-            "prod",
-            "--graph",
-            "g.json",
-            "--input",
-            "i.json",
-            unsupported,
-            "value",
-        ]))
-        .unwrap_err();
-        assert!(matches!(error, NativeV2CliError::Usage(_)));
-    }
-}
-
-#[test]
-fn parser_keeps_capsules_private_and_attach_read_only() {
-    let attach =
-        parse_native_v2_args(args(&["attach", "run-7", "exec-2", "--target", "prod"])).unwrap();
-    assert!(matches!(attach, NativeV2CliCommand::Attach { .. }));
-    assert!(parse_native_v2_args(args(&["capsule", "create"])).is_err());
-    assert!(
-        parse_native_v2_args(args(&[
-            "attach", "run-7", "exec-2", "--target", "prod", "--input", "text",
-        ]))
-        .is_err()
-    );
-}
-
-#[test]
-fn parser_exposes_named_target_setup_without_runtime_overrides() {
-    let command = parse_native_v2_args(args(&[
-        "target",
-        "setup",
-        "prod",
-        "--repository",
-        "open/engine",
-        "--runtime-config",
-        "runtime.json",
-        "--base",
-        "main",
-        "--target-branch",
-        "release",
-    ]))
-    .unwrap();
-    let NativeV2CliCommand::TargetSetup(setup) = command else {
-        panic!("setup command");
-    };
-    assert_eq!(setup.repository, "open/engine");
-    assert_eq!(setup.runtime_config, PathBuf::from("runtime.json"));
-}
-
-#[tokio::test]
-async fn named_target_commands_delegate_without_interpreting_runtime_configuration() {
-    let backend = FakeBackend::default();
-    for argv in [
-        args(&["target", "add", "prod", "--url", "https://target.example"]),
-        args(&["target", "login", "prod"]),
-        args(&[
-            "target",
-            "setup",
-            "prod",
-            "--repository",
-            "open/engine",
-            "--runtime-config",
-            "runtime.json",
-        ]),
-    ] {
-        let command = parse_native_v2_args(argv).unwrap();
-        execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        backend.calls(),
-        [
-            Call::TargetAdd {
-                name: "prod".to_owned(),
-                url: "https://target.example".to_owned(),
-            },
-            Call::TargetLogin {
-                name: "prod".to_owned(),
-            },
-            Call::TargetSetup {
-                name: "prod".to_owned(),
-                repository: "open/engine".to_owned(),
-                runtime_config: PathBuf::from("runtime.json"),
-            },
-        ]
-    );
-}
-
-#[tokio::test]
-async fn invalid_graph_and_input_fail_before_target_contact() {
-    let backend = FakeBackend::default();
-    let invalid_graph = FixtureFiles::new(json!({"not":"a graph"}), json!({"task":"ok"}));
-    let command = parse_native_v2_args(run_args(
-        &invalid_graph.graph,
-        &invalid_graph.input,
-        &["-d"],
-    ))
-    .unwrap();
-    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        NativeV2CliError::Json { kind: "graph", .. }
-    ));
-    assert!(backend.calls().is_empty());
-
-    let invalid_input = FixtureFiles::new(graph(), json!({"task":7}));
-    let command = parse_native_v2_args(run_args(
-        &invalid_input.graph,
-        &invalid_input.input,
-        &["-d"],
-    ))
-    .unwrap();
-    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert!(matches!(error, NativeV2CliError::InitialInput(_)));
-    assert!(backend.calls().is_empty());
-}
-
-#[tokio::test]
-async fn unsupported_graph_profile_fails_before_target_contact() {
-    let mut unsupported = graph();
-    unsupported["profile"] = json!("openengine.graph.single-worker/v1");
-    let files = FixtureFiles::new(unsupported, json!({"task":"no legacy profile"}));
-    let command = parse_native_v2_args(run_args(&files.graph, &files.input, &["-d"])).unwrap();
-    let backend = FakeBackend::default();
-    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
-        .await
-        .unwrap_err();
-    assert!(matches!(error, NativeV2CliError::Usage(_)));
-    assert!(backend.calls().is_empty());
+    .assert_value()
 }
 
 #[tokio::test]
@@ -496,12 +334,12 @@ async fn run_follows_by_default_and_forwards_ship_and_submission_key_unchanged()
         &files.input,
         &["--ship", "--submission-key", "stable-key"],
     ))
-    .unwrap();
+    .assert_value();
     let backend = FakeBackend::default();
     let mut output = Vec::new();
     let outcome = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut output)
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(outcome, CliOutcome::Finished);
     assert_eq!(
         backend.calls(),
@@ -518,7 +356,7 @@ async fn run_follows_by_default_and_forwards_ship_and_submission_key_unchanged()
             },
         ]
     );
-    let lines = String::from_utf8(output).unwrap();
+    let lines = String::from_utf8(output).assert_value();
     assert!(lines.contains("\"runId\":\"run-public\""));
     assert!(lines.contains("\"phase\":\"finished\""));
 }
@@ -526,11 +364,12 @@ async fn run_follows_by_default_and_forwards_ship_and_submission_key_unchanged()
 #[tokio::test]
 async fn detach_flag_returns_after_submit_without_opening_watch() {
     let files = FixtureFiles::new(graph(), json!({"task":"detach"}));
-    let command = parse_native_v2_args(run_args(&files.graph, &files.input, &["-d"])).unwrap();
+    let command =
+        parse_native_v2_args(run_args(&files.graph, &files.input, &["-d"])).assert_value();
     let backend = FakeBackend::default();
     let outcome = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(outcome, CliOutcome::Detached);
     assert!(matches!(backend.calls().as_slice(), [Call::Submit { .. }]));
 }
@@ -538,11 +377,11 @@ async fn detach_flag_returns_after_submit_without_opening_watch() {
 #[tokio::test]
 async fn ctrl_c_detaches_observation_without_force_stop() {
     let files = FixtureFiles::new(graph(), json!({"task":"interrupt"}));
-    let command = parse_native_v2_args(run_args(&files.graph, &files.input, &[])).unwrap();
+    let command = parse_native_v2_args(run_args(&files.graph, &files.input, &[])).assert_value();
     let backend = FakeBackend::with_pending_watch();
     let outcome = execute_native_v2_cli(command, &backend, &mut ImmediateDetach, &mut Vec::new())
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(outcome, CliOutcome::Detached);
     assert!(matches!(
         backend.calls().as_slice(),
@@ -564,7 +403,7 @@ async fn watch_closure_without_a_terminal_status_is_a_detach() {
         }]);
     let outcome = follow_watch(subscription, &mut NeverDetach, &mut Vec::new())
         .await
-        .unwrap();
+        .assert_value();
     assert_eq!(outcome, CliOutcome::Detached);
 }
 
@@ -573,10 +412,10 @@ async fn restarted_client_reconnects_with_public_run_id_only() {
     let backend = FakeBackend::default();
     for _client_process in 0..2 {
         let command =
-            parse_native_v2_args(args(&["watch", "run-public", "--target", "prod"])).unwrap();
+            parse_native_v2_args(args(&["watch", "run-public", "--target", "prod"])).assert_value();
         let outcome = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
             .await
-            .unwrap();
+            .assert_value();
         assert_eq!(outcome, CliOutcome::Finished);
     }
     assert_eq!(
@@ -594,6 +433,8 @@ async fn restarted_client_reconnects_with_public_run_id_only() {
     );
 }
 
+use openengine_cluster_testkit::assertions::{AssertValue};
+
 #[tokio::test]
 async fn list_and_status_are_run_centric() {
     let backend = FakeBackend::default();
@@ -601,10 +442,10 @@ async fn list_and_status_are_run_centric() {
         args(&["list", "--target", "prod"]),
         args(&["status", "run-8", "--target", "prod"]),
     ] {
-        let command = parse_native_v2_args(argv).unwrap();
+        let command = parse_native_v2_args(argv).assert_value();
         execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
             .await
-            .unwrap();
+            .assert_value();
     }
     assert_eq!(
         backend.calls(),
@@ -628,10 +469,10 @@ async fn logs_attach_and_force_use_the_run_scoped_methods() {
         args(&["attach", "run-1", "exec-9", "--target", "prod"]),
         args(&["force-stop", "run-1", "--target", "prod"]),
     ] {
-        let command = parse_native_v2_args(argv).unwrap();
+        let command = parse_native_v2_args(argv).assert_value();
         execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
             .await
-            .unwrap();
+            .assert_value();
     }
     assert_eq!(
         backend.calls(),

@@ -21,7 +21,8 @@ pub(in crate::graph_verifier) fn single_outcome_dimension(
     keys: &[SelectorKey],
 ) -> Option<Vec<Assignment>> {
     let choices = per_execution_outcomes(node, keys)?;
-    (choices.len() as u64 <= FULL_V1_MAX_GUARD_ASSIGNMENTS).then_some(choices)
+    (u64::try_from(choices.len()).unwrap_or(u64::MAX) <= FULL_V1_MAX_GUARD_ASSIGNMENTS)
+        .then_some(choices)
 }
 
 pub(in crate::graph_verifier) fn aggregate_assignments_from_outcomes(
@@ -221,11 +222,11 @@ fn with_runtime_errors(
 }
 
 fn insert_execution_controls(assignment: &mut Assignment, keys: &[SelectorKey]) {
+    let Some(executed) = enum_label("executed") else {
+        return;
+    };
     for key in keys {
-        assignment.insert(
-            key.clone(),
-            assigned_control(Some(enum_label("executed")), 1),
-        );
+        assignment.insert(key.clone(), assigned_control(Some(executed.clone()), 1));
     }
 }
 
@@ -297,11 +298,14 @@ pub(in crate::graph_verifier) fn evaluate_guard(guard: &Guard, assignment: &Assi
             values,
             labels,
         } => {
-            values
-                .as_slice()
-                .iter()
-                .filter(|selector| selector_matches(selector, labels.values(), assignment))
-                .count() as u64
+            u64::try_from(
+                values
+                    .as_slice()
+                    .iter()
+                    .filter(|selector| selector_matches(selector, labels.values(), assignment))
+                    .count(),
+            )
+            .unwrap_or(u64::MAX)
                 >= count.get()
         }
         Guard::KOfMap {
@@ -401,8 +405,16 @@ pub(in crate::graph_verifier) fn for_each_outcome_multiset(
             else {
                 break;
             };
-            let next_outcome = occurrence_indexes[position] + 1;
-            occurrence_indexes[position..].fill(next_outcome);
+            let Some(next_outcome) = occurrence_indexes
+                .get(position)
+                .and_then(|outcome| outcome.checked_add(1))
+            else {
+                return false;
+            };
+            let Some(remaining) = occurrence_indexes.get_mut(position..) else {
+                return false;
+            };
+            remaining.fill(next_outcome);
         }
     }
     true
@@ -424,7 +436,7 @@ pub(in crate::graph_verifier) fn selector_key_domain(
         },
         ControlSourceKey::Error => error_labels(),
         ControlSourceKey::Group => group_domain(node, key.field.as_ref()).unwrap_or_default(),
-        ControlSourceKey::Execution => vec![enum_label("executed")],
+        ControlSourceKey::Execution => enum_label("executed").into_iter().collect(),
     }
 }
 
@@ -433,7 +445,12 @@ pub(in crate::graph_verifier) fn group_domain(
     field: Option<&FieldName>,
 ) -> Option<Vec<EnumLabel>> {
     let expected = group_domain_labels(node, field?.as_str())?;
-    Some(expected.iter().map(|label| enum_label(label)).collect())
+    Some(
+        expected
+            .iter()
+            .filter_map(|label| enum_label(label))
+            .collect(),
+    )
 }
 
 fn group_domain_labels(node: &GraphNode, field: &str) -> Option<&'static [&'static str]> {
@@ -460,7 +477,7 @@ fn parallel_join_domain(node: &GraphNode, first: bool) -> bool {
 pub(in crate::graph_verifier) fn error_labels() -> Vec<EnumLabel> {
     ["timeout", "crash", "malformed", "refusal"]
         .into_iter()
-        .map(enum_label)
+        .filter_map(enum_label)
         .collect()
 }
 

@@ -16,6 +16,8 @@ use openengine_cluster_client::{
 use openengine_cluster_protocol::GetParams;
 use tokio::io::{AsyncRead, AsyncWrite};
 
+use crate::support::AssertValue;
+
 /// Minimal shape shared by every generated `Ndjson*EventStream`: `next`/`cancel` with the exact
 /// signatures `impl_ndjson_event_subscription!` produces.
 pub trait NdjsonEventStream {
@@ -72,25 +74,20 @@ pub async fn assert_cancel_stops_further_delivery<S, R, W, F>(
     W: AsyncWrite + Send + Unpin + 'static,
     F: Future<Output = ()>,
 {
-    stream.cancel().await.unwrap();
+    stream.cancel().await.assert_value();
     ClusterClient::new(transport)
         .get(GetParams::default())
         .await
-        .unwrap();
+        .assert_value();
 
     publish("maybe-leaked").await;
     publish("must-never-arrive").await;
 
     let mut leaked = Vec::new();
-    loop {
-        match tokio::time::timeout(Duration::from_millis(300), stream.next()).await {
-            Ok(Some(Ok(item))) => match classify(&item) {
-                Some(text) => leaked.push(text),
-                None => panic!("unexpected notification after cancel: {item:?}"),
-            },
-            Ok(Some(Err(e))) => panic!("unexpected error: {e}"),
-            Ok(None) | Err(_) => break,
-        }
+    while let Ok(Some(item)) = tokio::time::timeout(Duration::from_millis(300), stream.next()).await
+    {
+        let item = item.assert_value();
+        leaked.push(classify(&item).assert_value_with("expected a post-cancel event notification"));
     }
     assert!(
         leaked.len() <= 1,

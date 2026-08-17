@@ -141,7 +141,7 @@ impl ArtifactStore for FakeArtifactStore {
         bytes: ArtifactByteStream,
     ) -> Result<StagedArtifact, ArtifactStoreFailure> {
         let bytes = read_verified_bytes(&intent, bytes).await?;
-        let artifact_ref = intent.artifact_ref();
+        let artifact_ref = intent.artifact_ref()?;
         let stage_key = self.inner.next_stage.fetch_add(1, Ordering::Relaxed);
         let mut state = self.state();
         maybe_fail(&mut state, FakeFailurePoint::BeforeStageCommit)?;
@@ -173,7 +173,7 @@ impl ArtifactStore for FakeArtifactStore {
         state
             .stages
             .get_mut(&staged.stage_key())
-            .expect("stage was checked while holding store lock")
+            .ok_or_else(invalid_stage)?
             .status = FakeStageStatus::Published;
         maybe_fail(&mut state, FakeFailurePoint::AfterPublishCommit)?;
         Ok(stage.artifact_ref)
@@ -274,11 +274,9 @@ fn maybe_fail(state: &mut State, point: FakeFailurePoint) -> Result<(), Artifact
         .front()
         .is_some_and(|failure| failure.point == point)
     {
-        let failure = state
-            .failures
-            .pop_front()
-            .expect("front failure was present");
-        return Err(ArtifactStoreFailure::new(failure.kind));
+        if let Some(failure) = state.failures.pop_front() {
+            return Err(ArtifactStoreFailure::new(failure.kind));
+        }
     }
     Ok(())
 }

@@ -90,8 +90,7 @@ pub struct LogEventNotification {
 impl LogEventNotification {
     pub fn validate(&self) -> Result<(), LogEventValidationError> {
         let encoded_len = serde_json::to_vec(&LogEventNotificationRef::from(self))
-            .expect("LogEventNotificationRef fields serialize infallibly")
-            .len();
+            .map_or(usize::MAX, |encoded| encoded.len());
         if encoded_len > MAX_LOG_EVENT_ENCODED_BYTES {
             return Err(LogEventValidationError::EncodedTooLarge);
         }

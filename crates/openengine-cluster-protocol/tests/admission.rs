@@ -1,3 +1,13 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+#[path = "support/slice.rs"]
+mod slice;
+
+#[path = "support/json_insert.rs"]
+mod json_insert;
+
+use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     ApplyParams, Generation, GraphDiff, IdempotencyKey, PayloadType, PlanParams,
 };
@@ -24,9 +34,9 @@ fn graph() -> serde_json::Value {
 
 #[test]
 fn admission_params_are_closed_named_wire_objects() {
-    let plan: PlanParams = serde_json::from_value(json!({ "graph": graph() })).unwrap();
+    let plan: PlanParams = serde_json::from_value(json!({ "graph": graph() })).assert_value();
     assert_eq!(
-        serde_json::to_value(plan).unwrap(),
+        serde_json::to_value(plan).assert_value(),
         json!({ "graph": graph() })
     );
 
@@ -36,9 +46,9 @@ fn admission_params_are_closed_named_wire_objects() {
         "ifGeneration": 0,
         "idempotencyKey": "request-1"
     }))
-    .unwrap();
+    .assert_value();
     assert!(!apply.dry_run);
-    assert_eq!(apply.if_generation, Some(Generation::new(0).unwrap()));
+    assert_eq!(apply.if_generation, Some(Generation::new(0).assert_value()));
     assert!(
         serde_json::from_value::<ApplyParams>(json!({
             "graph": graph(), "unknown": true
@@ -47,14 +57,16 @@ fn admission_params_are_closed_named_wire_objects() {
     );
     for field in ["ifGeneration", "idempotencyKey"] {
         let mut value = json!({"graph":graph()});
-        value[field] = serde_json::Value::Null;
+        json_insert::json_insert(&mut value, "", field, serde_json::Value::Null);
         assert!(
             serde_json::from_value::<ApplyParams>(value.clone()).is_err(),
             "accepted explicit null {field}"
         );
-        let schema = serde_json::to_value(schemars::schema_for!(ApplyParams)).unwrap();
+        let schema = serde_json::to_value(schemars::schema_for!(ApplyParams)).assert_value();
         assert!(
-            !jsonschema::validator_for(&schema).unwrap().is_valid(&value),
+            !jsonschema::validator_for(&schema)
+                .assert_value()
+                .is_valid(&value),
             "schema accepted explicit null {field}"
         );
     }
@@ -70,12 +82,15 @@ fn idempotency_keys_are_non_empty_and_bounded() {
 
 #[test]
 fn closed_payload_validation_rejects_missing_extra_and_wrong_values() {
-    let graph: openengine_cluster_protocol::GraphSpec = serde_json::from_value(graph()).unwrap();
+    let graph: openengine_cluster_protocol::GraphSpec =
+        serde_json::from_value(graph()).assert_value();
     let payload = &graph.initial_input;
     payload
         .validate_value(&json!({ "count": 2, "label": "ok" }))
-        .unwrap();
-    payload.validate_value(&json!({ "count": 2.0 })).unwrap();
+        .assert_value();
+    payload
+        .validate_value(&json!({ "count": 2.0 }))
+        .assert_value();
     assert!(
         payload
             .validate_value(&json!({ "label": "missing" }))
@@ -95,6 +110,6 @@ fn graph_diff_wire_order_is_explicit() {
     let diff: GraphDiff = serde_json::from_value(json!({
         "added": ["alpha"], "removed": ["beta"], "changed": ["gamma"]
     }))
-    .unwrap();
-    assert_eq!(diff.added[0].as_str(), "alpha");
+    .assert_value();
+    assert_eq!(slice::slice_at(&diff.added, 0).as_str(), "alpha");
 }

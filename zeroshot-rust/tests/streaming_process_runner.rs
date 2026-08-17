@@ -57,7 +57,7 @@ async fn open(program: &str, argv: Vec<&str>) -> (watch::Sender<bool>, ProcessSe
     let session = LocalProcessRunner::new()
         .open(command(program, argv), cancellation)
         .await
-        .unwrap();
+        .assert_value();
     (cancel, session)
 }
 
@@ -91,8 +91,8 @@ async fn stdout_queue_applies_capacity_sixty_four_backpressure() {
     );
     let released = timeout(Duration::from_secs(4), session.release())
         .await
-        .expect("release must not depend on stdout capacity")
-        .unwrap();
+        .assert_value_with("release must not depend on stdout capacity")
+        .assert_value();
     assert_eq!(released.cleanup, ProcessCleanupEvidence::Reaped);
     assert!(
         released
@@ -111,18 +111,18 @@ async fn duplex_preserves_split_frames_and_eof_with_pending_output() {
     let boundary = vec![b'b'; 3 * 1024];
     let suffix = vec![b'c'; 512 * 1024];
     session
-        .send(ProcessFrame::new(prefix.clone()).unwrap())
+        .send(ProcessFrame::new(prefix.clone()).assert_value())
         .await
-        .unwrap();
+        .assert_value();
     session
-        .send(ProcessFrame::new(boundary.clone()).unwrap())
+        .send(ProcessFrame::new(boundary.clone()).assert_value())
         .await
-        .unwrap();
+        .assert_value();
     session
-        .send(ProcessFrame::new(suffix.clone()).unwrap())
+        .send(ProcessFrame::new(suffix.clone()).assert_value())
         .await
-        .unwrap();
-    session.close_stdin().await.unwrap();
+        .assert_value();
+    session.close_stdin().await.assert_value();
 
     tokio::time::sleep(Duration::from_millis(50)).await;
     let output = collect_stdout(&mut session).await;
@@ -130,7 +130,7 @@ async fn duplex_preserves_split_frames_and_eof_with_pending_output() {
     expected.extend_from_slice(&boundary);
     expected.extend_from_slice(&suffix);
     assert_eq!(output, expected);
-    let completion = session.wait().await.unwrap();
+    let completion = session.wait().await.assert_value();
     assert_eq!(completion.exit_code, Some(0));
     assert_eq!(completion.post_launch_error, None);
 }
@@ -141,27 +141,30 @@ async fn cancellation_and_child_exit_races_settle_once() {
     for _ in 0..8 {
         let (cancel, mut session) =
             open("/bin/sh", vec!["-c", "printf ready; /bin/sleep 0.01"]).await;
-        assert_eq!(session.recv_stdout().await.unwrap().as_slice(), b"ready");
+        assert_eq!(
+            session.recv_stdout().await.assert_value().as_slice(),
+            b"ready"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
         let _ = cancel.send(true);
         let completion = timeout(Duration::from_secs(2), session.wait())
             .await
-            .expect("child-exit race must settle")
-            .unwrap();
+            .assert_value_with("child-exit race must settle")
+            .assert_value();
         if completion.cancelled {
             assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
         } else {
             assert_eq!(completion.exit_code, Some(0));
         }
-        assert_eq!(completion, session.release().await.unwrap());
+        assert_eq!(completion, session.release().await.assert_value());
     }
 
     let (cancel, mut session) = open("/bin/sleep", vec!["30"]).await;
-    cancel.send(true).unwrap();
+    cancel.send(true).assert_value();
     let completion = timeout(Duration::from_secs(2), session.wait())
         .await
-        .expect("cancellation must settle")
-        .unwrap();
+        .assert_value_with("cancellation must settle")
+        .assert_value();
     assert!(completion.cancelled);
     assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
 }
@@ -175,11 +178,11 @@ async fn deadline_force_kills_and_reaps_the_session() {
     let mut session = LocalProcessRunner::new()
         .open(timed, cancellation)
         .await
-        .unwrap();
+        .assert_value();
     let completion = timeout(Duration::from_secs(2), session.wait())
         .await
-        .expect("deadline must settle")
-        .unwrap();
+        .assert_value_with("deadline must settle")
+        .assert_value();
     assert!(completion.timed_out);
     assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
 }
@@ -191,8 +194,8 @@ async fn child_death_closes_stream_and_reports_may_have_started() {
     assert_eq!(session.recv_stdout().await, None);
     let completion = timeout(Duration::from_secs(2), session.wait())
         .await
-        .unwrap()
-        .unwrap();
+        .assert_value()
+        .assert_value();
     assert_eq!(
         completion.launch_evidence,
         ProcessLaunchEvidence::MayHaveStarted
@@ -201,13 +204,10 @@ async fn child_death_closes_stream_and_reports_may_have_started() {
 
     let (cancel, cancellation) = cancellation_pair();
     let _keep_sender_alive = cancel;
-    let error = match LocalProcessRunner::new()
+    let error = LocalProcessRunner::new()
         .open(command("/definitely/missing", vec![]), cancellation)
         .await
-    {
-        Ok(_) => panic!("missing process unexpectedly started"),
-        Err(error) => error,
-    };
+        .assert_error_with("missing process unexpectedly started");
     assert!(matches!(error, ProcessRunnerError::Launch(_)));
     assert_eq!(
         error.launch_evidence(),
@@ -229,14 +229,16 @@ async fn release_drain_timeout_force_kills_and_reaps_descendants() {
 
     let first = timeout(Duration::from_secs(4), session.release())
         .await
-        .expect("release must force a non-draining child")
-        .unwrap();
-    let second = session.release().await.unwrap();
+        .assert_value_with("release must force a non-draining child")
+        .assert_value();
+    let second = session.release().await.assert_value();
     assert_eq!(first, second);
     assert_eq!(first.cleanup, ProcessCleanupEvidence::Reaped);
     wait_for_process_exit(child_pid).await;
     let _ = fs::remove_file(pid_file);
 }
+
+use openengine_cluster_testkit::assertions::{AssertValue, AssertError};
 
 #[cfg(unix)]
 #[tokio::test]
@@ -250,11 +252,11 @@ async fn root_exit_and_cancel_race_still_reap_surviving_descendants() {
     );
     let (_cancel, mut session) = open("/bin/sh", vec!["-c", &script]).await;
     let child_pid = wait_for_child_pid(&pid_file).await;
-    assert_eq!(fs::read(&ready_file).unwrap(), b"ready");
+    assert_eq!(fs::read(&ready_file).assert_value(), b"ready");
     let completion = timeout(Duration::from_secs(4), session.wait())
         .await
-        .expect("root exit must retain descendant cleanup ownership")
-        .unwrap();
+        .assert_value_with("root exit must retain descendant cleanup ownership")
+        .assert_value();
     assert_eq!(completion.exit_code, Some(0));
     assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
     assert_eq!(completion.post_launch_error, None);
@@ -264,12 +266,12 @@ async fn root_exit_and_cancel_race_still_reap_surviving_descendants() {
 
     let (cancel, mut session) = open("/bin/sh", vec!["-c", &script]).await;
     let child_pid = wait_for_child_pid(&pid_file).await;
-    assert_eq!(fs::read(&ready_file).unwrap(), b"ready");
+    assert_eq!(fs::read(&ready_file).assert_value(), b"ready");
     let _ = cancel.send(true);
     let completion = timeout(Duration::from_secs(4), session.wait())
         .await
-        .expect("root-exit cancellation race must retain cleanup ownership")
-        .unwrap();
+        .assert_value_with("root-exit cancellation race must retain cleanup ownership")
+        .assert_value();
     assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
     assert_eq!(completion.post_launch_error, None);
     wait_for_process_exit(child_pid).await;
@@ -288,13 +290,13 @@ async fn rejects_oversized_messages_and_classifies_post_launch_io() {
         ProcessFrame::with_framing(vec![0; MAX_PROCESS_FRAME_BYTES], MAX_PROCESS_MESSAGE_BYTES)
             .is_ok()
     );
-    let error = ProcessFrame::new(vec![0; MAX_PROCESS_MESSAGE_BYTES + 1]).unwrap_err();
+    let error = ProcessFrame::new(vec![0; MAX_PROCESS_MESSAGE_BYTES + 1]).assert_error();
     assert!(matches!(error, ProcessRunnerError::InvalidCommand(_)));
     let overhead_error = ProcessFrame::with_framing(
         vec![0; MAX_PROCESS_FRAME_BYTES + 1],
         MAX_PROCESS_MESSAGE_BYTES,
     )
-    .unwrap_err();
+    .assert_error();
     assert!(matches!(
         overhead_error,
         ProcessRunnerError::InvalidCommand(_)
@@ -305,11 +307,11 @@ async fn rejects_oversized_messages_and_classifies_post_launch_io() {
     );
 
     let (_cancel, mut session) = open("/bin/true", vec![]).await;
-    session.wait().await.unwrap();
+    session.wait().await.assert_value();
     let error = session
-        .send(ProcessFrame::new(b"late".to_vec()).unwrap())
+        .send(ProcessFrame::new(b"late".to_vec()).assert_value())
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(matches!(error, ProcessRunnerError::Io(_)));
     assert_eq!(
         error.launch_evidence(),
@@ -325,8 +327,8 @@ async fn stderr_keeps_only_the_bounded_diagnostic_tail() {
     let (_cancel, mut session) = open("/bin/sh", vec!["-c", script]).await;
     let completion = timeout(Duration::from_secs(5), session.wait())
         .await
-        .unwrap()
-        .unwrap();
+        .assert_value()
+        .assert_value();
     assert_eq!(completion.stderr_tail.len(), MAX_PROCESS_DIAGNOSTIC_BYTES);
     assert!(completion.stderr_tail.ends_with(b"TAIL"));
     assert_eq!(completion.post_launch_error, None);
@@ -337,16 +339,16 @@ async fn stderr_keeps_only_the_bounded_diagnostic_tail() {
 async fn close_and_release_are_idempotent_for_one_shot_sessions() {
     let (_cancel, mut session) = open("/bin/cat", vec![]).await;
     session
-        .send(ProcessFrame::new(b"one-shot\n".to_vec()).unwrap())
+        .send(ProcessFrame::new(b"one-shot\n".to_vec()).assert_value())
         .await
-        .unwrap();
-    session.close_stdin().await.unwrap();
-    session.close_stdin().await.unwrap();
+        .assert_value();
+    session.close_stdin().await.assert_value();
+    session.close_stdin().await.assert_value();
     assert_eq!(collect_stdout(&mut session).await, b"one-shot\n");
 
-    let waited = session.wait().await.unwrap();
-    let first_release = session.release().await.unwrap();
-    let second_release = session.release().await.unwrap();
+    let waited = session.wait().await.assert_value();
+    let first_release = session.release().await.assert_value();
+    let second_release = session.release().await.assert_value();
     assert_eq!(waited, first_release);
     assert_eq!(first_release, second_release);
     assert_eq!(first_release.cleanup, ProcessCleanupEvidence::NotRequired);
@@ -355,7 +357,7 @@ async fn close_and_release_are_idempotent_for_one_shot_sessions() {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_job_release_reaps_a_descendant() {
-    let system_root = std::env::var("SystemRoot").expect("Windows has SystemRoot");
+    let system_root = std::env::var("SystemRoot").assert_value_with("Windows has SystemRoot");
     let powershell = PathBuf::from(&system_root)
         .join("System32")
         .join("WindowsPowerShell")
@@ -378,14 +380,14 @@ async fn windows_job_release_reaps_a_descendant() {
     let mut session = LocalProcessRunner::new()
         .open(launch, cancellation)
         .await
-        .unwrap();
+        .assert_value();
     let child_pid = wait_for_child_pid(&pid_file).await;
     assert!(process_exists(child_pid));
-    cancel.send(true).unwrap();
+    cancel.send(true).assert_value();
     let completion = timeout(Duration::from_secs(5), session.wait())
         .await
-        .unwrap()
-        .unwrap();
+        .assert_value()
+        .assert_value();
     assert_eq!(completion.cleanup, ProcessCleanupEvidence::Reaped);
     wait_for_process_exit(child_pid).await;
     let _ = fs::remove_file(pid_file);

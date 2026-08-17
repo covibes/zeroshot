@@ -14,21 +14,20 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroshot_engine::native_v2_cli::oecp::TargetConnector;
 use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetSetup};
-use zeroshot_engine::native_v2_contract::RuntimePlan;
+pub use zeroshot_engine::native_v2_target_authority::{TargetBase, TargetSetupDocument};
 
 mod contract;
+mod controller_authority;
 mod oecp;
 mod registry;
 
-use contract::{prepare_setup, prepare_target, validate_target_name};
+use contract::{prepare_setup, prepare_target, validate_bearer_token, validate_target_name};
 pub use oecp::{AuthenticatedOecpWebSocketDialer, TargetOecpDialer};
 pub use registry::{FileTargetRegistry, TargetRegistry, default_target_registry_path};
+pub use controller_authority::HostedTargetControlAuthority;
 
 #[cfg(test)]
-use contract::{normalize_base, normalize_origin, validate_bearer_token};
-#[cfg(test)]
-use registry::encode_hex;
-
+use contract::{normalize_base, normalize_origin};
 #[cfg(test)]
 #[path = "native_v2_target/tests.rs"]
 mod tests;
@@ -68,76 +67,13 @@ impl TargetAuthorityError {
     }
 }
 
-/// Explicit production placeholder until hosting advertises the target-wide authority contract.
-/// It prevents the shipped Rust CLI from silently falling back to the Node/capsule path or
-/// guessing a cloud route.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct UndefinedTargetControlAuthority;
-
-pub const UNDEFINED_TARGET_AUTHORITY: &str = concat!(
-    "native-v2 target authority is not advertised: the current hosted discovery defines only ",
-    "capsule-scoped OAuth and WebSockets; target discovery, device login, atomic setup, and ",
-    "target-scoped run/* OECP endpoints are required"
-);
-pub const UNDEFINED_TARGET_AUTHORITY_HELP: &str = concat!(
-    "\nCloud target availability:\n",
-    "  This build requires a target-wide native-v2 authority contract. ",
-    "Current hosted discovery is capsule-scoped and cannot serve run/*.\n"
-);
-
-#[async_trait]
-impl TargetControlAuthority for UndefinedTargetControlAuthority {
-    async fn discover(&self, _target: &TargetRecord) -> Result<(), TargetAuthorityError> {
-        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
-    }
-
-    async fn login(&self, _target: &TargetRecord) -> Result<(), TargetAuthorityError> {
-        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
-    }
-
-    async fn install(
-        &self,
-        _target: &TargetRecord,
-        _setup: &TargetSetupDocument,
-    ) -> Result<(), TargetAuthorityError> {
-        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
-    }
-
-    async fn oecp_session(
-        &self,
-        _target: &TargetRecord,
-    ) -> Result<AuthenticatedTargetOecp, TargetAuthorityError> {
-        Err(TargetAuthorityError::new(UNDEFINED_TARGET_AUTHORITY))
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TargetRecord {
+    pub id: String,
     pub name: String,
     pub origin: String,
-}
-
-/// Secret-free setup installed on a target as one unit.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct TargetSetupDocument {
-    pub repository: String,
-    pub base: TargetBase,
-    pub runtime: RuntimePlan,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
-pub enum TargetBase {
-    Default,
-    Branch {
-        branch: String,
-    },
-    Revision {
-        revision: String,
-        target_branch: String,
-    },
+    pub device_token: String,
 }
 
 /// Opaque authenticated session minted by the control authority. Debug output never includes the
@@ -148,7 +84,6 @@ pub struct AuthenticatedTargetOecp {
 }
 
 impl AuthenticatedTargetOecp {
-    #[cfg(test)]
     fn new(
         endpoint: impl Into<String>,
         bearer_token: impl Into<String>,
@@ -199,6 +134,8 @@ pub enum TargetConnectorError {
     RegistryJson(#[source] serde_json::Error),
     #[error("target registry exceeds 1 MiB")]
     RegistryTooLarge,
+    #[error("secure randomness is unavailable")]
+    Randomness,
     #[error("runtime plan file {path} could not be read: {source}")]
     RuntimeRead {
         path: PathBuf,

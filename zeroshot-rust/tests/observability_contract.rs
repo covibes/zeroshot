@@ -18,7 +18,7 @@ fn fault_creation_emits_exactly_one_bounded_typed_observation() {
             FaultContext::Configuration,
             EvidenceClass::AuthenticationRequired,
         )
-        .with_diagnostic(RawDiagnostic::new(RedactionMarker::Credential, secret).unwrap()),
+        .with_diagnostic(RawDiagnostic::new(RedactionMarker::Credential, secret).assert_value()),
     );
 
     let snapshot = sink.snapshot();
@@ -28,10 +28,10 @@ fn fault_creation_emits_exactly_one_bounded_typed_observation() {
     assert_eq!(snapshot.faults.len(), 1);
     assert_eq!(snapshot.fault_size_bytes.len(), 1);
     assert_eq!(
-        snapshot.fault_size_bytes[0] as usize,
-        fault.encode_json().unwrap().len()
+        usize::from(*snapshot.fault_size_bytes.assert_at(0)),
+        fault.encode_json().assert_value().len()
     );
-    let record = snapshot.faults[0];
+    let record = snapshot.faults.assert_at(0);
     assert_eq!(record.module, ObservationModule::Credential);
     assert_eq!(record.operation, ObservationOperation::Configuration);
     assert_eq!(record.outcome, ObservationOutcome::Faulted);
@@ -53,7 +53,7 @@ fn session_loss_observation_is_terminal_typed_and_identifier_free() {
             EvidenceClass::SessionLost,
         )
         .with_diagnostic(
-            RawDiagnostic::new(RedactionMarker::SessionIdentifier, identifier).unwrap(),
+            RawDiagnostic::new(RedactionMarker::SessionIdentifier, identifier).assert_value(),
         ),
     );
 
@@ -63,9 +63,9 @@ fn session_loss_observation_is_terminal_typed_and_identifier_free() {
     assert_eq!(snapshot.faults.len(), 1);
     assert_eq!(
         snapshot.fault_size_bytes,
-        vec![fault.encode_json().unwrap().len() as u16]
+        vec![u16::try_from(fault.encode_json().assert_value().len()).assert_value()]
     );
-    let record = snapshot.faults[0];
+    let record = snapshot.faults.assert_at(0);
     assert_eq!(record.module, ObservationModule::Worker);
     assert_eq!(record.operation, ObservationOperation::Execution);
     assert_eq!(record.outcome, ObservationOutcome::Faulted);
@@ -89,7 +89,7 @@ fn diagnostic_content_cannot_change_observation_dimensions() {
                 FaultContext::Execution,
                 EvidenceClass::ProcessExited,
             )
-            .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, raw).unwrap()),
+            .with_diagnostic(RawDiagnostic::new(RedactionMarker::ProviderText, raw).assert_value()),
         )
     };
     classify(&first_sink, "provider secret one");
@@ -150,5 +150,7 @@ fn no_op_sink_accepts_typed_records_without_state_or_global_installation() {
         FaultContext::Observation,
         EvidenceClass::Unavailable,
     ));
-    assert!(!fault.encode_json().unwrap().is_empty());
+    assert!(!fault.encode_json().assert_value().is_empty());
 }
+
+use openengine_cluster_testkit::assertions::{AssertAt, AssertValue};

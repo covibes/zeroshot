@@ -93,8 +93,7 @@ pub struct AgentAttachEventNotification {
 impl AgentAttachEventNotification {
     pub fn validate(&self) -> Result<(), AgentAttachEventValidationError> {
         let encoded_len = serde_json::to_vec(&AgentAttachEventNotificationRef::from(self))
-            .expect("AgentAttachEventNotificationRef fields serialize infallibly")
-            .len();
+            .map_or(usize::MAX, |encoded| encoded.len());
         if encoded_len > MAX_AGENT_ATTACH_EVENT_ENCODED_BYTES {
             return Err(AgentAttachEventValidationError::EncodedTooLarge);
         }

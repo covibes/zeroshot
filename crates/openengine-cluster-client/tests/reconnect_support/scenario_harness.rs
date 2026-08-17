@@ -14,6 +14,7 @@ use openengine_cluster_server::watch::fixtures::{FixtureBackend, FixtureStore};
 use tokio::task::JoinHandle;
 
 use crate::reconnect_support::{assert_reconnect_replays_and_dedups, overflow_and_close_with};
+use crate::support::AssertValue;
 
 /// Spawn/shutdown glue letting [`run_overflow_and_reconnect_scenario`] (and, via
 /// `cancel_scenario`, `run_cancel_stops_delivery_scenario`) drive identical scenarios over any
@@ -37,12 +38,15 @@ pub async fn run_overflow_and_reconnect_scenario<T: ScenarioTransport>(
     let (transport, server) = T::spawn(FixtureBackend::new(Arc::clone(&store))).await;
 
     let watch_client = WatchSubscriptionClient::new(&transport);
-    let (result, mut stream) = watch_client.watch(WatchParams::default()).await.unwrap();
+    let (result, mut stream) = watch_client
+        .watch(WatchParams::default())
+        .await
+        .assert_value();
     assert_eq!(result.run_id, Some(run_id));
 
     let received = overflow_and_close_with(&store, &mut stream, &mut event).await;
 
-    let (_result, mut stream) = stream.reconnect().await.unwrap();
+    let (_result, mut stream) = stream.reconnect().await.assert_value();
     assert_reconnect_replays_and_dedups(&store, &mut stream, received).await;
 
     drop(stream);

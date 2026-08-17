@@ -60,7 +60,7 @@ impl ClaudeTranscript {
         while let Some(newline) = self.pending.iter().position(|byte| *byte == b'\n') {
             let remaining = self.pending.split_off(newline + 1);
             let line = std::mem::replace(&mut self.pending, remaining);
-            self.parse_line(&line[..newline], control)?;
+            self.parse_line(line.get(..newline).ok_or(NodeRunnerError::Driver)?, control)?;
         }
         if self.pending.len() > MAX_EVENT_BYTES {
             return Err(NodeRunnerError::Driver);

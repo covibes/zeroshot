@@ -1,6 +1,8 @@
 //! Deterministic admission fixtures. These types script verifier assertions and admission state;
 //! they are not a native graph verifier or production executor.
 
+use crate::fixture::*;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
@@ -191,7 +193,7 @@ impl StoreState {
         let input = proposal
             .input
             .clone()
-            .expect("changed admission validated required input");
+            .assert_value_with("changed admission validated required input");
         self.control.spec = Some(proposal.graph.clone());
         self.control.compiled_ir = Some(proposal.compiled_ir.clone());
         self.install_run(run_id.clone(), generation, input);
@@ -216,7 +218,7 @@ impl StoreState {
             .control
             .spec
             .clone()
-            .expect("install_run requires an admitted graph spec");
+            .assert_value_with("install_run requires an admitted graph spec");
         self.control.generation = Some(generation);
         self.control.run_id = Some(run_id.clone());
         self.control.phase = Phase::Running;

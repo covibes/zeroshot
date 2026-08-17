@@ -187,33 +187,31 @@ pub(crate) async fn run_watch_subscription<B>(
     };
 
     let encode_subscription_id = established.subscription_id.clone();
-    subscription::run_established_subscription(established, channels, move |item| {
-        Some(match item {
-            WatchStreamItem::Record(record) => serde_json::to_string(&JsonRpcNotification {
-                jsonrpc: JSON_RPC_VERSION.to_owned(),
-                method: "event".to_owned(),
-                params: EventNotification {
-                    subscription_id: encode_subscription_id.clone(),
-                    run_id: record.run_id,
-                    cursor: record.cursor,
-                    event: record.event,
-                },
-            })
-            .expect("event notification serialization must succeed"),
-            WatchStreamItem::Closed {
+    subscription::run_established_subscription(established, channels, move |item| match item {
+        WatchStreamItem::Record(record) => serde_json::to_string(&JsonRpcNotification {
+            jsonrpc: JSON_RPC_VERSION.to_owned(),
+            method: "event".to_owned(),
+            params: EventNotification {
+                subscription_id: encode_subscription_id.clone(),
+                run_id: record.run_id,
+                cursor: record.cursor,
+                event: record.event,
+            },
+        })
+        .ok(),
+        WatchStreamItem::Closed {
+            reason,
+            last_delivered_cursor,
+        } => serde_json::to_string(&JsonRpcNotification {
+            jsonrpc: JSON_RPC_VERSION.to_owned(),
+            method: "subscription/closed".to_owned(),
+            params: SubscriptionClosedNotification {
+                subscription_id: encode_subscription_id.clone(),
                 reason,
                 last_delivered_cursor,
-            } => serde_json::to_string(&JsonRpcNotification {
-                jsonrpc: JSON_RPC_VERSION.to_owned(),
-                method: "subscription/closed".to_owned(),
-                params: SubscriptionClosedNotification {
-                    subscription_id: encode_subscription_id.clone(),
-                    reason,
-                    last_delivered_cursor,
-                },
-            })
-            .expect("subscription closed notification serialization must succeed"),
+            },
         })
+        .ok(),
     })
     .await;
 }

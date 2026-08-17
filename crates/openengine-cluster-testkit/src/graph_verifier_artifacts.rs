@@ -1,5 +1,7 @@
 //! Deterministic production-verifier conformance envelopes.
 
+use crate::fixture::*;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
@@ -89,7 +91,7 @@ fn insert_descriptor(
 ) {
     descriptors.insert(
         worker_ref(requested),
-        serde_json::from_value(value).expect("fixture descriptor is valid"),
+        serde_json::from_value(value).assert_value_with("fixture descriptor is valid"),
     );
 }
 
@@ -100,7 +102,7 @@ fn insert_registry_fault_descriptors(descriptors: &mut BTreeMap<WorkerRef, Worke
         null_type(),
         None,
     ))
-    .unwrap();
+    .assert_value();
     invalid.contract.errors.pop();
     descriptors.insert(worker_ref("fixture.invalid-contract@1"), invalid);
 
@@ -115,7 +117,7 @@ fn insert_registry_fault_descriptors(descriptors: &mut BTreeMap<WorkerRef, Worke
         null_type(),
         None,
     ))
-    .unwrap();
+    .assert_value();
     profile.graph_profiles = vec![GraphProfile::SingleWorker];
     descriptors.insert(worker_ref("fixture.profile@1"), profile);
 }
@@ -158,7 +160,7 @@ pub async fn graph_verifier_fixture_artifacts() -> Vec<Artifact> {
     let mut artifacts = Vec::new();
     for (name, graph_value) in positive_cases().into_iter().chain(negative_cases()) {
         let graph: GraphSpec = serde_json::from_value(graph_value.clone())
-            .expect("verifier fixture graph must satisfy the wire contract");
+            .assert_value_with("verifier fixture graph must satisfy the wire contract");
         let expected = result_value(verify_fixture_graph(&graph).await);
         artifacts.push(json_artifact(
             format!("{ROOT}/{name}"),
@@ -180,7 +182,7 @@ pub fn result_value(result: Result<VerifiedGraph, VerificationError>) -> Value {
             json!({ "status": "rejected", "diagnostics": diagnostics })
         }
         Err(VerificationError::Internal(message)) => {
-            panic!("fixture verification reached internal failure: {message}")
+            json!({ "status": "internal-error", "message": message })
         }
     }
 }

@@ -34,10 +34,9 @@ pub struct ArtifactIntent {
 }
 
 impl ArtifactIntent {
-    #[must_use]
-    pub fn artifact_ref(&self) -> ArtifactRef {
-        ArtifactRef {
-            artifact_id: derive_artifact_id(self),
+    pub fn artifact_ref(&self) -> Result<ArtifactRef, ArtifactStoreFailure> {
+        Ok(ArtifactRef {
+            artifact_id: derive_artifact_id(self)?,
             sha256: self.expected_sha256.clone(),
             byte_length: self.expected_byte_length,
             media_type: self.media_type.clone(),
@@ -45,7 +44,7 @@ impl ArtifactIntent {
             producer: self.producer.clone(),
             lineage: self.lineage.clone(),
             redaction: self.redaction,
-        }
+        })
     }
 }
 
@@ -269,48 +268,74 @@ pub trait ArtifactStore: Send + Sync {
     ) -> Result<ReleaseResult, ArtifactStoreFailure>;
 }
 
-#[must_use]
-pub fn derive_artifact_id(intent: &ArtifactIntent) -> ArtifactId {
+pub fn derive_artifact_id(intent: &ArtifactIntent) -> Result<ArtifactId, ArtifactStoreFailure> {
     let mut preimage = Vec::new();
-    append_identity_field(&mut preimage, ARTIFACT_ID_DOMAIN.as_bytes());
-    append_identity_field(&mut preimage, intent.expected_sha256.as_str().as_bytes());
+    append_content_identity(&mut preimage, intent)?;
+    append_producer_identity(&mut preimage, intent)?;
+    append_lineage_identity(&mut preimage, intent)?;
+    append_redaction_identity(&mut preimage, intent.redaction)?;
+    ArtifactId::new(format!("cas-v1-{}", sha256_hex(&preimage)))
+        .map_err(|_| ArtifactStoreFailure::new(ArtifactStoreFailureKind::CorruptContent))
+}
+
+fn append_content_identity(
+    preimage: &mut Vec<u8>,
+    intent: &ArtifactIntent,
+) -> Result<(), ArtifactStoreFailure> {
+    append_identity_field(preimage, ARTIFACT_ID_DOMAIN.as_bytes())?;
+    append_identity_field(preimage, intent.expected_sha256.as_str().as_bytes())?;
     append_identity_field(
-        &mut preimage,
+        preimage,
         intent.expected_byte_length.get().to_string().as_bytes(),
-    );
-    append_identity_field(&mut preimage, intent.media_type.as_str().as_bytes());
-    append_identity_field(&mut preimage, intent.type_id.as_str().as_bytes());
-    append_identity_field(&mut preimage, intent.producer.node.as_str().as_bytes());
-    append_identity_field(&mut preimage, intent.producer.worker.as_str().as_bytes());
+    )?;
+    append_identity_field(preimage, intent.media_type.as_str().as_bytes())?;
+    append_identity_field(preimage, intent.type_id.as_str().as_bytes())
+}
+
+fn append_producer_identity(
+    preimage: &mut Vec<u8>,
+    intent: &ArtifactIntent,
+) -> Result<(), ArtifactStoreFailure> {
+    append_identity_field(preimage, intent.producer.node.as_str().as_bytes())?;
+    append_identity_field(preimage, intent.producer.worker.as_str().as_bytes())
+}
+
+fn append_lineage_identity(
+    preimage: &mut Vec<u8>,
+    intent: &ArtifactIntent,
+) -> Result<(), ArtifactStoreFailure> {
     append_identity_field(
-        &mut preimage,
+        preimage,
         intent.lineage.generation.get().to_string().as_bytes(),
-    );
-    append_identity_field(&mut preimage, intent.lineage.run_id.as_str().as_bytes());
+    )?;
+    append_identity_field(preimage, intent.lineage.run_id.as_str().as_bytes())?;
     append_identity_field(
-        &mut preimage,
+        preimage,
         intent.lineage.attempt.get().to_string().as_bytes(),
-    );
+    )
+}
+
+fn append_redaction_identity(
+    preimage: &mut Vec<u8>,
+    redaction: RedactionClass,
+) -> Result<(), ArtifactStoreFailure> {
     append_identity_field(
-        &mut preimage,
-        match intent.redaction {
+        preimage,
+        match redaction {
             RedactionClass::Public => b"public",
             RedactionClass::Internal => b"internal",
             RedactionClass::Confidential => b"confidential",
             RedactionClass::Restricted => b"restricted",
         },
-    );
-    ArtifactId::new(format!("cas-v1-{}", sha256_hex(&preimage)))
-        .expect("derived artifact identity is protocol-valid")
+    )
 }
 
-fn append_identity_field(preimage: &mut Vec<u8>, value: &[u8]) {
-    preimage.extend_from_slice(
-        &u64::try_from(value.len())
-            .expect("protocol field length fits u64")
-            .to_be_bytes(),
-    );
+fn append_identity_field(preimage: &mut Vec<u8>, value: &[u8]) -> Result<(), ArtifactStoreFailure> {
+    let length = u64::try_from(value.len())
+        .map_err(|_| ArtifactStoreFailure::new(ArtifactStoreFailureKind::CorruptContent))?;
+    preimage.extend_from_slice(&length.to_be_bytes());
     preimage.extend_from_slice(value);
+    Ok(())
 }
 
 pub(crate) async fn read_verified_bytes(
@@ -324,7 +349,8 @@ pub(crate) async fn read_verified_bytes(
         ));
     }
 
-    let capacity = usize::try_from(declared).expect("artifact limit fits usize");
+    let capacity = usize::try_from(declared)
+        .map_err(|_| ArtifactStoreFailure::new(ArtifactStoreFailureKind::Oversize))?;
     let mut output = Vec::with_capacity(capacity);
     let mut limited = (&mut bytes).take(declared + 1);
     limited
@@ -365,11 +391,20 @@ pub(crate) fn verify_bytes(
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
+    encode_hex(&digest)
+}
+
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    for byte in digest {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    for &byte in bytes {
+        if let (Some(&high), Some(&low)) = (
+            HEX.get(usize::from(byte >> 4)),
+            HEX.get(usize::from(byte & 0x0f)),
+        ) {
+            output.push(char::from(high));
+            output.push(char::from(low));
+        }
     }
     output
 }

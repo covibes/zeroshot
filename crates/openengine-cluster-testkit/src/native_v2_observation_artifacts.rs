@@ -1,5 +1,7 @@
 //! Deterministic schemas and examples for the additive native-v2 observation contract.
 
+use crate::fixture::*;
+
 use openengine_cluster_protocol::{
     ActiveExecution, AgentAttachEvent, BoundedAssistantOutput, BoundedLogMessage, BoundedLogTarget,
     Cursor, ExecutionRef, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LogLevel,
@@ -16,7 +18,6 @@ use crate::artifacts::{json_artifact, Artifact};
 const ROOT: &str = "protocol/openengine-cluster/v1";
 
 #[derive(JsonSchema)]
-#[allow(dead_code)] // Schema witness: fields exist only so schemars retains every wire root.
 pub struct NativeV2ObservationSchema {
     pub status_request: JsonRpcRequest<RunStatusParams>,
     pub status_response: JsonRpcResponse<RunStatusResult>,
@@ -35,12 +36,12 @@ pub struct NativeV2ObservationSchema {
 
 pub(crate) fn artifacts() -> Vec<Artifact> {
     let schema = serde_json::to_value(schema_for!(NativeV2ObservationSchema))
-        .expect("native-v2 observation schema serialization must succeed");
+        .assert_value_with("native-v2 observation schema serialization must succeed");
     vec![
         json_artifact(format!("{ROOT}/native-v2-observation.schema.json"), schema),
         json_artifact(
             format!("{ROOT}/fixtures/native_v2_observation/status.json"),
-            serde_json::to_value(status()).unwrap(),
+            serde_json::to_value(status()).assert_value(),
         ),
         json_artifact(
             format!("{ROOT}/fixtures/native_v2_observation/watch.json"),
@@ -70,7 +71,7 @@ fn cursor(value: u64) -> Cursor {
 }
 
 fn execution(value: &str) -> ExecutionRef {
-    ExecutionRef::new(value).unwrap()
+    ExecutionRef::new(value).assert_value()
 }
 
 fn status() -> RunStatusResult {
@@ -81,11 +82,11 @@ fn status() -> RunStatusResult {
             active_executions: vec![
                 ActiveExecution {
                     execution: execution("opaque-verifier-a"),
-                    node: NodeName::new("verify-a").unwrap(),
+                    node: NodeName::new("verify-a").assert_value(),
                 },
                 ActiveExecution {
                     execution: execution("opaque-verifier-b"),
-                    node: NodeName::new("verify-b").unwrap(),
+                    node: NodeName::new("verify-b").assert_value(),
                 },
             ],
         },
@@ -131,8 +132,8 @@ fn logs_fixture() -> Value {
             execution: Some(execution("opaque-verifier-b")),
             record: LogRecord {
                 level: LogLevel::Info,
-                target: BoundedLogTarget::new("agent").unwrap(),
-                message: BoundedLogMessage::new("historical output").unwrap(),
+                target: BoundedLogTarget::new("agent").assert_value(),
+                message: BoundedLogMessage::new("historical output").assert_value(),
             },
         }
     })
@@ -154,7 +155,7 @@ fn attach_fixture() -> Value {
             run_id: run_id(),
             execution: execution("opaque-verifier-b"),
             event: AgentAttachEvent::Output {
-                text: BoundedAssistantOutput::new("live output").unwrap(),
+                text: BoundedAssistantOutput::new("live output").assert_value(),
             },
         }
     })
@@ -164,9 +165,10 @@ fn force_fixture() -> Value {
     let mut result = status();
     result.at_cursor = cursor(10);
     let active_executions = match result.status {
-        RunStatus::Running { active_executions } => active_executions,
-        _ => unreachable!("fixture status is running"),
-    };
+        RunStatus::Running { active_executions } => Some(active_executions),
+        _ => None,
+    }
+    .assert_value_with("fixture status must be running");
     result.status = RunStatus::Stopping { active_executions };
     json!({
         "params": RunForceParams { run_id: run_id() },

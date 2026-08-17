@@ -25,12 +25,16 @@ use openengine_cluster_server::agent_attach::fixtures::{
 use openengine_cluster_server::watch::fixtures::{await_ndjson_shutdown, spawn_ndjson};
 use tokio::io::DuplexStream;
 
+#[path = "support/mod.rs"]
+pub mod support;
+use support::AssertValue;
+
 #[path = "cancel_leak_support/mod.rs"]
 mod cancel_leak_support;
 use cancel_leak_support::assert_cancel_stops_further_delivery;
 
 fn sample_execution_ref() -> ExecutionRef {
-    ExecutionRef::new("execution-1").unwrap()
+    ExecutionRef::new("execution-1").assert_value()
 }
 
 fn agent_attach_params() -> AgentAttachParams {
@@ -41,7 +45,7 @@ fn agent_attach_params() -> AgentAttachParams {
 
 fn sample_output_event(text: &str) -> AgentAttachEvent {
     AgentAttachEvent::Output {
-        text: BoundedAssistantOutput::new(text).unwrap(),
+        text: BoundedAssistantOutput::new(text).assert_value(),
     }
 }
 
@@ -50,10 +54,38 @@ async fn expect_next_event(
     stream: &mut NdjsonAgentAttachEventStream<'_, DuplexStream, DuplexStream>,
     expected: &AgentAttachEvent,
 ) {
-    match stream.next().await.unwrap().unwrap() {
-        AgentAttachEventOrClosed::Event(event) => assert_eq!(&event, expected),
-        other => panic!("expected an event matching {expected:?}, got {other:?}"),
+    let event = match stream.next().await.assert_value().assert_value() {
+        AgentAttachEventOrClosed::Event(event) => Some(event),
+        AgentAttachEventOrClosed::Closed { .. } => None,
     }
+    .assert_value_with("expected an agent attach event");
+    assert_eq!(&event, expected);
+}
+
+async fn assert_attach_rejection(
+    store: Arc<AgentAttachFixtureStore>,
+    expected_code: &str,
+    context: &str,
+) {
+    let (client_write, client_read, server) =
+        spawn_ndjson(AgentAttachFixtureBackend::new(Arc::clone(&store)));
+    let transport = NdjsonTransport::new(client_read, client_write);
+    let error = NdjsonAgentAttachClient::new(&transport)
+        .agent_attach(agent_attach_params())
+        .await
+        .err()
+        .assert_value_with(context);
+    let rpc_error = match error {
+        openengine_cluster_client::ClientError::Rpc(error) => Some(error),
+        _ => None,
+    }
+    .assert_value_with("expected an RPC error");
+    assert_eq!(
+        rpc_error.data.as_ref().map(|data| data.code.as_str()),
+        Some(expected_code)
+    );
+    drop(transport);
+    await_ndjson_shutdown(server).await;
 }
 
 #[tokio::test]
@@ -69,7 +101,7 @@ async fn establish_stream_working_output_settled_then_cancel_stops_delivery() {
     let (_result, mut stream) = agent_attach_client
         .agent_attach(agent_attach_params())
         .await
-        .unwrap();
+        .assert_value();
 
     for event in [
         AgentAttachEvent::Working {},
@@ -101,27 +133,12 @@ async fn establish_stream_working_output_settled_then_cancel_stops_delivery() {
 #[tokio::test]
 async fn unknown_execution_ref_error_propagates_to_the_client() {
     let store = Arc::new(AgentAttachFixtureStore::new());
-    let (client_write, client_read, server) =
-        spawn_ndjson(AgentAttachFixtureBackend::new(Arc::clone(&store)));
-
-    let transport = NdjsonTransport::new(client_read, client_write);
-    let agent_attach_client = NdjsonAgentAttachClient::new(&transport);
-    let Err(error) = agent_attach_client
-        .agent_attach(agent_attach_params())
-        .await
-    else {
-        panic!("expected an unknown execution ref to be rejected");
-    };
-    let openengine_cluster_client::ClientError::Rpc(rpc_error) = error else {
-        panic!("expected an RPC error, got {error}");
-    };
-    assert_eq!(
-        rpc_error.data.as_ref().map(|data| data.code.as_str()),
-        Some(NOT_FOUND)
-    );
-
-    drop(transport);
-    await_ndjson_shutdown(server).await;
+    assert_attach_rejection(
+        store,
+        NOT_FOUND,
+        "expected an unknown execution ref rejection",
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -130,25 +147,5 @@ async fn inactive_execution_ref_error_propagates_to_the_client() {
     let execution = sample_execution_ref();
     store.register_active(execution.clone()).await;
     store.mark_inactive(&execution).await;
-    let (client_write, client_read, server) =
-        spawn_ndjson(AgentAttachFixtureBackend::new(Arc::clone(&store)));
-
-    let transport = NdjsonTransport::new(client_read, client_write);
-    let agent_attach_client = NdjsonAgentAttachClient::new(&transport);
-    let Err(error) = agent_attach_client
-        .agent_attach(agent_attach_params())
-        .await
-    else {
-        panic!("expected an inactive execution ref to be rejected");
-    };
-    let openengine_cluster_client::ClientError::Rpc(rpc_error) = error else {
-        panic!("expected an RPC error, got {error}");
-    };
-    assert_eq!(
-        rpc_error.data.as_ref().map(|data| data.code.as_str()),
-        Some(GONE)
-    );
-
-    drop(transport);
-    await_ndjson_shutdown(server).await;
+    assert_attach_rejection(store, GONE, "expected an inactive execution ref rejection").await;
 }

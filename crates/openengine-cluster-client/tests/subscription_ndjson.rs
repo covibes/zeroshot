@@ -6,10 +6,21 @@
 
 use std::time::Duration;
 
-use openengine_cluster_client::{EventOrClosed, JsonRpcTransport, NdjsonTransport, NdjsonWatchClient};
+use openengine_cluster_client::{EventOrClosed, NdjsonTransport, NdjsonWatchClient};
 use openengine_cluster_protocol::{Cursor, RunId, SubscriptionCloseReason, WatchEvent, WatchParams};
-use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+use serde_json::json;
+use tokio::io::DuplexStream;
+
+#[path = "support/mod.rs"]
+pub mod support;
+use support::AssertValue;
+
+#[path = "ndjson_test_support/mod.rs"]
+mod ndjson_test_support;
+use ndjson_test_support::{
+    assert_distinct_ids_and_server, assert_unary_roundtrip, duplex_pair,
+    serve_distinct_subscription_ids, spawn_overflow_scenario, CLIENT_QUEUE_CAPACITY,
+};
 
 #[path = "reconnect_support/mod.rs"]
 mod reconnect_support;
@@ -47,52 +58,14 @@ async fn cancel_stops_further_delivery() {
     run_cancel_stops_delivery_scenario::<NdjsonTransport<DuplexStream, DuplexStream>>().await;
 }
 
-async fn write_json_line(writer: &mut DuplexStream, value: Value) {
-    writer
-        .write_all(value.to_string().as_bytes())
-        .await
-        .unwrap();
-    writer.write_all(b"\n").await.unwrap();
-    writer.flush().await.unwrap();
-}
-
-async fn read_json_line(reader: &mut BufReader<DuplexStream>) -> Value {
-    let mut line = String::new();
-    assert!(reader.read_line(&mut line).await.unwrap() > 0);
-    serde_json::from_str(&line).unwrap()
-}
-
 #[tokio::test]
 async fn independent_watch_clients_share_one_collision_free_request_id_source() {
-    let (client_write, server_read) = tokio::io::duplex(1 << 16);
-    let (mut server_write, client_read) = tokio::io::duplex(1 << 16);
-    let server = tokio::spawn(async move {
-        let mut server_read = BufReader::new(server_read);
-        let first = read_json_line(&mut server_read).await;
-        let second = read_json_line(&mut server_read).await;
-        let first_id = first["id"].clone();
-        let second_id = second["id"].clone();
-        assert_ne!(first_id, second_id);
-
-        write_json_line(
-            &mut server_write,
-            json!({
-                "jsonrpc": "2.0",
-                "id": second_id,
-                "result": {"subscriptionId": "sub-2", "runId": null, "atCursor": null}
-            }),
-        )
-        .await;
-        write_json_line(
-            &mut server_write,
-            json!({
-                "jsonrpc": "2.0",
-                "id": first_id,
-                "result": {"subscriptionId": "sub-1", "runId": null, "atCursor": null}
-            }),
-        )
-        .await;
-    });
+    let (client_write, server_read, server_write, client_read) = duplex_pair(1 << 16);
+    let server = tokio::spawn(serve_distinct_subscription_ids(
+        server_read,
+        server_write,
+        |subscription_id| json!({"subscriptionId": subscription_id, "runId": null, "atCursor": null}),
+    ));
 
     let transport = NdjsonTransport::new(client_read, client_write);
     let first = NdjsonWatchClient::new(&transport);
@@ -101,106 +74,69 @@ async fn independent_watch_clients_share_one_collision_free_request_id_source() 
         first.watch(WatchParams::default()),
         second.watch(WatchParams::default())
     );
-    assert_ne!(
-        first_result.unwrap().0.subscription_id,
-        second_result.unwrap().0.subscription_id
-    );
-    server.await.unwrap();
+    assert_distinct_ids_and_server(
+        (
+            first_result.assert_value().0.subscription_id,
+            second_result.assert_value().0.subscription_id,
+        ),
+        server,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn unread_subscription_overflow_does_not_block_unary_responses() {
-    const CLIENT_QUEUE_CAPACITY: usize = 1024;
-
-    let (client_write, server_read) = tokio::io::duplex(1 << 20);
-    let (mut server_write, client_read) = tokio::io::duplex(1 << 20);
-    let server = tokio::spawn(async move {
-        let mut server_read = BufReader::new(server_read);
-        let watch = read_json_line(&mut server_read).await;
-        write_json_line(
-            &mut server_write,
+    let (client_write, client_read, server) = spawn_overflow_scenario(
+        json!({
+            "subscriptionId": "slow-subscription",
+            "runId": "run-1",
+            "atCursor": null
+        }),
+        |index| {
             json!({
                 "jsonrpc": "2.0",
-                "id": watch["id"],
-                "result": {
+                "method": "event",
+                "params": {
                     "subscriptionId": "slow-subscription",
                     "runId": "run-1",
-                    "atCursor": null
+                    "cursor": format!("cursor-{index}"),
+                    "event": {"type": "bookmark"}
                 }
-            }),
-        )
-        .await;
-
-        for index in 1..=CLIENT_QUEUE_CAPACITY + 1 {
-            write_json_line(
-                &mut server_write,
-                json!({
-                    "jsonrpc": "2.0",
-                    "method": "event",
-                    "params": {
-                        "subscriptionId": "slow-subscription",
-                        "runId": "run-1",
-                        "cursor": format!("cursor-{index}"),
-                        "event": {"type": "bookmark"}
-                    }
-                }),
-            )
-            .await;
-        }
-
-        let mut saw_cancel = false;
-        let mut saw_unary = false;
-        while !(saw_cancel && saw_unary) {
-            let request = read_json_line(&mut server_read).await;
-            if request["method"] == "subscription/cancel" {
-                assert_eq!(request["params"]["subscriptionId"], "slow-subscription");
-                saw_cancel = true;
-            } else {
-                assert_eq!(request["method"], "get");
-                write_json_line(
-                    &mut server_write,
-                    json!({"jsonrpc": "2.0", "id": request["id"], "result": {}}),
-                )
-                .await;
-                saw_unary = true;
-            }
-        }
-    });
+            })
+        },
+    );
 
     let transport = NdjsonTransport::new(client_read, client_write);
     let watch_client = NdjsonWatchClient::new(&transport);
-    let (_result, mut stream) = watch_client.watch(WatchParams::default()).await.unwrap();
-
-    let unary =
-        json!({"jsonrpc": "2.0", "id": "unary-1", "method": "get", "params": {}}).to_string();
-    let response = tokio::time::timeout(Duration::from_secs(2), transport.request(unary))
+    let (_result, mut stream) = watch_client
+        .watch(WatchParams::default())
         .await
-        .expect("an unread subscription must not block the shared response pump")
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&response).unwrap()["id"],
-        "unary-1"
-    );
+        .assert_value();
 
-    server.await.unwrap();
+    assert_unary_roundtrip(&transport).await;
+
+    server.await.assert_value();
     let (events, closed_cursor) = tokio::time::timeout(Duration::from_secs(2), async {
         let mut events = 0;
         loop {
-            match stream.next().await {
-                Some(EventOrClosed::Event(_)) => events += 1,
-                Some(EventOrClosed::Closed {
+            match stream
+                .next()
+                .await
+                .assert_value_with("expected a local overflow close")
+            {
+                EventOrClosed::Event(_) => events += 1,
+                EventOrClosed::Closed {
                     reason,
                     last_delivered_cursor,
-                }) => {
+                } => {
                     assert_eq!(reason, SubscriptionCloseReason::SlowConsumer);
                     break (events, last_delivered_cursor);
                 }
-                None => panic!("local overflow ended without a SLOW_CONSUMER close"),
             }
         }
     })
     .await
-    .expect("buffered notifications and the local overflow close must drain");
+    .assert_value_with("buffered notifications and the local overflow close must drain");
     assert_eq!(events, CLIENT_QUEUE_CAPACITY);
     assert_eq!(closed_cursor, Some(Cursor::new("cursor-1024")));
     assert_eq!(stream.last_delivered_cursor(), closed_cursor.as_ref());

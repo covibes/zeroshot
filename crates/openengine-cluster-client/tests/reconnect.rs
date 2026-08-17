@@ -10,6 +10,10 @@ use openengine_cluster_protocol::{RunId, WatchEvent, WatchParams};
 use openengine_cluster_server::watch::fixtures::{FixtureBackend, FixtureStore};
 use openengine_cluster_server::{ConnectionContext, Dispatcher};
 
+#[path = "support/mod.rs"]
+pub mod support;
+use support::AssertValue;
+
 #[path = "reconnect_support/mod.rs"]
 mod reconnect_support;
 use reconnect_support::{
@@ -30,11 +34,11 @@ async fn reconnect_after_slow_consumer_recovers_with_no_gap_and_dedups_duplicate
     );
     let client = WatchClient::new(dispatcher);
 
-    let (result, mut stream, _handle) = client.watch(WatchParams::default()).await.unwrap();
+    let (result, mut stream, _handle) = client.watch(WatchParams::default()).await.assert_value();
     assert_eq!(result.run_id, Some(run_id));
 
     let received = overflow_and_close_with(&store, &mut stream, || WatchEvent::Bookmark).await;
 
-    let (_result, mut stream, _handle) = client.reconnect(stream).await.unwrap();
+    let (_result, mut stream, _handle) = client.reconnect(stream).await.assert_value();
     assert_reconnect_replays_and_dedups(&store, &mut stream, received).await;
 }

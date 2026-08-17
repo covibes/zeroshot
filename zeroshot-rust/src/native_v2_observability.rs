@@ -20,7 +20,8 @@ use openengine_cluster_protocol::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::native_v2_contract::{ExecutionId, ExecutionRef};
+use crate::full_v1_reducer::ExecutionId;
+use crate::native_v2_contract::ExecutionRef;
 use crate::native_v2_runner::{AttachReceiveError, LiveOutputSource, ReadOnlyAttach};
 use crate::native_v2_supervisor::{LiveOutputRegistrar, LiveOutputRegistration, LiveOutputUnavailable};
 use crate::v2_run_ledger::{
@@ -30,6 +31,12 @@ use crate::v2_run_ledger::{
 
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LOG_TARGET: &str = "agent";
+
+mod projection;
+use projection::{
+    bounded_attach_output, changes_public_status, log_notification, opaque_execution,
+    require_active_reference, resolve_public_execution, status_from_snapshot, status_result,
+};
 
 #[cfg(test)]
 #[path = "native_v2_observability/tests.rs"]
@@ -153,7 +160,7 @@ impl NativeV2Observability {
             .await?
             .ok_or(NativeV2ObservationError::RunNotFound)?;
         require_active_reference(&stored.snapshot, reference)?;
-        let public_execution = opaque_execution(reference);
+        let public_execution = opaque_execution(reference)?;
         let key = self
             .live
             .register(reference.run_id.clone(), public_execution.clone(), source)
@@ -281,187 +288,8 @@ impl LiveOutputRegistration for LiveExecutionRegistration {
     }
 }
 
-pub struct RunWatchSubscription {
-    ledger: Arc<dyn RunLedger>,
-    subscription_id: SubscriptionId,
-    run_id: RunId,
-    scanned_through: Cursor,
-    projection: RunSnapshot,
-    pending: VecDeque<RunWatchEventNotification>,
-}
-
-impl RunWatchSubscription {
-    /// Returns all status transitions currently durable after the exclusive resume cursor.
-    pub async fn read_available(
-        &mut self,
-    ) -> Result<Vec<RunWatchEventNotification>, NativeV2ObservationError> {
-        self.refresh().await?;
-        Ok(self.pending.drain(..).collect())
-    }
-
-    /// Waits for the next durable status transition. Dropping this value only stops observation.
-    pub async fn recv(
-        &mut self,
-    ) -> Result<Option<RunWatchEventNotification>, NativeV2ObservationError> {
-        recv_durable(self).await
-    }
-
-    async fn refresh(&mut self) -> Result<bool, NativeV2ObservationError> {
-        let tail = self
-            .ledger
-            .snapshot_and_tail(&self.run_id, Some(&self.scanned_through))
-            .await?;
-        WatchFold {
-            subscription_id: &self.subscription_id,
-            after: cursor_sequence(&self.scanned_through)?,
-            projection: &mut self.projection,
-            pending: &mut self.pending,
-        }
-        .apply(&tail.events)?;
-        self.scanned_through = tail.snapshot.cursor;
-        Ok(tail.snapshot.terminal.is_some())
-    }
-}
-
-pub struct RunLogsSubscription {
-    ledger: Arc<dyn RunLedger>,
-    subscription_id: SubscriptionId,
-    run_id: RunId,
-    execution: Option<ExecutionId>,
-    scanned_through: Cursor,
-    pending: VecDeque<RunLogEventNotification>,
-}
-
-impl RunLogsSubscription {
-    /// Returns every currently durable matching log strictly after the resume cursor.
-    pub async fn read_available(
-        &mut self,
-    ) -> Result<Vec<RunLogEventNotification>, NativeV2ObservationError> {
-        self.refresh().await?;
-        Ok(self.pending.drain(..).collect())
-    }
-
-    pub async fn recv(
-        &mut self,
-    ) -> Result<Option<RunLogEventNotification>, NativeV2ObservationError> {
-        recv_durable(self).await
-    }
-
-    async fn refresh(&mut self) -> Result<bool, NativeV2ObservationError> {
-        let tail = self
-            .ledger
-            .snapshot_and_tail(&self.run_id, Some(&self.scanned_through))
-            .await?;
-        for stored in &tail.events {
-            if let Some(notification) = log_notification(
-                &self.subscription_id,
-                &tail.snapshot,
-                self.execution,
-                stored,
-            )? {
-                self.pending.push_back(notification);
-            }
-        }
-        self.scanned_through = tail.snapshot.cursor;
-        Ok(tail.snapshot.terminal.is_some())
-    }
-}
-
-#[async_trait]
-trait DurableSubscription {
-    type Notification: Send;
-
-    fn pending(&mut self) -> &mut VecDeque<Self::Notification>;
-    async fn refresh_subscription(&mut self) -> Result<bool, NativeV2ObservationError>;
-}
-
-#[async_trait]
-impl DurableSubscription for RunWatchSubscription {
-    type Notification = RunWatchEventNotification;
-
-    fn pending(&mut self) -> &mut VecDeque<Self::Notification> {
-        &mut self.pending
-    }
-
-    async fn refresh_subscription(&mut self) -> Result<bool, NativeV2ObservationError> {
-        self.refresh().await
-    }
-}
-
-#[async_trait]
-impl DurableSubscription for RunLogsSubscription {
-    type Notification = RunLogEventNotification;
-
-    fn pending(&mut self) -> &mut VecDeque<Self::Notification> {
-        &mut self.pending
-    }
-
-    async fn refresh_subscription(&mut self) -> Result<bool, NativeV2ObservationError> {
-        self.refresh().await
-    }
-}
-
-async fn recv_durable<S>(
-    subscription: &mut S,
-) -> Result<Option<S::Notification>, NativeV2ObservationError>
-where
-    S: DurableSubscription + Send,
-{
-    loop {
-        if let Some(event) = subscription.pending().pop_front() {
-            return Ok(Some(event));
-        }
-        let terminal = subscription.refresh_subscription().await?;
-        if let Some(event) = subscription.pending().pop_front() {
-            return Ok(Some(event));
-        }
-        if terminal {
-            return Ok(None);
-        }
-        tokio::time::sleep(POLL_INTERVAL).await;
-    }
-}
-
-pub struct RunAttachSubscription {
-    subscription_id: SubscriptionId,
-    run_id: RunId,
-    execution: PublicExecutionRef,
-    initial_working: bool,
-    settled: bool,
-    receiver: ReadOnlyAttach,
-}
-
-impl RunAttachSubscription {
-    pub async fn recv(&mut self) -> Result<RunAttachEventNotification, NativeV2ObservationError> {
-        let event = if self.initial_working {
-            self.initial_working = false;
-            AgentAttachEvent::Working {}
-        } else {
-            match self.receiver.recv().await {
-                Ok(output) => AgentAttachEvent::Output {
-                    text: bounded_attach_output(&output.text),
-                },
-                Err(AttachReceiveError::Closed) if !self.settled => {
-                    self.settled = true;
-                    AgentAttachEvent::Settled {}
-                }
-                Err(AttachReceiveError::Closed) => {
-                    return Err(NativeV2ObservationError::AttachClosed);
-                }
-                Err(AttachReceiveError::Lagged) => {
-                    return Err(NativeV2ObservationError::AttachLagged);
-                }
-            }
-        };
-        Ok(RunAttachEventNotification {
-            subscription_id: self.subscription_id.clone(),
-            run_id: self.run_id.clone(),
-            execution: self.execution.clone(),
-            event,
-        })
-    }
-}
-
+mod subscriptions;
+pub use subscriptions::{RunAttachSubscription, RunLogsSubscription, RunWatchSubscription};
 #[derive(Clone, Default)]
 struct LiveRegistry {
     entries: Arc<Mutex<BTreeMap<LiveKey, LiveOutputSource>>>,
@@ -534,145 +362,4 @@ impl WatchFold<'_> {
         }
         Ok(())
     }
-}
-
-fn status_result(snapshot: &RunSnapshot) -> Result<RunStatusResult, NativeV2ObservationError> {
-    Ok(RunStatusResult {
-        run_id: snapshot.run_id.clone(),
-        at_cursor: snapshot.cursor.clone(),
-        status: status_from_snapshot(snapshot)?,
-    })
-}
-
-fn status_from_snapshot(snapshot: &RunSnapshot) -> Result<RunStatus, NativeV2ObservationError> {
-    let active_executions = || {
-        snapshot
-            .active_executions()
-            .map(|node| ActiveExecution {
-                execution: opaque_execution(&node.reference),
-                node: node.reference.node.clone(),
-            })
-            .collect::<Vec<_>>()
-    };
-    match snapshot.phase {
-        RunPhase::Admitted => Ok(RunStatus::Admitted {}),
-        RunPhase::Running => Ok(RunStatus::Running {
-            active_executions: active_executions(),
-        }),
-        RunPhase::Stopping => Ok(RunStatus::Stopping {
-            active_executions: active_executions(),
-        }),
-        RunPhase::Finished => Ok(RunStatus::Finished {
-            terminal_result: snapshot
-                .terminal
-                .clone()
-                .ok_or(NativeV2ObservationError::InvalidState)?,
-        }),
-    }
-}
-
-fn changes_public_status(event: &RunEvent) -> bool {
-    !matches!(event, RunEvent::SafeLog { .. })
-}
-
-fn log_notification(
-    subscription_id: &SubscriptionId,
-    snapshot: &RunSnapshot,
-    filter: Option<ExecutionId>,
-    stored: &StoredRunEvent,
-) -> Result<Option<RunLogEventNotification>, NativeV2ObservationError> {
-    let RunEvent::SafeLog {
-        execution,
-        stream,
-        line,
-    } = &stored.event
-    else {
-        return Ok(None);
-    };
-    if filter.is_some() && filter != *execution {
-        return Ok(None);
-    }
-    let public_execution = execution
-        .map(|execution| {
-            snapshot
-                .executions
-                .get(&execution)
-                .map(|node| opaque_execution(&node.reference))
-                .ok_or(NativeV2ObservationError::InvalidState)
-        })
-        .transpose()?;
-    Ok(Some(RunLogEventNotification {
-        subscription_id: subscription_id.clone(),
-        run_id: snapshot.run_id.clone(),
-        cursor: stored.cursor.clone(),
-        execution: public_execution,
-        record: log_record(*stream, line.as_str()),
-    }))
-}
-
-fn log_record(stream: SafeLogStream, line: &str) -> LogRecord {
-    let level = match stream {
-        SafeLogStream::Output => LogLevel::Info,
-        SafeLogStream::Error => LogLevel::Error,
-        SafeLogStream::System => LogLevel::Debug,
-    };
-    LogRecord {
-        level,
-        target: BoundedLogTarget::new(LOG_TARGET).expect("fixed log target is valid"),
-        message: BoundedLogMessage::new(line).unwrap_or_else(|_| BoundedLogMessage::redacted()),
-    }
-}
-
-fn bounded_attach_output(text: &str) -> BoundedAssistantOutput {
-    BoundedAssistantOutput::new(text).unwrap_or_else(|_| BoundedAssistantOutput::redacted())
-}
-
-fn require_active_reference(
-    snapshot: &RunSnapshot,
-    reference: &ExecutionRef,
-) -> Result<(), NativeV2ObservationError> {
-    let node = snapshot
-        .executions
-        .get(&reference.execution)
-        .ok_or(NativeV2ObservationError::ExecutionNotFound)?;
-    if node.reference != *reference {
-        return Err(NativeV2ObservationError::ExecutionNotFound);
-    }
-    if !matches!(node.state, NodeState::Active) {
-        return Err(NativeV2ObservationError::ExecutionNotActive);
-    }
-    Ok(())
-}
-
-fn resolve_public_execution(
-    snapshot: &RunSnapshot,
-    public: &PublicExecutionRef,
-) -> Result<ExecutionId, NativeV2ObservationError> {
-    snapshot
-        .executions
-        .values()
-        .find(|node| opaque_execution(&node.reference) == *public)
-        .map(|node| node.reference.execution)
-        .ok_or(NativeV2ObservationError::ExecutionNotFound)
-}
-
-fn opaque_execution(reference: &ExecutionRef) -> PublicExecutionRef {
-    let mut digest = Sha256::new();
-    digest.update(b"zeroshot/native-v2/execution-ref/v1\0");
-    digest.update(reference.run_id.as_str().as_bytes());
-    digest.update(b"\0");
-    digest.update(reference.node.as_str().as_bytes());
-    digest.update(b"\0");
-    digest.update(reference.node_instance.to_string().as_bytes());
-    digest.update(b"\0");
-    digest.update(reference.execution.to_string().as_bytes());
-    let token = digest
-        .finalize()
-        .iter()
-        .fold(String::from("nv2-"), |mut token, byte| {
-            use std::fmt::Write as _;
-            write!(token, "{byte:02x}").expect("writing to String cannot fail");
-            token
-        });
-    PublicExecutionRef::new(token).expect("native-v2 execution token is bounded and printable")
 }

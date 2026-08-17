@@ -9,6 +9,20 @@ use openengine_cluster_server::worker_registry::{
 };
 use serde_json::json;
 
+#[path = "support/assert_at.rs"]
+mod assert_at;
+#[path = "support/assert_at_mut.rs"]
+mod assert_at_mut;
+#[path = "support/assert_error.rs"]
+mod assert_error;
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+use assert_at::AssertAt;
+use assert_at_mut::AssertAtMut;
+use assert_error::AssertError;
+use assert_value::AssertValue;
+
 struct MemoryRegistry(BTreeMap<WorkerRef, WorkerDescriptor>);
 
 #[async_trait]
@@ -80,55 +94,62 @@ fn graph() -> serde_json::Value {
 fn registry() -> MemoryRegistry {
     MemoryRegistry(BTreeMap::from([
         (
-            WorkerRef::new("mock.worker@1").unwrap(),
-            serde_json::from_value(descriptor("mock.worker@1", false)).unwrap(),
+            WorkerRef::new("mock.worker@1").assert_value(),
+            serde_json::from_value(descriptor("mock.worker@1", false)).assert_value(),
         ),
         (
-            WorkerRef::new("mock.verifier@1").unwrap(),
-            serde_json::from_value(descriptor("mock.verifier@1", true)).unwrap(),
+            WorkerRef::new("mock.verifier@1").assert_value(),
+            serde_json::from_value(descriptor("mock.verifier@1", true)).assert_value(),
         ),
     ]))
 }
 
 #[tokio::test]
 async fn resolves_nested_workers_and_applies_all_covariant_rules() {
-    let graph: GraphSpec = serde_json::from_value(graph()).unwrap();
-    check_graph_workers(&graph, &registry()).await.unwrap();
+    let graph: GraphSpec = serde_json::from_value(graph()).assert_value();
+    check_graph_workers(&graph, &registry())
+        .await
+        .assert_value();
 }
 
 #[tokio::test]
 async fn diagnostics_are_depth_first_and_cover_each_compatibility_axis() {
     let mut registry = registry();
-    let worker = WorkerRef::new("mock.worker@1").unwrap();
+    let worker = WorkerRef::new("mock.worker@1").assert_value();
     let broken: WorkerDescriptor = serde_json::from_value({
         let mut value = descriptor("returned.other@1", false);
-        value["graphProfiles"] = json!(["openengine.graph.single-worker/v1"]);
-        value["contract"]["input"] = json!({ "kind": "string" });
-        value["contract"]["output"] = json!({ "kind": "string" });
+        *value.assert_at_mut("graphProfiles") = json!(["openengine.graph.single-worker/v1"]);
+        *value.assert_at_mut("contract").assert_at_mut("input") = json!({ "kind": "string" });
+        *value.assert_at_mut("contract").assert_at_mut("output") = json!({ "kind": "string" });
         value
     })
-    .unwrap();
+    .assert_value();
     registry.0.insert(worker, broken);
 
-    let verifier = WorkerRef::new("mock.verifier@1").unwrap();
+    let verifier = WorkerRef::new("mock.verifier@1").assert_value();
     let broken_verifier: WorkerDescriptor = serde_json::from_value({
         let mut value = descriptor("mock.verifier@1", true);
-        value["contract"]["verifier"]["signals"] =
-            json!({ "missing": ["x"], "verdict": ["undeclared"] });
-        value["contract"]["verifier"]["diagnostic"] = json!({ "kind": "string" });
+        *value
+            .assert_at_mut("contract")
+            .assert_at_mut("verifier")
+            .assert_at_mut("signals") = json!({ "missing": ["x"], "verdict": ["undeclared"] });
+        *value
+            .assert_at_mut("contract")
+            .assert_at_mut("verifier")
+            .assert_at_mut("diagnostic") = json!({ "kind": "string" });
         value
     })
-    .unwrap();
+    .assert_value();
     registry.0.insert(verifier, broken_verifier);
 
-    let graph: GraphSpec = serde_json::from_value(graph()).unwrap();
-    let diagnostics = check_graph_workers(&graph, &registry).await.unwrap_err();
+    let graph: GraphSpec = serde_json::from_value(graph()).assert_value();
+    let diagnostics = check_graph_workers(&graph, &registry).await.assert_error();
     let codes: Vec<_> = diagnostics
         .iter()
         .map(|diagnostic| diagnostic.code)
         .collect();
     assert_eq!(
-        &codes[..4],
+        codes.iter().take(4).copied().collect::<Vec<_>>(),
         &[
             WorkerCompatibilityCode::DescriptorIdentity,
             WorkerCompatibilityCode::GraphProfile,
@@ -136,8 +157,8 @@ async fn diagnostics_are_depth_first_and_cover_each_compatibility_axis() {
             WorkerCompatibilityCode::Output,
         ]
     );
-    assert_eq!(diagnostics[0].path, ["root", "work"]);
-    assert_eq!(diagnostics[4].path, ["root", "verify"]);
+    assert_eq!(diagnostics.assert_at(0).path, ["root", "work"]);
+    assert_eq!(diagnostics.assert_at(4).path, ["root", "verify"]);
     assert!(codes.contains(&WorkerCompatibilityCode::SignalField));
     assert!(codes.contains(&WorkerCompatibilityCode::SignalLabels));
     assert!(codes.contains(&WorkerCompatibilityCode::Diagnostic));
@@ -146,40 +167,49 @@ async fn diagnostics_are_depth_first_and_cover_each_compatibility_axis() {
 #[tokio::test]
 async fn resolves_builtin_worker_via_default_compatibility_rules() {
     let mut registry = registry();
-    let worker = WorkerRef::new("mock.worker@1").unwrap();
+    let worker = WorkerRef::new("mock.worker@1").assert_value();
     let mut value = descriptor("mock.worker@1", false);
-    value["binding"] =
+    *value.assert_at_mut("binding") =
         serde_json::to_value(openengine_cluster_protocol::WorkerProtocolBinding::builtin_v1())
-            .unwrap();
-    value["credentialRequirements"] = json!([]);
+            .assert_value();
+    *value.assert_at_mut("credentialRequirements") = json!([]);
     registry
         .0
-        .insert(worker, serde_json::from_value(value).unwrap());
+        .insert(worker, serde_json::from_value(value).assert_value());
 
-    let graph: GraphSpec = serde_json::from_value(graph()).unwrap();
-    check_graph_workers(&graph, &registry).await.unwrap();
+    let graph: GraphSpec = serde_json::from_value(graph()).assert_value();
+    check_graph_workers(&graph, &registry).await.assert_value();
 }
 
 #[tokio::test]
 async fn missing_exact_version_is_a_stable_registry_diagnostic() {
     let mut value = graph();
-    value["root"]["children"][0]["worker"] = json!("mock.worker@2");
-    let graph: GraphSpec = serde_json::from_value(value).unwrap();
-    let diagnostics = check_graph_workers(&graph, &registry()).await.unwrap_err();
-    assert_eq!(diagnostics[0].code, WorkerCompatibilityCode::Registry);
-    assert!(diagnostics[0].message.contains("mock.worker@2"));
+    *value
+        .assert_at_mut("root")
+        .assert_at_mut("children")
+        .assert_at_mut(0)
+        .assert_at_mut("worker") = json!("mock.worker@2");
+    let graph: GraphSpec = serde_json::from_value(value).assert_value();
+    let diagnostics = check_graph_workers(&graph, &registry())
+        .await
+        .assert_error();
+    assert_eq!(
+        diagnostics.assert_at(0).code,
+        WorkerCompatibilityCode::Registry
+    );
+    assert!(diagnostics.assert_at(0).message.contains("mock.worker@2"));
 }
 
 #[tokio::test]
 async fn step_rejects_verifier_only_descriptor() {
     let mut registry = registry();
-    let worker = WorkerRef::new("mock.worker@1").unwrap();
+    let worker = WorkerRef::new("mock.worker@1").assert_value();
     registry.0.insert(
         worker,
-        serde_json::from_value(descriptor("mock.worker@1", true)).unwrap(),
+        serde_json::from_value(descriptor("mock.worker@1", true)).assert_value(),
     );
-    let graph: GraphSpec = serde_json::from_value(graph()).unwrap();
-    let diagnostics = check_graph_workers(&graph, &registry).await.unwrap_err();
+    let graph: GraphSpec = serde_json::from_value(graph()).assert_value();
+    let diagnostics = check_graph_workers(&graph, &registry).await.assert_error();
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.path == ["root", "work"]
             && diagnostic.code == WorkerCompatibilityCode::VerifierContract
@@ -194,7 +224,7 @@ fn policy_refusal_routes_as_error() {
     use openengine_cluster_protocol::{EnumLabel, GraphNode, Guard, WorkerOutcome};
 
     let mut value = graph();
-    value["root"] = json!({
+    *value.assert_at_mut("root") = json!({
         "kind": "choice", "name": "route", "state": { "kind": "null" },
         "branches": [{
             "when": {
@@ -207,19 +237,25 @@ fn policy_refusal_routes_as_error() {
         "otherwise": { "kind": "succeed", "name": "continued", "output": { "kind": "null" }, "bindings": [] },
         "promotedStatePaths": []
     });
-    let graph: GraphSpec = serde_json::from_value(value).unwrap();
-    let GraphNode::Choice(choice) = graph.root else {
-        panic!("fixture must be a choice")
-    };
-    let Guard::In { value, labels } = &choice.branches.as_slice()[0].when else {
-        panic!("refusal branch must use an in guard")
-    };
+    let graph: GraphSpec = serde_json::from_value(value).assert_value();
+    let choice = match graph.root {
+        GraphNode::Choice(choice) => Some(choice),
+        _ => None,
+    }
+    .assert_value();
+    let branch = choice.branches.as_slice().first().assert_value();
+    let (value, labels) = match &branch.when {
+        Guard::In { value, labels } => Some((value, labels)),
+        _ => None,
+    }
+    .assert_value();
     let outcome = WorkerOutcome::policy_refusal();
     assert_eq!(value.source, ControlSource::Error);
     assert_eq!(outcome.error_code(), Some(WorkerErrorCode::Refusal));
+    let error_code = outcome.error_code().assert_value();
     assert!(
         labels
             .values()
-            .contains(&EnumLabel::new(outcome.error_code().unwrap().as_str()).unwrap())
+            .contains(&EnumLabel::new(error_code.as_str()).assert_value())
     );
 }

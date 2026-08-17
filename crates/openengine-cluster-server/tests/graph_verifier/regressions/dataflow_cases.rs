@@ -103,19 +103,14 @@ fn descendant_overwrite_graph() -> GraphSpec {
             "promotedStatePaths":[]
         }
     }))
-    .unwrap()
+    .assert_value()
 }
 
 #[tokio::test]
 async fn descendant_writes_invalidate_stale_ancestor_type_facts() {
     let graph = descendant_overwrite_graph();
-    let error = ProductionGraphVerifier::new(registry())
-        .verify(&graph)
-        .await
-        .unwrap_err();
-    let VerificationError::Rejected { diagnostics } = error else {
-        panic!("stale ancestor refinement must be rejected")
-    };
+    let error = assert_graph_rejected(&graph).await;
+    let diagnostics = rejection_diagnostics(error);
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.code == GraphDiagnosticCode::SchemaSafety
             && diagnostic.message == "binding source is not a subtype of its target"
@@ -219,7 +214,7 @@ fn nested_ancestor_promotion_graph() -> (GraphSpec, MemoryRegistry) {
             "promotedStatePaths":[]
         }
     }))
-    .unwrap();
+    .assert_value();
     let registry = registry_with_worker_outputs(object_output, number_output);
     (graph, registry)
 }
@@ -230,6 +225,6 @@ async fn nested_ancestor_promotion_preserves_the_latest_descendant_write_type() 
     let error = ProductionGraphVerifier::new(registry)
         .verify(&graph)
         .await
-        .unwrap_err();
+        .assert_error();
     assert!(rejection_codes(error).contains(&GraphDiagnosticCode::SchemaSafety));
 }

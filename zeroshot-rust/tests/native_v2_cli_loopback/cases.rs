@@ -1,0 +1,202 @@
+use super::*;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_cli_reaches_one_target_controller_over_http_and_websocket() {
+    if !cli_prerequisites_available() {
+        return;
+    }
+    let host = LoopbackHost::start().await;
+    let root = temp_root();
+    let config = root.path("config");
+    let (runtime, graph, input) = write_fixture_files(&root);
+    let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
+    let (stdout, stderr) = run_cli_command(
+        cli_command(CliInvocation {
+            script: &shell_script(),
+            label: "acceptance",
+            binary,
+            origin: &host.origin,
+            config: &config,
+            runtime: &runtime,
+            graph: &graph,
+            input: &input,
+            extra: None,
+        }),
+        Duration::from_secs(60),
+        "shipped CLI acceptance",
+    )
+    .await;
+    assert!(stderr.contains("ABCD-EFGH"), "device code was not surfaced");
+    let run_id = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("RUN_ID="))
+        .assert_value_with("run ID marker");
+    assert!(stdout.contains("DETACHED={\"runId\":"));
+    assert!(stdout.contains("LIST={\"runs\":"));
+    assert!(stdout.contains("ACTIVE={\"runId\":"));
+    assert!(stdout.contains("WATCH={\"subscriptionId\":"));
+    assert!(stdout.contains("LOGS={\"subscriptionId\":"));
+    assert!(stdout.contains("acceptance-live-output"));
+    assert!(stdout.contains("ATTACH={\"subscriptionId\":"));
+    assert!(stdout.contains("\"type\":\"working\""));
+    assert!(stdout.contains("FORCED={\"runId\":"));
+    assert!(stdout.contains("TERMINAL={\"runId\":"));
+    assert!(stdout.contains("\"phase\":\"finished\""));
+    assert!(stdout.matches(run_id).count() >= 8);
+    assert!(!stdout.contains("capsule"));
+
+    let registry = std::fs::read_to_string(config.join("targets.json")).assert_value();
+    for forbidden in ["control-token", "refresh-token", "oecp-token", "capsule"] {
+        assert!(!registry.contains(forbidden));
+    }
+    assert!(Path::new(&config).join("targets.json").is_file());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge() {
+    if !cli_prerequisites_available() {
+        return;
+    }
+    for (scenario, name, expected_repairs, expected_reviews) in [
+        (DeliveryScenario::NoCi, "no-ci", 0, 1),
+        (DeliveryScenario::CiFailureThenMerge, "ci-feedback", 1, 2),
+    ] {
+        let root = temp_root();
+        let fixture = DeliveryFixture::new(&root, name);
+        let authority = Arc::new(DeliveryAuthority::new(fixture.remote.clone(), scenario));
+        let repairs = Arc::new(AtomicUsize::new(0));
+        let allocator = Arc::new(DeliveryAllocator {
+            fixture,
+            authority: authority.clone(),
+            repairs: repairs.clone(),
+            lifecycle: ImmediateAllocator::default(),
+        });
+        let environment = ControllerEnvironment::new(BTreeMap::from([(
+            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
+            "test-token".to_owned(),
+        )]));
+        let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
+            allocator,
+            environment,
+        }))
+        .await;
+        let config = root.path(&format!("{name}-config"));
+        let (runtime, graph, input) = write_delivery_fixture_files(&root);
+        let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
+        let submission_key = format!("delivery-{name}");
+        let (stdout, stderr) = run_cli_command(
+            cli_command(CliInvocation {
+                script: &delivery_shell_script(),
+                label: name,
+                binary,
+                origin: &host.origin,
+                config: &config,
+                runtime: &runtime,
+                graph: &graph,
+                input: &input,
+                extra: Some(&submission_key),
+            }),
+            Duration::from_secs(60),
+            &format!("shipped CLI {name} delivery acceptance"),
+        )
+        .await;
+        assert!(stderr.contains("ABCD-EFGH"));
+        assert!(stdout.contains("DELIVERY={\"runId\":"));
+        assert!(stdout.contains("\"terminalResult\":{\"status\":\"succeeded\""));
+        assert_eq!(repairs.load(Ordering::SeqCst), expected_repairs);
+        assert_eq!(authority.reviews.load(Ordering::SeqCst), expected_reviews);
+        assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
+        assert!(authority.inspections.load(Ordering::SeqCst) >= expected_reviews);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
+    if !cli_prerequisites_available() {
+        return;
+    }
+    let allocator = Arc::new(ImmediateAllocator::default());
+    let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
+        allocator: allocator.clone(),
+        environment: ControllerEnvironment::default(),
+    }))
+    .await;
+    let root = temp_root();
+    let config = root.path("loss-config");
+    let (runtime, graph, input) = write_fixture_files(&root);
+    let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
+    let command = cli_command(CliInvocation {
+        script: &loss_shell_script(),
+        label: "loss-acceptance",
+        binary,
+        origin: &host.origin,
+        config: &config,
+        runtime: &runtime,
+        graph: &graph,
+        input: &input,
+        extra: None,
+    });
+    let acceptance = tokio::spawn(run_cli_command(
+        command,
+        Duration::from_secs(60),
+        "shipped CLI capsule-loss acceptance",
+    ));
+    let mut signalled = false;
+    for _ in 0..200 {
+        if allocator.signal_loss() {
+            signalled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(signalled, "capsule was not allocated before the deadline");
+    let (stdout, stderr) = acceptance.await.assert_value();
+    assert!(stderr.contains("ABCD-EFGH"));
+    assert!(stdout.contains("LOST={\"runId\":"));
+    assert!(stdout.contains("\"phase\":\"finished\""));
+    assert!(stdout.contains("\"reason\":\"runtime_lost\""));
+    assert_eq!(allocator.losses.lock().assert_value().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "manual live provider acceptance; requires root, network, provider CLI, and credential"]
+async fn shipped_cli_runs_one_real_production_provider_lane() {
+    let lane = LiveLane::from_environment();
+    let root = temp_root();
+    let hosting = live_hosting_config(&root, lane);
+    let host =
+        LoopbackHost::start_with_factory(Arc::new(ProductionTargetControllerFactory::new(hosting)))
+            .await;
+    let config = root.path("live-config");
+    let (runtime, graph, input) = write_live_fixture_files(&root, lane);
+    let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
+    let mut command = cli_command(CliInvocation {
+        script: &live_shell_script(),
+        label: "live-acceptance",
+        binary,
+        origin: &host.origin,
+        config: &config,
+        runtime: &runtime,
+        graph: &graph,
+        input: &input,
+        extra: Some(lane.sentinel()),
+    });
+    for name in [
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CODEX_API_KEY",
+    ] {
+        command.env_remove(name);
+    }
+    let context = format!("shipped CLI live acceptance for {lane:?}");
+    let (stdout, stderr) = run_cli_command(command, Duration::from_secs(15 * 60), &context).await;
+    assert!(stderr.contains("ABCD-EFGH"), "device code was not surfaced");
+    assert!(stdout.contains("LIVE={\"runId\":"));
+    assert!(stdout.contains("\"phase\":\"finished\""));
+    assert!(stdout.contains("\"terminalResult\":{\"status\":\"succeeded\",\"output\":null}"));
+    assert!(!stdout.contains("capsule"));
+}
+
+use openengine_cluster_testkit::assertions::{AssertValue};

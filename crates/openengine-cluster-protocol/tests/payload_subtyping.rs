@@ -1,3 +1,7 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+use assert_value::AssertValue;
 use std::collections::BTreeMap;
 
 use openengine_cluster_protocol::{EnumLabel, FieldName, NonEmptyEnumSet, PayloadType, RecordField};
@@ -15,7 +19,7 @@ fn record(fields: &[(&str, PayloadType, bool)]) -> PayloadType {
             .iter()
             .map(|(name, kind, required)| {
                 (
-                    FieldName::new(*name).unwrap(),
+                    FieldName::new(*name).assert_value(),
                     field(kind.clone(), *required),
                 )
             })
@@ -28,10 +32,10 @@ fn enumeration(values: &[&str]) -> PayloadType {
         values: NonEmptyEnumSet::new(
             values
                 .iter()
-                .map(|value| EnumLabel::new(*value).unwrap())
+                .map(|value| EnumLabel::new(*value).assert_value())
                 .collect(),
         )
-        .unwrap(),
+        .assert_value(),
     }
 }
 
@@ -104,13 +108,13 @@ fn closed_payload_subtyping_matches_the_normative_rules() {
 #[test]
 fn enum_sets_are_canonical_and_wire_input_rejects_empty_or_duplicate_values() {
     let values = NonEmptyEnumSet::new(vec![
-        EnumLabel::new("z").unwrap(),
-        EnumLabel::new("a").unwrap(),
-        EnumLabel::new("z").unwrap(),
+        EnumLabel::new("z").assert_value(),
+        EnumLabel::new("a").assert_value(),
+        EnumLabel::new("z").assert_value(),
     ])
-    .unwrap();
+    .assert_value();
     assert_eq!(
-        serde_json::to_value(values).unwrap(),
+        serde_json::to_value(values).assert_value(),
         serde_json::json!(["a", "z"])
     );
     assert!(

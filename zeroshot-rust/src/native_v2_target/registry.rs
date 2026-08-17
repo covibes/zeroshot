@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::contract::{normalize_origin, validate_target_name};
 use super::{TargetConnectorError, TargetRecord};
 
-const REGISTRY_VERSION: u32 = 1;
+const REGISTRY_VERSION: u32 = 2;
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 
 pub trait TargetRegistry: Send + Sync {
@@ -94,14 +94,14 @@ pub fn default_target_registry_path() -> Result<PathBuf, TargetConnectorError> {
     platform_config_root().map(|root| root.join("zeroshot-rust").join("targets.json"))
 }
 
-fn open_lock(path: &Path) -> Result<File, TargetConnectorError> {
+pub(super) fn open_lock(path: &Path) -> Result<File, TargetConnectorError> {
     let mut options = OpenOptions::new();
     options.create(true).read(true).write(true);
     set_private_file_mode(&mut options);
     options.open(path).map_err(TargetConnectorError::RegistryIo)
 }
 
-fn lock_registry(lock: &File, exclusive: bool) -> Result<(), TargetConnectorError> {
+pub(super) fn lock_registry(lock: &File, exclusive: bool) -> Result<(), TargetConnectorError> {
     if exclusive {
         lock.lock_exclusive()
             .map_err(TargetConnectorError::RegistryIo)
@@ -118,7 +118,9 @@ fn read_registry(path: &Path) -> Result<RegistryState, TargetConnectorError> {
     if metadata.len() > MAX_REGISTRY_BYTES {
         return Err(TargetConnectorError::RegistryTooLarge);
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let capacity =
+        usize::try_from(metadata.len()).map_err(|_| TargetConnectorError::RegistryTooLarge)?;
+    let mut bytes = Vec::with_capacity(capacity);
     file.read_to_end(&mut bytes)
         .map_err(TargetConnectorError::RegistryIo)?;
     let state: RegistryState =
@@ -143,11 +145,24 @@ fn validate_registry_state(state: &RegistryState) -> Result<(), TargetConnectorE
         if name != &target.name
             || validate_target_name(name).is_err()
             || !matches!(normalize_origin(&target.origin), Ok(origin) if origin == target.origin)
+            || !valid_uuid(&target.id)
+            || !valid_uuid(&target.device_token)
         {
             return Err(malformed_registry("invalid stored target record"));
         }
     }
     Ok(())
+}
+
+fn valid_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+            }
+        })
 }
 
 fn malformed_registry(message: &'static str) -> TargetConnectorError {
@@ -188,12 +203,12 @@ pub(super) fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut result = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        write!(&mut result, "{byte:02x}").expect("writing to String cannot fail");
+        let _ = write!(&mut result, "{byte:02x}");
     }
     result
 }
 
-fn create_private_directory(path: &Path) -> Result<(), TargetConnectorError> {
+pub(super) fn create_private_directory(path: &Path) -> Result<(), TargetConnectorError> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     set_private_directory_mode(&mut builder);

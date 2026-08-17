@@ -20,6 +20,14 @@
     {
       "source": "src/cluster/generated/protocol.ts",
       "document": "AGENTS.md"
+    },
+    {
+      "source": "zeroshot-rust/src/full_v1_reducer.rs",
+      "document": "docs/openengine-cluster-protocol/v1/graph-contract.md"
+    },
+    {
+      "source": "crates/openengine-cluster-testkit/src/fixture.rs",
+      "document": "AGENTS.md"
     }
   ]
 }

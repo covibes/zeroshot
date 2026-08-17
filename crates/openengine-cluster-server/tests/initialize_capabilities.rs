@@ -6,29 +6,16 @@ use openengine_cluster_protocol::{
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
 use serde_json::json;
 
-struct DefaultCapabilitiesBackend;
+#[path = "support/assert_at.rs"]
+mod assert_at;
+#[path = "support/assert_value.rs"]
+mod assert_value;
+#[path = "support/unexpected_get.rs"]
+mod unexpected_get;
 
-#[async_trait]
-impl ClusterBackend for DefaultCapabilitiesBackend {
-    async fn initialize(
-        &self,
-        _context: &ConnectionContext,
-        _params: InitializeParams,
-    ) -> Result<InitializeResult, BackendError> {
-        Ok(InitializeResult::new(
-            ServerCapabilities::default(),
-            ClusterStatus::empty(),
-        ))
-    }
-
-    async fn get(
-        &self,
-        _context: &ConnectionContext,
-        _params: GetParams,
-    ) -> Result<GetResult, BackendError> {
-        unreachable!()
-    }
-}
+use assert_at::AssertAt;
+use assert_value::AssertValue;
+use unexpected_get::DefaultBackend;
 
 struct SingleWorkerCapabilitiesBackend;
 
@@ -41,7 +28,8 @@ impl ClusterBackend for SingleWorkerCapabilitiesBackend {
     ) -> Result<InitializeResult, BackendError> {
         Ok(InitializeResult::new(
             ServerCapabilities {
-                graph_profiles: GraphProfileSet::new(vec![GraphProfile::SingleWorker]).unwrap(),
+                graph_profiles: GraphProfileSet::new(vec![GraphProfile::SingleWorker])
+                    .assert_value(),
                 logs: false,
                 agent_attach: false,
             },
@@ -51,10 +39,10 @@ impl ClusterBackend for SingleWorkerCapabilitiesBackend {
 
     async fn get(
         &self,
-        _context: &ConnectionContext,
-        _params: GetParams,
+        context: &ConnectionContext,
+        params: GetParams,
     ) -> Result<GetResult, BackendError> {
-        unreachable!()
+        ClusterBackend::get(&DefaultBackend, context, params).await
     }
 }
 
@@ -74,13 +62,17 @@ async fn initialize_capabilities<B: ClusterBackend>(
             )
             .await,
     )
-    .unwrap();
-    response["result"]["capabilities"]["graphProfiles"].clone()
+    .assert_value();
+    response
+        .assert_at("result")
+        .assert_at("capabilities")
+        .assert_at("graphProfiles")
+        .clone()
 }
 
 #[tokio::test]
 async fn default_backend_advertises_no_graph_profiles() {
-    let dispatcher = Dispatcher::new(DefaultCapabilitiesBackend, ConnectionContext::default());
+    let dispatcher = Dispatcher::new(DefaultBackend, ConnectionContext::default());
     assert_eq!(initialize_capabilities(&dispatcher).await, json!([]));
 }
 

@@ -1,3 +1,13 @@
+#[path = "support/assert_value.rs"]
+mod assert_value;
+
+#[path = "support/json_insert.rs"]
+mod json_insert;
+
+#[path = "support/json_mut.rs"]
+mod json_mut;
+
+use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     FieldName, FieldPath, GraphDiagnostic, GraphProfile, GraphSpec, Join, NodeName, PolicyRef,
     PositiveInteger, WorkerErrorCode, WorkerRef, FULL_GRAPH_PROFILE, LEGACY_ZEROSHOT_WORKER,
@@ -15,20 +25,29 @@ fn record_type() -> Value {
     })
 }
 
-fn guard(kind: &str) -> Value {
+#[derive(Clone, Copy)]
+enum GuardKind {
+    In,
+    All,
+    Any,
+    Not,
+    KOfN,
+    KOfMap,
+}
+
+fn guard(kind: GuardKind) -> Value {
     let selector = json!({ "name": "verify", "source": "signal", "field": "verdict" });
     match kind {
-        "in" => json!({ "kind": "in", "value": selector, "labels": ["accepted"] }),
-        "all" => json!({ "kind": "all", "guards": [guard("in")] }),
-        "any" => json!({ "kind": "any", "guards": [guard("in")] }),
-        "not" => json!({ "kind": "not", "guard": guard("in") }),
-        "k_of_n" => json!({
+        GuardKind::In => json!({ "kind": "in", "value": selector, "labels": ["accepted"] }),
+        GuardKind::All => json!({ "kind": "all", "guards": [guard(GuardKind::In)] }),
+        GuardKind::Any => json!({ "kind": "any", "guards": [guard(GuardKind::In)] }),
+        GuardKind::Not => json!({ "kind": "not", "guard": guard(GuardKind::In) }),
+        GuardKind::KOfN => json!({
             "kind": "k_of_n", "count": 1, "values": [selector], "labels": ["accepted"]
         }),
-        "k_of_map" => json!({
+        GuardKind::KOfMap => json!({
             "kind": "k_of_map", "count": 1, "value": selector, "labels": ["accepted"]
         }),
-        _ => unreachable!(),
     }
 }
 
@@ -88,7 +107,7 @@ fn full_graph() -> Value {
                 verifier,
                 {
                     "kind": "choice", "name": "choose", "state": record_type(),
-                    "branches": [{ "when": guard("all"), "node": succeed("chosen") }],
+                    "branches": [{ "when": guard(GuardKind::All), "node": succeed("chosen") }],
                     "otherwise": { "kind": "fail", "name": "rejected", "reason": "rejected" },
                     "promotedStatePaths": [["status"]]
                 },
@@ -99,7 +118,7 @@ fn full_graph() -> Value {
                 },
                 {
                     "kind": "loop", "name": "repeat", "state": record_type(),
-                    "body": succeed("loopBody"), "until": guard("not"),
+                    "body": succeed("loopBody"), "until": guard(GuardKind::Not),
                     "maxIterations": 3, "promotedStatePaths": []
                 },
                 {
@@ -117,55 +136,46 @@ fn full_graph() -> Value {
 #[test]
 fn every_graph_node_and_both_profiles_round_trip_deterministically() {
     let value = full_graph();
-    let graph: GraphSpec = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(serde_json::to_value(&graph).unwrap(), value);
+    let graph: GraphSpec = serde_json::from_value(value.clone()).assert_value();
+    assert_eq!(serde_json::to_value(&graph).assert_value(), value);
 
     let mut single = full_graph();
-    single["profile"] = json!(SINGLE_WORKER_GRAPH_PROFILE);
-    let single: GraphSpec = serde_json::from_value(single).unwrap();
+    *json_mut::json_at_mut(&mut single, "/profile") = json!(SINGLE_WORKER_GRAPH_PROFILE);
+    let single: GraphSpec = serde_json::from_value(single).assert_value();
     assert_eq!(single.profile, GraphProfile::SingleWorker);
 
     for join in [
         json!({"kind":"all"}),
         json!({"kind":"any"}),
         json!({"kind":"quorum","count":2}),
-        json!({"kind":"first","when":guard("in")}),
+        json!({"kind":"first","when":guard(GuardKind::In)}),
     ] {
-        let parsed: Join = serde_json::from_value(join.clone()).unwrap();
-        assert_eq!(serde_json::to_value(parsed).unwrap(), join);
+        let parsed: Join = serde_json::from_value(join.clone()).assert_value();
+        assert_eq!(serde_json::to_value(parsed).assert_value(), join);
     }
     assert!(serde_json::from_value::<Join>(json!({"kind":"all","count":1})).is_err());
-    for kind in ["in", "all", "any", "not", "k_of_n", "k_of_map"] {
-        serde_json::from_value::<openengine_cluster_protocol::Guard>(guard(kind)).unwrap();
+    for kind in [
+        GuardKind::In,
+        GuardKind::All,
+        GuardKind::Any,
+        GuardKind::Not,
+        GuardKind::KOfN,
+        GuardKind::KOfMap,
+    ] {
+        serde_json::from_value::<openengine_cluster_protocol::Guard>(guard(kind)).assert_value();
     }
 }
 
 #[test]
 fn structured_contract_rejects_executable_or_secret_bearing_extensions() {
-    for (path, key, value) in [
-        (&["root", "children", "0"][..], "command", json!("rm -rf /")),
-        (
-            &["root", "children", "0"][..],
-            "endpoint",
-            json!("https://worker"),
-        ),
-        (
-            &["root", "children", "0"][..],
-            "credential",
-            json!("secret"),
-        ),
-        (&["policy"][..], "script", json!("allow()")),
+    for (object_pointer, key, value) in [
+        ("/root/children/0", "command", json!("rm -rf /")),
+        ("/root/children/0", "endpoint", json!("https://worker")),
+        ("/root/children/0", "credential", json!("secret")),
+        ("/policy", "script", json!("allow()")),
     ] {
         let mut graph = full_graph();
-        let mut target = &mut graph;
-        for segment in path {
-            target = if let Ok(index) = segment.parse::<usize>() {
-                &mut target[index]
-            } else {
-                &mut target[*segment]
-            };
-        }
-        target[key] = value;
+        json_insert::json_insert(&mut graph, object_pointer, key, value);
         assert!(
             serde_json::from_value::<GraphSpec>(graph).is_err(),
             "accepted {key}"
@@ -173,17 +183,21 @@ fn structured_contract_rejects_executable_or_secret_bearing_extensions() {
     }
 
     let mut graph = full_graph();
-    graph["root"]["children"][2]["branches"][0]["when"] =
-        json!({"kind":"in","script":"return true"});
+    json_insert::json_insert(
+        &mut graph,
+        "/root/children/2/branches/0",
+        "when",
+        json!({"kind":"in","script":"return true"}),
+    );
     assert!(serde_json::from_value::<GraphSpec>(graph).is_err());
 
     let mut graph = full_graph();
-    graph["root"]["children"][5]["over"] = json!("$.items[*]");
+    *json_mut::json_at_mut(&mut graph, "/root/children/5/over") = json!("$.items[*]");
     assert!(serde_json::from_value::<GraphSpec>(graph).is_err());
 
     for pointer in ["/profile", "/root/kind"] {
         let mut graph = full_graph();
-        *graph.pointer_mut(pointer).unwrap() = json!("unknown");
+        *graph.pointer_mut(pointer).assert_value() = json!("unknown");
         assert!(serde_json::from_value::<GraphSpec>(graph).is_err());
     }
 }
@@ -206,36 +220,49 @@ fn identifiers_references_paths_and_positive_counts_validate_on_construction_and
         ("/policy/policy", "policy@"),
     ] {
         let mut graph = full_graph();
-        *graph.pointer_mut(pointer).unwrap() = json!(value);
+        *graph.pointer_mut(pointer).assert_value() = json!(value);
         assert!(serde_json::from_value::<GraphSpec>(graph.clone()).is_err());
-        let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).unwrap();
-        assert!(!jsonschema::validator_for(&schema).unwrap().is_valid(&graph));
+        let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).assert_value();
+        assert!(
+            !jsonschema::validator_for(&schema)
+                .assert_value()
+                .is_valid(&graph)
+        );
     }
 
     let mut graph = full_graph();
-    graph["root"]["children"][0]["timeoutMs"] = json!(0);
+    *json_mut::json_at_mut(&mut graph, "/root/children/0/timeoutMs") = json!(0);
     assert!(serde_json::from_value::<GraphSpec>(graph).is_err());
 
     let mut graph = full_graph();
-    graph["root"]["children"][0]["timeoutMs"] = serde_json::from_str("1.0").unwrap();
+    *json_mut::json_at_mut(&mut graph, "/root/children/0/timeoutMs") =
+        serde_json::from_str("1.0").assert_value();
     assert!(
         serde_json::from_value::<GraphSpec>(graph.clone()).is_ok(),
         "Rust must accept the same integral JSON numbers as JSON Schema"
     );
-    let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).unwrap();
-    assert!(jsonschema::validator_for(&schema).unwrap().is_valid(&graph));
+    let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).assert_value();
+    assert!(
+        jsonschema::validator_for(&schema)
+            .assert_value()
+            .is_valid(&graph)
+    );
 }
 
 #[test]
 fn identifier_keyed_maps_enforce_wire_identifier_bounds_in_rust_and_schema() {
-    let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).assert_value();
+    let validator = jsonschema::validator_for(&schema).assert_value();
     let overlength = "a".repeat(129);
 
     for pointer in ["/initialInput/fields", "/root/children/1/signals"] {
         let mut graph = full_graph();
-        let map = graph.pointer_mut(pointer).unwrap().as_object_mut().unwrap();
-        let value = map.values().next().cloned().unwrap();
+        let map = graph
+            .pointer_mut(pointer)
+            .assert_value()
+            .as_object_mut()
+            .assert_value();
+        let value = map.values().next().cloned().assert_value();
         map.insert(overlength.clone(), value);
         assert!(
             serde_json::from_value::<GraphSpec>(graph.clone()).is_err(),
@@ -258,13 +285,18 @@ fn authored_fail_nodes_cannot_use_the_reserved_unhandled_reason() {
 fn payload_constraints_and_worker_error_codes_are_closed() {
     let payload = json!({"kind":"string", "regex":".*"});
     assert!(serde_json::from_value::<openengine_cluster_protocol::PayloadType>(payload).is_err());
-    let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).assert_value();
+    let validator = jsonschema::validator_for(&schema).assert_value();
     let mut graph = full_graph();
-    graph["initialInput"] = json!({"kind":"string", "regex":".*"});
+    *json_mut::json_at_mut(&mut graph, "/initialInput") = json!({"kind":"string", "regex":".*"});
     assert!(!validator.is_valid(&graph));
     let mut graph = full_graph();
-    graph["root"]["children"][3]["join"]["unexpected"] = json!(true);
+    json_insert::json_insert(
+        &mut graph,
+        "/root/children/3/join",
+        "unexpected",
+        json!(true),
+    );
     assert!(!validator.is_valid(&graph));
 
     for (code, expected) in [
@@ -273,7 +305,7 @@ fn payload_constraints_and_worker_error_codes_are_closed() {
         (WorkerErrorCode::Malformed, "malformed"),
         (WorkerErrorCode::Refusal, "refusal"),
     ] {
-        assert_eq!(serde_json::to_value(code).unwrap(), json!(expected));
+        assert_eq!(serde_json::to_value(code).assert_value(), json!(expected));
     }
     assert!(serde_json::from_value::<WorkerErrorCode>(json!("policy_denied")).is_err());
 }
@@ -289,14 +321,14 @@ fn diagnostic_indices_have_matching_u32_bounds_in_rust_and_schema() {
             "relatedNodes": []
         })
     };
-    let schema = serde_json::to_value(schemars::schema_for!(GraphDiagnostic)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
+    let schema = serde_json::to_value(schemars::schema_for!(GraphDiagnostic)).assert_value();
+    let validator = jsonschema::validator_for(&schema).assert_value();
 
     for value in [
         json!(0),
-        serde_json::from_str("0.0").unwrap(),
+        serde_json::from_str("0.0").assert_value(),
         json!(4_294_967_295_u64),
-        serde_json::from_str("4294967295.0").unwrap(),
+        serde_json::from_str("4294967295.0").assert_value(),
     ] {
         let value = diagnostic(value);
         assert!(
@@ -311,9 +343,9 @@ fn diagnostic_indices_have_matching_u32_bounds_in_rust_and_schema() {
 
     for value in [
         json!(-1),
-        serde_json::from_str("1.5").unwrap(),
+        serde_json::from_str("1.5").assert_value(),
         json!(4_294_967_296_u64),
-        serde_json::from_str("4294967296.0").unwrap(),
+        serde_json::from_str("4294967296.0").assert_value(),
     ] {
         let value = diagnostic(value);
         assert!(

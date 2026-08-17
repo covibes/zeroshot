@@ -1,3 +1,4 @@
+use super::observation_support::*;
 use openengine_cluster_protocol::{
     BoundedLogMessage, BoundedLogTarget, LogEventNotification, LogLevel, LogRecord,
     LogsClosedNotification, LogsParams, LogsResult, ServerCapabilities, SubscriptionCloseReason,
@@ -8,16 +9,16 @@ use serde_json::json;
 fn sample_record() -> LogRecord {
     LogRecord {
         level: LogLevel::Info,
-        target: BoundedLogTarget::new("worker-dispatch").unwrap(),
-        message: BoundedLogMessage::new("dispatch started").unwrap(),
+        target: BoundedLogTarget::new("worker-dispatch").assert_value(),
+        message: BoundedLogMessage::new("dispatch started").assert_value(),
     }
 }
 
 #[test]
 fn logs_params_round_trip_as_empty_and_reject_unknown_fields() {
-    let params: LogsParams = serde_json::from_value(json!({})).unwrap();
+    let params: LogsParams = serde_json::from_value(json!({})).assert_value();
     assert_eq!(params, LogsParams::default());
-    assert_eq!(serde_json::to_value(&params).unwrap(), json!({}));
+    assert_eq!(serde_json::to_value(&params).assert_value(), json!({}));
 
     assert!(serde_json::from_value::<LogsParams>(json!({ "runId": "run-1" })).is_err());
     assert!(serde_json::from_value::<LogsParams>(json!({ "fromCursor": "cursor-1" })).is_err());
@@ -30,11 +31,11 @@ fn logs_result_round_trips_and_carries_only_a_subscription_id() {
         subscription_id: SubscriptionId::new("sub-1"),
     };
     assert_eq!(
-        serde_json::to_value(&result).unwrap(),
+        serde_json::to_value(&result).assert_value(),
         json!({ "subscriptionId": "sub-1" })
     );
     let round_tripped: LogsResult =
-        serde_json::from_value(serde_json::to_value(&result).unwrap()).unwrap();
+        serde_json::from_value(serde_json::to_value(&result).assert_value()).assert_value();
     assert_eq!(round_tripped, result);
 
     assert!(
@@ -56,7 +57,7 @@ fn logs_result_round_trips_and_carries_only_a_subscription_id() {
 #[test]
 fn log_record_round_trips_and_rejects_unknown_fields() {
     let record = sample_record();
-    let value = serde_json::to_value(&record).unwrap();
+    let value = serde_json::to_value(&record).assert_value();
     assert_eq!(
         value,
         json!({
@@ -65,7 +66,7 @@ fn log_record_round_trips_and_rejects_unknown_fields() {
             "message": "dispatch started"
         })
     );
-    let round_tripped: LogRecord = serde_json::from_value(value).unwrap();
+    let round_tripped: LogRecord = serde_json::from_value(value).assert_value();
     assert_eq!(round_tripped, record);
 
     assert!(
@@ -85,9 +86,8 @@ fn log_event_notification_round_trips_and_carries_only_subscription_id_and_recor
         subscription_id: SubscriptionId::new("sub-1"),
         record: sample_record(),
     };
-    let value = serde_json::to_value(&notification).unwrap();
-    assert_eq!(
-        value,
+    wire::assert_wire_round_trip_and_rejects_inserted_field(
+        &notification,
         json!({
             "subscriptionId": "sub-1",
             "record": {
@@ -95,14 +95,10 @@ fn log_event_notification_round_trips_and_carries_only_subscription_id_and_recor
                 "target": "worker-dispatch",
                 "message": "dispatch started"
             }
-        })
+        }),
+        "cursor",
+        json!("cursor-1"),
     );
-    let round_tripped: LogEventNotification = serde_json::from_value(value).unwrap();
-    assert_eq!(round_tripped, notification);
-
-    let mut malformed = serde_json::to_value(&notification).unwrap();
-    malformed["cursor"] = json!("cursor-1");
-    assert!(serde_json::from_value::<LogEventNotification>(malformed).is_err());
 }
 
 #[test]
@@ -111,22 +107,7 @@ fn logs_closed_notification_round_trips_and_carries_no_cursor() {
         subscription_id: SubscriptionId::new("sub-1"),
         reason: SubscriptionCloseReason::Done,
     };
-    assert_eq!(
-        serde_json::to_value(&done).unwrap(),
-        json!({ "subscriptionId": "sub-1", "reason": "done" })
-    );
-    let round_tripped: LogsClosedNotification =
-        serde_json::from_value(serde_json::to_value(&done).unwrap()).unwrap();
-    assert_eq!(round_tripped, done);
-
-    assert!(
-        serde_json::from_value::<LogsClosedNotification>(json!({
-            "subscriptionId": "sub-1",
-            "reason": "done",
-            "lastDeliveredCursor": "cursor-7"
-        }))
-        .is_err()
-    );
+    closed_notification::assert_done_closed_notification(&done);
 }
 
 #[test]
@@ -195,21 +176,17 @@ fn log_event_notification_validate_rejects_an_oversized_encoding() {
 
 #[test]
 fn server_capabilities_logs_defaults_to_false_and_round_trips() {
-    let value: ServerCapabilities = serde_json::from_value(json!({})).unwrap();
+    let value: ServerCapabilities = serde_json::from_value(json!({})).assert_value();
     assert!(!value.logs);
 
     let enabled = ServerCapabilities {
         logs: true,
         ..ServerCapabilities::default()
     };
-    let json = serde_json::to_value(&enabled).unwrap();
-    assert_eq!(json["logs"], json!(true));
-    let round_tripped: ServerCapabilities = serde_json::from_value(json).unwrap();
+    let json = serde_json::to_value(&enabled).assert_value();
+    assert_eq!(json_read::json_at(&json, "/logs"), &json!(true));
+    let round_tripped: ServerCapabilities = serde_json::from_value(json).assert_value();
     assert_eq!(round_tripped, enabled);
 
-    let schema = serde_json::to_value(schemars::schema_for!(ServerCapabilities)).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    assert!(validator.is_valid(&json!({ "graphProfiles": [], "logs": true })));
-    assert!(validator.is_valid(&json!({ "graphProfiles": [], "logs": false })));
-    assert!(validator.is_valid(&json!({ "graphProfiles": [] })));
+    capability::assert_boolean_capability_schema::<ServerCapabilities>("logs");
 }

@@ -22,7 +22,10 @@ fn descriptor(protocol: &str) -> WorkerDescriptor {
     let binding = match protocol {
         "acp" => WorkerProtocolBinding::acp_v1(),
         "a2a" => WorkerProtocolBinding::a2a_1_0(),
-        _ => unreachable!(),
+        other => {
+            assert!(matches!(other, "acp" | "a2a"), "unknown protocol {other}");
+            WorkerProtocolBinding::acp_v1()
+        }
     };
     serde_json::from_value(json!({
         "worker": format!("mock.{protocol}@1"),
@@ -34,12 +37,12 @@ fn descriptor(protocol: &str) -> WorkerDescriptor {
             "allowedMediaTypes": ["application/json"], "minimumRedaction": "internal" },
         "credentialRequirements": []
     }))
-    .unwrap()
+    .assert_value()
 }
 
 fn verifier_descriptor(protocol: &str) -> WorkerDescriptor {
-    let mut value = serde_json::to_value(descriptor(protocol)).unwrap();
-    value["contract"]["verifier"] = json!({
+    let mut value = serde_json::to_value(descriptor(protocol)).assert_value();
+    *value.assert_key_mut("contract").assert_key_mut("verifier") = json!({
         "signals": { "verdict": ["accepted", "rejected"] },
         "diagnostic": {
             "kind": "record",
@@ -48,7 +51,7 @@ fn verifier_descriptor(protocol: &str) -> WorkerDescriptor {
             }
         }
     });
-    serde_json::from_value(value).unwrap()
+    serde_json::from_value(value).assert_value()
 }
 
 fn signals(values: &[(&str, &str)]) -> BTreeMap<FieldName, EnumLabel> {
@@ -56,8 +59,8 @@ fn signals(values: &[(&str, &str)]) -> BTreeMap<FieldName, EnumLabel> {
         .iter()
         .map(|(field, label)| {
             (
-                FieldName::new(*field).unwrap(),
-                EnumLabel::new(*label).unwrap(),
+                FieldName::new(*field).assert_value(),
+                EnumLabel::new(*label).assert_value(),
             )
         })
         .collect()
@@ -65,19 +68,19 @@ fn signals(values: &[(&str, &str)]) -> BTreeMap<FieldName, EnumLabel> {
 
 fn receipt() -> ArtifactRef {
     ArtifactRef {
-        artifact_id: ArtifactId::new("result").unwrap(),
-        sha256: Sha256Digest::new("a".repeat(64)).unwrap(),
-        byte_length: ByteLength::new(2).unwrap(),
-        media_type: MediaType::new("application/json").unwrap(),
-        type_id: TypeId::new("openengine.result@1").unwrap(),
+        artifact_id: ArtifactId::new("result").assert_value(),
+        sha256: Sha256Digest::new("a".repeat(64)).assert_value(),
+        byte_length: ByteLength::new(2).assert_value(),
+        media_type: MediaType::new("application/json").assert_value(),
+        type_id: TypeId::new("openengine.result@1").assert_value(),
         producer: ArtifactProducer {
-            node: NodeName::new("worker").unwrap(),
-            worker: WorkerRef::new("mock.acp@1").unwrap(),
+            node: NodeName::new("worker").assert_value(),
+            worker: WorkerRef::new("mock.acp@1").assert_value(),
         },
         lineage: ArtifactLineage {
-            generation: Generation::new(1).unwrap(),
+            generation: Generation::new(1).assert_value(),
             run_id: RunId::new("run-1"),
-            attempt: PositiveInteger::new(1).unwrap(),
+            attempt: PositiveInteger::new(1).assert_value(),
         },
         redaction: RedactionClass::Internal,
     }
@@ -188,7 +191,7 @@ fn a2a_1_0_states_fail_closed_without_callbacks() {
     ] {
         let outcome = normalize_mock_a2a_1_0(&descriptor, state);
         assert_error(outcome.clone(), WorkerErrorCode::Refusal, reason);
-        let value = serde_json::to_value(outcome).unwrap();
+        let value = serde_json::to_value(outcome).assert_value();
         assert!(value.get("callback").is_none() && value.get("wait").is_none());
     }
     assert_error(
@@ -224,7 +227,7 @@ fn malformed_output_and_artifact_metadata_are_ephemeral() {
         WorkerFailureReason::MalformedResult,
     );
     let mut bad_receipt = receipt();
-    bad_receipt.media_type = MediaType::new("text/plain").unwrap();
+    bad_receipt.media_type = MediaType::new("text/plain").assert_value();
     assert_error(
         normalize_mock_acp_v1(
             &descriptor,
@@ -313,8 +316,8 @@ fn verifier_completions_validate_output_signals_diagnostic_and_artifacts() {
 
 #[test]
 fn integral_json_numbers_match_integer_contracts_recursively() {
-    let mut acp = serde_json::to_value(verifier_descriptor("acp")).unwrap();
-    acp["contract"]["output"] = json!({
+    let mut acp = serde_json::to_value(verifier_descriptor("acp")).assert_value();
+    *acp.assert_key_mut("contract").assert_key_mut("output") = json!({
         "kind": "record",
         "fields": {
             "values": {
@@ -323,7 +326,9 @@ fn integral_json_numbers_match_integer_contracts_recursively() {
             }
         }
     });
-    acp["contract"]["verifier"]["diagnostic"] = json!({
+    *acp.assert_key_mut("contract")
+        .assert_key_mut("verifier")
+        .assert_key_mut("diagnostic") = json!({
         "kind": "record",
         "fields": {
             "details": {
@@ -337,7 +342,7 @@ fn integral_json_numbers_match_integer_contracts_recursively() {
             }
         }
     });
-    let acp: WorkerDescriptor = serde_json::from_value(acp).unwrap();
+    let acp: WorkerDescriptor = serde_json::from_value(acp).assert_value();
     assert!(matches!(
         normalize_mock_acp_v1(
             &acp,
@@ -365,3 +370,7 @@ fn integral_json_numbers_match_integer_contracts_recursively() {
         WorkerFailureReason::MalformedResult,
     );
 }
+
+use openengine_cluster_testkit::assertions::AssertValue;
+
+use openengine_cluster_testkit::assertions::JsonAt;

@@ -1,50 +1,48 @@
-use async_trait::async_trait;
-use openengine_cluster_client::{ClusterClient, JsonRpcTransport, TransportError};
+#[path = "support/mod.rs"]
+pub mod support;
+
+use openengine_cluster_client::ClusterClient;
 use openengine_cluster_protocol::{ApplyParams, GetParams, PlanParams};
 use serde_json::json;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use serde_json::Value;
+use support::{AssertAt, AssertValue, RecordingTransport};
 
-#[derive(Clone, Default)]
-struct RecordingTransport {
-    methods: Arc<Mutex<Vec<String>>>,
-}
-
-#[async_trait]
-impl JsonRpcTransport for RecordingTransport {
-    async fn request(&self, request: String) -> Result<String, TransportError> {
-        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-        let method = request["method"].as_str().unwrap().to_owned();
-        self.methods.lock().await.push(method.clone());
-        let result = match method.as_str() {
-            "plan" => json!({"ok":false,"diagnostics":[]}),
-            "apply" => json!({
-                "generation":null,"runId":null,"phase":"empty","deduped":false,
-                "diff":{"added":["worker"],"removed":[],"changed":[]}
-            }),
-            "get" => json!({
-                "spec":null,
-                "status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null},
-                "atCursor":null
-            }),
-            _ => unreachable!(),
-        };
-        Ok(json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string())
-    }
+fn response(method: &str) -> Value {
+    [
+        ("plan", json!({"ok":false,"diagnostics":[]})),
+        ("apply", json!({
+            "generation":null,"runId":null,"phase":"empty","deduped":false,
+            "diff":{"added":["worker"],"removed":[],"changed":[]}
+        })),
+        ("get", json!({
+            "spec":null,
+            "status":{"phase":"empty","observedGeneration":null,"currentRunId":null,"atCursor":null},
+            "atCursor":null
+        })),
+    ]
+    .into_iter()
+    .find_map(|(candidate, value)| (candidate == method).then_some(value))
+    .assert_value_with("expected a known client method")
 }
 
 fn graph() -> openengine_cluster_protocol::GraphSpec {
     serde_json::from_str(include_str!(
         "../../../protocol/openengine-cluster/v1/fixtures/graph/positive/single-worker.json"
     ))
-    .unwrap()
+    .assert_value()
 }
 
 #[tokio::test]
 async fn typed_admission_calls_use_named_plan_apply_and_get_methods() {
-    let transport = RecordingTransport::default();
+    let transport = RecordingTransport::new(response);
     let client = ClusterClient::new(transport.clone());
-    assert!(!client.plan(PlanParams { graph: graph() }).await.unwrap().ok);
+    assert!(
+        !client
+            .plan(PlanParams { graph: graph() })
+            .await
+            .assert_value()
+            .ok
+    );
     assert_eq!(
         client
             .apply(ApplyParams {
@@ -55,10 +53,11 @@ async fn typed_admission_calls_use_named_plan_apply_and_get_methods() {
                 idempotency_key: None,
             })
             .await
-            .unwrap()
+            .assert_value()
             .diff
-            .unwrap()
-            .added[0]
+            .assert_value()
+            .added
+            .assert_at(0)
             .as_str(),
         "worker"
     );
@@ -66,9 +65,9 @@ async fn typed_admission_calls_use_named_plan_apply_and_get_methods() {
         client
             .get(GetParams::default())
             .await
-            .unwrap()
+            .assert_value()
             .spec
             .is_none()
     );
-    assert_eq!(*transport.methods.lock().await, ["plan", "apply", "get"]);
+    assert_eq!(transport.methods().await, ["plan", "apply", "get"]);
 }

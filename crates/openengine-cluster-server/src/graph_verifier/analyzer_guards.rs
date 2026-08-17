@@ -78,12 +78,12 @@ impl<'a> Analyzer<'a> {
         let mut reachable = Vec::with_capacity(choice.branches.as_slice().len());
         for (index, branch) in choice.branches.as_slice().iter().enumerate() {
             let mut residual = Vec::new();
-            for (assignment_index, assignment) in assignments.iter().enumerate() {
+            for (assignment, matched_prior) in assignments.iter().zip(&mut prior) {
                 let matches = evaluate_guard(&branch.when, assignment);
-                if matches && !prior[assignment_index] {
+                if matches && !*matched_prior {
                     residual.push(assignment);
                 }
-                prior[assignment_index] |= matches;
+                *matched_prior |= matches;
             }
             if residual.is_empty() {
                 emit_diagnostic!(
@@ -264,7 +264,7 @@ impl<'a> Analyzer<'a> {
         context: KOfNLabelsValidationContext<'_>,
     ) -> bool {
         let mut valid = true;
-        if context.count > context.selectors.len() as u64 {
+        if context.count > u64::try_from(context.selectors.len()).unwrap_or(u64::MAX) {
             emit_diagnostic!(
                 self,
                 context.guard.code,

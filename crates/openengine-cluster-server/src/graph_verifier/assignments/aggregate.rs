@@ -165,7 +165,7 @@ fn combine_shared_dimensions(
             return None;
         }
         for local in enumerate_assignments(local_dimensions) {
-            if combined.len() as u64 >= FULL_V1_MAX_GUARD_ASSIGNMENTS {
+            if u64::try_from(combined.len()).unwrap_or(u64::MAX) >= FULL_V1_MAX_GUARD_ASSIGNMENTS {
                 return None;
             }
             let mut assignment = shared.clone();

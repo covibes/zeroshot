@@ -13,8 +13,7 @@ use zeroshot_engine::native_v2_cli::{
 
 use native_v2_target::{
     default_target_registry_path, AuthenticatedOecpWebSocketDialer, FileTargetRegistry,
-    NativeV2TargetConnector, TargetConnectorError, UndefinedTargetControlAuthority,
-    UNDEFINED_TARGET_AUTHORITY_HELP,
+    HostedTargetControlAuthority, NativeV2TargetConnector, TargetConnectorError,
 };
 
 #[derive(Debug, Error)]
@@ -33,7 +32,6 @@ async fn run() -> Result<(), ProcessError> {
     let mut output = stdout.lock();
     if command == NativeV2CliCommand::Help {
         output.write_all(HELP.as_bytes())?;
-        output.write_all(UNDEFINED_TARGET_AUTHORITY_HELP.as_bytes())?;
         output.flush()?;
         return Ok(());
     }
@@ -41,7 +39,7 @@ async fn run() -> Result<(), ProcessError> {
     let registry = FileTargetRegistry::new(default_target_registry_path()?);
     let connector = NativeV2TargetConnector::new(
         registry,
-        UndefinedTargetControlAuthority,
+        HostedTargetControlAuthority::production().map_err(TargetConnectorError::Authority)?,
         AuthenticatedOecpWebSocketDialer,
     );
     let backend = OecpCliBackend::new(connector);

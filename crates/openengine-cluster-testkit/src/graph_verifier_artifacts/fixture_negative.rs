@@ -35,7 +35,13 @@ pub(super) fn illegal_control_graph() -> Value {
 
 pub(super) fn undefined_read_graph() -> Value {
     let mut step = data_step("work");
-    step["inputBindings"][0]["value"]["path"] = json!(["result"]);
+    *step
+        .assert_key_mut("inputBindings")
+        .as_array_mut()
+        .assert_value()
+        .assert_at_mut(0)
+        .assert_key_mut("value")
+        .assert_key_mut("path") = json!(["result"]);
     graph(
         data_state_type(),
         data_state_type(),
@@ -53,9 +59,21 @@ pub(super) fn output_write_error_path_graph() -> Value {
 
 pub(super) fn cyclic_read_graph() -> Value {
     let mut left = data_step("left");
-    left["writeBindings"][0]["value"]["node"] = json!("right");
+    *left
+        .assert_key_mut("writeBindings")
+        .as_array_mut()
+        .assert_value()
+        .assert_at_mut(0)
+        .assert_key_mut("value")
+        .assert_key_mut("node") = json!("right");
     let mut right = data_step("right");
-    right["writeBindings"][0]["value"]["node"] = json!("left");
+    *right
+        .assert_key_mut("writeBindings")
+        .as_array_mut()
+        .assert_value()
+        .assert_at_mut(0)
+        .assert_key_mut("value")
+        .assert_key_mut("node") = json!("left");
     graph(
         data_state_type(),
         data_state_type(),
@@ -65,7 +83,11 @@ pub(super) fn cyclic_read_graph() -> Value {
 
 pub(super) fn type_mismatch_graph() -> Value {
     let mut step = data_step("work");
-    step["input"]["fields"]["value"]["type"] = json!({"kind":"string"});
+    *step
+        .assert_key_mut("input")
+        .assert_key_mut("fields")
+        .assert_key_mut("value")
+        .assert_key_mut("type") = json!({"kind":"string"});
     graph(
         data_state_type(),
         data_state_type(),
@@ -125,7 +147,7 @@ pub(super) fn non_exhaustive_choice_graph() -> Value {
         in_guard(),
         succeed("selected"),
     );
-    decision["otherwise"] = Value::Null;
+    *decision.assert_key_mut("otherwise") = Value::Null;
     graph(
         data_state_type(),
         data_state_type(),
@@ -224,7 +246,7 @@ pub(super) fn worker_graph(worker: &str) -> Value {
 
 pub(super) fn registry_input_graph() -> Value {
     let mut step = null_step("work", "fixture.worker@1");
-    step["input"] = json!({"kind":"record","fields":{}});
+    *step.assert_key_mut("input") = json!({"kind":"record","fields":{}});
     graph(null_type(), null_type(), vec![step, succeed("done")])
 }
 
@@ -253,19 +275,19 @@ pub(super) fn registry_verifier_contract_graph() -> Value {
 
 pub(super) fn registry_signal_field_graph() -> Value {
     let mut verifier = verifier_node("verify");
-    verifier["signals"] = json!({"other":["accepted"]});
+    *verifier.assert_key_mut("signals") = json!({"other":["accepted"]});
     graph(null_type(), null_type(), vec![verifier, succeed("done")])
 }
 
 pub(super) fn registry_signal_labels_graph() -> Value {
     let mut verifier = verifier_node("verify");
-    verifier["signals"] = json!({"verdict":["accepted"]});
+    *verifier.assert_key_mut("signals") = json!({"verdict":["accepted"]});
     graph(null_type(), null_type(), vec![verifier, succeed("done")])
 }
 
 pub(super) fn registry_diagnostic_graph() -> Value {
     let mut verifier = verifier_node("verify");
-    verifier["diagnostic"] = json!({"kind":"string"});
+    *verifier.assert_key_mut("diagnostic") = json!({"kind":"string"});
     graph(null_type(), null_type(), vec![verifier, succeed("done")])
 }
 
@@ -307,17 +329,20 @@ pub(super) fn data_state_type() -> Value {
 }
 
 pub(super) fn worker_ref(value: &str) -> WorkerRef {
-    WorkerRef::new(value).expect("fixture worker reference is valid")
+    WorkerRef::new(value).assert_value_with("fixture worker reference is valid")
 }
 
 pub(super) fn json_artifact(relative_path: String, value: Value) -> Artifact {
-    let mut bytes = serde_json::to_vec_pretty(&value).expect("fixture serialization must succeed");
+    let mut bytes =
+        serde_json::to_vec_pretty(&value).assert_value_with("fixture serialization must succeed");
     bytes.push(b'\n');
     Artifact {
         relative_path,
         bytes,
     }
 }
+use crate::fixture::*;
+
 use super::fixture_builders::*;
 use super::fixture_controls::guarded_graph;
 use super::*;

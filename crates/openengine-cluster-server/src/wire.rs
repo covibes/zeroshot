@@ -7,16 +7,29 @@ use openengine_cluster_protocol::{
 
 use crate::{BackendError, BackendErrorKind};
 
+const SERIALIZATION_FAILURE: &str = concat!(
+    r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"#,
+    r#""message":"Internal error","data":{"code":"INTERNAL_ERROR","details":null}}}"#,
+);
+
 pub(crate) fn serialize_success<T>(id: RequestId, result: T) -> String
 where
     T: serde::Serialize,
 {
-    serde_json::to_string(&JsonRpcSuccess {
+    let response = JsonRpcSuccess {
         jsonrpc: JSON_RPC_VERSION.to_owned(),
-        id,
+        id: id.clone(),
         result,
-    })
-    .expect("protocol response serialization must succeed")
+    };
+    match serde_json::to_string(&response) {
+        Ok(serialized) => serialized,
+        Err(_) => serialize_error(
+            Some(id),
+            INTERNAL_ERROR,
+            "Internal error",
+            Some(DomainErrorData::new(INTERNAL_ERROR_CODE)),
+        ),
+    }
 }
 
 pub(crate) fn serialize_backend_error(id: RequestId, error: BackendError) -> String {
@@ -62,7 +75,7 @@ pub(crate) fn serialize_error(
     message: &str,
     data: Option<DomainErrorData>,
 ) -> String {
-    serde_json::to_string(&JsonRpcErrorResponse {
+    let response = JsonRpcErrorResponse {
         jsonrpc: JSON_RPC_VERSION.to_owned(),
         id,
         error: JsonRpcError {
@@ -70,6 +83,9 @@ pub(crate) fn serialize_error(
             message: message.to_owned(),
             data,
         },
-    })
-    .expect("protocol error serialization must succeed")
+    };
+    match serde_json::to_string(&response) {
+        Ok(serialized) => serialized,
+        Err(_) => SERIALIZATION_FAILURE.to_owned(),
+    }
 }

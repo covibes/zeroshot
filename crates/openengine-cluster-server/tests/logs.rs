@@ -9,7 +9,9 @@ use openengine_cluster_protocol::{
     SubscriptionId, INVALID_PHASE, MAX_LOG_EVENT_ENCODED_BYTES,
 };
 use openengine_cluster_server::logs::fixtures::{LogsFixtureBackend, LogsFixtureStore};
-use openengine_cluster_server::logs::{subscribe_and_stream_logs, LogStore, LogStreamItem};
+use openengine_cluster_server::logs::{
+    subscribe_and_stream_logs, LogEventStream, LogStore, LogStreamItem, LogsHandle,
+};
 use openengine_cluster_server::watch::fixtures::{await_ndjson_shutdown, spawn_ndjson};
 use openengine_cluster_server::{ClusterBackend, ConnectionContext, Dispatcher};
 use serde_json::json;
@@ -38,17 +40,22 @@ const AMPLE_CAPACITY: usize = 8;
 fn sample_log_record(message: &str) -> LogRecord {
     LogRecord {
         level: LogLevel::Info,
-        target: BoundedLogTarget::new("worker-dispatch").expect("fixture target must be valid"),
-        message: BoundedLogMessage::new(message).expect("fixture message must be valid"),
+        target: BoundedLogTarget::new("worker-dispatch").assert_value(),
+        message: BoundedLogMessage::new(message).assert_value(),
     }
+}
+
+async fn open_logs() -> (LogEventStream, LogsHandle) {
+    let store = Arc::new(LogsFixtureStore::new());
+    let dispatcher = Dispatcher::new(LogsFixtureBackend::new(store), ConnectionContext::default());
+    let (_result, stream, handle) = dispatcher.logs(LogsParams::default()).await.assert_value();
+    (stream, handle)
 }
 
 #[tokio::test]
 async fn default_logs_is_unsupported_unless_the_backend_overrides_it() {
     let dispatcher = bare_watch_dispatcher(AMPLE_CAPACITY);
-    let Err(error) = dispatcher.logs(LogsParams::default()).await else {
-        panic!("expected the default logs implementation to be unsupported");
-    };
+    let error = dispatcher.logs(LogsParams::default()).await.assert_error();
     assert_eq!(error.code, INVALID_PHASE);
 }
 
@@ -64,38 +71,29 @@ async fn logs_streams_only_future_records_no_replay() {
     // must never be observed.
     store.publish(sample_log_record("before subscribing")).await;
 
-    let (_result, mut stream, _handle) = dispatcher.logs(LogsParams::default()).await.unwrap();
+    let (_result, mut stream, _handle) =
+        dispatcher.logs(LogsParams::default()).await.assert_value();
 
     store.publish(sample_log_record("after subscribing")).await;
-    let item = stream.next().await.unwrap();
-    let LogStreamItem::Event(record) = item else {
-        panic!("expected a live log record");
-    };
+    let item = stream.next().await.assert_value();
+    let record = match item {
+        LogStreamItem::Event(record) => Some(record),
+        LogStreamItem::Closed { .. } => None,
+    }
+    .assert_value();
     assert_eq!(record.message.as_str(), "after subscribing");
 }
 
 #[tokio::test]
 async fn dropping_the_handle_cancels_without_delivering_more_events() {
-    let store = Arc::new(LogsFixtureStore::new());
-    let dispatcher = Dispatcher::new(
-        LogsFixtureBackend::new(Arc::clone(&store)),
-        ConnectionContext::default(),
-    );
-
-    let (_result, mut stream, handle) = dispatcher.logs(LogsParams::default()).await.unwrap();
+    let (mut stream, handle) = open_logs().await;
     drop(handle);
     assert!(stream.next().await.is_none());
 }
 
 #[tokio::test]
 async fn cancelling_wakes_an_already_pending_idle_next_call() {
-    let store = Arc::new(LogsFixtureStore::new());
-    let dispatcher = Dispatcher::new(
-        LogsFixtureBackend::new(Arc::clone(&store)),
-        ConnectionContext::default(),
-    );
-
-    let (_result, mut stream, handle) = dispatcher.logs(LogsParams::default()).await.unwrap();
+    let (mut stream, handle) = open_logs().await;
     let pending = tokio::spawn(async move { stream.next().await });
 
     // Give the spawned task time to actually park inside `receiver.recv().await` before
@@ -106,8 +104,8 @@ async fn cancelling_wakes_an_already_pending_idle_next_call() {
 
     let result = tokio::time::timeout(Duration::from_secs(1), pending)
         .await
-        .expect("cancellation must wake an already-pending idle next() call within 1s");
-    assert_eq!(result.unwrap(), None);
+        .assert_value();
+    assert_eq!(result.assert_value(), None);
 }
 
 #[tokio::test]
@@ -118,18 +116,20 @@ async fn queue_overflow_closes_with_slow_consumer_and_carries_no_cursor() {
     let (_result, mut stream, _handle) = backend
         .logs(&context, LogsParams::default(), 1)
         .await
-        .unwrap();
+        .assert_value();
 
     store.publish(sample_log_record("first")).await;
     store.publish(sample_log_record("second")).await;
 
-    let first = stream.next().await.unwrap();
-    let LogStreamItem::Event(record) = first else {
-        panic!("expected the first buffered record");
-    };
+    let first = stream.next().await.assert_value();
+    let record = match first {
+        LogStreamItem::Event(record) => Some(record),
+        LogStreamItem::Closed { .. } => None,
+    }
+    .assert_value();
     assert_eq!(record.message.as_str(), "first");
 
-    let closed = stream.next().await.unwrap();
+    let closed = stream.next().await.assert_value();
     assert_eq!(
         closed,
         LogStreamItem::Closed {
@@ -183,3 +183,11 @@ async fn oversized_event_encoding_ends_only_that_subscription_without_panicking(
     drop(write);
     await_ndjson_shutdown(server).await;
 }
+#[path = "support/assert_value.rs"]
+mod assert_value;
+use assert_value::AssertValue;
+#[path = "support/assert_error.rs"]
+mod assert_error;
+use assert_error::AssertError;
+#[path = "support/assert_at.rs"]
+mod assert_at;

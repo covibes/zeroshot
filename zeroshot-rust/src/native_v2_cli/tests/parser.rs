@@ -1,0 +1,173 @@
+use super::*;
+
+#[test]
+fn parser_is_the_agreed_lean_hosted_surface() {
+    let run = parse_native_v2_args(args(&[
+        "run",
+        "--target",
+        "prod",
+        "--graph",
+        "graph.json",
+        "--input",
+        "input.json",
+        "--ship",
+        "-d",
+        "--submission-key",
+        "retry-1",
+    ]))
+    .assert_value();
+    let run = match run {
+        NativeV2CliCommand::Run(run) => Some(run),
+        _ => None,
+    };
+    let run = run.assert_value_with("run command");
+    assert_eq!(run.target, "prod");
+    assert!(run.ship);
+    assert!(run.detach);
+    assert_eq!(run.submission_key.assert_value().as_str(), "retry-1");
+
+    for unsupported in ["--provider", "--model", "--effort", "--session", "--env"] {
+        let error = parse_native_v2_args(args(&[
+            "run",
+            "--target",
+            "prod",
+            "--graph",
+            "g.json",
+            "--input",
+            "i.json",
+            unsupported,
+            "value",
+        ]))
+        .assert_error();
+        assert!(matches!(error, NativeV2CliError::Usage(_)));
+    }
+}
+
+#[test]
+fn parser_keeps_capsules_private_and_attach_read_only() {
+    let attach = parse_native_v2_args(args(&["attach", "run-7", "exec-2", "--target", "prod"]))
+        .assert_value();
+    assert!(matches!(attach, NativeV2CliCommand::Attach { .. }));
+    assert!(parse_native_v2_args(args(&["capsule", "create"])).is_err());
+    assert!(
+        parse_native_v2_args(args(&[
+            "attach", "run-7", "exec-2", "--target", "prod", "--input", "text",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn parser_exposes_named_target_setup_without_runtime_overrides() {
+    let command = parse_native_v2_args(args(&[
+        "target",
+        "setup",
+        "prod",
+        "--repository",
+        "open/engine",
+        "--runtime-config",
+        "runtime.json",
+        "--base",
+        "main",
+        "--target-branch",
+        "release",
+    ]))
+    .assert_value();
+    let setup = match command {
+        NativeV2CliCommand::TargetSetup(setup) => Some(setup),
+        _ => None,
+    };
+    let setup = setup.assert_value_with("setup command");
+    assert_eq!(setup.repository, "open/engine");
+    assert_eq!(setup.runtime_config, PathBuf::from("runtime.json"));
+}
+
+#[tokio::test]
+async fn named_target_commands_delegate_without_interpreting_runtime_configuration() {
+    let backend = FakeBackend::default();
+    for argv in [
+        args(&["target", "add", "prod", "--url", "https://target.example"]),
+        args(&["target", "login", "prod"]),
+        args(&[
+            "target",
+            "setup",
+            "prod",
+            "--repository",
+            "open/engine",
+            "--runtime-config",
+            "runtime.json",
+        ]),
+    ] {
+        let command = parse_native_v2_args(argv).assert_value();
+        execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
+            .await
+            .assert_value();
+    }
+    assert_eq!(
+        backend.calls(),
+        [
+            Call::TargetAdd {
+                name: "prod".to_owned(),
+                url: "https://target.example".to_owned(),
+            },
+            Call::TargetLogin {
+                name: "prod".to_owned(),
+            },
+            Call::TargetSetup {
+                name: "prod".to_owned(),
+                repository: "open/engine".to_owned(),
+                runtime_config: PathBuf::from("runtime.json"),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn invalid_graph_and_input_fail_before_target_contact() {
+    let backend = FakeBackend::default();
+    let invalid_graph = FixtureFiles::new(json!({"not":"a graph"}), json!({"task":"ok"}));
+    let command = parse_native_v2_args(run_args(
+        &invalid_graph.graph,
+        &invalid_graph.input,
+        &["-d"],
+    ))
+    .assert_value();
+    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
+        .await
+        .assert_error();
+    assert!(matches!(
+        error,
+        NativeV2CliError::Json { kind: "graph", .. }
+    ));
+    assert!(backend.calls().is_empty());
+
+    let invalid_input = FixtureFiles::new(graph(), json!({"task":7}));
+    let command = parse_native_v2_args(run_args(
+        &invalid_input.graph,
+        &invalid_input.input,
+        &["-d"],
+    ))
+    .assert_value();
+    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
+        .await
+        .assert_error();
+    assert!(matches!(error, NativeV2CliError::InitialInput(_)));
+    assert!(backend.calls().is_empty());
+}
+
+#[tokio::test]
+async fn unsupported_graph_profile_fails_before_target_contact() {
+    let mut unsupported = graph();
+    *unsupported.get_mut("profile").assert_value() = json!("openengine.graph.single-worker/v1");
+    let files = FixtureFiles::new(unsupported, json!({"task":"no legacy profile"}));
+    let command =
+        parse_native_v2_args(run_args(&files.graph, &files.input, &["-d"])).assert_value();
+    let backend = FakeBackend::default();
+    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
+        .await
+        .assert_error();
+    assert!(matches!(error, NativeV2CliError::Usage(_)));
+    assert!(backend.calls().is_empty());
+}
+
+use openengine_cluster_testkit::assertions::{AssertValue, AssertError};

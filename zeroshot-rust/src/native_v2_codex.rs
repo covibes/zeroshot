@@ -8,7 +8,6 @@ mod output;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,10 +17,14 @@ use tokio::time::{Duration, Instant};
 
 use crate::execution::driver::WorkspaceCapability;
 use crate::execution::process::{
-    HostedProcessPool, HostedProcessScope, LocalProcessRunner, ProcessFrame, ProcessSession,
-    ProcessSessionCommand, ProcessSessionOutput,
+    HostedProcessPool, LocalProcessRunner, ProcessFrame, ProcessSession, ProcessSessionCommand,
+    ProcessSessionOutput,
 };
-use crate::execution::{SessionScope, WorkspaceAccessMode};
+use crate::execution::WorkspaceAccessMode;
+use crate::native_v2_capsule::provider_process::{
+    ClosedSessionFailure, ProviderProcessRunners, ProviderSessionCore, effort_token,
+    impl_provider_node_session, process_scope, redaction_values, validate_process_output,
+};
 use crate::native_v2_contract::{CodexProvider, NodeInvocation, NodeRuntimeBinding};
 use crate::native_v2_runner::{
     render_agent_prompt, DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NodeDriver,
@@ -54,13 +57,7 @@ pub struct NativeV2CodexConfig {
 /// One graph-wide Codex/OpenAI-or-OpenRouter adapter.
 pub struct NativeV2CodexAdapter {
     config: NativeV2CodexConfig,
-    runners: CodexProcessRunners,
-}
-
-enum CodexProcessRunners {
-    Hosted(HostedProcessPool),
-    #[cfg(test)]
-    Local,
+    runners: ProviderProcessRunners,
 }
 
 impl NativeV2CodexAdapter {
@@ -69,7 +66,7 @@ impl NativeV2CodexAdapter {
         let process_pool = config.process_pool;
         Self {
             config,
-            runners: CodexProcessRunners::Hosted(process_pool),
+            runners: ProviderProcessRunners::hosted(process_pool),
         }
     }
 
@@ -77,7 +74,7 @@ impl NativeV2CodexAdapter {
     fn new_for_test(config: NativeV2CodexConfig) -> Self {
         Self {
             config,
-            runners: CodexProcessRunners::Local,
+            runners: ProviderProcessRunners::local(),
         }
     }
 
@@ -86,24 +83,7 @@ impl NativeV2CodexAdapter {
         invocation: &DriverInvocation,
     ) -> Result<(LocalProcessRunner, PathBuf), NodeRunnerError> {
         let scope = process_scope(invocation)?;
-        match self.runners {
-            CodexProcessRunners::Hosted(pool) => {
-                let identity = pool.identity(scope).map_err(|_| NodeRunnerError::Driver)?;
-                let home = identity
-                    .prepare_private_home(&self.config.runtime_home)
-                    .map_err(|_| NodeRunnerError::Driver)?;
-                Ok((identity.runner(), home))
-            }
-            #[cfg(test)]
-            CodexProcessRunners::Local => {
-                let home = crate::execution::process::prepare_local_private_home(
-                    &self.config.runtime_home,
-                    scope,
-                )
-                .map_err(|_| NodeRunnerError::Driver)?;
-                Ok((LocalProcessRunner::new(), home))
-            }
-        }
+        self.runners.turn_process(&self.config.runtime_home, scope)
     }
 
     fn command(
@@ -147,16 +127,16 @@ impl NativeV2CodexAdapter {
         session: &CodexSession,
         control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
-        let _turn = session.turn.lock().await;
-        ensure_live(session)?;
+        let _turn = session.core.turn.lock().await;
+        session.core.ensure_live(ClosedSessionFailure::Driver)?;
         let resume = session.thread_id.lock().await.clone();
         let mut process = self
             .open_turn_process(invocation, resume.as_deref(), &control)
             .await?;
-        let redactions = redaction_values(&invocation.environment);
+        let redactions = redaction_values(invocation.environment.iter().map(|(_, value)| value));
         let output = collect_output(&mut process, &control, &redactions).await;
         let completion = finish_process(&mut process, output.is_ok()).await?;
-        validate_completion(&completion, &control)?;
+        validate_process_output(&completion, &control)?;
         let output = output?;
         session
             .record_thread(output.thread_id.as_deref(), resume.as_deref())
@@ -226,17 +206,15 @@ impl NodeDriver for NativeV2CodexAdapter {
 }
 
 struct CodexSession {
-    live: AtomicBool,
+    core: ProviderSessionCore,
     thread_id: Mutex<Option<String>>,
-    turn: Mutex<()>,
 }
 
 impl CodexSession {
     fn new() -> Self {
         Self {
-            live: AtomicBool::new(true),
+            core: ProviderSessionCore::new(),
             thread_id: Mutex::new(None),
-            turn: Mutex::new(()),
         }
     }
 
@@ -264,20 +242,7 @@ impl CodexSession {
     }
 }
 
-#[async_trait]
-impl NodeSession for CodexSession {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    async fn is_live(&self) -> bool {
-        self.live.load(Ordering::Acquire)
-    }
-
-    async fn close(&self) {
-        self.live.store(false, Ordering::Release);
-    }
-}
+impl_provider_node_session!(CodexSession);
 
 async fn collect_output(
     process: &mut ProcessSession,
@@ -338,23 +303,6 @@ fn emit_text(
     }
     if text.is_empty() {
         control.emit(LiveOutput::new(stream, "")?)?;
-    }
-    Ok(())
-}
-
-fn validate_completion(
-    completion: &ProcessSessionOutput,
-    control: &DriverControl,
-) -> Result<(), NodeRunnerError> {
-    if completion.cancelled || control.is_cancelled() {
-        return Err(NodeRunnerError::Cancelled);
-    }
-    if completion.exit_code != Some(0)
-        || completion.timed_out
-        || !completion.cleanup.proves_tree_empty()
-        || completion.post_launch_error.is_some()
-    {
-        return Err(NodeRunnerError::Driver);
     }
     Ok(())
 }
@@ -452,7 +400,7 @@ fn add_node_args(
     if let Some(effort) = effort {
         argv.extend([
             "--config".to_owned(),
-            format!("model_reasoning_effort=\"{}\"", effort_name(effort)),
+            format!("model_reasoning_effort=\"{}\"", effort_token(effort)),
         ]);
     }
     argv.extend([
@@ -495,64 +443,10 @@ fn role_settings(role: NodeRole) -> Result<(&'static str, WorkspaceAccessMode), 
     }
 }
 
-fn process_scope(invocation: &DriverInvocation) -> Result<HostedProcessScope, NodeRunnerError> {
-    let NodeRuntimeBinding::Agent { session_scope, .. } = &invocation.node.binding else {
-        return Err(NodeRunnerError::Driver);
-    };
-    let node_instance = invocation.node.reference.node_instance.get();
-    let execution = invocation.node.reference.execution.get();
-    match (invocation.role, *session_scope) {
-        (NodeRole::Worker, SessionScope::NodeInstance) => {
-            Ok(HostedProcessScope::WriterNodeInstance(node_instance))
-        }
-        (NodeRole::Worker, SessionScope::Execution) => {
-            Ok(HostedProcessScope::WriterExecution(execution))
-        }
-        (NodeRole::Verifier, SessionScope::NodeInstance) => {
-            Ok(HostedProcessScope::VerifierNodeInstance(node_instance))
-        }
-        (NodeRole::Verifier, SessionScope::Execution) => {
-            Ok(HostedProcessScope::VerifierExecution(execution))
-        }
-        (NodeRole::GitDelivery, _) => Err(NodeRunnerError::Driver),
-    }
-}
-
-fn redaction_values(environment: &ResolvedEnvironment) -> Vec<String> {
-    let mut values = environment
-        .iter()
-        .map(|(_, value)| value.to_owned())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    values.sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
-    values.dedup();
-    values
-}
-
 fn redact_text(text: &str, redactions: &[String]) -> String {
     redactions.iter().fold(text.to_owned(), |safe, value| {
         safe.replace(value, "[REDACTED]")
     })
-}
-
-fn ensure_live(session: &CodexSession) -> Result<(), NodeRunnerError> {
-    if session.live.load(Ordering::Acquire) {
-        Ok(())
-    } else {
-        Err(NodeRunnerError::Driver)
-    }
-}
-
-fn effort_name(effort: crate::worker_catalog::ReasoningEffort) -> &'static str {
-    use crate::worker_catalog::ReasoningEffort;
-
-    match effort {
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-        ReasoningEffort::Xhigh => "xhigh",
-        ReasoningEffort::Max => "max",
-    }
 }
 
 fn path_text(path: &Path) -> Result<String, NodeRunnerError> {
