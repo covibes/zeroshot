@@ -18,6 +18,7 @@ pub mod native_v2_claude;
 pub mod native_v2_codex;
 pub mod native_v2_contract;
 pub mod native_v2_runner;
+pub mod native_v2_supervisor;
 pub mod product_errors;
 mod provider_value;
 pub mod required_proof;
