@@ -6,11 +6,14 @@ fn parser_is_the_agreed_lean_hosted_surface() {
         "run",
         "--target",
         "prod",
+        "--title",
+        "Repair checkout",
         "--graph",
         "graph.json",
         "--input",
         "input.json",
-        "--ship",
+        "--runtime-config",
+        "runtime.json",
         "-d",
         "--submission-key",
         "retry-1",
@@ -21,20 +24,32 @@ fn parser_is_the_agreed_lean_hosted_surface() {
         _ => None,
     };
     let run = run.assert_value_with("run command");
-    assert_eq!(run.target, "prod");
-    assert!(run.ship);
+    assert_eq!(run.target.as_deref(), Some("prod"));
+    assert_eq!(run.title.as_str(), "Repair checkout");
+    assert_eq!(run.runtime_config, PathBuf::from("runtime.json"));
     assert!(run.detach);
     assert_eq!(run.submission_key.assert_value().as_str(), "retry-1");
 
-    for unsupported in ["--provider", "--model", "--effort", "--session", "--env"] {
+    for unsupported in [
+        "--provider",
+        "--model",
+        "--effort",
+        "--session",
+        "--env",
+        "--ship",
+    ] {
         let error = parse_native_v2_args(args(&[
             "run",
             "--target",
             "prod",
+            "--title",
+            "Repair checkout",
             "--graph",
             "g.json",
             "--input",
             "i.json",
+            "--runtime-config",
+            "runtime.json",
             unsupported,
             "value",
         ]))
@@ -65,8 +80,6 @@ fn parser_exposes_named_target_setup_without_runtime_overrides() {
         "prod",
         "--repository",
         "open/engine",
-        "--runtime-config",
-        "runtime.json",
         "--base",
         "main",
         "--target-branch",
@@ -79,7 +92,8 @@ fn parser_exposes_named_target_setup_without_runtime_overrides() {
     };
     let setup = setup.assert_value_with("setup command");
     assert_eq!(setup.repository, "open/engine");
-    assert_eq!(setup.runtime_config, PathBuf::from("runtime.json"));
+    assert_eq!(setup.base.as_deref(), Some("main"));
+    assert_eq!(setup.target_branch.as_deref(), Some("release"));
 }
 
 #[tokio::test]
@@ -88,15 +102,7 @@ async fn named_target_commands_delegate_without_interpreting_runtime_configurati
     for argv in [
         args(&["target", "add", "prod", "--url", "https://target.example"]),
         args(&["target", "login", "prod"]),
-        args(&[
-            "target",
-            "setup",
-            "prod",
-            "--repository",
-            "open/engine",
-            "--runtime-config",
-            "runtime.json",
-        ]),
+        args(&["target", "setup", "prod", "--repository", "open/engine"]),
     ] {
         let command = parse_native_v2_args(argv).assert_value();
         execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
@@ -116,7 +122,8 @@ async fn named_target_commands_delegate_without_interpreting_runtime_configurati
             Call::TargetSetup {
                 name: "prod".to_owned(),
                 repository: "open/engine".to_owned(),
-                runtime_config: PathBuf::from("runtime.json"),
+                base: None,
+                target_branch: None,
             },
         ]
     );
@@ -129,6 +136,7 @@ async fn invalid_graph_and_input_fail_before_target_contact() {
     let command = parse_native_v2_args(run_args(
         &invalid_graph.graph,
         &invalid_graph.input,
+        &invalid_graph.runtime,
         &["-d"],
     ))
     .assert_value();
@@ -145,6 +153,7 @@ async fn invalid_graph_and_input_fail_before_target_contact() {
     let command = parse_native_v2_args(run_args(
         &invalid_input.graph,
         &invalid_input.input,
+        &invalid_input.runtime,
         &["-d"],
     ))
     .assert_value();
@@ -160,8 +169,13 @@ async fn unsupported_graph_profile_fails_before_target_contact() {
     let mut unsupported = graph();
     *unsupported.get_mut("profile").assert_value() = json!("openengine.graph.single-worker/v1");
     let files = FixtureFiles::new(unsupported, json!({"task":"no legacy profile"}));
-    let command =
-        parse_native_v2_args(run_args(&files.graph, &files.input, &["-d"])).assert_value();
+    let command = parse_native_v2_args(run_args(
+        &files.graph,
+        &files.input,
+        &files.runtime,
+        &["-d"],
+    ))
+    .assert_value();
     let backend = FakeBackend::default();
     let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
         .await

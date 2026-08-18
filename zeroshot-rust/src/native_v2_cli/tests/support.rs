@@ -1,0 +1,397 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use openengine_cluster_protocol::{
+    RunAttachEventNotification, RunAttachParams, RunForceParams, RunForceResult, RunId,
+    RunListParams, RunListResult, RunLogEventNotification, RunLogsParams, RunStatusParams,
+    RunStatusResult, RunSubmitResult, RunTitle, RunWatchEventNotification, RunWatchParams,
+    RuntimePlan,
+};
+use openengine_cluster_testkit::assertions::AssertValue;
+use serde_json::{json, Value};
+
+use super::*;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Call {
+    TargetAdd {
+        name: String,
+        url: String,
+    },
+    TargetLogin {
+        name: String,
+    },
+    TargetSetup {
+        name: String,
+        repository: String,
+        base: Option<String>,
+        target_branch: Option<String>,
+    },
+    Submit {
+        target: Option<String>,
+        title: RunTitle,
+        runtime: RuntimePlan,
+        input: Value,
+        submission_key: String,
+    },
+    Watch {
+        target: Option<String>,
+        run_id: String,
+        from_cursor: Option<String>,
+    },
+    List {
+        target: Option<String>,
+    },
+    Status {
+        target: Option<String>,
+        run_id: String,
+    },
+    Logs {
+        target: Option<String>,
+        run_id: String,
+        from_cursor: Option<String>,
+    },
+    Attach {
+        target: Option<String>,
+        run_id: String,
+        execution: String,
+    },
+    Force {
+        target: Option<String>,
+        run_id: String,
+    },
+}
+
+pub(super) struct FakeSubscription<E> {
+    items: Option<VecDeque<FakeSubscriptionStep<E>>>,
+}
+
+enum FakeSubscriptionStep<E> {
+    Item(CliSubscriptionItem<E>),
+    Disconnected,
+}
+
+impl<E> FakeSubscription<E> {
+    fn items(items: Vec<CliSubscriptionItem<E>>) -> Self {
+        Self {
+            items: Some(items.into_iter().map(FakeSubscriptionStep::Item).collect()),
+        }
+    }
+
+    fn disconnect_after(items: Vec<CliSubscriptionItem<E>>) -> Self {
+        let mut steps = items
+            .into_iter()
+            .map(FakeSubscriptionStep::Item)
+            .collect::<VecDeque<_>>();
+        steps.push_back(FakeSubscriptionStep::Disconnected);
+        Self { items: Some(steps) }
+    }
+
+    fn pending() -> Self {
+        Self { items: None }
+    }
+}
+
+#[async_trait]
+impl<E> CliSubscription<E> for FakeSubscription<E>
+where
+    E: Send,
+{
+    async fn next(&mut self) -> Result<Option<CliSubscriptionItem<E>>, NativeV2CliError> {
+        match &mut self.items {
+            Some(items) => match items.pop_front() {
+                Some(FakeSubscriptionStep::Item(item)) => Ok(Some(item)),
+                Some(FakeSubscriptionStep::Disconnected) => Err(NativeV2CliError::Disconnected),
+                None => Ok(None),
+            },
+            None => std::future::pending().await,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct FakeBackend {
+    calls: Arc<Mutex<Vec<Call>>>,
+    pending_watch: bool,
+    reconnect_watch: bool,
+    reconnect_logs: bool,
+    disconnect_attach: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum CursorCallKind {
+    Watch,
+    Logs,
+}
+
+struct CursorCallArgs<'a> {
+    kind: CursorCallKind,
+    target: Option<&'a str>,
+    run_id: &'a RunId,
+    from_cursor: Option<&'a openengine_cluster_protocol::Cursor>,
+}
+
+impl FakeBackend {
+    pub(super) fn with_pending_watch() -> Self {
+        Self {
+            pending_watch: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_reconnecting_watch() -> Self {
+        Self {
+            reconnect_watch: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_reconnecting_logs() -> Self {
+        Self {
+            reconnect_logs: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_disconnected_attach() -> Self {
+        Self {
+            disconnect_attach: true,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn calls(&self) -> Vec<Call> {
+        self.calls.lock().assert_value().clone()
+    }
+
+    fn record_cursor_call(&self, args: CursorCallArgs<'_>) -> usize {
+        let mut calls = self.calls.lock().assert_value();
+        let attempt = calls
+            .iter()
+            .filter(|call| {
+                matches!(
+                    (args.kind, call),
+                    (CursorCallKind::Watch, Call::Watch { .. })
+                        | (CursorCallKind::Logs, Call::Logs { .. })
+                )
+            })
+            .count()
+            + 1;
+        let target = args.target.map(str::to_owned);
+        let run_id = args.run_id.as_str().to_owned();
+        let from_cursor = args.from_cursor.map(|cursor| cursor.as_str().to_owned());
+        calls.push(match args.kind {
+            CursorCallKind::Watch => Call::Watch {
+                target,
+                run_id,
+                from_cursor,
+            },
+            CursorCallKind::Logs => Call::Logs {
+                target,
+                run_id,
+                from_cursor,
+            },
+        });
+        attempt
+    }
+}
+
+#[async_trait]
+impl NativeV2CliBackend for FakeBackend {
+    type Watch = FakeSubscription<RunWatchEventNotification>;
+    type Logs = FakeSubscription<RunLogEventNotification>;
+    type Attach = FakeSubscription<RunAttachEventNotification>;
+
+    async fn target_add(&self, request: TargetAdd) -> Result<(), NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::TargetAdd {
+            name: request.name,
+            url: request.url,
+        });
+        Ok(())
+    }
+
+    async fn target_login(&self, name: &str) -> Result<(), NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::TargetLogin {
+            name: name.to_owned(),
+        });
+        Ok(())
+    }
+
+    async fn target_setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::TargetSetup {
+            name: request.name,
+            repository: request.repository,
+            base: request.base,
+            target_branch: request.target_branch,
+        });
+        Ok(())
+    }
+
+    async fn run_submit(
+        &self,
+        target: Option<&str>,
+        intent: TargetRunIntent,
+    ) -> Result<RunSubmitResult, NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::Submit {
+            target: target.map(str::to_owned),
+            title: intent.title,
+            runtime: intent.runtime,
+            input: intent.initial_input,
+            submission_key: intent.submission_key.as_str().to_owned(),
+        });
+        Ok(RunSubmitResult {
+            run_id: RunId::new("run-public"),
+        })
+    }
+
+    async fn run_list(
+        &self,
+        target: Option<&str>,
+        _params: RunListParams,
+    ) -> Result<RunListResult, NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::List {
+            target: target.map(str::to_owned),
+        });
+        Ok(RunListResult { runs: Vec::new() })
+    }
+
+    async fn run_status(
+        &self,
+        target: Option<&str>,
+        params: RunStatusParams,
+    ) -> Result<RunStatusResult, NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::Status {
+            target: target.map(str::to_owned),
+            run_id: params.run_id.as_str().to_owned(),
+        });
+        Ok(status("run-public", "admitted"))
+    }
+
+    async fn run_watch(
+        &self,
+        target: Option<&str>,
+        params: RunWatchParams,
+    ) -> Result<Self::Watch, NativeV2CliError> {
+        let attempt = self.record_cursor_call(CursorCallArgs {
+            kind: CursorCallKind::Watch,
+            target,
+            run_id: &params.run_id,
+            from_cursor: params.from_cursor.as_ref(),
+        });
+        if self.pending_watch {
+            return Ok(FakeSubscription::pending());
+        }
+        if self.reconnect_watch && attempt == 1 {
+            return Ok(FakeSubscription::disconnect_after(vec![
+                CliSubscriptionItem::Event(
+                    serde_json::from_value(json!({
+                        "subscriptionId":"watch-1",
+                        "runId":params.run_id,
+                        "title":"Repair checkout",
+                        "source":source(),
+                        "size":"standard",
+                        "cursor":"v2:1",
+                        "status":{"phase":"running","activeExecutions":[]}
+                    }))
+                    .assert_value(),
+                ),
+            ]));
+        }
+        Ok(FakeSubscription::items(vec![CliSubscriptionItem::Event(
+            serde_json::from_value(json!({
+                "subscriptionId":"watch-1",
+                "runId":params.run_id,
+                "title":"Repair checkout",
+                "source":source(),
+                "size":"standard",
+                "cursor":"v2:2",
+                "status":{"phase":"finished","terminalResult":{"status":"succeeded","output":null}}
+            }))
+            .assert_value(),
+        )]))
+    }
+
+    async fn run_logs(
+        &self,
+        target: Option<&str>,
+        params: RunLogsParams,
+    ) -> Result<Self::Logs, NativeV2CliError> {
+        let attempt = self.record_cursor_call(CursorCallArgs {
+            kind: CursorCallKind::Logs,
+            target,
+            run_id: &params.run_id,
+            from_cursor: params.from_cursor.as_ref(),
+        });
+        if self.reconnect_logs {
+            let (cursor, message) = if attempt == 1 {
+                ("v2:4", "before disconnect")
+            } else {
+                ("v2:5", "after reconnect")
+            };
+            let event = CliSubscriptionItem::Event(
+                serde_json::from_value(json!({
+                    "subscriptionId":format!("logs-{attempt}"),
+                    "runId":params.run_id,
+                    "cursor":cursor,
+                    "record":{"level":"info","target":"agent","message":message}
+                }))
+                .assert_value(),
+            );
+            if attempt == 1 {
+                return Ok(FakeSubscription::items(vec![event]));
+            }
+            return Ok(FakeSubscription::items(vec![
+                event,
+                CliSubscriptionItem::Closed {
+                    reason: SubscriptionCloseReason::Done,
+                },
+            ]));
+        }
+        Ok(FakeSubscription::items(vec![CliSubscriptionItem::Closed {
+            reason: SubscriptionCloseReason::Done,
+        }]))
+    }
+
+    async fn run_attach(
+        &self,
+        target: Option<&str>,
+        params: RunAttachParams,
+    ) -> Result<Self::Attach, NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::Attach {
+            target: target.map(str::to_owned),
+            run_id: params.run_id.as_str().to_owned(),
+            execution: params.execution.as_str().to_owned(),
+        });
+        if self.disconnect_attach {
+            return Ok(FakeSubscription::disconnect_after(Vec::new()));
+        }
+        Ok(FakeSubscription::items(Vec::new()))
+    }
+
+    async fn run_force(
+        &self,
+        target: Option<&str>,
+        params: RunForceParams,
+    ) -> Result<RunForceResult, NativeV2CliError> {
+        self.calls.lock().assert_value().push(Call::Force {
+            target: target.map(str::to_owned),
+            run_id: params.run_id.as_str().to_owned(),
+        });
+        serde_json::from_value(json!({
+            "runId":params.run_id,
+            "title":"Repair checkout",
+            "source":source(),
+            "size":"standard",
+            "atCursor":"v2:3",
+            "status":{"phase":"stopping","activeExecutions":[]}
+        }))
+        .map_err(NativeV2CliError::OutputJson)
+    }
+}
+
+pub(super) struct ImmediateDetach;
+
+#[async_trait]
+impl DetachSignal for ImmediateDetach {
+    async fn wait(&mut self) {}
+}

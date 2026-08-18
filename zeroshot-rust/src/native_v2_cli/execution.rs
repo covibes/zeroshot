@@ -1,17 +1,18 @@
 use std::fmt;
 use std::io::Write;
 use std::path::Path;
+use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    GraphProfile, GraphSpec, IdempotencyKey, RunAttachParams, RunForceParams, RunListParams,
-    RunLogsParams, RunStatus, RunStatusParams, RunSubmitParams, RunWatchEventNotification,
-    RunWatchParams,
+    Cursor, GraphProfile, GraphSpec, IdempotencyKey, RunAttachParams, RunForceParams, RunId,
+    RunListParams, RunLogEventNotification, RunLogsParams, RunStatus, RunStatusParams,
+    RunWatchEventNotification, RunWatchParams, RuntimePlan, SubscriptionCloseReason,
 };
 use serde::Serialize;
 
 use super::{
     CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal, NativeV2CliBackend,
-    NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector, HELP,
+    NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector, TargetRunIntent, HELP,
 };
 
 pub async fn execute_native_v2_cli<B, S, W>(
@@ -95,13 +96,18 @@ where
 {
     match command {
         NativeV2CliCommand::List { target } => {
-            let result = backend.run_list(&target, RunListParams::default()).await?;
+            let result = backend
+                .run_list(target.as_deref(), RunListParams::default())
+                .await?;
             write_json(output, &result)?;
             Ok(CliOutcome::Completed)
         }
         NativeV2CliCommand::Status(run) => {
             let result = backend
-                .run_status(&run.target, RunStatusParams { run_id: run.run_id })
+                .run_status(
+                    run.target.as_deref(),
+                    RunStatusParams { run_id: run.run_id },
+                )
                 .await?;
             write_json(output, &result)?;
             Ok(outcome_for_status(&result.status))
@@ -122,7 +128,7 @@ where
     W: Write,
 {
     let result = backend
-        .run_force(&run.target, RunForceParams { run_id: run.run_id })
+        .run_force(run.target.as_deref(), RunForceParams { run_id: run.run_id })
         .await?;
     write_json(output, &result)?;
     Ok(outcome_for_status(&result.status))
@@ -141,34 +147,35 @@ where
 {
     match command {
         NativeV2CliCommand::Watch(run) => {
-            let subscription = backend
-                .run_watch(
-                    &run.target,
-                    RunWatchParams {
-                        run_id: run.run_id,
-                        from_cursor: None,
-                    },
-                )
-                .await?;
-            follow_watch(subscription, signal, output).await
+            follow_durable(
+                DurableFollow {
+                    backend,
+                    target: run.target.as_deref(),
+                    run_id: run.run_id,
+                    kind: DurableFollowKind::Watch,
+                },
+                signal,
+                output,
+            )
+            .await
         }
         NativeV2CliCommand::Logs(run) => {
-            let subscription = backend
-                .run_logs(
-                    &run.target,
-                    RunLogsParams {
-                        run_id: run.run_id,
-                        from_cursor: None,
-                        execution: None,
-                    },
-                )
-                .await?;
-            follow_stream(subscription, signal, output).await
+            follow_durable(
+                DurableFollow {
+                    backend,
+                    target: run.target.as_deref(),
+                    run_id: run.run_id,
+                    kind: DurableFollowKind::Logs,
+                },
+                signal,
+                output,
+            )
+            .await
         }
         NativeV2CliCommand::Attach { run, execution } => {
             let subscription = backend
                 .run_attach(
-                    &run.target,
+                    run.target.as_deref(),
                     RunAttachParams {
                         run_id: run.run_id,
                         execution,
@@ -195,27 +202,29 @@ where
     W: Write,
 {
     let params = prepare_submission(&run)?;
-    let receipt = backend.run_submit(&run.target, params).await?;
+    let receipt = backend.run_submit(run.target.as_deref(), params).await?;
     write_json(output, &receipt)?;
     if run.detach {
         return Ok(CliOutcome::Detached);
     }
-    let subscription = backend
-        .run_watch(
-            &run.target,
-            RunWatchParams {
-                run_id: receipt.run_id,
-                from_cursor: None,
-            },
-        )
-        .await?;
-    follow_watch(subscription, signal, output).await
+    follow_durable(
+        DurableFollow {
+            backend,
+            target: run.target.as_deref(),
+            run_id: receipt.run_id,
+            kind: DurableFollowKind::Watch,
+        },
+        signal,
+        output,
+    )
+    .await
 }
 
-fn prepare_submission(run: &RunCommand) -> Result<RunSubmitParams, NativeV2CliError> {
+fn prepare_submission(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError> {
     let graph = read_json::<GraphSpec>("graph", &run.graph)?;
     validate_graph_profile(&graph)?;
     let initial_input = read_json::<serde_json::Value>("input", &run.input)?;
+    let runtime = read_json::<RuntimePlan>("runtime config", &run.runtime_config)?;
     graph
         .initial_input
         .validate_value(&initial_input)
@@ -224,10 +233,11 @@ fn prepare_submission(run: &RunCommand) -> Result<RunSubmitParams, NativeV2CliEr
         .submission_key
         .clone()
         .map_or_else(fresh_submission_key, Ok)?;
-    Ok(RunSubmitParams {
+    Ok(TargetRunIntent {
+        title: run.title.clone(),
         graph,
         initial_input,
-        ship: run.ship,
+        runtime,
         submission_key,
     })
 }
@@ -241,33 +251,184 @@ fn validate_graph_profile(graph: &GraphSpec) -> Result<(), NativeV2CliError> {
     ))
 }
 
-pub(crate) async fn follow_watch<S, W, T>(
-    mut subscription: T,
+#[derive(Clone, Copy)]
+enum DurableFollowKind {
+    Watch,
+    Logs,
+}
+
+impl DurableFollowKind {
+    const fn done_outcome(self) -> CliOutcome {
+        match self {
+            Self::Watch => CliOutcome::Detached,
+            Self::Logs => CliOutcome::Completed,
+        }
+    }
+}
+
+struct DurableFollow<'a, B> {
+    backend: &'a B,
+    target: Option<&'a str>,
+    run_id: RunId,
+    kind: DurableFollowKind,
+}
+
+impl<B> DurableFollow<'_, B>
+where
+    B: NativeV2CliBackend,
+{
+    async fn open(
+        &self,
+        from_cursor: Option<Cursor>,
+    ) -> Result<DurableSubscription<B::Watch, B::Logs>, NativeV2CliError> {
+        match self.kind {
+            DurableFollowKind::Watch => self
+                .backend
+                .run_watch(
+                    self.target,
+                    RunWatchParams {
+                        run_id: self.run_id.clone(),
+                        from_cursor,
+                    },
+                )
+                .await
+                .map(DurableSubscription::Watch),
+            DurableFollowKind::Logs => self
+                .backend
+                .run_logs(
+                    self.target,
+                    RunLogsParams {
+                        run_id: self.run_id.clone(),
+                        from_cursor,
+                        execution: None,
+                    },
+                )
+                .await
+                .map(DurableSubscription::Logs),
+        }
+    }
+}
+
+enum DurableSubscription<W, L> {
+    Watch(W),
+    Logs(L),
+}
+
+impl<W, L> DurableSubscription<W, L>
+where
+    W: CliSubscription<RunWatchEventNotification>,
+    L: CliSubscription<RunLogEventNotification>,
+{
+    async fn next(&mut self) -> Result<Option<DurableItem>, NativeV2CliError> {
+        match self {
+            Self::Watch(subscription) => subscription.next().await.map(|item| {
+                item.map(|item| match item {
+                    CliSubscriptionItem::Event(event) => DurableItem::Watch(event),
+                    CliSubscriptionItem::Closed { reason } => DurableItem::Closed(reason),
+                })
+            }),
+            Self::Logs(subscription) => subscription.next().await.map(|item| {
+                item.map(|item| match item {
+                    CliSubscriptionItem::Event(event) => DurableItem::Log(event),
+                    CliSubscriptionItem::Closed { reason } => DurableItem::Closed(reason),
+                })
+            }),
+        }
+    }
+}
+
+enum DurableItem {
+    Watch(RunWatchEventNotification),
+    Log(RunLogEventNotification),
+    Closed(SubscriptionCloseReason),
+}
+
+impl DurableItem {
+    fn cursor(&self) -> Option<&Cursor> {
+        match self {
+            Self::Watch(event) => Some(&event.cursor),
+            Self::Log(event) => Some(&event.cursor),
+            Self::Closed(_) => None,
+        }
+    }
+}
+
+async fn follow_durable<B, S, W>(
+    follow: DurableFollow<'_, B>,
     signal: &mut S,
     output: &mut W,
 ) -> Result<CliOutcome, NativeV2CliError>
 where
+    B: NativeV2CliBackend,
     S: DetachSignal,
     W: Write,
-    T: CliSubscription<RunWatchEventNotification>,
 {
+    let mut from_cursor: Option<Cursor> = None;
+    let mut opened = false;
     loop {
-        tokio::select! {
+        let subscription = tokio::select! {
             () = signal.wait() => return Ok(CliOutcome::Detached),
-            item = subscription.next() => match item? {
-                Some(CliSubscriptionItem::Event(event)) => {
-                    let finished = matches!(event.status, RunStatus::Finished { .. });
-                    write_json(output, &event)?;
-                    if finished {
-                        return Ok(CliOutcome::Finished);
+            result = follow.open(from_cursor.clone()) => match result {
+                Ok(subscription) => {
+                    opened = true;
+                    subscription
+                }
+                Err(error) if !opened => return Err(error),
+                Err(_) => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            },
+        };
+        let mut subscription = subscription;
+        loop {
+            let item = tokio::select! {
+                () = signal.wait() => return Ok(CliOutcome::Detached),
+                item = subscription.next() => item,
+            };
+            match item {
+                Ok(Some(DurableItem::Closed(SubscriptionCloseReason::Done))) => {
+                    return Ok(follow.kind.done_outcome());
+                }
+                Ok(Some(DurableItem::Closed(SubscriptionCloseReason::SlowConsumer)))
+                | Ok(None)
+                | Err(NativeV2CliError::Disconnected) => break,
+                Ok(Some(event)) => {
+                    if let Some(outcome) = write_durable_event(event, &mut from_cursor, output)? {
+                        return Ok(outcome);
                     }
                 }
-                Some(CliSubscriptionItem::Closed { .. }) | None => {
-                    return Ok(CliOutcome::Detached);
-                }
+                Err(error) => return Err(error),
             }
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+fn write_durable_event(
+    event: DurableItem,
+    from_cursor: &mut Option<Cursor>,
+    output: &mut impl Write,
+) -> Result<Option<CliOutcome>, NativeV2CliError> {
+    if event.cursor() == from_cursor.as_ref() {
+        return Ok(None);
+    }
+    let cursor = event.cursor().cloned();
+    let outcome = match event {
+        DurableItem::Watch(event) => {
+            let outcome =
+                matches!(event.status, RunStatus::Finished { .. }).then_some(CliOutcome::Finished);
+            write_json(output, &event)?;
+            outcome
+        }
+        DurableItem::Log(event) => {
+            write_json(output, &event)?;
+            None
+        }
+        DurableItem::Closed(_) => None,
+    };
+    *from_cursor = cursor;
+    Ok(outcome)
 }
 
 async fn follow_stream<E, S, W, T>(

@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use openengine_cluster_protocol::{ExecutionRef, IdempotencyKey};
+use openengine_cluster_protocol::{ExecutionRef, IdempotencyKey, RunTitle};
 
 use super::{NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector, TargetAdd, TargetSetup};
 
@@ -108,19 +108,11 @@ fn parse_target_login(args: &[String]) -> Result<NativeV2CliCommand, NativeV2Cli
 }
 
 fn parse_target_setup(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
-    let (name, options) = parse_target_options(
-        args,
-        &[
-            "--repository",
-            "--runtime-config",
-            "--base",
-            "--target-branch",
-        ],
-    )?;
+    let (name, options) =
+        parse_target_options(args, &["--repository", "--base", "--target-branch"])?;
     Ok(NativeV2CliCommand::TargetSetup(TargetSetup {
         name,
         repository: options.required("--repository")?,
-        runtime_config: PathBuf::from(options.required("--runtime-config")?),
         base: options.optional("--base"),
         target_branch: options.optional("--target-branch"),
     }))
@@ -138,8 +130,15 @@ fn parse_target_options(
 fn parse_run(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
     let options = Options::parse(
         args,
-        &["--target", "--graph", "--input", "--submission-key"],
-        &["--ship", "--detach", "-d"],
+        &[
+            "--target",
+            "--title",
+            "--graph",
+            "--input",
+            "--runtime-config",
+            "--submission-key",
+        ],
+        &["--detach", "-d"],
     )?;
     let submission_key = options
         .optional("--submission-key")
@@ -147,10 +146,12 @@ fn parse_run(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
         .transpose()
         .map_err(|error| usage(format!("invalid --submission-key: {error}")))?;
     Ok(NativeV2CliCommand::Run(RunCommand {
-        target: required_target(&options)?,
+        target: optional_target(&options)?,
+        title: RunTitle::new(options.required("--title")?)
+            .map_err(|error| usage(format!("invalid --title: {error}")))?,
         graph: PathBuf::from(options.required("--graph")?),
         input: PathBuf::from(options.required("--input")?),
-        ship: options.flag("--ship"),
+        runtime_config: PathBuf::from(options.required("--runtime-config")?),
         detach: options.flag("--detach") || options.flag("-d"),
         submission_key,
     }))
@@ -159,7 +160,7 @@ fn parse_run(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
 fn parse_list(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
     let options = Options::parse(args, &["--target"], &[])?;
     Ok(NativeV2CliCommand::List {
-        target: required_target(&options)?,
+        target: optional_target(&options)?,
     })
 }
 
@@ -168,7 +169,7 @@ fn parse_run_selector(args: &[String]) -> Result<RunSelector, NativeV2CliError> 
     validate_public_id(run_id, "run ID")?;
     let options = Options::parse(argument_tail(args, 1)?, &["--target"], &[])?;
     Ok(RunSelector {
-        target: required_target(&options)?,
+        target: optional_target(&options)?,
         run_id: openengine_cluster_protocol::RunId::new(run_id),
     })
 }
@@ -186,16 +187,18 @@ fn parse_attach(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError>
     let options = Options::parse(argument_tail(args, 2)?, &["--target"], &[])?;
     Ok(NativeV2CliCommand::Attach {
         run: RunSelector {
-            target: required_target(&options)?,
+            target: optional_target(&options)?,
             run_id: openengine_cluster_protocol::RunId::new(run_id),
         },
         execution,
     })
 }
 
-fn required_target(options: &Options) -> Result<String, NativeV2CliError> {
-    let target = options.required("--target")?;
-    validate_public_id(&target, "target name")?;
+fn optional_target(options: &Options) -> Result<Option<String>, NativeV2CliError> {
+    let target = options.optional("--target");
+    if let Some(target) = &target {
+        validate_public_id(target, "target name")?;
+    }
     Ok(target)
 }
 
