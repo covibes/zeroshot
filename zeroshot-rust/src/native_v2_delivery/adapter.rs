@@ -334,6 +334,9 @@ impl NativeV2DeliveryAdapter {
                 .await?
             {
                 GitHubMergeRequestOutcome::Accepted => drive.merge_requested = true,
+                GitHubMergeRequestOutcome::Pending => {
+                    emit(drive.control, "delivery: merge request is not yet accepted")?;
+                }
                 GitHubMergeRequestOutcome::Conflict => {
                     return review_completion(
                         drive,

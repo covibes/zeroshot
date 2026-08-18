@@ -104,6 +104,19 @@ async fn merge_api_conflict_is_not_collapsed_into_infrastructure_failure() {
 }
 
 #[tokio::test]
+async fn merge_rejection_before_ci_registration_is_reobserved() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(
+        repo.remote.clone(),
+        Script::RegistrationRace,
+    ));
+    let outcome = run_delivery(&repo, authority.clone(), 4, DeliveryMode::Merge).await;
+    assert_delivery_signal(&outcome, DELIVERY_MERGED_LABEL);
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(authority.inspections.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
 async fn accepted_merge_request_is_not_shipping_success() {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(

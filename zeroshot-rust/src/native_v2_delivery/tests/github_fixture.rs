@@ -15,6 +15,7 @@ pub(super) enum Script {
     CiFailed,
     Conflict,
     ConflictAtMerge,
+    RegistrationRace,
     CiFailsThenMerges,
     NeverConfirmsMerge,
 }
@@ -48,6 +49,7 @@ impl FakeGitHub {
             Script::CiFailed => open_review(GitHubChecks::Failed),
             Script::Conflict => GitHubReviewState::Conflict,
             Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
+            Script::RegistrationRace => self.registration_race_state(inspection),
             Script::CiFailsThenMerges => self.ci_repair_state(inspection),
             Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
         }
@@ -67,6 +69,16 @@ impl FakeGitHub {
         }
         if self.merge_requested.load(Ordering::SeqCst) {
             merged_review()
+        } else {
+            open_review(GitHubChecks::Passed)
+        }
+    }
+
+    fn registration_race_state(&self, inspection: usize) -> GitHubReviewState {
+        if self.merge_requested.load(Ordering::SeqCst) {
+            merged_review()
+        } else if inspection == 1 {
+            open_review(GitHubChecks::NotRequired)
         } else {
             open_review(GitHubChecks::Passed)
         }
@@ -147,6 +159,11 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         self.merge_requests.fetch_add(1, Ordering::SeqCst);
         if matches!(self.script, Script::ConflictAtMerge) {
             return Ok(GitHubMergeRequestOutcome::Conflict);
+        }
+        if matches!(self.script, Script::RegistrationRace)
+            && self.merge_requests.load(Ordering::SeqCst) == 1
+        {
+            return Ok(GitHubMergeRequestOutcome::Pending);
         }
         self.merge_requested.store(true, Ordering::SeqCst);
         Ok(GitHubMergeRequestOutcome::Accepted)

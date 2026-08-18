@@ -187,17 +187,19 @@ impl GhCliDeliveryAuthority {
         serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)
     }
 
-    async fn confirm_merge_conflict(
+    async fn classify_rejected_merge(
         &self,
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
     ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
         let wire = self.pull_request(review, credential).await?;
         require_review_identity(&wire, review)?;
-        if wire.state == "open" && wire.merged != Some(true) && wire.mergeable == Some(false) {
-            Ok(GitHubMergeRequestOutcome::Conflict)
-        } else {
-            Err(GitHubAuthorityError::Rejected)
+        if wire.state != "open" || wire.merged == Some(true) {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        match wire.mergeable {
+            Some(false) => Ok(GitHubMergeRequestOutcome::Conflict),
+            Some(true) | None => Ok(GitHubMergeRequestOutcome::Pending),
         }
     }
 }
@@ -300,11 +302,11 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
                 if confirmed_merge(value).is_ok() {
                     Ok(GitHubMergeRequestOutcome::Accepted)
                 } else {
-                    self.confirm_merge_conflict(review, credential).await
+                    self.classify_rejected_merge(review, credential).await
                 }
             }
             Err(GitHubAuthorityError::Rejected) => {
-                self.confirm_merge_conflict(review, credential).await
+                self.classify_rejected_merge(review, credential).await
             }
             Err(error) => Err(error),
         }

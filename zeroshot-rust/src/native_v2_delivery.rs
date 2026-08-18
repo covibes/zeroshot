@@ -242,6 +242,7 @@ pub enum GitHubReviewState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitHubMergeRequestOutcome {
     Accepted,
+    Pending,
     Conflict,
 }
 
