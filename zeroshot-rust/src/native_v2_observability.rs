@@ -82,7 +82,7 @@ impl NativeV2Observability {
         if start_sequence > cursor_sequence(&complete.snapshot.cursor)? {
             return Err(RunLedgerError::CursorAhead.into());
         }
-        let mut projection = RunSnapshot::admitted(params.run_id.clone());
+        let mut projection = complete.snapshot.replay_seed();
         let mut pending = VecDeque::new();
         WatchFold {
             subscription_id: &subscription_id,
@@ -355,6 +355,9 @@ impl WatchFold<'_> {
                 self.pending.push_back(RunWatchEventNotification {
                     subscription_id: self.subscription_id.clone(),
                     run_id: self.projection.run_id.clone(),
+                    title: self.projection.title.clone(),
+                    source: self.projection.source.clone(),
+                    size: self.projection.size,
                     cursor: stored.cursor.clone(),
                     status: status_from_snapshot(self.projection)?,
                 });

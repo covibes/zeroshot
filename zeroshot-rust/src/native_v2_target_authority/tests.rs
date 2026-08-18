@@ -5,7 +5,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use openengine_cluster_client::ClusterClient;
 use openengine_cluster_client::websocket::WebSocketTransport;
-use openengine_cluster_protocol::{RunId, RunListParams};
+use openengine_cluster_protocol::{
+    IdempotencyKey, RunId, RunListParams, RunSize, RunTitle, RuntimePlan,
+};
+use openengine_cluster_testkit::admission::graph_fixture;
+use serde_json::{json, Value};
 use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
 };
@@ -17,7 +21,7 @@ use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
 use super::*;
 use crate::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanupUnavailable,
-    CapsuleDestroyed, ControllerClaimUnavailable, ControllerEnvironment, ExclusiveControllerClaim,
+    CapsuleDestroyed, ControllerClaimUnavailable, ExclusiveControllerClaim,
 };
 use crate::native_v2_contract::{AdmittedRun, CodexProvider};
 use crate::native_v2_supervisor::RunRuntimeExit;
@@ -32,6 +36,7 @@ struct NoAllocation;
 impl CapsuleAllocator for NoAllocation {
     async fn claim_controller(
         &self,
+        _run_id: &RunId,
     ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
         Ok(Arc::new(Claim))
     }
@@ -56,24 +61,39 @@ impl CapsuleAllocator for NoAllocation {
 #[derive(Default)]
 struct FakeFactory {
     calls: AtomicUsize,
+    submissions: AtomicUsize,
+    active_submissions: AtomicUsize,
+    max_active_submissions: AtomicUsize,
 }
 
 #[async_trait]
 impl TargetControllerFactory for FakeFactory {
     async fn create(
         &self,
-        setup: &TargetSetupDocument,
+        _setup: &TargetSetupDocument,
     ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        NativeV2CloudController::new(
-            Arc::new(FakeRunLedger::new()),
-            setup.runtime.clone(),
-            ControllerEnvironment::default(),
-            Arc::new(NoAllocation),
-        )
-        .await
-        .map(Arc::new)
-        .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+        NativeV2CloudController::new(Arc::new(FakeRunLedger::new()), Arc::new(NoAllocation))
+            .await
+            .map(Arc::new)
+            .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+    }
+
+    async fn submit(
+        &self,
+        _setup: &TargetSetupDocument,
+        _controller: &NativeV2CloudController,
+        _intent: TargetRunIntent,
+    ) -> Result<TargetRunReceipt, TargetAuthorityError> {
+        let active = self.active_submissions.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_active_submissions
+            .fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        self.active_submissions.fetch_sub(1, Ordering::SeqCst);
+        self.submissions.fetch_add(1, Ordering::SeqCst);
+        Ok(TargetRunReceipt {
+            run_id: RunId::new("run-fake"),
+        })
     }
 }
 
@@ -125,10 +145,20 @@ fn setup(repository: &str) -> TargetSetupDocument {
     TargetSetupDocument {
         repository: repository.to_owned(),
         base: TargetBase::Default,
+    }
+}
+
+fn intent() -> TargetRunIntent {
+    TargetRunIntent {
+        title: RunTitle::new("Target authority test").assert_value(),
+        graph: graph_fixture("worker", json!({"kind": "null"})),
+        initial_input: Value::Null,
         runtime: RuntimePlan::Codex {
             provider: CodexProvider::OpenAi,
+            size: RunSize::Tiny,
             nodes: BTreeMap::new(),
         },
+        submission_key: IdempotencyKey::new("target-authority-test").assert_value(),
     }
 }
 
@@ -183,18 +213,17 @@ async fn file_setup_store_atomically_replaces_and_restores_one_document() {
         restored
             .install(setup("owner/divergent"))
             .await
-            .assert_error()
-            .kind(),
-        TargetAuthorityErrorKind::Conflict
+            .assert_value(),
+        TargetSetupOutcome::Installed
     );
     assert_eq!(
         store.load().await.assert_value(),
-        Some(setup("owner/current"))
+        Some(setup("owner/divergent"))
     );
 }
 
 #[tokio::test]
-async fn setup_replacement_stops_at_shared_controller_activation() {
+async fn setup_replacement_keeps_the_shared_controller_and_updates_later_submissions() {
     let factory = Arc::new(FakeFactory::default());
     let authority = NativeV2TargetAuthority::new(factory.clone());
     assert_eq!(
@@ -220,13 +249,33 @@ async fn setup_replacement_stops_at_shared_controller_activation() {
         TargetSetupOutcome::Unchanged
     );
     assert_eq!(
-        authority
-            .install(setup("owner/third"))
-            .await
-            .assert_error()
-            .kind(),
-        TargetAuthorityErrorKind::Conflict
+        authority.install(setup("owner/third")).await.assert_value(),
+        TargetSetupOutcome::Installed
     );
+}
+
+#[tokio::test]
+async fn concurrent_target_submissions_share_one_host_submission_turn() {
+    let factory = Arc::new(FakeFactory::default());
+    let authority = Arc::new(
+        NativeV2TargetAuthority::with_installed_setup(factory.clone(), setup("owner/repo"))
+            .assert_value(),
+    );
+    let left = {
+        let authority = authority.clone();
+        tokio::spawn(async move { authority.submit(intent()).await })
+    };
+    let right = {
+        let authority = authority.clone();
+        tokio::spawn(async move { authority.submit(intent()).await })
+    };
+    let (left, right) = tokio::join!(left, right);
+    assert_eq!(
+        left.assert_value().assert_value(),
+        right.assert_value().assert_value()
+    );
+    assert_eq!(factory.submissions.load(Ordering::SeqCst), 2);
+    assert_eq!(factory.max_active_submissions.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -296,7 +345,13 @@ async fn loopback_routes_setup_session_and_target_scoped_oecp() {
         ),
     )
     .await;
-    assert_eq!(divergent.status, 409);
+    assert_eq!(divergent.status, 200);
+    assert_eq!(
+        serde_json::from_slice::<TargetSetupResult>(&divergent.body)
+            .assert_value()
+            .outcome,
+        TargetSetupOutcome::Installed
+    );
 
     server_task.abort();
 }
@@ -413,4 +468,4 @@ async fn http(address: std::net::SocketAddr, request: TestHttpRequest<'_>) -> Te
     }
 }
 
-use openengine_cluster_testkit::assertions::{AssertValue, AssertError};
+use openengine_cluster_testkit::assertions::AssertValue;

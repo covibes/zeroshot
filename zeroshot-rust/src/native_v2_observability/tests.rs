@@ -5,7 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     IdempotencyKey, NodeName, PositiveInteger, RunAttachParams, RunId, RunLogsParams, RunStatus,
-    RunStatusParams, RunWatchParams, Sha256Digest, WorkerOutcome, WorkerRef,
+    RunStatusParams, RunWatchEventNotification, RunWatchParams, Sha256Digest, TerminalResult,
+    WorkerOutcome, WorkerRef,
 };
 use serde_json::Value;
 use tokio::sync::{Barrier, Notify};
@@ -13,7 +14,9 @@ use tokio::sync::{Barrier, Notify};
 use super::*;
 use crate::execution::SessionScope;
 use crate::full_v1_reducer::StructuralOccurrence;
-use crate::native_v2_contract::{AdmittedRun, ExecutionRef, NodeInvocation, NodeRuntimeBinding};
+use crate::native_v2_contract::{
+    AdmittedRun, ExecutionRef, NodeCompletion, NodeInvocation, NodeRuntimeBinding,
+};
 use crate::native_v2_runner::{
     DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NativeNodeRunner, NodeDriver,
     NodeRunRequest, NodeRunner, NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
@@ -36,6 +39,7 @@ async fn ledger_run(run: &str) -> (Arc<FakeRunLedger>, RunId) {
         .create_or_get(CreateRun {
             run_id: run_id.clone(),
             submission_key: IdempotencyKey::new(format!("submission-{run}")).assert_value(),
+            intent_digest: Sha256Digest::new("b".repeat(64)).assert_value(),
             submission_digest: Sha256Digest::new("a".repeat(64)).assert_value(),
             admitted: admitted_run(),
         })
@@ -72,6 +76,26 @@ fn started(reference: &ExecutionRef) -> RunEvent {
         },
         attempt: PositiveInteger::new(1).assert_value(),
         input: Value::Null,
+    }
+}
+
+fn completed(reference: &ExecutionRef, output: Value) -> RunEvent {
+    RunEvent::NodeCompleted {
+        completion: NodeCompletion {
+            reference: reference.clone(),
+            outcome: WorkerOutcome::Verified {
+                output,
+                artifacts: Vec::new(),
+            },
+        },
+    }
+}
+
+fn assert_watch_metadata(events: &[RunWatchEventNotification], admitted: &AdmittedRun) {
+    for event in events {
+        assert_eq!(&event.title, &admitted.title);
+        assert_eq!(&event.source, &admitted.source);
+        assert_eq!(event.size, admitted.runtime.size());
     }
 }
 

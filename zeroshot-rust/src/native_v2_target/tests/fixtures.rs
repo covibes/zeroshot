@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use openengine_cluster_client::{
     JsonRpcTransport, PumpedSubscription, SubscriptionTransport, TransportError,
 };
-use openengine_cluster_protocol::{RequestId, SubscriptionId};
+use openengine_cluster_protocol::{RequestId, RunId, RunSubmitResult, SubscriptionId};
 use serde_json::json;
 
 use super::super::*;
@@ -26,6 +25,7 @@ pub(super) enum AuthorityCall {
     Discover(TargetRecord),
     Login(TargetRecord),
     Install(TargetRecord, TargetSetupDocument),
+    Submit(TargetRecord, Box<TargetRunIntent>),
     Session(TargetRecord),
 }
 
@@ -105,6 +105,20 @@ impl TargetControlAuthority for FakeAuthority {
         Ok(())
     }
 
+    async fn submit(
+        &self,
+        target: &TargetRecord,
+        intent: &TargetRunIntent,
+    ) -> Result<RunSubmitResult, TargetAuthorityError> {
+        self.calls.lock().assert_value().push(AuthorityCall::Submit(
+            target.clone(),
+            Box::new(intent.clone()),
+        ));
+        Ok(RunSubmitResult {
+            run_id: RunId::new("run-hosted"),
+        })
+    }
+
     async fn oecp_session(
         &self,
         target: &TargetRecord,
@@ -174,34 +188,34 @@ pub(super) fn target() -> TargetRecord {
     }
 }
 
-pub(super) fn runtime_json() -> serde_json::Value {
-    json!({
-        "harness":"codex",
-        "provider":"openai",
-        "nodes":{
-            "worker":{
-                "kind":"agent",
-                "model":"gpt-5.6",
-                "env":["OPENAI_API_KEY"]
-            }
-        }
-    })
-}
-
-pub(super) fn runtime_file(root: &TempRoot) -> PathBuf {
-    let path = root.path("runtime.json");
-    std::fs::write(&path, serde_json::to_vec(&runtime_json()).assert_value()).assert_value();
-    path
-}
-
-pub(super) fn setup_request(path: PathBuf) -> TargetSetup {
+pub(super) fn setup_request() -> TargetSetup {
     TargetSetup {
         name: "prod".to_owned(),
         repository: "open-engine/zeroshot".to_owned(),
-        runtime_config: path,
         base: Some("main".to_owned()),
         target_branch: None,
     }
+}
+
+pub(super) fn run_intent() -> TargetRunIntent {
+    serde_json::from_value(json!({
+        "title":"Repair checkout",
+        "graph":{
+            "profile":"openengine.graph.full/v1",
+            "initialInput":{"kind":"null"},
+            "policy":{"policy":"policy.native-v2@1","default":"deny"},
+            "root":{"kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]}
+        },
+        "initialInput":null,
+        "runtime":{
+            "harness":"codex",
+            "provider":"openai",
+            "size":"standard",
+            "nodes":{}
+        },
+        "submissionKey":"target-test"
+    }))
+    .assert_value()
 }
 
 use openengine_cluster_testkit::assertions::{AssertValue};

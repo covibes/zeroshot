@@ -1,5 +1,5 @@
 use super::super::*;
-use super::fixtures::{runtime_file, setup_request, temp_root};
+use super::fixtures::setup_request;
 
 #[test]
 fn target_origins_match_the_existing_hosted_cli_contract() {
@@ -52,8 +52,7 @@ fn setup_base_contract_matches_current_hosted_semantics() {
 
 #[test]
 fn setup_repository_bounds_match_the_shared_authority_contract() {
-    let root = temp_root();
-    let mut request = setup_request(runtime_file(&root));
+    let mut request = setup_request();
     request.repository = format!("{}/repo", "a".repeat(101));
     assert!(matches!(
         prepare_setup(&request),

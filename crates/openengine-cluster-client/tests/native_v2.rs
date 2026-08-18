@@ -15,13 +15,23 @@ fn response(method: &str) -> Value {
         (
             "run/status",
             json!({
-                "runId":"run-1","atCursor":"v2:1","status":{"phase":"admitted"}
+                "runId":"run-1","title":"Protocol client test",
+                "source":{
+                    "repository":"open-engine/zeroshot","targetBranch":"main",
+                    "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                },
+                "size":"tiny","atCursor":"v2:1","status":{"phase":"admitted"}
             }),
         ),
         (
             "run/force",
             json!({
-                "runId":"run-1","atCursor":"v2:2",
+                "runId":"run-1","title":"Protocol client test",
+                "source":{
+                    "repository":"open-engine/zeroshot","targetBranch":"main",
+                    "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                },
+                "size":"tiny","atCursor":"v2:2",
                 "status":{"phase":"stopping","activeExecutions":[]}
             }),
         ),
@@ -33,17 +43,27 @@ fn response(method: &str) -> Value {
 
 fn submit() -> RunSubmitParams {
     serde_json::from_value(json!({
-        "graph": {
-            "profile":"openengine.graph.full/v1",
-            "initialInput":{"kind":"null"},
-            "policy":{"policy":"policy.native-v2@1","default":"deny"},
-            "root":{
-                "kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]
-            }
-        },
-        "initialInput":null,
-        "ship":false,
-        "submissionKey":"submission-1"
+        "runId":"run-1",
+        "submission":{
+            "title":"Protocol client test",
+            "graph": {
+                "profile":"openengine.graph.full/v1",
+                "initialInput":{"kind":"null"},
+                "policy":{"policy":"policy.native-v2@1","default":"deny"},
+                "root":{
+                    "kind":"succeed","name":"done","output":{"kind":"null"},"bindings":[]
+                }
+            },
+            "initialInput":null,
+            "runtime":{
+                "harness":"codex","provider":"openai","size":"tiny","nodes":{}
+            },
+            "source":{
+                "repository":"open-engine/zeroshot","targetBranch":"main",
+                "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+            },
+            "submissionKey":"submission-1"
+        }
     }))
     .assert_value()
 }

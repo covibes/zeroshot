@@ -11,8 +11,9 @@ use reqwest::{Client, Url};
 use serde::de::DeserializeOwned;
 use zeroshot_engine::native_v2_target_authority::{
     CONTROLLER_AUDIENCE, DISCOVERY_KIND, DISCOVERY_PATH, TargetDiscoveryDocument,
-    TargetOecpSession, TargetSetupOutcome, TargetSetupResult,
+    TargetOecpSession, TargetRunIntent, TargetRunReceipt, TargetSetupOutcome, TargetSetupResult,
 };
+use openengine_cluster_protocol::{RunSubmitResult};
 
 use self::contract::{
     build_auth_descriptor, validate_metadata_routes, ControllerDescriptor, DeviceCodeWire,
@@ -146,6 +147,7 @@ impl HostedTargetControlAuthority {
         }
         Ok(ControllerDescriptor {
             setup_url: same_origin_path(&origin, &wire.setup_path)?,
+            run_url: same_origin_path(&origin, &wire.run_path)?,
             session_url: same_origin_path(&origin, &wire.session_path)?,
             audience: wire.audience,
         })
@@ -395,6 +397,35 @@ impl TargetControlAuthority for HostedTargetControlAuthority {
             TargetSetupOutcome::Installed | TargetSetupOutcome::Unchanged => {}
         }
         Ok(())
+    }
+
+    async fn submit(
+        &self,
+        target: &TargetRecord,
+        intent: &TargetRunIntent,
+    ) -> Result<RunSubmitResult, TargetAuthorityError> {
+        let (auth, controller) = self.descriptors(target).await?;
+        let access = self
+            .access_token(target, &auth, &controller.audience)
+            .await?;
+        let response = self
+            .authorized(self.client.post(controller.run_url.clone()), &access)?
+            .header(ACCEPT, "application/json")
+            .json(intent)
+            .send()
+            .await
+            .map_err(|_| authority_error("target run request failed"))?;
+        require_response_route(&response, &controller.run_url)?;
+        if !response.status().is_success() {
+            return Err(authority_error(format!(
+                "target run request failed with status {}",
+                response.status().as_u16()
+            )));
+        }
+        let receipt: TargetRunReceipt = read_json(response, "target run").await?;
+        Ok(RunSubmitResult {
+            run_id: receipt.run_id,
+        })
     }
 
     async fn oecp_session(

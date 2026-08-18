@@ -20,6 +20,10 @@ async fn status_lists_every_parallel_execution_with_opaque_selectors() {
         })
         .await
         .assert_value();
+    let admitted = admitted_run();
+    assert_eq!(&status.title, &admitted.title);
+    assert_eq!(&status.source, &admitted.source);
+    assert_eq!(status.size, admitted.runtime.size());
     let active_executions = match status.status {
         RunStatus::Running { active_executions } => Some(active_executions),
         _ => None,
@@ -60,15 +64,7 @@ pub(super) async fn cursor_fixture() -> (
                     stream: SafeLogStream::Output,
                     line: SafeLogLine::new("first").assert_value(),
                 },
-                RunEvent::NodeCompleted {
-                    completion: crate::native_v2_contract::NodeCompletion {
-                        reference: left.clone(),
-                        outcome: WorkerOutcome::Verified {
-                            output: Value::Null,
-                            artifacts: Vec::new(),
-                        },
-                    },
-                },
+                completed(&left, Value::Null),
                 RunEvent::SafeLog {
                     execution: Some(left.execution),
                     stream: SafeLogStream::Output,

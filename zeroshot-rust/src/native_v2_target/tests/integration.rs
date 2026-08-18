@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde_json::json;
+use openengine_cluster_protocol::RunId;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_tungstenite::accept_hdr_async;
@@ -51,7 +51,6 @@ fn file_registry_is_private_on_creation() {
 
 #[tokio::test]
 async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
-    let root = temp_root();
     let registry = MemoryRegistry::default();
     let authority = FakeAuthority::new("wss://target.example/oecp");
     let dialer = FakeDialer::default();
@@ -65,11 +64,10 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
         .await
         .assert_value();
     connector.login("prod").await.assert_value();
-    connector
-        .setup(setup_request(runtime_file(&root)))
-        .await
-        .assert_value();
+    connector.setup(setup_request()).await.assert_value();
+    let receipt = connector.submit("prod", run_intent()).await.assert_value();
     connector.connect("prod").await.assert_value();
+    assert_eq!(receipt.run_id, RunId::new("run-hosted"));
 
     let calls = authority.calls();
     let added = match calls.assert_at(0) {
@@ -90,10 +88,19 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
     assert_eq!(record, added);
     assert_eq!(installed.repository, "open-engine/zeroshot");
     assert_eq!(
-        serde_json::to_value(&installed.runtime).assert_value(),
-        runtime_json()
+        installed.base,
+        TargetBase::Branch {
+            branch: "main".to_owned()
+        }
     );
-    assert!(matches!(calls.assert_at(3), AuthorityCall::Session(record) if record == added));
+    let submitted = match calls.assert_at(3) {
+        AuthorityCall::Submit(record, intent) => Some((record, intent.as_ref())),
+        _ => None,
+    };
+    let (record, intent) = submitted.assert_value_with("expected target submission");
+    assert_eq!(record, added);
+    assert_eq!(intent, &run_intent());
+    assert!(matches!(calls.assert_at(4), AuthorityCall::Session(record) if record == added));
     assert_eq!(
         dialer.sessions.lock().assert_value().as_slice(),
         &[(added.clone(), "wss://target.example/oecp".to_owned())]
@@ -101,28 +108,9 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
 }
 
 #[tokio::test]
-async fn invalid_runtime_plan_fails_before_target_lookup_or_authority() {
-    let root = temp_root();
-    let runtime_path = root.path("invalid.json");
-    std::fs::write(&runtime_path, b"{\"harness\":\"codex\"}").assert_value();
-    let authority = FakeAuthority::new("wss://target.example/oecp");
-    let connector = NativeV2TargetConnector::new(
-        MemoryRegistry::default(),
-        authority.clone(),
-        FakeDialer::default(),
-    );
-    let error = connector
-        .setup(setup_request(runtime_path))
-        .await
-        .assert_error();
-    assert!(error.to_string().contains("runtime plan file"));
-    assert!(authority.calls().is_empty());
-}
-
-#[tokio::test]
 async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() {
     let root = temp_root();
-    let (origin, server) = spawn_target_authority(18).await;
+    let (origin, server) = spawn_target_authority(24).await;
     let credentials = Arc::new(MemoryCredentialStore::default());
     let notifier = Arc::new(MemoryDeviceCodeNotifier::default());
     let authority = HostedTargetControlAuthority::with_dependencies(
@@ -141,7 +129,6 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
         base: TargetBase::Branch {
             branch: "main".to_owned(),
         },
-        runtime: serde_json::from_value(runtime_json()).assert_value(),
     };
 
     authority.login(&target).await.assert_value();
@@ -150,6 +137,11 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
         vec![(format!("{origin}/activate"), "ABCD-EFGH".to_owned())]
     );
     authority.install(&target, &setup).await.assert_value();
+    let receipt = authority
+        .submit(&target, &run_intent())
+        .await
+        .assert_value();
+    assert_eq!(receipt.run_id, RunId::new("run-hosted"));
     let session = authority.oecp_session(&target).await.assert_value();
     assert_eq!(
         session.endpoint(),
@@ -160,18 +152,18 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
     );
     assert_eq!(
         credentials.get(&target.id).await.assert_value().as_deref(),
-        Some("refresh-3")
+        Some("refresh-4")
     );
 
     let requests = server.await.assert_value();
-    assert_eq!(requests.len(), 18);
+    assert_eq!(requests.len(), 24);
     assert!(
         requests
             .iter()
             .all(|request| !request.path.contains("capsule"))
     );
     assert_device_exchange(&requests);
-    assert_setup_and_session_requests(&requests);
+    assert_setup_submit_and_session_requests(&requests);
 }
 
 fn assert_device_exchange(requests: &[CapturedHttpRequest]) {
@@ -188,7 +180,7 @@ fn assert_device_exchange(requests: &[CapturedHttpRequest]) {
     assert!(request.body.contains("audience=controller"));
 }
 
-fn assert_setup_and_session_requests(requests: &[CapturedHttpRequest]) {
+fn assert_setup_submit_and_session_requests(requests: &[CapturedHttpRequest]) {
     let setup = requests
         .iter()
         .find(|request| request.path == "/native-v2/setup")
@@ -199,16 +191,21 @@ fn assert_setup_and_session_requests(requests: &[CapturedHttpRequest]) {
         body.get("repository").assert_value(),
         "open-engine/zeroshot"
     );
-    assert_eq!(
-        body.pointer("/runtime/nodes/worker/env").assert_value(),
-        &json!(["OPENAI_API_KEY"])
-    );
-    assert!(setup.body.find("API_KEY\":\"").is_none());
+    assert!(body.get("runtime").is_none());
+    let submit = requests
+        .iter()
+        .find(|request| request.path == "/native-v2/run")
+        .assert_value();
+    assert_eq!(submit.authorization.as_deref(), Some("Bearer access-3"));
+    let intent: serde_json::Value = serde_json::from_str(&submit.body).assert_value();
+    assert_eq!(intent.pointer("/title").assert_value(), "Repair checkout");
+    assert_eq!(intent.pointer("/runtime/size").assert_value(), "standard");
+    assert!(intent.get("source").is_none());
     let session = requests
         .iter()
         .find(|request| request.path == "/native-v2/oecp-session")
         .assert_value();
-    assert_eq!(session.authorization.as_deref(), Some("Bearer access-3"));
+    assert_eq!(session.authorization.as_deref(), Some("Bearer access-4"));
     assert!(session.body.is_empty());
 }
 

@@ -4,18 +4,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use openengine_cluster_client::{
-    ClusterClient, RunSubscriptionClient, RunSubscriptionEvent, SubscriptionTransport,
+    ClientError, ClusterClient, RunSubscriptionClient, RunSubscriptionEvent, SubscriptionTransport,
 };
 use openengine_cluster_protocol::{
     RunAttachEventNotification, RunAttachParams, RunForceParams, RunForceResult, RunListParams,
     RunListResult, RunLogEventNotification, RunLogsParams, RunStatusParams, RunStatusResult,
-    RunSubmitParams, RunSubmitResult, RunWatchEventNotification, RunWatchParams,
+    RunSubmitResult, RunWatchEventNotification, RunWatchParams,
 };
 use tokio::sync::mpsc;
 
 use super::{
     CliSubscription, CliSubscriptionItem, NativeV2CliBackend, NativeV2CliError, TargetAdd,
-    TargetSetup,
+    TargetRunIntent, TargetSetup,
 };
 
 /// Named-target authority. The CLI does not interpret login credentials or runtime configuration.
@@ -26,6 +26,11 @@ pub trait TargetConnector: Send + Sync {
     async fn add(&self, request: TargetAdd) -> Result<(), NativeV2CliError>;
     async fn login(&self, name: &str) -> Result<(), NativeV2CliError>;
     async fn setup(&self, request: TargetSetup) -> Result<(), NativeV2CliError>;
+    async fn submit(
+        &self,
+        name: &str,
+        intent: TargetRunIntent,
+    ) -> Result<RunSubmitResult, NativeV2CliError>;
     async fn connect(&self, name: &str) -> Result<Arc<Self::Transport>, NativeV2CliError>;
 }
 
@@ -85,22 +90,23 @@ where
 
     async fn run_submit(
         &self,
-        target: &str,
-        params: RunSubmitParams,
+        target: Option<&str>,
+        intent: TargetRunIntent,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
-        let transport = self.connector.connect(target).await?;
-        ClusterClient::new(transport.as_ref())
-            .run_submit(params)
+        self.connector
+            .submit(require_named_target(target)?, intent)
             .await
-            .map_err(protocol_error)
     }
 
     async fn run_list(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunListParams,
     ) -> Result<RunListResult, NativeV2CliError> {
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(require_named_target(target)?)
+            .await?;
         ClusterClient::new(transport.as_ref())
             .run_list(params)
             .await
@@ -109,10 +115,13 @@ where
 
     async fn run_status(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunStatusParams,
     ) -> Result<RunStatusResult, NativeV2CliError> {
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(require_named_target(target)?)
+            .await?;
         ClusterClient::new(transport.as_ref())
             .run_status(params)
             .await
@@ -121,37 +130,49 @@ where
 
     async fn run_watch(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunWatchParams,
     ) -> Result<Self::Watch, NativeV2CliError> {
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(require_named_target(target)?)
+            .await?;
         Ok(spawn_watch(transport, params))
     }
 
     async fn run_logs(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunLogsParams,
     ) -> Result<Self::Logs, NativeV2CliError> {
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(require_named_target(target)?)
+            .await?;
         Ok(spawn_logs(transport, params))
     }
 
     async fn run_attach(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunAttachParams,
     ) -> Result<Self::Attach, NativeV2CliError> {
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(require_named_target(target)?)
+            .await?;
         Ok(spawn_attach(transport, params))
     }
 
     async fn run_force(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunForceParams,
     ) -> Result<RunForceResult, NativeV2CliError> {
-        let transport = self.connector.connect(target).await?;
+        let transport = self
+            .connector
+            .connect(require_named_target(target)?)
+            .await?;
         ClusterClient::new(transport.as_ref())
             .run_force(params)
             .await
@@ -159,7 +180,7 @@ where
     }
 }
 
-fn spawn_watch<T>(
+pub(super) fn spawn_watch<T>(
     transport: Arc<T>,
     params: RunWatchParams,
 ) -> ChannelSubscription<RunWatchEventNotification>
@@ -174,14 +195,14 @@ where
         {
             Ok((_result, mut stream)) => forward(&mut stream, sender).await,
             Err(error) => {
-                let _ = sender.send(Err(protocol_error(error))).await;
+                let _ = sender.send(Err(subscription_error(error))).await;
             }
         }
     });
     ChannelSubscription { receiver, task }
 }
 
-fn spawn_logs<T>(
+pub(super) fn spawn_logs<T>(
     transport: Arc<T>,
     params: RunLogsParams,
 ) -> ChannelSubscription<RunLogEventNotification>
@@ -196,14 +217,14 @@ where
         {
             Ok((_result, mut stream)) => forward(&mut stream, sender).await,
             Err(error) => {
-                let _ = sender.send(Err(protocol_error(error))).await;
+                let _ = sender.send(Err(subscription_error(error))).await;
             }
         }
     });
     ChannelSubscription { receiver, task }
 }
 
-fn spawn_attach<T>(
+pub(super) fn spawn_attach<T>(
     transport: Arc<T>,
     params: RunAttachParams,
 ) -> ChannelSubscription<RunAttachEventNotification>
@@ -218,7 +239,7 @@ where
         {
             Ok((_result, mut stream)) => forward(&mut stream, sender).await,
             Err(error) => {
-                let _ = sender.send(Err(protocol_error(error))).await;
+                let _ = sender.send(Err(subscription_error(error))).await;
             }
         }
     });
@@ -241,7 +262,7 @@ async fn forward<T, E>(
                 return;
             }
             Err(error) => {
-                let _ = sender.send(Err(protocol_error(error))).await;
+                let _ = sender.send(Err(subscription_error(error))).await;
                 return;
             }
         };
@@ -253,4 +274,17 @@ async fn forward<T, E>(
 
 fn protocol_error(error: impl std::fmt::Display) -> NativeV2CliError {
     NativeV2CliError::Protocol(error.to_string())
+}
+
+fn subscription_error(error: ClientError) -> NativeV2CliError {
+    match error {
+        ClientError::Transport(_) => NativeV2CliError::Disconnected,
+        error => protocol_error(error),
+    }
+}
+
+fn require_named_target(target: Option<&str>) -> Result<&str, NativeV2CliError> {
+    target.ok_or_else(|| {
+        NativeV2CliError::Target("local controller composition is unavailable".to_owned())
+    })
 }

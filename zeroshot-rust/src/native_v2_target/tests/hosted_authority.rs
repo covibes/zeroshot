@@ -92,12 +92,16 @@ fn authority_response(
     address: std::net::SocketAddr,
     token_index: &mut u8,
 ) -> String {
+    if let Some(response) = controller_response(request, address) {
+        return response;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/.well-known/openengine-hosted-target") => hosted_discovery(origin),
         ("GET", "/oauth/metadata") => oauth_metadata(origin),
         ("GET", "/.well-known/zeroshot-native-v2") => json!({
             "kind": "zeroshot.native-v2-target/v1",
             "setupPath": "/native-v2/setup",
+            "runPath": "/native-v2/run",
             "sessionPath": "/native-v2/oecp-session",
             "audience": "controller",
         })
@@ -116,12 +120,22 @@ fn authority_response(
             "organization_id": "organization-1",
         })
         .to_string(),
-        ("PUT", "/native-v2/setup") => r#"{"outcome":"installed"}"#.to_owned(),
-        ("POST", "/native-v2/oecp-session") => format!(
-            r#"{{"endpoint":"ws://{address}/native-v2/oecp","bearerToken":"oecp-session-token"}}"#
-        ),
         unexpected => None::<String>
             .assert_value_with(&format!("unexpected authority request: {unexpected:?}")),
+    }
+}
+
+fn controller_response(
+    request: &CapturedHttpRequest,
+    address: std::net::SocketAddr,
+) -> Option<String> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("PUT", "/native-v2/setup") => Some(r#"{"outcome":"installed"}"#.to_owned()),
+        ("POST", "/native-v2/run") => Some(r#"{"runId":"run-hosted"}"#.to_owned()),
+        ("POST", "/native-v2/oecp-session") => Some(format!(
+            r#"{{"endpoint":"ws://{address}/native-v2/oecp","bearerToken":"oecp-session-token"}}"#
+        )),
+        _ => None,
     }
 }
 

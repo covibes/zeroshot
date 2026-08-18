@@ -393,6 +393,13 @@ mod tests {
                 json!({
                     "jsonrpc":"2.0","method":"event","params":{
                         "subscriptionId":"watch-1","runId":"run-1","cursor":"v2:8",
+                        "title":"Protocol client test",
+                        "source":{
+                            "repository":"open-engine/zeroshot",
+                            "targetBranch":"main",
+                            "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                        },
+                        "size":"tiny",
                         "status":{"phase":"running","activeExecutions":[]}
                     }
                 }),
@@ -404,6 +411,13 @@ mod tests {
                 json!({
                     "jsonrpc":"2.0","method":"event","params":{
                         "subscriptionId":"watch-1","runId":"run-1","cursor":"v2:9",
+                        "title":"Protocol client test",
+                        "source":{
+                            "repository":"open-engine/zeroshot",
+                            "targetBranch":"main",
+                            "baseRevision":"0123456789abcdef0123456789abcdef01234567"
+                        },
+                        "size":"tiny",
                         "status":{"phase":"running","activeExecutions":[]}
                     }
                 }),

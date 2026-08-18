@@ -1,17 +1,11 @@
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-
 use tokio_tungstenite::tungstenite::http::Uri;
 use zeroshot_engine::native_v2_cli::{TargetAdd, TargetSetup};
-use zeroshot_engine::native_v2_contract::RuntimePlan;
 use zeroshot_engine::native_v2_target_authority::{
     is_exact_target_revision, valid_cli_target_branch, valid_target_repository,
 };
 
 use super::{TargetBase, TargetConnectorError, TargetRecord, TargetSetupDocument};
 
-const MAX_RUNTIME_PLAN_BYTES: u64 = 1024 * 1024;
 const MAX_BEARER_TOKEN_BYTES: usize = 16 * 1024;
 
 pub(super) fn prepare_target(request: TargetAdd) -> Result<TargetRecord, TargetConnectorError> {
@@ -46,45 +40,9 @@ pub(super) fn prepare_setup(
         return Err(TargetConnectorError::InvalidRepository);
     }
     let base = normalize_base(request.base.as_deref(), request.target_branch.as_deref())?;
-    let runtime = read_runtime_plan(&request.runtime_config)?;
     Ok(TargetSetupDocument {
         repository: request.repository.clone(),
         base,
-        runtime,
-    })
-}
-
-fn read_runtime_plan(path: &Path) -> Result<RuntimePlan, TargetConnectorError> {
-    let mut file = File::open(path).map_err(|source| TargetConnectorError::RuntimeRead {
-        path: path.to_owned(),
-        source,
-    })?;
-    let metadata = file
-        .metadata()
-        .map_err(|source| TargetConnectorError::RuntimeRead {
-            path: path.to_owned(),
-            source,
-        })?;
-    if !metadata.is_file() {
-        return Err(TargetConnectorError::RuntimeRead {
-            path: path.to_owned(),
-            source: std::io::Error::other("not a regular file"),
-        });
-    }
-    if metadata.len() > MAX_RUNTIME_PLAN_BYTES {
-        return Err(TargetConnectorError::RuntimeTooLarge);
-    }
-    let capacity =
-        usize::try_from(metadata.len()).map_err(|_| TargetConnectorError::RuntimeTooLarge)?;
-    let mut bytes = Vec::with_capacity(capacity);
-    file.read_to_end(&mut bytes)
-        .map_err(|source| TargetConnectorError::RuntimeRead {
-            path: path.to_owned(),
-            source,
-        })?;
-    serde_json::from_slice(&bytes).map_err(|source| TargetConnectorError::RuntimeJson {
-        path: path.to_owned(),
-        source,
     })
 }
 

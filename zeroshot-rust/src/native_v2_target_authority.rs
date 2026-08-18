@@ -1,8 +1,8 @@
 //! Target-wide native-v2 control authority and its public network boundary.
 //!
 //! The public object is a target, never a capsule. Setup installs one repository selector and
-//! one secret-free runtime plan atomically. The first authenticated OECP session activates one
-//! shared cloud controller; every later connection observes the same RunId/ledger namespace.
+//! one source selector atomically. The first authenticated OECP session activates the target
+//! adapter; every later connection observes the same RunId/ledger namespace.
 
 mod store;
 mod transport;
@@ -11,13 +11,14 @@ use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use openengine_cluster_protocol::{RunId, SourceBranchId, SourceRepositoryId, SourceRevisionId};
 use openengine_cluster_server::identity::ConnectionIdentity;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::native_v2_cloud::NativeV2CloudController;
-use crate::native_v2_contract::RuntimePlan;
+pub use crate::native_v2_contract::RunSubmissionIntent as TargetRunIntent;
 
 pub use store::{FileTargetSetupStore, TargetSetupStore};
 pub use transport::NativeV2TargetServer;
@@ -27,10 +28,17 @@ use store::encode_hex;
 
 pub const DISCOVERY_PATH: &str = "/.well-known/zeroshot-native-v2";
 pub const SETUP_PATH: &str = "/native-v2/setup";
+pub const RUN_PATH: &str = "/native-v2/run";
 pub const SESSION_PATH: &str = "/native-v2/oecp-session";
 pub const OECP_PATH: &str = "/native-v2/oecp";
 pub const DISCOVERY_KIND: &str = "zeroshot.native-v2-target/v1";
 pub const CONTROLLER_AUDIENCE: &str = "controller";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TargetRunReceipt {
+    pub run_id: RunId,
+}
 
 /// Secret-free target setup installed as one value.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -38,7 +46,6 @@ pub const CONTROLLER_AUDIENCE: &str = "controller";
 pub struct TargetSetupDocument {
     pub repository: String,
     pub base: TargetBase,
-    pub runtime: RuntimePlan,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -83,6 +90,7 @@ impl TargetSetupDocument {
 pub struct TargetDiscoveryDocument {
     pub kind: String,
     pub setup_path: String,
+    pub run_path: String,
     pub session_path: String,
     pub audience: String,
 }
@@ -92,6 +100,7 @@ impl Default for TargetDiscoveryDocument {
         Self {
             kind: DISCOVERY_KIND.to_owned(),
             setup_path: SETUP_PATH.to_owned(),
+            run_path: RUN_PATH.to_owned(),
             session_path: SESSION_PATH.to_owned(),
             audience: CONTROLLER_AUDIENCE.to_owned(),
         }
@@ -187,6 +196,13 @@ pub trait TargetControllerFactory: Send + Sync {
         &self,
         setup: &TargetSetupDocument,
     ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError>;
+
+    async fn submit(
+        &self,
+        setup: &TargetSetupDocument,
+        controller: &NativeV2CloudController,
+        intent: TargetRunIntent,
+    ) -> Result<TargetRunReceipt, TargetAuthorityError>;
 }
 
 /// Existing host authentication plugs into this narrow boundary. The target server neither
@@ -219,6 +235,7 @@ pub struct NativeV2TargetAuthority {
     factory: Arc<dyn TargetControllerFactory>,
     setup_store: Option<Arc<dyn TargetSetupStore>>,
     state: Mutex<AuthorityState>,
+    submission_turn: Mutex<()>,
 }
 
 impl NativeV2TargetAuthority {
@@ -231,6 +248,7 @@ impl NativeV2TargetAuthority {
                 setup: None,
                 controller: None,
             }),
+            submission_turn: Mutex::new(()),
         }
     }
 
@@ -246,6 +264,7 @@ impl NativeV2TargetAuthority {
                 setup: Some(setup),
                 controller: None,
             }),
+            submission_turn: Mutex::new(()),
         })
     }
 
@@ -266,12 +285,12 @@ impl NativeV2TargetAuthority {
                 setup,
                 controller: None,
             }),
+            submission_turn: Mutex::new(()),
         })
     }
 
-    /// Installs repository selector and runtime plan in one critical section. Before activation a
-    /// different document replaces the old value. After activation only an exact reinstall is
-    /// idempotent; divergent setup fails closed.
+    /// Atomically replaces the source selector used by later submissions. Already-admitted runs
+    /// retain their durable snapshots.
     pub async fn install(
         &self,
         setup: TargetSetupDocument,
@@ -280,11 +299,6 @@ impl NativeV2TargetAuthority {
         let mut state = self.state.lock().await;
         if state.setup.as_ref() == Some(&setup) {
             return Ok(TargetSetupOutcome::Unchanged);
-        }
-        if state.controller.is_some() {
-            return Err(TargetAuthorityError::conflict(
-                "target setup cannot change after controller activation",
-            ));
         }
         if let Some(store) = &self.setup_store {
             store.replace(&setup).await?;
@@ -307,58 +321,51 @@ impl NativeV2TargetAuthority {
         state.controller = Some(controller.clone());
         Ok(controller)
     }
+
+    /// Resolves current target selection into a durable source snapshot and host-assigned RunId.
+    pub async fn submit(
+        &self,
+        intent: TargetRunIntent,
+    ) -> Result<TargetRunReceipt, TargetAuthorityError> {
+        // The target factory's durable retry preflight, mutable source resolution, and ledger
+        // create must be one host turn. Otherwise two identical retries can resolve different
+        // branch heads and turn the losing retry into a false submission conflict.
+        let _turn = self.submission_turn.lock().await;
+        let controller = self.controller().await?;
+        let setup = self
+            .state
+            .lock()
+            .await
+            .setup
+            .clone()
+            .ok_or_else(|| TargetAuthorityError::conflict("target setup is not installed"))?;
+        self.factory.submit(&setup, &controller, intent).await
+    }
 }
 
 #[doc(hidden)]
 #[must_use]
 pub fn valid_target_repository(value: &str) -> bool {
-    let Some((owner, name)) = value.split_once('/') else {
-        return false;
-    };
-    value.len() <= 255
-        && !name.contains('/')
-        && valid_target_repository_part(owner)
-        && valid_target_repository_part(name)
-}
-
-fn valid_target_repository_part(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 100
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    SourceRepositoryId::new(value).is_ok()
 }
 
 #[doc(hidden)]
 #[must_use]
 pub fn valid_target_branch(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 255
-        && !value.starts_with('-')
-        && !value.ends_with('.')
-        && !value.ends_with(".lock")
-        && !value.contains("..")
-        && !value.contains("@{")
-        && value.bytes().all(|byte| {
-            byte.is_ascii_graphic()
-                && !matches!(byte, b'~' | b'^' | b':' | b'?' | b'*' | b'[' | b'\\')
-        })
+    SourceBranchId::new(value.trim_end_matches('/')).is_ok()
 }
 
 /// CLI selector policy is intentionally stricter than persisted setup-document compatibility.
 #[doc(hidden)]
 #[must_use]
 pub fn valid_cli_target_branch(value: &str) -> bool {
-    valid_target_branch(value) && !value.ends_with('/')
+    SourceBranchId::new(value).is_ok()
 }
 
 #[doc(hidden)]
 #[must_use]
 pub fn is_exact_target_revision(value: &str) -> bool {
-    value.len() == 40
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    SourceRevisionId::new(value).is_ok()
 }
 
 #[cfg(test)]

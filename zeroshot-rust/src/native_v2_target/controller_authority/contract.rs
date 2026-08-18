@@ -55,6 +55,7 @@ pub(super) struct HostedAuthDescriptor {
 
 pub(super) struct ControllerDescriptor {
     pub(super) setup_url: Url,
+    pub(super) run_url: Url,
     pub(super) session_url: Url,
     pub(super) audience: String,
 }

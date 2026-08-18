@@ -1,20 +1,37 @@
 use std::io;
 use std::sync::Arc;
 
+use async_trait::async_trait;
+use openengine_cluster_protocol::{
+    GetParams, GetResult, InitializeParams, InitializeResult, RunAttachParams, RunAttachResult,
+    RunForceParams, RunForceResult, RunListParams, RunListResult, RunLogsParams, RunLogsResult,
+    RunStatusParams, RunStatusResult, RunSubmitParams, RunSubmitResult, RunWatchParams,
+    RunWatchResult, RUN_CONFLICT,
+};
 use openengine_cluster_server::admission::CancellationSignal;
 use openengine_cluster_server::identity::{
     ConnectionBinding, StaticConnectionIdentityResolver, SystemConnectionTime,
 };
-use serde::Serialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use openengine_cluster_server::native_v2::{
+    RunAttachEventStream, RunLogEventStream, RunWatchEventStream,
+};
+use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::accept_async_with_config;
 use url::Url;
 
 use super::{
-    DISCOVERY_PATH, NativeV2TargetAuthority, OECP_PATH, SESSION_PATH, SETUP_PATH,
-    TargetAuthorityError, TargetAuthorityErrorKind, TargetDiscoveryDocument, TargetOecpSession,
+    DISCOVERY_PATH, NativeV2TargetAuthority, OECP_PATH, RUN_PATH, SESSION_PATH, SETUP_PATH,
+    TargetAuthorityError, TargetDiscoveryDocument, TargetOecpSession, TargetRunIntent,
     TargetSessionAuthority, TargetSetupDocument, TargetSetupResult,
+};
+use crate::native_v2_cloud::NativeV2CloudController;
+
+#[path = "transport_http.rs"]
+mod http;
+use http::{
+    HttpRequest, HttpResponse, RequestHead, authority_error_response, peek_request_head,
+    read_http_request, write_and_close, write_http_response,
 };
 
 const MAX_HEADER_BYTES: usize = 32 * 1024;
@@ -96,7 +113,7 @@ impl NativeV2TargetServer {
         .await
         .map_err(io::Error::other)?;
         let binding = ConnectionBinding::new(
-            controller,
+            Arc::new(TargetOecpBackend { controller }),
             StaticConnectionIdentityResolver::new(identity),
             SystemConnectionTime,
             CancellationSignal::default(),
@@ -110,8 +127,23 @@ impl NativeV2TargetServer {
                 HttpResponse::json(200, &TargetDiscoveryDocument::default())
             }
             ("PUT", SETUP_PATH) => self.handle_setup(request).await,
+            ("POST", RUN_PATH) => self.handle_run(request).await,
             ("POST", SESSION_PATH) if request.body.is_empty() => self.handle_session(request).await,
             _ => HttpResponse::empty(404),
+        }
+    }
+
+    async fn handle_run(&self, request: HttpRequest) -> HttpResponse {
+        if let Err(error) = self.authenticate_control(&request.head).await {
+            return authority_error_response(error);
+        }
+        let intent = match serde_json::from_slice::<TargetRunIntent>(&request.body) {
+            Ok(intent) => intent,
+            Err(_) => return HttpResponse::empty(400),
+        };
+        match self.target.submit(intent).await {
+            Ok(receipt) => HttpResponse::private_json(200, &receipt),
+            Err(error) => authority_error_response(error),
         }
     }
 
@@ -160,6 +192,91 @@ impl NativeV2TargetServer {
     }
 }
 
+/// Target OECP is an observation/control surface. Host-owned HTTP submission is the only route
+/// that may assign a run identity, resolve source, and select the exact environment.
+struct TargetOecpBackend {
+    controller: Arc<NativeV2CloudController>,
+}
+
+#[async_trait]
+impl ClusterBackend for TargetOecpBackend {
+    async fn initialize(
+        &self,
+        context: &ConnectionContext,
+        params: InitializeParams,
+    ) -> Result<InitializeResult, BackendError> {
+        ClusterBackend::initialize(self.controller.as_ref(), context, params).await
+    }
+
+    async fn get(
+        &self,
+        context: &ConnectionContext,
+        params: GetParams,
+    ) -> Result<GetResult, BackendError> {
+        ClusterBackend::get(self.controller.as_ref(), context, params).await
+    }
+
+    async fn run_submit(
+        &self,
+        _context: &ConnectionContext,
+        _params: RunSubmitParams,
+    ) -> Result<RunSubmitResult, BackendError> {
+        Err(BackendError::application(
+            RUN_CONFLICT,
+            "target OECP does not accept run submissions",
+            None,
+        ))
+    }
+
+    async fn run_list(
+        &self,
+        context: &ConnectionContext,
+        params: RunListParams,
+    ) -> Result<RunListResult, BackendError> {
+        ClusterBackend::run_list(self.controller.as_ref(), context, params).await
+    }
+
+    async fn run_status(
+        &self,
+        context: &ConnectionContext,
+        params: RunStatusParams,
+    ) -> Result<RunStatusResult, BackendError> {
+        ClusterBackend::run_status(self.controller.as_ref(), context, params).await
+    }
+
+    async fn run_watch(
+        &self,
+        context: &ConnectionContext,
+        params: RunWatchParams,
+    ) -> Result<(RunWatchResult, RunWatchEventStream), BackendError> {
+        ClusterBackend::run_watch(self.controller.as_ref(), context, params).await
+    }
+
+    async fn run_logs(
+        &self,
+        context: &ConnectionContext,
+        params: RunLogsParams,
+    ) -> Result<(RunLogsResult, RunLogEventStream), BackendError> {
+        ClusterBackend::run_logs(self.controller.as_ref(), context, params).await
+    }
+
+    async fn run_attach(
+        &self,
+        context: &ConnectionContext,
+        params: RunAttachParams,
+    ) -> Result<(RunAttachResult, RunAttachEventStream), BackendError> {
+        ClusterBackend::run_attach(self.controller.as_ref(), context, params).await
+    }
+
+    async fn run_force(
+        &self,
+        context: &ConnectionContext,
+        params: RunForceParams,
+    ) -> Result<RunForceResult, BackendError> {
+        ClusterBackend::run_force(self.controller.as_ref(), context, params).await
+    }
+}
+
 fn validate_oecp_endpoint(endpoint: &str) -> Result<(), TargetAuthorityError> {
     let url = Url::parse(endpoint)
         .map_err(|_| TargetAuthorityError::invalid("OECP endpoint must be an absolute URL"))?;
@@ -182,216 +299,4 @@ fn valid_issued_bearer(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_BEARER_BYTES
         && value.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
-#[derive(Clone)]
-struct RequestHead {
-    method: String,
-    path: String,
-    headers: Vec<(String, String)>,
-    encoded_len: usize,
-}
-
-impl RequestHead {
-    fn is_websocket_upgrade(&self) -> bool {
-        self.header_exact("upgrade")
-            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
-    }
-
-    fn header_exact(&self, name: &str) -> Option<&str> {
-        let mut values = self
-            .headers
-            .iter()
-            .filter(|(candidate, _)| candidate == name)
-            .map(|(_, value)| value.as_str());
-        let value = values.next()?;
-        if values.next().is_some() {
-            return None;
-        }
-        Some(value)
-    }
-
-    fn bearer(&self) -> Result<&str, ()> {
-        let value = self.header_exact("authorization").ok_or(())?;
-        let token = value.strip_prefix("Bearer ").ok_or(())?;
-        if valid_issued_bearer(token) {
-            Ok(token)
-        } else {
-            Err(())
-        }
-    }
-}
-
-struct HttpRequest {
-    method: String,
-    path: String,
-    head: RequestHead,
-    body: Vec<u8>,
-}
-
-async fn peek_request_head(stream: &TcpStream) -> io::Result<RequestHead> {
-    let mut buffer = vec![0_u8; MAX_HEADER_BYTES];
-    loop {
-        let count = stream.peek(&mut buffer).await?;
-        if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "empty request",
-            ));
-        }
-        let bytes = buffer.get(..count).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "request peek exceeded buffer")
-        })?;
-        match parse_request_head(bytes)? {
-            Some(head) => return Ok(head),
-            None if count == buffer.len() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "request headers exceed limit",
-                ));
-            }
-            None => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
-        }
-    }
-}
-
-fn parse_request_head(bytes: &[u8]) -> io::Result<Option<RequestHead>> {
-    let mut headers = [httparse::EMPTY_HEADER; 64];
-    let mut request = httparse::Request::new(&mut headers);
-    let encoded_len = match request.parse(bytes).map_err(invalid_http)? {
-        httparse::Status::Complete(length) => length,
-        httparse::Status::Partial => return Ok(None),
-    };
-    let method = request
-        .method
-        .ok_or_else(|| invalid_http("missing method"))?
-        .to_owned();
-    let path = request
-        .path
-        .ok_or_else(|| invalid_http("missing path"))?
-        .to_owned();
-    if !path.starts_with('/') || path.contains('?') || path.contains('#') {
-        return Err(invalid_http("invalid request target"));
-    }
-    let headers = request
-        .headers
-        .iter()
-        .map(|header| {
-            let value = std::str::from_utf8(header.value).map_err(invalid_http)?;
-            Ok((header.name.to_ascii_lowercase(), value.trim().to_owned()))
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    Ok(Some(RequestHead {
-        method,
-        path,
-        headers,
-        encoded_len,
-    }))
-}
-
-fn invalid_http(error: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
-}
-
-async fn read_http_request(stream: &mut TcpStream, head: RequestHead) -> io::Result<HttpRequest> {
-    if head.header_exact("transfer-encoding").is_some() {
-        return Err(invalid_http("transfer encoding is unsupported"));
-    }
-    let content_length = match head.header_exact("content-length") {
-        Some(value) => value.parse::<usize>().map_err(invalid_http)?,
-        None => 0,
-    };
-    if content_length > MAX_SETUP_BYTES {
-        return Err(invalid_http("request body exceeds limit"));
-    }
-    let mut encoded = vec![0_u8; head.encoded_len.saturating_add(content_length)];
-    stream.read_exact(&mut encoded).await?;
-    let body = encoded.split_off(head.encoded_len);
-    Ok(HttpRequest {
-        method: head.method.clone(),
-        path: head.path.clone(),
-        head,
-        body,
-    })
-}
-
-struct HttpResponse {
-    status: u16,
-    content_type: Option<&'static str>,
-    no_store: bool,
-    body: Vec<u8>,
-}
-
-impl HttpResponse {
-    fn empty(status: u16) -> Self {
-        Self {
-            status,
-            content_type: None,
-            no_store: false,
-            body: Vec::new(),
-        }
-    }
-
-    fn json(status: u16, value: &impl Serialize) -> Self {
-        match serde_json::to_vec(value) {
-            Ok(body) => Self {
-                status,
-                content_type: Some("application/json"),
-                no_store: false,
-                body,
-            },
-            Err(_) => Self::empty(500),
-        }
-    }
-
-    fn private_json(status: u16, value: &impl Serialize) -> Self {
-        let mut response = Self::json(status, value);
-        response.no_store = true;
-        response
-    }
-}
-
-fn authority_error_response(error: TargetAuthorityError) -> HttpResponse {
-    match error.kind() {
-        TargetAuthorityErrorKind::Invalid => HttpResponse::empty(400),
-        TargetAuthorityErrorKind::Unauthorized => HttpResponse::empty(401),
-        TargetAuthorityErrorKind::Conflict => HttpResponse::empty(409),
-        TargetAuthorityErrorKind::Unavailable => HttpResponse::empty(503),
-    }
-}
-
-async fn write_and_close(mut stream: TcpStream, response: HttpResponse) -> io::Result<()> {
-    write_http_response(&mut stream, response).await
-}
-
-async fn write_http_response(stream: &mut TcpStream, response: HttpResponse) -> io::Result<()> {
-    let reason = http_reason(response.status);
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        response.status,
-        reason,
-        response.body.len()
-    );
-    if let Some(content_type) = response.content_type {
-        head.push_str(&format!("Content-Type: {content_type}\r\n"));
-    }
-    if response.no_store {
-        head.push_str("Cache-Control: no-store\r\n");
-    }
-    head.push_str("\r\n");
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(&response.body).await?;
-    stream.shutdown().await
-}
-
-fn http_reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        409 => "Conflict",
-        503 => "Service Unavailable",
-        _ => "Internal Server Error",
-    }
 }

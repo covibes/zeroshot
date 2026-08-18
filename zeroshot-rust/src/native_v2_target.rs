@@ -1,19 +1,19 @@
 //! Native-v2 named-target connector.
 //!
 //! The CLI owns only a small local name-to-origin registry. A target control authority owns
-//! discovery, device login, atomic repository/runtime installation, and issuance of one
-//! authenticated target-scoped OECP session. The runtime plan contains environment names only;
-//! environment values remain cloud-owned and never cross this connector.
+//! discovery, device login, atomic source-selection installation, and issuance of one
+//! authenticated target-scoped OECP session. Runtime plans belong to run submissions;
+//! environment values remain host-owned and never cross this connector.
 
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroshot_engine::native_v2_cli::oecp::TargetConnector;
-use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetSetup};
+use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetRunIntent, TargetSetup};
+use openengine_cluster_protocol::RunSubmitResult;
 pub use zeroshot_engine::native_v2_target_authority::{TargetBase, TargetSetupDocument};
 
 mod contract;
@@ -46,6 +46,11 @@ pub trait TargetControlAuthority: Send + Sync {
         target: &TargetRecord,
         setup: &TargetSetupDocument,
     ) -> Result<(), TargetAuthorityError>;
+    async fn submit(
+        &self,
+        target: &TargetRecord,
+        intent: &TargetRunIntent,
+    ) -> Result<RunSubmitResult, TargetAuthorityError>;
     async fn oecp_session(
         &self,
         target: &TargetRecord,
@@ -136,18 +141,6 @@ pub enum TargetConnectorError {
     RegistryTooLarge,
     #[error("secure randomness is unavailable")]
     Randomness,
-    #[error("runtime plan file {path} could not be read: {source}")]
-    RuntimeRead {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error("runtime plan file {path} is invalid: {source}")]
-    RuntimeJson {
-        path: PathBuf,
-        source: serde_json::Error,
-    },
-    #[error("runtime plan exceeds 1 MiB")]
-    RuntimeTooLarge,
     #[error("repository must have the form owner/name")]
     InvalidRepository,
     #[error("base must be a bounded Git branch or a lowercase 40-character revision")]
@@ -214,6 +207,19 @@ where
         let target = self.registry.get(&request.name).map_err(cli_target_error)?;
         self.authority
             .install(&target, &document)
+            .await
+            .map_err(cli_target_error)
+    }
+
+    async fn submit(
+        &self,
+        name: &str,
+        intent: TargetRunIntent,
+    ) -> Result<RunSubmitResult, NativeV2CliError> {
+        validate_target_name(name).map_err(cli_target_error)?;
+        let target = self.registry.get(name).map_err(cli_target_error)?;
+        self.authority
+            .submit(&target, &intent)
             .await
             .map_err(cli_target_error)
     }
