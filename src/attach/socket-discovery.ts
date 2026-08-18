@@ -6,10 +6,10 @@
  */
 
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
 
 import socketPaths from './socket-paths';
+import { connectToEndpoint } from './socket-endpoint';
 
 interface ClustersRegistryModule {
   readClustersFileSync(storageDir: string): unknown;
@@ -83,7 +83,7 @@ function isSocketAlive(socketPath: string): Promise<boolean> {
   }
 
   return new Promise((resolve) => {
-    const socket = net.createConnection(socketPath);
+    const socket = connectToEndpoint(socketPath);
     const timeout = setTimeout(() => {
       socket.destroy();
       resolve(false);

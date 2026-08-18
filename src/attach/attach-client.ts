@@ -1,9 +1,9 @@
 /** Terminal client for attaching to a running task or agent. */
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import net from 'node:net';
 
 import protocol from './protocol';
+import { connectToEndpoint, type EndpointSocket } from './socket-endpoint';
 
 const CTRL_B = '\x02';
 const CTRL_C = '\x03';
@@ -60,7 +60,7 @@ class AttachClient extends EventEmitter {
   readonly stdin: AttachInput;
   readonly stdout: AttachOutput;
   readonly clientId: string;
-  socket: net.Socket | null = null;
+  socket: EndpointSocket | null = null;
   decoder = new protocol.MessageDecoder();
   connected = false;
   wasRawMode: boolean | undefined | null = null;
@@ -90,7 +90,7 @@ class AttachClient extends EventEmitter {
     }
 
     return new Promise((resolve, reject) => {
-      const socket = net.createConnection(this.socketPath);
+      const socket = connectToEndpoint(this.socketPath);
       this.socket = socket;
 
       socket.on('connect', () => {
