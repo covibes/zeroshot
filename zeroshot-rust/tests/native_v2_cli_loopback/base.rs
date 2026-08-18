@@ -8,8 +8,8 @@ pub(crate) use std::time::Duration;
 
 pub(crate) use async_trait::async_trait;
 pub(crate) use openengine_cluster_protocol::{
-    RunId, RunSubmission, RunSubmitParams, SourceBranchId, SourceRepositoryId, SourceRevisionId,
-    SourceSnapshot, WorkerOutcome,
+    IdempotencyKey, RunId, RunSubmission, RunSubmitParams, RunTitle, SourceBranchId,
+    SourceRepositoryId, SourceRevisionId, SourceSnapshot, WorkerOutcome,
 };
 pub(crate) use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
@@ -25,9 +25,10 @@ pub(crate) use zeroshot_engine::native_v2_cloud::{
     CapsuleCleanupUnavailable, CapsuleDestroyed, ControllerClaimUnavailable,
     ExclusiveControllerClaim, NativeV2CloudController, run_intent_digest,
 };
+pub(crate) use zeroshot_engine::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 pub(crate) use zeroshot_engine::native_v2_claude::ClaudeProcessEnvironment;
 pub(crate) use zeroshot_engine::native_v2_contract::{
-    AdmittedRun, EnvironmentVariableName, NodeInvocation, NodeRuntimeBinding,
+    AdmittedRun, EnvironmentVariableName, NodeInvocation, NodeRuntimeBinding, RuntimePlan,
 };
 pub(crate) use zeroshot_engine::native_v2_delivery::{
     DeliveryPollPolicy, DeliveryTarget, GitHubAuthorityError, GitHubChecks, GitHubCredential,

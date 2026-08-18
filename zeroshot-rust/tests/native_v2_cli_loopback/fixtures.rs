@@ -41,55 +41,6 @@ pub(crate) fn write_fixture_files(root: &TempRoot) -> (PathBuf, PathBuf, PathBuf
     (runtime, graph, input)
 }
 
-pub(crate) fn write_live_fixture_files(
-    root: &TempRoot,
-    lane: LiveLane,
-) -> (PathBuf, PathBuf, PathBuf) {
-    let runtime = root.path("live-runtime.json");
-    let graph = root.path("live-graph.json");
-    let input = root.path("live-input.json");
-    std::fs::write(
-        &runtime,
-        serde_json::to_vec(&json!({
-            "harness":lane.harness(),
-            "provider":lane.provider(),
-            "size":"standard",
-            "nodes":{
-                "worker":{
-                    "kind":"agent",
-                    "model":lane.model(),
-                    "effort":"max",
-                    "sessionScope":"execution",
-                    "env":[lane.credential_name()]
-                },
-                "deliver":{"kind":"git_delivery","env":[GITHUB_TOKEN_ENV]}
-            }
-        }))
-        .assert_value(),
-    )
-    .assert_value();
-    std::fs::write(
-        &graph,
-        serde_json::to_vec(&live_provider_graph(600_000)).assert_value(),
-    )
-    .assert_value();
-    std::fs::write(
-        &input,
-        serde_json::to_vec(&delivery_initial_input(
-            &format!(
-                "Create provider-proof.txt containing exactly {}. Then make your complete final \
-                 response exactly the JSON literal null (the four characters null), with no \
-                 object or wrapper.",
-                lane.sentinel()
-            ),
-            "pr",
-        ))
-        .assert_value(),
-    )
-    .assert_value();
-    (runtime, graph, input)
-}
-
 pub(crate) fn write_delivery_fixture_files(root: &TempRoot) -> (PathBuf, PathBuf, PathBuf) {
     let runtime = root.path("delivery-runtime.json");
     let graph = root.path("delivery-graph.json");
@@ -128,7 +79,7 @@ pub(crate) fn minimal_graph(timeout_ms: u64) -> serde_json::Value {
     pr_delivery_graph(timeout_ms, false)
 }
 
-fn live_provider_graph(timeout_ms: u64) -> serde_json::Value {
+pub(crate) fn live_provider_graph(timeout_ms: u64) -> serde_json::Value {
     pr_delivery_graph(timeout_ms, true)
 }
 
@@ -239,7 +190,10 @@ fn merge_delivery_graph() -> serde_json::Value {
     native_v2_graph(state, root)
 }
 
-fn native_v2_graph(initial_input: serde_json::Value, root: serde_json::Value) -> serde_json::Value {
+pub(crate) fn native_v2_graph(
+    initial_input: serde_json::Value,
+    root: serde_json::Value,
+) -> serde_json::Value {
     json!({
         "profile":"openengine.graph.full/v1",
         "initialInput":initial_input,
@@ -248,7 +202,7 @@ fn native_v2_graph(initial_input: serde_json::Value, root: serde_json::Value) ->
     })
 }
 
-fn delivery_node(
+pub(crate) fn delivery_node(
     worker: &str,
     labels: serde_json::Value,
     timeout_ms: u64,
@@ -263,7 +217,7 @@ fn delivery_node(
     })
 }
 
-fn delivery_result_schema(mode: &str) -> serde_json::Value {
+pub(crate) fn delivery_result_schema(mode: &str) -> serde_json::Value {
     let outcomes = match mode {
         "pr" => Some(json!(["opened"])),
         "merge" => Some(json!(["merged", "conflict", "ci_failed"])),
@@ -284,7 +238,7 @@ fn delivery_result_schema(mode: &str) -> serde_json::Value {
     })
 }
 
-fn delivery_state_schema(mode: &str) -> serde_json::Value {
+pub(crate) fn delivery_state_schema(mode: &str) -> serde_json::Value {
     let mut schema = delivery_result_schema(mode);
     schema
         .assert_key_mut("fields")
@@ -297,7 +251,7 @@ fn delivery_state_schema(mode: &str) -> serde_json::Value {
     schema
 }
 
-fn delivery_initial_input(instruction: &str, mode: &str) -> serde_json::Value {
+pub(crate) fn delivery_initial_input(instruction: &str, mode: &str) -> serde_json::Value {
     let outcome = match mode {
         "pr" => Some("opened"),
         "merge" => Some("conflict"),
@@ -328,7 +282,7 @@ fn delivery_fields() -> [&'static str; 7] {
     ]
 }
 
-fn delivery_field_paths() -> Vec<serde_json::Value> {
+pub(crate) fn delivery_field_paths() -> Vec<serde_json::Value> {
     delivery_fields()
         .into_iter()
         .map(|field| json!([field]))
@@ -347,7 +301,7 @@ fn delivery_write_bindings() -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn delivery_terminal_bindings() -> Vec<serde_json::Value> {
+pub(crate) fn delivery_terminal_bindings() -> Vec<serde_json::Value> {
     delivery_fields()
         .into_iter()
         .map(|field| {

@@ -168,13 +168,14 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
 #[ignore = "manual live provider acceptance; requires root, network, provider/GitHub CLIs, and credentials"]
 async fn shipped_cli_runs_one_real_production_provider_lane() {
     let lane = LiveLane::from_environment();
+    let scenario = LiveScenario::from_environment();
     let root = temp_root();
     let hosting = live_hosting_config(&root, lane);
     let host =
         LoopbackHost::start_with_factory(Arc::new(ProductionTargetControllerFactory::new(hosting)))
             .await;
     let config = root.path("live-config");
-    let (runtime, graph, input) = write_live_fixture_files(&root, lane);
+    let (runtime, graph, input) = write_live_fixture_files(&root, lane, scenario);
     let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
     let mut command = cli_command(CliInvocation {
         script: &live_shell_script(),
@@ -197,7 +198,7 @@ async fn shipped_cli_runs_one_real_production_provider_lane() {
     ] {
         command.env_remove(name);
     }
-    let context = format!("shipped CLI live acceptance for {lane:?}");
+    let context = format!("shipped CLI live acceptance for {lane:?}/{scenario:?}");
     let (stdout, stderr) = run_cli_command(command, Duration::from_secs(15 * 60), &context).await;
     assert!(stderr.contains("ABCD-EFGH"), "device code was not surfaced");
     assert!(stdout.contains("LIVE={\"runId\":"));
@@ -206,8 +207,24 @@ async fn shipped_cli_runs_one_real_production_provider_lane() {
         stdout.contains("\"terminalResult\":{\"status\":\"succeeded\""),
         "live run did not succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert!(stdout.contains("\"mode\":\"pr\""));
-    assert!(stdout.contains("\"outcome\":\"opened\""));
+    assert!(stdout.contains(&format!("\"mode\":\"{}\"", scenario.mode())));
+    assert!(stdout.contains(&format!("\"outcome\":\"{}\"", scenario.expected_outcome())));
+    if scenario == LiveScenario::OutputCorrection {
+        assert!(
+            stdout.contains("NOT_JSON"),
+            "invalid first output was absent"
+        );
+        assert!(
+            stdout.matches("Codex turn started").count() >= 2,
+            "correction did not run as a second turn in the Codex session"
+        );
+    }
+    if scenario == LiveScenario::CiRepair {
+        assert!(
+            stdout.contains("required CI checks failed"),
+            "delivery never observed the required CI failure"
+        );
+    }
     assert!(!stdout.contains("capsule"));
 }
 
