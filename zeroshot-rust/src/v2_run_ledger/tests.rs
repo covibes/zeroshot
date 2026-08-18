@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use openengine_cluster_protocol::{
-    CompiledGraphIr, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest,
+    ArtifactRef, CompiledGraphIr, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest,
+    RunSize, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
     TerminalResult, WorkerOutcome,
 };
 use serde_json::{Value, json};
@@ -25,13 +26,20 @@ fn admitted_run() -> AdmittedRun {
     ))
     .assert_value();
     AdmittedRun {
+        title: RunTitle::new("Ledger test").assert_value(),
         graph,
         initial_input: Value::Null,
         runtime: RuntimePlan::Codex {
             provider: CodexProvider::OpenAi,
+            size: RunSize::Standard,
             nodes: Default::default(),
         },
-        ship: false,
+        source: SourceSnapshot {
+            repository: SourceRepositoryId::new("open-engine/zeroshot").assert_value(),
+            target_branch: SourceBranchId::new("main").assert_value(),
+            base_revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+                .assert_value(),
+        },
     }
 }
 
@@ -39,6 +47,7 @@ fn create(run: &str, key: &str, digest_byte: char) -> CreateRun {
     CreateRun {
         run_id: RunId::new(run),
         submission_key: IdempotencyKey::new(key).assert_value(),
+        intent_digest: Sha256Digest::new('f'.to_string().repeat(64)).assert_value(),
         submission_digest: Sha256Digest::new(digest_byte.to_string().repeat(64)).assert_value(),
         admitted: admitted_run(),
     }
@@ -75,6 +84,58 @@ fn completed(reference: ExecutionRef, output: Value) -> RunEvent {
             },
         },
     }
+}
+
+#[tokio::test]
+async fn node_completion_with_artifact_reference_is_never_persisted() {
+    let ledger = FakeRunLedger::new();
+    let run_id = RunId::new("artifact-free-run");
+    ledger
+        .create_or_get(create(run_id.as_str(), "artifact-free", 'a'))
+        .await
+        .assert_value();
+    let reference = reference(&run_id, 1);
+    ledger
+        .append(
+            &run_id,
+            vec![RunEvent::RunStarted, started(reference.clone())],
+        )
+        .await
+        .assert_value();
+    let artifact: ArtifactRef = serde_json::from_str(include_str!(
+        "../../../protocol/openengine-cluster/v1/fixtures/graph/positive/artifact-ref.json"
+    ))
+    .assert_value();
+    let rejected = ledger
+        .append(
+            &run_id,
+            vec![RunEvent::NodeCompleted {
+                completion: NodeCompletion {
+                    reference: reference.clone(),
+                    outcome: WorkerOutcome::Verified {
+                        output: Value::Null,
+                        artifacts: vec![artifact],
+                    },
+                },
+            }],
+        )
+        .await;
+    assert_eq!(
+        rejected,
+        Err(RunLedgerError::InvalidEvent(
+            "native-v2 node outcomes cannot contain artifact references"
+        ))
+    );
+    let stored = ledger.get(&run_id).await.assert_value().assert_value();
+    assert!(matches!(
+        stored
+            .snapshot
+            .executions
+            .get(&reference.execution)
+            .assert_value()
+            .state,
+        NodeState::Active
+    ));
 }
 
 #[tokio::test]

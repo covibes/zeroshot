@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{Cursor, RunId};
+use openengine_cluster_protocol::{Cursor, IdempotencyKey, RunId};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::{
@@ -81,6 +81,14 @@ impl RunLedger for SqliteRunLedger {
 
     async fn get(&self, run_id: &RunId) -> Result<Option<StoredRun>, RunLedgerError> {
         load_by_id(&self.connection(), run_id)
+    }
+
+    async fn get_by_submission_key(
+        &self,
+        submission_key: &IdempotencyKey,
+    ) -> Result<Option<StoredRun>, RunLedgerError> {
+        load_by_submission(&self.connection(), submission_key.as_str())
+            .map(|stored| stored.map(|(_, _, stored)| stored))
     }
 
     async fn list(&self) -> Result<Vec<RunSummary>, RunLedgerError> {
@@ -284,7 +292,10 @@ fn existing_submission(
         require_unused_run_id(transaction, &request.run_id)?;
         return Ok(None);
     };
-    if digest == request.submission_digest.as_str() && existing.admitted == request.admitted {
+    if existing.intent_digest == request.intent_digest
+        && digest == request.submission_digest.as_str()
+        && existing.admitted == request.admitted
+    {
         Ok(Some(existing))
     } else {
         Err(RunLedgerError::SubmissionConflict {
@@ -308,11 +319,13 @@ fn insert_new_run(
     transaction: &Transaction<'_>,
     request: CreateRun,
 ) -> Result<StoredRun, RunLedgerError> {
+    let snapshot = super::RunSnapshot::admitted(request.run_id.clone(), &request.admitted);
     let stored = StoredRun {
         submission_key: request.submission_key,
+        intent_digest: request.intent_digest,
         submission_digest: request.submission_digest,
         admitted: request.admitted,
-        snapshot: super::RunSnapshot::admitted(request.run_id.clone()),
+        snapshot,
     };
     let stored_json = serde_json::to_string(&stored).map_err(|_| RunLedgerError::Storage)?;
     transaction

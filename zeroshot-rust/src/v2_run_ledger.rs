@@ -9,8 +9,8 @@ use std::fmt;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    Cursor, IdempotencyKey, Phase, PositiveInteger, RunId, Sha256Digest, TerminalResult,
-    WorkerOutcome,
+    Cursor, IdempotencyKey, Phase, PositiveInteger, RunId, RunSize, RunTitle, Sha256Digest,
+    SourceSnapshot, TerminalResult, WorkerOutcome,
 };
 use serde::de;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -39,6 +39,8 @@ pub const MAX_SAFE_LOG_BYTES: usize = 16 * 1024;
 pub struct CreateRun {
     pub run_id: RunId,
     pub submission_key: IdempotencyKey,
+    /// Digest of title/graph/input/runtime/key before mutable source resolution.
+    pub intent_digest: Sha256Digest,
     pub submission_digest: Sha256Digest,
     pub admitted: AdmittedRun,
 }
@@ -63,6 +65,7 @@ impl CreateRunOutcome {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StoredRun {
     pub submission_key: IdempotencyKey,
+    pub intent_digest: Sha256Digest,
     pub submission_digest: Sha256Digest,
     pub admitted: AdmittedRun,
     pub snapshot: RunSnapshot,
@@ -92,6 +95,9 @@ impl RunPhase {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunSnapshot {
     pub run_id: RunId,
+    pub title: RunTitle,
+    pub source: SourceSnapshot,
+    pub size: RunSize,
     pub cursor: Cursor,
     pub phase: RunPhase,
     pub force_stop_requested: bool,
@@ -101,9 +107,28 @@ pub struct RunSnapshot {
 
 impl RunSnapshot {
     #[must_use]
-    pub fn admitted(run_id: RunId) -> Self {
+    pub fn admitted(run_id: RunId, admitted: &AdmittedRun) -> Self {
         Self {
             run_id,
+            title: admitted.title.clone(),
+            source: admitted.source.clone(),
+            size: admitted.runtime.size(),
+            cursor: initial_cursor(),
+            phase: RunPhase::Admitted,
+            force_stop_requested: false,
+            executions: BTreeMap::new(),
+            terminal: None,
+        }
+    }
+
+    /// Returns the immutable metadata and empty projection used to replay durable events.
+    #[must_use]
+    pub fn replay_seed(&self) -> Self {
+        Self {
+            run_id: self.run_id.clone(),
+            title: self.title.clone(),
+            source: self.source.clone(),
+            size: self.size,
             cursor: initial_cursor(),
             phase: RunPhase::Admitted,
             force_stop_requested: false,
@@ -250,6 +275,9 @@ pub struct SnapshotAndTail {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunSummary {
     pub run_id: RunId,
+    pub title: RunTitle,
+    pub source: SourceSnapshot,
+    pub size: RunSize,
     pub cursor: Cursor,
     pub phase: RunPhase,
     pub force_stop_requested: bool,
@@ -260,6 +288,9 @@ impl From<&RunSnapshot> for RunSummary {
     fn from(snapshot: &RunSnapshot) -> Self {
         Self {
             run_id: snapshot.run_id.clone(),
+            title: snapshot.title.clone(),
+            source: snapshot.source.clone(),
+            size: snapshot.size,
             cursor: snapshot.cursor.clone(),
             phase: snapshot.phase.clone(),
             force_stop_requested: snapshot.force_stop_requested,
@@ -304,6 +335,11 @@ pub trait RunLedger: Send + Sync {
     async fn create_or_get(&self, request: CreateRun) -> Result<CreateRunOutcome, RunLedgerError>;
 
     async fn get(&self, run_id: &RunId) -> Result<Option<StoredRun>, RunLedgerError>;
+
+    async fn get_by_submission_key(
+        &self,
+        submission_key: &IdempotencyKey,
+    ) -> Result<Option<StoredRun>, RunLedgerError>;
 
     async fn list(&self) -> Result<Vec<RunSummary>, RunLedgerError>;
 

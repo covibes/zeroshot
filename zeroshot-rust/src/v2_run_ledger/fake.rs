@@ -52,7 +52,8 @@ impl RunLedger for FakeRunLedger {
                 .get(existing_id)
                 .ok_or(RunLedgerError::Corrupt)?
                 .stored;
-            if existing.submission_digest == request.submission_digest
+            if existing.intent_digest == request.intent_digest
+                && existing.submission_digest == request.submission_digest
                 && existing.admitted == request.admitted
             {
                 return Ok(CreateRunOutcome::Existing(existing.clone()));
@@ -64,11 +65,13 @@ impl RunLedger for FakeRunLedger {
         if state.runs.contains_key(&request.run_id) {
             return Err(RunLedgerError::RunIdConflict);
         }
+        let snapshot = super::RunSnapshot::admitted(request.run_id.clone(), &request.admitted);
         let stored = StoredRun {
             submission_key: request.submission_key.clone(),
+            intent_digest: request.intent_digest,
             submission_digest: request.submission_digest,
             admitted: request.admitted,
-            snapshot: super::RunSnapshot::admitted(request.run_id.clone()),
+            snapshot,
         };
         state
             .submissions
@@ -85,6 +88,18 @@ impl RunLedger for FakeRunLedger {
 
     async fn get(&self, run_id: &RunId) -> Result<Option<StoredRun>, RunLedgerError> {
         Ok(self.state().runs.get(run_id).map(|run| run.stored.clone()))
+    }
+
+    async fn get_by_submission_key(
+        &self,
+        submission_key: &openengine_cluster_protocol::IdempotencyKey,
+    ) -> Result<Option<StoredRun>, RunLedgerError> {
+        let state = self.state();
+        Ok(state
+            .submissions
+            .get(submission_key)
+            .and_then(|run_id| state.runs.get(run_id))
+            .map(|run| run.stored.clone()))
     }
 
     async fn list(&self) -> Result<Vec<RunSummary>, RunLedgerError> {

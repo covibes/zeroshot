@@ -135,6 +135,16 @@ fn apply_node_completed(
     sequence: u64,
 ) -> Result<(), RunLedgerError> {
     require_run(snapshot, &completion.reference)?;
+    if matches!(
+        &completion.outcome,
+        openengine_cluster_protocol::WorkerOutcome::Verified { artifacts, .. }
+            | openengine_cluster_protocol::WorkerOutcome::Verifier { artifacts, .. }
+            if !artifacts.is_empty()
+    ) {
+        return Err(RunLedgerError::InvalidEvent(
+            "native-v2 node outcomes cannot contain artifact references",
+        ));
+    }
     completion
         .outcome
         .validate()
