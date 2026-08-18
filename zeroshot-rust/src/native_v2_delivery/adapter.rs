@@ -49,7 +49,9 @@ impl SessionFactory for NativeV2DeliveryAdapter {
         invocation: &NodeInvocation,
         _environment: &ResolvedEnvironment,
     ) -> Result<Arc<dyn NodeSession>, NodeRunnerError> {
-        if !matches!(invocation.binding, NodeRuntimeBinding::GitDelivery { .. }) {
+        if !matches!(invocation.binding, NodeRuntimeBinding::GitDelivery { .. })
+            || DeliveryMode::from_worker(&invocation.worker).is_none()
+        {
             return Err(NodeRunnerError::InvalidRole);
         }
         Ok(Arc::new(DeliverySession {
@@ -66,7 +68,7 @@ impl NodeDriver for NativeV2DeliveryAdapter {
         invocation: DriverInvocation,
         mut control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
-        let (session, credential) = match self.authorize(&invocation) {
+        let (session, credential, mode) = match self.authorize(&invocation) {
             Ok(authority) => authority,
             Err(stop) => return stop.result(),
         };
@@ -86,6 +88,7 @@ impl NodeDriver for NativeV2DeliveryAdapter {
             Err(stop) => return stop.result(),
         };
         self.drive_review(ReviewDrive {
+            mode,
             response: &invocation.response,
             review: &review,
             credential,
@@ -124,6 +127,7 @@ impl From<NodeRunnerError> for DeliveryStop {
 }
 
 struct ReviewDrive<'a> {
+    mode: DeliveryMode,
     response: &'a NodeResponseContract,
     review: &'a GitHubReviewReceipt,
     credential: GitHubCredential<'a>,
@@ -135,7 +139,7 @@ impl NativeV2DeliveryAdapter {
     fn authorize<'a>(
         &self,
         invocation: &'a DriverInvocation,
-    ) -> Result<(&'a DeliverySession, GitHubCredential<'a>), DeliveryStop> {
+    ) -> Result<(&'a DeliverySession, GitHubCredential<'a>, DeliveryMode), DeliveryStop> {
         if invocation.role != NodeRole::GitDelivery
             || !matches!(
                 invocation.node.binding,
@@ -144,10 +148,9 @@ impl NativeV2DeliveryAdapter {
         {
             return Err(DeliveryStop::Runner(NodeRunnerError::InvalidRole));
         }
-        validate_delivery_contract(&invocation.response)?;
-        if !self.config.ship_authorized {
-            return Err(DeliveryStop::Outcome(WorkerOutcome::policy_refusal()));
-        }
+        let mode = DeliveryMode::from_worker(&invocation.node.worker)
+            .ok_or(DeliveryStop::Runner(NodeRunnerError::InvalidRole))?;
+        validate_delivery_contract(mode, &invocation.response)?;
         let credential = github_credential(&invocation.environment)
             .ok_or_else(|| DeliveryStop::Outcome(WorkerOutcome::authentication_refusal()))?;
         let session = invocation
@@ -155,7 +158,7 @@ impl NativeV2DeliveryAdapter {
             .as_any()
             .downcast_ref::<DeliverySession>()
             .ok_or(DeliveryStop::Runner(NodeRunnerError::InvalidRole))?;
-        Ok((session, credential))
+        Ok((session, credential, mode))
     }
 
     async fn prepare_review(
@@ -179,7 +182,10 @@ impl NativeV2DeliveryAdapter {
         if !valid_review(&review_request, &review) {
             return Err(DeliveryStop::Outcome(WorkerOutcome::malformed()));
         }
-        emit(preparation.control, "delivery: review is open")?;
+        emit(
+            preparation.control,
+            "delivery: review created or rediscovered",
+        )?;
         Ok(review)
     }
 
@@ -249,11 +255,43 @@ impl NativeV2DeliveryAdapter {
             )
             .await?;
         }
-        emit(drive.control, "delivery: merge confirmation timed out")?;
+        emit(
+            drive.control,
+            "delivery: authoritative confirmation timed out",
+        )?;
         Ok(WorkerOutcome::declared_failure(WorkerErrorCode::Timeout))
     }
 
     async fn advance_review(
+        &self,
+        drive: &mut ReviewDrive<'_>,
+        progress: ReviewProgress,
+    ) -> Result<ReviewStep, DeliveryStop> {
+        match drive.mode {
+            DeliveryMode::PullRequest => self.advance_pull_request(drive, progress),
+            DeliveryMode::Merge => self.advance_merge(drive, progress).await,
+        }
+    }
+
+    fn advance_pull_request(
+        &self,
+        drive: &ReviewDrive<'_>,
+        progress: ReviewProgress,
+    ) -> Result<ReviewStep, DeliveryStop> {
+        match progress {
+            ReviewProgress::CiFailed
+            | ReviewProgress::Mergeable
+            | ReviewProgress::Pending
+            | ReviewProgress::Conflict => review_completion(
+                drive,
+                DELIVERY_OPENED_LABEL,
+                "GitHub authoritatively confirmed the pull request is open",
+            ),
+            ReviewProgress::Merged | ReviewProgress::Closed => Err(crash_outcome()),
+        }
+    }
+
+    async fn advance_merge(
         &self,
         drive: &mut ReviewDrive<'_>,
         progress: ReviewProgress,
@@ -263,6 +301,11 @@ impl NativeV2DeliveryAdapter {
                 drive,
                 DELIVERY_MERGED_LABEL,
                 "GitHub authoritatively confirmed merge",
+            ),
+            ReviewProgress::Conflict => review_completion(
+                drive,
+                DELIVERY_CONFLICT_LABEL,
+                "GitHub authoritatively reported a merge conflict",
             ),
             ReviewProgress::CiFailed => {
                 review_completion(drive, DELIVERY_CI_FAILED_LABEL, "required CI checks failed")
@@ -286,9 +329,19 @@ impl NativeV2DeliveryAdapter {
                 "delivery: waiting for authoritative merge confirmation",
             )?;
         } else {
-            self.request_merge(drive.review, drive.credential, drive.control)
-                .await?;
-            drive.merge_requested = true;
+            match self
+                .request_merge(drive.review, drive.credential, drive.control)
+                .await?
+            {
+                GitHubMergeRequestOutcome::Accepted => drive.merge_requested = true,
+                GitHubMergeRequestOutcome::Conflict => {
+                    return review_completion(
+                        drive,
+                        DELIVERY_CONFLICT_LABEL,
+                        "GitHub authoritatively rejected merge due to conflict",
+                    );
+                }
+            }
         }
         Ok(ReviewStep::Continue)
     }
@@ -314,7 +367,7 @@ impl NativeV2DeliveryAdapter {
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
         control: &DriverControl,
-    ) -> Result<(), DeliveryStop> {
+    ) -> Result<GitHubMergeRequestOutcome, DeliveryStop> {
         emit(control, "delivery: requesting merge")?;
         self.authority
             .request_merge(review, credential)
@@ -328,6 +381,7 @@ enum ReviewProgress {
     CiFailed,
     Mergeable,
     Pending,
+    Conflict,
     Closed,
 }
 
@@ -354,6 +408,7 @@ impl ReviewProgress {
             GitHubReviewState::Open {
                 checks: GitHubChecks::NotRequired | GitHubChecks::Passed,
             } => Ok(Self::Mergeable),
+            GitHubReviewState::Conflict => Ok(Self::Conflict),
             GitHubReviewState::Closed => Ok(Self::Closed),
         }
     }
@@ -369,7 +424,8 @@ fn review_completion(
     diagnostic: &'static str,
 ) -> Result<ReviewStep, DeliveryStop> {
     emit(drive.control, diagnostic)?;
-    delivery_outcome(drive.response, label, diagnostic)
+    validate_delivery_contract(drive.mode, drive.response).map_err(DeliveryStop::Runner)?;
+    delivery_outcome(drive.mode, label, drive.review, diagnostic)
         .map(ReviewStep::Complete)
         .map_err(DeliveryStop::Runner)
 }

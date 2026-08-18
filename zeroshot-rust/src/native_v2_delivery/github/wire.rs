@@ -6,6 +6,7 @@ pub(super) struct PullRequestWire {
     pub(super) state: String,
     pub(super) merged: Option<bool>,
     pub(super) merge_commit_sha: Option<String>,
+    pub(super) mergeable: Option<bool>,
     base: ReviewBranchWire,
     head: ReviewBranchWire,
 }

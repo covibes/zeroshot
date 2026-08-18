@@ -1,3 +1,175 @@
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use async_trait::async_trait;
+use openengine_cluster_testkit::assertions::AssertValue;
+
+use super::*;
+
+#[derive(Clone, Copy)]
+pub(super) enum Script {
+    NoCi,
+    CiFailed,
+    Conflict,
+    ConflictAtMerge,
+    CiFailsThenMerges,
+    NeverConfirmsMerge,
+}
+
+pub(super) struct FakeGitHub {
+    remote: PathBuf,
+    script: Script,
+    pub(super) pushed: AtomicBool,
+    merge_requested: AtomicBool,
+    pub(super) merge_requests: AtomicUsize,
+    pub(super) inspections: AtomicUsize,
+    pub(super) reviews: Mutex<Vec<GitHubReviewRequest>>,
+}
+
+impl FakeGitHub {
+    pub(super) fn new(remote: PathBuf, script: Script) -> Self {
+        Self {
+            remote,
+            script,
+            pushed: AtomicBool::new(false),
+            merge_requested: AtomicBool::new(false),
+            merge_requests: AtomicUsize::new(0),
+            inspections: AtomicUsize::new(0),
+            reviews: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn review_state(&self, inspection: usize) -> GitHubReviewState {
+        match self.script {
+            Script::NoCi => self.no_ci_state(),
+            Script::CiFailed => open_review(GitHubChecks::Failed),
+            Script::Conflict => GitHubReviewState::Conflict,
+            Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
+            Script::CiFailsThenMerges => self.ci_repair_state(inspection),
+            Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
+        }
+    }
+
+    fn no_ci_state(&self) -> GitHubReviewState {
+        if self.merge_requested.load(Ordering::SeqCst) {
+            merged_review()
+        } else {
+            open_review(GitHubChecks::NotRequired)
+        }
+    }
+
+    fn ci_repair_state(&self, inspection: usize) -> GitHubReviewState {
+        if inspection == 1 {
+            return open_review(GitHubChecks::Failed);
+        }
+        if self.merge_requested.load(Ordering::SeqCst) {
+            merged_review()
+        } else {
+            open_review(GitHubChecks::Passed)
+        }
+    }
+}
+
+fn merged_review() -> GitHubReviewState {
+    GitHubReviewState::Merged {
+        merge_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+    }
+}
+
+fn open_review(checks: GitHubChecks) -> GitHubReviewState {
+    GitHubReviewState::Open { checks }
+}
+
+#[async_trait]
+impl GitHubDeliveryAuthority for FakeGitHub {
+    async fn push_branch(
+        &self,
+        request: &GitHubPushRequest,
+        credential: GitHubCredential<'_>,
+    ) -> Result<(), GitHubAuthorityError> {
+        assert_eq!(credential.expose(), "test-token");
+        let status = tokio::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(&request.workspace)
+            .arg("push")
+            .arg(&self.remote)
+            .arg(format!("HEAD:refs/heads/{}", request.head_branch))
+            .status()
+            .await
+            .assert_value();
+        if !status.success() {
+            return Err(GitHubAuthorityError::Rejected);
+        }
+        self.pushed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn open_or_update_review(
+        &self,
+        request: &GitHubReviewRequest,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubReviewReceipt, GitHubAuthorityError> {
+        assert_eq!(credential.expose(), "test-token");
+        assert!(self.pushed.load(Ordering::SeqCst));
+        self.reviews
+            .lock()
+            .assert_value_with("review request lock")
+            .push(request.clone());
+        Ok(GitHubReviewReceipt {
+            review_id: "17".to_owned(),
+            repository: request.target.repository.clone(),
+            target_branch: request.target.target_branch.clone(),
+            head_branch: request.head_branch.clone(),
+            head_revision: request.head_revision.clone(),
+        })
+    }
+
+    async fn inspect_review(
+        &self,
+        review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubReviewObservation, GitHubAuthorityError> {
+        assert_eq!(credential.expose(), "test-token");
+        let inspection = self.inspections.fetch_add(1, Ordering::SeqCst) + 1;
+        let state = self.review_state(inspection);
+        Ok(review.observation(state))
+    }
+
+    async fn request_merge(
+        &self,
+        _review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
+        assert_eq!(credential.expose(), "test-token");
+        self.merge_requests.fetch_add(1, Ordering::SeqCst);
+        if matches!(self.script, Script::ConflictAtMerge) {
+            return Ok(GitHubMergeRequestOutcome::Conflict);
+        }
+        self.merge_requested.store(true, Ordering::SeqCst);
+        Ok(GitHubMergeRequestOutcome::Accepted)
+    }
+}
+
+pub(super) fn write_executable(directory: &Path, name: &str, contents: &str) -> PathBuf {
+    let path = directory.join(name);
+    fs::write(&path, contents).assert_value();
+    let mut permissions = fs::metadata(&path).assert_value().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&path, permissions).assert_value();
+    path
+}
+
+pub(super) fn argument_lines(capture: &str) -> String {
+    capture
+        .lines()
+        .filter(|line| line.starts_with("arg="))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(super) const GH_SCRIPT: &str = r#"#!/bin/sh
 set -eu
 capture="${0}.capture"

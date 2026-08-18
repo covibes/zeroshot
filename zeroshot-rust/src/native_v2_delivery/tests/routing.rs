@@ -1,4 +1,5 @@
 use super::*;
+use openengine_cluster_protocol::GraphSpec;
 
 struct RepairSession;
 
@@ -64,6 +65,34 @@ impl NodeDriver for DeliveryLoopLane {
     }
 }
 
+async fn create_delivery_run(
+    admitted: crate::native_v2_contract::AdmittedRun,
+) -> (RunId, Arc<FakeRunLedger>, Arc<RunEnvironment>) {
+    let run_id = RunId::new("delivery-supervisor-run");
+    let ledger = Arc::new(FakeRunLedger::new());
+    let environments = Arc::new(
+        RunEnvironment::exact(
+            &admitted.runtime,
+            BTreeMap::from([(
+                EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
+                "test-token".to_owned(),
+            )]),
+        )
+        .assert_value_with("resolve delivery run environment"),
+    );
+    ledger
+        .create_or_get(CreateRun {
+            run_id: run_id.clone(),
+            submission_key: IdempotencyKey::new("delivery-supervisor").assert_value(),
+            intent_digest: Sha256Digest::new("c".repeat(64)).assert_value(),
+            submission_digest: Sha256Digest::new("d".repeat(64)).assert_value(),
+            admitted,
+        })
+        .await
+        .assert_value_with("create delivery run");
+    (run_id, ledger, environments)
+}
+
 #[tokio::test]
 async fn ci_failure_repairs_then_authoritatively_merges_in_one_supervised_run() {
     let repo = TempRepo::delivery();
@@ -71,13 +100,12 @@ async fn ci_failure_repairs_then_authoritatively_merges_in_one_supervised_run() 
         repo.remote.clone(),
         Script::CiFailsThenMerges,
     ));
-    let admitted = admitted_routing_graph().await;
+    let admitted = admitted_routing_graph(&repo.base).await;
     let delivery = Arc::new(NativeV2DeliveryAdapter::new(
         NativeV2DeliveryConfig {
             workspace: repo.workspace.clone(),
             git_program: PathBuf::from("/usr/bin/git"),
             target: DeliveryTarget::new("acme/project", "main", repo.base.clone()).assert_value(),
-            ship_authorized: admitted.ship,
             poll: DeliveryPollPolicy::new(3, Duration::ZERO).assert_value(),
         },
         authority.clone(),
@@ -91,21 +119,7 @@ async fn ci_failure_repairs_then_authoritatively_merges_in_one_supervised_run() 
         NativeNodeRunner::new(&admitted, lane.clone(), lane.clone())
             .assert_value_with("delivery loop runner"),
     );
-    let run_id = RunId::new("delivery-supervisor-run");
-    let ledger = Arc::new(FakeRunLedger::new());
-    ledger
-        .create_or_get(CreateRun {
-            run_id: run_id.clone(),
-            submission_key: IdempotencyKey::new("delivery-supervisor").assert_value(),
-            submission_digest: Sha256Digest::new("d".repeat(64)).assert_value(),
-            admitted,
-        })
-        .await
-        .assert_value_with("create delivery run");
-    let environments = Arc::new(ControllerEnvironment::new(BTreeMap::from([(
-        EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
-        "test-token".to_owned(),
-    )])));
+    let (run_id, ledger, environments) = create_delivery_run(admitted).await;
     let terminal = NativeV2Supervisor::new(run_id.clone(), ledger.clone(), runner, environments)
         .drive()
         .await
@@ -143,8 +157,11 @@ async fn ci_failure_repairs_then_authoritatively_merges_in_one_supervised_run() 
     );
 }
 
-pub(super) async fn assert_ci_failure_routes_an_authored_worker_loop(outcome: WorkerOutcome) {
-    let admitted = admitted_routing_graph().await;
+pub(super) async fn assert_ci_failure_routes_an_authored_worker_loop(
+    base_revision: &str,
+    outcome: WorkerOutcome,
+) {
+    let admitted = admitted_routing_graph(base_revision).await;
     let verified = VerifiedGraph {
         compiled_ir: admitted.graph,
         diagnostics: Vec::new(),
@@ -189,29 +206,38 @@ pub(super) async fn assert_ci_failure_routes_an_authored_worker_loop(outcome: Wo
     )));
 }
 
-async fn admitted_routing_graph() -> crate::native_v2_contract::AdmittedRun {
+async fn admitted_routing_graph(base_revision: &str) -> crate::native_v2_contract::AdmittedRun {
     let graph = routing_graph();
     let delivery = NodeRuntimeBinding::GitDelivery {
-        env: BTreeSet::from([EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()]),
+        env: DeclaredEnvironment::new([
+            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()
+        ])
+        .assert_value(),
     };
     let repair = NodeRuntimeBinding::Agent {
         model: crate::worker_catalog::ModelId::new("gpt-5.6").assert_value(),
         effort: Some(crate::worker_catalog::ReasoningEffort::Max),
         session_scope: crate::execution::SessionScope::Execution,
-        env: BTreeSet::new(),
+        env: DeclaredEnvironment::empty(),
     };
     NativeV2Admission
         .admit(RunSubmission {
+            title: RunTitle::new("Delivery routing test").assert_value(),
             graph,
             initial_input: Value::Null,
             runtime: RuntimePlan::Codex {
                 provider: crate::native_v2_contract::CodexProvider::OpenAi,
+                size: RunSize::Standard,
                 nodes: BTreeMap::from([
                     (NodeName::new("deliver").assert_value(), delivery),
                     (NodeName::new("repair").assert_value(), repair),
                 ]),
             },
-            ship: true,
+            source: SourceSnapshot {
+                repository: SourceRepositoryId::new("acme/project").assert_value(),
+                target_branch: SourceBranchId::new("main").assert_value(),
+                base_revision: SourceRevisionId::new(base_revision).assert_value(),
+            },
             submission_key: IdempotencyKey::new("delivery-routing").assert_value(),
         })
         .await
@@ -219,7 +245,7 @@ async fn admitted_routing_graph() -> crate::native_v2_contract::AdmittedRun {
 }
 
 fn routing_graph() -> GraphSpec {
-    let delivery = git_delivery_node();
+    let delivery = delivery_node(DeliveryMode::Merge);
     full_graph(vec![
         json!({
             "kind":"loop","name":"delivery_loop","state":{"kind":"null"},

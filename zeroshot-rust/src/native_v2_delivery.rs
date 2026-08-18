@@ -1,11 +1,12 @@
 //! Native-v2's graph-visible Git delivery node.
 //!
-//! Delivery is a trusted built-in verifier: it commits the shared workspace, asks the selected
-//! target's GitHub authority to push and open/update one run-stable review, and returns a signal
-//! that authored graph control flow can route. A merge request is never treated as success; only a
-//! later authoritative observation of the exact review and head revision can produce `merged`.
+//! Two graph worker references select PR or merge completion on one shared implementation. Both
+//! commit the workspace, push one deterministic run branch, and create or rediscover one stable
+//! review. Only authoritative open/merge observations produce successful inline receipts;
+//! conflict and CI failure remain routable attempt results.
 
 mod adapter;
+pub(crate) mod contract;
 mod git;
 pub(crate) mod git_auth;
 mod github;
@@ -14,6 +15,9 @@ mod github;
 mod tests;
 
 pub use github::{GhCliAuthorityConfig, GhCliDeliveryAuthority};
+pub use contract::{is_matching_success_receipt, validate_delivery_contract};
+#[cfg(test)]
+pub(crate) use contract::{delivery_result_schema, delivery_signal_labels};
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -24,10 +28,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{EnumLabel, FieldName, PayloadType, WorkerErrorCode, WorkerOutcome};
-use serde_json::Value;
+use openengine_cluster_protocol::{EnumLabel, FieldName, WorkerErrorCode, WorkerOutcome, WorkerRef};
+use serde_json::{Map, Value};
 
-use crate::native_v2_contract::{EnvironmentVariableName, NodeInvocation, NodeRuntimeBinding};
+use crate::native_v2_contract::{
+    EnvironmentVariableName, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
+    NodeInvocation, NodeRuntimeBinding,
+};
 use crate::native_v2_runner::{
     DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NodeDriver,
     NodeResponseContract, NodeRole, NodeRunnerError, NodeSession, ResolvedEnvironment,
@@ -38,12 +45,55 @@ use self::git::{GitError, SystemGit};
 
 pub const GITHUB_TOKEN_ENV: &str = "GH_TOKEN";
 pub const DELIVERY_SIGNAL_FIELD: &str = "delivery";
+pub const DELIVERY_OPENED_LABEL: &str = "opened";
 pub const DELIVERY_MERGED_LABEL: &str = "merged";
+pub const DELIVERY_CONFLICT_LABEL: &str = "conflict";
 pub const DELIVERY_CI_FAILED_LABEL: &str = "ci_failed";
+
+const DELIVERY_RESULT_VERSION: &str = "v1";
+const DELIVERY_VERSION_FIELD: &str = "version";
+const DELIVERY_MODE_FIELD: &str = "mode";
+const DELIVERY_OUTCOME_FIELD: &str = "outcome";
+const DELIVERY_REPOSITORY_FIELD: &str = "repository";
+const DELIVERY_TARGET_BRANCH_FIELD: &str = "targetBranch";
+const DELIVERY_HEAD_REVISION_FIELD: &str = "headRevision";
+const DELIVERY_PULL_REQUEST_ID_FIELD: &str = "pullRequestId";
 
 const DEFAULT_POLL_ATTEMPTS: usize = 90;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(20);
 const MAX_TOKEN_BYTES: usize = 4_096;
+const MAX_REVIEW_ID_BYTES: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeliveryMode {
+    PullRequest,
+    Merge,
+}
+
+impl DeliveryMode {
+    #[must_use]
+    pub fn from_worker(worker: &WorkerRef) -> Option<Self> {
+        match worker.as_str() {
+            GIT_DELIVERY_PR_WORKER_REF => Some(Self::PullRequest),
+            GIT_DELIVERY_MERGE_WORKER_REF => Some(Self::Merge),
+            _ => None,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::PullRequest => "pr",
+            Self::Merge => "merge",
+        }
+    }
+
+    const fn success_outcome(self) -> &'static str {
+        match self {
+            Self::PullRequest => DELIVERY_OPENED_LABEL,
+            Self::Merge => DELIVERY_MERGED_LABEL,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeliveryTarget {
@@ -117,23 +167,16 @@ pub struct NativeV2DeliveryConfig {
     pub workspace: PathBuf,
     pub git_program: PathBuf,
     pub target: DeliveryTarget,
-    /// The admitted run's unchanged `--ship` authorization bit.
-    pub ship_authorized: bool,
     pub poll: DeliveryPollPolicy,
 }
 
 impl NativeV2DeliveryConfig {
     #[must_use]
-    pub fn for_hosted_workspace(
-        workspace: PathBuf,
-        target: DeliveryTarget,
-        ship_authorized: bool,
-    ) -> Self {
+    pub fn for_hosted_workspace(workspace: PathBuf, target: DeliveryTarget) -> Self {
         Self {
             workspace,
             git_program: PathBuf::from("/usr/bin/git"),
             target,
-            ship_authorized,
             poll: DeliveryPollPolicy::default(),
         }
     }
@@ -192,7 +235,14 @@ pub enum GitHubChecks {
 pub enum GitHubReviewState {
     Open { checks: GitHubChecks },
     Merged { merge_revision: String },
+    Conflict,
     Closed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitHubMergeRequestOutcome {
+    Accepted,
+    Conflict,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -253,40 +303,10 @@ pub trait GitHubDeliveryAuthority: Send + Sync {
         &self,
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
-    ) -> Result<(), GitHubAuthorityError>;
+    ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError>;
 }
 
 pub use adapter::NativeV2DeliveryAdapter;
-
-pub fn validate_delivery_contract(response: &NodeResponseContract) -> Result<(), NodeRunnerError> {
-    let NodeResponseContract::Verifier {
-        output,
-        signals,
-        diagnostic,
-    } = response
-    else {
-        return Err(NodeRunnerError::InvalidRole);
-    };
-    if output != &PayloadType::Null || diagnostic != &PayloadType::String || signals.len() != 1 {
-        return Err(NodeRunnerError::Driver);
-    }
-    let field = FieldName::new(DELIVERY_SIGNAL_FIELD).map_err(|_| NodeRunnerError::Driver)?;
-    let Some(labels) = signals.get(&field) else {
-        return Err(NodeRunnerError::Driver);
-    };
-    let expected = [DELIVERY_MERGED_LABEL, DELIVERY_CI_FAILED_LABEL];
-    if labels.values().len() != expected.len()
-        || !expected.iter().all(|expected| {
-            labels
-                .values()
-                .iter()
-                .any(|label| label.as_str() == *expected)
-        })
-    {
-        return Err(NodeRunnerError::Driver);
-    }
-    Ok(())
-}
 
 fn github_credential(environment: &ResolvedEnvironment) -> Option<GitHubCredential<'_>> {
     let name = EnvironmentVariableName::new(GITHUB_TOKEN_ENV).ok()?;
@@ -295,23 +315,69 @@ fn github_credential(environment: &ResolvedEnvironment) -> Option<GitHubCredenti
 }
 
 fn delivery_outcome(
-    response: &NodeResponseContract,
-    label: &str,
+    mode: DeliveryMode,
+    outcome: &str,
+    review: &GitHubReviewReceipt,
     diagnostic: &str,
 ) -> Result<WorkerOutcome, NodeRunnerError> {
-    validate_delivery_contract(response)?;
+    if !valid_mode_outcome(mode, outcome) {
+        return Err(NodeRunnerError::Driver);
+    }
     let field = FieldName::new(DELIVERY_SIGNAL_FIELD).map_err(|_| NodeRunnerError::Driver)?;
-    let label = EnumLabel::new(label).map_err(|_| NodeRunnerError::Driver)?;
+    let label = EnumLabel::new(outcome).map_err(|_| NodeRunnerError::Driver)?;
     Ok(WorkerOutcome::Verifier {
-        output: Value::Null,
+        output: delivery_result(mode, outcome, review),
         signals: BTreeMap::from([(field, label)]),
         diagnostic: Value::String(diagnostic.to_owned()),
         artifacts: Vec::new(),
     })
 }
 
+fn valid_mode_outcome(mode: DeliveryMode, outcome: &str) -> bool {
+    match mode {
+        DeliveryMode::PullRequest => outcome == DELIVERY_OPENED_LABEL,
+        DeliveryMode::Merge => matches!(
+            outcome,
+            DELIVERY_MERGED_LABEL | DELIVERY_CONFLICT_LABEL | DELIVERY_CI_FAILED_LABEL
+        ),
+    }
+}
+
+fn delivery_result(mode: DeliveryMode, outcome: &str, review: &GitHubReviewReceipt) -> Value {
+    Value::Object(Map::from_iter([
+        (
+            DELIVERY_VERSION_FIELD.to_owned(),
+            Value::String(DELIVERY_RESULT_VERSION.to_owned()),
+        ),
+        (
+            DELIVERY_MODE_FIELD.to_owned(),
+            Value::String(mode.label().to_owned()),
+        ),
+        (
+            DELIVERY_OUTCOME_FIELD.to_owned(),
+            Value::String(outcome.to_owned()),
+        ),
+        (
+            DELIVERY_REPOSITORY_FIELD.to_owned(),
+            Value::String(review.repository.clone()),
+        ),
+        (
+            DELIVERY_TARGET_BRANCH_FIELD.to_owned(),
+            Value::String(review.target_branch.clone()),
+        ),
+        (
+            DELIVERY_HEAD_REVISION_FIELD.to_owned(),
+            Value::String(review.head_revision.clone()),
+        ),
+        (
+            DELIVERY_PULL_REQUEST_ID_FIELD.to_owned(),
+            Value::String(review.review_id.clone()),
+        ),
+    ]))
+}
+
 fn valid_review(request: &GitHubReviewRequest, review: &GitHubReviewReceipt) -> bool {
-    !review.review_id.trim().is_empty()
+    valid_review_id(&review.review_id)
         && review.repository == request.target.repository
         && review.target_branch == request.target.target_branch
         && review.head_branch == request.head_branch
@@ -400,6 +466,12 @@ fn valid_branch(value: &str) -> bool {
 
 fn valid_revision(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(is_lowercase_hex_digit)
+}
+
+fn valid_review_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_REVIEW_ID_BYTES
+        && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn is_lowercase_hex_digit(byte: u8) -> bool {

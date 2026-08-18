@@ -52,6 +52,14 @@ impl SystemGit {
             }
             _ => return Err(GitError::Command),
         }
+        self.deliverable_revision(workspace, base_revision).await
+    }
+
+    async fn deliverable_revision(
+        &self,
+        workspace: &Path,
+        base_revision: &str,
+    ) -> Result<String, GitError> {
         let revision = self.capture(workspace, &["rev-parse", "HEAD"]).await?;
         let revision = revision.trim().to_owned();
         if !valid_revision(&revision) {
@@ -60,6 +68,11 @@ impl SystemGit {
         if revision == base_revision {
             return Err(GitError::NoMutation);
         }
+        self.require_success(
+            workspace,
+            &["merge-base", "--is-ancestor", base_revision, &revision],
+        )
+        .await?;
         Ok(revision)
     }
 
@@ -100,6 +113,8 @@ impl SystemGit {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .arg("-c")
             .arg("core.hooksPath=/dev/null")
+            .arg("-c")
+            .arg(format!("safe.directory={}", workspace.display()))
             .arg("-C")
             .arg(workspace)
             .args(arguments)

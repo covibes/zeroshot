@@ -13,8 +13,8 @@ use crate::native_v2_delivery::git_auth::encode_basic_credential;
 
 use super::{
     GitHubAuthorityError, GitHubChecks, GitHubCredential, GitHubDeliveryAuthority,
-    GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt, GitHubReviewRequest,
-    GitHubReviewState, valid_revision,
+    GitHubMergeRequestOutcome, GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt,
+    GitHubReviewRequest, GitHubReviewState, valid_revision,
 };
 
 const MAX_API_OUTPUT_BYTES: usize = 256 * 1024;
@@ -83,7 +83,7 @@ impl GhCliDeliveryAuthority {
                     "--method".to_owned(),
                     "GET".to_owned(),
                     "-f".to_owned(),
-                    "state=open".to_owned(),
+                    "state=all".to_owned(),
                     "-f".to_owned(),
                     format!("head={owner}:{}", request.head_branch),
                     "-f".to_owned(),
@@ -186,6 +186,20 @@ impl GhCliDeliveryAuthority {
             .await?;
         serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)
     }
+
+    async fn confirm_merge_conflict(
+        &self,
+        review: &GitHubReviewReceipt,
+        credential: GitHubCredential<'_>,
+    ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
+        let wire = self.pull_request(review, credential).await?;
+        require_review_identity(&wire, review)?;
+        if wire.state == "open" && wire.merged != Some(true) && wire.mergeable == Some(false) {
+            Ok(GitHubMergeRequestOutcome::Conflict)
+        } else {
+            Err(GitHubAuthorityError::Rejected)
+        }
+    }
 }
 
 #[async_trait]
@@ -211,6 +225,8 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
             .env("GIT_TERMINAL_PROMPT", "0")
             .arg("-c")
             .arg("core.hooksPath=/dev/null")
+            .arg("-c")
+            .arg(format!("safe.directory={}", request.workspace.display()))
             .arg("-C")
             .arg(&request.workspace)
             .arg("push")
@@ -242,23 +258,15 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
     ) -> Result<GitHubReviewObservation, GitHubAuthorityError> {
         let wire = self.pull_request(review, credential).await?;
         require_review_identity(&wire, review)?;
-        let state = if wire.merged == Some(true) {
-            let merge_revision = wire
-                .merge_commit_sha
-                .filter(|revision| valid_revision(revision))
-                .ok_or(GitHubAuthorityError::Rejected)?;
-            if wire.state != "closed" {
-                return Err(GitHubAuthorityError::Rejected);
+        let state = match classify_review(&wire)? {
+            ReviewClassification::Merged(merge_revision) => {
+                GitHubReviewState::Merged { merge_revision }
             }
-            GitHubReviewState::Merged { merge_revision }
-        } else if wire.state == "closed" {
-            GitHubReviewState::Closed
-        } else if wire.state == "open" {
-            GitHubReviewState::Open {
+            ReviewClassification::Closed => GitHubReviewState::Closed,
+            ReviewClassification::Conflict => GitHubReviewState::Conflict,
+            ReviewClassification::Open => GitHubReviewState::Open {
                 checks: self.checks(review, credential).await?,
-            }
-        } else {
-            return Err(GitHubAuthorityError::Rejected);
+            },
         };
         Ok(review.observation(state))
     }
@@ -267,8 +275,8 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         &self,
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
-    ) -> Result<(), GitHubAuthorityError> {
-        let value = self
+    ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
+        let response = self
             .api(
                 &[
                     format!(
@@ -286,19 +294,59 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
                 ],
                 credential,
             )
-            .await?;
-        let response: MergeWire =
-            serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)?;
-        if response.merged && valid_revision(&response.sha) {
-            Ok(())
-        } else {
-            Err(GitHubAuthorityError::Rejected)
+            .await;
+        match response {
+            Ok(value) => {
+                if confirmed_merge(value).is_ok() {
+                    Ok(GitHubMergeRequestOutcome::Accepted)
+                } else {
+                    self.confirm_merge_conflict(review, credential).await
+                }
+            }
+            Err(GitHubAuthorityError::Rejected) => {
+                self.confirm_merge_conflict(review, credential).await
+            }
+            Err(error) => Err(error),
         }
     }
 }
 
+fn confirmed_merge(value: Value) -> Result<(), GitHubAuthorityError> {
+    let response: MergeWire =
+        serde_json::from_value(value).map_err(|_| GitHubAuthorityError::Rejected)?;
+    (response.merged && valid_revision(&response.sha))
+        .then_some(())
+        .ok_or(GitHubAuthorityError::Rejected)
+}
+
 mod wire;
 use wire::{MergeWire, PullRequestWire, classify_checks, require_review_identity, review_receipt};
+
+enum ReviewClassification {
+    Open,
+    Merged(String),
+    Conflict,
+    Closed,
+}
+
+fn classify_review(wire: &PullRequestWire) -> Result<ReviewClassification, GitHubAuthorityError> {
+    if wire.merged == Some(true) {
+        let merge_revision = wire
+            .merge_commit_sha
+            .clone()
+            .filter(|revision| valid_revision(revision))
+            .ok_or(GitHubAuthorityError::Rejected)?;
+        return (wire.state == "closed")
+            .then_some(ReviewClassification::Merged(merge_revision))
+            .ok_or(GitHubAuthorityError::Rejected);
+    }
+    match (wire.state.as_str(), wire.mergeable) {
+        ("closed", _) => Ok(ReviewClassification::Closed),
+        ("open", Some(false)) => Ok(ReviewClassification::Conflict),
+        ("open", _) => Ok(ReviewClassification::Open),
+        _ => Err(GitHubAuthorityError::Rejected),
+    }
+}
 
 fn clean_command(program: &PathBuf, credential: GitHubCredential<'_>) -> Command {
     let mut command = Command::new(program);
@@ -414,10 +462,28 @@ mod unit {
             head_branch: "zeroshot/v2-run".to_owned(),
             head_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
         };
-        let changed: PullRequestWire = serde_json::from_value(json!({
+        let changed = review_wire("other", None);
+        assert!(review_receipt(changed, &request).is_err());
+    }
+
+    #[test]
+    fn open_nonmergeable_review_is_an_authoritative_conflict() {
+        assert!(matches!(
+            classify_review(&review_wire("main", Some(false))).assert_value(),
+            ReviewClassification::Conflict
+        ));
+        assert!(matches!(
+            classify_review(&review_wire("main", None)).assert_value(),
+            ReviewClassification::Open
+        ));
+    }
+
+    fn review_wire(base_branch: &str, mergeable: Option<bool>) -> PullRequestWire {
+        serde_json::from_value(json!({
             "number":17,"state":"open","merged":false,"merge_commit_sha":null,
+            "mergeable":mergeable,
             "base":{
-                "ref":"other","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "ref":base_branch,"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "repo":{"full_name":"acme/project"}
             },
             "head":{
@@ -425,7 +491,6 @@ mod unit {
                 "repo":{"full_name":"acme/project"}
             }
         }))
-        .assert_value();
-        assert!(review_receipt(changed, &request).is_err());
+        .assert_value()
     }
 }

@@ -1,18 +1,12 @@
 #![cfg(unix)]
 
-use std::{
-    any::Any,
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::{any::Any, collections::BTreeMap, fs, path::PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    GraphSpec, IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest, TerminalResult,
+    IdempotencyKey, NodeName, PayloadType, PositiveInteger, RunId, Sha256Digest, TerminalResult,
     WorkerErrorCode, WorkerOutcome, WorkerRef,
 };
 use openengine_cluster_server::admission::VerifiedGraph;
@@ -24,18 +18,17 @@ use crate::full_v1_reducer::{
     ReductionInput, StructuralOccurrence,
 };
 use crate::native_v2_admission::NativeV2Admission;
-use crate::native_v2_candidate::test_support::{
-    TestGitRepository, git_delivery_node, full_graph, success_node,
-};
+use crate::native_v2_candidate::test_support::{TestGitRepository, full_graph, git, success_node};
 use crate::native_v2_contract::{
-    self, ExecutionRef, NodeInvocation, NodeRuntimeBinding, RunSubmission, RuntimePlan,
+    self, CodexProvider, DeclaredEnvironment, ExecutionRef, NodeInvocation, NodeRuntimeBinding,
+    RunSize, RunSubmission, RunTitle, RuntimePlan, SourceBranchId, SourceRepositoryId,
+    SourceRevisionId, SourceSnapshot, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
 };
-use crate::native_v2_cloud::ControllerEnvironment;
 use crate::native_v2_runner::{
     DriverControl, DriverInvocation, NativeNodeRunner, NodeDriver, NodeRunRequest, NodeRunner,
     NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
 };
-use crate::native_v2_supervisor::NativeV2Supervisor;
+use crate::native_v2_supervisor::{NativeV2Supervisor, RunEnvironment};
 use crate::v2_run_ledger::fake::FakeRunLedger;
 use crate::v2_run_ledger::{CreateRun, RunLedger};
 
@@ -44,159 +37,70 @@ mod github_fixture;
 #[path = "tests/routing.rs"]
 mod routing;
 
-use github_fixture::{GH_MISMATCH_SCRIPT, GH_SCRIPT, GIT_SCRIPT};
+use github_fixture::{
+    FakeGitHub, GH_MISMATCH_SCRIPT, GH_SCRIPT, GIT_SCRIPT, Script, argument_lines, write_executable,
+};
 use routing::assert_ci_failure_routes_an_authored_worker_loop;
 
 type TempRepo = TestGitRepository;
 
-#[derive(Clone, Copy)]
-enum Script {
-    NoCi,
-    CiFailed,
-    CiFailsThenMerges,
-    NeverConfirmsMerge,
-}
-
-struct FakeGitHub {
-    remote: PathBuf,
-    script: Script,
-    pushed: AtomicBool,
-    merge_requested: AtomicBool,
-    merge_requests: AtomicUsize,
-    inspections: AtomicUsize,
-}
-
-impl FakeGitHub {
-    fn new(remote: PathBuf, script: Script) -> Self {
-        Self {
-            remote,
-            script,
-            pushed: AtomicBool::new(false),
-            merge_requested: AtomicBool::new(false),
-            merge_requests: AtomicUsize::new(0),
-            inspections: AtomicUsize::new(0),
-        }
-    }
-
-    fn review_state(&self, inspection: usize) -> GitHubReviewState {
-        match self.script {
-            Script::NoCi => self.no_ci_state(),
-            Script::CiFailed => open_review(GitHubChecks::Failed),
-            Script::CiFailsThenMerges => self.ci_repair_state(inspection),
-            Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
-        }
-    }
-
-    fn no_ci_state(&self) -> GitHubReviewState {
-        if self.merge_requested.load(Ordering::SeqCst) {
-            merged_review()
-        } else {
-            open_review(GitHubChecks::NotRequired)
-        }
-    }
-
-    fn ci_repair_state(&self, inspection: usize) -> GitHubReviewState {
-        if inspection == 1 {
-            return open_review(GitHubChecks::Failed);
-        }
-        if self.merge_requested.load(Ordering::SeqCst) {
-            merged_review()
-        } else {
-            open_review(GitHubChecks::Passed)
-        }
-    }
-}
-
-fn merged_review() -> GitHubReviewState {
-    GitHubReviewState::Merged {
-        merge_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
-    }
-}
-
-fn open_review(checks: GitHubChecks) -> GitHubReviewState {
-    GitHubReviewState::Open { checks }
-}
-
-#[async_trait]
-impl GitHubDeliveryAuthority for FakeGitHub {
-    async fn push_branch(
-        &self,
-        request: &GitHubPushRequest,
-        credential: GitHubCredential<'_>,
-    ) -> Result<(), GitHubAuthorityError> {
-        assert_eq!(credential.expose(), "test-token");
-        let status = tokio::process::Command::new("/usr/bin/git")
-            .arg("-C")
-            .arg(&request.workspace)
-            .arg("push")
-            .arg(&self.remote)
-            .arg(format!("HEAD:refs/heads/{}", request.head_branch))
-            .status()
-            .await
-            .assert_value();
-        if !status.success() {
-            return Err(GitHubAuthorityError::Rejected);
-        }
-        self.pushed.store(true, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn open_or_update_review(
-        &self,
-        request: &GitHubReviewRequest,
-        credential: GitHubCredential<'_>,
-    ) -> Result<GitHubReviewReceipt, GitHubAuthorityError> {
-        assert_eq!(credential.expose(), "test-token");
-        assert!(self.pushed.load(Ordering::SeqCst));
-        Ok(GitHubReviewReceipt {
-            review_id: "17".to_owned(),
-            repository: request.target.repository.clone(),
-            target_branch: request.target.target_branch.clone(),
-            head_branch: request.head_branch.clone(),
-            head_revision: request.head_revision.clone(),
-        })
-    }
-
-    async fn inspect_review(
-        &self,
-        review: &GitHubReviewReceipt,
-        credential: GitHubCredential<'_>,
-    ) -> Result<GitHubReviewObservation, GitHubAuthorityError> {
-        assert_eq!(credential.expose(), "test-token");
-        let inspection = self.inspections.fetch_add(1, Ordering::SeqCst) + 1;
-        let state = self.review_state(inspection);
-        Ok(review.observation(state))
-    }
-
-    async fn request_merge(
-        &self,
-        _review: &GitHubReviewReceipt,
-        credential: GitHubCredential<'_>,
-    ) -> Result<(), GitHubAuthorityError> {
-        assert_eq!(credential.expose(), "test-token");
-        self.merge_requests.fetch_add(1, Ordering::SeqCst);
-        self.merge_requested.store(true, Ordering::SeqCst);
-        Ok(())
-    }
+#[tokio::test]
+async fn pr_mode_completes_only_after_authoritative_open_observation() {
+    let authority = successful_delivery(DeliveryMode::PullRequest, DELIVERY_OPENED_LABEL, 2).await;
+    assert_eq!(authority.inspections.load(Ordering::SeqCst), 1);
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn no_ci_can_merge_but_only_after_authoritative_confirmation() {
+    let authority = successful_delivery(DeliveryMode::Merge, DELIVERY_MERGED_LABEL, 3).await;
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
+}
+
+async fn successful_delivery(
+    mode: DeliveryMode,
+    expected_label: &str,
+    attempts: usize,
+) -> Arc<FakeGitHub> {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), Script::NoCi));
-    let outcome = run_delivery(&repo, authority.clone(), 3).await;
-    assert_delivery_signal(&outcome, DELIVERY_MERGED_LABEL);
-    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
+    let outcome = run_delivery(&repo, authority.clone(), attempts, mode).await;
+    let output = assert_delivery_signal(&outcome, expected_label);
+    assert_receipt_match(output, mode, &repo, true);
+    authority
 }
 
 #[tokio::test]
 async fn ci_failure_is_a_routable_verifier_result() {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), Script::CiFailed));
-    let outcome = run_delivery(&repo, authority.clone(), 2).await;
-    assert_delivery_signal(&outcome, DELIVERY_CI_FAILED_LABEL);
+    let outcome = run_delivery(&repo, authority.clone(), 2, DeliveryMode::Merge).await;
+    let output = assert_delivery_signal(&outcome, DELIVERY_CI_FAILED_LABEL);
+    assert_receipt_match(output, DeliveryMode::Merge, &repo, false);
     assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 0);
-    assert_ci_failure_routes_an_authored_worker_loop(outcome).await;
+    assert_ci_failure_routes_an_authored_worker_loop(&repo.base, outcome).await;
+}
+
+#[tokio::test]
+async fn observed_conflict_is_a_routable_non_receipt_result() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), Script::Conflict));
+    let outcome = run_delivery(&repo, authority.clone(), 2, DeliveryMode::Merge).await;
+    let output = assert_delivery_signal(&outcome, DELIVERY_CONFLICT_LABEL);
+    assert_receipt_match(output, DeliveryMode::Merge, &repo, false);
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn merge_api_conflict_is_not_collapsed_into_infrastructure_failure() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(
+        repo.remote.clone(),
+        Script::ConflictAtMerge,
+    ));
+    let outcome = run_delivery(&repo, authority.clone(), 2, DeliveryMode::Merge).await;
+    assert_delivery_signal(&outcome, DELIVERY_CONFLICT_LABEL);
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -206,12 +110,85 @@ async fn accepted_merge_request_is_not_shipping_success() {
         repo.remote.clone(),
         Script::NeverConfirmsMerge,
     ));
-    let outcome = run_delivery(&repo, authority.clone(), 2).await;
+    let outcome = run_delivery(&repo, authority.clone(), 2, DeliveryMode::Merge).await;
     assert_eq!(
         outcome,
         WorkerOutcome::declared_failure(WorkerErrorCode::Timeout)
     );
     assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn exact_merge_retry_rediscovers_the_same_review_and_receipt() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), Script::NoCi));
+    let first = run_delivery_with_id(
+        DeliveryRunRequest {
+            repo: &repo,
+            attempts: 3,
+            mode: DeliveryMode::Merge,
+            run_id: "stable-delivery-run",
+        },
+        authority.clone(),
+    )
+    .await;
+    let second = run_delivery_with_id(
+        DeliveryRunRequest {
+            repo: &repo,
+            attempts: 3,
+            mode: DeliveryMode::Merge,
+            run_id: "stable-delivery-run",
+        },
+        authority.clone(),
+    )
+    .await;
+
+    assert_eq!(first, second);
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
+    let reviews = authority
+        .reviews
+        .lock()
+        .assert_value_with("review request lock");
+    assert_eq!(reviews.len(), 2);
+    assert_eq!(reviews.assert_at(0), reviews.assert_at(1));
+}
+
+#[tokio::test]
+async fn rewritten_history_is_rejected_before_push() {
+    let repo = TempRepo::delivery();
+    git(&repo.workspace, &["checkout", "--orphan", "rewritten"]);
+    git(&repo.workspace, &["rm", "-r", "--force", "."]);
+    fs::write(repo.workspace.join("result.txt"), "rewritten\n").assert_value();
+    let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), Script::NoCi));
+
+    let outcome = run_delivery(&repo, authority.clone(), 2, DeliveryMode::Merge).await;
+
+    assert_eq!(
+        outcome,
+        WorkerOutcome::declared_failure(WorkerErrorCode::Crash)
+    );
+    assert!(!authority.pushed.load(Ordering::SeqCst));
+    assert!(
+        authority
+            .reviews
+            .lock()
+            .assert_value_with("review request lock")
+            .is_empty()
+    );
+}
+
+#[test]
+fn delivery_contract_rejects_the_other_modes_schema() {
+    let response = NodeResponseContract::Verifier {
+        output: delivery_result_schema(DeliveryMode::Merge).assert_value(),
+        signals: BTreeMap::from([(
+            FieldName::new(DELIVERY_SIGNAL_FIELD).assert_value(),
+            delivery_signal_labels(DeliveryMode::PullRequest).assert_value(),
+        )]),
+        diagnostic: PayloadType::String,
+    };
+
+    assert!(validate_delivery_contract(DeliveryMode::PullRequest, &response).is_err());
 }
 
 #[path = "tests/github_acceptance.rs"]
@@ -221,14 +198,37 @@ async fn run_delivery(
     repo: &TempRepo,
     authority: Arc<FakeGitHub>,
     attempts: usize,
+    mode: DeliveryMode,
 ) -> WorkerOutcome {
-    let admitted = admitted(repo).await;
+    run_delivery_with_id(
+        DeliveryRunRequest {
+            repo,
+            attempts,
+            mode,
+            run_id: "delivery-run",
+        },
+        authority,
+    )
+    .await
+}
+
+struct DeliveryRunRequest<'a> {
+    repo: &'a TempRepo,
+    attempts: usize,
+    mode: DeliveryMode,
+    run_id: &'a str,
+}
+
+async fn run_delivery_with_id(
+    request: DeliveryRunRequest<'_>,
+    authority: Arc<FakeGitHub>,
+) -> WorkerOutcome {
+    let admitted = admitted(request.repo, request.mode).await;
     let config = NativeV2DeliveryConfig {
-        workspace: repo.workspace.clone(),
+        workspace: request.repo.workspace.clone(),
         git_program: PathBuf::from("/usr/bin/git"),
-        target: DeliveryTarget::new("acme/project", "main", repo.base.clone()).assert_value(),
-        ship_authorized: admitted.ship,
-        poll: DeliveryPollPolicy::new(attempts, Duration::ZERO).assert_value(),
+        target: target(request.repo),
+        poll: DeliveryPollPolicy::new(request.attempts, Duration::ZERO).assert_value(),
     };
     let adapter = Arc::new(NativeV2DeliveryAdapter::new(config, authority));
     let runner = NativeNodeRunner::new(&admitted, adapter.clone(), adapter).assert_value();
@@ -250,12 +250,12 @@ async fn run_delivery(
         .start(NodeRunRequest {
             invocation: NodeInvocation {
                 reference: ExecutionRef {
-                    run_id: RunId::new("delivery-run"),
+                    run_id: RunId::new(request.run_id),
                     node: NodeName::new("deliver").assert_value(),
                     node_instance: native_v2_contract::NodeInstanceId::new(1).assert_value(),
                     execution: native_v2_contract::ExecutionId::new(1).assert_value(),
                 },
-                worker: WorkerRef::new("builtin.git-delivery@1").assert_value(),
+                worker: WorkerRef::new(worker_ref(request.mode)).assert_value(),
                 input: Value::Null,
                 binding,
             },
@@ -266,27 +266,65 @@ async fn run_delivery(
     handle.completion().await.assert_value().outcome
 }
 
-async fn admitted(repo: &TempRepo) -> crate::native_v2_contract::AdmittedRun {
-    let graph = full_graph(vec![git_delivery_node(), success_node()]);
+async fn admitted(repo: &TempRepo, mode: DeliveryMode) -> crate::native_v2_contract::AdmittedRun {
+    let graph = full_graph(vec![delivery_node(mode), success_node()]);
     let binding = NodeRuntimeBinding::GitDelivery {
-        env: BTreeSet::from([EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()]),
+        env: DeclaredEnvironment::new([
+            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value()
+        ])
+        .assert_value(),
     };
     NativeV2Admission
         .admit(RunSubmission {
+            title: RunTitle::new("Delivery test").assert_value(),
             graph,
             initial_input: Value::Null,
             runtime: RuntimePlan::Codex {
-                provider: crate::native_v2_contract::CodexProvider::OpenAi,
+                provider: CodexProvider::OpenAi,
+                size: RunSize::Standard,
                 nodes: BTreeMap::from([(NodeName::new("deliver").assert_value(), binding)]),
             },
-            ship: true,
-            submission_key: IdempotencyKey::new(format!("delivery-{}", repo.base)).assert_value(),
+            source: SourceSnapshot {
+                repository: SourceRepositoryId::new("acme/project").assert_value(),
+                target_branch: SourceBranchId::new("main").assert_value(),
+                base_revision: SourceRevisionId::new(repo.base.clone()).assert_value(),
+            },
+            submission_key: IdempotencyKey::new(format!("delivery-{}-{}", repo.base, mode.label()))
+                .assert_value(),
         })
         .await
         .assert_value()
 }
 
-fn assert_delivery_signal(outcome: &WorkerOutcome, expected: &str) {
+fn target(repo: &TempRepo) -> DeliveryTarget {
+    DeliveryTarget::new("acme/project", "main", repo.base.clone()).assert_value()
+}
+
+fn worker_ref(mode: DeliveryMode) -> &'static str {
+    match mode {
+        DeliveryMode::PullRequest => GIT_DELIVERY_PR_WORKER_REF,
+        DeliveryMode::Merge => GIT_DELIVERY_MERGE_WORKER_REF,
+    }
+}
+
+fn delivery_node(mode: DeliveryMode) -> Value {
+    let labels: &[&str] = match mode {
+        DeliveryMode::PullRequest => &[DELIVERY_OPENED_LABEL],
+        DeliveryMode::Merge => &[
+            DELIVERY_MERGED_LABEL,
+            DELIVERY_CONFLICT_LABEL,
+            DELIVERY_CI_FAILED_LABEL,
+        ],
+    };
+    json!({
+        "kind":"verifier","name":"deliver","worker":worker_ref(mode),
+        "input":{"kind":"null"},"output":delivery_result_schema(mode).assert_value(),
+        "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1,
+        "signals":{"delivery":labels},"diagnostic":{"kind":"string"}
+    })
+}
+
+fn assert_delivery_signal<'a>(outcome: &'a WorkerOutcome, expected: &str) -> &'a Value {
     let extracted = match outcome {
         WorkerOutcome::Verifier {
             output,
@@ -298,7 +336,6 @@ fn assert_delivery_signal(outcome: &WorkerOutcome, expected: &str) {
     };
     let (output, signals, diagnostic, artifacts) =
         extracted.assert_value_with("delivery must return a verifier result");
-    assert_eq!(output, &Value::Null);
     assert_eq!(
         signals
             .get(&FieldName::new(DELIVERY_SIGNAL_FIELD).assert_value())
@@ -308,23 +345,14 @@ fn assert_delivery_signal(outcome: &WorkerOutcome, expected: &str) {
     );
     assert!(diagnostic.is_string());
     assert!(artifacts.is_empty());
+    output
 }
 
-fn write_executable(directory: &Path, name: &str, contents: &str) -> PathBuf {
-    let path = directory.join(name);
-    fs::write(&path, contents).assert_value();
-    let mut permissions = fs::metadata(&path).assert_value().permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&path, permissions).assert_value();
-    path
+fn assert_receipt_match(output: &Value, mode: DeliveryMode, repo: &TempRepo, expected: bool) {
+    assert_eq!(
+        is_matching_success_receipt(output, mode, &target(repo)),
+        expected
+    );
 }
 
-fn argument_lines(capture: &str) -> String {
-    capture
-        .lines()
-        .filter(|line| line.starts_with("arg="))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-use openengine_cluster_testkit::assertions::{AssertValue};
+use openengine_cluster_testkit::assertions::{AssertAt, AssertValue};

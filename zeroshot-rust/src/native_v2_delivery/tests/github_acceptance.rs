@@ -49,10 +49,11 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
             checks: GitHubChecks::NotRequired
         }
     );
-    authority
+    let merge_request = authority
         .request_merge(&review, credential)
         .await
         .assert_value();
+    assert_eq!(merge_request, GitHubMergeRequestOutcome::Accepted);
 
     let git_capture =
         fs::read_to_string(format!("{}.capture", git_program.display())).assert_value();
@@ -67,6 +68,7 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
     let gh_capture = fs::read_to_string(format!("{}.capture", gh_program.display())).assert_value();
     assert!(gh_capture.contains("token=test-token\nhost=github.com\nhome=unset"));
     assert!(gh_capture.contains("arg=repos/acme/project/pulls"));
+    assert!(gh_capture.contains("arg=state=all"));
     assert!(gh_capture.contains("arg=head=acme:zeroshot/v2-test"));
     assert!(gh_capture.contains("arg=repos/acme/project/pulls/17/merge"));
     assert!(gh_capture.contains("arg=sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
