@@ -20,20 +20,6 @@ use crate::native_v2_runner::{
 use crate::v2_run_ledger::CreateRun;
 use crate::v2_run_ledger::fake::FakeRunLedger;
 
-#[derive(Clone)]
-struct EmptyEnvironment;
-
-#[async_trait]
-impl NodeEnvironmentResolver for EmptyEnvironment {
-    async fn resolve(
-        &self,
-        _node: &NodeName,
-        binding: &NodeRuntimeBinding,
-    ) -> Result<ResolvedEnvironment, EnvironmentUnavailable> {
-        ResolvedEnvironment::exact(binding, BTreeMap::new()).map_err(|_| EnvironmentUnavailable)
-    }
-}
-
 struct FakeSession;
 
 #[async_trait]
@@ -281,14 +267,20 @@ async fn harness(graph: GraphSpec, initial_input: Value, driver: FakeDriver) -> 
         })
         .collect::<serde_json::Map<_, _>>();
     let submission: RunSubmission = serde_json::from_value(json!({
+        "title": "Supervisor test",
         "graph": graph,
         "initialInput": initial_input,
         "runtime": {
             "harness": "codex",
             "provider": "openai",
+            "size": "standard",
             "nodes": runtime_nodes
         },
-        "ship": false,
+        "source": {
+            "repository": "open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        },
         "submissionKey": "supervisor-test"
     }))
     .assert_value_with("valid submission");
@@ -303,6 +295,7 @@ async fn harness(graph: GraphSpec, initial_input: Value, driver: FakeDriver) -> 
         .create_or_get(CreateRun {
             run_id: run_id.clone(),
             submission_key,
+            intent_digest: Sha256Digest::new("1".repeat(64)).assert_value_with("intent digest"),
             submission_digest: Sha256Digest::new("0".repeat(64)).assert_value_with("digest"),
             admitted: admitted.clone(),
         })
@@ -313,13 +306,10 @@ async fn harness(graph: GraphSpec, initial_input: Value, driver: FakeDriver) -> 
         NativeNodeRunner::new(&admitted, driver.clone(), Arc::new(FakeSessionFactory))
             .assert_value_with("runner"),
     );
+    let environment = RunEnvironment::exact(&admitted.runtime, BTreeMap::new())
+        .assert_value_with("empty run environment");
     Harness {
-        supervisor: NativeV2Supervisor::new(
-            run_id,
-            ledger.clone(),
-            runner,
-            Arc::new(EmptyEnvironment),
-        ),
+        supervisor: NativeV2Supervisor::new(run_id, ledger.clone(), runner, Arc::new(environment)),
         ledger,
         driver,
     }
@@ -334,5 +324,7 @@ mod cases_1;
 mod cases_2;
 #[path = "tests/cases_3.rs"]
 mod cases_3;
+#[path = "tests/delivery_gate.rs"]
+mod delivery_gate;
 
 use openengine_cluster_testkit::assertions::{AssertValue};

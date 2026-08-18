@@ -22,7 +22,7 @@ pub enum NodeResponseContract {
 
 impl NodeResponseContract {
     pub(super) fn validate_outcome(&self, outcome: &WorkerOutcome) -> Result<(), NodeRunnerError> {
-        outcome.validate().map_err(|_| NodeRunnerError::Driver)?;
+        validate_native_v2_outcome(outcome)?;
         match (self, outcome) {
             (_, WorkerOutcome::Error { .. }) => Ok(()),
             (Self::Worker { output: expected }, WorkerOutcome::Verified { output, .. }) => expected
@@ -63,6 +63,20 @@ impl NodeResponseContract {
     }
 }
 
+fn validate_native_v2_outcome(outcome: &WorkerOutcome) -> Result<(), NodeRunnerError> {
+    outcome.validate().map_err(|_| NodeRunnerError::Driver)?;
+    match outcome {
+        WorkerOutcome::Verified { artifacts, .. } | WorkerOutcome::Verifier { artifacts, .. }
+            if !artifacts.is_empty() =>
+        {
+            Err(NodeRunnerError::Driver)
+        }
+        WorkerOutcome::Verified { .. }
+        | WorkerOutcome::Verifier { .. }
+        | WorkerOutcome::Error { .. } => Ok(()),
+    }
+}
+
 /// Renders the provider-neutral node turn contract used by every agent harness.
 pub fn render_agent_prompt(
     input: &Value,
@@ -74,8 +88,10 @@ pub fn render_agent_prompt(
         "Execute this graph node using the shared workspace.\n\
          Input JSON:\n{input}\n\
          Response contract:\n{response}\n\
+         The response contract describes the required type; never return the contract itself. \
          Return only JSON with no Markdown or commentary. For a worker, return the output value \
-         itself. For a verifier, return exactly an object with output, signals, and diagnostic; \
-         every signal must use one of its declared labels."
+         itself; an output contract of {{\"kind\":\"null\"}} requires the literal null. For a \
+         verifier, return exactly an object with output, signals, and diagnostic; every signal \
+         must use one of its declared labels."
     ))
 }

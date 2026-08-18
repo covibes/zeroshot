@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use openengine_cluster_protocol::{FieldName, NodeName, NonEmptyEnumSet, PayloadType, RunId};
+use openengine_cluster_protocol::{
+    ArtifactRef, FieldName, NodeName, NonEmptyEnumSet, PayloadType, RunId,
+};
 use serde_json::Value;
 use tokio::sync::watch;
 
@@ -12,7 +14,7 @@ use super::test_support::{
     admitted, binding, request, runner, BurstDriver, FakeDriver, FakeFactory,
     SelectiveBlockingFactory,
 };
-use crate::native_v2_contract::EnvironmentVariableName;
+use crate::native_v2_contract::{DeclaredEnvironment, EnvironmentVariableName};
 
 #[tokio::test]
 async fn parallel_verifiers_overlap_but_writers_are_exclusive() {
@@ -294,7 +296,7 @@ fn resolved_environment_requires_exact_names_and_redacts_values() {
         NodeRuntimeBinding::GitDelivery { .. } => None,
     };
     let env = env.assert_value_with("fixture binding must be an agent");
-    env.insert(name.clone());
+    *env = DeclaredEnvironment::new([name.clone()]).assert_value();
     assert!(matches!(
         ResolvedEnvironment::exact(&binding, BTreeMap::new()),
         Err(EnvironmentResolutionError::Missing(_))
@@ -369,6 +371,54 @@ fn response_contract_rejects_wrong_shapes_signals_and_labels() {
                 signals,
                 diagnostic: Value::Null,
                 artifacts: Vec::new(),
+            })
+            .is_err()
+    );
+}
+
+#[test]
+fn agent_prompt_distinguishes_a_null_value_from_its_contract() {
+    let prompt = render_agent_prompt(
+        &Value::Null,
+        &NodeResponseContract::Worker {
+            output: PayloadType::Null,
+        },
+    )
+    .assert_value();
+
+    assert!(prompt.contains("never return the contract itself"));
+    assert!(prompt.contains("requires the literal null"));
+}
+
+#[test]
+fn response_contract_rejects_every_artifact_reference() {
+    let artifact: ArtifactRef = serde_json::from_str(include_str!(
+        "../../../protocol/openengine-cluster/v1/fixtures/graph/positive/artifact-ref.json"
+    ))
+    .assert_value();
+    let worker = NodeResponseContract::Worker {
+        output: PayloadType::Null,
+    };
+    assert!(
+        worker
+            .validate_outcome(&WorkerOutcome::Verified {
+                output: Value::Null,
+                artifacts: vec![artifact.clone()],
+            })
+            .is_err()
+    );
+    let verifier = NodeResponseContract::Verifier {
+        output: PayloadType::Null,
+        signals: BTreeMap::new(),
+        diagnostic: PayloadType::Null,
+    };
+    assert!(
+        verifier
+            .validate_outcome(&WorkerOutcome::Verifier {
+                output: Value::Null,
+                signals: BTreeMap::new(),
+                diagnostic: Value::Null,
+                artifacts: vec![artifact],
             })
             .is_err()
     );

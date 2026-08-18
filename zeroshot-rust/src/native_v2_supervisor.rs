@@ -15,6 +15,7 @@ use openengine_cluster_protocol::{
     EnumLabel, GraphNode, NodeName, RunId, TerminalResult, WorkerErrorCode, WorkerOutcome,
 };
 use openengine_cluster_server::admission::VerifiedGraph;
+use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinSet;
@@ -23,13 +24,14 @@ use crate::full_v1_reducer::{
     Decision, DurableExecution, DurableExecutionState, ExecutionId, ExecutionVoidReason,
     FullV1Reducer, HistoryPosition, ReducerError, ReductionInput,
 };
-use crate::native_v2_contract::{
-    AdmittedRun, ExecutionRef, NodeCompletion, NodeInvocation, NodeRuntimeBinding,
-};
+use crate::native_v2_admission::{DeliveryPolicy, sole_delivery_node, writer_nodes};
+use crate::native_v2_contract::{AdmittedRun, ExecutionRef, NodeCompletion, NodeInvocation};
+use crate::native_v2_delivery::{DeliveryTarget, is_matching_success_receipt};
 use crate::native_v2_runner::{
     LiveOutputSource, LiveOutputStream, NodeHandle, NodeRunRequest, NodeRunner, NodeRunnerError,
-    ResolvedEnvironment,
 };
+#[cfg(test)]
+use crate::native_v2_runner::ResolvedEnvironment;
 use crate::v2_run_ledger::{
     NodeSnapshot, NodeState, RunEvent, RunLedger, RunLedgerError, RunPhase, RunSnapshot,
     SafeLogLine, SafeLogStream, StoredRun, cursor_sequence,
@@ -40,21 +42,6 @@ use crate::v2_run_ledger::{
 mod tests;
 
 const FIRST_IDENTITY: u64 = 1;
-
-/// Runtime-only environment resolution. Implementations receive declared names but must never
-/// persist resolved values in the run ledger.
-#[async_trait]
-pub trait NodeEnvironmentResolver: Send + Sync {
-    async fn resolve(
-        &self,
-        node: &NodeName,
-        binding: &NodeRuntimeBinding,
-    ) -> Result<ResolvedEnvironment, EnvironmentUnavailable>;
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-#[error("declared node environment is unavailable")]
-pub struct EnvironmentUnavailable;
 
 /// Optional live-observation seam. The supervisor retains cancellation and completion ownership;
 /// a registration grants read-only subscription and is closed after durable output is drained.
@@ -120,7 +107,8 @@ pub struct NativeV2Supervisor {
     run_id: RunId,
     ledger: Arc<dyn RunLedger>,
     runner: Arc<dyn NodeRunner>,
-    environments: Arc<dyn NodeEnvironmentResolver>,
+    environment: Arc<RunEnvironment>,
+    delivery_policy: DeliveryPolicy,
     live_output: Option<Arc<dyn LiveOutputRegistrar>>,
     runtime_cleanup: Option<Arc<dyn RunRuntimeCleanup>>,
     runtime_lost: Arc<AtomicBool>,
@@ -133,18 +121,25 @@ impl NativeV2Supervisor {
         run_id: RunId,
         ledger: Arc<dyn RunLedger>,
         runner: Arc<dyn NodeRunner>,
-        environments: Arc<dyn NodeEnvironmentResolver>,
+        environment: Arc<RunEnvironment>,
     ) -> Self {
         Self {
             run_id,
             ledger,
             runner,
-            environments,
+            environment,
+            delivery_policy: DeliveryPolicy::Optional,
             live_output: None,
             runtime_cleanup: None,
             runtime_lost: Arc::new(AtomicBool::new(false)),
             drive_turn: Arc::new(Mutex::new(())),
         }
+    }
+
+    #[must_use]
+    pub fn with_delivery_policy(mut self, policy: DeliveryPolicy) -> Self {
+        self.delivery_policy = policy;
+        self
     }
 
     #[must_use]
@@ -237,8 +232,11 @@ impl NativeV2Supervisor {
             return Ok(None);
         }
         if let Some(terminal) = reduction.terminal {
+            if snapshot.active_executions().next().is_some() || !active.tasks.is_empty() {
+                return Err(NativeV2SupervisorError::InvalidState);
+            }
             return self
-                .finish_reduction(snapshot, active, terminal)
+                .finish_reduction(&program.admitted, snapshot, terminal)
                 .await
                 .map(Some);
         }
@@ -253,13 +251,12 @@ impl NativeV2Supervisor {
 
     async fn finish_reduction(
         &self,
+        admitted: &AdmittedRun,
         snapshot: &RunSnapshot,
-        active: &ActiveDispatches,
         terminal: TerminalResult,
     ) -> Result<TerminalResult, NativeV2SupervisorError> {
-        if snapshot.active_executions().next().is_some() || !active.tasks.is_empty() {
-            return Err(NativeV2SupervisorError::InvalidState);
-        }
+        let terminal =
+            enforce_delivery_terminal(self.delivery_policy, admitted, snapshot, terminal)?;
         self.runner.close_run(&self.run_id).await;
         self.cleanup_runtime(RunRuntimeExit::Completed).await?;
         let terminal = self.append_terminal(terminal).await?;
@@ -323,6 +320,83 @@ impl NativeV2Supervisor {
     // Dispatch and terminalization are kept in the controller companion module.
 }
 
+fn enforce_delivery_terminal(
+    policy: DeliveryPolicy,
+    admitted: &AdmittedRun,
+    snapshot: &RunSnapshot,
+    terminal: TerminalResult,
+) -> Result<TerminalResult, NativeV2SupervisorError> {
+    let accepted = match &terminal {
+        TerminalResult::Succeeded { output } if policy == DeliveryPolicy::Required => {
+            has_required_delivery_receipt(admitted, snapshot, output)
+        }
+        TerminalResult::Succeeded { .. } | TerminalResult::Failed { .. } => true,
+    };
+    if accepted {
+        return Ok(terminal);
+    }
+    Ok(TerminalResult::Failed {
+        reason: EnumLabel::new("delivery_unconfirmed")
+            .map_err(|_| NativeV2SupervisorError::InvalidState)?,
+    })
+}
+
+fn has_required_delivery_receipt(
+    admitted: &AdmittedRun,
+    snapshot: &RunSnapshot,
+    terminal_output: &Value,
+) -> bool {
+    let Some((node, mode)) = sole_delivery_node(admitted) else {
+        return false;
+    };
+    let Ok(target) = DeliveryTarget::new(
+        admitted.source.repository.as_str(),
+        admitted.source.target_branch.as_str(),
+        admitted.source.base_revision.as_str(),
+    ) else {
+        return false;
+    };
+    let writers = writer_nodes(admitted);
+    let Some(last_writer) = snapshot
+        .executions
+        .values()
+        .filter(|execution| writers.contains(&execution.reference.node))
+        .filter_map(|execution| match &execution.state {
+            NodeState::Completed { at, .. } => cursor_sequence(at).ok().map(|at| (at, execution)),
+            NodeState::Active | NodeState::Voided { .. } => None,
+        })
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, execution)| execution)
+    else {
+        return false;
+    };
+    if last_writer.reference.node != node {
+        return false;
+    }
+    let Some(WorkerOutcome::Verifier { output, .. }) = last_writer.outcome() else {
+        return false;
+    };
+    is_matching_success_receipt(output, mode, &target)
+        && contains_exact_value(terminal_output, output)
+}
+
+fn contains_exact_value(container: &Value, expected: &Value) -> bool {
+    if container == expected {
+        return true;
+    }
+    match container {
+        Value::Array(values) => values
+            .iter()
+            .any(|value| contains_exact_value(value, expected)),
+        Value::Object(values) => values
+            .values()
+            .any(|value| contains_exact_value(value, expected)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
+}
+
 mod controller;
+mod environment;
 mod runtime;
+pub use environment::{RunEnvironment, RunEnvironmentError};
 use runtime::*;

@@ -16,7 +16,6 @@ use crate::worker_catalog::ReasoningEffort;
 #[derive(Clone, Copy)]
 pub(crate) enum ProviderProcessRunners {
     Hosted(HostedProcessPool),
-    #[cfg(test)]
     Local,
 }
 
@@ -25,7 +24,6 @@ impl ProviderProcessRunners {
         Self::Hosted(pool)
     }
 
-    #[cfg(test)]
     pub(crate) const fn local() -> Self {
         Self::Local
     }
@@ -43,7 +41,6 @@ impl ProviderProcessRunners {
                     .map_err(|_| NodeRunnerError::Driver)?;
                 Ok((identity.runner(), home))
             }
-            #[cfg(test)]
             Self::Local => {
                 let home = crate::execution::process::prepare_local_private_home(root, scope)
                     .map_err(|_| NodeRunnerError::Driver)?;

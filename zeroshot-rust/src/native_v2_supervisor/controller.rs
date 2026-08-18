@@ -105,11 +105,7 @@ impl NativeV2Supervisor {
             .get(&dispatch.reference.node)
             .cloned()
             .ok_or(NativeV2SupervisorError::InvalidState)?;
-        let environment = match self
-            .environments
-            .resolve(&dispatch.reference.node, &binding)
-            .await
-        {
+        let environment = match self.environment.resolve(&binding) {
             Ok(environment) => environment,
             Err(_) => {
                 return Ok(StartNode::Failed(WorkerOutcome::authentication_refusal()));

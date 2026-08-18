@@ -1,12 +1,12 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    CompiledGraphIr, NodeName, NonEmptyVec, PositiveInteger, RunId, StructuralBounds,
-    TerminationWitness, WorkerRef,
+    CompiledGraphIr, DeclaredEnvironment, NodeName, NonEmptyVec, PositiveInteger, RunId, RunSize,
+    RunTitle, SourceSnapshot, StructuralBounds, TerminationWitness, WorkerRef,
 };
 use serde_json::{json, Value};
 use tokio::sync::watch;
@@ -21,7 +21,7 @@ pub(crate) fn binding(scope: SessionScope) -> NodeRuntimeBinding {
         model: crate::worker_catalog::ModelId::new("gpt-5.6").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: scope,
-        env: BTreeSet::new(),
+        env: DeclaredEnvironment::empty(),
     }
 }
 
@@ -55,6 +55,15 @@ fn executable(name: &str, verifier: bool) -> Value {
     }
 }
 
+fn source() -> SourceSnapshot {
+    serde_json::from_value(json!({
+        "repository": "open-engine/zeroshot",
+        "targetBranch": "main",
+        "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+    }))
+    .assert_value()
+}
+
 pub(crate) fn admitted() -> AdmittedRun {
     let verifier_names = ["left", "right", "verify", "slow_reuse", "fast_reuse"];
     let worker_names = ["worker1", "worker2", "looped", "fresh", "worker"];
@@ -84,6 +93,7 @@ pub(crate) fn admitted() -> AdmittedRun {
         })
         .collect();
     AdmittedRun {
+        title: RunTitle::new("Runner test run").assert_value(),
         graph: CompiledGraphIr {
             profile: graph.profile,
             initial_input: graph.initial_input,
@@ -104,9 +114,10 @@ pub(crate) fn admitted() -> AdmittedRun {
         initial_input: Value::Null,
         runtime: RuntimePlan::Codex {
             provider: CodexProvider::OpenAi,
+            size: RunSize::Standard,
             nodes: runtime_nodes,
         },
-        ship: false,
+        source: source(),
     }
 }
 
