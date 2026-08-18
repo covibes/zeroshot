@@ -1,6 +1,10 @@
 use super::*;
-use crate::execution::SessionScope;
-use crate::native_v2_contract::{CodexProvider, ClaudeProvider};
+use crate::native_v2_contract::{
+    ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, RunSize, RunTitle,
+    GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF, SessionScope, SourceSnapshot,
+};
+use crate::native_v2_delivery::DeliveryMode;
+use crate::native_v2_delivery::contract::{delivery_result_schema, delivery_signal_labels};
 use openengine_cluster_protocol::IdempotencyKey;
 use serde_json::{json, Value};
 
@@ -18,6 +22,22 @@ fn null_step(name: &str, worker: &str) -> Value {
         "kind":"step", "name":name, "worker":worker,
         "input":{"kind":"null"}, "output":{"kind":"null"},
         "inputBindings":[], "writeBindings":[], "timeoutMs":1000, "attempts":1
+    })
+}
+
+fn delivery_verifier(name: &str, mode: DeliveryMode) -> Value {
+    let worker = match mode {
+        DeliveryMode::PullRequest => GIT_DELIVERY_PR_WORKER_REF,
+        DeliveryMode::Merge => GIT_DELIVERY_MERGE_WORKER_REF,
+    };
+    let output = delivery_result_schema(mode).assert_value();
+    let labels = delivery_signal_labels(mode).assert_value();
+    json!({
+        "kind":"verifier", "name":name, "worker":worker,
+        "input":{"kind":"null"},
+        "output":output,
+        "inputBindings":[], "writeBindings":[], "timeoutMs":1000, "attempts":1,
+        "signals":{"delivery":labels}, "diagnostic":{"kind":"string"}
     })
 }
 
@@ -44,19 +64,52 @@ fn binding(model: &str, effort: Option<ReasoningEffort>) -> NodeRuntimeBinding {
         model: crate::worker_catalog::ModelId::new(model).assert_value(),
         effort,
         session_scope: SessionScope::Execution,
-        env: BTreeSet::new(),
+        env: DeclaredEnvironment::empty(),
     }
+}
+
+fn binding_with_environment(names: impl IntoIterator<Item = String>) -> NodeRuntimeBinding {
+    NodeRuntimeBinding::Agent {
+        model: crate::worker_catalog::ModelId::new("claude-sonnet-5").assert_value(),
+        effort: None,
+        session_scope: SessionScope::Execution,
+        env: DeclaredEnvironment::new(
+            names
+                .into_iter()
+                .map(|name| EnvironmentVariableName::new(name).assert_value()),
+        )
+        .assert_value(),
+    }
+}
+
+fn delivery_binding() -> NodeRuntimeBinding {
+    NodeRuntimeBinding::GitDelivery {
+        env: DeclaredEnvironment::empty(),
+    }
+}
+
+fn source_snapshot() -> SourceSnapshot {
+    serde_json::from_str(
+        r#"{
+            "repository": "open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        }"#,
+    )
+    .assert_value()
 }
 
 fn submission(graph: GraphSpec, nodes: BTreeMap<NodeName, NodeRuntimeBinding>) -> RunSubmission {
     RunSubmission {
+        title: RunTitle::new("Admission test").assert_value(),
         graph,
         initial_input: json!({"items":[null]}),
         runtime: RuntimePlan::Claude {
             provider: ClaudeProvider::Anthropic,
+            size: RunSize::Standard,
             nodes,
         },
-        ship: false,
+        source: source_snapshot(),
         submission_key: IdempotencyKey::new("admission-test").assert_value(),
     }
 }
@@ -163,6 +216,30 @@ async fn rejects_non_single_attempts_and_runtime_coverage_errors() {
 }
 
 #[tokio::test]
+async fn rejects_run_wide_declared_environment_union_over_limit() {
+    let graph = graph(vec![
+        null_step("first", "agent.first@1"),
+        null_step("second", "agent.second@1"),
+        succeed("done"),
+    ]);
+    let nodes = BTreeMap::from([
+        (
+            named("first"),
+            binding_with_environment((0..32).map(|index| format!("ENV_{index}"))),
+        ),
+        (
+            named("second"),
+            binding_with_environment((32..65).map(|index| format!("ENV_{index}"))),
+        ),
+    ]);
+
+    assert_eq!(
+        NativeV2Admission.admit(submission(graph, nodes)).await,
+        Err(NativeV2AdmissionError::DeclaredEnvironmentTooLarge { found: 65 })
+    );
+}
+
+#[tokio::test]
 async fn rejects_inconsistent_worker_reuse() {
     let graph = graph(vec![
         null_step("first", "agent.shared@1"),
@@ -180,48 +257,110 @@ async fn rejects_inconsistent_worker_reuse() {
 }
 
 #[tokio::test]
-async fn enforces_delivery_shape_and_ship_authorization() {
+async fn rejects_invalid_graph_visible_delivery_bindings_and_contracts() {
     let step_graph = graph(vec![
-        null_step("deliver", "git.delivery@1"),
+        null_step("deliver", GIT_DELIVERY_PR_WORKER_REF),
         succeed("done"),
     ]);
-    let mut request = submission(
+    let request = submission(
         step_graph,
-        BTreeMap::from([(
-            named("deliver"),
-            NodeRuntimeBinding::GitDelivery {
-                env: BTreeSet::new(),
-            },
-        )]),
+        BTreeMap::from([(named("deliver"), delivery_binding())]),
     );
-    request.ship = true;
     assert!(matches!(
         NativeV2Admission.admit(request).await,
         Err(NativeV2AdmissionError::DeliveryMustBeVerifier { .. })
     ));
 
-    let delivery_graph = graph(vec![
-        null_verifier("deliver", "git.delivery@1"),
+    let unsupported_graph = graph(vec![
+        null_verifier("deliver", "builtin.git-delivery@1"),
         succeed("done"),
     ]);
-    let delivery = BTreeMap::from([(
-        named("deliver"),
-        NodeRuntimeBinding::GitDelivery {
-            env: BTreeSet::new(),
-        },
-    )]);
     assert!(matches!(
         NativeV2Admission
-            .admit(submission(delivery_graph, delivery))
+            .admit(submission(
+                unsupported_graph,
+                BTreeMap::from([(named("deliver"), delivery_binding())]),
+            ))
             .await,
-        Err(NativeV2AdmissionError::DeliveryRequiresShipping { .. })
+        Err(NativeV2AdmissionError::UnsupportedDeliveryWorker { .. })
     ));
 
-    let mut no_delivery = submission(graph(vec![succeed("done")]), BTreeMap::new());
-    no_delivery.ship = true;
+    let wrong_binding_graph = graph(vec![
+        delivery_verifier("deliver", DeliveryMode::PullRequest),
+        succeed("done"),
+    ]);
+    assert!(matches!(
+        NativeV2Admission
+            .admit(submission(
+                wrong_binding_graph,
+                BTreeMap::from([(named("deliver"), binding("claude-sonnet-5", None))]),
+            ))
+            .await,
+        Err(NativeV2AdmissionError::DeliveryWorkerRequiresBinding { .. })
+    ));
+
+    let invalid_contract = graph(vec![
+        null_verifier("deliver", GIT_DELIVERY_PR_WORKER_REF),
+        succeed("done"),
+    ]);
+    assert!(matches!(
+        NativeV2Admission
+            .admit(submission(
+                invalid_contract,
+                BTreeMap::from([(named("deliver"), delivery_binding())]),
+            ))
+            .await,
+        Err(NativeV2AdmissionError::InvalidDeliveryContract { .. })
+    ));
+}
+
+#[tokio::test]
+async fn enforces_graph_visible_delivery_policy_counts() {
+    let no_delivery = submission(graph(vec![succeed("done")]), BTreeMap::new());
     assert_eq!(
-        NativeV2Admission.admit(no_delivery).await,
-        Err(NativeV2AdmissionError::ShippingDeliveryCount { found: 0 })
+        NativeV2Admission
+            .admit_with_policy(no_delivery, DeliveryPolicy::Required)
+            .await,
+        Err(NativeV2AdmissionError::DeliveryNodeCount {
+            policy: DeliveryPolicy::Required,
+            found: 0,
+        })
+    );
+
+    let delivery_graph = graph(vec![
+        delivery_verifier("deliver", DeliveryMode::Merge),
+        succeed("done"),
+    ]);
+    NativeV2Admission
+        .admit_with_policy(
+            submission(
+                delivery_graph,
+                BTreeMap::from([(named("deliver"), delivery_binding())]),
+            ),
+            DeliveryPolicy::Required,
+        )
+        .await
+        .assert_value_with("required policy accepts one valid delivery node");
+
+    let two_deliveries = graph(vec![
+        delivery_verifier("open", DeliveryMode::PullRequest),
+        delivery_verifier("merge", DeliveryMode::Merge),
+        succeed("done"),
+    ]);
+    assert_eq!(
+        NativeV2Admission
+            .admit(submission(
+                two_deliveries,
+                BTreeMap::from([
+                    (named("open"), delivery_binding()),
+                    (named("merge"), delivery_binding()),
+                ]),
+            ))
+            .await,
+        Err(NativeV2AdmissionError::DeliveryNodeCount {
+            policy: DeliveryPolicy::Optional,
+            found: 2,
+        })
     );
 }
 
@@ -229,16 +368,18 @@ async fn enforces_delivery_shape_and_ship_authorization() {
 async fn enforces_harness_model_and_effort_catalog() {
     let graph = graph(vec![null_step("work", "agent.work@1"), succeed("done")]);
     let codex_wrong_model = RunSubmission {
+        title: RunTitle::new("Codex model validation").assert_value(),
         graph: graph.clone(),
         initial_input: json!({"items":[null]}),
         runtime: RuntimePlan::Codex {
             provider: CodexProvider::OpenAi,
+            size: RunSize::Small,
             nodes: BTreeMap::from([(
                 named("work"),
                 binding("claude-sonnet-5", Some(ReasoningEffort::Max)),
             )]),
         },
-        ship: false,
+        source: source_snapshot(),
         submission_key: IdempotencyKey::new("codex-model").assert_value(),
     };
     assert!(matches!(
@@ -298,22 +439,16 @@ async fn rejects_parallel_writers_mixed_parallelism_and_writer_maps() {
     ));
 
     let delivery_parallel = par(
-        null_verifier("deliver", "git.delivery@1"),
+        delivery_verifier("deliver", DeliveryMode::PullRequest),
         null_verifier("reader", "verify.reader@1"),
     );
-    let mut delivery_request = submission(
+    let delivery_request = submission(
         delivery_parallel,
         BTreeMap::from([
-            (
-                named("deliver"),
-                NodeRuntimeBinding::GitDelivery {
-                    env: BTreeSet::new(),
-                },
-            ),
+            (named("deliver"), delivery_binding()),
             (named("reader"), binding("claude-sonnet-5", None)),
         ]),
     );
-    delivery_request.ship = true;
     assert!(matches!(
         NativeV2Admission.admit(delivery_request).await,
         Err(NativeV2AdmissionError::ConcurrentWriter { .. })

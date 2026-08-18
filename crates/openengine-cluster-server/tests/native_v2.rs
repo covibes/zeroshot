@@ -7,8 +7,8 @@ use openengine_cluster_protocol::{
     LogRecord, RunAttachEventNotification, RunAttachParams, RunAttachResult, RunForceParams,
     RunForceResult, RunId, RunListParams, RunListResult, RunLogEventNotification, RunLogsParams,
     RunLogsResult, RunStatus, RunStatusParams, RunStatusResult, RunSubmitParams, RunSubmitResult,
-    RunWatchEventNotification, RunWatchParams, RunWatchResult, ServerCapabilities,
-    SubscriptionCloseReason, SubscriptionId,
+    RunSize, RunTitle, RunWatchEventNotification, RunWatchParams, RunWatchResult,
+    ServerCapabilities, SubscriptionCloseReason, SubscriptionId,
 };
 use openengine_cluster_server::native_v2::{
     RunAttachEventStream, RunLogEventStream, RunSubscriptionItem, RunSubscriptionSource,
@@ -16,6 +16,7 @@ use openengine_cluster_server::native_v2::{
 };
 use openengine_cluster_server::watch::fixtures::{await_ndjson_shutdown, spawn_ndjson};
 use openengine_cluster_server::{BackendError, ClusterBackend, ConnectionContext, Dispatcher};
+use openengine_cluster_testkit::native_v2_source_fixture;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
 
@@ -47,9 +48,16 @@ fn cursor(value: u64) -> Cursor {
     Cursor::new(format!("v2:{value}"))
 }
 
+fn title() -> RunTitle {
+    RunTitle::new("Protocol server test").assert_value()
+}
+
 fn status(phase: RunStatus, at: u64) -> RunStatusResult {
     RunStatusResult {
         run_id: run_id(),
+        title: title(),
+        source: native_v2_source_fixture(),
+        size: RunSize::Tiny,
         at_cursor: cursor(at),
         status: phase,
     }
@@ -85,8 +93,8 @@ impl ClusterBackend for FakeBackend {
         _context: &ConnectionContext,
         params: RunSubmitParams,
     ) -> Result<RunSubmitResult, BackendError> {
-        assert_eq!(params.initial_input, Value::Null);
-        assert!(params.ship);
+        assert_eq!(params.run_id, run_id());
+        assert_eq!(params.submission.initial_input, Value::Null);
         Ok(RunSubmitResult { run_id: run_id() })
     }
 
@@ -129,6 +137,9 @@ impl ClusterBackend for FakeBackend {
                 RunSubscriptionItem::Event(RunWatchEventNotification {
                     subscription_id,
                     run_id: run_id(),
+                    title: title(),
+                    source: native_v2_source_fixture(),
+                    size: RunSize::Tiny,
                     cursor: cursor(3),
                     status: RunStatus::Running {
                         active_executions: vec![],
@@ -140,6 +151,9 @@ impl ClusterBackend for FakeBackend {
                 RunSubscriptionItem::Event(RunWatchEventNotification {
                     subscription_id: SubscriptionId::new("watch-1"),
                     run_id: run_id(),
+                    title: title(),
+                    source: native_v2_source_fixture(),
+                    size: RunSize::Tiny,
                     cursor: cursor(99),
                     status: RunStatus::Running {
                         active_executions: vec![],
@@ -213,6 +227,9 @@ impl ClusterBackend for FakeBackend {
         );
         Ok(RunForceResult {
             run_id: result.run_id,
+            title: result.title,
+            source: result.source,
+            size: result.size,
             at_cursor: result.at_cursor,
             status: result.status,
         })
@@ -230,6 +247,26 @@ fn graph() -> Value {
     })
 }
 
+fn submission() -> Value {
+    json!({
+        "title": "Protocol server test",
+        "graph": graph(),
+        "initialInput": null,
+        "runtime": {
+            "harness": "codex",
+            "provider": "openai",
+            "size": "tiny",
+            "nodes": {}
+        },
+        "source": {
+            "repository": "open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        },
+        "submissionKey": "submission-1"
+    })
+}
+
 #[tokio::test]
 async fn unary_run_methods_route_through_the_typed_backend() {
     let dispatcher = Dispatcher::new(FakeBackend, ConnectionContext::default());
@@ -237,8 +274,8 @@ async fn unary_run_methods_route_through_the_typed_backend() {
         (
             "run/submit",
             json!({
-                "graph": graph(), "initialInput": null, "ship": true,
-                "submissionKey": "submission-1"
+                "runId": "run-1",
+                "submission": submission()
             }),
         ),
         ("run/list", json!({})),

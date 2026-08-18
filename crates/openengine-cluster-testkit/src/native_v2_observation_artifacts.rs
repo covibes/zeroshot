@@ -7,8 +7,9 @@ use openengine_cluster_protocol::{
     Cursor, ExecutionRef, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, LogLevel,
     LogRecord, NodeName, RunAttachEventNotification, RunAttachParams, RunAttachResult,
     RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunLogsResult,
-    RunStatus, RunStatusParams, RunStatusResult, RunWatchEventNotification, RunWatchParams,
-    RunWatchResult, SubscriptionId,
+    RunSize, RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
+    RunWatchParams, RunWatchResult, SourceBranchId, SourceRepositoryId, SourceRevisionId,
+    SourceSnapshot, SubscriptionId, TerminalResult,
 };
 use schemars::{schema_for, JsonSchema};
 use serde_json::{json, Value};
@@ -74,9 +75,25 @@ fn execution(value: &str) -> ExecutionRef {
     ExecutionRef::new(value).assert_value()
 }
 
+fn title() -> RunTitle {
+    RunTitle::new("Repair checkout flow").assert_value()
+}
+
+pub fn native_v2_source_fixture() -> SourceSnapshot {
+    SourceSnapshot {
+        repository: SourceRepositoryId::new("open-engine/zeroshot").assert_value(),
+        target_branch: SourceBranchId::new("main").assert_value(),
+        base_revision: SourceRevisionId::new("0123456789abcdef0123456789abcdef01234567")
+            .assert_value(),
+    }
+}
+
 fn status() -> RunStatusResult {
     RunStatusResult {
         run_id: run_id(),
+        title: title(),
+        source: native_v2_source_fixture(),
+        size: RunSize::Standard,
         at_cursor: cursor(7),
         status: RunStatus::Running {
             active_executions: vec![
@@ -107,8 +124,19 @@ fn watch_fixture() -> Value {
         "event": RunWatchEventNotification {
             subscription_id: SubscriptionId::new("watch-1"),
             run_id: run_id(),
+            title: title(),
+            source: native_v2_source_fixture(),
+            size: RunSize::Standard,
             cursor: cursor(8),
-            status: status().status,
+            status: RunStatus::Finished {
+                terminal_result: TerminalResult::Succeeded {
+                    output: json!({
+                        "kind": "verification_receipt",
+                        "summary": "checkout repaired",
+                        "passed": true
+                    }),
+                },
+            },
         }
     })
 }
@@ -174,6 +202,9 @@ fn force_fixture() -> Value {
         "params": RunForceParams { run_id: run_id() },
         "result": RunForceResult {
             run_id: result.run_id,
+            title: result.title,
+            source: result.source,
+            size: result.size,
             at_cursor: result.at_cursor,
             status: result.status,
         }

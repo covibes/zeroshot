@@ -15,7 +15,7 @@ mod lifecycle_artifacts;
 pub mod logs;
 mod logs_artifacts;
 mod native_v2_observation_artifacts;
-pub use native_v2_observation_artifacts::NativeV2ObservationSchema;
+pub use native_v2_observation_artifacts::{NativeV2ObservationSchema, native_v2_source_fixture};
 mod negative_graph_fixtures;
 mod schema_helpers;
 pub mod watch;

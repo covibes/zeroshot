@@ -2,20 +2,25 @@
   "event": {
     "cursor": "v2:8",
     "runId": "run-1",
-    "status": {
-      "activeExecutions": [
-        {
-          "execution": "opaque-verifier-a",
-          "node": "verify-a"
-        },
-        {
-          "execution": "opaque-verifier-b",
-          "node": "verify-b"
-        }
-      ],
-      "phase": "running"
+    "size": "standard",
+    "source": {
+      "baseRevision": "0123456789abcdef0123456789abcdef01234567",
+      "repository": "open-engine/zeroshot",
+      "targetBranch": "main"
     },
-    "subscriptionId": "watch-1"
+    "status": {
+      "phase": "finished",
+      "terminalResult": {
+        "output": {
+          "kind": "verification_receipt",
+          "passed": true,
+          "summary": "checkout repaired"
+        },
+        "status": "succeeded"
+      }
+    },
+    "subscriptionId": "watch-1",
+    "title": "Repair checkout flow"
   },
   "params": {
     "fromCursor": "v2:7",

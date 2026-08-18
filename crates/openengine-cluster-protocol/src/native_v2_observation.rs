@@ -10,8 +10,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentAttachEvent, Cursor, ExecutionRef, LogRecord, NodeName, RunId, SubscriptionId,
-    TerminalResult,
+    AgentAttachEvent, Cursor, ExecutionRef, LogRecord, NodeName, RunId, SubscriptionId, RunSize,
+    RunTitle, SourceSnapshot, TerminalResult,
 };
 
 /// One currently active graph-leaf execution.
@@ -57,6 +57,9 @@ pub struct RunStatusParams {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunStatusResult {
     pub run_id: RunId,
+    pub title: RunTitle,
+    pub source: SourceSnapshot,
+    pub size: RunSize,
     pub at_cursor: Cursor,
     pub status: RunStatus,
 }
@@ -88,6 +91,9 @@ pub struct RunWatchResult {
 pub struct RunWatchEventNotification {
     pub subscription_id: SubscriptionId,
     pub run_id: RunId,
+    pub title: RunTitle,
+    pub source: SourceSnapshot,
+    pub size: RunSize,
     pub cursor: Cursor,
     pub status: RunStatus,
 }
@@ -170,7 +176,16 @@ pub struct RunForceParams {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RunForceResult {
+    /// Public identity of the run whose force request was recorded.
     pub run_id: RunId,
+    /// Immutable title captured when the run was admitted.
+    pub title: RunTitle,
+    /// Immutable repository snapshot captured when the run was admitted.
+    pub source: SourceSnapshot,
+    /// Immutable execution size selected for the run.
+    pub size: RunSize,
+    /// Durable cursor after the force request was recorded.
     pub at_cursor: Cursor,
+    /// Public phase projected after the force request was recorded.
     pub status: RunStatus,
 }

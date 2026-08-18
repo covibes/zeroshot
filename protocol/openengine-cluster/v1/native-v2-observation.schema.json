@@ -589,17 +589,38 @@
       "description": "The durable run status after recording the force request.",
       "properties": {
         "atCursor": {
+          "description": "Durable cursor after the force request was recorded.",
           "type": "string"
         },
         "runId": {
+          "description": "Public identity of the run whose force request was recorded.",
           "type": "string"
         },
+        "size": {
+          "$ref": "#/$defs/RunSize",
+          "description": "Immutable execution size selected for the run."
+        },
+        "source": {
+          "$ref": "#/$defs/SourceSnapshot",
+          "description": "Immutable repository snapshot captured when the run was admitted."
+        },
         "status": {
-          "$ref": "#/$defs/RunStatus"
+          "$ref": "#/$defs/RunStatus",
+          "description": "Public phase projected after the force request was recorded."
+        },
+        "title": {
+          "description": "Immutable title captured when the run was admitted.",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
         }
       },
       "required": [
         "runId",
+        "title",
+        "source",
+        "size",
         "atCursor",
         "status"
       ],
@@ -686,6 +707,15 @@
         "atCursor"
       ],
       "type": "object"
+    },
+    "RunSize": {
+      "enum": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ],
+      "type": "string"
     },
     "RunStatus": {
       "description": "Public run state. The closed phase variants make impossible combinations unrepresentable:\nadmitted runs have no execution, stopping means force was requested, and finished runs have\nexactly one terminal result and no active execution. Running/stopping report every active\nexecution rather than a single \"current worker\" slot.",
@@ -783,12 +813,27 @@
         "runId": {
           "type": "string"
         },
+        "size": {
+          "$ref": "#/$defs/RunSize"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
         "status": {
           "$ref": "#/$defs/RunStatus"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
         }
       },
       "required": [
         "runId",
+        "title",
+        "source",
+        "size",
         "atCursor",
         "status"
       ],
@@ -804,16 +849,31 @@
         "runId": {
           "type": "string"
         },
+        "size": {
+          "$ref": "#/$defs/RunSize"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
         "status": {
           "$ref": "#/$defs/RunStatus"
         },
         "subscriptionId": {
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
           "type": "string"
         }
       },
       "required": [
         "subscriptionId",
         "runId",
+        "title",
+        "source",
+        "size",
         "cursor",
         "status"
       ],
@@ -855,6 +915,32 @@
         "subscriptionId",
         "runId",
         "atCursor"
+      ],
+      "type": "object"
+    },
+    "SourceSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "baseRevision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "targetBranch": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "targetBranch",
+        "baseRevision"
       ],
       "type": "object"
     },

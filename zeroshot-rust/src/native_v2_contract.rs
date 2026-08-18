@@ -5,7 +5,6 @@
 //! reducer, the runner, and the run ledger. It deliberately contains no admission or execution
 //! policy.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
@@ -13,155 +12,42 @@ use std::num::NonZeroU64;
 use openengine_cluster_protocol::{
     CompiledGraphIr, GraphSpec, IdempotencyKey, NodeName, RunId, WorkerOutcome, WorkerRef,
 };
+pub use openengine_cluster_protocol::{
+    ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, ModelId,
+    NodeRuntimeBinding, ReasoningEffort, RunSize, RunSubmission, RunTitle, RuntimePlan,
+    SessionScope, SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
+    MAX_DECLARED_ENVIRONMENT_NAMES,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::execution::SessionScope;
-use crate::worker_catalog::{ModelId, ReasoningEffort};
+/// Graph-visible PR delivery worker backed by the shared Git delivery implementation.
+pub const GIT_DELIVERY_PR_WORKER_REF: &str = "builtin.git-delivery.pr@1";
+/// Graph-visible merge delivery worker backed by the shared Git delivery implementation.
+pub const GIT_DELIVERY_MERGE_WORKER_REF: &str = "builtin.git-delivery.merge@1";
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CodexProvider {
-    #[serde(rename = "openai")]
-    OpenAi,
-    #[serde(rename = "openrouter")]
-    OpenRouter,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClaudeProvider {
-    Anthropic,
-    #[serde(rename = "openrouter")]
-    OpenRouter,
-}
-
-/// One harness/provider lane for the entire graph.
-///
-/// The tagged variants make unsupported pairings unrepresentable without a second validation
-/// table: Codex supports OpenAI/OpenRouter and Claude supports Anthropic/OpenRouter.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, tag = "harness", rename_all = "snake_case")]
-pub enum RuntimePlan {
-    Codex {
-        provider: CodexProvider,
-        nodes: BTreeMap<NodeName, NodeRuntimeBinding>,
-    },
-    Claude {
-        provider: ClaudeProvider,
-        nodes: BTreeMap<NodeName, NodeRuntimeBinding>,
-    },
-}
-
-impl RuntimePlan {
-    #[must_use]
-    pub fn nodes(&self) -> &BTreeMap<NodeName, NodeRuntimeBinding> {
-        match self {
-            Self::Codex { nodes, .. } | Self::Claude { nodes, .. } => nodes,
-        }
-    }
-}
-
-/// Runtime configuration for an executable graph leaf.
-///
-/// Environment values are intentionally absent. The controller resolves only these declared
-/// names immediately before invocation. Git delivery is graph-visible but is not an agent session.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
-pub enum NodeRuntimeBinding {
-    Agent {
-        model: ModelId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        effort: Option<ReasoningEffort>,
-        #[serde(
-            default,
-            rename = "sessionScope",
-            skip_serializing_if = "is_execution_scope"
-        )]
-        session_scope: SessionScope,
-        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-        env: BTreeSet<EnvironmentVariableName>,
-    },
-    GitDelivery {
-        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-        env: BTreeSet<EnvironmentVariableName>,
-    },
-}
-
-fn is_execution_scope(scope: &SessionScope) -> bool {
-    *scope == SessionScope::Execution
-}
-
-impl NodeRuntimeBinding {
-    #[must_use]
-    pub fn declared_environment(&self) -> &BTreeSet<EnvironmentVariableName> {
-        match self {
-            Self::Agent { env, .. } | Self::GitDelivery { env } => env,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub enum EnvironmentVariableNameError {
-    #[error("environment variable name must match [A-Za-z_][A-Za-z0-9_]*")]
-    Invalid,
-    #[error("environment variable name must be at most 128 bytes")]
-    TooLong,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(try_from = "String")]
-pub struct EnvironmentVariableName(String);
-
-impl EnvironmentVariableName {
-    pub fn new(value: impl Into<String>) -> Result<Self, EnvironmentVariableNameError> {
-        let value = value.into();
-        if value.len() > 128 {
-            return Err(EnvironmentVariableNameError::TooLong);
-        }
-        let mut bytes = value.bytes();
-        let valid_first = bytes
-            .next()
-            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_');
-        if !valid_first || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') {
-            return Err(EnvironmentVariableNameError::Invalid);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for EnvironmentVariableName {
-    type Error = EnvironmentVariableNameError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::new(value)
-    }
-}
-
-impl fmt::Display for EnvironmentVariableName {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// The immutable, secret-free request admitted by a selected target.
-///
-/// Target selection is transport/CLI routing and is therefore not duplicated in this payload.
+/// Source- and identity-neutral request used before a host snapshots mutable source selection.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct RunSubmission {
+pub struct RunSubmissionIntent {
+    pub title: RunTitle,
     pub graph: GraphSpec,
     pub initial_input: Value,
     pub runtime: RuntimePlan,
-    #[serde(default)]
-    pub ship: bool,
     pub submission_key: IdempotencyKey,
+}
+
+impl From<&RunSubmission> for RunSubmissionIntent {
+    fn from(submission: &RunSubmission) -> Self {
+        Self {
+            title: submission.title.clone(),
+            graph: submission.graph.clone(),
+            initial_input: submission.initial_input.clone(),
+            runtime: submission.runtime.clone(),
+            submission_key: submission.submission_key.clone(),
+        }
+    }
 }
 
 /// Admission's secret-free output. The compiler promotes the unchanged `GraphSpec` to the existing
@@ -169,10 +55,11 @@ pub struct RunSubmission {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AdmittedRun {
+    pub title: RunTitle,
     pub graph: CompiledGraphIr,
     pub initial_input: Value,
     pub runtime: RuntimePlan,
-    pub ship: bool,
+    pub source: SourceSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -282,6 +169,7 @@ mod tests {
 
     fn canonical_submission() -> Value {
         json!({
+            "title": "Repair checkout flow",
             "graph": {
                 "profile": "openengine.graph.full/v1",
                 "initialInput": { "kind": "null" },
@@ -316,6 +204,7 @@ mod tests {
             "runtime": {
                 "harness": "codex",
                 "provider": "openai",
+                "size": "standard",
                 "nodes": {
                     "worker": {
                         "kind": "agent",
@@ -325,7 +214,11 @@ mod tests {
                     }
                 }
             },
-            "ship": false,
+            "source": {
+                "repository": "open-engine/zeroshot",
+                "targetBranch": "main",
+                "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            },
             "submissionKey": "submission-1"
         })
     }
@@ -347,6 +240,18 @@ mod tests {
             .assert_value_with("worker must be an agent binding");
         assert_eq!(*session_scope, SessionScope::Execution);
         assert_eq!(serde_json::to_value(submission).assert_value(), expected);
+    }
+
+    #[test]
+    fn submission_serialization_is_idempotent() {
+        let submission: RunSubmission =
+            serde_json::from_value(canonical_submission()).assert_value();
+        let first = serde_json::to_vec(&submission).assert_value();
+        let decoded: RunSubmission = serde_json::from_slice(&first).assert_value();
+        let second = serde_json::to_vec(&decoded).assert_value();
+
+        assert_eq!(first, second);
+        assert_eq!(decoded, submission);
     }
 
     #[test]
@@ -388,6 +293,67 @@ mod tests {
             .assert_value()
             .insert("model".to_owned(), json!("gpt-5.6"));
         assert!(serde_json::from_value::<RunSubmission>(graph_fixture).is_err());
+    }
+
+    #[test]
+    fn title_source_and_one_run_size_are_required_and_bounded() {
+        for (pointer, owner_pointer, field) in [
+            ("/title", "", "title"),
+            ("/source", "", "source"),
+            ("/runtime/size", "/runtime", "size"),
+        ] {
+            let mut missing = canonical_submission();
+            missing
+                .pointer_mut(owner_pointer)
+                .assert_value()
+                .as_object_mut()
+                .assert_value()
+                .remove(field);
+            assert!(
+                serde_json::from_value::<RunSubmission>(missing).is_err(),
+                "{pointer} must be required"
+            );
+        }
+
+        let mut invalid_title = canonical_submission();
+        *invalid_title.pointer_mut("/title").assert_value() = json!("");
+        assert!(serde_json::from_value::<RunSubmission>(invalid_title).is_err());
+
+        let mut invalid_size = canonical_submission();
+        *invalid_size.pointer_mut("/runtime/size").assert_value() = json!("xlarge");
+        assert!(serde_json::from_value::<RunSubmission>(invalid_size).is_err());
+
+        for (pointer, value) in [
+            ("/source/repository", json!("not-a-repository")),
+            ("/source/targetBranch", json!("bad..branch")),
+            ("/source/baseRevision", json!("not-an-exact-revision")),
+        ] {
+            let mut invalid_source = canonical_submission();
+            *invalid_source.pointer_mut(pointer).assert_value() = value;
+            assert!(
+                serde_json::from_value::<RunSubmission>(invalid_source).is_err(),
+                "{pointer} must be validated"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_environment_rejects_duplicates_and_per_node_overflow() {
+        let mut duplicate = canonical_submission();
+        *duplicate
+            .pointer_mut("/runtime/nodes/worker/env")
+            .assert_value() = json!(["OPENAI_API_KEY", "OPENAI_API_KEY"]);
+        assert!(serde_json::from_value::<RunSubmission>(duplicate).is_err());
+
+        let mut overflow = canonical_submission();
+        *overflow
+            .pointer_mut("/runtime/nodes/worker/env")
+            .assert_value() = Value::Array(
+            (0..=MAX_DECLARED_ENVIRONMENT_NAMES)
+                .map(|index| json!(format!("ENV_{index}")))
+                .collect(),
+        );
+        assert!(serde_json::from_value::<RunSubmission>(overflow).is_err());
     }
 
     #[test]

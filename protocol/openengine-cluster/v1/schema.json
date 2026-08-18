@@ -412,6 +412,13 @@
       ],
       "type": "object"
     },
+    "ClaudeProvider": {
+      "enum": [
+        "anthropic",
+        "openrouter"
+      ],
+      "type": "string"
+    },
     "ClusterStatus": {
       "properties": {
         "atCursor": {
@@ -452,6 +459,13 @@
         "phase"
       ],
       "type": "object"
+    },
+    "CodexProvider": {
+      "enum": [
+        "openai",
+        "openrouter"
+      ],
+      "type": "string"
     },
     "ControlSelector": {
       "additionalProperties": false,
@@ -542,6 +556,17 @@
           "type": "object"
         }
       ]
+    },
+    "DeclaredEnvironment": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+        "type": "string"
+      },
+      "maxItems": 64,
+      "type": "array",
+      "uniqueItems": true
     },
     "DeleteParams": {
       "additionalProperties": false,
@@ -3119,6 +3144,61 @@
       ],
       "type": "object"
     },
+    "NodeRuntimeBinding": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "effort": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ReasoningEffort"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "env": {
+              "$ref": "#/$defs/DeclaredEnvironment"
+            },
+            "kind": {
+              "const": "agent",
+              "type": "string"
+            },
+            "model": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "sessionScope": {
+              "$ref": "#/$defs/SessionScope"
+            }
+          },
+          "required": [
+            "kind",
+            "model"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "env": {
+              "$ref": "#/$defs/DeclaredEnvironment"
+            },
+            "kind": {
+              "const": "git_delivery",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "NonEmptyVec_of_ChoiceBranch": {
       "items": {
         "$ref": "#/$defs/ChoiceBranch"
@@ -3427,6 +3507,16 @@
       ],
       "type": "string"
     },
+    "ReasoningEffort": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "type": "string"
+    },
     "RecordField": {
       "additionalProperties": false,
       "properties": {
@@ -3679,17 +3769,38 @@
       "description": "The durable run status after recording the force request.",
       "properties": {
         "atCursor": {
+          "description": "Durable cursor after the force request was recorded.",
           "type": "string"
         },
         "runId": {
+          "description": "Public identity of the run whose force request was recorded.",
           "type": "string"
         },
+        "size": {
+          "$ref": "#/$defs/RunSize",
+          "description": "Immutable execution size selected for the run."
+        },
+        "source": {
+          "$ref": "#/$defs/SourceSnapshot",
+          "description": "Immutable repository snapshot captured when the run was admitted."
+        },
         "status": {
-          "$ref": "#/$defs/RunStatus"
+          "$ref": "#/$defs/RunStatus",
+          "description": "Public phase projected after the force request was recorded."
+        },
+        "title": {
+          "description": "Immutable title captured when the run was admitted.",
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
         }
       },
       "required": [
         "runId",
+        "title",
+        "source",
+        "size",
         "atCursor",
         "status"
       ],
@@ -3798,6 +3909,15 @@
       ],
       "type": "object"
     },
+    "RunSize": {
+      "enum": [
+        "tiny",
+        "small",
+        "standard",
+        "large"
+      ],
+      "type": "string"
+    },
     "RunStatus": {
       "description": "Public run state. The closed phase variants make impossible combinations unrepresentable:\nadmitted runs have no execution, stopping means force was requested, and finished runs have\nexactly one terminal result and no active execution. Running/stopping report every active\nexecution rather than a single \"current worker\" slot.",
       "oneOf": [
@@ -3894,30 +4014,16 @@
         "runId": {
           "type": "string"
         },
+        "size": {
+          "$ref": "#/$defs/RunSize"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
         "status": {
           "$ref": "#/$defs/RunStatus"
-        }
-      },
-      "required": [
-        "runId",
-        "atCursor",
-        "status"
-      ],
-      "type": "object"
-    },
-    "RunSubmitParams": {
-      "additionalProperties": false,
-      "description": "Secret-free native-v2 submission admitted by the selected target.",
-      "properties": {
-        "graph": {
-          "$ref": "#/$defs/GraphSpec"
         },
-        "initialInput": true,
-        "ship": {
-          "default": false,
-          "type": "boolean"
-        },
-        "submissionKey": {
+        "title": {
           "maxLength": 256,
           "minLength": 1,
           "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
@@ -3925,9 +4031,66 @@
         }
       },
       "required": [
+        "runId",
+        "title",
+        "source",
+        "size",
+        "atCursor",
+        "status"
+      ],
+      "type": "object"
+    },
+    "RunSubmission": {
+      "additionalProperties": false,
+      "description": "Immutable, secret-free native-v2 submission admitted by the selected target.",
+      "properties": {
+        "graph": {
+          "$ref": "#/$defs/GraphSpec"
+        },
+        "initialInput": true,
+        "runtime": {
+          "$ref": "#/$defs/RuntimePlan"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
+        "submissionKey": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
         "graph",
         "initialInput",
+        "runtime",
+        "source",
         "submissionKey"
+      ],
+      "type": "object"
+    },
+    "RunSubmitParams": {
+      "additionalProperties": false,
+      "description": "Trusted controller bootstrap admission. The host assigns the only public run identity before\ncontroller start; the immutable submission remains identity-neutral.",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "submission": {
+          "$ref": "#/$defs/RunSubmission"
+        }
+      },
+      "required": [
+        "runId",
+        "submission"
       ],
       "type": "object"
     },
@@ -3954,16 +4117,31 @@
         "runId": {
           "type": "string"
         },
+        "size": {
+          "$ref": "#/$defs/RunSize"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
         "status": {
           "$ref": "#/$defs/RunStatus"
         },
         "subscriptionId": {
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
           "type": "string"
         }
       },
       "required": [
         "subscriptionId",
         "runId",
+        "title",
+        "source",
+        "size",
         "cursor",
         "status"
       ],
@@ -4008,6 +4186,72 @@
       ],
       "type": "object"
     },
+    "RuntimePlan": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "harness": {
+              "const": "codex",
+              "type": "string"
+            },
+            "nodes": {
+              "additionalProperties": false,
+              "patternProperties": {
+                "^[A-Za-z_][A-Za-z0-9_.-]*$": {
+                  "$ref": "#/$defs/NodeRuntimeBinding"
+                }
+              },
+              "type": "object"
+            },
+            "provider": {
+              "$ref": "#/$defs/CodexProvider"
+            },
+            "size": {
+              "$ref": "#/$defs/RunSize"
+            }
+          },
+          "required": [
+            "harness",
+            "provider",
+            "size",
+            "nodes"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "harness": {
+              "const": "claude",
+              "type": "string"
+            },
+            "nodes": {
+              "additionalProperties": false,
+              "patternProperties": {
+                "^[A-Za-z_][A-Za-z0-9_.-]*$": {
+                  "$ref": "#/$defs/NodeRuntimeBinding"
+                }
+              },
+              "type": "object"
+            },
+            "provider": {
+              "$ref": "#/$defs/ClaudeProvider"
+            },
+            "size": {
+              "$ref": "#/$defs/RunSize"
+            }
+          },
+          "required": [
+            "harness",
+            "provider",
+            "size",
+            "nodes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ServerCapabilities": {
       "additionalProperties": false,
       "properties": {
@@ -4040,6 +4284,39 @@
           "type": "boolean"
         }
       },
+      "type": "object"
+    },
+    "SessionScope": {
+      "enum": [
+        "execution",
+        "node_instance"
+      ],
+      "type": "string"
+    },
+    "SourceSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "baseRevision": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "repository": {
+          "maxLength": 255,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "targetBranch": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "targetBranch",
+        "baseRevision"
+      ],
       "type": "object"
     },
     "StopMode": {

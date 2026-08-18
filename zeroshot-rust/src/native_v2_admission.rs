@@ -6,21 +6,25 @@
 //! the workflow-language invariants to [`ProductionGraphVerifier`]. No method in this module
 //! allocates a workspace, resolves an environment value, or performs another runtime effect.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
     ArtifactResultProfile, AutonomyPolicy, CapabilityPolicy, GraphNode, GraphProfile, GraphSpec,
-    MediaType, NodeName, PayloadValueError, RedactionClass, TypeId, VerifierContract,
-    WorkerContract, WorkerDescriptor, WorkerProtocolBinding, WorkerRef, RUNTIME_WORKER_ERRORS,
+    MediaType, NodeName, PayloadValueError, RedactionClass, TypeId, WorkerContract,
+    WorkerDescriptor, WorkerProtocolBinding, WorkerRef,
 };
 use openengine_cluster_server::admission::{GraphVerifier, VerificationError};
 use openengine_cluster_server::graph_verifier::ProductionGraphVerifier;
 use openengine_cluster_server::worker_registry::{WorkerRegistry, WorkerRegistryError};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::native_v2_contract::{AdmittedRun, NodeRuntimeBinding, RunSubmission, RuntimePlan};
+use crate::native_v2_contract::{
+    AdmittedRun, NodeRuntimeBinding, RunSubmission, RunSubmissionIntent, RuntimePlan,
+};
 use crate::worker_catalog::ReasoningEffort;
+use openengine_cluster_protocol::MAX_DECLARED_ENVIRONMENT_NAMES;
 
 const ALL_EFFORTS: &[ReasoningEffort] = &[
     ReasoningEffort::Low,
@@ -65,6 +69,17 @@ const fn effort_model(id: &'static str) -> SupportedModel {
     }
 }
 
+/// Host policy for graph-visible Git delivery.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryPolicy {
+    /// Local execution may leave changes in the run workspace.
+    #[default]
+    Optional,
+    /// Hosted execution requires exactly one graph-visible delivery node.
+    Required,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum NativeV2AdmissionError {
     #[error("native-v2 requires graph profile openengine.graph.full/v1")]
@@ -79,10 +94,23 @@ pub enum NativeV2AdmissionError {
     UnexpectedRuntimeBinding { node: NodeName },
     #[error("Git delivery binding {node} must be attached to a verifier node")]
     DeliveryMustBeVerifier { node: NodeName },
-    #[error("--ship requires exactly one graph-visible Git delivery node, found {found}")]
-    ShippingDeliveryCount { found: usize },
-    #[error("Git delivery node {node} requires --ship")]
-    DeliveryRequiresShipping { node: NodeName },
+    #[error("Git delivery binding {node} uses unsupported worker {worker}")]
+    UnsupportedDeliveryWorker { node: NodeName, worker: WorkerRef },
+    #[error(
+        "graph-visible Git delivery worker {worker} at node {node} requires a Git delivery binding"
+    )]
+    DeliveryWorkerRequiresBinding { node: NodeName, worker: WorkerRef },
+    #[error("delivery policy {policy:?} rejects {found} graph-visible Git delivery nodes")]
+    DeliveryNodeCount {
+        policy: DeliveryPolicy,
+        found: usize,
+    },
+    #[error(
+        "run declares {found} unique environment names; maximum is {MAX_DECLARED_ENVIRONMENT_NAMES}"
+    )]
+    DeclaredEnvironmentTooLarge { found: usize },
+    #[error("Git delivery node {node} declares an invalid contract for worker {worker}")]
+    InvalidDeliveryContract { node: NodeName, worker: WorkerRef },
     #[error("model {model} is not supported by the selected harness at node {node}")]
     UnsupportedModel { node: NodeName, model: String },
     #[error("model {model} does not accept effort {effort:?} at node {node}")]
@@ -114,273 +142,118 @@ pub enum NativeV2AdmissionError {
 pub struct NativeV2Admission;
 
 impl NativeV2Admission {
+    /// Admits with the local policy, where graph-visible delivery is optional.
     pub async fn admit(
         &self,
         submission: RunSubmission,
     ) -> Result<AdmittedRun, NativeV2AdmissionError> {
-        let prepared = prepare_submission(submission)?;
+        self.admit_with_policy(submission, DeliveryPolicy::Optional)
+            .await
+    }
 
-        let registry = GraphBoundWorkerRegistry::from_declarations(
-            &prepared.graph,
-            &prepared.declarations,
-            &prepared.runtime,
+    /// Admits with an explicit host delivery policy.
+    pub async fn admit_with_policy(
+        &self,
+        submission: RunSubmission,
+        delivery_policy: DeliveryPolicy,
+    ) -> Result<AdmittedRun, NativeV2AdmissionError> {
+        let RunSubmission {
+            title,
+            graph,
+            initial_input,
+            runtime,
+            source,
+            submission_key,
+        } = submission;
+        let prepared = prepare_submission(
+            RunSubmissionIntent {
+                title,
+                graph,
+                initial_input,
+                runtime,
+                submission_key,
+            },
+            delivery_policy,
         )?;
-        let verified = ProductionGraphVerifier::new(registry)
-            .verify(&prepared.graph)
-            .await?;
+        let verified = verify_submission(&prepared).await?;
 
         Ok(AdmittedRun {
-            graph: verified.compiled_ir,
+            title: prepared.title,
+            graph: verified,
             initial_input: prepared.initial_input,
             runtime: prepared.runtime,
-            ship: prepared.ship,
+            source,
         })
+    }
+
+    /// Verifies a source-neutral intent before a host resolves environment or source state.
+    pub async fn validate_intent(
+        &self,
+        intent: &RunSubmissionIntent,
+        delivery_policy: DeliveryPolicy,
+    ) -> Result<(), NativeV2AdmissionError> {
+        let prepared = prepare_submission(intent.clone(), delivery_policy)?;
+        verify_submission(&prepared).await.map(|_| ())
     }
 }
 
 struct PreparedSubmission {
+    title: crate::native_v2_contract::RunTitle,
     graph: GraphSpec,
     initial_input: serde_json::Value,
     runtime: RuntimePlan,
-    ship: bool,
     declarations: Vec<ExecutableDeclaration>,
 }
 
 fn prepare_submission(
-    submission: RunSubmission,
+    intent: RunSubmissionIntent,
+    delivery_policy: DeliveryPolicy,
 ) -> Result<PreparedSubmission, NativeV2AdmissionError> {
-    let RunSubmission {
+    let RunSubmissionIntent {
+        title,
         graph,
         initial_input,
         runtime,
-        ship,
         submission_key: _,
-    } = submission;
-
+    } = intent;
     validate_graph_input(&graph, &initial_input)?;
     let declarations = executable_declarations(&graph.root);
-    validate_executable_bindings(&declarations, runtime.nodes(), ship)?;
+    validate_executable_bindings(&declarations, runtime.nodes(), delivery_policy)?;
     let runtime = normalize_runtime(runtime)?;
     validate_concurrency(&graph.root, runtime.nodes())?;
 
     Ok(PreparedSubmission {
+        title,
         graph,
         initial_input,
         runtime,
-        ship,
         declarations,
     })
 }
 
-fn validate_graph_input(
-    graph: &GraphSpec,
-    initial_input: &serde_json::Value,
-) -> Result<(), NativeV2AdmissionError> {
-    if graph.profile != GraphProfile::Full {
-        return Err(NativeV2AdmissionError::UnsupportedGraphProfile);
-    }
-    graph.initial_input.validate_value(initial_input)?;
-    Ok(())
-}
-
-fn validate_executable_bindings(
-    declarations: &[ExecutableDeclaration],
-    bindings: &BTreeMap<NodeName, NodeRuntimeBinding>,
-    ship: bool,
-) -> Result<(), NativeV2AdmissionError> {
-    validate_attempts(declarations)?;
-    validate_binding_coverage(declarations, bindings)?;
-    validate_binding_kinds(declarations, bindings)?;
-    validate_shipping(ship, declarations, bindings)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LeafKind {
-    Step,
-    Verifier,
-}
-
-#[derive(Clone, Debug)]
-struct ExecutableDeclaration {
-    name: NodeName,
-    worker: WorkerRef,
-    contract: WorkerContract,
-    attempts: u64,
-    kind: LeafKind,
-}
-
-fn executable_declarations(root: &GraphNode) -> Vec<ExecutableDeclaration> {
-    let mut declarations = Vec::new();
-    collect_declarations(root, &mut declarations);
-    declarations
-}
-
-fn collect_declarations(node: &GraphNode, declarations: &mut Vec<ExecutableDeclaration>) {
-    match node {
-        GraphNode::Step(step) => declarations.push(ExecutableDeclaration {
-            name: step.name.clone(),
-            worker: step.worker.clone(),
-            contract: WorkerContract {
-                input: step.input.clone(),
-                output: step.output.clone(),
-                verifier: None,
-                errors: RUNTIME_WORKER_ERRORS.to_vec(),
-            },
-            attempts: step.attempts.get(),
-            kind: LeafKind::Step,
-        }),
-        GraphNode::Verifier(verifier) => declarations.push(ExecutableDeclaration {
-            name: verifier.name.clone(),
-            worker: verifier.worker.clone(),
-            contract: WorkerContract {
-                input: verifier.input.clone(),
-                output: verifier.output.clone(),
-                verifier: Some(VerifierContract {
-                    signals: verifier.signals.clone(),
-                    diagnostic: verifier.diagnostic.clone(),
-                }),
-                errors: RUNTIME_WORKER_ERRORS.to_vec(),
-            },
-            attempts: verifier.attempts.get(),
-            kind: LeafKind::Verifier,
-        }),
-        GraphNode::Seq(group) => group
-            .children
-            .as_slice()
-            .iter()
-            .for_each(|child| collect_declarations(child, declarations)),
-        GraphNode::Choice(group) => {
-            group
-                .branches
-                .as_slice()
-                .iter()
-                .for_each(|branch| collect_declarations(&branch.node, declarations));
-            if let Some(otherwise) = &group.otherwise {
-                collect_declarations(otherwise, declarations);
-            }
-        }
-        GraphNode::Par(group) => group
-            .branches
-            .as_slice()
-            .iter()
-            .for_each(|branch| collect_declarations(branch, declarations)),
-        GraphNode::Loop(group) => collect_declarations(&group.body, declarations),
-        GraphNode::Map(group) => collect_declarations(&group.body, declarations),
-        GraphNode::Succeed(_) | GraphNode::Fail(_) => {}
-    }
-}
-
-fn validate_attempts(declarations: &[ExecutableDeclaration]) -> Result<(), NativeV2AdmissionError> {
-    if let Some(declaration) = declarations.iter().find(|item| item.attempts != 1) {
-        return Err(NativeV2AdmissionError::Attempts {
-            node: declaration.name.clone(),
-            attempts: declaration.attempts,
-        });
-    }
-    Ok(())
-}
-
-fn validate_binding_coverage(
-    declarations: &[ExecutableDeclaration],
-    bindings: &BTreeMap<NodeName, NodeRuntimeBinding>,
-) -> Result<(), NativeV2AdmissionError> {
-    let executable = declarations
-        .iter()
-        .map(|declaration| declaration.name.clone())
-        .collect::<BTreeSet<_>>();
-    let bound = bindings.keys().cloned().collect::<BTreeSet<_>>();
-    if let Some(node) = executable.difference(&bound).next() {
-        return Err(NativeV2AdmissionError::MissingRuntimeBinding { node: node.clone() });
-    }
-    if let Some(node) = bindings.keys().find(|node| !executable.contains(*node)) {
-        return Err(NativeV2AdmissionError::UnexpectedRuntimeBinding { node: node.clone() });
-    }
-    Ok(())
-}
-
-fn validate_binding_kinds(
-    declarations: &[ExecutableDeclaration],
-    bindings: &BTreeMap<NodeName, NodeRuntimeBinding>,
-) -> Result<(), NativeV2AdmissionError> {
-    for declaration in declarations {
-        if declaration.kind == LeafKind::Step
-            && matches!(
-                bindings.get(&declaration.name),
-                Some(NodeRuntimeBinding::GitDelivery { .. })
-            )
-        {
-            return Err(NativeV2AdmissionError::DeliveryMustBeVerifier {
-                node: declaration.name.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_shipping(
-    ship: bool,
-    declarations: &[ExecutableDeclaration],
-    bindings: &BTreeMap<NodeName, NodeRuntimeBinding>,
-) -> Result<(), NativeV2AdmissionError> {
-    let delivery_nodes = declarations
-        .iter()
-        .filter(|declaration| {
-            matches!(
-                bindings.get(&declaration.name),
-                Some(NodeRuntimeBinding::GitDelivery { .. })
-            )
-        })
-        .collect::<Vec<_>>();
-    if ship && delivery_nodes.len() != 1 {
-        return Err(NativeV2AdmissionError::ShippingDeliveryCount {
-            found: delivery_nodes.len(),
-        });
-    }
-    if !ship {
-        if let Some(delivery) = delivery_nodes.first() {
-            return Err(NativeV2AdmissionError::DeliveryRequiresShipping {
-                node: delivery.name.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn normalize_runtime(mut runtime: RuntimePlan) -> Result<RuntimePlan, NativeV2AdmissionError> {
-    let (catalog, nodes) = match &mut runtime {
-        RuntimePlan::Codex { nodes, .. } => (CODEX_MODELS, nodes),
-        RuntimePlan::Claude { nodes, .. } => (CLAUDE_MODELS, nodes),
-    };
-    for (node, binding) in nodes {
-        let NodeRuntimeBinding::Agent { model, effort, .. } = binding else {
-            continue;
-        };
-        let Some(supported) = catalog
-            .iter()
-            .find(|supported| supported.id == model.as_str())
-        else {
-            return Err(NativeV2AdmissionError::UnsupportedModel {
-                node: node.clone(),
-                model: model.as_str().to_owned(),
-            });
-        };
-        match *effort {
-            Some(value) if !supported.efforts.contains(&value) => {
-                return Err(NativeV2AdmissionError::UnsupportedEffort {
-                    node: node.clone(),
-                    model: model.as_str().to_owned(),
-                    effort: value,
-                });
-            }
-            None => *effort = supported.default_effort,
-            Some(_) => {}
-        }
-    }
-    Ok(runtime)
+async fn verify_submission(
+    prepared: &PreparedSubmission,
+) -> Result<openengine_cluster_protocol::CompiledGraphIr, NativeV2AdmissionError> {
+    let registry = GraphBoundWorkerRegistry::from_declarations(
+        &prepared.graph,
+        &prepared.declarations,
+        &prepared.runtime,
+    )?;
+    ProductionGraphVerifier::new(registry)
+        .verify(&prepared.graph)
+        .await
+        .map(|verified| verified.compiled_ir)
+        .map_err(Into::into)
 }
 
 mod concurrency;
+mod validation;
 use concurrency::validate_concurrency;
+pub(crate) use validation::{sole_delivery_node, writer_nodes};
+use validation::{
+    ExecutableDeclaration, executable_declarations, normalize_runtime,
+    validate_executable_bindings, validate_graph_input,
+};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeRole {
     Agent,

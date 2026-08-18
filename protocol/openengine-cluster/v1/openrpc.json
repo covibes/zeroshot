@@ -559,33 +559,17 @@
       "paramStructure": "by-name",
       "params": [
         {
-          "name": "graph",
+          "name": "runId",
           "required": true,
           "schema": {
-            "$ref": "schema.json#/$defs/GraphSpec"
-          }
-        },
-        {
-          "name": "initialInput",
-          "required": true,
-          "schema": true
-        },
-        {
-          "name": "ship",
-          "required": false,
-          "schema": {
-            "default": false,
-            "type": "boolean"
-          }
-        },
-        {
-          "name": "submissionKey",
-          "required": true,
-          "schema": {
-            "maxLength": 256,
-            "minLength": 1,
-            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
             "type": "string"
+          }
+        },
+        {
+          "name": "submission",
+          "required": true,
+          "schema": {
+            "$ref": "schema.json#/$defs/RunSubmission"
           }
         }
       ],

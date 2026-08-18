@@ -363,10 +363,8 @@ fn run_submit_method() -> Value {
     json!({
         "paramStructure": "by-name",
         "params": [
-            { "name": "graph", "required": true, "schema": { "$ref": "schema.json#/$defs/GraphSpec" } },
-            { "name": "initialInput", "required": true, "schema": true },
-            { "name": "ship", "required": false, "schema": property_schema(&schema, "ship") },
-            { "name": "submissionKey", "required": true, "schema": property_schema(&schema, "submissionKey") }
+            { "name": "runId", "required": true, "schema": property_schema(&schema, "runId") },
+            { "name": "submission", "required": true, "schema": { "$ref": "schema.json#/$defs/RunSubmission" } }
         ],
         "result": {
             "name": "runSubmitResult",

@@ -7,10 +7,26 @@ mod json_read;
 use assert_value::AssertValue;
 use openengine_cluster_protocol::{
     ActiveExecution, Cursor, ExecutionRef, NodeName, RunAttachEventNotification, RunAttachParams,
-    RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunStatus,
-    RunStatusParams, RunStatusResult, RunWatchEventNotification, RunWatchParams, SubscriptionId,
+    RunForceParams, RunForceResult, RunId, RunLogEventNotification, RunLogsParams, RunSize,
+    RunStatus, RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification,
+    RunWatchParams, SourceSnapshot, SubscriptionId, TerminalResult,
 };
 use serde_json::json;
+
+fn title() -> RunTitle {
+    RunTitle::new("Repair checkout flow").assert_value()
+}
+
+fn source() -> SourceSnapshot {
+    serde_json::from_slice(
+        br#"{
+            "repository": "open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        }"#,
+    )
+    .assert_value()
+}
 
 fn execution(value: &str) -> ExecutionRef {
     ExecutionRef::new(value).assert_value()
@@ -36,6 +52,9 @@ fn running_status() -> RunStatus {
 fn status_exposes_every_parallel_execution_without_private_identity() {
     let result = RunStatusResult {
         run_id: RunId::new("run-1"),
+        title: title(),
+        source: source(),
+        size: RunSize::Standard,
         at_cursor: Cursor::new("v2:7"),
         status: running_status(),
     };
@@ -45,6 +64,13 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
         value,
         json!({
             "runId": "run-1",
+            "title": "Repair checkout flow",
+            "source": {
+                "repository": "open-engine/zeroshot",
+                "targetBranch": "main",
+                "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            },
+            "size": "standard",
             "atCursor": "v2:7",
             "status": {
                 "phase": "running",
@@ -62,6 +88,13 @@ fn status_exposes_every_parallel_execution_without_private_identity() {
     assert!(
         serde_json::from_value::<RunStatusResult>(json!({
             "runId": "run-1",
+            "title": "Repair checkout flow",
+            "source": {
+                "repository": "open-engine/zeroshot",
+                "targetBranch": "main",
+                "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+            },
+            "size": "standard",
             "atCursor": "v2:7",
             "status": {
                 "phase": "running",
@@ -104,14 +137,35 @@ fn watch_and_logs_use_required_run_id_and_exclusive_resume_cursor() {
 
 #[test]
 fn durable_events_carry_run_and_stable_cursor() {
+    let terminal_output = json!({
+        "kind": "verification_receipt",
+        "summary": "checkout repaired",
+        "passed": true
+    });
     let watch = RunWatchEventNotification {
         subscription_id: SubscriptionId::new("watch-1"),
         run_id: RunId::new("run-1"),
+        title: title(),
+        source: source(),
+        size: RunSize::Standard,
         cursor: Cursor::new("v2:8"),
-        status: running_status(),
+        status: RunStatus::Finished {
+            terminal_result: TerminalResult::Succeeded {
+                output: terminal_output.clone(),
+            },
+        },
     };
     let value = serde_json::to_value(&watch).assert_value();
     assert_eq!(json_read::json_at(&value, "/cursor"), &json!("v2:8"));
+    assert_eq!(
+        json_read::json_at(&value, "/title"),
+        &json!("Repair checkout flow")
+    );
+    assert_eq!(json_read::json_at(&value, "/size"), &json!("standard"));
+    assert_eq!(
+        json_read::json_at(&value, "/status/terminalResult/output"),
+        &terminal_output
+    );
 
     let value = json!({
         "subscriptionId": "logs-1",
@@ -188,6 +242,9 @@ fn force_is_the_only_stop_shape_and_returns_durable_status() {
 
     let result = RunForceResult {
         run_id: RunId::new("run-1"),
+        title: title(),
+        source: source(),
+        size: RunSize::Standard,
         at_cursor: Cursor::new("v2:10"),
         status: RunStatus::Stopping {
             active_executions: vec![active("opaque-verifier-b", "verify-b")],

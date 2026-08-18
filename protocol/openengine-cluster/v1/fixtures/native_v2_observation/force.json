@@ -5,6 +5,12 @@
   "result": {
     "atCursor": "v2:10",
     "runId": "run-1",
+    "size": "standard",
+    "source": {
+      "baseRevision": "0123456789abcdef0123456789abcdef01234567",
+      "repository": "open-engine/zeroshot",
+      "targetBranch": "main"
+    },
     "status": {
       "activeExecutions": [
         {
@@ -17,6 +23,7 @@
         }
       ],
       "phase": "stopping"
-    }
+    },
+    "title": "Repair checkout flow"
   }
 }
