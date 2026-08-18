@@ -183,6 +183,7 @@ impl ProductionCapsuleAllocator {
                     executable: self.config.codex_executable.clone(),
                     workspace: filesystem.workspace.clone(),
                     runtime_home: filesystem.runtime_home.clone(),
+                    local_user: None,
                     search_path: self.config.executable_search_path.clone(),
                     process_pool: self.config.process_pool,
                 }))
@@ -201,6 +202,8 @@ impl ProductionCapsuleAllocator {
                     executable: self.config.claude_executable.clone(),
                     prefix_arguments: self.config.claude_prefix_arguments.clone(),
                     workspace: filesystem.workspace.clone(),
+                    runtime_home: filesystem.runtime_home.clone(),
+                    local_user_home: None,
                     base_environment,
                     turn_timeout: self.config.claude_turn_timeout,
                     process_pool: self.config.process_pool,

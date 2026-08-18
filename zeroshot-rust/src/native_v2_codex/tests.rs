@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "tests/local_identity.rs"]
+mod local_identity;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -81,6 +84,7 @@ fn scripted_adapter(
         executable,
         workspace,
         runtime_home,
+        local_user: None,
         search_path: "/usr/bin:/bin".to_owned(),
         process_pool: HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value(),
     }))
@@ -233,9 +237,6 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
         "arg=model_reasoning_effort=\"max\"",
         "arg=--sandbox\narg=workspace-write",
         "arg=approval_policy=\"never\"",
-        "arg=--ignore-user-config",
-        "arg=--ignore-rules",
-        "arg=--strict-config",
         "arg=web_search=\"disabled\"",
         "Input JSON:\n{\"task\":\"change the workspace\"}",
         "Response contract:\n{\"kind\":\"worker\",\"output\":{\"kind\":\"record\"",
@@ -248,6 +249,9 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
             capture.contains(expected),
             "missing capture evidence: {expected}"
         );
+    }
+    for suppressed in ["--ignore-user-config", "--ignore-rules", "--strict-config"] {
+        assert!(!capture.contains(suppressed));
     }
 }
 
@@ -397,6 +401,7 @@ fn command_environment_is_exact_and_rejects_adapter_owned_collisions() {
     let environment = process_environment(
         &resolved,
         "/private/runtime".to_owned(),
+        "/private/runtime".to_owned(),
         "/usr/bin:/bin".to_owned(),
     )
     .assert_value();
@@ -422,6 +427,7 @@ fn command_environment_is_exact_and_rejects_adapter_owned_collisions() {
     assert_eq!(
         process_environment(
             &environment,
+            "adapter-owned".to_owned(),
             "adapter-owned".to_owned(),
             "/usr/bin:/bin".to_owned()
         ),

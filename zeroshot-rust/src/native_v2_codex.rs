@@ -49,9 +49,17 @@ pub struct NativeV2CodexConfig {
     pub executable: PathBuf,
     pub workspace: PathBuf,
     pub runtime_home: PathBuf,
+    /// Current-user homes are available only to the built-in local target.
+    pub local_user: Option<NativeV2CodexUser>,
     /// Explicit executable search path for Codex and commands launched by the agent.
     pub search_path: String,
     pub process_pool: HostedProcessPool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeV2CodexUser {
+    pub home: PathBuf,
+    pub codex_home: PathBuf,
 }
 
 /// One graph-wide Codex/OpenAI-or-OpenRouter adapter.
@@ -62,7 +70,8 @@ pub struct NativeV2CodexAdapter {
 
 impl NativeV2CodexAdapter {
     #[must_use]
-    pub fn new(config: NativeV2CodexConfig) -> Self {
+    pub fn new(mut config: NativeV2CodexConfig) -> Self {
+        config.local_user = None;
         let process_pool = config.process_pool;
         Self {
             config,
@@ -114,18 +123,44 @@ impl NativeV2CodexAdapter {
         Ok(ProcessSessionCommand {
             program: executable,
             argv,
-            environment: provider_environment(
-                &invocation.environment,
-                path_text(runtime_home)?,
-                self.config.search_path.clone(),
-                self.config.provider,
-            )?,
+            environment: self.provider_environment(&invocation.environment, runtime_home)?,
             workspace: WorkspaceCapability {
                 current_dir: workspace,
                 mode: access,
             },
             deadline: turn.deadline,
         })
+    }
+
+    fn provider_environment(
+        &self,
+        environment: &ResolvedEnvironment,
+        runtime_home: &Path,
+    ) -> Result<BTreeMap<String, String>, NodeRunnerError> {
+        let (home, codex_home) = match &self.config.local_user {
+            Some(local) => (path_text(&local.home)?, path_text(&local.codex_home)?),
+            None => {
+                let runtime_home = path_text(runtime_home)?;
+                (runtime_home.clone(), runtime_home)
+            }
+        };
+        let mut values = process_environment(
+            environment,
+            home,
+            codex_home,
+            self.config.search_path.clone(),
+        )?;
+        for provider_control in ["CODEX_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"] {
+            if values.contains_key(provider_control) {
+                return Err(NodeRunnerError::Driver);
+            }
+        }
+        configure_provider_auth(
+            &mut values,
+            self.config.provider,
+            self.config.local_user.is_some(),
+        )?;
+        Ok(values)
     }
 
     async fn run_turn(
@@ -291,7 +326,8 @@ fn emit_text(
 
 fn process_environment(
     environment: &ResolvedEnvironment,
-    runtime_home: String,
+    home: String,
+    codex_home: String,
     search_path: String,
 ) -> Result<BTreeMap<String, String>, NodeRunnerError> {
     let mut values = environment
@@ -304,32 +340,38 @@ fn process_environment(
     if values.contains_key(CODEX_HOME) || values.contains_key(HOME) || values.contains_key(PATH) {
         return Err(NodeRunnerError::Driver);
     }
-    values.insert(CODEX_HOME.to_owned(), runtime_home.clone());
-    values.insert(HOME.to_owned(), runtime_home);
+    values.insert(CODEX_HOME.to_owned(), codex_home);
+    values.insert(HOME.to_owned(), home);
     values.insert(PATH.to_owned(), search_path);
     Ok(values)
 }
 
-fn provider_environment(
-    environment: &ResolvedEnvironment,
-    runtime_home: String,
-    search_path: String,
+fn configure_provider_auth(
+    values: &mut BTreeMap<String, String>,
     provider: CodexProvider,
-) -> Result<BTreeMap<String, String>, NodeRunnerError> {
-    let mut values = process_environment(environment, runtime_home, search_path)?;
-    for provider_control in ["CODEX_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_BASE"] {
-        if values.contains_key(provider_control) {
-            return Err(NodeRunnerError::Driver);
-        }
+    has_local_user: bool,
+) -> Result<(), NodeRunnerError> {
+    match provider {
+        CodexProvider::OpenAi => configure_openai_auth(values, has_local_user),
+        CodexProvider::OpenRouter => values
+            .get("OPENROUTER_API_KEY")
+            .is_some_and(|value| !value.is_empty())
+            .then_some(())
+            .ok_or(NodeRunnerError::Driver),
     }
-    if provider == CodexProvider::OpenAi {
-        let openai = values.remove(OPENAI_API_KEY);
-        if !values.contains_key(CODEX_API_KEY) {
-            let value = openai.ok_or(NodeRunnerError::Driver)?;
-            values.insert(CODEX_API_KEY.to_owned(), value);
-        }
+}
+
+fn configure_openai_auth(
+    values: &mut BTreeMap<String, String>,
+    has_local_user: bool,
+) -> Result<(), NodeRunnerError> {
+    let openai = values.remove(OPENAI_API_KEY);
+    if values.contains_key(CODEX_API_KEY) || has_local_user && openai.is_none() {
+        return Ok(());
     }
-    Ok(values)
+    let value = openai.ok_or(NodeRunnerError::Driver)?;
+    values.insert(CODEX_API_KEY.to_owned(), value);
+    Ok(())
 }
 
 fn add_provider_args(argv: &mut Vec<String>, provider: CodexProvider) {
@@ -394,9 +436,6 @@ fn add_node_args(
     }
     argv.extend([
         "--skip-git-repo-check".to_owned(),
-        "--ignore-user-config".to_owned(),
-        "--ignore-rules".to_owned(),
-        "--strict-config".to_owned(),
         "--config".to_owned(),
         "web_search=\"disabled\"".to_owned(),
     ]);

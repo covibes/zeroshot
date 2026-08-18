@@ -36,70 +36,70 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 
 ## Where to Look
 
-| Concept                                 | File                                                                                                                             |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Conductor classification                | `src/conductor-bootstrap.js`                                                                                                     |
-| Base templates                          | `cluster-templates/base-templates/`                                                                                              |
-| Message bus                             | `src/message-bus.js`                                                                                                             |
-| Ledger (SQLite)                         | `src/ledger.js`                                                                                                                  |
-| Guidance topics                         | `src/guidance-topics.ts` (generated CommonJS: `src/guidance-topics.js`)                                                          |
-| Guidance mailbox helper                 | `src/ledger.js`                                                                                                                  |
-| Guidance live injection                 | `src/orchestrator.js`                                                                                                            |
-| Trigger evaluation                      | `src/logic-engine.js`                                                                                                            |
-| Agent wrapper                           | `src/agent-wrapper.js`                                                                                                           |
-| Agent context assembly                  | `src/agent/agent-context-*.ts`, `src/agent/context-pack-*.ts`                                                                    |
-| Providers registry                      | `src/providers/index.js`                                                                                                         |
-| Provider implementations                | `src/providers/`                                                                                                                 |
-| Provider engine registry                | `src/agent-cli-provider/provider-registry.ts`                                                                                    |
-| Pi JSON protocol                        | `src/agent-cli-provider/pi/`                                                                                                     |
-| Pi watcher lifecycle                    | `src/agent/pi-terminal-lifecycle.ts`                                                                                             |
-| Provider terminal failure               | `src/agent/provider-terminal-failure.ts`                                                                                         |
-| Structured-output recovery              | `src/agent/output-reformatter.ts`                                                                                                |
-| Provider output extraction              | `src/agent/output-extraction.ts`                                                                                                 |
-| Gateway runner                          | `src/agent-cli-provider/gateway-runner.ts`                                                                                       |
-| Gateway tools/policy                    | `src/agent-cli-provider/gateway-tools.ts`                                                                                        |
-| OMP release/version pinning             | `src/agent-cli-provider/omp-release.ts`                                                                                          |
-| OMP RPC codec (JSONL/chunking)          | `src/agent-cli-provider/omp-rpc-protocol.ts`                                                                                     |
-| OMP RPC lifecycle driver                | `src/agent-cli-provider/omp-rpc-driver.ts`                                                                                       |
-| OMP RPC frame normalization             | `src/agent-cli-provider/omp-rpc-events.ts`                                                                                       |
-| OMP session launch types                | `src/agent-cli-provider/omp-rpc-session.ts`                                                                                      |
-| OMP config safety overlay               | `src/omp-config-overlay.ts`                                                                                                      |
-| OMP detached RPC watcher                | `task-lib/rpc-watcher.js`                                                                                                        |
-| Provider detection                      | `lib/provider-detection.js`                                                                                                      |
-| Maintained legacy TypeScript leaves     | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
-| Maintained runtime TypeScript leaves    | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
-| Attach session facade/client/server     | `src/attach/{index,attach-client,attach-server}.ts`                                                                              |
-| Attach server lifecycle and PTY         | `src/attach/attach-server-{runtime,pty,socket}.ts`                                                                               |
-| Attach server clients and cleanup       | `src/attach/attach-server-{clients,events,cleanup,types}.ts`                                                                     |
-| Template validation entrypoint          | `src/template-validation/index.js`                                                                                               |
-| Shared template simulation seam         | `src/template-validation/{simulation-runtime,simulation-agent,simulation-agent-runtime}.ts`                                      |
-| Random topology simulation pipeline     | `src/template-validation/random-topology-*.ts`, `simulate-random-topology.ts`                                                    |
-| Provider capabilities                   | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
-| Claude settings overlay                 | `src/worktree-claude-config.ts`                                                                                                  |
-| Detached/foreground cleanup ownership   | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
-| Shared watcher output path              | `task-lib/watcher-output-runtime.js`                                                                                             |
-| Provider session reuse                  | `src/agent/provider-session.js`                                                                                                  |
-| Start-cluster helper                    | `lib/start-cluster.js`                                                                                                           |
-| Legacy worker facade                    | `lib/cluster-worker/`                                                                                                            |
-| Legacy worker executable                | `bin/zeroshot-cluster-worker.js`                                                                                                 |
-| Docker mounts/env                       | `lib/docker-config.js`                                                                                                           |
-| Container lifecycle                     | `src/isolation-manager.js`                                                                                                       |
-| Pull-request body templates             | `src/pr-body-template.js`, `src/agents/git-pusher-template.js`                                                                   |
-| Settings                                | `lib/settings.js`                                                                                                                |
-| Legacy settings property selection      | `src/repo-settings-access.ts`                                                                                                    |
-| Cluster wire/domain types               | `crates/openengine-cluster-protocol/`                                                                                            |
-| Admission wire semantics                | `crates/openengine-cluster-protocol/src/admission.rs`                                                                            |
-| Graph AST/bindings/guards               | `crates/openengine-cluster-protocol/src/graph.rs`                                                                                |
-| Closed payload algebra                  | `crates/openengine-cluster-protocol/src/payload.rs`                                                                              |
-| Closed payload validation               | `crates/openengine-cluster-protocol/src/payload_value.rs`                                                                        |
-| Compiled IR/identity                    | `crates/openengine-cluster-protocol/src/canonical.rs`                                                                            |
+| Concept                                   | File                                                                                                                             |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Conductor classification                  | `src/conductor-bootstrap.js`                                                                                                     |
+| Base templates                            | `cluster-templates/base-templates/`                                                                                              |
+| Message bus                               | `src/message-bus.js`                                                                                                             |
+| Ledger (SQLite)                           | `src/ledger.js`                                                                                                                  |
+| Guidance topics                           | `src/guidance-topics.ts` (generated CommonJS: `src/guidance-topics.js`)                                                          |
+| Guidance mailbox helper                   | `src/ledger.js`                                                                                                                  |
+| Guidance live injection                   | `src/orchestrator.js`                                                                                                            |
+| Trigger evaluation                        | `src/logic-engine.js`                                                                                                            |
+| Agent wrapper                             | `src/agent-wrapper.js`                                                                                                           |
+| Agent context assembly                    | `src/agent/agent-context-*.ts`, `src/agent/context-pack-*.ts`                                                                    |
+| Providers registry                        | `src/providers/index.js`                                                                                                         |
+| Provider implementations                  | `src/providers/`                                                                                                                 |
+| Provider engine registry                  | `src/agent-cli-provider/provider-registry.ts`                                                                                    |
+| Pi JSON protocol                          | `src/agent-cli-provider/pi/`                                                                                                     |
+| Pi watcher lifecycle                      | `src/agent/pi-terminal-lifecycle.ts`                                                                                             |
+| Provider terminal failure                 | `src/agent/provider-terminal-failure.ts`                                                                                         |
+| Structured-output recovery                | `src/agent/output-reformatter.ts`                                                                                                |
+| Provider output extraction                | `src/agent/output-extraction.ts`                                                                                                 |
+| Gateway runner                            | `src/agent-cli-provider/gateway-runner.ts`                                                                                       |
+| Gateway tools/policy                      | `src/agent-cli-provider/gateway-tools.ts`                                                                                        |
+| OMP release/version pinning               | `src/agent-cli-provider/omp-release.ts`                                                                                          |
+| OMP RPC codec (JSONL/chunking)            | `src/agent-cli-provider/omp-rpc-protocol.ts`                                                                                     |
+| OMP RPC lifecycle driver                  | `src/agent-cli-provider/omp-rpc-driver.ts`                                                                                       |
+| OMP RPC frame normalization               | `src/agent-cli-provider/omp-rpc-events.ts`                                                                                       |
+| OMP session launch types                  | `src/agent-cli-provider/omp-rpc-session.ts`                                                                                      |
+| OMP config safety overlay                 | `src/omp-config-overlay.ts`                                                                                                      |
+| OMP detached RPC watcher                  | `task-lib/rpc-watcher.js`                                                                                                        |
+| Provider detection                        | `lib/provider-detection.js`                                                                                                      |
+| Maintained legacy TypeScript leaves       | `src/legacy-lib/` (generated CommonJS: matching paths under `lib/` via `build:legacy-lib`)                                       |
+| Maintained runtime TypeScript leaves      | Beside runtime paths (generated CommonJS via `build:legacy-runtime`; task-lib ESM via `build:task-lib`)                          |
+| Attach session facade/client/server       | `src/attach/{index,attach-client,attach-server}.ts`                                                                              |
+| Attach server lifecycle and PTY           | `src/attach/attach-server-{runtime,pty,socket}.ts`                                                                               |
+| Attach server clients and cleanup         | `src/attach/attach-server-{clients,events,cleanup,types}.ts`                                                                     |
+| Template validation entrypoint            | `src/template-validation/index.js`                                                                                               |
+| Shared template simulation seam           | `src/template-validation/{simulation-runtime,simulation-agent,simulation-agent-runtime}.ts`                                      |
+| Random topology simulation pipeline       | `src/template-validation/random-topology-*.ts`, `simulate-random-topology.ts`                                                    |
+| Provider capabilities                     | `src/providers/capabilities.ts` (generated CommonJS: `src/providers/capabilities.js`)                                            |
+| Claude settings overlay                   | `src/worktree-claude-config.ts`                                                                                                  |
+| Detached/foreground cleanup ownership     | `src/command-cleanup-ownership.js` (re-exported by `task-lib/command-spec-cleanup.js` and used directly by `contract-invoke.ts`) |
+| Shared watcher output path                | `task-lib/watcher-output-runtime.js`                                                                                             |
+| Provider session reuse                    | `src/agent/provider-session.js`                                                                                                  |
+| Start-cluster helper                      | `lib/start-cluster.js`                                                                                                           |
+| Legacy worker facade                      | `lib/cluster-worker/`                                                                                                            |
+| Legacy worker executable                  | `bin/zeroshot-cluster-worker.js`                                                                                                 |
+| Docker mounts/env                         | `lib/docker-config.js`                                                                                                           |
+| Container lifecycle                       | `src/isolation-manager.js`                                                                                                       |
+| Pull-request body templates               | `src/pr-body-template.js`, `src/agents/git-pusher-template.js`                                                                   |
+| Settings                                  | `lib/settings.js`                                                                                                                |
+| Legacy settings property selection        | `src/repo-settings-access.ts`                                                                                                    |
+| Cluster wire/domain types                 | `crates/openengine-cluster-protocol/`                                                                                            |
+| Admission wire semantics                  | `crates/openengine-cluster-protocol/src/admission.rs`                                                                            |
+| Graph AST/bindings/guards                 | `crates/openengine-cluster-protocol/src/graph.rs`                                                                                |
+| Closed payload algebra                    | `crates/openengine-cluster-protocol/src/payload.rs`                                                                              |
+| Closed payload validation                 | `crates/openengine-cluster-protocol/src/payload_value.rs`                                                                        |
+| Compiled IR/identity                      | `crates/openengine-cluster-protocol/src/canonical.rs`                                                                            |
 | Shared non-v2 artifact receipt types      | `crates/openengine-cluster-protocol/src/artifact.rs`                                                                             |
-| Graph diagnostics/bounds                | `crates/openengine-cluster-protocol/src/diagnostic.rs`                                                                           |
-| Shared wire-value bounds                | `crates/openengine-cluster-protocol/src/value.rs`                                                                                |
-| Cluster server crate                    | `crates/openengine-cluster-server/`                                                                                              |
-| Graph verifier facade                   | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
-| Graph verifier analysis                 | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
-| Native product construction             | `zeroshot-rust/`                                                                                                                 |
+| Graph diagnostics/bounds                  | `crates/openengine-cluster-protocol/src/diagnostic.rs`                                                                           |
+| Shared wire-value bounds                  | `crates/openengine-cluster-protocol/src/value.rs`                                                                                |
+| Cluster server crate                      | `crates/openengine-cluster-server/`                                                                                              |
+| Graph verifier facade                     | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
+| Graph verifier analysis                   | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
+| Native product construction               | `zeroshot-rust/`                                                                                                                 |
 | Native v2 portable one-run engine/process | `zeroshot-rust/src/native_v2_portable_controller.rs`, `native_v2_portable_controller/`                                           |
 | Native v2 host run router/OECP binding    | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                       |
 | Native v2 target auth/inventory/routes    | `zeroshot-rust/src/native_v2_target_authority.rs`, `native_v2_target_authority/`                                                 |
@@ -109,66 +109,66 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native v2 provider/delivery composition   | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
 | Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
 | Native v2 target connector                | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
-| Native release targets                  | `distribution/zeroshot-rust-targets.json`                                                                                        |
-| Native npm binary shim                  | `npm/zeroshot-rust/`                                                                                                             |
-| Native distribution tooling             | `scripts/rust-distribution.js`                                                                                                   |
-| Native distribution decision            | `docs/zeroshot-rust-distribution.md`                                                                                             |
-| Full-v1 pure graph reducer              | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |
+| Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
+| Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
+| Native distribution tooling               | `scripts/rust-distribution.js`                                                                                                   |
+| Native distribution decision              | `docs/zeroshot-rust-distribution.md`                                                                                             |
+| Full-v1 pure graph reducer                | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |
 | Lean native v2 run ledger/SQLite          | `zeroshot-rust/src/v2_run_ledger.rs`, `v2_run_ledger/`                                                                           |
 | Native v2 filesystem controller lease     | `zeroshot-rust/src/native_v2_portable_controller/lease.rs`                                                                       |
-| Issue provider contracts                | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                                                                         |
-| Source provider contracts               | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`                                                             |
-| Provider value bounds                   | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                                                                         |
-| Native v2 model values                  | `zeroshot-rust/src/worker_catalog.rs`                                                                                            |
-| Native v2 execution primitives          | `zeroshot-rust/src/execution.rs`, `execution/driver.rs`                                                                          |
-| Contained provider sessions             | `zeroshot-rust/src/execution/process.rs`, `execution/process/`                                                                   |
-| Native safe faults                      | `zeroshot-rust/src/fault.rs`                                                                                                     |
-| Native fault taxonomy                   | `zeroshot-rust/src/fault/taxonomy.rs`                                                                                            |
-| Native diagnostic redaction             | `zeroshot-rust/src/fault/redaction.rs`                                                                                           |
-| Native product error projection         | `zeroshot-rust/src/product_errors.rs`                                                                                            |
-| Native observability                    | `zeroshot-rust/src/observability.rs`                                                                                             |
-| Admission coordinator                   | `crates/openengine-cluster-server/src/admission.rs`, `crates/openengine-cluster-server/src/admission/core.rs`                    |
-| Admission durable ports                 | `crates/openengine-cluster-server/src/admission/ports.rs`                                                                        |
-| Admission snapshot folding              | `crates/openengine-cluster-server/src/admission/snapshot.rs`                                                                     |
-| Lifecycle state machine                 | `crates/openengine-cluster-server/src/lifecycle.rs`                                                                              |
-| Lifecycle durable ports                 | `crates/openengine-cluster-server/src/lifecycle/ports.rs`                                                                        |
-| Watch event stream/handle               | `crates/openengine-cluster-server/src/watch.rs`                                                                                  |
-| Watch observation port                  | `crates/openengine-cluster-server/src/watch/ports.rs`                                                                            |
-| Watch minimal test fixture              | `crates/openengine-cluster-server/src/watch/fixtures.rs`                                                                         |
-| Watch wire types/framing                | `crates/openengine-cluster-protocol/src/watch.rs`                                                                                |
-| Native v2 run method wire values        | `crates/openengine-cluster-protocol/src/native_v2_{run,observation}.rs`                                                          |
-| Native v2 server routes/stream seam     | `crates/openengine-cluster-server/src/native_v2.rs`, `connection/native_v2.rs`                                                   |
-| Native v2 typed protocol client         | `crates/openengine-cluster-client/src/native_v2.rs`                                                                              |
-| Client watch/reconnect                  | `crates/openengine-cluster-client/src/watch.rs`                                                                                  |
-| NDJSON stdio binding                    | `crates/openengine-cluster-server/src/stdio.rs`                                                                                  |
-| NDJSON watch client                     | `crates/openengine-cluster-client/src/ndjson_watch.rs`                                                                           |
-| Connection core/admission               | `crates/openengine-cluster-server/src/connection.rs`, `connection/`                                                              |
-| JSON-RPC envelope/routing               | `crates/openengine-cluster-server/src/dispatch.rs`                                                                               |
-| Protocol method registry                | `crates/openengine-cluster-server/src/method_registry.rs`                                                                        |
-| NDJSON response pump                    | `crates/openengine-cluster-client/src/ndjson_pump.rs`                                                                            |
-| Cluster typed transports                | `crates/openengine-cluster-client/`                                                                                              |
-| TypeScript cluster client               | `src/cluster/`                                                                                                                   |
-| Hosted session coordinator              | `src/hosted-session/`                                                                                                            |
-| Hosted target capsule adapter           | `src/hosted-target/`                                                                                                             |
-| Named target registry and sessions      | `src/target/`                                                                                                                    |
-| TypeScript protocol emitter             | `scripts/generate-cluster-types.js`                                                                                              |
-| Cluster fixtures/artifacts              | `crates/openengine-cluster-testkit/`                                                                                             |
-| Portable backend conformance            | `crates/openengine-cluster-testkit/src/conformance.rs`                                                                           |
-| Scripted admission fixtures             | `crates/openengine-cluster-testkit/src/admission.rs`                                                                             |
-| Fixture inspection controls             | `crates/openengine-cluster-testkit/src/admission/inspection.rs`                                                                  |
-| Scripted lifecycle helpers              | `crates/openengine-cluster-testkit/src/lifecycle.rs`                                                                             |
-| Lifecycle fixture params                | `crates/openengine-cluster-testkit/src/lifecycle/params.rs`                                                                      |
-| In-memory observation store             | `crates/openengine-cluster-testkit/src/watch.rs`                                                                                 |
-| Admission transcript output             | `crates/openengine-cluster-testkit/src/admission_artifacts.rs`                                                                   |
-| Watch/subscription artifacts            | `crates/openengine-cluster-testkit/src/watch_artifacts.rs`                                                                       |
-| Negative graph vectors                  | `crates/openengine-cluster-testkit/src/negative_graph_fixtures.rs`                                                               |
-| Verifier vectors                        | `crates/openengine-cluster-testkit/src/graph_verifier_artifacts.rs`                                                              |
-| Graph contract prose                    | `docs/openengine-cluster-protocol/v1/graph-contract.md`                                                                          |
-| Admission contract prose                | `docs/openengine-cluster-protocol/v1/admission.md`                                                                               |
-| Lifecycle contract prose                | `docs/openengine-cluster-protocol/v1/lifecycle.md`                                                                               |
-| Watch contract prose                    | `docs/openengine-cluster-protocol/v1/watch.md`                                                                                   |
-| Generated graph fixtures                | `protocol/openengine-cluster/v1/fixtures/graph/`                                                                                 |
-| Generated watch fixtures                | `protocol/openengine-cluster/v1/fixtures/watch/`                                                                                 |
+| Issue provider contracts                  | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                                                                         |
+| Source provider contracts                 | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`                                                             |
+| Provider value bounds                     | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                                                                         |
+| Native v2 model values                    | `zeroshot-rust/src/worker_catalog.rs`                                                                                            |
+| Native v2 execution primitives            | `zeroshot-rust/src/execution.rs`, `execution/driver.rs`                                                                          |
+| Contained provider sessions               | `zeroshot-rust/src/execution/process.rs`, `execution/process/`                                                                   |
+| Native safe faults                        | `zeroshot-rust/src/fault.rs`                                                                                                     |
+| Native fault taxonomy                     | `zeroshot-rust/src/fault/taxonomy.rs`                                                                                            |
+| Native diagnostic redaction               | `zeroshot-rust/src/fault/redaction.rs`                                                                                           |
+| Native product error projection           | `zeroshot-rust/src/product_errors.rs`                                                                                            |
+| Native observability                      | `zeroshot-rust/src/observability.rs`                                                                                             |
+| Admission coordinator                     | `crates/openengine-cluster-server/src/admission.rs`, `crates/openengine-cluster-server/src/admission/core.rs`                    |
+| Admission durable ports                   | `crates/openengine-cluster-server/src/admission/ports.rs`                                                                        |
+| Admission snapshot folding                | `crates/openengine-cluster-server/src/admission/snapshot.rs`                                                                     |
+| Lifecycle state machine                   | `crates/openengine-cluster-server/src/lifecycle.rs`                                                                              |
+| Lifecycle durable ports                   | `crates/openengine-cluster-server/src/lifecycle/ports.rs`                                                                        |
+| Watch event stream/handle                 | `crates/openengine-cluster-server/src/watch.rs`                                                                                  |
+| Watch observation port                    | `crates/openengine-cluster-server/src/watch/ports.rs`                                                                            |
+| Watch minimal test fixture                | `crates/openengine-cluster-server/src/watch/fixtures.rs`                                                                         |
+| Watch wire types/framing                  | `crates/openengine-cluster-protocol/src/watch.rs`                                                                                |
+| Native v2 run method wire values          | `crates/openengine-cluster-protocol/src/native_v2_{run,observation}.rs`                                                          |
+| Native v2 server routes/stream seam       | `crates/openengine-cluster-server/src/native_v2.rs`, `connection/native_v2.rs`                                                   |
+| Native v2 typed protocol client           | `crates/openengine-cluster-client/src/native_v2.rs`                                                                              |
+| Client watch/reconnect                    | `crates/openengine-cluster-client/src/watch.rs`                                                                                  |
+| NDJSON stdio binding                      | `crates/openengine-cluster-server/src/stdio.rs`                                                                                  |
+| NDJSON watch client                       | `crates/openengine-cluster-client/src/ndjson_watch.rs`                                                                           |
+| Connection core/admission                 | `crates/openengine-cluster-server/src/connection.rs`, `connection/`                                                              |
+| JSON-RPC envelope/routing                 | `crates/openengine-cluster-server/src/dispatch.rs`                                                                               |
+| Protocol method registry                  | `crates/openengine-cluster-server/src/method_registry.rs`                                                                        |
+| NDJSON response pump                      | `crates/openengine-cluster-client/src/ndjson_pump.rs`                                                                            |
+| Cluster typed transports                  | `crates/openengine-cluster-client/`                                                                                              |
+| TypeScript cluster client                 | `src/cluster/`                                                                                                                   |
+| Hosted session coordinator                | `src/hosted-session/`                                                                                                            |
+| Hosted target capsule adapter             | `src/hosted-target/`                                                                                                             |
+| Named target registry and sessions        | `src/target/`                                                                                                                    |
+| TypeScript protocol emitter               | `scripts/generate-cluster-types.js`                                                                                              |
+| Cluster fixtures/artifacts                | `crates/openengine-cluster-testkit/`                                                                                             |
+| Portable backend conformance              | `crates/openengine-cluster-testkit/src/conformance.rs`                                                                           |
+| Scripted admission fixtures               | `crates/openengine-cluster-testkit/src/admission.rs`                                                                             |
+| Fixture inspection controls               | `crates/openengine-cluster-testkit/src/admission/inspection.rs`                                                                  |
+| Scripted lifecycle helpers                | `crates/openengine-cluster-testkit/src/lifecycle.rs`                                                                             |
+| Lifecycle fixture params                  | `crates/openengine-cluster-testkit/src/lifecycle/params.rs`                                                                      |
+| In-memory observation store               | `crates/openengine-cluster-testkit/src/watch.rs`                                                                                 |
+| Admission transcript output               | `crates/openengine-cluster-testkit/src/admission_artifacts.rs`                                                                   |
+| Watch/subscription artifacts              | `crates/openengine-cluster-testkit/src/watch_artifacts.rs`                                                                       |
+| Negative graph vectors                    | `crates/openengine-cluster-testkit/src/negative_graph_fixtures.rs`                                                               |
+| Verifier vectors                          | `crates/openengine-cluster-testkit/src/graph_verifier_artifacts.rs`                                                              |
+| Graph contract prose                      | `docs/openengine-cluster-protocol/v1/graph-contract.md`                                                                          |
+| Admission contract prose                  | `docs/openengine-cluster-protocol/v1/admission.md`                                                                               |
+| Lifecycle contract prose                  | `docs/openengine-cluster-protocol/v1/lifecycle.md`                                                                               |
+| Watch contract prose                      | `docs/openengine-cluster-protocol/v1/watch.md`                                                                                   |
+| Generated graph fixtures                  | `protocol/openengine-cluster/v1/fixtures/graph/`                                                                                 |
+| Generated watch fixtures                  | `protocol/openengine-cluster/v1/fixtures/watch/`                                                                                 |
 
 Provider-specific settings, defaults, validation, and static capabilities derive from the provider
 registry; do not add parallel provider lists. Opt-in native CLI capabilities must keep requested
@@ -251,6 +251,10 @@ artifact store, CAS, staged artifact pipeline, or `ArtifactRef` delivery path, a
 `execution/process` is the contained streaming-session seam. Recovery is registered before spawn,
 stdout and diagnostics remain bounded, and close/release owns termination and reaping exactly once.
 Provider framing and response decoding remain in the Codex and Claude adapters.
+Those adapters leave native repository config and MCP discovery enabled; v2 has no MCP schema or
+proxy. The built-in local host alone inherits the current user's `HOME`/`CODEX_HOME` paths for CLI
+subscription identity. Those paths and credentials never enter OECP; hosted homes stay private and
+remote runs use declared provider keys.
 
 Git delivery returns bounded, schema-declared inline output and must not persist a parallel delivery
 result outside the lean run history.

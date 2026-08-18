@@ -107,6 +107,8 @@ pub struct ClaudeAdapter {
     executable: String,
     prefix_arguments: Vec<String>,
     workspace: PathBuf,
+    runtime_home: PathBuf,
+    local_user_home: Option<PathBuf>,
     base_environment: ClaudeProcessEnvironment,
     turn_timeout: Duration,
     runners: ProviderProcessRunners,
@@ -117,29 +119,29 @@ pub struct ClaudeAdapterConfig {
     pub executable: String,
     pub prefix_arguments: Vec<String>,
     pub workspace: PathBuf,
+    pub runtime_home: PathBuf,
+    /// Current-user home is available only to the built-in local target.
+    pub local_user_home: Option<PathBuf>,
     pub base_environment: ClaudeProcessEnvironment,
     pub turn_timeout: Duration,
     pub process_pool: HostedProcessPool,
 }
 
 impl ClaudeAdapter {
-    pub fn new(configuration: ClaudeAdapterConfig) -> Result<Self, ClaudeAdapterConfigError> {
-        if configuration.executable.is_empty() {
-            return Err(ClaudeAdapterConfigError::EmptyExecutable);
-        }
-        let process_pool = configuration.process_pool;
-        Ok(Self {
-            provider: configuration.provider,
-            executable: configuration.executable,
-            prefix_arguments: configuration.prefix_arguments,
-            workspace: configuration.workspace,
-            base_environment: configuration.base_environment,
-            turn_timeout: configuration.turn_timeout,
-            runners: ProviderProcessRunners::hosted(process_pool),
-        })
+    pub fn new(mut configuration: ClaudeAdapterConfig) -> Result<Self, ClaudeAdapterConfigError> {
+        configuration.local_user_home = None;
+        let runners = ProviderProcessRunners::hosted(configuration.process_pool);
+        Self::configured(configuration, runners)
     }
 
     pub fn new_local(configuration: ClaudeAdapterConfig) -> Result<Self, ClaudeAdapterConfigError> {
+        Self::configured(configuration, ProviderProcessRunners::local())
+    }
+
+    fn configured(
+        configuration: ClaudeAdapterConfig,
+        runners: ProviderProcessRunners,
+    ) -> Result<Self, ClaudeAdapterConfigError> {
         if configuration.executable.is_empty() {
             return Err(ClaudeAdapterConfigError::EmptyExecutable);
         }
@@ -148,17 +150,17 @@ impl ClaudeAdapter {
             executable: configuration.executable,
             prefix_arguments: configuration.prefix_arguments,
             workspace: configuration.workspace,
+            runtime_home: configuration.runtime_home,
+            local_user_home: configuration.local_user_home,
             base_environment: configuration.base_environment,
             turn_timeout: configuration.turn_timeout,
-            runners: ProviderProcessRunners::local(),
+            runners,
         })
     }
 
     #[cfg(test)]
     fn new_for_test(configuration: ClaudeAdapterConfig) -> Result<Self, ClaudeAdapterConfigError> {
-        let mut adapter = Self::new(configuration)?;
-        adapter.runners = ProviderProcessRunners::local();
-        Ok(adapter)
+        Self::new_local(configuration)
     }
 
     fn turn_process(
@@ -166,13 +168,7 @@ impl ClaudeAdapter {
         invocation: &DriverInvocation,
     ) -> Result<(LocalProcessRunner, PathBuf), NodeRunnerError> {
         let scope = process_scope(invocation)?;
-        let root = self
-            .base_environment
-            .0
-            .get("HOME")
-            .map(PathBuf::from)
-            .ok_or(NodeRunnerError::Driver)?;
-        self.runners.turn_process(&root, scope)
+        self.runners.turn_process(&self.runtime_home, scope)
     }
 
     fn command(
@@ -218,7 +214,13 @@ impl ClaudeAdapter {
             .to_str()
             .filter(|value| !value.is_empty())
             .ok_or(NodeRunnerError::Driver)?;
-        environment.insert("HOME".to_owned(), runtime_home.to_owned());
+        let provider_home = self
+            .local_user_home
+            .as_deref()
+            .and_then(Path::to_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(runtime_home);
+        environment.insert("HOME".to_owned(), provider_home.to_owned());
         extend_declared_environment(&mut environment, resolved)?;
         reject_provider_controls(&environment)?;
         if self.provider == ClaudeProvider::OpenRouter {
@@ -343,15 +345,11 @@ fn claude_arguments(
     if let Some(effort) = turn.effort {
         argv.extend(["--effort".to_owned(), effort_token(effort).to_owned()]);
     }
-    argv.extend(["--setting-sources".to_owned(), String::new()]);
     match turn.role {
         NodeRole::Worker => argv.push("--dangerously-skip-permissions".to_owned()),
-        NodeRole::Verifier => argv.extend([
-            "--permission-mode".to_owned(),
-            "plan".to_owned(),
-            "--tools".to_owned(),
-            "Read,Glob,Grep".to_owned(),
-        ]),
+        NodeRole::Verifier => {
+            argv.extend(["--permission-mode".to_owned(), "plan".to_owned()]);
+        }
         NodeRole::GitDelivery => return Err(NodeRunnerError::Driver),
     }
     if let Some(resume_id) = turn.resume_id {

@@ -51,7 +51,15 @@ fn local_socket_path_capacity() -> usize {
 }
 
 pub(super) fn copy_minimal_process_environment(command: &mut Command) {
-    for name in ["PATH", "LANG", "LC_ALL", "TERM", "TMPDIR"] {
+    for name in [
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "TMPDIR",
+        "HOME",
+        "CODEX_HOME",
+    ] {
         if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
             command.env(name, value);
         }
@@ -140,5 +148,25 @@ mod tests {
             validate_local_socket_path(Path::new(&"x".repeat(capacity)))
                 .is_err_and(|error| error.to_string().contains("ZEROSHOT_RUST_STATE_DIR"))
         );
+    }
+
+    #[test]
+    fn local_controller_inherits_current_user_cli_home_paths() {
+        let mut command = Command::new("true");
+        command.env_clear();
+        copy_minimal_process_environment(&mut command);
+        let environment = command
+            .as_std()
+            .get_envs()
+            .filter_map(|(name, value)| value.map(|value| (name.to_owned(), value.to_owned())))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        for name in ["HOME", "CODEX_HOME"] {
+            let expected = std::env::var_os(name).filter(|value| !value.is_empty());
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new(name)),
+                expected.as_ref()
+            );
+        }
     }
 }

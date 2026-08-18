@@ -2,6 +2,8 @@
 
 #[path = "tests/correction.rs"]
 mod correction;
+#[path = "tests/local_identity.rs"]
+mod local_identity;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -109,6 +111,8 @@ async fn runner(
                     .into_owned(),
             ],
             workspace: workspace.path().to_owned(),
+            runtime_home: workspace.path().to_owned(),
+            local_user_home: None,
             base_environment,
             turn_timeout: Duration::from_secs(10),
             process_pool: HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value(),
@@ -249,8 +253,9 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
         assert!(arguments.starts_with(concat!(
             "--print\n--input-format\ntext\n--output-format\nstream-json\n",
             "--verbose\n--include-partial-messages\n--model\nclaude-sonnet-5\n",
-            "--effort\nmax\n--setting-sources\n\n--dangerously-skip-permissions\n",
+            "--effort\nmax\n--dangerously-skip-permissions\n",
         )));
+        assert!(!arguments.contains("--setting-sources"));
         assert!(arguments.contains("Input JSON:\n\"perform the node task\""));
         assert!(arguments.contains("Response contract:\n{\"kind\":\"worker\""));
         assert_eq!(workspace.read("ambient.txt").trim(), "unset");
@@ -373,7 +378,8 @@ printf '%s%s%s%s\n' \
     );
     let arguments = workspace.read("verifier.args");
     assert!(arguments.contains("--permission-mode\nplan"));
-    assert!(arguments.contains("--tools\nRead,Glob,Grep"));
+    assert!(!arguments.contains("--tools"));
+    assert!(!arguments.contains("--setting-sources"));
     assert!(!arguments.contains("--dangerously-skip-permissions"));
     assert!(arguments.contains("\"signals\":{\"verdict\":[\"accepted\",\"rejected\"]}"));
 }

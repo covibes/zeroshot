@@ -26,7 +26,7 @@ use crate::native_v2_candidate::{
 };
 use crate::native_v2_claude::{ClaudeAdapterConfig, ClaudeAdapterConfigError, ClaudeProcessEnvironment};
 use crate::native_v2_cli::TargetRunIntent;
-use crate::native_v2_codex::NativeV2CodexConfig;
+use crate::native_v2_codex::{NativeV2CodexConfig, NativeV2CodexUser};
 use crate::native_v2_contract::AdmittedRun;
 #[cfg(test)]
 use crate::native_v2_contract::CodexProvider;
@@ -257,6 +257,7 @@ pub fn build_local_process_candidate(
     let runtime_home = storage.join("runtime");
     prepare_private_directory(&runtime_home)?;
     let search_path = std::env::var("PATH").unwrap_or_else(|_| DEFAULT_SEARCH_PATH.to_owned());
+    let local_home = current_user_home();
     let process_pool = HostedProcessPool::hosted_default();
     let harness = match &admitted.runtime {
         RuntimePlan::Codex { provider, .. } => NativeV2HarnessConfig::Codex(NativeV2CodexConfig {
@@ -264,6 +265,12 @@ pub fn build_local_process_candidate(
             executable: PathBuf::from("codex"),
             workspace: workspace.to_owned(),
             runtime_home: runtime_home.clone(),
+            local_user: local_home.clone().map(|home| NativeV2CodexUser {
+                codex_home: std::env::var_os("CODEX_HOME")
+                    .filter(|value| !value.is_empty())
+                    .map_or_else(|| home.join(".codex"), PathBuf::from),
+                home,
+            }),
             search_path: search_path.clone(),
             process_pool,
         }),
@@ -273,7 +280,9 @@ pub fn build_local_process_candidate(
                 executable: "claude".to_owned(),
                 prefix_arguments: Vec::new(),
                 workspace: workspace.to_owned(),
-                base_environment: local_claude_environment(&runtime_home, &search_path)?,
+                runtime_home: runtime_home.clone(),
+                local_user_home: local_home,
+                base_environment: local_claude_environment(&search_path)?,
                 turn_timeout: LOCAL_TURN_TIMEOUT,
                 process_pool,
             })
@@ -304,17 +313,16 @@ pub fn build_local_process_candidate(
     Ok(Arc::new(candidate))
 }
 
+fn current_user_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 fn local_claude_environment(
-    runtime_home: &Path,
     search_path: &str,
 ) -> Result<ClaudeProcessEnvironment, ClaudeAdapterConfigError> {
-    let mut base_environment = BTreeMap::from([
-        (
-            "HOME".to_owned(),
-            runtime_home.to_string_lossy().into_owned(),
-        ),
-        ("PATH".to_owned(), search_path.to_owned()),
-    ]);
+    let mut base_environment = BTreeMap::from([("PATH".to_owned(), search_path.to_owned())]);
     for name in ["LANG", "LC_ALL", "TERM", "TMPDIR"] {
         if let Ok(value) = std::env::var(name) {
             base_environment.insert(name.to_owned(), value);
