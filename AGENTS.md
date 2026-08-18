@@ -93,28 +93,29 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Closed payload algebra                  | `crates/openengine-cluster-protocol/src/payload.rs`                                                                              |
 | Closed payload validation               | `crates/openengine-cluster-protocol/src/payload_value.rs`                                                                        |
 | Compiled IR/identity                    | `crates/openengine-cluster-protocol/src/canonical.rs`                                                                            |
-| Artifact receipts                       | `crates/openengine-cluster-protocol/src/artifact.rs`                                                                             |
+| Shared non-v2 artifact receipt types      | `crates/openengine-cluster-protocol/src/artifact.rs`                                                                             |
 | Graph diagnostics/bounds                | `crates/openengine-cluster-protocol/src/diagnostic.rs`                                                                           |
 | Shared wire-value bounds                | `crates/openengine-cluster-protocol/src/value.rs`                                                                                |
 | Cluster server crate                    | `crates/openengine-cluster-server/`                                                                                              |
 | Graph verifier facade                   | `crates/openengine-cluster-server/src/graph_verifier.rs`                                                                         |
 | Graph verifier analysis                 | `crates/openengine-cluster-server/src/graph_verifier/`                                                                           |
 | Native product construction             | `zeroshot-rust/`                                                                                                                 |
-| Native v2 cloud controller/OECP backend | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                       |
-| Native v2 target authority/routes       | `zeroshot-rust/src/native_v2_target_authority.rs`, `native_v2_target_authority/`                                                  |
-| Native v2 production hosting composition | `zeroshot-rust/src/native_v2_hosting.rs`, `native_v2_hosting/`                                                                  |
-| Native v2 private capsule runner        | `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`                                                                   |
-| Native v2 capsule composition root      | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
-| Native v2 CLI and OECP adapter          | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
-| Native v2 target connector              | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
+| Native v2 portable one-run engine/process | `zeroshot-rust/src/native_v2_portable_controller.rs`, `native_v2_portable_controller/`                                           |
+| Native v2 host run router/OECP binding    | `zeroshot-rust/src/native_v2_cloud.rs`, `native_v2_cloud/`                                                                       |
+| Native v2 target auth/inventory/routes    | `zeroshot-rust/src/native_v2_target_authority.rs`, `native_v2_target_authority/`                                                 |
+| Native v2 hosted run composition          | `zeroshot-rust/src/native_v2_hosting.rs`, `native_v2_hosting/`                                                                   |
+| Native v2 local run composition           | `zeroshot-rust/src/native_v2_local.rs`                                                                                           |
+| Native v2 node-executor/capsule adapters  | `zeroshot-rust/src/native_v2_runner.rs`, `native_v2_runner/`, `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`     |
+| Native v2 provider/delivery composition   | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
+| Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
+| Native v2 target connector                | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
 | Native release targets                  | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                  | `npm/zeroshot-rust/`                                                                                                             |
 | Native distribution tooling             | `scripts/rust-distribution.js`                                                                                                   |
 | Native distribution decision            | `docs/zeroshot-rust-distribution.md`                                                                                             |
 | Full-v1 pure graph reducer              | `zeroshot-rust/src/full_v1_reducer.rs`                                                                                           |
-| Lean native v2 run ledger               | `zeroshot-rust/src/v2_run_ledger.rs`, `v2_run_ledger/`                                                                           |
-| Artifact store port/fake                | `zeroshot-rust/src/artifact_store.rs`, `artifact_store/fake.rs`                                                                  |
-| Product-local artifact CAS              | `zeroshot-rust/src/artifact_store/local_cas.rs`, `local_cas/`                                                                    |
+| Lean native v2 run ledger/SQLite          | `zeroshot-rust/src/v2_run_ledger.rs`, `v2_run_ledger/`                                                                           |
+| Native v2 filesystem controller lease     | `zeroshot-rust/src/native_v2_portable_controller/lease.rs`                                                                       |
 | Issue provider contracts                | `zeroshot-rust/src/issue_provider.rs`, `issue_provider/`                                                                         |
 | Source provider contracts               | `zeroshot-rust/src/source_code_provider.rs`, `source_code_provider/`                                                             |
 | Provider value bounds                   | `zeroshot-rust/src/provider_value.rs`, `provider_value/`                                                                         |
@@ -219,35 +220,40 @@ Portable external conformance is the immutable public catalog in the testkit and
 backend-neutral behavior observable through public dispatcher and typed subscription surfaces.
 The existing integration binaries remain the richer reference regression suite; their
 implementation-specific vectors are not represented as portable external certification.
-`zeroshot-rust/` now ships only the native-v2 path. `native_v2_candidate` composes full-v1
-admission and reduction, the lean controller-owned run ledger, one capsule/workspace, the graph
-supervisor, provider sessions, observation, and trusted Git delivery. The old `ClusterLedger`,
-fixed-program execution, native daemon, compatibility capsule, and Node fallback are deleted and
-must not be reintroduced.
+`zeroshot-rust/` ships one portable, auth-free native-v2 engine/library for exactly one run and a
+private controller-process mode around the same engine. A host assigns the `RunId`, snapshots the
+immutable source, resolves the submission, and passes only the exact bounded run-scoped environment
+declared by its runtime plan. The controller does not allocate identity, authenticate users, inspect
+target-wide inventory, queue work, or choose another run. Local and hosted compositions reuse this
+same engine and differ only in their host adapters.
 
-The shipped CLI uses one local named-target registry and delegates discovery, login, atomic
-repository/runtime setup, and authenticated target-scoped `run/*` OECP session creation to
-`TargetControlAuthority`. It reuses hosted OAuth device/session discovery, stores only the refresh
-family in the OS credential store, and uses the native-v2 target discovery for atomic setup and a
-target-wide controller WebSocket. Access/OECP tokens remain memory-only; provider and harness
-interpretation never moves into hosting.
+The target-wide object owns routing, authentication, durable submission lookup, source/environment
+inventory, and observation before or after a controller exists; it is not an executing controller
+and does not own a runtime plan. The shipped CLI keeps its local named-target registry and reuses
+hosted OAuth discovery while storing only the rotating refresh family in the OS credential store.
+Access/OECP tokens remain memory-only, and the host routes authenticated target operations to the
+appropriate private one-run controller without moving user or token authority into that process.
 
-`GraphSpec` remains the control-flow source of truth. Provider, harness, model, effort, session
-scope, and required environment names are resolved through its companion runtime plan at admission.
-One target admits at most one nonterminal run; exact resubmission dedupes, distinct submission
-conflicts, and retained terminal runs remain observable. One run owns one workspace: ordinary
-verifiers are read-only and may overlap, while workers and Git delivery are exclusive writers.
-Capsule/session loss and force-stop are terminal; there is no workspace replacement or replay
-engine.
+`GraphSpec` remains the control-flow source of truth. Its companion runtime plan fixes the
+graph-wide harness/provider and each node's model, effort, session scope, and declared environment
+names at admission. One run owns one workspace: workers and Git delivery are exclusive writers,
+while ordinary verifiers are read-only and may overlap. PR and merge delivery are graph-visible
+modes of one shared trusted implementation; hosted success requires its bounded inline receipt.
+Local execution may omit delivery, in which case the invoking workspace and its mutations remain
+user-owned and are never reset or removed.
+
+Each one-run controller uses the lean v2 ledger, with SQLite and a filesystem controller lease as
+the local adapters. Runtime, controller, workspace, or reusable-session loss and force-stop are
+terminal; there is no replay, resume, workspace replacement, or recovery engine. Native v2 has no
+artifact store, CAS, staged artifact pipeline, or `ArtifactRef` delivery path, and the deleted
+`ClusterLedger`, fixed-program execution, compatibility capsule, and Node fallback must not return.
 
 `execution/process` is the contained streaming-session seam. Recovery is registered before spawn,
 stdout and diagnostics remain bounded, and close/release owns termination and reaping exactly once.
 Provider framing and response decoding remain in the Codex and Claude adapters.
 
-Artifact stages, bytes, roots, filesystem paths, locks, and manifests remain product-private; only
-verified protocol `ArtifactRef` receipts cross the engine boundary. `LocalCasArtifactStore` takes
-an explicit root, is a single-writer local filesystem store, and must preserve ref-first release
-plus synchronized blob-then-ref publication.
+Git delivery returns bounded, schema-declared inline output and must not persist a parallel delivery
+result outside the lean run history.
 Native engine faults must be constructed only by `FaultFactory` from closed `ModuleEvidence`.
 Decoded faults must match the canonical semantics derived from their required primary source frame.
 Raw diagnostic values are replaced wholesale with typed markers and remain ephemeral; never put
@@ -264,11 +270,11 @@ commands, stderr, session identities, or credentials. Keep routing, CLI parsing,
 telemetry, and retry authorization outside this module.
 A lost node-instance session terminates the affected execution; its descriptive fault disposition
 must never authorize retry or replacement-session recovery.
-`v2_run_ledger` is the only native-v2 durable run authority. It stores submission identity,
-ordered run/node events with stable cursors, current projections, normalized outputs, safe logs,
-force intent, and one terminal result. Keep provider sessions, credentials, runtime handles, raw
-diagnostics, and workspace recovery outside it. It intentionally has no old-ledger hash chain,
-mutation receipts, proof capabilities, or replay engine.
+`v2_run_ledger` is the one-run durable authority. It stores immutable run metadata, ordered run/node
+events with stable cursors, current projections, normalized inline outputs, safe logs, force intent,
+and one terminal result. Keep provider sessions, credentials, runtime handles, raw diagnostics,
+artifacts, and workspace recovery outside it. It intentionally has no old-ledger hash chain,
+mutation receipts, proof capabilities, replay, or recovery engine.
 Full-v1 reduction accepts only verifier-produced `VerifiedGraph` values containing authoritative
 `CompiledGraphIr` and durable ordered outcomes. It never accepts compiled IR directly.
 It is a pure authored-order fold: ledger position is the only concurrent

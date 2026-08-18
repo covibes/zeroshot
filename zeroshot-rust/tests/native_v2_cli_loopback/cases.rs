@@ -63,6 +63,7 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
     ] {
         let root = temp_root();
         let fixture = DeliveryFixture::new(&root, name);
+        let resolved_base_revision = fixture.base_revision.clone();
         let authority = Arc::new(DeliveryAuthority::new(fixture.remote.clone(), scenario));
         let repairs = Arc::new(AtomicUsize::new(0));
         let allocator = Arc::new(DeliveryAllocator {
@@ -71,13 +72,14 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
             repairs: repairs.clone(),
             lifecycle: ImmediateAllocator::default(),
         });
-        let environment = ControllerEnvironment::new(BTreeMap::from([(
+        let environment = BTreeMap::from([(
             EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
             "test-token".to_owned(),
-        )]));
+        )]);
         let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
             allocator,
             environment,
+            resolved_base_revision,
         }))
         .await;
         let config = root.path(&format!("{name}-config"));
@@ -102,7 +104,12 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
         .await;
         assert!(stderr.contains("ABCD-EFGH"));
         assert!(stdout.contains("DELIVERY={\"runId\":"));
-        assert!(stdout.contains("\"terminalResult\":{\"status\":\"succeeded\""));
+        assert!(
+            stdout.contains("\"terminalResult\":{\"status\":\"succeeded\""),
+            "delivery run did not succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(stdout.contains("\"mode\":\"merge\""));
+        assert!(stdout.contains("\"outcome\":\"merged\""));
         assert_eq!(repairs.load(Ordering::SeqCst), expected_repairs);
         assert_eq!(authority.reviews.load(Ordering::SeqCst), expected_reviews);
         assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 1);
@@ -118,7 +125,8 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
     let allocator = Arc::new(ImmediateAllocator::default());
     let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
         allocator: allocator.clone(),
-        environment: ControllerEnvironment::default(),
+        environment: BTreeMap::new(),
+        resolved_base_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
     }))
     .await;
     let root = temp_root();
@@ -141,15 +149,13 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
         Duration::from_secs(60),
         "shipped CLI capsule-loss acceptance",
     ));
-    let mut signalled = false;
-    for _ in 0..200 {
-        if allocator.signal_loss() {
-            signalled = true;
-            break;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !allocator.signal_loss() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(signalled, "capsule was not allocated before the deadline");
+    })
+    .await
+    .assert_value_with("capsule was not allocated before the deadline");
     let (stdout, stderr) = acceptance.await.assert_value();
     assert!(stderr.contains("ABCD-EFGH"));
     assert!(stdout.contains("LOST={\"runId\":"));
@@ -159,7 +165,7 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "manual live provider acceptance; requires root, network, provider CLI, and credential"]
+#[ignore = "manual live provider acceptance; requires root, network, provider/GitHub CLIs, and credentials"]
 async fn shipped_cli_runs_one_real_production_provider_lane() {
     let lane = LiveLane::from_environment();
     let root = temp_root();
@@ -187,6 +193,7 @@ async fn shipped_cli_runs_one_real_production_provider_lane() {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CODEX_API_KEY",
+        GITHUB_TOKEN_ENV,
     ] {
         command.env_remove(name);
     }
@@ -195,7 +202,12 @@ async fn shipped_cli_runs_one_real_production_provider_lane() {
     assert!(stderr.contains("ABCD-EFGH"), "device code was not surfaced");
     assert!(stdout.contains("LIVE={\"runId\":"));
     assert!(stdout.contains("\"phase\":\"finished\""));
-    assert!(stdout.contains("\"terminalResult\":{\"status\":\"succeeded\",\"output\":null}"));
+    assert!(
+        stdout.contains("\"terminalResult\":{\"status\":\"succeeded\""),
+        "live run did not succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains("\"mode\":\"pr\""));
+    assert!(stdout.contains("\"outcome\":\"opened\""));
     assert!(!stdout.contains("capsule"));
 }
 

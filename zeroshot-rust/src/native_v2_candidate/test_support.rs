@@ -11,8 +11,12 @@ use serde_json::{Value, json};
 use crate::native_v2_admission::NativeV2Admission;
 use crate::native_v2_contract::{
     self, AdmittedRun, ExecutionId, ExecutionRef, NodeInstanceId, NodeInvocation,
-    NodeRuntimeBinding, RunSubmission,
+    NodeRuntimeBinding, RunSubmission, GIT_DELIVERY_MERGE_WORKER_REF,
 };
+use crate::native_v2_delivery::{
+    DELIVERY_CI_FAILED_LABEL, DELIVERY_CONFLICT_LABEL, DELIVERY_MERGED_LABEL, DeliveryMode,
+};
+use crate::native_v2_delivery::contract::delivery_result_schema;
 use crate::native_v2_runner::{NodeRunRequest, ResolvedEnvironment};
 
 static NEXT_TEMPORARY_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -144,10 +148,15 @@ pub(crate) fn success_node() -> Value {
 
 pub(crate) fn git_delivery_node() -> Value {
     serde_json::json!({
-        "kind":"verifier","name":"deliver","worker":"builtin.git-delivery@1",
-        "input":{"kind":"null"},"output":{"kind":"null"},
+        "kind":"verifier","name":"deliver","worker":GIT_DELIVERY_MERGE_WORKER_REF,
+        "input":{"kind":"null"},"output":delivery_result_schema(DeliveryMode::Merge)
+            .assert_value_with("delivery result schema"),
         "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1,
-        "signals":{"delivery":["merged","ci_failed"]},
+        "signals":{"delivery":[
+            DELIVERY_MERGED_LABEL,
+            DELIVERY_CONFLICT_LABEL,
+            DELIVERY_CI_FAILED_LABEL
+        ]},
         "diagnostic":{"kind":"string"}
     })
 }

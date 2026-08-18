@@ -198,12 +198,12 @@ impl GitHubDeliveryAuthority for DeliveryAuthority {
         &self,
         review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
-    ) -> Result<(), GitHubAuthorityError> {
+    ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
         require_test_credential(credential)?;
         self.merge_requests.fetch_add(1, Ordering::SeqCst);
         let mut merged = self.merged_reviews.lock().assert_value();
         merged.insert(review.review_id.clone());
-        Ok(())
+        Ok(GitHubMergeRequestOutcome::Accepted)
     }
 }
 
@@ -268,8 +268,9 @@ pub(crate) struct DeliveryAllocator {
 impl CapsuleAllocator for DeliveryAllocator {
     async fn claim_controller(
         &self,
+        run_id: &RunId,
     ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
-        self.lifecycle.claim_controller().await
+        self.lifecycle.claim_controller(run_id).await
     }
 
     async fn allocate(
@@ -282,12 +283,11 @@ impl CapsuleAllocator for DeliveryAllocator {
                 workspace: self.fixture.workspace.clone(),
                 git_program: PathBuf::from("/usr/bin/git"),
                 target: DeliveryTarget::new(
-                    "acme/project",
-                    "main",
-                    self.fixture.base_revision.clone(),
+                    admitted.source.repository.as_str(),
+                    admitted.source.target_branch.as_str(),
+                    admitted.source.base_revision.as_str(),
                 )
                 .map_err(|_| CapsuleAllocationUnavailable)?,
-                ship_authorized: admitted.ship,
                 poll: DeliveryPollPolicy::new(3, Duration::ZERO)
                     .map_err(|_| CapsuleAllocationUnavailable)?,
             },

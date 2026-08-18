@@ -388,8 +388,11 @@ async fn validate_existing_run(
     Ok(!runs.is_empty())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) struct WorkspaceIdentity {
+    #[cfg(unix)]
+    // Pins the admitted inode so an immediate replacement cannot reuse its identity between polls.
+    _handle: Arc<std::fs::File>,
     #[cfg(unix)]
     device: u64,
     #[cfg(unix)]
@@ -400,21 +403,36 @@ pub(crate) struct WorkspaceIdentity {
 
 impl WorkspaceIdentity {
     pub(crate) fn capture(path: &Path) -> Result<Self, PortableControllerError> {
-        let metadata =
-            std::fs::symlink_metadata(path).map_err(|_| PortableControllerError::Workspace)?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(PortableControllerError::Workspace);
-        }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::MetadataExt as _;
+            use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+            let mut options = std::fs::OpenOptions::new();
+            options
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+            let handle = options
+                .open(path)
+                .map_err(|_| PortableControllerError::Workspace)?;
+            let metadata = handle
+                .metadata()
+                .map_err(|_| PortableControllerError::Workspace)?;
+            if !metadata.is_dir() {
+                return Err(PortableControllerError::Workspace);
+            }
             Ok(Self {
+                _handle: Arc::new(handle),
                 device: metadata.dev(),
                 inode: metadata.ino(),
             })
         }
         #[cfg(not(unix))]
         {
+            let metadata =
+                std::fs::symlink_metadata(path).map_err(|_| PortableControllerError::Workspace)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(PortableControllerError::Workspace);
+            }
             let canonical_path =
                 std::fs::canonicalize(path).map_err(|_| PortableControllerError::Workspace)?;
             Ok(Self { canonical_path })
@@ -422,6 +440,26 @@ impl WorkspaceIdentity {
     }
 
     pub(crate) fn is_current(&self, path: &Path) -> bool {
-        Self::capture(path).is_ok_and(|current| current == *self)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+
+            let Ok(metadata) = std::fs::symlink_metadata(path) else {
+                return false;
+            };
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode
+        }
+        #[cfg(not(unix))]
+        {
+            let Ok(metadata) = std::fs::symlink_metadata(path) else {
+                return false;
+            };
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && std::fs::canonicalize(path).is_ok_and(|current| current == self.canonical_path)
+        }
     }
 }

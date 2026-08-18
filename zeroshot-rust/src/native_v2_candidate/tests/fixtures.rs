@@ -1,7 +1,7 @@
 use openengine_cluster_protocol::GraphSpec;
 
 use super::*;
-use crate::native_v2_candidate::test_support::{full_graph, success_node};
+use crate::native_v2_candidate::test_support::git_delivery_node;
 
 #[derive(Clone, Copy)]
 pub(super) enum RuntimePlanKind {
@@ -18,12 +18,13 @@ pub(super) fn runtime(kind: RuntimePlanKind) -> RuntimePlan {
         .assert_value_with("model"),
         effort: Some(ReasoningEffort::Max),
         session_scope: SessionScope::Execution,
-        env: BTreeSet::new(),
+        env: DeclaredEnvironment::empty(),
     };
     let delivery = NodeRuntimeBinding::GitDelivery {
-        env: BTreeSet::from([
+        env: DeclaredEnvironment::new([
             EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value_with("token name")
-        ]),
+        ])
+        .assert_value_with("delivery environment"),
     };
     let nodes = BTreeMap::from([
         (
@@ -38,40 +39,110 @@ pub(super) fn runtime(kind: RuntimePlanKind) -> RuntimePlan {
     match kind {
         RuntimePlanKind::Codex => RuntimePlan::Codex {
             provider: CodexProvider::OpenAi,
+            size: RunSize::Standard,
             nodes,
         },
         RuntimePlanKind::Claude => RuntimePlan::Claude {
             provider: crate::native_v2_contract::ClaudeProvider::Anthropic,
+            size: RunSize::Standard,
             nodes,
         },
     }
 }
 
 pub(super) fn shipping_graph() -> GraphSpec {
-    full_graph(vec![
-        json!({
-            "kind":"step","name":"worker","worker":"agent.worker@1",
-            "input":{"kind":"null"},"output":{"kind":"null"},
-            "inputBindings":[],"writeBindings":[],"timeoutMs":10000,"attempts":1
-        }),
-        json!({
-            "kind":"verifier","name":"deliver","worker":"builtin.git-delivery@1",
-            "input":{"kind":"null"},"output":{"kind":"null"},
-            "inputBindings":[],"writeBindings":[],"timeoutMs":10000,"attempts":1,
-            "signals":{"delivery":["merged","ci_failed"]},
-            "diagnostic":{"kind":"string"}
-        }),
-        success_node(),
-    ])
+    let receipt_type = serde_json::to_value(
+        crate::native_v2_delivery::delivery_result_schema(
+            crate::native_v2_delivery::DeliveryMode::Merge,
+        )
+        .assert_value_with("delivery result schema"),
+    )
+    .assert_value_with("delivery receipt type");
+    let fields = receipt_type
+        .pointer("/fields")
+        .and_then(Value::as_object)
+        .map(|fields| fields.keys().cloned().collect::<Vec<_>>())
+        .assert_value_with("delivery receipt fields");
+    let mut delivery = git_delivery_node();
+    *delivery.assert_key_mut("writeBindings") = Value::Array(
+        fields
+            .iter()
+            .map(|field| {
+                json!({
+                    "value":{"node":"deliver","channel":"out","path":[field]},
+                    "target":["delivery",field]
+                })
+            })
+            .collect(),
+    );
+    let state_type = json!({
+        "kind":"record",
+        "fields":{"delivery":{"type":receipt_type.clone(),"required":false}}
+    });
+    let terminal_type = json!({
+        "kind":"record",
+        "fields":{"delivery":{"type":receipt_type,"required":true}}
+    });
+    let terminal_bindings = fields
+        .iter()
+        .map(|field| {
+            json!({
+                "target":["delivery",field],
+                "value":{"source":"state","path":["delivery",field]}
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::from_value(json!({
+        "profile":"openengine.graph.full/v1",
+        "initialInput":state_type,
+        "policy":{"policy":"policy.native-v2@1","default":"deny"},
+        "root":{
+            "kind":"seq",
+            "name":"root",
+            "state":state_type,
+            "children":[
+                {
+                    "kind":"step","name":"worker","worker":"agent.worker@1",
+                    "input":{"kind":"null"},"output":{"kind":"null"},
+                    "inputBindings":[],"writeBindings":[],"timeoutMs":10000,"attempts":1
+                },
+                delivery,
+                {
+                    "kind":"choice","name":"delivery_result","state":state_type,
+                    "branches":[{
+                        "when":{
+                            "kind":"in",
+                            "value":{"name":"deliver","source":"signal","field":"delivery"},
+                            "labels":["merged"]
+                        },
+                        "node":{
+                            "kind":"succeed","name":"done","output":terminal_type,
+                            "bindings":terminal_bindings
+                        }
+                    }],
+                    "otherwise":{"kind":"fail","name":"delivery_failed","reason":"delivery_failed"},
+                    "promotedStatePaths":[]
+                }
+            ],
+            "promotedStatePaths":[]
+        }
+    }))
+    .assert_value_with("shipping graph")
 }
 
 pub(super) async fn admitted(kind: RuntimePlanKind) -> AdmittedRun {
     NativeV2Admission
         .admit(RunSubmission {
+            title: RunTitle::new("Candidate config").assert_value_with("title"),
             graph: shipping_graph(),
-            initial_input: Value::Null,
+            initial_input: json!({}),
             runtime: runtime(kind),
-            ship: true,
+            source: SourceSnapshot {
+                repository: SourceRepositoryId::new("acme/project").assert_value_with("repository"),
+                target_branch: SourceBranchId::new("main").assert_value_with("target branch"),
+                base_revision: SourceRevisionId::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                    .assert_value_with("base revision"),
+            },
             submission_key: IdempotencyKey::new("candidate-config").assert_value_with("key"),
         })
         .await
@@ -82,7 +153,6 @@ pub(super) fn candidate_config(
     kind: RuntimePlanKind,
     repository: &TempRepository,
     github: Arc<ScriptedGitHub>,
-    ship: bool,
 ) -> NativeV2CandidateConfig {
     let pool = HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value_with("pool");
     let harness = match kind {
@@ -118,7 +188,6 @@ pub(super) fn candidate_config(
             git_program: PathBuf::from("/usr/bin/git"),
             target: DeliveryTarget::new("acme/project", "main", repository.base.clone())
                 .assert_value_with("target"),
-            ship_authorized: ship,
             poll: DeliveryPollPolicy::new(2, Duration::ZERO).assert_value_with("poll"),
         },
         github,

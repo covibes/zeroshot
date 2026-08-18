@@ -26,6 +26,18 @@
       "document": "docs/openengine-cluster-protocol/v1/graph-contract.md"
     },
     {
+      "source": "zeroshot-rust/src/native_v2_delivery.rs",
+      "document": "AGENTS.md"
+    },
+    {
+      "source": "zeroshot-rust/src/native_v2_admission.rs",
+      "document": "AGENTS.md"
+    },
+    {
+      "source": "zeroshot-rust/src/native_v2_supervisor.rs",
+      "document": "AGENTS.md"
+    },
+    {
       "source": "crates/openengine-cluster-testkit/src/fixture.rs",
       "document": "AGENTS.md"
     }

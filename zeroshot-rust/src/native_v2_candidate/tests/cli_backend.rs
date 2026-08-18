@@ -14,6 +14,7 @@ where
 
 pub(super) struct InProcessCliBackend {
     pub(super) controller: Arc<NativeV2CloudController>,
+    pub(super) environment: BTreeMap<EnvironmentVariableName, String>,
 }
 
 fn cli_protocol_error(error: impl std::fmt::Display) -> NativeV2CliError {
@@ -21,8 +22,8 @@ fn cli_protocol_error(error: impl std::fmt::Display) -> NativeV2CliError {
 }
 
 impl InProcessCliBackend {
-    fn target(&self, target: &str) -> Result<(), NativeV2CliError> {
-        if target == "candidate-cloud" {
+    fn target(&self, target: Option<&str>) -> Result<(), NativeV2CliError> {
+        if target == Some("candidate-cloud") {
             Ok(())
         } else {
             Err(NativeV2CliError::Target("unknown test target".to_owned()))
@@ -56,18 +57,44 @@ impl NativeV2CliBackend for InProcessCliBackend {
 
     async fn run_submit(
         &self,
-        target: &str,
-        params: RunSubmitParams,
+        target: Option<&str>,
+        intent: TargetRunIntent,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         self.target(target)?;
-        ClusterBackend::run_submit(&*self.controller, &ConnectionContext::default(), params)
+        let params = RunSubmitParams {
+            run_id: RunId::new("candidate-run"),
+            submission: RunSubmission {
+                title: intent.title,
+                graph: intent.graph,
+                initial_input: intent.initial_input,
+                runtime: intent.runtime,
+                source: SourceSnapshot {
+                    repository: SourceRepositoryId::new("acme/project")
+                        .map_err(cli_protocol_error)?,
+                    target_branch: SourceBranchId::new("main").map_err(cli_protocol_error)?,
+                    base_revision: SourceRevisionId::new(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )
+                    .map_err(cli_protocol_error)?,
+                },
+                submission_key: intent.submission_key,
+            },
+        };
+        let environment =
+            RunEnvironment::from_available(&params.submission.runtime, &self.environment)
+                .map_err(cli_protocol_error)?;
+        self.controller
+            .submit_with_exact_environment(params, environment)
             .await
+            .map(|receipt| RunSubmitResult {
+                run_id: receipt.run_id,
+            })
             .map_err(cli_protocol_error)
     }
 
     async fn run_list(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunListParams,
     ) -> Result<RunListResult, NativeV2CliError> {
         self.target(target)?;
@@ -78,7 +105,7 @@ impl NativeV2CliBackend for InProcessCliBackend {
 
     async fn run_status(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunStatusParams,
     ) -> Result<RunStatusResult, NativeV2CliError> {
         self.target(target)?;
@@ -89,7 +116,7 @@ impl NativeV2CliBackend for InProcessCliBackend {
 
     async fn run_watch(
         &self,
-        _target: &str,
+        _target: Option<&str>,
         _params: RunWatchParams,
     ) -> Result<Self::Watch, NativeV2CliError> {
         Err(NativeV2CliError::Target(
@@ -99,7 +126,7 @@ impl NativeV2CliBackend for InProcessCliBackend {
 
     async fn run_logs(
         &self,
-        _target: &str,
+        _target: Option<&str>,
         _params: RunLogsParams,
     ) -> Result<Self::Logs, NativeV2CliError> {
         Err(NativeV2CliError::Target(
@@ -109,7 +136,7 @@ impl NativeV2CliBackend for InProcessCliBackend {
 
     async fn run_attach(
         &self,
-        _target: &str,
+        _target: Option<&str>,
         _params: RunAttachParams,
     ) -> Result<Self::Attach, NativeV2CliError> {
         Err(NativeV2CliError::Target(
@@ -119,7 +146,7 @@ impl NativeV2CliBackend for InProcessCliBackend {
 
     async fn run_force(
         &self,
-        target: &str,
+        target: Option<&str>,
         params: RunForceParams,
     ) -> Result<RunForceResult, NativeV2CliError> {
         self.target(target)?;

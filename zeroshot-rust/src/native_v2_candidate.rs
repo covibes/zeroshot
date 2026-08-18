@@ -39,14 +39,18 @@ pub struct NativeV2CandidateConfig {
     pub github: Arc<dyn GitHubDeliveryAuthority>,
 }
 
+#[derive(Clone, Copy)]
+enum ProcessPlacement {
+    Capsule,
+    Local,
+}
+
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum NativeV2CandidateError {
     #[error("candidate harness/provider does not match the admitted graph runtime")]
     RuntimeMismatch,
     #[error("agent and delivery adapters must use the same run workspace")]
     WorkspaceMismatch,
-    #[error("delivery authorization must equal the admitted run ship intent")]
-    ShipMismatch,
     #[error(transparent)]
     Claude(#[from] ClaudeAdapterConfigError),
     #[error(transparent)]
@@ -58,15 +62,37 @@ pub fn build_native_v2_candidate(
     admitted: &AdmittedRun,
     config: NativeV2CandidateConfig,
 ) -> Result<NativeNodeRunner, NativeV2CandidateError> {
+    build_candidate(admitted, config, ProcessPlacement::Capsule)
+}
+
+/// Builds the same candidate with child processes running as the invoking local user.
+pub fn build_local_native_v2_candidate(
+    admitted: &AdmittedRun,
+    config: NativeV2CandidateConfig,
+) -> Result<NativeNodeRunner, NativeV2CandidateError> {
+    build_candidate(admitted, config, ProcessPlacement::Local)
+}
+
+fn build_candidate(
+    admitted: &AdmittedRun,
+    config: NativeV2CandidateConfig,
+    placement: ProcessPlacement,
+) -> Result<NativeNodeRunner, NativeV2CandidateError> {
     validate_config(admitted, &config)?;
     let delivery = Arc::new(NativeV2DeliveryAdapter::new(config.delivery, config.github));
     match config.harness {
         NativeV2HarnessConfig::Codex(config) => {
-            let agent = Arc::new(NativeV2CodexAdapter::new(config));
+            let agent = Arc::new(match placement {
+                ProcessPlacement::Capsule => NativeV2CodexAdapter::new(config),
+                ProcessPlacement::Local => NativeV2CodexAdapter::new_local(config),
+            });
             assemble_runner(admitted, agent.clone(), agent, delivery)
         }
         NativeV2HarnessConfig::Claude(config) => {
-            let agent = Arc::new(ClaudeAdapter::new(config)?);
+            let agent = Arc::new(match placement {
+                ProcessPlacement::Capsule => ClaudeAdapter::new(config)?,
+                ProcessPlacement::Local => ClaudeAdapter::new_local(config)?,
+            });
             assemble_runner(admitted, agent.clone(), agent, delivery)
         }
     }
@@ -91,9 +117,6 @@ fn validate_config(
     };
     if !workspace_matches {
         return Err(NativeV2CandidateError::WorkspaceMismatch);
-    }
-    if config.delivery.ship_authorized != admitted.ship {
-        return Err(NativeV2CandidateError::ShipMismatch);
     }
     Ok(())
 }

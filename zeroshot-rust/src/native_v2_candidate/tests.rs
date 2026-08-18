@@ -1,7 +1,7 @@
 #![cfg(unix)]
 
 use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -26,21 +26,25 @@ use crate::native_v2_capsule::{NativeCapsuleNodeEndpoint, RemoteCapsuleNodeRunne
 use crate::native_v2_claude::ClaudeProcessEnvironment;
 use crate::native_v2_cli::{
     execute_native_v2_cli, CliOutcome, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
-    NativeV2CliCommand, NativeV2CliError, NeverDetach, RunCommand, TargetAdd, TargetSetup,
+    NativeV2CliCommand, NativeV2CliError, NeverDetach, RunCommand, TargetAdd, TargetRunIntent,
+    TargetSetup,
 };
 use crate::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanup,
-    CapsuleCleanupUnavailable, CapsuleDestroyed, ControllerClaimUnavailable, ControllerEnvironment,
+    CapsuleCleanupUnavailable, CapsuleDestroyed, ControllerClaimUnavailable,
     ExclusiveControllerClaim, NativeV2CloudController,
 };
-use crate::native_v2_contract::{CodexProvider, EnvironmentVariableName, NodeInvocation, RunSubmission};
+use crate::native_v2_contract::{
+    CodexProvider, DeclaredEnvironment, EnvironmentVariableName, NodeInvocation, RunSize,
+    RunSubmission, RunTitle, SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot,
+};
 use crate::native_v2_delivery::{
     DeliveryPollPolicy, DeliveryTarget, GitHubAuthorityError, GitHubChecks, GitHubCredential,
-    GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt, GitHubReviewRequest,
-    GitHubReviewState, GITHUB_TOKEN_ENV,
+    GitHubMergeRequestOutcome, GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt,
+    GitHubReviewRequest, GitHubReviewState, GITHUB_TOKEN_ENV,
 };
 use crate::native_v2_runner::NodeRole;
-use crate::native_v2_supervisor::RunRuntimeExit;
+use crate::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
 use crate::v2_run_ledger::fake::FakeRunLedger;
 use crate::worker_catalog::{self, ReasoningEffort};
 
@@ -96,12 +100,14 @@ impl GitHubDeliveryAuthority for ScriptedGitHub {
         if credential.expose() != "test-github-token" || !self.pushed.load(Ordering::SeqCst) {
             return Err(GitHubAuthorityError::Rejected);
         }
+        let target = request.target.clone();
+        let head = (request.head_branch.clone(), request.head_revision.clone());
         Ok(GitHubReviewReceipt {
-            review_id: "candidate-review".to_owned(),
-            repository: request.target.repository.clone(),
-            target_branch: request.target.target_branch.clone(),
-            head_branch: request.head_branch.clone(),
-            head_revision: request.head_revision.clone(),
+            review_id: "17".to_owned(),
+            repository: target.repository,
+            target_branch: target.target_branch,
+            head_branch: head.0,
+            head_revision: head.1,
         })
     }
 
@@ -129,12 +135,12 @@ impl GitHubDeliveryAuthority for ScriptedGitHub {
         &self,
         _review: &GitHubReviewReceipt,
         credential: GitHubCredential<'_>,
-    ) -> Result<(), GitHubAuthorityError> {
+    ) -> Result<GitHubMergeRequestOutcome, GitHubAuthorityError> {
         if credential.expose() != "test-github-token" {
             return Err(GitHubAuthorityError::Rejected);
         }
         self.merge_requested.store(true, Ordering::SeqCst);
-        Ok(())
+        Ok(GitHubMergeRequestOutcome::Accepted)
     }
 }
 
@@ -238,6 +244,7 @@ use cli_backend::InProcessCliBackend;
 impl CapsuleAllocator for CandidateAllocator {
     async fn claim_controller(
         &self,
+        _run_id: &RunId,
     ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
         if self.claims.0.swap(true, Ordering::SeqCst) {
             return Err(ControllerClaimUnavailable);
@@ -255,7 +262,6 @@ impl CapsuleAllocator for CandidateAllocator {
                 workspace: self.workspace.clone(),
                 git_program: PathBuf::from("/usr/bin/git"),
                 target: self.target.clone(),
-                ship_authorized: admitted.ship,
                 poll: DeliveryPollPolicy::new(3, Duration::ZERO)
                     .map_err(|_| CapsuleAllocationUnavailable)?,
             },
@@ -301,18 +307,20 @@ async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2(
         cleanup: cleanup.clone(),
     });
     let ledger = Arc::new(FakeRunLedger::new());
-    let token = EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value_with("token name");
     let controller = Arc::new(
-        NativeV2CloudController::new(
-            ledger,
-            runtime(RuntimePlanKind::Codex),
-            ControllerEnvironment::new(BTreeMap::from([(token, "test-github-token".to_owned())])),
-            allocator,
-        )
-        .await
-        .assert_value_with("controller"),
+        NativeV2CloudController::new(ledger, allocator)
+            .await
+            .assert_value_with("controller"),
     );
-    let submitted = submit_through_cli(&repository, controller.clone()).await;
+    let submitted = submit_through_cli(
+        &repository,
+        controller.clone(),
+        BTreeMap::from([(
+            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value_with("token name"),
+            "test-github-token".to_owned(),
+        )]),
+    )
+    .await;
     let direct_status = ClusterBackend::run_status(
         &*controller,
         &ConnectionContext::default(),
@@ -325,11 +333,15 @@ async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2(
     assert_eq!(direct_status.run_id, submitted.run_id);
     let terminal = wait_for_terminal(&controller, &submitted.run_id).await;
 
+    let output = match terminal {
+        TerminalResult::Succeeded { output } => Some(output),
+        TerminalResult::Failed { .. } => None,
+    }
+    .assert_value_with("candidate succeeded");
+    assert_eq!(output.pointer("/delivery/outcome"), Some(&json!("merged")));
     assert_eq!(
-        terminal,
-        TerminalResult::Succeeded {
-            output: Value::Null
-        }
+        output.pointer("/delivery/repository"),
+        Some(&json!("acme/project"))
     );
     assert_eq!(agent.starts.load(Ordering::SeqCst), 1);
     assert!(github.pushed.load(Ordering::SeqCst));
@@ -342,23 +354,34 @@ async fn cloud_oecp_candidate_runs_worker_and_trusted_merge_entirely_through_v2(
 async fn submit_through_cli(
     repository: &TempRepository,
     controller: Arc<NativeV2CloudController>,
+    environment: BTreeMap<EnvironmentVariableName, String>,
 ) -> RunSubmitResult {
     let graph_path = repository.root.child("graph.json");
     let input_path = repository.root.child("input.json");
+    let runtime_path = repository.root.child("runtime.json");
     fs::write(
         &graph_path,
         serde_json::to_vec(&shipping_graph()).assert_value_with("encode graph"),
     )
     .assert_value_with("write graph");
-    fs::write(&input_path, b"null\n").assert_value_with("write input");
-    let backend = InProcessCliBackend { controller };
+    fs::write(&input_path, b"{}\n").assert_value_with("write input");
+    fs::write(
+        &runtime_path,
+        serde_json::to_vec(&runtime(RuntimePlanKind::Codex)).assert_value_with("encode runtime"),
+    )
+    .assert_value_with("write runtime");
+    let backend = InProcessCliBackend {
+        controller,
+        environment,
+    };
     let mut output = Vec::new();
     let outcome = execute_native_v2_cli(
         NativeV2CliCommand::Run(RunCommand {
-            target: "candidate-cloud".to_owned(),
+            target: Some("candidate-cloud".to_owned()),
+            title: RunTitle::new("Candidate end to end").assert_value_with("title"),
             graph: graph_path,
             input: input_path,
-            ship: true,
+            runtime_config: runtime_path,
             detach: true,
             submission_key: Some(
                 IdempotencyKey::new("candidate-e2e").assert_value_with("submission key"),
@@ -379,24 +402,14 @@ async fn concrete_codex_and_claude_configs_bind_only_to_their_admitted_lane() {
     let repository = TempRepository::candidate();
     let github = Arc::new(ScriptedGitHub::new(repository.remote.clone()));
     let codex = admitted(RuntimePlanKind::Codex).await;
-    let codex_config = candidate_config(
-        RuntimePlanKind::Codex,
-        &repository,
-        github.clone(),
-        codex.ship,
-    );
+    let codex_config = candidate_config(RuntimePlanKind::Codex, &repository, github.clone());
     build_native_v2_candidate(&codex, codex_config).assert_value_with("Codex candidate");
 
     let claude = admitted(RuntimePlanKind::Claude).await;
-    let claude_config = candidate_config(
-        RuntimePlanKind::Claude,
-        &repository,
-        github.clone(),
-        claude.ship,
-    );
+    let claude_config = candidate_config(RuntimePlanKind::Claude, &repository, github.clone());
     build_native_v2_candidate(&claude, claude_config).assert_value_with("Claude candidate");
 
-    let mismatch = candidate_config(RuntimePlanKind::Claude, &repository, github, codex.ship);
+    let mismatch = candidate_config(RuntimePlanKind::Claude, &repository, github);
     let error = build_native_v2_candidate(&codex, mismatch)
         .assert_error_with("mismatched candidate must fail");
     assert_eq!(error, NativeV2CandidateError::RuntimeMismatch);
@@ -429,4 +442,4 @@ use fixtures::{
     RuntimePlanKind, admitted, candidate_config, runtime, shipping_graph, wait_for_terminal,
 };
 
-use openengine_cluster_testkit::assertions::{AssertError, AssertValue};
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue, JsonAt};

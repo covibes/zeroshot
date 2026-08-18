@@ -7,7 +7,10 @@ pub(crate) use std::sync::{Arc, Mutex};
 pub(crate) use std::time::Duration;
 
 pub(crate) use async_trait::async_trait;
-pub(crate) use openengine_cluster_protocol::{RunId, WorkerOutcome};
+pub(crate) use openengine_cluster_protocol::{
+    RunId, RunSubmission, RunSubmitParams, SourceBranchId, SourceRepositoryId, SourceRevisionId,
+    SourceSnapshot, WorkerOutcome,
+};
 pub(crate) use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
 };
@@ -19,8 +22,8 @@ pub(crate) use tokio::sync::watch;
 pub(crate) use zeroshot_engine::execution::process::HostedProcessPool;
 pub(crate) use zeroshot_engine::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanup,
-    CapsuleCleanupUnavailable, CapsuleDestroyed, ControllerClaimUnavailable, ControllerEnvironment,
-    ExclusiveControllerClaim, NativeV2CloudController,
+    CapsuleCleanupUnavailable, CapsuleDestroyed, ControllerClaimUnavailable,
+    ExclusiveControllerClaim, NativeV2CloudController, run_intent_digest,
 };
 pub(crate) use zeroshot_engine::native_v2_claude::ClaudeProcessEnvironment;
 pub(crate) use zeroshot_engine::native_v2_contract::{
@@ -28,9 +31,9 @@ pub(crate) use zeroshot_engine::native_v2_contract::{
 };
 pub(crate) use zeroshot_engine::native_v2_delivery::{
     DeliveryPollPolicy, DeliveryTarget, GitHubAuthorityError, GitHubChecks, GitHubCredential,
-    GitHubDeliveryAuthority, GitHubPushRequest, GitHubReviewObservation, GitHubReviewReceipt,
-    GitHubReviewRequest, GitHubReviewState, NativeV2DeliveryAdapter, NativeV2DeliveryConfig,
-    GITHUB_TOKEN_ENV,
+    GitHubDeliveryAuthority, GitHubMergeRequestOutcome, GitHubPushRequest, GitHubReviewObservation,
+    GitHubReviewReceipt, GitHubReviewRequest, GitHubReviewState, NativeV2DeliveryAdapter,
+    NativeV2DeliveryConfig, GITHUB_TOKEN_ENV,
 };
 pub(crate) use zeroshot_engine::native_v2_hosting::{
     ProductionHostingConfig, ProductionTargetControllerFactory,
@@ -39,20 +42,25 @@ pub(crate) use zeroshot_engine::native_v2_runner::{
     DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NativeNodeRunner, NodeDriver,
     NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
 };
-pub(crate) use zeroshot_engine::native_v2_supervisor::RunRuntimeExit;
+pub(crate) use zeroshot_engine::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
 pub(crate) use zeroshot_engine::native_v2_target_authority::{
     NativeV2TargetAuthority, NativeV2TargetServer, TargetAuthorityError, TargetControllerFactory,
-    TargetSessionAuthority, TargetSetupDocument,
+    TargetBase, TargetRunIntent, TargetRunReceipt, TargetSessionAuthority, TargetSetupDocument,
 };
 pub(crate) use zeroshot_engine::v2_run_ledger::fake::FakeRunLedger;
 
 pub(crate) const HOSTED_DISCOVERY_PATH: &str = "/.well-known/openengine-hosted-target";
 pub(crate) const KEYRING_PREAMBLE: &str = r#"
-eval "$(printf '\n' | gnome-keyring-daemon --unlock --components=secrets)"
+mkdir -p "$3/keyring-control" "$3/keyring-data" || exit 90
+chmod 700 "$3/keyring-control" "$3/keyring-data" || exit 90
+export XDG_DATA_HOME="$3/keyring-data"
+eval "$(printf '\n' | gnome-keyring-daemon --control-directory="$3/keyring-control" --unlock --components=secrets)"
 printf ready | secret-tool store --label='Zeroshot native-v2 acceptance' zeroshot-test "$$" || exit 90
 test "$(secret-tool lookup zeroshot-test "$$")" = ready || exit 90
 secret-tool clear zeroshot-test "$$" || exit 90
 "#;
+
+static NEXT_TEST_RUN: AtomicUsize = AtomicUsize::new(1);
 
 pub(crate) fn temp_root() -> TempRoot {
     TempRoot::for_test("zeroshot-native-v2-cli")
@@ -92,6 +100,7 @@ impl ImmediateAllocator {
 impl CapsuleAllocator for ImmediateAllocator {
     async fn claim_controller(
         &self,
+        _run_id: &RunId,
     ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
         Ok(Arc::new(ControllerClaim))
     }
@@ -183,12 +192,22 @@ pub(crate) struct TestControllerFactory;
 impl TargetControllerFactory for TestControllerFactory {
     async fn create(
         &self,
-        setup: &TargetSetupDocument,
+        _setup: &TargetSetupDocument,
     ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
-        test_controller(
+        test_controller(Arc::new(ImmediateAllocator::default())).await
+    }
+
+    async fn submit(
+        &self,
+        setup: &TargetSetupDocument,
+        controller: &NativeV2CloudController,
+        intent: TargetRunIntent,
+    ) -> Result<TargetRunReceipt, TargetAuthorityError> {
+        submit_test_run(
             setup,
-            ControllerEnvironment::default(),
-            Arc::new(ImmediateAllocator::default()),
+            controller,
+            intent,
+            ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &BTreeMap::new()),
         )
         .await
     }
@@ -196,33 +215,117 @@ impl TargetControllerFactory for TestControllerFactory {
 
 pub(crate) struct FixedAllocatorFactory {
     pub(crate) allocator: Arc<dyn CapsuleAllocator>,
-    pub(crate) environment: ControllerEnvironment,
+    pub(crate) environment: BTreeMap<EnvironmentVariableName, String>,
+    pub(crate) resolved_base_revision: String,
 }
 
 #[async_trait]
 impl TargetControllerFactory for FixedAllocatorFactory {
     async fn create(
         &self,
-        setup: &TargetSetupDocument,
+        _setup: &TargetSetupDocument,
     ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
-        test_controller(setup, self.environment.clone(), self.allocator.clone()).await
+        test_controller(self.allocator.clone()).await
+    }
+
+    async fn submit(
+        &self,
+        setup: &TargetSetupDocument,
+        controller: &NativeV2CloudController,
+        intent: TargetRunIntent,
+    ) -> Result<TargetRunReceipt, TargetAuthorityError> {
+        submit_test_run(
+            setup,
+            controller,
+            intent,
+            (&self.resolved_base_revision, &self.environment),
+        )
+        .await
     }
 }
 
 async fn test_controller(
-    setup: &TargetSetupDocument,
-    environment: ControllerEnvironment,
     allocator: Arc<dyn CapsuleAllocator>,
 ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
-    NativeV2CloudController::new(
-        Arc::new(FakeRunLedger::new()),
-        setup.runtime.clone(),
-        environment,
-        allocator,
-    )
-    .await
-    .map(Arc::new)
-    .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+    NativeV2CloudController::new(Arc::new(FakeRunLedger::new()), allocator)
+        .await
+        .map(Arc::new)
+        .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+}
+
+async fn submit_test_run(
+    setup: &TargetSetupDocument,
+    controller: &NativeV2CloudController,
+    intent: TargetRunIntent,
+    resolution: (&str, &BTreeMap<EnvironmentVariableName, String>),
+) -> Result<TargetRunReceipt, TargetAuthorityError> {
+    let (resolved_base_revision, environment) = resolution;
+    let intent_digest = run_intent_digest(&intent)
+        .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
+    if let Some(existing) = controller
+        .resolve_intent(&intent.submission_key, &intent_digest)
+        .await
+        .map_err(|error| TargetAuthorityError::conflict(error.to_string()))?
+    {
+        return Ok(TargetRunReceipt {
+            run_id: existing.run_id,
+        });
+    }
+    let source = test_source_snapshot(setup, resolved_base_revision)?;
+    let run_id = RunId::new(format!(
+        "run-loopback-{}",
+        NEXT_TEST_RUN.fetch_add(1, Ordering::Relaxed)
+    ));
+    let TargetRunIntent {
+        title,
+        graph,
+        initial_input,
+        runtime,
+        submission_key,
+    } = intent;
+    let submission = RunSubmission {
+        source,
+        title,
+        graph,
+        initial_input,
+        runtime,
+        submission_key,
+    };
+    let exact_environment = RunEnvironment::exact(&submission.runtime, environment.clone())
+        .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
+    let receipt = controller
+        .submit_with_intent_digest_and_exact_environment(
+            RunSubmitParams { run_id, submission },
+            intent_digest,
+            exact_environment,
+        )
+        .await
+        .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))?;
+    Ok(TargetRunReceipt {
+        run_id: receipt.run_id,
+    })
+}
+
+fn test_source_snapshot(
+    setup: &TargetSetupDocument,
+    resolved_base_revision: &str,
+) -> Result<SourceSnapshot, TargetAuthorityError> {
+    let (target_branch, base_revision) = match &setup.base {
+        TargetBase::Default => ("main", resolved_base_revision),
+        TargetBase::Branch { branch } => (branch.as_str(), resolved_base_revision),
+        TargetBase::Revision {
+            revision,
+            target_branch,
+        } => (target_branch.as_str(), revision.as_str()),
+    };
+    Ok(SourceSnapshot {
+        repository: SourceRepositoryId::new(&setup.repository)
+            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?,
+        target_branch: SourceBranchId::new(target_branch)
+            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?,
+        base_revision: SourceRevisionId::new(base_revision)
+            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?,
+    })
 }
 
 use openengine_cluster_testkit::assertions::{AssertValue};
