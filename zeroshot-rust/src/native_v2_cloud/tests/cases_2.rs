@@ -1,21 +1,11 @@
 use super::*;
 
 #[tokio::test]
-async fn oecp_backend_submits_and_lists_the_same_public_run_identity() {
+async fn internal_submission_and_oecp_listing_share_the_same_public_run_identity() {
     let harness = harness(Behavior::Complete).await;
-    let request = request(Value::Null);
-    let submitted = ClusterBackend::run_submit(
-        &harness.controller,
-        &ConnectionContext::default(),
-        RunSubmitParams {
-            graph: request.graph,
-            initial_input: request.initial_input,
-            ship: request.ship,
-            submission_key: request.submission_key,
-        },
-    )
-    .await
-    .assert_value_with("OECP submit");
+    let submitted = submit_test_request(&harness.controller, request(Value::Null))
+        .await
+        .assert_value_with("trusted submit");
     terminal(&harness.controller, &submitted.run_id).await;
     let listed = ClusterBackend::run_list(
         &harness.controller,
@@ -34,22 +24,17 @@ async fn one_capsule_drives_worker_parallel_verifiers_and_loop() {
     let driver = Arc::new(GraphDriver::default());
     let cleanup = Arc::new(FakeCleanup::new(ledger.clone()));
     let allocator = Arc::new(FakeAllocator::new(driver.clone(), cleanup.clone()));
-    let controller = NativeV2CloudController::new(
-        ledger,
-        complex_runtime(),
-        ControllerEnvironment::default(),
-        allocator.clone(),
-    )
-    .await
-    .assert_value_with("controller startup");
-    let receipt = controller
-        .submit(complex_request())
+    let controller = NativeV2CloudController::new(ledger, allocator.clone())
+        .await
+        .assert_value_with("controller startup");
+    let receipt = submit_test_request(&controller, complex_request())
         .await
         .assert_value_with("submit complex graph");
-    assert!(matches!(
-        terminal(&controller, &receipt.run_id).await,
-        TerminalResult::Succeeded { .. }
-    ));
+    let result = terminal(&controller, &receipt.run_id).await;
+    assert!(
+        matches!(result, TerminalResult::Succeeded { .. }),
+        "unexpected terminal result: {result:?}"
+    );
     assert_eq!(allocator.allocation_count(), 1);
     assert_eq!(driver.starts("worker"), 1);
     assert_eq!(driver.starts("left"), 1);
@@ -65,19 +50,16 @@ async fn one_capsule_drives_worker_parallel_verifiers_and_loop() {
 #[tokio::test]
 async fn valid_run_injects_only_declared_environment_and_dedupes() {
     let harness = harness(Behavior::Complete).await;
-    let first = harness
-        .controller
-        .submit(request(Value::Null))
+    let first = submit_test_request(&harness.controller, request(Value::Null))
         .await
         .assert_value_with("submit");
     assert!(!first.deduped);
-    assert!(matches!(
-        terminal(&harness.controller, &first.run_id).await,
-        TerminalResult::Succeeded { .. }
-    ));
-    let second = harness
-        .controller
-        .submit(request(Value::Null))
+    let result = terminal(&harness.controller, &first.run_id).await;
+    assert!(
+        matches!(result, TerminalResult::Succeeded { .. }),
+        "unexpected terminal result: {result:?}"
+    );
+    let second = submit_test_request(&harness.controller, request(Value::Null))
         .await
         .assert_value_with("dedupe");
     assert!(second.deduped);
@@ -85,10 +67,10 @@ async fn valid_run_injects_only_declared_environment_and_dedupes() {
     assert_eq!(harness.allocator.allocation_count(), 1);
     assert_eq!(
         harness.driver.environments().as_slice(),
-        &[BTreeMap::from([(
-            "NODE_TOKEN".to_owned(),
-            "declared-secret".to_owned()
-        )])]
+        &[
+            BTreeMap::from([("NODE_TOKEN".to_owned(), "declared-secret".to_owned())]),
+            BTreeMap::new()
+        ]
     );
     assert_eq!(harness.cleanup.exits(), vec![RunRuntimeExit::Completed]);
     assert_eq!(harness.cleanup.terminal_seen(), vec![false]);

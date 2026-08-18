@@ -32,15 +32,7 @@ impl ClusterBackend for NativeV2CloudController {
         _context: &ConnectionContext,
         params: RunSubmitParams,
     ) -> Result<RunSubmitResult, BackendError> {
-        let receipt = self
-            .submit(CloudRunSubmission {
-                graph: params.graph,
-                initial_input: params.initial_input,
-                ship: params.ship,
-                submission_key: params.submission_key,
-            })
-            .await
-            .map_err(cloud_backend_error)?;
+        let receipt = self.submit(params).await.map_err(cloud_backend_error)?;
         Ok(RunSubmitResult {
             run_id: receipt.run_id,
         })
@@ -170,38 +162,7 @@ fn cloud_backend_error(error: NativeV2CloudError) -> BackendError {
         | NativeV2CloudError::Observation(NativeV2ObservationError::RunNotFound) => {
             BackendError::application(NOT_FOUND, "run was not found", None)
         }
-        NativeV2CloudError::RunActive { run_id } => BackendError::application(
-            RUN_CONFLICT,
-            "target already has a nonterminal run",
-            Some(serde_json::json!({ "runId": run_id })),
-        ),
         _ => BackendError::new(INTERNAL_ERROR_CODE, "native-v2 operation failed"),
-    }
-}
-
-pub(super) struct CapsuleRuntimeCleanup {
-    pub(super) cleanup: Arc<dyn CapsuleCleanup>,
-}
-
-#[async_trait]
-impl RunRuntimeCleanup for CapsuleRuntimeCleanup {
-    async fn cleanup(&self, exit: RunRuntimeExit) -> Result<(), RuntimeCleanupUnavailable> {
-        self.cleanup
-            .destroy_or_confirm_absent(exit)
-            .await
-            .map(|_| ())
-            .map_err(|_| RuntimeCleanupUnavailable)
-    }
-}
-
-pub(super) async fn wait_for_capsule_loss(loss: &mut watch::Receiver<bool>) {
-    loop {
-        if *loss.borrow_and_update() {
-            return;
-        }
-        if loss.changed().await.is_err() {
-            return;
-        }
     }
 }
 
@@ -212,22 +173,6 @@ pub(super) fn submission_digest(
         serde_json::to_vec(submission).map_err(|_| NativeV2CloudError::SubmissionIdentity)?;
     Sha256Digest::new(format!("{:x}", Sha256::digest(bytes)))
         .map_err(|_| NativeV2CloudError::SubmissionIdentity)
-}
-
-pub(super) fn fresh_run_id() -> Result<RunId, NativeV2CloudError> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random).map_err(|_| NativeV2CloudError::SubmissionIdentity)?;
-    Ok(RunId::new(format!("run-{}", hex(&random))))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(&mut output, "{byte:02x}");
-    }
-    output
 }
 
 pub(super) async fn append_runtime_lost(

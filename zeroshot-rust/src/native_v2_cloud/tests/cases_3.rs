@@ -3,81 +3,62 @@ use super::*;
 async fn assert_active_submission_conflicts(
     controller: &NativeV2CloudController,
     ledger: &FakeRunLedger,
-    allocator: &GatedAllocator,
+    allocator: &FakeAllocator,
     first: &CloudRunReceipt,
 ) {
-    let exact = controller
-        .submit(request_with_key(Value::Null, "cloud-first"))
+    let exact = submit_test_request(controller, request_with_key(Value::Null, "cloud-first"))
         .await
         .assert_value();
     assert!(exact.deduped);
     assert_eq!(exact.run_id, first.run_id);
 
     let mut conflicting_reuse = request_with_key(Value::Null, "cloud-first");
-    let mut graph = serde_json::to_value(&conflicting_reuse.graph).assert_value();
+    let mut graph = serde_json::to_value(&conflicting_reuse.submission.graph).assert_value();
     *graph
         .pointer_mut("/root/children/0/timeoutMs")
         .assert_value() = json!(9_999);
-    conflicting_reuse.graph = serde_json::from_value(graph).assert_value();
-    let conflict = controller.submit(conflicting_reuse).await.assert_error();
+    conflicting_reuse.submission.graph = serde_json::from_value(graph).assert_value();
+    let conflict = submit_test_request(controller, conflicting_reuse)
+        .await
+        .assert_error();
     assert!(matches!(
         conflict,
         NativeV2CloudError::Ledger(RunLedgerError::SubmissionConflict { existing_run_id })
             if existing_run_id == first.run_id
     ));
 
-    let request = request_with_key(Value::Null, "cloud-backend-conflict");
-    let conflict = ClusterBackend::run_submit(
-        controller,
-        &ConnectionContext::default(),
-        RunSubmitParams {
-            graph: request.graph,
-            initial_input: request.initial_input,
-            ship: request.ship,
-            submission_key: request.submission_key,
-        },
-    )
-    .await
-    .assert_error();
-    assert_eq!(conflict.code, RUN_CONFLICT);
-    assert_eq!(conflict.details, Some(json!({ "runId": first.run_id })));
     assert_eq!(allocator.allocation_count(), 1);
     assert_eq!(ledger.list().await.assert_value().len(), 1);
 }
 
-async fn exclusive_controller(
+async fn gated_controller(
     ledger: Arc<FakeRunLedger>,
     allocator: Arc<GatedAllocator>,
 ) -> NativeV2CloudController {
-    NativeV2CloudController::new(
-        ledger,
-        runtime(),
-        ControllerEnvironment::new(BTreeMap::from([(
-            EnvironmentVariableName::new("NODE_TOKEN").assert_value_with("environment name"),
-            "declared-secret".to_owned(),
-        )])),
-        allocator,
-    )
-    .await
-    .assert_value_with("controller startup")
+    NativeV2CloudController::new(ledger, allocator)
+        .await
+        .assert_value_with("controller startup")
 }
 
 #[tokio::test]
-async fn distinct_submissions_never_overlap_and_next_admits_after_terminal_cleanup() {
+async fn distinct_nonterminal_runs_are_both_admitted() {
     let ledger = Arc::new(FakeRunLedger::new());
     let driver = Arc::new(FakeDriver::new(Behavior::Hang));
     let cleanup = Arc::new(FakeCleanup::new(ledger.clone()));
     let allocator = Arc::new(GatedAllocator::new(driver, cleanup));
-    let controller = exclusive_controller(ledger.clone(), allocator.clone()).await;
+    let controller = gated_controller(ledger.clone(), allocator.clone()).await;
     let first_request = request_with_key(Value::Null, "cloud-first");
     let second_request = request_with_key(Value::Null, "cloud-second");
 
     let first_controller = controller.clone();
-    let first = tokio::spawn(async move { first_controller.submit(first_request.clone()).await });
+    let first =
+        tokio::spawn(
+            async move { submit_test_request(&first_controller, first_request.clone()).await },
+        );
     allocator.wait_started().await;
     let second_controller = controller.clone();
-    let retry_request = second_request.clone();
-    let second = tokio::spawn(async move { second_controller.submit(second_request).await });
+    let second =
+        tokio::spawn(async move { submit_test_request(&second_controller, second_request).await });
 
     tokio::task::yield_now().await;
     assert_eq!(allocator.allocation_count(), 1);
@@ -87,26 +68,20 @@ async fn distinct_submissions_never_overlap_and_next_admits_after_terminal_clean
         .await
         .assert_value_with("first task")
         .assert_value_with("first submission");
-    let conflict = second
+    let second = second
         .await
         .assert_value_with("second task")
-        .assert_error_with("distinct submission must be rejected");
-    assert!(matches!(
-        conflict,
-        NativeV2CloudError::RunActive { run_id } if run_id == first.run_id
-    ));
-    assert_eq!(allocator.allocation_count(), 1);
+        .assert_value_with("second submission");
+    assert_ne!(second.run_id, first.run_id);
+    assert_eq!(allocator.allocation_count(), 2);
     assert_eq!(
         ledger
             .list()
             .await
-            .assert_value_with("list after conflict")
+            .assert_value_with("list after concurrent submissions")
             .len(),
-        1
+        2
     );
-
-    assert_active_submission_conflicts(&controller, ledger.as_ref(), allocator.as_ref(), &first)
-        .await;
 
     controller
         .force(RunForceParams {
@@ -116,29 +91,38 @@ async fn distinct_submissions_never_overlap_and_next_admits_after_terminal_clean
         .assert_value_with("first force stop");
     terminal(&controller, &first.run_id).await;
 
-    let next = controller
-        .submit(retry_request)
-        .await
-        .assert_value_with("next submission after cleanup");
-    assert!(!next.deduped);
-    assert_ne!(next.run_id, first.run_id);
-    assert_eq!(allocator.allocation_count(), 2);
-    assert_eq!(
-        ledger
-            .list()
-            .await
-            .assert_value_with("list after next run")
-            .len(),
-        2
-    );
-
     controller
         .force(RunForceParams {
-            run_id: next.run_id.clone(),
+            run_id: second.run_id.clone(),
         })
         .await
-        .assert_value_with("next force stop");
-    terminal(&controller, &next.run_id).await;
+        .assert_value_with("second force stop");
+    terminal(&controller, &second.run_id).await;
+}
+
+#[tokio::test]
+async fn exact_retry_dedupes_and_changed_retry_conflicts() {
+    let harness = harness(Behavior::Hang).await;
+    let first = submit_test_request(
+        &harness.controller,
+        request_with_key(Value::Null, "cloud-first"),
+    )
+    .await
+    .assert_value_with("first submission");
+    assert_active_submission_conflicts(
+        &harness.controller,
+        harness.ledger.as_ref(),
+        harness.allocator.as_ref(),
+        &first,
+    )
+    .await;
+    harness
+        .controller
+        .force(RunForceParams {
+            run_id: first.run_id.clone(),
+        })
+        .await
+        .assert_value_with("cleanup");
 }
 
 #[tokio::test]
@@ -152,9 +136,11 @@ async fn aborted_allocation_leaves_durable_run_exclusive_and_exact_retry_reconci
 
     let abandoned_controller = controller.clone();
     let abandoned = tokio::spawn(async move {
-        abandoned_controller
-            .submit(request_with_key(Value::Null, "cloud-abandoned"))
-            .await
+        submit_test_request(
+            &abandoned_controller,
+            request_with_key(Value::Null, "cloud-abandoned"),
+        )
+        .await
     });
     allocator.wait_started().await;
     let run_id = ledger
@@ -173,23 +159,23 @@ async fn aborted_allocation_leaves_durable_run_exclusive_and_exact_retry_reconci
             .is_cancelled()
     );
 
-    let distinct = controller
-        .submit(request_with_key(Value::Null, "cloud-distinct"))
-        .await
-        .assert_error_with("durable nonterminal run remains exclusive");
-    assert!(matches!(
-        distinct,
-        NativeV2CloudError::RunActive { run_id: active } if active == run_id
-    ));
-    assert_eq!(allocator.allocation_count(), 1);
+    allocator.release();
+    let distinct =
+        submit_test_request(&controller, request_with_key(Value::Null, "cloud-distinct"))
+            .await
+            .assert_value_with("distinct run is independently admitted");
+    assert_ne!(distinct.run_id, run_id);
+    assert_eq!(allocator.allocation_count(), 2);
 
-    let exact = controller
-        .submit(request_with_key(Value::Null, "cloud-abandoned"))
-        .await
-        .assert_value_with("exact retry reconciles abandoned allocation");
+    let exact = submit_test_request(
+        &controller,
+        request_with_key(Value::Null, "cloud-abandoned"),
+    )
+    .await
+    .assert_value_with("exact retry reconciles abandoned allocation");
     assert!(exact.deduped);
     assert_eq!(exact.run_id, run_id);
-    assert_eq!(allocator.allocation_count(), 1);
+    assert_eq!(allocator.allocation_count(), 2);
     assert_eq!(
         terminal(&controller, &run_id).await,
         TerminalResult::Failed {
@@ -197,6 +183,12 @@ async fn aborted_allocation_leaves_durable_run_exclusive_and_exact_retry_reconci
         }
     );
     assert_eq!(cleanup.exits(), vec![RunRuntimeExit::RuntimeLost]);
+    controller
+        .force(RunForceParams {
+            run_id: distinct.run_id,
+        })
+        .await
+        .assert_value_with("distinct cleanup");
 }
 
 #[tokio::test]

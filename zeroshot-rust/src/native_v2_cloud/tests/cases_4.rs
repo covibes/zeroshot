@@ -11,8 +11,7 @@ async fn force_waits_for_in_flight_allocation_then_destroys_without_a_post_force
 
     let submit_controller = controller.clone();
     let submit = tokio::spawn(async move {
-        submit_controller
-            .submit(request(Value::Null))
+        submit_test_request(&submit_controller, request(Value::Null))
             .await
             .assert_value_with("submit")
     });
@@ -67,9 +66,7 @@ async fn capsule_loss_confirms_absence_then_terminalizes_without_replacement() {
         RunRuntimeExit::RuntimeLost,
     )
     .await;
-    let replay = harness
-        .controller
-        .submit(request(Value::Null))
+    let replay = submit_test_request(&harness.controller, request(Value::Null))
         .await
         .assert_value_with("resubmit");
     assert!(replay.deduped);
@@ -81,9 +78,7 @@ async fn capsule_loss_confirms_absence_then_terminalizes_without_replacement() {
 async fn exact_resubmit_of_controller_reconstructed_run_confirms_absence_without_allocation() {
     let harness = harness(Behavior::Complete).await;
     let run_id = seed_controller_reconstructed_run(&harness.ledger, "run-orphaned").await;
-    let replay = harness
-        .controller
-        .submit(request(Value::Null))
+    let replay = submit_test_request(&harness.controller, request(Value::Null))
         .await
         .assert_value_with("resubmit");
     assert!(replay.deduped);

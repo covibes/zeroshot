@@ -160,8 +160,9 @@ where
 {
     async fn claim_controller(
         &self,
+        run_id: &RunId,
     ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
-        self.core.claims.acquire()
+        self.core.claims.acquire(run_id)
     }
 
     async fn allocate(
@@ -206,14 +207,9 @@ pub(super) async fn gated_harness() -> GatedHarness {
     let driver = Arc::new(FakeDriver::new(Behavior::Hang));
     let cleanup = Arc::new(FakeCleanup::new(ledger.clone()));
     let allocator = Arc::new(GatedAllocator::new(driver, cleanup.clone()));
-    let controller = NativeV2CloudController::new(
-        ledger.clone(),
-        runtime(),
-        ControllerEnvironment::default(),
-        allocator.clone(),
-    )
-    .await
-    .assert_value_with("controller startup");
+    let controller = NativeV2CloudController::new(ledger.clone(), allocator.clone())
+        .await
+        .assert_value_with("controller startup");
     GatedHarness {
         controller,
         ledger,
@@ -227,16 +223,9 @@ pub(super) async fn harness(behavior: Behavior) -> Harness {
     let driver = Arc::new(FakeDriver::new(behavior));
     let cleanup = Arc::new(FakeCleanup::new(ledger.clone()));
     let allocator = Arc::new(FakeAllocator::new(driver.clone(), cleanup.clone()));
-    let token = EnvironmentVariableName::new("NODE_TOKEN").assert_value_with("environment name");
-    let extra = EnvironmentVariableName::new("EXTRA_SECRET").assert_value_with("environment name");
-    let environment = ControllerEnvironment::new(BTreeMap::from([
-        (token, "declared-secret".to_owned()),
-        (extra, "must-not-pass".to_owned()),
-    ]));
-    let controller =
-        NativeV2CloudController::new(ledger.clone(), runtime(), environment, allocator.clone())
-            .await
-            .assert_value_with("controller startup");
+    let controller = NativeV2CloudController::new(ledger.clone(), allocator.clone())
+        .await
+        .assert_value_with("controller startup");
     Harness {
         controller,
         ledger,
@@ -248,9 +237,7 @@ pub(super) async fn harness(behavior: Behavior) -> Harness {
 
 pub(super) async fn started_harness(behavior: Behavior) -> (Harness, CloudRunReceipt) {
     let harness = harness(behavior).await;
-    let receipt = harness
-        .controller
-        .submit(request(Value::Null))
+    let receipt = submit_test_request(&harness.controller, request(Value::Null))
         .await
         .assert_value_with("submit");
     harness.driver.wait_started().await;
@@ -300,13 +287,7 @@ pub(super) async fn seed_controller_reconstructed_run(
     run_id: &str,
 ) -> RunId {
     let request = request(Value::Null);
-    let submission = RunSubmission {
-        graph: request.graph,
-        initial_input: request.initial_input,
-        runtime: runtime(),
-        ship: request.ship,
-        submission_key: request.submission_key,
-    };
+    let submission = request.submission;
     let admitted = NativeV2Admission
         .admit(submission.clone())
         .await
@@ -317,6 +298,8 @@ pub(super) async fn seed_controller_reconstructed_run(
             .create_or_get(CreateRun {
                 run_id: run_id.clone(),
                 submission_key: submission.submission_key.clone(),
+                intent_digest: run_intent_digest(&RunSubmissionIntent::from(&submission))
+                    .assert_value_with("intent digest"),
                 submission_digest: submission_digest(&submission).assert_value_with("digest"),
                 admitted,
             })

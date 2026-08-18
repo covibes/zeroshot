@@ -1,4 +1,3 @@
-pub mod artifact_store;
 pub mod execution;
 pub mod full_v1_reducer;
 pub mod issue_provider;
@@ -12,7 +11,9 @@ pub mod native_v2_codex;
 pub mod native_v2_contract;
 pub mod native_v2_delivery;
 pub mod native_v2_hosting;
+pub mod native_v2_local;
 pub mod native_v2_observability;
+pub mod native_v2_portable_controller;
 pub mod native_v2_runner;
 pub mod native_v2_supervisor;
 pub mod native_v2_target_authority;

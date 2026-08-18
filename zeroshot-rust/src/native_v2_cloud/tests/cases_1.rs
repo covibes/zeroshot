@@ -4,7 +4,7 @@ use super::*;
 async fn invalid_submission_has_no_durable_or_allocation_effect() {
     let harness = harness(Behavior::Complete).await;
     assert!(matches!(
-        harness.controller.submit(request(json!({}))).await,
+        submit_test_request(&harness.controller, request(json!({}))).await,
         Err(NativeV2CloudError::Admission(_))
     ));
     assert_eq!(harness.allocator.allocation_count(), 0);
@@ -25,14 +25,9 @@ async fn startup_reconciles_every_persisted_nonterminal_before_status_is_visible
     let driver = Arc::new(FakeDriver::new(Behavior::Complete));
     let cleanup = Arc::new(FakeCleanup::new(ledger.clone()));
     let allocator = Arc::new(FakeAllocator::new(driver, cleanup.clone()));
-    let controller = NativeV2CloudController::new(
-        ledger,
-        runtime(),
-        ControllerEnvironment::default(),
-        allocator.clone(),
-    )
-    .await
-    .assert_value_with("reconciled startup");
+    let controller = NativeV2CloudController::new(ledger, allocator.clone())
+        .await
+        .assert_value_with("reconciled startup");
 
     let status = controller
         .status(RunStatusParams {
@@ -55,38 +50,26 @@ async fn startup_reconciles_every_persisted_nonterminal_before_status_is_visible
 }
 
 #[tokio::test]
-async fn allocator_rejects_a_second_live_controller_for_the_same_target() {
-    let ledger = Arc::new(FakeRunLedger::new());
+async fn allocator_claims_are_exclusive_per_run_not_per_target() {
     let driver = Arc::new(FakeDriver::new(Behavior::Complete));
-    let cleanup = Arc::new(FakeCleanup::new(ledger.clone()));
+    let cleanup = Arc::new(FakeCleanup::new(Arc::new(FakeRunLedger::new())));
     let allocator = Arc::new(FakeAllocator::new(driver, cleanup));
-    let first = NativeV2CloudController::new(
-        ledger.clone(),
-        runtime(),
-        ControllerEnvironment::default(),
-        allocator.clone(),
-    )
-    .await
-    .assert_value_with("first controller");
-    assert!(matches!(
-        NativeV2CloudController::new(
-            ledger.clone(),
-            runtime(),
-            ControllerEnvironment::default(),
-            allocator.clone(),
-        )
-        .await,
-        Err(NativeV2CloudError::ControllerClaim(_))
-    ));
+    let first_id = RunId::new("run-first");
+    let second_id = RunId::new("run-second");
+    let first = allocator
+        .claim_controller(&first_id)
+        .await
+        .assert_value_with("first run claim");
+    allocator
+        .claim_controller(&second_id)
+        .await
+        .assert_value_with("different run claim");
+    assert!(allocator.claim_controller(&first_id).await.is_err());
     drop(first);
-    NativeV2CloudController::new(
-        ledger,
-        runtime(),
-        ControllerEnvironment::default(),
-        allocator,
-    )
-    .await
-    .assert_value_with("claim released with controller lifetime");
+    allocator
+        .claim_controller(&first_id)
+        .await
+        .assert_value_with("released run claim");
 }
 
 use openengine_cluster_testkit::assertions::{AssertValue};

@@ -68,9 +68,7 @@ async fn concurrent_force_of_reconstructed_run_cleans_up_and_terminalizes_once()
 async fn force_retries_cleanup_after_a_drive_cleanup_failure() {
     let harness = harness(Behavior::Complete).await;
     harness.cleanup.fail_next();
-    let receipt = harness
-        .controller
-        .submit(request(Value::Null))
+    let receipt = submit_test_request(&harness.controller, request(Value::Null))
         .await
         .assert_value_with("submit");
     tokio::time::timeout(Duration::from_secs(2), async {

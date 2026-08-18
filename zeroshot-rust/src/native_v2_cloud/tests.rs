@@ -1,20 +1,23 @@
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    GraphSpec, IdempotencyKey, NodeName, RunForceParams, RunId, RunStatus, RunStatusParams,
-    TerminalResult, WorkerOutcome,
+    DeclaredEnvironment, GraphSpec, IdempotencyKey, NodeName, NodeRuntimeBinding, RunForceParams,
+    RunId, RunSize, RunStatus, RunStatusParams, RunSubmitParams, RunTitle, RuntimePlan,
+    SourceBranchId, SourceRepositoryId, SourceRevisionId, SourceSnapshot, TerminalResult,
+    WorkerOutcome,
 };
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
 use super::*;
 use crate::execution::SessionScope;
-use crate::native_v2_contract::{CodexProvider, NodeInvocation};
+use crate::native_v2_contract::{CodexProvider, GIT_DELIVERY_PR_WORKER_REF, NodeInvocation};
+use crate::native_v2_delivery::{DELIVERY_OPENED_LABEL, DELIVERY_SIGNAL_FIELD};
 use crate::native_v2_runner::{
     DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NativeNodeRunner, NodeDriver,
     NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
@@ -65,6 +68,34 @@ impl FakeDriver {
     }
 }
 
+fn fake_worker_outcome(invocation: &DriverInvocation) -> WorkerOutcome {
+    if invocation.node.worker.as_str() == GIT_DELIVERY_PR_WORKER_REF {
+        WorkerOutcome::Verifier {
+            output: json!({
+                "version": "v1",
+                "mode": "pr",
+                "outcome": "opened",
+                "repository": "owner/repo",
+                "targetBranch": "main",
+                "headRevision": "2222222222222222222222222222222222222222",
+                "pullRequestId": "1"
+            }),
+            signals: BTreeMap::from([(
+                serde_json::from_value(json!(DELIVERY_SIGNAL_FIELD))
+                    .assert_value_with("delivery signal field"),
+                EnumLabel::new(DELIVERY_OPENED_LABEL).assert_value_with("delivery signal"),
+            )]),
+            diagnostic: Value::String("opened".to_owned()),
+            artifacts: Vec::new(),
+        }
+    } else {
+        WorkerOutcome::Verified {
+            output: Value::Null,
+            artifacts: Vec::new(),
+        }
+    }
+}
+
 #[async_trait]
 impl NodeDriver for FakeDriver {
     async fn run(
@@ -83,10 +114,7 @@ impl NodeDriver for FakeDriver {
         let _ = self.started.send(true);
         control.emit(LiveOutput::new(LiveOutputStream::Output, "safe output")?)?;
         match self.behavior {
-            Behavior::Complete => Ok(WorkerOutcome::Verified {
-                output: Value::Null,
-                artifacts: Vec::new(),
-            }),
+            Behavior::Complete => Ok(fake_worker_outcome(&invocation)),
             Behavior::Hang => {
                 control.cancelled().await;
                 Err(NodeRunnerError::Cancelled)
@@ -131,11 +159,10 @@ impl NodeDriver for GraphDriver {
         if matches!(node.as_str(), "left" | "right") {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let outcome = if node == "worker" {
-            WorkerOutcome::Verified {
-                output: Value::Null,
-                artifacts: Vec::new(),
-            }
+        let outcome = if invocation.node.worker.as_str() == GIT_DELIVERY_PR_WORKER_REF
+            || node == "worker"
+        {
+            fake_worker_outcome(&invocation)
         } else {
             let label =
                 if node == "loop_check" && self.loop_visits.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -292,29 +319,65 @@ impl CapsuleCleanup for FakeCleanup {
 
 #[derive(Clone, Default)]
 struct FakeClaimAuthority {
-    held: Arc<AtomicBool>,
+    held: Arc<StdMutex<BTreeSet<RunId>>>,
 }
 
 impl FakeClaimAuthority {
-    fn acquire(&self) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
-        if self.held.swap(true, Ordering::SeqCst) {
+    fn acquire(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        if !held.insert(run_id.clone()) {
             return Err(ControllerClaimUnavailable);
         }
         Ok(Arc::new(FakeControllerClaim {
             held: self.held.clone(),
+            run_id: run_id.clone(),
         }))
     }
 }
 
 struct FakeControllerClaim {
-    held: Arc<AtomicBool>,
+    held: Arc<StdMutex<BTreeSet<RunId>>>,
+    run_id: RunId,
+}
+
+fn exact_test_environment(request: &RunSubmitParams) -> Result<RunEnvironment, NativeV2CloudError> {
+    let available = BTreeMap::from([
+        (
+            EnvironmentVariableName::new("NODE_TOKEN").assert_value_with("environment name"),
+            "declared-secret".to_owned(),
+        ),
+        (
+            EnvironmentVariableName::new("EXTRA_SECRET").assert_value_with("environment name"),
+            "must-not-pass".to_owned(),
+        ),
+    ]);
+    Ok(RunEnvironment::from_available(
+        &request.submission.runtime,
+        &available,
+    )?)
+}
+
+async fn submit_test_request(
+    controller: &NativeV2CloudController,
+    request: RunSubmitParams,
+) -> Result<CloudRunReceipt, NativeV2CloudError> {
+    let environment = exact_test_environment(&request)?;
+    controller
+        .submit_with_exact_environment(request, environment)
+        .await
 }
 
 impl ExclusiveControllerClaim for FakeControllerClaim {}
 
 impl Drop for FakeControllerClaim {
     fn drop(&mut self) {
-        self.held.store(false, Ordering::SeqCst);
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.run_id);
     }
 }
 
