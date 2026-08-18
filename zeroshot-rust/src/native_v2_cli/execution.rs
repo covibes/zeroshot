@@ -1,19 +1,21 @@
-use std::fmt;
 use std::io::Write;
-use std::path::Path;
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    Cursor, GraphProfile, GraphSpec, IdempotencyKey, RunAttachParams, RunForceParams, RunId,
-    RunListParams, RunLogEventNotification, RunLogsParams, RunStatus, RunStatusParams,
-    RunWatchEventNotification, RunWatchParams, RuntimePlan, SubscriptionCloseReason,
+    Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
+    RunLogsParams, RunStatus, RunStatusParams, RunWatchEventNotification, RunWatchParams,
+    SubscriptionCloseReason, TerminalResult,
 };
 use serde::Serialize;
 
 use super::{
     CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal, NativeV2CliBackend,
-    NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector, TargetRunIntent, HELP,
+    NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector, HELP,
 };
+
+#[path = "execution/submission.rs"]
+mod submission;
+use submission::prepare_submission;
 
 pub async fn execute_native_v2_cli<B, S, W>(
     command: NativeV2CliCommand,
@@ -207,7 +209,7 @@ where
     if run.detach {
         return Ok(CliOutcome::Detached);
     }
-    follow_durable(
+    let outcome = follow_durable(
         DurableFollow {
             backend,
             target: run.target.as_deref(),
@@ -217,38 +219,12 @@ where
         signal,
         output,
     )
-    .await
-}
-
-fn prepare_submission(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError> {
-    let graph = read_json::<GraphSpec>("graph", &run.graph)?;
-    validate_graph_profile(&graph)?;
-    let initial_input = read_json::<serde_json::Value>("input", &run.input)?;
-    let runtime = read_json::<RuntimePlan>("runtime config", &run.runtime_config)?;
-    graph
-        .initial_input
-        .validate_value(&initial_input)
-        .map_err(|error| NativeV2CliError::InitialInput(error.to_string()))?;
-    let submission_key = run
-        .submission_key
-        .clone()
-        .map_or_else(fresh_submission_key, Ok)?;
-    Ok(TargetRunIntent {
-        title: run.title.clone(),
-        graph,
-        initial_input,
-        runtime,
-        submission_key,
-    })
-}
-
-fn validate_graph_profile(graph: &GraphSpec) -> Result<(), NativeV2CliError> {
-    if graph.profile == GraphProfile::Full {
-        return Ok(());
+    .await?;
+    if outcome == CliOutcome::Failed {
+        Err(NativeV2CliError::RunFailed)
+    } else {
+        Ok(outcome)
     }
-    Err(NativeV2CliError::Usage(
-        "native-v2 requires graph profile openengine.graph.full/v1".to_owned(),
-    ))
 }
 
 #[derive(Clone, Copy)]
@@ -416,8 +392,15 @@ fn write_durable_event(
     let cursor = event.cursor().cloned();
     let outcome = match event {
         DurableItem::Watch(event) => {
-            let outcome =
-                matches!(event.status, RunStatus::Finished { .. }).then_some(CliOutcome::Finished);
+            let outcome = match &event.status {
+                RunStatus::Finished {
+                    terminal_result: TerminalResult::Succeeded { .. },
+                } => Some(CliOutcome::Finished),
+                RunStatus::Finished {
+                    terminal_result: TerminalResult::Failed { .. },
+                } => Some(CliOutcome::Failed),
+                _ => None,
+            };
             write_json(output, &event)?;
             outcome
         }
@@ -455,33 +438,6 @@ where
     }
 }
 
-fn read_json<T>(kind: &'static str, path: &Path) -> Result<T, NativeV2CliError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let bytes = std::fs::read(path).map_err(|source| NativeV2CliError::Read {
-        kind,
-        path: path.to_owned(),
-        source,
-    })?;
-    serde_json::from_slice(&bytes).map_err(|source| NativeV2CliError::Json {
-        kind,
-        path: path.to_owned(),
-        source,
-    })
-}
-
-fn fresh_submission_key() -> Result<IdempotencyKey, NativeV2CliError> {
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random).map_err(|_| NativeV2CliError::Randomness)?;
-    let mut key = String::from("cli-");
-    for byte in random {
-        use fmt::Write as _;
-        let _ = write!(&mut key, "{byte:02x}");
-    }
-    IdempotencyKey::new(key).map_err(|error| NativeV2CliError::Usage(error.to_owned()))
-}
-
 fn write_json(output: &mut impl Write, value: &impl Serialize) -> Result<(), NativeV2CliError> {
     serde_json::to_writer(&mut *output, value)?;
     output.write_all(b"\n")?;
@@ -491,7 +447,12 @@ fn write_json(output: &mut impl Write, value: &impl Serialize) -> Result<(), Nat
 
 fn outcome_for_status(status: &RunStatus) -> CliOutcome {
     match status {
-        RunStatus::Finished { .. } => CliOutcome::Finished,
+        RunStatus::Finished {
+            terminal_result: TerminalResult::Succeeded { .. },
+        } => CliOutcome::Finished,
+        RunStatus::Finished {
+            terminal_result: TerminalResult::Failed { .. },
+        } => CliOutcome::Failed,
         _ => CliOutcome::Completed,
     }
 }

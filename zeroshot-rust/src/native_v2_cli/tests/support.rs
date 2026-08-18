@@ -7,7 +7,7 @@ use openengine_cluster_protocol::{
     RunStatusResult, RunSubmitResult, RunTitle, RunWatchEventNotification, RunWatchParams,
     RuntimePlan,
 };
-use openengine_cluster_testkit::assertions::AssertValue;
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};
 use serde_json::{json, Value};
 
 use super::*;
@@ -116,6 +116,7 @@ pub(super) struct FakeBackend {
     reconnect_watch: bool,
     reconnect_logs: bool,
     disconnect_attach: bool,
+    failed_watch: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -297,6 +298,11 @@ impl NativeV2CliBackend for FakeBackend {
                 ),
             ]));
         }
+        let terminal_result = if self.failed_watch {
+            json!({"status":"failed","reason":"worker_failed"})
+        } else {
+            json!({"status":"succeeded","output":null})
+        };
         Ok(FakeSubscription::items(vec![CliSubscriptionItem::Event(
             serde_json::from_value(json!({
                 "subscriptionId":"watch-1",
@@ -305,7 +311,7 @@ impl NativeV2CliBackend for FakeBackend {
                 "source":source(),
                 "size":"standard",
                 "cursor":"v2:2",
-                "status":{"phase":"finished","terminalResult":{"status":"succeeded","output":null}}
+                "status":{"phase":"finished","terminalResult":terminal_result}
             }))
             .assert_value(),
         )]))
@@ -394,4 +400,25 @@ pub(super) struct ImmediateDetach;
 #[async_trait]
 impl DetachSignal for ImmediateDetach {
     async fn wait(&mut self) {}
+}
+
+#[tokio::test]
+async fn foreground_run_reports_a_terminal_failure_after_printing_it() {
+    let files = FixtureFiles::new(graph(), json!({"task":"fail"}));
+    let command = parse_native_v2_args(run_args(&files.graph, &files.input, &files.runtime, &[]))
+        .assert_value();
+    let backend = FakeBackend {
+        failed_watch: true,
+        ..FakeBackend::default()
+    };
+    let mut output = Vec::new();
+    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut output)
+        .await
+        .assert_error();
+    assert!(matches!(error, NativeV2CliError::RunFailed));
+    assert!(
+        String::from_utf8(output)
+            .assert_value()
+            .contains("\"reason\":\"worker_failed\"")
+    );
 }

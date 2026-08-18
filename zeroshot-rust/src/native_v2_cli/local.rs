@@ -34,6 +34,9 @@ use crate::v2_run_ledger::{RunLedger, RunLedgerError};
 mod state;
 use state::*;
 
+#[path = "local/backend.rs"]
+mod backend;
+
 /// Private process mode intercepted by the shipped binary before public CLI parsing.
 #[doc(hidden)]
 pub const LOCAL_CONTROLLER_MODE: &str = "__zeroshot-run-controller";
@@ -41,6 +44,7 @@ pub const LOCAL_CONTROLLER_MODE: &str = "__zeroshot-run-controller";
 const BOOTSTRAP_FILE: &str = "controller.bootstrap.json";
 const SUBMISSION_LOCK_FILE: &str = "submission.lock";
 const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const CONTROLLER_HANDOFF_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug)]
 pub struct LocalCliBackend {
@@ -330,17 +334,43 @@ impl LocalCliBackend {
         let Some(run_id) = entry.ok().and_then(local_run_id_from_entry) else {
             return Ok(None);
         };
-        let Ok(transport) = self.connect_run(&run_id).await else {
-            return Ok(None);
+        let result = match self.list_entry_once(&run_id).await {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                sleep(CONTROLLER_HANDOFF_RETRY_DELAY).await;
+                self.list_entry_once(&run_id).await
+            }
         };
+        match result {
+            Ok(result) => Ok(Some(result)),
+            Err(NativeV2CliError::Local(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn list_entry_once(&self, run_id: &RunId) -> Result<RunListResult, NativeV2CliError> {
+        let transport = self.connect_run(run_id).await?;
         ClusterClient::new(transport.as_ref())
             .run_list(RunListParams::default())
             .await
-            .map(Some)
             .map_err(protocol_error)
     }
 
     async fn status_local(
+        &self,
+        params: RunStatusParams,
+    ) -> Result<RunStatusResult, NativeV2CliError> {
+        let retry = params.clone();
+        match self.status_once(params).await {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                sleep(CONTROLLER_HANDOFF_RETRY_DELAY).await;
+                self.status_once(retry).await
+            }
+        }
+    }
+
+    async fn status_once(
         &self,
         params: RunStatusParams,
     ) -> Result<RunStatusResult, NativeV2CliError> {
@@ -350,96 +380,22 @@ impl LocalCliBackend {
             .await
             .map_err(protocol_error)
     }
-}
 
-#[async_trait]
-impl NativeV2CliBackend for LocalCliBackend {
-    type Watch = ChannelSubscription<RunWatchEventNotification>;
-    type Logs = ChannelSubscription<RunLogEventNotification>;
-    type Attach = ChannelSubscription<RunAttachEventNotification>;
-
-    async fn target_add(&self, _request: TargetAdd) -> Result<(), NativeV2CliError> {
-        Err(local_message(
-            "target commands are not local run operations",
-        ))
-    }
-
-    async fn target_login(&self, _name: &str) -> Result<(), NativeV2CliError> {
-        Err(local_message(
-            "target commands are not local run operations",
-        ))
-    }
-
-    async fn target_setup(&self, _request: TargetSetup) -> Result<(), NativeV2CliError> {
-        Err(local_message(
-            "target commands are not local run operations",
-        ))
-    }
-
-    async fn run_submit(
+    async fn force_local(
         &self,
-        target: Option<&str>,
-        intent: TargetRunIntent,
-    ) -> Result<RunSubmitResult, NativeV2CliError> {
-        require_local(target)?;
-        let run_id = self.start_controller(intent).await?;
-        Ok(RunSubmitResult { run_id })
-    }
-
-    async fn run_list(
-        &self,
-        target: Option<&str>,
-        _params: RunListParams,
-    ) -> Result<RunListResult, NativeV2CliError> {
-        require_local(target)?;
-        self.list_local().await
-    }
-
-    async fn run_status(
-        &self,
-        target: Option<&str>,
-        params: RunStatusParams,
-    ) -> Result<RunStatusResult, NativeV2CliError> {
-        require_local(target)?;
-        self.status_local(params).await
-    }
-
-    async fn run_watch(
-        &self,
-        target: Option<&str>,
-        params: RunWatchParams,
-    ) -> Result<Self::Watch, NativeV2CliError> {
-        require_local(target)?;
-        let transport = self.connect_run(&params.run_id).await?;
-        Ok(spawn_watch(transport, params))
-    }
-
-    async fn run_logs(
-        &self,
-        target: Option<&str>,
-        params: RunLogsParams,
-    ) -> Result<Self::Logs, NativeV2CliError> {
-        require_local(target)?;
-        let transport = self.connect_run(&params.run_id).await?;
-        Ok(spawn_logs(transport, params))
-    }
-
-    async fn run_attach(
-        &self,
-        target: Option<&str>,
-        params: RunAttachParams,
-    ) -> Result<Self::Attach, NativeV2CliError> {
-        require_local(target)?;
-        let transport = self.connect_run(&params.run_id).await?;
-        Ok(spawn_attach(transport, params))
-    }
-
-    async fn run_force(
-        &self,
-        target: Option<&str>,
         params: RunForceParams,
     ) -> Result<RunForceResult, NativeV2CliError> {
-        require_local(target)?;
+        let retry = params.clone();
+        match self.force_once(params).await {
+            Ok(result) => Ok(result),
+            Err(_) => {
+                sleep(CONTROLLER_HANDOFF_RETRY_DELAY).await;
+                self.force_once(retry).await
+            }
+        }
+    }
+
+    async fn force_once(&self, params: RunForceParams) -> Result<RunForceResult, NativeV2CliError> {
         let transport = self.connect_run(&params.run_id).await?;
         ClusterClient::new(transport.as_ref())
             .run_force(params)

@@ -255,6 +255,18 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
     }
 }
 
+#[test]
+fn hosted_codex_uses_the_capsule_as_its_sandbox_boundary() {
+    let directory = TestDirectory::new("codex-hosted-policy");
+    let local = scripted_adapter(&directory, CodexProvider::OpenAi);
+    let hosted = NativeV2CodexAdapter::new(local.config.clone());
+    for role in [NodeRole::Worker, NodeRole::Verifier] {
+        let mut arguments = Vec::new();
+        hosted.add_execution_policy(&mut arguments, role, "read-only");
+        assert_eq!(arguments, ["--dangerously-bypass-approvals-and-sandbox"]);
+    }
+}
+
 #[tokio::test]
 async fn openai_node_instance_session_resumes_the_exact_thread() {
     let directory = TestDirectory::new("codex-resume");

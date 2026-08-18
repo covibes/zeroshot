@@ -163,10 +163,15 @@ where
         where
             E: de::Error,
         {
-            if (self.minimum..=MAX_SAFE_GENERATION).contains(&value) {
-                Ok(value)
-            } else {
+            if value < self.minimum {
+                Err(E::custom(format!(
+                    "integer must be at least {}",
+                    self.minimum
+                )))
+            } else if value > MAX_SAFE_GENERATION {
                 Err(E::custom("integer is outside the JavaScript-safe range"))
+            } else {
+                Ok(value)
             }
         }
 
@@ -185,7 +190,13 @@ where
             if !value.is_finite() || value.fract() != 0.0 {
                 return Err(E::custom("number is not an integer"));
             }
-            if value < self.minimum as f64 || value > MAX_SAFE_GENERATION as f64 {
+            if value < self.minimum as f64 {
+                return Err(E::custom(format!(
+                    "integer must be at least {}",
+                    self.minimum
+                )));
+            }
+            if value > MAX_SAFE_GENERATION as f64 {
                 return Err(E::custom("integer is outside the JavaScript-safe range"));
             }
             integral_f64_to_u64(value)

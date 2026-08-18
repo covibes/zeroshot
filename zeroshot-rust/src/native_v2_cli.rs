@@ -108,6 +108,7 @@ pub enum NativeV2CliCommand {
 pub enum CliOutcome {
     Completed,
     Finished,
+    Failed,
     Detached,
 }
 
@@ -145,6 +146,8 @@ pub enum NativeV2CliError {
     Protocol(String),
     #[error("native-v2 observation transport disconnected")]
     Disconnected,
+    #[error("run finished unsuccessfully")]
+    RunFailed,
     #[error("could not write CLI output: {0}")]
     Output(#[from] std::io::Error),
     #[error("could not encode CLI output: {0}")]

@@ -319,7 +319,7 @@ async fn restarted_client_reconnects_with_public_run_id_only() {
     );
 }
 
-use openengine_cluster_testkit::assertions::{AssertValue};
+use openengine_cluster_testkit::assertions::AssertValue;
 
 #[tokio::test]
 async fn list_and_status_are_run_centric() {

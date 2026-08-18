@@ -8,6 +8,7 @@ mod json_insert;
 mod json_mut;
 
 use assert_value::AssertValue;
+use openengine_cluster_testkit::assertions::AssertError;
 use openengine_cluster_protocol::{
     FieldName, FieldPath, GraphDiagnostic, GraphProfile, GraphSpec, Join, NodeName, PolicyRef,
     PositiveInteger, WorkerErrorCode, WorkerRef, FULL_GRAPH_PROFILE, LEGACY_ZEROSHOT_WORKER,
@@ -232,7 +233,12 @@ fn identifiers_references_paths_and_positive_counts_validate_on_construction_and
 
     let mut graph = full_graph();
     *json_mut::json_at_mut(&mut graph, "/root/children/0/timeoutMs") = json!(0);
-    assert!(serde_json::from_value::<GraphSpec>(graph).is_err());
+    assert!(
+        serde_json::from_value::<GraphSpec>(graph)
+            .assert_error()
+            .to_string()
+            .contains("integer must be at least 1")
+    );
 
     let mut graph = full_graph();
     *json_mut::json_at_mut(&mut graph, "/root/children/0/timeoutMs") =

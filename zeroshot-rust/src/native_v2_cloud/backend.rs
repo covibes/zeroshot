@@ -162,6 +162,13 @@ fn cloud_backend_error(error: NativeV2CloudError) -> BackendError {
         | NativeV2CloudError::Observation(NativeV2ObservationError::RunNotFound) => {
             BackendError::application(NOT_FOUND, "run was not found", None)
         }
+        NativeV2CloudError::Observation(NativeV2ObservationError::ExecutionNotFound) => {
+            BackendError::application(NOT_FOUND, "execution was not found", None)
+        }
+        NativeV2CloudError::Observation(
+            NativeV2ObservationError::ExecutionNotActive
+            | NativeV2ObservationError::ExecutionNotLive,
+        ) => BackendError::application(GONE, "execution is no longer active", None),
         _ => BackendError::new(INTERNAL_ERROR_CODE, "native-v2 operation failed"),
     }
 }
@@ -207,4 +214,22 @@ pub(super) async fn append_terminal_failure(
     });
     ledger.append(&stored.snapshot.run_id, events).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod backend_error_tests {
+    use super::*;
+
+    #[test]
+    fn attach_lookup_failures_are_public_application_errors() {
+        for (source, code) in [
+            (NativeV2ObservationError::ExecutionNotFound, NOT_FOUND),
+            (NativeV2ObservationError::ExecutionNotActive, GONE),
+            (NativeV2ObservationError::ExecutionNotLive, GONE),
+        ] {
+            let error = cloud_backend_error(NativeV2CloudError::Observation(source));
+            assert_eq!(error.code, code);
+            assert!(error.details.is_none());
+        }
+    }
 }

@@ -15,7 +15,7 @@ use openengine_cluster_protocol::{
     RunLogEventNotification, RunLogsParams, RunLogsResult, RunStatusParams, RunStatusResult,
     RunSubmitParams, RunSubmitResult, RunWatchEventNotification, RunWatchParams, RunWatchResult,
     ServerCapabilities, Sha256Digest, SubscriptionCloseReason, TerminalResult, WorkerErrorCode,
-    WorkerOutcome, GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, NOT_FOUND,
+    WorkerOutcome, GONE, GRAPH_INVALID, IDEMPOTENCY_REUSE, INTERNAL_ERROR_CODE, NOT_FOUND,
 };
 use openengine_cluster_server::native_v2::{
     RunAttachEventStream, RunLogEventStream, RunSubscriptionItem, RunSubscriptionSource,

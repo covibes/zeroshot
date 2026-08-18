@@ -66,6 +66,7 @@ pub struct NativeV2CodexUser {
 pub struct NativeV2CodexAdapter {
     config: NativeV2CodexConfig,
     runners: ProviderProcessRunners,
+    externally_sandboxed: bool,
 }
 
 impl NativeV2CodexAdapter {
@@ -76,6 +77,7 @@ impl NativeV2CodexAdapter {
         Self {
             config,
             runners: ProviderProcessRunners::hosted(process_pool),
+            externally_sandboxed: true,
         }
     }
 
@@ -84,12 +86,21 @@ impl NativeV2CodexAdapter {
         Self {
             config,
             runners: ProviderProcessRunners::local(),
+            externally_sandboxed: false,
         }
     }
 
     #[cfg(test)]
     fn new_for_test(config: NativeV2CodexConfig) -> Self {
         Self::new_local(config)
+    }
+
+    fn add_execution_policy(&self, argv: &mut Vec<String>, role: NodeRole, sandbox: &str) {
+        if self.externally_sandboxed {
+            argv.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+            return;
+        }
+        add_local_execution_policy(argv, role, sandbox);
     }
 
     fn turn_process(
@@ -113,8 +124,7 @@ impl NativeV2CodexAdapter {
         let workspace = self.config.workspace.clone();
         let mut argv = vec!["exec".to_owned()];
         add_provider_args(&mut argv, self.config.provider);
-        argv.extend(["--sandbox".to_owned(), sandbox.to_owned()]);
-        add_execution_policy(&mut argv, invocation.role);
+        self.add_execution_policy(&mut argv, invocation.role, sandbox);
         add_resume_command(&mut argv, resume);
         let model = provider_model(self.config.provider, model.as_str());
         add_node_args(&mut argv, &model, effort.copied());
@@ -396,7 +406,8 @@ fn add_provider_args(argv: &mut Vec<String>, provider: CodexProvider) {
     }
 }
 
-fn add_execution_policy(argv: &mut Vec<String>, role: NodeRole) {
+fn add_local_execution_policy(argv: &mut Vec<String>, role: NodeRole, sandbox: &str) {
+    argv.extend(["--sandbox".to_owned(), sandbox.to_owned()]);
     argv.extend([
         "--config".to_owned(),
         "approval_policy=\"never\"".to_owned(),

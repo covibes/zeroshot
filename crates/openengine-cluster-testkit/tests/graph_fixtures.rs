@@ -68,6 +68,7 @@ const RUST_REJECTION_MARKERS: &[(&str, &str)] = &[
         "value must be at most 256 non-control characters",
         "INVALID_ARTIFACT_VALUE",
     ),
+    ("integer must be at least", "INVALID_BOUND"),
     (
         "integer is outside the JavaScript-safe range",
         "INVALID_BOUND",
