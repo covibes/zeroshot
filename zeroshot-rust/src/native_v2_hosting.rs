@@ -11,27 +11,31 @@ mod repository;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use openengine_cluster_protocol::{RunId, RunSubmission, RunSubmitParams};
 use thiserror::Error;
 
 use crate::execution::process::HostedProcessPool;
+use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 use crate::native_v2_claude::ClaudeProcessEnvironment;
-use crate::native_v2_cloud::{ControllerEnvironment, NativeV2CloudController};
-use crate::native_v2_contract::{EnvironmentVariableName, RuntimePlan};
+use crate::native_v2_cloud::{NativeV2CloudController, run_intent_digest};
+use crate::native_v2_contract::EnvironmentVariableName;
 use crate::native_v2_target_authority::{
     FileTargetSetupStore, NativeV2TargetAuthority, TargetAuthorityError, TargetControllerFactory,
-    TargetSetupDocument,
+    TargetRunIntent, TargetRunReceipt, TargetSetupDocument,
 };
 use crate::v2_run_ledger::RunLedger;
 use crate::v2_run_ledger::sqlite::SqliteRunLedger;
+use crate::native_v2_supervisor::RunEnvironment;
 
 use allocator::{ProductionCapsuleAllocator, ProductionCapsuleConfig};
+use repository::{repository_token, resolve_source_snapshot};
 
 const DEFAULT_CLAUDE_TURN_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const TARGET_SETUP_FILE: &str = "target-setup.json";
@@ -110,15 +114,13 @@ impl ProductionTargetControllerFactory {
             .validate()
             .map_err(|_| ProductionHostingError::InvalidSetup)?;
         let root = prepare_storage_root(&self.config.storage_root)?;
-        let environment = declared_environment(&setup.runtime, &self.config.controller_environment);
+        let environment = self.config.controller_environment.clone();
         let ledger: Arc<dyn RunLedger> = Arc::new(
             SqliteRunLedger::open(root.join("runs.sqlite3"))
                 .map_err(|_| ProductionHostingError::Ledger)?,
         );
         let allocator = Arc::new(ProductionCapsuleAllocator::new(ProductionCapsuleConfig {
             storage_root: root,
-            repository: setup.repository.clone(),
-            base: setup.base.clone(),
             environment: environment.clone(),
             codex_executable: self.config.codex_executable.clone(),
             claude_executable: self.config.claude_executable.clone(),
@@ -130,14 +132,9 @@ impl ProductionTargetControllerFactory {
             process_pool: self.config.process_pool,
             claude_turn_timeout: self.config.claude_turn_timeout,
         })?);
-        let controller = NativeV2CloudController::new(
-            ledger,
-            setup.runtime.clone(),
-            ControllerEnvironment::new(environment),
-            allocator,
-        )
-        .await
-        .map_err(|_| ProductionHostingError::Controller)?;
+        let controller = NativeV2CloudController::new(ledger, allocator)
+            .await
+            .map_err(|_| ProductionHostingError::Controller)?;
         Ok(Arc::new(controller))
     }
 }
@@ -152,6 +149,75 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
             .await
             .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
     }
+
+    async fn submit(
+        &self,
+        setup: &TargetSetupDocument,
+        controller: &NativeV2CloudController,
+        intent: TargetRunIntent,
+    ) -> Result<TargetRunReceipt, TargetAuthorityError> {
+        setup.validate()?;
+        let intent_digest = run_intent_digest(&intent)
+            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
+        if let Some(receipt) = controller
+            .resolve_intent(&intent.submission_key, &intent_digest)
+            .await
+            .map_err(|error| TargetAuthorityError::conflict(error.to_string()))?
+        {
+            return Ok(TargetRunReceipt {
+                run_id: receipt.run_id,
+            });
+        }
+        NativeV2Admission
+            .validate_intent(&intent, DeliveryPolicy::Required)
+            .await
+            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
+        let environment =
+            RunEnvironment::from_available(&intent.runtime, &self.config.controller_environment)
+                .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))?;
+        let source = resolve_source_snapshot(
+            &self.config.git_program,
+            setup,
+            self.config.process_pool,
+            repository_token(&self.config.controller_environment),
+        )
+        .await
+        .map_err(|_| TargetAuthorityError::unavailable("source snapshot could not be resolved"))?;
+        let run_id = fresh_host_run_id()?;
+        let receipt = controller
+            .submit_with_intent_digest_and_exact_environment(
+                RunSubmitParams {
+                    run_id,
+                    submission: RunSubmission {
+                        title: intent.title,
+                        graph: intent.graph,
+                        initial_input: intent.initial_input,
+                        runtime: intent.runtime,
+                        source,
+                        submission_key: intent.submission_key,
+                    },
+                },
+                intent_digest,
+                environment,
+            )
+            .await
+            .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))?;
+        Ok(TargetRunReceipt {
+            run_id: receipt.run_id,
+        })
+    }
+}
+
+fn fresh_host_run_id() -> Result<RunId, TargetAuthorityError> {
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random)
+        .map_err(|_| TargetAuthorityError::unavailable("run identity could not be assigned"))?;
+    let mut id = String::from("run-");
+    for byte in random {
+        use std::fmt::Write as _;
+        let _ = write!(&mut id, "{byte:02x}");
+    }
+    Ok(RunId::new(id))
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -193,21 +259,6 @@ fn prepare_storage_root(path: &PathBuf) -> Result<PathBuf, ProductionHostingErro
         return Err(ProductionHostingError::Storage);
     }
     Ok(root)
-}
-
-fn declared_environment(
-    runtime: &RuntimePlan,
-    available: &BTreeMap<EnvironmentVariableName, String>,
-) -> BTreeMap<EnvironmentVariableName, String> {
-    let names = runtime
-        .nodes()
-        .values()
-        .flat_map(|binding| binding.declared_environment().iter().cloned())
-        .collect::<BTreeSet<_>>();
-    names
-        .into_iter()
-        .filter_map(|name| available.get(&name).cloned().map(|value| (name, value)))
-        .collect()
 }
 
 impl Default for ProductionHostingConfig {

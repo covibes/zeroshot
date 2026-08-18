@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use openengine_cluster_protocol::{IdempotencyKey, NodeName, WorkerOutcome};
+use openengine_cluster_protocol::{IdempotencyKey, NodeName, RunSize, RunTitle, WorkerOutcome};
 use serde_json::{json, Value};
 
 use super::*;
@@ -15,7 +15,8 @@ use crate::native_v2_candidate::test_support::{
     NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,
 };
 use crate::native_v2_contract::{
-    AdmittedRun, EnvironmentVariableName, NodeRuntimeBinding, RunSubmission, RuntimePlan,
+    AdmittedRun, DeclaredEnvironment, EnvironmentVariableName, NodeRuntimeBinding, RunSubmission,
+    RuntimePlan,
 };
 use crate::native_v2_runner::{NativeNodeRunner, NodeHandle, NodeRunRequest, NodeRunner};
 use crate::worker_catalog::{self, ReasoningEffort};
@@ -83,8 +84,8 @@ fn scripted_adapter(
     }))
 }
 
-fn environment_names(names: &[&str]) -> BTreeSet<EnvironmentVariableName> {
-    names.iter().map(|name| environment_name(name)).collect()
+fn environment_names(names: &[&str]) -> DeclaredEnvironment {
+    DeclaredEnvironment::new(names.iter().map(|name| environment_name(name))).assert_value()
 }
 
 fn binding(scope: SessionScope, environment: &[&str]) -> NodeRuntimeBinding {
@@ -109,13 +110,20 @@ async fn admitted(binding: NodeRuntimeBinding, provider: CodexProvider) -> Admit
         success_node(),
     ]);
     admit(RunSubmission {
+        title: RunTitle::new("Codex adapter test").assert_value(),
         graph,
         initial_input: Value::Null,
         runtime: RuntimePlan::Codex {
             provider,
+            size: RunSize::Standard,
             nodes: BTreeMap::from([(NodeName::new("work").assert_value(), binding)]),
         },
-        ship: false,
+        source: serde_json::from_value(json!({
+            "repository": "open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        }))
+        .assert_value(),
         submission_key: IdempotencyKey::new("codex-adapter-test").assert_value(),
     })
     .await
@@ -208,7 +216,7 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
         "arg=model_providers.openrouter.base_url=\"https://openrouter.ai/api/v1\"",
         "arg=model_providers.openrouter.env_key=\"OPENROUTER_API_KEY\"",
         "arg=model_providers.openrouter.wire_api=\"responses\"",
-        "arg=--model\narg=gpt-5.6-sol",
+        "arg=--model\narg=openai/gpt-5.6-sol",
         "arg=model_reasoning_effort=\"max\"",
         "arg=--sandbox\narg=workspace-write",
         "arg=approval_policy=\"never\"",
@@ -262,6 +270,7 @@ async fn openai_node_instance_session_resumes_the_exact_thread() {
     ));
     let capture = fs::read_to_string(capture).assert_value();
     assert!(capture.contains("arg=model_provider=\"openai\""));
+    assert!(capture.contains("arg=--model\narg=gpt-5.6-sol"));
     assert_eq!(capture.matches("arg=resume").count(), 1);
     assert_eq!(capture.matches("arg=thread-123").count(), 1);
     assert!(capture.contains("codex_key=fake-openai-key"));

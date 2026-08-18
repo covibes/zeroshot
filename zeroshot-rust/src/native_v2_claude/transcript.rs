@@ -24,7 +24,7 @@ pub(super) struct ClaudeTranscript {
     session_id: Option<String>,
     result: Option<Value>,
     settled: bool,
-    streamed_text: bool,
+    visible_text_emitted: bool,
     redactions: Vec<String>,
 }
 
@@ -41,7 +41,7 @@ impl ClaudeTranscript {
             session_id: None,
             result: None,
             settled: false,
-            streamed_text: false,
+            visible_text_emitted: false,
             redactions,
         }
     }
@@ -115,7 +115,7 @@ impl ClaudeTranscript {
         match object.get("type").and_then(Value::as_str) {
             Some("stream_event") => self.parse_stream_event(object, control),
             Some("assistant") => self.parse_assistant(object, control),
-            Some("result") => self.parse_result(object),
+            Some("result") => self.parse_result(object, control),
             Some(_) => Ok(()),
             None => Err(NodeRunnerError::Driver),
         }
@@ -142,7 +142,7 @@ impl ClaudeTranscript {
         };
         if let Some(text) = delta.get(field).and_then(Value::as_str) {
             if field == "text" {
-                self.streamed_text = true;
+                self.visible_text_emitted = true;
             }
             self.emit(control, stream, text)?;
         }
@@ -150,11 +150,11 @@ impl ClaudeTranscript {
     }
 
     fn parse_assistant(
-        &self,
+        &mut self,
         event: &serde_json::Map<String, Value>,
         control: &DriverControl,
     ) -> Result<(), NodeRunnerError> {
-        if self.streamed_text {
+        if self.visible_text_emitted {
             return Ok(());
         }
         let Some(content) = event
@@ -172,6 +172,7 @@ impl ClaudeTranscript {
             if block.get("type").and_then(Value::as_str) == Some("text") {
                 if let Some(text) = block.get("text").and_then(Value::as_str) {
                     self.emit(control, LiveOutputStream::Output, text)?;
+                    self.visible_text_emitted = true;
                 }
             }
         }
@@ -181,11 +182,23 @@ impl ClaudeTranscript {
     fn parse_result(
         &mut self,
         event: &serde_json::Map<String, Value>,
+        control: &DriverControl,
     ) -> Result<(), NodeRunnerError> {
-        if event.get("subtype").and_then(Value::as_str) != Some("success")
-            || event.get("is_error").and_then(Value::as_bool) == Some(true)
-            || self.result.is_some()
-        {
+        let unsuccessful = event.get("subtype").and_then(Value::as_str) != Some("success")
+            || event.get("is_error").and_then(Value::as_bool) == Some(true);
+        if unsuccessful {
+            if !self.visible_text_emitted {
+                if let Some(text) = event
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                {
+                    self.emit(control, LiveOutputStream::Error, text)?;
+                }
+            }
+            return Err(NodeRunnerError::Driver);
+        }
+        if self.result.is_some() {
             return Err(NodeRunnerError::Driver);
         }
         self.result = Some(event.get("result").cloned().unwrap_or(Value::Null));

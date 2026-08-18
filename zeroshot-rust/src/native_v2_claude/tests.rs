@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use openengine_cluster_protocol::{
-    EnumLabel, FieldName, GraphSpec, IdempotencyKey, NodeName, WorkerOutcome,
+    EnumLabel, FieldName, GraphSpec, IdempotencyKey, NodeName, RunSize, RunTitle, WorkerOutcome,
 };
 use serde_json::{json, Value};
 
@@ -13,8 +13,10 @@ use super::*;
 use crate::native_v2_candidate::test_support::{
     NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,
 };
-use crate::native_v2_contract::{RunSubmission, RuntimePlan};
-use crate::native_v2_runner::{NativeNodeRunner, NodeRunRequest, NodeRunner};
+use crate::native_v2_contract::{DeclaredEnvironment, RunSubmission, RuntimePlan};
+use crate::native_v2_runner::{
+    AttachReceiveError, LiveOutputStream, NativeNodeRunner, NodeRunRequest, NodeRunner,
+};
 use crate::worker_catalog;
 
 fn agent_binding(
@@ -27,10 +29,8 @@ fn agent_binding(
         model: worker_catalog::ModelId::new(model).assert_value(),
         effort,
         session_scope: scope,
-        env: environment
-            .iter()
-            .map(|name| environment_name(name))
-            .collect::<BTreeSet<_>>(),
+        env: DeclaredEnvironment::new(environment.iter().map(|name| environment_name(name)))
+            .assert_value(),
     }
 }
 
@@ -60,13 +60,20 @@ async fn runner(
 ) -> NativeNodeRunner {
     let runtime = RuntimePlan::Claude {
         provider,
+        size: RunSize::Standard,
         nodes: BTreeMap::from([(NodeName::new("agent").assert_value(), binding)]),
     };
     let admitted = admit(RunSubmission {
+        title: RunTitle::new("Claude adapter test").assert_value(),
         graph: graph(verifier),
         initial_input: Value::Null,
         runtime,
-        ship: false,
+        source: serde_json::from_value(json!({
+            "repository": "open-engine/zeroshot",
+            "targetBranch": "main",
+            "baseRevision": "0123456789abcdef0123456789abcdef01234567"
+        }))
+        .assert_value(),
         submission_key: IdempotencyKey::new("claude-test").assert_value(),
     })
     .await;
@@ -455,3 +462,6 @@ fn capsule_environment_roots_home_defaults_path_and_preserves_minimal_values() {
 }
 
 use openengine_cluster_testkit::assertions::{AssertValue};
+
+#[path = "tests/failure.rs"]
+mod failure;

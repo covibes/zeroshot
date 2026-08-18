@@ -2,69 +2,27 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
-use openengine_cluster_protocol::{GraphSpec, IdempotencyKey, NodeName, RunId, WorkerRef};
-use serde_json::{Value, json};
+use openengine_cluster_protocol::{NodeName, RunId, WorkerRef};
+use serde_json::Value;
 
 use super::*;
-use crate::execution::SessionScope;
-use crate::native_v2_candidate::test_support::{
-    TestDirectory, admit, environment_name, full_graph, success_node,
-};
-use crate::native_v2_capsule::CapsuleFilesystem;
-use crate::native_v2_cloud::{CapsuleAllocationUnavailable, CapsuleAllocator};
-use crate::native_v2_contract::{
-    self, ClaudeProvider, CodexProvider, EnvironmentVariableName, ExecutionRef, NodeInvocation,
-    NodeRuntimeBinding, RunSubmission,
-};
+use crate::native_v2_candidate::test_support::{TestDirectory, admit, environment_name};
+use crate::native_v2_cloud::CapsuleAllocator;
+use crate::native_v2_contract::{self, ExecutionRef, NodeInvocation, RunSubmissionIntent};
 use crate::native_v2_runner::{NodeRunRequest, ResolvedEnvironment};
-use crate::native_v2_supervisor::RunRuntimeExit;
-use crate::native_v2_target_authority::{TargetBase, TargetSetupDocument, TargetSetupOutcome};
-use crate::worker_catalog::{self, ReasoningEffort};
+use crate::native_v2_portable_controller::WorkspaceIdentity;
+use crate::native_v2_supervisor::{RunEnvironment, RunEnvironmentError, RunRuntimeExit};
+use crate::native_v2_target_authority::{TargetAuthorityErrorKind, TargetBase, TargetSetupOutcome};
 
-use super::allocator::{ProductionCapsuleAllocator, ProductionCapsuleConfig};
+use super::allocator::{ProductionCapsuleAllocator, monitor_workspace_identity};
 use super::repository::{RepositoryInstall, install_repository, path_source};
 
-struct RepositoryFixture {
-    _root: TestDirectory,
-    remote: PathBuf,
-    main_revision: String,
-    feature_revision: String,
-}
+mod fixtures;
 
-impl RepositoryFixture {
-    fn new() -> Self {
-        let root = TestDirectory::new("hosting-repository");
-        let seed = root.path().join("seed");
-        let remote = root.path().join("remote.git");
-        git(root.path(), &["init", "--initial-branch=main", text(&seed)]);
-        fs::write(seed.join("README.md"), "base\n").assert_value_with("write base");
-        git(&seed, &["add", "README.md"]);
-        commit(&seed, "base");
-        let main_revision = git_output(&seed, &["rev-parse", "HEAD"]);
-        git(&seed, &["switch", "-c", "feature"]);
-        fs::write(seed.join("feature.txt"), "feature\n").assert_value_with("write feature");
-        git(&seed, &["add", "feature.txt"]);
-        commit(&seed, "feature");
-        let feature_revision = git_output(&seed, &["rev-parse", "HEAD"]);
-        git(&seed, &["switch", "main"]);
-        git(
-            root.path(),
-            &["clone", "--bare", text(&seed), text(&remote)],
-        );
-        git(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-        Self {
-            _root: root,
-            remote,
-            main_revision,
-            feature_revision,
-        }
-    }
-}
+use fixtures::*;
 
 #[test]
 fn controller_environment_is_filtered_to_declared_names_and_debug_is_redacted() {
@@ -75,10 +33,15 @@ fn controller_environment_is_filtered_to_declared_names_and_debug_is_redacted() 
         (declared.clone(), "openai-secret".to_owned()),
         (unused, "unused-secret".to_owned()),
     ]);
-    assert_eq!(
-        declared_environment(&runtime, &available),
-        BTreeMap::from([(declared, "openai-secret".to_owned())])
-    );
+    let selected = RunEnvironment::from_available(&runtime, &available)
+        .assert_value_with("select declared environment");
+    assert!(matches!(
+        RunEnvironment::exact(&runtime, available.clone()),
+        Err(RunEnvironmentError::Undeclared(_))
+    ));
+    let selected_debug = format!("{selected:?}");
+    assert!(!selected_debug.contains("openai-secret"));
+    assert!(!selected_debug.contains("unused-secret"));
 
     let config = hosting_config(PathBuf::from("/tmp/native-v2-redaction"), available);
     let debug = format!("{config:?}");
@@ -88,35 +51,32 @@ fn controller_environment_is_filtered_to_declared_names_and_debug_is_redacted() 
 }
 
 #[tokio::test]
-async fn sqlite_controller_claim_is_exclusive_and_released_with_controller() {
+async fn sqlite_controllers_share_one_durable_namespace_without_a_target_wide_claim() {
     let root = TestDirectory::new("hosting-controller");
-    let setup = setup(TargetBase::Default, runtime(BTreeSet::new()));
+    let setup = setup(TargetBase::Default);
     let first = ProductionTargetControllerFactory::new(hosting_config(
         root.path().to_owned(),
         BTreeMap::new(),
     ));
     let second = first.clone();
 
-    let controller = first
+    let first_controller = first
         .create_controller(&setup)
         .await
         .assert_value_with("first controller");
-    assert!(matches!(
-        second.create_controller(&setup).await,
-        Err(ProductionHostingError::Controller)
-    ));
-    drop(controller);
-    second
+    let second_controller = second
         .create_controller(&setup)
         .await
-        .assert_value_with("claim released");
+        .assert_value_with("second controller");
+    assert!(first_controller.list().await.assert_value().is_empty());
+    assert!(second_controller.list().await.assert_value().is_empty());
     assert!(root.path().join("runs.sqlite3").is_file());
 }
 
 #[tokio::test]
 async fn production_authority_restores_setup_from_target_storage() {
     let root = TestDirectory::new("hosting-authority-setup");
-    let setup = setup(TargetBase::Default, runtime(BTreeSet::new()));
+    let setup = setup(TargetBase::Default);
     let first =
         build_production_target_authority(hosting_config(root.path().to_owned(), BTreeMap::new()))
             .await
@@ -146,6 +106,37 @@ async fn production_authority_restores_setup_from_target_storage() {
         .controller()
         .await
         .assert_value_with("restored controller");
+}
+
+#[tokio::test]
+async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
+    let root = TestDirectory::new("hosting-invalid-intent");
+    let mut config = hosting_config(root.path().to_owned(), BTreeMap::new());
+    config.git_program = root.path().join("git-must-not-run");
+    let factory = ProductionTargetControllerFactory::new(config);
+    let setup = setup(TargetBase::Default);
+    let controller = factory
+        .create_controller(&setup)
+        .await
+        .assert_value_with("controller");
+    let sourceful = submission(
+        runtime(BTreeSet::new()),
+        "0123456789abcdef0123456789abcdef01234567",
+        "invalid-before-effects",
+    );
+
+    let error = factory
+        .submit(&setup, &controller, RunSubmissionIntent::from(&sourceful))
+        .await
+        .assert_error_with("hosted graph without delivery must fail admission");
+
+    assert_eq!(error.kind(), TargetAuthorityErrorKind::Invalid);
+    assert_eq!(
+        fs::read_dir(root.path().join("runs"))
+            .assert_value_with("runs directory")
+            .count(),
+        0
+    );
 }
 
 #[tokio::test]
@@ -201,21 +192,15 @@ async fn allocator_uses_one_workspace_then_cleans_without_replacement() {
     let root = TestDirectory::new("hosting-allocator");
     prepare_storage_root(&root.path().to_owned()).assert_value_with("storage root");
     let runtime = runtime(BTreeSet::new());
-    let admitted = admit(RunSubmission {
-        graph: graph(),
-        initial_input: Value::Null,
-        runtime: runtime.clone(),
-        ship: false,
-        submission_key: IdempotencyKey::new("hosting-allocation")
-            .assert_value_with("submission key"),
-    })
-    .await;
-    let allocator = ProductionCapsuleAllocator::new(capsule_config(
-        root.path().to_owned(),
-        TargetBase::Default,
+    let admitted = admit(submission(
+        runtime.clone(),
+        repository.main_revision.as_str(),
+        "hosting-allocation",
     ))
-    .assert_value_with("allocator")
-    .with_test_filesystem_and_source(repository.remote, portable_filesystem);
+    .await;
+    let allocator = ProductionCapsuleAllocator::new(capsule_config(root.path().to_owned()))
+        .assert_value_with("allocator")
+        .with_test_filesystem_and_source(repository.remote, portable_filesystem);
     let run_id = RunId::new("run-hosting-one");
     let run_path = allocator.run_path(&run_id);
 
@@ -241,21 +226,41 @@ async fn allocator_uses_one_workspace_then_cleans_without_replacement() {
 }
 
 #[tokio::test]
+async fn hosted_workspace_replacement_signals_runtime_loss() {
+    let root = TestDirectory::new("hosting-workspace-loss");
+    let workspace = root.path().join("workspace");
+    fs::create_dir(&workspace).assert_value_with("create workspace");
+    let identity = WorkspaceIdentity::capture(&workspace).assert_value_with("workspace identity");
+    let (loss_sender, mut loss) = tokio::sync::watch::channel(false);
+    monitor_workspace_identity(workspace.clone(), identity, loss_sender);
+
+    fs::remove_dir(&workspace).assert_value_with("remove workspace");
+    fs::create_dir(&workspace).assert_value_with("replace workspace");
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !*loss.borrow_and_update() {
+            loss.changed()
+                .await
+                .assert_value_with("workspace loss signal");
+        }
+    })
+    .await
+    .assert_value_with("workspace loss timeout");
+}
+
+#[tokio::test]
 async fn default_claude_environment_prepares_capsule_session_home() {
     let repository = RepositoryFixture::new();
     let root = TestDirectory::new("hosting-claude-environment");
     prepare_storage_root(&root.path().to_owned()).assert_value_with("storage root");
     let runtime = claude_runtime();
-    let admitted = admit(RunSubmission {
-        graph: graph(),
-        initial_input: Value::Null,
+    let admitted = admit(submission(
         runtime,
-        ship: false,
-        submission_key: IdempotencyKey::new("hosting-claude-environment")
-            .assert_value_with("submission key"),
-    })
+        repository.main_revision.as_str(),
+        "hosting-claude-environment",
+    ))
     .await;
-    let mut config = capsule_config(root.path().to_owned(), TargetBase::Default);
+    let mut config = capsule_config(root.path().to_owned());
     config.claude_process_environment = ClaudeProcessEnvironment::default();
     let allocator = ProductionCapsuleAllocator::new(config)
         .assert_value_with("allocator")
@@ -309,169 +314,4 @@ async fn default_claude_environment_prepares_capsule_session_home() {
         .assert_value_with("cleanup");
 }
 
-fn hosting_config(
-    storage_root: PathBuf,
-    controller_environment: BTreeMap<EnvironmentVariableName, String>,
-) -> ProductionHostingConfig {
-    ProductionHostingConfig {
-        storage_root,
-        controller_environment,
-        codex_executable: PathBuf::from("/usr/bin/false"),
-        claude_executable: "/usr/bin/false".to_owned(),
-        claude_prefix_arguments: Vec::new(),
-        claude_process_environment: ClaudeProcessEnvironment::default(),
-        executable_search_path: "/usr/bin:/bin".to_owned(),
-        git_program: PathBuf::from("/usr/bin/git"),
-        gh_program: PathBuf::from("/usr/bin/false"),
-        process_pool: test_process_pool(),
-        claude_turn_timeout: Duration::from_secs(1),
-    }
-}
-
-fn capsule_config(storage_root: PathBuf, base: TargetBase) -> ProductionCapsuleConfig {
-    let config = hosting_config(storage_root.clone(), BTreeMap::new());
-    ProductionCapsuleConfig {
-        storage_root,
-        repository: "acme/project".to_owned(),
-        base,
-        environment: BTreeMap::new(),
-        codex_executable: config.codex_executable,
-        claude_executable: config.claude_executable,
-        claude_prefix_arguments: config.claude_prefix_arguments,
-        claude_process_environment: config.claude_process_environment,
-        executable_search_path: config.executable_search_path,
-        git_program: config.git_program,
-        gh_program: config.gh_program,
-        process_pool: config.process_pool,
-        claude_turn_timeout: config.claude_turn_timeout,
-    }
-}
-
-fn setup(base: TargetBase, runtime: RuntimePlan) -> TargetSetupDocument {
-    TargetSetupDocument {
-        repository: "acme/project".to_owned(),
-        base,
-        runtime,
-    }
-}
-
-fn runtime(environment: BTreeSet<EnvironmentVariableName>) -> RuntimePlan {
-    RuntimePlan::Codex {
-        provider: CodexProvider::OpenAi,
-        nodes: BTreeMap::from([(
-            NodeName::new("work").assert_value_with("node"),
-            NodeRuntimeBinding::Agent {
-                model: worker_catalog::ModelId::new("gpt-5.6").assert_value_with("model"),
-                effort: None,
-                session_scope: SessionScope::Execution,
-                env: environment,
-            },
-        )]),
-    }
-}
-
-fn claude_runtime() -> RuntimePlan {
-    RuntimePlan::Claude {
-        provider: ClaudeProvider::Anthropic,
-        nodes: BTreeMap::from([(
-            NodeName::new("work").assert_value_with("node"),
-            NodeRuntimeBinding::Agent {
-                model: worker_catalog::ModelId::new("claude-sonnet-5").assert_value_with("model"),
-                effort: Some(ReasoningEffort::Max),
-                session_scope: SessionScope::Execution,
-                env: BTreeSet::new(),
-            },
-        )]),
-    }
-}
-
-fn graph() -> GraphSpec {
-    full_graph(vec![
-        json!({
-            "kind":"step","name":"work","worker":"agent.work@1",
-            "input":{"kind":"null"},"output":{"kind":"null"},
-            "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1
-        }),
-        success_node(),
-    ])
-}
-
-fn portable_filesystem(
-    workspace: &Path,
-    runtime_home: &Path,
-    _process_pool: HostedProcessPool,
-) -> Result<CapsuleFilesystem, CapsuleAllocationUnavailable> {
-    writable_directory(workspace);
-    writable_directory(runtime_home);
-    Ok(CapsuleFilesystem {
-        workspace: fs::canonicalize(workspace).map_err(|_| CapsuleAllocationUnavailable)?,
-        runtime_home: fs::canonicalize(runtime_home).map_err(|_| CapsuleAllocationUnavailable)?,
-    })
-}
-
-fn writable_directory(path: &Path) {
-    fs::create_dir(path).assert_value_with("create writable directory");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o777))
-        .assert_value_with("writable permissions");
-}
-
-fn test_process_pool() -> HostedProcessPool {
-    let uid = unsafe { libc::geteuid() };
-    let gid = unsafe { libc::getegid() };
-    if uid == 0 || gid == 0 {
-        HostedProcessPool::new(31_002, 31_002, 32_000, 32_000).assert_value_with("root test pool")
-    } else {
-        let verifier_base = uid.checked_add(10_000).assert_value_with("test UID range");
-        HostedProcessPool::new(uid, gid, verifier_base, gid)
-            .assert_value_with("current-user test pool")
-    }
-}
-
-fn commit(repository: &Path, message: &str) {
-    git(
-        repository,
-        &[
-            "-c",
-            "user.name=Hosting Test",
-            "-c",
-            "user.email=hosting@example.invalid",
-            "commit",
-            "-m",
-            message,
-        ],
-    );
-}
-
-fn git(repository: &Path, arguments: &[&str]) {
-    assert!(
-        Command::new("/usr/bin/git")
-            .args(arguments)
-            .current_dir(repository)
-            .env_clear()
-            .env("LANG", "C")
-            .status()
-            .assert_value_with("run Git")
-            .success()
-    );
-}
-
-fn git_output(repository: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("/usr/bin/git")
-        .args(arguments)
-        .current_dir(repository)
-        .env_clear()
-        .env("LANG", "C")
-        .output()
-        .assert_value_with("run Git");
-    assert!(output.status.success());
-    String::from_utf8(output.stdout)
-        .assert_value_with("Git UTF-8")
-        .trim()
-        .to_owned()
-}
-
-fn text(path: &Path) -> &str {
-    path.to_str().assert_value_with("UTF-8 path")
-}
-
-use openengine_cluster_testkit::assertions::{AssertValue};
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};

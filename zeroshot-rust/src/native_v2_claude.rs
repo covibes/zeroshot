@@ -2,8 +2,7 @@
 //!
 //! One adapter is constructed for the graph-wide Anthropic or OpenRouter lane. Admission has
 //! already selected the model, effort, session scope, and declared environment for each node;
-//! this module preserves those choices at the process boundary without consulting the old
-//! coordinator, ledger, provider registry, or ambient process environment.
+//! It preserves those choices without consulting legacy coordination or ambient process state.
 
 #[path = "native_v2_claude/transcript.rs"]
 mod transcript;
@@ -138,6 +137,21 @@ impl ClaudeAdapter {
             base_environment: configuration.base_environment,
             turn_timeout: configuration.turn_timeout,
             runners: ProviderProcessRunners::hosted(process_pool),
+        })
+    }
+
+    pub fn new_local(configuration: ClaudeAdapterConfig) -> Result<Self, ClaudeAdapterConfigError> {
+        if configuration.executable.is_empty() {
+            return Err(ClaudeAdapterConfigError::EmptyExecutable);
+        }
+        Ok(Self {
+            provider: configuration.provider,
+            executable: configuration.executable,
+            prefix_arguments: configuration.prefix_arguments,
+            workspace: configuration.workspace,
+            base_environment: configuration.base_environment,
+            turn_timeout: configuration.turn_timeout,
+            runners: ProviderProcessRunners::local(),
         })
     }
 

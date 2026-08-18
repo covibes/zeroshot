@@ -27,6 +27,7 @@ use crate::native_v2_cloud::{
 use crate::native_v2_codex::NativeV2CodexConfig;
 use crate::native_v2_contract::{AdmittedRun, EnvironmentVariableName, RuntimePlan};
 use crate::native_v2_delivery::{GhCliAuthorityConfig, GhCliDeliveryAuthority, NativeV2DeliveryConfig};
+use crate::native_v2_portable_controller::WorkspaceIdentity;
 use crate::native_v2_supervisor::RunRuntimeExit;
 use crate::native_v2_target_authority::TargetBase;
 
@@ -35,8 +36,6 @@ use super::repository::{RepositoryInstall, install_repository, production_source
 
 pub(super) struct ProductionCapsuleConfig {
     pub storage_root: PathBuf,
-    pub repository: String,
-    pub base: TargetBase,
     pub environment: BTreeMap<EnvironmentVariableName, String>,
     pub codex_executable: PathBuf,
     pub claude_executable: String,
@@ -64,8 +63,7 @@ pub(super) struct ProductionCapsuleAllocator {
 
 impl ProductionCapsuleAllocator {
     pub fn new(config: ProductionCapsuleConfig) -> Result<Self, ProductionHostingError> {
-        if config.repository.is_empty()
-            || config.codex_executable.as_os_str().is_empty()
+        if config.codex_executable.as_os_str().is_empty()
             || config.claude_executable.is_empty()
             || config.git_program.as_os_str().is_empty()
             || config.gh_program.as_os_str().is_empty()
@@ -107,12 +105,17 @@ impl ProductionCapsuleAllocator {
         let runtime_home = run_root.join("runtime");
         let filesystem =
             (self.prepare_filesystem)(&workspace, &runtime_home, self.config.process_pool)?;
-        let source = self.repository_source();
+        let repository = admitted.source.repository.as_str();
+        let base = TargetBase::Revision {
+            revision: admitted.source.base_revision.as_str().to_owned(),
+            target_branch: admitted.source.target_branch.as_str().to_owned(),
+        };
+        let source = self.repository_source(repository);
         let target = install_repository(RepositoryInstall {
             git_program: &self.config.git_program,
             source: &source,
-            repository: &self.config.repository,
-            base: &self.config.base,
+            repository,
+            base: &base,
             workspace: &filesystem.workspace,
             process_pool: self.config.process_pool,
             github_token: repository_token(&self.config.environment),
@@ -131,19 +134,20 @@ impl ProductionCapsuleAllocator {
                 delivery: NativeV2DeliveryConfig::for_hosted_workspace(
                     filesystem.workspace.clone(),
                     target,
-                    admitted.ship,
                 ),
                 github: Arc::new(GhCliDeliveryAuthority::new(github_config)),
             },
         )
         .map_err(|_| CapsuleAllocationUnavailable)?;
+        let workspace_identity = WorkspaceIdentity::capture(&filesystem.workspace)
+            .map_err(|_| CapsuleAllocationUnavailable)?;
         let endpoint = Arc::new(NativeCapsuleNodeEndpoint::new(Arc::new(candidate)));
         let runner = Arc::new(RemoteCapsuleNodeRunner::new(endpoint.clone()));
         let (loss_sender, loss) = watch::channel(false);
         let state = Arc::new(ProductionCapsuleState {
             endpoint,
             run_root: run_root.to_owned(),
-            _loss_sender: loss_sender,
+            _loss_sender: loss_sender.clone(),
             cleanup_turn: Mutex::new(false),
         });
         let replaced = self
@@ -154,6 +158,7 @@ impl ProductionCapsuleAllocator {
         if replaced.is_some() {
             return Err(CapsuleAllocationUnavailable);
         }
+        monitor_workspace_identity(filesystem.workspace, workspace_identity, loss_sender);
         let cleanup = Arc::new(ProductionCapsuleCleanup {
             run_id: run_id.clone(),
             state,
@@ -204,12 +209,12 @@ impl ProductionCapsuleAllocator {
         }
     }
 
-    fn repository_source(&self) -> std::ffi::OsString {
+    fn repository_source(&self, repository: &str) -> std::ffi::OsString {
         #[cfg(test)]
         if let Some(path) = &self.source_override {
             return super::repository::path_source(path);
         }
-        production_source(&self.config.repository)
+        production_source(repository)
     }
 }
 
@@ -217,8 +222,9 @@ impl ProductionCapsuleAllocator {
 impl CapsuleAllocator for ProductionCapsuleAllocator {
     async fn claim_controller(
         &self,
+        run_id: &RunId,
     ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
-        let lock_path = self.config.storage_root.join("controller.lock");
+        let lock_path = controller_lock_path(&self.config.storage_root, run_id);
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -271,6 +277,22 @@ struct ProductionCapsuleState {
     // is observed on restart through durable reconciliation, never by allocating a replacement.
     _loss_sender: watch::Sender<bool>,
     cleanup_turn: Mutex<bool>,
+}
+
+pub(super) fn monitor_workspace_identity(
+    workspace: PathBuf,
+    identity: WorkspaceIdentity,
+    loss: watch::Sender<bool>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if !identity.is_current(&workspace) {
+                loss.send_replace(true);
+                return;
+            }
+        }
+    });
 }
 
 struct ProductionCapsuleCleanup {
@@ -327,6 +349,13 @@ fn run_directory(root: &Path, run_id: &RunId) -> PathBuf {
     digest.update(b"zeroshot/native-v2/workspace/v1\0");
     digest.update(run_id.as_str().as_bytes());
     root.join("runs").join(format!("{:x}", digest.finalize()))
+}
+
+fn controller_lock_path(root: &Path, run_id: &RunId) -> PathBuf {
+    let mut digest = Sha256::new();
+    digest.update(b"zeroshot/native-v2/controller-lease/v1\0");
+    digest.update(run_id.as_str().as_bytes());
+    root.join(format!("controller-{:x}.lock", digest.finalize()))
 }
 
 fn remove_run_directory(path: &Path) -> Result<(), CapsuleCleanupUnavailable> {

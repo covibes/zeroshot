@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -12,7 +12,7 @@ use tokio::sync::Notify;
 
 use super::*;
 use crate::execution::{SessionScope, process::HostedProcessPool};
-use crate::native_v2_contract::{self, NodeInvocation, NodeRuntimeBinding};
+use crate::native_v2_contract::{self, DeclaredEnvironment, NodeInvocation, NodeRuntimeBinding};
 use crate::native_v2_runner::{ResolvedEnvironment, remote_node_handle};
 use crate::worker_catalog::{self, ReasoningEffort};
 
@@ -21,7 +21,7 @@ fn request(run: &str, execution: u64) -> NodeRunRequest {
         model: worker_catalog::ModelId::new("gpt-5.6").assert_value(),
         effort: Some(ReasoningEffort::Max),
         session_scope: SessionScope::Execution,
-        env: BTreeSet::new(),
+        env: DeclaredEnvironment::empty(),
     };
     let environment = ResolvedEnvironment::exact(&binding, BTreeMap::new()).assert_value();
     NodeRunRequest {

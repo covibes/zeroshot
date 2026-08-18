@@ -70,12 +70,17 @@ impl NativeV2CodexAdapter {
         }
     }
 
-    #[cfg(test)]
-    fn new_for_test(config: NativeV2CodexConfig) -> Self {
+    #[must_use]
+    pub fn new_local(config: NativeV2CodexConfig) -> Self {
         Self {
             config,
             runners: ProviderProcessRunners::local(),
         }
+    }
+
+    #[cfg(test)]
+    fn new_for_test(config: NativeV2CodexConfig) -> Self {
+        Self::new_local(config)
     }
 
     fn turn_process(
@@ -101,7 +106,8 @@ impl NativeV2CodexAdapter {
         argv.extend(["--sandbox".to_owned(), sandbox.to_owned()]);
         add_execution_policy(&mut argv, invocation.role);
         add_resume_command(&mut argv, resume);
-        add_node_args(&mut argv, model.as_str(), effort.copied());
+        let model = provider_model(self.config.provider, model.as_str());
+        add_node_args(&mut argv, &model, effort.copied());
         add_session_target(&mut argv, resume);
 
         Ok(ProcessSessionCommand {
@@ -388,6 +394,13 @@ fn add_execution_policy(argv: &mut Vec<String>, role: NodeRole) {
 fn add_resume_command(argv: &mut Vec<String>, resume: Option<&str>) {
     if resume.is_some() {
         argv.push("resume".to_owned());
+    }
+}
+
+fn provider_model(provider: CodexProvider, model: &str) -> String {
+    match provider {
+        CodexProvider::OpenAi => model.to_owned(),
+        CodexProvider::OpenRouter => format!("openai/{model}"),
     }
 }
 
