@@ -1,23 +1,35 @@
 #![cfg(unix)]
 
+#[path = "tests/correction.rs"]
+mod correction;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use openengine_cluster_protocol::{
     EnumLabel, FieldName, GraphSpec, IdempotencyKey, NodeName, RunSize, RunTitle, WorkerOutcome,
 };
+use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{json, Value};
 
-use super::*;
+use super::{
+    ANTHROPIC_KEY, ClaudeAdapter, ClaudeAdapterConfig, ClaudeProcessEnvironment,
+    OPENROUTER_BASE_URL, OPENROUTER_KEY, validate_model_effort,
+};
+use crate::execution::{SessionScope, process::HostedProcessPool};
 use crate::native_v2_candidate::test_support::{
     NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,
 };
-use crate::native_v2_contract::{DeclaredEnvironment, RunSubmission, RuntimePlan};
+use crate::native_v2_contract::{
+    ClaudeProvider, DeclaredEnvironment, NodeRuntimeBinding, RunSubmission, RuntimePlan,
+};
 use crate::native_v2_runner::{
     AttachReceiveError, LiveOutputStream, NativeNodeRunner, NodeRunRequest, NodeRunner,
+    NodeRunnerError,
 };
-use crate::worker_catalog;
+use crate::worker_catalog::{self, ReasoningEffort};
 
 fn agent_binding(
     model: &str,
@@ -160,6 +172,11 @@ async fn two_turn_workspace(
     workspace
 }
 
+fn assert_resumed_session(arguments: &str) {
+    assert!(arguments.lines().any(|line| line == "--resume"));
+    assert!(arguments.lines().any(|line| line == "session-1"));
+}
+
 const SUCCESS_SCRIPT: &str = r#"
 set -eu
 target=initial.args
@@ -180,7 +197,15 @@ printf '%s\n' '{"type":"system","subtype":"init","session_id":"session-1"}'
 printf '%s%s\n' \
   '{"type":"stream_event","event":{"type":"content_block_delta",' \
   '"delta":{"type":"text_delta","text":"visible sentinel-secret"}}}'
-printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"session-1"}'
+if [ "${CORRECT_OUTPUT-false}" = true ] && [ "$target" = initial.args ]; then
+  result=done
+else
+  result='\"done\"'
+fi
+printf '%s%s%s\n' \
+  '{"type":"result","subtype":"success","is_error":false,"result":"' \
+  "$result" \
+  '","session_id":"session-1"}'
 "#;
 
 #[tokio::test]
@@ -260,8 +285,7 @@ async fn node_instance_scope_resumes_the_exact_claude_session() {
     .await;
     assert!(workspace.child("initial.args").exists());
     let resumed = workspace.read("resumed.args");
-    assert!(resumed.lines().any(|line| line == "--resume"));
-    assert!(resumed.lines().any(|line| line == "session-1"));
+    assert_resumed_session(&resumed);
     assert!(resumed.lines().any(|line| line == "high"));
     let homes = workspace
         .read("homes.txt")
@@ -460,8 +484,6 @@ fn capsule_environment_roots_home_defaults_path_and_preserves_minimal_values() {
         ])
     );
 }
-
-use openengine_cluster_testkit::assertions::{AssertValue};
 
 #[path = "tests/failure.rs"]
 mod failure;

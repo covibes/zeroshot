@@ -5,14 +5,13 @@
 //! harness-owned runtime state and never enter the durable runner contract.
 
 mod output;
+#[path = "native_v2_codex/session.rs"]
+mod session;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use async_trait::async_trait;
 use openengine_cluster_protocol::WorkerOutcome;
-use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
 use crate::execution::driver::WorkspaceCapability;
@@ -22,16 +21,17 @@ use crate::execution::process::{
 };
 use crate::execution::WorkspaceAccessMode;
 use crate::native_v2_capsule::provider_process::{
-    ClosedSessionFailure, ProviderProcessRunners, ProviderSessionCore, effort_token,
-    impl_provider_node_session, process_scope, redaction_values, validate_process_output,
+    ClosedSessionFailure, ProviderProcessRunners, effort_token, process_scope, redaction_values,
+    validate_process_output,
 };
-use crate::native_v2_contract::{CodexProvider, NodeInvocation, NodeRuntimeBinding};
+use crate::native_v2_contract::{CodexProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
-    render_agent_prompt, DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NodeDriver,
-    NodeRole, NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
+    AgentResponse, render_agent_prompt, resolve_agent_response, DriverControl, DriverInvocation,
+    LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError, ResolvedEnvironment,
 };
 
 use output::{CodexOutput, CodexOutputDecoder};
+use session::CodexSession;
 
 const CODEX_HOME: &str = "CODEX_HOME";
 const CODEX_API_KEY: &str = "CODEX_API_KEY";
@@ -93,10 +93,11 @@ impl NativeV2CodexAdapter {
 
     fn command(
         &self,
-        invocation: &DriverInvocation,
+        turn: &CodexTurn<'_>,
         resume: Option<&str>,
         runtime_home: &Path,
     ) -> Result<ProcessSessionCommand, NodeRunnerError> {
+        let invocation = turn.invocation;
         let (model, effort) = agent_selection(&invocation.node.binding)?;
         let (sandbox, access) = role_settings(invocation.role)?;
         let executable = path_text(&self.config.executable)?;
@@ -123,7 +124,7 @@ impl NativeV2CodexAdapter {
                 current_dir: workspace,
                 mode: access,
             },
-            deadline: Instant::now() + PROCESS_TIMEOUT,
+            deadline: turn.deadline,
         })
     }
 
@@ -134,33 +135,70 @@ impl NativeV2CodexAdapter {
         control: DriverControl,
     ) -> Result<WorkerOutcome, NodeRunnerError> {
         let _turn = session.core.turn.lock().await;
-        session.core.ensure_live(ClosedSessionFailure::Driver)?;
-        let resume = session.thread_id.lock().await.clone();
-        let mut process = self
-            .open_turn_process(invocation, resume.as_deref(), &control)
-            .await?;
-        let redactions = redaction_values(invocation.environment.iter().map(|(_, value)| value));
-        let output = collect_output(&mut process, &control, &redactions).await;
-        let completion = finish_process(&mut process, output.is_ok()).await?;
-        validate_process_output(&completion, &control)?;
-        let output = output?;
-        session
+        let turn = CodexTurn {
+            invocation,
+            session,
+            control: &control,
+            deadline: Instant::now() + PROCESS_TIMEOUT,
+        };
+        let mut prompt = render_agent_prompt(&invocation.node.input, &invocation.response)?;
+        loop {
+            match self.advance_turn(&turn, &prompt).await? {
+                AgentResponse::Complete(outcome) => return Ok(outcome),
+                AgentResponse::Correction(correction) => prompt = correction,
+            }
+        }
+    }
+
+    async fn advance_turn(
+        &self,
+        turn: &CodexTurn<'_>,
+        prompt: &str,
+    ) -> Result<AgentResponse, NodeRunnerError> {
+        turn.session
+            .core
+            .ensure_live(ClosedSessionFailure::Driver)?;
+        let resume = turn.session.thread_id.lock().await.clone();
+        let output = self.execute_turn(turn, resume.as_deref(), prompt).await?;
+        turn.session
             .record_thread(output.thread_id.as_deref(), resume.as_deref())
             .await?;
-        output.outcome(invocation.role)
+        let response = resolve_agent_response(&turn.invocation.response, output.final_message()?)?;
+        if matches!(response, AgentResponse::Correction(_)) {
+            turn.control.emit(LiveOutput::new(
+                LiveOutputStream::System,
+                "Codex final output rejected; requesting correction",
+            )?)?;
+        }
+        Ok(response)
+    }
+
+    async fn execute_turn(
+        &self,
+        turn: &CodexTurn<'_>,
+        resume: Option<&str>,
+        prompt: &str,
+    ) -> Result<CodexOutput, NodeRunnerError> {
+        let mut process = self.open_turn_process(turn, resume, prompt).await?;
+        let redactions =
+            redaction_values(turn.invocation.environment.iter().map(|(_, value)| value));
+        let output = collect_output(&mut process, turn.control, &redactions).await;
+        let completion = finish_process(&mut process, output.is_ok()).await?;
+        validate_process_output(&completion, turn.control)?;
+        output
     }
 
     async fn open_turn_process(
         &self,
-        invocation: &DriverInvocation,
+        turn: &CodexTurn<'_>,
         resume: Option<&str>,
-        control: &DriverControl,
+        prompt: &str,
     ) -> Result<ProcessSession, NodeRunnerError> {
-        let (runner, runtime_home) = self.turn_process(invocation)?;
-        let command = self.command(invocation, resume, &runtime_home)?;
-        let prompt = render_agent_prompt(&invocation.node.input, &invocation.response)?;
-        let prompt = ProcessFrame::new(prompt.into_bytes()).map_err(|_| NodeRunnerError::Driver)?;
-        Self::open_process(runner, command, prompt, control).await
+        let (runner, runtime_home) = self.turn_process(turn.invocation)?;
+        let command = self.command(turn, resume, &runtime_home)?;
+        let prompt =
+            ProcessFrame::new(prompt.as_bytes().to_vec()).map_err(|_| NodeRunnerError::Driver)?;
+        Self::open_process(runner, command, prompt, turn.control).await
     }
 
     async fn open_process(
@@ -181,74 +219,12 @@ impl NativeV2CodexAdapter {
     }
 }
 
-#[async_trait]
-impl SessionFactory for NativeV2CodexAdapter {
-    async fn open(
-        &self,
-        invocation: &NodeInvocation,
-        _environment: &ResolvedEnvironment,
-    ) -> Result<Arc<dyn NodeSession>, NodeRunnerError> {
-        if !matches!(invocation.binding, NodeRuntimeBinding::Agent { .. }) {
-            return Err(NodeRunnerError::SessionOpen);
-        }
-        Ok(Arc::new(CodexSession::new()))
-    }
+struct CodexTurn<'a> {
+    invocation: &'a DriverInvocation,
+    session: &'a CodexSession,
+    control: &'a DriverControl,
+    deadline: Instant,
 }
-
-#[async_trait]
-impl NodeDriver for NativeV2CodexAdapter {
-    async fn run(
-        &self,
-        invocation: DriverInvocation,
-        control: DriverControl,
-    ) -> Result<WorkerOutcome, NodeRunnerError> {
-        let session = invocation
-            .session
-            .as_any()
-            .downcast_ref::<CodexSession>()
-            .ok_or(NodeRunnerError::Driver)?;
-        self.run_turn(&invocation, session, control).await
-    }
-}
-
-struct CodexSession {
-    core: ProviderSessionCore,
-    thread_id: Mutex<Option<String>>,
-}
-
-impl CodexSession {
-    fn new() -> Self {
-        Self {
-            core: ProviderSessionCore::new(),
-            thread_id: Mutex::new(None),
-        }
-    }
-
-    async fn record_thread(
-        &self,
-        observed: Option<&str>,
-        resumed: Option<&str>,
-    ) -> Result<(), NodeRunnerError> {
-        let expected = resumed.or(observed).ok_or(NodeRunnerError::Driver)?;
-        if expected.is_empty() || expected.len() > 256 || expected.contains(char::is_control) {
-            return Err(NodeRunnerError::Driver);
-        }
-        if observed.is_some_and(|value| value != expected) {
-            return Err(NodeRunnerError::Driver);
-        }
-        let mut thread_id = self.thread_id.lock().await;
-        match thread_id.as_deref() {
-            Some(current) if current != expected => Err(NodeRunnerError::Driver),
-            Some(_) => Ok(()),
-            None => {
-                *thread_id = Some(expected.to_owned());
-                Ok(())
-            }
-        }
-    }
-}
-
-impl_provider_node_session!(CodexSession);
 
 async fn collect_output(
     process: &mut ProcessSession,

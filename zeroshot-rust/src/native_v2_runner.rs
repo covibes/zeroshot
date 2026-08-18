@@ -31,6 +31,7 @@ mod remote;
 mod response;
 
 pub use response::{render_agent_prompt, NodeResponseContract};
+pub(crate) use response::{AgentResponse, resolve_agent_response};
 pub(crate) use remote::{RemoteNodeHandleBridge, remote_node_handle};
 
 mod plan;

@@ -52,7 +52,9 @@ if [ "${OPENROUTER_API_KEY-unset}" != unset ]; then
     '{"type":"item.completed","item":{"type":"agent_message",' \
     '"text":"visible fake-openrouter-key"}}'
 fi
-if [ "$resumed" = true ]; then
+if [ "${CORRECT_OUTPUT-false}" = true ] && [ "$resumed" = false ]; then
+  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":\"wrong\"}"}}'
+elif [ "$resumed" = true ]; then
   /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":43}"}}'
 else
   /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":42}"}}'
@@ -157,6 +159,17 @@ fn runner(admitted: &AdmittedRun, adapter: Arc<NativeV2CodexAdapter>) -> NativeN
     NativeNodeRunner::new(admitted, adapter.clone(), adapter).assert_value()
 }
 
+async fn openai_runtime(
+    directory: &TestDirectory,
+    scope: SessionScope,
+    environment: &[&str],
+) -> (AdmittedRun, NativeNodeRunner) {
+    let adapter = scripted_adapter(directory, CodexProvider::OpenAi);
+    let admitted = admitted(binding(scope, environment), CodexProvider::OpenAi).await;
+    let runtime = runner(&admitted, adapter);
+    (admitted, runtime)
+}
+
 async fn start(
     runtime: &NativeNodeRunner,
     admitted: &AdmittedRun,
@@ -242,16 +255,12 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
 async fn openai_node_instance_session_resumes_the_exact_thread() {
     let directory = TestDirectory::new("codex-resume");
     let capture = directory.child("capture");
-    let adapter = scripted_adapter(&directory, CodexProvider::OpenAi);
-    let admitted = admitted(
-        binding(
-            SessionScope::NodeInstance,
-            &["CAPTURE_PATH", "OPENAI_API_KEY"],
-        ),
-        CodexProvider::OpenAi,
+    let (admitted, runtime) = openai_runtime(
+        &directory,
+        SessionScope::NodeInstance,
+        &["CAPTURE_PATH", "OPENAI_API_KEY"],
     )
     .await;
-    let runtime = runner(&admitted, adapter);
     let values = [
         ("CAPTURE_PATH", capture.display().to_string()),
         ("OPENAI_API_KEY", "fake-openai-key".to_owned()),
@@ -288,20 +297,49 @@ async fn openai_node_instance_session_resumes_the_exact_thread() {
 }
 
 #[tokio::test]
+async fn invalid_output_is_corrected_in_the_same_codex_session() {
+    let directory = TestDirectory::new("codex-correction");
+    let capture = directory.child("capture");
+    let (admitted, runtime) = openai_runtime(
+        &directory,
+        SessionScope::Execution,
+        &["CAPTURE_PATH", "OPENAI_API_KEY", "CORRECT_OUTPUT"],
+    )
+    .await;
+    let mut handle = start(
+        &runtime,
+        &admitted,
+        1,
+        &[
+            ("CAPTURE_PATH", capture.display().to_string()),
+            ("OPENAI_API_KEY", "fake-openai-key".to_owned()),
+            ("CORRECT_OUTPUT", "true".to_owned()),
+        ],
+    )
+    .await;
+
+    assert!(matches!(
+        handle.completion().await.assert_value().outcome,
+        WorkerOutcome::Verified { output, .. } if output == json!({"answer": 43})
+    ));
+    let capture = fs::read_to_string(capture).assert_value();
+    assert_eq!(capture.matches("arg=resume").count(), 1);
+    assert_eq!(capture.matches("arg=thread-123").count(), 1);
+    assert!(capture.contains("Your previous final response was rejected mechanically"));
+    assert!(capture.contains("output $.answer must be a integer"));
+}
+
+#[tokio::test]
 async fn cancellation_waits_for_contained_child_cleanup() {
     let directory = TestDirectory::new("codex-cancel");
     let capture = directory.child("capture");
     let pid_path = directory.child("pid");
-    let adapter = scripted_adapter(&directory, CodexProvider::OpenAi);
-    let admitted = admitted(
-        binding(
-            SessionScope::Execution,
-            &["CAPTURE_PATH", "CODEX_API_KEY", "PID_PATH", "SLOW_RUN"],
-        ),
-        CodexProvider::OpenAi,
+    let (admitted, runtime) = openai_runtime(
+        &directory,
+        SessionScope::Execution,
+        &["CAPTURE_PATH", "CODEX_API_KEY", "PID_PATH", "SLOW_RUN"],
     )
     .await;
-    let runtime = runner(&admitted, adapter);
     let mut handle = start(
         &runtime,
         &admitted,

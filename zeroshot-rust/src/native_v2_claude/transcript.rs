@@ -1,10 +1,6 @@
-use std::collections::BTreeMap;
-
-use openengine_cluster_protocol::{EnumLabel, FieldName, WorkerOutcome};
-use serde::Deserialize;
 use serde_json::Value;
 
-use crate::native_v2_runner::{DriverControl, LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError};
+use crate::native_v2_runner::{DriverControl, LiveOutput, LiveOutputStream, NodeRunnerError};
 
 const MAX_EVENTS: usize = 4096;
 const MAX_EVENT_BYTES: usize = 64 * 1024;
@@ -14,7 +10,7 @@ const LIVE_CHUNK_BYTES: usize = 8 * 1024;
 
 pub(super) struct ClaudeResult {
     pub(super) session_id: Option<String>,
-    pub(super) outcome: WorkerOutcome,
+    pub(super) message: String,
 }
 
 pub(super) struct ClaudeTranscript {
@@ -75,20 +71,17 @@ impl ClaudeTranscript {
             .ok_or(NodeRunnerError::Driver)
     }
 
-    pub(super) fn finish(self, role: NodeRole) -> Result<ClaudeResult, NodeRunnerError> {
+    pub(super) fn finish(self) -> Result<ClaudeResult, NodeRunnerError> {
         if !self.settled {
             return Err(NodeRunnerError::Driver);
         }
-        let result = self.result.ok_or(NodeRunnerError::Driver)?;
-        let normalized = normalize_value(result);
-        let outcome = match role {
-            NodeRole::Worker => normalize_worker(normalized)?,
-            NodeRole::Verifier => normalize_verifier(normalized)?,
-            NodeRole::GitDelivery => return Err(NodeRunnerError::Driver),
-        };
+        let message = self
+            .result
+            .and_then(|result| result.as_str().map(str::to_owned))
+            .ok_or(NodeRunnerError::Driver)?;
         Ok(ClaudeResult {
             session_id: self.session_id,
-            outcome,
+            message,
         })
     }
 
@@ -245,39 +238,6 @@ fn record_session_id(
             Ok(())
         }
     }
-}
-
-fn normalize_value(value: Value) -> Value {
-    match value {
-        Value::String(text) => serde_json::from_str(&text).unwrap_or(Value::String(text)),
-        value => value,
-    }
-}
-
-fn normalize_worker(value: Value) -> Result<WorkerOutcome, NodeRunnerError> {
-    Ok(WorkerOutcome::Verified {
-        output: value,
-        artifacts: Vec::new(),
-    })
-}
-
-fn normalize_verifier(value: Value) -> Result<WorkerOutcome, NodeRunnerError> {
-    let verifier: VerifierMessage =
-        serde_json::from_value(value).map_err(|_| NodeRunnerError::Driver)?;
-    Ok(WorkerOutcome::Verifier {
-        output: verifier.output,
-        signals: verifier.signals,
-        diagnostic: verifier.diagnostic,
-        artifacts: Vec::new(),
-    })
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VerifierMessage {
-    output: Value,
-    signals: BTreeMap<FieldName, EnumLabel>,
-    diagnostic: Value,
 }
 
 fn utf8_chunks(value: &str, max: usize) -> Vec<String> {

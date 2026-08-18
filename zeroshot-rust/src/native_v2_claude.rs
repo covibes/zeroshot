@@ -4,31 +4,30 @@
 //! already selected the model, effort, session scope, and declared environment for each node;
 //! It preserves those choices without consulting legacy coordination or ambient process state.
 
+#[path = "native_v2_claude/session.rs"]
+mod session;
 #[path = "native_v2_claude/transcript.rs"]
 mod transcript;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
-use openengine_cluster_protocol::WorkerOutcome;
-use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::execution::process::{HostedProcessPool, LocalProcessRunner, ProcessSessionCommand};
-use crate::execution::{SessionScope, WorkspaceAccessMode};
+use crate::execution::WorkspaceAccessMode;
 use crate::native_v2_capsule::provider_process::{
-    ClosedSessionFailure, ProviderProcessRunners, ProviderSessionCore, effort_token,
-    impl_provider_node_session, process_scope, redaction_values, validate_process_output,
+    ClosedSessionFailure, ProviderProcessRunners, effort_token, process_scope, redaction_values,
+    validate_process_output,
 };
-use crate::native_v2_contract::{ClaudeProvider, NodeInvocation, NodeRuntimeBinding};
+use crate::native_v2_contract::{ClaudeProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
-    render_agent_prompt, DriverControl, DriverInvocation, NodeDriver, NodeRole, NodeRunnerError,
-    NodeSession, ResolvedEnvironment, SessionFactory,
+    AgentResponse, render_agent_prompt, resolve_agent_response, DriverControl, DriverInvocation,
+    LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError, ResolvedEnvironment,
 };
 use crate::worker_catalog::ReasoningEffort;
+use session::ClaudeSession;
 use transcript::ClaudeTranscript;
 
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
@@ -102,7 +101,7 @@ impl std::fmt::Debug for ClaudeProcessEnvironment {
     }
 }
 
-/// Both [`SessionFactory`] and [`NodeDriver`] for one graph-wide Claude provider lane.
+/// One graph-wide Claude provider lane.
 pub struct ClaudeAdapter {
     provider: ClaudeProvider,
     executable: String,
@@ -178,35 +177,34 @@ impl ClaudeAdapter {
 
     fn command(
         &self,
-        invocation: &DriverInvocation,
-        resume_id: Option<&str>,
-        runtime_home: &Path,
+        turn: &ClaudeTurn<'_>,
+        input: ClaudeCommandInput<'_>,
     ) -> Result<ProcessSessionCommand, NodeRunnerError> {
+        let invocation = turn.invocation;
         let NodeRuntimeBinding::Agent { model, effort, .. } = &invocation.node.binding else {
             return Err(NodeRunnerError::Driver);
         };
         validate_model_effort(model.as_str(), *effort)?;
-        let prompt = prompt(invocation)?;
         let argv = claude_arguments(
             self.prefix_arguments.clone(),
             ClaudeTurnArguments {
                 model: model.as_str(),
                 effort: *effort,
                 role: invocation.role,
-                resume_id,
-                prompt,
+                resume_id: input.resume_id,
+                prompt: input.prompt,
             },
         )?;
 
         Ok(ProcessSessionCommand {
             program: self.executable.clone(),
             argv,
-            environment: self.process_environment(&invocation.environment, runtime_home)?,
+            environment: self.process_environment(&invocation.environment, input.runtime_home)?,
             workspace: crate::execution::driver::WorkspaceCapability {
                 current_dir: self.workspace.clone(),
                 mode: workspace_access(invocation.role)?,
             },
-            deadline: Instant::now() + self.turn_timeout,
+            deadline: turn.deadline,
         })
     }
 
@@ -230,95 +228,72 @@ impl ClaudeAdapter {
     }
 }
 
-struct ClaudeSession {
-    core: ProviderSessionCore,
-    resume_id: Mutex<Option<String>>,
-}
-
-impl ClaudeSession {
-    fn new() -> Self {
-        Self {
-            core: ProviderSessionCore::new(),
-            resume_id: Mutex::new(None),
-        }
-    }
-}
-
-impl_provider_node_session!(ClaudeSession);
-
-#[async_trait]
-impl SessionFactory for ClaudeAdapter {
-    async fn open(
+impl ClaudeAdapter {
+    async fn advance_turn(
         &self,
-        invocation: &NodeInvocation,
-        _environment: &ResolvedEnvironment,
-    ) -> Result<Arc<dyn NodeSession>, NodeRunnerError> {
-        let NodeRuntimeBinding::Agent { model, effort, .. } = &invocation.binding else {
-            return Err(NodeRunnerError::SessionOpen);
-        };
-        validate_model_effort(model.as_str(), *effort).map_err(|_| NodeRunnerError::SessionOpen)?;
-        Ok(Arc::new(ClaudeSession::new()))
-    }
-}
-
-#[async_trait]
-impl NodeDriver for ClaudeAdapter {
-    async fn run(
-        &self,
-        invocation: DriverInvocation,
-        control: DriverControl,
-    ) -> Result<WorkerOutcome, NodeRunnerError> {
-        let session = invocation
-            .session
-            .as_any()
-            .downcast_ref::<ClaudeSession>()
-            .ok_or(NodeRunnerError::Driver)?;
-        let _turn = session.core.turn.lock().await;
-        session
+        turn: &ClaudeTurn<'_>,
+        resume_id: &mut Option<String>,
+        prompt: String,
+    ) -> Result<AgentResponse, NodeRunnerError> {
+        turn.session
             .core
             .ensure_live(ClosedSessionFailure::SessionLost)?;
-        let result = self.execute_turn(&invocation, session, &control).await?;
-        retain_session(&invocation.node, session, result.session_id.as_deref()).await?;
-        Ok(result.outcome)
+        let result = self
+            .execute_turn(turn, resume_id.as_deref(), prompt)
+            .await?;
+        observe_session(resume_id, result.session_id.as_deref())?;
+        let response = resolve_agent_response(&turn.invocation.response, &result.message)?;
+        if matches!(response, AgentResponse::Correction(_)) {
+            if resume_id.is_none() {
+                return Err(NodeRunnerError::Driver);
+            }
+            turn.control.emit(LiveOutput::new(
+                LiveOutputStream::System,
+                "Claude final output rejected; requesting correction",
+            )?)?;
+        }
+        Ok(response)
     }
-}
 
-impl ClaudeAdapter {
     async fn execute_turn(
         &self,
-        invocation: &DriverInvocation,
-        session: &ClaudeSession,
-        control: &DriverControl,
+        turn: &ClaudeTurn<'_>,
+        resume_id: Option<&str>,
+        prompt: String,
     ) -> Result<transcript::ClaudeResult, NodeRunnerError> {
-        let resume_id = session.resume_id.lock().await.clone();
-        let mut process = self
-            .open_turn_process(invocation, resume_id.as_deref(), control)
-            .await?;
+        let mut process = self.open_turn_process(turn, resume_id, prompt).await?;
         let mut transcript = ClaudeTranscript::new(redaction_values(
-            invocation.environment.iter().map(|(_, value)| value),
+            turn.invocation.environment.iter().map(|(_, value)| value),
         ));
-        let collected = collect_transcript(&mut process, &mut transcript, control).await;
+        let collected = collect_transcript(&mut process, &mut transcript, turn.control).await;
         let process_output = if collected.is_ok() {
             process.wait().await
         } else {
             process.release().await
         }
         .map_err(|_| NodeRunnerError::Driver)?;
-        validate_process_output(&process_output, control)?;
+        validate_process_output(&process_output, turn.control)?;
         collected?;
-        transcript.finish(invocation.role)
+        transcript.finish()
     }
 
     async fn open_turn_process(
         &self,
-        invocation: &DriverInvocation,
+        turn: &ClaudeTurn<'_>,
         resume_id: Option<&str>,
-        control: &DriverControl,
+        prompt: String,
     ) -> Result<crate::execution::process::ProcessSession, NodeRunnerError> {
-        let (runner, runtime_home) = self.turn_process(invocation)?;
-        let command = self.command(invocation, resume_id, &runtime_home)?;
+        let (runner, runtime_home) = self.turn_process(turn.invocation)?;
+        let command = self.command(
+            turn,
+            ClaudeCommandInput {
+                resume_id,
+                runtime_home: &runtime_home,
+                prompt,
+            },
+        )?;
         let mut process = runner
-            .open(command, control.cancellation())
+            .open(command, turn.control.cancellation())
             .await
             .map_err(|_| NodeRunnerError::Driver)?;
         if process.close_stdin().await.is_err() {
@@ -327,6 +302,19 @@ impl ClaudeAdapter {
         }
         Ok(process)
     }
+}
+
+struct ClaudeTurn<'a> {
+    invocation: &'a DriverInvocation,
+    session: &'a ClaudeSession,
+    control: &'a DriverControl,
+    deadline: Instant,
+}
+
+struct ClaudeCommandInput<'a> {
+    resume_id: Option<&'a str>,
+    runtime_home: &'a Path,
+    prompt: String,
 }
 
 struct ClaudeTurnArguments<'a> {
@@ -441,22 +429,13 @@ async fn collect_transcript(
     transcript.finish_stream()
 }
 
-async fn retain_session(
-    invocation: &NodeInvocation,
-    session: &ClaudeSession,
+fn observe_session(
+    retained: &mut Option<String>,
     observed: Option<&str>,
 ) -> Result<(), NodeRunnerError> {
-    if !matches!(
-        invocation.binding,
-        NodeRuntimeBinding::Agent {
-            session_scope: SessionScope::NodeInstance,
-            ..
-        }
-    ) {
+    let Some(observed) = observed else {
         return Ok(());
-    }
-    let observed = observed.ok_or(NodeRunnerError::Driver)?;
-    let mut retained = session.resume_id.lock().await;
+    };
     match retained.as_deref() {
         Some(existing) if existing != observed => Err(NodeRunnerError::Driver),
         Some(_) => Ok(()),

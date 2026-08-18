@@ -1,10 +1,6 @@
-use std::collections::BTreeMap;
-
-use openengine_cluster_protocol::{EnumLabel, FieldName, WorkerOutcome};
-use serde::Deserialize;
 use serde_json::Value;
 
-use crate::native_v2_runner::{LiveOutputStream, NodeRole, NodeRunnerError};
+use crate::native_v2_runner::{LiveOutputStream, NodeRunnerError};
 
 pub(super) enum CodexEmission {
     AgentMessage(String),
@@ -92,25 +88,11 @@ impl CodexOutput {
         Ok(())
     }
 
-    pub(super) fn outcome(self, role: NodeRole) -> Result<WorkerOutcome, NodeRunnerError> {
-        let message = self.messages.last().ok_or(NodeRunnerError::Driver)?;
-        match role {
-            NodeRole::Worker => Ok(WorkerOutcome::Verified {
-                output: serde_json::from_str(message).map_err(|_| NodeRunnerError::Driver)?,
-                artifacts: Vec::new(),
-            }),
-            NodeRole::Verifier => {
-                let verifier: VerifierMessage =
-                    serde_json::from_str(message).map_err(|_| NodeRunnerError::Driver)?;
-                Ok(WorkerOutcome::Verifier {
-                    output: verifier.output,
-                    signals: verifier.signals,
-                    diagnostic: verifier.diagnostic,
-                    artifacts: Vec::new(),
-                })
-            }
-            NodeRole::GitDelivery => Err(NodeRunnerError::Driver),
-        }
+    pub(super) fn final_message(&self) -> Result<&str, NodeRunnerError> {
+        self.messages
+            .last()
+            .map(String::as_str)
+            .ok_or(NodeRunnerError::Driver)
     }
 
     fn accept_bytes(&mut self, line: &[u8]) -> Result<Option<CodexEmission>, NodeRunnerError> {
@@ -209,14 +191,6 @@ fn progress_message(item_type: &str, completed: bool) -> String {
     format!("Codex {activity} {phase}")
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VerifierMessage {
-    output: Value,
-    signals: BTreeMap<FieldName, EnumLabel>,
-    diagnostic: Value,
-}
-
 #[cfg(test)]
 mod tests {
     use openengine_cluster_testkit::assertions::AssertValue;
@@ -232,16 +206,8 @@ mod tests {
 {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}
 "#,
         )
-        .assert_value()
-        .outcome(NodeRole::Worker)
         .assert_value();
-        assert_eq!(
-            worker,
-            WorkerOutcome::Verified {
-                output: json!({ "answer": 42 }),
-                artifacts: Vec::new(),
-            }
-        );
+        assert_eq!(worker.final_message().assert_value(), r#"{"answer":42}"#);
 
         let verifier_events = concat!(
             "{\"type\":\"thread.started\",\"thread_id\":\"thread-2\"}\n",
@@ -251,25 +217,15 @@ mod tests {
             "\\\"diagnostic\\\":null}\"}}\n",
             "{\"type\":\"turn.completed\"}\n",
         );
-        let verifier = CodexOutput::parse(verifier_events.as_bytes())
-            .assert_value()
-            .outcome(NodeRole::Verifier)
-            .assert_value();
-        let extracted = match verifier {
-            WorkerOutcome::Verifier {
-                output,
-                signals,
-                diagnostic,
-                artifacts,
-            } => Some((output, signals, diagnostic, artifacts)),
-            _ => None,
-        };
-        let (output, signals, diagnostic, artifacts) =
-            extracted.assert_value_with("expected verifier outcome");
-        assert_eq!(output, json!({ "ok": true }));
-        assert_eq!(diagnostic, Value::Null);
-        assert!(artifacts.is_empty());
-        assert_eq!(signals.len(), 1);
+        let verifier = CodexOutput::parse(verifier_events.as_bytes()).assert_value();
+        assert_eq!(
+            serde_json::from_str::<Value>(verifier.final_message().assert_value()).assert_value(),
+            json!({
+                "output": { "ok": true },
+                "signals": { "decision": "pass" },
+                "diagnostic": null
+            })
+        );
     }
 
     #[test]
