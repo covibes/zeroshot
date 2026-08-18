@@ -26,6 +26,8 @@ async fn target_omitted_run_derives_source_and_preserves_workspace_mutation() {
         .as_str()
         .assert_value_with("run receipt identity");
     assert_local_run_id(run_id);
+    let retired_pid = fixture.ready_pid(run_id);
+    wait_for_exit(retired_pid).await;
 
     let status = fixture.json(&["status", run_id], "finish").await;
     assert_eq!(status.assert_key("title"), TITLE);
@@ -83,6 +85,7 @@ async fn target_omitted_run_derives_source_and_preserves_workspace_mutation() {
 async fn detached_local_run_reconnects_without_observer_ownership_and_force_stops() {
     let fixture = LocalFixture::new();
     let run_id = fixture.submit_detached("block").await;
+    let active_pid = fixture.ready_pid(&run_id);
     let running = fixture.wait_running(&run_id).await;
     let execution = running
         .assert_key("status")
@@ -113,6 +116,10 @@ async fn detached_local_run_reconnects_without_observer_ownership_and_force_stop
         "running",
         "disconnecting an observer must not cancel the run"
     );
+    assert!(
+        process_exists(active_pid),
+        "active controller retired early"
+    );
 
     let logs = fixture.interrupted(&["logs", &run_id], "block").await;
     assert_success(&logs, "interrupted local logs");
@@ -136,6 +143,7 @@ async fn detached_local_run_reconnects_without_observer_ownership_and_force_stop
 
     let forced = fixture.json(&["force-stop", &run_id], "block").await;
     assert_eq!(forced.assert_key("runId"), run_id.as_str());
+    wait_for_exit(active_pid).await;
     let terminal = fixture
         .wait_terminal(&run_id, "block", "force_stopped")
         .await;

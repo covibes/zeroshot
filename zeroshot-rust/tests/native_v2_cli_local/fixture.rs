@@ -280,7 +280,7 @@ pub(super) async fn wait_for_exit(pid: u32) {
     }
 }
 
-fn process_exists(pid: u32) -> bool {
+pub(super) fn process_exists(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 

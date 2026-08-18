@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{NOT_FOUND, RunId, RunSubmitParams};
+use openengine_cluster_protocol::{NOT_FOUND, RunId, RunStatus, RunStatusParams, RunSubmitParams};
 use openengine_cluster_server::BackendError;
 use tokio::sync::{Mutex, watch};
 
@@ -178,6 +178,21 @@ impl PortableRunController {
     #[must_use]
     pub fn paths(&self) -> &PortableControllerPaths {
         &self.paths
+    }
+
+    pub(super) async fn wait_terminal(&self) -> Result<(), PortableControllerError> {
+        loop {
+            let status = self
+                .inner
+                .status(RunStatusParams {
+                    run_id: self.run_id.clone(),
+                })
+                .await?;
+            if matches!(status.status, RunStatus::Finished { .. }) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     #[cfg(unix)]

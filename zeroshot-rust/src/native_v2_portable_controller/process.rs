@@ -119,12 +119,7 @@ pub async fn run_controller_process(bootstrap_path: &Path) -> Result<(), Portabl
         })
         .await?,
     );
-    controller
-        .bind()
-        .await?
-        .serve()
-        .await
-        .map_err(PortableControllerError::Io)
+    controller.bind().await?.serve_until_terminal().await
 }
 
 pub fn load_bootstrap_file(
@@ -209,22 +204,46 @@ impl PortableControllerServer {
 
     pub async fn serve(self) -> io::Result<()> {
         loop {
-            let (stream, _) = self.listener.accept().await?;
-            let controller = self.controller.clone();
-            tokio::spawn(async move {
-                let (reader, writer) = stream.into_split();
-                let binding = local_binding(controller);
-                let _ = openengine_cluster_server::stdio::serve_ndjson(
-                    binding,
-                    openengine_cluster_server::stdio::NdjsonIo::new(
-                        reader,
-                        writer,
-                        tokio::io::sink(),
-                    ),
-                )
-                .await;
-            });
+            self.accept().await?;
         }
+    }
+
+    /// Serves one active local run until its durable terminal result exists. If a very short run
+    /// finishes before the submitting CLI reaches the socket, one connection is still accepted so
+    /// readiness cannot race normal startup. Later observation reopens the durable ledger.
+    async fn serve_until_terminal(self) -> Result<(), PortableControllerError> {
+        let mut accepted = false;
+        let mut terminal = false;
+        loop {
+            if accepted && terminal {
+                return Ok(());
+            }
+            tokio::select! {
+                result = self.accept() => {
+                    result.map_err(PortableControllerError::Io)?;
+                    accepted = true;
+                }
+                result = self.controller.wait_terminal(), if !terminal => {
+                    result?;
+                    terminal = true;
+                }
+            }
+        }
+    }
+
+    async fn accept(&self) -> io::Result<()> {
+        let (stream, _) = self.listener.accept().await?;
+        let controller = self.controller.clone();
+        tokio::spawn(async move {
+            let (reader, writer) = stream.into_split();
+            let binding = local_binding(controller);
+            let _ = openengine_cluster_server::stdio::serve_ndjson(
+                binding,
+                openengine_cluster_server::stdio::NdjsonIo::new(reader, writer, tokio::io::sink()),
+            )
+            .await;
+        });
+        Ok(())
     }
 }
 

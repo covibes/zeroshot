@@ -240,7 +240,9 @@ names at admission. One run owns one workspace: workers and Git delivery are exc
 while ordinary verifiers are read-only and may overlap. PR and merge delivery are graph-visible
 modes of one shared trusted implementation; hosted success requires its bounded inline receipt.
 Local execution may omit delivery, in which case the invoking workspace and its mutations remain
-user-owned and are never reset or removed.
+user-owned and are never reset or removed. Omitting `--target` starts the private local controller
+on demand and uses the ordinary OECP client surface; it survives client detach while active, exits
+after terminal state is durable, and later local observation reopens that ledger without a runtime.
 
 Each one-run controller uses the lean v2 ledger, with SQLite and a filesystem controller lease as
 the local adapters. Runtime, controller, workspace, or reusable-session loss and force-stop are
