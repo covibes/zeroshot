@@ -31,7 +31,7 @@ Every graph node is tagged by `kind`. Node payloads reject unknown fields.
 | `seq`      | Declared state, non-empty ordered children, promoted state paths                                                                              |
 | `choice`   | Declared state, non-empty authored-order guarded branches, optional `otherwise`, promoted paths                                               |
 | `par`      | Declared state, non-empty branches, promoted paths, and a tagged join                                                                         |
-| `loop`     | Declared state, body, structured `until`, positive `maxIterations`, promoted paths; syntactically do-while                                    |
+| `loop`     | Declared state, body, optional structured `until`, positive `maxIterations`, promoted paths; syntactically do-while                           |
 | `map`      | Declared state, body, structured array selector `over`, positive `maxItems`, promoted paths                                                   |
 | `succeed`  | Declared output type and structured state-to-output bindings                                                                                  |
 | `fail`     | Finite-enum reason; `unhandled` is reserved for a future compiler's implicit sink                                                             |
@@ -129,7 +129,9 @@ Selectors use closed finite domains: verifier signals use their declared labels;
 parallel `raced` is `satisfied|no_satisfier`. Choices are first-true in authored order and are
 checked over the bounded legal control space. An `otherwise` alternative is rejected as unreachable
 when earlier branches cover that space and does not participate in flow analysis. Loops are
-do-while and their exit guard must use a verifier guaranteed to execute on every iteration.
+do-while. When present, their exit guard must use a verifier guaranteed to execute on every
+iteration. When `until` is absent, the body repeats to `maxIterations` unless a terminal node ends
+the graph first.
 Signal and error controls from one executable are mutually exclusive outcomes. Map aggregates
 count joint per-item outcomes, so one mapped execution cannot contribute both a success signal and
 an error. They also preserve per-item execution flow: guaranteed sequential successors,

@@ -184,7 +184,10 @@ impl GitHubDeliveryAuthority for DeliveryAuthority {
             && review.review_id == "1"
         {
             GitHubReviewState::Open {
-                checks: GitHubChecks::Failed,
+                checks: GitHubChecks::Failed {
+                    diagnostic: "Required CI checks failed:\n- realistic CI fixture failed"
+                        .to_owned(),
+                },
             }
         } else {
             GitHubReviewState::Open {

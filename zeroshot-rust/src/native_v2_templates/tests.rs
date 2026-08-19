@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 
 use openengine_cluster_protocol::{IdempotencyKey, RunSubmission, RunTitle};
+use openengine_cluster_server::admission::VerifiedGraph;
 use openengine_cluster_testkit::assertions::AssertValue;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 use crate::native_v2_contract::RunSubmissionIntent;
-use crate::native_v2_delivery::DELIVERY_OPENED_LABEL;
+use crate::native_v2_delivery::{DELIVERY_MERGED_LABEL, DELIVERY_OPENED_LABEL};
 use crate::full_v1_reducer::{
     Decision, DurableExecution, FullV1Reducer, Reduction, ReductionInput, TerminalProjection,
 };
@@ -50,7 +51,8 @@ fn catalog_and_template_owned_input_are_closed() {
         json!({
             "task":"repair checkout",
             "acceptanceFeedback":"",
-            "codeFeedback":""
+            "codeFeedback":"",
+            "deliveryFeedback":""
         })
     );
 }
@@ -92,6 +94,31 @@ async fn every_supported_materialization_is_admissible() {
     }
 }
 
+#[test]
+fn software_change_has_one_global_ten_cycle_budget() {
+    for delivery in [
+        TemplateDelivery::None,
+        TemplateDelivery::PullRequest,
+        TemplateDelivery::Merge,
+    ] {
+        let graph = BuiltinGraphTemplate::SoftwareChange
+            .materialize(delivery)
+            .assert_value();
+        let loops = all_nodes(&graph.root)
+            .into_iter()
+            .filter_map(|node| match node {
+                GraphNode::Loop(loop_node) => Some(loop_node),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(loops.len(), 1, "software-change must contain one loop");
+        let change_loop = loops.first().assert_value_with("software-change loop");
+        assert_eq!(change_loop.name.as_str(), "change_loop");
+        assert_eq!(change_loop.max_iterations.get(), 10);
+        assert!(change_loop.until.is_none());
+    }
+}
+
 #[tokio::test]
 async fn rejected_parallel_reviews_dispatch_repair_with_both_diagnostics() {
     let (verified, initial_input) = verified_software_template(TemplateDelivery::None).await;
@@ -114,7 +141,8 @@ async fn rejected_parallel_reviews_dispatch_repair_with_both_diagnostics() {
                 && input == &json!({
                     "task":"repair checkout",
                     "acceptanceFeedback":"missing requested behavior",
-                    "codeFeedback":"unsafe error handling"
+                    "codeFeedback":"unsafe error handling",
+                    "deliveryFeedback":""
                 })
     )));
 }
@@ -162,56 +190,97 @@ async fn accepted_reviews_complete_or_dispatch_pull_request_delivery() {
 #[tokio::test]
 async fn merge_delivery_repairs_recoverable_outcomes_then_returns_the_receipt() {
     for recoverable in [DELIVERY_CI_FAILED_LABEL, DELIVERY_CONFLICT_LABEL] {
-        let (verified, initial_input) = verified_software_template(TemplateDelivery::Merge).await;
-        let mut history = accepted_review_history();
-        history.push(settled_delivery(
-            SettledExecutionSpec {
-                execution: 4,
-                node_instance: 4,
-                node: DELIVERY_NODE,
-                settled_at: 4,
-                input: serde_json::Value::Null,
-            },
-            DeliveryMode::Merge,
-            recoverable,
-        ));
-        let failed_delivery = reduce(&verified, &initial_input, &history);
-        assert_dispatch(
-            &failed_delivery,
-            "delivery_repair",
-            &json!({"task":"repair checkout","outcome":recoverable}),
-        );
-
-        history.push(settled_agent(SettledExecutionSpec {
-            execution: 5,
-            node_instance: 5,
-            node: "delivery_repair",
-            settled_at: 5,
-            input: json!({"task":"repair checkout","outcome":recoverable}),
-        }));
-        assert_dispatch(
-            &reduce(&verified, &initial_input, &history),
-            DELIVERY_NODE,
-            &serde_json::Value::Null,
-        );
-
-        history.push(settled_delivery(
-            SettledExecutionSpec {
-                execution: 6,
-                node_instance: 4,
-                node: DELIVERY_NODE,
-                settled_at: 6,
-                input: serde_json::Value::Null,
-            },
-            DeliveryMode::Merge,
-            DELIVERY_MERGED_LABEL,
-        ));
-        let receipt = delivery_receipt(DeliveryMode::Merge, DELIVERY_MERGED_LABEL);
-        assert_eq!(
-            reduce(&verified, &initial_input, &history).terminal,
-            Some(TerminalProjection::Succeeded { output: receipt })
-        );
+        assert_recoverable_delivery(recoverable).await;
     }
+}
+
+async fn assert_recoverable_delivery(recoverable: &str) {
+    let delivery_feedback = format!("trusted delivery reported {recoverable}");
+    let (verified, initial_input) = verified_software_template(TemplateDelivery::Merge).await;
+    let mut history = accepted_review_history();
+    let repair_input = json!({
+        "task":"repair checkout",
+        "outcome":recoverable,
+        "deliveryFeedback":delivery_feedback
+    });
+    history.push(settled_delivery_with_diagnostic(
+        SettledExecutionSpec {
+            execution: 4,
+            node_instance: 4,
+            node: DELIVERY_NODE,
+            settled_at: 4,
+            input: Value::Null,
+        },
+        DeliveryMode::Merge,
+        recoverable,
+        &delivery_feedback,
+    ));
+    assert_dispatch(
+        &reduce(&verified, &initial_input, &history),
+        "delivery_repair",
+        &repair_input,
+    );
+    history.push(settled_agent(SettledExecutionSpec {
+        execution: 5,
+        node_instance: 5,
+        node: "delivery_repair",
+        settled_at: 5,
+        input: repair_input,
+    }));
+    assert_repaired_reviews_then_merge(&verified, &initial_input, &mut history, &delivery_feedback);
+}
+
+fn assert_repaired_reviews_then_merge(
+    verified: &VerifiedGraph,
+    initial_input: &Value,
+    history: &mut Vec<DurableExecution>,
+    delivery_feedback: &str,
+) {
+    let repaired = reduce(verified, initial_input, history);
+    assert_dispatched_together(&repaired, &["acceptance", "code"]);
+    let review_input = json!({
+        "task":"repair checkout",
+        "deliveryFeedback":delivery_feedback
+    });
+    assert_dispatch(&repaired, "acceptance", &review_input);
+    assert_dispatch(&repaired, "code", &review_input);
+    for (execution, node, diagnostic) in [
+        (6, "acceptance", "CI repair meets the request"),
+        (7, "code", "CI repair is sound"),
+    ] {
+        history.push(settled_review_execution(
+            SettledExecutionSpec {
+                execution,
+                node_instance: execution - 4,
+                node,
+                settled_at: execution,
+                input: review_input.clone(),
+            },
+            ACCEPTED_LABEL,
+            diagnostic,
+        ));
+    }
+    assert_dispatch(
+        &reduce(verified, initial_input, history),
+        DELIVERY_NODE,
+        &Value::Null,
+    );
+    history.push(settled_delivery(
+        SettledExecutionSpec {
+            execution: 8,
+            node_instance: 4,
+            node: DELIVERY_NODE,
+            settled_at: 8,
+            input: Value::Null,
+        },
+        DeliveryMode::Merge,
+        DELIVERY_MERGED_LABEL,
+    ));
+    let receipt = delivery_receipt(DeliveryMode::Merge, DELIVERY_MERGED_LABEL);
+    assert_eq!(
+        reduce(verified, initial_input, history).terminal,
+        Some(TerminalProjection::Succeeded { output: receipt })
+    );
 }
 
 async fn assert_admissible(
@@ -330,9 +399,23 @@ fn assert_dispatched_together(reduction: &Reduction, expected: &[&str]) {
 }
 
 fn assert_dispatch(reduction: &Reduction, node: &str, expected_input: &serde_json::Value) {
-    assert!(reduction.decisions.iter().any(|decision| matches!(
-        decision,
-        Decision::Dispatch { occurrence, input, .. }
-            if occurrence.node.as_str() == node && input == expected_input
-    )));
+    assert!(
+        reduction.decisions.iter().any(|decision| matches!(
+            decision,
+            Decision::Dispatch { occurrence, input, .. }
+                if occurrence.node.as_str() == node && input == expected_input
+        )),
+        "expected {node} input {expected_input}; decisions: {:?}",
+        reduction.decisions
+    );
+}
+
+fn all_nodes(root: &GraphNode) -> Vec<&GraphNode> {
+    let mut nodes = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        nodes.push(node);
+        pending.extend(openengine_cluster_server::graph_verifier::graph_node_children(node));
+    }
+    nodes
 }

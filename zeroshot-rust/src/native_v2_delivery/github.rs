@@ -61,10 +61,18 @@ impl GhCliDeliveryAuthority {
         arguments: &[String],
         credential: GitHubCredential<'_>,
     ) -> Result<Value, GitHubAuthorityError> {
+        let output = self.api_output(arguments, credential).await?;
+        serde_json::from_slice(&output).map_err(|_| GitHubAuthorityError::Rejected)
+    }
+
+    async fn api_output(
+        &self,
+        arguments: &[String],
+        credential: GitHubCredential<'_>,
+    ) -> Result<Vec<u8>, GitHubAuthorityError> {
         let mut command = clean_command(&self.config, &self.config.gh_program, credential);
         command.arg("api").args(arguments).stdout(Stdio::piped());
-        let output = bounded_output(command, self.config.api_deadline).await?;
-        serde_json::from_slice(&output).map_err(|_| GitHubAuthorityError::Rejected)
+        bounded_output(command, self.config.api_deadline).await
     }
 
     async fn find_review(
@@ -168,7 +176,25 @@ impl GhCliDeliveryAuthority {
                 credential,
             )
             .await?;
-        classify_checks(check_runs, statuses)
+        let failed_jobs = failed_check_job_ids(&check_runs)?;
+        let checks = classify_checks(check_runs, statuses)?;
+        let mut logs = Vec::new();
+        for job in failed_jobs {
+            let output = self
+                .api_output(
+                    &[
+                        format!("repos/{}/actions/jobs/{job}/logs", review.repository),
+                        "--method".to_owned(),
+                        "GET".to_owned(),
+                    ],
+                    credential,
+                )
+                .await;
+            if let Ok(output) = output {
+                logs.push(String::from_utf8_lossy(&output).into_owned());
+            }
+        }
+        Ok(include_check_logs(checks, &logs))
     }
 
     async fn pull_request(
@@ -324,7 +350,10 @@ fn confirmed_merge(value: Value) -> Result<(), GitHubAuthorityError> {
 }
 
 mod wire;
-use wire::{MergeWire, PullRequestWire, classify_checks, require_review_identity, review_receipt};
+use wire::{
+    MergeWire, PullRequestWire, classify_checks, failed_check_job_ids, include_check_logs,
+    require_review_identity, review_receipt,
+};
 
 enum ReviewClassification {
     Open,

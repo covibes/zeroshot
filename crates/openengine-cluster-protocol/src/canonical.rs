@@ -429,7 +429,9 @@ fn normalize_parallel(node: &mut ParNode) -> Result<(), CanonicalError> {
 
 fn normalize_loop(node: &mut LoopNode) -> Result<(), CanonicalError> {
     normalize_node(&mut node.body)?;
-    normalize_guard(&mut node.until)?;
+    if let Some(until) = &mut node.until {
+        normalize_guard(until)?;
+    }
     sort_and_deduplicate_by_canonical_json(&mut node.promoted_state_paths)
 }
 

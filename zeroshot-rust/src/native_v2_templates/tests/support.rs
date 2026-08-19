@@ -117,14 +117,26 @@ pub(super) fn settled_review(
     verdict: &str,
     diagnostic: &str,
 ) -> DurableExecution {
-    settled_execution(
+    settled_review_execution(
         SettledExecutionSpec {
             execution,
             node_instance: execution,
             node,
             settled_at: execution,
-            input: json!({"task":"repair checkout"}),
+            input: json!({"task":"repair checkout","deliveryFeedback":""}),
         },
+        verdict,
+        diagnostic,
+    )
+}
+
+pub(super) fn settled_review_execution(
+    spec: SettledExecutionSpec<'_>,
+    verdict: &str,
+    diagnostic: &str,
+) -> DurableExecution {
+    settled_execution(
+        spec,
         WorkerOutcome::Verifier {
             output: serde_json::Value::Null,
             signals: BTreeMap::from([(
@@ -142,6 +154,15 @@ pub(super) fn settled_delivery(
     mode: DeliveryMode,
     outcome: &str,
 ) -> DurableExecution {
+    settled_delivery_with_diagnostic(spec, mode, outcome, "delivery outcome")
+}
+
+pub(super) fn settled_delivery_with_diagnostic(
+    spec: SettledExecutionSpec<'_>,
+    mode: DeliveryMode,
+    outcome: &str,
+    diagnostic: &str,
+) -> DurableExecution {
     settled_execution(
         spec,
         WorkerOutcome::Verifier {
@@ -150,7 +171,7 @@ pub(super) fn settled_delivery(
                 FieldName::new(DELIVERY_SIGNAL_FIELD).assert_value(),
                 EnumLabel::new(outcome).assert_value(),
             )]),
-            diagnostic: json!("delivery outcome"),
+            diagnostic: json!({DIAGNOSTIC_MESSAGE_FIELD:diagnostic}),
             artifacts: Vec::new(),
         },
     )

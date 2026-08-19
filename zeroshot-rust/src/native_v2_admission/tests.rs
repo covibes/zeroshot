@@ -52,7 +52,8 @@ fn delivery_verifier(name: &str, mode: DeliveryMode) -> Value {
         "input":{"kind":"null"},
         "output":output,
         "inputBindings":[], "writeBindings":[], "timeoutMs":1000, "attempts":1,
-        "signals":{"delivery":labels}, "diagnostic":{"kind":"string"}
+        "signals":{"delivery":labels},
+        "diagnostic":crate::native_v2_delivery::delivery_diagnostic_schema().assert_value()
     })
 }
 

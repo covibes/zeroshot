@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    IdempotencyKey, NodeName, PayloadType, PositiveInteger, RunId, Sha256Digest, TerminalResult,
+    IdempotencyKey, NodeName, PositiveInteger, RunId, Sha256Digest, TerminalResult,
     WorkerErrorCode, WorkerOutcome, WorkerRef,
 };
 use openengine_cluster_server::admission::VerifiedGraph;
@@ -117,6 +117,17 @@ async fn merge_rejection_before_ci_registration_is_reobserved() {
 }
 
 #[tokio::test]
+async fn pushed_review_head_is_retried_during_github_visibility_lag() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), Script::ReviewSyncRace));
+
+    let outcome = run_delivery(&repo, authority.clone(), 3, DeliveryMode::Merge).await;
+
+    assert_delivery_signal(&outcome, DELIVERY_MERGED_LABEL);
+    assert_eq!(authority.review_sync_attempts.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn accepted_merge_request_is_not_shipping_success() {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(
@@ -198,7 +209,7 @@ fn delivery_contract_rejects_the_other_modes_schema() {
             FieldName::new(DELIVERY_SIGNAL_FIELD).assert_value(),
             delivery_signal_labels(DeliveryMode::PullRequest).assert_value(),
         )]),
-        diagnostic: PayloadType::String,
+        diagnostic: delivery_diagnostic_schema().assert_value(),
     };
 
     assert!(validate_delivery_contract(DeliveryMode::PullRequest, &response).is_err());
@@ -334,7 +345,7 @@ fn delivery_node(mode: DeliveryMode) -> Value {
         "kind":"verifier","name":"deliver","worker":worker_ref(mode),
         "input":{"kind":"null"},"output":delivery_result_schema(mode).assert_value(),
         "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1,
-        "signals":{"delivery":labels},"diagnostic":{"kind":"string"}
+        "signals":{"delivery":labels},"diagnostic":delivery_diagnostic_schema().assert_value()
     })
 }
 
@@ -357,7 +368,7 @@ fn assert_delivery_signal<'a>(outcome: &'a WorkerOutcome, expected: &str) -> &'a
             .as_str(),
         expected
     );
-    assert!(diagnostic.is_string());
+    assert!(diagnostic.pointer("/message").is_some_and(Value::is_string));
     assert!(artifacts.is_empty());
     output
 }

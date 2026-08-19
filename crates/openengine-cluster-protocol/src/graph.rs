@@ -343,7 +343,8 @@ pub struct LoopNode {
     pub name: NodeName,
     pub state: PayloadType,
     pub body: Box<GraphNode>,
-    pub until: Guard,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Guard>,
     pub max_iterations: PositiveInteger,
     pub promoted_state_paths: Vec<FieldPath>,
 }

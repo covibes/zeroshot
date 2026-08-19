@@ -222,6 +222,10 @@ fn template_list_and_show_are_static_and_emit_ordinary_json() {
         shown.pointer("/initialInput/fields/codeFeedback/required"),
         Some(&json!(true))
     );
+    assert_eq!(
+        shown.pointer("/initialInput/fields/deliveryFeedback/required"),
+        Some(&json!(true))
+    );
     assert!(shown.to_string().contains("builtin.git-delivery.pr@1"));
     assert!(backend.calls().is_empty());
 }
@@ -264,6 +268,7 @@ async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
     assert_eq!(submitted.1.pointer("/task"), Some(&json!("ship it")));
     assert_eq!(submitted.1.pointer("/acceptanceFeedback"), Some(&json!("")));
     assert_eq!(submitted.1.pointer("/codeFeedback"), Some(&json!("")));
+    assert_eq!(submitted.1.pointer("/deliveryFeedback"), Some(&json!("")));
     let authored_input = std::fs::read(&files.input).assert_value();
     assert_eq!(
         serde_json::from_slice::<Value>(&authored_input).assert_value(),

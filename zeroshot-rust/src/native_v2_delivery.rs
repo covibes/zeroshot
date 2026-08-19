@@ -17,7 +17,7 @@ mod tests;
 pub use github::{GhCliAuthorityConfig, GhCliDeliveryAuthority};
 pub use contract::{is_matching_success_receipt, validate_delivery_contract};
 #[cfg(test)]
-pub(crate) use contract::{delivery_result_schema, delivery_signal_labels};
+pub(crate) use contract::{delivery_diagnostic_schema, delivery_result_schema, delivery_signal_labels};
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -29,7 +29,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{EnumLabel, FieldName, WorkerErrorCode, WorkerOutcome, WorkerRef};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::native_v2_contract::{
     EnvironmentVariableName, GIT_DELIVERY_MERGE_WORKER_REF, GIT_DELIVERY_PR_WORKER_REF,
@@ -61,6 +61,8 @@ const DELIVERY_PULL_REQUEST_ID_FIELD: &str = "pullRequestId";
 
 const DEFAULT_POLL_ATTEMPTS: usize = 90;
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(20);
+const REVIEW_SYNC_ATTEMPTS: usize = 5;
+const REVIEW_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_TOKEN_BYTES: usize = 4_096;
 const MAX_REVIEW_ID_BYTES: usize = 32;
 
@@ -228,7 +230,7 @@ pub enum GitHubChecks {
     NotRequired,
     Pending,
     Passed,
-    Failed,
+    Failed { diagnostic: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -329,7 +331,7 @@ fn delivery_outcome(
     Ok(WorkerOutcome::Verifier {
         output: delivery_result(mode, outcome, review),
         signals: BTreeMap::from([(field, label)]),
-        diagnostic: Value::String(diagnostic.to_owned()),
+        diagnostic: json!({"message":diagnostic}),
         artifacts: Vec::new(),
     })
 }
@@ -434,7 +436,7 @@ fn ensure_active(control: &DriverControl) -> Result<(), NodeRunnerError> {
         .ok_or(NodeRunnerError::Cancelled)
 }
 
-fn emit(control: &DriverControl, message: &'static str) -> Result<(), NodeRunnerError> {
+fn emit(control: &DriverControl, message: &str) -> Result<(), NodeRunnerError> {
     control.emit(LiveOutput::new(LiveOutputStream::System, message)?)
 }
 

@@ -26,19 +26,36 @@ pub fn validate_delivery_contract(
     else {
         return Err(NodeRunnerError::InvalidRole);
     };
-    let expected_output = delivery_result_schema(mode).map_err(|_| NodeRunnerError::Driver)?;
-    if output != &expected_output || diagnostic != &PayloadType::String || signals.len() != 1 {
-        return Err(NodeRunnerError::Driver);
-    }
-    let field = FieldName::new(DELIVERY_SIGNAL_FIELD).map_err(|_| NodeRunnerError::Driver)?;
-    let Some(labels) = signals.get(&field) else {
-        return Err(NodeRunnerError::Driver);
-    };
-    let expected_labels = delivery_signal_labels(mode).map_err(|_| NodeRunnerError::Driver)?;
-    if labels != &expected_labels {
+    if !delivery_contract_matches(mode, output, signals, diagnostic)
+        .map_err(|_| NodeRunnerError::Driver)?
+    {
         return Err(NodeRunnerError::Driver);
     }
     Ok(())
+}
+
+fn delivery_contract_matches(
+    mode: DeliveryMode,
+    output: &PayloadType,
+    signals: &std::collections::BTreeMap<FieldName, NonEmptyEnumSet>,
+    diagnostic: &PayloadType,
+) -> Result<bool, ContractValueError> {
+    let expected_output = delivery_result_schema(mode)?;
+    let expected_diagnostic = delivery_diagnostic_schema()?;
+    let field = FieldName::new(DELIVERY_SIGNAL_FIELD)?;
+    let expected_labels = delivery_signal_labels(mode)?;
+    Ok(output == &expected_output
+        && diagnostic == &expected_diagnostic
+        && signals.len() == 1
+        && signals.get(&field) == Some(&expected_labels))
+}
+
+pub(crate) fn delivery_diagnostic_schema() -> Result<PayloadType, ContractValueError> {
+    Ok(PayloadType::Record {
+        fields: [contract_field("message", PayloadType::String)?]
+            .into_iter()
+            .collect(),
+    })
 }
 
 #[must_use]

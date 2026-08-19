@@ -175,10 +175,8 @@ impl NativeV2DeliveryAdapter {
         };
         self.push_review_head(&preparation, &review_request).await?;
         let review = self
-            .authority
-            .open_or_update_review(&review_request, preparation.credential)
-            .await
-            .map_err(|_| crash_outcome())?;
+            .synchronize_review(&review_request, preparation.credential, preparation.control)
+            .await?;
         if !valid_review(&review_request, &review) {
             return Err(DeliveryStop::Outcome(WorkerOutcome::malformed()));
         }
@@ -187,6 +185,29 @@ impl NativeV2DeliveryAdapter {
             "delivery: review created or rediscovered",
         )?;
         Ok(review)
+    }
+
+    async fn synchronize_review(
+        &self,
+        request: &GitHubReviewRequest,
+        credential: GitHubCredential<'_>,
+        control: &DriverControl,
+    ) -> Result<GitHubReviewReceipt, DeliveryStop> {
+        for attempt in 0..REVIEW_SYNC_ATTEMPTS {
+            match self
+                .authority
+                .open_or_update_review(request, credential)
+                .await
+            {
+                Ok(review) => return Ok(review),
+                Err(_) if attempt + 1 < REVIEW_SYNC_ATTEMPTS => {
+                    emit(control, "delivery: waiting for pushed review head")?;
+                    tokio::time::sleep(REVIEW_SYNC_INTERVAL).await;
+                }
+                Err(_) => return Err(crash_outcome()),
+            }
+        }
+        Err(crash_outcome())
     }
 
     async fn prepare_head(
@@ -279,7 +300,7 @@ impl NativeV2DeliveryAdapter {
         progress: ReviewProgress,
     ) -> Result<ReviewStep, DeliveryStop> {
         match progress {
-            ReviewProgress::CiFailed
+            ReviewProgress::CiFailed(_)
             | ReviewProgress::Mergeable
             | ReviewProgress::Pending
             | ReviewProgress::Conflict => review_completion(
@@ -307,8 +328,8 @@ impl NativeV2DeliveryAdapter {
                 DELIVERY_CONFLICT_LABEL,
                 "GitHub authoritatively reported a merge conflict",
             ),
-            ReviewProgress::CiFailed => {
-                review_completion(drive, DELIVERY_CI_FAILED_LABEL, "required CI checks failed")
+            ReviewProgress::CiFailed(diagnostic) => {
+                review_completion(drive, DELIVERY_CI_FAILED_LABEL, &diagnostic)
             }
             ReviewProgress::Mergeable => self.advance_mergeable(drive).await,
             ReviewProgress::Pending => {
@@ -381,7 +402,7 @@ impl NativeV2DeliveryAdapter {
 
 enum ReviewProgress {
     Merged,
-    CiFailed,
+    CiFailed(String),
     Mergeable,
     Pending,
     Conflict,
@@ -403,8 +424,8 @@ impl ReviewProgress {
                 Err(DeliveryStop::Outcome(WorkerOutcome::malformed()))
             }
             GitHubReviewState::Open {
-                checks: GitHubChecks::Failed,
-            } => Ok(Self::CiFailed),
+                checks: GitHubChecks::Failed { diagnostic },
+            } => Ok(Self::CiFailed(diagnostic)),
             GitHubReviewState::Open {
                 checks: GitHubChecks::Pending,
             } => Ok(Self::Pending),
@@ -424,7 +445,7 @@ fn crash_outcome() -> DeliveryStop {
 fn review_completion(
     drive: &ReviewDrive<'_>,
     label: &'static str,
-    diagnostic: &'static str,
+    diagnostic: &str,
 ) -> Result<ReviewStep, DeliveryStop> {
     emit(drive.control, diagnostic)?;
     validate_delivery_contract(drive.mode, drive.response).map_err(DeliveryStop::Runner)?;

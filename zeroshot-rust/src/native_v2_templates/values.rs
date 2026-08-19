@@ -14,7 +14,7 @@ use crate::native_v2_delivery::DeliveryMode;
 use super::{
     delivery_mode, enum_label, field_name, field_path, node_name, non_empty, static_value,
     BuiltinTemplateError, TemplateDelivery, ACCEPTANCE_FEEDBACK_FIELD, CODE_FEEDBACK_FIELD,
-    DIAGNOSTIC_MESSAGE_FIELD, TASK_FIELD,
+    DELIVERY_FEEDBACK_FIELD, DIAGNOSTIC_MESSAGE_FIELD, TASK_FIELD,
 };
 
 pub(super) fn graph(
@@ -90,11 +90,19 @@ pub(super) fn review_repair_input_type() -> Result<PayloadType, BuiltinTemplateE
         (TASK_FIELD, PayloadType::String, true),
         (ACCEPTANCE_FEEDBACK_FIELD, PayloadType::String, true),
         (CODE_FEEDBACK_FIELD, PayloadType::String, true),
+        (DELIVERY_FEEDBACK_FIELD, PayloadType::String, true),
     ])
 }
 
 pub(super) fn software_input_type() -> Result<PayloadType, BuiltinTemplateError> {
     review_repair_input_type()
+}
+
+pub(super) fn review_input_type() -> Result<PayloadType, BuiltinTemplateError> {
+    record_type(vec![
+        (TASK_FIELD, PayloadType::String, true),
+        (DELIVERY_FEEDBACK_FIELD, PayloadType::String, true),
+    ])
 }
 
 pub(super) fn delivery_repair_input_type() -> Result<PayloadType, BuiltinTemplateError> {
@@ -107,6 +115,7 @@ pub(super) fn delivery_repair_input_type() -> Result<PayloadType, BuiltinTemplat
             },
             true,
         ),
+        (DELIVERY_FEEDBACK_FIELD, PayloadType::String, true),
     ])
 }
 
@@ -121,6 +130,10 @@ pub(super) fn software_state(
         ),
         (
             field_name(CODE_FEEDBACK_FIELD)?,
+            required(PayloadType::String),
+        ),
+        (
+            field_name(DELIVERY_FEEDBACK_FIELD)?,
             required(PayloadType::String),
         ),
     ]);

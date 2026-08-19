@@ -80,7 +80,11 @@ fn delivery_node() -> Value {
         "timeoutMs": 10000,
         "attempts": 1,
         "signals": {"delivery": labels},
-        "diagnostic": {"kind": "string"}
+        "diagnostic": {
+            "kind":"record","fields":{
+                "message":{"type":{"kind":"string"},"required":true}
+            }
+        }
     })
 }
 

@@ -309,18 +309,21 @@ impl<'a> Analyzer<'a> {
         context: &LocatedNodeValidationContext<'_>,
         body: &Effects,
     ) {
+        let Some(until) = &group.until else {
+            return;
+        };
         let mut available = context.node.incoming.available.clone();
         available.extend(body.definite_nodes.clone());
         let until_path = with_field(&context.path, "until");
         let valid = self.validate_guard(
-            &group.until,
+            until,
             &available,
             GuardValidationContext {
                 path: &until_path,
                 code: GraphDiagnosticCode::LoopExitSatisfiability,
             },
         );
-        for selector in guard_selectors(&group.until) {
+        for selector in guard_selectors(until) {
             let guaranteed = body.definite_nodes.contains(&selector.name)
                 && self
                     .nodes
@@ -339,7 +342,7 @@ impl<'a> Analyzer<'a> {
                 );
             }
         }
-        if valid && !self.guard_has_satisfying_assignment(&group.until, &until_path) {
+        if valid && !self.guard_has_satisfying_assignment(until, &until_path) {
             emit_diagnostic!(
                 self,
                 GraphDiagnosticCode::LoopExitSatisfiability,

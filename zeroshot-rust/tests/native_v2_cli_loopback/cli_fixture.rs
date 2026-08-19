@@ -7,8 +7,14 @@ pub(crate) const LIVE_TARGET_PREAMBLE: &str = r#"
 : "${ZEROSHOT_NATIVE_V2_LIVE_BASE:?live test base branch is required}"
 "$1" target add prod --url "$2" || exit $?
 "$1" target login prod || exit $?
-"$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
-  --base "$ZEROSHOT_NATIVE_V2_LIVE_BASE" || exit $?
+if test -n "${ZEROSHOT_NATIVE_V2_LIVE_TARGET_BRANCH:-}"; then
+  "$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
+    --base "$ZEROSHOT_NATIVE_V2_LIVE_BASE" \
+    --target-branch "$ZEROSHOT_NATIVE_V2_LIVE_TARGET_BRANCH" || exit $?
+else
+  "$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
+    --base "$ZEROSHOT_NATIVE_V2_LIVE_BASE" || exit $?
+fi
 "#;
 
 pub(crate) fn shell_script() -> String {

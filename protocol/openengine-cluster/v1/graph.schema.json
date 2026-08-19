@@ -678,7 +678,14 @@
               "$ref": "#/$defs/PayloadType"
             },
             "until": {
-              "$ref": "#/$defs/Guard"
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Guard"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -686,7 +693,6 @@
             "name",
             "state",
             "body",
-            "until",
             "maxIterations",
             "promotedStatePaths"
           ],

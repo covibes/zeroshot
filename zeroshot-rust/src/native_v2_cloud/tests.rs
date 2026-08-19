@@ -85,7 +85,7 @@ fn fake_worker_outcome(invocation: &DriverInvocation) -> WorkerOutcome {
                     .assert_value_with("delivery signal field"),
                 EnumLabel::new(DELIVERY_OPENED_LABEL).assert_value_with("delivery signal"),
             )]),
-            diagnostic: Value::String("opened".to_owned()),
+            diagnostic: json!({"message":"opened"}),
             artifacts: Vec::new(),
         }
     } else {

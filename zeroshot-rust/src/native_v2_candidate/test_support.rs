@@ -161,7 +161,8 @@ pub(crate) fn git_delivery_node() -> Value {
             DELIVERY_CONFLICT_LABEL,
             DELIVERY_CI_FAILED_LABEL
         ]},
-        "diagnostic":{"kind":"string"}
+        "diagnostic":crate::native_v2_delivery::delivery_diagnostic_schema()
+            .assert_value_with("delivery diagnostic schema")
     })
 }
 

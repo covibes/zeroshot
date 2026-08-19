@@ -215,7 +215,11 @@ pub(crate) fn delivery_node(
         "input":{"kind":"null"},"output":delivery_result_schema(mode),
         "inputBindings":[],"writeBindings":delivery_write_bindings(),
         "timeoutMs":timeout_ms,"attempts":1,
-        "signals":{"delivery":labels},"diagnostic":{"kind":"string"}
+        "signals":{"delivery":labels},"diagnostic":{
+            "kind":"record","fields":{
+                "message":{"type":{"kind":"string"},"required":true}
+            }
+        }
     })
 }
 

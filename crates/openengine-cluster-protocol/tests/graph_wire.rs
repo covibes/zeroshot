@@ -170,6 +170,19 @@ fn every_graph_node_and_both_profiles_round_trip_deterministically() {
 }
 
 #[test]
+fn bounded_loop_may_omit_an_exit_guard() {
+    let mut value = full_graph();
+    value
+        .pointer_mut("/root/children/4")
+        .assert_value()
+        .as_object_mut()
+        .assert_value()
+        .remove("until");
+    let graph: GraphSpec = serde_json::from_value(value.clone()).assert_value();
+    assert_eq!(serde_json::to_value(graph).assert_value(), value);
+}
+
+#[test]
 fn structured_contract_rejects_executable_or_secret_bearing_extensions() {
     for (object_pointer, key, value) in [
         ("/root/children/0", "command", json!("rm -rf /")),

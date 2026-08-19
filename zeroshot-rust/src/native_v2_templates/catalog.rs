@@ -9,7 +9,7 @@ use crate::native_v2_delivery::GITHUB_TOKEN_ENV;
 
 use super::{
     node_name, single_worker_graph, software_change_graph, static_value, ACCEPTANCE_FEEDBACK_FIELD,
-    CODE_FEEDBACK_FIELD, DELIVERY_NODE,
+    CODE_FEEDBACK_FIELD, DELIVERY_FEEDBACK_FIELD, DELIVERY_NODE,
 };
 
 /// The deliberately small set of built-in graph templates.
@@ -82,6 +82,10 @@ impl BuiltinGraphTemplate {
                 Value::String(String::new()),
             );
             object.insert(CODE_FEEDBACK_FIELD.to_owned(), Value::String(String::new()));
+            object.insert(
+                DELIVERY_FEEDBACK_FIELD.to_owned(),
+                Value::String(String::new()),
+            );
         }
         Ok(input)
     }

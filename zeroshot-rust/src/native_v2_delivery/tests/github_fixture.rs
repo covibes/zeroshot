@@ -16,6 +16,7 @@ pub(super) enum Script {
     Conflict,
     ConflictAtMerge,
     RegistrationRace,
+    ReviewSyncRace,
     CiFailsThenMerges,
     NeverConfirmsMerge,
 }
@@ -28,6 +29,7 @@ pub(super) struct FakeGitHub {
     pub(super) merge_requests: AtomicUsize,
     pub(super) inspections: AtomicUsize,
     pub(super) reviews: Mutex<Vec<GitHubReviewRequest>>,
+    pub(super) review_sync_attempts: AtomicUsize,
 }
 
 impl FakeGitHub {
@@ -40,16 +42,18 @@ impl FakeGitHub {
             merge_requests: AtomicUsize::new(0),
             inspections: AtomicUsize::new(0),
             reviews: Mutex::new(Vec::new()),
+            review_sync_attempts: AtomicUsize::new(0),
         }
     }
 
     fn review_state(&self, inspection: usize) -> GitHubReviewState {
         match self.script {
             Script::NoCi => self.no_ci_state(),
-            Script::CiFailed => open_review(GitHubChecks::Failed),
+            Script::CiFailed => open_review(failed_checks()),
             Script::Conflict => GitHubReviewState::Conflict,
             Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
             Script::RegistrationRace => self.registration_race_state(inspection),
+            Script::ReviewSyncRace => self.no_ci_state(),
             Script::CiFailsThenMerges => self.ci_repair_state(inspection),
             Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
         }
@@ -65,7 +69,7 @@ impl FakeGitHub {
 
     fn ci_repair_state(&self, inspection: usize) -> GitHubReviewState {
         if inspection == 1 {
-            return open_review(GitHubChecks::Failed);
+            return open_review(failed_checks());
         }
         if self.merge_requested.load(Ordering::SeqCst) {
             merged_review()
@@ -93,6 +97,12 @@ fn merged_review() -> GitHubReviewState {
 
 fn open_review(checks: GitHubChecks) -> GitHubReviewState {
     GitHubReviewState::Open { checks }
+}
+
+fn failed_checks() -> GitHubChecks {
+    GitHubChecks::Failed {
+        diagnostic: "Required CI checks failed:\n- hidden policy concluded failure".to_owned(),
+    }
 }
 
 #[async_trait]
@@ -126,6 +136,10 @@ impl GitHubDeliveryAuthority for FakeGitHub {
     ) -> Result<GitHubReviewReceipt, GitHubAuthorityError> {
         assert_eq!(credential.expose(), "test-token");
         assert!(self.pushed.load(Ordering::SeqCst));
+        let attempt = self.review_sync_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if matches!(self.script, Script::ReviewSyncRace) && attempt == 1 {
+            return Err(GitHubAuthorityError::Rejected);
+        }
         self.reviews
             .lock()
             .assert_value_with("review request lock")

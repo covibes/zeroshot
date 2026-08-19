@@ -1,7 +1,7 @@
 use super::*;
 use openengine_cluster_testkit::assertions::AssertValue;
 
-const LIVE_TEMPLATE_DEADLINE: Duration = Duration::from_secs(20 * 60);
+const LIVE_TEMPLATE_DEADLINE: Duration = Duration::from_secs(40 * 60);
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "manual live template acceptance; requires network, Codex login, and the disposable repository"]
@@ -67,22 +67,59 @@ async fn shipped_cli_runs_software_change_template_to_confirmed_merge() {
              in the module, run npm test, and keep the change focused."
         ),
     );
-    let hosting = live_hosting_config(&root, lane);
+    let (stdout, stderr) = run_live_software_change(&root, lane, &runtime, &input).await;
+    assert_terminal_success(&stdout, &stderr);
+    assert!(stdout.contains("\"mode\":\"merge\""));
+    assert!(stdout.contains("\"outcome\":\"merged\""));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "manual unseen-CI acceptance; requires root, network, provider/GitHub CLIs, \
+            credentials, and a prepared test repository"]
+async fn shipped_cli_repairs_unseen_ci_policy_then_reviews_and_merges() {
+    assert!(cli_prerequisites_available());
+    let lane = LiveLane::from_environment();
+    let root = temp_root();
+    let module_path = required_environment("ZEROSHOT_NATIVE_V2_LIVE_POLICY_MODULE");
+    let (runtime, input) = write_template_files(
+        &root,
+        lane,
+        "software-change",
+        format!(
+            "Implement and export validateDeploymentTarget in {module_path}. It accepts a \
+             deployment object and returns {{valid:boolean, errors:string[]}}. Require non-empty \
+             service, image, and environment fields. Add focused node:test coverage, run npm \
+             test, and do not modify CI configuration."
+        ),
+    );
+    let (stdout, stderr) = run_live_software_change(&root, lane, &runtime, &input).await;
+    assert_terminal_success(&stdout, &stderr);
+    assert!(stdout.contains("\"node\":\"delivery_repair\""));
+    assert!(stdout.contains("\"outcome\":\"merged\""));
+}
+
+async fn run_live_software_change(
+    root: &TempRoot,
+    lane: LiveLane,
+    runtime: &Path,
+    input: &Path,
+) -> (String, String) {
+    let hosting = live_hosting_config(root, lane);
     let host =
         LoopbackHost::start_with_factory(Arc::new(ProductionTargetControllerFactory::new(hosting)))
             .await;
-    let config = root.path("template-target-config");
+    let config = root.path("software-change-target-config");
     let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
     let script = live_template_target_script();
     let mut command = cli_command(CliInvocation {
         script: &script,
-        label: "live-template",
+        label: "live-software-change",
         binary,
         origin: &host.origin,
         config: &config,
-        runtime: &runtime,
-        graph: &input,
-        input: &input,
+        runtime,
+        graph: input,
+        input,
         extra: None,
     });
     for name in [
@@ -95,11 +132,8 @@ async fn shipped_cli_runs_software_change_template_to_confirmed_merge() {
     ] {
         command.env_remove(name);
     }
-    let context = format!("hosted software-change template acceptance for {lane:?}");
-    let (stdout, stderr) = run_cli_command(command, LIVE_TEMPLATE_DEADLINE, &context).await;
-    assert_terminal_success(&stdout, &stderr);
-    assert!(stdout.contains("\"mode\":\"merge\""));
-    assert!(stdout.contains("\"outcome\":\"merged\""));
+    let context = format!("software-change acceptance for {lane:?}");
+    run_cli_command(command, LIVE_TEMPLATE_DEADLINE, &context).await
 }
 
 fn write_template_files(
@@ -124,12 +158,19 @@ fn write_template_files(
 }
 
 fn template_runtime(lane: LiveLane, template: &str) -> serde_json::Value {
+    let effort =
+        std::env::var("ZEROSHOT_NATIVE_V2_LIVE_EFFORT").unwrap_or_else(|_| "max".to_owned());
+    let session_scope = if template == "software-change" {
+        "node_instance"
+    } else {
+        "execution"
+    };
     let agent = || {
         json!({
             "kind":"agent",
             "model":lane.model(),
-            "effort":"max",
-            "sessionScope":"execution",
+            "effort":effort,
+            "sessionScope":session_scope,
             "env": if template == "single-worker" { Vec::<&str>::new() } else { vec![lane.credential_name()] }
         })
     };

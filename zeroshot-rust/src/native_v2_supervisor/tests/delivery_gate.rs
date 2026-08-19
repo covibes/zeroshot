@@ -141,7 +141,7 @@ fn delivery_outcome(receipt: Value) -> WorkerOutcome {
             FieldName::new(DELIVERY_SIGNAL_FIELD).assert_value(),
             EnumLabel::new(DELIVERY_MERGED_LABEL).assert_value(),
         )]),
-        diagnostic: Value::String("authoritatively observed merge".to_owned()),
+        diagnostic: json!({"message":"authoritatively observed merge"}),
         artifacts: Vec::new(),
     }
 }

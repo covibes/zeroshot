@@ -148,7 +148,11 @@ impl Engine<'_> {
                 }
                 other => return Ok(other.after(position)),
             }
-            if self.guard(&group.until, &local, traversal.map_indices)? {
+            let converged = match &group.until {
+                Some(until) => self.guard(until, &local, traversal.map_indices)?,
+                None => false,
+            };
+            if converged {
                 return self.finish_loop(LoopFinishRequest {
                     group,
                     context,

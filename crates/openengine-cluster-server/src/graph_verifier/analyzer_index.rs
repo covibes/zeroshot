@@ -259,7 +259,9 @@ impl<'a> Analyzer<'a> {
         depth: u64,
     ) {
         self.loops.push(group.name.clone());
-        self.count_guard(&group.until, with_field(path, "until"));
+        if let Some(until) = &group.until {
+            self.count_guard(until, with_field(path, "until"));
+        }
         self.index_node(
             &group.body,
             named_child_path(path, "body", group.body.name()),

@@ -38,23 +38,39 @@ struct CheckRunsWire {
 
 #[derive(Deserialize)]
 struct CheckRunWire {
+    id: Option<u64>,
+    name: String,
     status: String,
     conclusion: Option<String>,
+    details_url: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct CombinedStatusWire {
     state: String,
-    statuses: Vec<Value>,
+    statuses: Vec<CommitStatusWire>,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Deserialize)]
+struct CommitStatusWire {
+    state: String,
+    context: String,
+    description: Option<String>,
+    target_url: Option<String>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
 enum CheckComponent {
     Absent,
     Pending,
     Passed,
-    Failed,
+    Failed(Vec<String>),
 }
+
+const MAX_FAILURE_ITEM_CHARS: usize = 1_024;
+const MAX_FAILURE_DIAGNOSTIC_CHARS: usize = 8 * 1_024;
+const MAX_FAILED_CHECK_LOGS: usize = 2;
+const MAX_CHECK_LOG_CHARS: usize = 7 * 1_024;
 
 pub(super) fn review_receipt(
     wire: PullRequestWire,
@@ -97,11 +113,7 @@ pub(super) fn classify_checks(
     check_runs: Value,
     statuses: Value,
 ) -> Result<GitHubChecks, GitHubAuthorityError> {
-    let check_runs: CheckRunsWire =
-        serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
-    if check_runs.total_count != check_runs.check_runs.len() as u64 {
-        return Err(GitHubAuthorityError::Rejected);
-    }
+    let check_runs = decode_check_runs(check_runs)?;
     let statuses: CombinedStatusWire =
         serde_json::from_value(statuses).map_err(|_| GitHubAuthorityError::Rejected)?;
     let check_runs = classify_check_runs(&check_runs.check_runs)?;
@@ -109,11 +121,59 @@ pub(super) fn classify_checks(
     Ok(combine_checks(check_runs, statuses))
 }
 
+pub(super) fn failed_check_job_ids(check_runs: &Value) -> Result<Vec<u64>, GitHubAuthorityError> {
+    Ok(decode_check_runs(check_runs.clone())?
+        .check_runs
+        .into_iter()
+        .filter(|run| {
+            run.status == "completed"
+                && matches!(
+                    run.conclusion.as_deref(),
+                    Some("failure" | "cancelled" | "timed_out" | "action_required" | "stale")
+                )
+        })
+        .filter_map(|run| run.id)
+        .take(MAX_FAILED_CHECK_LOGS)
+        .collect())
+}
+
+pub(super) fn include_check_logs(checks: GitHubChecks, logs: &[String]) -> GitHubChecks {
+    let GitHubChecks::Failed { diagnostic } = checks else {
+        return checks;
+    };
+    if logs.is_empty() {
+        return GitHubChecks::Failed { diagnostic };
+    }
+    let logs = logs
+        .iter()
+        .map(|log| log_tail(log))
+        .collect::<Vec<_>>()
+        .join("\n---\n");
+    GitHubChecks::Failed {
+        diagnostic: bounded_text(
+            &format!("{diagnostic}\nFailed check log tail:\n{logs}"),
+            MAX_FAILURE_DIAGNOSTIC_CHARS,
+        ),
+    }
+}
+
+fn decode_check_runs(check_runs: Value) -> Result<CheckRunsWire, GitHubAuthorityError> {
+    let check_runs: CheckRunsWire =
+        serde_json::from_value(check_runs).map_err(|_| GitHubAuthorityError::Rejected)?;
+    if check_runs.total_count != check_runs.check_runs.len() as u64 {
+        return Err(GitHubAuthorityError::Rejected);
+    }
+    Ok(check_runs)
+}
+
 fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAuthorityError> {
     let mut component = CheckComponent::Absent;
+    let mut failures = Vec::new();
     for run in runs {
         if run.status != "completed" || run.conclusion.is_none() {
-            component = CheckComponent::Pending;
+            if component == CheckComponent::Absent {
+                component = CheckComponent::Pending;
+            }
             continue;
         }
         let conclusion = run.conclusion.as_deref().unwrap_or_default();
@@ -125,12 +185,21 @@ fn classify_check_runs(runs: &[CheckRunWire]) -> Result<CheckComponent, GitHubAu
             conclusion,
             "failure" | "cancelled" | "timed_out" | "action_required" | "stale"
         ) {
-            return Ok(CheckComponent::Failed);
+            failures.push(failure_item(
+                &run.name,
+                conclusion,
+                None,
+                run.details_url.as_deref(),
+            ));
         } else {
             return Err(GitHubAuthorityError::Rejected);
         }
     }
-    Ok(component)
+    if failures.is_empty() {
+        Ok(component)
+    } else {
+        Ok(CheckComponent::Failed(failures))
+    }
 }
 
 fn classify_statuses(
@@ -142,19 +211,91 @@ fn classify_statuses(
     match statuses.state.as_str() {
         "success" => Ok(CheckComponent::Passed),
         "pending" => Ok(CheckComponent::Pending),
-        "failure" | "error" => Ok(CheckComponent::Failed),
+        "failure" | "error" => {
+            let mut failures = statuses
+                .statuses
+                .iter()
+                .filter(|status| matches!(status.state.as_str(), "failure" | "error"))
+                .map(|status| {
+                    failure_item(
+                        &status.context,
+                        &status.state,
+                        status.description.as_deref(),
+                        status.target_url.as_deref(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if failures.is_empty() {
+                failures.push("commit status checks failed".to_owned());
+            }
+            Ok(CheckComponent::Failed(failures))
+        }
         _ => Err(GitHubAuthorityError::Rejected),
     }
 }
 
 fn combine_checks(left: CheckComponent, right: CheckComponent) -> GitHubChecks {
-    if left == CheckComponent::Failed || right == CheckComponent::Failed {
-        GitHubChecks::Failed
-    } else if left == CheckComponent::Pending || right == CheckComponent::Pending {
-        GitHubChecks::Pending
-    } else if left == CheckComponent::Passed || right == CheckComponent::Passed {
-        GitHubChecks::Passed
-    } else {
-        GitHubChecks::NotRequired
+    match (left, right) {
+        (CheckComponent::Failed(mut left), CheckComponent::Failed(right)) => {
+            left.extend(right);
+            failed_checks(left)
+        }
+        (CheckComponent::Failed(failures), _) | (_, CheckComponent::Failed(failures)) => {
+            failed_checks(failures)
+        }
+        (CheckComponent::Pending, _) | (_, CheckComponent::Pending) => GitHubChecks::Pending,
+        (CheckComponent::Passed, _) | (_, CheckComponent::Passed) => GitHubChecks::Passed,
+        (CheckComponent::Absent, CheckComponent::Absent) => GitHubChecks::NotRequired,
     }
+}
+
+fn failed_checks(failures: Vec<String>) -> GitHubChecks {
+    let detail = failures
+        .into_iter()
+        .map(|failure| format!("- {failure}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let diagnostic = bounded_text(
+        &format!("Required CI checks failed:\n{detail}"),
+        MAX_FAILURE_DIAGNOSTIC_CHARS,
+    );
+    GitHubChecks::Failed { diagnostic }
+}
+
+fn failure_item(
+    name: &str,
+    conclusion: &str,
+    description: Option<&str>,
+    url: Option<&str>,
+) -> String {
+    let mut item = format!("{} concluded {}", one_line(name), one_line(conclusion));
+    if let Some(description) = description.filter(|value| !value.trim().is_empty()) {
+        item.push_str(": ");
+        item.push_str(&one_line(description));
+    }
+    if let Some(url) = url.filter(|value| !value.trim().is_empty()) {
+        item.push_str(" (");
+        item.push_str(&one_line(url));
+        item.push(')');
+    }
+    bounded_text(&item, MAX_FAILURE_ITEM_CHARS)
+}
+
+fn one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn bounded_text(value: &str, maximum: usize) -> String {
+    value.chars().take(maximum).collect()
+}
+
+fn log_tail(value: &str) -> String {
+    let mut tail = value
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .rev()
+        .take(MAX_CHECK_LOG_CHARS)
+        .collect::<Vec<_>>();
+    tail.reverse();
+    tail.into_iter().collect()
 }

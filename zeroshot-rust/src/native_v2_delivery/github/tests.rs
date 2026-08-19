@@ -24,11 +24,46 @@ fn check_evidence_is_closed_and_complete() {
     );
     assert_eq!(
         classify_checks(
-            json!({"total_count":1,"check_runs":[{"status":"completed","conclusion":"failure"}]}),
+            json!({"total_count":1,"check_runs":[{
+                "id":91,
+                "name":"organization policy: production requires changeTicket",
+                "status":"completed",
+                "conclusion":"failure",
+                "details_url":"https://github.com/acme/project/actions/runs/17"
+            }]}),
             json!({"state":"success","statuses":[]})
         )
         .assert_value(),
-        GitHubChecks::Failed
+        GitHubChecks::Failed {
+            diagnostic: "Required CI checks failed:\n- organization policy: production requires \
+                         changeTicket concluded failure \
+                         (https://github.com/acme/project/actions/runs/17)"
+                .to_owned()
+        }
+    );
+    assert_eq!(
+        failed_check_job_ids(&json!({"total_count":1,"check_runs":[{
+            "id":91,
+            "name":"organization policy",
+            "status":"completed",
+            "conclusion":"failure",
+            "details_url":"https://github.com/acme/project/actions/runs/17"
+        }]}))
+        .assert_value(),
+        vec![91]
+    );
+    assert_eq!(
+        include_check_logs(
+            GitHubChecks::Failed {
+                diagnostic: "Required CI checks failed".to_owned()
+            },
+            &["setup passed\nAssertionError: deployment object requires changeTicket".to_owned()]
+        ),
+        GitHubChecks::Failed {
+            diagnostic: "Required CI checks failed\nFailed check log tail:\nsetup passed\n\
+                         AssertionError: deployment object requires changeTicket"
+                .to_owned()
+        }
     );
     assert!(
         classify_checks(

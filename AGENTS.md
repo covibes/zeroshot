@@ -187,6 +187,8 @@ Cluster Protocol Rust types are the source of truth. Files under
 `cargo run -p openengine-cluster-testkit --bin generate-cluster-protocol -- --write` and
 verify byte-for-byte drift with `npm run protocol:check`. These generator-formatted artifacts
 are excluded from Prettier; never format them independently.
+Full-v1 loops may omit `until`; such loops repeat to their bound unless an inner terminal ends the
+graph first.
 Native release metadata and npm installer code stay outside the Rust-only `zeroshot-rust/`
 package. `distribution/zeroshot-rust-targets.json` is the authoritative release target list;
 the workflow matrix and checksum coverage must match it exactly.
