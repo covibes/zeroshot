@@ -31,12 +31,16 @@ fn step(name: &str, attempts: u64) -> Value {
 }
 
 fn promoted_integer_step(name: &str, target: &str) -> Value {
+    promoted_integer_step_at_path(name, &[target])
+}
+
+fn promoted_integer_step_at_path(name: &str, target: &[&str]) -> Value {
     json!({
         "kind":"step","name":name,"worker":"worker.test@1",
         "input":{"kind":"null"},
         "output":{"kind":"record","fields":{"value":{"type":{"kind":"integer"},"required":true}}},
         "inputBindings":[],
-        "writeBindings":[{"value":{"node":name,"channel":"out","path":["value"]},"target":[target]}],
+        "writeBindings":[{"value":{"node":name,"channel":"out","path":["value"]},"target":target}],
         "timeoutMs":1,"attempts":1
     })
 }

@@ -204,6 +204,7 @@ impl Engine<'_> {
                 .map(|item| select(&item.context.state, path).cloned())
                 .collect::<Result<Vec<_>, _>>()?;
             set_path(&mut local.state, path, Value::Array(values))?;
+            local.local_writes.insert(path.clone());
         }
         self.set_group_control(
             &mut local,

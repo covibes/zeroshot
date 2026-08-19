@@ -19,25 +19,15 @@ fn parser_is_the_agreed_lean_hosted_surface() {
         "retry-1",
     ]))
     .assert_value();
-    let run = match run {
-        NativeV2CliCommand::Run(run) => Some(run),
-        _ => None,
-    };
-    let run = run.assert_value_with("run command");
+    let run = run_command(run);
     assert_eq!(run.target.as_deref(), Some("prod"));
     assert_eq!(run.title.as_str(), "Repair checkout");
+    assert_eq!(run.graph, RunGraph::File(PathBuf::from("graph.json")));
     assert_eq!(run.runtime_config, PathBuf::from("runtime.json"));
     assert!(run.detach);
     assert_eq!(run.submission_key.assert_value().as_str(), "retry-1");
 
-    for unsupported in [
-        "--provider",
-        "--model",
-        "--effort",
-        "--session",
-        "--env",
-        "--ship",
-    ] {
+    for unsupported in ["--provider", "--model", "--effort", "--session", "--env"] {
         let error = parse_native_v2_args(args(&[
             "run",
             "--target",
@@ -56,6 +46,81 @@ fn parser_is_the_agreed_lean_hosted_surface() {
         .assert_error();
         assert!(matches!(error, NativeV2CliError::Usage(_)));
     }
+}
+
+#[test]
+fn parser_exposes_the_two_builtin_templates_and_closed_delivery_choice() {
+    assert_eq!(
+        parse_native_v2_args(args(&["template", "list"])).assert_value(),
+        NativeV2CliCommand::TemplateList
+    );
+    assert_eq!(
+        parse_native_v2_args(args(&["template", "show", "software-change", "--ship"]))
+            .assert_value(),
+        NativeV2CliCommand::TemplateShow {
+            template: BuiltinGraphTemplate::SoftwareChange,
+            delivery: TemplateDelivery::Merge,
+        }
+    );
+
+    let run = parse_native_v2_args(args(&[
+        "run",
+        "--title",
+        "Repair checkout",
+        "--template",
+        "software-change",
+        "--pr",
+        "--input",
+        "input.json",
+        "--runtime-config",
+        "runtime.json",
+    ]))
+    .assert_value();
+    let run = run_command(run);
+    assert_eq!(
+        run.graph,
+        RunGraph::Template {
+            template: BuiltinGraphTemplate::SoftwareChange,
+            delivery: TemplateDelivery::PullRequest,
+        }
+    );
+}
+
+fn run_command(command: NativeV2CliCommand) -> RunCommand {
+    match command {
+        NativeV2CliCommand::Run(run) => Some(run),
+        _ => None,
+    }
+    .assert_value_with("run command")
+}
+
+#[test]
+fn parser_rejects_ambiguous_graph_and_delivery_materialization() {
+    let common = [
+        "run",
+        "--title",
+        "Repair checkout",
+        "--input",
+        "input.json",
+        "--runtime-config",
+        "runtime.json",
+    ];
+    for suffix in [
+        &["--graph", "graph.json", "--template", "single-worker"][..],
+        &["--graph", "graph.json", "--ship"][..],
+        &["--template", "single-worker", "--pr"][..],
+        &["--template", "software-change", "--pr", "--ship"][..],
+    ] {
+        let argv = common
+            .into_iter()
+            .chain(suffix.iter().copied())
+            .collect::<Vec<_>>();
+        assert!(
+            parse_native_v2_args(args(&argv)).is_err(),
+            "accepted {argv:?}"
+        );
+    }
+    assert!(parse_native_v2_args(args(&common)).is_err());
 }
 
 #[test]

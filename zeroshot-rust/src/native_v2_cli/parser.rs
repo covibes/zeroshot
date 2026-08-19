@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 use openengine_cluster_protocol::{ExecutionRef, IdempotencyKey, RunTitle};
 
-use super::{NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector, TargetAdd, TargetSetup};
+use super::{
+    BuiltinGraphTemplate, NativeV2CliCommand, NativeV2CliError, RunCommand, RunGraph, RunSelector,
+    TargetAdd, TargetSetup, TemplateDelivery,
+};
 
 /// Parses only the native-v2 public command surface. Unknown options are rejected.
 pub fn parse_native_v2_args<I>(args: I) -> Result<NativeV2CliCommand, NativeV2CliError>
@@ -33,6 +36,9 @@ fn parse_native_v2_strings(args: &[String]) -> Result<NativeV2CliCommand, Native
     if is_observation_command(command) {
         return parse_observation_command(command, argument_tail(args, 1)?);
     }
+    if command == "template" {
+        return parse_template(argument_tail(args, 1)?);
+    }
     parse_primary_command(command, args)
 }
 
@@ -47,6 +53,27 @@ fn parse_primary_command(
         "list" => parse_list(argument_tail(args, 1)?),
         _ => Err(usage(format!("unknown native-v2 command {command:?}"))),
     }
+}
+
+fn parse_template(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
+    let Some(command) = args.first().map(String::as_str) else {
+        return Err(usage("template requires list or show"));
+    };
+    match command {
+        "list" if args.len() == 1 => Ok(NativeV2CliCommand::TemplateList),
+        "list" => Err(usage("template list accepts no arguments")),
+        "show" => parse_template_show(argument_tail(args, 1)?),
+        _ => Err(usage(format!("unknown template command {command:?}"))),
+    }
+}
+
+fn parse_template_show(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
+    let template = parse_template_name(args.first())?;
+    let options = Options::parse(argument_tail(args, 1)?, &[], &["--pr", "--ship"])?;
+    Ok(NativeV2CliCommand::TemplateShow {
+        template,
+        delivery: parse_template_delivery(template, &options)?,
+    })
 }
 
 fn is_observation_command(command: &str) -> bool {
@@ -134,11 +161,12 @@ fn parse_run(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
             "--target",
             "--title",
             "--graph",
+            "--template",
             "--input",
             "--runtime-config",
             "--submission-key",
         ],
-        &["--detach", "-d"],
+        &["--detach", "-d", "--pr", "--ship"],
     )?;
     let submission_key = options
         .optional("--submission-key")
@@ -149,12 +177,65 @@ fn parse_run(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
         target: optional_target(&options)?,
         title: RunTitle::new(options.required("--title")?)
             .map_err(|error| usage(format!("invalid --title: {error}")))?,
-        graph: PathBuf::from(options.required("--graph")?),
+        graph: parse_run_graph(&options)?,
         input: PathBuf::from(options.required("--input")?),
         runtime_config: PathBuf::from(options.required("--runtime-config")?),
         detach: options.flag("--detach") || options.flag("-d"),
         submission_key,
     }))
+}
+
+fn parse_run_graph(options: &Options) -> Result<RunGraph, NativeV2CliError> {
+    match (options.optional("--graph"), options.optional("--template")) {
+        (Some(path), None) => {
+            reject_delivery_flags(options)?;
+            Ok(RunGraph::File(PathBuf::from(path)))
+        }
+        (None, Some(name)) => {
+            let template = parse_template_name(Some(&name))?;
+            let delivery = parse_template_delivery(template, options)?;
+            Ok(RunGraph::Template { template, delivery })
+        }
+        (Some(_), Some(_)) => Err(usage("--graph and --template are mutually exclusive")),
+        (None, None) => Err(usage("exactly one of --graph or --template is required")),
+    }
+}
+
+fn parse_template_name(value: Option<&String>) -> Result<BuiltinGraphTemplate, NativeV2CliError> {
+    let name = value.ok_or_else(|| usage("template name is required"))?;
+    BuiltinGraphTemplate::parse(name)
+        .ok_or_else(|| usage(format!("unknown built-in template {name:?}")))
+}
+
+fn parse_template_delivery(
+    template: BuiltinGraphTemplate,
+    options: &Options,
+) -> Result<TemplateDelivery, NativeV2CliError> {
+    let delivery = selected_delivery(options)?;
+    if template == BuiltinGraphTemplate::SingleWorker && delivery != TemplateDelivery::None {
+        return Err(usage(
+            "--pr and --ship are valid only with --template software-change",
+        ));
+    }
+    Ok(delivery)
+}
+
+fn selected_delivery(options: &Options) -> Result<TemplateDelivery, NativeV2CliError> {
+    match (options.flag("--pr"), options.flag("--ship")) {
+        (true, true) => Err(usage("--pr and --ship are mutually exclusive")),
+        (true, false) => Ok(TemplateDelivery::PullRequest),
+        (false, true) => Ok(TemplateDelivery::Merge),
+        (false, false) => Ok(TemplateDelivery::None),
+    }
+}
+
+fn reject_delivery_flags(options: &Options) -> Result<(), NativeV2CliError> {
+    if options.flag("--pr") || options.flag("--ship") {
+        return Err(usage(
+            "--pr and --ship require --template software-change; author delivery in custom graphs",
+        ));
+    }
+    Ok(())
 }
 
 fn parse_list(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {

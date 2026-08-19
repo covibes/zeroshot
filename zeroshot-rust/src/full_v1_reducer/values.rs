@@ -225,6 +225,7 @@ pub(super) fn apply_writes(
     for binding in bindings {
         let value = bound_channel_value(context, binding, map_indices)?;
         set_path(&mut context.state, &binding.target, value)?;
+        context.local_writes.insert(binding.target.clone());
     }
     Ok(())
 }
@@ -282,6 +283,9 @@ pub(super) fn promote(request: PromotionRequest<'_>) -> Result<(), ReducerError>
             value,
         });
     }
+    parent
+        .local_writes
+        .extend(promoted_write_paths(&local.local_writes, paths));
     if mode == EvalMode::Decide && !values.is_empty() {
         decisions.push(Decision::Promote {
             node: node.clone(),
@@ -291,6 +295,39 @@ pub(super) fn promote(request: PromotionRequest<'_>) -> Result<(), ReducerError>
     }
     merge_runtime_facts(local, parent);
     Ok(())
+}
+
+pub(super) fn promoted_write_paths(
+    local_writes: &BTreeSet<FieldPath>,
+    promoted_paths: &[FieldPath],
+) -> BTreeSet<FieldPath> {
+    let candidates = promoted_paths
+        .iter()
+        .flat_map(|promoted| {
+            local_writes.iter().filter_map(move |written| {
+                if path_contains(promoted, written) {
+                    Some(written.clone())
+                } else if path_contains(written, promoted) {
+                    Some(promoted.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .collect::<BTreeSet<_>>();
+    candidates
+        .iter()
+        .filter(|candidate| {
+            !candidates
+                .iter()
+                .any(|other| other != *candidate && path_contains(other, candidate))
+        })
+        .cloned()
+        .collect()
+}
+
+fn path_contains(parent: &FieldPath, child: &FieldPath) -> bool {
+    child.segments().starts_with(parent.segments())
 }
 
 pub(super) fn merge_runtime_facts(source: &Context, target: &mut Context) {

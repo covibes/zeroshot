@@ -95,6 +95,10 @@ struct FixtureFiles {
 
 impl FixtureFiles {
     fn new(graph: Value, input: Value) -> Self {
+        Self::with_runtime(graph, input, runtime())
+    }
+
+    fn with_runtime(graph: Value, input: Value, runtime: RuntimePlan) -> Self {
         let mut random = [0_u8; 8];
         getrandom::fill(&mut random).assert_value();
         let suffix = random
@@ -108,7 +112,7 @@ impl FixtureFiles {
         let runtime_path = directory.join("runtime.json");
         std::fs::write(&graph_path, serde_json::to_vec(&graph).assert_value()).assert_value();
         std::fs::write(&input_path, serde_json::to_vec(&input).assert_value()).assert_value();
-        std::fs::write(&runtime_path, serde_json::to_vec(&runtime()).assert_value()).assert_value();
+        std::fs::write(&runtime_path, serde_json::to_vec(&runtime).assert_value()).assert_value();
         Self {
             directory,
             graph: graph_path,
@@ -149,6 +153,22 @@ fn runtime() -> RuntimePlan {
     .assert_value()
 }
 
+fn software_change_runtime() -> RuntimePlan {
+    serde_json::from_value(json!({
+        "harness":"codex",
+        "provider":"openai",
+        "size":"standard",
+        "nodes":{
+            "worker":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
+            "acceptance":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
+            "code":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
+            "review_repair":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
+            "delivery_repair":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"}
+        }
+    }))
+    .assert_value()
+}
+
 fn source() -> Value {
     json!({
         "repository":"open-engine/zeroshot",
@@ -167,6 +187,98 @@ fn status(run_id: &str, phase: &str) -> RunStatusResult {
         "status":{"phase":phase}
     }))
     .assert_value()
+}
+
+#[test]
+fn template_list_and_show_are_static_and_emit_ordinary_json() {
+    let backend = FakeBackend::default();
+    let mut list_output = Vec::new();
+    let list = parse_native_v2_args(args(&["template", "list"])).assert_value();
+    let outcome = try_execute_native_v2_static(&list, &mut list_output)
+        .assert_value()
+        .assert_value();
+    assert_eq!(outcome, CliOutcome::Completed);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list_output).assert_value(),
+        json!(["single-worker", "software-change"])
+    );
+
+    let mut show_output = Vec::new();
+    let show =
+        parse_native_v2_args(args(&["template", "show", "software-change", "--pr"])).assert_value();
+    try_execute_native_v2_static(&show, &mut show_output)
+        .assert_value()
+        .assert_value();
+    let shown = serde_json::from_slice::<Value>(&show_output).assert_value();
+    assert_eq!(
+        shown.pointer("/profile"),
+        Some(&json!("openengine.graph.full/v1"))
+    );
+    assert_eq!(
+        shown.pointer("/initialInput/fields/acceptanceFeedback/required"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        shown.pointer("/initialInput/fields/codeFeedback/required"),
+        Some(&json!(true))
+    );
+    assert!(shown.to_string().contains("builtin.git-delivery.pr@1"));
+    assert!(backend.calls().is_empty());
+}
+
+#[tokio::test]
+async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
+    let files = FixtureFiles::with_runtime(
+        graph(),
+        json!({"task":"ship it"}),
+        software_change_runtime(),
+    );
+    let command = parse_native_v2_args(args(&[
+        "run",
+        "--target",
+        "prod",
+        "--title",
+        "Ship change",
+        "--template",
+        "software-change",
+        "--ship",
+        "--input",
+        files.input.to_str().assert_value(),
+        "--runtime-config",
+        files.runtime.to_str().assert_value(),
+        "--submission-key",
+        "template-key",
+        "-d",
+    ]))
+    .assert_value();
+    let backend = FakeBackend::default();
+    execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
+        .await
+        .assert_value();
+    let calls = backend.calls();
+    let submitted = match calls.as_slice() {
+        [Call::Submit { runtime, input, .. }] => Some((runtime, input)),
+        _ => None,
+    }
+    .assert_value();
+    assert_eq!(submitted.1.pointer("/task"), Some(&json!("ship it")));
+    assert_eq!(submitted.1.pointer("/acceptanceFeedback"), Some(&json!("")));
+    assert_eq!(submitted.1.pointer("/codeFeedback"), Some(&json!("")));
+    let authored_input = std::fs::read(&files.input).assert_value();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&authored_input).assert_value(),
+        json!({"task":"ship it"})
+    );
+
+    let runtime = serde_json::to_value(submitted.0).assert_value();
+    assert_eq!(
+        runtime.pointer("/nodes/deliver/kind"),
+        Some(&json!("git_delivery"))
+    );
+    assert_eq!(
+        runtime.pointer("/nodes/deliver/env/0"),
+        Some(&json!("GH_TOKEN"))
+    );
 }
 
 #[tokio::test]

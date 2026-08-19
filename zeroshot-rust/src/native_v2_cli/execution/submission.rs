@@ -1,15 +1,19 @@
 use std::fmt;
 use std::path::Path;
 
-use openengine_cluster_protocol::{GraphProfile, GraphSpec, IdempotencyKey, RuntimePlan};
+use openengine_cluster_protocol::{
+    GraphProfile, GraphSpec, IdempotencyKey, NodeRuntimeBinding, RuntimePlan,
+};
 
-use super::super::{NativeV2CliError, RunCommand, TargetRunIntent};
+use super::super::{NativeV2CliError, RunCommand, RunGraph, TargetRunIntent};
 
 pub(super) fn prepare_submission(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError> {
-    let graph = read_json::<GraphSpec>("graph", &run.graph)?;
+    let graph = materialize_graph(&run.graph)?;
     validate_graph_profile(&graph)?;
     let initial_input = read_json::<serde_json::Value>("input", &run.input)?;
-    let runtime = read_json::<RuntimePlan>("runtime config", &run.runtime_config)?;
+    let initial_input = materialize_initial_input(&run.graph, initial_input)?;
+    let mut runtime = read_json::<RuntimePlan>("runtime config", &run.runtime_config)?;
+    materialize_runtime(&run.graph, &mut runtime)?;
     graph
         .initial_input
         .validate_value(&initial_input)
@@ -25,6 +29,65 @@ pub(super) fn prepare_submission(run: &RunCommand) -> Result<TargetRunIntent, Na
         runtime,
         submission_key,
     })
+}
+
+fn materialize_initial_input(
+    selection: &RunGraph,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, NativeV2CliError> {
+    match selection {
+        RunGraph::File(_) => Ok(input),
+        RunGraph::Template { template, .. } => template
+            .materialize_input(input)
+            .map_err(|error| NativeV2CliError::InitialInput(error.to_string())),
+    }
+}
+
+fn materialize_graph(selection: &RunGraph) -> Result<GraphSpec, NativeV2CliError> {
+    match selection {
+        RunGraph::File(path) => read_json("graph", path),
+        RunGraph::Template { template, delivery } => {
+            template.materialize(*delivery).map_err(template_error)
+        }
+    }
+}
+
+fn materialize_runtime(
+    selection: &RunGraph,
+    runtime: &mut RuntimePlan,
+) -> Result<(), NativeV2CliError> {
+    let RunGraph::Template { template, delivery } = selection else {
+        return Ok(());
+    };
+    let Some((name, binding)) = template
+        .delivery_runtime_binding(*delivery)
+        .map_err(template_error)?
+    else {
+        return Ok(());
+    };
+    insert_template_binding(runtime, name, binding)
+}
+
+fn insert_template_binding(
+    runtime: &mut RuntimePlan,
+    name: openengine_cluster_protocol::NodeName,
+    binding: NodeRuntimeBinding,
+) -> Result<(), NativeV2CliError> {
+    let nodes = match runtime {
+        RuntimePlan::Codex { nodes, .. } | RuntimePlan::Claude { nodes, .. } => nodes,
+    };
+    if nodes.contains_key(&name) {
+        return Err(NativeV2CliError::Usage(format!(
+            "runtime config must not bind template-owned node {:?}",
+            name.as_str()
+        )));
+    }
+    nodes.insert(name, binding);
+    Ok(())
+}
+
+fn template_error(error: impl std::fmt::Display) -> NativeV2CliError {
+    NativeV2CliError::Usage(error.to_string())
 }
 
 fn validate_graph_profile(graph: &GraphSpec) -> Result<(), NativeV2CliError> {

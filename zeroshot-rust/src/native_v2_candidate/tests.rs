@@ -26,8 +26,8 @@ use crate::native_v2_capsule::{NativeCapsuleNodeEndpoint, RemoteCapsuleNodeRunne
 use crate::native_v2_claude::ClaudeProcessEnvironment;
 use crate::native_v2_cli::{
     execute_native_v2_cli, CliOutcome, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
-    NativeV2CliCommand, NativeV2CliError, NeverDetach, RunCommand, TargetAdd, TargetRunIntent,
-    TargetSetup,
+    NativeV2CliCommand, NativeV2CliError, NeverDetach, RunCommand, RunGraph, TargetAdd,
+    TargetRunIntent, TargetSetup,
 };
 use crate::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanup,
@@ -379,7 +379,7 @@ async fn submit_through_cli(
         NativeV2CliCommand::Run(RunCommand {
             target: Some("candidate-cloud".to_owned()),
             title: RunTitle::new("Candidate end to end").assert_value_with("title"),
-            graph: graph_path,
+            graph: RunGraph::File(graph_path),
             input: input_path,
             runtime_config: runtime_path,
             detach: true,

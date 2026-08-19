@@ -172,6 +172,7 @@ struct Context {
     state: Value,
     controls: BTreeMap<ControlKey, String>,
     channels: BTreeMap<(NodeName, Vec<u64>), Channels>,
+    local_writes: BTreeSet<FieldPath>,
 }
 
 impl Context {
@@ -180,6 +181,7 @@ impl Context {
             state,
             controls: BTreeMap::new(),
             channels: BTreeMap::new(),
+            local_writes: BTreeSet::new(),
         }
     }
 }

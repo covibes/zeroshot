@@ -9,8 +9,9 @@ use openengine_cluster_protocol::{
 use serde::Serialize;
 
 use super::{
-    CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal, NativeV2CliBackend,
-    NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector, HELP,
+    BuiltinGraphTemplate, CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal,
+    NativeV2CliBackend, NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector,
+    TemplateDelivery, HELP,
 };
 
 #[path = "execution/submission.rs"]
@@ -28,17 +29,57 @@ where
     S: DetachSignal,
     W: Write,
 {
+    if let Some(outcome) = try_execute_native_v2_static(&command, output)? {
+        return Ok(outcome);
+    }
     match command {
-        NativeV2CliCommand::Help => {
-            output.write_all(HELP.as_bytes())?;
-            Ok(CliOutcome::Completed)
-        }
         NativeV2CliCommand::Run(run) => execute_run(run, backend, signal, output).await,
         command @ (NativeV2CliCommand::TargetAdd(_)
         | NativeV2CliCommand::TargetLogin { .. }
         | NativeV2CliCommand::TargetSetup(_)) => execute_target(command, backend).await,
         command => execute_run_operation(command, backend, signal, output).await,
     }
+}
+
+/// Executes commands that need no target registry, credentials, or controller state.
+pub fn try_execute_native_v2_static(
+    command: &NativeV2CliCommand,
+    output: &mut impl Write,
+) -> Result<Option<CliOutcome>, NativeV2CliError> {
+    let outcome = match command {
+        NativeV2CliCommand::Help => {
+            output.write_all(HELP.as_bytes())?;
+            output.flush()?;
+            CliOutcome::Completed
+        }
+        NativeV2CliCommand::TemplateList => execute_template_list(output)?,
+        NativeV2CliCommand::TemplateShow { template, delivery } => {
+            execute_template_show(*template, *delivery, output)?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(outcome))
+}
+
+fn execute_template_list(output: &mut impl Write) -> Result<CliOutcome, NativeV2CliError> {
+    let names = BuiltinGraphTemplate::all()
+        .iter()
+        .map(|template| template.name())
+        .collect::<Vec<_>>();
+    write_json(output, &names)?;
+    Ok(CliOutcome::Completed)
+}
+
+fn execute_template_show(
+    template: BuiltinGraphTemplate,
+    delivery: TemplateDelivery,
+    output: &mut impl Write,
+) -> Result<CliOutcome, NativeV2CliError> {
+    let graph = template
+        .materialize(delivery)
+        .map_err(|error| NativeV2CliError::Usage(error.to_string()))?;
+    write_json(output, &graph)?;
+    Ok(CliOutcome::Completed)
 }
 
 async fn execute_target<B>(

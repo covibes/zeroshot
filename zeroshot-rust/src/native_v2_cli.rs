@@ -15,6 +15,10 @@ use thiserror::Error;
 
 pub use crate::native_v2_target_authority::TargetRunIntent;
 
+#[path = "native_v2_templates.rs"]
+mod templates;
+pub use templates::{BuiltinGraphTemplate, TemplateDelivery};
+
 #[path = "native_v2_cli/oecp.rs"]
 pub mod oecp;
 
@@ -28,7 +32,7 @@ mod execution;
 #[path = "native_v2_cli/parser.rs"]
 mod parser;
 
-pub use execution::execute_native_v2_cli;
+pub use execution::{execute_native_v2_cli, try_execute_native_v2_static};
 pub use parser::parse_native_v2_args;
 
 #[cfg(test)]
@@ -41,8 +45,12 @@ zeroshot v2
   target add <name> --url <https-origin>
   target login <name>
   target setup <name> --repository <owner/name> [--base <ref>] [--target-branch <branch>]
-  run --title <title> --graph <file> --input <file> --runtime-config <file>
-      [--target <name>] [--submission-key <key>] [-d]
+  template list
+  template show <single-worker|software-change> [--pr|--ship]
+  run --title <title> (--graph <file>|--template <name>) --input <file>
+      --runtime-config <file> [--target <name>]
+      [--submission-key <key>] [-d]
+      (--pr|--ship are valid only with --template software-change)
   list [--target <name>]
   status <run-id> [--target <name>]
   watch <run-id> [--target <name>]
@@ -69,11 +77,20 @@ pub struct TargetSetup {
 pub struct RunCommand {
     pub target: Option<String>,
     pub title: RunTitle,
-    pub graph: PathBuf,
+    pub graph: RunGraph,
     pub input: PathBuf,
     pub runtime_config: PathBuf,
     pub detach: bool,
     pub submission_key: Option<IdempotencyKey>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RunGraph {
+    File(PathBuf),
+    Template {
+        template: BuiltinGraphTemplate,
+        delivery: TemplateDelivery,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +107,11 @@ pub enum NativeV2CliCommand {
         name: String,
     },
     TargetSetup(TargetSetup),
+    TemplateList,
+    TemplateShow {
+        template: BuiltinGraphTemplate,
+        delivery: TemplateDelivery,
+    },
     Run(RunCommand),
     List {
         target: Option<String>,

@@ -36,6 +36,80 @@ async fn assert_parallel_promotion() {
     );
 }
 
+#[tokio::test]
+async fn parallel_all_merges_disjoint_descendants_of_one_promoted_record() {
+    let state = json!({
+        "kind":"record",
+        "fields":{
+            "feedback":{"type":{
+                "kind":"record",
+                "fields":{
+                    "left":{"type":{"kind":"integer"},"required":true},
+                    "right":{"type":{"kind":"integer"},"required":true}
+                }
+            },"required":true}
+        }
+    });
+    let parallel = json!({
+        "kind":"par","name":"reviews","state":state.clone(),
+        "branches":[
+            promoted_integer_step_at_path("left_review", &["feedback", "left"]),
+            promoted_integer_step_at_path("right_review", &["feedback", "right"])
+        ],
+        "promotedStatePaths":[["feedback"]],
+        "join":{"kind":"all"}
+    });
+    let terminal = json!({
+        "kind":"succeed","name":"done","output":state.clone(),
+        "bindings":[
+            {"target":["feedback"],"value":{"source":"state","path":["feedback"]}}
+        ]
+    });
+    let seed = json!({
+        "kind":"step","name":"seed","worker":"worker.multi@1",
+        "input":{"kind":"null"},"output":{
+            "kind":"record","fields":{
+                "a":{"type":{"kind":"integer"},"required":true},
+                "b":{"type":{"kind":"integer"},"required":true}
+            }
+        },"inputBindings":[],
+        "writeBindings":[
+            {"value":{"node":"seed","channel":"out","path":["a"]},
+             "target":["feedback","left"]},
+            {"value":{"node":"seed","channel":"out","path":["b"]},
+             "target":["feedback","right"]}
+        ],
+        "timeoutMs":1,"attempts":1
+    });
+    let mut root = sequence("root", vec![seed, parallel, terminal]);
+    *root.get_mut("state").assert_value() = state;
+    let graph = verified(root, json!({"seed":1,"left_review":1,"right_review":1})).await;
+    let history = [
+        settled(
+            SettledSpec::new(1, 1, "seed").position(1),
+            WorkerOutcome::Verified {
+                output: json!({"a":1,"b":2}),
+                artifacts: Vec::new(),
+            },
+        ),
+        settled(
+            SettledSpec::new(2, 2, "left_review").position(2),
+            success(7),
+        ),
+        settled(
+            SettledSpec::new(3, 3, "right_review").position(3),
+            success(9),
+        ),
+    ];
+
+    assert_eq!(
+        reduce(&graph, &json!({}), &history).terminal,
+        Some(TerminalProjection::Succeeded {
+            output: json!({"feedback":{"left":7,"right":9}})
+        })
+    );
+}
+
 async fn assert_map_promotion() {
     let map_state = required_array_record(&[("items", "null"), ("results", "integer")]);
     let mapped = json!({

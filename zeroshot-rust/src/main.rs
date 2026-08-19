@@ -10,8 +10,8 @@ use thiserror::Error;
 use zeroshot_engine::native_v2_cli::local::{LOCAL_CONTROLLER_MODE, LocalCliBackend};
 use zeroshot_engine::native_v2_cli::oecp::OecpCliBackend;
 use zeroshot_engine::native_v2_cli::{
-    execute_native_v2_cli, parse_native_v2_args, CtrlCDetachSignal, NativeV2CliCommand,
-    NativeV2CliError, HELP,
+    execute_native_v2_cli, parse_native_v2_args, try_execute_native_v2_static, CtrlCDetachSignal,
+    NativeV2CliCommand, NativeV2CliError,
 };
 #[cfg(unix)]
 use zeroshot_engine::native_v2_portable_controller::{PortableControllerError, run_controller_process};
@@ -56,9 +56,7 @@ async fn run_public_command(arguments: Vec<std::ffi::OsString>) -> Result<(), Pr
     let command = parse_native_v2_args(arguments)?;
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    if command == NativeV2CliCommand::Help {
-        output.write_all(HELP.as_bytes())?;
-        output.flush()?;
+    if try_execute_native_v2_static(&command, &mut output)?.is_some() {
         return Ok(());
     }
 
@@ -118,6 +116,8 @@ fn is_local_command(command: &NativeV2CliCommand) -> bool {
         | NativeV2CliCommand::ForceStop(run) => run.target.is_none(),
         NativeV2CliCommand::Attach { run, .. } => run.target.is_none(),
         NativeV2CliCommand::Help
+        | NativeV2CliCommand::TemplateList
+        | NativeV2CliCommand::TemplateShow { .. }
         | NativeV2CliCommand::TargetAdd(_)
         | NativeV2CliCommand::TargetLogin { .. }
         | NativeV2CliCommand::TargetSetup(_) => false,

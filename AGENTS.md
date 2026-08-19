@@ -108,6 +108,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native v2 node-executor/capsule adapters  | `zeroshot-rust/src/native_v2_runner.rs`, `native_v2_runner/`, `zeroshot-rust/src/native_v2_capsule.rs`, `native_v2_capsule/`     |
 | Native v2 provider/delivery composition   | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
 | Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
+| Native v2 built-in graph templates        | `zeroshot-rust/src/native_v2_templates.rs`, `native_v2_templates/`                                                               |
 | Native v2 target connector                | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
 | Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
@@ -237,7 +238,10 @@ appropriate private one-run controller without moving user or token authority in
 `GraphSpec` remains the control-flow source of truth. Its companion runtime plan fixes the
 graph-wide harness/provider and each node's model, effort, session scope, and declared environment
 names at admission. Agent-backed leaves require bounded authored instructions; trusted Git delivery
-rejects them. One run owns one workspace: workers and Git delivery are exclusive writers,
+rejects them. Built-in templates expand locally into ordinary exact graph, input, and runtime values;
+OECP has no template semantics. The closed catalog is `single-worker` and `software-change`; only
+the latter materializes the `none`/PR/merge delivery choice. One run owns one workspace: workers
+and Git delivery are exclusive writers,
 while ordinary verifiers are read-only and may overlap. PR and merge delivery are graph-visible
 modes of one shared trusted implementation; hosted success requires its bounded inline receipt.
 Local execution may omit delivery, in which case the invoking workspace and its mutations remain

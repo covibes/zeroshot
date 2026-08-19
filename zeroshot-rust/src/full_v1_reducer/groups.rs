@@ -121,6 +121,7 @@ impl Engine<'_> {
             .iter()
             .map(|branch| {
                 let mut branch_context = context.clone();
+                branch_context.local_writes.clear();
                 let status = self.eval(
                     branch,
                     &mut branch_context,
@@ -224,6 +225,7 @@ impl Engine<'_> {
         let mut joined = context.clone();
         for (index, _) in winners {
             let mut branch_context = context.clone();
+            branch_context.local_writes.clear();
             let branch = group
                 .branches
                 .as_slice()
@@ -240,9 +242,12 @@ impl Engine<'_> {
             if !matches!(status, Status::Continue { .. }) {
                 return Err(ReducerError::InconsistentHistory);
             }
-            for path in &group.promoted_state_paths {
-                let value = select(&branch_context.state, path)?.clone();
-                set_path(&mut joined.state, path, value)?;
+            for path in
+                promoted_write_paths(&branch_context.local_writes, &group.promoted_state_paths)
+            {
+                let value = select(&branch_context.state, &path)?.clone();
+                set_path(&mut joined.state, &path, value)?;
+                joined.local_writes.insert(path);
             }
             merge_runtime_facts(&branch_context, &mut joined);
         }
