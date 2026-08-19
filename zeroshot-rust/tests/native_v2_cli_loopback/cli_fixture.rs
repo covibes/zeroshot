@@ -2,6 +2,15 @@ use openengine_cluster_testkit::assertions::AssertValue;
 
 use super::*;
 
+pub(crate) const LIVE_TARGET_PREAMBLE: &str = r#"
+: "${ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY:?live test repository is required}"
+: "${ZEROSHOT_NATIVE_V2_LIVE_BASE:?live test base branch is required}"
+"$1" target add prod --url "$2" || exit $?
+"$1" target login prod || exit $?
+"$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
+  --base "$ZEROSHOT_NATIVE_V2_LIVE_BASE" || exit $?
+"#;
+
 pub(crate) fn shell_script() -> String {
     [
         KEYRING_PREAMBLE,
@@ -57,13 +66,8 @@ printf '%s\n' \
 pub(crate) fn live_shell_script() -> String {
     [
         KEYRING_PREAMBLE,
+        LIVE_TARGET_PREAMBLE,
         r#"
-: "${ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY:?live test repository is required}"
-: "${ZEROSHOT_NATIVE_V2_LIVE_BASE:?live test base branch is required}"
-"$1" target add prod --url "$2" || exit $?
-"$1" target login prod || exit $?
-"$1" target setup prod --repository "$ZEROSHOT_NATIVE_V2_LIVE_REPOSITORY" \
-  --base "$ZEROSHOT_NATIVE_V2_LIVE_BASE" || exit $?
 live_output=$(
   "$1" run --target prod --title "Live provider acceptance" \
     --runtime-config "$4" --graph "$5" --input "$6" \
