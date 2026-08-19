@@ -13,12 +13,25 @@ pub(super) struct ClaudeResult {
     pub(super) message: String,
 }
 
+pub(super) struct ClaudeFailure {
+    pub(super) session_id: Option<String>,
+    pub(super) retryable: bool,
+    pub(super) diagnostic: String,
+}
+
+pub(super) enum ClaudeAttempt {
+    Complete(ClaudeResult),
+    Failed(ClaudeFailure),
+}
+
 pub(super) struct ClaudeTranscript {
     pending: Vec<u8>,
     bytes: usize,
     events: usize,
     session_id: Option<String>,
     result: Option<Value>,
+    failure: Option<String>,
+    retryable_failure_seen: bool,
     settled: bool,
     visible_text_emitted: bool,
     redactions: Vec<String>,
@@ -36,6 +49,8 @@ impl ClaudeTranscript {
             events: 0,
             session_id: None,
             result: None,
+            failure: None,
+            retryable_failure_seen: false,
             settled: false,
             visible_text_emitted: false,
             redactions,
@@ -71,18 +86,32 @@ impl ClaudeTranscript {
             .ok_or(NodeRunnerError::Driver)
     }
 
-    pub(super) fn finish(self) -> Result<ClaudeResult, NodeRunnerError> {
+    pub(super) fn finish(self) -> Result<ClaudeAttempt, NodeRunnerError> {
         if !self.settled {
+            if self.retryable_failure_seen {
+                return Ok(ClaudeAttempt::Failed(ClaudeFailure {
+                    session_id: self.session_id,
+                    retryable: true,
+                    diagnostic: "Claude execution ended after a retryable API error".to_owned(),
+                }));
+            }
             return Err(NodeRunnerError::Driver);
+        }
+        if let Some(diagnostic) = self.failure {
+            return Ok(ClaudeAttempt::Failed(ClaudeFailure {
+                session_id: self.session_id,
+                retryable: self.retryable_failure_seen,
+                diagnostic,
+            }));
         }
         let message = self
             .result
             .and_then(|result| result.as_str().map(str::to_owned))
             .ok_or(NodeRunnerError::Driver)?;
-        Ok(ClaudeResult {
+        Ok(ClaudeAttempt::Complete(ClaudeResult {
             session_id: self.session_id,
             message,
-        })
+        }))
     }
 
     fn parse_line(&mut self, line: &[u8], control: &DriverControl) -> Result<(), NodeRunnerError> {
@@ -106,12 +135,38 @@ impl ClaudeTranscript {
         control: &DriverControl,
     ) -> Result<(), NodeRunnerError> {
         match object.get("type").and_then(Value::as_str) {
+            Some("system") => self.parse_system(object, control),
             Some("stream_event") => self.parse_stream_event(object, control),
             Some("assistant") => self.parse_assistant(object, control),
             Some("result") => self.parse_result(object, control),
             Some(_) => Ok(()),
             None => Err(NodeRunnerError::Driver),
         }
+    }
+
+    fn parse_system(
+        &mut self,
+        event: &serde_json::Map<String, Value>,
+        control: &DriverControl,
+    ) -> Result<(), NodeRunnerError> {
+        if event.get("subtype").and_then(Value::as_str) != Some("api_retry") {
+            return Ok(());
+        }
+        self.retryable_failure_seen = true;
+        let attempt = event.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+        let maximum = event
+            .get("max_retries")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let error = event
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        self.emit(
+            control,
+            LiveOutputStream::System,
+            &format!("Claude API retry {attempt}/{maximum}: {error}"),
+        )
     }
 
     fn parse_stream_event(
@@ -175,21 +230,29 @@ impl ClaudeTranscript {
     fn parse_result(
         &mut self,
         event: &serde_json::Map<String, Value>,
-        control: &DriverControl,
+        _control: &DriverControl,
     ) -> Result<(), NodeRunnerError> {
         let unsuccessful = event.get("subtype").and_then(Value::as_str) != Some("success")
             || event.get("is_error").and_then(Value::as_bool) == Some(true);
         if unsuccessful {
-            if !self.visible_text_emitted {
-                if let Some(text) = event
-                    .get("result")
-                    .and_then(Value::as_str)
-                    .filter(|text| !text.is_empty())
-                {
-                    self.emit(control, LiveOutputStream::Error, text)?;
-                }
-            }
-            return Err(NodeRunnerError::Driver);
+            let diagnostic = event
+                .get("result")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_owned)
+                .or_else(|| error_list(event.get("errors")))
+                .unwrap_or_else(|| {
+                    format!(
+                        "Claude result {}",
+                        event
+                            .get("subtype")
+                            .and_then(Value::as_str)
+                            .unwrap_or("failed")
+                    )
+                });
+            self.failure = Some(diagnostic);
+            self.settled = true;
+            return Ok(());
         }
         if self.result.is_some() {
             return Err(NodeRunnerError::Driver);
@@ -217,6 +280,16 @@ impl ClaudeTranscript {
         }
         Ok(())
     }
+}
+
+fn error_list(value: Option<&Value>) -> Option<String> {
+    let errors = value?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|error| !error.trim().is_empty())
+        .collect::<Vec<_>>();
+    (!errors.is_empty()).then(|| errors.join("; "))
 }
 
 fn record_session_id(

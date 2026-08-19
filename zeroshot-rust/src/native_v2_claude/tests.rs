@@ -16,10 +16,8 @@ use openengine_cluster_protocol::{
 use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{json, Value};
 
-use super::{
-    ANTHROPIC_KEY, ClaudeAdapter, ClaudeAdapterConfig, ClaudeProcessEnvironment,
-    OPENROUTER_BASE_URL, OPENROUTER_KEY, validate_model_effort,
-};
+use super::command::{ANTHROPIC_KEY, OPENROUTER_BASE_URL, OPENROUTER_KEY, validate_model_effort};
+use super::{ClaudeAdapter, ClaudeAdapterConfig, ClaudeProcessEnvironment};
 use crate::execution::{SessionScope, process::HostedProcessPool};
 use crate::native_v2_candidate::test_support::{
     NodeRequestFixture, TestDirectory, admit, environment_name, full_graph, success_node,

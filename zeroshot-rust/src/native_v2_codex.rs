@@ -4,6 +4,7 @@
 //! scope, input, and declared environment remain per-node admitted values. Provider sessions are
 //! harness-owned runtime state and never enter the durable runner contract.
 
+mod command;
 mod output;
 #[path = "native_v2_codex/session.rs"]
 mod session;
@@ -19,26 +20,24 @@ use crate::execution::process::{
     HostedProcessPool, LocalProcessRunner, ProcessFrame, ProcessSession, ProcessSessionCommand,
     ProcessSessionOutput,
 };
-use crate::execution::WorkspaceAccessMode;
 use crate::native_v2_capsule::provider_process::{
-    ClosedSessionFailure, ProviderProcessRunners, effort_token, process_scope, redaction_values,
-    validate_process_output,
+    ClosedSessionFailure, ProviderFailure, ProviderFailureRetry, ProviderProcessRunners,
+    process_scope, redaction_values, validate_process_cleanup, validate_process_output,
 };
 use crate::native_v2_contract::{CodexProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
-    AgentResponse, render_agent_prompt, resolve_agent_response, DriverControl, DriverInvocation,
-    LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError, ResolvedEnvironment,
+    AgentResponse, AgentResponseState, render_agent_prompt, resolve_agent_response, DriverControl,
+    DriverInvocation, LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError, ResolvedEnvironment,
 };
 
+use command::{
+    add_local_execution_policy, add_node_args, add_provider_args, add_resume_command,
+    add_session_target, configure_provider_auth, process_environment, provider_model,
+    role_settings,
+};
 use output::{CodexOutput, CodexOutputDecoder};
 use session::CodexSession;
 
-const CODEX_HOME: &str = "CODEX_HOME";
-const CODEX_API_KEY: &str = "CODEX_API_KEY";
-const HOME: &str = "HOME";
-const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
-const PATH: &str = "PATH";
-const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 const MAX_CODEX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -186,16 +185,35 @@ impl NativeV2CodexAdapter {
             control: &control,
             deadline: Instant::now() + PROCESS_TIMEOUT,
         };
-        let mut prompt = render_agent_prompt(
+        let prompt = render_agent_prompt(
             invocation.agent_instructions()?,
             &invocation.node.input,
             &invocation.response,
         )?;
+        let mut state = CodexRunState::new(invocation, prompt);
         loop {
-            match self.advance_turn(&turn, &prompt).await? {
-                AgentResponse::Complete(outcome) => return Ok(outcome),
-                AgentResponse::Correction(correction) => prompt = correction,
+            if let Some(outcome) = self.advance_run(&turn, &mut state).await? {
+                return Ok(outcome);
             }
+        }
+    }
+
+    async fn advance_run(
+        &self,
+        turn: &CodexTurn<'_>,
+        state: &mut CodexRunState,
+    ) -> Result<Option<WorkerOutcome>, NodeRunnerError> {
+        match self.advance_turn(turn, state.response.prompt()).await {
+            Ok(CodexTurnAdvance::Response(response)) => state.accept_response(turn, response),
+            Ok(CodexTurnAdvance::ProviderFailure(detail)) => {
+                state.retry_provider_failure(turn, Some(&detail)).await?;
+                Ok(None)
+            }
+            Err(NodeRunnerError::Driver) => {
+                state.retry_provider_failure(turn, None).await?;
+                Ok(None)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -203,23 +221,14 @@ impl NativeV2CodexAdapter {
         &self,
         turn: &CodexTurn<'_>,
         prompt: &str,
-    ) -> Result<AgentResponse, NodeRunnerError> {
+    ) -> Result<CodexTurnAdvance, NodeRunnerError> {
         turn.session
             .core
             .ensure_live(ClosedSessionFailure::Driver)?;
         let resume = turn.session.thread_id.lock().await.clone();
         let output = self.execute_turn(turn, resume.as_deref(), prompt).await?;
-        turn.session
-            .record_thread(output.thread_id.as_deref(), resume.as_deref())
-            .await?;
-        let response = resolve_agent_response(&turn.invocation.response, output.final_message()?)?;
-        if matches!(response, AgentResponse::Correction(_)) {
-            turn.control.emit(LiveOutput::new(
-                LiveOutputStream::System,
-                "Codex final output rejected; requesting correction",
-            )?)?;
-        }
-        Ok(response)
+        record_attempt_thread(turn.session, &output, resume.as_deref()).await?;
+        resolve_codex_output(turn, output)
     }
 
     async fn execute_turn(
@@ -233,8 +242,12 @@ impl NativeV2CodexAdapter {
             redaction_values(turn.invocation.environment.iter().map(|(_, value)| value));
         let output = collect_output(&mut process, turn.control, &redactions).await;
         let completion = finish_process(&mut process, output.is_ok()).await?;
-        validate_process_output(&completion, turn.control)?;
-        output
+        validate_process_cleanup(&completion, turn.control)?;
+        let output = output?;
+        if output.failure_message().is_none() {
+            validate_process_output(&completion, turn.control)?;
+        }
+        Ok(output)
     }
 
     async fn open_turn_process(
@@ -273,6 +286,83 @@ struct CodexTurn<'a> {
     session: &'a CodexSession,
     control: &'a DriverControl,
     deadline: Instant,
+}
+
+struct CodexRunState {
+    response: AgentResponseState,
+    retry: ProviderFailureRetry,
+}
+
+impl CodexRunState {
+    fn new(invocation: &DriverInvocation, prompt: String) -> Self {
+        let redactions = redaction_values(invocation.environment.iter().map(|(_, value)| value));
+        Self {
+            retry: ProviderFailureRetry::new("Codex", prompt.clone(), redactions),
+            response: AgentResponseState::new(prompt),
+        }
+    }
+
+    fn accept_response(
+        &mut self,
+        turn: &CodexTurn<'_>,
+        response: AgentResponse,
+    ) -> Result<Option<WorkerOutcome>, NodeRunnerError> {
+        self.response.accept("Codex", turn.control, response)
+    }
+
+    async fn retry_provider_failure(
+        &mut self,
+        turn: &CodexTurn<'_>,
+        detail: Option<&str>,
+    ) -> Result<(), NodeRunnerError> {
+        let has_session = turn.session.thread_id.lock().await.is_some();
+        let prompt = self.retry.after_failure(
+            turn.control,
+            ProviderFailure {
+                detail,
+                retryable: true,
+                has_session,
+                deadline: turn.deadline,
+            },
+        )?;
+        self.response.replace_prompt(prompt);
+        Ok(())
+    }
+}
+
+enum CodexTurnAdvance {
+    Response(AgentResponse),
+    ProviderFailure(String),
+}
+
+async fn record_attempt_thread(
+    session: &CodexSession,
+    output: &CodexOutput,
+    resumed: Option<&str>,
+) -> Result<(), NodeRunnerError> {
+    if output.thread_id.is_none() && resumed.is_none() {
+        return Ok(());
+    }
+    session
+        .record_thread(output.thread_id.as_deref(), resumed)
+        .await
+}
+
+fn resolve_codex_output(
+    turn: &CodexTurn<'_>,
+    output: CodexOutput,
+) -> Result<CodexTurnAdvance, NodeRunnerError> {
+    if let Some(failure) = output.failure_message() {
+        return Ok(CodexTurnAdvance::ProviderFailure(failure.to_owned()));
+    }
+    let response = resolve_agent_response(&turn.invocation.response, output.final_message()?)?;
+    if matches!(response, AgentResponse::Correction(_)) {
+        turn.control.emit(LiveOutput::new(
+            LiveOutputStream::System,
+            "Codex final output rejected; requesting correction",
+        )?)?;
+    }
+    Ok(CodexTurnAdvance::Response(response))
 }
 
 async fn collect_output(
@@ -338,128 +428,6 @@ fn emit_text(
     Ok(())
 }
 
-fn process_environment(
-    environment: &ResolvedEnvironment,
-    home: String,
-    codex_home: String,
-    search_path: String,
-) -> Result<BTreeMap<String, String>, NodeRunnerError> {
-    let mut values = environment
-        .iter()
-        .map(|(name, value)| (name.as_str().to_owned(), value.to_owned()))
-        .collect::<BTreeMap<_, _>>();
-    if search_path.is_empty() || search_path.contains('\0') {
-        return Err(NodeRunnerError::Driver);
-    }
-    if values.contains_key(CODEX_HOME) || values.contains_key(HOME) || values.contains_key(PATH) {
-        return Err(NodeRunnerError::Driver);
-    }
-    values.insert(CODEX_HOME.to_owned(), codex_home);
-    values.insert(HOME.to_owned(), home);
-    values.insert(PATH.to_owned(), search_path);
-    Ok(values)
-}
-
-fn configure_provider_auth(
-    values: &mut BTreeMap<String, String>,
-    provider: CodexProvider,
-    has_local_user: bool,
-) -> Result<(), NodeRunnerError> {
-    match provider {
-        CodexProvider::OpenAi => configure_openai_auth(values, has_local_user),
-        CodexProvider::OpenRouter => values
-            .get("OPENROUTER_API_KEY")
-            .is_some_and(|value| !value.is_empty())
-            .then_some(())
-            .ok_or(NodeRunnerError::Driver),
-    }
-}
-
-fn configure_openai_auth(
-    values: &mut BTreeMap<String, String>,
-    has_local_user: bool,
-) -> Result<(), NodeRunnerError> {
-    let openai = values.remove(OPENAI_API_KEY);
-    if values.contains_key(CODEX_API_KEY) || has_local_user && openai.is_none() {
-        return Ok(());
-    }
-    let value = openai.ok_or(NodeRunnerError::Driver)?;
-    values.insert(CODEX_API_KEY.to_owned(), value);
-    Ok(())
-}
-
-fn add_provider_args(argv: &mut Vec<String>, provider: CodexProvider) {
-    argv.extend([
-        "--config".to_owned(),
-        match provider {
-            CodexProvider::OpenAi => "model_provider=\"openai\"".to_owned(),
-            CodexProvider::OpenRouter => "model_provider=\"openrouter\"".to_owned(),
-        },
-    ]);
-    if provider == CodexProvider::OpenRouter {
-        argv.extend([
-            "--config".to_owned(),
-            "model_providers.openrouter.name=\"OpenRouter\"".to_owned(),
-            "--config".to_owned(),
-            format!("model_providers.openrouter.base_url=\"{OPENROUTER_BASE_URL}\""),
-            "--config".to_owned(),
-            "model_providers.openrouter.env_key=\"OPENROUTER_API_KEY\"".to_owned(),
-            "--config".to_owned(),
-            "model_providers.openrouter.wire_api=\"responses\"".to_owned(),
-        ]);
-    }
-}
-
-fn add_local_execution_policy(argv: &mut Vec<String>, role: NodeRole, sandbox: &str) {
-    argv.extend(["--sandbox".to_owned(), sandbox.to_owned()]);
-    argv.extend([
-        "--config".to_owned(),
-        "approval_policy=\"never\"".to_owned(),
-    ]);
-    if role == NodeRole::Worker {
-        argv.extend([
-            "--config".to_owned(),
-            "sandbox_workspace_write.network_access=true".to_owned(),
-        ]);
-    }
-}
-
-fn add_resume_command(argv: &mut Vec<String>, resume: Option<&str>) {
-    if resume.is_some() {
-        argv.push("resume".to_owned());
-    }
-}
-fn provider_model(provider: CodexProvider, model: &str) -> String {
-    match provider {
-        CodexProvider::OpenAi => model.to_owned(),
-        CodexProvider::OpenRouter => format!("openai/{model}"),
-    }
-}
-fn add_node_args(
-    argv: &mut Vec<String>,
-    model: &str,
-    effort: Option<crate::worker_catalog::ReasoningEffort>,
-) {
-    argv.extend(["--json".to_owned(), "--model".to_owned(), model.to_owned()]);
-    if let Some(effort) = effort {
-        argv.extend([
-            "--config".to_owned(),
-            format!("model_reasoning_effort=\"{}\"", effort_token(effort)),
-        ]);
-    }
-    argv.extend([
-        "--skip-git-repo-check".to_owned(),
-        "--config".to_owned(),
-        "web_search=\"disabled\"".to_owned(),
-    ]);
-}
-fn add_session_target(argv: &mut Vec<String>, resume: Option<&str>) {
-    if let Some(session_id) = resume {
-        argv.push(session_id.to_owned());
-    }
-    argv.push("-".to_owned());
-}
-
 fn agent_selection(
     binding: &NodeRuntimeBinding,
 ) -> Result<
@@ -473,14 +441,6 @@ fn agent_selection(
         return Err(NodeRunnerError::Driver);
     };
     Ok((model, effort.as_ref()))
-}
-
-fn role_settings(role: NodeRole) -> Result<(&'static str, WorkspaceAccessMode), NodeRunnerError> {
-    match role {
-        NodeRole::Worker => Ok(("workspace-write", WorkspaceAccessMode::Exclusive)),
-        NodeRole::Verifier => Ok(("read-only", WorkspaceAccessMode::ReadOnly)),
-        NodeRole::GitDelivery => Err(NodeRunnerError::Driver),
-    }
 }
 
 fn redact_text(text: &str, redactions: &[String]) -> String {

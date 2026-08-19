@@ -4,6 +4,8 @@
 //! already selected the model, effort, session scope, and declared environment for each node;
 //! It preserves those choices without consulting legacy coordination or ambient process state.
 
+#[path = "native_v2_claude/command.rs"]
+mod command;
 #[path = "native_v2_claude/session.rs"]
 mod session;
 #[path = "native_v2_claude/transcript.rs"]
@@ -16,26 +18,23 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::execution::process::{HostedProcessPool, LocalProcessRunner, ProcessSessionCommand};
-use crate::execution::WorkspaceAccessMode;
 use crate::native_v2_capsule::provider_process::{
-    ClosedSessionFailure, ProviderProcessRunners, effort_token, process_scope, redaction_values,
-    validate_process_output,
+    ClosedSessionFailure, ProviderProcessRunners, process_scope, redaction_values,
+    validate_process_cleanup, validate_process_output,
 };
 use crate::native_v2_contract::{ClaudeProvider, NodeRuntimeBinding};
 use crate::native_v2_runner::{
     AgentResponse, render_agent_prompt, resolve_agent_response, DriverControl, DriverInvocation,
-    LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError, ResolvedEnvironment,
+    LiveOutput, LiveOutputStream, NodeRunnerError, ResolvedEnvironment,
 };
-use crate::worker_catalog::ReasoningEffort;
+use command::{
+    ClaudeTurnArguments, claude_arguments, configure_openrouter, extend_declared_environment,
+    reject_provider_controls, validate_model_effort, workspace_access,
+};
 use session::ClaudeSession;
-use transcript::ClaudeTranscript;
+use transcript::{ClaudeAttempt, ClaudeTranscript};
 
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
-const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api";
-const OPENROUTER_KEY: &str = "OPENROUTER_API_KEY";
-const ANTHROPIC_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
-const ANTHROPIC_KEY: &str = "ANTHROPIC_API_KEY";
-const ANTHROPIC_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const MINIMAL_ENVIRONMENT_NAMES: [&str; 6] = ["HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR"];
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -236,25 +235,15 @@ impl ClaudeAdapter {
         turn: &ClaudeTurn<'_>,
         resume_id: &mut Option<String>,
         prompt: String,
-    ) -> Result<AgentResponse, NodeRunnerError> {
+    ) -> Result<ClaudeTurnAdvance, NodeRunnerError> {
         turn.session
             .core
             .ensure_live(ClosedSessionFailure::SessionLost)?;
-        let result = self
+        let attempt = self
             .execute_turn(turn, resume_id.as_deref(), prompt)
             .await?;
-        observe_session(resume_id, result.session_id.as_deref())?;
-        let response = resolve_agent_response(&turn.invocation.response, &result.message)?;
-        if matches!(response, AgentResponse::Correction(_)) {
-            if resume_id.is_none() {
-                return Err(NodeRunnerError::Driver);
-            }
-            turn.control.emit(LiveOutput::new(
-                LiveOutputStream::System,
-                "Claude final output rejected; requesting correction",
-            )?)?;
-        }
-        Ok(response)
+        observe_session(resume_id, attempt_session_id(&attempt))?;
+        resolve_claude_attempt(turn, resume_id, attempt)
     }
 
     async fn execute_turn(
@@ -262,7 +251,7 @@ impl ClaudeAdapter {
         turn: &ClaudeTurn<'_>,
         resume_id: Option<&str>,
         prompt: String,
-    ) -> Result<transcript::ClaudeResult, NodeRunnerError> {
+    ) -> Result<ClaudeAttempt, NodeRunnerError> {
         let mut process = self.open_turn_process(turn, resume_id, prompt).await?;
         let mut transcript = ClaudeTranscript::new(redaction_values(
             turn.invocation.environment.iter().map(|(_, value)| value),
@@ -274,9 +263,13 @@ impl ClaudeAdapter {
             process.release().await
         }
         .map_err(|_| NodeRunnerError::Driver)?;
-        validate_process_output(&process_output, turn.control)?;
+        validate_process_cleanup(&process_output, turn.control)?;
         collected?;
-        transcript.finish()
+        let attempt = transcript.finish()?;
+        if matches!(attempt, ClaudeAttempt::Complete(_)) {
+            validate_process_output(&process_output, turn.control)?;
+        }
+        Ok(attempt)
     }
 
     async fn open_turn_process(
@@ -306,6 +299,40 @@ impl ClaudeAdapter {
     }
 }
 
+fn attempt_session_id(attempt: &ClaudeAttempt) -> Option<&str> {
+    match attempt {
+        ClaudeAttempt::Complete(result) => result.session_id.as_deref(),
+        ClaudeAttempt::Failed(failure) => failure.session_id.as_deref(),
+    }
+}
+
+fn resolve_claude_attempt(
+    turn: &ClaudeTurn<'_>,
+    resume_id: &Option<String>,
+    attempt: ClaudeAttempt,
+) -> Result<ClaudeTurnAdvance, NodeRunnerError> {
+    let result = match attempt {
+        ClaudeAttempt::Complete(result) => result,
+        ClaudeAttempt::Failed(failure) => {
+            return Ok(ClaudeTurnAdvance::ProviderFailure {
+                retryable: failure.retryable,
+                diagnostic: failure.diagnostic,
+            });
+        }
+    };
+    let response = resolve_agent_response(&turn.invocation.response, &result.message)?;
+    if matches!(response, AgentResponse::Correction(_)) {
+        if resume_id.is_none() {
+            return Err(NodeRunnerError::Driver);
+        }
+        turn.control.emit(LiveOutput::new(
+            LiveOutputStream::System,
+            "Claude final output rejected; requesting correction",
+        )?)?;
+    }
+    Ok(ClaudeTurnAdvance::Response(response))
+}
+
 struct ClaudeTurn<'a> {
     invocation: &'a DriverInvocation,
     session: &'a ClaudeSession,
@@ -313,107 +340,15 @@ struct ClaudeTurn<'a> {
     deadline: Instant,
 }
 
+enum ClaudeTurnAdvance {
+    Response(AgentResponse),
+    ProviderFailure { retryable: bool, diagnostic: String },
+}
+
 struct ClaudeCommandInput<'a> {
     resume_id: Option<&'a str>,
     runtime_home: &'a Path,
     prompt: String,
-}
-
-struct ClaudeTurnArguments<'a> {
-    model: &'a str,
-    effort: Option<ReasoningEffort>,
-    role: NodeRole,
-    resume_id: Option<&'a str>,
-    prompt: String,
-}
-
-fn claude_arguments(
-    mut argv: Vec<String>,
-    turn: ClaudeTurnArguments<'_>,
-) -> Result<Vec<String>, NodeRunnerError> {
-    argv.extend([
-        "--print".to_owned(),
-        "--input-format".to_owned(),
-        "text".to_owned(),
-        "--output-format".to_owned(),
-        "stream-json".to_owned(),
-        "--verbose".to_owned(),
-        "--include-partial-messages".to_owned(),
-        "--model".to_owned(),
-        turn.model.to_owned(),
-    ]);
-    if let Some(effort) = turn.effort {
-        argv.extend(["--effort".to_owned(), effort_token(effort).to_owned()]);
-    }
-    match turn.role {
-        NodeRole::Worker => argv.push("--dangerously-skip-permissions".to_owned()),
-        NodeRole::Verifier => {
-            argv.extend(["--permission-mode".to_owned(), "plan".to_owned()]);
-        }
-        NodeRole::GitDelivery => return Err(NodeRunnerError::Driver),
-    }
-    if let Some(resume_id) = turn.resume_id {
-        argv.extend(["--resume".to_owned(), resume_id.to_owned()]);
-    }
-    argv.push(turn.prompt);
-    Ok(argv)
-}
-
-fn workspace_access(role: NodeRole) -> Result<WorkspaceAccessMode, NodeRunnerError> {
-    match role {
-        NodeRole::Verifier => Ok(WorkspaceAccessMode::ReadOnly),
-        NodeRole::Worker => Ok(WorkspaceAccessMode::Exclusive),
-        NodeRole::GitDelivery => Err(NodeRunnerError::Driver),
-    }
-}
-
-fn extend_declared_environment(
-    environment: &mut BTreeMap<String, String>,
-    resolved: &ResolvedEnvironment,
-) -> Result<(), NodeRunnerError> {
-    for (name, value) in resolved.iter() {
-        if value.contains('\0') || environment.contains_key(name.as_str()) {
-            return Err(NodeRunnerError::Driver);
-        }
-        environment.insert(name.as_str().to_owned(), value.to_owned());
-    }
-    Ok(())
-}
-
-fn reject_provider_controls(environment: &BTreeMap<String, String>) -> Result<(), NodeRunnerError> {
-    const CONTROLS: [&str; 5] = [
-        ANTHROPIC_BASE_URL,
-        "CLAUDE_CONFIG_DIR",
-        "CLAUDE_CODE_USE_BEDROCK",
-        "CLAUDE_CODE_USE_VERTEX",
-        "CLAUDE_CODE_USE_FOUNDRY",
-    ];
-    CONTROLS
-        .iter()
-        .all(|name| !environment.contains_key(*name))
-        .then_some(())
-        .ok_or(NodeRunnerError::Driver)
-}
-
-fn configure_openrouter(environment: &mut BTreeMap<String, String>) -> Result<(), NodeRunnerError> {
-    let token = environment
-        .get(OPENROUTER_KEY)
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .ok_or(NodeRunnerError::Driver)?;
-    if [ANTHROPIC_TOKEN, ANTHROPIC_KEY]
-        .iter()
-        .any(|name| environment.contains_key(*name))
-    {
-        return Err(NodeRunnerError::Driver);
-    }
-    environment.insert(ANTHROPIC_TOKEN.to_owned(), token);
-    environment.insert(ANTHROPIC_KEY.to_owned(), String::new());
-    environment.insert(
-        ANTHROPIC_BASE_URL.to_owned(),
-        OPENROUTER_BASE_URL.to_owned(),
-    );
-    Ok(())
 }
 
 async fn collect_transcript(
@@ -454,26 +389,6 @@ fn prompt(invocation: &DriverInvocation) -> Result<String, NodeRunnerError> {
         return Err(NodeRunnerError::Driver);
     }
     Ok(value)
-}
-
-fn validate_model_effort(
-    model: &str,
-    effort: Option<ReasoningEffort>,
-) -> Result<(), NodeRunnerError> {
-    match (model, effort) {
-        ("claude-haiku-4-5", None) => Ok(()),
-        (
-            "claude-sonnet-5" | "claude-opus-5" | "claude-fable-5",
-            Some(
-                ReasoningEffort::Low
-                | ReasoningEffort::Medium
-                | ReasoningEffort::High
-                | ReasoningEffort::Xhigh
-                | ReasoningEffort::Max,
-            ),
-        ) => Ok(()),
-        _ => Err(NodeRunnerError::Driver),
-    }
 }
 
 #[cfg(test)]

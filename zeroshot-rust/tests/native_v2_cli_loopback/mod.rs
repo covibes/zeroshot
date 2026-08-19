@@ -4,6 +4,7 @@ mod delivery;
 mod fixtures;
 mod live;
 mod live_templates;
+mod retry;
 mod server;
 
 pub(crate) use base::*;

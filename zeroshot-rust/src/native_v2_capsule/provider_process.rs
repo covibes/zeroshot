@@ -4,14 +4,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 
 use crate::execution::SessionScope;
 use crate::execution::process::{
     HostedProcessPool, HostedProcessScope, LocalProcessRunner, ProcessSessionOutput,
 };
 use crate::native_v2_contract::NodeRuntimeBinding;
-use crate::native_v2_runner::{DriverControl, DriverInvocation, NodeRole, NodeRunnerError};
+use crate::native_v2_runner::{
+    DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NodeRole, NodeRunnerError,
+};
 use crate::worker_catalog::ReasoningEffort;
+
+const MAX_PROVIDER_DIAGNOSTIC_BYTES: usize = 8 * 1024;
+const CONTINUE_PROMPT: &str = "Continue";
 
 #[derive(Clone, Copy)]
 pub(crate) enum ProviderProcessRunners {
@@ -146,17 +152,132 @@ pub(crate) fn validate_process_output(
     output: &ProcessSessionOutput,
     control: &DriverControl,
 ) -> Result<(), NodeRunnerError> {
+    validate_process_cleanup(output, control)?;
+    if output.exit_code != Some(0) {
+        return Err(NodeRunnerError::Driver);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_process_cleanup(
+    output: &ProcessSessionOutput,
+    control: &DriverControl,
+) -> Result<(), NodeRunnerError> {
     if output.cancelled || control.is_cancelled() {
         return Err(NodeRunnerError::Cancelled);
     }
-    if output.exit_code != Some(0)
-        || output.timed_out
-        || !output.cleanup.proves_tree_empty()
-        || output.post_launch_error.is_some()
+    if output.timed_out || !output.cleanup.proves_tree_empty() || output.post_launch_error.is_some()
     {
         return Err(NodeRunnerError::Driver);
     }
     Ok(())
+}
+
+pub(crate) fn provider_failure_diagnostic(
+    provider: &str,
+    detail: Option<&str>,
+    output: Option<&ProcessSessionOutput>,
+    redactions: &[String],
+) -> String {
+    let mut detail = detail
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            output.and_then(|process| {
+                (!process.stderr_tail.is_empty())
+                    .then(|| String::from_utf8_lossy(&process.stderr_tail).into_owned())
+            })
+        })
+        .or_else(|| output.and_then(|process| process.post_launch_error.clone()))
+        .unwrap_or_else(|| "execution failed without provider detail".to_owned());
+    for value in redactions {
+        detail = detail.replace(value, "[REDACTED]");
+    }
+    detail = detail
+        .chars()
+        .map(|character| {
+            if character.is_control() && !matches!(character, '\n' | '\t') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let mut diagnostic = format!("{provider} provider failure: {}", detail.trim());
+    if diagnostic.len() > MAX_PROVIDER_DIAGNOSTIC_BYTES {
+        let mut end = MAX_PROVIDER_DIAGNOSTIC_BYTES.saturating_sub(3);
+        while !diagnostic.is_char_boundary(end) {
+            end -= 1;
+        }
+        diagnostic.truncate(end);
+        diagnostic.push_str("...");
+    }
+    diagnostic
+}
+
+pub(crate) struct ProviderFailureRetry {
+    provider: &'static str,
+    initial_prompt: String,
+    redactions: Vec<String>,
+    used: bool,
+}
+
+pub(crate) struct ProviderFailure<'a> {
+    pub(crate) detail: Option<&'a str>,
+    pub(crate) retryable: bool,
+    pub(crate) has_session: bool,
+    pub(crate) deadline: Instant,
+}
+
+impl ProviderFailureRetry {
+    pub(crate) fn new(
+        provider: &'static str,
+        initial_prompt: String,
+        redactions: Vec<String>,
+    ) -> Self {
+        Self {
+            provider,
+            initial_prompt,
+            redactions,
+            used: false,
+        }
+    }
+
+    pub(crate) fn after_failure(
+        &mut self,
+        control: &DriverControl,
+        failure: ProviderFailure<'_>,
+    ) -> Result<String, NodeRunnerError> {
+        let diagnostic =
+            provider_failure_diagnostic(self.provider, failure.detail, None, &self.redactions);
+        control.emit(LiveOutput::new(LiveOutputStream::Error, diagnostic)?)?;
+        if !failure.retryable || self.used || Instant::now() >= failure.deadline {
+            return Err(NodeRunnerError::Driver);
+        }
+        self.used = true;
+        control.emit(LiveOutput::new(
+            LiveOutputStream::System,
+            format!("{} provider failed; continuing once", self.provider),
+        )?)?;
+        Ok(if failure.has_session {
+            CONTINUE_PROMPT.to_owned()
+        } else {
+            self.initial_prompt.clone()
+        })
+    }
+
+    pub(crate) fn report_terminal(
+        &self,
+        control: &DriverControl,
+        error: &NodeRunnerError,
+    ) -> Result<(), NodeRunnerError> {
+        if *error == NodeRunnerError::Driver {
+            let diagnostic =
+                provider_failure_diagnostic(self.provider, None, None, &self.redactions);
+            control.emit(LiveOutput::new(LiveOutputStream::Error, diagnostic)?)?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn redaction_values<'a>(values: impl Iterator<Item = &'a str>) -> Vec<String> {
@@ -196,5 +317,21 @@ mod tests {
             session.ensure_live(ClosedSessionFailure::SessionLost),
             Err(NodeRunnerError::SessionLost)
         );
+    }
+
+    #[test]
+    fn provider_diagnostic_is_redacted_sanitized_and_bounded() {
+        let detail = format!(
+            "token=secret\u{0} {}",
+            "x".repeat(MAX_PROVIDER_DIAGNOSTIC_BYTES)
+        );
+        let diagnostic =
+            provider_failure_diagnostic("Codex", Some(&detail), None, &["secret".to_owned()]);
+
+        assert!(diagnostic.starts_with("Codex provider failure: token=[REDACTED] "));
+        assert!(!diagnostic.contains("secret"));
+        assert!(!diagnostic.contains('\0'));
+        assert_eq!(diagnostic.len(), MAX_PROVIDER_DIAGNOSTIC_BYTES);
+        assert!(diagnostic.ends_with("..."));
     }
 }

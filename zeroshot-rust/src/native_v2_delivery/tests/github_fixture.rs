@@ -16,6 +16,7 @@ pub(super) enum Script {
     Conflict,
     ConflictAtMerge,
     RegistrationRace,
+    ProtectedBranch,
     ReviewSyncRace,
     CiFailsThenMerges,
     NeverConfirmsMerge,
@@ -53,6 +54,7 @@ impl FakeGitHub {
             Script::Conflict => GitHubReviewState::Conflict,
             Script::ConflictAtMerge => open_review(GitHubChecks::NotRequired),
             Script::RegistrationRace => self.registration_race_state(inspection),
+            Script::ProtectedBranch => open_review(GitHubChecks::Passed),
             Script::ReviewSyncRace => self.no_ci_state(),
             Script::CiFailsThenMerges => self.ci_repair_state(inspection),
             Script::NeverConfirmsMerge => open_review(GitHubChecks::Passed),
@@ -174,8 +176,9 @@ impl GitHubDeliveryAuthority for FakeGitHub {
         if matches!(self.script, Script::ConflictAtMerge) {
             return Ok(GitHubMergeRequestOutcome::Conflict);
         }
-        if matches!(self.script, Script::RegistrationRace)
-            && self.merge_requests.load(Ordering::SeqCst) == 1
+        if matches!(self.script, Script::ProtectedBranch)
+            || matches!(self.script, Script::RegistrationRace)
+                && self.merge_requests.load(Ordering::SeqCst) == 1
         {
             return Ok(GitHubMergeRequestOutcome::Pending);
         }

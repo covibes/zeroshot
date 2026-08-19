@@ -17,13 +17,28 @@ else
 fi
 "#;
 
-pub(crate) fn shell_script() -> String {
-    [
-        KEYRING_PREAMBLE,
-        r#"
+pub(crate) const LOOPBACK_TARGET_PREAMBLE: &str = r#"
 "$1" target add prod --url "$2" || exit $?
 "$1" target login prod || exit $?
 "$1" target setup prod --repository open-engine/zeroshot --base main || exit $?
+"#;
+
+pub(crate) const WAIT_FOR_FINISHED_STATUS: &str = r#"
+attempt=0
+while :; do
+  status=$("$1" status "$run_id" --target prod) || exit $?
+  printf '%s' "$status" | grep -q '"phase":"finished"' && break
+  attempt=$((attempt + 1))
+  test "$attempt" -lt 100 || exit 92
+  sleep 0.05
+done
+"#;
+
+pub(crate) fn shell_script() -> String {
+    [
+        KEYRING_PREAMBLE,
+        LOOPBACK_TARGET_PREAMBLE,
+        r#"
 detached=$(
   "$1" run --target prod --title "Loopback acceptance" \
     --runtime-config "$4" --graph "$5" --input "$6" \
@@ -110,10 +125,8 @@ printf 'DELIVERY=%s\n' "$result"
 pub(crate) fn loss_shell_script() -> String {
     [
         KEYRING_PREAMBLE,
+        LOOPBACK_TARGET_PREAMBLE,
         r#"
-"$1" target add prod --url "$2" || exit $?
-"$1" target login prod || exit $?
-"$1" target setup prod --repository open-engine/zeroshot --base main || exit $?
 detached=$(
   "$1" run --target prod --title "Capsule loss acceptance" \
     --runtime-config "$4" --graph "$5" --input "$6" \
@@ -121,15 +134,10 @@ detached=$(
 ) || exit $?
 run_id=$(printf '%s' "$detached" | sed -n 's/.*"runId":"\([^"]*\)".*/\1/p')
 test -n "$run_id" || exit 91
-attempt=0
-while :; do
-  terminal=$("$1" status "$run_id" --target prod) || exit $?
-  printf '%s' "$terminal" | grep -q '"phase":"finished"' && break
-  attempt=$((attempt + 1))
-  test "$attempt" -lt 100 || exit 92
-  sleep 0.05
-done
-printf 'LOST=%s\nRUN_ID=%s\n' "$terminal" "$run_id"
+"#,
+        WAIT_FOR_FINISHED_STATUS,
+        r#"
+printf 'LOST=%s\nRUN_ID=%s\n' "$status" "$run_id"
 "#,
     ]
     .concat()

@@ -7,9 +7,10 @@ use openengine_cluster_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::NodeRunnerError;
+use super::{DriverControl, LiveOutput, LiveOutputStream, NodeRunnerError};
 
 const MAX_RESPONSE_ERROR_BYTES: usize = 8 * 1024;
+const MAX_OUTPUT_CORRECTIONS: usize = 2;
 
 /// Ephemeral response contract derived from the admitted graph leaf.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -118,6 +119,51 @@ impl NodeResponseError {
 pub(crate) enum AgentResponse {
     Complete(WorkerOutcome),
     Correction(String),
+}
+
+pub(crate) struct AgentResponseState {
+    prompt: String,
+    corrections: usize,
+}
+
+impl AgentResponseState {
+    pub(crate) fn new(prompt: String) -> Self {
+        Self {
+            prompt,
+            corrections: 0,
+        }
+    }
+
+    pub(crate) fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    pub(crate) fn replace_prompt(&mut self, prompt: String) {
+        self.prompt = prompt;
+    }
+
+    pub(crate) fn accept(
+        &mut self,
+        provider: &str,
+        control: &DriverControl,
+        response: AgentResponse,
+    ) -> Result<Option<WorkerOutcome>, NodeRunnerError> {
+        match response {
+            AgentResponse::Complete(outcome) => Ok(Some(outcome)),
+            AgentResponse::Correction(_) if self.corrections == MAX_OUTPUT_CORRECTIONS => {
+                control.emit(LiveOutput::new(
+                    LiveOutputStream::System,
+                    format!("{provider} final output remained malformed after two corrections"),
+                )?)?;
+                Ok(Some(WorkerOutcome::malformed()))
+            }
+            AgentResponse::Correction(correction) => {
+                self.corrections += 1;
+                self.prompt = correction;
+                Ok(None)
+            }
+        }
+    }
 }
 
 pub(crate) fn resolve_agent_response(

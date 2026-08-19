@@ -117,6 +117,21 @@ async fn merge_rejection_before_ci_registration_is_reobserved() {
 }
 
 #[tokio::test]
+async fn protected_branch_rejects_unsupported_direct_merge_promptly() {
+    let repo = TempRepo::delivery();
+    let authority = Arc::new(FakeGitHub::new(
+        repo.remote.clone(),
+        Script::ProtectedBranch,
+    ));
+
+    let outcome = run_delivery(&repo, authority.clone(), 20, DeliveryMode::Merge).await;
+
+    assert_eq!(outcome, WorkerOutcome::policy_refusal());
+    assert_eq!(authority.merge_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(authority.inspections.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn pushed_review_head_is_retried_during_github_visibility_lag() {
     let repo = TempRepo::delivery();
     let authority = Arc::new(FakeGitHub::new(repo.remote.clone(), Script::ReviewSyncRace));

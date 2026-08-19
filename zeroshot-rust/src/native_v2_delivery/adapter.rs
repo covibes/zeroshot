@@ -94,6 +94,7 @@ impl NodeDriver for NativeV2DeliveryAdapter {
             credential,
             control: &mut control,
             merge_requested: false,
+            merge_rejection_reobserved: false,
         })
         .await
     }
@@ -133,6 +134,7 @@ struct ReviewDrive<'a> {
     credential: GitHubCredential<'a>,
     control: &'a mut DriverControl,
     merge_requested: bool,
+    merge_rejection_reobserved: bool,
 }
 
 impl NativeV2DeliveryAdapter {
@@ -356,7 +358,9 @@ impl NativeV2DeliveryAdapter {
             {
                 GitHubMergeRequestOutcome::Accepted => drive.merge_requested = true,
                 GitHubMergeRequestOutcome::Pending => {
-                    emit(drive.control, "delivery: merge request is not yet accepted")?;
+                    if let Some(completion) = rejected_merge_step(drive)? {
+                        return Ok(completion);
+                    }
                 }
                 GitHubMergeRequestOutcome::Conflict => {
                     return review_completion(
@@ -398,6 +402,19 @@ impl NativeV2DeliveryAdapter {
             .await
             .map_err(|_| crash_outcome())
     }
+}
+
+fn rejected_merge_step(drive: &mut ReviewDrive<'_>) -> Result<Option<ReviewStep>, DeliveryStop> {
+    if !drive.merge_rejection_reobserved {
+        drive.merge_rejection_reobserved = true;
+        emit(drive.control, "delivery: merge request is not yet accepted")?;
+        return Ok(None);
+    }
+    emit(
+        drive.control,
+        "delivery: target policy rejected direct merge",
+    )?;
+    Ok(Some(ReviewStep::Complete(WorkerOutcome::policy_refusal())))
 }
 
 enum ReviewProgress {

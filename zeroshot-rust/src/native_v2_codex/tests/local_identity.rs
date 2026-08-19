@@ -24,12 +24,12 @@ fn local_codex_user_reuses_native_homes_without_an_openai_api_key() {
         .provider_environment(&environment, &runtime_home)
         .assert_value();
 
-    assert_eq!(values.get(HOME).map(String::as_str), home.to_str());
+    assert_eq!(values.get("HOME").map(String::as_str), home.to_str());
     assert_eq!(
-        values.get(CODEX_HOME).map(String::as_str),
+        values.get("CODEX_HOME").map(String::as_str),
         codex_home.to_str()
     );
-    assert!(!values.contains_key(CODEX_API_KEY));
+    assert!(!values.contains_key("CODEX_API_KEY"));
 
     let isolated = NativeV2CodexAdapter::new(adapter.config.clone());
     assert_eq!(

@@ -30,6 +30,12 @@ Operational rules and references for automated agents working on this repo. Inst
 
 Worker git operations are allowed only with isolation (`--worktree`, `--docker`, `--pr`, `--ship`). They are forbidden without isolation.
 
+Native-v2 provider continuation is fixed and bounded: Claude continues once only after a
+`system/api_retry` event, Codex continues once after any terminal execution error, and both send
+the literal `Continue` in the same session (or rerun the original prompt only when no session was
+created). Agent output gets at most two correction turns before `malformed`. Direct GitHub merge
+rejection is reobserved once for CI registration races, then terminates as a policy refusal.
+
 Read-only safe commands: `zeroshot list`, `zeroshot status`, `zeroshot logs`
 
 Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zeroshot purge`

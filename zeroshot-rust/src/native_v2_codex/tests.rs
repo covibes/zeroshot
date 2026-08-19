@@ -1,7 +1,11 @@
 #![cfg(unix)]
 
+#[path = "tests/environment.rs"]
+mod environment;
 #[path = "tests/local_identity.rs"]
 mod local_identity;
+#[path = "tests/retry.rs"]
+mod retry;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -10,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use openengine_cluster_protocol::{IdempotencyKey, NodeName, RunSize, RunTitle, WorkerOutcome};
+use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{json, Value};
 
 use super::*;
@@ -55,7 +60,9 @@ if [ "${OPENROUTER_API_KEY-unset}" != unset ]; then
     '{"type":"item.completed","item":{"type":"agent_message",' \
     '"text":"visible fake-openrouter-key"}}'
 fi
-if [ "${CORRECT_OUTPUT-false}" = true ] && [ "$resumed" = false ]; then
+if [ "${ALWAYS_MALFORMED-false}" = true ]; then
+  /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":\"wrong\"}"}}'
+elif [ "${CORRECT_OUTPUT-false}" = true ] && [ "$resumed" = false ]; then
   /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":\"wrong\"}"}}'
 elif [ "$resumed" = true ]; then
   /usr/bin/printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{\"answer\":43}"}}'
@@ -74,7 +81,16 @@ fn scripted_adapter(
     directory: &TestDirectory,
     provider: CodexProvider,
 ) -> Arc<NativeV2CodexAdapter> {
-    let executable = directory.write_executable("codex-script", SCRIPT);
+    scripted_adapter_with(directory, provider, "codex-script", SCRIPT)
+}
+
+fn scripted_adapter_with(
+    directory: &TestDirectory,
+    provider: CodexProvider,
+    name: &str,
+    script: &str,
+) -> Arc<NativeV2CodexAdapter> {
+    let executable = directory.write_executable(name, script);
     let runtime_home = directory.child("runtime-home");
     let workspace = directory.child("workspace");
     fs::create_dir_all(&runtime_home).assert_value();
@@ -349,6 +365,37 @@ async fn invalid_output_is_corrected_in_the_same_codex_session() {
 }
 
 #[tokio::test]
+async fn malformed_output_stops_after_two_correction_turns() {
+    let directory = TestDirectory::new("codex-malformed-limit");
+    let capture = directory.child("capture");
+    let (admitted, runtime) = openai_runtime(
+        &directory,
+        SessionScope::Execution,
+        &["ALWAYS_MALFORMED", "CAPTURE_PATH", "OPENAI_API_KEY"],
+    )
+    .await;
+    let mut handle = start(
+        &runtime,
+        &admitted,
+        1,
+        &[
+            ("ALWAYS_MALFORMED", "true".to_owned()),
+            ("CAPTURE_PATH", capture.display().to_string()),
+            ("OPENAI_API_KEY", "fake-openai-key".to_owned()),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        handle.completion().await.assert_value().outcome,
+        WorkerOutcome::malformed()
+    );
+    let capture = fs::read_to_string(capture).assert_value();
+    assert_eq!(capture.matches("prompt=").count(), 3);
+    assert_eq!(capture.matches("arg=resume").count(), 2);
+}
+
+#[tokio::test]
 async fn cancellation_waits_for_contained_child_cleanup() {
     let directory = TestDirectory::new("codex-cancel");
     let capture = directory.child("capture");
@@ -401,78 +448,3 @@ async fn wait_for_pid(path: &Path) -> u32 {
 fn process_is_live(pid: u32) -> bool {
     PathBuf::from(format!("/proc/{pid}")).exists()
 }
-
-#[test]
-fn command_environment_is_exact_and_rejects_adapter_owned_collisions() {
-    let declared = binding(SessionScope::Execution, &["DECLARED"]);
-    let resolved = ResolvedEnvironment::exact(
-        &declared,
-        BTreeMap::from([(
-            EnvironmentVariableName::new("DECLARED").assert_value(),
-            "resolved-value".to_owned(),
-        )]),
-    )
-    .assert_value();
-    let environment = process_environment(
-        &resolved,
-        "/private/runtime".to_owned(),
-        "/private/runtime".to_owned(),
-        "/usr/bin:/bin".to_owned(),
-    )
-    .assert_value();
-    assert_eq!(
-        environment,
-        BTreeMap::from([
-            ("CODEX_HOME".to_owned(), "/private/runtime".to_owned()),
-            ("DECLARED".to_owned(), "resolved-value".to_owned()),
-            ("HOME".to_owned(), "/private/runtime".to_owned()),
-            ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
-        ])
-    );
-
-    let binding = binding(SessionScope::Execution, &["CODEX_HOME"]);
-    let environment = ResolvedEnvironment::exact(
-        &binding,
-        BTreeMap::from([(
-            EnvironmentVariableName::new("CODEX_HOME").assert_value(),
-            "node-owned".to_owned(),
-        )]),
-    )
-    .assert_value();
-    assert_eq!(
-        process_environment(
-            &environment,
-            "adapter-owned".to_owned(),
-            "adapter-owned".to_owned(),
-            "/usr/bin:/bin".to_owned()
-        ),
-        Err(NodeRunnerError::Driver)
-    );
-}
-
-#[test]
-fn log_redactions_are_longest_first_and_do_not_leave_overlapping_suffixes() {
-    let binding = binding(SessionScope::Execution, &["LONG_SECRET", "SHORT_SECRET"]);
-    let environment = ResolvedEnvironment::exact(
-        &binding,
-        BTreeMap::from([
-            (
-                EnvironmentVariableName::new("LONG_SECRET").assert_value(),
-                "secret-tail".to_owned(),
-            ),
-            (
-                EnvironmentVariableName::new("SHORT_SECRET").assert_value(),
-                "secret".to_owned(),
-            ),
-        ]),
-    )
-    .assert_value();
-    let redactions = redaction_values(environment.iter().map(|(_, value)| value));
-    assert_eq!(redactions, vec!["secret-tail", "secret"]);
-    assert_eq!(
-        redact_text("value=secret-tail", &redactions),
-        "value=[REDACTED]"
-    );
-}
-
-use openengine_cluster_testkit::assertions::{AssertValue};

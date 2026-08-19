@@ -80,6 +80,7 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
             allocator,
             environment,
             resolved_base_revision,
+            delivery_policy: DeliveryPolicy::Required,
         }))
         .await;
         let config = root.path(&format!("{name}-config"));
@@ -127,6 +128,7 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
         allocator: allocator.clone(),
         environment: BTreeMap::new(),
         resolved_base_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        delivery_policy: DeliveryPolicy::Required,
     }))
     .await;
     let root = temp_root();

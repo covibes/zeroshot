@@ -70,6 +70,14 @@ pub(crate) fn temp_root() -> TempRoot {
 pub(crate) struct ControllerClaim;
 impl ExclusiveControllerClaim for ControllerClaim {}
 
+pub(crate) fn controller_claim() -> Arc<dyn ExclusiveControllerClaim> {
+    Arc::new(ControllerClaim)
+}
+
+pub(crate) fn confirmed_capsule_destroyed() -> Result<CapsuleDestroyed, CapsuleCleanupUnavailable> {
+    Ok(CapsuleDestroyed::confirmed())
+}
+
 pub(crate) struct ImmediateCleanup;
 
 #[async_trait]
@@ -78,7 +86,7 @@ impl CapsuleCleanup for ImmediateCleanup {
         &self,
         _exit: RunRuntimeExit,
     ) -> Result<CapsuleDestroyed, CapsuleCleanupUnavailable> {
-        Ok(CapsuleDestroyed::confirmed())
+        confirmed_capsule_destroyed()
     }
 }
 
@@ -103,7 +111,7 @@ impl CapsuleAllocator for ImmediateAllocator {
         &self,
         _run_id: &RunId,
     ) -> Result<Arc<dyn ExclusiveControllerClaim>, ControllerClaimUnavailable> {
-        Ok(Arc::new(ControllerClaim))
+        Ok(controller_claim())
     }
 
     async fn allocate(
@@ -131,7 +139,7 @@ impl CapsuleAllocator for ImmediateAllocator {
         _run_id: &RunId,
         _exit: RunRuntimeExit,
     ) -> Result<CapsuleDestroyed, CapsuleCleanupUnavailable> {
-        Ok(CapsuleDestroyed::confirmed())
+        confirmed_capsule_destroyed()
     }
 }
 
@@ -218,6 +226,7 @@ pub(crate) struct FixedAllocatorFactory {
     pub(crate) allocator: Arc<dyn CapsuleAllocator>,
     pub(crate) environment: BTreeMap<EnvironmentVariableName, String>,
     pub(crate) resolved_base_revision: String,
+    pub(crate) delivery_policy: DeliveryPolicy,
 }
 
 #[async_trait]
@@ -226,7 +235,7 @@ impl TargetControllerFactory for FixedAllocatorFactory {
         &self,
         _setup: &TargetSetupDocument,
     ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
-        test_controller(self.allocator.clone()).await
+        test_controller_with_policy(self.allocator.clone(), self.delivery_policy).await
     }
 
     async fn submit(
@@ -248,13 +257,24 @@ impl TargetControllerFactory for FixedAllocatorFactory {
 async fn test_controller(
     allocator: Arc<dyn CapsuleAllocator>,
 ) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
-    NativeV2CloudController::new(Arc::new(FakeRunLedger::new()), allocator)
-        .await
-        .map(Arc::new)
-        .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+    test_controller_with_policy(allocator, DeliveryPolicy::Required).await
 }
 
-async fn submit_test_run(
+async fn test_controller_with_policy(
+    allocator: Arc<dyn CapsuleAllocator>,
+    delivery_policy: DeliveryPolicy,
+) -> Result<Arc<NativeV2CloudController>, TargetAuthorityError> {
+    NativeV2CloudController::new_with_delivery_policy(
+        Arc::new(FakeRunLedger::new()),
+        allocator,
+        delivery_policy,
+    )
+    .await
+    .map(Arc::new)
+    .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))
+}
+
+pub(crate) async fn submit_test_run(
     setup: &TargetSetupDocument,
     controller: &NativeV2CloudController,
     intent: TargetRunIntent,
