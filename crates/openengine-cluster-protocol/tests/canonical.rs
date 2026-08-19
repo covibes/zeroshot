@@ -194,6 +194,7 @@ fn step_ir(worker: &str, reverse_bindings: bool) -> CompiledGraphIr {
         "policy":{"policy":"policy.default@1","default":"deny"},
         "root":{
             "kind":"step","name":"work","worker":worker,
+            "instructions":"Implement the requested change.",
             "input":{"kind":"record","fields":{}},"output":{"kind":"null"},
             "inputBindings":bindings,"writeBindings":[],"timeoutMs":1000,"attempts":1
         },
@@ -210,6 +211,28 @@ fn canonical_ir_sorts_bindings_but_preserves_binding_content() {
     assert_eq!(
         step_ir("worker.impl@1", false).identity().assert_value(),
         step_ir("worker.impl@1", true).identity().assert_value()
+    );
+}
+
+#[test]
+fn authored_instructions_participate_in_identity_and_node_diff() {
+    let baseline = step_ir("worker.impl@1", false);
+    let mut changed = serde_json::to_value(&baseline).assert_value();
+    *json_mut::json_at_mut(&mut changed, "/root/instructions") =
+        json!("Implement the requested change and run focused tests.");
+    let changed: CompiledGraphIr = serde_json::from_value(changed).assert_value();
+
+    assert_ne!(
+        baseline.identity().assert_value(),
+        changed.identity().assert_value()
+    );
+    let diff = diff_compiled_graphs(Some(&baseline), &changed).assert_value();
+    assert_eq!(
+        diff.changed
+            .iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>(),
+        ["work"]
     );
 }
 

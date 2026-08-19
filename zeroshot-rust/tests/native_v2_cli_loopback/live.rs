@@ -175,6 +175,7 @@ fn worker_node_with_state_instruction(name: &str, field: &str) -> serde_json::Va
 fn worker_node_with_binding(name: &str, binding: serde_json::Value) -> serde_json::Value {
     json!({
         "kind":"step","name":name,"worker":format!("agent.{name}@1"),
+        "instructions":format!("Execute the {name} role using the input."),
         "input":instruction_input(),"output":{"kind":"null"},
         "inputBindings":[binding],"writeBindings":[],
         "timeoutMs":LIVE_TIMEOUT_MS,"attempts":1
@@ -184,6 +185,7 @@ fn worker_node_with_binding(name: &str, binding: serde_json::Value) -> serde_jso
 fn verifier_node(name: &str) -> serde_json::Value {
     json!({
         "kind":"verifier","name":name,"worker":format!("agent.{name}@1"),
+        "instructions":format!("Verify the {name} role using the input."),
         "input":instruction_input(),"output":{"kind":"null"},
         "inputBindings":[instruction_binding()],"writeBindings":[],
         "timeoutMs":LIVE_TIMEOUT_MS,"attempts":1,

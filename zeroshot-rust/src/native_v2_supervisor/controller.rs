@@ -114,6 +114,11 @@ impl NativeV2Supervisor {
         let invocation = NodeInvocation {
             reference: dispatch.reference.clone(),
             worker: dispatch.worker.clone(),
+            instructions: program
+                .instructions
+                .get(&dispatch.reference.node)
+                .cloned()
+                .ok_or(NativeV2SupervisorError::InvalidState)?,
             input: dispatch.input.clone(),
             binding,
         };

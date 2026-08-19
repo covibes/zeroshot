@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use openengine_cluster_protocol::{EnumLabel, FieldName, NonEmptyEnumSet, PayloadType, WorkerOutcome};
+use openengine_cluster_protocol::{
+    EnumLabel, FieldName, NodeInstructions, NonEmptyEnumSet, PayloadType, WorkerOutcome,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -188,15 +190,18 @@ fn validate_native_v2_outcome(outcome: &WorkerOutcome) -> Result<(), NodeRunnerE
 
 /// Renders the provider-neutral node turn contract used by every agent harness.
 pub fn render_agent_prompt(
+    instructions: &NodeInstructions,
     input: &Value,
     response: &NodeResponseContract,
 ) -> Result<String, NodeRunnerError> {
+    let instructions = instructions.as_str();
     let input = serde_json::to_string(input).map_err(|_| NodeRunnerError::Driver)?;
     let response = serde_json::to_string(response).map_err(|_| NodeRunnerError::Driver)?;
     Ok(format!(
         "Execute this graph node using the shared workspace.\n\
+         Authored instructions:\n{instructions}\n\
          Input JSON:\n{input}\n\
-         Response contract:\n{response}\n\
+         Runtime-owned response contract:\n{response}\n\
          The response contract describes the required type; never return the contract itself. \
          Return only JSON with no Markdown or commentary. For a worker, return the output value \
          itself; an output contract of {{\"kind\":\"null\"}} requires the literal null. For a \

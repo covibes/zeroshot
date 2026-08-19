@@ -89,6 +89,7 @@ fn pr_delivery_graph(timeout_ms: u64, worker_errors_are_terminal: bool) -> serde
         "kind":"step",
         "name":"worker",
         "worker":"agent.worker@1",
+        "instructions":"Implement the requested test change.",
         "input":{"kind":"record","fields":{
             "instruction":{"type":{"kind":"string"},"required":true}
         }},
@@ -172,6 +173,7 @@ fn merge_delivery_graph() -> serde_json::Value {
                         "name":"deliver","source":"signal","field":"delivery"
                     },"labels":["ci_failed","conflict"]},
                     "node":{"kind":"step","name":"repair","worker":"agent.repair@1",
+                        "instructions":"Repair the failed delivery.",
                         "input":{"kind":"null"},"output":{"kind":"null"},
                         "inputBindings":[],"writeBindings":[],"timeoutMs":10_000,"attempts":1}
                 }],

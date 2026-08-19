@@ -31,6 +31,7 @@ fn executable(name: &str, verifier: bool) -> Value {
             "kind": "verifier",
             "name": name,
             "worker": format!("agent.{name}@1"),
+            "instructions": format!("Verify the {name} node."),
             "input": { "kind": "null" },
             "output": { "kind": "null" },
             "inputBindings": [],
@@ -45,6 +46,7 @@ fn executable(name: &str, verifier: bool) -> Value {
             "kind": "step",
             "name": name,
             "worker": format!("agent.{name}@1"),
+            "instructions": format!("Implement the {name} node."),
             "input": { "kind": "null" },
             "output": { "kind": "null" },
             "inputBindings": [],
@@ -121,7 +123,7 @@ pub(crate) fn admitted() -> AdmittedRun {
     }
 }
 
-pub(super) fn request(run: &str, node: &str, identity: (u64, u64)) -> NodeRunRequest {
+pub(crate) fn request(run: &str, node: &str, identity: (u64, u64)) -> NodeRunRequest {
     let (node_instance, execution) = identity;
     let admitted = admitted();
     let binding = admitted
@@ -139,6 +141,17 @@ pub(super) fn request(run: &str, node: &str, identity: (u64, u64)) -> NodeRunReq
                 execution: ExecutionId::new(execution).assert_value(),
             },
             worker: WorkerRef::new(format!("agent.{node}@1")).assert_value(),
+            instructions: Some(
+                openengine_cluster_protocol::NodeInstructions::new(format!(
+                    "{} the {node} node.",
+                    if ["left", "right", "verify", "slow_reuse", "fast_reuse"].contains(&node) {
+                        "Verify"
+                    } else {
+                        "Implement"
+                    }
+                ))
+                .assert_value(),
+            ),
             input: Value::Null,
             binding: binding.clone(),
         },

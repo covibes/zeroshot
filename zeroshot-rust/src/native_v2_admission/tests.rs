@@ -9,20 +9,35 @@ use openengine_cluster_protocol::IdempotencyKey;
 use serde_json::{json, Value};
 
 fn null_verifier(name: &str, worker: &str) -> Value {
-    json!({
-        "kind":"verifier", "name":name, "worker":worker,
-        "input":{"kind":"null"}, "output":{"kind":"null"},
-        "inputBindings":[], "writeBindings":[], "timeoutMs":1000, "attempts":1,
-        "signals":{"verdict":["accepted","rejected"]}, "diagnostic":{"kind":"null"}
-    })
+    let mut node = null_executable("verifier", name, worker);
+    let fields = node.as_object_mut().assert_value_with("verifier fixture");
+    fields.insert(
+        "signals".to_owned(),
+        json!({"verdict":["accepted","rejected"]}),
+    );
+    fields.insert("diagnostic".to_owned(), json!({"kind":"null"}));
+    node
 }
 
 fn null_step(name: &str, worker: &str) -> Value {
+    null_executable("step", name, worker)
+}
+
+fn null_executable(kind: &str, name: &str, worker: &str) -> Value {
     json!({
-        "kind":"step", "name":name, "worker":worker,
+        "kind":kind, "name":name, "worker":worker,
+        "instructions": authored_instructions(worker),
         "input":{"kind":"null"}, "output":{"kind":"null"},
         "inputBindings":[], "writeBindings":[], "timeoutMs":1000, "attempts":1
     })
+}
+
+fn authored_instructions(worker: &str) -> Value {
+    if worker.starts_with("builtin.git-delivery") {
+        Value::Null
+    } else {
+        json!("Exercise this agent node.")
+    }
 }
 
 fn delivery_verifier(name: &str, mode: DeliveryMode) -> Value {
@@ -216,6 +231,45 @@ async fn rejects_non_single_attempts_and_runtime_coverage_errors() {
 }
 
 #[tokio::test]
+async fn enforces_authored_instructions_by_runtime_role() {
+    let mut agent = null_step("work", "agent.work@1");
+    agent
+        .as_object_mut()
+        .assert_value_with("step fixture")
+        .remove("instructions");
+    let missing = graph(vec![agent, succeed("done")]);
+    assert_eq!(
+        NativeV2Admission
+            .admit(submission(
+                missing,
+                BTreeMap::from([(named("work"), binding("claude-sonnet-5", None))]),
+            ))
+            .await,
+        Err(NativeV2AdmissionError::MissingAgentInstructions {
+            node: named("work")
+        })
+    );
+
+    let mut delivery = delivery_verifier("deliver", DeliveryMode::PullRequest);
+    delivery
+        .as_object_mut()
+        .assert_value_with("delivery fixture")
+        .insert("instructions".to_owned(), json!("Open a pull request."));
+    let authored_delivery = graph(vec![delivery, succeed("done")]);
+    assert_eq!(
+        NativeV2Admission
+            .admit(submission(
+                authored_delivery,
+                BTreeMap::from([(named("deliver"), delivery_binding())]),
+            ))
+            .await,
+        Err(NativeV2AdmissionError::DeliveryInstructionsForbidden {
+            node: named("deliver")
+        })
+    );
+}
+
+#[tokio::test]
 async fn rejects_run_wide_declared_environment_union_over_limit() {
     let graph = graph(vec![
         null_step("first", "agent.first@1"),
@@ -254,114 +308,6 @@ async fn rejects_inconsistent_worker_reuse() {
         NativeV2Admission.admit(submission(graph, nodes)).await,
         Err(NativeV2AdmissionError::InconsistentWorkerReuse { .. })
     ));
-}
-
-#[tokio::test]
-async fn rejects_invalid_graph_visible_delivery_bindings_and_contracts() {
-    let step_graph = graph(vec![
-        null_step("deliver", GIT_DELIVERY_PR_WORKER_REF),
-        succeed("done"),
-    ]);
-    let request = submission(
-        step_graph,
-        BTreeMap::from([(named("deliver"), delivery_binding())]),
-    );
-    assert!(matches!(
-        NativeV2Admission.admit(request).await,
-        Err(NativeV2AdmissionError::DeliveryMustBeVerifier { .. })
-    ));
-
-    let unsupported_graph = graph(vec![
-        null_verifier("deliver", "builtin.git-delivery@1"),
-        succeed("done"),
-    ]);
-    assert!(matches!(
-        NativeV2Admission
-            .admit(submission(
-                unsupported_graph,
-                BTreeMap::from([(named("deliver"), delivery_binding())]),
-            ))
-            .await,
-        Err(NativeV2AdmissionError::UnsupportedDeliveryWorker { .. })
-    ));
-
-    let wrong_binding_graph = graph(vec![
-        delivery_verifier("deliver", DeliveryMode::PullRequest),
-        succeed("done"),
-    ]);
-    assert!(matches!(
-        NativeV2Admission
-            .admit(submission(
-                wrong_binding_graph,
-                BTreeMap::from([(named("deliver"), binding("claude-sonnet-5", None))]),
-            ))
-            .await,
-        Err(NativeV2AdmissionError::DeliveryWorkerRequiresBinding { .. })
-    ));
-
-    let invalid_contract = graph(vec![
-        null_verifier("deliver", GIT_DELIVERY_PR_WORKER_REF),
-        succeed("done"),
-    ]);
-    assert!(matches!(
-        NativeV2Admission
-            .admit(submission(
-                invalid_contract,
-                BTreeMap::from([(named("deliver"), delivery_binding())]),
-            ))
-            .await,
-        Err(NativeV2AdmissionError::InvalidDeliveryContract { .. })
-    ));
-}
-
-#[tokio::test]
-async fn enforces_graph_visible_delivery_policy_counts() {
-    let no_delivery = submission(graph(vec![succeed("done")]), BTreeMap::new());
-    assert_eq!(
-        NativeV2Admission
-            .admit_with_policy(no_delivery, DeliveryPolicy::Required)
-            .await,
-        Err(NativeV2AdmissionError::DeliveryNodeCount {
-            policy: DeliveryPolicy::Required,
-            found: 0,
-        })
-    );
-
-    let delivery_graph = graph(vec![
-        delivery_verifier("deliver", DeliveryMode::Merge),
-        succeed("done"),
-    ]);
-    NativeV2Admission
-        .admit_with_policy(
-            submission(
-                delivery_graph,
-                BTreeMap::from([(named("deliver"), delivery_binding())]),
-            ),
-            DeliveryPolicy::Required,
-        )
-        .await
-        .assert_value_with("required policy accepts one valid delivery node");
-
-    let two_deliveries = graph(vec![
-        delivery_verifier("open", DeliveryMode::PullRequest),
-        delivery_verifier("merge", DeliveryMode::Merge),
-        succeed("done"),
-    ]);
-    assert_eq!(
-        NativeV2Admission
-            .admit(submission(
-                two_deliveries,
-                BTreeMap::from([
-                    (named("open"), delivery_binding()),
-                    (named("merge"), delivery_binding()),
-                ]),
-            ))
-            .await,
-        Err(NativeV2AdmissionError::DeliveryNodeCount {
-            policy: DeliveryPolicy::Optional,
-            found: 2,
-        })
-    );
 }
 
 #[tokio::test]
@@ -498,3 +444,6 @@ async fn delegates_remaining_graph_language_errors_to_production_verifier() {
 }
 
 use openengine_cluster_testkit::assertions::{AssertValue};
+
+#[path = "tests/delivery.rs"]
+mod delivery;

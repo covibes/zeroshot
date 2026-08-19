@@ -12,7 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    EnumLabel, GraphNode, NodeName, RunId, TerminalResult, WorkerErrorCode, WorkerOutcome,
+    EnumLabel, GraphNode, NodeInstructions, NodeName, RunId, TerminalResult, WorkerErrorCode,
+    WorkerOutcome,
 };
 use openengine_cluster_server::admission::VerifiedGraph;
 use serde_json::Value;
@@ -190,8 +191,10 @@ impl NativeV2Supervisor {
         if stored.snapshot.phase != RunPhase::Running {
             return Err(NativeV2SupervisorError::InvalidState);
         }
+        let catalog = execution_catalog(&stored.admitted.graph.root);
         Ok(Initialization::Program(Box::new(RunProgram {
-            timeouts: timeout_catalog(&stored.admitted.graph.root),
+            timeouts: catalog.timeouts,
+            instructions: catalog.instructions,
             admitted: stored.admitted,
         })))
     }

@@ -236,7 +236,8 @@ appropriate private one-run controller without moving user or token authority in
 
 `GraphSpec` remains the control-flow source of truth. Its companion runtime plan fixes the
 graph-wide harness/provider and each node's model, effort, session scope, and declared environment
-names at admission. One run owns one workspace: workers and Git delivery are exclusive writers,
+names at admission. Agent-backed leaves require bounded authored instructions; trusted Git delivery
+rejects them. One run owns one workspace: workers and Git delivery are exclusive writers,
 while ordinary verifiers are read-only and may overlap. PR and merge delivery are graph-visible
 modes of one shared trusted implementation; hosted success requires its bounded inline receipt.
 Local execution may omit delivery, in which case the invoking workspace and its mutations remain

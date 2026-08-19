@@ -26,8 +26,8 @@ Every graph node is tagged by `kind`. Node payloads reject unknown fields.
 
 | `kind`     | Contract                                                                                                                                      |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `step`     | Stable name and versioned worker reference; declared input/output types; structured input/write bindings; positive `timeoutMs` and `attempts` |
-| `verifier` | The bounded worker surface plus named finite-enum signals and a declared diagnostic type                                                      |
+| `step`     | Stable name and versioned worker reference; optional bounded authored instructions; declared input/output types and bindings; positive bounds |
+| `verifier` | The bounded worker surface plus optional bounded authored instructions, named finite-enum signals, and a declared diagnostic type             |
 | `seq`      | Declared state, non-empty ordered children, promoted state paths                                                                              |
 | `choice`   | Declared state, non-empty authored-order guarded branches, optional `otherwise`, promoted paths                                               |
 | `par`      | Declared state, non-empty branches, promoted paths, and a tagged join                                                                         |
@@ -85,8 +85,9 @@ Unknown-field rejection prevents them from being smuggled into otherwise valid n
 ## Stable references and policies
 
 Workers and policies are references of the form `name@positiveVersion`. Graphs cannot represent a
-command, executable path, endpoint, credential, bearer token, environment value, inline permission,
-or provider secret. A policy binding contains one versioned policy reference and the only v1
+typed command, executable path, endpoint, credential, bearer token, environment value, inline
+permission, or provider secret. Executable `instructions` are opaque prompt guidance and grant no
+runtime authority. A policy binding contains one versioned policy reference and the only v1
 default, `deny`. Registry descriptors and policy implementations are outside this contract.
 
 ## Closed payload algebra and subtyping
@@ -226,8 +227,9 @@ structural bounds. Canonical bytes are compact UTF-8 JSON after these transforma
 
 `GraphIdentity` is lowercase hexadecimal SHA-256 over exactly those canonical bytes. Equivalent IR
 built with different map, set, guard, binding-order, or parallel insertion order has the same
-identity. Changing semantic sequence order, a payload type, bound, worker reference, policy
-reference, binding content or multiplicity, or `k_of_n` selector multiplicity changes the identity.
+identity. Changing semantic sequence order, authored instructions, a payload type, bound, worker
+reference, policy reference, binding content or multiplicity, or `k_of_n` selector multiplicity
+changes the identity.
 
 ## Generated conformance vectors
 

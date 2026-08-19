@@ -33,6 +33,10 @@ fn request(run: &str, execution: u64) -> NodeRunRequest {
                 execution: native_v2_contract::ExecutionId::new(execution).assert_value(),
             },
             worker: WorkerRef::new("agent.worker@1").assert_value(),
+            instructions: Some(
+                openengine_cluster_protocol::NodeInstructions::new("Exercise the capsule node.")
+                    .assert_value(),
+            ),
             input: Value::Null,
             binding: binding.clone(),
         },

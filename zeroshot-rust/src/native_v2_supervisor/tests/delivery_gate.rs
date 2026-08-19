@@ -41,12 +41,14 @@ async fn admitted_with_delivery() -> AdmittedRun {
     let graph = full_graph(vec![
         json!({
             "kind":"step","name":"worker","worker":"agent.worker@1",
+            "instructions":"Implement the requested change.",
             "input":{"kind":"null"},"output":{"kind":"null"},
             "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1
         }),
         git_delivery_node(),
         json!({
             "kind":"verifier","name":"verify","worker":"agent.verify@1",
+            "instructions":"Verify the completed delivery.",
             "input":{"kind":"null"},"output":{"kind":"null"},
             "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1,
             "signals":{"verdict":["accepted"]},"diagnostic":{"kind":"null"}

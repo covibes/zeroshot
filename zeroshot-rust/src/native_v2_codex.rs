@@ -186,7 +186,11 @@ impl NativeV2CodexAdapter {
             control: &control,
             deadline: Instant::now() + PROCESS_TIMEOUT,
         };
-        let mut prompt = render_agent_prompt(&invocation.node.input, &invocation.response)?;
+        let mut prompt = render_agent_prompt(
+            invocation.agent_instructions()?,
+            &invocation.node.input,
+            &invocation.response,
+        )?;
         loop {
             match self.advance_turn(&turn, &prompt).await? {
                 AgentResponse::Complete(outcome) => return Ok(outcome),
@@ -425,14 +429,12 @@ fn add_resume_command(argv: &mut Vec<String>, resume: Option<&str>) {
         argv.push("resume".to_owned());
     }
 }
-
 fn provider_model(provider: CodexProvider, model: &str) -> String {
     match provider {
         CodexProvider::OpenAi => model.to_owned(),
         CodexProvider::OpenRouter => format!("openai/{model}"),
     }
 }
-
 fn add_node_args(
     argv: &mut Vec<String>,
     model: &str,
@@ -451,7 +453,6 @@ fn add_node_args(
         "web_search=\"disabled\"".to_owned(),
     ]);
 }
-
 fn add_session_target(argv: &mut Vec<String>, resume: Option<&str>) {
     if let Some(session_id) = resume {
         argv.push(session_id.to_owned());

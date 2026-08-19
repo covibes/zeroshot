@@ -141,9 +141,33 @@ fn valid_input_or(input: Value) -> Value {
 }
 
 pub(super) fn graph() -> GraphSpec {
-    let deliver = delivery_node();
+    graph_with_nodes(vec![worker_node(), delivery_node()])
+}
+
+fn worker_node() -> Value {
+    json!({
+        "kind": "step",
+        "name": "worker",
+        "worker": "agent.worker@1",
+        "instructions": "Implement the cloud test change.",
+        "input": {"kind": "null"},
+        "output": {"kind": "null"},
+        "inputBindings": [],
+        "writeBindings": [],
+        "timeoutMs": 10000,
+        "attempts": 1
+    })
+}
+
+fn graph_with_nodes(mut children: Vec<Value>) -> GraphSpec {
     let state = delivery_state_schema();
     let bindings = delivery_terminal_bindings();
+    children.push(json!({
+        "kind": "succeed",
+        "name": "done",
+        "output": state,
+        "bindings": bindings
+    }));
     serde_json::from_value(json!({
         "profile": "openengine.graph.full/v1",
         "initialInput": state,
@@ -152,26 +176,7 @@ pub(super) fn graph() -> GraphSpec {
             "kind": "seq",
             "name": "root",
             "state": state,
-            "children": [
-                {
-                    "kind": "step",
-                    "name": "worker",
-                    "worker": "agent.worker@1",
-                    "input": {"kind": "null"},
-                    "output": {"kind": "null"},
-                    "inputBindings": [],
-                    "writeBindings": [],
-                    "timeoutMs": 10000,
-                    "attempts": 1
-                },
-                deliver,
-                {
-                    "kind": "succeed",
-                    "name": "done",
-                    "output": state,
-                    "bindings": bindings
-                }
-            ],
+            "children": children,
             "promotedStatePaths": []
         }
     }))
@@ -224,6 +229,7 @@ fn complex_verifier_node(name: &str) -> Value {
         "kind": "verifier",
         "name": name,
         "worker": format!("agent.{name}@1"),
+        "instructions": format!("Verify the {name} result."),
         "input": {"kind": "null"},
         "output": {"kind": "null"},
         "inputBindings": [],
@@ -236,66 +242,41 @@ fn complex_verifier_node(name: &str) -> Value {
 }
 
 fn complex_graph() -> GraphSpec {
-    let deliver = delivery_node();
     let state = delivery_state_schema();
-    let bindings = delivery_terminal_bindings();
-    serde_json::from_value(json!({
-        "profile": "openengine.graph.full/v1",
-        "initialInput": state,
-        "policy": {"policy": "policy.native-v2@1", "default": "deny"},
-        "root": {
-            "kind": "seq",
-            "name": "root",
+    graph_with_nodes(vec![
+        worker_node(),
+        json!({
+            "kind": "par",
+            "name": "parallel_verifiers",
             "state": state,
-            "children": [
-                {
-                    "kind": "step",
-                    "name": "worker",
-                    "worker": "agent.worker@1",
-                    "input": {"kind": "null"},
-                    "output": {"kind": "null"},
-                    "inputBindings": [],
-                    "writeBindings": [],
-                    "timeoutMs": 10000,
-                    "attempts": 1
-                },
-                {
-                    "kind": "par",
-                    "name": "parallel_verifiers",
-                    "state": state,
-                    "branches": [complex_verifier_node("left"), complex_verifier_node("right")],
-                    "join": {"kind": "all"},
-                    "promotedStatePaths": []
-                },
-                {
-                    "kind": "loop",
-                    "name": "review_loop",
-                    "state": state,
-                    "body": {
-                        "kind": "seq",
-                        "name": "loop_body",
-                        "state": state,
-                        "children": [
-                            complex_verifier_node("loop_fresh"),
-                            complex_verifier_node("loop_check")
-                        ],
-                        "promotedStatePaths": []
-                    },
-                    "until": {
-                        "kind": "in",
-                        "value": {"name": "loop_check", "source": "signal", "field": "verdict"},
-                        "labels": ["accepted"]
-                    },
-                    "maxIterations": 3,
-                    "promotedStatePaths": []
-                },
-                deliver,
-                {"kind": "succeed", "name": "done", "output": state, "bindings": bindings}
-            ],
+            "branches": [complex_verifier_node("left"), complex_verifier_node("right")],
+            "join": {"kind": "all"},
             "promotedStatePaths": []
-        }
-    }))
-    .assert_value_with("complex graph")
+        }),
+        json!({
+            "kind": "loop",
+            "name": "review_loop",
+            "state": state,
+            "body": {
+                "kind": "seq",
+                "name": "loop_body",
+                "state": state,
+                "children": [
+                    complex_verifier_node("loop_fresh"),
+                    complex_verifier_node("loop_check")
+                ],
+                "promotedStatePaths": []
+            },
+            "until": {
+                "kind": "in",
+                "value": {"name": "loop_check", "source": "signal", "field": "verdict"},
+                "labels": ["accepted"]
+            },
+            "maxIterations": 3,
+            "promotedStatePaths": []
+        }),
+        delivery_node(),
+    ])
 }
 
 pub(super) fn complex_request() -> RunSubmitParams {

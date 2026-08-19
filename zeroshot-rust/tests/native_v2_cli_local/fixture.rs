@@ -428,6 +428,7 @@ fn local_graph() -> Value {
                     "kind":"step",
                     "name":"worker",
                     "worker":"agent.worker@1",
+                    "instructions":"Exercise the local worker.",
                     "input":{"kind":"null"},
                     "output":{"kind":"null"},
                     "inputBindings":[],

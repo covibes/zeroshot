@@ -29,6 +29,7 @@ pub(super) enum Initialization {
 pub(super) struct RunProgram {
     pub(super) admitted: AdmittedRun,
     pub(super) timeouts: BTreeMap<NodeName, Duration>,
+    pub(super) instructions: BTreeMap<NodeName, Option<NodeInstructions>>,
 }
 
 #[derive(Default)]
@@ -273,49 +274,71 @@ pub(super) fn next_execution(
         .ok_or(NativeV2SupervisorError::InvalidState)
 }
 
-pub(super) fn timeout_catalog(root: &GraphNode) -> BTreeMap<NodeName, Duration> {
-    let mut timeouts = BTreeMap::new();
-    collect_timeouts(root, &mut timeouts);
-    timeouts
+pub(super) struct ExecutionCatalog {
+    pub(super) timeouts: BTreeMap<NodeName, Duration>,
+    pub(super) instructions: BTreeMap<NodeName, Option<NodeInstructions>>,
 }
 
-pub(super) fn collect_timeouts(node: &GraphNode, timeouts: &mut BTreeMap<NodeName, Duration>) {
+pub(super) fn execution_catalog(root: &GraphNode) -> ExecutionCatalog {
+    let mut catalog = ExecutionCatalog {
+        timeouts: BTreeMap::new(),
+        instructions: BTreeMap::new(),
+    };
+    collect_execution_metadata(root, &mut catalog);
+    catalog
+}
+
+fn collect_execution_metadata(node: &GraphNode, catalog: &mut ExecutionCatalog) {
     match node {
-        GraphNode::Step(node) => {
-            timeouts.insert(
-                node.name.clone(),
-                Duration::from_millis(node.timeout_ms.get()),
-            );
-        }
-        GraphNode::Verifier(node) => {
-            timeouts.insert(
-                node.name.clone(),
-                Duration::from_millis(node.timeout_ms.get()),
-            );
-        }
+        GraphNode::Step(node) => record_execution_metadata(
+            catalog,
+            &node.name,
+            node.timeout_ms.get(),
+            &node.instructions,
+        ),
+        GraphNode::Verifier(node) => record_execution_metadata(
+            catalog,
+            &node.name,
+            node.timeout_ms.get(),
+            &node.instructions,
+        ),
         GraphNode::Seq(node) => node
             .children
             .as_slice()
             .iter()
-            .for_each(|child| collect_timeouts(child, timeouts)),
+            .for_each(|child| collect_execution_metadata(child, catalog)),
         GraphNode::Choice(node) => {
             node.branches
                 .as_slice()
                 .iter()
-                .for_each(|branch| collect_timeouts(&branch.node, timeouts));
+                .for_each(|branch| collect_execution_metadata(&branch.node, catalog));
             if let Some(otherwise) = &node.otherwise {
-                collect_timeouts(otherwise, timeouts);
+                collect_execution_metadata(otherwise, catalog);
             }
         }
         GraphNode::Par(node) => node
             .branches
             .as_slice()
             .iter()
-            .for_each(|branch| collect_timeouts(branch, timeouts)),
-        GraphNode::Loop(node) => collect_timeouts(&node.body, timeouts),
-        GraphNode::Map(node) => collect_timeouts(&node.body, timeouts),
+            .for_each(|branch| collect_execution_metadata(branch, catalog)),
+        GraphNode::Loop(node) => collect_execution_metadata(&node.body, catalog),
+        GraphNode::Map(node) => collect_execution_metadata(&node.body, catalog),
         GraphNode::Succeed(_) | GraphNode::Fail(_) => {}
     }
+}
+
+fn record_execution_metadata(
+    catalog: &mut ExecutionCatalog,
+    name: &NodeName,
+    timeout_ms: u64,
+    instructions: &Option<NodeInstructions>,
+) {
+    catalog
+        .timeouts
+        .insert(name.clone(), Duration::from_millis(timeout_ms));
+    catalog
+        .instructions
+        .insert(name.clone(), instructions.clone());
 }
 
 pub(super) fn runner_failure(error: NodeRunnerError) -> WorkerOutcome {

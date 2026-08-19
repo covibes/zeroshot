@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{GraphNode, NodeName, RunId, WorkerOutcome, WorkerRef};
+use openengine_cluster_protocol::{
+    GraphNode, NodeInstructions, NodeName, RunId, WorkerOutcome, WorkerRef,
+};
 use tokio::sync::{
     broadcast, mpsc, oneshot, watch, Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock,
 };
@@ -117,6 +119,18 @@ pub struct DriverInvocation {
     pub response: NodeResponseContract,
     pub environment: ResolvedEnvironment,
     pub session: Arc<dyn NodeSession>,
+}
+
+impl DriverInvocation {
+    pub(crate) fn agent_instructions(&self) -> Result<&NodeInstructions, NodeRunnerError> {
+        if !matches!(&self.node.binding, NodeRuntimeBinding::Agent { .. }) {
+            return Err(NodeRunnerError::InvalidRole);
+        }
+        self.node
+            .instructions
+            .as_ref()
+            .ok_or(NodeRunnerError::InvalidRole)
+    }
 }
 
 #[derive(Clone)]

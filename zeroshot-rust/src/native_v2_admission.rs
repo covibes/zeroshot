@@ -92,6 +92,10 @@ pub enum NativeV2AdmissionError {
     MissingRuntimeBinding { node: NodeName },
     #[error("runtime plan contains a binding for non-executable node {node}")]
     UnexpectedRuntimeBinding { node: NodeName },
+    #[error("agent-backed node {node} requires authored instructions")]
+    MissingAgentInstructions { node: NodeName },
+    #[error("Git delivery node {node} rejects authored instructions")]
+    DeliveryInstructionsForbidden { node: NodeName },
     #[error("Git delivery binding {node} must be attached to a verifier node")]
     DeliveryMustBeVerifier { node: NodeName },
     #[error("Git delivery binding {node} uses unsupported worker {worker}")]

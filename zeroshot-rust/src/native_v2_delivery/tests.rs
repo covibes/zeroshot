@@ -269,6 +269,7 @@ async fn run_delivery_with_id(
                     execution: native_v2_contract::ExecutionId::new(1).assert_value(),
                 },
                 worker: WorkerRef::new(worker_ref(request.mode)).assert_value(),
+                instructions: None,
                 input: Value::Null,
                 binding,
             },

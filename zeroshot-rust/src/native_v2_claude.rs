@@ -445,7 +445,11 @@ fn observe_session(
 }
 
 fn prompt(invocation: &DriverInvocation) -> Result<String, NodeRunnerError> {
-    let value = render_agent_prompt(&invocation.node.input, &invocation.response)?;
+    let value = render_agent_prompt(
+        invocation.agent_instructions()?,
+        &invocation.node.input,
+        &invocation.response,
+    )?;
     if value.len() > MAX_PROMPT_BYTES || value.contains('\0') {
         return Err(NodeRunnerError::Driver);
     }

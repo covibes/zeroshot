@@ -263,8 +263,11 @@ fn routing_graph() -> GraphSpec {
                                     },
                                     "node":{
                                         "kind":"step","name":"repair","worker":"agent.repair@1",
+                                        "instructions":"Repair the failed delivery.",
                                         "input":{"kind":"null"},"output":{"kind":"null"},
-                                        "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1
+                                        "inputBindings":Value::Array(Vec::new()),
+                                        "writeBindings":Value::Array(Vec::new()),
+                                        "timeoutMs":1000,"attempts":1
                                     }
                                 }],
                                 "otherwise":{

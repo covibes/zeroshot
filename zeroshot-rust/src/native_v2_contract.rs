@@ -10,7 +10,8 @@ use std::marker::PhantomData;
 use std::num::NonZeroU64;
 
 use openengine_cluster_protocol::{
-    CompiledGraphIr, GraphSpec, IdempotencyKey, NodeName, RunId, WorkerOutcome, WorkerRef,
+    CompiledGraphIr, GraphSpec, IdempotencyKey, NodeInstructions, NodeName, RunId, WorkerOutcome,
+    WorkerRef,
 };
 pub use openengine_cluster_protocol::{
     ClaudeProvider, CodexProvider, DeclaredEnvironment, EnvironmentVariableName, ModelId,
@@ -149,6 +150,7 @@ pub struct ExecutionRef {
 pub struct NodeInvocation {
     pub reference: ExecutionRef,
     pub worker: WorkerRef,
+    pub instructions: Option<NodeInstructions>,
     pub input: Value,
     pub binding: NodeRuntimeBinding,
 }
@@ -183,6 +185,7 @@ mod tests {
                             "kind": "step",
                             "name": "worker",
                             "worker": "agent.worker@1",
+                            "instructions": "Implement the requested change.",
                             "input": { "kind": "null" },
                             "output": { "kind": "null" },
                             "inputBindings": [],

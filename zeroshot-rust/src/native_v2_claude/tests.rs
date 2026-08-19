@@ -52,6 +52,7 @@ fn graph(verifier: bool) -> GraphSpec {
     let executable = if verifier {
         json!({
             "kind":"verifier", "name":"agent", "worker":"agent.claude@1",
+            "instructions":"Exercise the Claude adapter.",
             "input":{"kind":"null"}, "output":{"kind":"null"},
             "inputBindings":[], "writeBindings":[], "timeoutMs":60000, "attempts":1,
             "signals":{"verdict":["accepted","rejected"]}, "diagnostic":{"kind":"null"}
@@ -59,6 +60,7 @@ fn graph(verifier: bool) -> GraphSpec {
     } else {
         json!({
             "kind":"step", "name":"agent", "worker":"agent.claude@1",
+            "instructions":"Exercise the Claude adapter.",
             "input":{"kind":"null"}, "output":{"kind":"string"},
             "inputBindings":[], "writeBindings":[], "timeoutMs":60000, "attempts":1
         })
@@ -133,6 +135,7 @@ fn request(binding: NodeRuntimeBinding, execution: u64, values: &[(&str, &str)])
         node_instance: 1,
         execution,
         worker: "agent.claude@1",
+        instructions: "Exercise the Claude adapter.",
         input: Value::String("perform the node task".to_owned()),
         binding,
         environment,
@@ -256,8 +259,9 @@ async fn scripted_anthropic_and_openrouter_commands_are_exact_and_ambient_free()
             "--effort\nmax\n--dangerously-skip-permissions\n",
         )));
         assert!(!arguments.contains("--setting-sources"));
+        assert!(arguments.contains("Authored instructions:\nExercise the Claude adapter."));
         assert!(arguments.contains("Input JSON:\n\"perform the node task\""));
-        assert!(arguments.contains("Response contract:\n{\"kind\":\"worker\""));
+        assert!(arguments.contains("Runtime-owned response contract:\n{\"kind\":\"worker\""));
         assert_eq!(workspace.read("ambient.txt").trim(), "unset");
         match provider {
             ClaudeProvider::Anthropic => {

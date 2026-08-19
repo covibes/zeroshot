@@ -107,6 +107,7 @@ async fn admitted(binding: NodeRuntimeBinding, provider: CodexProvider) -> Admit
     let graph = full_graph(vec![
         json!({
             "kind":"step","name":"work","worker":"agent.work@1",
+            "instructions":"Exercise the Codex adapter.",
             "input":{"kind":"null"},
             "output":{"kind":"record","fields":{
                 "answer":{"type":{"kind":"integer"},"required":true}
@@ -152,6 +153,7 @@ fn request(admitted: &AdmittedRun, execution: u64, values: &[(&str, String)]) ->
         node_instance: 1,
         execution,
         worker: "agent.work@1",
+        instructions: "Exercise the Codex adapter.",
         input: json!({"task":"change the workspace"}),
         binding,
         environment: values,
@@ -238,8 +240,9 @@ async fn openrouter_script_observes_exact_configuration_environment_output_and_a
         "arg=--sandbox\narg=workspace-write",
         "arg=approval_policy=\"never\"",
         "arg=web_search=\"disabled\"",
+        "Authored instructions:\nExercise the Codex adapter.",
         "Input JSON:\n{\"task\":\"change the workspace\"}",
-        "Response contract:\n{\"kind\":\"worker\",\"output\":{\"kind\":\"record\"",
+        "Runtime-owned response contract:\n{\"kind\":\"worker\",\"output\":{\"kind\":\"record\"",
         "openrouter_key=fake-openrouter-key",
         "codex_key=unset",
         "path=/usr/bin:/bin",

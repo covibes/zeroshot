@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use openengine_cluster_protocol::{
-    GraphNode, GraphProfile, GraphSpec, NodeName, VerifierContract, WorkerContract, WorkerRef,
-    MAX_DECLARED_ENVIRONMENT_NAMES, RUNTIME_WORKER_ERRORS,
+    GraphNode, GraphProfile, GraphSpec, NodeInstructions, NodeName, VerifierContract,
+    WorkerContract, WorkerRef, MAX_DECLARED_ENVIRONMENT_NAMES, RUNTIME_WORKER_ERRORS,
 };
 
 use super::{CODEX_MODELS, CLAUDE_MODELS, DeliveryPolicy, NativeV2AdmissionError};
@@ -46,6 +46,7 @@ enum LeafKind {
 pub(super) struct ExecutableDeclaration {
     pub(super) name: NodeName,
     pub(super) worker: WorkerRef,
+    pub(super) instructions: Option<NodeInstructions>,
     pub(super) contract: WorkerContract,
     attempts: u64,
     kind: LeafKind,
@@ -62,6 +63,7 @@ fn collect_declarations(node: &GraphNode, declarations: &mut Vec<ExecutableDecla
         GraphNode::Step(step) => declarations.push(ExecutableDeclaration {
             name: step.name.clone(),
             worker: step.worker.clone(),
+            instructions: step.instructions.clone(),
             contract: WorkerContract {
                 input: step.input.clone(),
                 output: step.output.clone(),
@@ -74,6 +76,7 @@ fn collect_declarations(node: &GraphNode, declarations: &mut Vec<ExecutableDecla
         GraphNode::Verifier(verifier) => declarations.push(ExecutableDeclaration {
             name: verifier.name.clone(),
             worker: verifier.worker.clone(),
+            instructions: verifier.instructions.clone(),
             contract: WorkerContract {
                 input: verifier.input.clone(),
                 output: verifier.output.clone(),
@@ -146,34 +149,60 @@ fn validate_binding_kinds(
 ) -> Result<(), NativeV2AdmissionError> {
     for declaration in declarations {
         let binding = &bindings[&declaration.name];
-        if declaration.kind == LeafKind::Step
-            && matches!(binding, NodeRuntimeBinding::GitDelivery { .. })
-        {
-            return Err(NativeV2AdmissionError::DeliveryMustBeVerifier {
-                node: declaration.name.clone(),
-            });
-        }
-
-        match (is_git_delivery_worker(&declaration.worker), binding) {
-            (true, NodeRuntimeBinding::Agent { .. }) => {
-                return Err(NativeV2AdmissionError::DeliveryWorkerRequiresBinding {
-                    node: declaration.name.clone(),
-                    worker: declaration.worker.clone(),
-                });
-            }
-            (false, NodeRuntimeBinding::GitDelivery { .. }) => {
-                return Err(NativeV2AdmissionError::UnsupportedDeliveryWorker {
-                    node: declaration.name.clone(),
-                    worker: declaration.worker.clone(),
-                });
-            }
-            (true, NodeRuntimeBinding::GitDelivery { .. }) => {
-                validate_delivery_declaration(declaration)?;
-            }
-            _ => {}
-        }
+        validate_binding_kind(declaration, binding)?;
+        validate_instructions(declaration, binding)?;
     }
     Ok(())
+}
+
+fn validate_binding_kind(
+    declaration: &ExecutableDeclaration,
+    binding: &NodeRuntimeBinding,
+) -> Result<(), NativeV2AdmissionError> {
+    if declaration.kind == LeafKind::Step
+        && matches!(binding, NodeRuntimeBinding::GitDelivery { .. })
+    {
+        return Err(NativeV2AdmissionError::DeliveryMustBeVerifier {
+            node: declaration.name.clone(),
+        });
+    }
+    match (is_git_delivery_worker(&declaration.worker), binding) {
+        (true, NodeRuntimeBinding::Agent { .. }) => {
+            Err(NativeV2AdmissionError::DeliveryWorkerRequiresBinding {
+                node: declaration.name.clone(),
+                worker: declaration.worker.clone(),
+            })
+        }
+        (false, NodeRuntimeBinding::GitDelivery { .. }) => {
+            Err(NativeV2AdmissionError::UnsupportedDeliveryWorker {
+                node: declaration.name.clone(),
+                worker: declaration.worker.clone(),
+            })
+        }
+        (true, NodeRuntimeBinding::GitDelivery { .. }) => {
+            validate_delivery_declaration(declaration)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_instructions(
+    declaration: &ExecutableDeclaration,
+    binding: &NodeRuntimeBinding,
+) -> Result<(), NativeV2AdmissionError> {
+    match (binding, &declaration.instructions) {
+        (NodeRuntimeBinding::Agent { .. }, None) => {
+            Err(NativeV2AdmissionError::MissingAgentInstructions {
+                node: declaration.name.clone(),
+            })
+        }
+        (NodeRuntimeBinding::GitDelivery { .. }, Some(_)) => {
+            Err(NativeV2AdmissionError::DeliveryInstructionsForbidden {
+                node: declaration.name.clone(),
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 fn validate_delivery_policy(

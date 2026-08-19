@@ -291,6 +291,10 @@ async fn default_claude_environment_prepares_capsule_session_home() {
                         .assert_value_with("execution"),
                 },
                 worker: WorkerRef::new("agent.work@1").assert_value_with("worker"),
+                instructions: Some(
+                    openengine_cluster_protocol::NodeInstructions::new("Exercise the hosted node.")
+                        .assert_value_with("instructions"),
+                ),
                 input: Value::Null,
                 binding: binding.clone(),
             },

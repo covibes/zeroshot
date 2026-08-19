@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use openengine_cluster_protocol::{GraphSpec, NodeName, RunId, WorkerRef};
+use openengine_cluster_protocol::{GraphSpec, NodeInstructions, NodeName, RunId, WorkerRef};
 use serde_json::{Value, json};
 
 use crate::native_v2_admission::NativeV2Admission;
@@ -88,6 +88,7 @@ pub(crate) struct NodeRequestFixture<'a> {
     pub(crate) node_instance: u64,
     pub(crate) execution: u64,
     pub(crate) worker: &'a str,
+    pub(crate) instructions: &'a str,
     pub(crate) input: Value,
     pub(crate) binding: NodeRuntimeBinding,
     pub(crate) environment: BTreeMap<native_v2_contract::EnvironmentVariableName, String>,
@@ -107,6 +108,9 @@ impl NodeRequestFixture<'_> {
                     execution: ExecutionId::new(self.execution).assert_value_with("execution"),
                 },
                 worker: WorkerRef::new(self.worker).assert_value_with("worker reference"),
+                instructions: Some(
+                    NodeInstructions::new(self.instructions).assert_value_with("node instructions"),
+                ),
                 input: self.input,
                 binding: self.binding,
             },

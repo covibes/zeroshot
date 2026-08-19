@@ -60,16 +60,11 @@ async fn opaque_selectors_disambiguate_parallel_verifier_attachments() {
 }
 
 fn node_request(reference: &ExecutionRef) -> NodeRunRequest {
-    let binding = agent_binding();
-    NodeRunRequest {
-        invocation: NodeInvocation {
-            reference: reference.clone(),
-            worker: WorkerRef::new(format!("agent.{}@1", reference.node.as_str())).assert_value(),
-            input: Value::Null,
-            binding: binding.clone(),
-        },
-        environment: ResolvedEnvironment::exact(&binding, BTreeMap::new()).assert_value(),
-    }
+    crate::native_v2_runner::test_support::request(
+        reference.run_id.as_str(),
+        reference.node.as_str(),
+        (reference.node_instance.get(), reference.execution.get()),
+    )
 }
 
 pub(super) async fn attach_text(subscription: &mut RunAttachSubscription) -> String {

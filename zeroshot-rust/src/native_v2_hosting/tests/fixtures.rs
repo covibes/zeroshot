@@ -159,6 +159,7 @@ fn graph() -> GraphSpec {
     full_graph(vec![
         json!({
             "kind":"step","name":"work","worker":"agent.work@1",
+            "instructions":"Exercise the hosted node.",
             "input":{"kind":"null"},"output":{"kind":"null"},
             "inputBindings":[],"writeBindings":[],"timeoutMs":1000,"attempts":1
         }),

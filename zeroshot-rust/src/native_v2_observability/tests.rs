@@ -6,27 +6,20 @@ use async_trait::async_trait;
 use openengine_cluster_protocol::{
     IdempotencyKey, NodeName, PositiveInteger, RunAttachParams, RunId, RunLogsParams, RunStatus,
     RunStatusParams, RunWatchEventNotification, RunWatchParams, Sha256Digest, TerminalResult,
-    WorkerOutcome, WorkerRef,
+    WorkerOutcome,
 };
 use serde_json::Value;
 use tokio::sync::{Barrier, Notify};
 
 use super::*;
-use crate::execution::SessionScope;
 use crate::full_v1_reducer::StructuralOccurrence;
-use crate::native_v2_contract::{
-    AdmittedRun, ExecutionRef, NodeCompletion, NodeInvocation, NodeRuntimeBinding,
-};
+use crate::native_v2_contract::{AdmittedRun, ExecutionRef, NodeCompletion, NodeInvocation};
 use crate::native_v2_runner::{
     DriverControl, DriverInvocation, LiveOutput, LiveOutputStream, NativeNodeRunner, NodeDriver,
     NodeRunRequest, NodeRunner, NodeRunnerError, NodeSession, ResolvedEnvironment, SessionFactory,
 };
 use crate::v2_run_ledger::fake::FakeRunLedger;
 use crate::v2_run_ledger::{CreateRun, RunEvent, RunLedger, SafeLogLine};
-
-fn agent_binding() -> NodeRuntimeBinding {
-    crate::native_v2_runner::test_support::binding(SessionScope::Execution)
-}
 
 fn admitted_run() -> AdmittedRun {
     crate::native_v2_runner::test_support::admitted()
@@ -129,17 +122,12 @@ async fn live_attach_fixture(run: &str) -> LiveAttachFixture {
         Arc::new(FakeSessions),
     )
     .assert_value();
-    let binding = agent_binding();
     let mut handle = runner
-        .start(NodeRunRequest {
-            invocation: NodeInvocation {
-                reference: reference.clone(),
-                worker: WorkerRef::new("agent.worker@1").assert_value(),
-                input: Value::Null,
-                binding: binding.clone(),
-            },
-            environment: ResolvedEnvironment::exact(&binding, BTreeMap::new()).assert_value(),
-        })
+        .start(crate::native_v2_runner::test_support::request(
+            reference.run_id.as_str(),
+            reference.node.as_str(),
+            (reference.node_instance.get(), reference.execution.get()),
+        ))
         .await
         .assert_value();
     let service = NativeV2Observability::new(ledger.clone());

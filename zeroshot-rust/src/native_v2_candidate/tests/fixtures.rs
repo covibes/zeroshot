@@ -103,6 +103,7 @@ pub(super) fn shipping_graph() -> GraphSpec {
             "children":[
                 {
                     "kind":"step","name":"worker","worker":"agent.worker@1",
+                    "instructions":"Exercise the candidate worker.",
                     "input":{"kind":"null"},"output":{"kind":"null"},
                     "inputBindings":[],"writeBindings":[],"timeoutMs":10000,"attempts":1
                 },

@@ -10,9 +10,9 @@ mod json_mut;
 use assert_value::AssertValue;
 use openengine_cluster_testkit::assertions::AssertError;
 use openengine_cluster_protocol::{
-    FieldName, FieldPath, GraphDiagnostic, GraphProfile, GraphSpec, Join, NodeName, PolicyRef,
-    PositiveInteger, WorkerErrorCode, WorkerRef, FULL_GRAPH_PROFILE, LEGACY_ZEROSHOT_WORKER,
-    SINGLE_WORKER_GRAPH_PROFILE,
+    FieldName, FieldPath, GraphDiagnostic, GraphProfile, GraphSpec, Join, NodeInstructions,
+    NodeName, PolicyRef, PositiveInteger, WorkerErrorCode, WorkerRef, FULL_GRAPH_PROFILE,
+    LEGACY_ZEROSHOT_WORKER, MAX_NODE_INSTRUCTIONS_BYTES, SINGLE_WORKER_GRAPH_PROFILE,
 };
 use serde_json::{json, Value};
 
@@ -69,6 +69,7 @@ fn full_graph() -> Value {
         "kind": "step",
         "name": "work",
         "worker": LEGACY_ZEROSHOT_WORKER,
+        "instructions": "Implement the requested change.\nRun focused checks.",
         "input": record_type(),
         "output": { "kind": "string" },
         "inputBindings": [{
@@ -86,6 +87,7 @@ fn full_graph() -> Value {
         "kind": "verifier",
         "name": "verify",
         "worker": "worker.validator@2",
+        "instructions": "Independently verify the result.",
         "input": { "kind": "null" },
         "output": { "kind": "boolean" },
         "inputBindings": [],
@@ -253,6 +255,28 @@ fn identifiers_references_paths_and_positive_counts_validate_on_construction_and
             .assert_value()
             .is_valid(&graph)
     );
+}
+
+#[test]
+fn node_instructions_are_nonempty_bounded_and_schema_validated() {
+    assert!(NodeInstructions::new("Implement the change.\nRun tests.").is_ok());
+    assert!(NodeInstructions::new(" \n\t ").is_err());
+    assert!(NodeInstructions::new("contains\0nul").is_err());
+    assert!(NodeInstructions::new("a".repeat(MAX_NODE_INSTRUCTIONS_BYTES + 1)).is_err());
+
+    let schema = serde_json::to_value(schemars::schema_for!(GraphSpec)).assert_value();
+    let validator = jsonschema::validator_for(&schema).assert_value();
+    assert!(validator.is_valid(&full_graph()));
+    for invalid in [
+        json!(" \n\t "),
+        json!("contains\0nul"),
+        json!("a".repeat(MAX_NODE_INSTRUCTIONS_BYTES + 1)),
+    ] {
+        let mut graph = full_graph();
+        *json_mut::json_at_mut(&mut graph, "/root/children/0/instructions") = invalid;
+        assert!(serde_json::from_value::<GraphSpec>(graph.clone()).is_err());
+        assert!(!validator.is_valid(&graph));
+    }
 }
 
 #[test]
