@@ -125,7 +125,7 @@ impl ProductionCapsuleAllocator {
         let github_config = GhCliAuthorityConfig {
             git_program: self.config.git_program.clone(),
             gh_program: self.config.gh_program.clone(),
-            ..GhCliAuthorityConfig::hosted()
+            ..GhCliAuthorityConfig::hosted(runtime_home)
         };
         let candidate = build_native_v2_candidate(
             admitted,

@@ -27,16 +27,18 @@ const PULL_REQUEST_BODY: &str = "Created by Zeroshot v2.";
 pub struct GhCliAuthorityConfig {
     pub git_program: PathBuf,
     pub gh_program: PathBuf,
+    pub home_directory: PathBuf,
     pub api_deadline: Duration,
     pub push_deadline: Duration,
 }
 
 impl GhCliAuthorityConfig {
     #[must_use]
-    pub fn hosted() -> Self {
+    pub fn hosted(home_directory: PathBuf) -> Self {
         Self {
             git_program: PathBuf::from("/usr/bin/git"),
             gh_program: PathBuf::from("/usr/bin/gh"),
+            home_directory,
             api_deadline: DEFAULT_API_DEADLINE,
             push_deadline: DEFAULT_PUSH_DEADLINE,
         }
@@ -59,7 +61,7 @@ impl GhCliDeliveryAuthority {
         arguments: &[String],
         credential: GitHubCredential<'_>,
     ) -> Result<Value, GitHubAuthorityError> {
-        let mut command = clean_command(&self.config.gh_program, credential);
+        let mut command = clean_command(&self.config, &self.config.gh_program, credential);
         command.arg("api").args(arguments).stdout(Stdio::piped());
         let output = bounded_output(command, self.config.api_deadline).await?;
         serde_json::from_slice(&output).map_err(|_| GitHubAuthorityError::Rejected)
@@ -211,7 +213,7 @@ impl GitHubDeliveryAuthority for GhCliDeliveryAuthority {
         request: &GitHubPushRequest,
         credential: GitHubCredential<'_>,
     ) -> Result<(), GitHubAuthorityError> {
-        let mut command = clean_command(&self.config.git_program, credential);
+        let mut command = clean_command(&self.config, &self.config.git_program, credential);
         let authorization = format!(
             "AUTHORIZATION: basic {}",
             encode_basic_credential(credential.expose())
@@ -350,11 +352,16 @@ fn classify_review(wire: &PullRequestWire) -> Result<ReviewClassification, GitHu
     }
 }
 
-fn clean_command(program: &PathBuf, credential: GitHubCredential<'_>) -> Command {
+fn clean_command(
+    config: &GhCliAuthorityConfig,
+    program: &PathBuf,
+    credential: GitHubCredential<'_>,
+) -> Command {
     let mut command = Command::new(program);
     command
         .kill_on_drop(true)
         .env_clear()
+        .env("HOME", &config.home_directory)
         .env("LANG", "C")
         .env("GH_HOST", "github.com")
         .env("GH_TOKEN", credential.expose())
@@ -411,88 +418,5 @@ async fn bounded_output(
 }
 
 #[cfg(test)]
-mod unit {
-    use openengine_cluster_testkit::assertions::AssertValue;
-    use super::*;
-    use crate::native_v2_delivery::DeliveryTarget;
-    use serde_json::json;
-
-    #[test]
-    fn basic_credential_encoding_is_canonical() {
-        assert_eq!(
-            encode_basic_credential("token"),
-            "eC1hY2Nlc3MtdG9rZW46dG9rZW4="
-        );
-    }
-
-    #[test]
-    fn check_evidence_is_closed_and_complete() {
-        assert_eq!(
-            classify_checks(
-                json!({"total_count":0,"check_runs":[]}),
-                json!({"state":"pending","statuses":[]})
-            )
-            .assert_value(),
-            GitHubChecks::NotRequired
-        );
-        assert_eq!(
-            classify_checks(
-                json!({"total_count":1,"check_runs":[{"status":"completed","conclusion":"failure"}]}),
-                json!({"state":"success","statuses":[]})
-            )
-            .assert_value(),
-            GitHubChecks::Failed
-        );
-        assert!(
-            classify_checks(
-                json!({"total_count":101,"check_runs":[]}),
-                json!({"state":"success","statuses":[]})
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn receipt_rejects_changed_authority() {
-        let request = GitHubReviewRequest {
-            target: DeliveryTarget::new(
-                "acme/project",
-                "main",
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .assert_value(),
-            head_branch: "zeroshot/v2-run".to_owned(),
-            head_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
-        };
-        let changed = review_wire("other", None);
-        assert!(review_receipt(changed, &request).is_err());
-    }
-
-    #[test]
-    fn open_nonmergeable_review_is_an_authoritative_conflict() {
-        assert!(matches!(
-            classify_review(&review_wire("main", Some(false))).assert_value(),
-            ReviewClassification::Conflict
-        ));
-        assert!(matches!(
-            classify_review(&review_wire("main", None)).assert_value(),
-            ReviewClassification::Open
-        ));
-    }
-
-    fn review_wire(base_branch: &str, mergeable: Option<bool>) -> PullRequestWire {
-        serde_json::from_value(json!({
-            "number":17,"state":"open","merged":false,"merge_commit_sha":null,
-            "mergeable":mergeable,
-            "base":{
-                "ref":base_branch,"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "repo":{"full_name":"acme/project"}
-            },
-            "head":{
-                "ref":"zeroshot/v2-run","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "repo":{"full_name":"acme/project"}
-            }
-        }))
-        .assert_value()
-    }
-}
+#[path = "github/tests.rs"]
+mod unit;

@@ -8,6 +8,7 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
     let authority = GhCliDeliveryAuthority::new(GhCliAuthorityConfig {
         git_program: git_program.clone(),
         gh_program: gh_program.clone(),
+        home_directory: repo.root.path().to_owned(),
         api_deadline: Duration::from_secs(2),
         push_deadline: Duration::from_secs(2),
     });
@@ -58,7 +59,7 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
     let git_capture =
         fs::read_to_string(format!("{}.capture", git_program.display())).assert_value();
     assert!(git_capture.contains("token=test-token"));
-    assert!(git_capture.contains("home=unset"));
+    assert!(git_capture.contains(&format!("home={}", repo.root.path().display())));
     assert!(git_capture.contains("config_count=2"));
     assert!(git_capture.contains("config_key_1=http.https://github.com/.extraheader"));
     assert!(git_capture.contains("arg=https://github.com/acme/project.git"));
@@ -66,7 +67,10 @@ async fn production_gh_transport_uses_exact_args_and_a_clean_environment() {
     assert!(!argument_lines(&git_capture).contains("test-token"));
 
     let gh_capture = fs::read_to_string(format!("{}.capture", gh_program.display())).assert_value();
-    assert!(gh_capture.contains("token=test-token\nhost=github.com\nhome=unset"));
+    assert!(gh_capture.contains(&format!(
+        "token=test-token\nhost=github.com\nhome={}",
+        repo.root.path().display()
+    )));
     assert!(gh_capture.contains("arg=repos/acme/project/pulls"));
     assert!(gh_capture.contains("arg=state=all"));
     assert!(gh_capture.contains("arg=head=acme:zeroshot/v2-test"));
@@ -98,6 +102,7 @@ async fn production_gh_transport_rejects_malformed_or_changed_authority() {
         let authority = GhCliDeliveryAuthority::new(GhCliAuthorityConfig {
             git_program: PathBuf::from("/usr/bin/git"),
             gh_program,
+            home_directory: repo.root.path().to_owned(),
             api_deadline: Duration::from_secs(2),
             push_deadline: Duration::from_secs(2),
         });

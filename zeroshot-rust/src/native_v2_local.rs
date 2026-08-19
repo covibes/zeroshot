@@ -294,7 +294,7 @@ pub fn build_local_process_candidate(
         admitted.source.base_revision.as_str(),
     )
     .map_err(|_| LocalCompositionError::SourceSnapshot)?;
-    let mut github_config = GhCliAuthorityConfig::hosted();
+    let mut github_config = GhCliAuthorityConfig::hosted(runtime_home);
     github_config.git_program = PathBuf::from("git");
     github_config.gh_program = PathBuf::from("gh");
     let candidate = build_local_native_v2_candidate(
