@@ -8,7 +8,7 @@ use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
 
 use super::contract::{canonical_host, default_port, uri_text_is_invalid};
-use super::{AuthenticatedTargetOecp, TargetConnectorError, TargetRecord};
+use super::{TargetConnectorError, TargetOecpAccess, TargetRecord};
 
 #[async_trait]
 pub trait TargetOecpDialer: Send + Sync {
@@ -17,33 +17,35 @@ pub trait TargetOecpDialer: Send + Sync {
     async fn dial(
         &self,
         target: &TargetRecord,
-        session: AuthenticatedTargetOecp,
+        session: TargetOecpAccess,
     ) -> Result<Arc<Self::Transport>, TargetConnectorError>;
 }
 
-/// Concrete authenticated WebSocket binding. Session discovery and token refresh stay in the
-/// control authority; this type performs only one bounded-authority WebSocket handshake.
+/// Concrete same-authority WebSocket binding. Session discovery and hosted token refresh stay in
+/// the control authority; direct targets deliberately send no Authorization header.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AuthenticatedOecpWebSocketDialer;
+pub struct TargetOecpWebSocketDialer;
 
 #[async_trait]
-impl TargetOecpDialer for AuthenticatedOecpWebSocketDialer {
+impl TargetOecpDialer for TargetOecpWebSocketDialer {
     type Transport = DialedWebSocketTransport;
 
     async fn dial(
         &self,
         target: &TargetRecord,
-        session: AuthenticatedTargetOecp,
+        session: TargetOecpAccess,
     ) -> Result<Arc<Self::Transport>, TargetConnectorError> {
         validate_oecp_endpoint(&target.origin, session.endpoint())?;
         let mut request = session
             .endpoint()
             .into_client_request()
             .map_err(|_| TargetConnectorError::InvalidOecpEndpoint)?;
-        let mut value = HeaderValue::from_str(&format!("Bearer {}", session.bearer_token()))
-            .map_err(|_| TargetConnectorError::InvalidBearerToken)?;
-        value.set_sensitive(true);
-        request.headers_mut().insert(AUTHORIZATION, value);
+        if let Some(token) = session.bearer_token() {
+            let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| TargetConnectorError::InvalidBearerToken)?;
+            value.set_sensitive(true);
+            request.headers_mut().insert(AUTHORIZATION, value);
+        }
         let (stream, _response) = tokio_tungstenite::connect_async(request)
             .await
             .map_err(|error| TargetConnectorError::OecpConnection(error.to_string()))?;

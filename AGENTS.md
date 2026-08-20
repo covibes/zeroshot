@@ -115,7 +115,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native v2 provider/delivery composition   | `zeroshot-rust/src/native_v2_candidate.rs`, `native_v2_candidate/`                                                               |
 | Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
 | Native v2 built-in graph templates        | `zeroshot-rust/src/native_v2_templates.rs`, `native_v2_templates/`                                                               |
-| Native v2 target connector                | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
+| Native v2 target connector/server command | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
 | Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
 | Native distribution tooling               | `scripts/rust-distribution.js`                                                                                                   |
@@ -243,12 +243,15 @@ identity, authenticate users, inspect
 target-wide inventory, queue work, or choose another run. Local and hosted compositions reuse this
 same engine and differ only in their host adapters.
 
-The target-wide object owns routing, authentication, durable submission lookup, source setup, and
-observation before or after a controller exists; it is not an executing controller
-and does not own a runtime plan. The shipped CLI keeps its local named-target registry and reuses
-hosted OAuth discovery while storing only the rotating refresh family in the OS credential store.
-Access/OECP tokens remain memory-only, and the host routes authenticated target operations to the
-appropriate private one-run controller without moving user or token authority into that process.
+The target-wide object owns routing, access policy, durable submission lookup, source setup, and
+observation before or after a controller exists; it is not an executing controller and does not
+own a runtime plan. Named-target records have one closed access mode. Hosted remains the default,
+reuses OAuth discovery, stores only the rotating refresh family in the OS credential store, and
+keeps access/OECP tokens memory-only. Direct access requires `target add --direct`, must match the
+target discovery authentication mode, and sends no HTTP or OECP Authorization. `target login`
+rejects direct targets locally. `target serve` is the raw, auth-free multi-run composition for one
+private VM; it accepts only HTTPS public origins or literal-loopback HTTP, uses one static target
+identity, and adds no queue, scheduler, TLS, or per-user isolation layer.
 
 `GraphSpec` remains the control-flow source of truth. Its companion runtime plan fixes the
 graph-wide harness/provider and each node's model, effort, session scope, and declared environment

@@ -7,9 +7,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
 use super::contract::{normalize_origin, validate_target_name};
-use super::{TargetConnectorError, TargetRecord};
+use super::{TargetAccess, TargetConnectorError, TargetRecord};
 
-const REGISTRY_VERSION: u32 = 2;
+const REGISTRY_VERSION: u32 = 3;
 const MAX_REGISTRY_BYTES: u64 = 1024 * 1024;
 
 pub trait TargetRegistry: Send + Sync {
@@ -146,12 +146,19 @@ fn validate_registry_state(state: &RegistryState) -> Result<(), TargetConnectorE
             || validate_target_name(name).is_err()
             || !matches!(normalize_origin(&target.origin), Ok(origin) if origin == target.origin)
             || !valid_uuid(&target.id)
-            || !valid_uuid(&target.device_token)
+            || !valid_target_access(&target.access)
         {
             return Err(malformed_registry("invalid stored target record"));
         }
     }
     Ok(())
+}
+
+fn valid_target_access(access: &TargetAccess) -> bool {
+    match access {
+        TargetAccess::Hosted { device_token } => valid_uuid(device_token),
+        TargetAccess::Direct => true,
+    }
 }
 
 fn valid_uuid(value: &str) -> bool {

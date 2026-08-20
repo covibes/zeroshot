@@ -23,6 +23,25 @@ fn target_origins_match_the_existing_hosted_cli_contract() {
 }
 
 #[test]
+fn target_access_is_explicit_and_hosted_remains_the_default() {
+    let hosted = prepare_target(TargetAdd {
+        name: "cloud".to_owned(),
+        url: "https://target.example".to_owned(),
+        direct: false,
+    })
+    .assert_value();
+    assert!(matches!(hosted.access, TargetAccess::Hosted { .. }));
+
+    let direct = prepare_target(TargetAdd {
+        name: "vm".to_owned(),
+        url: "http://127.0.0.1:8080".to_owned(),
+        direct: true,
+    })
+    .assert_value();
+    assert_eq!(direct.access, TargetAccess::Direct);
+}
+
+#[test]
 fn setup_carries_one_optional_default_branch() {
     let request = setup_request();
     assert_eq!(

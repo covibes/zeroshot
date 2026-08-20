@@ -1,8 +1,8 @@
 //! Target-wide native-v2 control authority and its public network boundary.
 //!
 //! The public object is a target, never a capsule. Setup installs one repository and optional
-//! default branch atomically. The first authenticated OECP session activates the target
-//! adapter; every later connection observes the same RunId/ledger namespace.
+//! default branch atomically. The first OECP session activates the target adapter; every later
+//! hosted or explicit direct connection observes the same RunId/ledger namespace.
 
 mod store;
 mod transport;
@@ -99,21 +99,37 @@ impl TargetSetupDocument {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TargetDiscoveryDocument {
     pub kind: String,
+    pub authentication: TargetAuthentication,
     pub setup_path: String,
     pub run_path: String,
     pub session_path: String,
     pub audience: String,
 }
 
-impl Default for TargetDiscoveryDocument {
-    fn default() -> Self {
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetAuthentication {
+    HostedOauth,
+    None,
+}
+
+impl TargetDiscoveryDocument {
+    #[must_use]
+    pub fn new(authentication: TargetAuthentication) -> Self {
         Self {
             kind: DISCOVERY_KIND.to_owned(),
+            authentication,
             setup_path: SETUP_PATH.to_owned(),
             run_path: RUN_PATH.to_owned(),
             session_path: SESSION_PATH.to_owned(),
             audience: CONTROLLER_AUDIENCE.to_owned(),
         }
+    }
+}
+
+impl Default for TargetDiscoveryDocument {
+    fn default() -> Self {
+        Self::new(TargetAuthentication::HostedOauth)
     }
 }
 
@@ -130,12 +146,14 @@ pub struct TargetSetupResult {
     pub outcome: TargetSetupOutcome,
 }
 
-/// Short-lived session returned only after the host authenticates the target control bearer.
+/// Same-authority session route result. Hosted targets return a short-lived bearer; direct
+/// targets deliberately omit it.
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TargetOecpSession {
     pub endpoint: String,
-    pub bearer_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bearer_token: Option<String>,
 }
 
 impl fmt::Debug for TargetOecpSession {
@@ -143,7 +161,10 @@ impl fmt::Debug for TargetOecpSession {
         formatter
             .debug_struct("TargetOecpSession")
             .field("endpoint", &self.endpoint)
-            .field("bearer_token", &"[REDACTED]")
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }

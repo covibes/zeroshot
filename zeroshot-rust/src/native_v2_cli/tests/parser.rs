@@ -239,6 +239,7 @@ async fn named_target_commands_delegate_without_interpreting_runtime_configurati
             Call::TargetAdd {
                 name: "prod".to_owned(),
                 url: "https://target.example".to_owned(),
+                direct: false,
             },
             Call::TargetLogin {
                 name: "prod".to_owned(),
@@ -250,6 +251,36 @@ async fn named_target_commands_delegate_without_interpreting_runtime_configurati
             },
         ]
     );
+}
+
+#[test]
+fn target_add_requires_an_explicit_direct_flag() {
+    let direct = parse_native_v2_args(args(&[
+        "target",
+        "add",
+        "vm",
+        "--url",
+        "http://127.0.0.1:8080",
+        "--direct",
+    ]))
+    .assert_value();
+    assert!(matches!(
+        direct,
+        NativeV2CliCommand::TargetAdd(TargetAdd { direct: true, .. })
+    ));
+
+    let hosted = parse_native_v2_args(args(&[
+        "target",
+        "add",
+        "cloud",
+        "--url",
+        "https://target.example",
+    ]))
+    .assert_value();
+    assert!(matches!(
+        hosted,
+        NativeV2CliCommand::TargetAdd(TargetAdd { direct: false, .. })
+    ));
 }
 
 #[tokio::test]

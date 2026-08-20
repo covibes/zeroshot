@@ -10,7 +10,7 @@ use openengine_cluster_protocol::{
 };
 use openengine_cluster_server::admission::CancellationSignal;
 use openengine_cluster_server::identity::{
-    ConnectionBinding, StaticConnectionIdentityResolver, SystemConnectionTime,
+    ConnectionBinding, ConnectionIdentity, StaticConnectionIdentityResolver, SystemConnectionTime,
 };
 use openengine_cluster_server::native_v2::{
     RunAttachEventStream, RunLogEventStream, RunWatchEventStream,
@@ -23,7 +23,7 @@ use url::Url;
 use super::{
     DISCOVERY_PATH, NativeV2TargetAuthority, OECP_PATH, RUN_PATH, SESSION_PATH, SETUP_PATH,
     TargetAuthorityError, TargetDiscoveryDocument, TargetOecpSession, TargetRunRequest,
-    TargetSessionAuthority, TargetSetupDocument, TargetSetupResult,
+    TargetAuthentication, TargetSessionAuthority, TargetSetupDocument, TargetSetupResult,
 };
 use crate::native_v2_cloud::NativeV2CloudController;
 
@@ -39,16 +39,30 @@ const MAX_SETUP_BYTES: usize = 1024 * 1024;
 const MAX_BEARER_BYTES: usize = 16 * 1024;
 const REQUEST_HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Concrete target-wide HTTP/WebSocket binding. TLS termination and OAuth remain host-owned;
-/// this server consumes the already-issued controller bearer through [`TargetSessionAuthority`].
+/// Concrete target-wide HTTP/WebSocket binding. Hosted access consumes bearer authority supplied
+/// by its host. Explicit direct access uses one static target identity and no Authorization.
 pub struct NativeV2TargetServer {
     target: Arc<NativeV2TargetAuthority>,
-    sessions: Arc<dyn TargetSessionAuthority>,
+    access: TargetServerAccess,
     oecp_endpoint: String,
 }
 
+enum TargetServerAccess {
+    Hosted(Arc<dyn TargetSessionAuthority>),
+    Direct(ConnectionIdentity),
+}
+
+impl TargetServerAccess {
+    const fn authentication(&self) -> TargetAuthentication {
+        match self {
+            Self::Hosted(_) => TargetAuthentication::HostedOauth,
+            Self::Direct(_) => TargetAuthentication::None,
+        }
+    }
+}
+
 impl NativeV2TargetServer {
-    pub fn new(
+    pub fn new_hosted(
         target: Arc<NativeV2TargetAuthority>,
         sessions: Arc<dyn TargetSessionAuthority>,
         oecp_endpoint: impl Into<String>,
@@ -57,7 +71,21 @@ impl NativeV2TargetServer {
         validate_oecp_endpoint(&endpoint)?;
         Ok(Self {
             target,
-            sessions,
+            access: TargetServerAccess::Hosted(sessions),
+            oecp_endpoint: endpoint,
+        })
+    }
+
+    pub fn new_direct(
+        target: Arc<NativeV2TargetAuthority>,
+        identity: ConnectionIdentity,
+        oecp_endpoint: impl Into<String>,
+    ) -> Result<Self, TargetAuthorityError> {
+        let endpoint = oecp_endpoint.into();
+        validate_oecp_endpoint(&endpoint)?;
+        Ok(Self {
+            target,
+            access: TargetServerAccess::Direct(identity),
             oecp_endpoint: endpoint,
         })
     }
@@ -92,11 +120,7 @@ impl NativeV2TargetServer {
         if head.method != "GET" || head.path != OECP_PATH {
             return write_and_close(stream, HttpResponse::empty(404)).await;
         }
-        let bearer = match head.bearer() {
-            Ok(value) => value,
-            Err(()) => return write_and_close(stream, HttpResponse::empty(401)).await,
-        };
-        let identity = match self.sessions.authenticate_oecp(bearer).await {
+        let identity = match self.authenticate_oecp(&head).await {
             Ok(identity) => identity,
             Err(error) => return write_and_close(stream, authority_error_response(error)).await,
         };
@@ -123,9 +147,10 @@ impl NativeV2TargetServer {
 
     async fn handle_http(&self, request: HttpRequest) -> HttpResponse {
         match (request.method.as_str(), request.path.as_str()) {
-            ("GET", DISCOVERY_PATH) if request.body.is_empty() => {
-                HttpResponse::json(200, &TargetDiscoveryDocument::default())
-            }
+            ("GET", DISCOVERY_PATH) if request.body.is_empty() => HttpResponse::json(
+                200,
+                &TargetDiscoveryDocument::new(self.access.authentication()),
+            ),
             ("PUT", SETUP_PATH) => self.handle_setup(request).await,
             ("POST", RUN_PATH) => self.handle_run(request).await,
             ("POST", SESSION_PATH) if request.body.is_empty() => self.handle_session(request).await,
@@ -169,15 +194,26 @@ impl NativeV2TargetServer {
         if let Err(error) = self.target.controller().await {
             return authority_error_response(error);
         }
-        match self.sessions.issue_oecp(&identity).await {
-            Ok(bearer_token) if valid_issued_bearer(&bearer_token) => HttpResponse::private_json(
+        match &self.access {
+            TargetServerAccess::Hosted(sessions) => match sessions.issue_oecp(&identity).await {
+                Ok(bearer_token) if valid_issued_bearer(&bearer_token) => {
+                    HttpResponse::private_json(
+                        200,
+                        &TargetOecpSession {
+                            endpoint: self.oecp_endpoint.clone(),
+                            bearer_token: Some(bearer_token),
+                        },
+                    )
+                }
+                _ => HttpResponse::empty(503),
+            },
+            TargetServerAccess::Direct(_) => HttpResponse::private_json(
                 200,
                 &TargetOecpSession {
                     endpoint: self.oecp_endpoint.clone(),
-                    bearer_token,
+                    bearer_token: None,
                 },
             ),
-            _ => HttpResponse::empty(503),
         }
     }
 
@@ -185,10 +221,30 @@ impl NativeV2TargetServer {
         &self,
         head: &RequestHead,
     ) -> Result<openengine_cluster_server::identity::ConnectionIdentity, TargetAuthorityError> {
-        let bearer = head
-            .bearer()
-            .map_err(|()| TargetAuthorityError::unauthorized())?;
-        self.sessions.authenticate_control(bearer).await
+        match &self.access {
+            TargetServerAccess::Hosted(sessions) => {
+                let bearer = head
+                    .bearer()
+                    .map_err(|()| TargetAuthorityError::unauthorized())?;
+                sessions.authenticate_control(bearer).await
+            }
+            TargetServerAccess::Direct(identity) => Ok(identity.clone()),
+        }
+    }
+
+    async fn authenticate_oecp(
+        &self,
+        head: &RequestHead,
+    ) -> Result<ConnectionIdentity, TargetAuthorityError> {
+        match &self.access {
+            TargetServerAccess::Hosted(sessions) => {
+                let bearer = head
+                    .bearer()
+                    .map_err(|()| TargetAuthorityError::unauthorized())?;
+                sessions.authenticate_oecp(bearer).await
+            }
+            TargetServerAccess::Direct(identity) => Ok(identity.clone()),
+        }
     }
 }
 

@@ -1,9 +1,9 @@
 //! Native-v2 named-target connector.
 //!
 //! The CLI owns only a small local name-to-origin registry. A target control authority owns
-//! discovery, device login, atomic source-selection installation, and issuance of one
-//! authenticated target-scoped OECP session. Runtime plans belong to run submissions;
-//! environment values cross only in the ephemeral per-run request and are never stored locally.
+//! discovery, explicit hosted/direct access, atomic source-selection installation, and issuance
+//! of one target-scoped OECP session. Runtime plans belong to run submissions; environment values
+//! cross only in the ephemeral per-run request and are never stored locally.
 
 use std::fmt;
 use std::sync::Arc;
@@ -20,11 +20,13 @@ mod contract;
 mod controller_authority;
 mod oecp;
 mod registry;
+mod serve;
 
 use contract::{prepare_setup, prepare_target, validate_bearer_token, validate_target_name};
-pub use oecp::{AuthenticatedOecpWebSocketDialer, TargetOecpDialer};
+pub use oecp::{TargetOecpDialer, TargetOecpWebSocketDialer};
 pub use registry::{FileTargetRegistry, TargetRegistry, default_target_registry_path};
-pub use controller_authority::HostedTargetControlAuthority;
+pub use controller_authority::TargetHttpControlAuthority;
+pub use serve::{TargetServeError, parse_target_serve, serve_direct_target};
 
 #[cfg(test)]
 use contract::normalize_origin;
@@ -35,8 +37,8 @@ mod tests;
 /// The external contract which hosting must implement before the native-v2 CLI can reach cloud.
 ///
 /// `install` is one atomic target-side operation: either both repository selection and the
-/// companion runtime plan become current, or neither does. `oecp_session` returns an access token
-/// and endpoint scoped to the selected target's public `run/*` surface.
+/// companion runtime plan become current, or neither does. `oecp_session` returns one same-origin
+/// endpoint and the hosted bearer, if that target uses OAuth.
 #[async_trait]
 pub trait TargetControlAuthority: Send + Sync {
     async fn discover(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError>;
@@ -54,7 +56,7 @@ pub trait TargetControlAuthority: Send + Sync {
     async fn oecp_session(
         &self,
         target: &TargetRecord,
-    ) -> Result<AuthenticatedTargetOecp, TargetAuthorityError>;
+    ) -> Result<TargetOecpAccess, TargetAuthorityError>;
 }
 
 #[derive(Debug, Error)]
@@ -78,26 +80,63 @@ pub struct TargetRecord {
     pub id: String,
     pub name: String,
     pub origin: String,
-    pub device_token: String,
+    pub access: TargetAccess,
 }
 
-/// Opaque authenticated session minted by the control authority. Debug output never includes the
-/// bearer token.
-pub struct AuthenticatedTargetOecp {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    tag = "mode"
+)]
+pub enum TargetAccess {
+    Hosted { device_token: String },
+    Direct,
+}
+
+impl TargetAccess {
+    const fn authentication(
+        &self,
+    ) -> zeroshot_engine::native_v2_target_authority::TargetAuthentication {
+        match self {
+            Self::Hosted { .. } => {
+                zeroshot_engine::native_v2_target_authority::TargetAuthentication::HostedOauth
+            }
+            Self::Direct => zeroshot_engine::native_v2_target_authority::TargetAuthentication::None,
+        }
+    }
+
+    fn device_token(&self) -> Option<&str> {
+        match self {
+            Self::Hosted { device_token } => Some(device_token),
+            Self::Direct => None,
+        }
+    }
+}
+
+/// Same-authority OECP access minted by the target control authority. Hosted targets carry a
+/// short-lived bearer; explicit direct targets do not. Debug output never includes bearer values.
+pub struct TargetOecpAccess {
     endpoint: String,
-    bearer_token: String,
+    bearer_token: Option<String>,
 }
 
-impl AuthenticatedTargetOecp {
+impl TargetOecpAccess {
     fn new(
         endpoint: impl Into<String>,
-        bearer_token: impl Into<String>,
+        bearer_token: Option<String>,
+        access: &TargetAccess,
     ) -> Result<Self, TargetConnectorError> {
         let session = Self {
             endpoint: endpoint.into(),
-            bearer_token: bearer_token.into(),
+            bearer_token,
         };
-        validate_bearer_token(&session.bearer_token)?;
+        match (access, session.bearer_token.as_deref()) {
+            (TargetAccess::Hosted { .. }, Some(token)) => validate_bearer_token(token)?,
+            (TargetAccess::Direct, None) => {}
+            _ => return Err(TargetConnectorError::InvalidBearerToken),
+        }
         Ok(session)
     }
 
@@ -106,17 +145,20 @@ impl AuthenticatedTargetOecp {
         &self.endpoint
     }
 
-    fn bearer_token(&self) -> &str {
-        &self.bearer_token
+    fn bearer_token(&self) -> Option<&str> {
+        self.bearer_token.as_deref()
     }
 }
 
-impl fmt::Debug for AuthenticatedTargetOecp {
+impl fmt::Debug for TargetOecpAccess {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("AuthenticatedTargetOecp")
+            .debug_struct("TargetOecpAccess")
             .field("endpoint", &self.endpoint)
-            .field("bearer_token", &"[REDACTED]")
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }

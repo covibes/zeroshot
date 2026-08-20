@@ -2,17 +2,24 @@ use tokio_tungstenite::tungstenite::http::Uri;
 use zeroshot_engine::native_v2_cli::{TargetAdd, TargetSetup};
 use zeroshot_engine::native_v2_target_authority::valid_target_repository;
 
-use super::{TargetConnectorError, TargetRecord, TargetSetupDocument};
+use super::{TargetAccess, TargetConnectorError, TargetRecord, TargetSetupDocument};
 
 const MAX_BEARER_TOKEN_BYTES: usize = 16 * 1024;
 
 pub(super) fn prepare_target(request: TargetAdd) -> Result<TargetRecord, TargetConnectorError> {
     validate_target_name(&request.name)?;
+    let access = if request.direct {
+        TargetAccess::Direct
+    } else {
+        TargetAccess::Hosted {
+            device_token: fresh_uuid()?,
+        }
+    };
     Ok(TargetRecord {
         id: fresh_uuid()?,
         name: request.name,
         origin: normalize_origin(&request.url)?,
-        device_token: fresh_uuid()?,
+        access,
     })
 }
 

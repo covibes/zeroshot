@@ -17,8 +17,9 @@ use zeroshot_engine::native_v2_cli::{
 use zeroshot_engine::native_v2_portable_controller::{PortableControllerError, run_controller_process};
 
 use native_v2_target::{
-    default_target_registry_path, AuthenticatedOecpWebSocketDialer, FileTargetRegistry,
-    HostedTargetControlAuthority, NativeV2TargetConnector, TargetConnectorError,
+    default_target_registry_path, parse_target_serve, serve_direct_target, FileTargetRegistry,
+    NativeV2TargetConnector, TargetConnectorError, TargetHttpControlAuthority,
+    TargetOecpWebSocketDialer, TargetServeError,
 };
 
 #[derive(Debug, Error)]
@@ -30,6 +31,8 @@ enum ProcessError {
     #[cfg(unix)]
     #[error(transparent)]
     Portable(#[from] PortableControllerError),
+    #[error(transparent)]
+    Serve(#[from] TargetServeError),
     #[error("could not write CLI output: {0}")]
     Output(#[from] std::io::Error),
 }
@@ -38,6 +41,10 @@ async fn run() -> Result<(), ProcessError> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     #[cfg(unix)]
     if run_private_controller(&arguments).await? {
+        return Ok(());
+    }
+    if let Some(config) = parse_target_serve(&arguments)? {
+        serve_direct_target(config).await?;
         return Ok(());
     }
     run_public_command(arguments).await
@@ -75,8 +82,8 @@ async fn run_named_target_command(
     let registry = FileTargetRegistry::new(default_target_registry_path()?);
     let connector = NativeV2TargetConnector::new(
         registry,
-        HostedTargetControlAuthority::production().map_err(TargetConnectorError::Authority)?,
-        AuthenticatedOecpWebSocketDialer,
+        TargetHttpControlAuthority::production().map_err(TargetConnectorError::Authority)?,
+        TargetOecpWebSocketDialer,
     );
     let backend = OecpCliBackend::new(connector);
     execute_native_v2_cli(command, &backend, detach, output).await?;
@@ -147,5 +154,33 @@ async fn main() {
     if let Err(error) = run().await {
         eprintln!("zeroshot-rust: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use openengine_cluster_testkit::assertions::AssertValue;
+
+    use super::*;
+
+    #[test]
+    fn target_serve_is_intercepted_as_a_process_command() {
+        let arguments = [
+            "target",
+            "serve",
+            "--listen",
+            "127.0.0.1:8080",
+            "--public-origin",
+            "http://127.0.0.1:8080",
+            "--storage",
+            "/tmp/zeroshot-target",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+        assert!(parse_target_serve(&arguments).assert_value().is_some());
+        assert!(parse_native_v2_args(arguments).is_err());
     }
 }

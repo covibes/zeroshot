@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use openengine_cluster_protocol::RunId;
+use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertValue};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_tungstenite::accept_hdr_async;
@@ -29,8 +30,27 @@ fn file_registry_round_trips_named_targets_without_credentials() {
         Err(TargetConnectorError::AlreadyExists(_))
     ));
     let stored = std::fs::read_to_string(path).assert_value();
-    assert!(!stored.contains("token"));
+    assert!(!stored.contains("accessToken"));
+    assert!(!stored.contains("refreshToken"));
     assert!(!stored.contains("runtime"));
+}
+
+#[test]
+fn file_registry_round_trips_direct_access_without_a_device_credential() {
+    let root = temp_root();
+    let path = root.path("config/targets.json");
+    let registry = FileTargetRegistry::new(path.clone());
+    let direct = TargetRecord {
+        id: "33333333-3333-4333-8333-333333333333".to_owned(),
+        name: "vm".to_owned(),
+        origin: "http://127.0.0.1:8080".to_owned(),
+        access: TargetAccess::Direct,
+    };
+    registry.insert(direct.clone()).assert_value();
+    assert_eq!(registry.get("vm").assert_value(), direct);
+    let stored = std::fs::read_to_string(path).assert_value();
+    assert!(stored.contains(r#""mode": "direct""#));
+    assert!(!stored.contains("deviceToken"));
 }
 
 #[cfg(unix)]
@@ -60,6 +80,7 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
         .add(TargetAdd {
             name: "prod".to_owned(),
             url: "https://target.example".to_owned(),
+            direct: false,
         })
         .await
         .assert_value();
@@ -78,7 +99,10 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
     assert_eq!(added.name, "prod");
     assert_eq!(added.origin, "https://target.example");
     assert_eq!(added.id.len(), 36);
-    assert_eq!(added.device_token.len(), 36);
+    assert!(matches!(
+        &added.access,
+        TargetAccess::Hosted { device_token } if device_token.len() == 36
+    ));
     assert!(matches!(calls.assert_at(1), AuthorityCall::Login(record) if record == added));
     let install = match calls.assert_at(2) {
         AuthorityCall::Install(record, installed) => Some((record, installed)),
@@ -108,17 +132,12 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
     let (origin, server) = spawn_target_authority(24).await;
     let credentials = Arc::new(MemoryCredentialStore::default());
     let notifier = Arc::new(MemoryDeviceCodeNotifier::default());
-    let authority = HostedTargetControlAuthority::with_dependencies(
+    let authority = TargetHttpControlAuthority::with_dependencies(
         credentials.clone(),
         notifier.clone(),
         root.path("refresh-locks"),
     );
-    let target = TargetRecord {
-        id: "11111111-1111-4111-8111-111111111111".to_owned(),
-        name: "local".to_owned(),
-        origin: origin.clone(),
-        device_token: "22222222-2222-4222-8222-222222222222".to_owned(),
-    };
+    let target = hosted_target("local", origin.clone());
     let setup = TargetSetupDocument {
         repository: "open-engine/zeroshot".to_owned(),
         default_branch: Some("main".to_owned()),
@@ -157,6 +176,68 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
     );
     assert_device_exchange(&requests);
     assert_setup_submit_and_session_requests(&requests);
+}
+
+#[tokio::test]
+async fn direct_authority_skips_hosted_auth_and_all_authorization_headers() {
+    let root = temp_root();
+    let (origin, server) = spawn_direct_target_authority(7).await;
+    let credentials = Arc::new(MemoryCredentialStore::default());
+    let notifier = Arc::new(MemoryDeviceCodeNotifier::default());
+    let authority = TargetHttpControlAuthority::with_dependencies(
+        credentials.clone(),
+        notifier.clone(),
+        root.path("refresh-locks"),
+    );
+    let target = direct_target(origin);
+    let setup = TargetSetupDocument {
+        repository: "open-engine/zeroshot".to_owned(),
+        default_branch: Some("main".to_owned()),
+    };
+
+    authority.discover(&target).await.assert_value();
+    assert_eq!(
+        authority.login(&target).await.assert_error().to_string(),
+        "direct target does not use login"
+    );
+    authority.install(&target, &setup).await.assert_value();
+    assert_eq!(
+        authority
+            .submit(&target, &run_request())
+            .await
+            .assert_value()
+            .run_id,
+        RunId::new("run-direct")
+    );
+    authority.oecp_session(&target).await.assert_value();
+
+    assert!(credentials.get(&target.id).await.assert_value().is_none());
+    assert!(notifier.values().is_empty());
+    let requests = server.await.assert_value();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.authorization.is_none())
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.path != "/.well-known/openengine-hosted-target")
+    );
+}
+
+#[tokio::test]
+async fn direct_target_rejects_hosted_controller_discovery() {
+    let root = temp_root();
+    let (origin, server) = spawn_target_authority(1).await;
+    let authority = TargetHttpControlAuthority::with_dependencies(
+        Arc::new(MemoryCredentialStore::default()),
+        Arc::new(MemoryDeviceCodeNotifier::default()),
+        root.path("refresh-locks"),
+    );
+    let target = direct_target(origin);
+    assert!(authority.discover(&target).await.is_err());
+    server.await.assert_value();
 }
 
 fn assert_device_exchange(requests: &[CapturedHttpRequest]) {
@@ -221,22 +302,17 @@ async fn hosted_authorities_serialize_one_time_refresh_rotation_per_target() {
     let credentials = Arc::new(RotatingCredentialStore::new("refresh-0"));
     let notifier = Arc::new(MemoryDeviceCodeNotifier::default());
     let lock_directory = root.path("refresh-locks");
-    let first = HostedTargetControlAuthority::with_dependencies(
+    let first = TargetHttpControlAuthority::with_dependencies(
         credentials.clone(),
         notifier.clone(),
         lock_directory.clone(),
     );
-    let second = HostedTargetControlAuthority::with_dependencies(
+    let second = TargetHttpControlAuthority::with_dependencies(
         credentials.clone(),
         notifier,
         lock_directory,
     );
-    let target = TargetRecord {
-        id: "11111111-1111-4111-8111-111111111111".to_owned(),
-        name: "local".to_owned(),
-        origin,
-        device_token: "22222222-2222-4222-8222-222222222222".to_owned(),
-    };
+    let target = hosted_target("local", origin);
     let (first_session, second_session) =
         tokio::join!(first.oecp_session(&target), second.oecp_session(&target));
     first_session.assert_value();
@@ -294,15 +370,14 @@ async fn websocket_dialer_sends_bearer_only_to_same_target_authority() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         drop(websocket);
     });
-    let target = TargetRecord {
-        id: "11111111-1111-4111-8111-111111111111".to_owned(),
-        name: "local".to_owned(),
-        origin: format!("http://{address}"),
-        device_token: "22222222-2222-4222-8222-222222222222".to_owned(),
-    };
-    let session =
-        AuthenticatedTargetOecp::new(format!("ws://{address}/oecp"), "secret").assert_value();
-    let transport = AuthenticatedOecpWebSocketDialer
+    let target = hosted_target("local", format!("http://{address}"));
+    let session = TargetOecpAccess::new(
+        format!("ws://{address}/oecp"),
+        Some("secret".to_owned()),
+        &target.access,
+    )
+    .assert_value();
+    let transport = TargetOecpWebSocketDialer
         .dial(&target, session)
         .await
         .assert_value();
@@ -315,19 +390,49 @@ async fn websocket_dialer_sends_bearer_only_to_same_target_authority() {
 }
 
 #[tokio::test]
+#[allow(clippy::result_large_err)]
+async fn direct_websocket_dialer_sends_no_authorization() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
+    let address = listener.local_addr().assert_value();
+    let (sent, received) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.assert_value();
+        let websocket = accept_hdr_async(
+            stream,
+            move |request: &ServerRequest, response: ServerResponse| {
+                let authorization = request.headers().get(AUTHORIZATION).cloned();
+                let _ = sent.send(authorization);
+                Ok(response)
+            },
+        )
+        .await
+        .assert_value();
+        drop(websocket);
+    });
+    let target = direct_target(format!("http://{address}"));
+    let session =
+        TargetOecpAccess::new(format!("ws://{address}/oecp"), None, &target.access).assert_value();
+    let transport = TargetOecpWebSocketDialer
+        .dial(&target, session)
+        .await
+        .assert_value();
+    assert!(received.await.assert_value().is_none());
+    drop(transport);
+    server.await.assert_value();
+}
+
+#[tokio::test]
 async fn websocket_dialer_rejects_cross_authority_before_network() {
-    let target = TargetRecord {
-        id: "11111111-1111-4111-8111-111111111111".to_owned(),
-        name: "prod".to_owned(),
-        origin: "https://target.example".to_owned(),
-        device_token: "22222222-2222-4222-8222-222222222222".to_owned(),
-    };
-    let session = AuthenticatedTargetOecp::new("wss://other.example/oecp", "secret").assert_value();
-    let error = AuthenticatedOecpWebSocketDialer
+    let target = target();
+    let session = TargetOecpAccess::new(
+        "wss://other.example/oecp",
+        Some("secret".to_owned()),
+        &target.access,
+    )
+    .assert_value();
+    let error = TargetOecpWebSocketDialer
         .dial(&target, session)
         .await
         .assert_error_with("cross-authority session unexpectedly dialed");
     assert!(matches!(error, TargetConnectorError::InvalidOecpEndpoint));
 }
-
-use openengine_cluster_testkit::assertions::{AssertAt, AssertError, AssertValue};

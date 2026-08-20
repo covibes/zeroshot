@@ -56,7 +56,7 @@ impl LoopbackHost {
         let origin = format!("http://{address}");
         let authority = Arc::new(NativeV2TargetAuthority::new(factory));
         let native = Arc::new(
-            NativeV2TargetServer::new(
+            NativeV2TargetServer::new_hosted(
                 authority,
                 Arc::new(TestSessions),
                 format!("ws://{address}/native-v2/oecp"),

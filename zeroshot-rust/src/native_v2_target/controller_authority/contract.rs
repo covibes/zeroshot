@@ -1,9 +1,12 @@
 use reqwest::Url;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use zeroshot_engine::native_v2_target_authority::{
+    CONTROLLER_AUDIENCE, DISCOVERY_KIND, TargetAuthentication, TargetDiscoveryDocument,
+};
 
 use super::DEVICE_GRANT;
-use crate::native_v2_target::{TargetAuthorityError, TargetRecord};
+use crate::native_v2_target::TargetAuthorityError;
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_TOKEN_BYTES: usize = 16 * 1024;
@@ -60,8 +63,30 @@ pub(super) struct ControllerDescriptor {
     pub(super) audience: String,
 }
 
+pub(super) fn build_controller_descriptor(
+    origin: &Url,
+    wire: TargetDiscoveryDocument,
+    authentication: TargetAuthentication,
+) -> Result<ControllerDescriptor, TargetAuthorityError> {
+    if wire.kind != DISCOVERY_KIND
+        || wire.authentication != authentication
+        || wire.audience != CONTROLLER_AUDIENCE
+        || !valid_audience(&wire.audience)
+    {
+        return Err(authority_error(
+            "native-v2 controller discovery is incompatible",
+        ));
+    }
+    Ok(ControllerDescriptor {
+        setup_url: same_origin_path(origin, &wire.setup_path)?,
+        run_url: same_origin_path(origin, &wire.run_path)?,
+        session_url: same_origin_path(origin, &wire.session_path)?,
+        audience: wire.audience,
+    })
+}
+
 pub(super) struct DevicePoll<'a> {
-    pub(super) target: &'a TargetRecord,
+    pub(super) device_token: &'a str,
     pub(super) auth: &'a HostedAuthDescriptor,
     pub(super) audience: &'a str,
     pub(super) code: &'a DeviceCodeWire,

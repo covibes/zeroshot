@@ -8,13 +8,13 @@ use openengine_cluster_client::websocket::WebSocketTransport;
 use openengine_cluster_protocol::{
     IdempotencyKey, RunId, RunListParams, RunSize, RunTitle, RuntimePlan,
 };
+use openengine_cluster_testkit::assertions::AssertValue;
 use openengine_cluster_testkit::admission::graph_fixture;
 use serde_json::{json, Value};
 use openengine_cluster_server::identity::{
     BindingAttributes, ConnectionIdentity, ConnectionIdentityConfig, PrincipalId, TenantId,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderValue};
 
@@ -30,6 +30,9 @@ use crate::v2_run_ledger::fake::FakeRunLedger;
 #[path = "tests/run_submission.rs"]
 mod run_submission;
 use run_submission::assert_run_submission;
+#[path = "tests/http.rs"]
+mod http_fixture;
+use http_fixture::{http, TestHttpRequest};
 
 struct Claim;
 impl ExclusiveControllerClaim for Claim {}
@@ -299,7 +302,7 @@ async fn loopback_routes_setup_session_and_target_scoped_oecp() {
     let authority = Arc::new(NativeV2TargetAuthority::new(factory.clone()));
     let endpoint = format!("ws://{address}{OECP_PATH}");
     let server = Arc::new(
-        NativeV2TargetServer::new(authority, Arc::new(FakeSessions), endpoint.clone())
+        NativeV2TargetServer::new_hosted(authority, Arc::new(FakeSessions), endpoint.clone())
             .assert_value(),
     );
     let server_task = tokio::spawn(server.serve(listener));
@@ -370,6 +373,55 @@ async fn loopback_routes_setup_session_and_target_scoped_oecp() {
     server_task.abort();
 }
 
+#[tokio::test]
+async fn direct_loopback_routes_control_and_oecp_without_bearers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.assert_value();
+    let address = listener.local_addr().assert_value();
+    let factory = Arc::new(FakeFactory::default());
+    let authority = Arc::new(NativeV2TargetAuthority::new(factory.clone()));
+    let endpoint = format!("ws://{address}{OECP_PATH}");
+    let server = Arc::new(
+        NativeV2TargetServer::new_direct(authority, identity(), endpoint.clone()).assert_value(),
+    );
+    let server_task = tokio::spawn(server.serve(listener));
+
+    let discovery = http(address, TestHttpRequest::empty("GET", DISCOVERY_PATH, None)).await;
+    let document: TargetDiscoveryDocument = serde_json::from_slice(&discovery.body).assert_value();
+    assert_eq!(document.authentication, TargetAuthentication::None);
+
+    let encoded_setup = serde_json::to_vec(&setup("owner/repo")).assert_value();
+    let installed = http(
+        address,
+        TestHttpRequest::body("PUT", SETUP_PATH, None, &encoded_setup),
+    )
+    .await;
+    assert_eq!(installed.status, 200);
+    let session = http(address, TestHttpRequest::empty("POST", SESSION_PATH, None)).await;
+    assert_eq!(session.status, 200);
+    let session: TargetOecpSession = serde_json::from_slice(&session.body).assert_value();
+    assert_eq!(session.endpoint, endpoint);
+    assert_eq!(session.bearer_token, None);
+
+    let request = session.endpoint.into_client_request().assert_value();
+    assert!(request.headers().get(AUTHORIZATION).is_none());
+    let (websocket, _) = tokio_tungstenite::connect_async(request)
+        .await
+        .assert_value();
+    let client = ClusterClient::new(WebSocketTransport::new(websocket));
+    client.initialize().await.assert_value();
+    assert!(
+        client
+            .run_list(RunListParams {})
+            .await
+            .assert_value()
+            .runs
+            .is_empty()
+    );
+    assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
+
+    server_task.abort();
+}
+
 async fn assert_pre_setup_routes(address: std::net::SocketAddr, factory: &FakeFactory) {
     let unauthorized = http(
         address,
@@ -415,71 +467,3 @@ async fn assert_setup_outcome(
         expected
     );
 }
-
-struct TestHttpResponse {
-    status: u16,
-    body: Vec<u8>,
-}
-
-struct TestHttpRequest<'a> {
-    method: &'a str,
-    path: &'a str,
-    bearer: Option<&'a str>,
-    body: &'a [u8],
-}
-
-impl<'a> TestHttpRequest<'a> {
-    fn empty(method: &'a str, path: &'a str, bearer: Option<&'a str>) -> Self {
-        Self {
-            method,
-            path,
-            bearer,
-            body: &[],
-        }
-    }
-
-    fn body(method: &'a str, path: &'a str, bearer: Option<&'a str>, body: &'a [u8]) -> Self {
-        Self {
-            method,
-            path,
-            bearer,
-            body,
-        }
-    }
-}
-
-async fn http(address: std::net::SocketAddr, request: TestHttpRequest<'_>) -> TestHttpResponse {
-    let mut stream = TcpStream::connect(address).await.assert_value();
-    let authorization = request
-        .bearer
-        .map(|token| format!("Authorization: Bearer {token}\r\n"))
-        .unwrap_or_default();
-    let encoded = format!(
-        "{} {} HTTP/1.1\r\nHost: {address}\r\n{authorization}Content-Length: {}\r\nConnection: close\r\n\r\n",
-        request.method,
-        request.path,
-        request.body.len()
-    );
-    stream.write_all(encoded.as_bytes()).await.assert_value();
-    stream.write_all(request.body).await.assert_value();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).await.assert_value();
-    let split = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .assert_value();
-    let head = std::str::from_utf8(response.get(..split).assert_value()).assert_value();
-    let status = head
-        .split_ascii_whitespace()
-        .nth(1)
-        .assert_value()
-        .parse()
-        .assert_value();
-    let body_start = split.checked_add(4).assert_value();
-    TestHttpResponse {
-        status,
-        body: response.get(body_start..).assert_value().to_vec(),
-    }
-}
-
-use openengine_cluster_testkit::assertions::AssertValue;

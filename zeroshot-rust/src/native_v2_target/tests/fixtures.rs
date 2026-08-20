@@ -123,13 +123,17 @@ impl TargetControlAuthority for FakeAuthority {
     async fn oecp_session(
         &self,
         target: &TargetRecord,
-    ) -> Result<AuthenticatedTargetOecp, TargetAuthorityError> {
+    ) -> Result<TargetOecpAccess, TargetAuthorityError> {
         self.calls
             .lock()
             .assert_value()
             .push(AuthorityCall::Session(target.clone()));
-        AuthenticatedTargetOecp::new(self.endpoint.clone(), "access-token")
-            .map_err(|error| TargetAuthorityError::new(error.to_string()))
+        TargetOecpAccess::new(
+            self.endpoint.clone(),
+            Some("access-token".to_owned()),
+            &target.access,
+        )
+        .map_err(|error| TargetAuthorityError::new(error.to_string()))
     }
 }
 
@@ -170,7 +174,7 @@ impl TargetOecpDialer for FakeDialer {
     async fn dial(
         &self,
         target: &TargetRecord,
-        session: AuthenticatedTargetOecp,
+        session: TargetOecpAccess,
     ) -> Result<Arc<Self::Transport>, TargetConnectorError> {
         self.sessions
             .lock()
@@ -181,11 +185,26 @@ impl TargetOecpDialer for FakeDialer {
 }
 
 pub(super) fn target() -> TargetRecord {
+    hosted_target("prod", "https://target.example")
+}
+
+pub(super) fn hosted_target(name: &str, origin: impl Into<String>) -> TargetRecord {
     TargetRecord {
         id: "11111111-1111-4111-8111-111111111111".to_owned(),
-        name: "prod".to_owned(),
-        origin: "https://target.example".to_owned(),
-        device_token: "22222222-2222-4222-8222-222222222222".to_owned(),
+        name: name.to_owned(),
+        origin: origin.into(),
+        access: TargetAccess::Hosted {
+            device_token: "22222222-2222-4222-8222-222222222222".to_owned(),
+        },
+    }
+}
+
+pub(super) fn direct_target(origin: impl Into<String>) -> TargetRecord {
+    TargetRecord {
+        id: "11111111-1111-4111-8111-111111111111".to_owned(),
+        name: "vm".to_owned(),
+        origin: origin.into(),
+        access: TargetAccess::Direct,
     }
 }
 

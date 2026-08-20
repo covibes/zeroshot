@@ -271,8 +271,8 @@ impl Default for ProductionHostingConfig {
     fn default() -> Self {
         Self {
             storage_root: PathBuf::from("/var/lib/zeroshot/native-v2"),
-            codex_executable: PathBuf::from("/usr/bin/codex"),
-            claude_executable: "/usr/bin/claude".to_owned(),
+            codex_executable: PathBuf::from("/usr/local/bin/codex"),
+            claude_executable: "/usr/local/bin/claude".to_owned(),
             claude_prefix_arguments: Vec::new(),
             claude_process_environment: ClaudeProcessEnvironment::default(),
             executable_search_path: "/usr/local/bin:/usr/bin:/bin".to_owned(),

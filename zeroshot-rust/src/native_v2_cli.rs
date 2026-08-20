@@ -45,9 +45,10 @@ mod tests;
 pub const HELP: &str = "\
 zeroshot v2
 
-  target add <name> --url <https-origin>
+  target add <name> --url <origin> [--direct]
   target login <name>
   target setup <name> --repository <owner/name> [--branch <branch>]
+  target serve --listen <address> --public-origin <origin> --storage <directory>
   template list
   template show <single-worker|software-change> [--pr|--ship]
   run --title <title> (--graph <file>|--template <name>) --input <file>
@@ -66,6 +67,7 @@ zeroshot v2
 pub struct TargetAdd {
     pub name: String,
     pub url: String,
+    pub direct: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -21,6 +21,7 @@ pub(super) enum Call {
     TargetAdd {
         name: String,
         url: String,
+        direct: bool,
     },
     TargetLogin {
         name: String,
@@ -250,6 +251,7 @@ impl NativeV2CliBackend for FakeBackend {
         self.calls.lock().assert_value().push(Call::TargetAdd {
             name: request.name,
             url: request.url,
+            direct: request.direct,
         });
         Ok(())
     }

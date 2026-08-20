@@ -118,10 +118,12 @@ fn parse_target(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError>
 }
 
 fn parse_target_add(args: &[String]) -> Result<NativeV2CliCommand, NativeV2CliError> {
-    let (name, options) = parse_target_options(args, &["--url"])?;
+    let name = required_name(args.get(1), "target name")?;
+    let options = Options::parse(argument_tail(args, 2)?, &["--url"], &["--direct"])?;
     Ok(NativeV2CliCommand::TargetAdd(TargetAdd {
         name,
         url: options.required("--url")?,
+        direct: options.flag("--direct"),
     }))
 }
 
