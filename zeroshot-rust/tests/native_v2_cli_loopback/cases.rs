@@ -35,6 +35,7 @@ async fn shipped_cli_reaches_one_target_controller_over_http_and_websocket() {
     assert!(stdout.contains("LIST={\"runs\":"));
     assert!(stdout.contains("ACTIVE={\"runId\":"));
     assert!(stdout.contains("WATCH={\"subscriptionId\":"));
+    assert!(stdout.contains("\"phase\":\"queued\""));
     assert!(stdout.contains("LOGS={\"subscriptionId\":"));
     assert!(stdout.contains("acceptance-live-output"));
     assert!(stdout.contains("ATTACH={\"subscriptionId\":"));

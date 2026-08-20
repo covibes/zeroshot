@@ -19,7 +19,7 @@ mod cursor;
 use cursor::{record_cursor_call, CursorCallArgs};
 #[path = "support/lifecycle.rs"]
 mod lifecycle;
-use lifecycle::queued_watch;
+use lifecycle::{permanent_reopen_watch, queued_watch};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Call {
@@ -135,6 +135,7 @@ pub(super) struct FakeBackend {
     calls: Arc<Mutex<Vec<Call>>>,
     pending_watch: bool,
     reconnect_watch: bool,
+    permanent_reopen_watch: bool,
     reconnect_logs: bool,
     attach_behavior: AttachBehavior,
     failed_watch: bool,
@@ -323,6 +324,9 @@ impl NativeV2CliBackend for FakeBackend {
         );
         if self.pending_watch {
             return Ok(FakeSubscription::pending());
+        }
+        if let Some(result) = permanent_reopen_watch(self, &params, attempt) {
+            return result;
         }
         if self.queued_lifecycle {
             return Ok(queued_watch(&params, attempt));

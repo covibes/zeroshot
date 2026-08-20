@@ -5,6 +5,11 @@ use zeroshot_engine::native_v2_target_authority::{
     CONTROLLER_AUDIENCE, DISCOVERY_KIND, TargetAuthentication, TargetDiscoveryDocument,
 };
 
+mod hosted_runs;
+
+use hosted_runs::{HostedExtensionsWire, build_hosted_runs_descriptor};
+pub(super) use hosted_runs::HostedRunsDescriptor;
+
 use super::DEVICE_GRANT;
 use crate::native_v2_target::TargetAuthorityError;
 
@@ -16,6 +21,8 @@ pub(super) struct HostedDiscoveryWire {
     pub(super) kind: String,
     pub(super) oauth: OAuthDiscoveryWire,
     pub(super) session: SessionDiscoveryWire,
+    #[serde(default)]
+    extensions: HostedExtensionsWire,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +61,7 @@ pub(super) struct HostedAuthDescriptor {
     pub(super) client_id: String,
     pub(super) device_grant_type: String,
     pub(super) session_endpoint: Url,
+    pub(super) hosted_runs: HostedRunsDescriptor,
 }
 
 pub(super) struct ControllerDescriptor {
@@ -191,11 +199,9 @@ pub(super) async fn read_json<T: DeserializeOwned>(
         )));
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| authority_error(format!("{operation} response read failed")))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
+        TargetAuthorityError::disconnected(format!("{operation} response read failed"))
+    })? {
         if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
             return Err(authority_error(format!(
                 "{operation} response is too large"
@@ -225,6 +231,7 @@ pub(super) fn build_auth_descriptor(
     origin: &Url,
     wire: HostedDiscoveryWire,
 ) -> Result<HostedAuthDescriptor, TargetAuthorityError> {
+    let hosted_runs = build_hosted_runs_descriptor(origin, &wire.extensions)?;
     Ok(HostedAuthDescriptor {
         metadata_url: same_origin_url(origin, &wire.oauth.metadata_url)?,
         device_authorization_endpoint: same_origin_url(
@@ -236,6 +243,7 @@ pub(super) fn build_auth_descriptor(
         client_id: bounded_value(&wire.oauth.client_id, 256, "OAuth client ID")?,
         device_grant_type: wire.oauth.device_grant_type,
         session_endpoint: same_origin_path(origin, &wire.session.route_template)?,
+        hosted_runs,
     })
 }
 

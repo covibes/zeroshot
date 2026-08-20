@@ -415,10 +415,11 @@ where
                     subscription
                 }
                 Err(error) if !opened => return Err(error),
-                Err(_) => {
+                Err(NativeV2CliError::Disconnected) => {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 }
+                Err(error) => return Err(error),
             },
         };
         let mut subscription = subscription;

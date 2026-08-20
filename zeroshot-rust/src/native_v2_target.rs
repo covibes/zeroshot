@@ -11,9 +11,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use zeroshot_engine::native_v2_cli::oecp::TargetConnector;
-use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetRunRequest, TargetSetup};
-use openengine_cluster_protocol::RunSubmitResult;
+use zeroshot_engine::native_v2_cli::oecp::{BoxedSubscription, TargetConnector};
+use zeroshot_engine::native_v2_cli::{
+    CliRunForceResult, CliRunListResult, CliRunStatusResult, CliRunWatchEventNotification,
+    NativeV2CliError, TargetAdd, TargetRunRequest, TargetSetup,
+};
+use openengine_cluster_protocol::{
+    RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams,
+    RunSubmitResult, RunWatchParams,
+};
 pub use zeroshot_engine::native_v2_target_authority::TargetSetupDocument;
 
 mod contract;
@@ -57,12 +63,43 @@ pub trait TargetControlAuthority: Send + Sync {
         &self,
         target: &TargetRecord,
     ) -> Result<TargetOecpAccess, TargetAuthorityError>;
+
+    async fn hosted_run_list(
+        &self,
+        target: &TargetRecord,
+        params: RunListParams,
+    ) -> Result<CliRunListResult, TargetAuthorityError>;
+
+    async fn hosted_run_status(
+        &self,
+        target: &TargetRecord,
+        params: RunStatusParams,
+    ) -> Result<CliRunStatusResult, TargetAuthorityError>;
+
+    async fn hosted_run_watch(
+        &self,
+        target: &TargetRecord,
+        params: RunWatchParams,
+    ) -> Result<BoxedSubscription<CliRunWatchEventNotification>, TargetAuthorityError>;
+
+    async fn hosted_run_logs(
+        &self,
+        target: &TargetRecord,
+        params: RunLogsParams,
+    ) -> Result<BoxedSubscription<RunLogEventNotification>, TargetAuthorityError>;
+
+    async fn hosted_run_force(
+        &self,
+        target: &TargetRecord,
+        params: RunForceParams,
+    ) -> Result<CliRunForceResult, TargetAuthorityError>;
 }
 
 #[derive(Debug, Error)]
 #[error("{message}")]
 pub struct TargetAuthorityError {
     message: String,
+    disconnected: bool,
 }
 
 impl TargetAuthorityError {
@@ -70,7 +107,19 @@ impl TargetAuthorityError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            disconnected: false,
         }
+    }
+
+    fn disconnected(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            disconnected: true,
+        }
+    }
+
+    const fn is_disconnected(&self) -> bool {
+        self.disconnected
     }
 }
 
@@ -269,14 +318,119 @@ where
             .authority
             .oecp_session(&target)
             .await
-            .map_err(cli_target_error)?;
+            .map_err(cli_authority_error)?;
         self.dialer
             .dial(&target, session)
             .await
+            .map_err(cli_connector_error)
+    }
+
+    async fn hosted_run_list(
+        &self,
+        name: &str,
+        params: RunListParams,
+    ) -> Result<Option<CliRunListResult>, NativeV2CliError> {
+        let target = self.target(name)?;
+        if matches!(target.access, TargetAccess::Direct) {
+            return Ok(None);
+        }
+        self.authority
+            .hosted_run_list(&target, params)
+            .await
             .map_err(cli_target_error)
+            .map(Some)
+    }
+
+    async fn hosted_run_status(
+        &self,
+        name: &str,
+        params: RunStatusParams,
+    ) -> Result<Option<CliRunStatusResult>, NativeV2CliError> {
+        let target = self.target(name)?;
+        if matches!(target.access, TargetAccess::Direct) {
+            return Ok(None);
+        }
+        self.authority
+            .hosted_run_status(&target, params)
+            .await
+            .map_err(cli_target_error)
+            .map(Some)
+    }
+
+    async fn hosted_run_watch(
+        &self,
+        name: &str,
+        params: RunWatchParams,
+    ) -> Result<Option<BoxedSubscription<CliRunWatchEventNotification>>, NativeV2CliError> {
+        let target = self.target(name)?;
+        if matches!(target.access, TargetAccess::Direct) {
+            return Ok(None);
+        }
+        self.authority
+            .hosted_run_watch(&target, params)
+            .await
+            .map_err(cli_authority_error)
+            .map(Some)
+    }
+
+    async fn hosted_run_logs(
+        &self,
+        name: &str,
+        params: RunLogsParams,
+    ) -> Result<Option<BoxedSubscription<RunLogEventNotification>>, NativeV2CliError> {
+        let target = self.target(name)?;
+        if matches!(target.access, TargetAccess::Direct) {
+            return Ok(None);
+        }
+        self.authority
+            .hosted_run_logs(&target, params)
+            .await
+            .map_err(cli_authority_error)
+            .map(Some)
+    }
+
+    async fn hosted_run_force(
+        &self,
+        name: &str,
+        params: RunForceParams,
+    ) -> Result<Option<CliRunForceResult>, NativeV2CliError> {
+        let target = self.target(name)?;
+        if matches!(target.access, TargetAccess::Direct) {
+            return Ok(None);
+        }
+        self.authority
+            .hosted_run_force(&target, params)
+            .await
+            .map_err(cli_target_error)
+            .map(Some)
+    }
+}
+
+impl<R, A, D> NativeV2TargetConnector<R, A, D>
+where
+    R: TargetRegistry,
+{
+    fn target(&self, name: &str) -> Result<TargetRecord, NativeV2CliError> {
+        validate_target_name(name).map_err(cli_target_error)?;
+        self.registry.get(name).map_err(cli_target_error)
     }
 }
 
 fn cli_target_error(error: impl fmt::Display) -> NativeV2CliError {
     NativeV2CliError::Target(error.to_string())
+}
+
+fn cli_authority_error(error: TargetAuthorityError) -> NativeV2CliError {
+    if error.is_disconnected() {
+        NativeV2CliError::Disconnected
+    } else {
+        cli_target_error(error)
+    }
+}
+
+fn cli_connector_error(error: TargetConnectorError) -> NativeV2CliError {
+    match error {
+        TargetConnectorError::OecpConnection(_) => NativeV2CliError::Disconnected,
+        error => cli_target_error(error),
+    }
 }

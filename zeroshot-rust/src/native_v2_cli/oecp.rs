@@ -18,6 +18,28 @@ use super::{
     TargetRunRequest, TargetSetup,
 };
 
+pub struct BoxedSubscription<E> {
+    inner: Box<dyn CliSubscription<E>>,
+}
+
+impl<E> BoxedSubscription<E> {
+    pub fn new(subscription: impl CliSubscription<E> + 'static) -> Self {
+        Self {
+            inner: Box::new(subscription),
+        }
+    }
+}
+
+#[async_trait]
+impl<E> CliSubscription<E> for BoxedSubscription<E>
+where
+    E: Send,
+{
+    async fn next(&mut self) -> Result<Option<CliSubscriptionItem<E>>, NativeV2CliError> {
+        self.inner.next().await
+    }
+}
+
 /// Named-target authority. The CLI does not interpret login credentials or runtime configuration.
 #[async_trait]
 pub trait TargetConnector: Send + Sync {
@@ -32,13 +54,43 @@ pub trait TargetConnector: Send + Sync {
         request: TargetRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError>;
     async fn connect(&self, name: &str) -> Result<Arc<Self::Transport>, NativeV2CliError>;
+
+    async fn hosted_run_list(
+        &self,
+        name: &str,
+        params: RunListParams,
+    ) -> Result<Option<CliRunListResult>, NativeV2CliError>;
+
+    async fn hosted_run_status(
+        &self,
+        name: &str,
+        params: RunStatusParams,
+    ) -> Result<Option<CliRunStatusResult>, NativeV2CliError>;
+
+    async fn hosted_run_watch(
+        &self,
+        name: &str,
+        params: RunWatchParams,
+    ) -> Result<Option<BoxedSubscription<CliRunWatchEventNotification>>, NativeV2CliError>;
+
+    async fn hosted_run_logs(
+        &self,
+        name: &str,
+        params: RunLogsParams,
+    ) -> Result<Option<BoxedSubscription<RunLogEventNotification>>, NativeV2CliError>;
+
+    async fn hosted_run_force(
+        &self,
+        name: &str,
+        params: RunForceParams,
+    ) -> Result<Option<CliRunForceResult>, NativeV2CliError>;
 }
 
-pub struct OecpCliBackend<C> {
+pub struct NamedTargetCliBackend<C> {
     connector: C,
 }
 
-impl<C> OecpCliBackend<C> {
+impl<C> NamedTargetCliBackend<C> {
     #[must_use]
     pub const fn new(connector: C) -> Self {
         Self { connector }
@@ -68,13 +120,13 @@ where
 }
 
 #[async_trait]
-impl<C> NativeV2CliBackend for OecpCliBackend<C>
+impl<C> NativeV2CliBackend for NamedTargetCliBackend<C>
 where
     C: TargetConnector,
 {
-    type Watch = ChannelSubscription<CliRunWatchEventNotification>;
-    type Logs = ChannelSubscription<RunLogEventNotification>;
-    type Attach = ChannelSubscription<RunAttachEventNotification>;
+    type Watch = BoxedSubscription<CliRunWatchEventNotification>;
+    type Logs = BoxedSubscription<RunLogEventNotification>;
+    type Attach = BoxedSubscription<RunAttachEventNotification>;
 
     async fn target_add(&self, request: TargetAdd) -> Result<(), NativeV2CliError> {
         self.connector.add(request).await
@@ -103,10 +155,15 @@ where
         target: Option<&str>,
         params: RunListParams,
     ) -> Result<CliRunListResult, NativeV2CliError> {
-        let transport = self
+        let target = require_named_target(target)?;
+        if let Some(result) = self
             .connector
-            .connect(require_named_target(target)?)
-            .await?;
+            .hosted_run_list(target, params.clone())
+            .await?
+        {
+            return Ok(result);
+        }
+        let transport = self.connector.connect(target).await?;
         ClusterClient::new(transport.as_ref())
             .run_list(params)
             .await
@@ -119,10 +176,15 @@ where
         target: Option<&str>,
         params: RunStatusParams,
     ) -> Result<CliRunStatusResult, NativeV2CliError> {
-        let transport = self
+        let target = require_named_target(target)?;
+        if let Some(result) = self
             .connector
-            .connect(require_named_target(target)?)
-            .await?;
+            .hosted_run_status(target, params.clone())
+            .await?
+        {
+            return Ok(result);
+        }
+        let transport = self.connector.connect(target).await?;
         ClusterClient::new(transport.as_ref())
             .run_status(params)
             .await
@@ -135,11 +197,16 @@ where
         target: Option<&str>,
         params: RunWatchParams,
     ) -> Result<Self::Watch, NativeV2CliError> {
-        let transport = self
+        let target = require_named_target(target)?;
+        if let Some(subscription) = self
             .connector
-            .connect(require_named_target(target)?)
-            .await?;
-        Ok(spawn_watch(transport, params))
+            .hosted_run_watch(target, params.clone())
+            .await?
+        {
+            return Ok(subscription);
+        }
+        let transport = self.connector.connect(target).await?;
+        Ok(BoxedSubscription::new(spawn_watch(transport, params)))
     }
 
     async fn run_logs(
@@ -147,11 +214,16 @@ where
         target: Option<&str>,
         params: RunLogsParams,
     ) -> Result<Self::Logs, NativeV2CliError> {
-        let transport = self
+        let target = require_named_target(target)?;
+        if let Some(subscription) = self
             .connector
-            .connect(require_named_target(target)?)
-            .await?;
-        Ok(spawn_logs(transport, params))
+            .hosted_run_logs(target, params.clone())
+            .await?
+        {
+            return Ok(subscription);
+        }
+        let transport = self.connector.connect(target).await?;
+        Ok(BoxedSubscription::new(spawn_logs(transport, params)))
     }
 
     async fn run_attach(
@@ -163,7 +235,7 @@ where
             .connector
             .connect(require_named_target(target)?)
             .await?;
-        Ok(spawn_attach(transport, params))
+        Ok(BoxedSubscription::new(spawn_attach(transport, params)))
     }
 
     async fn run_force(
@@ -171,10 +243,15 @@ where
         target: Option<&str>,
         params: RunForceParams,
     ) -> Result<CliRunForceResult, NativeV2CliError> {
-        let transport = self
+        let target = require_named_target(target)?;
+        if let Some(result) = self
             .connector
-            .connect(require_named_target(target)?)
-            .await?;
+            .hosted_run_force(target, params.clone())
+            .await?
+        {
+            return Ok(result);
+        }
+        let transport = self.connector.connect(target).await?;
         ClusterClient::new(transport.as_ref())
             .run_force(params)
             .await

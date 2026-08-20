@@ -1,5 +1,9 @@
 use super::*;
 
+mod hosted_runs;
+
+use hosted_runs::serve_hosted_run;
+
 struct TestSessions;
 
 #[async_trait]
@@ -57,7 +61,7 @@ impl LoopbackHost {
         let authority = Arc::new(NativeV2TargetAuthority::new(factory));
         let native = Arc::new(
             NativeV2TargetServer::new_hosted(
-                authority,
+                authority.clone(),
                 Arc::new(TestSessions),
                 format!("ws://{address}/native-v2/oecp"),
             )
@@ -68,6 +72,7 @@ impl LoopbackHost {
             loop {
                 let (stream, _) = listener.accept().await.assert_value();
                 let native = native.clone();
+                let authority = authority.clone();
                 let hosted_origin = hosted_origin.clone();
                 tokio::spawn(async move {
                     let path = peek_path(&stream).await.assert_value();
@@ -75,6 +80,18 @@ impl LoopbackHost {
                         serve_hosted_auth(stream, &hosted_origin)
                             .await
                             .assert_value();
+                    } else if path.starts_with("/native-v2/runs") {
+                        if let Err(error) = serve_hosted_run(stream, authority).await {
+                            assert!(
+                                matches!(
+                                    error.kind(),
+                                    io::ErrorKind::BrokenPipe
+                                        | io::ErrorKind::ConnectionReset
+                                        | io::ErrorKind::UnexpectedEof
+                                ),
+                                "hosted run route failed: {error}"
+                            );
+                        }
                     } else {
                         native.serve_connection(stream).await.assert_value();
                     }
@@ -209,6 +226,19 @@ async fn serve_hosted_auth(mut stream: TcpStream, origin: &str) -> io::Result<()
                 "route_template":"/session",
                 "method":"GET",
                 "cache_policy":"no-store"
+            },
+            "extensions":{
+                "hosted_runs":{
+                    "kind":"zeroshot.hosted-runs/v1",
+                    "base_url":origin,
+                    "route_templates":{
+                        "list":"/native-v2/runs",
+                        "status":"/native-v2/runs/{run_id}",
+                        "watch":"/native-v2/runs/{run_id}/watch{?from_cursor}",
+                        "logs":"/native-v2/runs/{run_id}/logs{?from_cursor,execution}",
+                        "force":"/native-v2/runs/{run_id}/force"
+                    }
+                }
             }
         }),
         ("GET", "/oauth/metadata") => json!({

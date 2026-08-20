@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -31,6 +32,7 @@ struct HostedDiscoveryFixture {
     kind: &'static str,
     oauth: OAuthDiscoveryFixture,
     session: SessionDiscoveryFixture,
+    extensions: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -129,6 +131,9 @@ fn authority_response(
     address: std::net::SocketAddr,
     token_index: &mut u8,
 ) -> String {
+    if let Some(response) = hosted_run_response(request) {
+        return response;
+    }
     if let Some(response) = controller_response(request, address) {
         return response;
     }
@@ -163,6 +168,88 @@ fn authority_response(
     }
 }
 
+fn hosted_run_response(request: &CapturedHttpRequest) -> Option<String> {
+    let queued = || {
+        json!({
+            "runId": "run-hosted",
+            "title": "Hosted queue test",
+            "source": source(),
+            "size": "standard",
+            "atCursor": "cloud:1",
+            "status": {"phase": "queued"}
+        })
+    };
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/native-v2/runs") => Some(json!({"runs": [queued()]}).to_string()),
+        ("GET", "/native-v2/runs/run-hosted") => Some(queued().to_string()),
+        ("GET", "/native-v2/runs/run-hosted/watch") => Some(
+            json!({
+                "type": "event",
+                "event": {
+                    "subscriptionId": "watch-1",
+                    "runId": "run-hosted",
+                    "title": "Hosted queue test",
+                    "source": source(),
+                    "size": "standard",
+                    "cursor": "cloud:1",
+                    "status": {"phase": "queued"}
+                }
+            })
+            .to_string()
+                + "\n{\"type\":\"event\"",
+        ),
+        ("GET", "/native-v2/runs/run-hosted/watch?from_cursor=cloud%3A1") => Some(format!(
+            "{}\n{}\n",
+            json!({
+                "type": "event",
+                "event": {
+                    "subscriptionId": "watch-2",
+                    "runId": "run-hosted",
+                    "title": "Hosted queue test",
+                    "source": source(),
+                    "size": "standard",
+                    "cursor": "cloud:2",
+                    "status": {
+                        "phase": "finished",
+                        "terminalResult": {"status": "succeeded", "output": null}
+                    }
+                }
+            }),
+            json!({"type": "closed", "reason": "done"})
+        )),
+        ("GET", "/native-v2/runs/run-hosted/logs?from_cursor=cloud%3A2&execution=worker%2F1") => {
+            Some(format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "event",
+                    "event": {
+                        "subscriptionId": "logs-1",
+                        "runId": "run-hosted",
+                        "cursor": "cloud:3",
+                        "execution": "worker/1",
+                        "record": {
+                            "level": "info",
+                            "target": "agent",
+                            "message": "retained output"
+                        }
+                    }
+                }),
+                json!({"type": "closed", "reason": "done"})
+            ))
+        }
+        ("POST", "/native-v2/runs/run-hosted/force") => Some(queued().to_string()),
+        _ => None,
+    }
+}
+
+fn source() -> serde_json::Value {
+    json!({
+        "repository": "open-engine/zeroshot",
+        "branch": "main",
+        "revision": "0123456789abcdef0123456789abcdef01234567"
+    })
+}
+
 fn controller_response(
     request: &CapturedHttpRequest,
     address: std::net::SocketAddr,
@@ -195,8 +282,28 @@ fn hosted_discovery(origin: &str) -> String {
             method: "GET",
             cache_policy: "no-store",
         },
+        extensions: json!({
+            "hosted_runs": {
+                "kind": "zeroshot.hosted-runs/v1",
+                "base_url": origin,
+                "route_templates": hosted_run_routes()
+            }
+        }),
     };
     serde_json::to_string(&fixture).unwrap_or_else(|_| std::process::abort())
+}
+
+fn hosted_run_routes() -> BTreeMap<&'static str, &'static str> {
+    BTreeMap::from([
+        ("force", "/native-v2/runs/{run_id}/force"),
+        ("list", "/native-v2/runs"),
+        (
+            "logs",
+            "/native-v2/runs/{run_id}/logs{?from_cursor,execution}",
+        ),
+        ("status", "/native-v2/runs/{run_id}"),
+        ("watch", "/native-v2/runs/{run_id}/watch{?from_cursor}"),
+    ])
 }
 
 fn oauth_metadata(origin: &str) -> String {

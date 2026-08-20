@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex};
 use openengine_cluster_client::{
     JsonRpcTransport, PumpedSubscription, SubscriptionTransport, TransportError,
 };
-use openengine_cluster_protocol::{RequestId, RunId, RunSubmitResult, SourceBranchId, SubscriptionId};
+use openengine_cluster_protocol::{
+    RequestId, RunForceParams, RunId, RunListParams, RunLogEventNotification, RunLogsParams,
+    RunStatusParams, RunSubmitResult, RunWatchParams, SourceBranchId, SubscriptionId,
+};
 use serde_json::json;
 use zeroshot_engine::native_v2_target_authority::TargetRunIntent;
 
@@ -134,6 +137,56 @@ impl TargetControlAuthority for FakeAuthority {
             &target.access,
         )
         .map_err(|error| TargetAuthorityError::new(error.to_string()))
+    }
+
+    async fn hosted_run_list(
+        &self,
+        _target: &TargetRecord,
+        _params: RunListParams,
+    ) -> Result<CliRunListResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake hosted lifecycle is unavailable",
+        ))
+    }
+
+    async fn hosted_run_status(
+        &self,
+        _target: &TargetRecord,
+        _params: RunStatusParams,
+    ) -> Result<CliRunStatusResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake hosted lifecycle is unavailable",
+        ))
+    }
+
+    async fn hosted_run_watch(
+        &self,
+        _target: &TargetRecord,
+        _params: RunWatchParams,
+    ) -> Result<BoxedSubscription<CliRunWatchEventNotification>, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake hosted lifecycle is unavailable",
+        ))
+    }
+
+    async fn hosted_run_logs(
+        &self,
+        _target: &TargetRecord,
+        _params: RunLogsParams,
+    ) -> Result<BoxedSubscription<RunLogEventNotification>, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake hosted lifecycle is unavailable",
+        ))
+    }
+
+    async fn hosted_run_force(
+        &self,
+        _target: &TargetRecord,
+        _params: RunForceParams,
+    ) -> Result<CliRunForceResult, TargetAuthorityError> {
+        Err(TargetAuthorityError::new(
+            "fake hosted lifecycle is unavailable",
+        ))
     }
 }
 

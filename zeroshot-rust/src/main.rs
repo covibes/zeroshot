@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 #[cfg(unix)]
 use zeroshot_engine::native_v2_cli::local::{LOCAL_CONTROLLER_MODE, LocalCliBackend};
-use zeroshot_engine::native_v2_cli::oecp::OecpCliBackend;
+use zeroshot_engine::native_v2_cli::oecp::NamedTargetCliBackend;
 use zeroshot_engine::native_v2_cli::{
     execute_native_v2_cli, parse_native_v2_args, try_execute_native_v2_static, CtrlCDetachSignal,
     NativeV2CliCommand, NativeV2CliError,
@@ -85,7 +85,7 @@ async fn run_named_target_command(
         TargetHttpControlAuthority::production().map_err(TargetConnectorError::Authority)?,
         TargetOecpWebSocketDialer,
     );
-    let backend = OecpCliBackend::new(connector);
+    let backend = NamedTargetCliBackend::new(connector);
     execute_native_v2_cli(command, &backend, detach, output).await?;
     Ok(())
 }

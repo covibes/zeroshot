@@ -1,19 +1,16 @@
 mod contract;
+mod control;
 pub(super) mod credentials;
+mod hosted_runs;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CACHE_CONTROL, HeaderValue};
 use reqwest::{Client, Url};
 use serde::de::DeserializeOwned;
-use zeroshot_engine::native_v2_target_authority::{
-    DISCOVERY_PATH, TargetDiscoveryDocument, TargetOecpSession, TargetRunReceipt, TargetRunRequest,
-    TargetSetupOutcome, TargetSetupResult,
-};
-use openengine_cluster_protocol::{RunSubmitResult};
+use zeroshot_engine::native_v2_target_authority::{DISCOVERY_PATH, TargetDiscoveryDocument};
 
 use self::contract::{
     build_auth_descriptor, build_controller_descriptor, validate_metadata_routes,
@@ -27,10 +24,7 @@ use self::credentials::{
     credential_service, open_refresh_lock,
 };
 use super::registry::default_target_registry_path;
-use super::{
-    TargetAccess, TargetAuthorityError, TargetControlAuthority, TargetOecpAccess, TargetRecord,
-    TargetSetupDocument,
-};
+use super::{TargetAccess, TargetAuthorityError, TargetRecord};
 
 const HOSTED_DISCOVERY_PATH: &str = "/.well-known/openengine-hosted-target";
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -49,6 +43,7 @@ struct HostedLogin<'a> {
 #[derive(Clone)]
 pub struct TargetHttpControlAuthority {
     client: Client,
+    stream_client: Client,
     credentials: Arc<dyn TargetCredentialStore>,
     notifier: Arc<dyn DeviceCodeNotifier>,
     refresh_lock_directory: PathBuf,
@@ -69,8 +64,15 @@ impl TargetHttpControlAuthority {
             .user_agent(concat!("zeroshot-rust/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| authority_error("target HTTP client could not be initialized"))?;
+        let stream_client = Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("zeroshot-rust/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|_| authority_error("target HTTP client could not be initialized"))?;
         Ok(Self {
             client,
+            stream_client,
             credentials: Arc::new(KeyringTargetCredentialStore),
             notifier: Arc::new(StderrDeviceCodeNotifier),
             refresh_lock_directory,
@@ -85,6 +87,10 @@ impl TargetHttpControlAuthority {
     ) -> Self {
         Self {
             client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default(),
+            stream_client: Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
@@ -208,7 +214,7 @@ impl TargetHttpControlAuthority {
             ])
             .send()
             .await
-            .map_err(|_| authority_error("device token request failed"))?;
+            .map_err(|_| TargetAuthorityError::disconnected("device token request failed"))?;
         require_response_route(&response, &request.auth.token_endpoint)?;
         read_token_poll(response).await
     }
@@ -277,7 +283,9 @@ impl TargetHttpControlAuthority {
             .header(CACHE_CONTROL, "no-store")
             .send()
             .await
-            .map_err(|_| authority_error("target session verification failed"))?;
+            .map_err(|_| {
+                TargetAuthorityError::disconnected("target session verification failed")
+            })?;
         require_response_route(&response, &auth.session_endpoint)?;
         if !response.status().is_success() {
             return Err(authority_error("target session verification failed"));
@@ -342,7 +350,9 @@ impl TargetHttpControlAuthority {
             .header(ACCEPT, "application/json")
             .send()
             .await
-            .map_err(|_| authority_error(format!("{operation} request failed")))?;
+            .map_err(|_| {
+                TargetAuthorityError::disconnected(format!("{operation} request failed"))
+            })?;
         require_response_route(&response, url)?;
         if !response.status().is_success() {
             return Err(authority_error(format!(
@@ -365,7 +375,9 @@ impl TargetHttpControlAuthority {
             .form(form)
             .send()
             .await
-            .map_err(|_| authority_error(format!("{operation} request failed")))?;
+            .map_err(|_| {
+                TargetAuthorityError::disconnected(format!("{operation} request failed"))
+            })?;
         require_response_route(&response, url)?;
         if !response.status().is_success() {
             return Err(authority_error(format!(
@@ -374,116 +386,6 @@ impl TargetHttpControlAuthority {
             )));
         }
         read_json(response, operation).await
-    }
-}
-
-#[async_trait]
-impl TargetControlAuthority for TargetHttpControlAuthority {
-    async fn discover(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError> {
-        match target.access {
-            TargetAccess::Hosted { .. } => self.descriptors(target).await.map(|_| ()),
-            TargetAccess::Direct => self.controller_descriptor(target).await.map(|_| ()),
-        }
-    }
-
-    async fn login(&self, target: &TargetRecord) -> Result<(), TargetAuthorityError> {
-        let device_token = target
-            .access
-            .device_token()
-            .ok_or_else(|| authority_error("direct target does not use login"))?;
-        let (auth, controller) = self.descriptors(target).await?;
-        self.login_inner(HostedLogin {
-            target_id: &target.id,
-            device_token,
-            auth: &auth,
-            audience: &controller.audience,
-        })
-        .await
-    }
-
-    async fn install(
-        &self,
-        target: &TargetRecord,
-        setup: &TargetSetupDocument,
-    ) -> Result<(), TargetAuthorityError> {
-        let (controller, access) = self.controller_access(target).await?;
-        let response = self
-            .with_access(
-                self.client.put(controller.setup_url.clone()),
-                access.as_deref(),
-            )?
-            .header(ACCEPT, "application/json")
-            .json(setup)
-            .send()
-            .await
-            .map_err(|_| authority_error("target setup request failed"))?;
-        require_response_route(&response, &controller.setup_url)?;
-        if !response.status().is_success() {
-            return Err(authority_error(format!(
-                "target setup request failed with status {}",
-                response.status().as_u16()
-            )));
-        }
-        let receipt: TargetSetupResult = read_json(response, "target setup").await?;
-        match receipt.outcome {
-            TargetSetupOutcome::Installed | TargetSetupOutcome::Unchanged => {}
-        }
-        Ok(())
-    }
-
-    async fn submit(
-        &self,
-        target: &TargetRecord,
-        request: &TargetRunRequest,
-    ) -> Result<RunSubmitResult, TargetAuthorityError> {
-        let (controller, access) = self.controller_access(target).await?;
-        let response = self
-            .with_access(
-                self.client.post(controller.run_url.clone()),
-                access.as_deref(),
-            )?
-            .header(ACCEPT, "application/json")
-            .json(request)
-            .send()
-            .await
-            .map_err(|_| authority_error("target run request failed"))?;
-        require_response_route(&response, &controller.run_url)?;
-        if !response.status().is_success() {
-            return Err(authority_error(format!(
-                "target run request failed with status {}",
-                response.status().as_u16()
-            )));
-        }
-        let receipt: TargetRunReceipt = read_json(response, "target run").await?;
-        Ok(RunSubmitResult {
-            run_id: receipt.run_id,
-        })
-    }
-
-    async fn oecp_session(
-        &self,
-        target: &TargetRecord,
-    ) -> Result<TargetOecpAccess, TargetAuthorityError> {
-        let (controller, access) = self.controller_access(target).await?;
-        let response = self
-            .with_access(
-                self.client.post(controller.session_url.clone()),
-                access.as_deref(),
-            )?
-            .header(ACCEPT, "application/json")
-            .send()
-            .await
-            .map_err(|_| authority_error("target OECP session request failed"))?;
-        require_response_route(&response, &controller.session_url)?;
-        if !response.status().is_success() {
-            return Err(authority_error(format!(
-                "target OECP session request failed with status {}",
-                response.status().as_u16()
-            )));
-        }
-        let session: TargetOecpSession = read_json(response, "target OECP session").await?;
-        TargetOecpAccess::new(session.endpoint, session.bearer_token, &target.access)
-            .map_err(|_| authority_error("target OECP session response is malformed"))
     }
 }
 

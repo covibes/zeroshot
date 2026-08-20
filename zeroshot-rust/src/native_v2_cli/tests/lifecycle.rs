@@ -1,4 +1,4 @@
-use openengine_cluster_testkit::assertions::AssertValue;
+use openengine_cluster_testkit::assertions::{AssertError, AssertValue};
 
 use super::*;
 
@@ -50,6 +50,28 @@ async fn watch_reconnects_from_queued_cursor_into_admitted_history() {
     for cursor in ["cloud:1", "cloud:2", "cloud:3"] {
         assert_cursor_once(&output, cursor);
     }
+}
+
+#[tokio::test]
+async fn watch_surfaces_a_permanent_reopen_error() {
+    let backend = FakeBackend::with_permanent_reopen_watch_error();
+    let command =
+        parse_native_v2_args(args(&["watch", "run-public", "--target", "prod"])).assert_value();
+    let mut output = Vec::new();
+
+    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut output)
+        .await
+        .assert_error();
+
+    assert_eq!(
+        error.to_string(),
+        "native-v2 OECP request failed: hosted watch authorization rejected"
+    );
+    assert_cursor_calls(
+        &backend.calls(),
+        CursorCallKind::Watch,
+        &[None, Some("cloud:1")],
+    );
 }
 
 #[tokio::test]
