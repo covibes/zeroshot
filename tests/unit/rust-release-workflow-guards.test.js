@@ -1,152 +1,101 @@
 const assert = require('assert');
-const fs = require('fs');
-const path = require('path');
 
 const {
   distribution,
   mutation,
-  projectRoot,
+  nodeReleaseWorkflow,
   releaseWorkflow,
 } = require('./rust-distribution-support');
 
-function assertBuildAndUploadGuards(workflow) {
+function rejectsRustMutation(before, after, error) {
   assert.throws(
     () =>
       distribution.checkRepository(
-        mutation(
-          workflow,
-          'run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}',
-          'run: echo cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}'
-        )
+        mutation(releaseWorkflow(), before, after),
+        nodeReleaseWorkflow()
       ),
-    /build step must execute exactly/
-  );
-  for (const [before, after, error] of [
-    [
-      'run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
-      'run: echo node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
-      /version staging/,
-    ],
-    [
-      'run: node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
-      'run: echo node scripts/rust-distribution.js smoke --binary "$BINARY_PATH"',
-      /native Rust executable smoke/,
-    ],
-    [
-      'node scripts/rust-distribution.js smoke-archive \\',
-      'echo node scripts/rust-distribution.js smoke-archive \\',
-      /archive smoke step/,
-    ],
-    [
-      'if ! git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
-      'if ! echo git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main; then',
-      /main ancestry verification/,
-    ],
-  ]) {
-    assert.throws(() => distribution.checkRepository(mutation(workflow, before, after)), error);
-  }
-  assert.throws(
-    () =>
-      distribution.checkRepository(
-        mutation(
-          workflow,
-          'needs: [dry-run, release-plan, rust-recovery-plan]',
-          'needs: [dry-run, rust-recovery-plan]'
-        )
-      ),
-    /rust-binaries dependencies/
-  );
-  assert.throws(
-    () =>
-      distribution.checkRepository(
-        mutation(
-          workflow,
-          `      - name: Upload target archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: zeroshot-rust-\${{ matrix.target }}
-          path: rust-release/*.tar.gz
-          if-no-files-found: error
-`
-        )
-      ),
-    /Upload target archive|per-target archive upload/
+    error
   );
 }
 
 describe('Rust release workflow causal guards', function () {
-  it('causally guards build, matrix, upload, publication, recovery, and shim integrity', function () {
-    const workflow = releaseWorkflow();
-    assertBuildAndUploadGuards(workflow);
-    for (const [before, after] of [
-      ['runner: macos-14', 'runner: ubuntu-latest'],
-      ['executable: zeroshot-rust.exe', 'executable: zeroshot-rust'],
-      ['c-compiler: cl.exe', 'c-compiler: cc'],
+  it('guards the exact source, independent tag, build matrix, and complete assets', function () {
+    for (const [before, after, error] of [
+      [
+        'git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main',
+        'echo skip-main-ancestry',
+        /exact-source guard/,
+      ],
+      [
+        'release_tag="zeroshot-rust-v$RELEASE_VERSION"',
+        'release_tag="v$RELEASE_VERSION"',
+        /exact-source guard/,
+      ],
+      [
+        'run: node scripts/rust-distribution.js stage-version --tag "$RELEASE_TAG"',
+        'run: echo skip-version-stage',
+        /version staging/,
+      ],
+      [
+        'run: cargo build --release --locked -p zeroshot-rust --bin zeroshot-rust --target ${{ matrix.target }}',
+        'run: echo skip-native-build',
+        /build step must execute exactly/,
+      ],
+      ['runner: macos-14', 'runner: ubuntu-latest', /matrix rows differs/],
+      [
+        'docker/zeroshot-rust-target/Dockerfile',
+        'docker/zeroshot-v2-target/Dockerfile',
+        /public Rust target Dockerfile/,
+      ],
+      [
+        'docker image tag "$canonical" "$commit_ref"',
+        'echo skip-commit-image-tag',
+        /canonical image guard/,
+      ],
+      [
+        'run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release',
+        'run: gh release upload "$RELEASE_TAG" rust-release/* --clobber',
+        /assets are not verified/,
+      ],
+      ['--latest=false', '--latest=true', /must not replace the Node release as Latest/],
     ]) {
-      assert.throws(
-        () => distribution.checkRepository(mutation(workflow, before, after)),
-        /matrix rows differs/
-      );
+      rejectsRustMutation(before, after, error);
     }
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(workflow, 'targets: ${{ matrix.target }}', 'targets: x86_64-unknown-linux-gnu')
-        ),
-      /toolchain setup/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(mutation(workflow, 'toolchain: 1.97.0', 'toolchain: stable')),
-      /toolchain setup/
-    );
+  });
 
-    const shimTargets = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, 'npm', 'zeroshot-rust', 'targets.json'), 'utf8')
+  it('keeps dry-run inputs non-publishing and the npm shim independently recoverable', function () {
+    rejectsRustMutation('          - dry-run\n', '', /Rust release actions/);
+    rejectsRustMutation(
+      "if: inputs.action == 'publish-npm-shim' && needs.rust-shim-input.result == 'success'",
+      "if: inputs.action == 'release'",
+      /separate OIDC-authorized action/
     );
-    shimTargets[0].target = 'aarch64-unknown-linux-gnu';
-    assert.throws(
-      () => distribution.checkRepository(workflow, shimTargets),
-      /npm shim host mapping/
+    rejectsRustMutation(
+      '      contents: read\n    env:\n      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}',
+      '      contents: read\n      packages: write\n    env:\n      RELEASE_COMMIT: ${{ needs.plan.outputs.commit }}',
+      /dry-run input job must not receive publication authority/
     );
+    rejectsRustMutation(
+      'registry_integrity="$(npm view "$package" dist.integrity)"',
+      'registry_integrity="$local_integrity"',
+      /idempotently recoverable/
+    );
+    rejectsRustMutation(
+      '$install_root/node_modules/.bin/zeroshot-rust',
+      '$install_root/bin/zeroshot-rust',
+      /exact packed tarball/
+    );
+  });
 
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'needs: [install-matrix, release-plan, rust-manifest]',
-            'needs: [install-matrix, release-plan]'
-          )
-        ),
-      /release dependencies/
+  it('keeps the Node semantic-release train free of Rust dependencies', function () {
+    const coupled = mutation(
+      nodeReleaseWorkflow(),
+      'needs: [install-matrix, release-plan]',
+      'needs: [install-matrix, release-plan, rust-manifest]'
     );
     assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'run: node scripts/release-dry-run.js',
-            'run: |\n          npx semantic-release\n          node scripts/release-dry-run.js'
-          )
-        ),
-      /semantic-release runs before artifacts/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(mutation(workflow, '          - recover-rust-distribution\n')),
-      /no recover-rust-distribution action/
-    );
-    assert.throws(
-      () =>
-        distribution.checkRepository(
-          mutation(
-            workflow,
-            'run: node scripts/rust-distribution.js publish-assets --tag "$RELEASE_TAG" --dir rust-release',
-            'run: gh release upload "$RELEASE_TAG" rust-release/* --clobber'
-          )
-        ),
-      /assets are not verified and uploaded without overwrite/
+      () => distribution.checkRepository(releaseWorkflow(), coupled),
+      /Node release retains Rust coupling|Node release dependencies/
     );
   });
 });

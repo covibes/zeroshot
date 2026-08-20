@@ -23,7 +23,7 @@ function pluginName(plugin) {
 
 function validationPlugins(releaseConfig) {
   const allowed = new Set([
-    '@semantic-release/commit-analyzer',
+    './scripts/node-release-analyzer.js',
     './scripts/semantic-release-notes.js',
   ]);
   return releaseConfig.plugins.filter((plugin) => allowed.has(pluginName(plugin)));

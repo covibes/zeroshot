@@ -105,6 +105,15 @@ function assertNativeSourcesExcluded(files) {
       !file.startsWith('zeroshot-rust/'),
       `npm package must not expose the native product sources: ${file}`
     );
+    assert.ok(
+      !file.startsWith('docker/zeroshot-rust-target/'),
+      `npm package must not expose the native target image: ${file}`
+    );
+    assert.notStrictEqual(
+      file,
+      'scripts/rust-distribution.js',
+      'npm package must not expose native release tooling'
+    );
   }
 }
 

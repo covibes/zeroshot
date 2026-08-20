@@ -1,6 +1,8 @@
-# NPM Publishing Setup for @the-open-engine/zeroshot
+# Node publishing setup for @the-open-engine/zeroshot
 
-This document explains how to set up automated NPM publishing using semantic-release and GitHub Actions.
+This document covers only the Node product's automated npm release. Zeroshot Rust has an independent
+manual release described in [docs/zeroshot-rust-distribution.md](docs/zeroshot-rust-distribution.md).
+Rust-only commits do not participate in Node versioning or generated Node release notes.
 
 ## Prerequisites
 

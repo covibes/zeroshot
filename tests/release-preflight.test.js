@@ -46,7 +46,7 @@ describe('release configuration', () => {
           release: {
             branches: ['main'],
             plugins: [
-              '@semantic-release/commit-analyzer',
+              './scripts/node-release-analyzer.js',
               './scripts/semantic-release-notes.js',
               ['@semantic-release/npm', { npmPublish: true }],
               '@semantic-release/git',
@@ -66,7 +66,7 @@ describe('release configuration', () => {
             branches: ['main'],
             plugins: [
               [
-                '@semantic-release/commit-analyzer',
+                './scripts/node-release-analyzer.js',
                 { releaseRules: [{ type: 'release', release: 'minor' }] },
               ],
               './scripts/semantic-release-notes.js',
@@ -84,7 +84,7 @@ describe('release configuration', () => {
       release: {
         branches: ['main'],
         plugins: [
-          '@semantic-release/commit-analyzer',
+          './scripts/node-release-analyzer.js',
           './scripts/semantic-release-notes.js',
           ['@semantic-release/npm', { npmPublish: true }],
           '@semantic-release/github',
@@ -93,7 +93,7 @@ describe('release configuration', () => {
     });
 
     assert.deepStrictEqual(plugins, [
-      '@semantic-release/commit-analyzer',
+      './scripts/node-release-analyzer.js',
       './scripts/semantic-release-notes.js',
       '@semantic-release/npm',
       '@semantic-release/github',

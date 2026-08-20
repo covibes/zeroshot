@@ -32,8 +32,8 @@ function registerShimInstallTests() {
       });
       assert.deepStrictEqual(fs.readFileSync(destination), binary);
       assert.deepStrictEqual(requested, [
-        `${shim.RELEASE_BASE_URL}/v1.2.3/SHA256SUMS`,
-        `${shim.RELEASE_BASE_URL}/v1.2.3/${filename}`,
+        `${shim.RELEASE_BASE_URL}/${shim.RELEASE_TAG_PREFIX}1.2.3/SHA256SUMS`,
+        `${shim.RELEASE_BASE_URL}/${shim.RELEASE_TAG_PREFIX}1.2.3/${filename}`,
       ]);
     } finally {
       fs.rmSync(packageRoot, { recursive: true, force: true });
@@ -101,9 +101,10 @@ function registerNativeMetadataTest() {
       'task-lib/',
       'cluster-templates/',
       'cluster-hooks/',
-      'docker/',
+      'docker/zeroshot-cluster/',
       'scripts/',
       '!scripts/build-cli-runtime.js',
+      '!scripts/rust-distribution.js',
       'protocol/openengine-cluster/v1/worker.schema.json',
       'docs/openengine-cluster-protocol/v1/legacy-worker.md',
       'README.md',
@@ -112,6 +113,7 @@ function registerNativeMetadataTest() {
       'npm-shrinkwrap.json',
     ]);
     assert(!rootPackage.files.some((entry) => entry.startsWith('zeroshot-rust')));
+    assert(!rootPackage.files.includes('docker/'));
     assert.strictEqual(
       JSON.parse(
         fs.readFileSync(path.join(projectRoot, 'npm', 'zeroshot-rust', 'package.json'), 'utf8')

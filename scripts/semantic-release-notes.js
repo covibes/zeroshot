@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { nodeReleaseContext } = require('./node-release-commits');
 
 function curatedNotesPath(cwd, version) {
   return path.join(cwd, 'docs', 'releases', `v${version}.md`);
@@ -21,13 +22,18 @@ async function conventionalNotes(pluginConfig, context) {
   return generator.generateNotes(pluginConfig.conventional || {}, context);
 }
 
-async function generateNotesWithFallback(pluginConfig, context, fallback = conventionalNotes) {
+async function generateNotesWithFallback(
+  pluginConfig,
+  context,
+  fallback = conventionalNotes,
+  options = {}
+) {
   const version = context.nextRelease?.version;
   if (!version) throw new Error('nextRelease.version is required to generate release notes');
 
   const curated = readCuratedNotes(context.cwd || process.cwd(), version);
   if (curated) return curated;
-  const generated = await fallback(pluginConfig, context);
+  const generated = await fallback(pluginConfig, nodeReleaseContext(context, options));
   return generated;
 }
 

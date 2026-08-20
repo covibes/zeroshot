@@ -8,6 +8,7 @@ const { URL } = require('url');
 const zlib = require('zlib');
 
 const RELEASE_BASE_URL = 'https://github.com/the-open-engine/zeroshot/releases/download';
+const RELEASE_TAG_PREFIX = 'zeroshot-rust-v';
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const HOST_TARGETS = Object.freeze(
@@ -164,7 +165,7 @@ async function install(options = {}) {
   }
   const selected = selectTarget(options.platform, options.arch);
   const filename = archiveName(metadata.version, selected.target);
-  const baseUrl = `${RELEASE_BASE_URL}/v${metadata.version}`;
+  const baseUrl = `${RELEASE_BASE_URL}/${RELEASE_TAG_PREFIX}${metadata.version}`;
   const fetchBuffer = options.fetchBuffer || download;
   const manifest = await fetchBuffer(`${baseUrl}/SHA256SUMS`, MAX_MANIFEST_BYTES);
   const archive = await fetchBuffer(`${baseUrl}/${filename}`, MAX_ARCHIVE_BYTES);
@@ -188,6 +189,7 @@ async function install(options = {}) {
 module.exports = {
   HOST_TARGETS,
   RELEASE_BASE_URL,
+  RELEASE_TAG_PREFIX,
   archiveName,
   extractExecutable,
   install,

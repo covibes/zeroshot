@@ -39,7 +39,7 @@ describe('Rust release asset recovery', function () {
     };
     try {
       const result = distribution.publishAssets({
-        tag: 'v6.10.3',
+        tag: 'zeroshot-rust-v6.10.3',
         directory,
         invokeGh,
       });
@@ -51,7 +51,7 @@ describe('Rust release asset recovery', function () {
       assert.throws(
         () =>
           distribution.publishAssets({
-            tag: 'v6.10.3',
+            tag: 'zeroshot-rust-v6.10.3',
             directory,
             invokeGh: (args) => {
               if (args[1] === 'view') {

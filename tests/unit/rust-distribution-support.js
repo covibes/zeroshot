@@ -34,6 +34,13 @@ function mutateWorkflowJob(source, jobName, mutateJob) {
 }
 
 function releaseWorkflow() {
+  return fs.readFileSync(
+    path.join(projectRoot, '.github', 'workflows', 'release-rust.yml'),
+    'utf8'
+  );
+}
+
+function nodeReleaseWorkflow() {
   return fs.readFileSync(path.join(projectRoot, '.github', 'workflows', 'release.yml'), 'utf8');
 }
 
@@ -93,6 +100,7 @@ module.exports = {
   distribution,
   mutation,
   mutateWorkflowJob,
+  nodeReleaseWorkflow,
   projectRoot,
   relativeFiles,
   releaseWorkflow,

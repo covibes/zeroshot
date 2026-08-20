@@ -48,6 +48,30 @@ describe('semantic release notes', function () {
     assert.strictEqual(readCuratedNotes(root, '6.7.3'), null);
   });
 
+  it('omits Rust-only commits from generated Node release notes', async function () {
+    const context = {
+      cwd: root,
+      commits: [
+        { hash: 'aaaaaaa', message: 'feat: Rust product' },
+        { hash: 'bbbbbbb', message: 'fix: Node product' },
+      ],
+      nextRelease: { version: '6.7.3' },
+    };
+    const notes = await generateNotesWithFallback(
+      {},
+      context,
+      (_pluginConfig, filteredContext) =>
+        filteredContext.commits.map((commit) => commit.message).join('\n'),
+      {
+        pathsForCommit(hash) {
+          return hash === 'aaaaaaa' ? ['zeroshot-rust/src/main.rs'] : ['src/orchestrator.js'];
+        },
+      }
+    );
+
+    assert.strictEqual(notes, 'fix: Node product');
+  });
+
   it('rejects an empty curated file instead of silently falling back', async function () {
     fs.writeFileSync(path.join(root, 'docs', 'releases', 'v6.7.2.md'), ' \n');
 

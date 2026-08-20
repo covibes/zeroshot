@@ -10,6 +10,15 @@ const {
 } = require('./rust-distribution-support');
 
 describe('Rust product distribution', function () {
+  it('uses an independent Rust release tag without changing archive names', function () {
+    assert.strictEqual(distribution.rustReleaseTag('1.2.3'), 'zeroshot-rust-v1.2.3');
+    assert.strictEqual(distribution.normalizeVersion('zeroshot-rust-v1.2.3'), '1.2.3');
+    assert.strictEqual(
+      distribution.archiveName('zeroshot-rust-v1.2.3', 'x86_64-unknown-linux-gnu'),
+      'zeroshot-rust-v1.2.3-x86_64-unknown-linux-gnu.tar.gz'
+    );
+  });
+
   it('declares the complete native target and host matrix', function () {
     assert.deepStrictEqual(
       distribution.targets.map(({ target }) => target),
@@ -59,6 +68,7 @@ describe('Rust product distribution', function () {
         });
       }
       const manifestText = distribution.createManifest({ version: '1.2.3', directory });
+      assert.strictEqual(distribution.verifyDistribution({ version: '1.2.3', directory }), true);
       const manifest = distribution.parseChecksumManifest(manifestText);
       assert.strictEqual(manifest.size, distribution.targets.length);
       for (const declaration of distribution.targets) {
@@ -90,25 +100,24 @@ describe('Rust product distribution', function () {
 });
 
 describe('Rust release executable smoke', function () {
-  it('uses the valid greeting-validator protocol', function () {
+  it('requires the exact public product version', function () {
     if (process.platform === 'win32') this.skip();
     const directory = temporaryDirectory();
     const binaryPath = path.join(directory, 'fixture-binary');
     fs.writeFileSync(
       binaryPath,
       `#!/bin/sh
-[ "$1" = "--native-validate-greeting" ] || exit 2
-cat > actual-stdin
-cat > expected <<'EOF'
-zeroshot release smoke
-EOF
-cmp -s actual-stdin expected || exit 3
-cmp -s greeting.txt expected || exit 4
+[ "$1" = "--version" ] || exit 2
+printf 'zeroshot-rust 1.2.3\\n'
 `,
       { mode: 0o755 }
     );
     try {
-      distribution.smokeExecutable(binaryPath, 'RUST_BINARY_SMOKE_FAILED');
+      distribution.smokeExecutable(binaryPath, 'RUST_BINARY_SMOKE_FAILED', '1.2.3');
+      assert.throws(
+        () => distribution.smokeExecutable(binaryPath, 'RUST_BINARY_SMOKE_FAILED', '1.2.4'),
+        /expected "zeroshot-rust 1\.2\.4", received "zeroshot-rust 1\.2\.3"/
+      );
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }

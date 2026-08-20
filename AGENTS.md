@@ -15,10 +15,13 @@ Operational rules and references for automated agents working on this repo. Inst
 - `main` is the single development and release trunk. Target normal PRs at `main`; never recreate a
   long-lived `dev -> main` release-promotion flow.
 - Pull request titles are Conventional Commit headers because squash merge makes the title the
-  released commit. `fix:`/`perf:` publish patches, `feat:` publishes minors, breaking syntax
-  publishes majors, and `docs:`/`chore:` intentionally publish nothing.
-- The checked-in package version is always `0.0.0-development`. Release tags, npm metadata, and
-  GitHub Releases are authoritative; release automation must never commit versions back to `main`.
+  released commit. For Node-owned changes, `fix:`/`perf:` publish patches, `feat:` publishes minors,
+  breaking syntax publishes majors, and `docs:`/`chore:` intentionally publish nothing.
+- Node and Zeroshot Rust release independently from `main`. Node owns `vX.Y.Z` and automatic
+  semantic releases. Rust uses explicit `zeroshot-rust-vX.Y.Z` releases and must never affect the
+  next Node version or generated Node notes.
+- Checked-in publication manifests are non-authoritative development versions. Release tags, npm
+  metadata, and GitHub Releases are authoritative; automation must never commit versions to `main`.
 - Curated notes live at `docs/releases/vX.Y.Z.md`. Recovery may operate only from an immutable
   `vX.Y.Z` tag whose exact commit is an ancestor of `main`, and it must never overwrite an existing
   npm version or GitHub Release.
@@ -116,7 +119,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
 | Native v2 built-in graph templates        | `zeroshot-rust/src/native_v2_templates.rs`, `native_v2_templates/`                                                               |
 | Native v2 target connector/server command | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
-| Native v2 self-hosted target image        | `docker/zeroshot-v2-target/`                                                                                                     |
+| Native self-hosted target image           | `docker/zeroshot-rust-target/`                                                                                                   |
 | Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
 | Native distribution tooling               | `scripts/rust-distribution.js`                                                                                                   |
@@ -199,6 +202,13 @@ graph first.
 Native release metadata and npm installer code stay outside the Rust-only `zeroshot-rust/`
 package. `distribution/zeroshot-rust-targets.json` is the authoritative release target list;
 the workflow matrix and checksum coverage must match it exactly.
+Node and Rust CI lanes are selected by `.github/ci-path-classifier.js`; shared or unknown paths run
+both. Keep the aggregate `required` check stable. Node release analysis and notes must filter every
+Rust-only commit since the last Node tag, not just the triggering commit. Rust releases are manual,
+use an exact `main` commit and explicit version, and publish `zeroshot-rust-vX.Y.Z`, five native
+archives with `SHA256SUMS`, and the Linux AMD64 `zeroshot-rust-target` image. The optional npm shim
+is published separately only after those GitHub assets exist. Rust GitHub Releases are never marked
+repository-wide latest.
 The published Node bindings are the standalone `@the-open-engine/zeroshot/cluster` and
 `@the-open-engine/zeroshot/hosted-session` subpaths. Hosted-session owns only short-lived access
 renewal and authenticated reconnect over the public cluster client; provider capsule APIs remain
@@ -1258,12 +1268,14 @@ Multiple CI jobs fail → Diagnose each independently.
 
 - `main` is the only development and release branch.
 - Feature branches merge directly to `main` through its merge queue.
-- Main requires `check` + `install-matrix`; semantic-release runs only after the exact merged
-  `main` commit passes CI.
-- Conventional squash-commit titles select patch/minor/major. Documentation and chore commits may
-  intentionally produce no release.
-- The checked-in `0.0.0-development` manifest version is deliberately non-authoritative;
-  semantic-release derives and writes the published version from Git tags in its release workspace.
+- Main requires the stable aggregate `required` check. Node and Rust paths run independent CI lanes;
+  shared or unknown paths run both.
+- Node semantic-release runs only after an applicable exact merged `main` commit passes CI.
+  Conventional squash titles select patch/minor/major, and Rust-only history is excluded.
+- Zeroshot Rust releases only by explicit `release-rust.yml` dispatch with a version and exact
+  `main` commit. Its canonical outputs are GitHub archives/checksums and the Linux AMD64 GHCR image;
+  the npm downloader shim is optional and separately published.
+- Checked-in versions are deliberately non-authoritative and are staged only in release workspaces.
 - There is no release-promotion PR and no `dev -> main` synchronization step.
 
 Do NOT assume single root cause.
