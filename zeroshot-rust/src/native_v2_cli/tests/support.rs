@@ -12,6 +12,10 @@ use serde_json::{json, Value};
 
 use super::*;
 
+#[path = "support/attach.rs"]
+mod attach;
+use attach::{attach_event, AttachBehavior};
+
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Call {
     TargetAdd {
@@ -69,6 +73,7 @@ pub(super) struct FakeSubscription<E> {
 enum FakeSubscriptionStep<E> {
     Item(CliSubscriptionItem<E>),
     Disconnected,
+    ProtocolError,
 }
 
 impl<E> FakeSubscription<E> {
@@ -87,6 +92,12 @@ impl<E> FakeSubscription<E> {
         Self { items: Some(steps) }
     }
 
+    fn protocol_error() -> Self {
+        Self {
+            items: Some(VecDeque::from([FakeSubscriptionStep::ProtocolError])),
+        }
+    }
+
     fn pending() -> Self {
         Self { items: None }
     }
@@ -102,6 +113,9 @@ where
             Some(items) => match items.pop_front() {
                 Some(FakeSubscriptionStep::Item(item)) => Ok(Some(item)),
                 Some(FakeSubscriptionStep::Disconnected) => Err(NativeV2CliError::Disconnected),
+                Some(FakeSubscriptionStep::ProtocolError) => {
+                    Err(NativeV2CliError::Protocol("attach rejected".to_owned()))
+                }
                 None => Ok(None),
             },
             None => std::future::pending().await,
@@ -115,7 +129,7 @@ pub(super) struct FakeBackend {
     pending_watch: bool,
     reconnect_watch: bool,
     reconnect_logs: bool,
-    disconnect_attach: bool,
+    attach_behavior: AttachBehavior,
     failed_watch: bool,
 }
 
@@ -154,9 +168,30 @@ impl FakeBackend {
         }
     }
 
-    pub(super) fn with_disconnected_attach() -> Self {
+    pub(super) fn with_reconnecting_attach_after_disconnect() -> Self {
         Self {
-            disconnect_attach: true,
+            attach_behavior: AttachBehavior::Disconnect,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_reconnecting_attach_after_eof() -> Self {
+        Self {
+            attach_behavior: AttachBehavior::EndOfStream,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_reconnecting_attach_after_slow_consumer() -> Self {
+        Self {
+            attach_behavior: AttachBehavior::SlowConsumer,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn with_failed_attach() -> Self {
+        Self {
+            attach_behavior: AttachBehavior::ProtocolError,
             ..Self::default()
         }
     }
@@ -363,15 +398,51 @@ impl NativeV2CliBackend for FakeBackend {
         target: Option<&str>,
         params: RunAttachParams,
     ) -> Result<Self::Attach, NativeV2CliError> {
-        self.calls.lock().assert_value().push(Call::Attach {
+        let mut calls = self.calls.lock().assert_value();
+        let attempt = calls
+            .iter()
+            .filter(|call| matches!(call, Call::Attach { .. }))
+            .count()
+            + 1;
+        calls.push(Call::Attach {
             target: target.map(str::to_owned),
             run_id: params.run_id.as_str().to_owned(),
             execution: params.execution.as_str().to_owned(),
         });
-        if self.disconnect_attach {
-            return Ok(FakeSubscription::disconnect_after(Vec::new()));
+        drop(calls);
+
+        match (self.attach_behavior, attempt) {
+            (AttachBehavior::Done, _) => {
+                Ok(FakeSubscription::items(vec![CliSubscriptionItem::Closed {
+                    reason: SubscriptionCloseReason::Done,
+                }]))
+            }
+            (AttachBehavior::ProtocolError, _) => Ok(FakeSubscription::protocol_error()),
+            (_, 2..) => Ok(FakeSubscription::items(vec![
+                attach_event(&params, attempt, "after reconnect"),
+                CliSubscriptionItem::Closed {
+                    reason: SubscriptionCloseReason::Done,
+                },
+            ])),
+            (AttachBehavior::Disconnect, _) => {
+                Ok(FakeSubscription::disconnect_after(vec![attach_event(
+                    &params,
+                    attempt,
+                    "before reconnect",
+                )]))
+            }
+            (AttachBehavior::EndOfStream, _) => Ok(FakeSubscription::items(vec![attach_event(
+                &params,
+                attempt,
+                "before reconnect",
+            )])),
+            (AttachBehavior::SlowConsumer, _) => Ok(FakeSubscription::items(vec![
+                attach_event(&params, attempt, "before reconnect"),
+                CliSubscriptionItem::Closed {
+                    reason: SubscriptionCloseReason::SlowConsumer,
+                },
+            ])),
         }
-        Ok(FakeSubscription::items(Vec::new()))
     }
 
     async fn run_force(

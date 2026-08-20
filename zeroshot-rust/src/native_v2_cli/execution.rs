@@ -14,8 +14,11 @@ use super::{
     TemplateDelivery, HELP,
 };
 
+#[path = "execution/attach.rs"]
+mod attach;
 #[path = "execution/submission.rs"]
 mod submission;
+use attach::{follow_attach, RoutedAttach};
 use submission::prepare_submission;
 
 pub async fn execute_native_v2_cli<B, S, W>(
@@ -216,16 +219,19 @@ where
             .await
         }
         NativeV2CliCommand::Attach { run, execution } => {
-            let subscription = backend
-                .run_attach(
-                    run.target.as_deref(),
-                    RunAttachParams {
+            follow_attach(
+                backend,
+                RoutedAttach {
+                    target: run.target.as_deref(),
+                    params: RunAttachParams {
                         run_id: run.run_id,
                         execution,
                     },
-                )
-                .await?;
-            follow_stream(subscription, signal, output).await
+                },
+                signal,
+                output,
+            )
+            .await
         }
         _ => Err(NativeV2CliError::Usage(
             "expected a subscription run operation".to_owned(),
@@ -453,30 +459,6 @@ fn write_durable_event(
     };
     *from_cursor = cursor;
     Ok(outcome)
-}
-
-async fn follow_stream<E, S, W, T>(
-    mut subscription: T,
-    signal: &mut S,
-    output: &mut W,
-) -> Result<CliOutcome, NativeV2CliError>
-where
-    E: Serialize + Send,
-    S: DetachSignal,
-    W: Write,
-    T: CliSubscription<E>,
-{
-    loop {
-        tokio::select! {
-            () = signal.wait() => return Ok(CliOutcome::Detached),
-            item = subscription.next() => match item? {
-                Some(CliSubscriptionItem::Event(event)) => write_json(output, &event)?,
-                Some(CliSubscriptionItem::Closed { .. }) | None => {
-                    return Ok(CliOutcome::Completed);
-                }
-            }
-        }
-    }
 }
 
 fn write_json(output: &mut impl Write, value: &impl Serialize) -> Result<(), NativeV2CliError> {

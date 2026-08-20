@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 
 use super::*;
 
+#[path = "tests/attach.rs"]
+mod attach_tests;
 #[path = "tests/parser.rs"]
 mod parser_tests;
 
@@ -390,22 +392,6 @@ async fn logs_reconnect_after_transport_close_without_replaying_the_boundary() {
     );
     assert_cursor_once(&output, "v2:4");
     assert_cursor_once(&output, "v2:5");
-}
-
-#[tokio::test]
-async fn attach_transport_loss_is_reported_without_replay_or_reconnect() {
-    let backend = FakeBackend::with_disconnected_attach();
-    let command = parse_native_v2_args(args(&[
-        "attach",
-        "run-public",
-        "exec-9",
-        "--target",
-        "prod",
-    ]))
-    .assert_value();
-    let result = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new()).await;
-    assert!(matches!(result, Err(NativeV2CliError::Disconnected)));
-    assert!(matches!(backend.calls().as_slice(), [Call::Attach { .. }]));
 }
 
 #[tokio::test]
