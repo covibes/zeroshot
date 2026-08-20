@@ -252,6 +252,9 @@ target discovery authentication mode, and sends no HTTP or OECP Authorization. `
 rejects direct targets locally. `target serve` is the raw, auth-free multi-run composition for one
 private VM; it accepts only HTTPS public origins or literal-loopback HTTP, uses one static target
 identity, and adds no queue, scheduler, TLS, or per-user isolation layer.
+The production target reserves its configured writer UID for serialized source resolution and
+leases one fixed, disjoint UID block per active run. The lease covers its writer and every bounded
+verifier identity and is released only after capsule process and workspace cleanup.
 The CLI backend lifecycle alone adds `queued` for cloud-owned work before OECP admission, including
 target startup. Local and direct backends mechanically project OECP phases and never synthesize
 `queued`; it does not belong in OECP, the target server, the controller ledger, or retry policy.

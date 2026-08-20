@@ -26,10 +26,11 @@ pub const MAX_PROCESS_ENV_BYTES: usize = 64 * 1024;
 pub const HOSTED_WORKER_UID: u32 = 10_002;
 pub const HOSTED_WORKER_GID: u32 = 10_002;
 
-/// One-run Linux identity allocation for contained provider turns.
+/// Linux identity allocation for one contained provider process domain.
 ///
-/// Workers reuse one identity because the workspace gate serializes them. Verifiers derive stable,
-/// disjoint identities from their session scope so parallel cleanup cannot affect peers.
+/// Within an active run, workers reuse one identity because the workspace gate serializes them.
+/// Verifiers derive stable, disjoint identities from their session scope so parallel cleanup cannot
+/// affect peers. A production host derives one such pool per active run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostedProcessPool {
     writer_uid: u32,
@@ -170,6 +171,49 @@ impl HostedProcessPool {
             .map(HostedProcessIdentity::runner)
     }
 
+    /// Derives one disjoint active-run pool from this host pool.
+    ///
+    /// The host pool's writer identity remains reserved for serialized source resolution. Active
+    /// runs start at its verifier base and reserve one writer plus both verifier session variants
+    /// for every admitted execution identity.
+    pub(crate) fn active_run_slot(
+        self,
+        slot: u32,
+        maximum_identity: u64,
+    ) -> Result<Self, ProcessRunnerError> {
+        let width = maximum_identity
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(identity_range_exhausted)?;
+        let verifier_span = maximum_identity
+            .checked_mul(2)
+            .and_then(|value| value.checked_sub(1))
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(identity_range_exhausted)?;
+        let offset = u64::from(slot)
+            .checked_mul(width)
+            .ok_or_else(identity_range_exhausted)?;
+        let writer_uid = u64::from(self.verifier_uid_base)
+            .checked_add(offset)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(identity_range_exhausted)?;
+        let verifier_uid_base = writer_uid
+            .checked_add(1)
+            .ok_or_else(identity_range_exhausted)?;
+        let highest_uid = verifier_uid_base
+            .checked_add(verifier_span)
+            .ok_or_else(identity_range_exhausted)?;
+        if highest_uid == u32::MAX {
+            return Err(identity_range_exhausted());
+        }
+        Self::new(
+            writer_uid,
+            self.writer_gid,
+            verifier_uid_base,
+            self.verifier_gid,
+        )
+    }
+
     pub fn identity(
         self,
         scope: HostedProcessScope,
@@ -208,6 +252,10 @@ impl HostedProcessPool {
             scope,
         })
     }
+}
+
+fn identity_range_exhausted() -> ProcessRunnerError {
+    ProcessRunnerError::InvalidCommand("hosted process identity range is exhausted".to_owned())
 }
 
 pub fn prepare_local_private_home(
@@ -386,42 +434,5 @@ impl LocalProcessRunner {
 pub use platform::ProcessCleanupEvidence;
 
 #[cfg(test)]
-mod hosted_identity_tests {
-    use std::path::Path;
-
-    use openengine_cluster_testkit::assertions::AssertValue;
-
-    use super::{HostedProcessPool, HostedProcessScope};
-
-    #[test]
-    fn hosted_scopes_keep_loop_sessions_stable_and_executions_disjoint() {
-        let pool = HostedProcessPool::new(10_002, 10_002, 20_000, 20_000).assert_value();
-        let loop_scope = HostedProcessScope::VerifierNodeInstance(7);
-        let repeated = pool.identity(loop_scope).assert_value();
-        let first_execution = pool
-            .identity(HostedProcessScope::VerifierExecution(7))
-            .assert_value();
-        let second_execution = pool
-            .identity(HostedProcessScope::VerifierExecution(8))
-            .assert_value();
-
-        assert_eq!(
-            pool.identity(loop_scope).assert_value().uid(),
-            repeated.uid()
-        );
-        assert_ne!(repeated.uid(), first_execution.uid());
-        assert_ne!(first_execution.uid(), second_execution.uid());
-        assert_eq!(
-            loop_scope.private_home(Path::new("/runtime")),
-            Path::new("/runtime/verifier-node-instance-7")
-        );
-        assert_eq!(
-            HostedProcessScope::VerifierExecution(7).private_home(Path::new("/runtime")),
-            Path::new("/runtime/verifier-execution-7")
-        );
-        assert!(
-            pool.identity(HostedProcessScope::VerifierExecution(0))
-                .is_err()
-        );
-    }
-}
+#[path = "process/tests.rs"]
+mod tests;

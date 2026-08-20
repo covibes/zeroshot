@@ -97,7 +97,7 @@ pub(super) fn capsule_config(storage_root: PathBuf) -> ProductionCapsuleConfig {
         executable_search_path: config.executable_search_path,
         git_program: config.git_program,
         gh_program: config.gh_program,
-        process_pool: config.process_pool,
+        process_pool: allocator_process_pool(),
         claude_turn_timeout: config.claude_turn_timeout,
     }
 }
@@ -197,6 +197,19 @@ pub(super) fn test_process_pool() -> HostedProcessPool {
         let verifier_base = uid.checked_add(10_000).assert_value_with("test UID range");
         HostedProcessPool::new(uid, gid, verifier_base, gid)
             .assert_value_with("current-user test pool")
+    }
+}
+
+fn allocator_process_pool() -> HostedProcessPool {
+    let uid = unsafe { libc::geteuid() };
+    let gid = unsafe { libc::getegid() };
+    if uid == 0 || gid == 0 {
+        HostedProcessPool::new(31_002, 31_002, 32_000, 32_000)
+            .assert_value_with("root allocator pool")
+    } else {
+        let source_uid = uid.checked_sub(1).assert_value_with("allocator source UID");
+        HostedProcessPool::new(source_uid, gid, uid, gid)
+            .assert_value_with("current-user allocator pool")
     }
 }
 

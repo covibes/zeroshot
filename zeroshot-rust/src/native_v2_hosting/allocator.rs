@@ -1,3 +1,5 @@
+mod identity_leases;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -32,6 +34,7 @@ use crate::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
 
 use super::ProductionHostingError;
 use super::repository::{RepositoryInstall, install_repository, production_source, repository_token};
+use identity_leases::{ActiveRunProcessPool, ActiveRunProcessPools};
 
 pub(super) struct ProductionCapsuleConfig {
     pub storage_root: PathBuf,
@@ -51,6 +54,7 @@ type FilesystemPreparer =
 
 pub(super) struct ProductionCapsuleAllocator {
     config: Arc<ProductionCapsuleConfig>,
+    process_pools: ActiveRunProcessPools,
     active: Arc<Mutex<BTreeMap<RunId, Arc<ProductionCapsuleState>>>>,
     allocated: Mutex<BTreeSet<RunId>>,
     allocation_turn: Mutex<()>,
@@ -68,8 +72,11 @@ impl ProductionCapsuleAllocator {
         {
             return Err(ProductionHostingError::CapsuleConfiguration);
         }
+        let process_pools = ActiveRunProcessPools::new(config.process_pool)
+            .map_err(|_| ProductionHostingError::CapsuleConfiguration)?;
         Ok(Self {
             config: Arc::new(config),
+            process_pools,
             active: Arc::new(Mutex::new(BTreeMap::new())),
             allocated: Mutex::new(BTreeSet::new()),
             allocation_turn: Mutex::new(()),
@@ -100,11 +107,15 @@ impl ProductionCapsuleAllocator {
         admitted: &AdmittedRun,
         environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
+        let process_pool = self
+            .process_pools
+            .acquire()
+            .map_err(|_| CapsuleAllocationUnavailable)?;
+        let active_process_pool = process_pool.process_pool();
         let run_root = run_directory(&self.config.storage_root, run_id);
         let workspace = run_root.join("workspace");
         let runtime_home = run_root.join("runtime");
-        let filesystem =
-            (self.prepare_filesystem)(&workspace, &runtime_home, self.config.process_pool)?;
+        let filesystem = (self.prepare_filesystem)(&workspace, &runtime_home, active_process_pool)?;
         let repository = admitted.source.repository.as_str();
         let source = self.repository_source(repository);
         let target = install_repository(RepositoryInstall {
@@ -112,7 +123,7 @@ impl ProductionCapsuleAllocator {
             source: &source,
             resolved: &admitted.source,
             workspace: &filesystem.workspace,
-            process_pool: self.config.process_pool,
+            process_pool: active_process_pool,
             github_token: repository_token(environment),
         })
         .await
@@ -125,7 +136,7 @@ impl ProductionCapsuleAllocator {
         let candidate = build_native_v2_candidate(
             admitted,
             NativeV2CandidateConfig {
-                harness: self.harness(admitted, &filesystem)?,
+                harness: self.harness(admitted, &filesystem, active_process_pool)?,
                 delivery: NativeV2DeliveryConfig::for_hosted_workspace(
                     filesystem.workspace.clone(),
                     target,
@@ -142,6 +153,7 @@ impl ProductionCapsuleAllocator {
         let state = Arc::new(ProductionCapsuleState {
             endpoint,
             run_root,
+            process_pool: Mutex::new(Some(process_pool)),
             _loss_sender: loss_sender.clone(),
             cleanup_turn: Mutex::new(false),
         });
@@ -170,6 +182,7 @@ impl ProductionCapsuleAllocator {
         &self,
         admitted: &AdmittedRun,
         filesystem: &CapsuleFilesystem,
+        process_pool: HostedProcessPool,
     ) -> Result<NativeV2HarnessConfig, CapsuleAllocationUnavailable> {
         match &admitted.runtime {
             RuntimePlan::Codex { provider, .. } => {
@@ -180,7 +193,7 @@ impl ProductionCapsuleAllocator {
                     runtime_home: filesystem.runtime_home.clone(),
                     local_user: None,
                     search_path: self.config.executable_search_path.clone(),
-                    process_pool: self.config.process_pool,
+                    process_pool,
                 }))
             }
             RuntimePlan::Claude { provider, .. } => {
@@ -201,7 +214,7 @@ impl ProductionCapsuleAllocator {
                     local_user_home: None,
                     base_environment,
                     turn_timeout: self.config.claude_turn_timeout,
-                    process_pool: self.config.process_pool,
+                    process_pool,
                 }))
             }
         }
@@ -272,6 +285,8 @@ impl ExclusiveControllerClaim for ProductionControllerClaim {}
 struct ProductionCapsuleState {
     endpoint: Arc<NativeCapsuleNodeEndpoint>,
     run_root: PathBuf,
+    // Retains the run's disjoint Linux identities until endpoint and workspace cleanup complete.
+    process_pool: Mutex<Option<ActiveRunProcessPool>>,
     // Keeps the controller-side loss receiver live during intentional cleanup. A whole-host loss
     // is observed on restart through durable reconciliation, never by allocating a replacement.
     _loss_sender: watch::Sender<bool>,
@@ -326,6 +341,7 @@ async fn cleanup_state(
     state.endpoint.disconnect().await;
     remove_run_directory(&state.run_root)?;
     active.lock().await.remove(run_id);
+    state.process_pool.lock().await.take();
     *cleaned = true;
     Ok(())
 }
