@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use super::{
     CliSubscription, CliSubscriptionItem, NativeV2CliBackend, NativeV2CliError, TargetAdd,
-    TargetRunIntent, TargetSetup,
+    TargetRunRequest, TargetSetup,
 };
 
 /// Named-target authority. The CLI does not interpret login credentials or runtime configuration.
@@ -29,7 +29,7 @@ pub trait TargetConnector: Send + Sync {
     async fn submit(
         &self,
         name: &str,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError>;
     async fn connect(&self, name: &str) -> Result<Arc<Self::Transport>, NativeV2CliError>;
 }
@@ -91,10 +91,10 @@ where
     async fn run_submit(
         &self,
         target: Option<&str>,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         self.connector
-            .submit(require_named_target(target)?, intent)
+            .submit(require_named_target(target)?, request)
             .await
     }
 

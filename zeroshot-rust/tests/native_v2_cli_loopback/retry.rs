@@ -78,7 +78,12 @@ impl CapsuleAllocator for RetryAllocator {
         Ok(controller_claim())
     }
 
-    async fn allocate(&self, _run_id: &RunId, admitted: &AdmittedRun) -> AllocationResult {
+    async fn allocate(
+        &self,
+        _run_id: &RunId,
+        admitted: &AdmittedRun,
+        _environment: &RunEnvironment,
+    ) -> AllocationResult {
         let runner = match self.lane {
             RetryLane::Codex => self.codex_runner(admitted)?,
             RetryLane::Claude => self.claude_runner(admitted)?,
@@ -166,10 +171,8 @@ async fn shipped_cli_observes_one_bounded_provider_continuation_for_both_harness
     for lane in [RetryLane::Codex, RetryLane::Claude] {
         let root = temp_root();
         let allocator = Arc::new(RetryAllocator::new(&root, lane));
-        let credential_name = EnvironmentVariableName::new(lane.credential()).assert_value();
         let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
             allocator: allocator.clone(),
-            environment: BTreeMap::from([(credential_name, "sentinel-secret".to_owned())]),
             resolved_base_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
             delivery_policy: DeliveryPolicy::Optional,
         }))
@@ -177,18 +180,20 @@ async fn shipped_cli_observes_one_bounded_provider_continuation_for_both_harness
         let config = root.path(&format!("{}-config", lane.label()));
         let (runtime, graph, input) = write_retry_files(&root, lane);
         let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
+        let mut command = cli_command(CliInvocation {
+            script: &retry_shell_script(),
+            label: lane.label(),
+            binary,
+            origin: &host.origin,
+            config: &config,
+            runtime: &runtime,
+            graph: &graph,
+            input: &input,
+            extra: Some(lane.label()),
+        });
+        command.env(lane.credential(), "sentinel-secret");
         let (stdout, stderr) = run_cli_command(
-            cli_command(CliInvocation {
-                script: &retry_shell_script(),
-                label: lane.label(),
-                binary,
-                origin: &host.origin,
-                config: &config,
-                runtime: &runtime,
-                graph: &graph,
-                input: &input,
-                extra: Some(lane.label()),
-            }),
+            command,
             Duration::from_secs(60),
             &format!("shipped CLI {:?} retry acceptance", lane),
         )

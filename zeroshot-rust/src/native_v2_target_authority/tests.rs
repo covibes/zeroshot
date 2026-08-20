@@ -24,8 +24,12 @@ use crate::native_v2_cloud::{
     CapsuleDestroyed, ControllerClaimUnavailable, ExclusiveControllerClaim,
 };
 use crate::native_v2_contract::{AdmittedRun, CodexProvider};
-use crate::native_v2_supervisor::RunRuntimeExit;
+use crate::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
 use crate::v2_run_ledger::fake::FakeRunLedger;
+
+#[path = "tests/run_submission.rs"]
+mod run_submission;
+use run_submission::assert_run_submission;
 
 struct Claim;
 impl ExclusiveControllerClaim for Claim {}
@@ -45,6 +49,7 @@ impl CapsuleAllocator for NoAllocation {
         &self,
         _run_id: &RunId,
         _admitted: &AdmittedRun,
+        _environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         Err(CapsuleAllocationUnavailable)
     }
@@ -83,7 +88,7 @@ impl TargetControllerFactory for FakeFactory {
         &self,
         _setup: &TargetSetupDocument,
         _controller: &NativeV2CloudController,
-        _intent: TargetRunIntent,
+        _request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError> {
         let active = self.active_submissions.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active_submissions
@@ -160,6 +165,13 @@ fn intent() -> TargetRunIntent {
         },
         branch: None,
         submission_key: IdempotencyKey::new("target-authority-test").assert_value(),
+    }
+}
+
+fn request() -> TargetRunRequest {
+    TargetRunRequest {
+        intent: intent(),
+        environment: BTreeMap::new(),
     }
 }
 
@@ -264,11 +276,11 @@ async fn concurrent_target_submissions_share_one_host_submission_turn() {
     );
     let left = {
         let authority = authority.clone();
-        tokio::spawn(async move { authority.submit(intent()).await })
+        tokio::spawn(async move { authority.submit(request()).await })
     };
     let right = {
         let authority = authority.clone();
-        tokio::spawn(async move { authority.submit(intent()).await })
+        tokio::spawn(async move { authority.submit(request()).await })
     };
     let (left, right) = tokio::join!(left, right);
     assert_eq!(
@@ -299,6 +311,7 @@ async fn loopback_routes_setup_session_and_target_scoped_oecp() {
     assert_pre_setup_routes(address, &factory).await;
     let encoded_setup = serde_json::to_vec(&setup("owner/repo")).assert_value();
     assert_setup_outcome(address, &encoded_setup, TargetSetupOutcome::Installed).await;
+    assert_run_submission(address, &factory).await;
     let session = http(
         address,
         TestHttpRequest::empty("POST", SESSION_PATH, Some("control-token")),

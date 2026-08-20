@@ -25,17 +25,16 @@ use crate::native_v2_cloud::{
     ExclusiveControllerClaim,
 };
 use crate::native_v2_codex::NativeV2CodexConfig;
-use crate::native_v2_contract::{AdmittedRun, EnvironmentVariableName, RuntimePlan};
+use crate::native_v2_contract::{AdmittedRun, RuntimePlan};
 use crate::native_v2_delivery::{GhCliAuthorityConfig, GhCliDeliveryAuthority, NativeV2DeliveryConfig};
 use crate::native_v2_portable_controller::WorkspaceIdentity;
-use crate::native_v2_supervisor::RunRuntimeExit;
+use crate::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
 
 use super::ProductionHostingError;
 use super::repository::{RepositoryInstall, install_repository, production_source, repository_token};
 
 pub(super) struct ProductionCapsuleConfig {
     pub storage_root: PathBuf,
-    pub environment: BTreeMap<EnvironmentVariableName, String>,
     pub codex_executable: PathBuf,
     pub claude_executable: String,
     pub claude_prefix_arguments: Vec<String>,
@@ -84,10 +83,11 @@ impl ProductionCapsuleAllocator {
         &self,
         run_id: &RunId,
         admitted: &AdmittedRun,
+        environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let run_root = run_directory(&self.config.storage_root, run_id);
         std::fs::create_dir(&run_root).map_err(|_| CapsuleAllocationUnavailable)?;
-        let allocation = self.build_capsule(run_id, admitted, &run_root).await;
+        let allocation = self.build_capsule(run_id, admitted, environment).await;
         if allocation.is_err() {
             let _ = remove_run_directory(&run_root);
         }
@@ -98,8 +98,9 @@ impl ProductionCapsuleAllocator {
         &self,
         run_id: &RunId,
         admitted: &AdmittedRun,
-        run_root: &Path,
+        environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
+        let run_root = run_directory(&self.config.storage_root, run_id);
         let workspace = run_root.join("workspace");
         let runtime_home = run_root.join("runtime");
         let filesystem =
@@ -112,7 +113,7 @@ impl ProductionCapsuleAllocator {
             resolved: &admitted.source,
             workspace: &filesystem.workspace,
             process_pool: self.config.process_pool,
-            github_token: repository_token(&self.config.environment),
+            github_token: repository_token(environment),
         })
         .await
         .map_err(|_| CapsuleAllocationUnavailable)?;
@@ -140,7 +141,7 @@ impl ProductionCapsuleAllocator {
         let (loss_sender, loss) = watch::channel(false);
         let state = Arc::new(ProductionCapsuleState {
             endpoint,
-            run_root: run_root.to_owned(),
+            run_root,
             _loss_sender: loss_sender.clone(),
             cleanup_turn: Mutex::new(false),
         });
@@ -238,12 +239,13 @@ impl CapsuleAllocator for ProductionCapsuleAllocator {
         &self,
         run_id: &RunId,
         admitted: &AdmittedRun,
+        environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let _turn = self.allocation_turn.lock().await;
         if !self.allocated.lock().await.insert(run_id.clone()) {
             return Err(CapsuleAllocationUnavailable);
         }
-        self.allocate_one(run_id, admitted).await
+        self.allocate_one(run_id, admitted, environment).await
     }
 
     async fn destroy_or_confirm_absent(

@@ -264,7 +264,11 @@ impl NativeV2CloudController {
     ) -> Result<CloudRunReceipt, NativeV2CloudError> {
         let run_id = stored.snapshot.run_id;
         let controller_claim = self.allocator.claim_controller(&run_id).await?;
-        let capsule = match self.allocator.allocate(&run_id, &admitted).await {
+        let capsule = match self
+            .allocator
+            .allocate(&run_id, &admitted, environment.as_ref())
+            .await
+        {
             Ok(capsule) => capsule,
             Err(error) => {
                 self.append_unavailable(&run_id).await?;

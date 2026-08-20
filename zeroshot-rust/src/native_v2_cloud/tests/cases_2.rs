@@ -48,7 +48,7 @@ async fn one_capsule_drives_worker_parallel_verifiers_and_loop() {
 }
 
 #[tokio::test]
-async fn valid_run_injects_only_declared_environment_and_dedupes() {
+async fn valid_run_injects_only_declared_environment_and_retry_does_not_replace_it() {
     let harness = harness(Behavior::Complete).await;
     let first = submit_test_request(&harness.controller, request(Value::Null))
         .await
@@ -59,7 +59,18 @@ async fn valid_run_injects_only_declared_environment_and_dedupes() {
         matches!(result, TerminalResult::Succeeded { .. }),
         "unexpected terminal result: {result:?}"
     );
-    let second = submit_test_request(&harness.controller, request(Value::Null))
+    let retry = request(Value::Null);
+    let replacement = RunEnvironment::exact(
+        &retry.submission.runtime,
+        BTreeMap::from([(
+            EnvironmentVariableName::new("NODE_TOKEN").assert_value_with("environment name"),
+            "replacement-secret".to_owned(),
+        )]),
+    )
+    .assert_value_with("replacement environment");
+    let second = harness
+        .controller
+        .submit_with_exact_environment(retry, replacement)
         .await
         .assert_value_with("dedupe");
     assert!(second.deduped);
@@ -81,9 +92,11 @@ async fn valid_run_injects_only_declared_environment_and_dedupes() {
         .assert_value_with("ledger")
         .assert_value_with("stored");
     assert!(
-        !serde_json::to_string(&stored)
-            .assert_value_with("stored JSON")
-            .contains("declared-secret")
+        ["declared-secret", "replacement-secret"]
+            .into_iter()
+            .all(|secret| !serde_json::to_string(&stored)
+                .assert_value_with("stored JSON")
+                .contains(secret))
     );
 }
 

@@ -17,7 +17,7 @@ use tokio::process::{Child, Command};
 use tokio::time::{Instant, sleep};
 
 use super::oecp::{ChannelSubscription, spawn_attach, spawn_logs, spawn_watch};
-use super::{NativeV2CliBackend, NativeV2CliError, TargetAdd, TargetRunIntent, TargetSetup};
+use super::{NativeV2CliBackend, NativeV2CliError, TargetAdd, TargetRunRequest, TargetSetup};
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 use crate::native_v2_cloud::run_intent_digest;
 use crate::native_v2_local::{PreparedLocalRun, prepare_local_run};
@@ -26,7 +26,6 @@ use crate::native_v2_portable_controller::{
     PortableRunController, read_ready, write_bootstrap_file,
 };
 use crate::native_v2_portable_controller::process::{PortableControllerTransport, connect_transport};
-use crate::native_v2_supervisor::RunEnvironment;
 use crate::v2_run_ledger::sqlite::SqliteRunLedger;
 use crate::v2_run_ledger::{RunLedger, RunLedgerError};
 
@@ -133,21 +132,21 @@ impl LocalCliBackend {
 
     async fn start_controller(
         &self,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<openengine_cluster_protocol::RunId, NativeV2CliError> {
-        let intent_digest = run_intent_digest(&intent).map_err(local_error)?;
+        let intent_digest = run_intent_digest(&request.intent).map_err(local_error)?;
         let _submission_lock = self.acquire_submission_lock().await?;
         if let Some(run_id) = self
-            .existing_submission(&intent.submission_key, &intent_digest)
+            .existing_submission(&request.intent.submission_key, &intent_digest)
             .await?
         {
             return Ok(run_id);
         }
         NativeV2Admission
-            .validate_intent(&intent, DeliveryPolicy::Optional)
+            .validate_intent(&request.intent, DeliveryPolicy::Optional)
             .await
             .map_err(local_error)?;
-        let prepared = prepare_local_run(intent, &self.current_directory, &self.git_program)
+        let prepared = prepare_local_run(request, &self.current_directory, &self.git_program)
             .map_err(local_error)?;
         self.start_prepared_controller(prepared).await
     }
@@ -160,12 +159,10 @@ impl LocalCliBackend {
         let storage = self.create_run_storage(&prepared.run_id)?;
         let workspace_lease = self.workspace_lease(&prepared.workspace)?;
         let bootstrap_path = storage.join(BOOTSTRAP_FILE);
-        let environment = RunEnvironment::exact(&prepared.submission.runtime, prepared.environment)
-            .map_err(local_error)?;
         let bootstrap = PortableControllerBootstrap {
             run_id: prepared.run_id.clone(),
             submission: prepared.submission,
-            environment,
+            environment: prepared.environment,
             workspace: prepared.workspace,
             workspace_lease,
             storage,

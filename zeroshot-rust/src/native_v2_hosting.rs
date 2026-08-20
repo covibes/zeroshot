@@ -11,7 +11,6 @@ mod repository;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,10 +24,10 @@ use crate::execution::process::HostedProcessPool;
 use crate::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 use crate::native_v2_claude::ClaudeProcessEnvironment;
 use crate::native_v2_cloud::{NativeV2CloudController, run_intent_digest};
-use crate::native_v2_contract::{EnvironmentVariableName, SourceBranchId};
+use crate::native_v2_contract::SourceBranchId;
 use crate::native_v2_target_authority::{
     FileTargetSetupStore, NativeV2TargetAuthority, TargetAuthorityError, TargetControllerFactory,
-    TargetRunIntent, TargetRunReceipt, TargetSetupDocument,
+    TargetRunReceipt, TargetRunRequest, TargetSetupDocument,
 };
 use crate::v2_run_ledger::RunLedger;
 use crate::v2_run_ledger::sqlite::SqliteRunLedger;
@@ -55,14 +54,10 @@ pub async fn build_production_target_authority(
     .map_err(|_| ProductionHostingError::SetupStore)
 }
 
-/// Host-owned capabilities used to compose one installed target.
-///
-/// `controller_environment` is the target's available environment, not a process environment.
-/// Before controller construction it is reduced to names declared by the installed runtime plan.
+/// Host-owned non-secret capabilities used to compose one installed target.
 #[derive(Clone)]
 pub struct ProductionHostingConfig {
     pub storage_root: PathBuf,
-    pub controller_environment: BTreeMap<EnvironmentVariableName, String>,
     pub codex_executable: PathBuf,
     pub claude_executable: String,
     pub claude_prefix_arguments: Vec<String>,
@@ -79,11 +74,6 @@ impl fmt::Debug for ProductionHostingConfig {
         formatter
             .debug_struct("ProductionHostingConfig")
             .field("storage_root", &self.storage_root)
-            .field(
-                "controller_environment_names",
-                &self.controller_environment.keys().collect::<Vec<_>>(),
-            )
-            .field("controller_environment_values", &"[REDACTED]")
             .field("codex_executable", &self.codex_executable)
             .field("claude_executable", &self.claude_executable)
             .field("git_program", &self.git_program)
@@ -114,14 +104,12 @@ impl ProductionTargetControllerFactory {
             .validate()
             .map_err(|_| ProductionHostingError::InvalidSetup)?;
         let root = prepare_storage_root(&self.config.storage_root)?;
-        let environment = self.config.controller_environment.clone();
         let ledger: Arc<dyn RunLedger> = Arc::new(
             SqliteRunLedger::open(root.join("runs.sqlite3"))
                 .map_err(|_| ProductionHostingError::Ledger)?,
         );
         let allocator = Arc::new(ProductionCapsuleAllocator::new(ProductionCapsuleConfig {
             storage_root: root,
-            environment: environment.clone(),
             codex_executable: self.config.codex_executable.clone(),
             claude_executable: self.config.claude_executable.clone(),
             claude_prefix_arguments: self.config.claude_prefix_arguments.clone(),
@@ -132,9 +120,13 @@ impl ProductionTargetControllerFactory {
             process_pool: self.config.process_pool,
             claude_turn_timeout: self.config.claude_turn_timeout,
         })?);
-        let controller = NativeV2CloudController::new(ledger, allocator)
-            .await
-            .map_err(|_| ProductionHostingError::Controller)?;
+        let controller = NativeV2CloudController::new_with_delivery_policy(
+            ledger,
+            allocator,
+            DeliveryPolicy::Optional,
+        )
+        .await
+        .map_err(|_| ProductionHostingError::Controller)?;
         Ok(Arc::new(controller))
     }
 }
@@ -154,9 +146,13 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
         &self,
         setup: &TargetSetupDocument,
         controller: &NativeV2CloudController,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError> {
         setup.validate()?;
+        let TargetRunRequest {
+            intent,
+            environment,
+        } = request;
         let intent_digest = run_intent_digest(&intent)
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
         if let Some(receipt) = controller
@@ -169,12 +165,11 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
             });
         }
         NativeV2Admission
-            .validate_intent(&intent, DeliveryPolicy::Required)
+            .validate_intent(&intent, DeliveryPolicy::Optional)
             .await
             .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
-        let environment =
-            RunEnvironment::from_available(&intent.runtime, &self.config.controller_environment)
-                .map_err(|error| TargetAuthorityError::unavailable(error.to_string()))?;
+        let environment = RunEnvironment::exact(&intent.runtime, environment)
+            .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
         let repository_source = production_source(&setup.repository);
         let branch = effective_branch(intent.branch.as_ref(), setup.default_branch.as_deref());
         let source = resolve_source(SourceResolution {
@@ -183,7 +178,7 @@ impl TargetControllerFactory for ProductionTargetControllerFactory {
             repository: &setup.repository,
             branch,
             process_pool: self.config.process_pool,
-            github_token: repository_token(&self.config.controller_environment),
+            github_token: repository_token(&environment),
         })
         .await
         .map_err(|_| TargetAuthorityError::unavailable("source could not be resolved"))?;
@@ -276,7 +271,6 @@ impl Default for ProductionHostingConfig {
     fn default() -> Self {
         Self {
             storage_root: PathBuf::from("/var/lib/zeroshot/native-v2"),
-            controller_environment: BTreeMap::new(),
             codex_executable: PathBuf::from("/usr/bin/codex"),
             claude_executable: "/usr/bin/claude".to_owned(),
             claude_prefix_arguments: Vec::new(),

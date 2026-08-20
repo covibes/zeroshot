@@ -1,13 +1,33 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 
 use openengine_cluster_protocol::{
-    GraphProfile, GraphSpec, IdempotencyKey, NodeRuntimeBinding, RuntimePlan,
+    EnvironmentVariableName, GraphProfile, GraphSpec, IdempotencyKey, NodeRuntimeBinding,
+    RuntimePlan,
 };
 
-use super::super::{NativeV2CliError, RunCommand, RunGraph, TargetRunIntent};
+use super::super::{NativeV2CliError, RunCommand, RunGraph, TargetRunIntent, TargetRunRequest};
+use crate::native_v2_supervisor::RunEnvironment;
 
-pub(super) fn prepare_submission(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError> {
+pub(super) fn prepare_submission_with_environment<F>(
+    run: &RunCommand,
+    available: F,
+) -> Result<TargetRunRequest, NativeV2CliError>
+where
+    F: Fn(&str) -> Option<OsString>,
+{
+    let intent = prepare_intent(run)?;
+    let environment = select_environment(&intent.runtime, available)?;
+    let environment = RunEnvironment::exact(&intent.runtime, environment)?.bootstrap_values();
+    Ok(TargetRunRequest {
+        intent,
+        environment,
+    })
+}
+
+fn prepare_intent(run: &RunCommand) -> Result<TargetRunIntent, NativeV2CliError> {
     let graph = materialize_graph(&run.graph)?;
     validate_graph_profile(&graph)?;
     let initial_input = read_json::<serde_json::Value>("input", &run.input)?;
@@ -30,6 +50,32 @@ pub(super) fn prepare_submission(run: &RunCommand) -> Result<TargetRunIntent, Na
         branch: run.branch.clone(),
         submission_key,
     })
+}
+
+fn select_environment<F>(
+    runtime: &RuntimePlan,
+    available: F,
+) -> Result<BTreeMap<EnvironmentVariableName, String>, NativeV2CliError>
+where
+    F: Fn(&str) -> Option<OsString>,
+{
+    declared_environment_names(runtime)
+        .into_iter()
+        .map(|name| {
+            let value = available(name.as_str())
+                .and_then(|value| value.into_string().ok())
+                .ok_or_else(|| NativeV2CliError::Environment(name.clone()))?;
+            Ok((name, value))
+        })
+        .collect()
+}
+
+fn declared_environment_names(runtime: &RuntimePlan) -> BTreeSet<EnvironmentVariableName> {
+    runtime
+        .nodes()
+        .values()
+        .flat_map(|binding| binding.declared_environment().iter().cloned())
+        .collect()
 }
 
 fn materialize_initial_input(

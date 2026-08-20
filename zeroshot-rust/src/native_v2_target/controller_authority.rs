@@ -11,7 +11,7 @@ use reqwest::{Client, Url};
 use serde::de::DeserializeOwned;
 use zeroshot_engine::native_v2_target_authority::{
     CONTROLLER_AUDIENCE, DISCOVERY_KIND, DISCOVERY_PATH, TargetDiscoveryDocument,
-    TargetOecpSession, TargetRunIntent, TargetRunReceipt, TargetSetupOutcome, TargetSetupResult,
+    TargetOecpSession, TargetRunReceipt, TargetRunRequest, TargetSetupOutcome, TargetSetupResult,
 };
 use openengine_cluster_protocol::{RunSubmitResult};
 
@@ -402,7 +402,7 @@ impl TargetControlAuthority for HostedTargetControlAuthority {
     async fn submit(
         &self,
         target: &TargetRecord,
-        intent: &TargetRunIntent,
+        request: &TargetRunRequest,
     ) -> Result<RunSubmitResult, TargetAuthorityError> {
         let (auth, controller) = self.descriptors(target).await?;
         let access = self
@@ -411,7 +411,7 @@ impl TargetControlAuthority for HostedTargetControlAuthority {
         let response = self
             .authorized(self.client.post(controller.run_url.clone()), &access)?
             .header(ACCEPT, "application/json")
-            .json(intent)
+            .json(request)
             .send()
             .await
             .map_err(|_| authority_error("target run request failed"))?;

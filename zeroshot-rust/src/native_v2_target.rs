@@ -3,7 +3,7 @@
 //! The CLI owns only a small local name-to-origin registry. A target control authority owns
 //! discovery, device login, atomic source-selection installation, and issuance of one
 //! authenticated target-scoped OECP session. Runtime plans belong to run submissions;
-//! environment values remain host-owned and never cross this connector.
+//! environment values cross only in the ephemeral per-run request and are never stored locally.
 
 use std::fmt;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zeroshot_engine::native_v2_cli::oecp::TargetConnector;
-use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetRunIntent, TargetSetup};
+use zeroshot_engine::native_v2_cli::{NativeV2CliError, TargetAdd, TargetRunRequest, TargetSetup};
 use openengine_cluster_protocol::RunSubmitResult;
 pub use zeroshot_engine::native_v2_target_authority::TargetSetupDocument;
 
@@ -49,7 +49,7 @@ pub trait TargetControlAuthority: Send + Sync {
     async fn submit(
         &self,
         target: &TargetRecord,
-        intent: &TargetRunIntent,
+        request: &TargetRunRequest,
     ) -> Result<RunSubmitResult, TargetAuthorityError>;
     async fn oecp_session(
         &self,
@@ -210,12 +210,12 @@ where
     async fn submit(
         &self,
         name: &str,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         validate_target_name(name).map_err(cli_target_error)?;
         let target = self.registry.get(name).map_err(cli_target_error)?;
         self.authority
-            .submit(&target, &intent)
+            .submit(&target, &request)
             .await
             .map_err(cli_target_error)
     }

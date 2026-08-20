@@ -6,6 +6,7 @@ use openengine_cluster_client::{
 };
 use openengine_cluster_protocol::{RequestId, RunId, RunSubmitResult, SourceBranchId, SubscriptionId};
 use serde_json::json;
+use zeroshot_engine::native_v2_target_authority::TargetRunIntent;
 
 use super::super::*;
 
@@ -25,7 +26,7 @@ pub(super) enum AuthorityCall {
     Discover(TargetRecord),
     Login(TargetRecord),
     Install(TargetRecord, TargetSetupDocument),
-    Submit(TargetRecord, Box<TargetRunIntent>),
+    Submit(TargetRecord, Box<TargetRunRequest>),
     Session(TargetRecord),
 }
 
@@ -108,11 +109,11 @@ impl TargetControlAuthority for FakeAuthority {
     async fn submit(
         &self,
         target: &TargetRecord,
-        intent: &TargetRunIntent,
+        request: &TargetRunRequest,
     ) -> Result<RunSubmitResult, TargetAuthorityError> {
         self.calls.lock().assert_value().push(AuthorityCall::Submit(
             target.clone(),
-            Box::new(intent.clone()),
+            Box::new(request.clone()),
         ));
         Ok(RunSubmitResult {
             run_id: RunId::new("run-hosted"),
@@ -216,6 +217,13 @@ pub(super) fn run_intent() -> TargetRunIntent {
         "submissionKey":"target-test"
     }))
     .assert_value()
+}
+
+pub(super) fn run_request() -> TargetRunRequest {
+    TargetRunRequest {
+        intent: run_intent(),
+        environment: BTreeMap::new(),
+    }
 }
 
 use openengine_cluster_testkit::assertions::{AssertValue};

@@ -5,16 +5,15 @@
 //! the submitted runtime plan. The candidate then runs as the invoking user in that same
 //! workspace; no cleanup authority owns, resets, or removes workspace mutations.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
 use openengine_cluster_protocol::{
-    EnvironmentVariableName, RunId, RunSubmission, RuntimePlan, SourceBranchId, SourceRepositoryId,
-    SourceRevisionId, ResolvedSource,
+    RunId, RunSubmission, RuntimePlan, SourceBranchId, SourceRepositoryId, SourceRevisionId,
+    ResolvedSource,
 };
 use thiserror::Error;
 use url::Url;
@@ -25,11 +24,9 @@ use crate::native_v2_candidate::{
     build_local_native_v2_candidate,
 };
 use crate::native_v2_claude::{ClaudeAdapterConfig, ClaudeAdapterConfigError, ClaudeProcessEnvironment};
-use crate::native_v2_cli::TargetRunIntent;
+use crate::native_v2_cli::TargetRunRequest;
 use crate::native_v2_codex::{NativeV2CodexConfig, NativeV2CodexUser};
 use crate::native_v2_contract::AdmittedRun;
-#[cfg(test)]
-use crate::native_v2_contract::CodexProvider;
 use crate::native_v2_delivery::{
     DeliveryTarget, GhCliAuthorityConfig, GhCliDeliveryAuthority, NativeV2DeliveryConfig,
 };
@@ -52,8 +49,6 @@ pub enum LocalCompositionError {
     ResolvedSource,
     #[error("local run identity could not be assigned")]
     RunIdentity,
-    #[error("declared environment variable {0} is unavailable or is not valid UTF-8")]
-    Environment(EnvironmentVariableName),
     #[error(transparent)]
     RunEnvironment(#[from] RunEnvironmentError),
     #[error("local controller storage could not be prepared")]
@@ -68,33 +63,22 @@ pub enum LocalCompositionError {
 pub struct PreparedLocalRun {
     pub run_id: RunId,
     pub submission: RunSubmission,
-    pub environment: BTreeMap<EnvironmentVariableName, String>,
+    pub environment: RunEnvironment,
     pub workspace: PathBuf,
 }
 
-/// Snapshots local source and selects only runtime-declared values from the invoking process.
+/// Snapshots local source and revalidates the request's exact runtime environment.
 pub fn prepare_local_run(
-    intent: TargetRunIntent,
+    request: TargetRunRequest,
     current_directory: &Path,
     git_program: &Path,
 ) -> Result<PreparedLocalRun, LocalCompositionError> {
-    prepare_local_run_with_environment(intent, current_directory, git_program, |name| {
-        std::env::var_os(name)
-    })
-}
-
-fn prepare_local_run_with_environment<F>(
-    intent: TargetRunIntent,
-    current_directory: &Path,
-    git_program: &Path,
-    environment: F,
-) -> Result<PreparedLocalRun, LocalCompositionError>
-where
-    F: Fn(&str) -> Option<OsString>,
-{
+    let TargetRunRequest {
+        intent,
+        environment,
+    } = request;
+    let environment = RunEnvironment::exact(&intent.runtime, environment)?;
     let (workspace, source) = local_resolved_source(current_directory, git_program)?;
-    let selected = select_environment(&intent.runtime, environment)?;
-    RunEnvironment::exact(&intent.runtime, selected.clone())?;
     let run_id = fresh_local_run_id()?;
     Ok(PreparedLocalRun {
         run_id,
@@ -106,35 +90,9 @@ where
             source,
             submission_key: intent.submission_key,
         },
-        environment: selected,
+        environment,
         workspace,
     })
-}
-
-fn select_environment<F>(
-    runtime: &RuntimePlan,
-    environment: F,
-) -> Result<BTreeMap<EnvironmentVariableName, String>, LocalCompositionError>
-where
-    F: Fn(&str) -> Option<OsString>,
-{
-    declared_environment_names(runtime)
-        .into_iter()
-        .map(|name| {
-            let value = environment(name.as_str())
-                .and_then(|value| value.into_string().ok())
-                .ok_or_else(|| LocalCompositionError::Environment(name.clone()))?;
-            Ok((name, value))
-        })
-        .collect()
-}
-
-fn declared_environment_names(runtime: &RuntimePlan) -> BTreeSet<EnvironmentVariableName> {
-    runtime
-        .nodes()
-        .values()
-        .flat_map(|binding| binding.declared_environment().iter().cloned())
-        .collect()
 }
 
 fn local_resolved_source(
@@ -356,28 +314,7 @@ fn prepare_private_directory(path: &Path) -> Result<(), LocalCompositionError> {
 
 #[cfg(test)]
 mod tests {
-    use openengine_cluster_protocol::{DeclaredEnvironment, NodeName, NodeRuntimeBinding, RunSize};
-    use openengine_cluster_testkit::assertions::AssertValue;
-
     use super::*;
-    use crate::native_v2_contract::{ModelId, ReasoningEffort, SessionScope};
-
-    fn runtime_with_credential(effort: Option<ReasoningEffort>) -> RuntimePlan {
-        let credential = EnvironmentVariableName::new("OPENAI_API_KEY").assert_value();
-        RuntimePlan::Codex {
-            provider: CodexProvider::OpenAi,
-            size: RunSize::Standard,
-            nodes: BTreeMap::from([(
-                NodeName::new("worker").assert_value(),
-                NodeRuntimeBinding::Agent {
-                    model: ModelId::new("gpt-5.6").assert_value(),
-                    effort,
-                    session_scope: SessionScope::Execution,
-                    env: DeclaredEnvironment::new([credential]).assert_value(),
-                },
-            )]),
-        }
-    }
 
     #[test]
     fn parses_canonical_github_remote_forms() {
@@ -393,36 +330,5 @@ mod tests {
         }
         assert!(github_repository("https://example.com/open-engine/zeroshot.git").is_none());
         assert!(github_repository("https://github.com/extra/open-engine/zeroshot").is_none());
-    }
-
-    #[test]
-    fn selects_exactly_declared_environment_names() {
-        let credential = EnvironmentVariableName::new("OPENAI_API_KEY").assert_value();
-        let runtime = runtime_with_credential(Some(ReasoningEffort::Max));
-        let selected = select_environment(&runtime, |name| match name {
-            "OPENAI_API_KEY" => Some(OsString::from("declared-secret")),
-            _ => Some(OsString::from("ambient-secret")),
-        })
-        .assert_value();
-        assert_eq!(selected.len(), 1);
-        assert_eq!(
-            selected.get(&credential).map(String::as_str),
-            Some("declared-secret")
-        );
-    }
-
-    #[test]
-    fn missing_declared_environment_fails_without_exposing_values() {
-        let credential = EnvironmentVariableName::new("OPENAI_API_KEY").assert_value();
-        let runtime = runtime_with_credential(None);
-        let result = select_environment(&runtime, |_| None)
-            .map(|_| ())
-            .map_err(|error| error.to_string());
-        assert_eq!(
-            result,
-            Err(format!(
-                "declared environment variable {credential} is unavailable or is not valid UTF-8"
-            ))
-        );
     }
 }

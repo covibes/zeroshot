@@ -1,13 +1,13 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use openengine_cluster_protocol::{
     RunAttachEventNotification, RunAttachParams, RunForceParams, RunForceResult, RunId,
     RunListParams, RunListResult, RunLogEventNotification, RunLogsParams, RunStatusParams,
-    RunStatusResult, RunSubmitResult, RunTitle, RunWatchEventNotification, RunWatchParams,
-    RuntimePlan,
+    EnvironmentVariableName, RunStatusResult, RunSubmitResult, RunTitle, RunWatchEventNotification,
+    RunWatchParams, RuntimePlan,
 };
-use openengine_cluster_testkit::assertions::{AssertError, AssertValue};
+use openengine_cluster_testkit::assertions::AssertValue;
 use serde_json::{json, Value};
 
 use super::*;
@@ -35,6 +35,7 @@ pub(super) enum Call {
         title: RunTitle,
         runtime: RuntimePlan,
         input: Value,
+        environment: BTreeMap<EnvironmentVariableName, String>,
         branch: Option<String>,
         submission_key: String,
     },
@@ -168,6 +169,13 @@ impl FakeBackend {
         }
     }
 
+    pub(super) fn with_failed_watch() -> Self {
+        Self {
+            failed_watch: true,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn with_reconnecting_attach_after_disconnect() -> Self {
         Self {
             attach_behavior: AttachBehavior::Disconnect,
@@ -267,13 +275,18 @@ impl NativeV2CliBackend for FakeBackend {
     async fn run_submit(
         &self,
         target: Option<&str>,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
+        let TargetRunRequest {
+            intent,
+            environment,
+        } = request;
         self.calls.lock().assert_value().push(Call::Submit {
             target: target.map(str::to_owned),
             title: intent.title,
             runtime: intent.runtime,
             input: intent.initial_input,
+            environment,
             branch: intent.branch.map(|branch| branch.as_str().to_owned()),
             submission_key: intent.submission_key.as_str().to_owned(),
         });
@@ -473,25 +486,4 @@ pub(super) struct ImmediateDetach;
 #[async_trait]
 impl DetachSignal for ImmediateDetach {
     async fn wait(&mut self) {}
-}
-
-#[tokio::test]
-async fn foreground_run_reports_a_terminal_failure_after_printing_it() {
-    let files = FixtureFiles::new(graph(), json!({"task":"fail"}));
-    let command = parse_native_v2_args(run_args(&files.graph, &files.input, &files.runtime, &[]))
-        .assert_value();
-    let backend = FakeBackend {
-        failed_watch: true,
-        ..FakeBackend::default()
-    };
-    let mut output = Vec::new();
-    let error = execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut output)
-        .await
-        .assert_error();
-    assert!(matches!(error, NativeV2CliError::RunFailed));
-    assert!(
-        String::from_utf8(output)
-            .assert_value()
-            .contains("\"reason\":\"worker_failed\"")
-    );
 }

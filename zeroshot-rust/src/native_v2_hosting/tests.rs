@@ -2,10 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
-use openengine_cluster_protocol::{NodeName, RunId, WorkerRef};
+use openengine_cluster_protocol::{NodeName, RunId, RunSize, RuntimePlan, WorkerRef};
 use serde_json::Value;
 
 use super::*;
@@ -19,7 +19,8 @@ use crate::native_v2_target_authority::{TargetAuthorityErrorKind, TargetSetupOut
 
 use super::allocator::{ProductionCapsuleAllocator, monitor_workspace_identity};
 use super::repository::{
-    install_repository, path_source, resolve_source, RepositoryInstall, SourceResolution,
+    RepositoryInstall, SourceResolution, install_repository, path_source, repository_token,
+    resolve_source,
 };
 
 mod fixtures;
@@ -35,7 +36,7 @@ fn run_branch_override_wins_over_target_default() {
 }
 
 #[test]
-fn controller_environment_is_filtered_to_declared_names_and_debug_is_redacted() {
+fn run_environment_is_exact_and_request_debug_is_redacted() {
     let declared = environment_name("OPENAI_API_KEY");
     let unused = environment_name("UNUSED_SECRET");
     let runtime = runtime(BTreeSet::from([declared.clone()]));
@@ -53,21 +54,42 @@ fn controller_environment_is_filtered_to_declared_names_and_debug_is_redacted() 
     assert!(!selected_debug.contains("openai-secret"));
     assert!(!selected_debug.contains("unused-secret"));
 
-    let config = hosting_config(PathBuf::from("/tmp/native-v2-redaction"), available);
-    let debug = format!("{config:?}");
+    let request = crate::native_v2_target_authority::TargetRunRequest {
+        intent: RunSubmissionIntent::from(&submission(
+            runtime,
+            "0123456789abcdef0123456789abcdef01234567",
+            "redacted-request",
+        )),
+        environment: available,
+    };
+    let debug = format!("{request:?}");
     assert!(debug.contains("OPENAI_API_KEY"));
+    assert!(debug.contains("UNUSED_SECRET"));
     assert!(!debug.contains("openai-secret"));
     assert!(!debug.contains("unused-secret"));
+}
+
+#[test]
+fn repository_provisioning_reads_github_token_from_the_current_run_only() {
+    let name = environment_name(crate::native_v2_delivery::GITHUB_TOKEN_ENV);
+    let declared_runtime = runtime(BTreeSet::from([name.clone()]));
+    let environment = RunEnvironment::exact(
+        &declared_runtime,
+        BTreeMap::from([(name, "run-scoped-token".to_owned())]),
+    )
+    .assert_value_with("run environment");
+    assert_eq!(repository_token(&environment), Some("run-scoped-token"));
+
+    let empty = RunEnvironment::exact(&runtime(BTreeSet::new()), BTreeMap::new())
+        .assert_value_with("empty run environment");
+    assert_eq!(repository_token(&empty), None);
 }
 
 #[tokio::test]
 async fn sqlite_controllers_share_one_durable_namespace_without_a_target_wide_claim() {
     let root = TestDirectory::new("hosting-controller");
     let setup = setup(None);
-    let first = ProductionTargetControllerFactory::new(hosting_config(
-        root.path().to_owned(),
-        BTreeMap::new(),
-    ));
+    let first = ProductionTargetControllerFactory::new(hosting_config(root.path().to_owned()));
     let second = first.clone();
 
     let first_controller = first
@@ -87,10 +109,9 @@ async fn sqlite_controllers_share_one_durable_namespace_without_a_target_wide_cl
 async fn production_authority_restores_setup_from_target_storage() {
     let root = TestDirectory::new("hosting-authority-setup");
     let setup = setup(None);
-    let first =
-        build_production_target_authority(hosting_config(root.path().to_owned(), BTreeMap::new()))
-            .await
-            .assert_value_with("first authority");
+    let first = build_production_target_authority(hosting_config(root.path().to_owned()))
+        .await
+        .assert_value_with("first authority");
     assert_eq!(
         first
             .install(setup.clone())
@@ -101,10 +122,9 @@ async fn production_authority_restores_setup_from_target_storage() {
     drop(first);
     assert!(root.path().join(TARGET_SETUP_FILE).is_file());
 
-    let restored =
-        build_production_target_authority(hosting_config(root.path().to_owned(), BTreeMap::new()))
-            .await
-            .assert_value_with("restored authority");
+    let restored = build_production_target_authority(hosting_config(root.path().to_owned()))
+        .await
+        .assert_value_with("restored authority");
     assert_eq!(
         restored
             .install(setup)
@@ -121,7 +141,7 @@ async fn production_authority_restores_setup_from_target_storage() {
 #[tokio::test]
 async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
     let root = TestDirectory::new("hosting-invalid-intent");
-    let mut config = hosting_config(root.path().to_owned(), BTreeMap::new());
+    let mut config = hosting_config(root.path().to_owned());
     config.git_program = root.path().join("git-must-not-run");
     let factory = ProductionTargetControllerFactory::new(config);
     let setup = setup(None);
@@ -129,16 +149,67 @@ async fn invalid_intent_fails_before_source_resolution_or_run_allocation() {
         .create_controller(&setup)
         .await
         .assert_value_with("controller");
-    let sourceful = submission(
+    let mut sourceful = submission(
         runtime(BTreeSet::new()),
         "0123456789abcdef0123456789abcdef01234567",
         "invalid-before-effects",
     );
+    sourceful.runtime = RuntimePlan::Codex {
+        provider: crate::native_v2_contract::CodexProvider::OpenAi,
+        size: RunSize::Small,
+        nodes: BTreeMap::new(),
+    };
 
     let error = factory
-        .submit(&setup, &controller, RunSubmissionIntent::from(&sourceful))
+        .submit(
+            &setup,
+            &controller,
+            crate::native_v2_target_authority::TargetRunRequest {
+                intent: RunSubmissionIntent::from(&sourceful),
+                environment: BTreeMap::new(),
+            },
+        )
         .await
-        .assert_error_with("hosted graph without delivery must fail admission");
+        .assert_error_with("invalid runtime must fail admission");
+
+    assert_eq!(error.kind(), TargetAuthorityErrorKind::Invalid);
+    assert_eq!(
+        fs::read_dir(root.path().join("runs"))
+            .assert_value_with("runs directory")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn invalid_run_environment_fails_before_source_resolution_or_allocation() {
+    let root = TestDirectory::new("hosting-invalid-environment");
+    let mut config = hosting_config(root.path().to_owned());
+    config.git_program = root.path().join("git-must-not-run");
+    let factory = ProductionTargetControllerFactory::new(config);
+    let setup = setup(None);
+    let controller = factory
+        .create_controller(&setup)
+        .await
+        .assert_value_with("controller");
+    let declared = environment_name("NODE_TOKEN");
+    let sourceful = submission(
+        runtime(BTreeSet::from([declared])),
+        "0123456789abcdef0123456789abcdef01234567",
+        "invalid-environment-before-effects",
+    );
+
+    let error = factory
+        .submit(
+            &setup,
+            &controller,
+            crate::native_v2_target_authority::TargetRunRequest {
+                intent: RunSubmissionIntent::from(&sourceful),
+                environment: BTreeMap::new(),
+            },
+        )
+        .await
+        .assert_error_with("missing environment must fail before source resolution");
 
     assert_eq!(error.kind(), TargetAuthorityErrorKind::Invalid);
     assert_eq!(
@@ -214,15 +285,22 @@ async fn allocator_uses_one_workspace_then_cleans_without_replacement() {
         .assert_value_with("allocator")
         .with_test_filesystem_and_source(repository.remote, portable_filesystem);
     let run_id = RunId::new("run-hosting-one");
+    let environment = RunEnvironment::exact(&admitted.runtime, BTreeMap::new())
+        .assert_value_with("empty environment");
     let run_path = allocator.run_path(&run_id);
 
     let capsule = allocator
-        .allocate(&run_id, &admitted)
+        .allocate(&run_id, &admitted, &environment)
         .await
         .assert_value_with("allocate capsule");
     assert!(run_path.join("workspace/.git").is_dir());
     assert!(run_path.join("runtime").is_dir());
-    assert!(allocator.allocate(&run_id, &admitted).await.is_err());
+    assert!(
+        allocator
+            .allocate(&run_id, &admitted, &environment)
+            .await
+            .is_err()
+    );
 
     capsule
         .cleanup
@@ -234,7 +312,12 @@ async fn allocator_uses_one_workspace_then_cleans_without_replacement() {
         .destroy_or_confirm_absent(&run_id, RunRuntimeExit::RuntimeLost)
         .await
         .assert_value_with("confirm absent");
-    assert!(allocator.allocate(&run_id, &admitted).await.is_err());
+    assert!(
+        allocator
+            .allocate(&run_id, &admitted, &environment)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -278,9 +361,11 @@ async fn default_claude_environment_prepares_capsule_session_home() {
         .assert_value_with("allocator")
         .with_test_filesystem_and_source(repository.remote, portable_filesystem);
     let run_id = RunId::new("run-hosting-claude-environment");
+    let environment = RunEnvironment::exact(&admitted.runtime, BTreeMap::new())
+        .assert_value_with("empty environment");
     let run_path = allocator.run_path(&run_id);
     let capsule = allocator
-        .allocate(&run_id, &admitted)
+        .allocate(&run_id, &admitted, &environment)
         .await
         .assert_value_with("allocate Claude capsule");
     let node = NodeName::new("work").assert_value_with("node");

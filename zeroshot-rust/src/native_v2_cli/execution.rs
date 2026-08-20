@@ -1,25 +1,25 @@
 use std::io::Write;
 use std::time::Duration;
-
 use openengine_cluster_protocol::{
     Cursor, RunAttachParams, RunForceParams, RunId, RunListParams, RunLogEventNotification,
     RunLogsParams, RunStatus, RunStatusParams, RunWatchEventNotification, RunWatchParams,
     SubscriptionCloseReason, TerminalResult,
 };
 use serde::Serialize;
-
 use super::{
     BuiltinGraphTemplate, CliOutcome, CliSubscription, CliSubscriptionItem, DetachSignal,
     NativeV2CliBackend, NativeV2CliCommand, NativeV2CliError, RunCommand, RunSelector,
     TemplateDelivery, HELP,
 };
-
 #[path = "execution/attach.rs"]
 mod attach;
+#[path = "execution/context.rs"]
+mod context;
 #[path = "execution/submission.rs"]
 mod submission;
 use attach::{follow_attach, RoutedAttach};
-use submission::prepare_submission;
+pub(crate) use context::CliExecutionContext;
+use submission::prepare_submission_with_environment;
 
 pub async fn execute_native_v2_cli<B, S, W>(
     command: NativeV2CliCommand,
@@ -32,15 +32,31 @@ where
     S: DetachSignal,
     W: Write,
 {
+    let environment = |name: &str| std::env::var_os(name);
+    let context = CliExecutionContext::new(backend, &environment);
+    execute_native_v2_cli_with_context(command, &context, signal, output).await
+}
+
+pub(crate) async fn execute_native_v2_cli_with_context<B, S, W>(
+    command: NativeV2CliCommand,
+    context: &CliExecutionContext<'_, B>,
+    signal: &mut S,
+    output: &mut W,
+) -> Result<CliOutcome, NativeV2CliError>
+where
+    B: NativeV2CliBackend,
+    S: DetachSignal,
+    W: Write,
+{
     if let Some(outcome) = try_execute_native_v2_static(&command, output)? {
         return Ok(outcome);
     }
     match command {
-        NativeV2CliCommand::Run(run) => execute_run(run, backend, signal, output).await,
+        NativeV2CliCommand::Run(run) => execute_run(run, context, signal, output).await,
         command @ (NativeV2CliCommand::TargetAdd(_)
         | NativeV2CliCommand::TargetLogin { .. }
-        | NativeV2CliCommand::TargetSetup(_)) => execute_target(command, backend).await,
-        command => execute_run_operation(command, backend, signal, output).await,
+        | NativeV2CliCommand::TargetSetup(_)) => execute_target(command, context.backend).await,
+        command => execute_run_operation(command, context.backend, signal, output).await,
     }
 }
 
@@ -241,7 +257,7 @@ where
 
 async fn execute_run<B, S, W>(
     run: RunCommand,
-    backend: &B,
+    context: &CliExecutionContext<'_, B>,
     signal: &mut S,
     output: &mut W,
 ) -> Result<CliOutcome, NativeV2CliError>
@@ -250,15 +266,18 @@ where
     S: DetachSignal,
     W: Write,
 {
-    let params = prepare_submission(&run)?;
-    let receipt = backend.run_submit(run.target.as_deref(), params).await?;
+    let params = prepare_submission_with_environment(&run, context.environment)?;
+    let receipt = context
+        .backend
+        .run_submit(run.target.as_deref(), params)
+        .await?;
     write_json(output, &receipt)?;
     if run.detach {
         return Ok(CliOutcome::Detached);
     }
     let outcome = follow_durable(
         DurableFollow {
-            backend,
+            backend: context.backend,
             target: run.target.as_deref(),
             run_id: receipt.run_id,
             kind: DurableFollowKind::Watch,

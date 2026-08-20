@@ -7,11 +7,12 @@
 mod store;
 mod transport;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use openengine_cluster_protocol::{RunId, SourceBranchId, SourceRepositoryId};
+use openengine_cluster_protocol::{EnvironmentVariableName, RunId, SourceBranchId, SourceRepositoryId};
 use openengine_cluster_server::identity::ConnectionIdentity;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,6 +34,31 @@ pub const SESSION_PATH: &str = "/native-v2/oecp-session";
 pub const OECP_PATH: &str = "/native-v2/oecp";
 pub const DISCOVERY_KIND: &str = "zeroshot.native-v2-target/v1";
 pub const CONTROLLER_AUDIENCE: &str = "controller";
+
+/// Private target submission carrying one secret-free intent and its ephemeral runtime values.
+///
+/// This is a host HTTP contract, not an OECP value. Environment values are validated against the
+/// intent's runtime plan at the target boundary and never enter setup, admission, or the ledger.
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TargetRunRequest {
+    pub intent: TargetRunIntent,
+    pub environment: BTreeMap<EnvironmentVariableName, String>,
+}
+
+impl fmt::Debug for TargetRunRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TargetRunRequest")
+            .field("intent", &self.intent)
+            .field(
+                "environment_names",
+                &self.environment.keys().collect::<Vec<_>>(),
+            )
+            .field("environment_values", &"[REDACTED]")
+            .finish()
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -185,7 +211,7 @@ pub trait TargetControllerFactory: Send + Sync {
         &self,
         setup: &TargetSetupDocument,
         controller: &NativeV2CloudController,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError>;
 }
 
@@ -309,7 +335,7 @@ impl NativeV2TargetAuthority {
     /// Resolves current target selection into a durable resolved source and host-assigned RunId.
     pub async fn submit(
         &self,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError> {
         // The target factory's durable retry preflight, mutable source resolution, and ledger
         // create must be one host turn. Otherwise two identical retries can resolve different
@@ -323,7 +349,7 @@ impl NativeV2TargetAuthority {
             .setup
             .clone()
             .ok_or_else(|| TargetAuthorityError::conflict("target setup is not installed"))?;
-        self.factory.submit(&setup, &controller, intent).await
+        self.factory.submit(&setup, &controller, request).await
     }
 }
 

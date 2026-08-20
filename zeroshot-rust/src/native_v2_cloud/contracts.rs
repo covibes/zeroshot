@@ -69,6 +69,7 @@ pub trait CapsuleAllocator: Send + Sync {
         &self,
         run_id: &RunId,
         admitted: &AdmittedRun,
+        environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable>;
 
     /// Destroys an allocator-known capsule for a controller-reconstructed run, or confirms that

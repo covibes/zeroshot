@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,10 @@ use super::*;
 
 #[path = "tests/attach.rs"]
 mod attach_tests;
+#[path = "tests/environment.rs"]
+mod environment_tests;
+#[path = "tests/outcome.rs"]
+mod outcome_tests;
 #[path = "tests/parser.rs"]
 mod parser_tests;
 
@@ -155,22 +160,6 @@ fn runtime() -> RuntimePlan {
     .assert_value()
 }
 
-fn software_change_runtime() -> RuntimePlan {
-    serde_json::from_value(json!({
-        "harness":"codex",
-        "provider":"openai",
-        "size":"standard",
-        "nodes":{
-            "worker":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
-            "acceptance":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
-            "code":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
-            "review_repair":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"},
-            "delivery_repair":{"kind":"agent","model":"gpt-5.6-sol","effort":"max"}
-        }
-    }))
-    .assert_value()
-}
-
 fn source() -> Value {
     json!({
         "repository":"open-engine/zeroshot",
@@ -233,62 +222,6 @@ fn template_list_and_show_are_static_and_emit_ordinary_json() {
 }
 
 #[tokio::test]
-async fn template_run_materializes_internal_input_and_owned_delivery_binding() {
-    let files = FixtureFiles::with_runtime(
-        graph(),
-        json!({"task":"ship it"}),
-        software_change_runtime(),
-    );
-    let command = parse_native_v2_args(args(&[
-        "run",
-        "--target",
-        "prod",
-        "--title",
-        "Ship change",
-        "--template",
-        "software-change",
-        "--ship",
-        "--input",
-        files.input.to_str().assert_value(),
-        "--runtime-config",
-        files.runtime.to_str().assert_value(),
-        "--submission-key",
-        "template-key",
-        "-d",
-    ]))
-    .assert_value();
-    let backend = FakeBackend::default();
-    execute_native_v2_cli(command, &backend, &mut NeverDetach, &mut Vec::new())
-        .await
-        .assert_value();
-    let calls = backend.calls();
-    let submitted = match calls.as_slice() {
-        [Call::Submit { runtime, input, .. }] => Some((runtime, input)),
-        _ => None,
-    }
-    .assert_value();
-    assert_eq!(submitted.1.pointer("/task"), Some(&json!("ship it")));
-    assert_eq!(submitted.1.pointer("/acceptanceFeedback"), Some(&json!("")));
-    assert_eq!(submitted.1.pointer("/codeFeedback"), Some(&json!("")));
-    assert_eq!(submitted.1.pointer("/deliveryFeedback"), Some(&json!("")));
-    let authored_input = std::fs::read(&files.input).assert_value();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&authored_input).assert_value(),
-        json!({"task":"ship it"})
-    );
-
-    let runtime = serde_json::to_value(submitted.0).assert_value();
-    assert_eq!(
-        runtime.pointer("/nodes/deliver/kind"),
-        Some(&json!("git_delivery"))
-    );
-    assert_eq!(
-        runtime.pointer("/nodes/deliver/env/0"),
-        Some(&json!("GH_TOKEN"))
-    );
-}
-
-#[tokio::test]
 async fn run_follows_by_default_and_forwards_per_run_intent_unchanged() {
     let files = FixtureFiles::new(graph(), json!({"task":"ship it"}));
     let command = parse_native_v2_args(run_args(
@@ -312,6 +245,7 @@ async fn run_follows_by_default_and_forwards_per_run_intent_unchanged() {
                 title: RunTitle::new("Repair checkout").assert_value(),
                 runtime: runtime(),
                 input: json!({"task":"ship it"}),
+                environment: BTreeMap::new(),
                 branch: Some("feature".to_owned()),
                 submission_key: "stable-key".to_owned(),
             },

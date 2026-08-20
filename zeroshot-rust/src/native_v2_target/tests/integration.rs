@@ -65,7 +65,7 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
         .assert_value();
     connector.login("prod").await.assert_value();
     connector.setup(setup_request()).await.assert_value();
-    let receipt = connector.submit("prod", run_intent()).await.assert_value();
+    let receipt = connector.submit("prod", run_request()).await.assert_value();
     connector.connect("prod").await.assert_value();
     assert_eq!(receipt.run_id, RunId::new("run-hosted"));
 
@@ -92,9 +92,9 @@ async fn connector_preserves_add_login_setup_and_target_scoped_connect() {
         AuthorityCall::Submit(record, intent) => Some((record, intent.as_ref())),
         _ => None,
     };
-    let (record, intent) = submitted.assert_value_with("expected target submission");
+    let (record, request) = submitted.assert_value_with("expected target submission");
     assert_eq!(record, added);
-    assert_eq!(intent, &run_intent());
+    assert_eq!(request, &run_request());
     assert!(matches!(calls.assert_at(4), AuthorityCall::Session(record) if record == added));
     assert_eq!(
         dialer.sessions.lock().assert_value().as_slice(),
@@ -131,7 +131,7 @@ async fn hosted_authority_uses_device_login_atomic_setup_and_target_wide_oecp() 
     );
     authority.install(&target, &setup).await.assert_value();
     let receipt = authority
-        .submit(&target, &run_intent())
+        .submit(&target, &run_request())
         .await
         .assert_value();
     assert_eq!(receipt.run_id, RunId::new("run-hosted"));
@@ -190,10 +190,22 @@ fn assert_setup_submit_and_session_requests(requests: &[CapturedHttpRequest]) {
         .find(|request| request.path == "/native-v2/run")
         .assert_value();
     assert_eq!(submit.authorization.as_deref(), Some("Bearer access-3"));
-    let intent: serde_json::Value = serde_json::from_str(&submit.body).assert_value();
-    assert_eq!(intent.pointer("/title").assert_value(), "Repair checkout");
-    assert_eq!(intent.pointer("/runtime/size").assert_value(), "standard");
-    assert!(intent.get("source").is_none());
+    let request: serde_json::Value = serde_json::from_str(&submit.body).assert_value();
+    assert_eq!(
+        request.pointer("/intent/title").assert_value(),
+        "Repair checkout"
+    );
+    assert_eq!(
+        request.pointer("/intent/runtime/size").assert_value(),
+        "standard"
+    );
+    assert!(
+        request
+            .pointer("/environment")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(serde_json::Map::is_empty)
+    );
+    assert!(request.pointer("/intent/source").is_none());
     let session = requests
         .iter()
         .find(|request| request.path == "/native-v2/oecp-session")

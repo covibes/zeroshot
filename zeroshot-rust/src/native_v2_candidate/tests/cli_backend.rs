@@ -14,7 +14,6 @@ where
 
 pub(super) struct InProcessCliBackend {
     pub(super) controller: Arc<NativeV2CloudController>,
-    pub(super) environment: BTreeMap<EnvironmentVariableName, String>,
 }
 
 fn cli_protocol_error(error: impl std::fmt::Display) -> NativeV2CliError {
@@ -58,9 +57,13 @@ impl NativeV2CliBackend for InProcessCliBackend {
     async fn run_submit(
         &self,
         target: Option<&str>,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<RunSubmitResult, NativeV2CliError> {
         self.target(target)?;
+        let TargetRunRequest {
+            intent,
+            environment,
+        } = request;
         let params = RunSubmitParams {
             run_id: RunId::new("candidate-run"),
             submission: RunSubmission {
@@ -78,9 +81,8 @@ impl NativeV2CliBackend for InProcessCliBackend {
                 submission_key: intent.submission_key,
             },
         };
-        let environment =
-            RunEnvironment::from_available(&params.submission.runtime, &self.environment)
-                .map_err(cli_protocol_error)?;
+        let environment = RunEnvironment::exact(&params.submission.runtime, environment)
+            .map_err(cli_protocol_error)?;
         self.controller
             .submit_with_exact_environment(params, environment)
             .await

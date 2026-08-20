@@ -169,6 +169,7 @@ where
         &self,
         _run_id: &RunId,
         admitted: &AdmittedRun,
+        _environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         self.core.allocations.fetch_add(1, Ordering::SeqCst);
         self.gate.enter().await?;

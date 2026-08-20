@@ -8,13 +8,15 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use openengine_cluster_protocol::{
-    ExecutionRef, IdempotencyKey, RunAttachEventNotification, RunAttachParams, RunForceParams,
-    RunListParams, RunLogEventNotification, RunLogsParams, RunStatusParams, RunStatusResult,
-    RunTitle, RunWatchEventNotification, RunWatchParams, SourceBranchId, SubscriptionCloseReason,
+    EnvironmentVariableName, ExecutionRef, IdempotencyKey, RunAttachEventNotification,
+    RunAttachParams, RunForceParams, RunListParams, RunLogEventNotification, RunLogsParams,
+    RunStatusParams, RunStatusResult, RunTitle, RunWatchEventNotification, RunWatchParams,
+    SourceBranchId, SubscriptionCloseReason,
 };
 use thiserror::Error;
 
-pub use crate::native_v2_target_authority::TargetRunIntent;
+pub use crate::native_v2_target_authority::{TargetRunIntent, TargetRunRequest};
+use crate::native_v2_supervisor::RunEnvironmentError;
 
 #[path = "native_v2_templates.rs"]
 mod templates;
@@ -28,7 +30,7 @@ pub mod oecp;
 pub mod local;
 
 #[path = "native_v2_cli/execution.rs"]
-mod execution;
+pub(crate) mod execution;
 
 #[path = "native_v2_cli/parser.rs"]
 mod parser;
@@ -159,6 +161,10 @@ pub enum NativeV2CliError {
     },
     #[error("initial input does not match GraphSpec.initialInput: {0}")]
     InitialInput(String),
+    #[error("declared environment variable {0} is unavailable or is not valid UTF-8")]
+    Environment(EnvironmentVariableName),
+    #[error(transparent)]
+    RunEnvironment(#[from] RunEnvironmentError),
     #[error("submission identity randomness is unavailable")]
     Randomness,
     #[error("target operation failed: {0}")]
@@ -218,7 +224,7 @@ pub trait NativeV2CliBackend: Send + Sync {
     async fn run_submit(
         &self,
         target: Option<&str>,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<openengine_cluster_protocol::RunSubmitResult, NativeV2CliError>;
     async fn run_list(
         &self,

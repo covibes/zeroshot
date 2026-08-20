@@ -233,13 +233,18 @@ implementation-specific vectors are not represented as portable external certifi
 private controller-process mode around the same engine. A host assigns the `RunId`, resolves the
 selected repository branch to one exact immutable revision, and passes only the exact bounded
 run-scoped environment declared by its runtime plan. Run branch selection overrides the target
-default branch; otherwise the remote default branch is used. The controller does not allocate
+default branch; otherwise the remote default branch is used. The CLI collects declared values only
+after template materialization and carries them beside the secret-free intent in one private,
+ephemeral target request. The target validates the exact map; source provisioning may consume that
+run's declared `GH_TOKEN`, while setup, admission, the ledger, observations, and target configuration
+never retain values. Exact submission retry identity covers the intent only and never replaces a
+created run's environment. The controller does not allocate
 identity, authenticate users, inspect
 target-wide inventory, queue work, or choose another run. Local and hosted compositions reuse this
 same engine and differ only in their host adapters.
 
-The target-wide object owns routing, authentication, durable submission lookup, source/environment
-inventory, and observation before or after a controller exists; it is not an executing controller
+The target-wide object owns routing, authentication, durable submission lookup, source setup, and
+observation before or after a controller exists; it is not an executing controller
 and does not own a runtime plan. The shipped CLI keeps its local named-target registry and reuses
 hosted OAuth discovery while storing only the rotating refresh family in the OS credential store.
 Access/OECP tokens remain memory-only, and the host routes authenticated target operations to the

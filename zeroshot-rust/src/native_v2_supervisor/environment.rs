@@ -85,6 +85,10 @@ impl RunEnvironment {
         self.values.as_ref().clone()
     }
 
+    pub(crate) fn get(&self, name: &EnvironmentVariableName) -> Option<&str> {
+        self.values.get(name).map(String::as_str)
+    }
+
     pub(super) fn resolve(
         &self,
         binding: &NodeRuntimeBinding,

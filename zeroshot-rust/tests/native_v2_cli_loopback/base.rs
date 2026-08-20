@@ -28,7 +28,7 @@ pub(crate) use zeroshot_engine::native_v2_cloud::{
 pub(crate) use zeroshot_engine::native_v2_admission::{DeliveryPolicy, NativeV2Admission};
 pub(crate) use zeroshot_engine::native_v2_claude::ClaudeProcessEnvironment;
 pub(crate) use zeroshot_engine::native_v2_contract::{
-    AdmittedRun, EnvironmentVariableName, NodeInvocation, NodeRuntimeBinding, RuntimePlan,
+    AdmittedRun, NodeInvocation, NodeRuntimeBinding, RuntimePlan,
 };
 pub(crate) use zeroshot_engine::native_v2_delivery::{
     DeliveryPollPolicy, DeliveryTarget, GitHubAuthorityError, GitHubChecks, GitHubCredential,
@@ -46,7 +46,8 @@ pub(crate) use zeroshot_engine::native_v2_runner::{
 pub(crate) use zeroshot_engine::native_v2_supervisor::{RunEnvironment, RunRuntimeExit};
 pub(crate) use zeroshot_engine::native_v2_target_authority::{
     NativeV2TargetAuthority, NativeV2TargetServer, TargetAuthorityError, TargetControllerFactory,
-    TargetRunIntent, TargetRunReceipt, TargetSessionAuthority, TargetSetupDocument,
+    TargetRunIntent, TargetRunReceipt, TargetRunRequest, TargetSessionAuthority,
+    TargetSetupDocument,
 };
 pub(crate) use zeroshot_engine::v2_run_ledger::fake::FakeRunLedger;
 
@@ -118,6 +119,7 @@ impl CapsuleAllocator for ImmediateAllocator {
         &self,
         _run_id: &RunId,
         admitted: &AdmittedRun,
+        _environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let runner = NativeNodeRunner::new(
             admitted,
@@ -210,13 +212,13 @@ impl TargetControllerFactory for TestControllerFactory {
         &self,
         setup: &TargetSetupDocument,
         controller: &NativeV2CloudController,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError> {
         submit_test_run(
             setup,
             controller,
-            intent,
-            ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &BTreeMap::new()),
+            request,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )
         .await
     }
@@ -224,7 +226,6 @@ impl TargetControllerFactory for TestControllerFactory {
 
 pub(crate) struct FixedAllocatorFactory {
     pub(crate) allocator: Arc<dyn CapsuleAllocator>,
-    pub(crate) environment: BTreeMap<EnvironmentVariableName, String>,
     pub(crate) resolved_base_revision: String,
     pub(crate) delivery_policy: DeliveryPolicy,
 }
@@ -242,15 +243,9 @@ impl TargetControllerFactory for FixedAllocatorFactory {
         &self,
         setup: &TargetSetupDocument,
         controller: &NativeV2CloudController,
-        intent: TargetRunIntent,
+        request: TargetRunRequest,
     ) -> Result<TargetRunReceipt, TargetAuthorityError> {
-        submit_test_run(
-            setup,
-            controller,
-            intent,
-            (&self.resolved_base_revision, &self.environment),
-        )
-        .await
+        submit_test_run(setup, controller, request, &self.resolved_base_revision).await
     }
 }
 
@@ -277,10 +272,13 @@ async fn test_controller_with_policy(
 pub(crate) async fn submit_test_run(
     setup: &TargetSetupDocument,
     controller: &NativeV2CloudController,
-    intent: TargetRunIntent,
-    resolution: (&str, &BTreeMap<EnvironmentVariableName, String>),
+    request: TargetRunRequest,
+    resolved_base_revision: &str,
 ) -> Result<TargetRunReceipt, TargetAuthorityError> {
-    let (resolved_base_revision, environment) = resolution;
+    let TargetRunRequest {
+        intent,
+        environment,
+    } = request;
     let intent_digest = run_intent_digest(&intent)
         .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
     if let Some(existing) = controller
@@ -317,7 +315,7 @@ pub(crate) async fn submit_test_run(
         runtime,
         submission_key,
     };
-    let exact_environment = RunEnvironment::exact(&submission.runtime, environment.clone())
+    let exact_environment = RunEnvironment::exact(&submission.runtime, environment)
         .map_err(|error| TargetAuthorityError::invalid(error.to_string()))?;
     let receipt = controller
         .submit_with_intent_digest_and_exact_environment(

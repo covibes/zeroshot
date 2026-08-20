@@ -328,18 +328,9 @@ pub(crate) fn live_hosting_config(root: &TempRoot, lane: LiveLane) -> Production
     let credential = std::env::var(lane.credential_name())
         .assert_value_with(&format!("{} is required", lane.credential_name()));
     assert!(!credential.is_empty(), "provider credential is empty");
-    let credential_name =
-        EnvironmentVariableName::new(lane.credential_name()).assert_value_with("credential name");
     let github_credential = std::env::var(GITHUB_TOKEN_ENV)
         .assert_value_with("GH_TOKEN is required for the live delivery lane");
     assert!(!github_credential.is_empty(), "GitHub credential is empty");
-    let controller_environment = BTreeMap::from([
-        (credential_name, credential),
-        (
-            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value_with("GitHub token name"),
-            github_credential,
-        ),
-    ]);
     let codex_executable = if lane.uses_codex() {
         PathBuf::from(
             std::env::var_os("ZEROSHOT_NATIVE_V2_CODEX_EXECUTABLE").assert_value_with(
@@ -363,7 +354,6 @@ pub(crate) fn live_hosting_config(root: &TempRoot, lane: LiveLane) -> Production
     };
     ProductionHostingConfig {
         storage_root: root.path("live-target"),
-        controller_environment,
         codex_executable,
         claude_executable,
         claude_prefix_arguments,

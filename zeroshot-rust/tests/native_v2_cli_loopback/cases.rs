@@ -72,13 +72,8 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
             repairs: repairs.clone(),
             lifecycle: ImmediateAllocator::default(),
         });
-        let environment = BTreeMap::from([(
-            EnvironmentVariableName::new(GITHUB_TOKEN_ENV).assert_value(),
-            "test-token".to_owned(),
-        )]);
         let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
             allocator,
-            environment,
             resolved_base_revision,
             delivery_policy: DeliveryPolicy::Required,
         }))
@@ -87,18 +82,20 @@ async fn shipped_cli_drives_direct_and_ci_feedback_delivery_to_confirmed_merge()
         let (runtime, graph, input) = write_delivery_fixture_files(&root);
         let binary = env!("CARGO_BIN_EXE_zeroshot-rust");
         let submission_key = format!("delivery-{name}");
+        let mut command = cli_command(CliInvocation {
+            script: &delivery_shell_script(),
+            label: name,
+            binary,
+            origin: &host.origin,
+            config: &config,
+            runtime: &runtime,
+            graph: &graph,
+            input: &input,
+            extra: Some(&submission_key),
+        });
+        command.env(GITHUB_TOKEN_ENV, "test-token");
         let (stdout, stderr) = run_cli_command(
-            cli_command(CliInvocation {
-                script: &delivery_shell_script(),
-                label: name,
-                binary,
-                origin: &host.origin,
-                config: &config,
-                runtime: &runtime,
-                graph: &graph,
-                input: &input,
-                extra: Some(&submission_key),
-            }),
+            command,
             Duration::from_secs(60),
             &format!("shipped CLI {name} delivery acceptance"),
         )
@@ -126,7 +123,6 @@ async fn shipped_cli_observes_capsule_loss_as_terminal_without_replacement() {
     let allocator = Arc::new(ImmediateAllocator::default());
     let host = LoopbackHost::start_with_factory(Arc::new(FixedAllocatorFactory {
         allocator: allocator.clone(),
-        environment: BTreeMap::new(),
         resolved_base_revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
         delivery_policy: DeliveryPolicy::Required,
     }))

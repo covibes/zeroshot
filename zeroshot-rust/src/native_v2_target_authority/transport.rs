@@ -22,7 +22,7 @@ use url::Url;
 
 use super::{
     DISCOVERY_PATH, NativeV2TargetAuthority, OECP_PATH, RUN_PATH, SESSION_PATH, SETUP_PATH,
-    TargetAuthorityError, TargetDiscoveryDocument, TargetOecpSession, TargetRunIntent,
+    TargetAuthorityError, TargetDiscoveryDocument, TargetOecpSession, TargetRunRequest,
     TargetSessionAuthority, TargetSetupDocument, TargetSetupResult,
 };
 use crate::native_v2_cloud::NativeV2CloudController;
@@ -137,11 +137,11 @@ impl NativeV2TargetServer {
         if let Err(error) = self.authenticate_control(&request.head).await {
             return authority_error_response(error);
         }
-        let intent = match serde_json::from_slice::<TargetRunIntent>(&request.body) {
-            Ok(intent) => intent,
+        let submission = match serde_json::from_slice::<TargetRunRequest>(&request.body) {
+            Ok(submission) => submission,
             Err(_) => return HttpResponse::empty(400),
         };
-        match self.target.submit(intent).await {
+        match self.target.submit(submission).await {
             Ok(receipt) => HttpResponse::private_json(200, &receipt),
             Err(error) => authority_error_response(error),
         }

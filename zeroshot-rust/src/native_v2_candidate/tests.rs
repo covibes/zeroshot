@@ -2,6 +2,7 @@
 
 use std::any::Any;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -24,10 +25,10 @@ use crate::native_v2_candidate::test_support::{TestGitRepository, git_output};
 use crate::native_v2_admission::NativeV2Admission;
 use crate::native_v2_capsule::{NativeCapsuleNodeEndpoint, RemoteCapsuleNodeRunner};
 use crate::native_v2_claude::ClaudeProcessEnvironment;
+use crate::native_v2_cli::execution::{CliExecutionContext, execute_native_v2_cli_with_context};
 use crate::native_v2_cli::{
-    execute_native_v2_cli, CliOutcome, CliSubscription, CliSubscriptionItem, NativeV2CliBackend,
-    NativeV2CliCommand, NativeV2CliError, NeverDetach, RunCommand, RunGraph, TargetAdd,
-    TargetRunIntent, TargetSetup,
+    CliOutcome, CliSubscription, CliSubscriptionItem, NativeV2CliBackend, NativeV2CliCommand,
+    NativeV2CliError, NeverDetach, RunCommand, RunGraph, TargetAdd, TargetRunRequest, TargetSetup,
 };
 use crate::native_v2_cloud::{
     AllocatedCapsule, CapsuleAllocationUnavailable, CapsuleAllocator, CapsuleCleanup,
@@ -256,6 +257,7 @@ impl CapsuleAllocator for CandidateAllocator {
         &self,
         _run_id: &RunId,
         admitted: &AdmittedRun,
+        _environment: &RunEnvironment,
     ) -> Result<AllocatedCapsule, CapsuleAllocationUnavailable> {
         let delivery = Arc::new(NativeV2DeliveryAdapter::new(
             NativeV2DeliveryConfig {
@@ -370,12 +372,16 @@ async fn submit_through_cli(
         serde_json::to_vec(&runtime(RuntimePlanKind::Codex)).assert_value_with("encode runtime"),
     )
     .assert_value_with("write runtime");
-    let backend = InProcessCliBackend {
-        controller,
-        environment,
+    let backend = InProcessCliBackend { controller };
+    let available = |name: &str| {
+        EnvironmentVariableName::new(name)
+            .ok()
+            .and_then(|name| environment.get(&name))
+            .map(OsString::from)
     };
+    let context = CliExecutionContext::new(&backend, &available);
     let mut output = Vec::new();
-    let outcome = execute_native_v2_cli(
+    let outcome = execute_native_v2_cli_with_context(
         NativeV2CliCommand::Run(RunCommand {
             target: Some("candidate-cloud".to_owned()),
             title: RunTitle::new("Candidate end to end").assert_value_with("title"),
@@ -388,7 +394,7 @@ async fn submit_through_cli(
                 IdempotencyKey::new("candidate-e2e").assert_value_with("submission key"),
             ),
         }),
-        &backend,
+        &context,
         &mut NeverDetach,
         &mut output,
     )

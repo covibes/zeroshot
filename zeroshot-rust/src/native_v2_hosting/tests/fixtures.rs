@@ -71,13 +71,9 @@ impl RepositoryFixture {
     }
 }
 
-pub(super) fn hosting_config(
-    storage_root: PathBuf,
-    controller_environment: BTreeMap<EnvironmentVariableName, String>,
-) -> ProductionHostingConfig {
+pub(super) fn hosting_config(storage_root: PathBuf) -> ProductionHostingConfig {
     ProductionHostingConfig {
         storage_root,
-        controller_environment,
         codex_executable: PathBuf::from("/usr/bin/false"),
         claude_executable: "/usr/bin/false".to_owned(),
         claude_prefix_arguments: Vec::new(),
@@ -91,10 +87,9 @@ pub(super) fn hosting_config(
 }
 
 pub(super) fn capsule_config(storage_root: PathBuf) -> ProductionCapsuleConfig {
-    let config = hosting_config(storage_root.clone(), BTreeMap::new());
+    let config = hosting_config(storage_root.clone());
     ProductionCapsuleConfig {
         storage_root,
-        environment: BTreeMap::new(),
         codex_executable: config.codex_executable,
         claude_executable: config.claude_executable,
         claude_prefix_arguments: config.claude_prefix_arguments,

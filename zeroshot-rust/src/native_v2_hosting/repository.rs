@@ -291,15 +291,13 @@ fn configure_identity(_command: &mut Command, _uid: u32, _gid: u32) {}
 pub(super) struct RepositoryInstallError;
 
 pub(super) fn repository_token(
-    environment: &std::collections::BTreeMap<
-        crate::native_v2_contract::EnvironmentVariableName,
-        String,
-    >,
+    environment: &crate::native_v2_supervisor::RunEnvironment,
 ) -> Option<&str> {
-    environment
-        .iter()
-        .find(|(name, _)| name.as_str() == crate::native_v2_delivery::GITHUB_TOKEN_ENV)
-        .map(|(_, value)| value.as_str())
+    let name = crate::native_v2_contract::EnvironmentVariableName::new(
+        crate::native_v2_delivery::GITHUB_TOKEN_ENV,
+    )
+    .ok()?;
+    environment.get(&name)
 }
 
 #[cfg(test)]
