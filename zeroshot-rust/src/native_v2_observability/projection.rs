@@ -1,5 +1,17 @@
 use super::*;
 
+fn visible_text(text: &str) -> String {
+    let mut visible = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_control() {
+            visible.extend(character.escape_default());
+        } else {
+            visible.push(character);
+        }
+    }
+    visible
+}
+
 pub(super) fn status_result(
     snapshot: &RunSnapshot,
 ) -> Result<RunStatusResult, NativeV2ObservationError> {
@@ -93,12 +105,14 @@ fn log_record(stream: SafeLogStream, line: &str) -> Result<LogRecord, NativeV2Ob
         level,
         target: BoundedLogTarget::new(LOG_TARGET)
             .map_err(|_| NativeV2ObservationError::InvalidState)?,
-        message: BoundedLogMessage::new(line).unwrap_or_else(|_| BoundedLogMessage::redacted()),
+        message: BoundedLogMessage::new(visible_text(line))
+            .unwrap_or_else(|_| BoundedLogMessage::redacted()),
     })
 }
 
 pub(super) fn bounded_attach_output(text: &str) -> BoundedAssistantOutput {
-    BoundedAssistantOutput::new(text).unwrap_or_else(|_| BoundedAssistantOutput::redacted())
+    BoundedAssistantOutput::new(visible_text(text))
+        .unwrap_or_else(|_| BoundedAssistantOutput::redacted())
 }
 
 pub(super) fn require_active_reference(
@@ -151,4 +165,44 @@ pub(super) fn opaque_execution(
             token
         });
     PublicExecutionRef::new(token).map_err(|_| NativeV2ObservationError::InvalidState)
+}
+
+#[cfg(test)]
+mod tests {
+    use openengine_cluster_protocol::{REDACTED_ASSISTANT_OUTPUT, REDACTED_LOG_MESSAGE};
+    use openengine_cluster_testkit::assertions::AssertValue;
+
+    use super::*;
+
+    #[test]
+    fn public_output_preserves_text_with_visible_control_escapes() {
+        let source = "first\n\tsecond\r\u{1b}[31m café";
+        let expected = "first\\n\\tsecond\\r\\u{1b}[31m café";
+
+        assert_eq!(bounded_attach_output(source).as_str(), expected);
+        assert_eq!(
+            log_record(SafeLogStream::Output, source)
+                .assert_value()
+                .message
+                .as_str(),
+            expected
+        );
+    }
+
+    #[test]
+    fn public_output_redacts_when_visible_escapes_exceed_the_wire_bound() {
+        let source = "\u{1b}".repeat(3_000);
+
+        assert_eq!(
+            bounded_attach_output(&source).as_str(),
+            REDACTED_ASSISTANT_OUTPUT
+        );
+        assert_eq!(
+            log_record(SafeLogStream::Output, &source)
+                .assert_value()
+                .message
+                .as_str(),
+            REDACTED_LOG_MESSAGE
+        );
+    }
 }
