@@ -116,6 +116,7 @@ Destructive commands (need permission): `zeroshot kill`, `zeroshot clear`, `zero
 | Native v2 CLI and OECP adapter            | `zeroshot-rust/src/native_v2_cli.rs`, `native_v2_cli/`                                                                           |
 | Native v2 built-in graph templates        | `zeroshot-rust/src/native_v2_templates.rs`, `native_v2_templates/`                                                               |
 | Native v2 target connector/server command | `zeroshot-rust/src/native_v2_target.rs`, `native_v2_target/`, `zeroshot-rust/src/main.rs`                                        |
+| Native v2 self-hosted target image        | `docker/zeroshot-v2-target/`                                                                                                     |
 | Native release targets                    | `distribution/zeroshot-rust-targets.json`                                                                                        |
 | Native npm binary shim                    | `npm/zeroshot-rust/`                                                                                                             |
 | Native distribution tooling               | `scripts/rust-distribution.js`                                                                                                   |
@@ -252,6 +253,10 @@ target discovery authentication mode, and sends no HTTP or OECP Authorization. `
 rejects direct targets locally. `target serve` is the raw, auth-free multi-run composition for one
 private VM; it accepts only HTTPS public origins or literal-loopback HTTP, uses one static target
 identity, and adds no queue, scheduler, TLS, or per-user isolation layer.
+The self-hosted image packages that server with the pinned Codex and Claude harnesses plus Git and
+GitHub CLI. Its root supervisor owns persistent target state and isolated per-run identities; the
+state root must remain traversable by those identities. It retains the direct target contract: no
+login, queue, scheduler, TLS, or tenant isolation is added by the container.
 The production target reserves its configured writer UID for serialized source resolution and
 leases one fixed, disjoint UID block per active run. The lease covers its writer and every bounded
 verifier identity and is released only after capsule process and workspace cleanup.
