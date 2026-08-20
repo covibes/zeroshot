@@ -93,6 +93,10 @@ it('keeps one always-starting classifier and one stable aggregate result', funct
     workflow,
     /node-check:[\s\S]*?Opcore introduced-change gate[\s\S]*?if: needs\.classify\.outputs\.rust != 'true'/
   );
+  assert.match(
+    workflow,
+    /node-check:[\s\S]*?Setup Rust 1\.97\.0 for Opcore tests[\s\S]*?Install Opcore Rust metrics analyzer for Node tests/
+  );
   assert.match(workflow, /\n {2}required:\n[\s\S]*?name: required/);
   assert.match(workflow, /RUST_DOCKER_RESULT: \$\{\{ needs\.rust-docker\.result \}\}/);
   assert.match(workflow, /if \[\[ "\$NODE_SELECTED" == "true" \]\]/);
