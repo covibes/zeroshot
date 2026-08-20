@@ -3,7 +3,8 @@
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
-use std::sync::mpsc;
+use std::process::Command;
+use std::sync::{Arc, Barrier, mpsc};
 use std::time::Duration;
 
 #[path = "support/temp_profile.rs"]
@@ -13,8 +14,11 @@ use temp_profile::TempProfile;
 use zeroshot_engine::daemon_auth::DaemonCredentials;
 use zeroshot_engine::daemon_discovery::{
     CLUSTER_PROTOCOL, DAEMON_PROTOCOL, DaemonLocator, DiscoveryError, MAX_LOCATOR_BYTES,
-    acquire_start_guard, read_locator, remove_locator_if_matches, replace_locator,
+    NativeProfile, acquire_start_guard, read_locator, remove_locator_if_matches, replace_locator,
 };
+
+const PROFILE_CREATION_CONTENDERS: usize = 32;
+const RESTRICTIVE_UMASK_PROFILE_ENV: &str = "ZEROSHOT_RESTRICTIVE_UMASK_PROFILE";
 
 fn locator(profile: &TempProfile, port: u16) -> DaemonLocator {
     let credentials = DaemonCredentials::generate(profile.profile.digest()).expect("credentials");
@@ -235,4 +239,91 @@ fn profile_start_serialization_has_a_bounded_loser() {
         contender.join().expect("contender thread"),
         Err(DiscoveryError::StartupLockTimeout)
     ));
+}
+
+#[test]
+fn concurrent_profile_creation_never_exposes_default_permissions() {
+    let profile = TempProfile::new("concurrent-profile-creation");
+    acquire_profile_guards_concurrently(&profile.profile);
+
+    let metadata = fs::metadata(profile.profile.root()).expect("profile metadata");
+    assert_eq!(metadata.mode() & 0o777, 0o700);
+}
+
+#[test]
+fn concurrent_profile_creation_restores_owner_access_under_restrictive_umask() {
+    let profile = TempProfile::new("restrictive-umask");
+    let status = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--exact",
+            "restrictive_umask_profile_creation_child",
+            "--nocapture",
+        ])
+        .env(RESTRICTIVE_UMASK_PROFILE_ENV, profile.profile.root())
+        .status()
+        .expect("run restrictive-umask child");
+
+    assert!(status.success(), "restrictive-umask child failed");
+    let metadata = fs::metadata(profile.profile.root()).expect("profile metadata");
+    assert_eq!(metadata.mode() & 0o777, 0o700);
+}
+
+#[test]
+fn restrictive_umask_profile_creation_child() {
+    let Some(root) = std::env::var_os(RESTRICTIVE_UMASK_PROFILE_ENV) else {
+        return;
+    };
+    unsafe {
+        libc::umask(0o777);
+    }
+    let profile = NativeProfile::new(root, "native-profile:restrictive-umask-child");
+    read_profile_concurrently(&profile);
+
+    let metadata = fs::metadata(profile.root()).expect("profile metadata");
+    assert_eq!(metadata.mode() & 0o777, 0o700);
+}
+
+fn acquire_profile_guards_concurrently(profile: &NativeProfile) {
+    let barrier = Arc::new(Barrier::new(PROFILE_CREATION_CONTENDERS));
+    let contenders = (0..PROFILE_CREATION_CONTENDERS)
+        .map(|_| {
+            let contender_profile = profile.clone();
+            let contender_barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                contender_barrier.wait();
+                acquire_start_guard(&contender_profile, Duration::from_secs(5)).map(drop)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for contender in contenders {
+        contender
+            .join()
+            .expect("contender thread")
+            .expect("secure concurrent profile creation");
+    }
+}
+
+fn read_profile_concurrently(profile: &NativeProfile) {
+    let barrier = Arc::new(Barrier::new(PROFILE_CREATION_CONTENDERS));
+    let contenders = (0..PROFILE_CREATION_CONTENDERS)
+        .map(|_| {
+            let contender_profile = profile.clone();
+            let contender_barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                contender_barrier.wait();
+                read_locator(&contender_profile)
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for contender in contenders {
+        assert_eq!(
+            contender
+                .join()
+                .expect("contender thread")
+                .expect("secure concurrent profile read"),
+            None
+        );
+    }
 }

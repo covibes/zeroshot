@@ -261,7 +261,7 @@ fn secure_directory_handle_shape(is_directory: bool, is_reparse_point: bool, lin
 mod platform {
     use std::fs::{self, File, OpenOptions};
     use std::io;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::Path;
 
     use super::DiscoveryError;
@@ -275,11 +275,18 @@ mod platform {
                 {
                     return Err(DiscoveryError::InsecureProfileDirectory);
                 }
+                // mkdir modes are filtered through the process umask. Creation at 0700 prevents
+                // any group/other exposure; restoring missing owner bits afterward keeps hardened
+                // umasks from leaving the profile unusable. Recursing revalidates the path.
+                if metadata.mode() & 0o700 != 0o700 {
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+                    return ensure_profile_directory(path);
+                }
                 Ok(())
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::create_dir_all(path)?;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+                let mut builder = fs::DirBuilder::new();
+                builder.recursive(true).mode(0o700).create(path)?;
                 ensure_profile_directory(path)
             }
             Err(error) => Err(error.into()),
