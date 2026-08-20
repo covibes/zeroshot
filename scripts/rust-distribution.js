@@ -861,6 +861,7 @@ function checkPublicationJobs(jobs) {
 
   const shimPublish = jobs['rust-shim-publish'];
   if (
+    !shimPublish.if?.trim().startsWith('always() &&') ||
     !shimPublish.if?.includes("inputs.action == 'publish-npm-shim'") ||
     shimPublish.permissions?.['id-token'] !== 'write'
   ) {

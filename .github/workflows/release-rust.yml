@@ -665,7 +665,10 @@ jobs:
 
   rust-shim-publish:
     needs: [plan, rust-shim-input]
-    if: inputs.action == 'publish-npm-shim' && needs.rust-shim-input.result == 'success'
+    if: |
+      always() &&
+      inputs.action == 'publish-npm-shim' &&
+      needs.rust-shim-input.result == 'success'
     runs-on: ubuntu-latest
     environment: release
     permissions:
